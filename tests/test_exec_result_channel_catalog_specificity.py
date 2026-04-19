@@ -37,3 +37,29 @@ def test_channel_enforcer_accepts_dedicated_verb_result_reply_channel() -> None:
 
     assert entry is not None
     assert entry["schema_id"] == "VerbResultV1"
+
+
+def test_channel_enforcer_accepts_cortex_result_reply_channel() -> None:
+    raw = yaml.safe_load(CHANNELS_YAML.read_text()) or {}
+    channels = raw.get("channels", [])
+    catalog = {entry["name"]: entry for entry in channels if isinstance(entry, dict) and entry.get("name")}
+    enforcer = ChannelCatalogEnforcer(enforce=True, catalog=catalog)
+
+    entry = enforcer.entry_for("orion:cortex:result:corr-123")
+
+    assert entry is not None
+    assert entry["schema_id"] == "CortexClientResult"
+
+
+def test_channel_enforcer_rejects_uncataloged_agent_chain_capability_reply_channel() -> None:
+    raw = yaml.safe_load(CHANNELS_YAML.read_text()) or {}
+    channels = raw.get("channels", [])
+    catalog = {entry["name"]: entry for entry in channels if isinstance(entry, dict) and entry.get("name")}
+    enforcer = ChannelCatalogEnforcer(enforce=True, catalog=catalog)
+
+    try:
+        enforcer.validate("orion:agent-chain:capability:reply:corr-123")
+    except ValueError as exc:
+        assert "Channel not found in catalog" in str(exc)
+    else:
+        raise AssertionError("Expected uncataloged nested capability reply channel to be rejected")

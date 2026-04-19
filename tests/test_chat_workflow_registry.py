@@ -21,5 +21,12 @@ def test_registry_payload_exposes_machine_readable_workflows() -> None:
     payload = workflow_registry_payload(user_invocable_only=True)
     workflow_ids = {item['workflow_id'] for item in payload}
 
-    assert {'dream_cycle', 'journal_pass', 'self_review', 'concept_induction_pass'} <= workflow_ids
+    assert {'dream_cycle', 'journal_pass', 'journal_discussion_window_pass', 'self_review', 'concept_induction_pass'} <= workflow_ids
     assert get_workflow_definition('journal_pass').may_call_actions is False
+    assert get_workflow_definition('journal_discussion_window_pass').may_call_actions is False
+
+
+def test_journal_last_n_minutes_resolves_discussion_window_workflow() -> None:
+    m = resolve_user_workflow_invocation('Journal the last 47 minutes')
+    assert m is not None
+    assert m.workflow_id == 'journal_discussion_window_pass'

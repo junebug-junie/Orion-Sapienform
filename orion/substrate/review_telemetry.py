@@ -19,7 +19,34 @@ from orion.core.schemas.substrate_review_telemetry import (
 class GraphReviewTelemetryRecorder:
     max_records: int = 2000
     sql_db_path: str | None = None
+    postgres_url: str | None = None
     _records: list[GraphReviewTelemetryRecordV1] = field(default_factory=list)
+    _source_kind: str = field(default="memory", init=False)
+    _last_error: str | None = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        if self.postgres_url:
+            try:
+                self._ensure_postgres_schema()
+                self._load_from_postgres()
+                self._source_kind = "postgres"
+                return
+            except Exception as exc:
+                self._last_error = str(exc)
+                self._source_kind = "fallback"
+        if self.sql_db_path:
+            self._ensure_sql_schema()
+            self._load_from_sql()
+            self._source_kind = "sqlite"
+
+    def source_kind(self) -> str:
+        return self._source_kind
+
+    def degraded(self) -> bool:
+        return self._source_kind == "fallback" or self._last_error is not None
+
+    def last_error(self) -> str | None:
+        return self._last_error
 
     def __post_init__(self) -> None:
         if self.sql_db_path:
@@ -34,9 +61,31 @@ class GraphReviewTelemetryRecorder:
             self._insert_sql(entry)
             self._trim_sql()
 
+        if self.postgres_url:
+            try:
+                self._insert_postgres(entry)
+                self._trim_postgres()
+                self._source_kind = "postgres"
+                self._last_error = None
+                return
+            except Exception as exc:
+                self._source_kind = "fallback"
+                self._last_error = str(exc)
+        if self.sql_db_path:
+            self._insert_sql(entry)
+            self._trim_sql()
+
     def query(self, query: GraphReviewTelemetryQueryV1) -> list[GraphReviewTelemetryRecordV1]:
         records = self._records
-        if self.sql_db_path:
+        if self.postgres_url:
+            try:
+                records = self._load_from_postgres()
+                self._source_kind = "postgres"
+                self._last_error = None
+            except Exception as exc:
+                self._source_kind = "fallback"
+                self._last_error = str(exc)
+        elif self.sql_db_path:
             records = self._load_from_sql()
 
         if query.since is not None:
@@ -68,6 +117,10 @@ class GraphReviewTelemetryRecorder:
         ]
         runtime_ms = [r.runtime_duration_ms for r in records]
 
+        notes = ["bounded_telemetry_summary_v1"]
+        if self.degraded() and self._last_error:
+            notes.append("degraded_source_fallback")
+
         return GraphReviewTelemetrySummaryV1(
             total_executions=outcome_counts.get("executed", 0),
             total_noops=outcome_counts.get("noop", 0),
@@ -83,8 +136,9 @@ class GraphReviewTelemetryRecorder:
             query_metadata={
                 "limit": query.limit,
                 "since": query.since.isoformat() if isinstance(query.since, datetime) else None,
+                "source_kind": self.source_kind(),
             },
-            notes=["bounded_telemetry_summary_v1"],
+            notes=notes,
         )
 
     def _ensure_sql_schema(self) -> None:
@@ -140,8 +194,86 @@ class GraphReviewTelemetryRecorder:
         if not self.sql_db_path:
             return list(self._records)
         with sqlite3.connect(self.sql_db_path) as conn:
+            rows = conn.execute("SELECT payload_json FROM substrate_review_telemetry ORDER BY selected_at ASC").fetchall()
+        self._records = [
+            GraphReviewTelemetryRecordV1.model_validate(json.loads(payload_json))
+            for (payload_json,) in rows
+        ][-self.max_records :]
+        return list(self._records)
+
+    def _ensure_postgres_schema(self) -> None:
+        if not self.postgres_url:
+            return
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine(self.postgres_url)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS substrate_review_telemetry (
+                        telemetry_id TEXT PRIMARY KEY,
+                        selected_at TIMESTAMPTZ NOT NULL,
+                        payload_json JSONB NOT NULL
+                    )
+                    """
+                )
+            )
+
+    def _insert_postgres(self, entry: GraphReviewTelemetryRecordV1) -> None:
+        if not self.postgres_url:
+            return
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine(self.postgres_url)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_review_telemetry(telemetry_id, selected_at, payload_json)
+                    VALUES (:telemetry_id, :selected_at, CAST(:payload_json AS JSONB))
+                    ON CONFLICT (telemetry_id) DO UPDATE SET
+                      selected_at = EXCLUDED.selected_at,
+                      payload_json = EXCLUDED.payload_json
+                    """
+                ),
+                {
+                    "telemetry_id": entry.telemetry_id,
+                    "selected_at": entry.selected_at,
+                    "payload_json": json.dumps(entry.model_dump(mode="json"), ensure_ascii=False, sort_keys=True),
+                },
+            )
+
+    def _trim_postgres(self) -> None:
+        if not self.postgres_url:
+            return
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine(self.postgres_url)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    DELETE FROM substrate_review_telemetry
+                    WHERE telemetry_id IN (
+                        SELECT telemetry_id FROM substrate_review_telemetry
+                        ORDER BY selected_at DESC
+                        OFFSET :max_records
+                    )
+                    """
+                ),
+                {"max_records": self.max_records},
+            )
+
+    def _load_from_postgres(self) -> list[GraphReviewTelemetryRecordV1]:
+        if not self.postgres_url:
+            return list(self._records)
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine(self.postgres_url)
+        with engine.begin() as conn:
             rows = conn.execute(
-                "SELECT payload_json FROM substrate_review_telemetry ORDER BY selected_at ASC"
+                text("SELECT payload_json::text FROM substrate_review_telemetry ORDER BY selected_at ASC")
             ).fetchall()
         self._records = [
             GraphReviewTelemetryRecordV1.model_validate(json.loads(payload_json))

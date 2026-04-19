@@ -30,6 +30,8 @@ from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 
 from orion.cognition.output_mode_classifier import classify_output_mode
 from orion.cognition.delivery_grounding import build_delivery_grounding_context
+from orion.cognition.answer_contract_normalize import investigation_state_for_contract
+from orion.schemas.cognition.answer_contract import AnswerContract
 
 logger = logging.getLogger("orion.cortex.orch")
 
@@ -43,6 +45,7 @@ _DIRECT_VERB_TRIGGERS = {
     "skills.landing_pad.metrics_snapshot.v1",
     "skills.landing_pad.last_events.v1",
     "skills.system.notify_chat_message.v1",
+    "skills.chat.discussion_window.v1",
 }
 
 def build_agent_plan(verb_name: str | None) -> ExecutionPlan:
@@ -312,6 +315,7 @@ def build_plan_request(
     args = _plan_args(client_request, correlation_id)
     if isinstance(args.extra, dict):
         args.extra["packs"] = list(context.get("packs") or [])
+    ut_preview = _user_text_for_classifier(client_request)
     logger.info(
         "orch_plan_wiring corr=%s output_mode=%s profile=%s packs=%s supervised=%s force_agent_chain=%s output_mode_decision=%s",
         correlation_id,
@@ -321,6 +325,13 @@ def build_plan_request(
         bool(args.extra.get("supervised")) if isinstance(args.extra, dict) else False,
         bool(args.extra.get("force_agent_chain")) if isinstance(args.extra, dict) else False,
         bool(context.get("metadata", {}).get("output_mode_decision")) if isinstance(context.get("metadata"), dict) else False,
+    )
+    logger.info(
+        "orch_plan_user_text_preview corr=%s verb=%s user_text_len=%s head=%r",
+        correlation_id,
+        client_request.verb,
+        len(ut_preview),
+        ut_preview[:220],
     )
 
     # Attach latest Orion state (Spark) as a read-model artifact
@@ -340,6 +351,19 @@ def build_plan_request(
             normalized_depth = str(int(router_metadata.get("execution_depth")))
             plan.metadata["execution_depth"] = normalized_depth
             context.setdefault("metadata", {})["execution_depth"] = int(router_metadata.get("execution_depth"))
+    ac_raw = options.get("answer_contract")
+    if isinstance(ac_raw, dict):
+        try:
+            ac = AnswerContract.model_validate(ac_raw)
+            context.setdefault("metadata", {})["answer_contract"] = ac.model_dump(mode="json")
+            context.setdefault("metadata", {})["investigation_state"] = investigation_state_for_contract(ac)
+            context.setdefault("metadata", {})["evidence_first_investigation"] = bool(
+                ac.requires_repo_grounding or ac.requires_runtime_grounding
+            )
+            if ac.requires_repo_grounding or ac.requires_runtime_grounding:
+                plan.metadata["evidence_first_investigation"] = "1"
+        except Exception as exc:
+            logger.warning("orch_answer_contract_attach_failed corr=%s err=%s", correlation_id, exc)
     return PlanExecutionRequest(plan=plan, args=args, context=context)
 
 

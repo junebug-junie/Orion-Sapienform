@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -27,7 +28,14 @@ from orion.schemas.agents.schemas import (
 from orion.schemas.cortex.schemas import ExecutionPlan, ExecutionStep, PlanExecutionResult, StepExecutionResult
 from orion.cognition.verb_activation import is_active
 from orion.cognition.delivery_grounding import build_delivery_grounding_context
+from orion.cognition.finalize_payload import answer_contract_expects_findings_rendering
 from orion.cognition.quality_evaluator import should_rewrite_for_instructional
+from orion.cognition.findings_bundle_synth import merge_findings_bundle_dicts
+from orion.schemas.agents.bound_capability import (
+    BoundCapabilityExecutionRequestV1,
+    CapabilityRecoveryDecisionV1,
+    CapabilityRecoveryReasonV1,
+)
 
 from .clients import AgentChainClient, CouncilClient, LLMGatewayClient, PlannerReactClient
 from .executor import _last_user_message, call_step_services, run_recall_step
@@ -35,6 +43,23 @@ from .recall_utils import delivery_safe_recall_decision, has_inline_recall
 from .settings import settings
 
 logger = logging.getLogger("orion.cortex.exec.supervisor")
+
+
+def _merge_agent_findings_into_ctx(ctx: Dict[str, Any], agent_payload: Any) -> None:
+    if not isinstance(agent_payload, dict):
+        return
+    rd = agent_payload.get("runtime_debug")
+    if not isinstance(rd, dict):
+        return
+    fb = rd.get("findings_bundle")
+    if not isinstance(fb, dict):
+        return
+    prev = ctx.get("merged_findings_bundle")
+    ctx["merged_findings_bundle"] = merge_findings_bundle_dicts(
+        prev if isinstance(prev, dict) else None,
+        fb,
+    )
+
 
 ORION_PKG_DIR = Path(orion.__file__).resolve().parent
 PROMPTS_DIR = ORION_PKG_DIR / "cognition" / "prompts"
@@ -56,6 +81,10 @@ def _load_prompt_content(template_ref: Optional[str]) -> Optional[str]:
 
 def _verb_to_step(cfg) -> ExecutionStep:
     prompt_text = _load_prompt_content(cfg.prompt_template)
+    if _is_capability_backed_cfg(cfg):
+        raise RuntimeError(
+            f"capability_backed_llm_fallback_blocked:{cfg.name}"
+        )
     services = cfg.services or ["LLMGatewayService"]
     return ExecutionStep(
         verb_name=cfg.name,
@@ -68,6 +97,10 @@ def _verb_to_step(cfg) -> ExecutionStep:
         requires_memory=bool(cfg.requires_memory),
         timeout_ms=int(cfg.timeout_ms or settings.step_timeout_ms),
     )
+
+def _is_capability_backed_cfg(cfg: Any) -> bool:
+    execution_mode = str(getattr(cfg, "execution_mode", "") or "").strip().lower()
+    return execution_mode == "capability_backed" or bool(getattr(cfg, "requires_capability_selector", False))
 
 
 def _extract_observation(step_res: StepExecutionResult) -> Dict[str, Any]:
@@ -151,6 +184,463 @@ def _extract_key_terms(text: str) -> List[str]:
         if token not in terms:
             terms.append(token)
     return terms[:12]
+
+
+_OPERATIONAL_INTENT_TERMS = {
+    "run", "execute", "cleanup", "clean", "prune", "restart", "remove", "delete", "stop",
+    "start", "deploy", "rollback", "docker", "container", "kubernetes", "cluster", "runtime",
+}
+_SHELL_GUIDANCE_PATTERN = re.compile(r"(^|\n)\s*(```\w*\n)?\s*(docker|kubectl|systemctl|rm\s+-rf|sudo|killall|service)\b", re.IGNORECASE)
+
+
+def _detect_operational_intent(user_text: str) -> bool:
+    lowered = str(user_text or "").lower()
+    return any(term in lowered for term in _OPERATIONAL_INTENT_TERMS)
+
+
+def _available_operational_semantic_tools(toolset: List[ToolDef]) -> List[ToolDef]:
+    operational: List[ToolDef] = []
+    for tool in toolset:
+        if str(tool.tool_id or "") in {"agent_chain", "tool_chain", "finalize_response", "answer_direct"}:
+            continue
+        mode = str(getattr(tool, "execution_mode", "") or "").lower()
+        side_effect = str(getattr(tool, "side_effect_level", "") or "").lower()
+        if mode == "capability_backed" or side_effect in {"low", "moderate", "high"}:
+            operational.append(tool)
+    return operational
+
+
+
+_RUNTIME_CLEANUP_TERMS = {"docker", "container", "cleanup", "stopped", "prune", "runtime", "housekeep", "housekeeping", "dry", "run"}
+_CHANGE_SUMMARY_TERMS = {"summarize", "summary", "recent", "changes", "change", "changelog", "intel"}
+_UNSAFE_ASSISTANT_COMMAND_PATTERN = re.compile(r"(docker\s+(rm|rmi|system\s+prune|container\s+prune|volume\s+rm|network\s+rm)|rm\s+-rf|kubectl\s+delete)", re.IGNORECASE)
+_OPERATIONAL_VERB_RULES: list[tuple[str, tuple[str, ...]]] = [
+    # Avoid generic "node"/"status" — they match "Docker … on this node" and steal routing from docker/gpu.
+    ("assess_mesh_presence", ("mesh", "tailscale", "subnet", "subnets", "peers", "peer")),
+    ("assess_storage_health", ("disk", "storage", "health", "filesystem", "volume")),
+    ("summarize_recent_changes", ("summarize", "summary", "recent", "changes", "prs", "pull request", "commits")),
+    ("housekeep_runtime", ("cleanup", "clean up", "stopped", "container", "containers", "runtime", "prune", "dry-run", "dry run")),
+]
+
+
+def _tool_semantic_haystack(tool: ToolDef) -> str:
+    families = " ".join(str(item) for item in (getattr(tool, "preferred_skill_families", []) or []))
+    return " ".join(
+        [
+            str(tool.tool_id or ""),
+            str(tool.description or ""),
+            families,
+            str(getattr(tool, "execution_mode", "") or ""),
+            str(getattr(tool, "side_effect_level", "") or ""),
+        ]
+    ).lower()
+
+
+def _semantic_override_scores(*, user_text: str, normalized_action_input: Dict[str, Any] | None, tools: List[ToolDef]) -> List[Dict[str, Any]]:
+    action_blob = json.dumps(normalized_action_input or {}, ensure_ascii=False, default=str).lower()
+    ask = f"{str(user_text or '').lower()} {action_blob}".strip()
+    ask_has_runtime_cleanup = all(term in ask for term in ("cleanup", "container")) or ("docker" in ask and ("prune" in ask or "stopped" in ask))
+    ask_terms = set(_extract_key_terms(ask))
+    scored: List[Dict[str, Any]] = []
+    for tool in tools:
+        hay = _tool_semantic_haystack(tool)
+        score = 0
+        reasons: List[str] = []
+
+        lexical_hits = sorted(term for term in ask_terms if term and term in hay)
+        if lexical_hits:
+            score += len(lexical_hits) * 3
+            reasons.append(f"lexical_overlap:{','.join(lexical_hits[:6])}")
+
+        runtime_hits = sorted(term for term in _RUNTIME_CLEANUP_TERMS if term in ask and term in hay)
+        if runtime_hits:
+            score += len(runtime_hits) * 5
+            reasons.append(f"runtime_hits:{','.join(runtime_hits[:6])}")
+
+        if ask_has_runtime_cleanup and "runtime_housekeeping" in hay:
+            score += 12
+            reasons.append("preferred_family:runtime_housekeeping")
+        if ask_has_runtime_cleanup and "housekeep" in hay:
+            score += 8
+            reasons.append("verb_housekeep_match")
+
+        if ask_has_runtime_cleanup and any(term in hay for term in _CHANGE_SUMMARY_TERMS):
+            score -= 18
+            reasons.append("mismatch:change_summary_for_runtime_cleanup")
+        if ask_has_runtime_cleanup and "summarize_recent_changes" in hay:
+            score -= 30
+            reasons.append("hard_mismatch:summarize_recent_changes")
+
+        if "biometric" in ask:
+            if str(tool.tool_id or "") in {"assess_mesh_presence", "inspect_docker_container_status", "housekeep_runtime"}:
+                score -= 40
+                reasons.append("penalty:biometrics_prompt")
+            if str(tool.tool_id or "") in {"show_biometrics_snapshot", "list_biometrics_recent_readings"}:
+                score += 22
+                reasons.append("boost:biometrics_prompt")
+
+        if ("docker" in ask or "container status" in ask) and "biometric" not in ask:
+            if str(tool.tool_id or "") == "inspect_docker_container_status":
+                score += 24
+                reasons.append("boost:docker_status_prompt")
+            if str(tool.tool_id or "") == "assess_mesh_presence" and "mesh" not in ask and "tailscale" not in ask:
+                score -= 40
+                reasons.append("penalty:docker_prompt_not_mesh")
+
+        if str(getattr(tool, "execution_mode", "") or "").lower() == "capability_backed":
+            score += 2
+            reasons.append("capability_backed")
+
+        scored.append({"tool_id": tool.tool_id, "score": score, "reasons": reasons, "tool": tool})
+
+    scored.sort(key=lambda item: (int(item.get("score") or 0), str(item.get("tool_id") or "")), reverse=True)
+    return scored
+
+
+def _select_preferred_operational_tool(
+    user_text: str,
+    tools: List[ToolDef],
+    *,
+    normalized_action_input: Dict[str, Any] | None = None,
+) -> Tuple[Optional[ToolDef], List[Dict[str, Any]]]:
+    if not tools:
+        return None, []
+    scored = _semantic_override_scores(user_text=user_text, normalized_action_input=normalized_action_input, tools=tools)
+    best = scored[0]["tool"] if scored else None
+    return best, scored
+
+
+def _select_canonical_operational_tool(user_text: str, tools: List[ToolDef]) -> Optional[ToolDef]:
+    if not tools:
+        return None
+    hay = str(user_text or "").lower()
+    tool_map = {str(t.tool_id or ""): t for t in tools}
+    priority_rules = [
+        ("answer_current_datetime", ("what time", "current time", "time is it", "what's the time", "clock", "date and time")),
+        ("inspect_gpu_status", ("nvidia", "gpu status", "gpu ", "nvidia-smi", "cuda")),
+        (
+            "show_biometrics_snapshot",
+            ("biometrics snapshot", "current biometrics", "biometric snapshot", "biometrics card"),
+        ),
+        (
+            "list_biometrics_recent_readings",
+            (
+                "most recent biometrics",
+                "recent biometrics reading",
+                "biometrics readings",
+                "biometrics reading",
+                "raw biometrics",
+                "recent biometrics",
+            ),
+        ),
+        (
+            "send_operator_notification",
+            (
+                "notify operator",
+                "notification to operator",
+                "send a notification",
+                "alert operator",
+                "operators saying",
+                "notification to operators",
+                "page on-call",
+            ),
+        ),
+        (
+            "inspect_docker_container_status",
+            (
+                "docker container",
+                "docker containers",
+                "docker ps",
+                "container status",
+                "containers running",
+                "list containers",
+                "running containers",
+                "docker status",
+            ),
+        ),
+        ("show_landing_pad_metrics", ("landing pad metrics", "landing pad metric", "landing pad snapshot", "pad metrics")),
+        ("assess_storage_health", ("disk", "storage")),
+        ("summarize_recent_changes", ("recent pr", "recent pull request", "recent changes", "summarize recent")),
+        ("housekeep_runtime", ("cleanup", "dry-run", "dry run", "stopped containers", "prune")),
+        ("assess_mesh_presence", ("nodes are up", "which nodes", "mesh presence", "nodes up")),
+    ]
+    for tool_id, phrases in priority_rules:
+        if tool_id not in tool_map:
+            continue
+        if any(phrase in hay for phrase in phrases):
+            return tool_map[tool_id]
+    best_tool: Optional[ToolDef] = None
+    best_hits = 0
+    for tool_id, terms in _OPERATIONAL_VERB_RULES:
+        if tool_id not in tool_map:
+            continue
+        hits = sum(1 for term in terms if term in hay)
+        if hits > best_hits:
+            best_hits = hits
+            best_tool = tool_map[tool_id]
+    return best_tool if best_hits >= 2 else None
+
+
+def _should_override_planner_operational_action(
+    *,
+    planner_tool_id: str | None,
+    preferred_tool_id: str | None,
+    override_scores: List[Dict[str, Any]],
+    minimum_score_gap: int = 10,
+) -> tuple[bool, Dict[str, Any]]:
+    planner_id = str(planner_tool_id or "").strip()
+    preferred_id = str(preferred_tool_id or "").strip()
+    score_map = {
+        str(item.get("tool_id") or ""): int(item.get("score") or 0)
+        for item in (override_scores or [])
+        if str(item.get("tool_id") or "").strip()
+    }
+    planner_score = score_map.get(planner_id)
+    preferred_score = score_map.get(preferred_id)
+    diagnostics = {
+        "planner_tool_id": planner_id or None,
+        "preferred_tool_id": preferred_id or None,
+        "planner_score": planner_score,
+        "preferred_score": preferred_score,
+        "minimum_score_gap": minimum_score_gap,
+        "score_gap": (preferred_score - planner_score) if isinstance(preferred_score, int) and isinstance(planner_score, int) else None,
+    }
+    if not planner_id or not preferred_id or planner_id == preferred_id:
+        return False, diagnostics
+    if planner_score is None or preferred_score is None:
+        return False, diagnostics
+    should_override = (preferred_score - planner_score) >= int(minimum_score_gap)
+    return should_override, diagnostics
+
+
+def _extract_bound_failure_signal(step_results: List[StepExecutionResult]) -> Dict[str, Any] | None:
+    def _bound_payload(agent_payload: Dict[str, Any]) -> Dict[str, Any]:
+        direct = agent_payload.get("bound_capability")
+        if isinstance(direct, dict):
+            return direct
+        structured = agent_payload.get("structured")
+        if isinstance(structured, dict) and isinstance(structured.get("bound_capability"), dict):
+            return structured.get("bound_capability") or {}
+        return {}
+
+    for step in reversed(step_results or []):
+        payload = (step.result or {}).get("AgentChainService") if isinstance(step.result, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        bound = _bound_payload(payload)
+        if not isinstance(bound, dict):
+            continue
+        status_value = str(bound.get("status") or "").strip().lower()
+        reason = str(bound.get("reason") or "").strip()
+        path = str(bound.get("path") or "").strip()
+        if status_value == "fail" or reason or path.startswith("bound_direct_"):
+            return {
+                "step_name": step.step_name,
+                "verb_name": step.verb_name,
+                "reason": reason or None,
+                "path": path or None,
+                "status": status_value or None,
+                "detail": str(bound.get("detail") or "").strip() or None,
+            }
+    return None
+
+
+def _enrich_final_text_with_bound_skill_output(
+    final_text: str | None,
+    step_results: List[StepExecutionResult],
+) -> str | None:
+    """Append nested cortex final_text JSON when the user-facing line is only the execution summary."""
+    if not final_text or not str(final_text).strip():
+        return final_text
+    for step in reversed(step_results or []):
+        payload = (step.result or {}).get("AgentChainService") if isinstance(step.result, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        structured = payload.get("structured")
+        if not isinstance(structured, dict):
+            continue
+        bc = structured.get("bound_capability")
+        if not isinstance(bc, dict):
+            continue
+        sk = bc.get("structured_skill_output")
+        if not isinstance(sk, dict):
+            continue
+        raw = sk.get("raw_payload_ref")
+        if not isinstance(raw, dict):
+            continue
+        nested = raw.get("final_text")
+        if not isinstance(nested, str) or not nested.strip():
+            continue
+        if nested.strip() in final_text:
+            return final_text
+        return f"{final_text.rstrip()}\n\nSkill output:\n{nested.strip()}"
+    return final_text
+
+
+def _bound_capability_succeeded(step_results: List[StepExecutionResult]) -> bool:
+    """True when AgentChain reported a successful bound-capability execution (avoid grounding drift rewrite)."""
+
+    def _bound_payload(agent_payload: Dict[str, Any]) -> Dict[str, Any]:
+        direct = agent_payload.get("bound_capability")
+        if isinstance(direct, dict):
+            return direct
+        structured = agent_payload.get("structured")
+        if isinstance(structured, dict) and isinstance(structured.get("bound_capability"), dict):
+            return structured.get("bound_capability") or {}
+        return {}
+
+    for step in reversed(step_results or []):
+        payload = (step.result or {}).get("AgentChainService") if isinstance(step.result, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        bound = _bound_payload(payload)
+        if not isinstance(bound, dict):
+            continue
+        if str(bound.get("status") or "").strip().lower() == "ok":
+            return True
+    return False
+
+
+def _sanitize_operational_history(messages: List[LLMMessage], *, user_text: str) -> Tuple[List[LLMMessage], Dict[str, Any]]:
+    lowered = str(user_text or "").lower()
+    safety_sensitive = any(token in lowered for token in ("dry-run", "dry run", "preview", "safe"))
+    operational = _detect_operational_intent(lowered)
+    if not operational:
+        return messages, {"operational_history_filtering": False, "dropped": 0}
+
+    filtered: List[LLMMessage] = []
+    dropped = 0
+    for msg in messages:
+        if msg.role != "assistant":
+            filtered.append(msg)
+            continue
+        content = str(msg.content or "")
+        has_unsafe_command = bool(_UNSAFE_ASSISTANT_COMMAND_PATTERN.search(content))
+        if safety_sensitive and has_unsafe_command:
+            dropped += 1
+            continue
+        filtered.append(msg)
+    return filtered, {
+        "operational_history_filtering": True,
+        "safety_sensitive": safety_sensitive,
+        "dropped": dropped,
+        "kept": len(filtered),
+    }
+
+
+def _build_blocked_execution_explanation(*, selected_tool: Optional[str], no_write_active: bool) -> str:
+    tool_part = f" '{selected_tool}'" if selected_tool else ""
+    if no_write_active:
+        return (
+            f"Execution is disabled in this session (NO_WRITE active), so I’m not running{tool_part}. "
+            "I can provide a safe preview of what would run, but this is not execution."
+        )
+    return (
+        f"Execution is blocked by runtime policy, so I’m not running{tool_part}. "
+        "I can provide a safe preview-only explanation, but no commands were executed."
+    )
+
+
+
+
+def _execution_policy_state_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    options = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
+    tool_execution_policy = str(options.get("tool_execution_policy") or "").strip().lower()
+    action_execution_policy = str(options.get("action_execution_policy") or "").strip().lower()
+    no_write_active = bool(ctx.get("no_write_active")) or bool(options.get("no_write_active"))
+    forbidden_by_tool_policy = tool_execution_policy == "none"
+    forbidden_by_action_policy = action_execution_policy == "none"
+    execution_forbidden = bool(no_write_active or forbidden_by_tool_policy or forbidden_by_action_policy)
+    blocked_reasons: List[str] = []
+    if no_write_active:
+        blocked_reasons.append("no_write_active=true")
+    if forbidden_by_tool_policy:
+        blocked_reasons.append("tool_execution_policy=none")
+    if forbidden_by_action_policy:
+        blocked_reasons.append("action_execution_policy=none")
+    return {
+        "no_write_active": no_write_active,
+        "tool_execution_policy": tool_execution_policy or None,
+        "action_execution_policy": action_execution_policy or None,
+        "execution_forbidden": execution_forbidden,
+        "execution_blocked_reason": ";".join(blocked_reasons) if blocked_reasons else None,
+    }
+
+
+def _blocked_bound_step_result(*, tool_id: str, tool_input: Dict[str, Any], correlation_id: str, policy_state: Dict[str, Any]) -> StepExecutionResult:
+    blocked_reason = str(policy_state.get("execution_blocked_reason") or "execution_forbidden_policy")
+    no_write_active = bool(policy_state.get("no_write_active"))
+    text = _build_blocked_execution_explanation(selected_tool=tool_id, no_write_active=no_write_active)
+    metadata = {
+        "selected_verb": tool_id,
+        "no_write_active": no_write_active,
+        "tool_execution_policy": policy_state.get("tool_execution_policy"),
+        "action_execution_policy": policy_state.get("action_execution_policy"),
+        "execution_blocked_reason": blocked_reason,
+        "selected_tool_would_have_been": tool_id,
+        "path": "blocked_pre_dispatch",
+        "dispatch_skipped": True,
+        "reply_emitted": True,
+    }
+    logger.warning(
+        "bound_capability_pre_dispatch_blocked corr_id=%s selected_verb=%s no_write_active=%s tool_execution_policy=%s action_execution_policy=%s blocked_reason=%s dispatch_skipped=true",
+        correlation_id,
+        tool_id,
+        no_write_active,
+        policy_state.get("tool_execution_policy"),
+        policy_state.get("action_execution_policy"),
+        blocked_reason,
+    )
+    return StepExecutionResult(
+        status="success",
+        verb_name=str(tool_id),
+        step_name="bound_capability_pre_dispatch_blocked",
+        order=0,
+        result={
+            "AgentChainService": {
+                "text": text,
+                "bound_capability": {
+                    "status": "fail",
+                    "reason": CapabilityRecoveryReasonV1.policy_blocked.value,
+                    **metadata,
+                },
+                "runtime_debug": {
+                    "bound_capability_pre_dispatch_blocked": True,
+                    "bound_capability_policy_state": metadata,
+                },
+            }
+        },
+        latency_ms=0,
+        node=settings.node_name,
+        logs=["blocked <- bound capability pre-dispatch policy gate"],
+        error=None,
+    )
+
+def _is_operational_guidance_text(answer: str) -> bool:
+    return bool(_SHELL_GUIDANCE_PATTERN.search(str(answer or "")))
+
+
+def _looks_like_coaching_growth_prompt(user_text: str) -> bool:
+    """
+    Open-ended self-improvement / wellness prompts: lexical overlap checks are weak because
+    planner answers may not repeat words like "version" or "become". Suppress the generic
+    "drifted from your request" replacement for this lane only (agent_runtime still allowed).
+    """
+    t = " " + " ".join(str(user_text or "").lower().split()) + " "
+    hints = (
+        " myself ",
+        " yourself ",
+        "motivat",
+        "better version",
+        "self-improve",
+        "self improvement",
+        "become a better",
+        " become better ",
+        "personal growth",
+        "well-being",
+        "wellbeing",
+    )
+    return any(h in t for h in hints)
 
 
 def _grounding_verdict(user_text: str, answer_text: str) -> Dict[str, Any]:
@@ -419,6 +909,10 @@ class Supervisor:
                     description=v.description or f"Orion verb: {v.name}",
                     input_schema=v.input_schema or {},
                     output_schema=v.output_schema or {},
+                    execution_mode=v.execution_mode or None,
+                    requires_capability_selector=bool(v.requires_capability_selector),
+                    preferred_skill_families=list(v.preferred_skill_families or []),
+                    side_effect_level=v.side_effect_level or None,
                 )
             )
         return tools
@@ -461,12 +955,19 @@ class Supervisor:
         for key in ("delivery_grounding_mode", "grounding_context", "anti_generic_drift"):
             if ctx.get(key):
                 ext_facts[key] = ctx[key]
+        ext_facts["no_write_active"] = bool(ctx.get("no_write_active"))
+        ext_facts["execution_blocked_reason"] = ctx.get("execution_blocked_reason")
+        ext_facts["operational_intent_detected"] = bool(ctx.get("operational_intent_detected"))
+        ext_facts["available_operational_tools"] = list(ctx.get("available_operational_tools") or [])
+        history_msgs = [LLMMessage(**m) if not isinstance(m, LLMMessage) else m for m in (ctx.get("messages") or [])]
+        sanitized_history, history_filter_meta = _sanitize_operational_history(history_msgs, user_text=goal_text)
+        ext_facts["operational_history_filter"] = history_filter_meta
         planner_req = PlannerRequest(
             request_id=correlation_id,
             caller="cortex-exec",
             goal=Goal(description=goal_text, metadata={"verb": ctx.get("verb")}),
             context=ContextBlock(
-                conversation_history=[LLMMessage(**m) if not isinstance(m, LLMMessage) else m for m in (ctx.get("messages") or [])],
+                conversation_history=sanitized_history,
                 external_facts=ext_facts,
             ),
             toolset=toolset,
@@ -567,6 +1068,83 @@ class Supervisor:
             )
 
         verb_cfg = self.registry.get(tool_id)
+        if _is_capability_backed_cfg(verb_cfg):
+            policy_state = _execution_policy_state_from_ctx(ctx)
+            logger.info(
+                "bound_capability_policy_state corr_id=%s selected_verb=%s no_write_active=%s tool_execution_policy=%s action_execution_policy=%s execution_forbidden=%s",
+                correlation_id,
+                tool_id,
+                policy_state.get("no_write_active"),
+                policy_state.get("tool_execution_policy"),
+                policy_state.get("action_execution_policy"),
+                policy_state.get("execution_forbidden"),
+            )
+            if policy_state.get("execution_forbidden"):
+                return _blocked_bound_step_result(
+                    tool_id=str(tool_id),
+                    tool_input=tool_input if isinstance(tool_input, dict) else {},
+                    correlation_id=correlation_id,
+                    policy_state=policy_state,
+                )
+            logger.info(
+                "dispatch_action corr_id=%s mode=%s step=%s route=AgentChainService(bound_capability)",
+                correlation_id,
+                mode,
+                tool_id,
+            )
+            bound_execution = BoundCapabilityExecutionRequestV1(
+                selected_verb=str(tool_id),
+                normalized_action_input=tool_input if isinstance(tool_input, dict) else {},
+                execution_mode="capability_backed",
+                requires_capability_selector=bool(getattr(verb_cfg, "requires_capability_selector", False)),
+                preferred_skill_families=list(getattr(verb_cfg, "preferred_skill_families", []) or []),
+                side_effect_level=getattr(verb_cfg, "side_effect_level", None),
+                planner_correlation_id=correlation_id,
+                planner_metadata={"planner_mode": mode, "source": "supervisor_planner_delegate"},
+                selected_tool_metadata={"tool_id": str(tool_id), "description": getattr(verb_cfg, "description", "")},
+                policy_metadata={
+                    "no_write_active": bool(policy_state.get("no_write_active")),
+                    "tool_execution_policy": policy_state.get("tool_execution_policy"),
+                    "action_execution_policy": policy_state.get("action_execution_policy"),
+                    "execution_blocked_reason": policy_state.get("execution_blocked_reason"),
+                },
+                recovery=CapabilityRecoveryDecisionV1(
+                    reason=CapabilityRecoveryReasonV1.internal_contract_error,
+                    allow_replan=True,
+                    replanned=False,
+                    detail="supervisor_bound_allow_planner_fallback_on_miss",
+                ),
+            )
+            chain_ctx = {**ctx, "__bound_execution": bound_execution.model_dump(mode="json")}
+            try:
+                return await self._agent_chain_escalation(
+                    source=source,
+                    correlation_id=correlation_id,
+                    ctx=chain_ctx,
+                    packs=packs,
+                )
+            except Exception as exc:
+                logger.error(
+                    "bound_capability_fail_closed corr_id=%s selected_verb=%s reason=capability_executor_unavailable error=%s",
+                    correlation_id,
+                    tool_id,
+                    exc,
+                )
+                return StepExecutionResult(
+                    status="fail",
+                    verb_name=str(tool_id),
+                    step_name="bound_capability_execution_failed",
+                    order=0,
+                    result={
+                        "error": "capability_executor_unavailable",
+                        "selected_verb": str(tool_id),
+                        "bound_capability_execution": bound_execution.model_dump(mode="json"),
+                    },
+                    latency_ms=0,
+                    node=settings.node_name,
+                    logs=["fail_closed <- bound capability escalation unavailable"],
+                    error=f"capability_executor_unavailable:{tool_id}",
+                )
         step = _verb_to_step(verb_cfg)
 
         exec_ctx = {**ctx, **tool_input}
@@ -674,6 +1252,19 @@ class Supervisor:
             "output_mode": ctx.get("output_mode"),
             "response_profile": ctx.get("response_profile"),
         }
+        ac = ctx.get("answer_contract")
+        if isinstance(ac, dict):
+            agent_req["answer_contract"] = ac
+        bound_execution = ctx.get("__bound_execution")
+        if isinstance(bound_execution, dict):
+            contract = BoundCapabilityExecutionRequestV1.model_validate(bound_execution)
+            logger.info(
+                "bound_capability_request_received corr_id=%s selected_verb=%s selected_verb_preserved=1",
+                correlation_id,
+                contract.selected_verb,
+            )
+            agent_req["goal_description"] = "execute_selected_capability"
+            agent_req["bound_capability_execution"] = contract.model_dump(mode="json")
         reply_channel = f"{settings.exec_result_prefix}:AgentChainService:{correlation_id}"
         t0 = time.time()
         logs = [f"rpc -> AgentChainService reply={reply_channel}"]
@@ -819,7 +1410,69 @@ class Supervisor:
                 correlation_id,
             )
         options = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
+        policy_state = _execution_policy_state_from_ctx(ctx)
+        no_write_active = bool(policy_state.get("no_write_active"))
+        execution_blocked_reason = policy_state.get("execution_blocked_reason")
+        user_text = _last_user_message(ctx)
+        operational_intent_detected = _detect_operational_intent(user_text)
+        operational_tools = _available_operational_semantic_tools(tools)
+        offered_operational_tool_ids = [t.tool_id for t in operational_tools]
+        preferred_operational_tool, override_scores = _select_preferred_operational_tool(
+            user_text,
+            operational_tools,
+            normalized_action_input=ctx.get("normalized_action_input") if isinstance(ctx.get("normalized_action_input"), dict) else None,
+        )
+        canonical_operational_tool = _select_canonical_operational_tool(user_text, operational_tools)
+        if canonical_operational_tool is not None:
+            operational_intent_detected = True
+            preferred_operational_tool = canonical_operational_tool
+        ctx["no_write_active"] = no_write_active
+        ctx["execution_blocked_reason"] = execution_blocked_reason
+        ctx["operational_intent_detected"] = operational_intent_detected
+        ctx["available_operational_tools"] = offered_operational_tool_ids
+        if canonical_operational_tool is not None:
+            ctx.setdefault("debug", {})["canonical_operational_tool"] = canonical_operational_tool.tool_id
         allowed_verbs = [str(v).strip() for v in (options.get("allowed_verbs") or []) if str(v).strip()]
+        if operational_intent_detected:
+            logger.info(
+                "operational_intent_detected corr_id=%s user_intent=%s offered_semantic_tools=%s no_write_active=%s",
+                correlation_id,
+                "operational_action",
+                offered_operational_tool_ids,
+                no_write_active,
+            )
+            logger.info(
+                "semantic_tool_override_candidates corr_id=%s candidates=%s",
+                correlation_id,
+                [
+                    {
+                        "tool_id": item.get("tool_id"),
+                        "score": item.get("score"),
+                        "reasons": item.get("reasons"),
+                    }
+                    for item in override_scores
+                ],
+            )
+            if preferred_operational_tool:
+                logger.info(
+                    "semantic_tool_override_selected corr_id=%s selected=%s score=%s reasons=%s",
+                    correlation_id,
+                    preferred_operational_tool.tool_id,
+                    next((item.get("score") for item in override_scores if item.get("tool_id") == preferred_operational_tool.tool_id), None),
+                    next((item.get("reasons") for item in override_scores if item.get("tool_id") == preferred_operational_tool.tool_id), []),
+                )
+            logger.info(
+                "semantic_tool_override_rejected corr_id=%s rejected=%s",
+                correlation_id,
+                [
+                    {
+                        "tool_id": item.get("tool_id"),
+                        "score": item.get("score"),
+                        "reasons": item.get("reasons"),
+                    }
+                    for item in override_scores[1:]
+                ],
+            )
 
         if not self._should_use_react(mode, tools):
             logger.info("Supervisor: using direct LLM path")
@@ -868,6 +1521,8 @@ class Supervisor:
         final_text: Optional[str] = None
         planner_thought: Optional[str] = None
         executed_steps: List[str] = [s.step_name for s in step_results]
+        semantic_execution_validated = False
+        selected_tool_would_have_been = preferred_operational_tool.tool_id if preferred_operational_tool else None
 
         for loop_index in range(max_steps):
             goal_text = _last_user_message(ctx)
@@ -908,9 +1563,79 @@ class Supervisor:
 
             tool_id = (action or {}).get("tool_id") if isinstance(action, dict) else None
             logger.info("planner_action corr_id=%s tool_id=%s lane=%s", correlation_id, tool_id, "depth2")
+            if operational_intent_detected and preferred_operational_tool and mode in {"agent", "council"}:
+                should_override, override_diag = _should_override_planner_operational_action(
+                    planner_tool_id=str(tool_id or ""),
+                    preferred_tool_id=preferred_operational_tool.tool_id,
+                    override_scores=override_scores,
+                )
+                if canonical_operational_tool is not None and str(tool_id or "") != canonical_operational_tool.tool_id:
+                    should_override = True
+                    override_diag = {
+                        **override_diag,
+                        "forced_by": "canonical_operational_rail",
+                        "preferred_tool_id": canonical_operational_tool.tool_id,
+                    }
+                ctx.setdefault("debug", {})["semantic_override_decision"] = override_diag
+                if should_override and action:
+                    logger.info(
+                        "semantic_tool_override_applied corr_id=%s planner_tool=%s planner_score=%s preferred_tool=%s preferred_score=%s score_gap=%s",
+                        correlation_id,
+                        override_diag.get("planner_tool_id"),
+                        override_diag.get("planner_score"),
+                        override_diag.get("preferred_tool_id"),
+                        override_diag.get("preferred_score"),
+                        override_diag.get("score_gap"),
+                    )
+                    action = {
+                        **action,
+                        "tool_id": preferred_operational_tool.tool_id,
+                    }
+                    tool_id = preferred_operational_tool.tool_id
 
             if decision["stop_reason"] == "final_answer" and not decision["action_present"]:
-                if not trace:
+                forced_delegate = False
+                if operational_intent_detected and preferred_operational_tool and mode in {"agent", "council"}:
+                    logger.info(
+                        "semantic_tool_preferred corr_id=%s chosen_path=%s selected_tool=%s no_write_active=%s reason=%s",
+                        correlation_id,
+                        "blocked_explanation" if no_write_active else "delegate",
+                        preferred_operational_tool.tool_id,
+                        no_write_active,
+                        "operational_intent_with_semantic_tool_available",
+                    )
+                    ctx.setdefault("debug", {})["selected_tool_would_have_been"] = preferred_operational_tool.tool_id
+                    if no_write_active:
+                        ctx.setdefault("debug", {})["no_write_downgrade"] = True
+                        ctx.setdefault("debug", {})["downgraded_to_explanation"] = True
+                        final_text = _build_blocked_execution_explanation(
+                            selected_tool=preferred_operational_tool.tool_id,
+                            no_write_active=True,
+                        )
+                        logger.info(
+                            "no_write_downgrade corr_id=%s selected_tool_would_have_been=%s blocked_execution_explanation_emitted=true",
+                            correlation_id,
+                            preferred_operational_tool.tool_id,
+                        )
+                        break
+                    action = {
+                        "tool_id": preferred_operational_tool.tool_id,
+                        "input": {"text": goal_text},
+                    }
+                    decision["action_present"] = True
+                    decision["stop_reason"] = "delegate"
+                    decision["continue_reason"] = "operational_semantic_tool_preferred"
+                    forced_delegate = True
+                if decision["action_present"]:
+                    logger.info(
+                        "planner_final_answer_overridden corr_id=%s chosen_path=delegate selected_tool=%s",
+                        correlation_id,
+                        (action or {}).get("tool_id"),
+                    )
+                    final_text = None
+                if forced_delegate:
+                    pass
+                elif not trace:
                     trace.append(
                         TraceStep(
                             step_index=0,
@@ -919,18 +1644,19 @@ class Supervisor:
                             observation={"llm_output": final_text},
                         )
                     )
-                logger.info(
-                    "agent_runtime_stop corr_id=%s mode=%s verb=%s reason=%s final_len=%s action_present=%s executed_steps=%s skipped_steps=%s",
-                    correlation_id,
-                    mode,
-                    req.verb_name,
-                    decision["stop_reason"],
-                    len(final_text or ""),
-                    decision["action_present"],
-                    executed_steps,
-                    ["agent_chain"],
-                )
-                break
+                if not forced_delegate:
+                    logger.info(
+                        "agent_runtime_stop corr_id=%s mode=%s verb=%s reason=%s final_len=%s action_present=%s executed_steps=%s skipped_steps=%s",
+                        correlation_id,
+                        mode,
+                        req.verb_name,
+                        decision["stop_reason"],
+                        len(final_text or ""),
+                        decision["action_present"],
+                        executed_steps,
+                        ["agent_chain"],
+                    )
+                    break
 
             if planner_step.status != "success":
                 logger.info(
@@ -986,8 +1712,41 @@ class Supervisor:
             if obs.get("llm_output"):
                 final_text = obs.get("llm_output")
 
+            try:
+                agent_payload = (action_step.result or {}).get("AgentChainService", {})
+                _merge_agent_findings_into_ctx(ctx, agent_payload)
+                if isinstance(agent_payload, dict):
+                    bound_payload = agent_payload.get("bound_capability")
+                    if not isinstance(bound_payload, dict):
+                        structured_payload = agent_payload.get("structured")
+                        if isinstance(structured_payload, dict):
+                            bound_payload = structured_payload.get("bound_capability")
+                    if isinstance(bound_payload, dict) and str(bound_payload.get("path") or "").startswith("blocked_"):
+                        ctx.setdefault("debug", {})["downgraded_to_explanation"] = True
+                        ctx.setdefault("debug", {})["no_write_downgrade"] = True
+            except Exception:
+                pass
+
             selected_tool = str((action or {}).get("tool_id") or "")
+            selected_cfg = None
             if selected_tool and selected_tool not in {"agent_chain", "tool_chain"}:
+                try:
+                    selected_cfg = self.registry.get(selected_tool)
+                except Exception:
+                    selected_cfg = None
+            selected_is_capability = _is_capability_backed_cfg(selected_cfg) if selected_cfg else False
+            if selected_tool and selected_tool not in {"agent_chain", "tool_chain"}:
+                if selected_is_capability:
+                    semantic_execution_validated = True
+                if selected_is_capability:
+                    logger.info(
+                        "agent_runtime_stop corr_id=%s mode=%s verb=%s reason=capability_bound_executed tool_id=%s",
+                        correlation_id,
+                        mode,
+                        req.verb_name,
+                        selected_tool,
+                    )
+                    break
                 logger.info(
                     "agent_runtime_continue corr_id=%s mode=%s verb=%s reason=delegate_then_agent_chain tool_id=%s",
                     correlation_id,
@@ -1054,6 +1813,7 @@ class Supervisor:
             step_results.append(agent_step)
             try:
                 agent_payload = agent_step.result.get("AgentChainService", {})
+                _merge_agent_findings_into_ctx(ctx, agent_payload)
                 if isinstance(agent_payload, dict):
                     final_text = agent_payload.get("text") or final_text
             except Exception:
@@ -1070,6 +1830,8 @@ class Supervisor:
                 ctx.get("output_mode"),
                 request_text=_last_user_message(ctx),
                 grounding_mode=grounding.get("delivery_grounding_mode"),
+                findings_bundle=ctx.get("merged_findings_bundle") if isinstance(ctx.get("merged_findings_bundle"), dict) else None,
+                answer_contract=ctx.get("answer_contract") if isinstance(ctx.get("answer_contract"), dict) else None,
             )
             if shallow:
                 logger.info(
@@ -1101,6 +1863,16 @@ class Supervisor:
                     "response_profile": ctx.get("response_profile") or "direct_answer",
                     **grounding,
                 }
+                mfb = ctx.get("merged_findings_bundle")
+                ac = ctx.get("answer_contract")
+                if isinstance(mfb, dict) and answer_contract_expects_findings_rendering(
+                    ac if isinstance(ac, dict) else None
+                ):
+                    finalize_input_blob["findings_bundle"] = mfb
+                    finalize_input_blob["findings_bundle_json"] = json.dumps(mfb, ensure_ascii=False, default=str)[:12000]
+                if isinstance(ac, dict):
+                    finalize_input_blob["answer_contract"] = ac
+                    finalize_input_blob["preferred_render_style"] = ac.get("preferred_render_style") or "answer"
                 scaffold_markers = _detect_scaffolding_markers(finalize_input_blob)
                 if scaffold_markers:
                     logger.warning(
@@ -1125,6 +1897,34 @@ class Supervisor:
                     obs = _extract_observation(fin_step)
                     final_text = obs.get("llm_output") or final_text
 
+        if final_text and operational_intent_detected and _is_operational_guidance_text(final_text):
+            if no_write_active:
+                final_text = _build_blocked_execution_explanation(
+                    selected_tool=selected_tool_would_have_been,
+                    no_write_active=True,
+                )
+                ctx.setdefault("debug", {})["no_write_downgrade"] = True
+                ctx.setdefault("debug", {})["downgraded_to_explanation"] = True
+                logger.info(
+                    "final_answer_operational_guidance_blocked corr_id=%s chosen_path=blocked_explanation no_write_active=true reason=direct_command_guidance_blocked",
+                    correlation_id,
+                )
+            elif not semantic_execution_validated:
+                final_text = (
+                    "I can provide a safe preview, but I’m not executing operations in this answer. "
+                    "Use the semantic runtime housekeeping path for execution; this response is explanation-only."
+                )
+                ctx.setdefault("debug", {})["downgraded_to_explanation"] = True
+                logger.info(
+                    "final_answer_operational_guidance_blocked corr_id=%s chosen_path=safe_preview no_write_active=false reason=unvalidated_direct_command_guidance",
+                    correlation_id,
+                )
+            else:
+                logger.info(
+                    "final_answer_operational_guidance_allowed corr_id=%s chosen_path=delegate validated_semantic_execution=true",
+                    correlation_id,
+                )
+
         logger.info(
             "agent_runtime_stop corr_id=%s mode=%s verb=%s reason=loop_complete final_len=%s output_mode=%s packs=%s steps=%s",
             correlation_id,
@@ -1135,6 +1935,7 @@ class Supervisor:
             packs,
             [s.step_name for s in step_results],
         )
+        final_text = _enrich_final_text_with_bound_skill_output(final_text, step_results)
         user_text = _last_user_message(ctx)
         verdict = _grounding_verdict(user_text, final_text or "")
         recent_followup_continuity = _has_recent_followup_continuity(ctx.get("messages"), final_text or "")
@@ -1149,19 +1950,77 @@ class Supervisor:
             verdict["unrelated_markers"],
             verdict["scaffolding_markers"],
         )
-        if not verdict["anchored"] and not recent_followup_continuity:
-            logger.warning(
-                "grounding_guardrail_triggered corr_id=%s ask_head=%r answer_head=%r",
+        explanation_downgrade = bool((ctx.get("debug") or {}).get("downgraded_to_explanation"))
+        bound_failure_signal = _extract_bound_failure_signal(step_results)
+        preserve_operational_failure_text = bound_failure_signal is not None
+        preserve_bound_capability_text = _bound_capability_succeeded(step_results)
+        output_mode_lane = str(ctx.get("output_mode") or "").strip() == "implementation_guide"
+        if (
+            not verdict["anchored"]
+            and not recent_followup_continuity
+            and not explanation_downgrade
+            and not preserve_operational_failure_text
+            and not preserve_bound_capability_text
+        ):
+            if _looks_like_coaching_growth_prompt(user_text) or output_mode_lane:
+                logger.info(
+                    "grounding_guardrail_suppressed corr_id=%s reason=%s ask_head=%r answer_head=%r",
+                    correlation_id,
+                    "coaching_growth_lane" if _looks_like_coaching_growth_prompt(user_text) else "implementation_guide_lane",
+                    _truncate_text(user_text, 220),
+                    _truncate_text(final_text, 220),
+                )
+            else:
+                logger.warning(
+                    "grounding_guardrail_triggered corr_id=%s ask_head=%r answer_head=%r",
+                    correlation_id,
+                    _truncate_text(user_text, 220),
+                    _truncate_text(final_text, 220),
+                )
+                final_text = (
+                    f"I may have drifted from your request. You asked: {user_text}\n\n"
+                    "Could you restate the key constraint and I will answer directly from that prompt?"
+                )
+        elif preserve_bound_capability_text:
+            logger.info(
+                "grounding_guardrail_bypassed_for_bound_capability corr_id=%s",
                 correlation_id,
-                _truncate_text(user_text, 220),
-                _truncate_text(final_text, 220),
             )
-            final_text = (
-                f"I may have drifted from your request. You asked: {user_text}\n\n"
-                "Could you restate the key constraint and I will answer directly from that prompt?"
+        elif preserve_operational_failure_text:
+            logger.info(
+                "grounding_guardrail_bypassed_for_operational_failure corr_id=%s reason=%s path=%s",
+                correlation_id,
+                bound_failure_signal.get("reason"),
+                bound_failure_signal.get("path"),
             )
 
+        runtime_policy_meta = {
+            "no_write_active": no_write_active,
+            "execution_blocked_reason": execution_blocked_reason,
+            "operational_intent_detected": operational_intent_detected,
+            "semantic_tool_preferred": bool(operational_intent_detected and preferred_operational_tool),
+            "downgraded_to_explanation": bool((ctx.get("debug") or {}).get("downgraded_to_explanation")),
+            "selected_tool_would_have_been": selected_tool_would_have_been,
+            "bound_failure_signal": bound_failure_signal,
+        }
+        logger.info(
+            "blocked_execution_explanation_emitted corr_id=%s emitted=%s selected_tool=%s",
+            correlation_id,
+            runtime_policy_meta["downgraded_to_explanation"],
+            selected_tool_would_have_been,
+        )
+
         overall_status = "success" if step_results and all(s.status == "success" for s in step_results if s) else "partial"
+        overall_error: str | None = None
+        if bound_failure_signal is not None:
+            overall_status = "fail"
+            overall_error = (
+                bound_failure_signal.get("detail")
+                or bound_failure_signal.get("reason")
+                or "bound_capability_failed"
+            )
+        elif overall_status != "success":
+            overall_error = step_results[-1].error if step_results else None
         return PlanExecutionResult(
             verb_name=req.verb_name,
             request_id=correlation_id,
@@ -1173,5 +2032,6 @@ class Supervisor:
             final_text=final_text,
             memory_used=memory_used,
             recall_debug=recall_debug,
-            error=None,
+            metadata={"runtime_policy": runtime_policy_meta},
+            error=overall_error,
         )

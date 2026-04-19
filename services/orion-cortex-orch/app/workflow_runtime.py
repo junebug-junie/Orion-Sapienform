@@ -11,15 +11,21 @@ from orion.cognition.workflows import get_workflow_definition, workflow_registry
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.verbs import VerbResultV1
-from orion.journaler.schemas import JournalEntryDraftV1
+from orion.journaler.schemas import JournalEntryDraftV1, JournalEntryWriteV1
+from orion.discussion_window.timeframe import parse_journal_discussion_lookback_seconds
+from orion.journaler.workflow_journal_delegate import workflow_journal_write_delegated_to_exec
 from orion.journaler.worker import (
     JOURNAL_WRITE_KIND,
     build_compose_request,
+    build_discussion_window_journal_trigger,
     build_manual_trigger,
     build_write_payload,
+    coerce_journal_title,
     draft_from_cortex_result,
+    stable_journal_entry_id_for_workflow_compose,
 )
-from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
+from orion.schemas.discussion_window import DiscussionWindowRequestV1, DiscussionWindowResultV1
+from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, CortexClientResult, RecallDirective
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1
 from orion.spark.concept_induction.profile_repository import build_concept_profile_repository
 from orion.spark.concept_induction.settings import DEFAULT_CONCEPT_STORE_PATH
@@ -40,6 +46,79 @@ CutoverFallbackPolicyKind = Literal["fail_open_local", "fail_closed"]
 
 class WorkflowExecutionError(RuntimeError):
     pass
+
+
+async def _publish_journal_entry_write_or_fail(
+    *,
+    bus: OrionBusAsync,
+    source: ServiceRef,
+    correlation_id: str,
+    causality_chain: list | None,
+    trace: dict | None,
+    workflow_id: str,
+    write: JournalEntryWriteV1,
+) -> None:
+    """
+    Emit journal.entry.write.v1 on orion:journal:write.
+
+    OrionBusAsync.publish is a silent no-op when the bus is disabled; sql-writer only
+    persists what it receives on this channel, so we fail the workflow if we cannot emit.
+    """
+    if not getattr(bus, "enabled", True):
+        logger.error(
+            "journal_write_skipped_bus_disabled corr=%s workflow_id=%s entry_id=%s",
+            correlation_id,
+            workflow_id,
+            write.entry_id,
+        )
+        raise WorkflowExecutionError("journal_write_bus_disabled")
+    payload_dict = write.model_dump(mode="json")
+    try:
+        JournalEntryWriteV1.model_validate(payload_dict)
+    except Exception as exc:
+        logger.exception(
+            "journal_write_payload_invalid corr=%s workflow_id=%s entry_id=%s",
+            correlation_id,
+            workflow_id,
+            write.entry_id,
+        )
+        raise WorkflowExecutionError(f"journal_write_invalid_payload:{exc}") from exc
+    envelope = BaseEnvelope(
+        kind=JOURNAL_WRITE_KIND,
+        source=source,
+        correlation_id=correlation_id,
+        causality_chain=list(causality_chain or []),
+        trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
+        payload=payload_dict,
+    )
+    try:
+        await bus.publish(JOURNAL_WRITE_CHANNEL, envelope)
+    except ValueError as exc:
+        logger.exception(
+            "journal_write_catalog_rejected corr=%s workflow_id=%s channel=%s entry_id=%s err=%s",
+            correlation_id,
+            workflow_id,
+            JOURNAL_WRITE_CHANNEL,
+            write.entry_id,
+            exc,
+        )
+        raise WorkflowExecutionError(f"journal_write_bus_catalog_rejected:{exc}") from exc
+    except Exception as exc:
+        logger.exception(
+            "journal_write_publish_failed corr=%s workflow_id=%s channel=%s entry_id=%s",
+            correlation_id,
+            workflow_id,
+            JOURNAL_WRITE_CHANNEL,
+            write.entry_id,
+        )
+        raise WorkflowExecutionError(f"journal_write_publish_failed:{exc}") from exc
+    logger.info(
+        "journal_write_published corr=%s workflow_id=%s channel=%s entry_id=%s",
+        correlation_id,
+        workflow_id,
+        JOURNAL_WRITE_CHANNEL,
+        write.entry_id,
+    )
 
 
 def has_explicit_workflow_request(req: CortexClientRequest) -> bool:
@@ -226,14 +305,6 @@ def _workflow_summary_text(*, title: str, status: str, main_result: str, persist
         f"Scheduled: {', '.join(scheduled_items) if scheduled_items else 'none'}",
     ]
     return "\n".join(lines)
-
-
-def _coerce_journal_title(*, raw_title: Any, fallback_summary: str, correlation_id: str) -> str:
-    title = str(raw_title or "").strip()
-    if title:
-        return title
-    seed = str(fallback_summary or "").strip() or "Journal Pass"
-    return f"Journal Pass · {seed[:64]} · {correlation_id[:8]}"
 
 
 def _should_notify(*, notify_on: str, ok: bool) -> bool:
@@ -594,28 +665,31 @@ async def _execute_journal_pass(
     )
     compose_payload = _extract_result_payload(verb_result)
     draft = draft_from_cortex_result(compose_payload)
-    title = _coerce_journal_title(raw_title=draft.title, fallback_summary=trigger.summary, correlation_id=correlation_id)
+    title = coerce_journal_title(raw_title=draft.title, fallback_summary=trigger.summary, correlation_id=correlation_id)
     body = str(draft.body or "").strip()
     if not body:
         raise WorkflowExecutionError("journal_pass_empty_body")
     draft = draft.model_copy(update={"title": title, "body": body}, deep=True)
+    entry_id = stable_journal_entry_id_for_workflow_compose(
+        correlation_id=correlation_id, workflow_id=workflow_id, draft=draft, trigger=trigger
+    )
     write = build_write_payload(
         draft,
         trigger=trigger,
         correlation_id=correlation_id,
         author=req.context.user_id or "orion",
+        entry_id=entry_id,
     )
-    await bus.publish(
-        JOURNAL_WRITE_CHANNEL,
-        BaseEnvelope(
-            kind=JOURNAL_WRITE_KIND,
+    if not workflow_journal_write_delegated_to_exec(compose_req.context.metadata):
+        await _publish_journal_entry_write_or_fail(
+            bus=bus,
             source=source,
             correlation_id=correlation_id,
-            causality_chain=list(causality_chain or []),
-            trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
-            payload=write.model_dump(mode="json"),
-        ),
-    )
+            causality_chain=causality_chain,
+            trace=trace,
+            workflow_id=workflow_id,
+            write=write,
+        )
     metadata = _workflow_metadata_base(request=_workflow_request(req), status="completed")
     metadata["workflow"] = {
         "workflow_id": workflow_id,
@@ -639,6 +713,223 @@ async def _execute_journal_pass(
             status="completed",
             main_result=f"Drafted '{draft.title}' and sent it through the append-only journal write path.",
             persisted=metadata["workflow"]["persisted"],
+        ),
+        memory_used=bool(compose_payload.get("memory_used")),
+        recall_debug=compose_payload.get("recall_debug") or {},
+        steps=compose_payload.get("steps") or [],
+        error=None,
+        correlation_id=correlation_id,
+        metadata=metadata,
+    )
+
+
+def _humanize_lookback_seconds(sec: int) -> str:
+    if sec <= 0:
+        return f"{sec}s"
+    if sec == 3600:
+        return "hour"
+    if sec == 86400:
+        return "day"
+    if sec % 3600 == 0:
+        n = sec // 3600
+        return f"{n} hours"
+    if sec % 60 == 0:
+        n = sec // 60
+        return f"{n} minutes" if n != 1 else "1 minute"
+    return f"{sec} seconds"
+
+
+async def _execute_journal_discussion_window_pass(
+    *,
+    bus: OrionBusAsync,
+    source: ServiceRef,
+    correlation_id: str,
+    causality_chain: list | None,
+    trace: dict | None,
+    req: CortexClientRequest,
+    call_verb_runtime,
+) -> CortexClientResult:
+    workflow_id = "journal_discussion_window_pass"
+    user_text = (req.context.raw_user_text or req.context.user_message or "").strip()
+    lookback = parse_journal_discussion_lookback_seconds(user_text)
+    if lookback is None:
+        lookback = 86400
+
+    md = req.context.metadata if isinstance(req.context.metadata, dict) else {}
+    # Do not map Hub routing metadata (`source` = hub_http / hub_ws) onto `chat_history_log.source`:
+    # legacy HTTP publishes often use SERVICE_NAME (or leave source/user_id unset on merge paths),
+    # so automatic filters frequently return zero rows and block journaling entirely.
+    opt_uid = md.get("discussion_window_user_id")
+    dw_user = str(opt_uid).strip() if isinstance(opt_uid, str) and opt_uid.strip() else None
+    opt_src = md.get("discussion_window_source")
+    dw_source = str(opt_src).strip() if isinstance(opt_src, str) and opt_src.strip() else None
+
+    dw_req = DiscussionWindowRequestV1(
+        lookback_seconds=int(lookback),
+        end_time_utc=None,
+        user_id=dw_user,
+        source=dw_source,
+        max_turns=30,
+        require_prompt_and_response=True,
+    )
+    skill_args = dw_req.model_dump(mode="json", exclude_none=True)
+    skill_client = CortexClientRequest(
+        mode="brain",
+        route_intent="none",
+        verb="skills.chat.discussion_window.v1",
+        packs=[],
+        options={"source": "cortex-orch-workflow", "policy_dispatch_only": True, "workflow_execution": True, "workflow_id": workflow_id},
+        recall=RecallDirective(enabled=False, required=False, profile=None),
+        context=CortexClientContext(
+            messages=[],
+            raw_user_text=user_text,
+            user_message=user_text,
+            session_id=f"journal-discussion-window:{correlation_id}",
+            user_id=req.context.user_id,
+            trace_id=req.context.trace_id or correlation_id,
+            metadata={
+                **md,
+                "skill_args": skill_args,
+                "workflow_subverb": "skills.chat.discussion_window.v1",
+                "workflow_id": workflow_id,
+            },
+        ),
+    )
+    skill_client.context.metadata.update(
+        _workflow_execution_envelope(
+            req=skill_client,
+            correlation_id=correlation_id,
+            workflow_id=workflow_id,
+            workflow_subverb="skills.chat.discussion_window.v1",
+        )
+    )
+    verb_result = await call_verb_runtime(
+        bus,
+        source=source,
+        client_request=skill_client,
+        correlation_id=f"{correlation_id}:discussion_window",
+        causality_chain=causality_chain,
+        trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
+        timeout_sec=float((skill_client.options or {}).get("timeout_sec", 120.0)),
+    )
+    if not verb_result.ok:
+        raise WorkflowExecutionError(f"discussion_window_skill_failed:{verb_result.error}")
+    pl = _extract_result_payload(verb_result)
+    md_pl = pl.get("metadata") if isinstance(pl.get("metadata"), dict) else {}
+    skill_blob = md_pl.get("skill_result") if isinstance(md_pl.get("skill_result"), dict) else None
+    if skill_blob is None:
+        skill_blob = pl.get("skill_result") if isinstance(pl.get("skill_result"), dict) else _parse_json_text(pl.get("final_text"))
+    if pl.get("ok") is False:
+        raise WorkflowExecutionError(f"discussion_window_skill_failed:{pl.get('error') or pl.get('status')}")
+    if not isinstance(skill_blob, dict):
+        raise WorkflowExecutionError("discussion_window_skill_empty_payload")
+    if skill_blob.get("error"):
+        raise WorkflowExecutionError(f"discussion_window_skill_error:{skill_blob.get('error')}")
+    window = DiscussionWindowResultV1.model_validate(skill_blob)
+    if window.turn_count <= 0 or not (window.transcript_text or "").strip():
+        raise WorkflowExecutionError("discussion_window_empty")
+
+    human = _humanize_lookback_seconds(int(lookback))
+    summary = f"Chat discussion journal for the last {human}"
+    trigger = build_discussion_window_journal_trigger(
+        summary=summary,
+        transcript_text=window.transcript_text,
+        window_start_utc=window.window_start_utc,
+        window_end_utc=window.window_end_utc,
+        turn_count=window.turn_count,
+    )
+    compose_req = build_compose_request(
+        trigger,
+        session_id=f"journal-discussion-window:{correlation_id}",
+        trace_id=req.context.trace_id or correlation_id,
+        user_id=req.context.user_id,
+        options={"workflow_execution": True, "workflow_id": workflow_id},
+    )
+    compose_req.context.metadata = {**dict(req.context.metadata or {}), **dict(compose_req.context.metadata or {})}
+    compose_req.context.metadata.update(
+        _workflow_execution_envelope(
+            req=req,
+            correlation_id=correlation_id,
+            workflow_id=workflow_id,
+            workflow_subverb="journal.compose",
+        )
+    )
+    compose_req.context.metadata["workflow_subverb"] = "journal.compose"
+    compose_req.context.metadata["workflow_id"] = workflow_id
+    _log_primary_metadata_status(
+        correlation_id=correlation_id,
+        workflow_id=workflow_id,
+        verb="journal.compose",
+        metadata=compose_req.context.metadata,
+    )
+    compose_verb = await call_verb_runtime(
+        bus,
+        source=source,
+        client_request=compose_req,
+        correlation_id=correlation_id,
+        causality_chain=causality_chain,
+        trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
+        timeout_sec=float((compose_req.options or {}).get("timeout_sec", 900.0)),
+    )
+    compose_payload = _extract_result_payload(compose_verb)
+    draft = draft_from_cortex_result(compose_payload)
+    title = coerce_journal_title(raw_title=draft.title, fallback_summary=trigger.summary, correlation_id=correlation_id)
+    body = str(draft.body or "").strip()
+    if not body:
+        raise WorkflowExecutionError("journal_discussion_window_empty_body")
+    draft = draft.model_copy(update={"title": title, "body": body}, deep=True)
+    entry_id = stable_journal_entry_id_for_workflow_compose(
+        correlation_id=correlation_id, workflow_id=workflow_id, draft=draft, trigger=trigger
+    )
+    write = build_write_payload(
+        draft,
+        trigger=trigger,
+        correlation_id=correlation_id,
+        author=req.context.user_id or "orion",
+        entry_id=entry_id,
+    )
+    if not workflow_journal_write_delegated_to_exec(compose_req.context.metadata):
+        await _publish_journal_entry_write_or_fail(
+            bus=bus,
+            source=source,
+            correlation_id=correlation_id,
+            causality_chain=causality_chain,
+            trace=trace,
+            workflow_id=workflow_id,
+            write=write,
+        )
+    persisted_id = f"journal.entry.write.v1:{write.entry_id}"
+    ws = window.window_start_utc.isoformat() if hasattr(window.window_start_utc, "isoformat") else str(window.window_start_utc)
+    we = window.window_end_utc.isoformat() if hasattr(window.window_end_utc, "isoformat") else str(window.window_end_utc)
+    main = (
+        f"Journaled {window.turn_count} turn(s) from {ws} to {we} (lookback {human}). "
+        f"Entry id: {write.entry_id}. Title: {draft.title}."
+    )
+    metadata = _workflow_metadata_base(request=_workflow_request(req), status="completed")
+    metadata["workflow"] = {
+        "workflow_id": workflow_id,
+        "display_name": "Journal discussion window",
+        "status": "completed",
+        "executed": True,
+        "subverb": "journal.compose",
+        "persisted": [persisted_id],
+        "scheduled": [],
+        "main_result": main,
+        "journal_entry": write.model_dump(mode="json"),
+        "draft": draft.model_dump(mode="json"),
+        "discussion_window": window.model_dump(mode="json"),
+        "lookback_seconds": int(lookback),
+    }
+    return CortexClientResult(
+        ok=True,
+        mode="brain",
+        verb=workflow_id,
+        status="success",
+        final_text=_workflow_summary_text(
+            title="Journal discussion window",
+            status="completed",
+            main_result=main,
+            persisted=[persisted_id],
         ),
         memory_used=bool(compose_payload.get("memory_used")),
         recall_debug=compose_payload.get("recall_debug") or {},
@@ -1100,7 +1391,7 @@ async def _run_concept_induction_grounded_journal_synthesis(
     )
     payload = _extract_result_payload(verb_result)
     draft = draft_from_cortex_result(payload)
-    title = _coerce_journal_title(
+    title = coerce_journal_title(
         raw_title=draft.title,
         fallback_summary="Concept Induction Review",
         correlation_id=correlation_id,
@@ -1432,14 +1723,6 @@ async def _execute_concept_induction_pass(
             correlation_id=correlation_id,
             author=req.context.user_id or "orion",
         )
-        envelope = BaseEnvelope(
-            kind=JOURNAL_WRITE_KIND,
-            source=source,
-            payload=write.model_dump(mode="json"),
-            correlation_id=correlation_id,
-            causality_chain=list(causality_chain or []),
-            trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
-        )
         logger.info(
             "concept_induction_journal_handoff %s",
             json.dumps(
@@ -1458,8 +1741,16 @@ async def _execute_concept_induction_pass(
             ),
         )
         try:
-            await bus.publish(JOURNAL_WRITE_CHANNEL, envelope)
-        except Exception as exc:
+            await _publish_journal_entry_write_or_fail(
+                bus=bus,
+                source=source,
+                correlation_id=correlation_id,
+                causality_chain=causality_chain,
+                trace=trace,
+                workflow_id=workflow_id,
+                write=write,
+            )
+        except WorkflowExecutionError as exc:
             logger.exception(
                 "concept_induction_journal_handoff %s",
                 json.dumps(
@@ -1623,6 +1914,16 @@ async def execute_chat_workflow(
             )
         elif workflow_id == "journal_pass":
             result = await _execute_journal_pass(
+                bus=bus,
+                source=source,
+                correlation_id=correlation_id,
+                causality_chain=causality_chain,
+                trace=trace,
+                req=req,
+                call_verb_runtime=call_verb_runtime,
+            )
+        elif workflow_id == "journal_discussion_window_pass":
+            result = await _execute_journal_discussion_window_pass(
                 bus=bus,
                 source=source,
                 correlation_id=correlation_id,

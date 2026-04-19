@@ -2,6 +2,7 @@
   const DEFAULT_RERUN_PROMPTS = {
     dream_cycle: 'Run your dream cycle',
     journal_pass: 'Do a journal pass',
+    journal_discussion_window_pass: 'Journal the last hour',
     self_review: 'Run a self review',
     concept_induction_pass: 'Run through your concept induction graphs',
   };

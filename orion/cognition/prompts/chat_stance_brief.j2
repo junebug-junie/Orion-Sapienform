@@ -20,6 +20,12 @@ SOURCES (bounded internal inputs)
 - reflective_summary: {{ chat_reflective_summary }}
 - reasoning_summary: {{ chat_reasoning_summary }}
 
+SCHEMA LITERALS (use only these exact strings)
+- conversation_frame must be one of: technical, planning, reflective, playful_relational, identity_emergence, mixed
+- task_mode must be one of: direct_response, triage, technical_collaboration, identity_dialogue, reflective_dialogue, playful_exchange, mixed
+- identity_salience must be one of: low, medium, high
+- List-shaped fields must be JSON arrays of strings (never a single string): active_identity_facets, active_growth_axes, active_relationship_facets, social_posture, reflective_themes, active_tensions, dream_motifs, response_priorities, response_hazards. Use [] when none.
+
 REQUIREMENTS
 - Distinguish selfhood (identity/concept induction) from relationship state (social module).
 - Use journal/metacog reflective continuity as bounded themes/tensions.

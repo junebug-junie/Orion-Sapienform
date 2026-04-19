@@ -40,6 +40,13 @@
             class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
             role="button"
           >Service Logs</a>
+          <a
+            id="substratePageLink"
+            href="#substrate"
+            data-hash-target="#substrate"
+            class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
+            role="button"
+          >Substrate</a>
         </div>
       </div>
       <div class="flex items-center gap-3">
@@ -197,6 +204,79 @@
           </div>
         </div>
 
+        <div
+          id="skillRunnerPanel"
+          class="bg-gray-800/40 border border-gray-700 rounded-xl p-2 flex flex-wrap items-end gap-2 text-xs"
+        >
+          <div class="flex flex-col gap-1 min-w-[10rem] flex-1 max-w-xl">
+            <label for="skillRunnerSelect" class="text-[10px] uppercase tracking-wide text-gray-400">Skill Runner</label>
+            <select
+              id="skillRunnerSelect"
+              class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1.5 text-xs w-full"
+              aria-label="Operator skill prompt catalogue"
+            >
+              <option value="">— Select prompt —</option>
+              <optgroup label="System / runtime">
+                <option value="What time is it right now?">1 · What time is it right now?</option>
+                <option value="Show NVIDIA GPU status on this node.">2 · Show NVIDIA GPU status on this node.</option>
+                <option value="Show Docker container status on this node.">3 · Show Docker container status on this node.</option>
+                <option value="Dry-run cleanup of stopped containers.">4 · Dry-run cleanup of stopped containers.</option>
+                <option value="Prune stopped containers.">5 · Prune stopped containers.</option>
+              </optgroup>
+              <optgroup label="Biometrics">
+                <option value="Show the current biometrics snapshot.">6 · Show the current biometrics snapshot.</option>
+                <option value="Show the 10 most recent biometrics readings.">7 · Show the 10 most recent biometrics readings.</option>
+                <option value="Show the most recent biometrics readings for athena.">8 · Show the most recent biometrics readings for athena.</option>
+              </optgroup>
+              <optgroup label="Landing pad">
+                <option value="Show the landing pad metrics snapshot.">9 · Show the landing pad metrics snapshot.</option>
+                <option value="Show the last 10 landing pad events.">10 · Show the last 10 landing pad events.</option>
+                <option value="Show the last 10 landing pad events with salience above 0.7.">11 · Show the last 10 landing pad events with salience above 0.7.</option>
+              </optgroup>
+              <optgroup label="Mesh / storage / repo">
+                <option value="Which nodes are up right now?">12 · Which nodes are up right now?</option>
+                <option value="Run an active mesh probe.">13 · Run an active mesh probe.</option>
+                <option value="Check disk health across active nodes.">14 · Check disk health across active nodes.</option>
+                <option value="Summarize recent PR changes.">15 · Summarize recent PR changes.</option>
+              </optgroup>
+              <optgroup label="Round-up skill">
+                <option value="Run a mesh ops round.">16 · Run a mesh ops round.</option>
+                <option value="Run a mesh ops round with PR digest and disk health.">17 · Run a mesh ops round with PR digest and disk health.</option>
+                <option value="Run a mesh ops round including docker housekeeping preview.">18 · Run a mesh ops round including docker housekeeping preview.</option>
+              </optgroup>
+              <optgroup label="Notify">
+                <option value='Send a notification to operators saying "test alert from Orion".'>19 · Send a notification to operators…</option>
+              </optgroup>
+              <optgroup label="Chat history (SQL)">
+                <option
+                  value="Run skills.chat.discussion_window.v1 on chat_history_log with lookback_seconds 3600 and max_turns 30 (optional filters: current user_id and hub source)."
+                >
+                  20 · Discussion window · last hour (SQL)
+                </option>
+                <option
+                  value="Run skills.chat.discussion_window.v1 on chat_history_log with lookback_seconds 86400 and max_turns 30 (optional filters: current user_id and hub source)."
+                >
+                  21 · Discussion window · last day (SQL)
+                </option>
+              </optgroup>
+            </select>
+          </div>
+          <button
+            type="button"
+            id="skillRunnerInsertBtn"
+            class="rounded-lg border border-gray-600 bg-gray-700/80 px-2.5 py-1.5 text-[11px] font-medium text-gray-200 hover:bg-gray-600"
+          >
+            Insert
+          </button>
+          <button
+            type="button"
+            id="skillRunnerRunBtn"
+            class="rounded-lg border border-indigo-500/50 bg-indigo-600/80 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-indigo-500"
+          >
+            Run
+          </button>
+        </div>
+
         <div id="runtimeDebugPanel" class="bg-gray-800/40 border border-gray-700 rounded-xl p-3 space-y-2">
           <button
             id="runtimeDebugPanelToggle"
@@ -208,14 +288,23 @@
           </button>
           <div id="runtimeDebugPanelBody" class="hidden space-y-2 text-xs text-gray-300">
             <div class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-2">
-              <button
-                id="memoryPanelToggle"
-                class="w-full flex items-center justify-between text-xs text-gray-300 hover:text-white"
-                type="button"
-              >
-                <span class="uppercase tracking-wide">Memory / Recall Debug</span>
-                <span class="text-gray-500">▾</span>
-              </button>
+              <div class="flex items-center justify-between gap-2">
+                <button
+                  id="memoryPanelToggle"
+                  class="flex-1 flex items-center justify-between text-xs text-gray-300 hover:text-white"
+                  type="button"
+                >
+                  <span class="uppercase tracking-wide">Memory / Recall Debug</span>
+                  <span id="memoryPanelCaret" class="text-gray-500">▾</span>
+                </button>
+                <button
+                  id="memoryDebugOpenModal"
+                  class="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-200 hover:bg-indigo-500/20"
+                  type="button"
+                >
+                  Modal
+                </button>
+              </div>
               <div id="memoryPanelBody" class="hidden space-y-2 text-xs text-gray-300">
             <div class="flex items-center justify-between">
               <span class="text-gray-500">Memory used</span>
@@ -227,28 +316,37 @@
             </div>
             <div>
               <div class="text-gray-500 mb-1">Backend counts</div>
-              <pre id="backendCountsValue" class="whitespace-pre-wrap text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2">--</pre>
+              <pre id="backendCountsValue" class="whitespace-pre-wrap break-words text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2 max-h-20 overflow-y-auto">--</pre>
             </div>
             <div>
-              <div class="text-gray-500 mb-1">Memory digest</div>
-              <pre id="memoryDigestPre" class="whitespace-pre-wrap text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2">--</pre>
+              <div class="text-gray-500 mb-1">Memory digest (summary)</div>
+              <pre id="memoryDigestPre" class="whitespace-pre-wrap break-words text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2 max-h-24 overflow-y-auto">--</pre>
             </div>
             <div>
               <div class="text-gray-500 mb-1">Outbound routing debug</div>
-              <div id="outboundRoutingDebug" class="text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2">--</div>
+              <pre id="outboundRoutingDebug" class="whitespace-pre-wrap break-words text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2 max-h-20 overflow-y-auto">--</pre>
             </div>
               </div>
             </div>
 
         <div id="agentTraceDebugPanel" class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-2">
-          <button
-            id="agentTraceDebugToggle"
-            class="w-full flex items-center justify-between text-xs text-gray-300 hover:text-white"
-            type="button"
-          >
-            <span class="uppercase tracking-wide">Agent Trace</span>
-            <span id="agentTraceDebugCaret" class="text-gray-500">▾</span>
-          </button>
+          <div class="flex items-center justify-between gap-2">
+            <button
+              id="agentTraceDebugToggle"
+              class="flex-1 flex items-center justify-between text-xs text-gray-300 hover:text-white"
+              type="button"
+            >
+              <span class="uppercase tracking-wide">Agent Trace</span>
+              <span id="agentTraceDebugCaret" class="text-gray-500">▾</span>
+            </button>
+            <button
+              id="agentTraceDebugOpenModal"
+              class="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-200 hover:bg-indigo-500/20"
+              type="button"
+            >
+              Modal
+            </button>
+          </div>
           <div id="agentTraceDebugBody" class="hidden space-y-4 text-xs text-gray-300">
             <div id="agentTraceDebugMeta" class="text-[10px] text-gray-500">--</div>
             <div id="agentTraceDebugOverview" class="space-y-3"></div>
@@ -313,6 +411,66 @@
             <div>
               <div class="text-gray-500 mb-1">Raw compact debug</div>
               <pre id="autonomyDebugRaw" class="whitespace-pre-wrap text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2">--</pre>
+            </div>
+          </div>
+        </div>
+
+        <div id="chatStanceDebugPanel" class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <button
+              id="chatStanceDebugToggle"
+              class="flex-1 flex items-center justify-between text-xs text-gray-300 hover:text-white"
+              type="button"
+            >
+              <span class="uppercase tracking-wide">Chat Stance</span>
+              <span id="chatStanceDebugCaret" class="text-gray-500">▾</span>
+            </button>
+            <button
+              id="chatStanceDebugOpenModal"
+              class="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-200 hover:bg-indigo-500/20"
+              type="button"
+            >
+              Modal
+            </button>
+          </div>
+          <div id="chatStanceDebugBody" class="hidden space-y-3 text-xs text-gray-300">
+            <div id="chatStanceDebugMeta" class="text-[10px] text-gray-500">No chat stance debug payload on this turn.</div>
+            <div id="chatStanceDebugOverview" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-2">No chat stance debug payload on this turn.</div>
+            <div>
+              <div class="text-gray-500 mb-1">Compact lineage summary</div>
+              <div id="chatStanceDebugLineage" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-1">--</div>
+            </div>
+            <div>
+              <div class="text-gray-500 mb-1">Raw compact JSON</div>
+              <pre id="chatStanceDebugRaw" class="whitespace-pre-wrap text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2">--</pre>
+            </div>
+          </div>
+        </div>
+
+        <div id="substrateReviewDebugPanel" class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <button
+              id="substrateReviewDebugToggle"
+              class="flex-1 flex items-center justify-between text-xs text-gray-300 hover:text-white"
+              type="button"
+            >
+              <span class="uppercase tracking-wide">Substrate Review</span>
+              <span id="substrateReviewDebugCaret" class="text-gray-500">▾</span>
+            </button>
+            <button
+              id="substrateReviewDebugOpenModal"
+              class="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-200 hover:bg-indigo-500/20"
+              type="button"
+            >
+              Modal
+            </button>
+          </div>
+          <div id="substrateReviewDebugBody" class="hidden space-y-2 text-xs text-gray-300">
+            <div id="substrateReviewDebugMeta" class="text-[10px] text-gray-500">Loading substrate review runtime status…</div>
+            <div id="substrateReviewDebugOverview" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-2">--</div>
+            <div class="flex items-center justify-between text-[10px] text-gray-400">
+              <a id="substrateReviewDebugStandaloneLink" href="/substrate" class="text-indigo-300 hover:text-indigo-200 underline">Open standalone /substrate</a>
+              <span>Operator bounded controls in modal</span>
             </div>
           </div>
         </div>
@@ -1876,6 +2034,28 @@
         <div id="serviceLogsTerminals" class="grid grid-cols-1 md:grid-cols-3 gap-4"></div>
       </section>
 
+      <section id="substrate" data-panel="substrate" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-bold text-white">Substrate Inspector</h2>
+            <p class="text-xs text-gray-400">Isolated standalone substrate page embedded in-shell to preserve Hub context.</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="substratePanelRefresh" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700" type="button">Refresh</button>
+            <a id="substratePanelStandaloneLink" href="/substrate" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Open standalone</a>
+          </div>
+        </div>
+        <div class="rounded-xl border border-gray-800 bg-gray-950/40 overflow-hidden flex-1 min-h-[40rem]">
+          <iframe
+            id="substratePanelFrame"
+            src="/substrate"
+            class="w-full h-full border-0 min-h-[40rem]"
+            loading="lazy"
+            title="Substrate Inspector"
+          ></iframe>
+        </div>
+      </section>
+
   <div
     id="agentTraceModal"
     class="hidden fixed inset-0 z-50 bg-gray-950/80 backdrop-blur-sm px-4 py-6"
@@ -2023,6 +2203,30 @@
     </div>
   </div>
 
+  <div id="responseFeedbackModal" class="hidden fixed inset-0 z-[72] bg-black/80 p-4 md:p-8" aria-hidden="true">
+    <div class="mx-auto flex h-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl">
+      <div class="flex items-start justify-between gap-3 border-b border-gray-800 px-5 py-4">
+        <div>
+          <h2 id="responseFeedbackTitle" class="text-lg font-semibold text-white">Response feedback</h2>
+          <div id="responseFeedbackMeta" class="mt-1 text-[11px] text-gray-400">Share quick feedback on this response.</div>
+        </div>
+        <button id="responseFeedbackModalClose" type="button" class="rounded-full border border-gray-700 bg-gray-900 px-3 py-1 text-sm text-gray-300 hover:bg-gray-800 hover:text-white">Close</button>
+      </div>
+      <div class="flex-1 space-y-4 overflow-y-auto px-5 py-4">
+        <div id="responseFeedbackCategoryList" class="flex flex-wrap gap-2"></div>
+        <div>
+          <label for="responseFeedbackNotes" class="mb-1 block text-xs text-gray-300">Optional notes</label>
+          <textarea id="responseFeedbackNotes" maxlength="2000" rows="4" class="w-full rounded-xl border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-gray-100 outline-none focus:border-indigo-500" placeholder="Anything else you'd like to add?"></textarea>
+        </div>
+        <div id="responseFeedbackStatus" class="text-xs text-gray-400"></div>
+      </div>
+      <div class="flex items-center justify-end gap-2 border-t border-gray-800 px-5 py-3">
+        <button id="responseFeedbackCancel" type="button" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1 text-sm text-gray-300 hover:bg-gray-800">Cancel</button>
+        <button id="responseFeedbackSubmit" type="button" class="rounded-lg border border-indigo-500/70 bg-indigo-500/20 px-3 py-1 text-sm font-semibold text-indigo-100 hover:bg-indigo-500/30">Submit feedback</button>
+      </div>
+    </div>
+  </div>
+
   <div id="autonomyDebugModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
     <div id="autonomyDebugModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
     <div id="autonomyDebugModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121] mx-auto flex w-auto max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
@@ -2041,6 +2245,94 @@
       </div>
       <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         <div id="autonomyDebugModalBody" class="text-xs text-gray-300 space-y-4"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="memoryDebugModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
+    <div id="memoryDebugModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
+    <div id="memoryDebugModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121] mx-auto flex w-auto max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
+      <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
+        <div>
+          <div class="text-xs uppercase tracking-[0.24em] text-indigo-300">Memory / recall debug</div>
+          <div id="memoryDebugModalMeta" class="mt-1 text-[11px] text-gray-400">Recall and memory diagnostics for the selected turn.</div>
+        </div>
+        <button
+          id="memoryDebugModalClose"
+          class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-800"
+          type="button"
+        >
+          Close
+        </button>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        <div id="memoryDebugModalBody" class="text-xs text-gray-300 space-y-4"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="chatStanceDebugModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
+    <div id="chatStanceDebugModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
+    <div id="chatStanceDebugModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121] mx-auto flex w-auto max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
+      <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
+        <div>
+          <div class="text-xs uppercase tracking-[0.24em] text-indigo-300">Chat stance debug</div>
+          <div id="chatStanceDebugModalMeta" class="mt-1 text-[11px] text-gray-400">Source inputs, synthesized brief, and final stance contract for this turn.</div>
+        </div>
+        <button
+          id="chatStanceDebugModalClose"
+          class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-800"
+          type="button"
+        >
+          Close
+        </button>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+        <div id="chatStanceDebugModalBody" class="text-xs text-gray-300 space-y-4"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="substrateReviewModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
+    <div id="substrateReviewModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
+    <div id="substrateReviewModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121] mx-auto flex w-auto max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
+      <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
+        <div>
+          <div class="text-xs uppercase tracking-[0.24em] text-cyan-300">Substrate review runtime</div>
+          <div id="substrateReviewModalMeta" class="mt-1 text-[11px] text-gray-400">Bounded operator controls for single-cycle substrate review checks.</div>
+        </div>
+        <button
+          id="substrateReviewModalClose"
+          class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-800"
+          type="button"
+        >
+          Close
+        </button>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4 space-y-4 text-xs text-gray-300">
+        <section class="rounded-xl border border-gray-700 bg-gray-900/40 p-3 space-y-2">
+          <div class="text-[10px] uppercase tracking-wide text-gray-500">Quick status</div>
+          <div id="substrateReviewModalQuickStatus" class="grid grid-cols-1 gap-2 md:grid-cols-2"></div>
+          <a id="substrateReviewModalSubstrateLink" href="/substrate" class="text-indigo-300 hover:text-indigo-200 underline text-[11px]">Open standalone /substrate</a>
+        </section>
+        <section class="rounded-xl border border-gray-700 bg-gray-900/40 p-3 space-y-2">
+          <div class="text-[10px] uppercase tracking-wide text-gray-500">Bounded operator test actions</div>
+          <div class="flex flex-wrap gap-2">
+            <button id="substrateReviewActionRefresh" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1 text-[11px] text-gray-100 hover:bg-gray-800" type="button">Refresh status</button>
+            <button id="substrateReviewActionExecuteOnce" class="rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-3 py-1 text-[11px] text-emerald-100 hover:bg-emerald-500/20" type="button">Execute once</button>
+            <button id="substrateReviewActionExecuteFollowup" class="rounded-lg border border-amber-500/50 bg-amber-500/10 px-3 py-1 text-[11px] text-amber-100 hover:bg-amber-500/20" type="button">Execute once + follow-up</button>
+            <button id="substrateReviewActionSmokeCheck" class="rounded-lg border border-indigo-500/50 bg-indigo-500/10 px-3 py-1 text-[11px] text-indigo-100 hover:bg-indigo-500/20" type="button">Smoke check</button>
+          </div>
+          <div id="substrateReviewActionStatus" class="text-[11px] text-gray-400">Idle.</div>
+        </section>
+        <section class="rounded-xl border border-gray-700 bg-gray-900/40 p-3 space-y-2">
+          <div class="text-[10px] uppercase tracking-wide text-gray-500">Latest action result</div>
+          <div id="substrateReviewResultSummary" class="space-y-2 text-[11px]">No action run yet.</div>
+          <details class="rounded-lg border border-gray-800 bg-gray-950/60 p-2">
+            <summary class="cursor-pointer text-[10px] uppercase tracking-wide text-gray-500">Raw JSON</summary>
+            <pre id="substrateReviewResultRaw" class="mt-2 whitespace-pre-wrap break-words text-[10px] text-gray-200 max-h-64 overflow-y-auto">--</pre>
+          </details>
+        </section>
       </div>
     </div>
   </div>

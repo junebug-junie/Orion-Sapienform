@@ -27,6 +27,9 @@ def repair_json(text: str) -> str:
     text = text.replace(" True", " true").replace(":True", ":true")
     text = text.replace(" False", " false").replace(":False", ":false")
     text = re.sub(r",\s*([}\]])", r"\1", text)
+    # LLMs often emit \' inside double-quoted JSON strings; JSON allows only \" \\ \/ \b \f \n \r \t \uXXXX.
+    # Strip a lone backslash before apostrophe, but not the second backslash in \\' (escaped backslash + quote).
+    text = re.sub(r"(?<!\\)\\(?=')", "", text)
     return text
 
 

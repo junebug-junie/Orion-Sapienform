@@ -128,6 +128,38 @@ def test_profile_validation_stage_and_activate_are_manual() -> None:
     assert resolution.overrides.get("normal_revisit_seconds") == 900
 
 
+def test_activate_on_new_rollout_scope_supersedes_prior_active() -> None:
+    store = SubstratePolicyProfileStore()
+    narrow = store.adopt(
+        SubstratePolicyAdoptionRequestV1(
+            rollout_scope=SubstratePolicyRolloutScopeV1(invocation_surfaces=["operator_review"], target_zones=["concept_graph"]),
+            policy_overrides=SubstratePolicyOverridesV1(normal_revisit_seconds=400),
+            activate_now=True,
+            operator_id="op-1",
+            rationale="narrow",
+        )
+    )
+    wide = store.adopt(
+        SubstratePolicyAdoptionRequestV1(
+            rollout_scope=SubstratePolicyRolloutScopeV1(invocation_surfaces=["operator_review"], target_zones=[]),
+            policy_overrides=SubstratePolicyOverridesV1(normal_revisit_seconds=800),
+            activate_now=True,
+            operator_id="op-1",
+            rationale="wide",
+        )
+    )
+    inspection = store.inspect()
+    assert len(inspection.active_profiles) == 1
+    assert inspection.active_profiles[0].profile_id == wide.profile_id
+    narrow_reload = store.get_profile(narrow.profile_id or "")
+    assert narrow_reload is not None
+    assert narrow_reload.activation_state == "inactive"
+    r_concept = store.resolve(invocation_surface="operator_review", target_zone="concept_graph", operator_mode=True)
+    assert r_concept.mode == "adopted"
+    assert r_concept.profile_id == wide.profile_id
+    assert r_concept.overrides.get("normal_revisit_seconds") == 800
+
+
 def test_rollout_scope_baseline_elsewhere_and_rollback_paths() -> None:
     store = SubstratePolicyProfileStore()
     first = store.adopt(

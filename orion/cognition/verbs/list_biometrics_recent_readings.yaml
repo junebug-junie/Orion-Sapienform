@@ -1,0 +1,39 @@
+name: list_biometrics_recent_readings
+label: List Recent Biometrics Readings
+description: >
+  Return recent raw biometrics samples from the biometrics feed (time-ordered readings).
+  Use when the user asks for "most recent readings", "last N biometrics samples", "raw biometrics",
+  or a history list. Pass count/limit in the tool input text if the user specifies a number (e.g. 10).
+  Do NOT use for Docker ps, mesh status, or aggregated snapshot card only.
+category: ExecutiveControl
+priority: medium
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+timeout_ms: 30000
+max_recursion_depth: 0
+services: []
+execution_mode: capability_backed
+requires_capability_selector: true
+preferred_skill_families:
+  - biometrics_recent
+side_effect_level: none
+input_schema:
+  type: object
+  properties:
+    text:
+      type: string
+    limit:
+      type: integer
+      minimum: 1
+      maximum: 500
+      description: Max number of recent readings to return (default 10).
+  required: [text]
+output_schema:
+  type: object
+  properties:
+    selected_verb: { type: string }
+    selected_skill_family: { type: string }
+    selected_skill: { type: string }
+    execution_summary: { type: string }

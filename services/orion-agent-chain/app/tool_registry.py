@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, List
+import logging
 
 from orion.cognition.packs_loader import PackManager
 from orion.cognition.planner.loader import VerbRegistry
@@ -31,6 +32,8 @@ _RICH_INPUT_SCHEMA: dict[str, Any] = {
     "required": ["text"],
 }
 
+logger = logging.getLogger("agent-chain.tool-registry")
+
 
 class ToolRegistry:
     """
@@ -43,13 +46,36 @@ class ToolRegistry:
         self._pack_manager = PackManager(self.base_dir)
         self._verb_registry = VerbRegistry(self.base_dir / "verbs")
         self._loaded = False
+        self._capability_registry_validated = False
 
     def _ensure_loaded(self) -> None:
         if self._loaded:
             return
         self._pack_manager.load_packs()
         self._verb_registry.load()
+        self._validate_capability_backed_registry_invariants()
         self._loaded = True
+
+    def _validate_capability_backed_registry_invariants(self) -> None:
+        if self._capability_registry_validated:
+            return
+        violations: list[str] = []
+        for verb_cfg in self._verb_registry.list():
+            execution_mode = str(verb_cfg.execution_mode or "").strip().lower()
+            requires_selector = bool(verb_cfg.requires_capability_selector)
+            if not (execution_mode == "capability_backed" or requires_selector):
+                continue
+            if str(verb_cfg.name).startswith("skills."):
+                violations.append(f"{verb_cfg.name}: capability-backed semantic verbs cannot use skills.* namespace")
+            services = verb_cfg.services or []
+            if "LLMGatewayService" in services:
+                violations.append(f"{verb_cfg.name}: capability-backed verb cannot bind LLMGatewayService")
+            if not requires_selector:
+                violations.append(f"{verb_cfg.name}: capability-backed verb must require_capability_selector=true")
+        if violations:
+            raise ValueError("Capability-backed registry invariant violation(s): " + "; ".join(violations))
+        logger.info("[agent-chain] capability_registry_validation_ok=1")
+        self._capability_registry_validated = True
 
     def tools_for_packs(self, pack_names: List[str]) -> List[ToolDef]:
         """
@@ -76,7 +102,12 @@ class ToolRegistry:
                 verb_cfg = self._verb_registry.get(verb_name)
                 services = verb_cfg.services or []
                 execution_mode = str(verb_cfg.execution_mode or "").strip().lower()
-                is_capability_backed = execution_mode == "capability_backed"
+                # Keep planner-visible registry semantic: reasoning verbs plus
+                # capability-backed verbs that route through the capability bridge.
+                # Some verb YAMLs may only mark requires_capability_selector, so
+                # treat that as capability-backed for visibility instead of dropping
+                # those verbs from PlannerReact toolset assembly.
+                is_capability_backed = execution_mode == "capability_backed" or bool(verb_cfg.requires_capability_selector)
                 is_reasoning_llm = services == ["LLMGatewayService"]
                 if not (is_reasoning_llm or is_capability_backed):
                     continue
@@ -96,7 +127,7 @@ class ToolRegistry:
                         description=verb_cfg.description or f"Orion verb: {verb_cfg.name}",
                         input_schema=input_schema,
                         output_schema=output_schema,
-                        execution_mode=(verb_cfg.execution_mode or ("reasoning_only" if is_reasoning_llm else None)),
+                        execution_mode=(verb_cfg.execution_mode or ("reasoning_only" if is_reasoning_llm else "capability_backed")),
                         requires_capability_selector=bool(verb_cfg.requires_capability_selector),
                         preferred_skill_families=list(verb_cfg.preferred_skill_families or []),
                         side_effect_level=verb_cfg.side_effect_level or ("none" if is_reasoning_llm else "low"),

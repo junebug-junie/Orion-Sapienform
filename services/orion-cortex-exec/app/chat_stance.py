@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any, Dict, Iterable, List
 
 from orion.autonomy.summary import summarize_autonomy_state
@@ -97,6 +98,11 @@ def _env_int(name: str, default: int) -> int:
         return int(raw)
     except (TypeError, ValueError):
         return default
+
+
+def resolve_autonomy_graph_timeout_sec() -> float:
+    timeout = _env_float("AUTONOMY_GRAPH_TIMEOUT_SEC", _env_float("GRAPHDB_TIMEOUT_SEC", 4.5))
+    return max(0.25, timeout)
 
 
 def resolve_autonomy_graphdb_config() -> dict[str, Any]:
@@ -223,6 +229,114 @@ def _extract_json_object(raw_text: str) -> dict[str, Any] | None:
                 except Exception:
                     return None
     return None
+
+
+_ALLOWED_CONVERSATION_FRAMES = frozenset(
+    {
+        "technical",
+        "planning",
+        "reflective",
+        "playful_relational",
+        "identity_emergence",
+        "mixed",
+    }
+)
+_ALLOWED_TASK_MODES = frozenset(
+    {
+        "direct_response",
+        "triage",
+        "technical_collaboration",
+        "identity_dialogue",
+        "reflective_dialogue",
+        "playful_exchange",
+        "mixed",
+    }
+)
+_ALLOWED_IDENTITY_SALIENCE = frozenset({"low", "medium", "high"})
+
+_CONVERSATION_FRAME_ALIASES: dict[str, str] = {
+    "playful_invitation": "playful_relational",
+    "playfulrelational": "playful_relational",
+    "identity_emergent": "identity_emergence",
+}
+
+_TASK_MODE_ALIASES: dict[str, str] = {
+    "direct": "direct_response",
+    "playful": "playful_exchange",
+    "reflective": "reflective_dialogue",
+}
+
+_STANCE_BRIEF_LIST_KEYS = frozenset(
+    {
+        "active_identity_facets",
+        "active_growth_axes",
+        "active_relationship_facets",
+        "social_posture",
+        "reflective_themes",
+        "active_tensions",
+        "dream_motifs",
+        "response_priorities",
+        "response_hazards",
+    }
+)
+
+
+def _coerce_str_list_field(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = " ".join(value.split()).strip()
+        return [text] if text else []
+    if isinstance(value, (list, tuple)):
+        out: list[str] = []
+        for item in value:
+            if item is None:
+                continue
+            text = " ".join(str(item).split()).strip()
+            if text:
+                out.append(text)
+        return out
+    text = " ".join(str(value).split()).strip()
+    return [text] if text else []
+
+
+def _normalize_stance_literal(*, raw: str, allowed: frozenset[str], aliases: dict[str, str], default: str) -> str:
+    key = raw.strip().lower().replace(" ", "_").replace("-", "_")
+    resolved = aliases.get(key, key)
+    if resolved in allowed:
+        return resolved
+    return default
+
+
+def _coerce_stance_brief_obj(obj: dict[str, Any]) -> dict[str, Any]:
+    """Repair common LLM JSON shape drift before Pydantic validation. Mutates a shallow copy."""
+    out = dict(obj)
+    for field in _STANCE_BRIEF_LIST_KEYS:
+        if field not in out:
+            continue
+        out[field] = _coerce_str_list_field(out.get(field))
+    if "conversation_frame" in out and isinstance(out["conversation_frame"], str):
+        out["conversation_frame"] = _normalize_stance_literal(
+            raw=out["conversation_frame"],
+            allowed=_ALLOWED_CONVERSATION_FRAMES,
+            aliases=_CONVERSATION_FRAME_ALIASES,
+            default="mixed",
+        )
+    if "task_mode" in out and isinstance(out["task_mode"], str):
+        out["task_mode"] = _normalize_stance_literal(
+            raw=out["task_mode"],
+            allowed=_ALLOWED_TASK_MODES,
+            aliases=_TASK_MODE_ALIASES,
+            default="direct_response",
+        )
+    if "identity_salience" in out and isinstance(out["identity_salience"], str):
+        out["identity_salience"] = _normalize_stance_literal(
+            raw=out["identity_salience"],
+            allowed=_ALLOWED_IDENTITY_SALIENCE,
+            aliases={},
+            default="medium",
+        )
+    return out
 
 
 def identity_kernel_with_fallbacks(ctx: Dict[str, Any]) -> dict[str, list[str]]:
@@ -474,6 +588,7 @@ def _reflective_summary(ctx: Dict[str, Any]) -> dict[str, list[str]]:
 
 
 def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    started_at = time.perf_counter()
     graphdb_cfg = resolve_autonomy_graphdb_config()
     endpoint = graphdb_cfg["endpoint"]
 
@@ -484,7 +599,7 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
     repository = build_autonomy_repository(
         backend=backend,
         endpoint=endpoint,
-        timeout_sec=_env_float("GRAPHDB_TIMEOUT_SEC", 4.5),
+        timeout_sec=resolve_autonomy_graph_timeout_sec(),
         user=graphdb_cfg["user"],
         password=graphdb_cfg["password"],
         goals_limit=_env_int("AUTONOMY_GOALS_LIMIT", 3),
@@ -501,6 +616,14 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
     if preferred is None or preferred.availability != "available":
         preferred = by_subject.get("relationship")
     selected_subject = preferred.subject if preferred is not None else None
+    partial_used = bool(
+        preferred
+        and preferred.availability == "available"
+        and any(
+            str((preferred.subquery_diagnostics or {}).get(name, {}).get("status", "ok")) not in {"ok", "empty"}
+            for name in ("identity", "drives", "goals")
+        )
+    )
 
     summary = summarize_autonomy_state(preferred.state if preferred and preferred.availability == "available" else None)
     debug = {
@@ -508,16 +631,19 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
             "availability": by_subject.get(subject).availability if by_subject.get(subject) else "empty",
             "present": bool(by_subject.get(subject) and by_subject.get(subject).state is not None),
             "unavailable_reason": by_subject.get(subject).unavailable_reason if by_subject.get(subject) else None,
+            "subqueries": (by_subject.get(subject).subquery_diagnostics or {}) if by_subject.get(subject) else {},
         }
         for subject in SUBJECT_BINDINGS
     }
     repo_status = repository.status()
     debug["_runtime"] = {
-        "backend": repo_status.backend,
-        "selected_subject": selected_subject,
-        "repository_status": {
-            "source_available": repo_status.source_available,
-            "source_path": repo_status.source_path,
+            "backend": repo_status.backend,
+            "selected_subject": selected_subject,
+            "endpoint_repo": endpoint or "graphdb:unconfigured",
+            "timeout_sec": resolve_autonomy_graph_timeout_sec(),
+            "repository_status": {
+                "source_available": repo_status.source_available,
+                "source_path": repo_status.source_path,
         },
     }
     exported_keys = sorted(["autonomy_backend", "autonomy_debug", "autonomy_selected_subject", "autonomy_summary"])
@@ -533,12 +659,22 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
                 "config_source": graphdb_cfg["source"],
                 "repo": graphdb_cfg["repo"],
                 "endpoint_repo": endpoint or "graphdb:unconfigured",
+                "timeout_sec": resolve_autonomy_graph_timeout_sec(),
                 "subjects_requested": subjects,
                 "states_returned": sum(1 for item in lookups if item.availability == "available"),
                 "availability_counts": {
                     "available": sum(1 for item in lookups if item.availability == "available"),
                     "empty": sum(1 for item in lookups if item.availability == "empty"),
                     "unavailable": sum(1 for item in lookups if item.availability == "unavailable"),
+                    "partial": sum(
+                        1
+                        for item in lookups
+                        if item.availability == "available"
+                        and any(
+                            str((item.subquery_diagnostics or {}).get(name, {}).get("status", "ok")) not in {"ok", "empty"}
+                            for name in ("identity", "drives", "goals")
+                        )
+                    ),
                 },
                 "unavailable_reasons": sorted(
                     {
@@ -548,10 +684,12 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
                     }
                 ),
                 "selected_subject": selected_subject,
+                "selected_subject_partial": partial_used,
                 "selected_subject_availability": preferred.availability if preferred is not None else "empty",
                 "selected_subject_unavailable_reason": preferred.unavailable_reason if preferred is not None else None,
                 "mapped_state": bool(preferred and preferred.state is not None),
                 "summary_present": bool(summary and summary.stance_hint),
+                "elapsed_ms_before_llm_emit": round((time.perf_counter() - started_at) * 1000.0, 2),
                 "subject_availability": {
                     subject: {
                         "availability": by_subject.get(subject).availability if by_subject.get(subject) else "empty",
@@ -693,13 +831,180 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def parse_chat_stance_brief(raw_text: str) -> ChatStanceBrief | None:
+    parsed, _ = parse_chat_stance_brief_with_debug(raw_text)
+    return parsed
+
+
+def parse_chat_stance_brief_with_debug(raw_text: str) -> tuple[ChatStanceBrief | None, dict[str, Any]]:
+    info: dict[str, Any] = {"normalized_applied": False, "coercion_applied": False}
     obj = _extract_json_object(raw_text)
     if not obj:
-        return None
+        info["parse_error"] = "missing_json_object"
+        return None, info
+    coerced = _coerce_stance_brief_obj(obj)
     try:
-        return normalize_chat_stance_brief(ChatStanceBrief.model_validate(obj))
+        info["coercion_applied"] = json.dumps(obj, sort_keys=True) != json.dumps(coerced, sort_keys=True)
     except Exception:
-        return None
+        info["coercion_applied"] = coerced != obj
+    try:
+        parsed = ChatStanceBrief.model_validate(coerced)
+        normalized = normalize_chat_stance_brief(parsed)
+        parsed_json = parsed.model_dump(mode="json")
+        normalized_json = normalized.model_dump(mode="json")
+        info["normalized_applied"] = parsed_json != normalized_json
+        info["parsed_brief"] = parsed_json
+        return normalized, info
+    except Exception as exc:
+        info["parse_error"] = str(exc)
+        return None, info
+
+
+def build_chat_stance_debug_payload(
+    *,
+    ctx: Dict[str, Any],
+    synthesized_brief: Dict[str, Any],
+    final_brief: Dict[str, Any],
+    fallback_invoked: bool,
+    normalized_applied: bool,
+    semantic_fallback: bool,
+    quality_modified: bool,
+    parse_error: str | None = None,
+) -> Dict[str, Any]:
+    stance_inputs = ctx.get("chat_stance_inputs") if isinstance(ctx.get("chat_stance_inputs"), dict) else {}
+    concept = stance_inputs.get("concept_induction") if isinstance(stance_inputs.get("concept_induction"), dict) else {}
+    social = stance_inputs.get("social") if isinstance(stance_inputs.get("social"), dict) else {}
+    social_bridge = stance_inputs.get("social_bridge") if isinstance(stance_inputs.get("social_bridge"), dict) else {}
+    reflective = stance_inputs.get("reflective") if isinstance(stance_inputs.get("reflective"), dict) else {}
+    autonomy = stance_inputs.get("autonomy") if isinstance(stance_inputs.get("autonomy"), dict) else {}
+    autonomy_summary = autonomy.get("summary") if isinstance(autonomy.get("summary"), dict) else {}
+    autonomy_debug = autonomy.get("debug") if isinstance(autonomy.get("debug"), dict) else {}
+    reasoning = stance_inputs.get("reasoning_summary") if isinstance(stance_inputs.get("reasoning_summary"), dict) else {}
+    identity = stance_inputs.get("identity") if isinstance(stance_inputs.get("identity"), dict) else {}
+
+    user_message = _compact(ctx.get("user_message") or "", limit=600)
+    memory_digest = ctx.get("memory_digest")
+    if not isinstance(memory_digest, str):
+        memory_digest = ""
+    categories_present = sorted(
+        [
+            key
+            for key, value in {
+                "identity": identity,
+                "concept_induction": concept,
+                "social": social,
+                "social_bridge": social_bridge,
+                "reflective": reflective,
+                "autonomy": autonomy_summary,
+                "reasoning": reasoning,
+            }.items()
+            if isinstance(value, dict) and any(value.values())
+        ]
+    )
+
+    final_prompt_contract = {
+        "chat_stance_brief": final_brief,
+        "memory_digest": memory_digest,
+        "orion_identity_summary": list(ctx.get("orion_identity_summary") or []),
+        "juniper_relationship_summary": list(ctx.get("juniper_relationship_summary") or []),
+        "response_policy_summary": list(ctx.get("response_policy_summary") or []),
+    }
+
+    notes: list[str] = []
+    if fallback_invoked:
+        notes.append("fallback_chat_stance_brief invoked")
+    if semantic_fallback:
+        notes.append("semantic quality guard modified/replaced synthesized brief")
+    if quality_modified:
+        notes.append("final brief differs from synthesized brief after enforcement")
+    if normalized_applied:
+        notes.append("brief normalization compacted or deduplicated generated fields")
+    if parse_error:
+        notes.append(f"parse_error: {parse_error}")
+    if not notes:
+        notes.append("no enforcement deltas")
+
+    return {
+        "overview": {
+            "categories_present": categories_present,
+            "fallback_invoked": fallback_invoked,
+            "normalized_applied": normalized_applied,
+            "quality_enforcement_modified": quality_modified,
+            "semantic_fallback": semantic_fallback,
+        },
+        "source_inputs": {
+            "user_message": user_message,
+            "memory_digest": memory_digest,
+            "identity_kernel": {
+                "orion_identity_summary": list(identity.get("orion") or []),
+                "juniper_relationship_summary": list(identity.get("juniper") or []),
+                "response_policy_summary": list(identity.get("response_policy") or []),
+            },
+            "concept_induction": {
+                "self": list(concept.get("self") or []),
+                "relationship": list(concept.get("relationship") or []),
+                "growth": list(concept.get("growth") or []),
+                "tension": list(concept.get("tension") or []),
+            },
+            "social": {
+                "social_posture": list(social.get("social_posture") or []),
+                "relationship_facets": list(social.get("relationship_facets") or []),
+                "hazards": list(social.get("hazards") or []),
+            },
+            "social_bridge": {
+                "posture": list(social_bridge.get("posture") or []),
+                "hazards": list(social_bridge.get("hazards") or []),
+                "framing": list(social_bridge.get("framing") or []),
+                "turn_decision": social_bridge.get("turn_decision"),
+                "summary": list(social_bridge.get("summary") or []),
+            },
+            "reflective": {
+                "themes": list(reflective.get("themes") or []),
+                "tensions": list(reflective.get("tensions") or []),
+                "dream_motifs": list(reflective.get("dream_motifs") or []),
+            },
+            "autonomy": {
+                "summary": autonomy_summary,
+                "selected_subject": ctx.get("chat_autonomy_selected_subject"),
+                "backend": ctx.get("chat_autonomy_backend"),
+                "compact_debug": autonomy_debug,
+            },
+            "reasoning": {
+                "summary": reasoning,
+                "hazards": list(reasoning.get("hazards") or []),
+                "tensions": list(reasoning.get("tensions") or []),
+                "fallback_recommended": bool(reasoning.get("fallback_recommended")),
+                "used": bool(ctx.get("chat_reasoning_summary_used")),
+            },
+        },
+        "synthesized_brief": synthesized_brief,
+        "enforcement": {
+            "fallback_invoked": fallback_invoked,
+            "normalized_applied": normalized_applied,
+            "quality_modified": quality_modified,
+            "semantic_fallback": semantic_fallback,
+            "notes": notes,
+        },
+        "final_prompt_contract": final_prompt_contract,
+        "lineage_summary": [
+            f"concept/self injected: {len((concept.get('self') or []))} items",
+            f"social hazards injected: {len((social.get('hazards') or []))} items",
+            f"autonomy summary present: {'yes' if bool(autonomy_summary) else 'no'}",
+            f"reasoning summary used: {'yes' if bool(ctx.get('chat_reasoning_summary_used')) else 'no'}",
+            f"fallback applied: {'yes' if fallback_invoked or semantic_fallback else 'no'}",
+        ],
+        "raw": {
+            "source_inputs": stance_inputs,
+            "synthesized_brief": synthesized_brief,
+            "final_prompt_contract": final_prompt_contract,
+            "enforcement": {
+                "fallback_invoked": fallback_invoked,
+                "normalized_applied": normalized_applied,
+                "semantic_fallback": semantic_fallback,
+                "quality_modified": quality_modified,
+                "parse_error": parse_error,
+            },
+        },
+    }
 
 
 def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:

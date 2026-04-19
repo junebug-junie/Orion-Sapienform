@@ -25,7 +25,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     python3-dev \
     pkg-config \
+    smartmontools \
+    nvme-cli \
     && rm -rf /var/lib/apt/lists/*
+
+# smartctl/nvme live under /usr/sbin; slim images often omit it from default PATH for non-root.
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Upgrade pip
 RUN pip3 install --no-cache-dir --upgrade pip

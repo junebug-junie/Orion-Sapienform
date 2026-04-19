@@ -24,6 +24,7 @@ from orion.schemas.cortex.contracts import (
     CortexClientRequest,
     OutputModeDecisionV1,
 )
+from orion.schemas.cognition.answer_contract import AnswerContract
 
 from .output_mode_classifier import classify_output_mode
 from .settings import get_settings
@@ -38,13 +39,39 @@ ORCH_INTERNAL_DENY = {
     "auto_depth_select",
 }
 ENGINEERING_TERMS = {
-    "fix", "debug", "refactor", "stack trace", "traceback", "docker", "compose", "error", "logs", "exception", "pytest",
+    "fix",
+    "debug",
+    "refactor",
+    "stack trace",
+    "traceback",
+    "docker",
+    "compose",
+    "error",
+    "logs",
+    "log triage",
+    "exception",
+    "pytest",
 }
 ANALYSIS_TERMS = {"analyze", "analysis", "summarize", "summary", "extract", "classify", "intent"}
 COUNCIL_TERMS = {"argue both sides", "deliberate", "debate", "multi-perspective", "deep deliberation", "council"}
-INSTRUCTION_TERMS = {"how do", "how to", "instructions", "deploy", "guide", "tutorial", "setup", "walkthrough"}
+# "how do" as substring matched inside "how does…" and mis-fired the instruction / agent_runtime lane.
+_INSTRUCTION_RUNBOOK_SUBSTRINGS = frozenset(
+    {"how to", "instructions", "deploy", "guide", "tutorial", "setup", "walkthrough"}
+)
 MENU_HINT_TERMS = {"options", "choose", "proceed", "deep dive", "axes", "first one", "second one", "third one"}
 TOPIC_FILLER_PREFIXES = ("hm ", "hmm ", "uh ", "um ", "okay ", "ok ", "sure ", "let's do ", "lets do ", "deep dive on ")
+# After routing heuristics / LLM, bump to planner+agent when classifier says these modes need verb/tool lanes.
+TOOL_HEAVY_OUTPUT_MODES = frozenset(
+    {
+        "implementation_guide",
+        "code_delivery",
+        "comparative_analysis",
+        "decision_support",
+        "debug_diagnosis",
+        "project_planning",
+    }
+)
+
 ORDINAL_SELECTION_TERMS = {
     "the first one",
     "first one",
@@ -56,6 +83,13 @@ ORDINAL_SELECTION_TERMS = {
     "third one",
     "that third one",
 }
+
+def _instruction_runbook_heuristic(text: str) -> bool:
+    """Likely runbook/setup intent. *how do* uses a word boundary so *how does* is not a substring false positive."""
+    t = str(text or "").lower()
+    if any(term in t for term in _INSTRUCTION_RUNBOOK_SUBSTRINGS):
+        return True
+    return bool(re.search(r"\bhow do\b", t))
 
 
 @dataclass(frozen=True)
@@ -163,7 +197,15 @@ class DecisionRouter:
             return AutoDepthDecisionV1(execution_depth=3, primary_verb=None, confidence=0.82, reason="heuristic:council", source="heuristic")
         if "```" in text or any(term in text for term in ENGINEERING_TERMS):
             return AutoDepthDecisionV1(execution_depth=2, primary_verb=None, confidence=0.85, reason="heuristic:engineering", source="heuristic")
-        if any(term in text for term in INSTRUCTION_TERMS):
+        if "planner" in text and ("agent chain" in text or "agent_chain" in text):
+            return AutoDepthDecisionV1(
+                execution_depth=2,
+                primary_verb=None,
+                confidence=0.86,
+                reason="heuristic:planner_agent_chain_design",
+                source="heuristic",
+            )
+        if _instruction_runbook_heuristic(text):
             return AutoDepthDecisionV1(execution_depth=2, primary_verb=None, confidence=0.84, reason="heuristic:instruction", source="heuristic")
         if any(term in text for term in ANALYSIS_TERMS):
             primary = shortlist[0].name if shortlist else "analyze_text"
@@ -180,7 +222,7 @@ class DecisionRouter:
             raw_user_text=req.context.raw_user_text or req.context.user_message,
             options={
                 "temperature": 0.0,
-                "max_tokens": 220,
+                "max_tokens": 512,
                 "stream": False,
                 "response_format": {"type": "json_object"},
             },
@@ -232,14 +274,39 @@ class DecisionRouter:
             decision = self.heuristic_router(req, shortlist=shortlist)
 
         clamped = self._clamp_decision(decision, shortlist=shortlist)
+        ac_raw = (req.options or {}).get("answer_contract")
+        if isinstance(ac_raw, dict):
+            try:
+                ac_model = AnswerContract.model_validate(ac_raw)
+                if (
+                    ac_model.requires_repo_grounding or ac_model.requires_runtime_grounding
+                ) and int(clamped.execution_depth) < 2:
+                    clamped = clamped.model_copy(
+                        update={
+                            "execution_depth": 2,
+                            "reason": f"{clamped.reason}+acquisition_contract",
+                        }
+                    )
+            except Exception:
+                logger.debug("router_answer_contract_acquisition_skip corr=%s", correlation_id)
         rewritten = req.model_copy(deep=True)
-        rewritten.options["execution_depth"] = clamped.execution_depth
 
         # Output mode classification for delivery-oriented routing
         output_mode_decision = classify_output_mode(self._user_text(req))
         rewritten.options["output_mode"] = output_mode_decision.output_mode
         rewritten.options["response_profile"] = output_mode_decision.response_profile
         rewritten.options["output_mode_decision"] = output_mode_decision.model_dump()
+
+        om = str(output_mode_decision.output_mode or "").strip()
+        if om in TOOL_HEAVY_OUTPUT_MODES and int(clamped.execution_depth) < 2:
+            clamped = clamped.model_copy(
+                update={
+                    "execution_depth": 2,
+                    "reason": f"{clamped.reason}+output_mode_tool_lane",
+                }
+            )
+
+        rewritten.options["execution_depth"] = clamped.execution_depth
 
         if clamped.execution_depth == 1:
             rewritten.mode = "brain"

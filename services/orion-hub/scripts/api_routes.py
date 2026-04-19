@@ -3,21 +3,25 @@ from __future__ import annotations
 import json
 import logging
 import os
+import ipaddress
 from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Optional, Any, List, Dict, Tuple
+from urllib.parse import urlparse
 import aiohttp
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 import requests
 
 from .settings import settings
 from .session import ensure_session
 from .chat_history import (
     build_chat_history_envelope,
+    build_chat_response_feedback_envelope,
     publish_chat_history,
+    publish_chat_response_feedback,
     publish_social_room_turn,
     select_reasoning_trace_for_history,
 )
@@ -25,6 +29,7 @@ from .library import scan_cognition_library
 from .trace_payloads import extract_agent_trace_payload
 from .autonomy_payloads import extract_autonomy_payload
 from .workflow_payloads import extract_workflow_payload
+from .cortex_chat_display import hub_effective_chat_text
 from .cortex_request_builder import build_chat_request, build_continuity_messages, validate_single_verb_override
 from .social_room import is_social_room_payload, social_room_client_meta
 from .service_logs import collect_service_inventory
@@ -33,6 +38,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
 from orion.schemas.workflow_execution import WorkflowScheduleManageRequestV1, WorkflowScheduleManageResponseV1
+from orion.schemas.chat_response_feedback import ChatResponseFeedbackV1, build_feedback_category_options
 from orion.schemas.notify import (
     ChatAttentionAck,
     ChatMessageReceipt,
@@ -42,11 +48,23 @@ from orion.schemas.notify import (
 )
 
 from orion.core.schemas.substrate_review_queue import GraphReviewCyclePolicyV1
+from orion.core.schemas.substrate_review_runtime import GraphReviewRuntimeRequestV1
 from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryQueryV1
+from orion.core.schemas.frontier_expansion import FrontierTargetZoneV1
+from orion.core.schemas.substrate_policy_adoption import (
+    SubstratePolicyAdoptionRequestV1,
+    SubstratePolicyOverridesV1,
+    SubstratePolicyRolloutScopeV1,
+)
 from orion.core.schemas.substrate_policy_comparison import SubstratePolicyComparisonRequestV1
+from orion.core.schemas.substrate_review_runtime import GraphReviewRuntimeSurfaceV1
 from orion.substrate import build_substrate_policy_store_from_env, build_substrate_store_from_env
+from orion.substrate.consolidation import GraphConsolidationEvaluator
 from orion.substrate.policy_comparison import SubstratePolicyComparisonService
 from orion.substrate.review_queue import GraphReviewQueue
+from orion.substrate.review_bootstrap import GraphReviewBootstrapper
+from orion.substrate.review_runtime import GraphReviewRuntimeExecutor
+from orion.substrate.review_schedule import GraphReviewScheduler
 from orion.substrate.review_telemetry import GraphReviewCalibrationAnalyzer, GraphReviewTelemetryRecorder
 
 logger = logging.getLogger("orion-hub.api")
@@ -54,16 +72,77 @@ PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc)
 
 router = APIRouter()
 
-SUBSTRATE_REVIEW_QUEUE_STORE = GraphReviewQueue(max_items=200)
+
+def _hub_uses_host_network_mode() -> bool:
+    mode = str(os.getenv("HUB_DOCKER_NETWORK_MODE", "")).strip().lower()
+    return mode == "host"
+
+
+def _postgres_url_host(postgres_url: str) -> str:
+    try:
+        return str(urlparse(postgres_url).hostname or "").strip()
+    except Exception:
+        return ""
+
+
+def _looks_like_docker_service_hostname(postgres_url: str) -> bool:
+    host = _postgres_url_host(postgres_url)
+    if not host:
+        return False
+    if host in {"localhost", "host.docker.internal"}:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return False
+    except ValueError:
+        pass
+    return "." not in host
+
+
+def _resolve_control_plane_postgres_url() -> Optional[str]:
+    control_plane_url = str(os.getenv("SUBSTRATE_CONTROL_PLANE_POSTGRES_URL", "")).strip()
+    policy_url = str(os.getenv("SUBSTRATE_POLICY_POSTGRES_URL", "")).strip()
+    database_url = str(os.getenv("DATABASE_URL", "")).strip()
+    resolved = control_plane_url or policy_url or database_url or None
+    if resolved and _hub_uses_host_network_mode() and _looks_like_docker_service_hostname(resolved):
+        logger.warning(
+            "Hub is configured for host networking (HUB_DOCKER_NETWORK_MODE=host), "
+            "but the resolved Postgres hostname '%s' looks like a Docker service name. "
+            "Use a host-reachable address (for example 127.0.0.1, LAN IP, or Tailscale IP).",
+            _postgres_url_host(resolved),
+        )
+    return resolved
+
+
+SUBSTRATE_REVIEW_QUEUE_STORE = GraphReviewQueue(
+    max_items=200,
+    sql_db_path=str(os.getenv("SUBSTRATE_REVIEW_QUEUE_SQL_DB_PATH", "")).strip() or None,
+    postgres_url=_resolve_control_plane_postgres_url(),
+)
 SUBSTRATE_REVIEW_TELEMETRY_STORE = GraphReviewTelemetryRecorder(
     max_records=2000,
     sql_db_path=str(os.getenv("SUBSTRATE_REVIEW_TELEMETRY_SQL_DB_PATH", "")).strip() or None,
+    postgres_url=_resolve_control_plane_postgres_url(),
 )
 SUBSTRATE_SEMANTIC_STORE = build_substrate_store_from_env()
 SUBSTRATE_POLICY_STORE = build_substrate_policy_store_from_env()
 SUBSTRATE_POLICY_COMPARISON = SubstratePolicyComparisonService(
     policy_store=SUBSTRATE_POLICY_STORE,
     telemetry_recorder=SUBSTRATE_REVIEW_TELEMETRY_STORE,
+)
+SUBSTRATE_REVIEW_RUNTIME_EXECUTOR = GraphReviewRuntimeExecutor(
+    queue=SUBSTRATE_REVIEW_QUEUE_STORE,
+    consolidation_evaluator=GraphConsolidationEvaluator(store=SUBSTRATE_SEMANTIC_STORE),
+    scheduler=GraphReviewScheduler(
+        queue=SUBSTRATE_REVIEW_QUEUE_STORE,
+        policy_profiles=SUBSTRATE_POLICY_STORE,
+    ),
+    telemetry_recorder=SUBSTRATE_REVIEW_TELEMETRY_STORE,
+    policy_profiles=SUBSTRATE_POLICY_STORE,
+)
+SUBSTRATE_REVIEW_BOOTSTRAPPER = GraphReviewBootstrapper(
+    scheduler=SUBSTRATE_REVIEW_RUNTIME_EXECUTOR.scheduler,
+    semantic_store=SUBSTRATE_SEMANTIC_STORE,
 )
 
 
@@ -106,6 +185,38 @@ class WorkflowScheduleUpdateRequest(BaseModel):
     timezone: Optional[str] = None
     notify_on: Optional[str] = None
     expected_revision: Optional[int] = None
+
+
+class SubstrateReviewExecuteRequest(BaseModel):
+    explicit_queue_item_id: Optional[str] = None
+
+
+class SubstrateReviewSmokeCheckRequest(BaseModel):
+    limit: int = Field(default=10, ge=1, le=100)
+
+
+class SubstrateReviewBootstrapRequest(BaseModel):
+    limit: int = Field(default=12, ge=1, le=32)
+
+
+class SubstratePolicyAdoptHubRequest(BaseModel):
+    """Hub-facing adopt payload; defaults match Substrate Inspector operator_review cycles.
+
+    Empty ``target_zones`` applies the profile to every review zone (see
+    ``SubstratePolicyProfileStore._matches_scope``); a single zone caused
+    autonomy_graph/world_ontology runs to stay on baseline while Postgres
+    still showed an active profile for concept_graph only.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    activate_now: bool = True
+    operator_id: Optional[str] = None
+    rationale: str = "substrate-inspector"
+    invocation_surfaces: list[GraphReviewRuntimeSurfaceV1] = Field(default_factory=lambda: ["operator_review"])
+    target_zones: list[FrontierTargetZoneV1] = Field(default_factory=list)
+    operator_only: bool = False
+    policy_overrides: SubstratePolicyOverridesV1 = Field(default_factory=SubstratePolicyOverridesV1)
 
 
 async def _execute_workflow_schedule_management(*, session_id: str, user_id: Optional[str], request: WorkflowScheduleManageRequestV1) -> Dict[str, Any]:
@@ -586,6 +697,46 @@ def api_chat_message_receipt(message_id: str, payload: ChatMessageReceiptRequest
     except Exception as exc:
         logger.warning("Failed to send chat message receipt %s: %s", message_id, exc)
         raise HTTPException(status_code=502, detail="Failed to acknowledge chat message") from exc
+
+@router.post("/api/chat/response-feedback")
+async def api_chat_response_feedback(payload: Dict[str, Any]):
+    from .main import bus
+
+    if not bus or not getattr(bus, "enabled", False):
+        raise HTTPException(status_code=503, detail="Bus unavailable")
+
+    try:
+        payload_data = dict(payload or {})
+        payload_data.setdefault("source", "hub_ui")
+        payload_data.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+        feedback_payload = ChatResponseFeedbackV1.model_validate(payload_data)
+    except Exception as exc:
+        logger.warning(
+            "chat_response_feedback_rejected reason=%s feedback_id=%s corr=%s sid=%s",
+            exc,
+            (payload or {}).get("feedback_id"),
+            (payload or {}).get("target_correlation_id"),
+            (payload or {}).get("session_id"),
+        )
+        raise HTTPException(status_code=422, detail=f"Invalid feedback payload: {exc}") from exc
+
+    env = build_chat_response_feedback_envelope(
+        feedback_payload=feedback_payload,
+        correlation_id=feedback_payload.target_correlation_id,
+    )
+    await publish_chat_response_feedback(bus, env)
+    return {"ok": True, "feedback_id": feedback_payload.feedback_id}
+
+
+@router.get("/api/chat/response-feedback/options")
+def api_chat_response_feedback_options() -> Dict[str, Any]:
+    return {
+        "feedback_values": ["up", "down"],
+        "categories": build_feedback_category_options(),
+        "max_free_text_chars": 2000,
+    }
+
+
 # ======================================================================
 # 🧠 SESSION MANAGEMENT
 # ======================================================================
@@ -664,8 +815,10 @@ async def handle_chat_request(
         latest_user_prompt=user_prompt,
         turns=context_turns,
     )
+    routed_payload = dict(payload)
+    routed_payload["no_write"] = bool(no_write)
     req, route_debug, _ = build_chat_request(
-        payload=payload,
+        payload=routed_payload,
         session_id=session_id,
         user_id=payload.get("user_id"),
         trace_id=None,
@@ -745,11 +898,11 @@ async def handle_chat_request(
         # Call Bus RPC - Hub/Client generates correlation_id internally for RPC
         resp: CortexChatResult = await cortex_client.chat(req, correlation_id=corr_id)
 
-        # Extract Text
-        text = resp.final_text or ""
-
-        # Map raw result for UI debug
+        # Map raw result for UI debug (HTTP + WS clients use this to coalesce display text)
         raw_result = resp.cortex_result.model_dump(mode="json")
+
+        # Extract Text — prefer longest answer if top-level vs nested diverge (parity with curl `raw.final_text`)
+        text = hub_effective_chat_text(resp)
 
         # Use the correlation_id from the response (gateway) if available
         # or it might be passed back from the client logic if modified to do so.
@@ -1255,7 +1408,12 @@ def _graphdb_hotspots_payload(*, limit: int = 20) -> Dict[str, Any]:
 def _sql_review_queue_payload(*, limit: int = 50) -> Dict[str, Any]:
     snapshot = SUBSTRATE_REVIEW_QUEUE_STORE.snapshot(limit=limit)
     return {
-        "source": _source_meta(kind="sql", degraded=False, limit=limit),
+        "source": _source_meta(
+            kind=SUBSTRATE_REVIEW_QUEUE_STORE.source_kind(),
+            degraded=SUBSTRATE_REVIEW_QUEUE_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_REVIEW_QUEUE_STORE.last_error(),
+        ),
         "data": snapshot.model_dump(mode="json"),
     }
 
@@ -1263,7 +1421,12 @@ def _sql_review_queue_payload(*, limit: int = 50) -> Dict[str, Any]:
 def _sql_review_executions_payload(*, limit: int = 50) -> Dict[str, Any]:
     records = SUBSTRATE_REVIEW_TELEMETRY_STORE.query(GraphReviewTelemetryQueryV1(limit=limit))
     return {
-        "source": _source_meta(kind="sql", degraded=False, limit=limit),
+        "source": _source_meta(
+            kind=SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind(),
+            degraded=SUBSTRATE_REVIEW_TELEMETRY_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_REVIEW_TELEMETRY_STORE.last_error(),
+        ),
         "data": [record.model_dump(mode="json") for record in records],
     }
 
@@ -1272,7 +1435,12 @@ def _sql_telemetry_summary_payload(*, limit: int = 200) -> Dict[str, Any]:
     summary = SUBSTRATE_REVIEW_TELEMETRY_STORE.summary(GraphReviewTelemetryQueryV1(limit=limit))
     recommendations = GraphReviewCalibrationAnalyzer().recommend(summary=summary)
     return {
-        "source": _source_meta(kind="sql", degraded=False, limit=limit),
+        "source": _source_meta(
+            kind=SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind(),
+            degraded=SUBSTRATE_REVIEW_TELEMETRY_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_REVIEW_TELEMETRY_STORE.last_error(),
+        ),
         "data": {
             "summary": summary.model_dump(mode="json"),
             "recommendations": [rec.model_dump(mode="json") for rec in recommendations],
@@ -1285,14 +1453,25 @@ def _sql_calibration_payload(*, limit: int = 20) -> Dict[str, Any]:
     recommendations = GraphReviewCalibrationAnalyzer().recommend(summary=summary)
     baseline_policy = GraphReviewCyclePolicyV1().model_dump(mode="json")
     inspection = SUBSTRATE_POLICY_STORE.inspect(audit_limit=limit)
+    actives_cal = list(inspection.active_profiles)
+    if actives_cal:
+        actives_cal.sort(key=lambda p: p.activated_at or p.created_at, reverse=True)
+        active_profile_dump = actives_cal[0].model_dump(mode="json")
+    else:
+        active_profile_dump = baseline_policy
+    source_kind = "postgres" if (
+        SUBSTRATE_POLICY_STORE.source_kind() == "postgres"
+        and SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind() == "postgres"
+    ) else SUBSTRATE_POLICY_STORE.source_kind()
     return {
-        "source": _source_meta(kind="sql", degraded=False, limit=limit),
+        "source": _source_meta(
+            kind=source_kind,
+            degraded=bool(SUBSTRATE_POLICY_STORE.degraded() or SUBSTRATE_REVIEW_TELEMETRY_STORE.degraded()),
+            limit=limit,
+            error=SUBSTRATE_POLICY_STORE.last_error() or SUBSTRATE_REVIEW_TELEMETRY_STORE.last_error(),
+        ),
         "data": {
-            "active_profile": (
-                inspection.active_profiles[0].model_dump(mode="json")
-                if inspection.active_profiles
-                else baseline_policy
-            ),
+            "active_profile": active_profile_dump,
             "staged_profiles": [item.model_dump(mode="json") for item in inspection.staged_profiles],
             "recent_audit_events": [item.model_dump(mode="json") for item in inspection.recent_audit_events],
             "rolled_back_profiles": [item.model_dump(mode="json") for item in inspection.rolled_back_profiles],
@@ -1328,8 +1507,24 @@ def _sql_policy_comparison_payload(
             sample_limit=sample_limit,
         )
         data = SUBSTRATE_POLICY_COMPARISON.compare(request=request)
+        source_kind = "postgres" if (
+            SUBSTRATE_POLICY_STORE.source_kind() == "postgres"
+            and SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind() == "postgres"
+        ) else (
+            "fallback" if (SUBSTRATE_POLICY_STORE.degraded() or SUBSTRATE_REVIEW_TELEMETRY_STORE.degraded()) else (
+                "sqlite" if (
+                    SUBSTRATE_POLICY_STORE.source_kind() == "sqlite"
+                    or SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind() == "sqlite"
+                ) else "sql"
+            )
+        )
         return {
-            "source": _source_meta(kind="sql", degraded=False, limit=sample_limit),
+            "source": _source_meta(
+                kind=source_kind,
+                degraded=bool(SUBSTRATE_POLICY_STORE.degraded() or SUBSTRATE_REVIEW_TELEMETRY_STORE.degraded()),
+                limit=sample_limit,
+                error=SUBSTRATE_POLICY_STORE.last_error() or SUBSTRATE_REVIEW_TELEMETRY_STORE.last_error(),
+            ),
             "data": data,
         }
     except Exception as exc:
@@ -1349,6 +1544,329 @@ def _sql_policy_comparison_payload(
                 "advisory": {"mutating": False, "message": "comparison failed safely"},
             },
         }
+
+
+def _substrate_source_posture() -> Dict[str, Any]:
+    control_kind = SUBSTRATE_REVIEW_QUEUE_STORE.source_kind()
+    telemetry_kind = SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind()
+    semantic_kind_raw = getattr(SUBSTRATE_SEMANTIC_STORE, "source_kind", "graphdb")
+    semantic_kind = semantic_kind_raw() if callable(semantic_kind_raw) else semantic_kind_raw
+    policy_kind = SUBSTRATE_POLICY_STORE.source_kind()
+    control_degraded = bool(SUBSTRATE_REVIEW_QUEUE_STORE.degraded() or SUBSTRATE_REVIEW_TELEMETRY_STORE.degraded())
+    semantic_degraded_raw = getattr(SUBSTRATE_SEMANTIC_STORE, "degraded", False)
+    semantic_degraded = bool(semantic_degraded_raw() if callable(semantic_degraded_raw) else semantic_degraded_raw)
+    policy_degraded = bool(SUBSTRATE_POLICY_STORE.degraded())
+    control_posture = "degraded" if control_degraded else ("postgres" if control_kind == "postgres" else "fallback")
+    return {
+        "control_plane": {
+            "kind": control_kind,
+            "telemetry_kind": telemetry_kind,
+            "degraded": control_degraded,
+            "posture": control_posture,
+            "error": SUBSTRATE_REVIEW_QUEUE_STORE.last_error() or SUBSTRATE_REVIEW_TELEMETRY_STORE.last_error(),
+        },
+        "semantic": {
+            "kind": semantic_kind,
+            "degraded": semantic_degraded,
+            "posture": "degraded" if semantic_degraded else semantic_kind,
+            "error": getattr(SUBSTRATE_SEMANTIC_STORE, "last_error", lambda: None)(),
+        },
+        "policy": {
+            "kind": policy_kind,
+            "degraded": policy_degraded,
+            "posture": "degraded" if policy_degraded else ("postgres" if policy_kind == "postgres" else "fallback"),
+            "error": SUBSTRATE_POLICY_STORE.last_error(),
+        },
+    }
+
+
+def _parse_substrate_status_instant(value: object) -> datetime | None:
+    """Parse ISO-8601 strings or datetimes for substrate status clock comparisons."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    if isinstance(value, str):
+        text = value.strip().replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    return None
+
+
+def _last_execution_predates_active_profile(
+    last_execution: Dict[str, Any] | None,
+    active_profile: Dict[str, Any],
+) -> bool | None:
+    """True when the newest telemetry row is older than the active policy's activation time."""
+    if not last_execution or not active_profile.get("activated_at"):
+        return None
+    selected = _parse_substrate_status_instant(last_execution.get("selected_at"))
+    activated = _parse_substrate_status_instant(active_profile.get("activated_at"))
+    if selected is None or activated is None:
+        return None
+    return selected < activated
+
+
+def _substrate_runtime_status_payload(*, queue_limit: int = 20, telemetry_limit: int = 20) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    queue_snapshot = SUBSTRATE_REVIEW_QUEUE_STORE.snapshot(limit=queue_limit)
+    due_items = SUBSTRATE_REVIEW_QUEUE_STORE.list_eligible(now=now, limit=queue_limit)
+    recent_exec = SUBSTRATE_REVIEW_TELEMETRY_STORE.query(GraphReviewTelemetryQueryV1(limit=1))
+    telemetry_summary = SUBSTRATE_REVIEW_TELEMETRY_STORE.summary(GraphReviewTelemetryQueryV1(limit=telemetry_limit))
+    policy_inspection = SUBSTRATE_POLICY_STORE.inspect(audit_limit=5)
+    actives = list(policy_inspection.active_profiles)
+    if actives:
+        actives.sort(key=lambda p: p.activated_at or p.created_at, reverse=True)
+        active_profile = actives[0].model_dump(mode="json")
+    else:
+        active_profile = {}
+    last_execution = recent_exec[0].model_dump(mode="json") if recent_exec else None
+    last_predates = _last_execution_predates_active_profile(last_execution, active_profile)
+    next_due = min((item.next_review_at for item in due_items), default=None)
+
+    return {
+        "generated_at": now.isoformat(),
+        "summary": {
+            "queue_count": len(queue_snapshot.queue_items),
+            "due_count": len(due_items),
+            "next_due_at": next_due.isoformat() if next_due else None,
+            "next_item": (
+                {
+                    "queue_item_id": due_items[0].queue_item_id,
+                    "target_zone": due_items[0].target_zone,
+                    "subject_ref": due_items[0].subject_ref,
+                    "remaining_cycles": due_items[0].cycle_budget.remaining_cycles,
+                    "next_review_at": due_items[0].next_review_at.isoformat(),
+                }
+                if due_items
+                else None
+            ),
+            "last_execution": last_execution,
+            "last_execution_predates_active_profile": last_predates,
+            "telemetry_count": (
+                telemetry_summary.total_executions
+                + telemetry_summary.total_noops
+                + telemetry_summary.total_suppressed
+                + telemetry_summary.total_terminated
+                + telemetry_summary.total_failed
+            ),
+            "policy_active_profile_id": active_profile.get("profile_id"),
+            "policy_active_profile": active_profile,
+        },
+        "source": _substrate_source_posture(),
+    }
+
+
+def _execute_substrate_review_cycle(*, allow_followup: bool, explicit_queue_item_id: str | None = None) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    SUBSTRATE_REVIEW_QUEUE_STORE.refresh_from_storage()
+    before_due = len(SUBSTRATE_REVIEW_QUEUE_STORE.list_eligible(now=now, limit=200))
+    before_count = len(SUBSTRATE_REVIEW_QUEUE_STORE.snapshot(limit=200).queue_items)
+    request = GraphReviewRuntimeRequestV1(
+        invocation_surface="operator_review",
+        explicit_queue_item_id=explicit_queue_item_id,
+        execute_frontier_followup_allowed=allow_followup,
+        operator_override_strict_zone=False,
+        max_items_to_consider=20,
+    )
+    result = SUBSTRATE_REVIEW_RUNTIME_EXECUTOR.execute_once(request=request, now=now)
+    after_now = datetime.now(timezone.utc)
+    after_due = len(SUBSTRATE_REVIEW_QUEUE_STORE.list_eligible(now=after_now, limit=200))
+    after_count = len(SUBSTRATE_REVIEW_QUEUE_STORE.snapshot(limit=200).queue_items)
+    return {
+        "request": {
+            "invocation_surface": "operator_review",
+            "allow_frontier_followup": allow_followup,
+            "explicit_queue_item_id": explicit_queue_item_id,
+            "single_cycle": True,
+        },
+        "result": result.model_dump(mode="json"),
+        "queue_before": {"count": before_count, "due_count": before_due},
+        "queue_after": {"count": after_count, "due_count": after_due},
+        "source": _substrate_source_posture(),
+    }
+
+
+def _bootstrap_substrate_review_frontier(*, limit: int = 12) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    SUBSTRATE_REVIEW_QUEUE_STORE.refresh_from_storage()
+    execution = SUBSTRATE_REVIEW_BOOTSTRAPPER.bootstrap(now=now, query_limit=limit)
+    return {
+        "generated_at": now.isoformat(),
+        "items_before": execution.items_before,
+        "items_enqueued": execution.items_enqueued,
+        "items_after": execution.items_after,
+        "due_after": execution.due_after,
+        "source_posture": _substrate_source_posture(),
+        "audit_summary": {
+            "scheduled_decision_count": execution.scheduled_decision_count,
+            "semantic_source": execution.semantic_source,
+            "semantic_degraded": execution.semantic_degraded,
+        },
+        "notes": execution.notes,
+    }
+
+
+def _queue_count(payload: Dict[str, Any]) -> int:
+    data = payload.get("data")
+    if isinstance(data, dict):
+        items = data.get("queue_items")
+        if isinstance(items, list):
+            return len(items)
+    return 0
+
+
+def _classify_substrate_debug_diagnosis(
+    *,
+    source_posture: Dict[str, Any],
+    bootstrap_payload: Dict[str, Any],
+    baseline_queue_payload: Dict[str, Any],
+    post_bootstrap_queue_payload: Dict[str, Any],
+    execute_payload: Dict[str, Any],
+    final_queue_payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    categories: list[str] = []
+    highlights: list[str] = []
+    severity = "ok"
+
+    control_plane = source_posture.get("control_plane") if isinstance(source_posture, dict) else {}
+    semantic = source_posture.get("semantic") if isinstance(source_posture, dict) else {}
+
+    control_degraded = bool(control_plane.get("degraded")) if isinstance(control_plane, dict) else False
+    semantic_degraded = bool(semantic.get("degraded")) if isinstance(semantic, dict) else False
+
+    if control_degraded:
+        categories.append("control plane degraded")
+        highlights.append("Control-plane storage/reporting is degraded.")
+        severity = "degraded"
+
+    if semantic_degraded:
+        categories.append("semantic substrate degraded")
+        highlights.append("Semantic substrate queries are degraded.")
+        severity = "degraded"
+
+    bootstrap_items_enqueued = int(bootstrap_payload.get("items_enqueued") or 0)
+    bootstrap_notes = bootstrap_payload.get("notes")
+    if isinstance(bootstrap_notes, list) and any("seed_skipped" in str(note) for note in bootstrap_notes):
+        categories.append("likely weak seed heuristics for current graph shape")
+        highlights.append("Bootstrap skipped one or more seed regions.")
+        severity = "warning" if severity != "degraded" else severity
+
+    if "items_enqueued" not in bootstrap_payload and "error" in bootstrap_payload:
+        categories.append("bootstrap route/path unavailable")
+        highlights.append("Bootstrap path could not be invoked.")
+        severity = "degraded"
+    elif bootstrap_items_enqueued <= 0:
+        categories.append("bootstrap produced zero items")
+        highlights.append("Bootstrap completed without queue growth.")
+        severity = "warning" if severity != "degraded" else severity
+
+    baseline_queue_count = _queue_count(baseline_queue_payload)
+    post_bootstrap_queue_count = _queue_count(post_bootstrap_queue_payload)
+    final_queue_count = _queue_count(final_queue_payload)
+
+    if bootstrap_items_enqueued > 0 and post_bootstrap_queue_count <= baseline_queue_count:
+        categories.append("bootstrap claimed to enqueue but queue remained empty")
+        highlights.append("Bootstrap reported enqueues, but queue did not increase.")
+        severity = "degraded"
+
+    execute_result = execute_payload.get("result") if isinstance(execute_payload, dict) else {}
+    execute_outcome = execute_result.get("outcome") if isinstance(execute_result, dict) else None
+    execute_reason = ""
+    execute_audit = execute_result.get("audit_summary") if isinstance(execute_result, dict) else {}
+    if isinstance(execute_audit, dict):
+        execute_reason = str(execute_audit.get("selection_reason") or "").strip().lower()
+    execute_notes = execute_result.get("notes") if isinstance(execute_result, dict) else []
+    execute_notes_lower = " ".join(str(note).lower() for note in execute_notes) if isinstance(execute_notes, list) else ""
+
+    if post_bootstrap_queue_count > 0 and execute_outcome == "noop" and (
+        "no eligible queue items" in execute_reason or "not due yet" in execute_reason
+    ):
+        categories.append("queue nonempty but execute-once still noop due to no eligible items")
+        highlights.append("Queue has items, but none were eligible for this cycle.")
+        severity = "warning" if severity == "ok" else severity
+
+    if bootstrap_items_enqueued > 0 and execute_outcome == "executed":
+        categories.append("bootstrap produced items and execute-once succeeded")
+        highlights.append("Bootstrap seeded the queue and one cycle executed successfully.")
+
+    if "seed_skipped" in execute_notes_lower and "likely weak seed heuristics for current graph shape" not in categories:
+        categories.append("likely weak seed heuristics for current graph shape")
+        highlights.append("Execution notes indicate weak substrate seed coverage.")
+        severity = "warning" if severity == "ok" else severity
+
+    summary = " | ".join(highlights) if highlights else "Debug pass completed."
+    return {
+        "severity": severity,
+        "categories": categories,
+        "summary": summary,
+        "facts": {
+            "baseline_queue_count": baseline_queue_count,
+            "post_bootstrap_queue_count": post_bootstrap_queue_count,
+            "final_queue_count": final_queue_count,
+            "bootstrap_items_enqueued": bootstrap_items_enqueued,
+            "execute_outcome": execute_outcome,
+        },
+    }
+
+
+def _run_substrate_review_debug_pass(*, bootstrap_limit: int = 12) -> Dict[str, Any]:
+    generated_at = datetime.now(timezone.utc).isoformat()
+    baseline_status = _substrate_runtime_status_payload(queue_limit=50, telemetry_limit=20)
+    baseline_queue = _sql_review_queue_payload(limit=50)
+    baseline_overview = _graphdb_overview_payload(limit=10)
+    baseline_hotspots = _graphdb_hotspots_payload(limit=20)
+    baseline_executions = _sql_review_executions_payload(limit=20)
+
+    bootstrap = _bootstrap_substrate_review_frontier(limit=bootstrap_limit)
+    post_bootstrap_queue = _sql_review_queue_payload(limit=50)
+    post_bootstrap_status = _substrate_runtime_status_payload(queue_limit=50, telemetry_limit=20)
+
+    execute_once = _execute_substrate_review_cycle(allow_followup=False)
+    final_queue = _sql_review_queue_payload(limit=50)
+    final_status = _substrate_runtime_status_payload(queue_limit=50, telemetry_limit=20)
+    final_executions = _sql_review_executions_payload(limit=20)
+    source_posture = _substrate_source_posture()
+    diagnosis = _classify_substrate_debug_diagnosis(
+        source_posture=source_posture,
+        bootstrap_payload=bootstrap,
+        baseline_queue_payload=baseline_queue,
+        post_bootstrap_queue_payload=post_bootstrap_queue,
+        execute_payload=execute_once,
+        final_queue_payload=final_queue,
+    )
+
+    return {
+        "generated_at": generated_at,
+        "baseline": {
+            "runtime_status": baseline_status,
+            "review_queue": baseline_queue,
+            "overview": baseline_overview,
+            "hotspots": baseline_hotspots,
+            "recent_executions": baseline_executions,
+        },
+        "bootstrap": bootstrap,
+        "post_bootstrap": {
+            "review_queue": post_bootstrap_queue,
+            "runtime_status": post_bootstrap_status,
+        },
+        "execute_once": execute_once,
+        "final": {
+            "review_queue": final_queue,
+            "runtime_status": final_status,
+            "recent_executions": final_executions,
+        },
+        "diagnosis": diagnosis,
+        "source_posture": source_posture,
+    }
 
 
 @router.get("/substrate")
@@ -1413,3 +1931,94 @@ def api_substrate_policy_comparison(
         window_seconds=window_seconds,
         sample_limit=sample_limit,
     )
+
+
+@router.post("/api/substrate/policy/adopt")
+def api_substrate_policy_adopt(request: SubstratePolicyAdoptHubRequest) -> Dict[str, Any]:
+    """Stage or activate a substrate review policy profile (operator-controlled)."""
+    adoption = SubstratePolicyAdoptionRequestV1(
+        rollout_scope=SubstratePolicyRolloutScopeV1(
+            invocation_surfaces=list(request.invocation_surfaces),
+            target_zones=list(request.target_zones),
+            operator_only=request.operator_only,
+        ),
+        policy_overrides=request.policy_overrides,
+        activate_now=request.activate_now,
+        operator_id=request.operator_id,
+        rationale=request.rationale,
+    )
+    result = SUBSTRATE_POLICY_STORE.adopt(adoption)
+    return {
+        "source": _source_meta(
+            kind=SUBSTRATE_POLICY_STORE.source_kind(),
+            degraded=SUBSTRATE_POLICY_STORE.degraded(),
+            limit=1,
+            error=SUBSTRATE_POLICY_STORE.last_error(),
+        ),
+        "data": result.model_dump(mode="json"),
+    }
+
+
+@router.get("/api/substrate/review-runtime/status")
+def api_substrate_review_runtime_status(
+    queue_limit: int = Query(default=20, ge=1, le=200),
+    telemetry_limit: int = Query(default=20, ge=1, le=500),
+) -> Dict[str, Any]:
+    return _substrate_runtime_status_payload(queue_limit=queue_limit, telemetry_limit=telemetry_limit)
+
+
+@router.post("/api/substrate/review-runtime/execute-once")
+def api_substrate_review_runtime_execute_once(request: SubstrateReviewExecuteRequest | None = None) -> Dict[str, Any]:
+    req = request or SubstrateReviewExecuteRequest()
+    return _execute_substrate_review_cycle(
+        allow_followup=False,
+        explicit_queue_item_id=req.explicit_queue_item_id,
+    )
+
+
+@router.post("/api/substrate/review-runtime/execute-once-followup")
+def api_substrate_review_runtime_execute_once_followup(request: SubstrateReviewExecuteRequest | None = None) -> Dict[str, Any]:
+    req = request or SubstrateReviewExecuteRequest()
+    return _execute_substrate_review_cycle(
+        allow_followup=True,
+        explicit_queue_item_id=req.explicit_queue_item_id,
+    )
+
+
+@router.post("/api/substrate/review-runtime/bootstrap")
+def api_substrate_review_runtime_bootstrap(request: SubstrateReviewBootstrapRequest | None = None) -> Dict[str, Any]:
+    req = request or SubstrateReviewBootstrapRequest()
+    return _bootstrap_substrate_review_frontier(limit=req.limit)
+
+
+@router.post("/api/substrate/review-runtime/debug-run")
+def api_substrate_review_runtime_debug_run(request: SubstrateReviewBootstrapRequest | None = None) -> Dict[str, Any]:
+    req = request or SubstrateReviewBootstrapRequest()
+    return _run_substrate_review_debug_pass(bootstrap_limit=req.limit)
+
+
+@router.post("/api/substrate/review-runtime/smoke-check")
+def api_substrate_review_runtime_smoke_check(request: SubstrateReviewSmokeCheckRequest | None = None) -> Dict[str, Any]:
+    req = request or SubstrateReviewSmokeCheckRequest()
+    now = datetime.now(timezone.utc)
+    queue_snapshot = SUBSTRATE_REVIEW_QUEUE_STORE.snapshot(limit=req.limit)
+    due_items = SUBSTRATE_REVIEW_QUEUE_STORE.list_eligible(now=now, limit=req.limit)
+    semantic_probe = SUBSTRATE_SEMANTIC_STORE.query_hotspot_region(limit_nodes=min(5, req.limit), limit_edges=max(10, req.limit * 2))
+    source = _substrate_source_posture()
+    return {
+        "generated_at": now.isoformat(),
+        "source": source,
+        "checks": {
+            "queue_available": len(queue_snapshot.queue_items) >= 0,
+            "runtime_eligible": len(due_items) > 0,
+            "semantic_available": not bool(semantic_probe.degraded),
+            "control_plane_available": not bool(source["control_plane"]["degraded"]),
+        },
+        "summary": {
+            "queue_count": len(queue_snapshot.queue_items),
+            "due_count": len(due_items),
+            "semantic_query_kind": semantic_probe.query_kind,
+            "semantic_truncated": bool(semantic_probe.truncated),
+            "semantic_error": semantic_probe.error,
+        },
+    }

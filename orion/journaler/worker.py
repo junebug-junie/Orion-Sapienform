@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4, uuid5
 
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorStoredV1
 from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, RecallDirective
@@ -20,6 +20,37 @@ JOURNAL_COMPOSE_VERB = "journal.compose"
 JOURNAL_WRITE_KIND = "journal.entry.write.v1"
 JOURNAL_CREATED_KIND = "journal.entry.created.v1"
 logger = logging.getLogger("orion.journaler.worker")
+
+_JOURNAL_WORKFLOW_ENTRY_ID_NS = UUID("18f4b2e6-c1b0-5f3a-9c11-4a7a9e0b2d01")
+
+
+def coerce_journal_title(*, raw_title: Any, fallback_summary: str, correlation_id: str) -> str:
+    title = str(raw_title or "").strip()
+    if title:
+        return title
+    seed = str(fallback_summary or "").strip() or "Journal Pass"
+    return f"Journal Pass · {seed[:64]} · {str(correlation_id)[:8]}"
+
+
+def stable_journal_entry_id_for_workflow_compose(
+    *,
+    correlation_id: str,
+    workflow_id: str,
+    draft: JournalEntryDraftV1,
+    trigger: JournalTriggerV1,
+) -> str:
+    payload = "|".join(
+        [
+            correlation_id,
+            workflow_id,
+            str(draft.mode),
+            str(draft.title or ""),
+            str(draft.body or ""),
+            str(trigger.source_ref or ""),
+            str(trigger.source_kind or ""),
+        ]
+    )
+    return str(uuid5(_JOURNAL_WORKFLOW_ENTRY_ID_NS, payload))
 
 
 _TRIGGER_TO_MODE: dict[str, JournalMode] = {
@@ -62,6 +93,21 @@ def build_manual_trigger(*, summary: str, prompt_seed: str | None = None, source
         summary=summary,
         prompt_seed=prompt_seed,
     )
+
+
+def build_discussion_window_journal_trigger(
+    *,
+    summary: str,
+    transcript_text: str,
+    window_start_utc: datetime,
+    window_end_utc: datetime,
+    turn_count: int,
+) -> JournalTriggerV1:
+    """Manual journal trigger for a time-bounded chat_history_log window (not session-scoped)."""
+    source_ref = (
+        f"chat_history_log:window:{window_start_utc.isoformat()}:{window_end_utc.isoformat()}:turns={int(turn_count)}"
+    )
+    return build_manual_trigger(summary=summary, prompt_seed=transcript_text, source_ref=source_ref)
 
 
 def build_scheduler_trigger(*, summary: str, prompt_seed: str | None = None, source_ref: str | None = None) -> JournalTriggerV1:

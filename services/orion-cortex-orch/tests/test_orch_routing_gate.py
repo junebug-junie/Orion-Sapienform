@@ -157,3 +157,18 @@ def test_brain_yaml_verb_still_gated_when_inactive(monkeypatch: pytest.MonkeyPat
     res = asyncio.run(orch_main.handle(_env(source_name="spark-introspector", mode="brain", verb="chat_general", route_intent="none", text="hello")))
     assert res.payload.ok is False
     assert res.payload.error and res.payload.error.get("message") == "inactive_verb:chat_general"
+
+
+def test_timeout_terminalizes_with_fallback_verb(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _timeout(*args, **kwargs):
+        raise TimeoutError("RPC timeout waiting on orion:verb:result")
+
+    monkeypatch.setattr(orch_main, "call_verb_runtime", _timeout)
+    monkeypatch.setattr(orch_main, "svc", SimpleNamespace(bus=object()))
+    monkeypatch.setattr(orch_main, "is_active", lambda *_args, **_kwargs: True)
+
+    res = asyncio.run(orch_main.handle(_env(source_name="spark-introspector", mode="brain", verb=None, route_intent="none", text="hello")))
+    assert res.payload.ok is False
+    assert res.payload.verb == "chat_general"
+    assert res.payload.error and res.payload.error.get("category") == "timeout"
+    assert res.payload.metadata and res.payload.metadata.get("orch_timeout_terminalized") is True

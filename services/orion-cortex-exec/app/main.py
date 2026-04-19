@@ -157,6 +157,7 @@ def _run_autonomy_graph_probe() -> None:
         return
 
     timeout_sec = min(max(float(os.getenv("GRAPHDB_PROBE_TIMEOUT_SEC", "3.0")), 1.0), 4.0)
+    deep_probe = str(os.getenv("AUTONOMY_GRAPH_PROBE_DEEP", "false")).strip().lower() in {"1", "true", "yes", "on"}
     auth = (str(user), str(password)) if auth_present else None
     ask_query = "ASK { ?s ?p ?o }"
     headers = {
@@ -180,6 +181,29 @@ def _run_autonomy_graph_probe() -> None:
                 parsed_ok = body in {"true", "false"} or "<boolean>true</boolean>" in body or "<boolean>false</boolean>" in body
             if parsed_ok:
                 logger.info("autonomy_graph_probe result=ok endpoint=%s repo=%s query=ASK", endpoint, repo)
+                if not deep_probe:
+                    return
+                deep_query = "ASK { GRAPH <http://conjourney.net/graph/autonomy/identity> { ?s ?p ?o } }"
+                deep_response = requests.post(
+                    endpoint,
+                    data={"query": deep_query},
+                    headers=headers,
+                    timeout=timeout_sec,
+                    auth=auth,
+                )
+                if deep_response.status_code == 200:
+                    logger.info(
+                        "autonomy_graph_probe_deep result=ok endpoint=%s repo=%s graph=autonomy_identity",
+                        endpoint,
+                        repo,
+                    )
+                else:
+                    logger.warning(
+                        "autonomy_graph_probe_deep result=fail reason=http_%s endpoint=%s repo=%s",
+                        deep_response.status_code,
+                        endpoint,
+                        repo,
+                    )
                 return
             logger.warning(
                 "autonomy_graph_probe result=fail reason=parse_error endpoint=%s repo=%s response_snippet=%r",
@@ -620,7 +644,12 @@ verb_runtime = VerbRuntime(
     logger=logger,
     allow_backdoor=settings.orion_verb_backdoor_enabled,
 )
-verb_listener = Hunter(_cfg(), handler=handle_verb_request, patterns=["orion:verb:request"])
+verb_listener = Hunter(
+    _cfg(),
+    handler=handle_verb_request,
+    patterns=["orion:verb:request"],
+    concurrent_handlers=True,
+)
 trace_listener = Hunter(_cfg(), handler=handle_trace, patterns=["orion:cognition:trace"])
 core_event_listener = Hunter(_cfg(), handler=handle_core_event, patterns=[settings.channel_core_events])
 

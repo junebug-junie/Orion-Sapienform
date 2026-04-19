@@ -37,18 +37,41 @@ class SubstratePolicyProfileStore:
     max_profiles: int = 200
     max_audit_events: int = 500
     sql_db_path: str | None = None
+    postgres_url: str | None = None
     persistence_path: str | None = None  # legacy JSON fallback / migration source
     _profiles: dict[str, SubstratePolicyProfileV1] = field(default_factory=dict)
     _active_by_scope: dict[tuple[tuple[str, ...], tuple[str, ...], bool], str] = field(default_factory=dict)
     _audit_events: list[SubstratePolicyAuditEventV1] = field(default_factory=list)
+    _source_kind: str = field(default="memory", init=False)
+    _last_error: str | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
+        if self.postgres_url:
+            try:
+                self._ensure_postgres_schema()
+                self._load_from_postgres()
+                self._migrate_from_legacy_json_if_needed()
+                self._source_kind = "postgres"
+                return
+            except Exception as exc:
+                self._last_error = str(exc)
+                self._source_kind = "fallback"
         if self.sql_db_path:
             self._ensure_sql_schema()
             self._load_from_sql()
             self._migrate_from_legacy_json_if_needed()
+            self._source_kind = "sqlite"
         else:
             self._load_if_available()
+
+    def source_kind(self) -> str:
+        return self._source_kind
+
+    def degraded(self) -> bool:
+        return self._source_kind == "fallback" or self._last_error is not None
+
+    def last_error(self) -> str | None:
+        return self._last_error
 
     def adopt(self, request: SubstratePolicyAdoptionRequestV1) -> SubstratePolicyAdoptionResultV1:
         profile = SubstratePolicyProfileV1(
@@ -218,12 +241,30 @@ class SubstratePolicyProfileStore:
             comparison_notes=notes,
         )
 
+    def _prune_stale_scope_slots(self) -> None:
+        """Drop ``_active_by_scope`` entries that no longer point at an *active* profile."""
+        stale = [
+            key
+            for key, vid in self._active_by_scope.items()
+            if vid not in self._profiles or self._profiles[vid].activation_state != "active"
+        ]
+        for key in stale:
+            self._active_by_scope.pop(key, None)
+
     def _activate_profile(self, *, profile_id: str, operator_id: str | None, rationale: str) -> tuple[SubstratePolicyProfileV1, str | None]:
         profile = self._profiles[profile_id]
         scope_key = _scope_key(profile.rollout_scope)
-        previous_id = self._active_by_scope.get(scope_key)
-        if previous_id and previous_id in self._profiles:
-            self._deactivate(previous_id, state="inactive")
+        # Capture before cross-scope sweep: prune clears slots whose profile is no longer active.
+        same_slot_previous = self._active_by_scope.get(scope_key)
+
+        # One active profile globally: different rollout_scope keys used to stack actives
+        # (e.g. concept_graph-only vs empty target_zones), confusing resolve() vs inspector UIs.
+        for other in list(self._profiles.values()):
+            if other.activation_state == "active" and other.profile_id != profile_id:
+                self._deactivate(other.profile_id, state="inactive")
+        self._prune_stale_scope_slots()
+
+        previous_id = same_slot_previous
 
         activated = profile.model_copy(
             update={
@@ -296,6 +337,15 @@ class SubstratePolicyProfileStore:
             self._profiles.pop(profile.profile_id, None)
 
     def _persist(self) -> None:
+        if self.postgres_url:
+            try:
+                self._persist_to_postgres()
+                self._source_kind = "postgres"
+                self._last_error = None
+                return
+            except Exception as exc:
+                self._source_kind = "fallback"
+                self._last_error = str(exc)
         if self.sql_db_path:
             self._persist_to_sql()
             return
@@ -376,6 +426,50 @@ class SubstratePolicyProfileStore:
             )
             conn.commit()
 
+    def _ensure_postgres_schema(self) -> None:
+        if not self.postgres_url:
+            return
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine(self.postgres_url)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS substrate_policy_profile (
+                        profile_id TEXT PRIMARY KEY,
+                        activation_state TEXT NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL,
+                        activated_at TIMESTAMPTZ NULL,
+                        payload_json JSONB NOT NULL
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS substrate_policy_active_scope (
+                        scope_key TEXT PRIMARY KEY,
+                        profile_id TEXT NOT NULL
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS substrate_policy_audit (
+                        event_id TEXT PRIMARY KEY,
+                        profile_id TEXT NULL,
+                        event_type TEXT NOT NULL,
+                        recorded_at TIMESTAMPTZ NOT NULL,
+                        payload_json JSONB NOT NULL
+                    )
+                    """
+                )
+            )
+
     def _persist_to_sql(self) -> None:
         if not self.sql_db_path:
             return
@@ -418,6 +512,57 @@ class SubstratePolicyProfileStore:
                 )
             conn.commit()
 
+    def _persist_to_postgres(self) -> None:
+        if not self.postgres_url:
+            return
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine(self.postgres_url)
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM substrate_policy_profile"))
+            conn.execute(text("DELETE FROM substrate_policy_active_scope"))
+            conn.execute(text("DELETE FROM substrate_policy_audit"))
+            for profile in self._profiles.values():
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO substrate_policy_profile(profile_id, activation_state, created_at, activated_at, payload_json)
+                        VALUES (:profile_id, :activation_state, :created_at, :activated_at, CAST(:payload_json AS JSONB))
+                        """
+                    ),
+                    {
+                        "profile_id": profile.profile_id,
+                        "activation_state": profile.activation_state,
+                        "created_at": profile.created_at,
+                        "activated_at": profile.activated_at,
+                        "payload_json": json.dumps(profile.model_dump(mode="json"), ensure_ascii=False, sort_keys=True),
+                    },
+                )
+            for key, profile_id in self._active_by_scope.items():
+                conn.execute(
+                    text("INSERT INTO substrate_policy_active_scope(scope_key, profile_id) VALUES (:scope_key, :profile_id)"),
+                    {
+                        "scope_key": json.dumps([list(key[0]), list(key[1]), key[2]], ensure_ascii=False),
+                        "profile_id": profile_id,
+                    },
+                )
+            for event in self._audit_events[-self.max_audit_events :]:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO substrate_policy_audit(event_id, profile_id, event_type, recorded_at, payload_json)
+                        VALUES (:event_id, :profile_id, :event_type, :recorded_at, CAST(:payload_json AS JSONB))
+                        """
+                    ),
+                    {
+                        "event_id": event.event_id,
+                        "profile_id": event.profile_id,
+                        "event_type": event.event_type,
+                        "recorded_at": event.recorded_at,
+                        "payload_json": json.dumps(event.model_dump(mode="json"), ensure_ascii=False, sort_keys=True),
+                    },
+                )
+
     def _load_from_sql(self) -> None:
         if not self.sql_db_path:
             return
@@ -443,8 +588,38 @@ class SubstratePolicyProfileStore:
             for (payload_json,) in audits
         ][-self.max_audit_events :]
 
+    def _load_from_postgres(self) -> None:
+        if not self.postgres_url:
+            return
+        from sqlalchemy import create_engine, text
+
+        engine = create_engine(self.postgres_url)
+        with engine.begin() as conn:
+            profiles = conn.execute(text("SELECT payload_json::text FROM substrate_policy_profile")).fetchall()
+            active = conn.execute(text("SELECT scope_key, profile_id FROM substrate_policy_active_scope")).fetchall()
+            audits = conn.execute(
+                text("SELECT payload_json::text FROM substrate_policy_audit ORDER BY recorded_at ASC")
+            ).fetchall()
+        self._profiles = {}
+        for (payload_json,) in profiles:
+            profile = SubstratePolicyProfileV1.model_validate(json.loads(payload_json))
+            self._profiles[profile.profile_id] = profile
+        self._active_by_scope = {}
+        for scope_key, profile_id in active:
+            invocation_surfaces, target_zones, operator_only = json.loads(scope_key)
+            scope = SubstratePolicyRolloutScopeV1(
+                invocation_surfaces=list(invocation_surfaces or []),
+                target_zones=list(target_zones or []),
+                operator_only=bool(operator_only),
+            )
+            self._active_by_scope[_scope_key(scope)] = profile_id
+        self._audit_events = [
+            SubstratePolicyAuditEventV1.model_validate(json.loads(payload_json))
+            for (payload_json,) in audits
+        ][-self.max_audit_events :]
+
     def _migrate_from_legacy_json_if_needed(self) -> None:
-        if not self.sql_db_path or not self.persistence_path:
+        if (not self.sql_db_path and not self.postgres_url) or not self.persistence_path:
             return
         if self._profiles:
             return
@@ -466,7 +641,10 @@ class SubstratePolicyProfileStore:
             SubstratePolicyAuditEventV1.model_validate(item)
             for item in payload.get("audit_events", [])
         ][-self.max_audit_events :]
-        self._persist_to_sql()
+        if self.postgres_url:
+            self._persist_to_postgres()
+        elif self.sql_db_path:
+            self._persist_to_sql()
 
     @staticmethod
     def _scope_summary(scope: SubstratePolicyRolloutScopeV1) -> dict[str, Any]:
@@ -480,8 +658,9 @@ class SubstratePolicyProfileStore:
 def build_substrate_policy_store_from_env() -> SubstratePolicyProfileStore:
     import os
 
+    postgres_url = str(os.getenv("SUBSTRATE_POLICY_POSTGRES_URL", "")).strip() or str(os.getenv("DATABASE_URL", "")).strip() or None
     sql_db_path = str(os.getenv("SUBSTRATE_POLICY_SQL_DB_PATH", "")).strip() or None
     legacy_json_path = str(os.getenv("SUBSTRATE_POLICY_LEGACY_JSON_PATH", "")).strip() or None
-    if sql_db_path is None:
+    if postgres_url is None and sql_db_path is None:
         sql_db_path = "/tmp/orion_substrate_policy.sqlite3"
-    return SubstratePolicyProfileStore(sql_db_path=sql_db_path, persistence_path=legacy_json_path)
+    return SubstratePolicyProfileStore(postgres_url=postgres_url, sql_db_path=sql_db_path, persistence_path=legacy_json_path)

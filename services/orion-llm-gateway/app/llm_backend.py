@@ -6,6 +6,7 @@ import logging
 import os
 import time
 import json
+import re
 
 import httpx
 
@@ -110,7 +111,7 @@ def _load_route_targets() -> Dict[str, RouteTarget]:
 
     served_by_defaults = {
         "chat": settings.llm_route_chat_served_by or "atlas-worker-1",
-        "metacog": settings.llm_route_metacog_served_by or "athena-worker-1",
+        "metacog": settings.llm_route_metacog_served_by or settings.atlas_metacog_service_name or "atlas-worker-2",
         "latents": settings.llm_route_latents_served_by or "atlas-worker-2",
         "specialist": settings.llm_route_specialist_served_by or "atlas-worker-3",
     }
@@ -203,27 +204,62 @@ def _extract_text_from_openai_response(data: Dict[str, Any]) -> str:
 
 
 def _extract_reasoning_from_openai_response(data: Dict[str, Any]) -> Optional[str]:
+    """Extract structured reasoning emitted by provider/OpenAI-compatible payloads only."""
     try:
         choices = data.get("choices") or []
         if not choices:
             return None
         first = choices[0] or {}
         msg = first.get("message")
+        candidates: List[Any] = []
         if isinstance(msg, dict):
-            reasoning = msg.get("reasoning_content")
-            if isinstance(reasoning, str) and reasoning.strip():
-                return reasoning.strip()
-        reasoning = first.get("reasoning_content")
-        if isinstance(reasoning, str) and reasoning.strip():
-            return reasoning.strip()
+            candidates.extend(
+                [
+                    msg.get("reasoning_content"),
+                    msg.get("reasoning"),
+                    msg.get("reasoning_text"),
+                ]
+            )
+            content_parts = msg.get("content")
+            if isinstance(content_parts, list):
+                for part in content_parts:
+                    if not isinstance(part, dict):
+                        continue
+                    part_type = str(part.get("type") or "").strip().lower()
+                    if part_type in {"reasoning", "reasoning_text", "thinking", "analysis"}:
+                        candidates.extend(
+                            [
+                                part.get("text"),
+                                part.get("content"),
+                                part.get("reasoning"),
+                            ]
+                        )
+        candidates.extend(
+            [
+                first.get("reasoning_content"),
+                first.get("reasoning"),
+                first.get("reasoning_text"),
+            ]
+        )
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
     except Exception:
         return None
     return None
 
 
+_THINK_CLOSE_ONLY_RE = re.compile(r"</think\s*>", flags=re.IGNORECASE)
+
+
 def _split_think_blocks(text: str) -> Tuple[str, Optional[str]]:
     raw = str(text or "")
     if "<think>" not in raw:
+        close_match = _THINK_CLOSE_ONLY_RE.search(raw)
+        if close_match:
+            hidden = raw[: close_match.start()].strip()
+            visible = raw[close_match.end() :].strip()
+            return visible, (hidden or None)
         return raw.strip(), None
     visible = raw
     traces: List[str] = []
@@ -787,14 +823,12 @@ def _execute_openai_chat(
     payload = {k: v for k, v in payload.items() if v is not None}
 
     # 3. Execute
+    logger.info(f"[LLM-GW] {backend_name} req model={model} msgs={len(body.messages or [])} url={url}")
     logger.info(
-        "[LLM-GW] %s req model=%s msgs=%s url=%s route=%s corr=%s payload_max_tokens=%s",
-        backend_name,
-        model,
-        len(body.messages or []),
-        url,
-        route,
+        "[LLM-GW] llm_gateway_payload_budget corr=%s route=%s served_by=%s payload_max_tokens=%s",
         body.trace_id,
+        route,
+        served_by,
         payload.get("max_tokens"),
     )
 
@@ -811,27 +845,38 @@ def _execute_openai_chat(
 
             r.raise_for_status()
             raw_data = r.json()
-            usage = raw_data.get("usage") if isinstance(raw_data, dict) and isinstance(raw_data.get("usage"), dict) else {}
-            choices = raw_data.get("choices") if isinstance(raw_data, dict) and isinstance(raw_data.get("choices"), list) else []
-            first_choice = choices[0] if choices else {}
-            finish_reason = first_choice.get("finish_reason") if isinstance(first_choice, dict) else None
-            logger.info(
-                "[LLM-GW] %s rsp model=%s route=%s corr=%s prompt_tokens=%s completion_tokens=%s finish_reason=%s",
-                backend_name,
-                model,
-                route,
-                body.trace_id,
-                usage.get("prompt_tokens") if isinstance(usage, dict) else None,
-                usage.get("completion_tokens") if isinstance(usage, dict) else None,
-                finish_reason,
+            raw_choices = raw_data.get("choices") if isinstance(raw_data, dict) else []
+            raw_first = raw_choices[0] if isinstance(raw_choices, list) and raw_choices else {}
+            raw_msg = raw_first.get("message") if isinstance(raw_first, dict) else {}
+            raw_reasoning_fields = {
+                "message.reasoning_content": bool(str((raw_msg.get("reasoning_content") if isinstance(raw_msg, dict) else None) or "").strip()),
+                "message.reasoning": bool(str((raw_msg.get("reasoning") if isinstance(raw_msg, dict) else None) or "").strip()),
+                "message.reasoning_text": bool(str((raw_msg.get("reasoning_text") if isinstance(raw_msg, dict) else None) or "").strip()),
+                "choice.reasoning_content": bool(str((raw_first.get("reasoning_content") if isinstance(raw_first, dict) else None) or "").strip()),
+                "choice.reasoning": bool(str((raw_first.get("reasoning") if isinstance(raw_first, dict) else None) or "").strip()),
+                "choice.reasoning_text": bool(str((raw_first.get("reasoning_text") if isinstance(raw_first, dict) else None) or "").strip()),
+            }
+            raw_message_content = raw_msg.get("content") if isinstance(raw_msg, dict) else None
+            raw_reasoning_parts = 0
+            if isinstance(raw_message_content, list):
+                for part in raw_message_content:
+                    if not isinstance(part, dict):
+                        continue
+                    part_type = str(part.get("type") or "").strip().lower()
+                    if part_type in {"reasoning", "reasoning_text", "thinking", "analysis"}:
+                        part_text = str(part.get("text") or part.get("content") or part.get("reasoning") or "").strip()
+                        if part_text:
+                            raw_reasoning_parts += 1
+            raw_reasoning_fields["message.content.reasoning_parts"] = raw_reasoning_parts > 0
+            print(
+                "===THINK_HOP=== hop=llm_gateway_raw "
+                f"corr={getattr(body, 'trace_id', None)} "
+                f"keys={sorted(list(raw_data.keys())) if isinstance(raw_data, dict) else []} "
+                f"reasoning_fields={raw_reasoning_fields}",
+                flush=True,
             )
             if _thought_debug_enabled():
-                choices = raw_data.get("choices") if isinstance(raw_data, dict) else None
-                first = choices[0] if isinstance(choices, list) and choices else {}
-                msg = first.get("message") if isinstance(first, dict) else {}
-                raw_reasoning = (msg.get("reasoning_content") if isinstance(msg, dict) else None) or (
-                    first.get("reasoning_content") if isinstance(first, dict) else None
-                )
+                raw_reasoning = _extract_reasoning_from_openai_response(raw_data)
                 logger.info(
                     "THOUGHT_DEBUG_LLM stage=raw_response corr=%s model=%s keys=%s raw_reasoning_exists=%s raw_reasoning_len=%s raw_reasoning_snippet=%r raw_content_len=%s raw_content_snippet=%r",
                     getattr(body, "trace_id", None),
@@ -840,11 +885,24 @@ def _execute_openai_chat(
                     bool(str(raw_reasoning or "").strip()),
                     _debug_len(raw_reasoning),
                     _debug_snippet(raw_reasoning),
-                    _debug_len((msg or {}).get("content") if isinstance(msg, dict) else None),
-                    _debug_snippet((msg or {}).get("content") if isinstance(msg, dict) else None),
+                    _debug_len((raw_msg or {}).get("content") if isinstance(raw_msg, dict) else None),
+                    _debug_snippet((raw_msg or {}).get("content") if isinstance(raw_msg, dict) else None),
                 )
             text = _extract_text_from_openai_response(raw_data)
             reasoning_content = _extract_reasoning_from_openai_response(raw_data)
+            raw_usage = raw_data.get("usage") if isinstance(raw_data.get("usage"), dict) else {}
+            raw_choices = raw_data.get("choices") if isinstance(raw_data.get("choices"), list) else []
+            first_choice = raw_choices[0] if raw_choices and isinstance(raw_choices[0], dict) else {}
+            finish_reason = first_choice.get("finish_reason")
+            completion_tokens = raw_usage.get("completion_tokens")
+            logger.info(
+                "[LLM-GW] llm_gateway_provider_result corr=%s route=%s served_by=%s completion_tokens=%s finish_reason=%s",
+                body.trace_id,
+                route,
+                served_by,
+                completion_tokens,
+                finish_reason,
+            )
             if _thought_debug_enabled():
                 _debug_think_capture(str(text or ""), "raw_provider_text")
                 logger.warning(
@@ -861,26 +919,27 @@ def _execute_openai_chat(
                     _debug_len(think_reasoning),
                     _debug_snippet(think_reasoning),
                 )
-            if not reasoning_content:
-                reasoning_content = think_reasoning
+            structured_reasoning = reasoning_content
             if _thought_debug_enabled():
                 logger.info(
-                    "THOUGHT_DEBUG_LLM stage=extracted corr=%s model=%s reasoning_exists=%s reasoning_len=%s visible_len=%s think_blocks_found=%s reasoning_snippet=%r visible_snippet=%r",
+                    "THOUGHT_DEBUG_LLM stage=extracted corr=%s model=%s structured_reasoning_exists=%s structured_reasoning_len=%s inline_think_len=%s visible_len=%s think_blocks_found=%s structured_reasoning_snippet=%r inline_think_snippet=%r visible_snippet=%r",
                     getattr(body, "trace_id", None),
                     model,
-                    bool(str(reasoning_content or "").strip()),
-                    _debug_len(reasoning_content),
+                    bool(str(structured_reasoning or "").strip()),
+                    _debug_len(structured_reasoning),
+                    _debug_len(think_reasoning),
                     _debug_len(text),
                     think_blocks_found,
-                    _debug_snippet(reasoning_content),
+                    _debug_snippet(structured_reasoning),
+                    _debug_snippet(think_reasoning),
                     _debug_snippet(text),
                 )
-            if reasoning_content:
+            if structured_reasoning:
                 logger.info(
                     "[LLM-GW] reasoning_trace_extracted corr=%s model=%s chars=%s",
                     getattr(body, "trace_id", None),
                     model,
-                    len(reasoning_content.strip()),
+                    len(structured_reasoning.strip()),
                 )
             else:
                 logger.info(
@@ -911,10 +970,12 @@ def _execute_openai_chat(
             print(
                 "===THINK_HOP=== hop=llm_gateway_out "
                 f"corr={getattr(body, 'trace_id', None)} "
-                f"has_reasoning_content={bool(reasoning_content)} "
-                f"reasoning_len={len(reasoning_content) if reasoning_content else 0} "
+                f"has_reasoning_content={bool(structured_reasoning)} "
+                f"reasoning_len={len(structured_reasoning) if structured_reasoning else 0} "
                 f"trace_len={len(trace_content) if trace_content else 0} "
-                f"preview={_preview_text(reasoning_content)}",
+                f"inline_think_len={len(think_reasoning) if think_reasoning else 0} "
+                f"reasoning_origin={'structured_provider' if structured_reasoning else 'none'} "
+                f"preview={_preview_text(structured_reasoning or think_reasoning)}",
                 flush=True,
             )
             return {
@@ -922,8 +983,9 @@ def _execute_openai_chat(
                 "spark_meta": spark_meta,
                 "spark_vector": spark_vector,
                 "raw": raw_data,
-                "reasoning_content": reasoning_content,
+                "reasoning_content": structured_reasoning,
                 "reasoning_trace": reasoning_trace,
+                "inline_think_content": think_reasoning or None,
             }
 
     except httpx.TimeoutException:
@@ -955,10 +1017,18 @@ def _execute_openai_chat(
 # ─────────────────────────────────────────────
 
 def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
-    profile = _select_profile(body.profile_name)
+    route, route_target, has_route_table, route_source = _resolve_route(body)
+    effective_profile_name = body.profile_name
+    if (
+        route == "metacog"
+        and not effective_profile_name
+        and settings.atlas_metacog_profile_name
+    ):
+        # Keep metacog lane deterministic even when callers omit profile.
+        effective_profile_name = settings.atlas_metacog_profile_name
+    profile = _select_profile(effective_profile_name)
     backend = _pick_backend(body.options, profile)
     model = _resolve_model(body.model, profile)
-    route, route_target, has_route_table, route_source = _resolve_route(body)
 
     if has_route_table and not route_target:
         logger.error("[LLM-GW] Route '%s' not configured in route table", route)

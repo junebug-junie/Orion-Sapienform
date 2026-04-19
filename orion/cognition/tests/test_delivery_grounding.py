@@ -12,6 +12,7 @@ def test_orion_discord_request_uses_repo_architecture_grounding() -> None:
 
     assert grounding["delivery_grounding_mode"] == "orion_repo_architecture"
     assert "PlannerReact/AgentChain" in grounding["grounding_context"]
+    assert "Discord" in grounding["grounding_context"]
 
 
 def test_generic_flask_answer_detected_as_drift_for_orion_discord_request() -> None:

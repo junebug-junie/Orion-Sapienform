@@ -4,7 +4,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import asyncio
 import uuid
+from time import perf_counter
 from pathlib import Path
 from typing import Any, List
 
@@ -16,17 +18,35 @@ from .settings import settings
 from .tool_executor import ToolExecutor
 from .tool_registry import ToolRegistry
 from orion.schemas.agents.schemas import AgentChainRequest, AgentChainResult, ToolDef
+from orion.schemas.agents.bound_capability import (
+    BoundCapabilityExecutionFailureV1,
+    BoundCapabilityExecutionRequestV1,
+    BoundCapabilityExecutionResultV1,
+    CapabilityRecoveryDecisionV1,
+    CapabilityRecoveryReasonV1,
+)
 from orion.cognition.output_mode_classifier import classify_output_mode
-from orion.cognition.quality_evaluator import detect_generic_delivery_drift, should_rewrite_for_instructional
+from orion.cognition.quality_evaluator import (
+    detect_generic_delivery_drift,
+    should_block_unsupported_specifics,
+    should_rewrite_for_instructional,
+)
 from orion.cognition.runtime_pack_merge import ensure_delivery_pack_in_packs
 from orion.cognition.agent_chain_guards import (
     consecutive_tool_count,
     plan_action_saturated,
     triage_must_finalize,
 )
-from orion.cognition.finalize_payload import build_finalize_tool_input
+from orion.cognition.finalize_payload import (
+    answer_contract_expects_findings_rendering,
+    build_finalize_tool_input,
+)
 from orion.cognition.delivery_grounding import build_delivery_grounding_context
-
+from orion.cognition.answer_contract_normalize import (
+    heuristic_answer_contract,
+    output_modes_for_answer_contract_style,
+)
+from orion.cognition.findings_bundle_synth import attach_findings_to_debug, synthesize_findings_bundle
 logger = logging.getLogger("agent-chain.api")
 
 
@@ -48,14 +68,22 @@ async def _maybe_rewrite_meta_plan(
     output_mode: str | None,
     response_profile: str | None = None,
     trace_snapshot: list | None = None,
+    *,
+    findings_bundle: dict[str, Any] | None = None,
+    answer_contract: dict[str, Any] | None = None,
 ) -> tuple[str, bool]:
     """If text looks like meta-plan for instructional mode, rewrite via finalize_response."""
     grounding = build_delivery_grounding_context(user_text=body.text, output_mode=output_mode)
+    ac = answer_contract if isinstance(answer_contract, dict) else (
+        body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else None
+    )
     should_rewrite, rewrite_reason = should_rewrite_for_instructional(
         text,
         output_mode,
         request_text=body.text,
         grounding_mode=grounding.get("delivery_grounding_mode"),
+        findings_bundle=findings_bundle,
+        answer_contract=ac,
     )
     if not should_rewrite:
         return text, False
@@ -66,17 +94,30 @@ async def _maybe_rewrite_meta_plan(
         grounding.get("delivery_grounding_mode"),
     )
     try:
+        ac_dict = ac if isinstance(ac, dict) else {}
+        fb = synthesize_findings_bundle(
+            answer_contract=ac_dict,
+            trace=list(trace_snapshot or []),
+            tools_called=[],
+        )
+        fb_use = findings_bundle if isinstance(findings_bundle, dict) else fb
+        fin_payload: dict[str, Any] = {
+            "original_request": body.text,
+            "request": f"Rewrite the following as a concrete, architecture-grounded answer. Do not use meta-planning language or silently swap architectures:\n\n{text[:4000]}",
+            "trace": text[:8000],
+            "output_mode": output_mode or "direct_answer",
+            "response_profile": response_profile or "direct_answer",
+            "trace_preferred_output": text[:8000],
+            "answer_contract": ac_dict,
+            "preferred_render_style": str(ac_dict.get("preferred_render_style") or "answer"),
+            **grounding,
+        }
+        if answer_contract_expects_findings_rendering(ac_dict):
+            fin_payload["findings_bundle"] = fb_use
+            fin_payload["findings_bundle_json"] = json.dumps(fb_use, ensure_ascii=False, default=str)[:12000]
         fin_result = await tool_executor.execute_llm_verb(
             "finalize_response",
-            {
-                "original_request": body.text,
-                "request": f"Rewrite the following as a concrete, architecture-grounded answer. Do not use meta-planning language or silently swap architectures:\n\n{text[:4000]}",
-                "trace": text[:8000],
-                "output_mode": output_mode or "direct_answer",
-                "response_profile": response_profile or "direct_answer",
-                "trace_preferred_output": text[:8000],
-                **grounding,
-            },
+            fin_payload,
             parent_correlation_id=parent_corr_id,
         )
         return str(fin_result.get("llm_output") or text), True
@@ -88,6 +129,11 @@ async def _maybe_rewrite_meta_plan(
 def _effective_output_modes(body: AgentChainRequest) -> tuple[str | None, str | None]:
     om = getattr(body, "output_mode", None) or None
     rp = getattr(body, "response_profile", None) or None
+    ac = getattr(body, "answer_contract", None)
+    if isinstance(ac, dict) and ac.get("preferred_render_style"):
+        om_hint, rp_hint = output_modes_for_answer_contract_style(str(ac.get("preferred_render_style") or ""))
+        om = om or om_hint
+        rp = rp or rp_hint
     if not om or not rp:
         omd = classify_output_mode(body.text or "")
         om = om or omd.output_mode
@@ -116,12 +162,21 @@ def _finalize_tool_input(
     *,
     output_mode: str | None,
     response_profile: str | None,
+    tools_called: list[str] | None = None,
 ) -> dict[str, Any]:
+    ac = body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else {}
+    fb = synthesize_findings_bundle(
+        answer_contract=ac,
+        trace=list(trace_snapshot or []),
+        tools_called=list(tools_called or []),
+    )
     return build_finalize_tool_input(
         user_text=body.text,
         trace_snapshot=trace_snapshot,
         output_mode=output_mode,
         response_profile=response_profile,
+        findings_bundle=fb,
+        answer_contract=ac or None,
     )
 
 
@@ -155,16 +210,59 @@ def _ground_tool_input(
     grounded.setdefault("original_request", body.text)
     grounded.setdefault("trace", json.dumps([dict(s) for s in trace_snapshot], default=str)[:12000])
     grounded.update({k: v for k, v in grounding.items() if k not in grounded})
-    finalize_payload = build_finalize_tool_input(
-        user_text=body.text,
-        trace_snapshot=trace_snapshot,
+    finalize_payload = _finalize_tool_input(
+        body,
+        trace_snapshot,
         output_mode=output_mode,
         response_profile=response_profile,
+        tools_called=[],
     )
-    for key in ("trace_preferred_output", "finalization_source_trace_used"):
+    for key in (
+        "trace_preferred_output",
+        "finalization_source_trace_used",
+        "findings_bundle",
+        "findings_bundle_json",
+        "answer_contract",
+        "preferred_render_style",
+    ):
         if key in finalize_payload and key not in grounded:
             grounded[key] = finalize_payload[key]
     return grounded
+
+
+def _contract_for_findings_gate(body: AgentChainRequest) -> dict[str, Any]:
+    """Prefer bus-threaded contract; fall back to same heuristic as orch when exec omitted it."""
+    ac = body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else {}
+    if ac:
+        return ac
+    return heuristic_answer_contract(str(body.text or "")).model_dump(mode="json")
+
+
+def _strip_findings_from_planner_input_if_unneeded(body: AgentChainRequest, tool_input: dict[str, Any]) -> dict[str, Any]:
+    """Planner JSON may hallucinate findings_bundle; never let it trigger findings-only prompts for coaching."""
+    tid = dict(tool_input or {})
+    if not answer_contract_expects_findings_rendering(_contract_for_findings_gate(body)):
+        tid.pop("findings_bundle", None)
+        tid.pop("findings_bundle_json", None)
+    return tid
+
+
+def _finalize_claim_guard(body: AgentChainRequest, dbg: dict[str, Any], text: str) -> str:
+    ac = body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else None
+    if not isinstance(ac, dict) or not (ac.get("requires_repo_grounding") or ac.get("requires_runtime_grounding")):
+        return text
+    blocked, reason = should_block_unsupported_specifics(
+        text,
+        findings_bundle=dbg.get("findings_bundle") if isinstance(dbg.get("findings_bundle"), dict) else {},
+        answer_contract=ac,
+    )
+    if not blocked:
+        return text
+    dbg["unsupported_specific_blocked"] = reason
+    return (
+        "Blocked unverified package install lines pending evidence in the findings bundle. "
+        "Add repo reads or runtime observations, then retry."
+    )
 
 
 def _delivery_override_for_plan_action_repeat(
@@ -275,6 +373,475 @@ def _resolve_delegate_tool_id(
     return _pick_finalization_tool(available_ids) or _delivery_override_for_plan_action_repeat(output_mode), "fallback_finalize"
 
 
+def _extract_bound_capability_contract(body: AgentChainRequest) -> BoundCapabilityExecutionRequestV1 | None:
+    if body.bound_capability_execution is not None:
+        return body.bound_capability_execution
+    tools = body.tools if isinstance(body.tools, list) else []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        candidate = tool.get("bound_execution")
+        if isinstance(candidate, dict):
+            logger.warning("[agent-chain] selected_verb_lost_contract_violation=1 legacy_bound_execution_field=tools[0].bound_execution")
+            return BoundCapabilityExecutionRequestV1.model_validate(candidate)
+    return None
+
+
+def _replan_allowed_for_bound_recovery(
+    contract: BoundCapabilityExecutionRequestV1,
+    reason: CapabilityRecoveryReasonV1,
+) -> bool:
+    recovery = contract.recovery
+    if recovery is None:
+        return False
+    if not bool(recovery.allow_replan):
+        return False
+    allowed_reasons: set[CapabilityRecoveryReasonV1] = {
+        CapabilityRecoveryReasonV1.selected_verb_missing,
+        CapabilityRecoveryReasonV1.invalid_bound_input,
+        CapabilityRecoveryReasonV1.no_compatible_capability,
+        CapabilityRecoveryReasonV1.policy_blocked,
+        CapabilityRecoveryReasonV1.capability_executor_unavailable,
+        CapabilityRecoveryReasonV1.internal_contract_error,
+    }
+    return reason in allowed_reasons
+
+
+
+
+def _bound_policy_state(contract: BoundCapabilityExecutionRequestV1) -> dict[str, Any]:
+    meta = contract.policy_metadata if isinstance(contract.policy_metadata, dict) else {}
+    no_write_active = bool(meta.get("no_write_active"))
+    tool_execution_policy = str(meta.get("tool_execution_policy") or "").strip().lower()
+    action_execution_policy = str(meta.get("action_execution_policy") or "").strip().lower()
+    execution_forbidden = bool(no_write_active or tool_execution_policy == "none" or action_execution_policy == "none")
+    reasons: list[str] = []
+    if no_write_active:
+        reasons.append("no_write_active=true")
+    if tool_execution_policy == "none":
+        reasons.append("tool_execution_policy=none")
+    if action_execution_policy == "none":
+        reasons.append("action_execution_policy=none")
+    return {
+        "no_write_active": no_write_active,
+        "tool_execution_policy": tool_execution_policy or None,
+        "action_execution_policy": action_execution_policy or None,
+        "execution_forbidden": execution_forbidden,
+        "blocked_reason": ";".join(reasons) if reasons else None,
+    }
+
+
+def _bound_policy_blocked_result(*, body: AgentChainRequest, contract: BoundCapabilityExecutionRequestV1, dbg: dict[str, Any]) -> AgentChainResult:
+    policy_state = _bound_policy_state(contract)
+    blocked_reason = str(policy_state.get("blocked_reason") or "execution_forbidden_policy")
+    selected_verb = str(contract.selected_verb or "unknown")
+    detail = f"Execution blocked by policy: {blocked_reason}"
+    failure = BoundCapabilityExecutionFailureV1(
+        reason=CapabilityRecoveryReasonV1.policy_blocked,
+        selected_verb=selected_verb,
+        detail=detail,
+        recovery=CapabilityRecoveryDecisionV1(
+            reason=CapabilityRecoveryReasonV1.policy_blocked,
+            allow_replan=False,
+            replanned=False,
+            detail="blocked_agent_chain_entry",
+        ),
+        observation={
+            "selected_verb": selected_verb,
+            "selected_tool_would_have_been": selected_verb,
+            "no_write_active": bool(policy_state.get("no_write_active")),
+            "tool_execution_policy": policy_state.get("tool_execution_policy"),
+            "action_execution_policy": policy_state.get("action_execution_policy"),
+            "execution_blocked_reason": blocked_reason,
+            "path": "blocked_agent_chain_entry",
+            "dispatch_skipped": False,
+            "reply_emitted": True,
+        },
+    )
+    dbg["bound_capability_policy_state"] = dict(policy_state)
+    dbg["bound_capability_agent_chain_blocked"] = True
+    dbg["bound_capability_blocked_reply_emitted"] = True
+    dbg["bound_capability_timeout_prevented"] = True
+    logger.warning(
+        "[agent-chain] bound_capability_agent_chain_blocked=1 selected_verb=%s no_write_active=%s tool_execution_policy=%s action_execution_policy=%s blocked_reason=%s dispatch_skipped=false reply_emitted=true",
+        selected_verb,
+        policy_state.get("no_write_active"),
+        policy_state.get("tool_execution_policy"),
+        policy_state.get("action_execution_policy"),
+        blocked_reason,
+    )
+    logger.info(
+        "[agent-chain] bound_capability_blocked_reply_emitted=1 selected_verb=%s path=blocked_agent_chain_entry",
+        selected_verb,
+    )
+    return AgentChainResult(
+        mode=body.mode,
+        text=(
+            f"Execution is disabled by runtime policy, so I’m not running '{selected_verb}'. "
+            "I can provide a safe preview, but no capability was executed."
+        ),
+        structured={
+            "finalization_reason": "bound_capability_policy_blocked",
+            "bound_capability": failure.model_dump(mode="json"),
+        },
+        planner_raw={"runtime_debug": dbg, "trace": []},
+        runtime_debug=dbg,
+    )
+
+
+def _is_semantic_mismatch(*, selected_verb: str, user_text: str, action_input: dict[str, Any] | None) -> tuple[bool, list[str]]:
+    ask = f"{str(user_text or '').lower()} {json.dumps(action_input or {}, ensure_ascii=False, default=str).lower()}"
+    asks_runtime_cleanup = ("docker" in ask and "container" in ask and ("cleanup" in ask or "prune" in ask or "stopped" in ask))
+    verb = str(selected_verb or "").strip().lower()
+    reasons: list[str] = []
+    if asks_runtime_cleanup and any(token in verb for token in ("summarize", "recent_changes", "change_intel")):
+        reasons.append("runtime_cleanup_request_conflicts_with_change_summary_verb")
+    return bool(reasons), reasons
+
+
+def _bound_terminal_failure(
+    *,
+    body: AgentChainRequest,
+    dbg: dict[str, Any],
+    selected_verb: str,
+    reason: CapabilityRecoveryReasonV1,
+    detail: str,
+    path: str,
+    failure_category: str,
+    capability_decision: dict[str, Any] | None = None,
+    observation: dict[str, Any] | None = None,
+    selected_tool_would_have_been: str | None = None,
+) -> AgentChainResult:
+    payload_observation = dict(observation or {})
+    payload_observation.setdefault("path", path)
+    payload_observation.setdefault("selected_verb", selected_verb)
+    payload_observation.setdefault("selected_tool_would_have_been", selected_tool_would_have_been or selected_verb)
+    payload_observation.setdefault("failure_category", failure_category)
+    payload_observation["reply_emitted"] = True
+    failure = BoundCapabilityExecutionFailureV1(
+        reason=reason,
+        selected_verb=selected_verb,
+        detail=detail,
+        recovery=CapabilityRecoveryDecisionV1(reason=reason, allow_replan=False, replanned=False, detail=path),
+        capability_decision=capability_decision or {},
+        observation=payload_observation,
+    )
+    dbg["bound_capability_terminal_path"] = path
+    dbg["bound_capability_reply_emitted"] = True
+    logger.info("[agent-chain] bound_capability_terminal_reply_emitted selected_verb=%s path=%s", selected_verb, path)
+    return AgentChainResult(
+        mode=body.mode,
+        text=f"Bound capability execution failed: {detail}",
+        structured={"finalization_reason": "bound_capability_fail_closed", "bound_capability": failure.model_dump(mode="json")},
+        planner_raw={"runtime_debug": dbg, "trace": []},
+        runtime_debug=dbg,
+    )
+
+
+def _bound_execution_timeout_seconds() -> float:
+    """
+    Bound-capability direct execution guardrail.
+    Keep this strictly below the broader agent-chain / exec hop timeout so
+    we can always emit a terminal bound-capability reply instead of letting
+    the parent RPC time out first.
+    """
+    default_timeout = float(settings.default_timeout_seconds or 90)
+    # Bound execution wraps ToolExecutor.execute_llm_verb(), which for capability-backed
+    # verbs performs a nested cortex-orch RPC using settings.default_timeout_seconds.
+    # The guardrail here must exceed that inner timeout so we don't fail closed early
+    # while the concrete skill invocation is still legitimately in flight.
+    return max(12.0, min(180.0, default_timeout + 15.0))
+
+
+async def _execute_bound_capability_request(
+    *,
+    body: AgentChainRequest,
+    dbg: dict[str, Any],
+    tools: List[ToolDef],
+    tool_executor: ToolExecutor,
+    parent_corr_id: str,
+    bound_contract: BoundCapabilityExecutionRequestV1,
+    action_input: dict[str, Any],
+) -> AgentChainResult | None:
+    selected_verb = str(bound_contract.selected_verb or "").strip()
+    semantic_mismatch, mismatch_reasons = _is_semantic_mismatch(
+        selected_verb=selected_verb,
+        user_text=body.text,
+        action_input=action_input,
+    )
+    if semantic_mismatch:
+        logger.warning(
+            "[agent-chain] bound_capability_semantic_mismatch selected_verb=%s reasons=%s",
+            selected_verb,
+            mismatch_reasons,
+        )
+        return _bound_terminal_failure(
+            body=body,
+            dbg=dbg,
+            selected_verb=selected_verb,
+            reason=CapabilityRecoveryReasonV1.policy_blocked,
+            detail=f"semantic mismatch: {','.join(mismatch_reasons)}",
+            path="bound_direct_semantic_mismatch",
+            failure_category="semantic_mismatch",
+            observation={"mismatch_reasons": mismatch_reasons, "capability_resolution_status": "skipped"},
+        )
+    policy_state = _bound_policy_state(bound_contract)
+    dbg["bound_capability_policy_state"] = dict(policy_state)
+    logger.info(
+        "[agent-chain] bound_capability_policy_state selected_verb=%s no_write_active=%s tool_execution_policy=%s action_execution_policy=%s execution_forbidden=%s",
+        selected_verb,
+        policy_state.get("no_write_active"),
+        policy_state.get("tool_execution_policy"),
+        policy_state.get("action_execution_policy"),
+        policy_state.get("execution_forbidden"),
+    )
+    if policy_state.get("execution_forbidden"):
+        return _bound_policy_blocked_result(body=body, contract=bound_contract, dbg=dbg)
+
+    candidate = next((t for t in tools if t.tool_id == selected_verb), None)
+    is_capability = bool(
+        candidate
+        and (
+            str(candidate.execution_mode or "").strip().lower() == "capability_backed"
+            or bool(candidate.requires_capability_selector)
+        )
+    )
+    logger.info(
+        "[agent-chain] bound_capability_candidate selected_verb=%s candidate_exists=%s capability_backed=%s execution_mode=%s requires_selector=%s",
+        selected_verb,
+        bool(candidate),
+        is_capability,
+        str(candidate.execution_mode) if candidate else None,
+        bool(candidate.requires_capability_selector) if candidate else False,
+    )
+    if not is_capability:
+        return _bound_terminal_failure(
+            body=body,
+            dbg=dbg,
+            selected_verb=selected_verb,
+            reason=CapabilityRecoveryReasonV1.policy_blocked,
+            detail=f"selected verb '{selected_verb}' is not capability-backed.",
+            path="bound_direct_no_compatible_capability",
+            failure_category="no_compatible_capability",
+            observation={"capability_resolution_status": "selected_verb_not_capability"},
+        )
+    exec_started = perf_counter()
+    try:
+        execution_timeout = _bound_execution_timeout_seconds()
+        logger.info(
+            "[agent-chain] bound_capability_pre_tool_executor selected_verb=%s correlation_id=%s timeout_sec=%.2f elapsed_ms=%.1f",
+            selected_verb,
+            parent_corr_id,
+            execution_timeout,
+            0.0,
+        )
+        observation = await asyncio.wait_for(
+            tool_executor.execute_llm_verb(
+                selected_verb,
+                action_input,
+                parent_correlation_id=parent_corr_id,
+            ),
+            timeout=execution_timeout,
+        )
+        logger.info(
+            "[agent-chain] bound_capability_post_tool_executor selected_verb=%s correlation_id=%s elapsed_ms=%.1f has_observation=%s selected_skill=%s",
+            selected_verb,
+            parent_corr_id,
+            (perf_counter() - exec_started) * 1000.0,
+            bool(isinstance(observation, dict)),
+            (observation or {}).get("selected_skill") if isinstance(observation, dict) else None,
+        )
+    except (asyncio.TimeoutError, TimeoutError):
+        logger.error(
+            "[agent-chain] bound_capability_execution_timeout selected_verb=%s correlation_id=%s timeout_sec=%.2f elapsed_ms=%.1f has_observation=%s",
+            selected_verb,
+            parent_corr_id,
+            execution_timeout,
+            (perf_counter() - exec_started) * 1000.0,
+            False,
+        )
+        return _bound_terminal_failure(
+            body=body,
+            dbg=dbg,
+            selected_verb=selected_verb,
+            reason=CapabilityRecoveryReasonV1.capability_executor_unavailable,
+            detail=f"capability execution timed out after {execution_timeout:.2f}s",
+            path="bound_direct_timeout",
+            failure_category="execution_timeout",
+            observation={"capability_resolution_status": "executor_timeout"},
+        )
+    except FileNotFoundError:
+        reason = CapabilityRecoveryReasonV1.selected_verb_missing
+        dbg["bound_execution_recovery_reason"] = reason.value
+        if _replan_allowed_for_bound_recovery(bound_contract, reason):
+            logger.warning("[agent-chain] bound_capability_recovery_replan=1 reason=%s", reason.value)
+            dbg["bound_execution_replanned"] = True
+            bound_contract.recovery.reason = reason
+            bound_contract.recovery.replanned = True
+            return None
+        return _bound_terminal_failure(
+            body=body,
+            dbg=dbg,
+            selected_verb=selected_verb,
+            reason=reason,
+            detail=f"verb '{selected_verb}' no longer exists.",
+            path="bound_direct_resolution_failed",
+            failure_category="resolution_failed",
+            observation={"capability_resolution_status": "selected_verb_missing"},
+        )
+    except Exception as e:
+        logger.exception(
+            "[agent-chain] bound_capability_resolution_failed selected_verb=%s correlation_id=%s elapsed_ms=%.1f has_observation=%s",
+            selected_verb,
+            parent_corr_id,
+            (perf_counter() - exec_started) * 1000.0,
+            False,
+        )
+        return _bound_terminal_failure(
+            body=body,
+            dbg=dbg,
+            selected_verb=selected_verb,
+            reason=CapabilityRecoveryReasonV1.capability_executor_unavailable,
+            detail=str(e),
+            path="bound_direct_internal_error",
+            failure_category="internal_error",
+            observation={"capability_resolution_status": "executor_exception"},
+        )
+
+    selected_skill = observation.get("selected_skill") if isinstance(observation, dict) else None
+    if not selected_skill:
+        failure_reason = (
+            (observation or {}).get("capability_decision", {}).get("resolution_failure")
+            if isinstance(observation, dict)
+            else None
+        )
+        rejection_reasons = (
+            (observation or {}).get("capability_decision", {}).get("rejection_reasons")
+            if isinstance(observation, dict)
+            else None
+        )
+        logger.error(
+            "[agent-chain] bound_capability_no_compatible_capability selected_verb=%s resolution_failure=%s rejection_reasons=%s",
+            selected_verb,
+            failure_reason,
+            rejection_reasons,
+        )
+        miss_reason = CapabilityRecoveryReasonV1.no_compatible_capability
+        if _replan_allowed_for_bound_recovery(bound_contract, miss_reason):
+            logger.warning(
+                "[agent-chain] bound_capability_recovery_replan=1 reason=%s selected_verb=%s",
+                miss_reason.value,
+                selected_verb,
+            )
+            dbg["bound_execution_replanned"] = True
+            dbg["bound_execution_recovery_reason"] = miss_reason.value
+            bound_contract.recovery.reason = miss_reason
+            bound_contract.recovery.replanned = True
+            return None
+        return _bound_terminal_failure(
+            body=body,
+            dbg=dbg,
+            selected_verb=selected_verb,
+            reason=miss_reason,
+            detail="no compatible capability skill was resolved.",
+            path="bound_direct_no_compatible_capability",
+            failure_category="no_compatible_capability",
+            capability_decision=(observation or {}).get("capability_decision", {}) if isinstance(observation, dict) else {},
+            observation={
+                "capability_resolution_status": "no_skill",
+                "selected_tool_would_have_been": selected_verb,
+                "resolution_failure": failure_reason,
+                "rejection_reasons": rejection_reasons or [],
+            },
+        )
+    raw_payload_ref = (observation or {}).get("raw_payload_ref", {}) if isinstance(observation, dict) else {}
+    if str(raw_payload_ref.get("status") or "").strip().lower() == "empty_terminal_output":
+        return _bound_terminal_failure(
+            body=body,
+            dbg=dbg,
+            selected_verb=selected_verb,
+            reason=CapabilityRecoveryReasonV1.capability_executor_unavailable,
+            detail=f"{selected_skill} returned empty terminal output.",
+            path="bound_direct_empty_terminal_output",
+            failure_category="empty_terminal_output",
+            capability_decision=(observation or {}).get("capability_decision", {}) if isinstance(observation, dict) else {},
+            observation={
+                "capability_resolution_status": "selected_skill_empty_output",
+                "selected_tool_would_have_been": selected_verb,
+                "selected_skill": selected_skill,
+            },
+        )
+    if raw_payload_ref.get("ok") is False or raw_payload_ref.get("domain_negative"):
+        friendly = str((observation or {}).get("execution_summary") or "").strip()
+        detail = friendly or str(raw_payload_ref.get("domain_reason") or "skill_domain_negative")
+        failure = BoundCapabilityExecutionFailureV1(
+            reason=CapabilityRecoveryReasonV1.capability_executor_unavailable,
+            selected_verb=selected_verb,
+            detail=detail,
+            recovery=CapabilityRecoveryDecisionV1(
+                reason=CapabilityRecoveryReasonV1.capability_executor_unavailable,
+                allow_replan=False,
+                replanned=False,
+                detail="bound_direct_skill_domain_negative",
+            ),
+            capability_decision=(observation or {}).get("capability_decision", {}) if isinstance(observation, dict) else {},
+            observation={
+                "capability_resolution_status": "skill_domain_negative",
+                "selected_tool_would_have_been": selected_verb,
+                "selected_skill": selected_skill,
+                "raw_payload_ref": raw_payload_ref,
+                "failure_category": "skill_domain_negative",
+            },
+        )
+        dbg["bound_capability_terminal_path"] = "bound_direct_skill_domain_negative"
+        dbg["bound_capability_reply_emitted"] = True
+        logger.info(
+            "[agent-chain] bound_capability_terminal_reply_emitted selected_verb=%s path=bound_direct_skill_domain_negative selected_skill=%s",
+            selected_verb,
+            selected_skill,
+        )
+        return AgentChainResult(
+            mode=body.mode,
+            text=friendly or f"Bound capability execution failed: {detail}",
+            structured={"finalization_reason": "bound_capability_domain_negative", "bound_capability": failure.model_dump(mode="json")},
+            planner_raw={"runtime_debug": dbg, "trace": []},
+            runtime_debug={**dbg, "bound_capability_reply_emitted": True},
+        )
+    dbg["bound_execution_completed"] = True
+    logger.info(
+        "[agent-chain] bound_capability_direct_execute=1 selected_verb=%s selected_skill=%s selected_verb_preserved=1",
+        selected_verb,
+        selected_skill,
+    )
+    result_obj = BoundCapabilityExecutionResultV1(
+        selected_verb=selected_verb,
+        normalized_action_input=action_input,
+        selected_skill_family=(observation or {}).get("selected_skill_family") if isinstance(observation, dict) else None,
+        selected_skill=selected_skill,
+        policy_metadata=bound_contract.policy_metadata,
+        capability_decision=(observation or {}).get("capability_decision", {}) if isinstance(observation, dict) else {},
+        structured_skill_output=observation if isinstance(observation, dict) else {},
+        execution_path="direct_execute",
+        recovery=CapabilityRecoveryDecisionV1(
+            reason=CapabilityRecoveryReasonV1.internal_contract_error,
+            allow_replan=False,
+            replanned=False,
+            detail="not_used",
+        ),
+    )
+    logger.info(
+        "[agent-chain] bound_capability_terminal_reply_emitted selected_verb=%s path=bound_direct_success",
+        selected_verb,
+    )
+    return AgentChainResult(
+        mode=body.mode,
+        text=str(observation.get("execution_summary") or "Capability executed."),
+        structured={"finalization_reason": "bound_capability_execution", "bound_capability": result_obj.model_dump(mode="json")},
+        planner_raw={"runtime_debug": dbg, "trace": []},
+        runtime_debug={**dbg, "bound_capability_reply_emitted": True, "bound_capability_terminal_path": "bound_direct_success"},
+    )
+
+
 async def execute_agent_chain(
     body: AgentChainRequest,
     *,
@@ -330,6 +897,7 @@ async def execute_agent_chain(
                 "text": body.text,
                 "output_mode": output_mode,
                 "response_profile": response_profile,
+                "answer_contract": body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else {},
                 **grounding,
             },
         },
@@ -354,6 +922,83 @@ async def execute_agent_chain(
 
     tools_called: list[str] = []
     try:
+        try:
+            bound_contract = _extract_bound_capability_contract(body)
+        except Exception as exc:
+            reason = CapabilityRecoveryReasonV1.internal_contract_error
+            failure = BoundCapabilityExecutionFailureV1(
+                reason=reason,
+                selected_verb="unknown",
+                detail=str(exc),
+                recovery=CapabilityRecoveryDecisionV1(reason=reason, allow_replan=False, replanned=False),
+            )
+            logger.error("[agent-chain] bound_capability_fail_closed=1 reason=%s", reason.value)
+            return AgentChainResult(
+                mode=body.mode,
+                text=f"Bound capability execution failed: {exc}",
+                structured={"bound_capability": failure.model_dump(mode="json")},
+                planner_raw={"runtime_debug": dbg, "trace": []},
+                runtime_debug=dbg,
+            )
+        if isinstance(bound_contract, BoundCapabilityExecutionRequestV1):
+            dbg["bound_execution_received"] = True
+            logger.info(
+                "[agent-chain] bound_capability_request_received=1 selected_verb=%s planner_corr=%s",
+                bound_contract.selected_verb,
+                bound_contract.planner_correlation_id,
+            )
+            selected_verb = str(bound_contract.selected_verb or "").strip()
+            action_input = bound_contract.normalized_action_input
+            if not isinstance(action_input, dict):
+                reason = CapabilityRecoveryReasonV1.invalid_bound_input
+                dbg["bound_execution_recovery_reason"] = reason.value
+                if _replan_allowed_for_bound_recovery(bound_contract, reason):
+                    logger.warning("[agent-chain] bound_capability_recovery_replan=1 reason=%s", reason.value)
+                    dbg["bound_execution_replanned"] = True
+                    bound_contract.recovery.reason = reason
+                    bound_contract.recovery.replanned = True
+                else:
+                    return _bound_terminal_failure(
+                        body=body,
+                        dbg=dbg,
+                        selected_verb=selected_verb or "unknown",
+                        reason=reason,
+                        detail="normalized_action_input must be an object.",
+                        path="bound_direct_internal_error",
+                        failure_category="invalid_bound_input",
+                    )
+            elif not selected_verb:
+                reason = CapabilityRecoveryReasonV1.selected_verb_missing
+                dbg["bound_execution_recovery_reason"] = reason.value
+                if _replan_allowed_for_bound_recovery(bound_contract, reason):
+                    logger.warning("[agent-chain] bound_capability_recovery_replan=1 reason=%s", reason.value)
+                    dbg["bound_execution_replanned"] = True
+                    bound_contract.recovery.reason = reason
+                    bound_contract.recovery.replanned = True
+                else:
+                    return _bound_terminal_failure(
+                        body=body,
+                        dbg=dbg,
+                        selected_verb="unknown",
+                        reason=reason,
+                        detail="selected semantic verb is missing.",
+                        path="bound_direct_internal_error",
+                        failure_category="selected_verb_missing",
+                    )
+            else:
+                bound_result = await _execute_bound_capability_request(
+                    body=body,
+                    dbg=dbg,
+                    tools=tools,
+                    tool_executor=tool_executor,
+                    parent_corr_id=parent_corr_id,
+                    bound_contract=bound_contract,
+                    action_input=action_input,
+                )
+                if bound_result is not None:
+                    return bound_result
+
+
         for step_idx in range(settings.default_max_steps):
             consecutive_plan_actions = consecutive_tool_count(tools_called=tools_called, candidate="plan_action")
             if step_idx > 0:
@@ -393,6 +1038,12 @@ async def execute_agent_chain(
                     request_text=body.text,
                     grounding_mode=dbg.get("delivery_grounding_mode"),
                 )
+                attach_findings_to_debug(
+                    dbg,
+                    answer_contract=body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else None,
+                    trace=planner_payload.get("trace") or [],
+                    tools_called=tools_called,
+                )
                 text, rewrote = await _maybe_rewrite_meta_plan(
                     text,
                     body,
@@ -402,6 +1053,8 @@ async def execute_agent_chain(
                     output_mode,
                     response_profile,
                     trace_snapshot=planner_payload.get("trace") or [],
+                    findings_bundle=dbg.get("findings_bundle"),
+                    answer_contract=body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else None,
                 )
                 if rewrote:
                     dbg["finalize_response_invoked"] = True
@@ -415,6 +1068,7 @@ async def execute_agent_chain(
                     logger.info("[agent-chain] generic_drift_detected=1 output_mode=%s", output_mode)
                 dbg["quality_evaluator_rewrite"] = rewrote
                 dbg["finalization_reason"] = dbg.get("finalization_reason") or "planner_finish"
+                text = _finalize_claim_guard(body, dbg, text)
                 raw_resp = {**raw_resp, "runtime_debug": dbg}
                 return AgentChainResult(
                     mode=body.mode,
@@ -452,6 +1106,7 @@ async def execute_agent_chain(
                     planner_payload.get("trace") or [],
                     output_mode=output_mode,
                     response_profile=response_profile,
+                    tools_called=tools_called,
                 )
                 if tool_id != "finalize_response":
                     tool_input = {"request": body.text, "text": body.text, "goal": body.text, **tool_input}
@@ -471,7 +1126,11 @@ async def execute_agent_chain(
                     tool_id = "finalize_response"
                     trace_snapshot = planner_payload.get("trace") or []
                     tool_input = _finalize_tool_input(
-                        body, trace_snapshot, output_mode=output_mode, response_profile=response_profile
+                        body,
+                        trace_snapshot,
+                        output_mode=output_mode,
+                        response_profile=response_profile,
+                        tools_called=tools_called,
                     )
                     dbg["finalize_response_invoked"] = True
 
@@ -506,6 +1165,7 @@ async def execute_agent_chain(
                                     trace_snapshot,
                                     output_mode=output_mode,
                                     response_profile=response_profile,
+                                    tools_called=tools_called,
                                 ),
                                 parent_correlation_id=parent_corr_id,
                             )
@@ -523,11 +1183,20 @@ async def execute_agent_chain(
                         output_mode,
                         response_profile,
                         trace_snapshot=planner_payload.get("trace") or [],
+                        findings_bundle=dbg.get("findings_bundle"),
+                        answer_contract=body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else None,
                     )
                     dbg["quality_evaluator_rewrite"] = dbg["quality_evaluator_rewrite"] or rewrote
                     if rewrote:
                         dbg["finalize_response_invoked"] = True
                     dbg["finalization_reason"] = dbg.get("finalization_reason") or "fallback_finalization"
+                    attach_findings_to_debug(
+                        dbg,
+                        answer_contract=body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else None,
+                        trace=planner_payload.get("trace") or [],
+                        tools_called=tools_called,
+                    )
+                    fallback = _finalize_claim_guard(body, dbg, fallback)
                     raw_resp = {**raw_resp, "runtime_debug": dbg}
                     return AgentChainResult(
                         mode=body.mode,
@@ -556,6 +1225,7 @@ async def execute_agent_chain(
                     planner_payload.get("trace") or [],
                     output_mode=output_mode,
                     response_profile=response_profile,
+                    tools_called=tools_called,
                 )
                 if tool_id != "finalize_response":
                     tool_input = {"request": body.text, "text": body.text, "goal": body.text, **tool_input}
@@ -567,7 +1237,11 @@ async def execute_agent_chain(
                 tool_id = "finalize_response"
                 trace_snapshot = planner_payload.get("trace") or []
                 tool_input = _finalize_tool_input(
-                    body, trace_snapshot, output_mode=output_mode, response_profile=response_profile
+                    body,
+                    trace_snapshot,
+                    output_mode=output_mode,
+                    response_profile=response_profile,
+                    tools_called=tools_called,
                 )
                 dbg["finalize_response_invoked"] = True
 
@@ -594,9 +1268,13 @@ async def execute_agent_chain(
             tool_id = resolved_tool_id
             if not tool_id:
                 raise RuntimeError("Planner selected invalid delegate tool and no fallback tool is available")
+            tool_input = _strip_findings_from_planner_input_if_unneeded(
+                body,
+                tool_input if isinstance(tool_input, dict) else {},
+            )
             tool_input = _ground_tool_input(
                 tool_id=str(tool_id),
-                tool_input=tool_input if isinstance(tool_input, dict) else {},
+                tool_input=tool_input,
                 body=body,
                 trace_snapshot=planner_payload.get("trace") or [],
                 output_mode=output_mode,
@@ -610,6 +1288,75 @@ async def execute_agent_chain(
                     output_mode,
                 )
 
+            chosen_tool = next((t for t in tools if t.tool_id == str(tool_id)), None)
+            is_capability_selected = bool(
+                chosen_tool
+                and (
+                    str(chosen_tool.execution_mode or "").strip().lower() == "capability_backed"
+                    or bool(chosen_tool.requires_capability_selector)
+                )
+            )
+            if is_capability_selected:
+                logger.info("[agent-chain] planner_selected_capability_handoff tool_id=%s", tool_id)
+                synthetic_bound = BoundCapabilityExecutionRequestV1(
+                    selected_verb=str(tool_id),
+                    normalized_action_input=tool_input if isinstance(tool_input, dict) else {},
+                    planner_correlation_id=parent_corr_id,
+                    planner_metadata={"source": "planner_action", "step_index": step_idx},
+                    selected_tool_metadata={
+                        "tool_id": str(tool_id),
+                        "execution_mode": str(chosen_tool.execution_mode or ""),
+                        "requires_capability_selector": bool(chosen_tool.requires_capability_selector),
+                    },
+                    policy_metadata={},
+                    recovery=CapabilityRecoveryDecisionV1(
+                        reason=CapabilityRecoveryReasonV1.internal_contract_error,
+                        allow_replan=True,
+                        replanned=False,
+                        detail="planner_selected_capability_allow_planner_fallback",
+                    ),
+                )
+                logger.info("[agent-chain] planner_selected_capability_bound_entry tool_id=%s", tool_id)
+                bound_result = await _execute_bound_capability_request(
+                    body=body,
+                    dbg=dbg,
+                    tools=tools,
+                    tool_executor=tool_executor,
+                    parent_corr_id=parent_corr_id,
+                    bound_contract=synthetic_bound,
+                    action_input=synthetic_bound.normalized_action_input,
+                )
+                if bound_result is not None:
+                    logger.info("[agent-chain] planner_selected_capability_terminal_reply_emitted tool_id=%s", tool_id)
+                    return bound_result
+                if synthetic_bound.recovery.replanned:
+                    logger.warning(
+                        "[agent-chain] planner_selected_capability_replan_continue tool_id=%s step=%s",
+                        tool_id,
+                        step_idx,
+                    )
+                    dbg["planner_selected_capability_replan"] = True
+                    if trace and isinstance(trace[-1], dict):
+                        cap_obs = trace[-1].setdefault("observation", {})
+                        if isinstance(cap_obs, dict):
+                            cap_obs["capability_replan"] = {
+                                "reason": "no_compatible_capability",
+                                "requested_tool_id": str(tool_id),
+                            }
+                    planner_payload["trace"] = trace
+                    continue
+                logger.error("[agent-chain] planner_selected_capability_fail_closed tool_id=%s", tool_id)
+                return _bound_terminal_failure(
+                    body=body,
+                    dbg=dbg,
+                    selected_verb=str(tool_id),
+                    reason=CapabilityRecoveryReasonV1.internal_contract_error,
+                    detail="planner-selected capability execution did not terminalize.",
+                    path="planner_selected_non_terminal",
+                    failure_category="internal_error",
+                    observation={"capability_resolution_status": "non_terminal"},
+                )
+
             observation = await tool_executor.execute_llm_verb(
                 tool_id,
                 tool_input if isinstance(tool_input, dict) else {},
@@ -620,6 +1367,12 @@ async def execute_agent_chain(
                 final_text = _usable_finalized_text(observation)
                 if final_text:
                     dbg["quality_evaluator_rewrite"] = True
+                    attach_findings_to_debug(
+                        dbg,
+                        answer_contract=body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else None,
+                        trace=planner_payload.get("trace") or [],
+                        tools_called=tools_called,
+                    )
                     final_text, rewrote = await _maybe_rewrite_meta_plan(
                         final_text,
                         body,
@@ -629,6 +1382,8 @@ async def execute_agent_chain(
                         output_mode,
                         response_profile,
                         trace_snapshot=planner_payload.get("trace") or [],
+                        findings_bundle=dbg.get("findings_bundle"),
+                        answer_contract=body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else None,
                     )
                     dbg["quality_evaluator_rewrite"] = dbg["quality_evaluator_rewrite"] or rewrote
                     drifted, _ = detect_generic_delivery_drift(
@@ -639,6 +1394,7 @@ async def execute_agent_chain(
                     dbg["generic_drift_detected"] = dbg["generic_drift_detected"] or drifted
                     if drifted:
                         logger.info("[agent-chain] generic_drift_detected=1 output_mode=%s", output_mode)
+                    final_text = _finalize_claim_guard(body, dbg, final_text)
                     return AgentChainResult(
                         mode=body.mode,
                         text=final_text,
@@ -660,7 +1416,11 @@ async def execute_agent_chain(
             fin_result = await tool_executor.execute_llm_verb(
                 "finalize_response",
                 _finalize_tool_input(
-                    body, trace_snapshot, output_mode=output_mode, response_profile=response_profile
+                    body,
+                    trace_snapshot,
+                    output_mode=output_mode,
+                    response_profile=response_profile,
+                    tools_called=tools_called,
                 ),
                 parent_correlation_id=parent_corr_id,
             )
@@ -668,6 +1428,12 @@ async def execute_agent_chain(
         except Exception as e:
             logger.warning("[agent-chain] finalize_response at step cap failed: %s", e)
             final_text = "Max steps reached. Please try a more focused request."
+        attach_findings_to_debug(
+            dbg,
+            answer_contract=body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else None,
+            trace=planner_payload.get("trace") or [],
+            tools_called=tools_called,
+        )
         final_text, rewrote = await _maybe_rewrite_meta_plan(
             final_text,
             body,
@@ -677,8 +1443,11 @@ async def execute_agent_chain(
             output_mode,
             response_profile,
             trace_snapshot=planner_payload.get("trace") or [],
+            findings_bundle=dbg.get("findings_bundle"),
+            answer_contract=body.answer_contract if isinstance(getattr(body, "answer_contract", None), dict) else None,
         )
         dbg["quality_evaluator_rewrite"] = dbg["quality_evaluator_rewrite"] or rewrote
+        final_text = _finalize_claim_guard(body, dbg, final_text)
         return AgentChainResult(
             mode=body.mode,
             text=final_text,

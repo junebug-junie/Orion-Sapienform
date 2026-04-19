@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     ORION_HEALTH_CHANNEL: str = Field(default="orion:system:health", validation_alias=AliasChoices("ORION_HEALTH_CHANNEL"))
     ERROR_CHANNEL: str = Field(default="orion:system:error", validation_alias=AliasChoices("ERROR_CHANNEL"))
     SHUTDOWN_GRACE_SEC: float = Field(default=10.0, validation_alias=AliasChoices("SHUTDOWN_GRACE_SEC"))
+    # When true, Rabbit handler runs concurrent requests (reduces head-of-line blocking on slow RPCs).
+    RECALL_RABBIT_CONCURRENT_HANDLERS: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("RECALL_RABBIT_CONCURRENT_HANDLERS"),
+    )
 
     # ── Default Recall Behavior ───────────────────────────────────────
     RECALL_DEFAULT_MAX_ITEMS: int = Field(default=16, validation_alias=AliasChoices("RECALL_DEFAULT_MAX_ITEMS"))

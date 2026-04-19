@@ -44,6 +44,7 @@ let latestSocialInspectionState = null;
 const socialInspectionCache = new Map();
 let workflowSchedules = [];
 let selectedSchedule = null;
+const submittedFeedbackTargets = new Set();
 
 document.addEventListener("DOMContentLoaded", () => {
   console.log("[Main] DOM Content Loaded - Initializing UI...");
@@ -89,6 +90,9 @@ loadDismissedIds();
   const conversationDiv = document.getElementById('conversation');
   const chatInput = document.getElementById('chatInput');
   const sendButton = document.getElementById('sendButton');
+  const skillRunnerSelect = document.getElementById('skillRunnerSelect');
+  const skillRunnerRunBtn = document.getElementById('skillRunnerRunBtn');
+  const skillRunnerInsertBtn = document.getElementById('skillRunnerInsertBtn');
   const textToSpeechToggle = document.getElementById('textToSpeechToggle');
   const recallToggle = document.getElementById('recallToggle');
   const recallRequiredToggle = document.getElementById('recallRequiredToggle');
@@ -99,13 +103,22 @@ loadDismissedIds();
   const runtimeDebugPanelBody = document.getElementById('runtimeDebugPanelBody');
   const runtimeDebugPanelCaret = document.getElementById('runtimeDebugPanelCaret');
   const memoryPanelToggle = document.getElementById('memoryPanelToggle');
+  const memoryPanelCaret = document.getElementById('memoryPanelCaret');
   const memoryPanelBody = document.getElementById('memoryPanelBody');
   const memoryUsedValue = document.getElementById('memoryUsedValue');
   const recallCountValue = document.getElementById('recallCountValue');
   const backendCountsValue = document.getElementById('backendCountsValue');
   const memoryDigestPre = document.getElementById('memoryDigestPre');
+  const memoryDebugOpenModal = document.getElementById('memoryDebugOpenModal');
+  const memoryDebugModalRoot = document.getElementById('memoryDebugModalRoot');
+  const memoryDebugModalBackdrop = document.getElementById('memoryDebugModalBackdrop');
+  const memoryDebugModalDialog = document.getElementById('memoryDebugModalDialog');
+  const memoryDebugModalClose = document.getElementById('memoryDebugModalClose');
+  const memoryDebugModalMeta = document.getElementById('memoryDebugModalMeta');
+  const memoryDebugModalBody = document.getElementById('memoryDebugModalBody');
   const agentTraceDebugPanel = document.getElementById('agentTraceDebugPanel');
   const agentTraceDebugToggle = document.getElementById('agentTraceDebugToggle');
+  const agentTraceDebugOpenModal = document.getElementById('agentTraceDebugOpenModal');
   const agentTraceDebugCaret = document.getElementById('agentTraceDebugCaret');
   const agentTraceDebugBody = document.getElementById('agentTraceDebugBody');
   const agentTraceDebugMeta = document.getElementById('agentTraceDebugMeta');
@@ -131,6 +144,41 @@ loadDismissedIds();
   const autonomyDebugModalClose = document.getElementById('autonomyDebugModalClose');
   const autonomyDebugModalMeta = document.getElementById('autonomyDebugModalMeta');
   const autonomyDebugModalBody = document.getElementById('autonomyDebugModalBody');
+  const chatStanceDebugPanel = document.getElementById('chatStanceDebugPanel');
+  const chatStanceDebugToggle = document.getElementById('chatStanceDebugToggle');
+  const chatStanceDebugCaret = document.getElementById('chatStanceDebugCaret');
+  const chatStanceDebugBody = document.getElementById('chatStanceDebugBody');
+  const chatStanceDebugMeta = document.getElementById('chatStanceDebugMeta');
+  const chatStanceDebugOverview = document.getElementById('chatStanceDebugOverview');
+  const chatStanceDebugLineage = document.getElementById('chatStanceDebugLineage');
+  const chatStanceDebugRaw = document.getElementById('chatStanceDebugRaw');
+  const chatStanceDebugOpenModal = document.getElementById('chatStanceDebugOpenModal');
+  const chatStanceDebugModalRoot = document.getElementById('chatStanceDebugModalRoot');
+  const chatStanceDebugModalBackdrop = document.getElementById('chatStanceDebugModalBackdrop');
+  const chatStanceDebugModalDialog = document.getElementById('chatStanceDebugModalDialog');
+  const chatStanceDebugModalClose = document.getElementById('chatStanceDebugModalClose');
+  const chatStanceDebugModalMeta = document.getElementById('chatStanceDebugModalMeta');
+  const chatStanceDebugModalBody = document.getElementById('chatStanceDebugModalBody');
+  const substrateReviewDebugPanel = document.getElementById('substrateReviewDebugPanel');
+  const substrateReviewDebugToggle = document.getElementById('substrateReviewDebugToggle');
+  const substrateReviewDebugCaret = document.getElementById('substrateReviewDebugCaret');
+  const substrateReviewDebugBody = document.getElementById('substrateReviewDebugBody');
+  const substrateReviewDebugMeta = document.getElementById('substrateReviewDebugMeta');
+  const substrateReviewDebugOverview = document.getElementById('substrateReviewDebugOverview');
+  const substrateReviewDebugOpenModal = document.getElementById('substrateReviewDebugOpenModal');
+  const substrateReviewModalRoot = document.getElementById('substrateReviewModalRoot');
+  const substrateReviewModalBackdrop = document.getElementById('substrateReviewModalBackdrop');
+  const substrateReviewModalDialog = document.getElementById('substrateReviewModalDialog');
+  const substrateReviewModalMeta = document.getElementById('substrateReviewModalMeta');
+  const substrateReviewModalClose = document.getElementById('substrateReviewModalClose');
+  const substrateReviewModalQuickStatus = document.getElementById('substrateReviewModalQuickStatus');
+  const substrateReviewActionRefresh = document.getElementById('substrateReviewActionRefresh');
+  const substrateReviewActionExecuteOnce = document.getElementById('substrateReviewActionExecuteOnce');
+  const substrateReviewActionExecuteFollowup = document.getElementById('substrateReviewActionExecuteFollowup');
+  const substrateReviewActionSmokeCheck = document.getElementById('substrateReviewActionSmokeCheck');
+  const substrateReviewActionStatus = document.getElementById('substrateReviewActionStatus');
+  const substrateReviewResultSummary = document.getElementById('substrateReviewResultSummary');
+  const substrateReviewResultRaw = document.getElementById('substrateReviewResultRaw');
   const notificationList = document.getElementById('notificationList');
   const notificationFilter = document.getElementById('notificationFilter');
   const attentionList = document.getElementById('attentionList');
@@ -200,6 +248,21 @@ loadDismissedIds();
   const socialInspectionLiveSurface = document.getElementById('socialInspectionLiveSurface');
   const socialInspectionMemorySurface = document.getElementById('socialInspectionMemorySurface');
   const socialInspectionMemoryMeta = document.getElementById('socialInspectionMemoryMeta');
+  const responseFeedbackModal = document.getElementById('responseFeedbackModal');
+  const responseFeedbackModalClose = document.getElementById('responseFeedbackModalClose');
+  const responseFeedbackCancel = document.getElementById('responseFeedbackCancel');
+  const responseFeedbackSubmit = document.getElementById('responseFeedbackSubmit');
+  const responseFeedbackTitle = document.getElementById('responseFeedbackTitle');
+  const responseFeedbackMeta = document.getElementById('responseFeedbackMeta');
+  const responseFeedbackCategoryList = document.getElementById('responseFeedbackCategoryList');
+  const responseFeedbackNotes = document.getElementById('responseFeedbackNotes');
+  const responseFeedbackStatus = document.getElementById('responseFeedbackStatus');
+  let lastMemoryDebugModel = null;
+  let lastAgentTraceSummary = null;
+  let lastAgentTraceMeta = {};
+  let lastChatStanceDebug = null;
+  let lastSubstrateReviewStatus = null;
+  let lastSubstrateReviewAction = null;
 
   // Controls
   const speedControl = document.getElementById('speedControl');
@@ -272,9 +335,13 @@ loadDismissedIds();
   const hubTabButton = document.getElementById("hubTabButton");
   const topicStudioTabButton = document.getElementById("topicStudioTabButton");
   const serviceLogsTabButton = document.getElementById("serviceLogsTabButton");
+  const substrateTabButton = document.getElementById("substratePageLink");
   const hubTabPanel = document.getElementById("hubTabPanel");
   const topicStudioPanel = document.getElementById("topicStudioPanel");
   const serviceLogsPanel = document.getElementById("service-logs");
+  const substratePanel = document.getElementById("substrate");
+  const substratePanelFrame = document.getElementById("substratePanelFrame");
+  const substratePanelRefresh = document.getElementById("substratePanelRefresh");
   const topicFoundryBaseLabel = document.getElementById("topicFoundryBaseLabel");
   const tsDatasetSelect = document.getElementById("tsDatasetSelect");
   const tsDatasetName = document.getElementById("tsDatasetName");
@@ -516,16 +583,19 @@ loadDismissedIds();
   }
 
   function setActiveTab(tabKey) {
-    if (!hubTabPanel || !topicStudioPanel || !serviceLogsPanel || !hubTabButton || !topicStudioTabButton || !serviceLogsTabButton) return;
+    if (!hubTabPanel || !topicStudioPanel || !serviceLogsPanel || !substratePanel || !hubTabButton || !topicStudioTabButton || !serviceLogsTabButton || !substrateTabButton) return;
     const isHub = tabKey === "hub";
     const isTopicStudio = tabKey === "topic-studio";
     const isServiceLogs = tabKey === "service-logs";
+    const isSubstrate = tabKey === "substrate";
     hubTabPanel.classList.toggle("hidden", !isHub);
     topicStudioPanel.classList.toggle("hidden", !isTopicStudio);
     serviceLogsPanel.classList.toggle("hidden", !isServiceLogs);
+    substratePanel.classList.toggle("hidden", !isSubstrate);
     styleTabButton(hubTabButton, isHub);
     styleTabButton(topicStudioTabButton, isTopicStudio);
     styleTabButton(serviceLogsTabButton, isServiceLogs);
+    styleTabButton(substrateTabButton, isSubstrate);
   }
 
   function resolveTopicStudioSubview() {
@@ -1609,8 +1679,49 @@ loadDismissedIds();
     outboundRoutingDebug.textContent = routeDebug ? JSON.stringify(routeDebug, null, 2) : '--';
   }
 
-  function updateMemoryPanelFromResponse(data) {
-    if (!memoryUsedValue || !recallCountValue || !backendCountsValue || !memoryDigestPre) return;
+  function applyDebugTextLayout(node) {
+    if (!node) return;
+    node.style.whiteSpace = 'pre-wrap';
+    node.style.overflowWrap = 'anywhere';
+    node.style.wordBreak = 'break-word';
+  }
+
+  function toPrettyText(value) {
+    if (typeof value === 'string') return value;
+    if (value === null || value === undefined) return '--';
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch (_error) {
+      return String(value);
+    }
+  }
+
+  function summarizeInlineText(value, maxChars = 220) {
+    const raw = String(value || '').trim();
+    if (!raw) return '--';
+    return raw.length > maxChars ? `${raw.slice(0, maxChars - 1)}…` : raw;
+  }
+
+  function collectRecallEntries(recallDebug) {
+    if (!recallDebug || typeof recallDebug !== 'object') return [];
+    const debugLayer = recallDebug.debug && typeof recallDebug.debug === 'object' ? recallDebug.debug : null;
+    const candidates = [
+      recallDebug.results,
+      recallDebug.recall_results,
+      recallDebug.entries,
+      recallDebug.items,
+      recallDebug.memories,
+      debugLayer && debugLayer.results,
+      debugLayer && debugLayer.recall_results,
+      debugLayer && debugLayer.entries,
+      debugLayer && debugLayer.items,
+      debugLayer && debugLayer.memories,
+    ];
+    const found = candidates.find((entry) => Array.isArray(entry));
+    return Array.isArray(found) ? found : [];
+  }
+
+  function normalizeMemoryDebugModel(data) {
     const recallDebug = data && typeof data.recall_debug === 'object' ? data.recall_debug : null;
     const recallCount = recallDebug && typeof recallDebug.count === 'number' ? recallDebug.count : null;
     const backendCounts = recallDebug && recallDebug.backend_counts
@@ -1619,13 +1730,219 @@ loadDismissedIds();
     const memoryUsed = typeof data.memory_used === 'boolean'
       ? data.memory_used
       : (typeof recallCount === 'number' ? recallCount > 0 : false);
-    const memoryDigest = data.memory_digest || (recallDebug && recallDebug.memory_digest) || "";
+    const memoryDigest = data.memory_digest || (recallDebug && recallDebug.memory_digest) || '';
+    const routingDebug = data && typeof data.routing_debug === 'object' ? data.routing_debug : null;
+    const recallEntries = collectRecallEntries(recallDebug);
 
-    memoryUsedValue.textContent = memoryUsed ? "true" : "false";
-    recallCountValue.textContent = typeof recallCount === 'number' ? recallCount : "--";
-    backendCountsValue.textContent = backendCounts ? JSON.stringify(backendCounts, null, 2) : "--";
-    memoryDigestPre.textContent = memoryDigest || "--";
+    return {
+      memoryUsed,
+      recallCount,
+      backendCounts,
+      memoryDigest,
+      routingDebug,
+      recallEntries,
+      recallDebug,
+      raw: {
+        memory_used: memoryUsed,
+        memory_digest: memoryDigest,
+        recall_debug: recallDebug || {},
+        routing_debug: routingDebug || {},
+      },
+    };
+  }
+
+  function buildMemoryDebugRecallEntryNode(entry, index) {
+    const details = document.createElement('details');
+    details.className = 'rounded-xl border border-gray-700 bg-gray-900/40';
+
+    const summary = document.createElement('summary');
+    summary.className = 'cursor-pointer list-none px-3 py-2 text-xs text-gray-200';
+    const source = entry && typeof entry === 'object' ? (entry.source || entry.backend || entry.kind || 'unknown') : 'scalar';
+    const score = entry && typeof entry === 'object' && entry.score != null ? `score ${entry.score}` : '';
+    const title = entry && typeof entry === 'object'
+      ? (entry.title || entry.id || entry.uri || entry.source_ref || '')
+      : '';
+    const stableLabel = `Entry ${index + 1}`;
+    summary.textContent = `${stableLabel} · ${source}${score ? ` · ${score}` : ''}${title ? ` · ${title}` : ''}`;
+    details.dataset.recallEntry = title || `${source}-${index + 1}`;
+
+    const body = document.createElement('div');
+    body.className = 'border-t border-gray-800 px-3 py-3 space-y-2';
+
+    const snippet = entry && typeof entry === 'object'
+      ? (entry.snippet || entry.text || entry.content || entry.rendered || '')
+      : '';
+    if (snippet) {
+      const snippetLabel = document.createElement('div');
+      snippetLabel.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+      snippetLabel.textContent = 'Snippet';
+      const snippetPre = document.createElement('pre');
+      snippetPre.className = 'whitespace-pre-wrap break-words rounded-lg border border-gray-800 bg-gray-950/70 p-3 text-[11px] leading-5 text-gray-200 max-h-52 overflow-y-auto';
+      snippetPre.textContent = String(snippet);
+      applyDebugTextLayout(snippetPre);
+      body.appendChild(snippetLabel);
+      body.appendChild(snippetPre);
+    }
+
+    const rawLabel = document.createElement('div');
+    rawLabel.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+    rawLabel.textContent = 'Raw entry';
+    const rawPre = document.createElement('pre');
+    rawPre.className = 'whitespace-pre-wrap break-words rounded-lg border border-gray-800 bg-gray-950/70 p-3 text-[11px] leading-5 text-gray-200 max-h-72 overflow-y-auto';
+    rawPre.textContent = toPrettyText(entry);
+    applyDebugTextLayout(rawPre);
+    body.appendChild(rawLabel);
+    body.appendChild(rawPre);
+
+    details.appendChild(summary);
+    details.appendChild(body);
+    return details;
+  }
+
+  function renderMemoryDebugModal(model) {
+    if (!memoryDebugModalMeta || !memoryDebugModalBody) return;
+    const safeModel = model || normalizeMemoryDebugModel({});
+    const backendLabel = safeModel.backendCounts ? toPrettyText(safeModel.backendCounts).replace(/\s+/g, ' ') : '--';
+    memoryDebugModalMeta.textContent = `memory ${safeModel.memoryUsed ? 'used' : 'unused'} · recall ${safeModel.recallCount ?? '--'} · backends ${backendLabel}`;
+
+    memoryDebugModalBody.innerHTML = '';
+    const summaryGrid = document.createElement('div');
+    summaryGrid.className = 'grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4';
+    [
+      ['memory used', safeModel.memoryUsed ? 'true' : 'false'],
+      ['recall count', safeModel.recallCount ?? '--'],
+      ['backend counts', toPrettyText(safeModel.backendCounts)],
+      ['recall entries', safeModel.recallEntries.length],
+    ].forEach(([label, value]) => {
+      const card = document.createElement('div');
+      card.className = 'rounded-xl border border-gray-800 bg-gray-900/50 px-3 py-2';
+      const key = document.createElement('div');
+      key.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+      key.textContent = label;
+      const val = document.createElement('pre');
+      val.className = 'mt-1 whitespace-pre-wrap break-words text-[11px] text-gray-100';
+      val.textContent = String(value);
+      applyDebugTextLayout(val);
+      card.appendChild(key);
+      card.appendChild(val);
+      summaryGrid.appendChild(card);
+    });
+    memoryDebugModalBody.appendChild(summaryGrid);
+
+    const sections = [
+      ['Memory digest', safeModel.memoryDigest],
+      ['Outbound routing debug', safeModel.routingDebug],
+      ['Recall debug payload', safeModel.recallDebug],
+      ['Raw payload', safeModel.raw],
+    ];
+    sections.forEach(([label, value]) => {
+      const block = document.createElement('section');
+      block.className = 'rounded-xl border border-gray-700 bg-gray-900/40 p-3';
+      const title = document.createElement('div');
+      title.className = 'text-[10px] uppercase tracking-wide text-gray-500 mb-2';
+      title.textContent = label;
+      const pre = document.createElement('pre');
+      pre.className = 'whitespace-pre-wrap break-words rounded-lg border border-gray-800 bg-gray-950/70 p-3 text-[11px] leading-5 text-gray-200 max-h-80 overflow-y-auto';
+      pre.textContent = toPrettyText(value);
+      applyDebugTextLayout(pre);
+      block.appendChild(title);
+      block.appendChild(pre);
+      memoryDebugModalBody.appendChild(block);
+    });
+
+    const entriesSection = document.createElement('section');
+    entriesSection.className = 'rounded-xl border border-gray-700 bg-gray-900/40 p-3 space-y-2';
+    const entriesTitle = document.createElement('div');
+    entriesTitle.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+    entriesTitle.textContent = `Recall entries (${safeModel.recallEntries.length})`;
+    entriesSection.appendChild(entriesTitle);
+    if (!safeModel.recallEntries.length) {
+      const empty = document.createElement('div');
+      empty.className = 'text-xs text-gray-400';
+      empty.textContent = 'No explicit recall entries were provided in recall_debug.';
+      entriesSection.appendChild(empty);
+    } else {
+      safeModel.recallEntries.forEach((entry, index) => {
+        entriesSection.appendChild(buildMemoryDebugRecallEntryNode(entry, index));
+      });
+    }
+    memoryDebugModalBody.appendChild(entriesSection);
+  }
+
+  function updateMemoryPanelFromResponse(data) {
+    if (!memoryUsedValue || !recallCountValue || !backendCountsValue || !memoryDigestPre) return;
+    const model = normalizeMemoryDebugModel(data);
+    lastMemoryDebugModel = model;
+
+    memoryUsedValue.textContent = model.memoryUsed ? 'true' : 'false';
+    recallCountValue.textContent = typeof model.recallCount === 'number' ? model.recallCount : '--';
+    backendCountsValue.textContent = model.backendCounts ? JSON.stringify(model.backendCounts, null, 2) : '--';
+    memoryDigestPre.textContent = summarizeInlineText(model.memoryDigest);
     updateRoutingDebugPanel(data);
+    applyDebugTextLayout(backendCountsValue);
+    applyDebugTextLayout(memoryDigestPre);
+    applyDebugTextLayout(outboundRoutingDebug);
+    renderMemoryDebugModal(model);
+  }
+
+  function clearMemoryDebugPanel() {
+    if (memoryUsedValue) memoryUsedValue.textContent = '--';
+    if (recallCountValue) recallCountValue.textContent = '--';
+    if (backendCountsValue) backendCountsValue.textContent = '--';
+    if (memoryDigestPre) memoryDigestPre.textContent = '--';
+    if (outboundRoutingDebug) outboundRoutingDebug.textContent = '--';
+    lastMemoryDebugModel = normalizeMemoryDebugModel({});
+    renderMemoryDebugModal(lastMemoryDebugModel);
+  }
+
+  function ensureMemoryDebugModalRootOnBody() {
+    if (!memoryDebugModalRoot || !document.body) return;
+    if (memoryDebugModalRoot.parentElement !== document.body) {
+      document.body.appendChild(memoryDebugModalRoot);
+    }
+  }
+
+  function isModalVisible(el) {
+    return !!(el && !el.classList.contains('hidden'));
+  }
+
+  function syncDebugModalScrollLock() {
+    if (!document.body) return;
+    const shouldLock = isModalVisible(memoryDebugModalRoot)
+      || isModalVisible(autonomyDebugModalRoot)
+      || isModalVisible(chatStanceDebugModalRoot)
+      || isModalVisible(substrateReviewModalRoot)
+      || isModalVisible(agentTraceModal);
+    document.body.classList.toggle('overflow-hidden', shouldLock);
+  }
+
+  function openMemoryDebugModal() {
+    if (!memoryDebugModalRoot) return;
+    closeAutonomyDebugModal();
+    ensureMemoryDebugModalRootOnBody();
+    memoryDebugModalRoot.style.position = 'fixed';
+    memoryDebugModalRoot.style.inset = '0';
+    memoryDebugModalRoot.style.zIndex = '2147483646';
+    if (memoryDebugModalBackdrop) {
+      memoryDebugModalBackdrop.style.position = 'fixed';
+      memoryDebugModalBackdrop.style.inset = '0';
+      memoryDebugModalBackdrop.style.zIndex = '2147483646';
+    }
+    if (memoryDebugModalDialog) {
+      memoryDebugModalDialog.style.position = 'fixed';
+      memoryDebugModalDialog.style.zIndex = '2147483647';
+    }
+    renderMemoryDebugModal(lastMemoryDebugModel || normalizeMemoryDebugModel({}));
+    memoryDebugModalRoot.classList.remove('hidden');
+    memoryDebugModalRoot.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
+  }
+
+  function closeMemoryDebugModal() {
+    if (!memoryDebugModalRoot) return;
+    memoryDebugModalRoot.classList.add('hidden');
+    memoryDebugModalRoot.setAttribute('aria-hidden', 'true');
+    syncDebugModalScrollLock();
   }
 
   function clearAgentTraceDebugPanel() {
@@ -1637,6 +1954,8 @@ loadDismissedIds();
     if (agentTraceDebugToolGroups) agentTraceDebugToolGroups.innerHTML = '';
     if (agentTraceDebugTimeline) agentTraceDebugTimeline.innerHTML = '';
     if (agentTraceDebugRaw) agentTraceDebugRaw.textContent = 'No agent trace on this turn.';
+    lastAgentTraceSummary = null;
+    lastAgentTraceMeta = {};
   }
 
   function updateAgentTraceDebugPanel(summary, meta = {}) {
@@ -1655,6 +1974,8 @@ loadDismissedIds();
       clearAgentTraceDebugPanel();
       return;
     }
+    lastAgentTraceSummary = summary;
+    lastAgentTraceMeta = meta || {};
 
     agentTraceDebugPanel.classList.remove('hidden');
     if (agentTraceDebugMeta) {
@@ -1667,14 +1988,33 @@ loadDismissedIds();
 
     agentTraceDebugSummary.textContent = summary.summary_text || 'No deterministic summary available.';
 
+    const grouped = agentTraceApi.groupToolsByFamily ? agentTraceApi.groupToolsByFamily(summary.tools) : [];
+    const timelineRows = agentTraceApi.buildTimelineRows ? agentTraceApi.buildTimelineRows(summary) : [];
+    const compactRows = [
+      ['Tool families', grouped.length],
+      ['Total tool calls', summary.tool_call_count ?? summary.tools_count ?? '--'],
+      ['Timeline events', timelineRows.length],
+      ['Status', summary.status || '--'],
+    ];
     agentTraceDebugToolGroups.innerHTML = '';
-    Array.from(buildAgentTraceToolGroupsNode(summary).children).forEach((child) => agentTraceDebugToolGroups.appendChild(child));
+    compactRows.forEach(([label, value]) => {
+      const row = document.createElement('div');
+      row.className = 'flex items-center justify-between rounded-lg border border-gray-700 bg-gray-900/50 px-3 py-2';
+      const key = document.createElement('span');
+      key.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+      key.textContent = String(label);
+      const val = document.createElement('span');
+      val.className = 'text-xs text-gray-200';
+      val.textContent = String(value ?? '--');
+      row.appendChild(key);
+      row.appendChild(val);
+      agentTraceDebugToolGroups.appendChild(row);
+    });
 
     agentTraceDebugTimeline.innerHTML = '';
-    agentTraceDebugTimeline.appendChild(buildAgentTraceTimelineNode(summary));
-
+    agentTraceDebugTimeline.innerHTML = '<div class="text-[11px] text-gray-400">Timeline details moved to modal for full inspection.</div>';
     agentTraceDebugRaw.innerHTML = '';
-    agentTraceDebugRaw.appendChild(buildAgentTraceRawPayloadsNode(summary));
+    agentTraceDebugRaw.innerHTML = '<div class="text-[11px] text-gray-400">Raw payload inspection is available in the modal.</div>';
   }
 
   function clearAutonomyDebugPanel() {
@@ -1895,6 +2235,7 @@ loadDismissedIds();
 
   function openAutonomyDebugModal() {
     if (!autonomyDebugModalRoot) return;
+    closeMemoryDebugModal();
     ensureAutonomyModalRootOnBody();
     autonomyDebugModalRoot.style.position = 'fixed';
     autonomyDebugModalRoot.style.inset = '0';
@@ -1913,6 +2254,7 @@ loadDismissedIds();
     autonomyDebugModalRoot.classList.remove('hidden');
     autonomyDebugModalRoot.setAttribute('aria-hidden', 'false');
     if (document.body) document.body.classList.add('overflow-hidden');
+    syncDebugModalScrollLock();
   }
 
   function closeAutonomyDebugModal() {
@@ -1920,6 +2262,324 @@ loadDismissedIds();
     autonomyDebugModalRoot.classList.add('hidden');
     autonomyDebugModalRoot.setAttribute('aria-hidden', 'true');
     if (document.body) document.body.classList.remove('overflow-hidden');
+    syncDebugModalScrollLock();
+  }
+
+  function clearChatStanceDebugPanel() {
+    lastChatStanceDebug = null;
+    if (chatStanceDebugBody) chatStanceDebugBody.classList.add('hidden');
+    if (chatStanceDebugCaret) chatStanceDebugCaret.textContent = '▾';
+    if (chatStanceDebugMeta) chatStanceDebugMeta.textContent = 'No chat stance debug payload on this turn.';
+    if (chatStanceDebugOverview) chatStanceDebugOverview.textContent = 'No chat stance debug payload on this turn.';
+    if (chatStanceDebugLineage) chatStanceDebugLineage.textContent = '--';
+    if (chatStanceDebugRaw) chatStanceDebugRaw.textContent = 'No chat stance debug payload on this turn.';
+    if (chatStanceDebugModalMeta) chatStanceDebugModalMeta.textContent = 'No chat stance debug payload on this turn.';
+    if (chatStanceDebugModalBody) chatStanceDebugModalBody.textContent = 'No chat stance debug payload on this turn.';
+  }
+
+  function buildChatStanceSection(title, value) {
+    const section = document.createElement('section');
+    section.className = 'rounded-xl border border-gray-700 bg-gray-900/50 p-3 space-y-2';
+    const heading = document.createElement('div');
+    heading.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+    heading.textContent = title;
+    section.appendChild(heading);
+    const pre = document.createElement('pre');
+    pre.className = 'whitespace-pre-wrap break-words text-[11px] text-gray-200';
+    pre.textContent = JSON.stringify(value || {}, null, 2);
+    section.appendChild(pre);
+    return section;
+  }
+
+  function updateChatStanceDebugPanel(payload) {
+    if (!chatStanceDebugPanel) return;
+    const model = payload && typeof payload === 'object' ? payload : null;
+    if (!model) {
+      clearChatStanceDebugPanel();
+      return;
+    }
+    lastChatStanceDebug = model;
+    const overview = model.overview && typeof model.overview === 'object' ? model.overview : {};
+    const lineage = Array.isArray(model.lineage_summary) ? model.lineage_summary : [];
+    if (chatStanceDebugMeta) {
+      chatStanceDebugMeta.textContent = `categories ${Array.isArray(overview.categories_present) ? overview.categories_present.length : 0} · fallback ${overview.fallback_invoked ? 'yes' : 'no'} · quality modified ${overview.quality_enforcement_modified ? 'yes' : 'no'}`;
+    }
+    if (chatStanceDebugOverview) {
+      chatStanceDebugOverview.innerHTML = '';
+      [
+        `categories present: ${(overview.categories_present || []).join(', ') || '--'}`,
+        `fallback invoked: ${overview.fallback_invoked ? 'yes' : 'no'}`,
+        `normalized applied: ${overview.normalized_applied ? 'yes' : 'no'}`,
+        `quality enforcement modified: ${overview.quality_enforcement_modified ? 'yes' : 'no'}`,
+        `semantic fallback: ${overview.semantic_fallback ? 'yes' : 'no'}`,
+      ].forEach((line) => {
+        const row = document.createElement('div');
+        row.textContent = line;
+        chatStanceDebugOverview.appendChild(row);
+      });
+    }
+    if (chatStanceDebugLineage) {
+      chatStanceDebugLineage.innerHTML = '';
+      if (!lineage.length) {
+        chatStanceDebugLineage.textContent = '--';
+      } else {
+        lineage.forEach((line) => {
+          const row = document.createElement('div');
+          row.textContent = String(line || '--');
+          chatStanceDebugLineage.appendChild(row);
+        });
+      }
+    }
+    if (chatStanceDebugRaw) chatStanceDebugRaw.textContent = JSON.stringify(model, null, 2);
+    if (chatStanceDebugModalMeta) chatStanceDebugModalMeta.textContent = chatStanceDebugMeta ? chatStanceDebugMeta.textContent : '--';
+    if (chatStanceDebugModalBody) {
+      chatStanceDebugModalBody.innerHTML = '';
+      if (!model || Object.keys(model).length === 0) {
+        chatStanceDebugModalBody.textContent = 'No chat stance debug payload on this turn.';
+      } else {
+        chatStanceDebugModalBody.appendChild(buildChatStanceSection('Overview', model.overview || {}));
+        chatStanceDebugModalBody.appendChild(buildChatStanceSection('Source Inputs by Category', model.source_inputs || {}));
+        chatStanceDebugModalBody.appendChild(buildChatStanceSection('Synthesized Brief', model.synthesized_brief || {}));
+        chatStanceDebugModalBody.appendChild(buildChatStanceSection('Enforcement / Fallback', model.enforcement || {}));
+        chatStanceDebugModalBody.appendChild(buildChatStanceSection('Final Prompt Contract', model.final_prompt_contract || {}));
+        chatStanceDebugModalBody.appendChild(buildChatStanceSection('Raw compact JSON', model.raw || model));
+      }
+    }
+  }
+
+  function toggleChatStanceDebugPanel() {
+    if (!chatStanceDebugBody) return;
+    const nextHidden = !chatStanceDebugBody.classList.contains('hidden');
+    chatStanceDebugBody.classList.toggle('hidden', nextHidden);
+    if (chatStanceDebugCaret) chatStanceDebugCaret.textContent = nextHidden ? '▾' : '▴';
+  }
+
+  function ensureChatStanceModalRootOnBody() {
+    if (!chatStanceDebugModalRoot || !document.body) return;
+    if (chatStanceDebugModalRoot.parentElement !== document.body) {
+      document.body.appendChild(chatStanceDebugModalRoot);
+    }
+  }
+
+  function openChatStanceDebugModal() {
+    if (!chatStanceDebugModalRoot) return;
+    closeAutonomyDebugModal();
+    closeMemoryDebugModal();
+    ensureChatStanceModalRootOnBody();
+    chatStanceDebugModalRoot.style.position = 'fixed';
+    chatStanceDebugModalRoot.style.inset = '0';
+    chatStanceDebugModalRoot.style.zIndex = '2147483646';
+    if (chatStanceDebugModalBackdrop) {
+      chatStanceDebugModalBackdrop.style.position = 'fixed';
+      chatStanceDebugModalBackdrop.style.inset = '0';
+      chatStanceDebugModalBackdrop.style.zIndex = '2147483646';
+    }
+    if (chatStanceDebugModalDialog) {
+      chatStanceDebugModalDialog.style.position = 'fixed';
+      chatStanceDebugModalDialog.style.zIndex = '2147483647';
+    }
+    updateChatStanceDebugPanel(lastChatStanceDebug);
+    chatStanceDebugModalRoot.classList.remove('hidden');
+    chatStanceDebugModalRoot.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
+  }
+
+  function closeChatStanceDebugModal() {
+    if (!chatStanceDebugModalRoot) return;
+    chatStanceDebugModalRoot.classList.add('hidden');
+    chatStanceDebugModalRoot.setAttribute('aria-hidden', 'true');
+    syncDebugModalScrollLock();
+  }
+
+  async function substrateReviewFetch(path, options = {}) {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+      ...options,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.detail || payload.error || `HTTP ${response.status}`);
+    }
+    return payload;
+  }
+
+  function clearSubstrateReviewDebugPanel() {
+    if (substrateReviewDebugBody) substrateReviewDebugBody.classList.add('hidden');
+    if (substrateReviewDebugCaret) substrateReviewDebugCaret.textContent = '▾';
+    if (substrateReviewDebugMeta) substrateReviewDebugMeta.textContent = 'No substrate review runtime status loaded.';
+    if (substrateReviewDebugOverview) substrateReviewDebugOverview.textContent = 'No substrate review runtime status loaded.';
+    if (substrateReviewModalQuickStatus) substrateReviewModalQuickStatus.innerHTML = '';
+    if (substrateReviewResultSummary) substrateReviewResultSummary.textContent = 'No action run yet.';
+    if (substrateReviewResultRaw) substrateReviewResultRaw.textContent = '--';
+    if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = 'Idle.';
+    lastSubstrateReviewStatus = null;
+    lastSubstrateReviewAction = null;
+  }
+
+  function renderSubstrateQuickStatus(statusPayload) {
+    if (!substrateReviewModalQuickStatus) return;
+    const summary = statusPayload && statusPayload.summary ? statusPayload.summary : {};
+    const source = statusPayload && statusPayload.source ? statusPayload.source : {};
+    const control = source.control_plane || {};
+    const semantic = source.semantic || {};
+    const rows = [
+      ['Queue count', summary.queue_count ?? '--'],
+      ['Due count', summary.due_count ?? '--'],
+      ['Next due', summary.next_due_at || '--'],
+      ['Last outcome', (summary.last_execution && summary.last_execution.execution_outcome) || '--'],
+      ['Telemetry count', summary.telemetry_count ?? '--'],
+      ['Policy profile', summary.policy_active_profile_id || '--'],
+      ['Control posture', `${control.posture || '--'} (${control.kind || '--'})`],
+      ['Semantic posture', `${semantic.posture || '--'} (${semantic.kind || '--'})`],
+    ];
+    substrateReviewModalQuickStatus.innerHTML = '';
+    rows.forEach(([label, value]) => {
+      const card = document.createElement('div');
+      card.className = 'rounded-xl border border-gray-800 bg-gray-900/60 px-3 py-2';
+      const k = document.createElement('div');
+      k.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+      k.textContent = label;
+      const v = document.createElement('div');
+      v.className = 'mt-1 text-[11px] text-gray-100 break-words';
+      v.textContent = String(value ?? '--');
+      card.appendChild(k);
+      card.appendChild(v);
+      substrateReviewModalQuickStatus.appendChild(card);
+    });
+  }
+
+  function updateSubstrateReviewDebugPanel(statusPayload) {
+    if (!substrateReviewDebugPanel || !substrateReviewDebugMeta || !substrateReviewDebugOverview) return;
+    const summary = statusPayload && statusPayload.summary ? statusPayload.summary : {};
+    const source = statusPayload && statusPayload.source ? statusPayload.source : {};
+    const control = source.control_plane || {};
+    const semantic = source.semantic || {};
+    lastSubstrateReviewStatus = statusPayload || null;
+    substrateReviewDebugMeta.textContent = `queue ${summary.queue_count ?? '--'} · due ${summary.due_count ?? '--'} · control ${control.posture || '--'} · semantic ${semantic.posture || '--'}`;
+    substrateReviewDebugOverview.innerHTML = '';
+    [
+      `last outcome: ${(summary.last_execution && summary.last_execution.execution_outcome) || '--'}`,
+      `next eligible: ${(summary.next_item && summary.next_item.queue_item_id) || '--'}`,
+      `policy profile: ${summary.policy_active_profile_id || '--'}`,
+      `telemetry count: ${summary.telemetry_count ?? '--'}`,
+    ].forEach((line) => {
+      const row = document.createElement('div');
+      row.textContent = line;
+      substrateReviewDebugOverview.appendChild(row);
+    });
+    if (substrateReviewModalMeta) substrateReviewModalMeta.textContent = substrateReviewDebugMeta.textContent;
+    renderSubstrateQuickStatus(statusPayload);
+  }
+
+  function toggleSubstrateReviewDebugPanel() {
+    if (!substrateReviewDebugBody) return;
+    const nextHidden = !substrateReviewDebugBody.classList.contains('hidden');
+    substrateReviewDebugBody.classList.toggle('hidden', nextHidden);
+    if (substrateReviewDebugCaret) substrateReviewDebugCaret.textContent = nextHidden ? '▾' : '▴';
+  }
+
+  function ensureSubstrateReviewModalRootOnBody() {
+    if (!substrateReviewModalRoot || !document.body) return;
+    if (substrateReviewModalRoot.parentElement !== document.body) {
+      document.body.appendChild(substrateReviewModalRoot);
+    }
+  }
+
+  function openSubstrateReviewModal() {
+    if (!substrateReviewModalRoot) return;
+    closeAutonomyDebugModal();
+    closeMemoryDebugModal();
+    ensureSubstrateReviewModalRootOnBody();
+    substrateReviewModalRoot.style.position = 'fixed';
+    substrateReviewModalRoot.style.inset = '0';
+    substrateReviewModalRoot.style.zIndex = '2147483646';
+    if (substrateReviewModalBackdrop) {
+      substrateReviewModalBackdrop.style.position = 'fixed';
+      substrateReviewModalBackdrop.style.inset = '0';
+      substrateReviewModalBackdrop.style.zIndex = '2147483646';
+    }
+    if (substrateReviewModalDialog) {
+      substrateReviewModalDialog.style.position = 'fixed';
+      substrateReviewModalDialog.style.zIndex = '2147483647';
+    }
+    substrateReviewModalRoot.classList.remove('hidden');
+    substrateReviewModalRoot.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
+  }
+
+  function closeSubstrateReviewModal() {
+    if (!substrateReviewModalRoot) return;
+    substrateReviewModalRoot.classList.add('hidden');
+    substrateReviewModalRoot.setAttribute('aria-hidden', 'true');
+    syncDebugModalScrollLock();
+  }
+
+  function renderSubstrateActionResult(resultPayload) {
+    if (substrateReviewResultRaw) substrateReviewResultRaw.textContent = JSON.stringify(resultPayload || {}, null, 2);
+    if (!substrateReviewResultSummary) return;
+    const result = resultPayload && resultPayload.result ? resultPayload.result : {};
+    const source = resultPayload && resultPayload.source ? resultPayload.source : {};
+    const control = source.control_plane || {};
+    const semantic = source.semantic || {};
+    substrateReviewResultSummary.innerHTML = '';
+    [
+      `outcome: ${result.outcome || '--'}`,
+      `selected queue item: ${result.selected_queue_item_id || '--'}`,
+      `frontier follow-up invoked: ${result.frontier_followup_invoked ? 'yes' : 'no'}`,
+      `control posture: ${control.posture || '--'} (${control.kind || '--'})`,
+      `semantic posture: ${semantic.posture || '--'} (${semantic.kind || '--'})`,
+      `executed at: ${result.executed_at || '--'}`,
+    ].forEach((line) => {
+      const row = document.createElement('div');
+      row.className = 'rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-2';
+      row.textContent = line;
+      substrateReviewResultSummary.appendChild(row);
+    });
+  }
+
+  async function refreshSubstrateReviewStatus() {
+    const payload = await substrateReviewFetch('/api/substrate/review-runtime/status');
+    updateSubstrateReviewDebugPanel(payload);
+    return payload;
+  }
+
+  async function runSubstrateReviewExecuteOnce() {
+    if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = 'Running execute-once…';
+    const payload = await substrateReviewFetch('/api/substrate/review-runtime/execute-once', { method: 'POST', body: JSON.stringify({}) });
+    lastSubstrateReviewAction = payload;
+    renderSubstrateActionResult(payload);
+    await refreshSubstrateReviewStatus();
+    if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = 'Execute-once complete.';
+    return payload;
+  }
+
+  async function runSubstrateReviewExecuteOnceWithFollowup() {
+    if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = 'Running execute-once with explicit follow-up…';
+    const payload = await substrateReviewFetch('/api/substrate/review-runtime/execute-once-followup', { method: 'POST', body: JSON.stringify({}) });
+    lastSubstrateReviewAction = payload;
+    renderSubstrateActionResult(payload);
+    await refreshSubstrateReviewStatus();
+    if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = 'Execute-once + follow-up complete.';
+    return payload;
+  }
+
+  async function runSubstrateReviewSmokeCheck() {
+    if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = 'Running smoke check…';
+    const payload = await substrateReviewFetch('/api/substrate/review-runtime/smoke-check', { method: 'POST', body: JSON.stringify({}) });
+    lastSubstrateReviewAction = payload;
+    if (substrateReviewResultRaw) substrateReviewResultRaw.textContent = JSON.stringify(payload || {}, null, 2);
+    if (substrateReviewResultSummary) {
+      const checks = payload.checks || {};
+      substrateReviewResultSummary.innerHTML = [
+        `queue available: ${checks.queue_available ? 'yes' : 'no'}`,
+        `runtime eligible: ${checks.runtime_eligible ? 'yes' : 'no'}`,
+        `semantic available: ${checks.semantic_available ? 'yes' : 'no'}`,
+        `control plane available: ${checks.control_plane_available ? 'yes' : 'no'}`,
+      ].map((line) => `<div class="rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-2">${line}</div>`).join('');
+    }
+    await refreshSubstrateReviewStatus();
+    if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = 'Smoke check complete.';
+    return payload;
   }
 
   function renderSocialInspectionBadges(container, badges) {
@@ -2165,7 +2825,9 @@ loadDismissedIds();
 
   function toggleMemoryPanel() {
     if (!memoryPanelBody) return;
-    memoryPanelBody.classList.toggle('hidden');
+    const nextHidden = !memoryPanelBody.classList.contains('hidden');
+    memoryPanelBody.classList.toggle('hidden', nextHidden);
+    if (memoryPanelCaret) memoryPanelCaret.textContent = nextHidden ? '▾' : '▴';
   }
 
   function toggleRuntimeDebugPanel() {
@@ -2454,6 +3116,7 @@ loadDismissedIds();
     }
     if (data.text) {
       appendMessage('Orion', data.text, 'text-white', {
+        raw: data.raw,
         workflow: data.workflow,
         correlationId: data.correlation_id,
       });
@@ -3498,6 +4161,7 @@ loadDismissedIds();
     addSection('recall', 'Recall', meta.recallDebug || meta.recall_debug || meta.memoryDigest || meta.memory_digest);
     addSection('agent_trace', 'Agent Trace', meta.agentTrace || meta.agent_trace);
     addSection('routing', 'Routing', meta.routingDebug || meta.routing_debug);
+    addSection('raw', 'Raw cortex', meta.raw);
     return sections;
   }
 
@@ -3554,11 +4218,236 @@ loadDismissedIds();
     return panel;
   }
 
+  const RESPONSE_FEEDBACK_CATEGORY_OPTIONS_FALLBACK = {
+    up: [
+      { value: 'helpful_actionable', label: 'Helpful / actionable' },
+      { value: 'well_grounded', label: 'Well grounded' },
+      { value: 'good_recall_continuity', label: 'Good recall / continuity' },
+      { value: 'right_depth', label: 'Right depth' },
+      { value: 'good_tone', label: 'Good tone' },
+      { value: 'strong_implementation_detail', label: 'Strong implementation detail' },
+      { value: 'good_structure_easy_to_use', label: 'Good structure / easy to use' },
+      { value: 'good_judgment', label: 'Good judgment' },
+      { value: 'other', label: 'Other' },
+    ],
+    down: [
+      { value: 'made_up_facts', label: 'Made up facts' },
+      { value: 'fabricated_recall_memory', label: 'Fabricated recall / memory' },
+      { value: 'missed_relevant_context', label: 'Missed relevant context' },
+      { value: 'lost_conversation_continuity', label: 'Lost conversation continuity' },
+      { value: 'contradicted_earlier_messages', label: 'Contradicted earlier messages' },
+      { value: 'did_not_distinguish_fact_vs_inference', label: "Didn't distinguish fact vs inference" },
+      { value: 'overconfident_false_certainty', label: 'Overconfident / false certainty' },
+      { value: 'too_surface_level', label: 'Too surface-level' },
+      { value: 'too_abstract', label: 'Too abstract' },
+      { value: 'not_actionable', label: 'Not actionable' },
+      { value: 'incomplete_truncated', label: 'Incomplete / truncated' },
+      { value: 'did_not_answer_directly', label: "Didn't answer directly" },
+      { value: 'missed_edge_cases', label: 'Missed edge cases' },
+      { value: 'incorrect_tone', label: 'Incorrect tone' },
+      { value: 'too_boilerplate_generic', label: 'Too boilerplate / generic' },
+      { value: 'too_guarded_sanitized', label: 'Too guarded / sanitized' },
+      { value: 'poor_attunement', label: 'Poor attunement' },
+      { value: 'ignored_instructions', label: 'Ignored instructions' },
+      { value: 'asked_unnecessary_follow_up', label: 'Asked unnecessary follow-up' },
+      { value: 'poor_structure_hard_to_scan', label: 'Poor structure / hard to scan' },
+      { value: 'wrong_tool_wrong_routing_wrong_mode', label: 'Wrong tool / routing / mode' },
+      { value: 'should_have_probed_more_about_stated_topics', label: 'Should have probed more' },
+      { value: 'other', label: 'Other' },
+    ],
+  };
+  let responseFeedbackCategoryOptions = RESPONSE_FEEDBACK_CATEGORY_OPTIONS_FALLBACK;
+  let responseFeedbackDraft = null;
+
+  async function loadResponseFeedbackOptions() {
+    try {
+      const resp = await fetch(`${API_BASE_URL}/api/chat/response-feedback/options`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      const categories = data && typeof data === 'object' ? data.categories : null;
+      if (
+        categories
+        && typeof categories === 'object'
+        && Array.isArray(categories.up)
+        && Array.isArray(categories.down)
+      ) {
+        responseFeedbackCategoryOptions = categories;
+      }
+    } catch (_err) {
+      // keep fallback options
+    }
+  }
+
+  function feedbackTargetKey(meta = {}) {
+    const linkage = resolveFeedbackLinkage(meta);
+    const turnId = linkage ? String(linkage.targetTurnId || linkage.targetCorrelationId || linkage.targetMessageId || '').trim() : '';
+    const sessionId = String(orionSessionId || '').trim();
+    if (!turnId || !sessionId) return null;
+    return `${sessionId}:${turnId}`;
+  }
+
+  function resolveFeedbackLinkage(meta = {}) {
+    const explicitTurnId = String(meta.turnId || '').trim();
+    const explicitMessageId = String(meta.messageId || '').trim();
+    const explicitCorrelationId = String(meta.correlationId || '').trim();
+
+    let linkageStrategy = 'explicit_ids';
+    let targetTurnId = explicitTurnId || null;
+    let targetMessageId = explicitMessageId || null;
+    let targetCorrelationId = explicitCorrelationId || null;
+
+    if (!targetTurnId && targetCorrelationId) {
+      targetTurnId = targetCorrelationId;
+      linkageStrategy = 'derived_turn_id_from_correlation_id';
+    }
+    if (!targetMessageId && targetTurnId) {
+      targetMessageId = `${targetTurnId}:assistant`;
+      linkageStrategy = linkageStrategy === 'explicit_ids'
+        ? 'derived_message_id_from_turn_id'
+        : `${linkageStrategy}+derived_message_id_from_turn_id`;
+    }
+    if (!targetCorrelationId && targetTurnId) {
+      targetCorrelationId = targetTurnId;
+      linkageStrategy = linkageStrategy === 'explicit_ids'
+        ? 'derived_correlation_id_from_turn_id'
+        : `${linkageStrategy}+derived_correlation_id_from_turn_id`;
+    }
+
+    if (!targetTurnId && !targetMessageId && !targetCorrelationId) return null;
+    return { targetTurnId, targetMessageId, targetCorrelationId, linkageStrategy };
+  }
+
+  function closeResponseFeedbackModal() {
+    if (!responseFeedbackModal) return;
+    responseFeedbackModal.classList.add('hidden');
+    responseFeedbackModal.setAttribute('aria-hidden', 'true');
+    responseFeedbackDraft = null;
+  }
+
+  function renderResponseFeedbackCategoryOptions(value) {
+    if (!responseFeedbackCategoryList) return;
+    responseFeedbackCategoryList.innerHTML = '';
+    const options = responseFeedbackCategoryOptions[value] || [];
+    options.forEach((item) => {
+      const label = document.createElement('label');
+      label.className = 'inline-flex items-center gap-2 rounded-full border border-gray-700 bg-gray-900/70 px-3 py-1 text-xs text-gray-200';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.value = item.value;
+      checkbox.className = 'h-3 w-3 accent-indigo-400';
+      checkbox.checked = !!(responseFeedbackDraft && responseFeedbackDraft.categories.has(item.value));
+      checkbox.addEventListener('change', () => {
+        if (!responseFeedbackDraft) return;
+        if (checkbox.checked) responseFeedbackDraft.categories.add(item.value);
+        else responseFeedbackDraft.categories.delete(item.value);
+      });
+      const text = document.createElement('span');
+      text.textContent = item.label;
+      label.appendChild(checkbox);
+      label.appendChild(text);
+      responseFeedbackCategoryList.appendChild(label);
+    });
+  }
+
+  function openResponseFeedbackModal(value, meta = {}, responseText = '') {
+    if (!responseFeedbackModal || !responseFeedbackTitle) return;
+    const linkage = resolveFeedbackLinkage(meta);
+    if (!linkage) return;
+    const key = feedbackTargetKey(meta);
+    if (key && submittedFeedbackTargets.has(key)) return;
+    responseFeedbackDraft = {
+      feedbackId: (window.crypto && typeof window.crypto.randomUUID === 'function') ? window.crypto.randomUUID() : `feedback:${Date.now()}:${Math.random()}`,
+      feedbackValue: value,
+      categories: new Set(),
+      targetTurnId: linkage.targetTurnId,
+      targetMessageId: linkage.targetMessageId,
+      targetCorrelationId: linkage.targetCorrelationId,
+      sessionId: String(orionSessionId || ''),
+      userId: '',
+      source: 'hub_ui',
+      responsePreview: String(responseText || '').slice(0, 140),
+      uiContext: {
+        mode: meta.routingDebug && meta.routingDebug.mode ? meta.routingDebug.mode : null,
+        trace_verb: meta.routingDebug && meta.routingDebug.verb ? meta.routingDebug.verb : null,
+        linkage_strategy: linkage.linkageStrategy,
+      },
+    };
+    responseFeedbackTitle.textContent = value === 'up' ? 'What was good about this response?' : 'What went wrong with this response?';
+    if (responseFeedbackMeta) {
+      const turnLabel = String(linkage.targetTurnId || linkage.targetCorrelationId || linkage.targetMessageId || '').slice(0, 16);
+      responseFeedbackMeta.textContent = `Turn ${turnLabel} · ${value === 'up' ? 'thumbs up' : 'thumbs down'}`;
+    }
+    if (responseFeedbackNotes) responseFeedbackNotes.value = '';
+    if (responseFeedbackStatus) responseFeedbackStatus.textContent = '';
+    renderResponseFeedbackCategoryOptions(value);
+    responseFeedbackModal.classList.remove('hidden');
+    responseFeedbackModal.setAttribute('aria-hidden', 'false');
+  }
+
+  async function submitResponseFeedback() {
+    if (!responseFeedbackDraft) return;
+    if (!responseFeedbackSubmit) return;
+    if (!responseFeedbackDraft.feedbackValue || !['up', 'down'].includes(responseFeedbackDraft.feedbackValue)) return;
+    responseFeedbackSubmit.disabled = true;
+    responseFeedbackSubmit.textContent = 'Submitting…';
+    if (responseFeedbackStatus) responseFeedbackStatus.textContent = '';
+    try {
+      const payload = {
+        feedback_id: responseFeedbackDraft.feedbackId,
+        target_turn_id: responseFeedbackDraft.targetTurnId,
+        target_message_id: responseFeedbackDraft.targetMessageId,
+        target_correlation_id: responseFeedbackDraft.targetCorrelationId,
+        session_id: responseFeedbackDraft.sessionId || null,
+        user_id: responseFeedbackDraft.userId || null,
+        feedback_value: responseFeedbackDraft.feedbackValue,
+        categories: Array.from(responseFeedbackDraft.categories),
+        free_text: responseFeedbackNotes ? String(responseFeedbackNotes.value || '').trim().slice(0, 2000) : null,
+        source: responseFeedbackDraft.source,
+        ui_context: responseFeedbackDraft.uiContext,
+      };
+      const resp = await fetch(`${API_BASE_URL}/api/chat/response-feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(text || `HTTP ${resp.status}`);
+      }
+      const key = feedbackTargetKey({
+        turnId: responseFeedbackDraft.targetTurnId,
+        correlationId: responseFeedbackDraft.targetCorrelationId,
+      });
+      if (key) submittedFeedbackTargets.add(key);
+      if (responseFeedbackStatus) responseFeedbackStatus.textContent = 'Thanks — feedback saved.';
+      closeResponseFeedbackModal();
+    } catch (err) {
+      if (responseFeedbackStatus) responseFeedbackStatus.textContent = `Could not save feedback: ${String(err.message || err)}`;
+    } finally {
+      responseFeedbackSubmit.disabled = false;
+      responseFeedbackSubmit.textContent = 'Submit feedback';
+    }
+  }
+
+  function hubCoalesceAssistantText(primary, meta) {
+    const a = String(primary || '').trim();
+    if (!meta || typeof meta !== 'object') return primary || '';
+    const raw = meta.raw;
+    if (!raw || typeof raw !== 'object') return primary || '';
+    let b = String(raw.final_text || '').trim();
+    if (!b && raw.cortex_result && typeof raw.cortex_result === 'object') {
+      b = String(raw.cortex_result.final_text || '').trim();
+    }
+    if (b.length > a.length) return b;
+    return a || b;
+  }
+
   function appendMessage(sender, text, colorClass = 'text-white') {
     if (!conversationDiv) return;
     const div = document.createElement('div');
     const color = sender === 'You' ? 'text-blue-300' : 'text-green-300';
     const meta = arguments.length > 3 && arguments[3] && typeof arguments[3] === 'object' ? arguments[3] : {};
+    const displayText = sender === 'Orion' ? hubCoalesceAssistantText(text, meta) : (text || '');
     let inspectPanel = null;
     const headerRow = document.createElement('div');
     headerRow.className = 'mb-1 flex items-center justify-between gap-3';
@@ -3566,6 +4455,7 @@ loadDismissedIds();
     header.className = `font-bold ${color}`;
     header.textContent = sender;
     headerRow.appendChild(header);
+    let feedbackRow = null;
     if (sender === 'Orion') {
       const actionRow = document.createElement('div');
       actionRow.className = 'flex items-center gap-2';
@@ -3610,12 +4500,13 @@ loadDismissedIds();
     }
     const body = document.createElement('p');
     body.className = `${colorClass} whitespace-pre-wrap`;
-    body.textContent = text || "";
+    body.textContent = displayText;
     div.className = "mb-2 border-b border-gray-800/50 pb-2 last:border-0";
     if (sender === 'Orion') {
-      const autonomyMeta = { ...meta, replyText: text || '' };
+      const autonomyMeta = { ...meta, replyText: displayText };
       updateAgentTraceDebugPanel(meta.agentTrace, meta);
       updateAutonomyDebugPanel(meta.autonomySummary || meta.autonomy_summary, meta.autonomyDebug || meta.autonomy_debug, autonomyMeta);
+      updateChatStanceDebugPanel(meta.chatStanceDebug || meta.chat_stance_debug);
       const actionRow = document.createElement('div');
       actionRow.className = 'flex items-center gap-2';
       if (agentTraceApi.shouldShowAgentTrace && agentTraceApi.shouldShowAgentTrace(meta.agentTrace)) {
@@ -3647,6 +4538,29 @@ loadDismissedIds();
       if (actionRow.childNodes.length) {
         headerRow.appendChild(actionRow);
       }
+      const targetKey = feedbackTargetKey(meta);
+      feedbackRow = document.createElement('div');
+      feedbackRow.className = 'mt-2 flex items-center gap-2';
+      const thumbsUp = document.createElement('button');
+      thumbsUp.type = 'button';
+      thumbsUp.className = 'rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold text-emerald-200 hover:bg-emerald-500/20';
+      thumbsUp.textContent = '👍';
+      const thumbsDown = document.createElement('button');
+      thumbsDown.type = 'button';
+      thumbsDown.className = 'rounded-full border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-[10px] font-semibold text-rose-200 hover:bg-rose-500/20';
+      thumbsDown.textContent = '👎';
+      const ack = document.createElement('span');
+      ack.className = 'text-[10px] text-gray-400';
+      if (targetKey && submittedFeedbackTargets.has(targetKey)) {
+        thumbsUp.disabled = true;
+        thumbsDown.disabled = true;
+        ack.textContent = 'Feedback saved';
+      }
+      thumbsUp.addEventListener('click', () => openResponseFeedbackModal('up', meta, displayText));
+      thumbsDown.addEventListener('click', () => openResponseFeedbackModal('down', meta, displayText));
+      feedbackRow.appendChild(thumbsUp);
+      feedbackRow.appendChild(thumbsDown);
+      feedbackRow.appendChild(ack);
     }
     div.appendChild(headerRow);
     const workflowPanel = sender === 'Orion' ? createWorkflowPanel(meta.workflow, {
@@ -3654,12 +4568,13 @@ loadDismissedIds();
     }) : null;
     if (workflowPanel) div.appendChild(workflowPanel);
     div.appendChild(body);
+    if (feedbackRow) div.appendChild(feedbackRow);
     if (inspectPanel) div.appendChild(inspectPanel);
     if (sender === 'Orion') {
       const autonomyPanel = createAutonomyPanel(
         meta.autonomySummary || meta.autonomy_summary,
         meta.autonomyDebug || meta.autonomy_debug,
-        { ...meta, replyText: text || '' },
+        { ...meta, replyText: displayText },
       );
       if (autonomyPanel) div.appendChild(autonomyPanel);
       const tracePanel = createAgentTracePanel(meta.agentTrace, meta);
@@ -3675,6 +4590,7 @@ loadDismissedIds();
     if (!agentTraceModal) return;
     agentTraceModal.classList.add('hidden');
     agentTraceModal.setAttribute('aria-hidden', 'true');
+    syncDebugModalScrollLock();
   }
 
   function setAgentTraceEmptyState(isEmpty) {
@@ -4055,6 +4971,7 @@ loadDismissedIds();
       }
       agentTraceModal.classList.remove('hidden');
       agentTraceModal.setAttribute('aria-hidden', 'false');
+      syncDebugModalScrollLock();
       return;
     }
     setAgentTraceEmptyState(false);
@@ -4065,6 +4982,7 @@ loadDismissedIds();
     populateAgentTraceModal(summary);
     agentTraceModal.classList.remove('hidden');
     agentTraceModal.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
   }
 
   async function loadNotifications() {
@@ -4553,6 +5471,26 @@ loadDismissedIds();
     });
   }
 
+  function getSkillRunnerPrompt() {
+    if (!skillRunnerSelect || !skillRunnerSelect.value) return '';
+    return String(skillRunnerSelect.value);
+  }
+  if (skillRunnerInsertBtn && skillRunnerSelect && chatInput) {
+    skillRunnerInsertBtn.addEventListener('click', () => {
+      const promptText = getSkillRunnerPrompt();
+      if (!promptText) return;
+      chatInput.value = promptText;
+      chatInput.focus();
+    });
+  }
+  if (skillRunnerRunBtn && skillRunnerSelect) {
+    skillRunnerRunBtn.addEventListener('click', async () => {
+      const promptText = getSkillRunnerPrompt();
+      if (!promptText) return;
+      await submitExplicitChatText(promptText, { mode: 'agent' });
+    });
+  }
+
   if (interruptButton) {
     interruptButton.addEventListener('click', () => {
       if (currentAudioSource) currentAudioSource.stop();
@@ -4586,8 +5524,11 @@ loadDismissedIds();
   if (clearButton && conversationDiv) {
     clearButton.addEventListener('click', () => {
       conversationDiv.innerHTML = '';
+      clearMemoryDebugPanel();
       clearAgentTraceDebugPanel();
       clearAutonomyDebugPanel();
+      clearChatStanceDebugPanel();
+      clearSubstrateReviewDebugPanel();
     });
   }
   if (copyButton && conversationDiv) {
@@ -4773,11 +5714,40 @@ loadDismissedIds();
   if (memoryPanelToggle) {
     memoryPanelToggle.addEventListener('click', toggleMemoryPanel);
   }
+  ensureMemoryDebugModalRootOnBody();
+  if (memoryDebugOpenModal) {
+    memoryDebugOpenModal.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openMemoryDebugModal();
+    });
+  }
+  if (memoryDebugModalClose) {
+    memoryDebugModalClose.addEventListener('click', closeMemoryDebugModal);
+  }
+  if (memoryDebugModalBackdrop) {
+    memoryDebugModalBackdrop.addEventListener('click', closeMemoryDebugModal);
+  }
+  if (memoryDebugModalRoot) {
+    memoryDebugModalRoot.addEventListener('click', (event) => {
+      if (event.target === memoryDebugModalRoot) closeMemoryDebugModal();
+    });
+  }
+  if (memoryDebugModalDialog) {
+    memoryDebugModalDialog.addEventListener('click', (event) => event.stopPropagation());
+  }
   if (runtimeDebugPanelToggle) {
     runtimeDebugPanelToggle.addEventListener('click', toggleRuntimeDebugPanel);
   }
   if (agentTraceDebugToggle) {
     agentTraceDebugToggle.addEventListener('click', toggleAgentTraceDebugPanel);
+  }
+  if (agentTraceDebugOpenModal) {
+    agentTraceDebugOpenModal.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openAgentTraceModal(lastAgentTraceSummary, lastAgentTraceMeta);
+    });
   }
   if (autonomyDebugToggle) {
     autonomyDebugToggle.addEventListener('click', toggleAutonomyDebugPanel);
@@ -4800,11 +5770,113 @@ loadDismissedIds();
   if (autonomyDebugModalDialog) {
     autonomyDebugModalDialog.addEventListener('click', (event) => event.stopPropagation());
   }
+  if (chatStanceDebugToggle) {
+    chatStanceDebugToggle.addEventListener('click', toggleChatStanceDebugPanel);
+  }
+  ensureChatStanceModalRootOnBody();
+  if (chatStanceDebugOpenModal) {
+    chatStanceDebugOpenModal.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openChatStanceDebugModal();
+    });
+  }
+  if (chatStanceDebugModalClose) {
+    chatStanceDebugModalClose.addEventListener('click', closeChatStanceDebugModal);
+  }
+  if (chatStanceDebugModalBackdrop) {
+    chatStanceDebugModalBackdrop.addEventListener('click', closeChatStanceDebugModal);
+  }
+  if (chatStanceDebugModalRoot) {
+    chatStanceDebugModalRoot.addEventListener('click', (event) => {
+      if (event.target === chatStanceDebugModalRoot) closeChatStanceDebugModal();
+    });
+  }
+  if (chatStanceDebugModalDialog) {
+    chatStanceDebugModalDialog.addEventListener('click', (event) => event.stopPropagation());
+  }
+  if (substrateReviewDebugToggle) {
+    substrateReviewDebugToggle.addEventListener('click', toggleSubstrateReviewDebugPanel);
+  }
+  ensureSubstrateReviewModalRootOnBody();
+  if (substrateReviewDebugOpenModal) {
+    substrateReviewDebugOpenModal.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openSubstrateReviewModal();
+    });
+  }
+  if (substrateReviewModalClose) {
+    substrateReviewModalClose.addEventListener('click', closeSubstrateReviewModal);
+  }
+  if (substrateReviewModalBackdrop) {
+    substrateReviewModalBackdrop.addEventListener('click', closeSubstrateReviewModal);
+  }
+  if (substrateReviewModalRoot) {
+    substrateReviewModalRoot.addEventListener('click', (event) => {
+      if (event.target === substrateReviewModalRoot) closeSubstrateReviewModal();
+    });
+  }
+  if (substrateReviewModalDialog) {
+    substrateReviewModalDialog.addEventListener('click', (event) => event.stopPropagation());
+  }
+  if (substrateReviewActionRefresh) {
+    substrateReviewActionRefresh.addEventListener('click', async () => {
+      try {
+        if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = 'Refreshing…';
+        await refreshSubstrateReviewStatus();
+        if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = 'Status refreshed.';
+      } catch (err) {
+        if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = `Refresh failed: ${String(err.message || err)}`;
+      }
+    });
+  }
+  if (substrateReviewActionExecuteOnce) {
+    substrateReviewActionExecuteOnce.addEventListener('click', async () => {
+      try {
+        await runSubstrateReviewExecuteOnce();
+      } catch (err) {
+        if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = `Execute failed: ${String(err.message || err)}`;
+      }
+    });
+  }
+  if (substrateReviewActionExecuteFollowup) {
+    substrateReviewActionExecuteFollowup.addEventListener('click', async () => {
+      try {
+        await runSubstrateReviewExecuteOnceWithFollowup();
+      } catch (err) {
+        if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = `Execute follow-up failed: ${String(err.message || err)}`;
+      }
+    });
+  }
+  if (substrateReviewActionSmokeCheck) {
+    substrateReviewActionSmokeCheck.addEventListener('click', async () => {
+      try {
+        await runSubstrateReviewSmokeCheck();
+      } catch (err) {
+        if (substrateReviewActionStatus) substrateReviewActionStatus.textContent = `Smoke check failed: ${String(err.message || err)}`;
+      }
+    });
+  }
   if (socialInspectionOpen) {
     socialInspectionOpen.addEventListener('click', () => openSocialInspectionModal());
   }
   if (socialInspectionModalClose) {
     socialInspectionModalClose.addEventListener('click', closeSocialInspectionModal);
+  }
+  if (responseFeedbackModalClose) {
+    responseFeedbackModalClose.addEventListener('click', closeResponseFeedbackModal);
+  }
+  if (responseFeedbackCancel) {
+    responseFeedbackCancel.addEventListener('click', closeResponseFeedbackModal);
+  }
+  if (responseFeedbackSubmit) {
+    responseFeedbackSubmit.addEventListener('click', submitResponseFeedback);
+  }
+  if (responseFeedbackModal) {
+    responseFeedbackModal.addEventListener('click', (event) => {
+      if (event.target === responseFeedbackModal) closeResponseFeedbackModal();
+    });
   }
   if (socialInspectionModal) {
     socialInspectionModal.addEventListener('click', (event) => {
@@ -4875,8 +5947,16 @@ loadDismissedIds();
     });
   }
   document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && memoryDebugModalRoot && !memoryDebugModalRoot.classList.contains('hidden')) {
+      closeMemoryDebugModal();
+      return;
+    }
     if (event.key === 'Escape' && socialInspectionModal && !socialInspectionModal.classList.contains('hidden')) {
       closeSocialInspectionModal();
+      return;
+    }
+    if (event.key === 'Escape' && responseFeedbackModal && !responseFeedbackModal.classList.contains('hidden')) {
+      closeResponseFeedbackModal();
       return;
     }
     if (event.key === 'Escape' && agentTraceModal && !agentTraceModal.classList.contains('hidden')) {
@@ -4889,6 +5969,14 @@ loadDismissedIds();
     }
     if (event.key === 'Escape' && autonomyDebugModalRoot && !autonomyDebugModalRoot.classList.contains('hidden')) {
       closeAutonomyDebugModal();
+      return;
+    }
+    if (event.key === 'Escape' && chatStanceDebugModalRoot && !chatStanceDebugModalRoot.classList.contains('hidden')) {
+      closeChatStanceDebugModal();
+      return;
+    }
+    if (event.key === 'Escape' && substrateReviewModalRoot && !substrateReviewModalRoot.classList.contains('hidden')) {
+      closeSubstrateReviewModal();
       return;
     }
     if (event.key === 'Escape' && scheduleModal && !scheduleModal.classList.contains('hidden')) {
@@ -4904,7 +5992,14 @@ loadDismissedIds();
     textToSpeechToggle.checked = false;
   }
   normalizeRecallProfileDisplay();
+  clearMemoryDebugPanel();
+  clearChatStanceDebugPanel();
+  clearSubstrateReviewDebugPanel();
+  refreshSubstrateReviewStatus().catch((err) => {
+    if (substrateReviewDebugMeta) substrateReviewDebugMeta.textContent = `Substrate review status unavailable: ${String(err.message || err)}`;
+  });
   renderSocialInspectionState(null);
+  loadResponseFeedbackOptions();
   loadScheduleInventory();
 
   // --- WebSocket ---
@@ -4926,11 +6021,14 @@ loadDismissedIds();
           if (d.transcript && !d.is_text_input) appendMessage('You', d.transcript);
           if (d.llm_response) {
             appendMessage('Orion', d.llm_response, 'text-white', {
+              raw: d.raw,
               reasoning: d.reasoning,
               reasoningTrace: d.reasoning_trace,
               agentTrace: d.agent_trace,
               metacogTraces: d.metacog_traces,
               correlationId: d.correlation_id,
+              turnId: d.turn_id || d.turnId || d.correlation_id,
+              messageId: d.message_id || d.messageId || null,
               routingDebug: d.routing_debug,
               recallDebug: d.recall_debug,
               memoryDigest: d.memory_digest,
@@ -4941,6 +6039,7 @@ loadDismissedIds();
               autonomyBackend: d.autonomy_backend,
               autonomySelectedSubject: d.autonomy_selected_subject,
               autonomyRepositoryStatus: d.autonomy_repository_status,
+              chatStanceDebug: d.chat_stance_debug,
             });
             updateMemoryPanelFromResponse(d);
             syncSocialInspectionFromRouteDebug(d.routing_debug);
@@ -4972,7 +6071,7 @@ loadDismissedIds();
     };
   }
 
-  async function submitExplicitChatText(text) {
+  async function submitExplicitChatText(text, opts = {}) {
     const value = String(text || '').trim();
     if (!value) return;
     appendMessage('You', value);
@@ -4981,9 +6080,10 @@ loadDismissedIds();
     const recallMode = recallModeSelect ? recallModeSelect.value : "auto";
     const recallProfile = recallProfileSelect ? recallProfileSelect.value : "auto";
     const effectiveVerbs = modeVerbOverride ? [modeVerbOverride] : selectedVerbs;
+    const requestMode = opts && opts.mode ? String(opts.mode) : currentMode;
     const payload = {
        text_input: value,
-       mode: currentMode,
+       mode: requestMode,
        session_id: orionSessionId,
        disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
        no_write: noWriteToggle ? noWriteToggle.checked : false,
@@ -5017,11 +6117,14 @@ loadDismissedIds();
         .then(d => {
             if(d.text) {
               appendMessage('Orion', d.text, 'text-white', {
+                raw: d.raw,
                 reasoning: d.reasoning,
                 reasoningTrace: d.reasoning_trace,
                 agentTrace: d.agent_trace,
                 metacogTraces: d.metacog_traces,
                 correlationId: d.correlation_id,
+                turnId: d.turn_id || d.turnId || d.correlation_id,
+                messageId: d.message_id || d.messageId || null,
                 routingDebug: d.routing_debug,
                 recallDebug: d.recall_debug,
                 memoryDigest: d.memory_digest,
@@ -5032,6 +6135,7 @@ loadDismissedIds();
                 autonomyBackend: d.autonomy_backend,
                 autonomySelectedSubject: d.autonomy_selected_subject,
                 autonomyRepositoryStatus: d.autonomy_repository_status,
+                chatStanceDebug: d.chat_stance_debug,
               });
               syncSocialInspectionFromRouteDebug(d.routing_debug);
             } else if(d.error) appendMessage('System', d.error, 'text-red-400');
@@ -5639,7 +6743,7 @@ loadDismissedIds();
   }
   setTopicStudioSubview(resolveTopicStudioSubview());
 
-  if (hubTabButton && topicStudioTabButton && serviceLogsTabButton) {
+  if (hubTabButton && topicStudioTabButton && serviceLogsTabButton && substrateTabButton) {
     hubTabButton.addEventListener("click", () => {
       setActiveTab("hub");
       history.replaceState(null, "", "#hub");
@@ -5653,14 +6757,27 @@ loadDismissedIds();
       setActiveTab("service-logs");
       history.replaceState(null, "", "#service-logs");
     });
+    substrateTabButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      setActiveTab("substrate");
+      history.replaceState(null, "", "#substrate");
+    });
     if (window.location.hash === "#topic-studio") {
       setActiveTab("topic-studio");
       refreshTopicStudio();
     } else if (window.location.hash === "#service-logs") {
       setActiveTab("service-logs");
+    } else if (window.location.hash === "#substrate") {
+      setActiveTab("substrate");
     } else {
       setActiveTab("hub");
     }
+  }
+
+  if (substratePanelRefresh && substratePanelFrame) {
+    substratePanelRefresh.addEventListener("click", () => {
+      substratePanelFrame.contentWindow?.location.reload();
+    });
   }
 
   if (tsDatasetSelect) {

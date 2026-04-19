@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Dict
 
 from pydantic import BaseModel, Field
 
 from .actions_skill_registry import ActionsSkillRegistry
+
+# One-to-one mapping from planner-visible semantic verbs to concrete skills (avoids family ordering bugs).
+_SEMANTIC_VERB_TO_SKILL: dict[str, str] = {
+    "answer_current_datetime": "skills.system.time_now.v1",
+    "inspect_gpu_status": "skills.gpu.nvidia_smi_snapshot.v1",
+    "show_biometrics_snapshot": "skills.biometrics.snapshot.v1",
+    "list_biometrics_recent_readings": "skills.biometrics.raw_recent.v1",
+    "inspect_docker_container_status": "skills.docker.ps_status.v1",
+    "send_operator_notification": "skills.system.notify_chat_message.v1",
+    "show_landing_pad_metrics": "skills.landing_pad.metrics_snapshot.v1",
+}
 
 
 class CapabilityDecision(BaseModel):
@@ -17,6 +29,8 @@ class CapabilityDecision(BaseModel):
     confidence: float = 0.0
     policy: Dict[str, Any] = Field(default_factory=dict)
     observational: bool = True
+    rejection_reasons: list[str] = Field(default_factory=list)
+    resolution_failure: str | None = None
 
 
 def resolve_capability_decision(
@@ -25,11 +39,41 @@ def resolve_capability_decision(
     preferred_skill_families: list[str] | None,
     registry: ActionsSkillRegistry,
 ) -> CapabilityDecision:
+    fixed = _SEMANTIC_VERB_TO_SKILL.get(str(verb or "").strip())
+    if fixed:
+        entry = next((item for item in registry.list() if item.skill_id == fixed), None)
+        if entry:
+            policy: Dict[str, Any] = {
+                "risk_class": entry.risk_class,
+                "confirmation_required": bool(entry.requires_confirmation),
+                "execute_opt_in": bool(entry.requires_execute_opt_in),
+            }
+            return CapabilityDecision(
+                verb=verb,
+                needs_skill=True,
+                skill_family=entry.family,
+                candidate_skills=[fixed],
+                selected_skill=fixed,
+                reason=f"Semantic verb '{verb}' pinned to concrete skill '{fixed}'.",
+                confidence=1.0,
+                policy=policy,
+                observational=bool(entry.observational),
+                rejection_reasons=[],
+                resolution_failure=None,
+            )
     families = [str(item).strip() for item in (preferred_skill_families or []) if str(item).strip()]
     if not families:
         families = ["system_inspection"]
-    family = families[0]
-    candidates = registry.by_family(family)
+    family = None
+    candidates = []
+    rejection_reasons: list[str] = []
+    for candidate_family in families:
+        family = candidate_family
+        candidates = registry.by_family(candidate_family)
+        if candidates:
+            break
+        rejection_reasons.append(f"empty_candidates:{candidate_family}")
+    family = family or families[0]
     candidate_ids = [item.skill_id for item in candidates]
     selected = candidate_ids[0] if candidate_ids else None
     if family == "runtime_housekeeping":
@@ -47,11 +91,14 @@ def resolve_capability_decision(
             "execute_opt_in": bool(selected_entry.requires_execute_opt_in),
         }
         observational = bool(selected_entry.observational)
+    resolution_failure = None
     reason = (
         f"Verb '{verb}' prefers family '{family}', selected '{selected}'."
         if selected
         else f"No registered skill available for preferred family '{family}'."
     )
+    if not selected:
+        resolution_failure = "no_skill_for_preferred_families"
     return CapabilityDecision(
         verb=verb,
         needs_skill=True,
@@ -62,7 +109,68 @@ def resolve_capability_decision(
         confidence=0.87 if selected else 0.0,
         policy=policy,
         observational=observational,
+        rejection_reasons=rejection_reasons,
+        resolution_failure=resolution_failure,
     )
+
+
+def _domain_reason_from_skill_result(sr: Dict[str, Any]) -> str | None:
+    """In-domain failure for mesh/storage-style skill JSON (mirrors cortex-exec executor heuristics)."""
+    if sr.get("unsupported") is True and sr.get("available") is False:
+        return str(sr.get("reason") or "unsupported").strip() or "unsupported"
+    if sr.get("available") is False and sr.get("reason"):
+        return str(sr.get("reason")).strip()
+    devices = sr.get("devices")
+    summary = sr.get("summary")
+    if isinstance(devices, list) and isinstance(summary, dict) and len(devices) > 0:
+        unsup = int(summary.get("unsupported") or 0)
+        healthy = int(summary.get("healthy") or 0)
+        if unsup >= len(devices) and healthy == 0:
+            return "disk_health_unavailable_for_all_probed_devices"
+    return None
+
+
+def skill_domain_failure_reason_from_skill_payload(obj: Any) -> str | None:
+    """
+    Detect domain-negative skill output from nested cortex final_text.
+    Accepts either a full SkillVerbOutput-shaped dict or the inner skill_result JSON
+    (what skills emit as final_text).
+    """
+    if not isinstance(obj, dict):
+        return None
+    if obj.get("ok") is False:
+        err = obj.get("error")
+        if isinstance(err, dict) and err.get("message"):
+            return str(err.get("message") or "").strip() or None
+        return str(obj.get("status") or "failed").strip() or None
+    meta = obj.get("metadata")
+    if isinstance(meta, dict):
+        sr = meta.get("skill_result")
+        if isinstance(sr, dict):
+            r = _domain_reason_from_skill_result(sr)
+            if r:
+                return r
+    return _domain_reason_from_skill_result(obj)
+
+
+def skill_domain_failure_reason_from_final_text(final_text: str) -> str | None:
+    ft = (final_text or "").strip()
+    if not ft:
+        return None
+    try:
+        parsed = json.loads(ft)
+    except Exception:
+        return None
+    return skill_domain_failure_reason_from_skill_payload(parsed)
+
+
+def humanize_domain_failure(selected_skill: str, reason: str) -> str:
+    sk = (selected_skill or "").lower()
+    if "mesh" in sk or "tailscale" in sk:
+        return f"Could not check mesh status: {reason}"
+    if "storage" in sk or "disk" in sk:
+        return f"Could not check disk health: {reason}"
+    return f"Could not complete this check: {reason}"
 
 
 def normalize_capability_observation(

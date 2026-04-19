@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, ConfigDict
 
 from orion.core.bus.bus_schemas import LLMMessage
+from .bound_capability import BoundCapabilityExecutionRequestV1
 
 # ─────────────────────────────────────────────
 # Shared: Tools & Capabilities
@@ -42,6 +43,8 @@ class AgentChainRequest(BaseModel):
     packs: Optional[List[str]] = None
     output_mode: Optional[str] = None
     response_profile: Optional[str] = None
+    answer_contract: Optional[Dict[str, Any]] = None
+    bound_capability_execution: Optional[BoundCapabilityExecutionRequestV1] = None
 
 
 class AgentChainResult(BaseModel):

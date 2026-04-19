@@ -2,7 +2,9 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-from app.decision_router import DecisionRouter
+import pytest
+
+from app.decision_router import DecisionRouter, _instruction_runbook_heuristic
 from app.orchestrator import build_plan_request
 from app import main as orch_main
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -39,6 +41,18 @@ def test_hub_auto_depth0_simple_question_heuristic():
     routed = asyncio.run(router.route(req, correlation_id="c1", source=ServiceRef(name="orch", version="0", node="n")))
     assert routed.decision.execution_depth == 0
     assert routed.request.verb == "chat_general"
+
+
+def test_auto_router_clamps_short_instruction_question_to_agent_for_implementation_guide():
+    """Short `?` heuristic is depth 0, but output_mode implementation_guide must still use planner+agent lane."""
+    router = DecisionRouter(_FakeBus())
+    req = _req(text="how do I configure redis for caching?")
+    routed = asyncio.run(router.route(req, correlation_id="c-impl-short", source=ServiceRef(name="orch", version="0", node="n")))
+    assert routed.request.options["output_mode"] == "implementation_guide"
+    assert routed.decision.execution_depth == 2
+    assert "output_mode_tool_lane" in routed.decision.reason
+    assert routed.request.mode == "agent"
+    assert routed.request.verb == "agent_runtime"
 
 
 def test_hub_auto_depth1_analysis_heuristic():
@@ -224,3 +238,81 @@ def test_auto_router_menu_followup_variants_preserve_chat_lane():
         assert routed.request.verb == "chat_general"
         assert routed.decision.reason == "heuristic:menu_topic_selection_followup"
         assert "hm_mesh_continuity" not in json.dumps(routed.request.model_dump(mode="json"))
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("", False),
+        ("how does it work", False),
+        ("how do we ship", True),
+        ("deploy to prod", True),
+        ("walkthrough please", True),
+    ],
+)
+def test_instruction_runbook_how_do_word_boundary(text: str, expected: bool) -> None:
+    assert _instruction_runbook_heuristic(text) is expected
+
+
+def test_auto_route_engineering_how_do_still_uses_agent_runtime():
+    router = DecisionRouter(_FakeBus())
+    req = _req(text="How do I fix this docker compose error?")
+    routed = asyncio.run(router.route(req, correlation_id="c-howdo-docker", source=ServiceRef(name="orch", version="0", node="n")))
+    assert routed.decision.execution_depth == 2
+    assert routed.request.verb == "agent_runtime"
+
+
+def test_auto_route_prune_containers_stays_depth0_chat_general():
+    router = DecisionRouter(_FakeBus())
+    req = _req(text="Prune stopped containers")
+    routed = asyncio.run(router.route(req, correlation_id="c-prune", source=ServiceRef(name="orch", version="0", node="n")))
+    assert routed.decision.execution_depth == 0
+    assert routed.request.verb == "chat_general"
+
+
+def test_auto_route_workflow_planner_agent_chain_goes_agent_runtime():
+    router = DecisionRouter(_FakeBus())
+    req = _req(text="Help me design a workflow for log triage with planner and agent chain")
+    routed = asyncio.run(router.route(req, correlation_id="c-workflow", source=ServiceRef(name="orch", version="0", node="n")))
+    assert routed.decision.execution_depth == 2
+    assert routed.request.verb == "agent_runtime"
+    assert routed.decision.reason in ("heuristic:engineering", "heuristic:planner_agent_chain_design")
+
+
+def test_explicit_skill_verb_request_skips_auto_router(monkeypatch):
+    called = {"router": 0}
+
+    class _NeverRouter:
+        def __init__(self, *_a, **_k):
+            called["router"] += 1
+
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        req = kwargs["client_request"]
+        return VerbResultV1(verb=req.verb or "unknown", ok=True, output={"result": {"status": "success", "steps": []}}, request_id="r")
+
+    monkeypatch.setattr(orch_main, "DecisionRouter", _NeverRouter)
+    monkeypatch.setattr(orch_main, "call_verb_runtime", _fake_call_verb_runtime)
+    monkeypatch.setattr(orch_main, "svc", SimpleNamespace(bus=object()))
+    monkeypatch.setattr(orch_main, "is_active", lambda *_args, **_kwargs: True)
+
+    env = BaseEnvelope(
+        kind="cortex.orch.request",
+        source=ServiceRef(name="cortex-gateway", version="0", node="n"),
+        correlation_id="22222222-2222-2222-2222-222222222222",
+        payload={
+            "mode": "brain",
+            "verb": "skills.runtime.docker_prune_stopped_containers.v1",
+            "route_intent": "none",
+            "packs": [],
+            "options": {},
+            "recall": {"enabled": False, "required": False, "mode": "hybrid", "profile": None},
+            "context": {
+                "messages": [{"role": "user", "content": "Prune stopped containers"}],
+                "raw_user_text": "Prune stopped containers",
+                "user_message": "Prune stopped containers",
+                "metadata": {},
+            },
+        },
+    )
+    asyncio.run(orch_main.handle(env))
+    assert called["router"] == 0

@@ -14,6 +14,12 @@ services:
       - "${PORT}:8000"
     volumes:
       - ${CHROMA_DATA_PATH}:/chroma/chroma
+      - ./scripts/chroma_preflight.py:/opt/orion/chroma_preflight.py:ro
+    entrypoint:
+      - /bin/sh
+      - -c
+    command:
+      - "python /opt/orion/chroma_preflight.py /chroma/chroma/chroma.sqlite3 && exec uvicorn chromadb.app:app --host 0.0.0.0 --port 8000"
 
     environment:
       - CHROMA_SERVER_HOST=0.0.0.0

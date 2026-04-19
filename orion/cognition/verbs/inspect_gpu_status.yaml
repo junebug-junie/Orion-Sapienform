@@ -1,0 +1,33 @@
+name: inspect_gpu_status
+label: Inspect GPU Status (NVIDIA)
+description: >
+  Read NVIDIA GPU utilization, memory, temperature, and driver status via nvidia-smi on this node.
+  Use when the user asks for GPU status, NVIDIA metrics, CUDA device health, or "show GPU".
+  Do NOT use for Tailscale mesh, Docker containers, or disk health.
+category: ExecutiveControl
+priority: medium
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+timeout_ms: 30000
+max_recursion_depth: 0
+services: []
+execution_mode: capability_backed
+requires_capability_selector: true
+preferred_skill_families:
+  - gpu_presence
+side_effect_level: none
+input_schema:
+  type: object
+  properties:
+    text:
+      type: string
+  required: [text]
+output_schema:
+  type: object
+  properties:
+    selected_verb: { type: string }
+    selected_skill_family: { type: string }
+    selected_skill: { type: string }
+    execution_summary: { type: string }

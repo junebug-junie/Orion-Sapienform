@@ -1,0 +1,33 @@
+name: answer_current_datetime
+label: Answer Current Date and Time
+description: >
+  Return the current date and time for the executor node (local timezone and UTC).
+  Use for questions like "what time is it", "current time", "what's the date now",
+  or any request for a real-time clock readout.
+category: ExecutiveControl
+priority: medium
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+timeout_ms: 15000
+max_recursion_depth: 0
+services: []
+execution_mode: capability_backed
+requires_capability_selector: true
+preferred_skill_families:
+  - temporal_context
+side_effect_level: none
+input_schema:
+  type: object
+  properties:
+    text:
+      type: string
+  required: [text]
+output_schema:
+  type: object
+  properties:
+    selected_verb: { type: string }
+    selected_skill_family: { type: string }
+    selected_skill: { type: string }
+    execution_summary: { type: string }

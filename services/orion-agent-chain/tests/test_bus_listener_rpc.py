@@ -24,6 +24,7 @@ class _FakeBus:
         self.codec = _FakeCodec(envelope)
         self.published: list[tuple[str, BaseEnvelope]] = []
         self.forked: _FakePlannerBus | None = None
+        self.fork_start_rpc_worker: bool | None = None
 
     async def connect(self):
         return None
@@ -32,7 +33,8 @@ class _FakeBus:
         return None
 
     async def fork(self, *, start_rpc_worker: bool = False):
-        assert start_rpc_worker is True
+        self.fork_start_rpc_worker = start_rpc_worker
+        assert start_rpc_worker is False
         if self.forked is None:
             self.forked = _FakePlannerBus()
         return self.forked
@@ -59,8 +61,10 @@ class _FakePlannerBus:
     def __init__(self, *_, **__):
         self.codec = _FakePlannerCodec()
         self.captured = None
+        self.connected = False
 
     async def connect(self):
+        self.connected = True
         return None
 
     async def close(self):
@@ -107,6 +111,8 @@ def test_agent_chain_rpc_reply_preserves_corr_and_reply_channel(monkeypatch):
     asyncio.run(bus_listener._handle_request(bus, {"data": b"ignored"}))
 
     assert len(bus.published) == 1
+    assert bus.fork_start_rpc_worker is False
+    assert bus.forked is not None and bus.forked.connected is True
     channel, result_env = bus.published[0]
     assert channel == reply_to
     assert str(result_env.correlation_id) == corr
@@ -141,7 +147,7 @@ def test_nested_planner_child_corr_still_replies_to_exec_parent(monkeypatch):
     reply_to = f"orion:exec:result:AgentChainService:{parent_corr}"
     env = _request_env(corr=parent_corr, reply_to=reply_to)
     bus = _FakeBus(env)
-    monkeypatch.setattr(agent_api, "_resolve_tools", lambda _body: [])
+    monkeypatch.setattr(agent_api, "_resolve_tools", lambda _body, **_kwargs: ([], []))
     monkeypatch.setattr(bus_listener, "execute_agent_chain", agent_api.execute_agent_chain)
 
     asyncio.run(bus_listener._handle_request(bus, {"data": b"ignored"}))

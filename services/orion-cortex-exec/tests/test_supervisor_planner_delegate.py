@@ -4,14 +4,21 @@ import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from orion.core.bus.bus_schemas import ServiceRef
+from orion.core.bus.bus_schemas import LLMMessage, ServiceRef
 from orion.schemas.agents.schemas import FinalAnswer, ToolDef
 from orion.schemas.cortex.schemas import ExecutionPlan, StepExecutionResult
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
 
-from app.supervisor import Supervisor, _ensure_agent_chain_tool, _extract_latest_planner_thought
+from app.supervisor import (
+    Supervisor,
+    _ensure_agent_chain_tool,
+    _extract_latest_planner_thought,
+    _verb_to_step,
+    _select_preferred_operational_tool,
+    _sanitize_operational_history,
+)
 
 
 class StubSupervisor(Supervisor):
@@ -74,6 +81,261 @@ class StubSupervisor(Supervisor):
             return self.action_outputs["agent_chain"]
         return self.action_step_output
 
+
+class CapabilityRoutingSupervisor(Supervisor):
+    def __init__(self):
+        super().__init__(MagicMock())
+        self.chain_calls = 0
+
+    def _toolset(self, packs=None, tags=None):
+        return [ToolDef(tool_id="housekeep_runtime", description="cap", input_schema={}, output_schema={})]
+
+    async def _planner_step(self, **kwargs):
+        step = StepExecutionResult(
+            status="success",
+            verb_name="planner",
+            step_name="planner_react",
+            order=0,
+            result={
+                "PlannerReactService": {
+                    "status": "ok",
+                    "trace": [{"thought": "run cleanup", "action": {"tool_id": "housekeep_runtime", "input": {"text": "dry run"}}}],
+                    "stop_reason": "delegate",
+                }
+            },
+            latency_ms=1,
+            node="test",
+            logs=["ok"],
+            error=None,
+        )
+        return None, step, None, {"tool_id": "housekeep_runtime", "input": {"text": "dry run"}}
+
+    async def _agent_chain_escalation(self, **kwargs):
+        self.chain_calls += 1
+        return StepExecutionResult(
+            status="success",
+            verb_name="agent_chain",
+            step_name="agent_chain",
+            order=100,
+            result={"AgentChainService": {"text": "dry-run cleanup complete", "runtime_debug": {"bound_execution_completed": True}}},
+            latency_ms=1,
+            node="test",
+            logs=["ok"],
+            error=None,
+        )
+
+
+class OperationalPreferenceSupervisor(Supervisor):
+    def __init__(self):
+        super().__init__(MagicMock())
+        self.executed_tool_ids = []
+
+    def _toolset(self, packs=None, tags=None):
+        return [
+            ToolDef(
+                tool_id="housekeep_runtime",
+                description="runtime cleanup semantic tool",
+                input_schema={},
+                output_schema={},
+                execution_mode="capability_backed",
+                side_effect_level="low",
+            )
+        ]
+
+    async def _planner_step(self, **kwargs):
+        step = StepExecutionResult(
+            status="success",
+            verb_name="planner",
+            step_name="planner_react",
+            order=0,
+            result={"PlannerReactService": {"status": "ok", "trace": [{"thought": "answer directly", "action": None}], "stop_reason": "final_answer"}},
+            latency_ms=1,
+            node="test",
+            logs=["ok"],
+            error=None,
+        )
+        return None, step, FinalAnswer(content="Run: docker container prune --force"), None
+
+    async def _execute_action(self, **kwargs):
+        action = kwargs.get("action") or {}
+        tool_id = action.get("tool_id")
+        self.executed_tool_ids.append(tool_id)
+        if tool_id == "housekeep_runtime":
+            return StepExecutionResult(
+                status="success",
+                verb_name="housekeep_runtime",
+                step_name="agent_chain",
+                order=1,
+                result={"AgentChainService": {"text": "dry-run cleanup complete"}},
+                latency_ms=1,
+                node="test",
+                logs=["ok"],
+                error=None,
+            )
+        return StepExecutionResult(
+            status="success",
+            verb_name="agent_chain",
+            step_name="agent_chain",
+            order=2,
+            result={"AgentChainService": {"text": "chain-result"}},
+            latency_ms=1,
+            node="test",
+            logs=["ok"],
+            error=None,
+        )
+
+    async def _agent_chain_escalation(self, **kwargs):
+        self.executed_tool_ids.append("agent_chain")
+        return StepExecutionResult(
+            status="success",
+            verb_name="agent_chain",
+            step_name="agent_chain",
+            order=100,
+            result={"AgentChainService": {"text": "agent-chain-fallback"}},
+            latency_ms=1,
+            node="test",
+            logs=["ok"],
+            error=None,
+        )
+
+
+class PlannerConflictOperationalSupervisor(Supervisor):
+    def __init__(self):
+        super().__init__(MagicMock())
+        self.executed_tool_ids = []
+
+    def _toolset(self, packs=None, tags=None):
+        return [
+            ToolDef(
+                tool_id="housekeep_runtime",
+                description="Runtime housekeeping and container cleanup",
+                input_schema={},
+                output_schema={},
+                execution_mode="capability_backed",
+                preferred_skill_families=["runtime_housekeeping"],
+                side_effect_level="low",
+            ),
+            ToolDef(
+                tool_id="assess_runtime_state",
+                description="Assess runtime status and health",
+                input_schema={},
+                output_schema={},
+                execution_mode="capability_backed",
+                preferred_skill_families=["runtime_health"],
+                side_effect_level="none",
+            ),
+        ]
+
+    async def _planner_step(self, **kwargs):
+        step = StepExecutionResult(
+            status="success",
+            verb_name="planner",
+            step_name="planner_react",
+            order=0,
+            result={
+                "PlannerReactService": {
+                    "status": "ok",
+                    "trace": [{"thought": "delegate", "action": {"tool_id": "assess_runtime_state", "input": {"text": "list stopped containers"}}}],
+                    "stop_reason": "delegate",
+                }
+            },
+            latency_ms=1,
+            node="test",
+            logs=["ok"],
+            error=None,
+        )
+        return None, step, None, {"tool_id": "assess_runtime_state", "input": {"text": "list stopped containers"}}
+
+    async def _execute_action(self, **kwargs):
+        action = kwargs.get("action") or {}
+        tool_id = action.get("tool_id")
+        self.executed_tool_ids.append(tool_id)
+        return StepExecutionResult(
+            status="success",
+            verb_name=str(tool_id),
+            step_name="agent_chain",
+            order=1,
+            result={"AgentChainService": {"text": "dry-run cleanup of stopped containers completed"}},
+            latency_ms=1,
+            node="test",
+            logs=["ok"],
+            error=None,
+        )
+
+
+class BoundFailureSupervisor(Supervisor):
+    def __init__(self):
+        super().__init__(MagicMock())
+
+    def _toolset(self, packs=None, tags=None):
+        return [ToolDef(tool_id="agent_chain", description="delegate", input_schema={}, output_schema={})]
+
+    async def _planner_step(self, **kwargs):
+        step = StepExecutionResult(
+            status="success",
+            verb_name="planner",
+            step_name="planner_react",
+            order=0,
+            result={"PlannerReactService": {"status": "ok", "trace": [{"thought": "delegate", "action": {"tool_id": "agent_chain", "input": {}}}], "stop_reason": "delegate"}},
+            latency_ms=1,
+            node="test",
+            logs=["ok"],
+            error=None,
+        )
+        return None, step, None, {"tool_id": "agent_chain", "input": {}}
+
+    async def _execute_action(self, **kwargs):
+        return StepExecutionResult(
+            status="success",
+            verb_name="agent_chain",
+            step_name="agent_chain",
+            order=100,
+            result={
+                "AgentChainService": {
+                    "text": "Bound capability execution failed: capability execution timed out after 25.00s",
+                    "bound_capability": {
+                        "status": "fail",
+                        "reason": "capability_executor_unavailable",
+                        "path": "bound_direct_timeout",
+                        "detail": "capability execution timed out after 25.00s",
+                    },
+                    "runtime_debug": {"bound_capability_terminal_path": "bound_direct_timeout"},
+                }
+            },
+            latency_ms=1,
+            node="test",
+            logs=["ok"],
+            error=None,
+        )
+
+
+class StructuredBoundFailureSupervisor(BoundFailureSupervisor):
+    async def _execute_action(self, **kwargs):
+        return StepExecutionResult(
+            status="success",
+            verb_name="agent_chain",
+            step_name="agent_chain",
+            order=100,
+            result={
+                "AgentChainService": {
+                    "text": "Bound capability execution failed: capability execution timed out after 25.00s",
+                    "structured": {
+                        "finalization_reason": "bound_capability_fail_closed",
+                        "bound_capability": {
+                            "status": "fail",
+                            "reason": "capability_executor_unavailable",
+                            "path": "bound_direct_timeout",
+                            "detail": "capability execution timed out after 25.00s",
+                        },
+                    },
+                    "runtime_debug": {"bound_capability_terminal_path": "bound_direct_timeout"},
+                }
+            },
+            latency_ms=1,
+            node="test",
+            logs=["ok"],
+            error=None,
+        )
 
 
 class TestSupervisorPlannerDelegate(unittest.TestCase):
@@ -174,6 +436,242 @@ class TestSupervisorPlannerDelegate(unittest.TestCase):
         self.assertIn("analyze_text", step_names)
         self.assertIn("agent_chain", step_names)
 
+    def test_capability_backed_action_routes_to_bound_agent_chain_without_llm_fallback(self):
+        supervisor = CapabilityRoutingSupervisor()
+        source = ServiceRef(name="test", node="test", version="1.0")
+        req = ExecutionPlan(verb_name="chat", steps=[], metadata={"mode": "agent"})
+        ctx = {"mode": "agent", "messages": [{"role": "user", "content": "dry-run cleanup"}], "max_steps": 1}
+
+        async_mock = AsyncMock(side_effect=AssertionError("call_step_services should not execute for capability-backed verbs"))
+        with patch("app.supervisor.is_active", return_value=True), patch("app.supervisor.call_step_services", async_mock):
+            result = asyncio.run(
+                supervisor.execute(
+                    source=source,
+                    req=req,
+                    correlation_id="corr-cap",
+                    ctx=ctx,
+                    recall_cfg={"enabled": False},
+                )
+            )
+
+        self.assertEqual(supervisor.chain_calls, 1)
+        self.assertEqual(result.final_text, "dry-run cleanup complete")
+        self.assertEqual(async_mock.await_count, 0)
+
+
+    def test_no_write_blocks_bound_capability_pre_dispatch(self):
+        supervisor = CapabilityRoutingSupervisor()
+        source = ServiceRef(name="test", node="test", version="1.0")
+        req = ExecutionPlan(verb_name="chat", steps=[], metadata={"mode": "agent"})
+        ctx = {
+            "mode": "agent",
+            "messages": [{"role": "user", "content": "dry-run cleanup"}],
+            "max_steps": 1,
+            "options": {"no_write_active": True, "tool_execution_policy": "none", "action_execution_policy": "none"},
+        }
+
+        result = asyncio.run(
+            supervisor.execute(
+                source=source,
+                req=req,
+                correlation_id="corr-cap-no-write",
+                ctx=ctx,
+                recall_cfg={"enabled": False},
+            )
+        )
+
+        self.assertEqual(supervisor.chain_calls, 0)
+        self.assertIn("Execution is disabled in this session", result.final_text or "")
+        blocked_step = next((s for s in result.steps if s.step_name == "bound_capability_pre_dispatch_blocked"), None)
+        self.assertIsNotNone(blocked_step)
+        payload = (blocked_step.result or {}).get("AgentChainService", {})
+        bound = payload.get("bound_capability", {})
+        self.assertEqual(bound.get("path"), "blocked_pre_dispatch")
+        self.assertTrue(bound.get("dispatch_skipped"))
+
+    def test_capability_backed_verb_cannot_fall_back_to_llm_step(self):
+        cfg = CapabilityRoutingSupervisor().registry.get("housekeep_runtime")
+        with self.assertRaises(RuntimeError):
+            _verb_to_step(cfg)
+
+
+
+    def test_semantic_override_ranking_prefers_housekeep_for_docker_cleanup(self):
+        tools = [
+            ToolDef(
+                tool_id="summarize_recent_changes",
+                description="Summarize recent system changes and change intel",
+                input_schema={},
+                output_schema={},
+                execution_mode="capability_backed",
+                preferred_skill_families=["change_intel"],
+                side_effect_level="none",
+            ),
+            ToolDef(
+                tool_id="housekeep_runtime",
+                description="Runtime housekeeping and container cleanup",
+                input_schema={},
+                output_schema={},
+                execution_mode="capability_backed",
+                preferred_skill_families=["runtime_housekeeping"],
+                side_effect_level="low",
+            ),
+        ]
+        selected, scored = _select_preferred_operational_tool(
+            "dry-run cleanup of stopped docker containers",
+            tools,
+            normalized_action_input={"text": "dry-run cleanup stopped containers"},
+        )
+        assert selected is not None
+        self.assertEqual(selected.tool_id, "housekeep_runtime")
+        score_map = {item["tool_id"]: item for item in scored}
+        self.assertGreater(score_map["housekeep_runtime"]["score"], score_map["summarize_recent_changes"]["score"])
+        self.assertIn("hard_mismatch:summarize_recent_changes", score_map["summarize_recent_changes"]["reasons"])
+
+    def test_operational_intent_prefers_semantic_tool_over_planner_final_answer(self):
+        supervisor = OperationalPreferenceSupervisor()
+        source = ServiceRef(name="test", node="test", version="1.0")
+        req = ExecutionPlan(verb_name="chat", steps=[], metadata={"mode": "agent"})
+        ctx = {
+            "mode": "agent",
+            "messages": [{"role": "user", "content": "would you please dry-run cleanup of stopped containers"}],
+            "max_steps": 1,
+            "options": {},
+        }
+        result = asyncio.run(
+            supervisor.execute(
+                source=source,
+                req=req,
+                correlation_id="corr-operational-prefer",
+                ctx=ctx,
+                recall_cfg={"enabled": False},
+            )
+        )
+        self.assertIn("housekeep_runtime", supervisor.executed_tool_ids)
+        self.assertIn("runtime_policy", result.metadata)
+        self.assertTrue(result.metadata["runtime_policy"]["semantic_tool_preferred"])
+
+    def test_no_write_explicit_downgrade_for_operational_request(self):
+        supervisor = OperationalPreferenceSupervisor()
+        source = ServiceRef(name="test", node="test", version="1.0")
+        req = ExecutionPlan(verb_name="chat", steps=[], metadata={"mode": "agent"})
+        ctx = {
+            "mode": "agent",
+            "messages": [{"role": "user", "content": "would you please dry-run cleanup of stopped containers"}],
+            "max_steps": 1,
+            "options": {"tool_execution_policy": "none", "no_write_active": True},
+        }
+        result = asyncio.run(
+            supervisor.execute(
+                source=source,
+                req=req,
+                correlation_id="corr-no-write",
+                ctx=ctx,
+                recall_cfg={"enabled": False},
+            )
+        )
+        self.assertNotIn("housekeep_runtime", supervisor.executed_tool_ids)
+        self.assertIn("Execution is disabled in this session", result.final_text or "")
+        self.assertTrue(result.metadata["runtime_policy"]["no_write_active"])
+        self.assertTrue(result.metadata["runtime_policy"]["downgraded_to_explanation"])
+
+    def test_operational_semantic_override_wins_over_lower_scored_planner_action(self):
+        supervisor = PlannerConflictOperationalSupervisor()
+        source = ServiceRef(name="test", node="test", version="1.0")
+        req = ExecutionPlan(verb_name="chat", steps=[], metadata={"mode": "agent"})
+        ctx = {
+            "mode": "agent",
+            "messages": [{"role": "user", "content": "dry-run cleanup of stopped containers"}],
+            "max_steps": 1,
+        }
+        result = asyncio.run(
+            supervisor.execute(
+                source=source,
+                req=req,
+                correlation_id="corr-override",
+                ctx=ctx,
+                recall_cfg={"enabled": False},
+            )
+        )
+        self.assertIn("housekeep_runtime", supervisor.executed_tool_ids)
+        self.assertNotIn("assess_runtime_state", supervisor.executed_tool_ids)
+        self.assertIn("cleanup", result.final_text or "")
+        override_diag = (ctx.get("debug") or {}).get("semantic_override_decision", {})
+        self.assertEqual(override_diag.get("planner_tool_id"), "assess_runtime_state")
+        self.assertEqual(override_diag.get("preferred_tool_id"), "housekeep_runtime")
+
+    def test_bound_failure_passthrough_not_rewritten_by_grounding_guardrail(self):
+        supervisor = BoundFailureSupervisor()
+        source = ServiceRef(name="test", node="test", version="1.0")
+        req = ExecutionPlan(verb_name="chat", steps=[], metadata={"mode": "agent"})
+        ctx = {
+            "mode": "agent",
+            "messages": [{"role": "user", "content": "list stopped containers"}],
+            "max_steps": 1,
+        }
+        result = asyncio.run(
+            supervisor.execute(
+                source=source,
+                req=req,
+                correlation_id="corr-bound-failure",
+                ctx=ctx,
+                recall_cfg={"enabled": False},
+            )
+        )
+        assert result.final_text is not None
+        self.assertIn("Bound capability execution failed", result.final_text)
+        self.assertNotIn("I may have drifted from your request", result.final_text)
+        self.assertEqual(result.status, "fail")
+        self.assertIn("runtime_policy", result.metadata)
+        self.assertEqual(result.metadata["runtime_policy"]["bound_failure_signal"]["path"], "bound_direct_timeout")
+
+    def test_structured_bound_failure_passthrough_not_rewritten_by_grounding_guardrail(self):
+        supervisor = StructuredBoundFailureSupervisor()
+        source = ServiceRef(name="test", node="test", version="1.0")
+        req = ExecutionPlan(verb_name="chat", steps=[], metadata={"mode": "agent"})
+        ctx = {
+            "mode": "agent",
+            "messages": [{"role": "user", "content": "cleanup stopped containers"}],
+            "max_steps": 1,
+        }
+        result = asyncio.run(
+            supervisor.execute(
+                source=source,
+                req=req,
+                correlation_id="corr-structured-bound-failure",
+                ctx=ctx,
+                recall_cfg={"enabled": False},
+            )
+        )
+        assert result.final_text is not None
+        self.assertIn("Bound capability execution failed", result.final_text)
+        self.assertNotIn("I may have drifted from your request", result.final_text)
+        self.assertEqual(result.status, "fail")
+        self.assertEqual(result.metadata["runtime_policy"]["bound_failure_signal"]["path"], "bound_direct_timeout")
+
+    def test_operational_guidance_blocked_without_validated_semantic_execution(self):
+        supervisor = StubSupervisor(
+            planner_outputs=[(FinalAnswer(content="```bash\ndocker rm -f $(docker ps -aq)\n```"), None, "final_answer")]
+        )
+        source = ServiceRef(name="test", node="test", version="1.0")
+        req = ExecutionPlan(verb_name="chat", steps=[], metadata={"mode": "agent"})
+        ctx = {
+            "mode": "agent",
+            "messages": [{"role": "user", "content": "cleanup stopped containers now"}],
+            "max_steps": 1,
+            "options": {},
+        }
+        result = asyncio.run(
+            supervisor.execute(
+                source=source,
+                req=req,
+                correlation_id="corr-guidance-block",
+                ctx=ctx,
+                recall_cfg={"enabled": False},
+            )
+        )
+        self.assertIn("safe preview", (result.final_text or "").lower())
+
     def test_supervisor_prefers_effective_packs_from_context_metadata(self):
         supervisor = StubSupervisor(planner_outputs=[(FinalAnswer(content="hello"), None, "final_answer")])
         source = ServiceRef(name="test", node="test", version="1.0")
@@ -230,6 +728,35 @@ class TestSupervisorPlannerDelegate(unittest.TestCase):
         self.assertIn("I may have drifted from your request", result.final_text)
         self.assertIn("V100s", result.final_text)
         self.assertNotIn("Return your normal council output contract", result.final_text)
+
+    def test_grounding_guardrail_suppressed_for_coaching_growth_prompt(self):
+        """Planner answers may not repeat tokens like 'version'; do not replace with drift boilerplate."""
+        supervisor = StubSupervisor(
+            planner_outputs=[
+                (FinalAnswer(content="Focus on habits, sleep, and consistent reflection."), None, "final_answer")
+            ]
+        )
+        source = ServiceRef(name="test", node="test", version="1.0")
+        req = ExecutionPlan(verb_name="chat", steps=[], metadata={"mode": "agent"})
+        ctx = {
+            "mode": "agent",
+            "raw_user_text": "how do I become a better version of myself?",
+            "messages": [{"role": "user", "content": "how do I become a better version of myself?"}],
+            "max_steps": 1,
+        }
+
+        result = asyncio.run(
+            supervisor.execute(
+                source=source,
+                req=req,
+                correlation_id="corr-coaching-growth",
+                ctx=ctx,
+                recall_cfg={"enabled": False},
+            )
+        )
+        assert result.final_text is not None
+        self.assertNotIn("I may have drifted from your request", result.final_text)
+        self.assertIn("habits", result.final_text.lower())
 
     def test_grounding_guardrail_allows_direct_followup_answer_when_recent_thread_is_coherent(self):
         supervisor = StubSupervisor(
@@ -308,6 +835,19 @@ class TestSupervisorPlannerDelegate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestRecallContaminationMitigation(unittest.TestCase):
+    def test_operational_history_filter_drops_unsafe_assistant_commands_for_dry_run(self):
+        msgs = [
+            LLMMessage(role="assistant", content="Run docker rm -f $(docker ps -aq) now"),
+            LLMMessage(role="user", content="dry-run cleanup stopped containers"),
+        ]
+        sanitized, meta = _sanitize_operational_history(msgs, user_text="dry-run cleanup of stopped containers")
+        self.assertEqual(len(sanitized), 1)
+        self.assertEqual(sanitized[0].role, "user")
+        self.assertTrue(meta.get("operational_history_filtering"))
+        self.assertEqual(meta.get("dropped"), 1)
+
 
 class TestExtractLatestPlannerThought(unittest.TestCase):
     def test_returns_none_for_empty_trace(self):

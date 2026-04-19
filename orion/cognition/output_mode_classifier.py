@@ -168,3 +168,25 @@ def classify_output_mode(user_text: str) -> OutputModeDecisionV1:
         response_profile="direct_answer",
         direct_answer_bypass_used=False,
     )
+
+
+def preferred_render_style_from_classifier(omd: OutputModeDecisionV1 | dict[str, object] | None) -> str:
+    """
+    Map legacy output_mode / response_profile to evidence-first render style.
+    Used as a weak hint alongside AnswerContract.preferred_render_style.
+    """
+    if omd is None:
+        return "answer"
+    if isinstance(omd, dict):
+        try:
+            omd = OutputModeDecisionV1.model_validate(omd)
+        except Exception:
+            return "answer"
+    om = str(omd.output_mode or "direct_answer")
+    if om in {"implementation_guide", "tutorial", "code_delivery", "debug_diagnosis", "project_planning"}:
+        return "steps"
+    if om == "comparative_analysis":
+        return "comparison"
+    if om == "decision_support":
+        return "recommendation"
+    return "answer"

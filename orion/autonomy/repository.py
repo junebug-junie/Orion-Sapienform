@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, Sequence
@@ -32,6 +35,7 @@ class AutonomyLookupV1:
     state: AutonomyStateV1 | None
     availability: AvailabilityKind
     unavailable_reason: str | None = None
+    subquery_diagnostics: dict[str, dict[str, object]] | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +76,20 @@ def _literal(binding: dict[str, dict[str, str]], key: str) -> str | None:
 def _bounded_reason(exc: Exception, *, limit: int = 180) -> str:
     reason = " ".join(str(exc or "").split()).strip() or exc.__class__.__name__
     return reason[:limit]
+
+
+def _classify_query_error(exc: Exception) -> str:
+    if isinstance(exc, GraphQueryError):
+        if exc.error_type and exc.error_type != "query_error":
+            return exc.error_type
+    lowered = str(exc or "").lower()
+    if "timed out" in lowered or "timeout" in lowered:
+        return "timeout"
+    if any(token in lowered for token in ("connection refused", "name or service not known", "max retries exceeded")):
+        return "connection_error"
+    if "400" in lowered or "malformed" in lowered or "parse" in lowered:
+        return "malformed_query"
+    return "query_error"
 
 
 def _dominant_drive_from_evidence(
@@ -148,6 +166,14 @@ class GraphAutonomyRepository:
         self._user = user
         self._password = password
         self._goals_limit = max(1, min(int(goals_limit), 5))
+        self._subquery_max_workers = 3
+        self._subject_max_workers = max(1, int(os.getenv("AUTONOMY_SUBJECT_MAX_WORKERS", "3")))
+        self._chat_stance_short_circuit = str(os.getenv("AUTONOMY_CHAT_STANCE_SHORT_CIRCUIT", "true")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         self._query_client = query_client or (
             GraphQueryClient(
                 GraphQueryConfig(
@@ -240,7 +266,7 @@ WHERE {{
   }}
 }}
 ORDER BY DESC(?created_at) DESC(STR(?artifact_id))
-LIMIT 200
+LIMIT 80
 """.strip()
         rows = self._select_rows(sparql)
         if not rows:
@@ -324,10 +350,12 @@ LIMIT {self._goals_limit}
                 continue
         return out, len(rows)
 
-    def _query_subject(self, subject: str) -> AutonomyLookupV1:
+    def _query_subject(self, subject: str, *, observer: dict[str, str] | None = None) -> AutonomyLookupV1:
         binding = SUBJECT_BINDINGS.get(subject)
         if binding is None:
             return AutonomyLookupV1(subject=subject, state=None, availability="empty")
+
+        correlation_id = str((observer or {}).get("correlation_id") or "")
 
         if self._query_client is None:
             logger.warning(
@@ -346,52 +374,102 @@ LIMIT {self._goals_limit}
         goals_rows = 0
         failed_subquery: str | None = None
         failure_reason: str | None = None
-        for name, fn in (
+        failure_type: str | None = None
+        subquery_diagnostics: dict[str, dict[str, object]] = {}
+        subqueries = (
             ("identity", self._fetch_identity),
             ("drives", self._fetch_drive_audit),
             ("goals", self._fetch_goals),
-        ):
-            try:
-                value, row_count = fn(subject=subject, model_layer=binding.model_layer, entity_id=binding.entity_id)
-                if name == "identity":
-                    identity = value  # type: ignore[assignment]
-                    identity_rows = row_count
-                elif name == "drives":
-                    audit = value  # type: ignore[assignment]
-                    drives_rows = row_count
-                else:
-                    goals = value  # type: ignore[assignment]
-                    goals_rows = row_count
-                logger.info(
-                    "autonomy_graph_subquery subject=%s subquery=%s status=ok rows=%s",
-                    subject,
-                    name,
-                    row_count,
-                )
-            except (GraphQueryError, Exception) as exc:
-                failed_subquery = name
-                failure_reason = _bounded_reason(exc)
-                logger.warning(
-                    "autonomy_graph_subquery subject=%s subquery=%s status=query_error reason=%s",
-                    subject,
-                    name,
-                    failure_reason,
-                )
-                break
+        )
+        logger.info(
+            "autonomy_graph_subject_start subject=%s execution_mode=concurrent subquery_workers=%s correlation_id=%s",
+            subject,
+            self._subquery_max_workers,
+            correlation_id or "-",
+        )
+        with ThreadPoolExecutor(max_workers=self._subquery_max_workers) as executor:
+            future_map = {
+                executor.submit(fn, subject=subject, model_layer=binding.model_layer, entity_id=binding.entity_id): (name, time.perf_counter())
+                for name, fn in subqueries
+            }
+            for future in as_completed(future_map):
+                name, started_at = future_map[future]
+                try:
+                    value, row_count = future.result()
+                    elapsed_ms = round((time.perf_counter() - started_at) * 1000.0, 2)
+                    if name == "identity":
+                        identity = value  # type: ignore[assignment]
+                        identity_rows = row_count
+                    elif name == "drives":
+                        audit = value  # type: ignore[assignment]
+                        drives_rows = row_count
+                    else:
+                        goals = value  # type: ignore[assignment]
+                        goals_rows = row_count
+                    status = "empty" if row_count == 0 else "ok"
+                    subquery_diagnostics[name] = {
+                        "status": status,
+                        "row_count": row_count,
+                        "elapsed_ms": elapsed_ms,
+                    }
+                    logger.info(
+                        "autonomy_graph_subquery subject=%s subquery=%s status=%s rows=%s repo=%s elapsed_ms=%s timeout_sec=%s correlation_id=%s",
+                        subject,
+                        name,
+                        status,
+                        row_count,
+                        self._endpoint or "graphdb:unconfigured",
+                        elapsed_ms,
+                        self._timeout_sec,
+                        correlation_id or "-",
+                    )
+                except (GraphQueryError, Exception) as exc:
+                    elapsed_ms = round((time.perf_counter() - started_at) * 1000.0, 2)
+                    failure_type = _classify_query_error(exc)
+                    if failed_subquery is None:
+                        failed_subquery = name
+                        failure_reason = _bounded_reason(exc)
+                    logger.warning(
+                        "autonomy_graph_subquery subject=%s subquery=%s status=%s repo=%s elapsed_ms=%s timeout_sec=%s error_type=%s reason=%s correlation_id=%s",
+                        subject,
+                        name,
+                        failure_type,
+                        self._endpoint or "graphdb:unconfigured",
+                        elapsed_ms,
+                        self._timeout_sec,
+                        failure_type,
+                        _bounded_reason(exc),
+                        correlation_id or "-",
+                    )
+                    subquery_diagnostics[name] = {
+                        "status": failure_type,
+                        "row_count": 0,
+                        "elapsed_ms": elapsed_ms,
+                        "error_type": failure_type,
+                        "reason": _bounded_reason(exc),
+                    }
 
-        if failed_subquery is not None:
+        if failed_subquery is not None and not identity and not audit and not goals:
             logger.warning(
-                "autonomy_graph_lookup subject=%s model_layer=%s entity_id=%s query_ok=false failed_subquery=%s failure_reason=%s identity_rows=%s drives_rows=%s goals_rows=%s availability=unavailable unavailable_reason=query_error",
+                "autonomy_graph_lookup subject=%s model_layer=%s entity_id=%s query_ok=false failed_subquery=%s failure_reason=%s failure_type=%s identity_rows=%s drives_rows=%s goals_rows=%s availability=unavailable unavailable_reason=%s",
                 subject,
                 binding.model_layer,
                 binding.entity_id,
                 failed_subquery,
                 failure_reason or "unknown",
+                failure_type or "query_error",
                 identity_rows,
                 drives_rows,
                 goals_rows,
+                failure_type or "query_error",
             )
-            return AutonomyLookupV1(subject=subject, state=None, availability="unavailable", unavailable_reason="query_error")
+            return AutonomyLookupV1(
+                subject=subject,
+                state=None,
+                availability="unavailable",
+                unavailable_reason=failure_type or "query_error",
+                subquery_diagnostics=subquery_diagnostics,
+            )
 
         if not identity and not audit and not goals:
             logger.info(
@@ -403,7 +481,7 @@ LIMIT {self._goals_limit}
                 drives_rows,
                 goals_rows,
             )
-            return AutonomyLookupV1(subject=subject, state=None, availability="empty")
+            return AutonomyLookupV1(subject=subject, state=None, availability="empty", subquery_diagnostics=subquery_diagnostics)
 
         generated_at = None
         if identity and identity.get("created_at"):
@@ -428,25 +506,100 @@ LIMIT {self._goals_limit}
             source="graph",
             generated_at=generated_at,
         )
+        partial = failed_subquery is not None
         logger.info(
-            "autonomy_graph_lookup subject=%s model_layer=%s entity_id=%s query_ok=true identity_rows=%s drives_rows=%s goals_rows=%s availability=available mapped_state=true summary_present=%s",
+            "autonomy_graph_lookup subject=%s model_layer=%s entity_id=%s query_ok=%s identity_rows=%s drives_rows=%s goals_rows=%s availability=available mapped_state=true summary_present=%s partial=%s",
             subject,
             binding.model_layer,
             binding.entity_id,
+            "false" if partial else "true",
             identity_rows,
             drives_rows,
             goals_rows,
             "yes" if bool(state.identity_summary) else "no",
+            "yes" if partial else "no",
         )
-        return AutonomyLookupV1(subject=subject, state=state, availability="available")
+        return AutonomyLookupV1(
+            subject=subject,
+            state=state,
+            availability="available",
+            unavailable_reason=(failure_type if partial else None),
+            subquery_diagnostics=subquery_diagnostics,
+        )
 
     def get_latest(self, subject: str, *, observer: dict[str, str] | None = None) -> AutonomyLookupV1:
-        result = self._query_subject(subject)
+        result = self._query_subject(subject, observer=observer)
         logger.info("autonomy_repository_status %s", _status_json(backend="graph", subjects=[subject], results=[result], observer=observer))
         return result
 
     def list_latest(self, subjects: Sequence[str], *, observer: dict[str, str] | None = None) -> list[AutonomyLookupV1]:
-        results = [self._query_subject(subject) for subject in subjects]
+        corr = str((observer or {}).get("correlation_id") or "-")
+        consumer = str((observer or {}).get("consumer") or "")
+        ordered_subjects = list(subjects)
+        preferred_order = [name for name in ("orion", "relationship", "juniper") if name in ordered_subjects]
+        short_circuit_allowed = self._chat_stance_short_circuit and consumer == "chat_stance" and bool(preferred_order)
+        started = time.perf_counter()
+        logger.info(
+            "autonomy_graph_subject_fanout_start subjects=%s execution_mode=concurrent workers=%s correlation_id=%s short_circuit_allowed=%s",
+            list(subjects),
+            self._subject_max_workers,
+            corr,
+            short_circuit_allowed,
+        )
+        results_by_subject: dict[str, AutonomyLookupV1] = {}
+        executor = ThreadPoolExecutor(max_workers=max(1, min(self._subject_max_workers, len(subjects) or 1)))
+        try:
+            future_map = {executor.submit(self._query_subject, subject, observer=observer): subject for subject in subjects}
+            if short_circuit_allowed:
+                pending = set(future_map.keys())
+                short_circuit_triggered = False
+                while pending:
+                    done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        subject = future_map[future]
+                        results_by_subject[subject] = future.result()
+                    selected = next(
+                        (
+                            results_by_subject.get(name)
+                            for name in preferred_order
+                            if results_by_subject.get(name) is not None and results_by_subject.get(name).availability == "available"
+                        ),
+                        None,
+                    )
+                    if selected is not None:
+                        short_circuit_triggered = True
+                        for future in pending:
+                            future.cancel()
+                        logger.info(
+                            "autonomy_graph_subject_fanout_short_circuit correlation_id=%s selected_subject=%s selected_availability=%s selected_unavailable_reason=%s",
+                            corr,
+                            selected.subject,
+                            selected.availability,
+                            selected.unavailable_reason,
+                        )
+                        break
+                if short_circuit_triggered:
+                    for subject in ordered_subjects:
+                        if subject not in results_by_subject:
+                            results_by_subject[subject] = AutonomyLookupV1(
+                                subject=subject,
+                                state=None,
+                                availability="unavailable",
+                                unavailable_reason="short_circuited_after_preferred_subject",
+                            )
+            else:
+                for future in as_completed(future_map):
+                    subject = future_map[future]
+                    results_by_subject[subject] = future.result()
+        finally:
+            executor.shutdown(wait=not short_circuit_allowed, cancel_futures=short_circuit_allowed)
+        results = [results_by_subject.get(subject, AutonomyLookupV1(subject=subject, state=None, availability="empty")) for subject in subjects]
+        logger.info(
+            "autonomy_graph_subject_fanout_end subjects=%s elapsed_ms=%s correlation_id=%s",
+            list(subjects),
+            round((time.perf_counter() - started) * 1000.0, 2),
+            corr,
+        )
         logger.info("autonomy_repository_status %s", _status_json(backend="graph", subjects=subjects, results=results, observer=observer))
         return results
 

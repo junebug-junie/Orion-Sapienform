@@ -28,6 +28,7 @@ from orion.spark.concept_induction.profile_repository import concept_profile_par
 from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientResult
 from orion.schemas.cortex.schemas import StepExecutionResult
 from orion.cognition.verb_activation import is_active, is_runtime_entry_verb
+from orion.cognition.answer_contract_normalize import bootstrap_answer_contract_on_request, enrich_answer_contract_after_routing
 
 logger = logging.getLogger("orion.cortex.orch")
 PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc)
@@ -80,6 +81,20 @@ def _normalize_and_validate_verb(req: CortexClientRequest) -> tuple[bool, str | 
 
     req.verb = verb
     return True, None
+
+
+
+def _safe_req_verb(req: CortexClientRequest | None, raw_payload: dict | None = None) -> str:
+    if req is not None:
+        value = getattr(req, "verb", None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    if isinstance(raw_payload, dict):
+        for key in ("verb", "verb_name", "requested_verb"):
+            value = raw_payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return "unknown"
 
 def _cfg() -> ChassisConfig:
     s = get_settings()
@@ -173,14 +188,20 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
                 json.dumps(raw_payload, default=str),
             )
         req = CortexClientRequest.model_validate(raw_payload)
+        req = bootstrap_answer_contract_on_request(req)
+        context_metadata = req.context.metadata if isinstance(req.context.metadata, dict) else {}
+        capability_bridge = bool(context_metadata.get("capability_bridge"))
+        requested_verb = context_metadata.get("requested_verb")
 
         logger.info(
-            "orch_intake corr=%s source=%s reply=%s mode=%s verb=%s supervised=%s recall_enabled=%s recall_profile=%s packs=%s",
+            "orch_intake corr=%s source=%s reply=%s mode=%s verb=%s requested_verb=%s capability_bridge=%s supervised=%s recall_enabled=%s recall_profile=%s packs=%s",
             str(env.correlation_id),
             (env.source.name if env.source else "unknown"),
             env.reply_to,
             req.mode,
             req.verb,
+            requested_verb,
+            capability_bridge,
             bool((req.options or {}).get("supervised")),
             req.recall.enabled,
             req.recall.profile,
@@ -219,6 +240,19 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         elif str(req.mode).lower() == "auto":
             logger.info("auto_route_gate corr_id=%s fallback_mode=brain reason=%s", str(env.correlation_id), route_reason)
             req.mode = "brain"
+
+        req = enrich_answer_contract_after_routing(req)
+        ac_opts = (req.options or {}).get("answer_contract") if isinstance(req.options, dict) else {}
+        if isinstance(ac_opts, dict):
+            logger.info(
+                "answer_contract_normalized corr=%s request_kind=%s preferred_render_style=%s classifier_style=%s",
+                str(env.correlation_id),
+                ac_opts.get("request_kind"),
+                ac_opts.get("preferred_render_style"),
+                (req.context.metadata or {}).get("classifier_preferred_render_style")
+                if isinstance(req.context.metadata, dict)
+                else None,
+            )
 
         if has_explicit_workflow_request(req):
             try:
@@ -402,6 +436,8 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             final_meta["agent_trace_available"] = True
         metacog_traces = result_payload.get("metacog_traces") or []
         reasoning_content = result_payload.get("reasoning_content")
+        inline_think_content = result_payload.get("inline_think_content")
+        thinking_source = result_payload.get("thinking_source")
         reasoning_trace = result_payload.get("reasoning_trace")
         reasoning_trace_content = reasoning_trace.get("content") if isinstance(reasoning_trace, dict) else None
         print(
@@ -409,6 +445,8 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             f"corr={env.correlation_id} "
             f"payload_keys={sorted(result_payload.keys()) if isinstance(result_payload, dict) else []} "
             f"reasoning_len={len(reasoning_content) if isinstance(reasoning_content, str) else 0} "
+            f"inline_think_len={len(inline_think_content) if isinstance(inline_think_content, str) else 0} "
+            f"thinking_source={thinking_source} "
             f"trace_len={len(reasoning_trace_content) if isinstance(reasoning_trace_content, str) else 0} "
             f"metacog_count={len(metacog_traces) if isinstance(metacog_traces, list) else 0} "
             f"preview={repr(str((reasoning_content if isinstance(reasoning_content, str) else None) or reasoning_trace_content or '')[:220])}",
@@ -424,10 +462,12 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         client_result = CortexClientResult(
             ok=(result_payload.get("status") == "success" and verb_result.ok),
             mode=req.mode,
-            verb=req.verb or "unknown",
+            verb=_safe_req_verb(req, raw_payload),
             status=result_payload.get("status") or "fail",
             final_text=result_payload.get("final_text"),
             reasoning_content=reasoning_content if isinstance(reasoning_content, str) else None,
+            inline_think_content=inline_think_content if isinstance(inline_think_content, str) else None,
+            thinking_source=thinking_source if isinstance(thinking_source, str) else "none",
             reasoning_trace=reasoning_trace if isinstance(reasoning_trace, dict) else None,
             memory_used=bool(result_payload.get("memory_used")),
             recall_debug=result_payload.get("recall_debug") or {},
@@ -460,8 +500,34 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             payload=client_payload,
         )
 
+    except TimeoutError as e:
+        fallback_verb = _safe_req_verb(locals().get("req", None), locals().get("raw_payload", None))
+        logger.error("orch_timeout_terminalized corr=%s verb=%s error=%s", str(env.correlation_id), fallback_verb, str(e))
+        if fallback_verb == "unknown":
+            logger.info("orch_timeout_verb_fallback_applied corr=%s", str(env.correlation_id))
+        payload = CortexClientResult(
+            ok=False,
+            mode=getattr(locals().get("req", None), "mode", "brain"),
+            verb=fallback_verb,
+            status="fail",
+            final_text=None,
+            memory_used=False,
+            recall_debug={},
+            steps=[],
+            error={"message": str(e), "type": type(e).__name__, "category": "timeout", "terminalized": True},
+            correlation_id=str(env.correlation_id),
+            metadata={"timeout": True, "orch_timeout_terminalized": True},
+        ).model_dump(mode="json")
+        logger.info("orch_timeout_error_payload_emitted corr=%s verb=%s", str(env.correlation_id), fallback_verb)
+        return CortexOrchResult(
+            source=sref,
+            correlation_id=env.correlation_id,
+            causality_chain=env.causality_chain,
+            payload=payload,
+        )
+
     except Exception as e:
-        logger.exception(f"Execution failed for verb {getattr(req, 'verb', 'unknown')}")
+        logger.exception(f"Execution failed for verb {_safe_req_verb(locals().get('req', None), locals().get('raw_payload', None))}")
         return CortexOrchResult(
             source=sref,
             correlation_id=env.correlation_id,
@@ -469,7 +535,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             payload=CortexClientResult(
                 ok=False,
                 mode=getattr(req, "mode", "brain"),
-                verb=getattr(req, "verb", "unknown"),
+                verb=_safe_req_verb(locals().get("req", None), locals().get("raw_payload", None)),
                 status="fail",
                 final_text=None,
                 memory_used=False,
@@ -480,7 +546,12 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             ).model_dump(mode="json"),
         )
 
-svc = Rabbit(_cfg(), request_channel=get_settings().channel_cortex_request, handler=handle)
+svc = Rabbit(
+    _cfg(),
+    request_channel=get_settings().channel_cortex_request,
+    handler=handle,
+    concurrent_handlers=True,
+)
 equilibrium_hunter: Hunter
 dream_hunter: Hunter
 

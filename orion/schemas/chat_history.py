@@ -128,6 +128,9 @@ class ChatHistoryTurnV1(BaseModel):
     source: str = Field(..., description="Source label (e.g. hub_ws)")
     prompt: str = Field(..., description="User prompt")
     response: str = Field(..., description="Assistant response")
+    reasoning_content: Optional[str] = None
+    inline_think_content: Optional[str] = None
+    thinking_source: Optional[str] = None
     reasoning_trace: Optional[MetacognitiveTraceV1] = None
     user_id: Optional[str] = Field(default=None)
     session_id: Optional[str] = Field(default=None)

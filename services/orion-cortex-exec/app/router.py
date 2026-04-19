@@ -49,6 +49,15 @@ def _preview_text(value: str | None, limit: int = 220) -> str:
 
 
 _THINK_BLOCK_RE = re.compile(r"<think>\s*.*?\s*</think>", flags=re.IGNORECASE | re.DOTALL)
+_THINK_CLOSE_ONLY_RE = re.compile(r"</think\s*>", flags=re.IGNORECASE)
+_PLANNING_LINE_RE = re.compile(
+    r"^\s*(okay,?\s+i\s+need\s+to|okay,?\s+so\s+the\s+user\s+wants|the\s+user\s+wants|i\s+should|need\s+to|let\s+me(?:\s+think)?|check\s+response\s+hazards|looking\s+at\s+the\s+memory\s+digest|plan:|steps?:)\b",
+    flags=re.IGNORECASE,
+)
+_PLANNING_TEXT_RE = re.compile(
+    r"^\s*(okay,?\s+i\s+need\s+to|okay,?\s+so\s+the\s+user\s+wants|the\s+user\s+wants|i\s+should|need\s+to|let\s+me(?:\s+think)?|check\s+response\s+hazards|looking\s+at\s+the\s+memory\s+digest)\b",
+    flags=re.IGNORECASE,
+)
 
 
 def _structured_output_expected(verb_name: str | None) -> bool:
@@ -58,15 +67,82 @@ def _structured_output_expected(verb_name: str | None) -> bool:
     }
 
 
-def _strip_think_content(text: str) -> tuple[str, bool, bool]:
+def _strip_think_content(text: str) -> tuple[str, dict[str, Any]]:
     raw = str(text or "")
-    has_think_tags = "<think>" in raw.lower()
-    if not has_think_tags:
-        return raw.strip(), False, False
-    stripped = _THINK_BLOCK_RE.sub(" ", raw).strip()
-    if "<think>" in stripped.lower():
-        stripped = stripped[: stripped.lower().find("<think>")].strip()
-    return stripped, True, stripped != raw.strip()
+    raw_trimmed = raw.strip()
+    has_open = "<think>" in raw.lower()
+    has_close = bool(_THINK_CLOSE_ONLY_RE.search(raw))
+    if has_open and has_close:
+        stripped = _THINK_BLOCK_RE.sub(" ", raw).strip()
+        if "<think>" in stripped.lower():
+            stripped = stripped[: stripped.lower().find("<think>")].strip()
+        return stripped, {
+            "has_think_tags": True,
+            "think_stripped": stripped != raw_trimmed,
+            "full_block_detected": True,
+            "close_tag_only_detected": False,
+        }
+    if (not has_open) and has_close:
+        first_close = _THINK_CLOSE_ONLY_RE.search(raw)
+        cleaned = raw[first_close.end() :] if first_close else raw
+        stripped = cleaned.strip()
+        return stripped, {
+            "has_think_tags": True,
+            "think_stripped": stripped != raw_trimmed,
+            "full_block_detected": False,
+            "close_tag_only_detected": True,
+        }
+    if has_open and not has_close:
+        stripped = raw[: raw.lower().find("<think>")].strip()
+        return stripped, {
+            "has_think_tags": True,
+            "think_stripped": stripped != raw_trimmed,
+            "full_block_detected": False,
+            "close_tag_only_detected": False,
+        }
+    return raw_trimmed, {
+        "has_think_tags": False,
+        "think_stripped": False,
+        "full_block_detected": False,
+        "close_tag_only_detected": False,
+    }
+
+
+def _strip_planning_preamble(text: str) -> tuple[str, bool, int]:
+    lines = [line for line in str(text or "").splitlines()]
+    dropped = 0
+    while lines and _PLANNING_LINE_RE.search(lines[0] or ""):
+        lines.pop(0)
+        dropped += 1
+    cleaned = "\n".join(lines).strip()
+    return cleaned, dropped > 0, dropped
+
+
+def _looks_like_internal_planning(text: str) -> bool:
+    candidate = str(text or "").strip()
+    if not candidate:
+        return False
+    head = "\n".join(candidate.splitlines()[:3]).strip()
+    return bool(_PLANNING_TEXT_RE.search(head))
+
+
+def _provider_completion_meta(payload: dict[str, Any]) -> dict[str, Any]:
+    raw = payload.get("raw") if isinstance(payload.get("raw"), dict) else {}
+    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    raw_usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
+    choices = raw.get("choices") if isinstance(raw.get("choices"), list) else []
+    first = choices[0] if choices and isinstance(choices[0], dict) else {}
+    finish_reason = first.get("finish_reason")
+    completion_tokens = usage.get("completion_tokens") or raw_usage.get("completion_tokens")
+    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    return {
+        "finish_reason": finish_reason,
+        "completion_tokens": completion_tokens,
+        "has_reasoning_content": bool(str(payload.get("reasoning_content") or "").strip()),
+        "has_reasoning_trace": isinstance(payload.get("reasoning_trace"), dict),
+        "provider_reasoning_available": meta.get("provider_reasoning_available"),
+        "inline_think_extracted": meta.get("inline_think_extracted"),
+    }
 
 
 def _extract_first_json_object_text(text: str) -> str | None:
@@ -106,25 +182,44 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
         "source_service": None,
         "think_tags_detected": False,
         "think_stripping_applied": False,
+        "think_full_block_detected": False,
+        "think_close_tag_only_detected": False,
         "structured_output_sanitized": False,
         "structured_output_rejected": False,
         "structured_json_extraction_attempted": False,
         "candidate_count": 0,
         "rejected_candidate_count": 0,
         "candidate_fields_considered": [],
+        "provider_finish_reason": None,
+        "provider_completion_tokens": None,
+        "provider_has_reasoning_content": False,
+        "provider_has_reasoning_trace": False,
+        "provider_reasoning_available": None,
+        "inline_think_extracted": None,
+        "planning_stripping_applied": False,
+        "planning_lines_dropped": 0,
+        "planning_candidate_rejected": False,
+        "planning_candidate_rejection_reason": None,
+        "raw_len": 0,
+        "clean_len": 0,
+        "final_len": 0,
+        "truncation_detected": False,
         "result_len": 0,
     }
     structured_expected = _structured_output_expected(verb_name)
+    # Skill/service adapters frequently emit terminal text in `final_text`.
+    # Consider it first for all verbs so capability-backed skills do not lose output.
+    candidate_fields = ("final_text", "content", "text")
     for step in reversed(steps):
         for service_name, payload in (step.result or {}).items():
             if not isinstance(payload, dict):
                 continue
-            for field in ("content", "text"):
+            for field in candidate_fields:
                 candidate = payload.get(field)
                 if not isinstance(candidate, str) or not candidate.strip():
                     continue
                 diagnostics["candidate_count"] += 1
-                cleaned, has_think_tags, think_stripped = _strip_think_content(candidate)
+                cleaned, think_diag = _strip_think_content(candidate)
                 pre_len = len(candidate.strip())
                 post_len = len(cleaned)
                 candidate_diag = {
@@ -132,9 +227,23 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
                     "field": field,
                     "raw_len": pre_len,
                     "clean_len": post_len,
-                    "think_tags": bool(has_think_tags),
-                    "think_stripped": bool(think_stripped),
+                    "think_tags": bool(think_diag["has_think_tags"]),
+                    "think_stripped": bool(think_diag["think_stripped"]),
+                    "think_full_block_detected": bool(think_diag["full_block_detected"]),
+                    "think_close_tag_only_detected": bool(think_diag["close_tag_only_detected"]),
                 }
+                provider_meta = _provider_completion_meta(payload)
+                diagnostics["provider_finish_reason"] = provider_meta.get("finish_reason")
+                diagnostics["provider_completion_tokens"] = provider_meta.get("completion_tokens")
+                diagnostics["provider_has_reasoning_content"] = provider_meta.get("has_reasoning_content")
+                diagnostics["provider_has_reasoning_trace"] = provider_meta.get("has_reasoning_trace")
+                diagnostics["provider_reasoning_available"] = provider_meta.get("provider_reasoning_available")
+                diagnostics["inline_think_extracted"] = provider_meta.get("inline_think_extracted")
+                no_plan_text = cleaned
+                planning_applied = False
+                dropped_lines = 0
+                if str(verb_name or "").strip().lower() == "chat_general":
+                    no_plan_text, planning_applied, dropped_lines = _strip_planning_preamble(cleaned)
                 if len(diagnostics["candidate_fields_considered"]) < 8:
                     diagnostics["candidate_fields_considered"].append(candidate_diag)
                 if structured_expected:
@@ -143,22 +252,88 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
                     if json_text:
                         diagnostics["source_field"] = field
                         diagnostics["source_service"] = service_name
-                        diagnostics["think_tags_detected"] = bool(has_think_tags)
-                        diagnostics["think_stripping_applied"] = bool(think_stripped)
+                        diagnostics["think_tags_detected"] = bool(think_diag["has_think_tags"])
+                        diagnostics["think_stripping_applied"] = bool(think_diag["think_stripped"])
+                        diagnostics["think_full_block_detected"] = bool(think_diag["full_block_detected"])
+                        diagnostics["think_close_tag_only_detected"] = bool(think_diag["close_tag_only_detected"])
                         diagnostics["structured_output_sanitized"] = bool(json_text != cleaned)
                         diagnostics["result_len"] = len(json_text)
+                        diagnostics["raw_len"] = pre_len
+                        diagnostics["clean_len"] = len(json_text)
+                        diagnostics["final_len"] = len(json_text)
                         return json_text, diagnostics
                     diagnostics["rejected_candidate_count"] += 1
                     continue
                 diagnostics["source_field"] = field
                 diagnostics["source_service"] = service_name
-                diagnostics["think_tags_detected"] = bool(has_think_tags)
-                diagnostics["think_stripping_applied"] = bool(think_stripped)
-                diagnostics["result_len"] = len(cleaned)
-                return cleaned, diagnostics
+                diagnostics["think_tags_detected"] = bool(think_diag["has_think_tags"])
+                diagnostics["think_stripping_applied"] = bool(think_diag["think_stripped"])
+                diagnostics["think_full_block_detected"] = bool(think_diag["full_block_detected"])
+                diagnostics["think_close_tag_only_detected"] = bool(think_diag["close_tag_only_detected"])
+                diagnostics["planning_stripping_applied"] = planning_applied
+                diagnostics["planning_lines_dropped"] = dropped_lines
+                final_text = no_plan_text or cleaned
+                if str(verb_name or "").strip().lower() == "chat_general" and _looks_like_internal_planning(final_text):
+                    diagnostics["planning_candidate_rejected"] = True
+                    diagnostics["planning_candidate_rejection_reason"] = "looks_like_internal_planning_after_cleanup"
+                    diagnostics["rejected_candidate_count"] += 1
+                    continue
+                if provider_meta.get("finish_reason") == "length":
+                    diagnostics["truncation_detected"] = True
+                    if final_text and final_text[-1] not in ".!?…":
+                        final_text = f"{final_text}…"
+                diagnostics["result_len"] = len(final_text)
+                diagnostics["raw_len"] = pre_len
+                diagnostics["clean_len"] = post_len
+                diagnostics["final_len"] = len(final_text)
+                return final_text, diagnostics
     if structured_expected and diagnostics["candidate_count"] > 0:
         diagnostics["structured_output_rejected"] = True
+    if _is_runtime_skill_verb(verb_name):
+        fallback_message = None
+        fallback_status = None
+        for step in reversed(steps):
+            for _service_name, payload in (step.result or {}).items():
+                if not isinstance(payload, dict):
+                    continue
+                if isinstance(payload.get("status"), str):
+                    ps = str(payload.get("status")).strip()
+                    if ps:
+                        fallback_status = ps
+                err = payload.get("error")
+                if isinstance(err, dict) and isinstance(err.get("message"), str):
+                    candidate = str(err.get("message")).strip()
+                    if candidate:
+                        fallback_message = candidate
+                elif isinstance(err, str) and err.strip():
+                    fallback_message = err.strip()
+            if not fallback_status and isinstance(step.status, str) and step.status.strip():
+                fallback_status = step.status.strip()
+            if not fallback_message and isinstance(step.error, str) and step.error.strip():
+                fallback_message = step.error.strip()
+            if fallback_message or fallback_status:
+                break
+        if fallback_message or fallback_status:
+            runtime_text = (
+                f"Runtime skill result: status={fallback_status or 'fail'} "
+                f"message={fallback_message or 'empty_terminal_output'}"
+            )
+            diagnostics["source_field"] = diagnostics["source_field"] or "runtime_fallback"
+            diagnostics["source_service"] = diagnostics["source_service"] or "runtime_fallback"
+            diagnostics["result_len"] = len(runtime_text)
+            diagnostics["final_len"] = len(runtime_text)
+            diagnostics["clean_len"] = len(runtime_text)
+            diagnostics["raw_len"] = len(runtime_text)
+            return runtime_text, diagnostics
     return "", diagnostics
+
+
+def _is_runtime_skill_verb(verb_name: str | None) -> bool:
+    return str(verb_name or "").strip().lower().startswith("skills.runtime.")
+
+
+def _should_fail_empty_runtime_skill_output(*, overall_status: str, verb_name: str | None, final_text: str | None) -> bool:
+    return overall_status == "success" and _is_runtime_skill_verb(verb_name) and not str(final_text or "").strip()
 
 
 def _autonomy_state_preview(ctx: Dict[str, Any]) -> Dict[str, Any] | None:
@@ -216,6 +391,18 @@ def _autonomy_payload_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
             payload["autonomy_selected_subject"] = None
     if repository_status:
         payload["autonomy_repository_status"] = repository_status
+    inline_think_content = ctx.get("inline_think_content")
+    thinking_source = ctx.get("thinking_source")
+    final_text_clean = ctx.get("chat_general_final_text_clean")
+    chat_stance_debug = ctx.get("chat_stance_debug") if isinstance(ctx.get("chat_stance_debug"), dict) else None
+    if isinstance(inline_think_content, str):
+        payload["inline_think_content"] = inline_think_content
+    if isinstance(thinking_source, str):
+        payload["thinking_source"] = thinking_source
+    if isinstance(final_text_clean, str):
+        payload["final_text_clean"] = final_text_clean
+    if chat_stance_debug:
+        payload["chat_stance_debug"] = chat_stance_debug
     return payload
 
 
@@ -260,6 +447,8 @@ def _collect_metacog_traces(step_results: List[StepExecutionResult], *, correlat
             f"keys={payload_keys} "
             f"reasoning_len={len(reasoning_content) if isinstance(reasoning_content, str) else 0} "
             f"trace_len={len(trace_content) if isinstance(trace_content, str) else 0} "
+            f"provider_reasoning_available={(payload.get('meta') or {}).get('provider_reasoning_available') if isinstance(payload, dict) else None} "
+            f"inline_think_extracted={(payload.get('meta') or {}).get('inline_think_extracted') if isinstance(payload, dict) else None} "
             f"preview={_preview_text((reasoning_content if isinstance(reasoning_content, str) else None) or trace_content)}",
             flush=True,
         )
@@ -302,23 +491,73 @@ def _collect_metacog_traces(step_results: List[StepExecutionResult], *, correlat
     return traces
 
 
-def _extract_reasoning_payload(step_results: List[StepExecutionResult]) -> tuple[str | None, Dict[str, Any] | None]:
-    for step in step_results:
-        if not isinstance(step.result, dict):
-            continue
-        payload = step.result.get("LLMGatewayService")
-        if not isinstance(payload, dict):
-            continue
+def _extract_reasoning_payload(
+    step_results: List[StepExecutionResult],
+    *,
+    think_close_tag_only_detected: bool = False,
+    prior_step_results: List[Dict[str, Any]] | None = None,
+    correlation_id: str | None = None,
+    canonical_verb_name: str | None = None,
+    canonical_step_name: str | None = None,
+) -> tuple[str | None, str | None, str, Dict[str, Any] | None]:
+    def _iter_payloads() -> List[Dict[str, Any]]:
+        payloads: List[Dict[str, Any]] = []
+        if canonical_verb_name and canonical_step_name:
+            for step in step_results:
+                if (
+                    str(step.verb_name or "").strip().lower() == str(canonical_verb_name).strip().lower()
+                    and str(step.step_name or "").strip().lower() == str(canonical_step_name).strip().lower()
+                    and isinstance(step.result, dict)
+                ):
+                    payload = step.result.get("LLMGatewayService")
+                    if isinstance(payload, dict):
+                        payloads.append(payload)
+            return payloads
+        for step in step_results:
+            if not isinstance(step.result, dict):
+                continue
+            payload = step.result.get("LLMGatewayService")
+            if isinstance(payload, dict):
+                payloads.append(payload)
+        for prior in prior_step_results or []:
+            if not isinstance(prior, dict):
+                continue
+            svc_payload = prior.get("result")
+            if not isinstance(svc_payload, dict):
+                continue
+            payload = svc_payload.get("LLMGatewayService")
+            if isinstance(payload, dict):
+                payloads.append(payload)
+        return payloads
+
+    for payload in _iter_payloads():
         reasoning_content = payload.get("reasoning_content")
+        inline_think_content = payload.get("inline_think_content")
+        raw_thinking_source = payload.get("thinking_source")
         reasoning_trace = payload.get("reasoning_trace")
+        if correlation_id:
+            logger.info(
+                "exec_step_reasoning_capture corr_id=%s reasoning_content_len=%s inline_think_content_len=%s thinking_source=%s payload_keys=%s",
+                correlation_id,
+                len(reasoning_content) if isinstance(reasoning_content, str) else 0,
+                len(inline_think_content) if isinstance(inline_think_content, str) else 0,
+                raw_thinking_source if isinstance(raw_thinking_source, str) else "none",
+                sorted(list(payload.keys())),
+            )
         if isinstance(reasoning_content, str) and reasoning_content.strip():
             trace_dict = reasoning_trace if isinstance(reasoning_trace, dict) else None
-            return reasoning_content.strip(), trace_dict
+            return reasoning_content.strip(), (
+                inline_think_content.strip() if isinstance(inline_think_content, str) and inline_think_content.strip() else None
+            ), "provider_reasoning", trace_dict
+        if isinstance(inline_think_content, str) and inline_think_content.strip():
+            thinking_source = "inline_think_close_tag_only" if think_close_tag_only_detected else "inline_think_full_block"
+            if isinstance(raw_thinking_source, str) and raw_thinking_source.strip() == "inline_think":
+                return None, inline_think_content.strip(), thinking_source, None
         if isinstance(reasoning_trace, dict):
             trace_content = reasoning_trace.get("content")
             if isinstance(trace_content, str) and trace_content.strip():
-                return trace_content.strip(), reasoning_trace
-    return None, None
+                return trace_content.strip(), None, "provider_reasoning", reasoning_trace
+    return None, None, "none", None
 
 
 class PlanRunner:
@@ -344,6 +583,13 @@ class PlanRunner:
             plan.verb_name,
             [s.step_name for s in plan.steps],
         )
+        if _is_runtime_skill_verb(plan.verb_name):
+            logger.info(
+                "runtime_skill_invocation corr_id=%s verb=%s mode=%s",
+                correlation_id,
+                plan.verb_name,
+                start_mode,
+            )
         step_results: List[StepExecutionResult] = []
         overall_status = "success"
         recall_debug: Dict[str, Any] = {}
@@ -420,7 +666,8 @@ class PlanRunner:
             ctx["diagnostic"] = True
 
         ctx["verb"] = plan.verb_name
-        prepare_brain_reply_context(ctx)
+        if mode == "brain" and not _is_runtime_skill_verb(plan.verb_name):
+            prepare_brain_reply_context(ctx)
         existing_scope = str(ctx.get("_run_scope_corr_id") or "")
         if existing_scope and existing_scope != correlation_id:
             logger.warning(
@@ -429,8 +676,12 @@ class PlanRunner:
                 existing_scope,
             )
         ctx["_run_scope_corr_id"] = correlation_id
-        ctx["prior_step_results"] = []
-        ctx.setdefault("prior_step_results_by_corr", {})[correlation_id] = []
+        scoped_results = ctx.setdefault("prior_step_results_by_corr", {})
+        existing_scoped_results = scoped_results.get(correlation_id)
+        if not isinstance(existing_scoped_results, list):
+            existing_scoped_results = []
+            scoped_results[correlation_id] = existing_scoped_results
+        ctx["prior_step_results"] = list(existing_scoped_results)
         if mode == "brain" and plan.verb_name and not is_active(plan.verb_name, node_name=settings.node_name):
             logger.warning("Inactive verb blocked in router corr_id=%s verb=%s", correlation_id, plan.verb_name)
             return PlanExecutionResult(
@@ -594,23 +845,50 @@ class PlanRunner:
 
         final_text, final_text_diag = _extract_final_text(step_results, verb_name=plan.verb_name)
         logger.info(
-            "final_text_assembly corr_id=%s verb=%s source_service=%s source_field=%s think_tags_detected=%s think_stripping_applied=%s structured_output_sanitized=%s structured_output_rejected=%s structured_json_extraction_attempted=%s candidates=%s rejected_candidates=%s candidate_fields_considered=%s result_len=%s",
+            "final_text_assembly corr_id=%s verb=%s source_service=%s source_field=%s think_tags_detected=%s think_full_block_detected=%s think_close_tag_only_detected=%s think_stripping_applied=%s planning_stripping_applied=%s planning_lines_dropped=%s planning_candidate_rejected=%s planning_candidate_rejection_reason=%s provider_has_reasoning_content=%s provider_has_reasoning_trace=%s provider_reasoning_available=%s inline_think_extracted=%s provider_completion_tokens=%s provider_finish_reason=%s truncation_detected=%s structured_output_sanitized=%s structured_output_rejected=%s structured_json_extraction_attempted=%s candidates=%s rejected_candidates=%s candidate_fields_considered=%s raw_len=%s clean_len=%s final_len=%s result_len=%s",
             correlation_id,
             plan.verb_name,
             final_text_diag.get("source_service"),
             final_text_diag.get("source_field"),
             final_text_diag.get("think_tags_detected"),
+            final_text_diag.get("think_full_block_detected"),
+            final_text_diag.get("think_close_tag_only_detected"),
             final_text_diag.get("think_stripping_applied"),
+            final_text_diag.get("planning_stripping_applied"),
+            final_text_diag.get("planning_lines_dropped"),
+            final_text_diag.get("planning_candidate_rejected"),
+            final_text_diag.get("planning_candidate_rejection_reason"),
+            final_text_diag.get("provider_has_reasoning_content"),
+            final_text_diag.get("provider_has_reasoning_trace"),
+            final_text_diag.get("provider_reasoning_available"),
+            final_text_diag.get("inline_think_extracted"),
+            final_text_diag.get("provider_completion_tokens"),
+            final_text_diag.get("provider_finish_reason"),
+            final_text_diag.get("truncation_detected"),
             final_text_diag.get("structured_output_sanitized"),
             final_text_diag.get("structured_output_rejected"),
             final_text_diag.get("structured_json_extraction_attempted"),
             final_text_diag.get("candidate_count"),
             final_text_diag.get("rejected_candidate_count"),
             final_text_diag.get("candidate_fields_considered"),
+            final_text_diag.get("raw_len"),
+            final_text_diag.get("clean_len"),
+            final_text_diag.get("final_len"),
             final_text_diag.get("result_len"),
         )
         if overall_status == "success" and soft_failure:
             overall_status = "partial"
+        if _should_fail_empty_runtime_skill_output(
+            overall_status=overall_status,
+            verb_name=plan.verb_name,
+            final_text=final_text,
+        ):
+            overall_status = "fail"
+            logger.error(
+                "runtime_skill_empty_terminal_output corr_id=%s verb=%s status=fail",
+                correlation_id,
+                plan.verb_name,
+            )
 
         if depth == 1:
             logger.info("depth1_complete corr_id=%s verb=%s elapsed=%s", correlation_id, plan.verb_name, sum([s.latency_ms for s in step_results]))
@@ -619,12 +897,48 @@ class PlanRunner:
             correlation_id=correlation_id,
             session_id=str(ctx.get("session_id")) if ctx.get("session_id") else None,
         )
-        reasoning_content, reasoning_trace = _extract_reasoning_payload(step_results)
+        reasoning_content, inline_think_content, thinking_source, reasoning_trace = _extract_reasoning_payload(
+            step_results,
+            think_close_tag_only_detected=bool(final_text_diag.get("think_close_tag_only_detected")),
+            prior_step_results=list(ctx.get("prior_step_results") or []),
+            correlation_id=correlation_id,
+            canonical_verb_name="chat_general" if plan.verb_name == "chat_general" else None,
+            canonical_step_name="llm_chat_general" if plan.verb_name == "chat_general" else None,
+        )
         if reasoning_trace is None and metacog_traces:
             first_trace = metacog_traces[0]
             reasoning_trace = first_trace.model_dump(mode="json")
             if not reasoning_content:
                 reasoning_content = str(first_trace.content or "").strip() or None
+                if thinking_source == "none" and reasoning_content:
+                    thinking_source = "provider_reasoning"
+        if thinking_source == "none" and inline_think_content:
+            thinking_source = "inline_think_close_tag_only" if bool(final_text_diag.get("think_close_tag_only_detected")) else "inline_think_full_block"
+        logger.info(
+            "exec_reasoning_selection corr_id=%s provider_reasoning_available=%s reasoning_content_len=%s inline_think_content_len=%s thinking_source=%s final_clean_answer_len=%s",
+            correlation_id,
+            bool(reasoning_content),
+            len(reasoning_content) if isinstance(reasoning_content, str) else 0,
+            len(inline_think_content) if isinstance(inline_think_content, str) else 0,
+            thinking_source,
+            len(final_text or ""),
+        )
+        if plan.verb_name == "chat_general":
+            wrote_chat_history = bool(str(inline_think_content or "").strip())
+            logger.info(
+                "chat_general_thought_capture corr=%s step=llm_chat_general think_len=%s source=%s wrote_chat_history=%s",
+                correlation_id,
+                len(str(inline_think_content or "").strip()),
+                thinking_source,
+                wrote_chat_history,
+            )
+            if isinstance(final_text, str):
+                ctx["chat_general_final_text_clean"] = final_text
+        ctx["reasoning_content"] = reasoning_content
+        ctx["inline_think_content"] = inline_think_content
+        ctx["thinking_source"] = thinking_source
+        if isinstance(reasoning_trace, dict):
+            ctx["reasoning_trace"] = reasoning_trace
         logger.info(
             "cortex_exec_metacog_attached corr_id=%s verb=%s traces=%s",
             correlation_id,
@@ -652,12 +966,14 @@ class PlanRunner:
             mode=mode,
             final_text=final_text or None,
             reasoning_content=reasoning_content,
+            inline_think_content=inline_think_content,
+            thinking_source=thinking_source,
             reasoning_trace=reasoning_trace,
             memory_used=memory_used,
             recall_debug=recall_debug,
             metacog_traces=metacog_traces,
             metadata=metadata,
-            error=None if overall_status == "success" else step_results[-1].error,
+            error=None if overall_status == "success" else (step_results[-1].error or "empty_runtime_terminal_output"),
         )
 
 

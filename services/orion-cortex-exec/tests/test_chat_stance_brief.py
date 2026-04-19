@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from app.chat_stance import (
+    build_chat_stance_debug_payload,
     build_chat_stance_inputs,
     enforce_chat_stance_quality,
     fallback_chat_stance_brief,
     normalize_chat_stance_brief,
     parse_chat_stance_brief,
+    parse_chat_stance_brief_with_debug,
 )
 from orion.schemas.chat_stance import ChatStanceBrief
 
@@ -250,6 +252,49 @@ def test_semantic_guard_enriches_weak_generic_identity_brief() -> None:
     assert enriched.conversation_frame == "identity_emergence"
 
 
+def test_parse_chat_stance_brief_with_debug_reports_normalization_flag() -> None:
+    brief, debug = parse_chat_stance_brief_with_debug(
+        '{"conversation_frame":"mixed","user_intent":"help","self_relevance":"x","juniper_relevance":"y","active_identity_facets":["ongoing cognitive presence in a long-running shared project"],"active_growth_axes":[],"active_relationship_facets":[],"social_posture":[],"reflective_themes":[],"active_tensions":[],"dream_motifs":[],"response_priorities":["direct"],"response_hazards":["sludge"],"answer_strategy":"DirectAnswer","stance_summary":"short"}'
+    )
+    assert brief is not None
+    assert debug["normalized_applied"] is True
+
+
+def test_build_chat_stance_debug_payload_includes_grouped_contract_and_lineage() -> None:
+    ctx = {
+        "user_message": "what changed?",
+        "memory_digest": "m1",
+        "orion_identity_summary": ["orion-id"],
+        "juniper_relationship_summary": ["juniper-rel"],
+        "response_policy_summary": ["policy"],
+        "chat_reasoning_summary_used": True,
+        "chat_autonomy_selected_subject": "orion",
+        "chat_autonomy_backend": "graph",
+        "chat_stance_inputs": {
+            "identity": {"orion": ["orion-id"], "juniper": ["juniper-rel"], "response_policy": ["policy"]},
+            "concept_induction": {"self": ["continuity"], "relationship": [], "growth": [], "tension": []},
+            "social": {"social_posture": ["direct"], "relationship_facets": ["shared_build"], "hazards": ["h1"]},
+            "social_bridge": {"posture": ["direct"], "hazards": [], "framing": [], "turn_decision": "reply", "summary": ["s"]},
+            "reflective": {"themes": [], "tensions": [], "dream_motifs": []},
+            "autonomy": {"summary": {"stance_hint": "focus"}, "debug": {"_runtime": {"backend": "graph"}}},
+            "reasoning_summary": {"summary_text": "r", "hazards": ["h"], "tensions": [], "fallback_recommended": False},
+        },
+    }
+    payload = build_chat_stance_debug_payload(
+        ctx=ctx,
+        synthesized_brief={"task_mode": "direct_response"},
+        final_brief={"task_mode": "direct_response"},
+        fallback_invoked=False,
+        normalized_applied=True,
+        semantic_fallback=False,
+        quality_modified=False,
+    )
+    assert payload["source_inputs"]["concept_induction"]["self"] == ["continuity"]
+    assert payload["enforcement"]["normalized_applied"] is True
+    assert payload["final_prompt_contract"]["chat_stance_brief"]["task_mode"] == "direct_response"
+    assert payload["lineage_summary"][0].startswith("concept/self injected")
+
+
 def test_semantic_guard_triage_adds_self_intro_suppression_hazard() -> None:
     triage = ChatStanceBrief(
         conversation_frame="technical",
@@ -275,6 +320,52 @@ def test_semantic_guard_triage_adds_self_intro_suppression_hazard() -> None:
     assert enriched.identity_salience == "low"
     assert "self_intro_on_operational_turn" in enriched.response_hazards
     assert "triage_operational_blockers_first" in enriched.response_priorities
+
+
+def test_ensure_chat_stance_pipeline_ctx_populates_stance_inputs_for_agent_mode(monkeypatch) -> None:
+    monkeypatch.setenv("AUTONOMY_REPOSITORY_BACKEND", "local")
+    from app.executor import ensure_chat_stance_pipeline_ctx
+
+    ctx: dict = {"mode": "agent", "user_message": "hello", "verb": "chat_general", "correlation_id": "pytest-stance-1"}
+    ensure_chat_stance_pipeline_ctx(ctx)
+    inputs = ctx.get("chat_stance_inputs")
+    assert isinstance(inputs, dict)
+    assert inputs.get("identity", {}).get("orion")
+    assert "autonomy" in inputs
+    first = inputs
+    ensure_chat_stance_pipeline_ctx(ctx)
+    assert ctx.get("chat_stance_inputs") is first
+
+
+def test_parse_chat_stance_brief_coerces_playful_invitation_and_scalar_social_posture() -> None:
+    raw = (
+        '{"conversation_frame":"playful_invitation","task_mode":"playful_exchange","identity_salience":"medium",'
+        '"user_intent":"greet","self_relevance":"x","juniper_relevance":"y",'
+        '"active_identity_facets":[],"active_growth_axes":[],"active_relationship_facets":[],'
+        '"social_posture":"friendly and playful",'
+        '"reflective_themes":[],"active_tensions":[],"dream_motifs":[],'
+        '"response_priorities":["direct"],"response_hazards":["sludge"],'
+        '"answer_strategy":"DirectAnswer","stance_summary":"short"}'
+    )
+    brief, debug = parse_chat_stance_brief_with_debug(raw)
+    assert brief is not None
+    assert debug.get("parse_error") is None
+    assert debug.get("coercion_applied") is True
+    assert brief.conversation_frame == "playful_relational"
+    assert brief.social_posture == ["friendly and playful"]
+
+
+def test_parse_chat_stance_brief_unknown_frame_defaults_to_mixed() -> None:
+    raw = (
+        '{"conversation_frame":"ceremonial_launch","task_mode":"direct_response","identity_salience":"medium",'
+        '"user_intent":"u","self_relevance":"s","juniper_relevance":"j",'
+        '"active_identity_facets":[],"active_growth_axes":[],"active_relationship_facets":[],"social_posture":[],'
+        '"reflective_themes":[],"active_tensions":[],"dream_motifs":[],'
+        '"response_priorities":[],"response_hazards":[],"answer_strategy":"A","stance_summary":"z"}'
+    )
+    brief, debug = parse_chat_stance_brief_with_debug(raw)
+    assert brief is not None
+    assert brief.conversation_frame == "mixed"
 
 
 def test_normalize_chat_stance_brief_deliteralizes_known_phrases() -> None:

@@ -138,3 +138,46 @@ def test_insufficient_data_and_missing_profiles_fail_safely(tmp_path) -> None:
                 candidate_profile_id=current_id,
             )
         )
+
+
+def test_postgres_preferred_source_kind_for_control_plane_reads(monkeypatch) -> None:
+    monkeypatch.setattr(
+        SubstratePolicyProfileStore,
+        "_ensure_postgres_schema",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        SubstratePolicyProfileStore,
+        "_load_from_postgres",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        GraphReviewTelemetryRecorder,
+        "_ensure_postgres_schema",
+        lambda self: None,
+    )
+    monkeypatch.setattr(
+        GraphReviewTelemetryRecorder,
+        "_load_from_postgres",
+        lambda self: [],
+    )
+
+    store = SubstratePolicyProfileStore(postgres_url="postgresql://unit:test@localhost/db")
+    recorder = GraphReviewTelemetryRecorder(postgres_url="postgresql://unit:test@localhost/db")
+    assert store.source_kind() == "postgres"
+    assert recorder.source_kind() == "postgres"
+
+
+def test_postgres_failure_is_explicit_fallback_not_silent(tmp_path) -> None:
+    store = SubstratePolicyProfileStore(
+        postgres_url="postgresql://invalid:invalid@localhost:1/nope",
+        sql_db_path=str(tmp_path / "policy.sqlite3"),
+    )
+    recorder = GraphReviewTelemetryRecorder(
+        postgres_url="postgresql://invalid:invalid@localhost:1/nope",
+        sql_db_path=str(tmp_path / "telemetry.sqlite3"),
+    )
+    assert store.degraded() is True
+    assert recorder.degraded() is True
+    assert store.last_error()
+    assert recorder.last_error()

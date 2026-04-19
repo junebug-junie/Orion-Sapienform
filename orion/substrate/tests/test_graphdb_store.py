@@ -38,16 +38,23 @@ class _FakeGraphDB:
         self.identity: dict[tuple[str, str], str] = {}
 
     def post(self, url, data=None, headers=None, auth=None, timeout=None):  # noqa: ANN001
-        text = str(data or "")
-        ctype = (headers or {}).get("Content-Type")
-        if ctype == "application/sparql-update":
+        if isinstance(data, (bytes, bytearray)):
+            text = data.decode("utf-8")
+        else:
+            text = str(data or "")
+        ctype = (headers or {}).get("Content-Type") or ""
+        base_ct = ctype.split(";", 1)[0].strip().lower()
+        if base_ct == "application/sparql-update":
             self._handle_update(text)
             return _Resp()
-        if ctype == "application/sparql-query":
+        if base_ct == "application/sparql-query":
             return _Resp(payload={"results": {"bindings": self._handle_query(text)}})
         return _Resp(status_code=400)
 
     def _extract_literal(self, text: str, predicate: str) -> str | None:
+        long_match = re.search(rf"{re.escape(predicate)}\s+\"\"\"(.*?)\"\"\"", text, flags=re.DOTALL)
+        if long_match:
+            return long_match.group(1)
         match = re.search(rf"{re.escape(predicate)}\s+\"((?:\\.|[^\"])*)\"", text)
         return match.group(1) if match else None
 

@@ -22,6 +22,13 @@ def load_verb_yaml(verb_name: str) -> dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 
+def _resolve_step_services(step: dict[str, Any], default_services: list[str]) -> list[str]:
+    """Honor explicit `services: []` on a plan step; do not treat it as 'inherit default'."""
+    if "services" in step:
+        return list(step.get("services") or [])
+    return list(default_services)
+
+
 def load_prompt_template(template_ref: Optional[str]) -> Optional[str]:
     if not template_ref:
         return None
@@ -59,7 +66,7 @@ def build_plan_for_verb(verb_name: str, *, mode: str = "brain") -> ExecutionPlan
                     step_name=str(step.get("name") or f"step_{i}"),
                     description=str(step.get("description") or ""),
                     order=int(step.get("order", i)),
-                    services=list(step.get("services") or default_services),
+                    services=_resolve_step_services(step, default_services),
                     prompt_template=step_prompt,
                     requires_gpu=bool(step.get("requires_gpu", False)),
                     requires_memory=bool(step.get("requires_memory", False)),

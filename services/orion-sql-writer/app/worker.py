@@ -57,6 +57,7 @@ from orion.schemas.telemetry.biometrics import BiometricsPayload, BiometricsSumm
 from orion.schemas.telemetry.dream import DreamRequest, DreamResultV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.chat_history import ChatHistoryMessageV1
+from orion.schemas.chat_response_feedback import ChatResponseFeedbackV1
 from orion.schemas.chat_gpt_log import ChatGptLogTurnV1, ChatGptMessageV1
 from orion.schemas.chat_response_feedback import ChatResponseFeedbackV1
 from orion.schemas.social_chat import SocialRoomTurnStoredV1, SocialRoomTurnV1
@@ -88,7 +89,7 @@ logger = logging.getLogger("sql-writer")
 _SPARK_CONTRACT_METRICS = SparkContractMetrics()
 COLLAPSE_STORED_KIND = "collapse.mirror.stored.v1"
 SOCIAL_TURN_STORED_KIND = "social.turn.stored.v1"
-INSERT_ONLY_MODELS = {JournalEntrySQL, SocialRoomTurnSQL}
+INSERT_ONLY_MODELS = {JournalEntrySQL, SocialRoomTurnSQL, ChatResponseFeedbackSQL}
 
 
 def _thought_debug_enabled() -> bool:
@@ -149,6 +150,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "EndogenousRuntimeRecordSQL": (EndogenousRuntimeRecordSQL, EndogenousRuntimeExecutionRecordV1),
     "EndogenousRuntimeAuditSQL": (EndogenousRuntimeAuditSQL, EndogenousRuntimeAuditV1),
     "CalibrationProfileAuditSQL": (CalibrationProfileAuditSQL, CalibrationProfileAuditV1),
+    "ChatResponseFeedbackSQL": (ChatResponseFeedbackSQL, ChatResponseFeedbackV1),
 }
 
 
@@ -424,17 +426,34 @@ def _thought_candidate_and_reason(payload: dict[str, Any]) -> tuple[Optional[str
     if role and role != "assistant" and not has_assistant_response:
         return None, f"role_filtered:{role}"
     rt = payload.get("reasoning_trace")
+    thinking_source = _normalized_text(payload.get("thinking_source")) or "none"
+    reasoning_content = _normalized_text(payload.get("reasoning_content"))
+    inline_think_content = _normalized_text(payload.get("inline_think_content"))
+    spark_meta = payload.get("spark_meta") if isinstance(payload.get("spark_meta"), dict) else {}
+    trace_verb = _normalized_text((spark_meta or {}).get("trace_verb"))
+    thought_capture_step = _normalized_text((spark_meta or {}).get("thought_capture_step"))
+    if (
+        trace_verb == "chat_general"
+        and thought_capture_step == "llm_chat_general"
+        and inline_think_content
+    ):
+        return inline_think_content, "inline_think_content.chat_general_llm_chat_general"
+    if thinking_source == "provider_reasoning" and reasoning_content:
+        return reasoning_content, "reasoning_content.provider"
+    if thinking_source.startswith("inline_think") and inline_think_content:
+        return inline_think_content, f"inline_think_content.{thinking_source}"
     if isinstance(rt, dict):
         candidate = _normalized_text(rt.get("content"))
         if candidate:
-            return candidate, "reasoning_trace.content"
+            return candidate, f"reasoning_trace.content({thinking_source})"
     elif isinstance(rt, str):
         candidate = _normalized_text(rt)
         if candidate:
             return candidate, "reasoning_trace.string"
-    candidate = _normalized_text(payload.get("reasoning_content"))
-    if candidate:
-        return candidate, "reasoning_content"
+    if reasoning_content:
+        return reasoning_content, "reasoning_content"
+    if inline_think_content:
+        return inline_think_content, "inline_think_content"
     traces = payload.get("metacog_traces")
     if isinstance(traces, list):
         for idx, trace in enumerate(traces):
@@ -447,6 +466,25 @@ def _thought_candidate_and_reason(payload: dict[str, Any]) -> tuple[Optional[str
             if candidate:
                 return candidate, f"metacog_traces[{idx}].content"
     return None, "none"
+
+
+def _chat_history_thought_for_merge(sess: Any, filtered_data: dict[str, Any], raw_data: dict[str, Any]) -> Optional[str]:
+    incoming = _normalized_text(filtered_data.get("thought_process"))
+    candidate_id = filtered_data.get("id") or filtered_data.get("correlation_id") or raw_data.get("correlation_id")
+    if not candidate_id:
+        return incoming
+    existing = (
+        sess.query(ChatHistoryLogSQL)
+        .filter(
+            (ChatHistoryLogSQL.id == str(candidate_id))
+            | (ChatHistoryLogSQL.correlation_id == str(candidate_id))
+        )
+        .first()
+    )
+    existing_thought = _normalized_text(getattr(existing, "thought_process", None)) if existing is not None else None
+    if existing_thought:
+        return existing_thought
+    return incoming
 
 
 def _map_spark_to_telemetry_row(
@@ -606,6 +644,16 @@ def _write_row(sql_model_cls, data: dict) -> bool:
                 _debug_snippet(filtered_data.get("thought_process")),
             )
         if sql_model_cls is ChatHistoryLogSQL:
+            preserved_thought = _chat_history_thought_for_merge(sess, filtered_data, data)
+            if preserved_thought:
+                filtered_data["thought_process"] = preserved_thought
+            elif "thought_process" in filtered_data and not _normalized_text(filtered_data.get("thought_process")):
+                filtered_data.pop("thought_process", None)
+            spark_meta = filtered_data.get("spark_meta")
+            top_level_thinking_source = _normalized_text(data.get("thinking_source"))
+            if top_level_thinking_source:
+                merged_spark_meta = _merge_spark_meta(spark_meta, {"thinking_source": top_level_thinking_source})
+                filtered_data["spark_meta"] = merged_spark_meta
             persisted_value = filtered_data.get("thought_process")
             print(
                 "===THINK_HOP=== hop=sql_row_ready "
@@ -976,6 +1024,16 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
     if client_meta is not None:
         extra_sql_fields["client_meta"] = _json_sanitize(client_meta)
     thought_process, thought_source = _thought_candidate_and_reason(payload)
+    logger.info(
+        "sql_writer_thought_selection corr=%s kind=%s reasoning_content_len=%s inline_think_content_len=%s thinking_source=%s selected_source=%s selected_len=%s",
+        env.correlation_id,
+        env.kind,
+        _debug_len(payload.get("reasoning_content")) if isinstance(payload, dict) else 0,
+        _debug_len(payload.get("inline_think_content")) if isinstance(payload, dict) else 0,
+        payload.get("thinking_source") if isinstance(payload, dict) else None,
+        thought_source,
+        _debug_len(thought_process),
+    )
     if env.kind == "chat.history":
         print(
             "===THINK_HOP=== hop=sql_before_assign "
@@ -988,11 +1046,13 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
         )
     if _thought_debug_enabled() and env.kind == "chat.history":
         logger.info(
-            "THOUGHT_DEBUG_SQL_INTAKE stage=chat_history_intake corr=%s payload_keys=%s reasoning_trace_exists=%s reasoning_content_exists=%s candidate_source=%s candidate_len=%s candidate_snippet=%r discarded=%s",
+            "THOUGHT_DEBUG_SQL_INTAKE stage=chat_history_intake corr=%s payload_keys=%s reasoning_trace_exists=%s reasoning_content_exists=%s inline_think_content_exists=%s thinking_source=%s candidate_source=%s candidate_len=%s candidate_snippet=%r discarded=%s",
             env.correlation_id,
             sorted(list(payload.keys())) if isinstance(payload, dict) else [],
             isinstance(payload.get("reasoning_trace"), dict) or isinstance(payload.get("reasoning_trace"), str),
             bool(str(payload.get("reasoning_content") or "").strip()),
+            bool(str(payload.get("inline_think_content") or "").strip()),
+            payload.get("thinking_source"),
             thought_source,
             _debug_len(thought_process),
             _debug_snippet(thought_process),

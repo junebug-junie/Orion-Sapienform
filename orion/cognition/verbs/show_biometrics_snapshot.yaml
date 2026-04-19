@@ -1,0 +1,33 @@
+name: show_biometrics_snapshot
+label: Show Biometrics Snapshot
+description: >
+  Fetch the latest aggregated biometrics snapshot for the Orion biometrics card (current state).
+  Use for "biometrics snapshot", "current biometrics", "health snapshot", or vitals overview.
+  Do NOT use for raw time-series lists (use list_biometrics_recent_readings) or GPU/mesh checks.
+category: ExecutiveControl
+priority: medium
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+timeout_ms: 30000
+max_recursion_depth: 0
+services: []
+execution_mode: capability_backed
+requires_capability_selector: true
+preferred_skill_families:
+  - biometrics_snapshot
+side_effect_level: none
+input_schema:
+  type: object
+  properties:
+    text:
+      type: string
+  required: [text]
+output_schema:
+  type: object
+  properties:
+    selected_verb: { type: string }
+    selected_skill_family: { type: string }
+    selected_skill: { type: string }
+    execution_summary: { type: string }

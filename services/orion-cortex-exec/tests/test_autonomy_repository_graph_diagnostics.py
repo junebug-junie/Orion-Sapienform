@@ -16,6 +16,28 @@ class _FailingQueryClient:
         raise GraphQueryError("boom")
 
 
+class _TimeoutOnDrivesQueryClient:
+    def select(self, sparql: str):
+        if "GRAPH <http://conjourney.net/graph/autonomy/drives>" in sparql:
+            raise GraphQueryError("Read timed out. (read timeout=4.5)", error_type="timeout")
+        if "GRAPH <http://conjourney.net/graph/autonomy/identity>" in sparql:
+            return [
+                {
+                    "artifact_id": {"value": "id-orion-1"},
+                    "summary": {"value": "holds course"},
+                    "anchor_strategy": {"value": "steady"},
+                    "created_at": {"value": "2026-03-31T12:00:00Z"},
+                }
+            ]
+        return []
+
+
+class _ConnectionFailureQueryClient:
+    def select(self, sparql: str):
+        del sparql
+        raise GraphQueryError("Connection refused", error_type="connection_error")
+
+
 class _DrivesOnlyFailingQueryClient:
     def select(self, sparql: str):
         if "GRAPH <http://conjourney.net/graph/autonomy/drives>" in sparql:
@@ -124,9 +146,40 @@ def test_graph_lookup_logs_failed_subquery_name_and_reason(caplog) -> None:
 
     assert result.availability == "unavailable"
     assert result.unavailable_reason == "query_error"
-    assert "subquery=identity status=ok rows=0" in caplog.text
-    assert "subquery=drives status=query_error reason=drive_lookup_failed" in caplog.text
+    assert "subquery=identity status=empty rows=0" in caplog.text
+    assert "subquery=drives status=query_error" in caplog.text
+    assert "reason=drive_lookup_failed" in caplog.text
     assert "failed_subquery=drives" in caplog.text
+
+
+def test_graph_lookup_retains_partial_data_on_timeout(caplog) -> None:
+    repo = GraphAutonomyRepository(
+        endpoint="http://graphdb.local/repositories/collapse",
+        timeout_sec=2.0,
+        query_client=_TimeoutOnDrivesQueryClient(),
+    )
+    caplog.set_level(logging.INFO)
+
+    result = repo.get_latest("orion", observer={"correlation_id": "corr-1"})
+
+    assert result.availability == "available"
+    assert result.unavailable_reason == "timeout"
+    assert result.state is not None
+    assert result.state.identity_summary == "holds course"
+    assert "subquery=drives status=timeout" in caplog.text
+    assert "correlation_id=corr-1" in caplog.text
+    assert (result.subquery_diagnostics or {}).get("drives", {}).get("error_type") == "timeout"
+
+
+def test_graph_lookup_connection_failure_classified() -> None:
+    repo = GraphAutonomyRepository(
+        endpoint="http://graphdb.local/repositories/collapse",
+        timeout_sec=2.0,
+        query_client=_ConnectionFailureQueryClient(),
+    )
+    result = repo.get_latest("orion")
+    assert result.availability == "unavailable"
+    assert result.unavailable_reason == "connection_error"
 
 
 def test_graph_lookup_handles_legacy_active_drive_shape_without_query_error() -> None:

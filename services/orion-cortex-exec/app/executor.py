@@ -7,6 +7,7 @@ Handles recall, planner-react, agent-chain, and LLM Gateway hops over the bus.
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import re
@@ -26,7 +27,8 @@ from orion.core.contracts.recall import RecallQueryV1
 from orion.schemas.agents.schemas import AgentChainRequest, DeliberationRequest
 from orion.core.verbs import VerbResultV1
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, find_collapse_entry, normalize_collapse_entry
-from orion.schemas.cortex.schemas import ExecutionStep, StepExecutionResult
+from orion.core.verbs.base import VerbContext
+from orion.schemas.cortex.schemas import ExecutionPlan, ExecutionStep, PlanExecutionArgs, PlanExecutionRequest, StepExecutionResult
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from orion.schemas.pad.v1 import KIND_PAD_RPC_REQUEST_V1, PadRpcRequestV1, PadRpcResponseV1
@@ -52,11 +54,12 @@ from .core_event_cache import format_recent_turn_effect_alerts, get_core_event_c
 from .trace_cache import get_trace_cache
 from .spark_narrative import spark_phi_hint, spark_phi_narrative
 from .chat_stance import (
+    build_chat_stance_debug_payload,
     build_chat_stance_inputs,
     enforce_chat_stance_quality,
     fallback_chat_stance_brief,
     identity_kernel_with_fallbacks,
-    parse_chat_stance_brief,
+    parse_chat_stance_brief_with_debug,
 )
 
 logger = logging.getLogger("orion.cortex.exec")
@@ -224,11 +227,19 @@ def _resolve_llm_chat_max_tokens(step: ExecutionStep, ctx: Dict[str, Any]) -> Tu
     if requested is not None and requested > 0:
         return requested, requested, "ctx.max_tokens"
 
+    if step.verb_name == "dream_cycle" and step.step_name == "dream_synthesis":
+        return int(settings.llm_dream_max_tokens), requested, "settings.llm_dream_max_tokens"
+
     if step.verb_name == "chat_quick":
         return int(settings.llm_chat_quick_max_tokens), requested, "settings.llm_chat_quick_max_tokens"
 
     if step.verb_name == "chat_general" and step.step_name == "llm_chat_general":
         return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens"
+
+    # journal.compose returns strict JSON; recall-heavy prompts need a general-lane budget or the
+    # model hits max_tokens mid-object (finish_reason=length) and structured output is rejected.
+    if step.verb_name == "journal.compose" and step.step_name == "draft_journal_entry":
+        return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_journal_compose"
 
     return int(settings.llm_chat_max_tokens_default), requested, "settings.llm_chat_max_tokens_default"
 
@@ -804,6 +815,65 @@ def _last_user_message(ctx: Dict[str, Any]) -> str:
     return str(ctx.get("user_message") or "")
 
 
+def _extract_reasoning_fields_from_ctx(ctx: Dict[str, Any]) -> tuple[str | None, str | None, str]:
+    reasoning_content = ctx.get("reasoning_content")
+    inline_think_content = ctx.get("inline_think_content")
+    thinking_source = str(ctx.get("thinking_source") or "none")
+    if (
+        (isinstance(reasoning_content, str) and reasoning_content.strip())
+        or (isinstance(inline_think_content, str) and inline_think_content.strip())
+    ):
+        return (
+            reasoning_content.strip() if isinstance(reasoning_content, str) and reasoning_content.strip() else None,
+            inline_think_content.strip() if isinstance(inline_think_content, str) and inline_think_content.strip() else None,
+            thinking_source,
+        )
+    prior = ctx.get("prior_step_results")
+    if not isinstance(prior, list):
+        return None, None, "none"
+    for step in reversed(prior):
+        if not isinstance(step, dict):
+            continue
+        result = step.get("result")
+        if not isinstance(result, dict):
+            continue
+        llm_payload = result.get("LLMGatewayService")
+        if not isinstance(llm_payload, dict):
+            continue
+        reasoning_content = llm_payload.get("reasoning_content")
+        inline_think_content = llm_payload.get("inline_think_content")
+        thinking_source = str(llm_payload.get("thinking_source") or "none")
+        if isinstance(reasoning_content, str) and reasoning_content.strip():
+            return reasoning_content.strip(), (
+                inline_think_content.strip() if isinstance(inline_think_content, str) and inline_think_content.strip() else None
+            ), "provider_reasoning"
+        if isinstance(inline_think_content, str) and inline_think_content.strip():
+            normalized_source = "inline_think_full_block" if thinking_source == "inline_think" else thinking_source
+            return None, inline_think_content.strip(), normalized_source
+    return None, None, "none"
+
+
+def _resolve_llm_max_tokens(*, ctx: Dict[str, Any], step: ExecutionStep) -> tuple[int, str, int | None]:
+    requested_raw = ctx.get("max_tokens")
+    requested: int | None = None
+    if isinstance(requested_raw, (int, float)) and int(requested_raw) > 0:
+        requested = int(requested_raw)
+
+    if requested is not None:
+        return requested, "ctx_override", requested
+
+    if step.verb_name == "dream_cycle" and step.step_name == "dream_synthesis":
+        return max(1, int(settings.llm_dream_max_tokens)), "dream_default", requested
+
+    if step.verb_name == "chat_general" and step.step_name == "synthesize_chat_stance_brief":
+        return max(1, int(settings.llm_chat_quick_max_tokens)), "quick_default", requested
+    if step.verb_name == "chat_quick":
+        return max(1, int(settings.llm_chat_quick_max_tokens)), "quick_default", requested
+    if step.verb_name == "chat_general" and step.step_name == "llm_chat_general":
+        return max(1, int(settings.llm_chat_general_max_tokens)), "general_default", requested
+    return max(1, int(settings.llm_chat_fallback_max_tokens)), "fallback_default", requested
+
+
 def _json_sanitize(obj: Any, *, _seen: set[int] | None = None, _depth: int = 0, _max_depth: int = 10) -> Any:
     if _seen is None:
         _seen = set()
@@ -1122,6 +1192,7 @@ async def run_recall_step(
                     debug["source_gating"] = recall_dbg.get("source_gating") or {}
                     debug["drop_counts"] = (decision_dbg.get("dropped") or {})
                     debug["selected_summary"] = recall_dbg.get("selected_summary") or []
+                    debug["latency_breakdown_ms"] = recall_dbg.get("latency_breakdown_ms") or {}
         memory_digest = bundle.rendered if hasattr(bundle, "rendered") else ""
         debug["memory_digest"] = memory_digest
         debug["memory_digest_chars"] = len(memory_digest or "")
@@ -1170,7 +1241,7 @@ async def run_recall_step(
         ]
         logs.append(f"ok <- RecallService ({len(bundle.items)} items)")
         logger.info(
-            "recall_visibility corr_id=%s trace_id=%s session_id=%s profile=%s profile_source=%s override_source=%s items=%s source_gating=%s drop_counts=%s summary=%s",
+            "recall_visibility corr_id=%s trace_id=%s session_id=%s profile=%s profile_source=%s override_source=%s items=%s source_gating=%s drop_counts=%s latency_breakdown_ms=%s summary=%s",
             correlation_id,
             trace_val,
             ctx.get("session_id"),
@@ -1180,6 +1251,7 @@ async def run_recall_step(
             len(recall_fragments),
             debug.get("source_gating", {}),
             debug.get("drop_counts", {}),
+            debug.get("latency_breakdown_ms", {}),
             debug["items"],
         )
 
@@ -1223,6 +1295,128 @@ async def run_recall_step(
             debug,
             "",
         )
+
+
+def _ctx_user_text_for_skill_hints(ctx: Dict[str, Any]) -> str:
+    """Best-effort outer user text for skills that infer options from natural language (e.g. docker prune)."""
+    for key in ("raw_user_text", "user_message"):
+        v = ctx.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    lm = _last_user_message(ctx)
+    return str(lm or "").strip()
+
+
+def _plan_request_from_step_ctx(
+    step: ExecutionStep,
+    ctx: Dict[str, Any],
+    correlation_id: str,
+) -> PlanExecutionRequest:
+    """Rebuild PlanExecutionRequest args/context from exec ctx (merged from payload.args.extra and plan metadata)."""
+    pm = ctx.get("plan_metadata") if isinstance(ctx.get("plan_metadata"), dict) else {}
+    skill_args: Dict[str, Any] = {}
+    if isinstance(pm.get("skill_args"), dict):
+        skill_args.update(pm["skill_args"])
+    if isinstance(ctx.get("skill_args"), dict):
+        skill_args.update(ctx["skill_args"])
+    md_top = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+    bridge_sa = md_top.get("capability_bridge_skill_args")
+    if isinstance(bridge_sa, dict):
+        skill_args.update(bridge_sa)
+    verb_n = str(step.verb_name or "")
+    # Capability-bridge nested calls carry user text on Cortex context (raw_user_text / messages) but
+    # historically did not populate plan.metadata.skill_args — NL run_mode for docker prune never fired.
+    if "docker_prune_stopped_containers" in verb_n:
+        hint_keys = ("text", "user_request", "request", "prompt", "natural_language", "instruction", "description")
+        if not any(isinstance(skill_args.get(k), str) and str(skill_args.get(k)).strip() for k in hint_keys):
+            ut = _ctx_user_text_for_skill_hints(ctx)
+            if ut:
+                skill_args["user_request"] = ut
+                logger.info(
+                    "docker_prune_skill_args_injected corr=%s verb=%s user_request_len=%s head=%r",
+                    correlation_id,
+                    verb_n,
+                    len(ut),
+                    ut[:200],
+                )
+            else:
+                logger.info(
+                    "docker_prune_skill_args_empty_hints corr=%s verb=%s ctx_keys=%s raw_user_text=%r",
+                    correlation_id,
+                    verb_n,
+                    sorted(str(k) for k in ctx.keys())[:40],
+                    (ctx.get("raw_user_text") or "")[:120],
+                )
+    # Nested capability bridge passes user text as messages/raw_user_text but often omits
+    # plan.metadata.skill_args; notify_chat_message reads body_text (not planner "text").
+    if "notify_chat_message" in verb_n:
+        if not str(skill_args.get("body_text") or "").strip():
+            ut = _ctx_user_text_for_skill_hints(ctx)
+            if ut:
+                skill_args["body_text"] = ut
+                logger.info(
+                    "notify_chat_skill_args_injected corr=%s verb=%s body_text_len=%s head=%r",
+                    correlation_id,
+                    verb_n,
+                    len(ut),
+                    ut[:200],
+                )
+    extra: Dict[str, Any] = {}
+    if skill_args:
+        extra["skill_args"] = skill_args
+    for key in ("packs", "options", "mode", "recall", "diagnostic"):
+        if key in ctx and ctx[key] is not None:
+            extra[key] = ctx[key]
+    ctx_metadata: Dict[str, Any] = dict(pm) if isinstance(pm, dict) else {}
+    if skill_args:
+        ctx_metadata["skill_args"] = skill_args
+    return PlanExecutionRequest(
+        plan=ExecutionPlan(verb_name=step.verb_name, steps=[]),
+        args=PlanExecutionArgs(
+            request_id=str(ctx.get("request_id") or correlation_id),
+            user_id=ctx.get("user_id"),
+            trigger_source=ctx.get("trigger_source"),
+            extra=extra,
+        ),
+        context={"metadata": ctx_metadata},
+    )
+
+
+def _local_skill_payload_failure_reason(skill_payload: Dict[str, Any]) -> str | None:
+    """
+    If a SkillVerbOutput model_dump indicates the skill did not succeed in-domain, return a short reason
+    so the exec step is marked fail (orch ok=false) instead of false-green success.
+    """
+    if not isinstance(skill_payload, dict):
+        return None
+    if skill_payload.get("ok") is False:
+        err = skill_payload.get("error")
+        if isinstance(err, dict) and err.get("message"):
+            return str(err.get("message") or "").strip() or None
+        return str(skill_payload.get("status") or "failed").strip() or None
+    meta = skill_payload.get("metadata")
+    if not isinstance(meta, dict):
+        return None
+    sr = meta.get("skill_result")
+    if not isinstance(sr, dict):
+        return None
+    # Mesh / tailscale-style
+    if sr.get("unsupported") is True and sr.get("available") is False:
+        return str(sr.get("reason") or "unsupported").strip() or "unsupported"
+    if sr.get("available") is False and sr.get("reason"):
+        return str(sr.get("reason")).strip()
+    # Disk snapshot: only when every device is unsupported (e.g. smartctl missing), not when some
+    # failed/warned with real probe output.
+    devices = sr.get("devices")
+    summary = sr.get("summary")
+    if isinstance(devices, list) and isinstance(summary, dict) and len(devices) > 0:
+        unsup = int(summary.get("unsupported") or 0)
+        healthy = int(summary.get("healthy") or 0)
+        failed = int(summary.get("failed") or 0)
+        warning = int(summary.get("warning") or 0)
+        if unsup >= len(devices) and healthy == 0 and failed == 0 and warning == 0:
+            return "disk_health_unavailable_for_all_probed_devices"
+    return None
 
 
 async def call_step_services(
@@ -1269,7 +1463,12 @@ async def call_step_services(
     planner_client = PlannerReactClient(bus)
     agent_client = AgentChainClient(bus)
 
-    def _record_scoped_step(status: str, error: str | None = None) -> None:
+    def _record_scoped_step(
+        status: str,
+        error: str | None = None,
+        result_payload: Dict[str, Any] | None = None,
+        logs_payload: List[str] | None = None,
+    ) -> None:
         scoped = ctx.get("prior_step_results_by_corr")
         if not isinstance(scoped, dict):
             return
@@ -1277,18 +1476,116 @@ async def call_step_services(
         if not isinstance(scoped_list, list):
             scoped_list = []
             scoped[run_scope] = scoped_list
-        scoped_list.append(
-            {
-                "step_name": step.step_name,
-                "verb_name": step.verb_name,
-                "status": status,
-                "error": error,
-                "services": list(step.services or []),
-            }
-        )
+        scoped_entry = {
+            "step_name": step.step_name,
+            "verb_name": step.verb_name,
+            "status": status,
+            "error": error,
+            "services": list(step.services or []),
+        }
+        if isinstance(result_payload, dict):
+            scoped_entry["result"] = result_payload
+        if isinstance(logs_payload, list):
+            scoped_entry["logs"] = list(logs_payload)
+        scoped_list.append(scoped_entry)
         ctx["prior_step_results"] = list(scoped_list)
 
-    prepare_brain_reply_context(ctx)
+    if _should_prepare_brain_reply_context(step=step, ctx=ctx):
+        prepare_brain_reply_context(ctx)
+
+    if str(step.verb_name or "") == "chat_general" and str(step.step_name or "") == "synthesize_chat_stance_brief":
+        ensure_chat_stance_pipeline_ctx(ctx)
+
+    # Skill YAMLs may list services: [] while the work is implemented as local verb_adapters.
+    # Without this branch the service loop runs zero times and final_text assembly sees no candidates.
+    if not step.services and str(step.verb_name or "").startswith("skills."):
+        from . import verb_adapters as _verb_adapters  # noqa: F401 — register skills.* on registry
+
+        from orion.core.verbs.registry import registry
+
+        verb_cls = registry.get(step.verb_name)
+        if verb_cls is None:
+            err = f"local_skill_verb_not_registered:{step.verb_name}"
+            logger.error(
+                "local_skill_verb_missing_registry corr_id=%s verb=%s — empty services with no registered adapter; "
+                "check cortex-exec loads verb_adapters",
+                correlation_id,
+                step.verb_name,
+            )
+            logs.append(f"fail <- {err}")
+            merged_result["error"] = {"message": err, "verb": step.verb_name}
+            _record_scoped_step("fail", err, merged_result, logs)
+            return StepExecutionResult(
+                status="fail",
+                verb_name=step.verb_name,
+                step_name=step.step_name,
+                order=step.order,
+                result=merged_result,
+                latency_ms=int((time.time() - t0) * 1000),
+                node=settings.node_name,
+                logs=logs,
+                error=err,
+            )
+        logs.append(f"exec -> local_skill_verb:{step.verb_name}")
+        try:
+            plan_req = _plan_request_from_step_ctx(step, ctx, correlation_id)
+            vctx = VerbContext(
+                request_id=str(ctx.get("request_id") or correlation_id),
+                meta={
+                    "correlation_id": correlation_id,
+                    "bus": bus,
+                    "source": source,
+                },
+            )
+            raw = verb_cls().execute(vctx, plan_req)
+            if inspect.isawaitable(raw):
+                out, _effects = await raw
+            else:
+                out, _effects = raw
+            merged_result[step.verb_name] = out.model_dump(mode="json")
+            fail_reason = _local_skill_payload_failure_reason(merged_result[step.verb_name])
+            if fail_reason:
+                logs.append(f"fail <- local_skill_domain_negative:{step.verb_name}:{fail_reason}")
+                _record_scoped_step("fail", fail_reason, merged_result, logs)
+                return StepExecutionResult(
+                    status="fail",
+                    verb_name=step.verb_name,
+                    step_name=step.step_name,
+                    order=step.order,
+                    result=merged_result,
+                    spark_vector=spark_vector,
+                    latency_ms=int((time.time() - t0) * 1000),
+                    node=settings.node_name,
+                    logs=logs,
+                    error=fail_reason,
+                )
+        except Exception as e:
+            logger.exception("local_skill_verb_failed verb=%s", step.verb_name)
+            logs.append(f"exception <- local_skill_verb:{step.verb_name}: {e}")
+            _record_scoped_step("fail", str(e), merged_result, logs)
+            return StepExecutionResult(
+                status="fail",
+                verb_name=step.verb_name,
+                step_name=step.step_name,
+                order=step.order,
+                result=merged_result,
+                latency_ms=int((time.time() - t0) * 1000),
+                node=settings.node_name,
+                logs=logs,
+                error=str(e),
+            )
+        _record_scoped_step("success", None, merged_result, logs)
+        return StepExecutionResult(
+            status="success",
+            verb_name=step.verb_name,
+            step_name=step.step_name,
+            order=step.order,
+            result=merged_result,
+            spark_vector=spark_vector,
+            latency_ms=int((time.time() - t0) * 1000),
+            node=settings.node_name,
+            logs=logs,
+        )
 
     for service in step.services:
         reply_channel = f"orion:exec:result:{service}:{uuid4()}"
@@ -1337,6 +1634,7 @@ async def call_step_services(
 
                 request_object = ChatRequestPayload(
                     model=req_model,
+                    profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
                     messages=messages_payload,
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
                     route="metacog",
@@ -1524,6 +1822,7 @@ async def call_step_services(
 
                 request_object = ChatRequestPayload(
                     model=req_model,
+                    profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
                     messages=messages_payload,
                     raw_user_text="metacog_enrich",
                     route="metacog",
@@ -1682,7 +1981,40 @@ async def call_step_services(
                     continue
 
                 try:
+                    reasoning_content, inline_think_content, thinking_source = _extract_reasoning_fields_from_ctx(ctx)
+                    thought_candidate = None
+                    thought_source = "none"
+                    if thinking_source == "provider_reasoning" and isinstance(reasoning_content, str) and reasoning_content.strip():
+                        thought_candidate = reasoning_content.strip()
+                        thought_source = "reasoning_content.provider_reasoning"
+                    elif thinking_source.startswith("inline_think") and isinstance(inline_think_content, str) and inline_think_content.strip():
+                        thought_candidate = inline_think_content.strip()
+                        thought_source = f"inline_think_content.{thinking_source}"
+
                     entry = normalize_collapse_entry(final_data)
+                    entry_payload = entry.model_dump(mode="json")
+                    state_snapshot = entry_payload.get("state_snapshot")
+                    if not isinstance(state_snapshot, dict):
+                        state_snapshot = {}
+                    telemetry = state_snapshot.get("telemetry")
+                    if not isinstance(telemetry, dict):
+                        telemetry = {}
+                    telemetry["reasoning_content"] = reasoning_content if isinstance(reasoning_content, str) else None
+                    telemetry["inline_think_content"] = inline_think_content if isinstance(inline_think_content, str) else None
+                    telemetry["thinking_source"] = thinking_source
+                    telemetry["thought_process"] = thought_candidate
+                    telemetry["thought_process_source"] = thought_source
+                    state_snapshot["telemetry"] = telemetry
+                    entry_payload["state_snapshot"] = state_snapshot
+                    logger.info(
+                        "metacog_publish_reasoning_payload corr_id=%s reasoning_content_len=%s inline_think_content_len=%s thinking_source=%s selected_thought_len=%s selected_thought_source=%s",
+                        correlation_id,
+                        len(reasoning_content) if isinstance(reasoning_content, str) else 0,
+                        len(inline_think_content) if isinstance(inline_think_content, str) else 0,
+                        thinking_source,
+                        len(thought_candidate) if isinstance(thought_candidate, str) else 0,
+                        thought_source,
+                    )
                     event_id = str(uuid4())
                     trace_meta = _trace_meta_from_ctx(
                         ctx,
@@ -1696,7 +2028,7 @@ async def call_step_services(
                         source=source,
                         correlation_id=correlation_id,
                         trace=trace_meta,
-                        payload=entry.model_dump(mode="json"),
+                        payload=entry_payload,
                     )
 
                     await bus.publish(settings.channel_collapse_sql_write, env)
@@ -2041,6 +2373,7 @@ async def call_step_services(
                 req_model = ctx.get("model") or ctx.get("llm_model") or None
                 memory_digest = (ctx.get("memory_digest") or "").strip()
                 prompt = _append_memory_digest(prompt, memory_digest)
+                effective_max_tokens, max_tokens_source, requested_max_tokens = _resolve_llm_max_tokens(ctx=ctx, step=step)
                 if diagnostic:
                     logger.info(
                         "memory_digest_present=%s memory_digest_chars=%s",
@@ -2141,6 +2474,33 @@ async def call_step_services(
                     step.step_name,
                     llm_route,
                 )
+                logger.info(
+                    "llm_chat_budget corr_id=%s verb=%s step=%s requested_max_tokens=%s effective_max_tokens=%s source=%s",
+                    correlation_id,
+                    step.verb_name,
+                    step.step_name,
+                    requested_max_tokens,
+                    effective_max_tokens,
+                    max_tokens_source,
+                )
+
+                effective_max_tokens, requested_max_tokens, max_tokens_source = _resolve_llm_chat_max_tokens(step, ctx)
+                prompt_token_count = _safe_int(ctx.get("prompt_token_count"))
+                logger.info(
+                    "llm_chat_budget corr_id=%s mode=%s verb=%s step=%s route=%s requested_max_tokens=%s effective_max_tokens=%s max_tokens_source=%s profile=%s model=%s prompt_token_count=%s prompt_char_count=%s",
+                    correlation_id,
+                    ctx.get("mode"),
+                    step.verb_name,
+                    step.step_name,
+                    llm_route,
+                    requested_max_tokens,
+                    effective_max_tokens,
+                    max_tokens_source,
+                    ctx.get("profile_name"),
+                    req_model,
+                    prompt_token_count,
+                    len(prompt or ""),
+                )
 
                 effective_max_tokens, requested_max_tokens, max_tokens_source = _resolve_llm_chat_max_tokens(step, ctx)
                 prompt_token_count = _safe_int(ctx.get("prompt_token_count"))
@@ -2162,6 +2522,10 @@ async def call_step_services(
 
                 request_object = ChatRequestPayload(
                     model=req_model,
+                    profile=(
+                        ctx.get("profile_name")
+                        or (settings.atlas_metacog_profile_name if llm_route == "metacog" else None)
+                    ),
                     messages=messages_payload,
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
                     route=llm_route,
@@ -2219,9 +2583,11 @@ async def call_step_services(
                 merged_result[service] = result_payload
                 if step.verb_name == "chat_general" and step.step_name == "synthesize_chat_stance_brief":
                     brief_text = _extract_llm_text(result_object)
-                    parsed_brief = parse_chat_stance_brief(brief_text)
+                    parsed_brief, parse_debug = parse_chat_stance_brief_with_debug(brief_text)
+                    fallback_invoked = False
                     if parsed_brief is None:
                         parsed_brief = fallback_chat_stance_brief(ctx)
+                        fallback_invoked = True
                         logs.append("warn <- chat stance brief parse failed; using fallback brief")
                     else:
                         logger.info(
@@ -2231,6 +2597,7 @@ async def call_step_services(
                             len(parsed_brief.active_relationship_facets),
                             len(parsed_brief.response_priorities),
                         )
+                    synthesized_brief = parsed_brief.model_dump(mode="json")
                     parsed_brief, semantic_fallback = enforce_chat_stance_quality(parsed_brief, ctx)
                     if semantic_fallback:
                         logs.append("warn <- chat stance brief semantic guard enriched/replaced brief")
@@ -2242,7 +2609,19 @@ async def call_step_services(
                         semantic_fallback,
                     )
                     ctx["chat_stance_brief"] = parsed_brief.model_dump(mode="json")
+                    quality_modified = synthesized_brief != ctx["chat_stance_brief"]
+                    ctx["chat_stance_debug"] = build_chat_stance_debug_payload(
+                        ctx=ctx,
+                        synthesized_brief=synthesized_brief,
+                        final_brief=ctx["chat_stance_brief"],
+                        fallback_invoked=fallback_invoked,
+                        normalized_applied=bool(parse_debug.get("normalized_applied")),
+                        semantic_fallback=semantic_fallback,
+                        quality_modified=quality_modified,
+                        parse_error=str(parse_debug.get("parse_error") or "") or None,
+                    )
                     merged_result["ChatStanceBrief"] = ctx["chat_stance_brief"]
+                    merged_result["ChatStanceDebug"] = ctx["chat_stance_debug"]
 
                 if spark_vector is None:
                     try:
@@ -2438,7 +2817,7 @@ async def call_step_services(
         except Exception as e:
             logs.append(f"exception <- {service}: {e}")
             logger.error(f"Service {service} failed: {e}")
-            _record_scoped_step("fail", f"{service}: {e}")
+            _record_scoped_step("fail", f"{service}: {e}", merged_result, logs)
             return StepExecutionResult(
                 status="fail",
                 verb_name=step.verb_name,
@@ -2453,7 +2832,7 @@ async def call_step_services(
 
     if step_failed:
         logs.append(f"fail-fast <- {step_error}")
-        _record_scoped_step("fail", step_error)
+        _record_scoped_step("fail", step_error, merged_result, logs)
         return StepExecutionResult(
             status="fail",
             verb_name=step.verb_name,
@@ -2467,7 +2846,7 @@ async def call_step_services(
             error=step_error,
         )
 
-    _record_scoped_step("success", None)
+    _record_scoped_step("success", None, merged_result, logs)
     return StepExecutionResult(
         status="success",
         verb_name=step.verb_name,
@@ -2479,6 +2858,19 @@ async def call_step_services(
         node=settings.node_name,
         logs=logs,
     )
+
+
+def ensure_chat_stance_pipeline_ctx(ctx: Dict[str, Any]) -> None:
+    """Populate identity kernel and chat_stance_inputs for chat_general stance synthesis in any exec mode.
+
+    Brain-lane uses prepare_brain_reply_context first; this path covers agent (and other) modes where
+    stance debug and the stance LLM prompt must still see the same bounded inputs.
+    """
+    existing = ctx.get("chat_stance_inputs")
+    if isinstance(existing, dict) and "identity" in existing and "autonomy" in existing:
+        return
+    _inject_identity_context(ctx)
+    build_chat_stance_inputs(ctx)
 
 
 def prepare_brain_reply_context(ctx: Dict[str, Any], *, force_refresh: bool = False) -> Dict[str, Any] | None:
@@ -2503,3 +2895,13 @@ def prepare_brain_reply_context(ctx: Dict[str, Any], *, force_refresh: bool = Fa
         len((stance_inputs.get("identity") or {}).get("response_policy") or []),
     )
     return stance_inputs
+
+
+def _should_prepare_brain_reply_context(*, step: ExecutionStep, ctx: Dict[str, Any]) -> bool:
+    mode = str(ctx.get("mode") or "").strip().lower()
+    if mode != "brain":
+        return False
+    verb_name = str(step.verb_name or "").strip().lower()
+    if verb_name.startswith("skills.runtime."):
+        return False
+    return True

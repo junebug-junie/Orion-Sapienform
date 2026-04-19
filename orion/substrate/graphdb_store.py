@@ -49,6 +49,15 @@ class GraphDBSubstrateStore(SubstrateGraphStore):
         self._cfg = cfg
         self._cache = InMemorySubstrateGraphStore()
 
+    def _sparql_update_endpoint(self) -> str:
+        """GraphDB accepts SPARQL UPDATE only on the RDF4J statements endpoint, not the repo root."""
+        base = str(self._cfg.endpoint or "").rstrip("/")
+        if not base:
+            return base
+        if base.endswith("/statements"):
+            return base
+        return f"{base}/statements"
+
     # ---- canonical write / lookup path ----
     def get_node_by_id(self, node_id: str) -> BaseSubstrateNodeV1 | None:
         cached = self._cache.get_node_by_id(node_id)
@@ -142,9 +151,9 @@ INSERT {{
       orion:confidence {self._typed_float(node.signals.confidence)} ;
       orion:salience {self._typed_float(node.signals.salience)} ;
       orion:observedAt {self._typed_datetime(node.temporal.observed_at.isoformat())} ;
-      orion:metadataJson {self._lit(metadata_json)} ;
-      orion:provenanceJson {self._lit(provenance_json)} ;
-      orion:payloadJson {self._lit(payload_json)} .
+      orion:metadataJson {self._lit_long(metadata_json)} ;
+      orion:provenanceJson {self._lit_long(provenance_json)} ;
+      orion:payloadJson {self._lit_long(payload_json)} .
 {subject_clause}
 {evidence_values}
   }}
@@ -180,9 +189,9 @@ INSERT {{
       orion:confidence {self._typed_float(edge.confidence)} ;
       orion:salience {self._typed_float(edge.salience)} ;
       orion:observedAt {self._typed_datetime(edge.temporal.observed_at.isoformat())} ;
-      orion:metadataJson {self._lit(metadata_json)} ;
-      orion:provenanceJson {self._lit(provenance_json)} ;
-      orion:payloadJson {self._lit(payload_json)} .
+      orion:metadataJson {self._lit_long(metadata_json)} ;
+      orion:provenanceJson {self._lit_long(provenance_json)} ;
+      orion:payloadJson {self._lit_long(payload_json)} .
 {evidence_values}
   }}
 }}
@@ -470,9 +479,9 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {iri} ?p ?o . }} }} }}
         try:
             response = requests.post(
                 self._cfg.endpoint,
-                data=sparql,
+                data=sparql.encode("utf-8"),
                 headers={
-                    "Content-Type": "application/sparql-query",
+                    "Content-Type": "application/sparql-query; charset=utf-8",
                     "Accept": "application/sparql-results+json",
                 },
                 auth=self._auth(),
@@ -487,15 +496,21 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {iri} ?p ?o . }} }} }}
     def _update(self, sparql: str) -> None:
         try:
             response = requests.post(
-                self._cfg.endpoint,
-                data=sparql,
-                headers={"Content-Type": "application/sparql-update"},
+                self._sparql_update_endpoint(),
+                data=sparql.encode("utf-8"),
+                headers={"Content-Type": "application/sparql-update; charset=utf-8"},
                 auth=self._auth(),
                 timeout=self._cfg.timeout_sec,
             )
             response.raise_for_status()
         except Exception as exc:  # noqa: BLE001
-            raise GraphDBSubstrateStoreError(str(exc)) from exc
+            detail = ""
+            try:
+                if isinstance(exc, requests.HTTPError) and exc.response is not None:
+                    detail = (exc.response.text or "")[:1200]
+            except Exception:  # noqa: BLE001
+                detail = ""
+            raise GraphDBSubstrateStoreError(f"{exc}{f' | {detail}' if detail else ''}") from exc
 
     def _auth(self) -> tuple[str, str] | None:
         if self._cfg.user and self._cfg.password:
@@ -513,6 +528,12 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {iri} ?p ?o . }} }} }}
     def _lit(value: Any) -> str:
         escaped = str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
         return f'"{escaped}"'
+
+    @staticmethod
+    def _lit_long(value: Any) -> str:
+        """SPARQL STRING_LITERAL_LONG2 — safe for JSON payloads with quotes and newlines."""
+        text = str(value).replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
+        return f'"""{text}"""'
 
     @staticmethod
     def _typed_float(value: float) -> str:

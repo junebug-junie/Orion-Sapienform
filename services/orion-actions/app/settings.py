@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     actions_notify_dedupe_window_seconds: int = Field(86400, alias="ACTIONS_NOTIFY_DEDUPE_WINDOW_SECONDS")
     actions_max_concurrency: int = Field(2, alias="ACTIONS_MAX_CONCURRENCY")
 
-    actions_recall_profile: str = Field("reflect.v1", alias="ACTIONS_RECALL_PROFILE")
+    actions_recall_profile: str = Field("collapse_mirror.v1", alias="ACTIONS_RECALL_PROFILE")
     actions_exec_timeout_seconds: float = Field(240.0, alias="ACTIONS_EXEC_TIMEOUT_SECONDS")
     actions_daily_timezone: str = Field("America/Denver", alias="ACTIONS_DAILY_TIMEZONE")
     actions_daily_run_on_startup: bool = Field(False, alias="ACTIONS_DAILY_RUN_ON_STARTUP")

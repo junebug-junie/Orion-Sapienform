@@ -34,6 +34,8 @@ services:
       # --- Request Channels for Service
       - PLANNER_REQUEST_CHANNEL=${PLANNER_REQUEST_CHANNEL}
       - PLANNER_RESULT_PREFIX=${PLANNER_RESULT_PREFIX}
+
+      - PLANNER_MAX_COMPLETION_TOKENS=${PLANNER_MAX_COMPLETION_TOKENS:-2048}
     networks:
       - ${NET}
 

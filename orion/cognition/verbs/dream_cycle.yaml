@@ -18,7 +18,7 @@ requires_memory: true
 
 recall_profile: dream.v1
 
-timeout_ms: 120000
+timeout_ms: 300000
 max_recursion_depth: 1
 
 services:

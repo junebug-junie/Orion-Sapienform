@@ -160,6 +160,7 @@ def test_qwen3_8b_balanced_profile_forwards_enable_thinking_false(monkeypatch):
         lambda _server_bin: {
             "--jinja",
             "--chat-template-kwargs",
+            "--reasoning-budget",
             "--no-context-shift",
             "--n-predict",
             "--temp",
@@ -180,3 +181,5 @@ def test_qwen3_8b_balanced_profile_forwards_enable_thinking_false(monkeypatch):
     assert "--chat-template-kwargs" in cmd
     kwargs_val = _find_flag_value(cmd, "--chat-template-kwargs")
     assert json.loads(kwargs_val) == {"enable_thinking": False}
+    assert "--reasoning-budget" in cmd
+    assert _find_flag_value(cmd, "--reasoning-budget") == "0"

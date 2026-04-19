@@ -228,6 +228,8 @@ profiles:
 
       chat_template_kwargs:
         enable_thinking: false
+      # llama.cpp: --reasoning-budget 0 disables Qwen3 thinking when template kwargs are ignored (newer server)
+      reasoning_budget: 0
 
       # Non-thinking mode sampling (Qwen3 model card)
       temperature: 0.7
@@ -243,8 +245,8 @@ profiles:
     notes: |
       Balanced profile for Qwen3-8B on one V100 16GB; thinking disabled only for workers using THIS profile key.
       - Scope: each orion-llamacpp-host process loads one LLM_PROFILE_NAME; other profiles/workers are unaffected.
-      - Knob: llamacpp.chat_template_kwargs.enable_thinking false is passed to llama-server as --chat-template-kwargs (see host logs: Effective llama-server argv).
-      - If thinking still appears: confirm this profile name is set for that container, restart the worker, and ensure the llama-server binary lists --chat-template-kwargs in --help (upgrade image if the flag is skipped).
+      - Knobs: (1) chat_template_kwargs.enable_thinking false -> --chat-template-kwargs; (2) reasoning_budget 0 -> --reasoning-budget 0 (llama.cpp; use when kwargs alone still leave thinking on).
+      - If thinking still appears: check logs for ERROR about missing flags; upgrade pinned llama-server (Dockerfile LLAMACPP_IMAGE_TAG) so --chat-template-kwargs and/or --reasoning-budget appear in llama-server --help.
       - Q4_K_M for VRAM headroom with 16k context.
       - Gateway does not set enable_thinking per request.
       - If OOM: lower ctx_size or use Qwen_Qwen3-8B-Q3_K_M.gguf from the same repo.

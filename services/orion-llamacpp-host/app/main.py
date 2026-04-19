@@ -237,6 +237,9 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
         # builds without the flag log a skip from append_flag and keep default template behavior.
         append_flag("--chat-template-kwargs", json.dumps(cfg.chat_template_kwargs, separators=(",", ":")))
 
+    if cfg.reasoning_budget is not None:
+        append_flag("--reasoning-budget", str(int(cfg.reasoning_budget)))
+
     if reasoning_format_emitted and "--jinja" not in cmd:
         logger.warning("--reasoning-format requested but --jinja could not be emitted")
 
@@ -277,6 +280,18 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
         append_flag("--min-p", str(cfg.min_p))
     if cfg.presence_penalty is not None:
         append_flag("--presence-penalty", str(cfg.presence_penalty))
+
+    if cfg.chat_template_kwargs is not None and "--chat-template-kwargs" not in cmd:
+        logger.error(
+            "Profile requested chat_template_kwargs but --chat-template-kwargs was not emitted "
+            "(unsupported by this llama-server or missing from --help). Qwen3 may stay in default thinking; "
+            "upgrade llama-server or set reasoning_budget: 0 if supported."
+        )
+    if cfg.reasoning_budget is not None and "--reasoning-budget" not in cmd:
+        logger.error(
+            "Profile requested reasoning_budget but --reasoning-budget was not emitted; "
+            "upgrade llama-server to a build that supports this flag."
+        )
 
     logger.info("Effective llama-server argv: %s", " ".join(cmd))
 

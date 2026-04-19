@@ -1,0 +1,33 @@
+services:
+  orion-pageindex:
+    build:
+      context: ../..
+      dockerfile: services/orion-pageindex/Dockerfile
+    container_name: ${PROJECT:-orion}-pageindex
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      SERVICE_NAME: ${SERVICE_NAME:-orion-pageindex}
+      SERVICE_VERSION: ${SERVICE_VERSION:-0.1.0}
+      NODE_NAME: ${NODE_NAME:-athena}
+      PORT: ${PORT:-8360}
+      JOURNAL_PG_DSN: ${JOURNAL_PG_DSN:-postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney}
+      JOURNAL_INDEX_TABLE: ${JOURNAL_INDEX_TABLE:-journal_entry_index}
+      PAGEINDEX_IMPL: ${PAGEINDEX_IMPL:-actual}
+      PAGEINDEX_INSTALLATION_MODE: ${PAGEINDEX_INSTALLATION_MODE:-cli}
+      PAGEINDEX_REPO_PATH: ${PAGEINDEX_REPO_PATH:-/opt/PageIndex}
+      PAGEINDEX_RUN_SCRIPT: ${PAGEINDEX_RUN_SCRIPT:-run_pageindex.py}
+      PAGEINDEX_PYTHON_BIN: ${PAGEINDEX_PYTHON_BIN:-python3}
+      PAGEINDEX_BUILD_ARGS: ${PAGEINDEX_BUILD_ARGS:---md_path {md_path} --output_dir {artifact_dir}}
+      PAGEINDEX_QUERY_ARGS: ${PAGEINDEX_QUERY_ARGS:---md_path {md_path} --output_dir {artifact_dir} --query {query}}
+      PAGEINDEX_TIMEOUT_SEC: ${PAGEINDEX_TIMEOUT_SEC:-120}
+      PAGEINDEX_DATA_DIR: ${PAGEINDEX_DATA_DIR:-/data/pageindex}
+    volumes:
+      - pageindex-data:/data/pageindex
+      - ${PAGEINDEX_HOST_REPO_PATH:-/opt/PageIndex}:/opt/PageIndex:ro
+    ports:
+      - "8360:8360"
+
+volumes:
+  pageindex-data:

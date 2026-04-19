@@ -25,7 +25,7 @@ from orion.schemas.actions.mesh_ops import (
     RepoPullRequestDigestItemV1,
     RepoRecentChangesDigestV1,
 )
-from orion.journaler.schemas import JournalEntryDraftV1, JournalEntryWriteV1, JournalTriggerV1
+from orion.journaler.schemas import JournalEntryDraftV1, JournalEntryIndexV1, JournalEntryWriteV1, JournalTriggerV1
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorStoredV1
 from orion.schemas.cortex.contracts import (
     AgentTraceStepV1,
@@ -405,6 +405,15 @@ from orion.schemas.notify import (
 )
 from orion.schemas.topic import TopicSummaryEventV1, TopicShiftEventV1, TopicRailAssignedV1
 from orion.schemas.chat_stance import ChatStanceBrief
+from orion.schemas.evidence_index import (
+    EvidenceQueryResultItemV1,
+    EvidenceQueryV1,
+    EvidenceUnitV1,
+    MarkdownSpecIngestV1,
+    ParsedDocumentBlockV1,
+    ParsedDocumentIngestV1,
+    ParsedDocumentSectionV1,
+)
 from orion.schemas.topic_foundry import (
     KgEdgeIngestV1,
     TopicFoundryDriftAlertV1,
@@ -772,6 +781,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "DailyPulseV1": DailyPulseV1,
     "JournalTriggerV1": JournalTriggerV1,
     "JournalEntryDraftV1": JournalEntryDraftV1,
+    "JournalEntryIndexV1": JournalEntryIndexV1,
     "JournalEntryWriteV1": JournalEntryWriteV1,
     "DailyMetacogV1": DailyMetacogV1,
     "MeshNodeStatusV1": MeshNodeStatusV1,
@@ -805,6 +815,13 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "BoundCapabilityExecutionRequestV1": BoundCapabilityExecutionRequestV1,
     "BoundCapabilityExecutionResultV1": BoundCapabilityExecutionResultV1,
     "BoundCapabilityExecutionFailureV1": BoundCapabilityExecutionFailureV1,
+    "EvidenceUnitV1": EvidenceUnitV1,
+    "EvidenceQueryV1": EvidenceQueryV1,
+    "EvidenceQueryResultItemV1": EvidenceQueryResultItemV1,
+    "MarkdownSpecIngestV1": MarkdownSpecIngestV1,
+    "ParsedDocumentIngestV1": ParsedDocumentIngestV1,
+    "ParsedDocumentSectionV1": ParsedDocumentSectionV1,
+    "ParsedDocumentBlockV1": ParsedDocumentBlockV1,
 
 }
 

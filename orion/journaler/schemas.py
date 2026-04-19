@@ -60,3 +60,35 @@ class JournalEntryWriteV1(BaseModel):
     source_kind: JournalSourceKind | None = None
     source_ref: str | None = None
     correlation_id: str | None = None
+
+
+class JournalEntryIndexV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    entry_id: str
+    created_at: datetime
+    author: str
+    mode: JournalMode
+    title: str | None = None
+    body: str
+
+    source_kind: str | None = None
+    source_ref: str | None = None
+    correlation_id: str | None = None
+    trigger_kind: str | None = None
+    trigger_summary: str | None = None
+
+    conversation_frame: str | None = None
+    task_mode: str | None = None
+    identity_salience: str | None = None
+    answer_strategy: str | None = None
+    stance_summary: str | None = None
+
+    active_identity_facets: list[str] | None = None
+    active_growth_axes: list[str] | None = None
+    active_relationship_facets: list[str] | None = None
+    social_posture: list[str] | None = None
+    reflective_themes: list[str] | None = None
+    active_tensions: list[str] | None = None
+    dream_motifs: list[str] | None = None
+    response_hazards: list[str] | None = None

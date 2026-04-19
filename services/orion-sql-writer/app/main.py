@@ -245,6 +245,100 @@ async def lifespan(app: FastAPI):
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS idx_journal_entries_correlation_id ON journal_entries (correlation_id);"
             )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS journal_entry_index (
+                    entry_id TEXT PRIMARY KEY,
+                    created_at TIMESTAMPTZ NOT NULL,
+                    author TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    title TEXT NULL,
+                    body TEXT NOT NULL,
+                    source_kind TEXT NULL,
+                    source_ref TEXT NULL,
+                    correlation_id TEXT NULL,
+                    trigger_kind TEXT NULL,
+                    trigger_summary TEXT NULL,
+                    conversation_frame TEXT NULL,
+                    task_mode TEXT NULL,
+                    identity_salience TEXT NULL,
+                    answer_strategy TEXT NULL,
+                    stance_summary TEXT NULL,
+                    active_identity_facets JSONB NULL,
+                    active_growth_axes JSONB NULL,
+                    active_relationship_facets JSONB NULL,
+                    social_posture JSONB NULL,
+                    reflective_themes JSONB NULL,
+                    active_tensions JSONB NULL,
+                    dream_motifs JSONB NULL,
+                    response_hazards JSONB NULL
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_journal_entry_index_created_at ON journal_entry_index (created_at);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_journal_entry_index_mode ON journal_entry_index (mode);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_journal_entry_index_source_kind ON journal_entry_index (source_kind);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_journal_entry_index_trigger_kind ON journal_entry_index (trigger_kind);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_journal_entry_index_author ON journal_entry_index (author);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_journal_entry_index_source_ref ON journal_entry_index (source_ref);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_journal_entry_index_correlation_id ON journal_entry_index (correlation_id);"
+            )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS evidence_units (
+                    unit_id TEXT PRIMARY KEY,
+                    unit_kind TEXT NOT NULL,
+                    source_family TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    source_ref TEXT NOT NULL,
+                    correlation_id TEXT NULL,
+                    parent_unit_id TEXT NULL,
+                    sibling_prev_id TEXT NULL,
+                    sibling_next_id TEXT NULL,
+                    title TEXT NULL,
+                    summary TEXT NULL,
+                    body TEXT NULL,
+                    facets JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    created_at TIMESTAMPTZ NOT NULL,
+                    updated_at TIMESTAMPTZ NULL
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_evidence_units_created_at ON evidence_units (created_at);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_evidence_units_unit_kind ON evidence_units (unit_kind);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_evidence_units_source_family ON evidence_units (source_family);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_evidence_units_source_kind ON evidence_units (source_kind);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_evidence_units_source_ref ON evidence_units (source_ref);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_evidence_units_correlation_id ON evidence_units (correlation_id);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_evidence_units_parent_unit_id ON evidence_units (parent_unit_id);"
+            )
         logger.info("🧬 chat_message correlation/trace columns ensured")
         retention_days = int(getattr(settings, "metacog_trace_retention_days", 0) or 0)
         if retention_days > 0:

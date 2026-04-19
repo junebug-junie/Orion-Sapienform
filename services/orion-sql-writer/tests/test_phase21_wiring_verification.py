@@ -35,3 +35,77 @@ def test_feedback_wiring_exists_in_bus_and_schema_registry() -> None:
     assert "orion:chat:response:feedback" in channels
     assert "chat.response.feedback.v1" in channels
     assert "ChatResponseFeedbackV1" in registry
+
+
+def test_journal_index_wiring_exists_in_settings_env_compose_bus_and_registry() -> None:
+    settings_module = _load_settings_module()
+    assert "journal.entry.index.v1" in settings_module.DEFAULT_ROUTE_MAP
+
+    cfg = settings_module.Settings()
+    assert "orion:journal:index" in cfg.sql_writer_subscribe_channels
+
+    env_example = Path("services/orion-sql-writer/.env_example").read_text(encoding="utf-8")
+    compose = Path("services/orion-sql-writer/docker-compose.yml").read_text(encoding="utf-8")
+    channels = Path("orion/bus/channels.yaml").read_text(encoding="utf-8")
+    registry = Path("orion/schemas/registry.py").read_text(encoding="utf-8")
+
+    assert "orion:journal:index" in env_example
+    assert "journal.entry.index.v1\":\"JournalEntryIndexSQL" in env_example
+    assert "orion:journal:index" in compose
+    assert "orion:journal:index" in channels
+    assert "journal.entry.index.v1" in channels
+    assert "JournalEntryIndexV1" in registry
+
+
+def test_evidence_index_wiring_exists_in_settings_env_compose_bus_and_registry() -> None:
+    settings_module = _load_settings_module()
+    assert "evidence.unit.v1" in settings_module.DEFAULT_ROUTE_MAP
+
+    cfg = settings_module.Settings()
+    assert "orion:evidence:index:upsert" in cfg.sql_writer_subscribe_channels
+
+    env_example = Path("services/orion-sql-writer/.env_example").read_text(encoding="utf-8")
+    compose = Path("services/orion-sql-writer/docker-compose.yml").read_text(encoding="utf-8")
+    channels = Path("orion/bus/channels.yaml").read_text(encoding="utf-8")
+    registry = Path("orion/schemas/registry.py").read_text(encoding="utf-8")
+
+    assert "orion:evidence:index:upsert" in env_example
+    assert "evidence.unit.v1\":\"EvidenceUnitSQL" in env_example
+    assert "orion:evidence:index:upsert" in compose
+    assert "orion:evidence:index:upsert" in channels
+    assert "evidence.unit.v1" in channels
+    assert "EvidenceUnitV1" in registry
+
+
+def test_markdown_adapter_channel_wiring_exists_in_settings_env_compose_bus_and_registry() -> None:
+    settings_module = _load_settings_module()
+    cfg = settings_module.Settings()
+    assert "orion:evidence:markdown:ingest" in cfg.sql_writer_subscribe_channels
+
+    env_example = Path("services/orion-sql-writer/.env_example").read_text(encoding="utf-8")
+    compose = Path("services/orion-sql-writer/docker-compose.yml").read_text(encoding="utf-8")
+    channels = Path("orion/bus/channels.yaml").read_text(encoding="utf-8")
+    registry = Path("orion/schemas/registry.py").read_text(encoding="utf-8")
+
+    assert "orion:evidence:markdown:ingest" in env_example
+    assert "orion:evidence:markdown:ingest" in compose
+    assert "orion:evidence:markdown:ingest" in channels
+    assert "document.markdown.spec.v1" in channels
+    assert "MarkdownSpecIngestV1" in registry
+
+
+def test_parsed_document_channel_wiring_exists_in_settings_env_compose_bus_and_registry() -> None:
+    settings_module = _load_settings_module()
+    cfg = settings_module.Settings()
+    assert "orion:evidence:parsed:ingest" in cfg.sql_writer_subscribe_channels
+
+    env_example = Path("services/orion-sql-writer/.env_example").read_text(encoding="utf-8")
+    compose = Path("services/orion-sql-writer/docker-compose.yml").read_text(encoding="utf-8")
+    channels = Path("orion/bus/channels.yaml").read_text(encoding="utf-8")
+    registry = Path("orion/schemas/registry.py").read_text(encoding="utf-8")
+
+    assert "orion:evidence:parsed:ingest" in env_example
+    assert "orion:evidence:parsed:ingest" in compose
+    assert "orion:evidence:parsed:ingest" in channels
+    assert "document.parsed.v1" in channels
+    assert "ParsedDocumentIngestV1" in registry

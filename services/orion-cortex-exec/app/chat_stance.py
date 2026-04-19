@@ -105,6 +105,11 @@ def resolve_autonomy_graph_timeout_sec() -> float:
     return max(0.25, timeout)
 
 
+def resolve_autonomy_subject_max_workers() -> int:
+    """Parallel subject fan-out for graph autonomy (orion / relationship / juniper)."""
+    return max(1, _env_int("AUTONOMY_SUBJECT_MAX_WORKERS", 3))
+
+
 def resolve_autonomy_graphdb_config() -> dict[str, Any]:
     endpoint_raw = (
         os.getenv("GRAPHDB_QUERY_ENDPOINT")
@@ -625,6 +630,7 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
         user=graphdb_cfg["user"],
         password=graphdb_cfg["password"],
         goals_limit=_env_int("AUTONOMY_GOALS_LIMIT", 3),
+        subject_max_workers=resolve_autonomy_subject_max_workers(),
     )
     subjects = ["orion", "relationship", "juniper"]
     observer = {
@@ -663,6 +669,7 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
             "selected_subject": selected_subject,
             "endpoint_repo": endpoint or "graphdb:unconfigured",
             "timeout_sec": resolve_autonomy_graph_timeout_sec(),
+            "subject_max_workers": resolve_autonomy_subject_max_workers(),
             "repository_status": {
                 "source_available": repo_status.source_available,
                 "source_path": repo_status.source_path,
@@ -682,6 +689,7 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
                 "repo": graphdb_cfg["repo"],
                 "endpoint_repo": endpoint or "graphdb:unconfigured",
                 "timeout_sec": resolve_autonomy_graph_timeout_sec(),
+                "subject_max_workers": resolve_autonomy_subject_max_workers(),
                 "subjects_requested": subjects,
                 "states_returned": sum(1 for item in lookups if item.availability == "available"),
                 "availability_counts": {

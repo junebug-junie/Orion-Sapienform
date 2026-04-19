@@ -74,6 +74,8 @@ def test_chat_stance_unavailable_autonomy_keeps_behavior_stable(monkeypatch) -> 
 
 
 def test_chat_stance_autonomy_debug_contains_unavailable_reason(monkeypatch) -> None:
+    monkeypatch.setenv("AUTONOMY_GRAPH_TIMEOUT_SEC", "4.5")
+    monkeypatch.delenv("AUTONOMY_SUBJECT_MAX_WORKERS", raising=False)
     repo = _Repo(
         {
             "orion": _Lookup(
@@ -95,6 +97,7 @@ def test_chat_stance_autonomy_debug_contains_unavailable_reason(monkeypatch) -> 
     assert ctx["chat_autonomy_debug"]["orion"]["subqueries"]["identity"]["status"] == "timeout"
     assert ctx["chat_autonomy_debug"]["_runtime"]["backend"] == "graph"
     assert ctx["chat_autonomy_debug"]["_runtime"]["timeout_sec"] == 4.5
+    assert ctx["chat_autonomy_debug"]["_runtime"]["subject_max_workers"] == 3
     assert "repository_status" in ctx["chat_autonomy_debug"]["_runtime"]
     assert ctx["chat_autonomy_backend"] == "graph"
     assert "chat_autonomy_repository_status" in ctx
@@ -192,3 +195,14 @@ def test_autonomy_timeout_prefers_autonomy_specific_env(monkeypatch) -> None:
     monkeypatch.setenv("AUTONOMY_GRAPH_TIMEOUT_SEC", "9.25")
 
     assert chat_stance.resolve_autonomy_graph_timeout_sec() == 9.25
+
+
+def test_autonomy_subject_max_workers_env(monkeypatch) -> None:
+    monkeypatch.delenv("AUTONOMY_SUBJECT_MAX_WORKERS", raising=False)
+    assert chat_stance.resolve_autonomy_subject_max_workers() == 3
+
+    monkeypatch.setenv("AUTONOMY_SUBJECT_MAX_WORKERS", "2")
+    assert chat_stance.resolve_autonomy_subject_max_workers() == 2
+
+    monkeypatch.setenv("AUTONOMY_SUBJECT_MAX_WORKERS", "0")
+    assert chat_stance.resolve_autonomy_subject_max_workers() == 1

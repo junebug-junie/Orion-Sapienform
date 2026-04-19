@@ -160,6 +160,7 @@ class GraphAutonomyRepository:
         password: str | None = None,
         query_client: GraphQueryClient | None = None,
         goals_limit: int = 3,
+        subject_max_workers: int | None = None,
     ) -> None:
         self._endpoint = (endpoint or "").strip()
         self._timeout_sec = timeout_sec
@@ -167,7 +168,11 @@ class GraphAutonomyRepository:
         self._password = password
         self._goals_limit = max(1, min(int(goals_limit), 5))
         self._subquery_max_workers = 3
-        self._subject_max_workers = max(1, int(os.getenv("AUTONOMY_SUBJECT_MAX_WORKERS", "3")))
+        self._subject_max_workers = (
+            max(1, int(subject_max_workers))
+            if subject_max_workers is not None
+            else max(1, int(os.getenv("AUTONOMY_SUBJECT_MAX_WORKERS", "3")))
+        )
         self._chat_stance_short_circuit = str(os.getenv("AUTONOMY_CHAT_STANCE_SHORT_CIRCUIT", "true")).strip().lower() in {
             "1",
             "true",
@@ -639,6 +644,7 @@ def build_autonomy_repository(
     user: str | None = None,
     password: str | None = None,
     goals_limit: int = 3,
+    subject_max_workers: int | None = None,
 ) -> AutonomyRepository:
     local_repo = LocalAutonomyRepository()
     if backend == "local":
@@ -650,6 +656,7 @@ def build_autonomy_repository(
         user=user,
         password=password,
         goals_limit=goals_limit,
+        subject_max_workers=subject_max_workers,
     )
     if backend == "graph":
         return graph_repo

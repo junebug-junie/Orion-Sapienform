@@ -46,6 +46,66 @@ If self-study runs in a flattened container layout, set `ORION_REPO_ROOT` to the
 ### Self-study GraphDB readback
 `self_retrieve` can read persisted self-study RDF back from GraphDB when either `RECALL_RDF_ENDPOINT_URL` or `GRAPHDB_URL` / `GRAPHDB_REPO` are present in the environment. If that persisted backend is unavailable, Cortex Exec falls back explicitly to the in-process self-study snapshot path instead of silently widening trust semantics.
 
+### Backfill Journal PageIndex-indcies
+```docker exec -i orion-athena-sql-writer python - <<'PY'
+from app.db import get_session, remove_session
+from app.models import JournalEntrySQL, JournalEntryIndexSQL
+from orion.journaler import JournalEntryWriteV1, build_journal_entry_index_payload
+
+sess = get_session()
+created = 0
+skipped = 0
+
+try:
+    existing_ids = {row[0] for row in sess.query(JournalEntryIndexSQL.entry_id).all()}
+
+    rows = (
+        sess.query(JournalEntrySQL)
+        .order_by(JournalEntrySQL.created_at.asc())
+        .all()
+    )
+
+    for row in rows:
+        if row.entry_id in existing_ids:
+            skipped += 1
+            continue
+
+        payload = JournalEntryWriteV1(
+            entry_id=row.entry_id,
+            created_at=row.created_at,
+            author=row.author,
+            mode=row.mode,
+            title=row.title,
+            body=row.body,
+            source_kind=row.source_kind,
+            source_ref=row.source_ref,
+            correlation_id=row.correlation_id,
+        )
+
+        index_payload = build_journal_entry_index_payload(
+            payload,
+            trigger=None,
+            chat_stance=None,
+            stance_metadata=None,
+        )
+
+        sess.merge(JournalEntryIndexSQL(**index_payload))
+        created += 1
+
+        if created % 100 == 0:
+            sess.commit()
+            print(f"committed {created} rows...")
+
+    sess.commit()
+    print(f"done: created={created} skipped={skipped}")
+
+finally:
+    try:
+        sess.close()
+    finally:
+        remove_session()
+PY
+```
 
 ### Smoke Test
 Exec is tested via the Orchestrator flow.

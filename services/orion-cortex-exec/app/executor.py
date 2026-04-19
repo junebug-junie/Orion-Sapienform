@@ -49,6 +49,7 @@ from orion.schemas.metacog_patches import MetacogDraftTextPatchV1, MetacogEnrich
 from orion.cognition.personality.identity_context import build_identity_context, load_identity_file
 from .settings import settings
 from .clients import AgentChainClient, LLMGatewayClient, RecallClient, PlannerReactClient
+from .pageindex_client import JournalPageIndexClient
 from .recall_utils import resolve_profile
 from .core_event_cache import format_recent_turn_effect_alerts, get_core_event_cache
 from .trace_cache import get_trace_cache
@@ -1175,6 +1176,91 @@ def _journal_pageindex_tree(recall_fragments: List[Dict[str, Any]]) -> Dict[str,
     }
 
 
+def _journal_pageindex_compose_context(
+    *,
+    tree: Dict[str, Any],
+    selected_entry_ids: List[str],
+    selected_block_ids: List[str],
+    entry_reasons: Dict[str, Any],
+    block_reasons: Dict[str, Any],
+    fallback_invoked: bool,
+) -> Dict[str, Any]:
+    entries = list(tree.get("entries") or [])
+    blocks: list[dict[str, Any]] = []
+    for item in entries:
+        blocks.extend(list((tree.get("blocks_by_entry") or {}).get(str(item.get("entry_id")), [])))
+    selected_entries = [entry for entry in entries if str(entry.get("entry_id")) in set(selected_entry_ids)]
+    selected_blocks = [blk for blk in blocks if str(blk.get("block_id")) in set(selected_block_ids)]
+    return {
+        "tree": tree,
+        "selected_entries": selected_entries,
+        "selected_blocks": selected_blocks,
+        "entry_reasons": entry_reasons or {},
+        "block_reasons": block_reasons or {},
+        "fallback_invoked": bool(fallback_invoked),
+    }
+
+
+def _journal_pageindex_tree_from_service_response(payload: Dict[str, Any]) -> Dict[str, Any]:
+    results = payload.get("results") if isinstance(payload, dict) else []
+    if not isinstance(results, list):
+        results = []
+
+    entries_by_id: Dict[str, Dict[str, Any]] = {}
+    blocks_by_entry: Dict[str, list[dict[str, Any]]] = {}
+    for idx, item in enumerate(results, start=1):
+        if not isinstance(item, dict):
+            continue
+        entry_id = str(item.get("entry_id") or "").strip() or f"service-entry-{idx}"
+        provenance = item.get("provenance") if isinstance(item.get("provenance"), dict) else {}
+        created_at = item.get("created_at") or provenance.get("created_at")
+        title = item.get("heading") or provenance.get("title") or provenance.get("entry_title")
+        source_kind = item.get("source_kind") or provenance.get("source_kind") or "journal"
+        body_excerpt = _truncate_text(item.get("excerpt") or provenance.get("excerpt"), 180)
+        entry = entries_by_id.get(entry_id)
+        if entry is None:
+            entry = {
+                "entry_id": entry_id,
+                "unit_id": entry_id,
+                "created_at": created_at,
+                "mode": provenance.get("mode"),
+                "source_kind": source_kind,
+                "title": _truncate_text(title, 96),
+                "stance_summary": provenance.get("stance_summary"),
+                "active_identity_facets": list(provenance.get("active_identity_facets") or [])[:4],
+                "active_growth_axes": list(provenance.get("active_growth_axes") or [])[:4],
+                "active_relationship_facets": list(provenance.get("active_relationship_facets") or [])[:4],
+                "social_posture": list(provenance.get("social_posture") or [])[:3],
+                "reflective_themes": list(provenance.get("reflective_themes") or [])[:4],
+                "active_tensions": list(provenance.get("active_tensions") or [])[:4],
+                "dream_motifs": list(provenance.get("dream_motifs") or [])[:3],
+                "body_excerpt": body_excerpt,
+            }
+            entries_by_id[entry_id] = entry
+            blocks_by_entry[entry_id] = []
+        block_id = str(item.get("node_id") or "").strip() or f"{entry_id}::service::{len(blocks_by_entry[entry_id]) + 1}"
+        excerpt = _truncate_text(item.get("excerpt"), 140)
+        blocks_by_entry[entry_id].append(
+            {
+                "block_id": block_id,
+                "entry_id": entry_id,
+                "block_index": len(blocks_by_entry[entry_id]) + 1,
+                "text": item.get("excerpt") or "",
+                "excerpt": excerpt,
+                "source_kind": entry.get("source_kind"),
+                "mode": entry.get("mode"),
+                "provenance": provenance,
+            }
+        )
+
+    entries = list(entries_by_id.values())
+    return {
+        "journal_corpus": {"unit_id": "journal_corpus", "entry_count": len(entries)},
+        "entries": entries,
+        "blocks_by_entry": blocks_by_entry,
+    }
+
+
 def _journal_pageindex_llm_prompt(kind: str, query: str, items: List[Dict[str, Any]]) -> str:
     item_json = json.dumps(items, ensure_ascii=False)
     if kind == "entry":
@@ -1370,63 +1456,113 @@ async def run_recall_step(
 
         # Journal PageIndex MVP (journals-only reflective/identity/continuity lane)
         user_query = fragment_text
-        pageindex_fallback_invoked = False
         try:
             if _journal_pageindex_query(user_query):
-                tree = _journal_pageindex_tree(recall_fragments)
-                entries = list(tree.get("entries") or [])
-                logger.info(
-                    "journal_pageindex_invoked corr_id=%s candidate_count=%s",
-                    correlation_id,
-                    len(entries),
-                )
-                if entries:
+                service_invoked = False
+                service_status = "unavailable"
+                final_impl = "native_fallback"
+                fallback_invoked = False
+
+                service_tree: Dict[str, Any] | None = None
+                service_payload: Dict[str, Any] | None = None
+                service_available = False
+                try:
+                    pageindex_client = JournalPageIndexClient()
+                    service_invoked = True
+                    status = pageindex_client.get_journal_corpus_status()
+                    service_available = True
+                    if not bool(status.get("build_success")):
+                        raise RuntimeError("journal pageindex corpus is not built")
+                    service_payload = pageindex_client.query_journal_pageindex(user_query, allow_fallback=False, top_k=8)
+                    service_tree = _journal_pageindex_tree_from_service_response(service_payload)
+                    service_status = "success"
+                except Exception as service_exc:
+                    fallback_invoked = True
+                    if service_invoked and service_status != "success":
+                        service_status = "error" if service_available else "unavailable"
+                    logger.warning("journal_pageindex_service_error corr_id=%s error=%s", correlation_id, service_exc)
+
+                if service_tree and list(service_tree.get("entries") or []):
+                    entries = list(service_tree.get("entries") or [])
                     blocks: list[dict[str, Any]] = []
                     for item in entries:
-                        blocks.extend(list((tree.get("blocks_by_entry") or {}).get(str(item.get("entry_id")), [])))
-                    selection = await _journal_pageindex_select_with_llm(
-                        bus=bus,
-                        source=source,
-                        correlation_id=correlation_id,
-                        query_text=user_query,
-                        entries=entries,
-                        blocks=blocks,
+                        blocks.extend(list((service_tree.get("blocks_by_entry") or {}).get(str(item.get("entry_id")), [])))
+                    selected_entry_ids = [str(item.get("entry_id")) for item in entries if str(item.get("entry_id")).strip()]
+                    selected_block_ids = [str(item.get("block_id")) for item in blocks if str(item.get("block_id")).strip()]
+                    ctx["journal_pageindex_context"] = _journal_pageindex_compose_context(
+                        tree=service_tree,
+                        selected_entry_ids=selected_entry_ids,
+                        selected_block_ids=selected_block_ids,
+                        entry_reasons={},
+                        block_reasons={},
+                        fallback_invoked=False,
                     )
-                    selected_entry_ids = list(selection.get("selected_entry_ids") or [])
-                    selected_block_ids = list(selection.get("selected_block_ids") or [])
-                    if not selected_entry_ids:
-                        pageindex_fallback_invoked = True
-                        selected_entry_ids = [str(entries[0].get("entry_id"))]
-                    if not selected_block_ids:
-                        pageindex_fallback_invoked = True
-                    selected_entries = [entry for entry in entries if str(entry.get("entry_id")) in set(selected_entry_ids)]
-                    selected_blocks = [blk for blk in blocks if str(blk.get("block_id")) in set(selected_block_ids)]
-                    ctx["journal_pageindex_context"] = {
-                        "tree": tree,
-                        "selected_entries": selected_entries,
-                        "selected_blocks": selected_blocks,
-                        "entry_reasons": selection.get("entry_reasons") or {},
-                        "block_reasons": selection.get("block_reasons") or {},
-                        "fallback_invoked": pageindex_fallback_invoked,
-                    }
-                    logger.info(
-                        "journal_pageindex_selected corr_id=%s selected_entry_ids=%s selected_block_ids=%s fallback_invoked=%s final_context_entry_count=%s",
-                        correlation_id,
-                        selected_entry_ids,
-                        selected_block_ids,
-                        pageindex_fallback_invoked,
-                        len(selected_entries),
-                    )
+                    final_impl = "service"
+                    fallback_invoked = False
                 else:
-                    pageindex_fallback_invoked = True
-                    logger.info(
-                        "journal_pageindex_invoked corr_id=%s candidate_count=0 fallback_invoked=true",
-                        correlation_id,
-                    )
+                    tree = _journal_pageindex_tree(recall_fragments)
+                    entries = list(tree.get("entries") or [])
+                    if entries:
+                        blocks: list[dict[str, Any]] = []
+                        for item in entries:
+                            blocks.extend(list((tree.get("blocks_by_entry") or {}).get(str(item.get("entry_id")), [])))
+                        selection = await _journal_pageindex_select_with_llm(
+                            bus=bus,
+                            source=source,
+                            correlation_id=correlation_id,
+                            query_text=user_query,
+                            entries=entries,
+                            blocks=blocks,
+                        )
+                        selected_entry_ids = list(selection.get("selected_entry_ids") or [])
+                        selected_block_ids = list(selection.get("selected_block_ids") or [])
+                        native_selection_fallback = False
+                        if not selected_entry_ids:
+                            native_selection_fallback = True
+                            selected_entry_ids = [str(entries[0].get("entry_id"))]
+                        if not selected_block_ids:
+                            native_selection_fallback = True
+                        ctx["journal_pageindex_context"] = _journal_pageindex_compose_context(
+                            tree=tree,
+                            selected_entry_ids=selected_entry_ids,
+                            selected_block_ids=selected_block_ids,
+                            entry_reasons=selection.get("entry_reasons") or {},
+                            block_reasons=selection.get("block_reasons") or {},
+                            fallback_invoked=True,
+                        )
+                        final_impl = "legacy_fallback" if native_selection_fallback else "native_fallback"
+                        fallback_invoked = True
+                    else:
+                        final_impl = "legacy_fallback"
+                        fallback_invoked = True
+
+                context_payload = ctx.get("journal_pageindex_context") if isinstance(ctx.get("journal_pageindex_context"), dict) else {}
+                selected_entries = context_payload.get("selected_entries") if isinstance(context_payload, dict) else []
+                selected_blocks = context_payload.get("selected_blocks") if isinstance(context_payload, dict) else []
+                selected_entry_ids = [
+                    str(item.get("entry_id"))
+                    for item in (selected_entries if isinstance(selected_entries, list) else [])
+                    if isinstance(item, dict) and str(item.get("entry_id")).strip()
+                ]
+                selected_block_ids = [
+                    str(item.get("block_id"))
+                    for item in (selected_blocks if isinstance(selected_blocks, list) else [])
+                    if isinstance(item, dict) and str(item.get("block_id")).strip()
+                ]
+                logger.info(
+                    "journal_pageindex_path corr_id=%s journal_pageindex_impl=%s pageindex_service_invoked=%s pageindex_service_status=%s selected_entry_ids=%s selected_block_ids=%s fallback_invoked=%s final_context_entry_count=%s",
+                    correlation_id,
+                    final_impl,
+                    service_invoked,
+                    service_status,
+                    selected_entry_ids,
+                    selected_block_ids,
+                    fallback_invoked,
+                    len(selected_entry_ids),
+                )
             else:
                 logger.debug("journal_pageindex_skipped corr_id=%s", correlation_id)
         except Exception as exc:
-            pageindex_fallback_invoked = True
             logger.warning("journal_pageindex_error corr_id=%s error=%s", correlation_id, exc)
 
         logs.append(f"ok <- RecallService ({len(bundle.items)} items)")

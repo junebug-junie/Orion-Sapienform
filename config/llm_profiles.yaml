@@ -241,9 +241,12 @@ profiles:
       no_context_shift: true
 
     notes: |
-      Balanced profile for Qwen3-8B on one V100 16GB; thinking disabled via chat_template_kwargs.
+      Balanced profile for Qwen3-8B on one V100 16GB; thinking disabled only for workers using THIS profile key.
+      - Scope: each orion-llamacpp-host process loads one LLM_PROFILE_NAME; other profiles/workers are unaffected.
+      - Knob: llamacpp.chat_template_kwargs.enable_thinking false is passed to llama-server as --chat-template-kwargs (see host logs: Effective llama-server argv).
+      - If thinking still appears: confirm this profile name is set for that container, restart the worker, and ensure the llama-server binary lists --chat-template-kwargs in --help (upgrade image if the flag is skipped).
       - Q4_K_M for VRAM headroom with 16k context.
-      - Restart llamacpp-host after changing enable_thinking; gateway does not send this per request.
+      - Gateway does not set enable_thinking per request.
       - If OOM: lower ctx_size or use Qwen_Qwen3-8B-Q3_K_M.gguf from the same repo.
 
   qwen3-30b-a3b-q4km-atlas-agent-64k-think:

@@ -231,13 +231,11 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
         append_flag("--jinja")
         append_flag("--reasoning-format", cfg.reasoning_format)
         reasoning_format_emitted = "--reasoning-format" in cmd
-    if cfg.chat_template_kwargs is not None and not is_b5332_compatible:
+    if cfg.chat_template_kwargs is not None:
+        # Do not gate on legacy build numbers: if the binary advertises --chat-template-kwargs in
+        # --help, append_flag emits it (per-profile enable_thinking / Qwen3 template kwargs). Older
+        # builds without the flag log a skip from append_flag and keep default template behavior.
         append_flag("--chat-template-kwargs", json.dumps(cfg.chat_template_kwargs, separators=(",", ":")))
-    elif cfg.chat_template_kwargs is not None and is_b5332_compatible:
-        logger.info(
-            "Skipping --chat-template-kwargs for llama.cpp build %s (not documented/supported)",
-            detected_build,
-        )
 
     if reasoning_format_emitted and "--jinja" not in cmd:
         logger.warning("--reasoning-format requested but --jinja could not be emitted")

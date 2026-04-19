@@ -249,6 +249,17 @@ ORION_BUS_ENFORCE_CATALOG=true
 
 Rule of thumb: if a value already exists in `config/llm_profiles.yaml`, do not duplicate it in `.env` unless you are deliberately overriding it.
 
+### Per-profile template kwargs (e.g. Qwen3 `enable_thinking`)
+
+Thinking on/off for Qwen3-style models is controlled **only** in the profile entry under `llamacpp.chat_template_kwargs` (for example `enable_thinking: false`). Each worker is independent: set `LLM_PROFILE_NAME` to that profile key for the container that should use it; other workers keep their own profile names.
+
+**Verify after deploy or YAML edits:**
+
+1. `LLM_PROFILE_NAME` matches the registry key exactly (case-sensitive).
+2. Restart the worker so `llama-server` argv is rebuilt.
+3. In logs, find `Effective llama-server argv:` and confirm `--chat-template-kwargs` includes your JSON (e.g. `enable_thinking:false`).
+4. If you see `Skipping unsupported llama-server option for this binary: --chat-template-kwargs`, upgrade the pinned `llama-server` image so the binary advertises that flag in `llama-server --help`.
+
 ---
 
 ## Compose usage

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from pathlib import Path
 
 import yaml
@@ -134,3 +135,48 @@ def test_qwen3_64k_profile_skips_unsupported_reasoning_flag(monkeypatch):
     no_context_shift_idx = cmd.index("--no-context-shift")
     assert no_context_shift_idx + 1 >= len(cmd) or cmd[no_context_shift_idx + 1].startswith("-")
     print("effective argv (b5332):", " ".join(cmd))
+
+
+def test_qwen3_8b_balanced_profile_forwards_enable_thinking_false(monkeypatch):
+    """config/llm_profiles qwen3-8b-q4km-v100-16gb-balanced: non-thinking template kwargs."""
+    repo_root = Path(__file__).resolve().parents[3]
+    config_path = repo_root / "config" / "llm_profiles.yaml"
+
+    monkeypatch.setenv("LLM_PROFILE_NAME", "qwen3-8b-q4km-v100-16gb-balanced")
+    monkeypatch.setenv("LLM_PROFILES_CONFIG_PATH", str(config_path))
+
+    main = importlib.import_module("app.main")
+    settings_mod = importlib.import_module("app.settings")
+    profiles_mod = importlib.import_module("app.profiles")
+
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    profile_cfg = raw["profiles"]["qwen3-8b-q4km-v100-16gb-balanced"]
+    profile = profiles_mod.LLMProfile(name="qwen3-8b-q4km-v100-16gb-balanced", **profile_cfg)
+
+    monkeypatch.setattr(main, "_ensure_model_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _server_bin: {
+            "--jinja",
+            "--chat-template-kwargs",
+            "--no-context-shift",
+            "--n-predict",
+            "--temp",
+            "--top-k",
+            "--top-p",
+            "--min-p",
+            "--presence-penalty",
+        },
+    )
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _server_bin: 6000)
+    monkeypatch.setattr(
+        settings_mod.settings,
+        "llamacpp_model_path_override",
+        "/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf",
+    )
+
+    cmd, _env = main.build_llama_server_cmd_and_env(profile)
+    assert "--chat-template-kwargs" in cmd
+    kwargs_val = _find_flag_value(cmd, "--chat-template-kwargs")
+    assert json.loads(kwargs_val) == {"enable_thinking": False}

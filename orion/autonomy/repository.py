@@ -161,13 +161,18 @@ class GraphAutonomyRepository:
         query_client: GraphQueryClient | None = None,
         goals_limit: int = 3,
         subject_max_workers: int | None = None,
+        subquery_max_workers: int | None = None,
     ) -> None:
         self._endpoint = (endpoint or "").strip()
         self._timeout_sec = timeout_sec
         self._user = user
         self._password = password
         self._goals_limit = max(1, min(int(goals_limit), 5))
-        self._subquery_max_workers = 3
+        self._subquery_max_workers = (
+            max(1, min(3, int(subquery_max_workers)))
+            if subquery_max_workers is not None
+            else max(1, min(3, int(os.getenv("AUTONOMY_SUBQUERY_MAX_WORKERS", "1"))))
+        )
         self._subject_max_workers = (
             max(1, int(subject_max_workers))
             if subject_max_workers is not None
@@ -386,9 +391,11 @@ LIMIT {self._goals_limit}
             ("drives", self._fetch_drive_audit),
             ("goals", self._fetch_goals),
         )
+        subq_mode = "sequential" if self._subquery_max_workers <= 1 else "concurrent"
         logger.info(
-            "autonomy_graph_subject_start subject=%s execution_mode=concurrent subquery_workers=%s correlation_id=%s",
+            "autonomy_graph_subject_start subject=%s execution_mode=%s subquery_workers=%s correlation_id=%s",
             subject,
+            subq_mode,
             self._subquery_max_workers,
             correlation_id or "-",
         )
@@ -645,6 +652,7 @@ def build_autonomy_repository(
     password: str | None = None,
     goals_limit: int = 3,
     subject_max_workers: int | None = None,
+    subquery_max_workers: int | None = None,
 ) -> AutonomyRepository:
     local_repo = LocalAutonomyRepository()
     if backend == "local":
@@ -657,6 +665,7 @@ def build_autonomy_repository(
         password=password,
         goals_limit=goals_limit,
         subject_max_workers=subject_max_workers,
+        subquery_max_workers=subquery_max_workers,
     )
     if backend == "graph":
         return graph_repo

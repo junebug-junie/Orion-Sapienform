@@ -3,7 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 
-from app.chat_stance import resolve_autonomy_graph_timeout_sec, resolve_autonomy_graphdb_config
+from app.chat_stance import (
+    resolve_autonomy_graph_timeout_sec,
+    resolve_autonomy_graphdb_config,
+    resolve_autonomy_subject_max_workers,
+    resolve_autonomy_subquery_max_workers,
+)
 from orion.autonomy.repository import GraphAutonomyRepository
 
 
@@ -15,6 +20,8 @@ def run_probe(subjects: list[str]) -> list[dict[str, object]]:
         timeout_sec=timeout_sec,
         user=cfg.get("user"),
         password=cfg.get("password"),
+        subject_max_workers=resolve_autonomy_subject_max_workers(),
+        subquery_max_workers=resolve_autonomy_subquery_max_workers(),
     )
     lookups = repository.list_latest(subjects, observer={"consumer": "autonomy_graph_probe"})
     return [

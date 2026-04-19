@@ -2502,6 +2502,24 @@ async def call_step_services(
                     len(prompt or ""),
                 )
 
+                effective_max_tokens, requested_max_tokens, max_tokens_source = _resolve_llm_chat_max_tokens(step, ctx)
+                prompt_token_count = _safe_int(ctx.get("prompt_token_count"))
+                logger.info(
+                    "llm_chat_budget corr_id=%s mode=%s verb=%s step=%s route=%s requested_max_tokens=%s effective_max_tokens=%s max_tokens_source=%s profile=%s model=%s prompt_token_count=%s prompt_char_count=%s",
+                    correlation_id,
+                    ctx.get("mode"),
+                    step.verb_name,
+                    step.step_name,
+                    llm_route,
+                    requested_max_tokens,
+                    effective_max_tokens,
+                    max_tokens_source,
+                    ctx.get("profile_name"),
+                    req_model,
+                    prompt_token_count,
+                    len(prompt or ""),
+                )
+
                 request_object = ChatRequestPayload(
                     model=req_model,
                     profile=(

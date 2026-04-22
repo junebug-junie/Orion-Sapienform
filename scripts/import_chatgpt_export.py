@@ -38,8 +38,13 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.vector.schemas import EmbeddingGenerateV1
 from orion.importers.chatgpt_export import (
+    build_conversation_envelope,
+    build_example_envelope,
     build_envelopes_for_turn,
+    build_import_run_id,
+    build_import_run_envelope,
     build_message_envelope,
+    file_sha256,
     iter_messages,
     load_conversations,
     pair_turns,
@@ -54,7 +59,10 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
     parser.add_argument("--export", required=True, help="Path to chatgpt export (zip, dir, conversations.json)")
     parser.add_argument("--bus-url", default=os.getenv("ORION_BUS_URL", "redis://localhost:6379/0"))
     parser.add_argument("--channel-log", default="orion:chat:gpt:message:log")
-    parser.add_argument("--channel-turn", default="orion:chat:gpt:log")
+    parser.add_argument("--channel-turn", default="orion:chat:gpt:turn")
+    parser.add_argument("--channel-import-run", default="orion:chat:gpt:import:run")
+    parser.add_argument("--channel-conversation", default="orion:chat:gpt:conversation")
+    parser.add_argument("--channel-example", default="orion:chat:gpt:example")
     parser.add_argument("--user-id", default="Juniper")
     parser.add_argument("--user-speaker", default="~Juniper")
     parser.add_argument("--assistant-speaker", default="ChatGPT")
@@ -79,6 +87,9 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
 def _validate_channel_schemas(
     channel_log: str,
     channel_turn: str,
+    channel_import_run: str,
+    channel_conversation: str,
+    channel_example: str,
     *,
     embedding_channel: str | None = None,
 ) -> None:
@@ -100,6 +111,9 @@ def _validate_channel_schemas(
     expected = {
         channel_log: "ChatGptMessageV1",
         channel_turn: "ChatGptLogTurnV1",
+        channel_import_run: "ChatGptImportRunV1",
+        channel_conversation: "ChatGptConversationV1",
+        channel_example: "ChatGptDerivedExampleV1",
     }
     if embedding_channel:
         expected[embedding_channel] = "EmbeddingGenerateV1"
@@ -352,6 +366,9 @@ async def _run(args: argparse.Namespace) -> int:
     _validate_channel_schemas(
         args.channel_log,
         args.channel_turn,
+        args.channel_import_run,
+        args.channel_conversation,
+        args.channel_example,
         embedding_channel=args.embedding_channel if args.emit_embeddings else None,
     )
     if args.include_branches and args.only_turns:
@@ -366,6 +383,15 @@ async def _run(args: argparse.Namespace) -> int:
     conversations = load_conversations(export_path)
     if args.limit:
         conversations = conversations[: args.limit]
+    artifact_stat = export_path.stat()
+    artifact_sha = file_sha256(export_path)
+    import_run_id = build_import_run_id(
+        artifact_sha256=artifact_sha,
+        include_branches=args.include_branches,
+        include_system=args.include_system,
+        force_full=args.force_full,
+        limit=args.limit,
+    )
 
     state_path = (ROOT / args.state_file).resolve()
     state = _load_state(state_path)
@@ -373,6 +399,7 @@ async def _run(args: argparse.Namespace) -> int:
     per_conv_update = state.get("per_conversation_update_time", {})
     per_conv_max = state.get("per_conversation_max_message_time", {})
 
+    started_at = datetime.utcnow().isoformat()
     counters: Dict[str, int] = {
         "conversations_total": len(conversations),
         "conversations_processed": 0,
@@ -380,6 +407,7 @@ async def _run(args: argparse.Namespace) -> int:
         "messages_published": 0,
         "turns_emitted": 0,
         "turns_published": 0,
+        "examples_published": 0,
         "embedding_requests_published": 0,
         "skipped_by_state_conversations": 0,
         "skipped_by_state_messages": 0,
@@ -427,6 +455,23 @@ async def _run(args: argparse.Namespace) -> int:
             )
             counters["messages_published"] += publish_counts["messages_published"]
             counters["turns_published"] += publish_counts["turns_published"]
+            convo_env = build_conversation_envelope(
+                import_run_id=import_run_id,
+                conversation=conversation,
+                message_count=publish_counts["messages_published"],
+                turn_count=publish_counts["turns_published"],
+                include_branches=args.include_branches,
+            )
+            envelopes.append((args.channel_conversation, convo_env))
+            for turn in turns:
+                example_env = build_example_envelope(
+                    import_run_id=import_run_id,
+                    conversation_id=str(conversation.get("id") or ""),
+                    conversation_title=str(conversation.get("title") or "Untitled"),
+                    turn=turn,
+                )
+                envelopes.append((args.channel_example, example_env))
+                counters["examples_published"] += 1
 
             if args.emit_embeddings:
                 embedding_envelopes, embedding_counts = _build_embedding_envelopes(envelopes, args)
@@ -444,6 +489,31 @@ async def _run(args: argparse.Namespace) -> int:
                 max_msg_time = max((msg.create_time for msg in eligible_messages), default=None)
                 if max_msg_time is not None:
                     per_conv_max[str(conversation_id)] = max_msg_time
+
+        completed_at = datetime.utcnow().isoformat()
+        run_env = build_import_run_envelope(
+            import_run_id=import_run_id,
+            source_artifact_path=str(export_path),
+            source_artifact_sha256=artifact_sha,
+            source_artifact_bytes=artifact_stat.st_size,
+            source_artifact_mtime=datetime.utcfromtimestamp(artifact_stat.st_mtime).isoformat(),
+            include_branches=args.include_branches,
+            include_system=args.include_system,
+            force_full=args.force_full,
+            dry_run=args.dry_run,
+            state_file=args.state_file,
+            counters=counters,
+            started_at=started_at,
+            completed_at=completed_at,
+            metadata={"bus_url": args.bus_url},
+        )
+        await publish_import(
+            bus,
+            [(args.channel_import_run, run_env)],
+            args.rate_limit,
+            args.dry_run,
+            counters,
+        )
     finally:
         if not args.dry_run:
             await bus.close()
@@ -461,6 +531,7 @@ async def _run(args: argparse.Namespace) -> int:
     print(f"messages_published={counters['messages_published']}")
     print(f"turns_emitted={counters['turns_emitted']}")
     print(f"turns_published={counters['turns_published']}")
+    print(f"examples_published={counters['examples_published']}")
     print(f"embedding_requests_published={counters['embedding_requests_published']}")
     print(f"skipped_by_state_conversations={counters['skipped_by_state_conversations']}")
     print(f"skipped_by_state_messages={counters['skipped_by_state_messages']}")

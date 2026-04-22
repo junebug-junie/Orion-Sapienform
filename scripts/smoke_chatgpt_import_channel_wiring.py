@@ -21,6 +21,9 @@ IMPORTER_SCRIPT = REPO_ROOT / "scripts" / "import_chatgpt_export.py"
 EXPECTED = {
     "orion:chat:gpt:log": "ChatGptMessageV1",
     "orion:chat:gpt:turn": "ChatGptLogTurnV1",
+    "orion:chat:gpt:import:run": "ChatGptImportRunV1",
+    "orion:chat:gpt:conversation": "ChatGptConversationV1",
+    "orion:chat:gpt:example": "ChatGptDerivedExampleV1",
 }
 
 
@@ -90,6 +93,12 @@ def _run_importer_dry_run(export_file: Path) -> None:
         "orion:chat:gpt:log",
         "--channel-turn",
         "orion:chat:gpt:turn",
+        "--channel-import-run",
+        "orion:chat:gpt:import:run",
+        "--channel-conversation",
+        "orion:chat:gpt:conversation",
+        "--channel-example",
+        "orion:chat:gpt:example",
         "--dry-run",
         "--limit",
         "1",

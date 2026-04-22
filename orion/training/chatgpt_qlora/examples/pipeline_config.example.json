@@ -1,0 +1,48 @@
+{
+  "foundry": {
+    "output_dir": "artifacts/chatgpt_qlora",
+    "build_name": "chatgpt-semantic-foundry-v1",
+    "preserve_unknown_concepts": true,
+    "include_oracle_rewrite_candidates": true
+  },
+  "dataset": {
+    "source": {
+      "examples_jsonl": "orion/training/chatgpt_qlora/examples/examples.sample.jsonl",
+      "postgres_uri": null,
+      "import_run_ids": [],
+      "limit": 200
+    },
+    "output_dir": "artifacts/chatgpt_qlora",
+    "split_seed": "chatgpt-qlora-sft-v1",
+    "val_ratio": 0.2,
+    "min_prompt_chars": 3,
+    "min_response_chars": 3,
+    "template_style": "orion_chatml_v1"
+  },
+  "training": {
+    "base_model": "meta-llama/Llama-3.1-8B-Instruct",
+    "output_dir": "artifacts/chatgpt_qlora",
+    "run_name": "juniper-chatgpt-sft-v1",
+    "max_seq_length": 1024,
+    "epochs": 1.0,
+    "max_steps": 10,
+    "learning_rate": 0.0002,
+    "train_batch_size": 1,
+    "eval_batch_size": 1,
+    "gradient_accumulation_steps": 8,
+    "save_steps": 5,
+    "eval_steps": 5,
+    "save_total_limit": 2,
+    "qlora": {
+      "r": 16,
+      "alpha": 32,
+      "dropout": 0.05,
+      "target_modules": ["q_proj", "k_proj", "v_proj", "o_proj"]
+    }
+  },
+  "eval": {
+    "output_dir": "artifacts/chatgpt_qlora",
+    "max_new_tokens": 128,
+    "sample_count": 3
+  }
+}

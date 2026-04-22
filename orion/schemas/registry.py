@@ -52,7 +52,13 @@ from orion.schemas.platform import CoreEventV1, GenericPayloadV1, SystemErrorV1
 from orion.schemas.chat_history import ChatHistoryMessageV1, ChatHistoryTurnV1  # includes memory policy fields
 from orion.schemas.chat_response_feedback import ChatResponseFeedbackV1
 from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
-from orion.schemas.chat_gpt_log import ChatGptLogTurnV1, ChatGptMessageV1
+from orion.schemas.chat_gpt_log import (
+    ChatGptConversationV1,
+    ChatGptDerivedExampleV1,
+    ChatGptImportRunV1,
+    ChatGptLogTurnV1,
+    ChatGptMessageV1,
+)
 from orion.schemas.chat_response_feedback import ChatResponseFeedbackV1
 from orion.schemas.social_chat import (
     SocialConceptEvidenceV1,
@@ -822,6 +828,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ParsedDocumentIngestV1": ParsedDocumentIngestV1,
     "ParsedDocumentSectionV1": ParsedDocumentSectionV1,
     "ParsedDocumentBlockV1": ParsedDocumentBlockV1,
+    "ChatGptImportRunV1": ChatGptImportRunV1,
+    "ChatGptConversationV1": ChatGptConversationV1,
+    "ChatGptDerivedExampleV1": ChatGptDerivedExampleV1,
 
 }
 

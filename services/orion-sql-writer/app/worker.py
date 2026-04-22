@@ -23,6 +23,9 @@ from app.models import (
     ChatHistoryLogSQL,
     ChatGptLogSQL,
     ChatGptMessageSQL,
+    ChatGptImportRunSQL,
+    ChatGptConversationSQL,
+    ChatGptDerivedExampleSQL,
     ChatMessageSQL,
     ChatResponseFeedbackSQL,
     CollapseEnrichment,
@@ -69,7 +72,13 @@ from orion.schemas.telemetry.dream import DreamRequest, DreamResultV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.chat_history import ChatHistoryMessageV1
 from orion.schemas.chat_response_feedback import ChatResponseFeedbackV1
-from orion.schemas.chat_gpt_log import ChatGptLogTurnV1, ChatGptMessageV1
+from orion.schemas.chat_gpt_log import (
+    ChatGptConversationV1,
+    ChatGptDerivedExampleV1,
+    ChatGptImportRunV1,
+    ChatGptLogTurnV1,
+    ChatGptMessageV1,
+)
 from orion.schemas.chat_response_feedback import ChatResponseFeedbackV1
 from orion.schemas.social_chat import SocialRoomTurnStoredV1, SocialRoomTurnV1
 from orion.schemas.social_bridge import (
@@ -141,6 +150,9 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "ChatHistoryLogSQL": (ChatHistoryLogSQL, None),
     "ChatGptLogSQL": (ChatGptLogSQL, ChatGptLogTurnV1),
     "ChatGptMessageSQL": (ChatGptMessageSQL, ChatGptMessageV1),
+    "ChatGptImportRunSQL": (ChatGptImportRunSQL, ChatGptImportRunV1),
+    "ChatGptConversationSQL": (ChatGptConversationSQL, ChatGptConversationV1),
+    "ChatGptDerivedExampleSQL": (ChatGptDerivedExampleSQL, ChatGptDerivedExampleV1),
     "ChatMessageSQL": (ChatMessageSQL, ChatHistoryMessageV1),
     "ChatResponseFeedbackSQL": (ChatResponseFeedbackSQL, ChatResponseFeedbackV1),
     "Dream": (Dream, None),
@@ -825,6 +837,30 @@ def _write_row(sql_model_cls, data: dict) -> bool:
                     )
             except Exception as ex:
                 logger.warning(f"Failed to upsert chat_history_log from chat_message: {ex}")
+
+        if sql_model_cls is ChatGptMessageSQL:
+            existing_meta = filtered_data.get("meta") or {}
+            if not isinstance(existing_meta, dict):
+                existing_meta = {"raw_meta": str(existing_meta)}
+            export_meta: dict[str, Any] = {}
+            for key in (
+                "source_message_id",
+                "parent_message_id",
+                "child_message_ids",
+                "content_type",
+                "content_blocks",
+                "attachments",
+                "shared_conversation_id",
+            ):
+                value = data.get(key)
+                if value is not None and value != []:
+                    export_meta[key] = _json_sanitize(value)
+            message_metadata = data.get("metadata")
+            if isinstance(message_metadata, dict):
+                export_meta["message_metadata"] = _json_sanitize(message_metadata)
+            if export_meta:
+                existing_meta.update(export_meta)
+                filtered_data["meta"] = existing_meta
 
         if sql_model_cls in INSERT_ONLY_MODELS:
             try:

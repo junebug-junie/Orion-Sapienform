@@ -3,6 +3,9 @@ from .collapse_mirror import CollapseMirror
 from .chat_history_log import ChatHistoryLogSQL
 from .chat_gpt_log import ChatGptLogSQL
 from .chat_gpt_message import ChatGptMessageSQL
+from .chat_gpt_import_run import ChatGptImportRunSQL
+from .chat_gpt_conversation import ChatGptConversationSQL
+from .chat_gpt_derived_example import ChatGptDerivedExampleSQL
 from .chat_message import ChatMessageSQL
 from .chat_response_feedback import ChatResponseFeedbackSQL
 from .dreams import Dream
@@ -40,6 +43,9 @@ __all__ = [
     "ChatHistoryLogSQL",
     "ChatGptLogSQL",
     "ChatGptMessageSQL",
+    "ChatGptImportRunSQL",
+    "ChatGptConversationSQL",
+    "ChatGptDerivedExampleSQL",
     "ChatMessageSQL",
     "ChatResponseFeedbackSQL",
     "Dream",

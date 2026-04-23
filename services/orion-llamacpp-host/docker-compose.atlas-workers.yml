@@ -9,7 +9,7 @@ services:
       context: ../..
       dockerfile: services/orion-llamacpp-host/Dockerfile
       args:
-        - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b5401}
+        - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b8660}
     image: orion-llamacpp-host:0.1.0
     container_name: ${PROJECT:-orion}-atlas-llamacpp-chat
     restart: unless-stopped
@@ -49,7 +49,7 @@ services:
       context: ../..
       dockerfile: services/orion-llamacpp-host/Dockerfile
       args:
-        - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b5401}
+        - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b8660}
     image: orion-llamacpp-host:0.1.0
     container_name: ${PROJECT:-orion}-atlas-llamacpp-metacog
     restart: unless-stopped
@@ -88,7 +88,7 @@ services:
       context: ../..
       dockerfile: services/orion-llamacpp-host/Dockerfile
       args:
-        - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b5401}
+        - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b8660}
     image: orion-llamacpp-host:0.1.0
     container_name: ${PROJECT:-orion}-atlas-llamacpp-fast
     restart: unless-stopped
@@ -128,7 +128,7 @@ services:
       context: ../..
       dockerfile: services/orion-llamacpp-host/Dockerfile
       args:
-        - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b5401}
+        - LLAMACPP_IMAGE_TAG=${LLAMACPP_IMAGE_TAG:-server-cuda-b8660}
     image: orion-llamacpp-host:0.1.0
     container_name: ${PROJECT:-orion}-atlas-llamacpp-agent
     restart: unless-stopped

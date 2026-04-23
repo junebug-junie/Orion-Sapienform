@@ -20,8 +20,10 @@ from .session import ensure_session
 from .chat_history import (
     build_chat_history_envelope,
     build_chat_response_feedback_envelope,
+    build_chat_turn_envelope,
     publish_chat_history,
     publish_chat_response_feedback,
+    publish_chat_turn,
     publish_social_room_turn,
     select_reasoning_trace_for_history,
 )
@@ -775,6 +777,78 @@ def api_verbs(include_inactive: int = Query(default=0, ge=0, le=1)):
 # 💬 SHARED CHAT CORE (HTTP + WS)
 # ======================================================================
 
+def _http_chat_turn_context_from_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    WebSocket parity for HTTP /api/chat: merge gateway metadata (turn_effect, model, …)
+    into spark_meta and align reasoning extraction with websocket_handler.
+    """
+    raw = result.get("raw") or {}
+    gateway_meta = raw.get("metadata") if isinstance(raw, dict) else {}
+    if not isinstance(gateway_meta, dict):
+        gateway_meta = {}
+    routing = result.get("routing_debug") or {}
+    trace_verb = str(
+        gateway_meta.get("trace_verb")
+        or routing.get("verb")
+        or raw.get("verb")
+        or ""
+    ).strip() or None
+    explicit_reasoning_trace = (
+        raw.get("reasoning_trace") if isinstance(raw.get("reasoning_trace"), dict) else None
+    )
+    reasoning_content = (
+        gateway_meta.get("reasoning_content")
+        or raw.get("reasoning_content")
+        or (
+            ((raw.get("raw") or {}).get("reasoning_content"))
+            if isinstance(raw.get("raw"), dict)
+            else None
+        )
+    )
+    inline_think_content = (
+        gateway_meta.get("inline_think_content")
+        or raw.get("inline_think_content")
+    )
+    raw_thinking_source = gateway_meta.get("thinking_source") or raw.get("thinking_source")
+    thinking_source = "none"
+    if isinstance(raw_thinking_source, str) and raw_thinking_source.strip():
+        thinking_source = raw_thinking_source.strip()
+    elif isinstance(reasoning_content, str) and reasoning_content.strip():
+        thinking_source = "provider_reasoning"
+    elif isinstance(inline_think_content, str) and inline_think_content.strip():
+        thinking_source = "inline_think_full_block"
+    if reasoning_content and not (
+        isinstance(explicit_reasoning_trace, dict)
+        and str(explicit_reasoning_trace.get("content") or "").strip()
+    ):
+        explicit_reasoning_trace = {
+            "trace_role": "reasoning",
+            "trace_stage": "post_answer",
+            "content": str(reasoning_content).strip(),
+            "metadata": {"source": "hub_reasoning_content_fallback"},
+        }
+    spark_meta = {
+        "mode": result.get("mode"),
+        "trace_verb": trace_verb,
+        "use_recall": result.get("use_recall"),
+        "reasoning_content": reasoning_content,
+        "inline_think_content": inline_think_content,
+        "thinking_source": thinking_source,
+        "thought_capture_step": "llm_chat_general"
+        if str(trace_verb or "").strip() == "chat_general"
+        else None,
+        **gateway_meta,
+    }
+    return {
+        "spark_meta": spark_meta,
+        "explicit_reasoning_trace": explicit_reasoning_trace,
+        "reasoning_content": reasoning_content,
+        "inline_think_content": inline_think_content,
+        "thinking_source": thinking_source,
+        "gateway_meta": gateway_meta,
+    }
+
+
 async def handle_chat_request(
     cortex_client,
     payload: dict,
@@ -981,7 +1055,7 @@ async def handle_chat_request(
             "memory_used": memory_used,
             "memory_digest": memory_digest,
             "no_write": no_write,
-            "spark_meta": None,
+            "spark_meta": dict(autonomy_payload) if isinstance(autonomy_payload, dict) else {},
             "correlation_id": correlation_id,
             "routing_debug": route_debug,
             "metacog_traces": metacog_traces,
@@ -1038,19 +1112,21 @@ async def api_chat(
             # (but ideally we got it).
             final_corr_id = correlation_id or str(uuid4())
 
+            turn_ctx = _http_chat_turn_context_from_result(result)
             metacog_traces = result.get("metacog_traces") or []
-            reasoning_content = (
-                result.get("reasoning_content")
-                or ((result.get("raw") or {}).get("reasoning_content") if isinstance(result.get("raw"), dict) else None)
-            )
             selected_reasoning_trace, _ = select_reasoning_trace_for_history(
                 correlation_id=final_corr_id,
-                reasoning_trace=result.get("reasoning_trace"),
+                reasoning_trace=turn_ctx.get("explicit_reasoning_trace"),
                 metacog_traces=metacog_traces if isinstance(metacog_traces, list) else None,
-                reasoning_content=reasoning_content,
+                reasoning_content=turn_ctx.get("reasoning_content"),
                 session_id=session_id,
                 message_id=f"{final_corr_id}:assistant",
-                model=(settings.GATEWAY_MODEL if hasattr(settings, "GATEWAY_MODEL") else None),
+                model=(
+                    (turn_ctx.get("gateway_meta") or {}).get("model")
+                    if isinstance(turn_ctx.get("gateway_meta"), dict)
+                    else None
+                )
+                or (settings.GATEWAY_MODEL if hasattr(settings, "GATEWAY_MODEL") else None),
             )
 
             envelopes = []
@@ -1135,6 +1211,27 @@ async def api_chat(
                     len([t for t in metacog_traces if isinstance(t, dict)]),
                 )
 
+            spark_meta = turn_ctx.get("spark_meta") if isinstance(turn_ctx.get("spark_meta"), dict) else {}
+            env_turn = build_chat_turn_envelope(
+                prompt=latest_user_prompt,
+                response=text,
+                session_id=session_id,
+                correlation_id=final_corr_id,
+                user_id=payload.get("user_id"),
+                source_label="hub_http",
+                spark_meta=spark_meta,
+                turn_id=final_corr_id,
+                memory_status="accepted",
+                memory_tier="ephemeral",
+                client_meta=social_meta or None,
+                reasoning_content=turn_ctx.get("reasoning_content"),
+                inline_think_content=turn_ctx.get("inline_think_content"),
+                thinking_source=turn_ctx.get("thinking_source"),
+                reasoning_trace=selected_reasoning_trace,
+            )
+            await publish_chat_turn(bus, env_turn)
+            logger.info("Published chat.history turn row -> %s", settings.chat_history_turn_channel)
+
             # Legacy log for downstream SQL-writer compatibility
             chat_log_payload = {
                 "correlation_id": final_corr_id,
@@ -1145,7 +1242,7 @@ async def api_chat(
                 "mode": result.get("mode", "brain"),
                 "recall": use_recall,
                 "user_id": None,
-                "spark_meta": None,
+                "spark_meta": spark_meta,
                 "reasoning_trace": selected_reasoning_trace,
             }
             if _thought_debug_enabled():

@@ -70,9 +70,21 @@ def resolve_subject_identity(env: BaseEnvelope, intake_channel: str) -> str:
     role = payload.get("role")
     if isinstance(user, str) and user.lower().startswith("juniper"):
         return USER_SUBJECT
-    if role == "assistant" or "orion" in _source_name(env):
+    # Dyadic chat turns (Hub WS/HTTP, GPT log, etc.) are relationship-scoped: drives/tensions must
+    # land on `relationship` so Graph autonomy + Hub cards match what chat_stance queries.
+    ch = (intake_channel or "").lower()
+    if any(tok in ch for tok in ("chat:history", "chat:gpt", "chat:social")):
+        if isinstance(payload.get("prompt"), str) and isinstance(payload.get("response"), str):
+            return RELATIONSHIP_SUBJECT
+    role_norm = str(role or "").strip().lower()
+    if role_norm == "assistant":
         return SELF_SUBJECT
-    if any(token in (intake_channel or "").lower() for token in ("telemetry", "system", "hardware", "infra")):
+    # Avoid classifying Hub as "self": source names like "orion-hub" contain "orion" but are not
+    # the assistant agent identity for autonomy graph keys.
+    source_name = _source_name(env)
+    if "orion" in source_name and "hub" not in source_name:
+        return SELF_SUBJECT
+    if any(token in ch for token in ("telemetry", "system", "hardware", "infra")):
         return infer_external_subject(env, intake_channel)
     return RELATIONSHIP_SUBJECT
 

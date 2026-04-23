@@ -102,7 +102,8 @@ def test_inline_autonomy_rendering_uses_high_signal_gate() -> None:
 
     assert "function shouldRenderAutonomyInline(model)" in app_js
     assert "if (!model || !shouldRenderAutonomyInline(model)) return null;" in app_js
-    assert "return !!(model.dominantDrive || (model.topDrives || []).length || (model.tensions || []).length || (model.proposals || []).length);" in app_js
+    assert "model.driveCompetition" in app_js
+    assert "hasDc" in app_js
 
 
 def test_normalization_uses_state_preview_semantics_when_summary_sparse() -> None:
@@ -113,6 +114,8 @@ def test_normalization_uses_state_preview_semantics_when_summary_sparse() -> Non
     assert "(safeSummary && safeSummary.active_tensions) || (safePreview && safePreview.active_tensions)" in app_js
     assert "(safeSummary && safeSummary.proposal_headlines) || (safePreview && safePreview.proposal_headlines)" in app_js
     assert "(safeSummary && safeSummary.dominant_drive) || (safePreview && safePreview.dominant_drive)" in app_js
+    assert "safeSummary.drive_competition" in app_js
+    assert "competing pressures:" in app_js
 
 
 def test_clear_flow_clears_autonomy_debug_state() -> None:

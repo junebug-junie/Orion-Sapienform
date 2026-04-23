@@ -48,11 +48,6 @@ class GraphReviewTelemetryRecorder:
     def last_error(self) -> str | None:
         return self._last_error
 
-    def __post_init__(self) -> None:
-        if self.sql_db_path:
-            self._ensure_sql_schema()
-            self._load_from_sql()
-
     def record(self, entry: GraphReviewTelemetryRecordV1) -> None:
         self._records.append(entry)
         if len(self._records) > self.max_records:

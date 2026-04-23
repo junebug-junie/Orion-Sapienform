@@ -26,10 +26,17 @@ prompt_template: chat_quick.j2
 personality_file: orion/cognition/personality/orion_identity.yaml
 
 plan:
+  - name: collect_metacog_context
+    description: >
+      Hydrate current spark/turn-effect context so quick chat can propagate
+      downstream tension signals.
+    order: 0
+    services:
+      - MetacogContextService
   - name: llm_chat_quick
     description: >
       Single-pass quick response lane with lightweight identity context.
-    order: 0
+    order: 1
     prompt_template: chat_quick.j2
     services:
       - LLMGatewayService

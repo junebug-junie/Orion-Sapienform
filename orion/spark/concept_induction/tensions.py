@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.core.schemas.drives import ArtifactProvenance, TensionEventV1
@@ -35,6 +35,11 @@ def _extract_turn_effect(payload: Dict[str, Any]) -> Dict[str, Any]:
         eff = spark_meta.get("turn_effect")
         if isinstance(eff, dict):
             return eff
+        nested_meta = spark_meta.get("metadata")
+        if isinstance(nested_meta, dict):
+            nested_eff = nested_meta.get("turn_effect")
+            if isinstance(nested_eff, dict):
+                return nested_eff
         if all(k in spark_meta for k in ("phi_before", "phi_post_after")):
             before = spark_meta.get("phi_before") or {}
             after = spark_meta.get("phi_post_after") or {}
@@ -177,3 +182,78 @@ def extract_tensions(
     for event in events:
         event.provenance.tension_refs = [event.artifact_id]
     return events
+
+
+# Matches DriveEngine keys so pressure spread is comparable across turns.
+_DRIVE_KEYS: Sequence[str] = ("coherence", "continuity", "capability", "relational", "predictive", "autonomy")
+
+# When turn_effect-derived tensions are empty but drives disagree materially, record a named tension for audits/goals.
+_PRESSURE_SPREAD_THRESHOLD = 0.06
+
+
+def _canonical_pressures_for_spread(pressures: Dict[str, float]) -> Dict[str, float]:
+    out = {k: float(pressures.get(k, 0.0)) for k in _DRIVE_KEYS}
+    rs = float(pressures.get("relational_stability") or 0.0)
+    if rs:
+        out["relational"] = max(out["relational"], rs)
+    return out
+
+
+def derive_pressure_competition_tensions(
+    *,
+    envelope: BaseEnvelope,
+    intake_channel: str,
+    subject: str,
+    model_layer: str,
+    entity_id: str,
+    pressures: Dict[str, float],
+) -> List[TensionEventV1]:
+    """Emit at most one tension when max-min drive pressure spread exceeds threshold (no turn_effect required)."""
+    canon = _canonical_pressures_for_spread(pressures)
+    vals = list(canon.values())
+    if len(vals) < 2:
+        return []
+    spread = max(vals) - min(vals)
+    if spread < _PRESSURE_SPREAD_THRESHOLD:
+        raw = [float(v) for v in pressures.values() if isinstance(v, (int, float))]
+        if len(raw) >= 2:
+            spread = max(raw) - min(raw)
+        if spread < _PRESSURE_SPREAD_THRESHOLD:
+            return []
+
+    ranked = sorted(_DRIVE_KEYS, key=lambda k: float(canon.get(k, 0.0)), reverse=True)
+    top = ranked[0]
+    runner = ranked[1]
+    ts = envelope.created_at if envelope.created_at.tzinfo else envelope.created_at.replace(tzinfo=timezone.utc)
+    trace_id = extract_trace_id(envelope)
+    turn_id = extract_turn_id(envelope)
+    source_event_ref = build_source_event_ref(envelope, intake_channel)
+    evidence_items = build_evidence_items(envelope, intake_channel, None)
+    prov = ArtifactProvenance(
+        intake_channel=intake_channel,
+        correlation_id=str(envelope.correlation_id),
+        trace_id=str(trace_id) if trace_id else None,
+        turn_id=turn_id,
+        evidence_text=None,
+        evidence_summary=evidence_items[0].summary if evidence_items else None,
+        source_event_refs=[source_event_ref],
+        evidence_items=evidence_items,
+    )
+    event = TensionEventV1(
+        artifact_id=_artifact_id(envelope, entity_id, "tension.drive_competition.v1"),
+        subject=subject,
+        model_layer=model_layer,
+        entity_id=entity_id,
+        kind="tension.drive_competition.v1",
+        ts=ts,
+        confidence=0.68,
+        correlation_id=str(envelope.correlation_id),
+        trace_id=str(trace_id) if trace_id else None,
+        turn_id=turn_id,
+        provenance=prov,
+        related_nodes=[f"drive:{top}", f"drive:{runner}", "tension.drive_competition.v1"],
+        magnitude=clamp01(spread),
+        drive_impacts={top: 0.9, runner: 0.75},
+    )
+    event.provenance.tension_refs = [event.artifact_id]
+    return [event]

@@ -16,6 +16,10 @@ def extract_autonomy_payload(cortex_result: Any) -> Dict[str, Any]:
         "autonomy_selected_subject",
         "autonomy_repository_status",
         "chat_stance_debug",
+        "turn_effect",
+        "turn_effect_evidence",
+        "turn_effect_status",
+        "turn_effect_missing_reason",
     ):
         value = metadata.get(key)
         if value is not None:

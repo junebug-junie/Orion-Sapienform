@@ -27,7 +27,7 @@ from .inducer import ConceptInducer, WindowEvent
 from .settings import ConceptSettings
 from .store import LocalProfileStore
 from .summarizer import Summarizer
-from .tensions import extract_tensions
+from .tensions import derive_pressure_competition_tensions, extract_tensions
 from .rdf_materialization import build_concept_profile_rdf_request
 
 logger = logging.getLogger("orion.spark.concept.worker")
@@ -419,7 +419,7 @@ class ConceptWorker:
         model_layer = self._model_layer(subject, intake_channel)
         entity_id = self._entity_id(subject, model_layer)
 
-        tensions = extract_tensions(
+        spark_tensions = extract_tensions(
             envelope=env,
             intake_channel=intake_channel,
             subject=subject,
@@ -427,7 +427,7 @@ class ConceptWorker:
             entity_id=entity_id,
         )
         published_artifacts: List[GraphReadyArtifact] = []
-        for tension in tensions:
+        for tension in spark_tensions:
             await self._publish_tension_event(tension, env.correlation_id)
             published_artifacts.append(tension)
 
@@ -442,16 +442,30 @@ class ConceptWorker:
         pressures, activations = self.drive_engine.update(
             previous_pressures=prior_drive_state.get("pressures"),
             previous_activations=prior_drive_state.get("activations"),
-            tensions=tensions,
+            tensions=spark_tensions,
             now=now,
             previous_ts=previous_ts,
         )
         self.store.save_drive_state(subject, pressures=pressures, activations=activations, updated_at=now)
 
+        pressure_tensions = derive_pressure_competition_tensions(
+            envelope=env,
+            intake_channel=intake_channel,
+            subject=subject,
+            model_layer=model_layer,
+            entity_id=entity_id,
+            pressures=pressures,
+        )
+        for tension in pressure_tensions:
+            await self._publish_tension_event(tension, env.correlation_id)
+            published_artifacts.append(tension)
+
+        all_tensions = spark_tensions + pressure_tensions
+
         trace_id = extract_trace_id(env)
         turn_id = extract_turn_id(env)
         source_event_ref = build_source_event_ref(env, intake_channel)
-        evidence_items = build_evidence_items(env, intake_channel, tensions[0].provenance.evidence_text if tensions else None)
+        evidence_items = build_evidence_items(env, intake_channel, all_tensions[0].provenance.evidence_text if all_tensions else None)
         drive_state = drive_state_from_values(
             subject=subject,
             model_layer=model_layer,
@@ -468,17 +482,17 @@ class ConceptWorker:
                 correlation_id=str(env.correlation_id),
                 trace_id=trace_id,
                 turn_id=turn_id,
-                evidence_text=(tensions[0].provenance.evidence_text if tensions else None),
+                evidence_text=(all_tensions[0].provenance.evidence_text if all_tensions else None),
                 evidence_summary=(evidence_items[0].summary if evidence_items else None),
                 source_event_refs=[source_event_ref],
                 evidence_items=evidence_items,
-                tension_refs=[tension.artifact_id for tension in tensions],
+                tension_refs=[tension.artifact_id for tension in all_tensions],
             ),
-            related_nodes=[f"subject:{subject}"] + [tension.artifact_id for tension in tensions],
+            related_nodes=[f"subject:{subject}"] + [tension.artifact_id for tension in all_tensions],
         )
         await self._publish_drive_state(drive_state, env.correlation_id)
 
-        drive_audit = build_drive_audit(env=env, intake_channel=intake_channel, drive_state=drive_state, tensions=tensions)
+        drive_audit = build_drive_audit(env=env, intake_channel=intake_channel, drive_state=drive_state, tensions=all_tensions)
         await self._publish_artifact(drive_audit, self.cfg.drive_audit_channel, env.correlation_id)
         published_artifacts.append(drive_audit)
 
@@ -486,7 +500,7 @@ class ConceptWorker:
             drive_state=drive_state,
             source_event_ref=source_event_ref,
             evidence_items=evidence_items,
-            tensions=tensions,
+            tensions=all_tensions,
         )
         await self._publish_artifact(identity_snapshot, self.cfg.identity_snapshot_channel, env.correlation_id)
         published_artifacts.append(identity_snapshot)
@@ -495,7 +509,7 @@ class ConceptWorker:
             env=env,
             intake_channel=intake_channel,
             drive_state=drive_state,
-            tensions=tensions,
+            tensions=all_tensions,
             store=self.store,
         )
         suppressed_signatures: List[str] = []

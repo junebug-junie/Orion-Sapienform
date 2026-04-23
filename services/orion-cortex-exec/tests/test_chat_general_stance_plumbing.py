@@ -8,10 +8,12 @@ import yaml
 def test_chat_general_plan_runs_stance_before_final() -> None:
     doc = yaml.safe_load(Path("orion/cognition/verbs/chat_general.yaml").read_text(encoding="utf-8"))
     steps = doc.get("plan") or []
-    assert len(steps) >= 2
-    assert steps[0]["name"] == "synthesize_chat_stance_brief"
-    assert steps[0]["prompt_template"] == "chat_stance_brief.j2"
-    assert steps[1]["name"] == "llm_chat_general"
+    assert len(steps) >= 3
+    assert steps[0]["name"] == "collect_metacog_context"
+    assert steps[0]["services"] == ["MetacogContextService"]
+    assert steps[1]["name"] == "synthesize_chat_stance_brief"
+    assert steps[1]["prompt_template"] == "chat_stance_brief.j2"
+    assert steps[2]["name"] == "llm_chat_general"
 
 
 def test_final_prompt_consumes_stance_brief_and_keeps_rails() -> None:

@@ -36,12 +36,26 @@ class AutonomyStateV1(BaseModel):
     generated_at: datetime | None = None
 
 
+class DriveCompetitionSummaryV1(BaseModel):
+    """When tension.drive_competition.v1 is active: which drives disagree and by how much."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    top_drive: str
+    runner_drive: str
+    spread: float = Field(ge=0.0, le=1.0)
+    pressure_top: float = Field(ge=0.0, le=1.0)
+    pressure_runner: float = Field(ge=0.0, le=1.0)
+
+
 class AutonomySummaryV1(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     stance_hint: str
+    dominant_drive: str | None = None
     top_drives: list[str] = Field(default_factory=list)
     active_tensions: list[str] = Field(default_factory=list)
     proposal_headlines: list[str] = Field(default_factory=list)
     response_hazards: list[str] = Field(default_factory=list)
     raw_state_present: bool = False
+    drive_competition: DriveCompetitionSummaryV1 | None = None

@@ -2034,9 +2034,11 @@ loadDismissedIds();
     const key = String(drive || '').trim().toLowerCase();
     if (key === 'coherence') return 'synthesis/reduction';
     if (key === 'continuity') return 'continuity-preserving';
-    if (key === 'relational_stability') return 'relationally steady';
+    if (key === 'relational_stability' || key === 'relational') return 'relationally steady';
     if (key === 'capability_expansion') return 'forward-building';
-    if (key === 'predictive_mastery') return 'clarifying / forecasting';
+    if (key === 'predictive_mastery' || key === 'predictive') return 'clarifying / forecasting';
+    // Graph-native dominant drives: no keyword gate (avoid permanent "not clearly visible").
+    if (key === 'autonomy') return null;
     return key ? 'neutral' : null;
   }
 
@@ -2048,6 +2050,7 @@ loadDismissedIds();
       { label: 'continuity-preserving', patterns: ['continue', 'earlier', 'you said', 'as we were saying'] },
       { label: 'synthesis/reduction', patterns: ['the key point', 'in short', 'this means', 'so the answer is'] },
       { label: 'relationally steady', patterns: ['i hear you', 'that makes sense', 'you’re right', "you're right"] },
+      { label: 'clarifying / forecasting', patterns: ['likely', 'if we', 'next step', 'expect', 'forecast', 'prediction'] },
     ];
     cueRules.forEach((rule) => {
       if (rule.patterns.some((pattern) => text.includes(pattern))) {
@@ -2060,11 +2063,15 @@ loadDismissedIds();
   function computeAutonomyAlignment(model, replyText) {
     const expectedPosture = expectedPostureFromDrive(model && model.dominantDrive);
     const visibleCues = deriveVisibleAutonomyCues(replyText);
-    let alignmentNote = 'no strong posture expected';
-    if (expectedPosture) {
+    let alignmentNote = 'no fixed keyword gate for this dominant drive';
+    if (expectedPosture === 'neutral') {
+      alignmentNote = visibleCues.length
+        ? 'informal stylistic cues present (neutral drive)'
+        : 'neutral drive — keyword cue check optional';
+    } else if (expectedPosture) {
       alignmentNote = visibleCues.includes(expectedPosture)
         ? 'reply appears aligned'
-        : 'reply posture not clearly visible';
+        : 'reply posture not clearly visible (heuristic)';
     }
     return {
       expected_posture: expectedPosture,
@@ -2095,27 +2102,48 @@ loadDismissedIds();
     const availableCount = availabilityRows.filter(([, value]) => value.availability === 'available').length;
     const unavailableCount = availabilityRows.filter(([, value]) => value.availability === 'unavailable').length;
     const subjectCount = availabilityRows.length;
-    const dominantDrive = String((safeSummary && safeSummary.dominant_drive) || (safePreview && safePreview.dominant_drive) || '').trim();
+    const dominantDrive = String(
+      (safeSummary && safeSummary.dominant_drive)
+        || (safePreview && safePreview.dominant_drive)
+        || ''
+    ).trim();
     const runtimeRepositoryStatus = (safeDebug && safeDebug._runtime && safeDebug._runtime.repository_status && typeof safeDebug._runtime.repository_status === 'object')
       ? safeDebug._runtime.repository_status
       : {};
     const repositoryStatus = (meta.autonomyRepositoryStatus && typeof meta.autonomyRepositoryStatus === 'object')
       ? meta.autonomyRepositoryStatus
       : ((meta.autonomy_repository_status && typeof meta.autonomy_repository_status === 'object') ? meta.autonomy_repository_status : runtimeRepositoryStatus);
-    const hasSemanticSignal = !!(dominantDrive || topDrives.length || tensions.length || proposalHeadlines.length);
+    const executionMode = String((meta.autonomyExecutionMode != null && meta.autonomyExecutionMode)
+      || meta.autonomy_execution_mode || '').trim();
+    const goalLineageRaw = (meta.autonomyGoalLineage && typeof meta.autonomyGoalLineage === 'object')
+      ? meta.autonomyGoalLineage
+      : ((meta.autonomy_goal_lineage && typeof meta.autonomy_goal_lineage === 'object')
+        ? meta.autonomy_goal_lineage
+        : (safePreview && safePreview.goal_lineage) || null);
+    const driveCompetition = (safeSummary && safeSummary.drive_competition && typeof safeSummary.drive_competition === 'object')
+      ? safeSummary.drive_competition
+      : ((safePreview && safePreview.drive_competition && typeof safePreview.drive_competition === 'object')
+        ? safePreview.drive_competition
+        : null);
+    const hasSemanticSignal = !!(dominantDrive || topDrives.length || tensions.length || proposalHeadlines.length
+      || (driveCompetition && (driveCompetition.top_drive || driveCompetition.runner_drive)));
     const hasDebugSignal = !!(safeDebug && typeof safeDebug === 'object' && Object.keys(safeDebug).length);
-    const hasAnySignal = !!(hasSemanticSignal || hasDebugSignal || String((safeSummary && safeSummary.stance_hint) || '').trim());
+    const hasLineageMeta = !!(executionMode || (goalLineageRaw && Object.keys(goalLineageRaw).length));
+    const hasAnySignal = !!(hasSemanticSignal || hasDebugSignal || String((safeSummary && safeSummary.stance_hint) || '').trim() || hasLineageMeta);
     if (!hasAnySignal) return null;
 
     return {
       dominantDrive,
       topDrives,
       tensions,
+      driveCompetition,
       proposals: proposalHeadlines,
       proposalHeadlines,
       stanceHint: String((safeSummary && safeSummary.stance_hint) || '').trim(),
       hasSemanticSignal,
       hasDebugSignal,
+      executionMode,
+      goalLineage: goalLineageRaw,
       backend: String((meta.autonomyBackend || (safeDebug && safeDebug._runtime && safeDebug._runtime.backend) || meta.backend || '')).trim() || '--',
       selectedSubject: String((meta.autonomySelectedSubject || (safeDebug && safeDebug._runtime && safeDebug._runtime.selected_subject) || meta.selectedSubject || '')).trim() || '--',
       availability: {
@@ -2147,7 +2175,9 @@ loadDismissedIds();
 
   function shouldRenderAutonomyInline(model) {
     if (!model || typeof model !== 'object') return false;
-    return !!(model.dominantDrive || (model.topDrives || []).length || (model.tensions || []).length || (model.proposals || []).length);
+    const dc = model.driveCompetition;
+    const hasDc = dc && typeof dc === 'object' && (dc.top_drive || dc.runner_drive);
+    return !!(model.dominantDrive || (model.topDrives || []).length || (model.tensions || []).length || (model.proposals || []).length || hasDc);
   }
 
   function updateAutonomyDebugPanel(summary, debug, meta = {}) {
@@ -2181,6 +2211,10 @@ loadDismissedIds();
       `repository source: ${model.repositoryStatus.source_available ? 'available' : 'unavailable'}`,
       `repository path: ${model.repositoryStatus.source_path}`,
       `fallback: ${model.fallback}`,
+      ...(model.executionMode ? [`execution: ${model.executionMode}`] : []),
+      ...(model.goalLineage && Object.keys(model.goalLineage).length
+        ? [`goal lineage: ${JSON.stringify(model.goalLineage)}`]
+        : []),
     ].forEach((line) => {
       const row = document.createElement('div');
       row.textContent = line;
@@ -2192,6 +2226,9 @@ loadDismissedIds();
       `dominant drive: ${model.dominantDrive || '--'}`,
       `top drives: ${model.topDrives.length ? model.topDrives.join(', ') : '--'}`,
       `top tensions: ${model.tensions.length ? model.tensions.join(', ') : '--'}`,
+      ...(model.driveCompetition && model.driveCompetition.top_drive && model.driveCompetition.runner_drive
+        ? [`competing pressures: ${model.driveCompetition.top_drive} ${Number(model.driveCompetition.pressure_top).toFixed(2)} vs ${model.driveCompetition.runner_drive} ${Number(model.driveCompetition.pressure_runner).toFixed(2)} (spread ${Number(model.driveCompetition.spread).toFixed(2)})`]
+        : []),
     ].forEach((line) => {
       const row = document.createElement('div');
       row.textContent = line;
@@ -4906,7 +4943,10 @@ loadDismissedIds();
       ['dominant drive', model.dominantDrive || '--'],
       ['top drives', model.topDrives.length ? model.topDrives.join(', ') : '--'],
       ['top tensions', model.tensions.length ? model.tensions.join(', ') : '--'],
-      ['proposal headlines', model.proposalHeadlines.length ? model.proposalHeadlines.join(' · ') : '--'],
+      ...(model.driveCompetition && model.driveCompetition.top_drive && model.driveCompetition.runner_drive
+        ? [['competing pressures', `${model.driveCompetition.top_drive} ${Number(model.driveCompetition.pressure_top).toFixed(2)} vs ${model.driveCompetition.runner_drive} ${Number(model.driveCompetition.pressure_runner).toFixed(2)} (spread ${Number(model.driveCompetition.spread).toFixed(2)})`]]
+        : []),
+      ['proposal headlines', model.proposalHeadlines.length ? model.proposalHeadlines.join('; ') : '--'],
       ['alignment', model.alignment.alignment_note],
     ].forEach(([label, value]) => {
       const row = document.createElement('div');

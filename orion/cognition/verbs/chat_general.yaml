@@ -28,12 +28,19 @@ prompt_template: chat_general.j2
 personality_file: orion/cognition/personality/orion_identity.yaml
 
 plan:
+  - name: collect_metacog_context
+    description: >
+      Hydrate current spark/turn-effect context so chat-general turns can
+      propagate downstream tension signals.
+    order: 0
+    services:
+      - MetacogContextService
   - name: synthesize_chat_stance_brief
     description: >
       Bounded internal synthesis pass that composes identity kernel, concept induction,
       social state, and reflective continuity into a strict stance brief.
       This step is toolless and emits only internal structured guidance.
-    order: 0
+    order: 1
     prompt_template: chat_stance_brief.j2
     services:
       - LLMGatewayService
@@ -43,7 +50,7 @@ plan:
     description: >
       Final speech pass that answers Juniper directly using the synthesized stance brief.
       Keeps chat bounded, identity-aware, and non-agentic.
-    order: 1
+    order: 2
     prompt_template: chat_general.j2
     services:
       - LLMGatewayService

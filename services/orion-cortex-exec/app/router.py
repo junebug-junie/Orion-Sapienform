@@ -336,6 +336,27 @@ def _should_fail_empty_runtime_skill_output(*, overall_status: str, verb_name: s
     return overall_status == "success" and _is_runtime_skill_verb(verb_name) and not str(final_text or "").strip()
 
 
+def _autonomy_goal_lineage_from_state(state: Dict[str, Any] | None) -> Dict[str, Any] | None:
+    if not isinstance(state, dict):
+        return None
+    headlines = state.get("goal_headlines")
+    if not isinstance(headlines, list) or not headlines:
+        return None
+    first = headlines[0]
+    if not isinstance(first, dict):
+        return None
+    aid = first.get("artifact_id")
+    sig = first.get("proposal_signature")
+    if not aid and not sig:
+        return None
+    out: Dict[str, Any] = {}
+    if aid:
+        out["goal_artifact_id"] = aid
+    if sig:
+        out["proposal_signature"] = sig
+    return out or None
+
+
 def _autonomy_state_preview(ctx: Dict[str, Any]) -> Dict[str, Any] | None:
     summary = ctx.get("chat_autonomy_summary") if isinstance(ctx.get("chat_autonomy_summary"), dict) else {}
     state = ctx.get("chat_autonomy_state") if isinstance(ctx.get("chat_autonomy_state"), dict) else {}
@@ -355,6 +376,12 @@ def _autonomy_state_preview(ctx: Dict[str, Any]) -> Dict[str, Any] | None:
         "active_tensions": list(summary.get("active_tensions") or state.get("tension_kinds") or [])[:3],
         "proposal_headlines": list(summary.get("proposal_headlines") or [])[:3],
     }
+    dc = summary.get("drive_competition") if isinstance(summary.get("drive_competition"), dict) else None
+    if dc:
+        preview["drive_competition"] = dc
+    lineage = _autonomy_goal_lineage_from_state(state)
+    if lineage:
+        preview["goal_lineage"] = lineage
     if not any(preview.values()):
         return None
     return preview
@@ -376,6 +403,15 @@ def _autonomy_payload_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
     preview = _autonomy_state_preview(ctx)
     if preview:
         payload["autonomy_state_preview"] = preview
+    lineage = _autonomy_goal_lineage_from_state(state if isinstance(state, dict) else None)
+    if lineage:
+        payload["autonomy_goal_lineage"] = lineage
+    has_proposals = bool(
+        (isinstance(summary, dict) and summary.get("proposal_headlines"))
+        or (isinstance(state, dict) and state.get("goal_headlines"))
+    )
+    if has_proposals or lineage:
+        payload["autonomy_execution_mode"] = "proposal_only"
     if has_autonomy_context:
         if backend:
             payload["autonomy_backend"] = backend
@@ -403,6 +439,22 @@ def _autonomy_payload_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
         payload["final_text_clean"] = final_text_clean
     if chat_stance_debug:
         payload["chat_stance_debug"] = chat_stance_debug
+    # Hub merges cortex_result.metadata into chat turn spark_meta; concept-induction reads
+    # payload.spark_meta.turn_effect (see orion.spark.concept_induction.tensions._extract_turn_effect).
+    te = ctx.get("turn_effect")
+    if isinstance(te, dict) and te:
+        payload["turn_effect"] = te
+        payload["turn_effect_status"] = "present"
+    te_ev = ctx.get("turn_effect_evidence")
+    if isinstance(te_ev, dict) and te_ev:
+        payload["turn_effect_evidence"] = te_ev
+    elif payload.get("turn_effect_status") != "present":
+        payload["turn_effect_status"] = "missing"
+        reason = "no_turn_effect_in_ctx"
+        biometrics = ctx.get("biometrics")
+        if isinstance(biometrics, dict):
+            reason = str(biometrics.get("reason") or reason)
+        payload["turn_effect_missing_reason"] = reason
     return payload
 
 

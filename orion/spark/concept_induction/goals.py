@@ -45,8 +45,17 @@ class GoalProposalEngine:
         base = GOAL_TEMPLATES.get(drive_origin, GOAL_TEMPLATES["continuity"])
         if tensions:
             lead = sorted(tensions, key=lambda tension: (-tension.magnitude, tension.kind))[0]
-            return f"{base} Primary tension: {lead.kind}."
-        return base
+            text = f"{base} Primary tension: {lead.kind}."
+        else:
+            text = base
+        # Lineage only: do not append evidence_summary (often user chat text from the intake envelope).
+        extras: List[str] = []
+        tr = str(drive_state.trace_id or "").strip()
+        if tr:
+            extras.append(f"trace={tr[:8]}" + ("…" if len(tr) > 8 else ""))
+        if extras:
+            text = f"{text} · {' · '.join(extras)}"
+        return text
 
     @staticmethod
     def _signature(subject: str, model_layer: str, drive_origin: str, goal_statement: str, tensions: List[TensionEventV1]) -> str:

@@ -33,6 +33,12 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `CHANNEL_COUNCIL_INTAKE` | ... | Council worker channel. |
 | `ORION_REPO_ROOT` | auto-detected | Optional override for self-study repo-root resolution when the container layout differs from local dev. |
 
+### Turn effect and drive tensions (bus)
+
+When the executor computes `turn_effect` / `turn_effect_evidence`, they are included in `PlanExecutionResult.metadata`. Hub merges that metadata into each chat turn `spark_meta`, so `orion-spark-concept-induction` can derive `extract_tensions` from `spark_meta.turn_effect`. For graph-backed tension kinds on `DriveAudit`, `orion-rdf-writer` must still consume `memory.drives.audit.v1` after concept-induction publishes it.
+
+**Stack verification (after deploy):** subscribe to the Hub chat turn channel (see Hub `chat_history_turn_channel`) and confirm envelope payloads include `spark_meta.turn_effect` on turns where phi telemetry ran. Confirm `orion-spark-concept-induction` logs `handle_envelope` for that channel and `orion-rdf-writer` logs RDF for `memory.drives.audit.v1`. In GraphDB, query the latest `DriveAudit` for your subject and check `orion:derivedFromTension` / `orion:tensionKind` bindings.
+
 ## Running & Testing
 
 ### Run via Docker

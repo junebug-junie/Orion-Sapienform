@@ -5,14 +5,16 @@ from pathlib import Path
 import yaml
 
 
-def test_chat_quick_plan_is_single_pass_llm_gateway() -> None:
+def test_chat_quick_plan_collects_metacog_then_runs_llm_gateway() -> None:
     doc = yaml.safe_load(Path("orion/cognition/verbs/chat_quick.yaml").read_text(encoding="utf-8"))
     assert doc["name"] == "chat_quick"
     steps = doc.get("plan") or []
-    assert len(steps) == 1
-    assert steps[0]["name"] == "llm_chat_quick"
-    assert steps[0]["services"] == ["LLMGatewayService"]
-    assert steps[0]["prompt_template"] == "chat_quick.j2"
+    assert len(steps) >= 2
+    assert steps[0]["name"] == "collect_metacog_context"
+    assert steps[0]["services"] == ["MetacogContextService"]
+    assert steps[1]["name"] == "llm_chat_quick"
+    assert steps[1]["services"] == ["LLMGatewayService"]
+    assert steps[1]["prompt_template"] == "chat_quick.j2"
 
 
 def test_chat_quick_prompt_has_identity_context_and_no_stance_dependency() -> None:

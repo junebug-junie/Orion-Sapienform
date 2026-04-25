@@ -7,6 +7,9 @@ from app.main import (
     ACTION_DAILY_METACOG_V1,
     ACTION_DAILY_PULSE_V1,
     _daily_notify_request,
+    _build_scheduler_daily_journal_email_request,
+    _build_scheduler_daily_journal_message_payload,
+    _is_scheduler_daily_journal,
     _publish_daily_outputs,
     _publish_workflow_attention_signal,
     _send_orion_async_message,
@@ -14,6 +17,7 @@ from app.main import (
     settings,
 )
 from app.workflow_schedule_store import WorkflowScheduleStore
+from orion.journaler import build_manual_trigger, build_scheduler_trigger
 from orion.schemas.workflow_execution import WorkflowDispatchRequestV1
 
 
@@ -71,6 +75,7 @@ def test_publish_daily_outputs_calls_chat_message_once_for_daily_pulse(monkeypat
         dedupe_key="dedupe-key",
         correlation_id="corr-1",
         payload={"date": "2026-04-25", "timezone": "America/Denver", "today_focus": "x"},
+        include_email_channel=True,
     )
 
     _publish_daily_outputs(
@@ -100,6 +105,7 @@ def test_publish_daily_outputs_respects_preserve_generic_notify_flag(monkeypatch
         dedupe_key="dedupe-key",
         correlation_id="corr-2",
         payload={"date": "2026-04-25", "timezone": "America/Denver", "course_correction": "x"},
+        include_email_channel=True,
     )
 
     _publish_daily_outputs(
@@ -114,6 +120,114 @@ def test_publish_daily_outputs_respects_preserve_generic_notify_flag(monkeypatch
 
     assert len(notify.send_calls) == 0
     assert len(notify.chat_calls) == 1
+
+
+def test_daily_notify_request_includes_email_channel_when_enabled() -> None:
+    req = _daily_notify_request(
+        event_kind="orion.daily.pulse",
+        title="Orion — Daily Pulse",
+        dedupe_key="dedupe-key",
+        correlation_id="corr-email-on",
+        payload={"date": "2026-04-25"},
+        include_email_channel=True,
+    )
+    assert req.channels_requested == ["email"]
+
+
+def test_daily_notify_request_omits_email_channel_when_disabled() -> None:
+    req = _daily_notify_request(
+        event_kind="orion.daily.metacog",
+        title="Orion — Daily Metacog",
+        dedupe_key="dedupe-key",
+        correlation_id="corr-email-off",
+        payload={"date": "2026-04-25"},
+        include_email_channel=False,
+    )
+    assert req.channels_requested is None
+
+
+def test_publish_daily_outputs_requires_both_async_flags(monkeypatch) -> None:
+    notify = _FakeNotify()
+    monkeypatch.setattr(settings, "actions_preserve_generic_notify_enabled", True)
+    monkeypatch.setattr(settings, "actions_async_messages_enabled", True)
+    monkeypatch.setattr(settings, "actions_daily_async_messages_enabled", False)
+    req = _daily_notify_request(
+        event_kind="orion.daily.pulse",
+        title="Orion — Daily Pulse",
+        dedupe_key="dedupe-key",
+        correlation_id="corr-async-flags",
+        payload={"date": "2026-04-25"},
+        include_email_channel=True,
+    )
+
+    _publish_daily_outputs(
+        notify=notify,
+        action_name=ACTION_DAILY_PULSE_V1,
+        title="Orion — Daily Pulse",
+        preview_text="preview",
+        full_text="full",
+        notify_req=req,
+        correlation_id="corr-async-flags",
+    )
+    assert len(notify.chat_calls) == 0
+
+    monkeypatch.setattr(settings, "actions_daily_async_messages_enabled", True)
+    _publish_daily_outputs(
+        notify=notify,
+        action_name=ACTION_DAILY_PULSE_V1,
+        title="Orion — Daily Pulse",
+        preview_text="preview",
+        full_text="full",
+        notify_req=req,
+        correlation_id="corr-async-flags",
+    )
+    assert len(notify.chat_calls) == 1
+
+
+def test_scheduler_daily_journal_helpers_build_message_and_email_request() -> None:
+    trigger = build_scheduler_trigger(summary="Daily cadence", source_ref="2026-04-25")
+    write_payload = {
+        "entry_id": "entry-123",
+        "mode": "daily",
+        "title": "Morning Reflection",
+        "body": "Summarize daily priorities and anchors.",
+        "source_kind": "scheduler",
+        "source_ref": "2026-04-25",
+    }
+    draft = {"mode": "daily", "title": "Morning Reflection", "body": "Summarize daily priorities and anchors."}
+
+    assert _is_scheduler_daily_journal(trigger=trigger, write_payload=write_payload, draft=draft) is True
+    message_payload = _build_scheduler_daily_journal_message_payload(
+        trigger=trigger,
+        write_payload=write_payload,
+        draft=draft,
+        correlation_id="corr-journal-1",
+    )
+    assert message_payload["title"] == "Orion — Daily Journal"
+    assert "Morning Reflection" in message_payload["preview_text"]
+
+    email_req = _build_scheduler_daily_journal_email_request(
+        trigger=trigger,
+        write_payload=write_payload,
+        draft=draft,
+        correlation_id="corr-journal-1",
+    )
+    assert email_req.event_kind == "orion.journal.daily.scheduler"
+    assert email_req.channels_requested == ["email"]
+
+
+def test_scheduler_daily_journal_helper_skips_non_scheduler_or_non_daily() -> None:
+    manual_trigger = build_manual_trigger(summary="manual", source_ref="manual-1")
+    write_payload = {
+        "entry_id": "entry-456",
+        "mode": "manual",
+        "title": "Manual Journal",
+        "body": "Operator-authored note.",
+        "source_kind": "manual",
+        "source_ref": "manual-1",
+    }
+    draft = {"mode": "manual", "title": "Manual Journal", "body": "Operator-authored note."}
+    assert _is_scheduler_daily_journal(trigger=manual_trigger, write_payload=write_payload, draft=draft) is False
 
 
 def test_send_pending_attention_routes_to_attention_request() -> None:

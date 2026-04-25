@@ -87,22 +87,34 @@ def test_attention_notify_integration_dedupe_payload_and_no_spam(tmp_path) -> No
     assert len(signals) == 1
     signal = signals[0]
     sent: list = []
+    attention_requests: list = []
+    chat_messages: list = []
 
     class _Notify:
         def send(self, req):
             sent.append(req)
             return SimpleNamespace(ok=True, detail=None)
 
+        def attention_request(self, **kwargs):
+            attention_requests.append(kwargs)
+            return SimpleNamespace(ok=True, detail=None, notification_id=None)
+
+        def chat_message(self, **kwargs):
+            chat_messages.append(kwargs)
+            return SimpleNamespace(ok=True, detail=None, notification_id=None)
+
     before_entered = workflow_schedule_metrics.get("workflow_schedule_attention_entered_total")
     asyncio.run(_publish_workflow_attention_signal(signal=signal, notify=_Notify()))
     assert workflow_schedule_metrics.get("workflow_schedule_attention_entered_total") == before_entered + 1
     assert len(sent) == 1
+    assert len(attention_requests) == 1
     req = sent[0]
     assert req.dedupe_key == f"workflow:schedule:attention:{created.schedule_id}:failing"
     assert req.context["transition"] == "entered"
     assert req.context["condition"] == "failing"
     assert req.context["state"] == "active"
     assert req.context["schedule_id_short"] == created.schedule_id[-8:]
+    assert attention_requests[0]["context"]["reason"].startswith("Workflow schedule needs attention:")
 
     again = store.evaluate_attention_signals(now_utc=datetime(2026, 3, 25, 7, 3, tzinfo=timezone.utc), reminder_cooldown_seconds=9999)
     assert again == []
@@ -115,12 +127,16 @@ def test_attention_notify_integration_dedupe_payload_and_no_spam(tmp_path) -> No
     recovered = store.evaluate_attention_signals(now_utc=datetime(2026, 3, 25, 7, 5, tzinfo=timezone.utc), reminder_cooldown_seconds=9999)
     assert len(recovered) == 1
     sent.clear()
+    attention_requests.clear()
+    chat_messages.clear()
     before_recovered = workflow_schedule_metrics.get("workflow_schedule_attention_recovered_total")
     asyncio.run(_publish_workflow_attention_signal(signal=recovered[0], notify=_Notify()))
     assert workflow_schedule_metrics.get("workflow_schedule_attention_recovered_total") == before_recovered + 1
     assert sent[0].dedupe_key == f"workflow:schedule:attention:{created.schedule_id}:recovered"
     assert sent[0].context["transition"] == "recovered"
     assert sent[0].context["condition"] == "ok"
+    assert attention_requests == []
+    assert len(chat_messages) == 1
 
 
 def test_attention_notify_integration_overdue_transition(tmp_path) -> None:

@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     actions_daily_metacog_enabled: bool = Field(True, alias="ACTIONS_DAILY_METACOG_ENABLED")
     actions_daily_metacog_hour_local: int = Field(20, alias="ACTIONS_DAILY_METACOG_HOUR_LOCAL")
     actions_daily_metacog_minute_local: int = Field(15, alias="ACTIONS_DAILY_METACOG_MINUTE_LOCAL")
+    actions_async_messages_enabled: bool = Field(True, alias="ACTIONS_ASYNC_MESSAGES_ENABLED")
+    actions_pending_attention_enabled: bool = Field(True, alias="ACTIONS_PENDING_ATTENTION_ENABLED")
+    actions_preserve_generic_notify_enabled: bool = Field(True, alias="ACTIONS_PRESERVE_GENERIC_NOTIFY_ENABLED")
 
     actions_skills_scheduler_enabled: bool = Field(True, alias="ACTIONS_SKILLS_SCHEDULER_ENABLED")
     actions_skills_run_on_startup: bool = Field(False, alias="ACTIONS_SKILLS_RUN_ON_STARTUP")

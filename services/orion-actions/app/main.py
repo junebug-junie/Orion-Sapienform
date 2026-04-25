@@ -358,6 +358,95 @@ def _daily_notify_request(*, event_kind: str, title: str, dedupe_key: str, corre
     )
 
 
+def _daily_preview_and_markdown(*, title: str, payload: dict[str, Any]) -> tuple[str, str]:
+    preview = "; ".join([f"{k}: {v}" for k, v in list(payload.items())[:3]])[:280]
+    pretty = json.dumps(payload, indent=2, sort_keys=True)
+    markdown = f"## {title}\n\n```json\n{pretty}\n```\n"
+    return preview, markdown
+
+
+def _send_orion_async_message(
+    *,
+    notify,
+    title: str,
+    preview_text: str,
+    full_text: str,
+    severity: str = "info",
+    tags: list[str] | None = None,
+    session_id: str | None = None,
+    source_service: str | None = None,
+    correlation_id: str | None = None,
+):
+    return notify.chat_message(
+        session_id=session_id or settings.actions_session_id,
+        title=title,
+        preview_text=preview_text[:280],
+        full_text=full_text,
+        severity=severity,
+        require_read_receipt=True,
+        tags=tags or ["actions", "async-message"],
+        source_service=source_service or settings.service_name,
+        correlation_id=correlation_id,
+    )
+
+
+def _send_pending_attention(
+    *,
+    notify,
+    reason: str,
+    message: str,
+    severity: str = "warning",
+    context: dict[str, Any] | None = None,
+    require_ack: bool = True,
+    expires_in_minutes: int | None = None,
+):
+    payload_context = dict(context or {})
+    payload_context.setdefault("source_service", settings.service_name)
+    payload_context.setdefault("reason", reason)
+    return notify.attention_request(
+        message=message,
+        severity=severity,
+        require_ack=require_ack,
+        context=payload_context,
+        expires_in_minutes=expires_in_minutes,
+    )
+
+
+def _publish_daily_outputs(
+    *,
+    notify,
+    action_name: str,
+    title: str,
+    preview_text: str,
+    full_text: str,
+    notify_req: NotificationRequest,
+    correlation_id: str,
+) -> dict[str, Any]:
+    accepted = None
+    if settings.actions_preserve_generic_notify_enabled:
+        accepted = notify.send(notify_req)
+
+    chat_message_accepted = None
+    if settings.actions_async_messages_enabled:
+        chat_tags = ["actions", "daily", "pulse"] if action_name == ACTION_DAILY_PULSE_V1 else ["actions", "daily", "metacog"]
+        chat_message_accepted = _send_orion_async_message(
+            notify=notify,
+            title=title,
+            preview_text=preview_text,
+            full_text=full_text,
+            severity="info",
+            tags=chat_tags,
+            session_id=settings.actions_session_id,
+            source_service=settings.service_name,
+            correlation_id=correlation_id,
+        )
+
+    return {
+        "generic": accepted,
+        "chat_message": chat_message_accepted,
+    }
+
+
 def _schedule_attention_notify_request(*, signal: ScheduleAttentionSignal, correlation_id: str) -> NotificationRequest:
     schedule = signal.schedule
     analytics = signal.analytics
@@ -414,16 +503,56 @@ def _journal_daily_dedupe_key(window: DailyWindow) -> str:
 
 async def _publish_workflow_attention_signal(*, signal: ScheduleAttentionSignal, notify) -> None:
     req = _schedule_attention_notify_request(signal=signal, correlation_id=str(uuid4()))
-    accepted = await asyncio.to_thread(notify.send, req)
-    workflow_schedule_metrics.incr_attention(signal.transition)
-    if not accepted.ok:
-        logger.warning(
-            "workflow attention notify failed schedule_id=%s transition=%s condition=%s detail=%s",
-            signal.schedule.schedule_id,
-            signal.transition,
-            signal.kind,
-            accepted.detail,
+    if settings.actions_preserve_generic_notify_enabled:
+        generic_accepted = await asyncio.to_thread(notify.send, req)
+        if not generic_accepted.ok:
+            logger.warning(
+                "workflow attention notify failed schedule_id=%s transition=%s condition=%s detail=%s",
+                signal.schedule.schedule_id,
+                signal.transition,
+                signal.kind,
+                generic_accepted.detail,
+            )
+
+    if signal.transition == "recovered":
+        if settings.actions_async_messages_enabled:
+            await asyncio.to_thread(
+                _send_orion_async_message,
+                notify=notify,
+                title=req.title,
+                preview_text=req.body_text or req.title,
+                full_text=req.body_text or req.title,
+                severity="info",
+                tags=["workflow", "schedule", "recovered"],
+                session_id=req.session_id or settings.actions_session_id,
+                source_service=settings.service_name,
+                correlation_id=req.correlation_id,
+            )
+        workflow_schedule_metrics.incr_attention(signal.transition)
+        return
+
+    if settings.actions_pending_attention_enabled:
+        attention_context = dict(req.context or {})
+        attention_context.update(
+            {
+                "source_service": settings.service_name,
+                "reason": req.title,
+                "event_kind": "workflow.schedule.attention.v1",
+                "tags": ["workflow", "schedule", "attention"],
+                "correlation_id": req.correlation_id,
+            }
         )
+        await asyncio.to_thread(
+            _send_pending_attention,
+            notify=notify,
+            reason=req.title,
+            message=req.body_text or req.title,
+            severity=req.severity if req.severity in {"error", "warning"} else "warning",
+            context=attention_context,
+            require_ack=True,
+        )
+
+    workflow_schedule_metrics.incr_attention(signal.transition)
 
 
 def should_journal_from_collapse(is_causally_dense: bool, *, dense_only: bool) -> bool:
@@ -728,20 +857,36 @@ async def lifespan(app: FastAPI):
                 event_kind = "orion.daily.metacog"
                 title = "Orion — Daily Metacog"
 
+            model_payload = model.model_dump(mode="json")
+            preview_text, full_text = _daily_preview_and_markdown(title=title, payload=model_payload)
             notify_req = _daily_notify_request(
                 event_kind=event_kind,
                 title=title,
                 dedupe_key=dedupe_key,
                 correlation_id=str(parent.correlation_id),
-                payload=model.model_dump(mode="json"),
+                payload=model_payload,
             )
-            accepted = await asyncio.to_thread(notify.send, notify_req)
+            publish_results = await asyncio.to_thread(
+                _publish_daily_outputs,
+                notify=notify,
+                action_name=action_name,
+                title=title,
+                preview_text=preview_text,
+                full_text=full_text,
+                notify_req=notify_req,
+                correlation_id=str(parent.correlation_id),
+            )
+            accepted = publish_results.get("generic")
+            chat_message_accepted = publish_results.get("chat_message")
+
             dt_ms = int((time.monotonic() - t0) * 1000)
             extra = {
                 "duration_ms": dt_ms,
-                "notify_ok": accepted.ok,
-                "notify_status": accepted.status,
-                "notification_id": str(accepted.notification_id) if accepted.notification_id else None,
+                "generic_notify_ok": accepted.ok if accepted else None,
+                "generic_notify_status": accepted.status if accepted else None,
+                "generic_notification_id": str(accepted.notification_id) if accepted and accepted.notification_id else None,
+                "chat_message_ok": chat_message_accepted.ok if chat_message_accepted else None,
+                "chat_message_notification_id": str(chat_message_accepted.notification_id) if chat_message_accepted and chat_message_accepted.notification_id else None,
                 "parse_retry_used": parse_retry_used,
                 "llm_finish_reason": daily_llm_diag.get("finish_reason"),
                 "llm_stop_reason": daily_llm_diag.get("stop_reason"),
@@ -751,11 +896,19 @@ async def lifespan(app: FastAPI):
                 else None,
             }
 
-            if accepted.ok:
+            generic_ok = accepted.ok if accepted else True
+            chat_ok = chat_message_accepted.ok if chat_message_accepted else True
+
+            if generic_ok and chat_ok:
                 deduper.mark_done(dedupe_key)
                 await _audit(parent, status="completed", event_id=dedupe_key, action_name=action_name, extra=extra)
             else:
-                await _audit(parent, status="failed", event_id=dedupe_key, action_name=action_name, reason=accepted.detail, extra=extra)
+                reason = None
+                if accepted and not accepted.ok:
+                    reason = accepted.detail
+                elif chat_message_accepted and not chat_message_accepted.ok:
+                    reason = chat_message_accepted.detail
+                await _audit(parent, status="failed", event_id=dedupe_key, action_name=action_name, reason=reason, extra=extra)
 
         except Exception as exc:
             dt_ms = int((time.monotonic() - t0) * 1000)

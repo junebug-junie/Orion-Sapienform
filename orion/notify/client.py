@@ -105,10 +105,12 @@ class NotifyClient:
         session_id: str,
         preview_text: str,
         full_text: Optional[str] = None,
+        title: Optional[str] = None,
         severity: str = "info",
         require_read_receipt: bool = True,
         tags: Optional[List[str]] = None,
         source_service: str = "unknown",
+        correlation_id: Optional[str] = None,
     ) -> NotificationAccepted:
         url = f"{self.base_url}/chat/message"
         headers = {"Content-Type": "application/json"}
@@ -117,6 +119,8 @@ class NotifyClient:
         payload = ChatMessageNotification(
             source_service=source_service,
             session_id=session_id,
+            correlation_id=correlation_id,
+            title=title,
             preview_text=preview_text,
             full_text=full_text,
             severity=severity,

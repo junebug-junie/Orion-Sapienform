@@ -40,6 +40,8 @@ from app.models import (
     MetacognitiveTraceSQL,
     NotificationRequestDB,
     NotificationReceiptDB,
+    RecipientProfileDB,
+    NotificationPreferenceDB,
     JournalEntrySQL,
     SocialRoomTurnSQL,
     ExternalRoomMessageSQL,
@@ -167,6 +169,8 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "MetacognitiveTraceSQL": (MetacognitiveTraceSQL, MetacognitiveTraceV1),
     "NotificationRequestDB": (NotificationRequestDB, None),
     "NotificationReceiptDB": (NotificationReceiptDB, None),
+    "RecipientProfileDB": (RecipientProfileDB, None),
+    "NotificationPreferenceDB": (NotificationPreferenceDB, None),
     "JournalEntrySQL": (JournalEntrySQL, JournalEntryWriteV1),
     "SocialRoomTurnSQL": (SocialRoomTurnSQL, SocialRoomTurnV1),
     "ExternalRoomMessageSQL": (ExternalRoomMessageSQL, ExternalRoomMessageV1),
@@ -435,6 +439,68 @@ def _normalized_text(value: Any) -> Optional[str]:
     return cleaned or None
 
 
+def _is_missing_scalar(value: Any) -> bool:
+    return value is None or value == ""
+
+
+def _normalize_notification_request_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = dict(data or {})
+    context = normalized.get("context")
+    if not isinstance(context, dict):
+        context = {}
+
+    event_kind = str(normalized.get("event_kind") or "").strip()
+    is_attention = event_kind == "orion.chat.attention"
+    is_message = event_kind == "orion.chat.message"
+
+    if not is_attention and not is_message:
+        return normalized
+
+    if is_attention:
+        if _is_missing_scalar(normalized.get("attention_id")) and context.get("attention_id"):
+            normalized["attention_id"] = context.get("attention_id")
+        if "attention_require_ack" not in normalized and "require_ack" in context:
+            normalized["attention_require_ack"] = bool(context.get("require_ack"))
+        if normalized.get("attention_ack_deadline_minutes") is None and context.get("ack_deadline_minutes") is not None:
+            normalized["attention_ack_deadline_minutes"] = context.get("ack_deadline_minutes")
+        if normalized.get("attention_escalation_channels") is None and context.get("escalation_channels") is not None:
+            normalized["attention_escalation_channels"] = context.get("escalation_channels")
+        if normalized.get("attention_expires_at") is None and context.get("expires_at"):
+            parsed = _coerce_sql_timestamp(context.get("expires_at"))
+            if parsed is not None:
+                normalized["attention_expires_at"] = parsed
+            else:
+                logger.warning(
+                    "sql_writer_notify_attention_parse_failed field=expires_at value=%r",
+                    context.get("expires_at"),
+                )
+
+    if is_message:
+        if _is_missing_scalar(normalized.get("message_id")) and context.get("message_id"):
+            normalized["message_id"] = context.get("message_id")
+        if _is_missing_scalar(normalized.get("message_session_id")):
+            session_id = normalized.get("session_id") or context.get("session_id")
+            if session_id:
+                normalized["message_session_id"] = session_id
+        if _is_missing_scalar(normalized.get("message_preview_text")) and context.get("preview_text"):
+            normalized["message_preview_text"] = context.get("preview_text")
+        if _is_missing_scalar(normalized.get("message_full_text")) and context.get("full_text"):
+            normalized["message_full_text"] = context.get("full_text")
+        if "message_require_read_receipt" not in normalized and "require_read_receipt" in context:
+            normalized["message_require_read_receipt"] = bool(context.get("require_read_receipt"))
+        if normalized.get("message_expires_at") is None and context.get("expires_at"):
+            parsed = _coerce_sql_timestamp(context.get("expires_at"))
+            if parsed is not None:
+                normalized["message_expires_at"] = parsed
+            else:
+                logger.warning(
+                    "sql_writer_notify_message_parse_failed field=expires_at value=%r",
+                    context.get("expires_at"),
+                )
+
+    return normalized
+
+
 def _extract_thought_process(payload: dict[str, Any]) -> Optional[str]:
     if not isinstance(payload, dict):
         return None
@@ -668,12 +734,15 @@ def _write_row(sql_model_cls, data: dict) -> bool:
     sess = get_session()
     try:
         mapper = inspect(sql_model_cls)
+        write_data = dict(data)
+        if sql_model_cls is NotificationRequestDB:
+            write_data = _normalize_notification_request_payload(write_data)
 
         col_key_by_name = {col.name: col.key for col in mapper.columns}
         valid_keys = set(attr.key for attr in mapper.attrs)
 
         filtered_data: dict = {}
-        for k, v in data.items():
+        for k, v in write_data.items():
             kk = col_key_by_name.get(k, k)
             if kk in valid_keys:
                 filtered_data[kk] = v
@@ -683,7 +752,7 @@ def _write_row(sql_model_cls, data: dict) -> bool:
             filtered_data["telemetry_id"] = str(uuid.uuid4())
 
         if sql_model_cls in (ChatMessageSQL, ChatGptMessageSQL) and "id" in valid_keys and not filtered_data.get("id"):
-            mid = data.get("message_id") or data.get("id")
+            mid = write_data.get("message_id") or write_data.get("id")
             filtered_data["id"] = str(mid) if mid else str(uuid.uuid4())
 
         if sql_model_cls in (ChatHistoryLogSQL, ChatGptLogSQL) and ("id" in valid_keys) and not filtered_data.get("id"):

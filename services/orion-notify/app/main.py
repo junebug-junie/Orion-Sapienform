@@ -12,6 +12,7 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.notify.transport import EmailTransport
 from orion.schemas.cortex.contracts import AgentTraceSummaryV1
 from orion.schemas.notify import (
     ChatAttentionAck,
@@ -53,9 +54,9 @@ CHAT_MESSAGE_ESCALATION_EVENT_KIND = "orion.chat.message.escalation"
 async def on_startup() -> None:
     app.state.env_lookup = dict(os.environ)
     app.state.bus = await _init_bus()
+    app.state.email_transport = _build_email_transport()
     # No DB init
     # No policy load (stateless)
-    # No email transport (stateless router only)
     # No escalation loop (stateless)
 
 
@@ -125,6 +126,44 @@ async def notify(
     # Fill defaults
     if not payload.created_at:
         payload.created_at = datetime.utcnow()
+
+    email_transport: EmailTransport | None = getattr(request.app.state, "email_transport", None)
+    should_send_email, send_reason = _should_send_email(payload)
+    if should_send_email:
+        logger.info(
+            "[NOTIFY] email_send_eligible notification_id=%s event_kind=%s reason=%s",
+            payload.notification_id,
+            payload.event_kind,
+            send_reason,
+        )
+        if email_transport is None:
+            logger.info(
+                "[NOTIFY] email_send_unavailable notification_id=%s event_kind=%s reason=smtp_transport_unconfigured",
+                payload.notification_id,
+                payload.event_kind,
+            )
+        else:
+            logger.info(
+                "[NOTIFY] email_send_attempted notification_id=%s event_kind=%s",
+                payload.notification_id,
+                payload.event_kind,
+            )
+            try:
+                email_transport.send(payload)
+            except Exception as exc:
+                logger.error(
+                    "[NOTIFY] email_send_failed notification_id=%s event_kind=%s error_class=%s error=%s",
+                    payload.notification_id,
+                    payload.event_kind,
+                    exc.__class__.__name__,
+                    str(exc),
+                )
+            else:
+                logger.info(
+                    "[NOTIFY] email_send_succeeded notification_id=%s event_kind=%s",
+                    payload.notification_id,
+                    payload.event_kind,
+                )
 
     # 1. Publish In-App (if enabled)
     # We do this blindly as a router. Policy logic is stripped for statelessness or should be in the consumer.
@@ -719,3 +758,52 @@ def _resolve_notification_type(event_kind: str) -> Optional[str]:
 
 def _check_presence():
     return False # Stateless stub
+
+
+def _build_email_transport() -> EmailTransport | None:
+    missing = []
+    if not settings.NOTIFY_EMAIL_SMTP_HOST:
+        missing.append("smtp_host")
+    if not settings.NOTIFY_EMAIL_FROM:
+        missing.append("from")
+    if not settings.notify_email_to:
+        missing.append("to")
+
+    if missing:
+        logger.info(
+            "[NOTIFY] smtp_transport_not_configured missing=%s",
+            ",".join(missing),
+        )
+        return None
+
+    transport = EmailTransport(
+        smtp_host=settings.NOTIFY_EMAIL_SMTP_HOST,
+        smtp_port=settings.NOTIFY_EMAIL_SMTP_PORT,
+        smtp_username=settings.NOTIFY_EMAIL_SMTP_USERNAME,
+        smtp_password=settings.NOTIFY_EMAIL_SMTP_PASSWORD,
+        use_tls=settings.NOTIFY_EMAIL_USE_TLS,
+        default_from=settings.NOTIFY_EMAIL_FROM,
+        default_to=settings.notify_email_to,
+    )
+    logger.info(
+        "[NOTIFY] smtp_transport_configured smtp_host=%s smtp_port=%s use_tls=%s default_to_count=%s",
+        settings.NOTIFY_EMAIL_SMTP_HOST,
+        settings.NOTIFY_EMAIL_SMTP_PORT,
+        settings.NOTIFY_EMAIL_USE_TLS,
+        len(settings.notify_email_to),
+    )
+    return transport
+
+
+def _should_send_email(payload: NotificationRequest) -> tuple[bool, Optional[str]]:
+    channels = payload.channels_requested or []
+    if any(channel.lower() == "email" for channel in channels):
+        return True, "channels_requested=email"
+
+    severity = (payload.severity or "").lower()
+    if severity == "error":
+        return True, "severity=error"
+    if severity == "critical":
+        return True, "severity=critical"
+
+    return False, None

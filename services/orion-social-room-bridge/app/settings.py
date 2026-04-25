@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     hub_chat_path: str = Field("/api/chat", alias="HUB_CHAT_PATH")
     hub_timeout_sec: float = Field(120.0, alias="HUB_TIMEOUT_SEC")
 
-    callsyne_base_url: str = Field("http://callsyne.local", alias="CALLSYNE_BASE_URL")
+    callsyne_base_url: str = Field("https://api.callsyne.com", alias="CALLSYNE_BASE_URL")
     callsyne_api_token: str = Field("", alias="CALLSYNE_API_TOKEN")
     callsyne_timeout_sec: float = Field(30.0, alias="CALLSYNE_TIMEOUT_SEC")
     callsyne_post_path_template: str = Field(

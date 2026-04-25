@@ -32,12 +32,21 @@ class _FakeCallSyneClient:
     def __init__(self) -> None:
         self.posts = []
         self.fetch_payloads = []
+        self.fetch_calls = []
 
     async def post_message(self, request):
         self.posts.append(request)
         return {"message_id": "callsyne-out-1", "status": "posted"}
 
     async def fetch_recent_messages(self, *, path: str, room_id: str, limit: int, since_message_id: str | None = None):
+        self.fetch_calls.append(
+            {
+                "path": path,
+                "room_id": room_id,
+                "limit": limit,
+                "since_message_id": since_message_id,
+            }
+        )
         if self.fetch_payloads:
             return self.fetch_payloads.pop(0)
         return []
@@ -1603,6 +1612,7 @@ def test_polling_fallback_dedupes_and_skips_self_messages() -> None:
             SOCIAL_BRIDGE_CALLSYNE_POLL_ROOM_ID="world",
             SOCIAL_BRIDGE_CALLSYNE_POLL_SINCE_MESSAGE_ID="9",
             SOCIAL_BRIDGE_CALLSYNE_POLL_SKIP_SELF=True,
+            SOCIAL_BRIDGE_CALLSYNE_POLL_PATH="/api/bridge/messages/read",
         ),
         hub_client=hub,
         callsyne_client=callsyne,
@@ -1621,13 +1631,53 @@ def test_polling_fetch_failure_does_not_raise() -> None:
             raise RuntimeError("fetch failure")
 
     svc = SocialRoomBridgeService(
-        settings=_settings(SOCIAL_BRIDGE_CALLSYNE_POLL_ENABLED=True),
+        settings=_settings(
+            SOCIAL_BRIDGE_CALLSYNE_POLL_ENABLED=True,
+            SOCIAL_BRIDGE_CALLSYNE_POLL_PATH="/api/bridge/messages/read",
+        ),
         hub_client=_FakeHubClient(),
         callsyne_client=_ErroringPollClient(),
         bus=_FakeBus(),
     )
 
     asyncio.run(svc.poll_callsyne_once())
+
+
+def test_polling_is_hard_blocked_for_post_only_bridge_path() -> None:
+    callsyne = _FakeCallSyneClient()
+    svc = SocialRoomBridgeService(
+        settings=_settings(
+            SOCIAL_BRIDGE_CALLSYNE_POLL_ENABLED=True,
+            SOCIAL_BRIDGE_CALLSYNE_POLL_PATH="/api/bridge/messages",
+        ),
+        hub_client=_FakeHubClient(),
+        callsyne_client=callsyne,
+        bus=_FakeBus(),
+    )
+
+    asyncio.run(svc.start())
+
+    assert svc._poll_task is None
+    assert callsyne.fetch_calls == []
+
+
+def test_polling_allows_non_post_only_paths() -> None:
+    callsyne = _FakeCallSyneClient()
+    callsyne.fetch_payloads = [[]]
+    svc = SocialRoomBridgeService(
+        settings=_settings(
+            SOCIAL_BRIDGE_CALLSYNE_POLL_ENABLED=True,
+            SOCIAL_BRIDGE_CALLSYNE_POLL_PATH="/api/bridge/messages/read",
+        ),
+        hub_client=_FakeHubClient(),
+        callsyne_client=callsyne,
+        bus=_FakeBus(),
+    )
+
+    asyncio.run(svc.poll_callsyne_once())
+
+    assert len(callsyne.fetch_calls) == 1
+    assert callsyne.fetch_calls[0]["path"] == "/api/bridge/messages/read"
 
 
 def test_settings_defaults_and_schema_registration() -> None:

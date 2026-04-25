@@ -19,6 +19,12 @@ CallSyne exposes a single posting endpoint for bots instead of per-room URLs.
 | Orion → CallSyne | `POST /api/bridge/messages` with Bearer API key (manage keys in CallSyne admin) |
 | Upstream health | `GET /api/bridge/health` with the same Bearer token |
 
+### Polling fallback status (quarantined)
+
+- `GET /api/bridge/messages` currently returns `405 Method Not Allowed` in live Athena checks, so it is **not** a readable timeline endpoint.
+- Orion keeps `SOCIAL_BRIDGE_CALLSYNE_POLL_ENABLED=false` by default and hard-blocks polling startup when the configured poll path is `/api/bridge/messages`.
+- Do **not** enable Orion-side polling unless CallSyne provides a documented read/listen endpoint.
+
 **Outbound JSON** (Orion sends only non-empty optional fields):
 
 - Required: `room_id`, `text`
@@ -42,6 +48,8 @@ Inbound webhook bodies are normalized so `room_id` can also appear as `channel_k
 - End-to-end: user message in CallSyne → webhook hit on Orion → reply visible in room.
 
 Full contract reference: [docs/integrations/callsyne-handoff-spec.md](../integrations/callsyne-handoff-spec.md).
+
+Operational note: Orion-side bridge can receive webhooks and post replies today, but live CallSyne UI interactivity depends on CallSyne backend emitting webhooks when users create messages in-room (or exposing a real read/listen API).
 
 ## Bus events
 

@@ -87,6 +87,17 @@ class SocialRoomBridgeService:
         )
         self.policy = SocialTurnPolicyEvaluator(settings=settings)
 
+    def _polling_path_is_post_only(self) -> bool:
+        poll_path = (self.settings.social_bridge_callsyne_poll_path or "").strip().split("?", 1)[0].rstrip("/")
+        return poll_path == "/api/bridge/messages"
+
+    def _log_polling_path_blocked(self) -> None:
+        logger.warning(
+            "callsyne_poll_hard_blocked reason=post_only_endpoint path=%s enabled=%s action=disable_poller",
+            self.settings.social_bridge_callsyne_poll_path,
+            self.settings.social_bridge_callsyne_poll_enabled,
+        )
+
     async def start(self) -> None:
         if self.bus is None and self.settings.orion_bus_enabled:
             self.bus = OrionBusAsync(
@@ -96,6 +107,9 @@ class SocialRoomBridgeService:
             )
             await self.bus.connect()
         if self.settings.social_bridge_callsyne_poll_enabled and self._poll_task is None:
+            if self._polling_path_is_post_only():
+                self._log_polling_path_blocked()
+                return
             self._poll_task = asyncio.create_task(self._poll_callsyne_loop(), name="callsyne-poll-loop")
 
     async def stop(self) -> None:
@@ -509,6 +523,9 @@ class SocialRoomBridgeService:
             await asyncio.sleep(interval)
 
     async def poll_callsyne_once(self) -> None:
+        if self._polling_path_is_post_only():
+            self._log_polling_path_blocked()
+            return
         since_message_id = str(self._poll_last_seen_message_id) if self._poll_last_seen_message_id is not None else (
             self.settings.social_bridge_callsyne_poll_since_message_id.strip() or None
         )

@@ -347,7 +347,15 @@ def _daily_metacog_dedupe_key(window: DailyWindow) -> str:
     return f"actions:daily_metacog:{window.request_date}:{settings.node_name}"
 
 
-def _daily_notify_request(*, event_kind: str, title: str, dedupe_key: str, correlation_id: str, payload: dict[str, Any]) -> NotificationRequest:
+def _daily_notify_request(
+    *,
+    event_kind: str,
+    title: str,
+    dedupe_key: str,
+    correlation_id: str,
+    payload: dict[str, Any],
+    include_email_channel: bool,
+) -> NotificationRequest:
     pretty = json.dumps(payload, indent=2, sort_keys=True)
     preview = "; ".join([f"{k}: {v}" for k, v in list(payload.items())[:3]])[:280]
     return NotificationRequest(
@@ -364,6 +372,7 @@ def _daily_notify_request(*, event_kind: str, title: str, dedupe_key: str, corre
         dedupe_window_seconds=int(settings.actions_notify_dedupe_window_seconds),
         tags=["actions", "daily", "json"],
         context={"payload": payload, "preview_text": preview},
+        channels_requested=["email"] if include_email_channel else None,
     )
 
 
@@ -436,7 +445,8 @@ def _publish_daily_outputs(
         accepted = notify.send(notify_req)
 
     chat_message_accepted = None
-    if settings.actions_async_messages_enabled:
+    if settings.actions_async_messages_enabled and settings.actions_daily_async_messages_enabled:
+        logger.info("daily_async_message_attempted action=%s correlation_id=%s", action_name, correlation_id)
         chat_tags = ["actions", "daily", "pulse"] if action_name == ACTION_DAILY_PULSE_V1 else ["actions", "daily", "metacog"]
         chat_message_accepted = _send_orion_async_message(
             notify=notify,
@@ -449,6 +459,15 @@ def _publish_daily_outputs(
             source_service=settings.service_name,
             correlation_id=correlation_id,
         )
+        if chat_message_accepted.ok:
+            logger.info("daily_async_message_succeeded action=%s correlation_id=%s", action_name, correlation_id)
+        else:
+            logger.info(
+                "daily_async_message_failed action=%s correlation_id=%s detail=%s",
+                action_name,
+                correlation_id,
+                chat_message_accepted.detail,
+            )
 
     return {
         "generic": accepted,
@@ -508,6 +527,94 @@ def _schedule_attention_notify_request(*, signal: ScheduleAttentionSignal, corre
 
 def _journal_daily_dedupe_key(window: DailyWindow) -> str:
     return f"actions:journal:daily:{window.request_date}:{settings.node_name}"
+
+
+def _is_scheduler_daily_journal(*, trigger: Any, write_payload: dict[str, Any], draft: dict[str, Any]) -> bool:
+    mode = str(write_payload.get("mode") or draft.get("mode") or "").strip().lower()
+    trigger_kind = str(getattr(trigger, "trigger_kind", "") or "").strip().lower()
+    source_kind = str(write_payload.get("source_kind") or getattr(trigger, "source_kind", "") or "").strip().lower()
+    if mode != "daily":
+        return False
+    if trigger_kind == "daily_summary" and source_kind == "scheduler":
+        return True
+    logger.info(
+        "scheduler_daily_journal_unexpected_fields mode=%s trigger_kind=%s source_kind=%s source_ref=%s",
+        mode or None,
+        trigger_kind or None,
+        source_kind or None,
+        str(write_payload.get("source_ref") or getattr(trigger, "source_ref", None) or ""),
+    )
+    return False
+
+
+def _build_scheduler_daily_journal_message_payload(
+    *,
+    trigger: Any,
+    write_payload: dict[str, Any],
+    draft: dict[str, Any],
+    correlation_id: str,
+) -> dict[str, Any]:
+    title_text = str(write_payload.get("title") or draft.get("title") or "Daily Journal").strip()
+    body_text = str(write_payload.get("body") or draft.get("body") or "").strip()
+    source_ref = str(write_payload.get("source_ref") or getattr(trigger, "source_ref", "") or "").strip()
+    mode = str(write_payload.get("mode") or draft.get("mode") or "").strip()
+    source_kind = str(write_payload.get("source_kind") or getattr(trigger, "source_kind", "") or "").strip()
+    preview = f"{title_text}: {body_text}".strip(": ").replace("\n", " ")[:280]
+    full_text = (
+        "## Orion — Daily Journal\n\n"
+        f"**Title:** {title_text}\n\n"
+        f"**Mode:** {mode or 'daily'}\n\n"
+        f"**Source:** {source_kind or 'scheduler'}"
+        f"{f' ({source_ref})' if source_ref else ''}\n\n"
+        f"{body_text}"
+    )
+    return {
+        "title": "Orion — Daily Journal",
+        "preview_text": preview,
+        "full_text": full_text,
+        "severity": "info",
+        "tags": ["actions", "journal", "daily", "scheduler"],
+        "session_id": settings.actions_journal_session_id or settings.actions_session_id,
+        "source_service": settings.service_name,
+        "correlation_id": correlation_id,
+    }
+
+
+def _build_scheduler_daily_journal_email_request(
+    *,
+    trigger: Any,
+    write_payload: dict[str, Any],
+    draft: dict[str, Any],
+    correlation_id: str,
+) -> NotificationRequest:
+    message_payload = _build_scheduler_daily_journal_message_payload(
+        trigger=trigger,
+        write_payload=write_payload,
+        draft=draft,
+        correlation_id=correlation_id,
+    )
+    dedupe_seed = str(write_payload.get("entry_id") or correlation_id)
+    return NotificationRequest(
+        source_service=settings.service_name,
+        event_kind="orion.journal.daily.scheduler",
+        severity="info",
+        title="Orion — Daily Journal",
+        body_text=message_payload["preview_text"],
+        body_md=message_payload["full_text"],
+        recipient_group=settings.actions_recipient_group,
+        session_id=settings.actions_journal_session_id or settings.actions_session_id,
+        correlation_id=correlation_id,
+        tags=["actions", "journal", "daily", "scheduler"],
+        channels_requested=["email"],
+        dedupe_key=f"actions:journal:daily:scheduler:{dedupe_seed}",
+        dedupe_window_seconds=int(settings.actions_notify_dedupe_window_seconds),
+        context={
+            "trigger_kind": str(getattr(trigger, "trigger_kind", "") or ""),
+            "source_kind": str(write_payload.get("source_kind") or getattr(trigger, "source_kind", "") or ""),
+            "source_ref": str(write_payload.get("source_ref") or getattr(trigger, "source_ref", "") or ""),
+            "entry_id": str(write_payload.get("entry_id") or ""),
+        },
+    )
 
 
 async def _publish_workflow_attention_signal(*, signal: ScheduleAttentionSignal, notify) -> None:
@@ -763,6 +870,97 @@ async def lifespan(app: FastAPI):
             await sem.acquire()
             acquired = True
             result = await _run_journal(parent, trigger=trigger)
+            draft = result.get("draft") if isinstance(result, dict) else {}
+            write_payload = result.get("write") if isinstance(result, dict) else {}
+            scheduler_daily = _is_scheduler_daily_journal(trigger=trigger, write_payload=write_payload, draft=draft)
+            scheduler_daily_msg_accepted = None
+            scheduler_daily_email_accepted = None
+            scheduler_daily_msg_skip_reason = None
+            scheduler_daily_email_skip_reason = None
+
+            if scheduler_daily:
+                if settings.actions_async_messages_enabled and settings.actions_scheduler_daily_journal_messages_enabled:
+                    logger.info(
+                        "scheduler_daily_journal_message_attempted correlation_id=%s entry_id=%s",
+                        parent.correlation_id,
+                        write_payload.get("entry_id"),
+                    )
+                    message_payload = _build_scheduler_daily_journal_message_payload(
+                        trigger=trigger,
+                        write_payload=write_payload,
+                        draft=draft,
+                        correlation_id=str(parent.correlation_id),
+                    )
+                    scheduler_daily_msg_accepted = await asyncio.to_thread(
+                        _send_orion_async_message,
+                        notify=notify,
+                        **message_payload,
+                    )
+                    if scheduler_daily_msg_accepted.ok:
+                        logger.info(
+                            "scheduler_daily_journal_message_succeeded correlation_id=%s notification_id=%s",
+                            parent.correlation_id,
+                            scheduler_daily_msg_accepted.notification_id,
+                        )
+                    else:
+                        logger.info(
+                            "scheduler_daily_journal_message_failed correlation_id=%s detail=%s",
+                            parent.correlation_id,
+                            scheduler_daily_msg_accepted.detail,
+                        )
+                else:
+                    scheduler_daily_msg_skip_reason = "scheduler_daily_journal_messages_disabled"
+                    logger.info(
+                        "scheduler_daily_journal_message_skipped correlation_id=%s reason=%s",
+                        parent.correlation_id,
+                        scheduler_daily_msg_skip_reason,
+                    )
+
+                if settings.actions_scheduler_daily_journal_email_enabled:
+                    logger.info(
+                        "scheduler_daily_journal_email_attempted correlation_id=%s entry_id=%s",
+                        parent.correlation_id,
+                        write_payload.get("entry_id"),
+                    )
+                    email_req = _build_scheduler_daily_journal_email_request(
+                        trigger=trigger,
+                        write_payload=write_payload,
+                        draft=draft,
+                        correlation_id=str(parent.correlation_id),
+                    )
+                    scheduler_daily_email_accepted = await asyncio.to_thread(notify.send, email_req)
+                    if scheduler_daily_email_accepted.ok:
+                        logger.info(
+                            "scheduler_daily_journal_email_succeeded correlation_id=%s notification_id=%s",
+                            parent.correlation_id,
+                            scheduler_daily_email_accepted.notification_id,
+                        )
+                    else:
+                        logger.info(
+                            "scheduler_daily_journal_email_failed correlation_id=%s detail=%s",
+                            parent.correlation_id,
+                            scheduler_daily_email_accepted.detail,
+                        )
+                else:
+                    scheduler_daily_email_skip_reason = "scheduler_daily_journal_email_disabled"
+                    logger.info(
+                        "scheduler_daily_journal_email_skipped correlation_id=%s reason=%s",
+                        parent.correlation_id,
+                        scheduler_daily_email_skip_reason,
+                    )
+            else:
+                scheduler_daily_msg_skip_reason = "not_scheduler_daily_journal"
+                scheduler_daily_email_skip_reason = "not_scheduler_daily_journal"
+                logger.info(
+                    "scheduler_daily_journal_message_skipped correlation_id=%s reason=%s",
+                    parent.correlation_id,
+                    scheduler_daily_msg_skip_reason,
+                )
+                logger.info(
+                    "scheduler_daily_journal_email_skipped correlation_id=%s reason=%s",
+                    parent.correlation_id,
+                    scheduler_daily_email_skip_reason,
+                )
             dt_ms = int((time.monotonic() - t0) * 1000)
             journal_deduper.mark_done(dedupe_key)
             await _audit(
@@ -775,6 +973,12 @@ async def lifespan(app: FastAPI):
                     "journal_mode": result["draft"]["mode"],
                     "write_channel": settings.actions_journal_write_channel,
                     "journal_entry_id": result["write"]["entry_id"],
+                    "scheduler_daily_journal_message_ok": scheduler_daily_msg_accepted.ok if scheduler_daily_msg_accepted else None,
+                    "scheduler_daily_journal_message_notification_id": str(scheduler_daily_msg_accepted.notification_id) if scheduler_daily_msg_accepted and scheduler_daily_msg_accepted.notification_id else None,
+                    "scheduler_daily_journal_message_skipped_reason": scheduler_daily_msg_skip_reason,
+                    "scheduler_daily_journal_email_ok": scheduler_daily_email_accepted.ok if scheduler_daily_email_accepted else None,
+                    "scheduler_daily_journal_email_notification_id": str(scheduler_daily_email_accepted.notification_id) if scheduler_daily_email_accepted and scheduler_daily_email_accepted.notification_id else None,
+                    "scheduler_daily_journal_email_skipped_reason": scheduler_daily_email_skip_reason,
                 },
             )
         except Exception as exc:
@@ -880,7 +1084,10 @@ async def lifespan(app: FastAPI):
                 dedupe_key=dedupe_key,
                 correlation_id=str(parent.correlation_id),
                 payload=model_payload,
+                include_email_channel=settings.actions_daily_email_enabled,
             )
+            if settings.actions_daily_email_enabled:
+                logger.info("daily_email_requested action=%s correlation_id=%s", action_name, parent.correlation_id)
             publish_results = await asyncio.to_thread(
                 _publish_daily_outputs,
                 notify=notify,

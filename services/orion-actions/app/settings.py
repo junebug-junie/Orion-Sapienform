@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     actions_daily_metacog_hour_local: int = Field(20, alias="ACTIONS_DAILY_METACOG_HOUR_LOCAL")
     actions_daily_metacog_minute_local: int = Field(15, alias="ACTIONS_DAILY_METACOG_MINUTE_LOCAL")
     actions_async_messages_enabled: bool = Field(True, alias="ACTIONS_ASYNC_MESSAGES_ENABLED")
+    actions_daily_async_messages_enabled: bool = Field(True, alias="ACTIONS_DAILY_ASYNC_MESSAGES_ENABLED")
+    actions_daily_email_enabled: bool = Field(True, alias="ACTIONS_DAILY_EMAIL_ENABLED")
     actions_pending_attention_enabled: bool = Field(True, alias="ACTIONS_PENDING_ATTENTION_ENABLED")
     actions_preserve_generic_notify_enabled: bool = Field(True, alias="ACTIONS_PRESERVE_GENERIC_NOTIFY_ENABLED")
 
@@ -66,6 +68,8 @@ class Settings(BaseSettings):
     actions_journaling_daily_enabled: bool = Field(False, alias="ACTIONS_JOURNALING_DAILY_ENABLED")
     actions_journaling_cooldown_seconds: int = Field(21600, alias="ACTIONS_JOURNALING_COOLDOWN_SECONDS")
     actions_journaling_collapse_dense_only: bool = Field(True, alias="ACTIONS_JOURNALING_COLLAPSE_DENSE_ONLY")
+    actions_scheduler_daily_journal_messages_enabled: bool = Field(True, alias="ACTIONS_SCHEDULER_DAILY_JOURNAL_MESSAGES_ENABLED")
+    actions_scheduler_daily_journal_email_enabled: bool = Field(True, alias="ACTIONS_SCHEDULER_DAILY_JOURNAL_EMAIL_ENABLED")
     actions_journal_session_id: str = Field("orion_journal", alias="ACTIONS_JOURNAL_SESSION_ID")
     actions_journal_author: str = Field("orion", alias="ACTIONS_JOURNAL_AUTHOR")
     actions_journal_write_channel: str = Field("orion:journal:write", alias="ACTIONS_JOURNAL_WRITE_CHANNEL")

@@ -631,6 +631,7 @@ class SocialRoomBridgeService:
         return {
             "messages": [{"role": "user", "content": message.text}],
             "mode": "brain",
+            "verbs": ["chat_quick"],
             "chat_profile": "social_room",
             "user_id": message.sender_id,
             "use_recall": self.settings.social_bridge_use_recall,

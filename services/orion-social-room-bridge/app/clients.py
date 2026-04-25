@@ -16,7 +16,9 @@ def _callsyne_bridge_post_body(request: ExternalRoomPostRequestV1) -> Dict[str, 
         "text": request.text,
     }
     if request.reply_to_message_id:
-        body["reply_to_message_id"] = request.reply_to_message_id
+        raw_reply_to = str(request.reply_to_message_id).strip()
+        if raw_reply_to.isdigit():
+            body["reply_to_message_id"] = int(raw_reply_to)
     if request.thread_id:
         body["thread_id"] = request.thread_id
     if media_hint:

@@ -31,10 +31,22 @@ class _FakeHubClient:
 class _FakeCallSyneClient:
     def __init__(self) -> None:
         self.posts = []
+        self.fetch_payloads = []
 
     async def post_message(self, request):
         self.posts.append(request)
         return {"message_id": "callsyne-out-1", "status": "posted"}
+
+    async def fetch_recent_messages(self, *, path: str, room_id: str, limit: int, since_message_id: str | None = None):
+        if self.fetch_payloads:
+            return self.fetch_payloads.pop(0)
+        return []
+
+
+class _FailingCallSyneClient(_FakeCallSyneClient):
+    async def post_message(self, request):
+        self.posts.append(request)
+        raise RuntimeError("post failed")
 
 
 class _FakeBus:
@@ -152,6 +164,48 @@ def test_normalizes_and_invokes_social_room_without_tools() -> None:
     assert any("directly addressed" in reason for reason in decisions[0]["reasons"])
 
 
+def test_hub_mode_and_verbs_are_configurable() -> None:
+    bus = _FakeBus()
+    hub = _FakeHubClient()
+    callsyne = _FakeCallSyneClient()
+    svc = SocialRoomBridgeService(
+        settings=_settings(
+            SOCIAL_BRIDGE_HUB_MODE="brain",
+            SOCIAL_BRIDGE_HUB_VERB="chat_quick",
+        ),
+        hub_client=hub,
+        callsyne_client=callsyne,
+        bus=bus,
+    )
+
+    result = asyncio.run(svc.process_callsyne_message(_payload(message_id="msg-hub-1")))
+
+    assert result["status"] == "ok"
+    hub_payload, _ = hub.calls[0]
+    assert hub_payload["mode"] == "brain"
+    assert hub_payload["verbs"] == ["chat_quick"]
+
+
+def test_empty_hub_verb_omits_verbs_field() -> None:
+    bus = _FakeBus()
+    hub = _FakeHubClient()
+    callsyne = _FakeCallSyneClient()
+    svc = SocialRoomBridgeService(
+        settings=_settings(
+            SOCIAL_BRIDGE_HUB_MODE="brain",
+            SOCIAL_BRIDGE_HUB_VERB="",
+        ),
+        hub_client=hub,
+        callsyne_client=callsyne,
+        bus=bus,
+    )
+
+    result = asyncio.run(svc.process_callsyne_message(_payload(message_id="msg-hub-2")))
+    assert result["status"] == "ok"
+    hub_payload, _ = hub.calls[0]
+    assert "verbs" not in hub_payload
+
+
 def test_self_message_is_suppressed() -> None:
     bus = _FakeBus()
     hub = _FakeHubClient()
@@ -170,6 +224,20 @@ def test_self_message_is_suppressed() -> None:
     assert any("self-loop suppression" in reason for reason in decisions[0]["reasons"])
 
 
+def test_self_message_is_suppressed_by_name_match() -> None:
+    bus = _FakeBus()
+    hub = _FakeHubClient()
+    callsyne = _FakeCallSyneClient()
+    svc = SocialRoomBridgeService(settings=_settings(), hub_client=hub, callsyne_client=callsyne, bus=bus)
+
+    result = asyncio.run(svc.process_callsyne_message(_payload(message_id="msg-self-name", sender_id="peer-77", sender_name="Oríon")))
+
+    assert result["status"] == "skipped"
+    assert result["reason"] == "self_message"
+    assert hub.calls == []
+    assert callsyne.posts == []
+
+
 def test_duplicate_message_is_deduped() -> None:
     bus = _FakeBus()
     hub = _FakeHubClient()
@@ -186,6 +254,20 @@ def test_duplicate_message_is_deduped() -> None:
     decisions = _published_payloads(bus, "orion:social:turn-policy")
     assert decisions[-1]["decision"] == "skip"
     assert any("duplicate inbound" in reason for reason in decisions[-1]["reasons"])
+
+
+def test_address_detection_aliases() -> None:
+    for idx, text in enumerate(("Orion can you weigh in?", "@Orion are you there?", "orion-sapienform, respond please"), start=1):
+        bus = _FakeBus()
+        hub = _FakeHubClient()
+        callsyne = _FakeCallSyneClient()
+        svc = SocialRoomBridgeService(settings=_settings(), hub_client=hub, callsyne_client=callsyne, bus=bus)
+        result = asyncio.run(
+            svc.process_callsyne_message(
+                _payload(message_id=f"msg-address-{idx}", mentions_orion=False, text=text)
+            )
+        )
+        assert result["status"] == "ok"
 
 
 def test_addressed_only_mode_and_cooldown_controls() -> None:
@@ -1440,7 +1522,6 @@ def test_callsyne_bridge_post_body_minimal_and_media_hint() -> None:
     assert body == {
         "room_id": "room-1",
         "text": "hello",
-        "reply_to_message_id": "prev-1",
         "thread_id": "t-a",
         "media_hint": {"kind": "gif", "query": "lol"},
         "metadata": {"gif_intent": "laugh_with", "correlation_id": "corr-x"},
@@ -1450,6 +1531,103 @@ def test_callsyne_bridge_post_body_minimal_and_media_hint() -> None:
         ExternalRoomPostRequestV1(platform="callsyne", room_id="r", text="x", metadata={})
     )
     assert bare == {"room_id": "r", "text": "x"}
+
+
+def test_callsyne_bridge_post_body_numeric_reply_id_only() -> None:
+    numeric = _callsyne_bridge_post_body(
+        ExternalRoomPostRequestV1(
+            platform="callsyne",
+            room_id="room-1",
+            text="hello",
+            reply_to_message_id="12345",
+        )
+    )
+    assert numeric["reply_to_message_id"] == 12345
+    non_numeric = _callsyne_bridge_post_body(
+        ExternalRoomPostRequestV1(
+            platform="callsyne",
+            room_id="room-1",
+            text="hello",
+            reply_to_message_id="live-public-test-xyz",
+        )
+    )
+    assert "reply_to_message_id" not in non_numeric
+
+
+def test_delivery_failure_returns_structured_200_payload_when_enabled() -> None:
+    bus = _FakeBus()
+    hub = _FakeHubClient(reply_text="bridge message")
+    callsyne = _FailingCallSyneClient()
+    svc = SocialRoomBridgeService(
+        settings=_settings(SOCIAL_BRIDGE_RETURN_2XX_ON_DELIVERY_FAILURE=True),
+        hub_client=hub,
+        callsyne_client=callsyne,
+        bus=bus,
+    )
+
+    result = asyncio.run(svc.process_callsyne_message(_payload(message_id="msg-delivery-fail")))
+    assert result["status"] == "delivery_failed"
+    assert result["message_id"] == "msg-delivery-fail"
+
+
+def test_delivery_failure_raises_when_disabled() -> None:
+    bus = _FakeBus()
+    hub = _FakeHubClient(reply_text="bridge message")
+    callsyne = _FailingCallSyneClient()
+    svc = SocialRoomBridgeService(
+        settings=_settings(SOCIAL_BRIDGE_RETURN_2XX_ON_DELIVERY_FAILURE=False),
+        hub_client=hub,
+        callsyne_client=callsyne,
+        bus=bus,
+    )
+
+    try:
+        asyncio.run(svc.process_callsyne_message(_payload(message_id="msg-delivery-fail-raise")))
+        assert False, "expected RuntimeError"
+    except RuntimeError:
+        pass
+
+
+def test_polling_fallback_dedupes_and_skips_self_messages() -> None:
+    bus = _FakeBus()
+    hub = _FakeHubClient(reply_text="poll reply")
+    callsyne = _FakeCallSyneClient()
+    callsyne.fetch_payloads = [[
+        {"id": "9", "room_id": "world", "sender_id": "peer-1", "sender_name": "CallSyne Peer", "text": "Orion ping"},
+        {"id": "10", "room_id": "world", "sender_id": "orion-room-bot", "sender_name": "Oríon", "text": "self"},
+        {"id": "11", "room_id": "world", "sender_id": "peer-2", "sender_name": "Peer Two", "text": "@Orion answer this"},
+    ]]
+    svc = SocialRoomBridgeService(
+        settings=_settings(
+            SOCIAL_BRIDGE_CALLSYNE_POLL_ENABLED=True,
+            SOCIAL_BRIDGE_CALLSYNE_POLL_ROOM_ID="world",
+            SOCIAL_BRIDGE_CALLSYNE_POLL_SINCE_MESSAGE_ID="9",
+            SOCIAL_BRIDGE_CALLSYNE_POLL_SKIP_SELF=True,
+        ),
+        hub_client=hub,
+        callsyne_client=callsyne,
+        bus=bus,
+    )
+
+    asyncio.run(svc.poll_callsyne_once())
+
+    assert len(hub.calls) == 1
+    assert len(callsyne.posts) == 1
+
+
+def test_polling_fetch_failure_does_not_raise() -> None:
+    class _ErroringPollClient(_FakeCallSyneClient):
+        async def fetch_recent_messages(self, *, path: str, room_id: str, limit: int, since_message_id: str | None = None):
+            raise RuntimeError("fetch failure")
+
+    svc = SocialRoomBridgeService(
+        settings=_settings(SOCIAL_BRIDGE_CALLSYNE_POLL_ENABLED=True),
+        hub_client=_FakeHubClient(),
+        callsyne_client=_ErroringPollClient(),
+        bus=_FakeBus(),
+    )
+
+    asyncio.run(svc.poll_callsyne_once())
 
 
 def test_settings_defaults_and_schema_registration() -> None:

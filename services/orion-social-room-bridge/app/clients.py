@@ -15,8 +15,8 @@ def _callsyne_bridge_post_body(request: ExternalRoomPostRequestV1) -> Dict[str, 
         "room_id": request.room_id,
         "text": request.text,
     }
-    if request.reply_to_message_id:
-        body["reply_to_message_id"] = request.reply_to_message_id
+    if request.reply_to_message_id and str(request.reply_to_message_id).isdigit():
+        body["reply_to_message_id"] = int(str(request.reply_to_message_id))
     if request.thread_id:
         body["thread_id"] = request.thread_id
     if media_hint:
@@ -66,6 +66,29 @@ class CallSyneClient:
         if "message_id" not in data:
             data["message_id"] = data.get("id") or ""
         return data
+
+    async def fetch_recent_messages(
+        self,
+        *,
+        path: str,
+        room_id: str,
+        limit: int,
+        since_message_id: str | None = None,
+    ) -> Dict[str, Any] | list[Dict[str, Any]]:
+        url = f"{self._base_url}{path}"
+        headers: Dict[str, str] = {}
+        if self._api_token:
+            headers["Authorization"] = f"Bearer {self._api_token}"
+        params: Dict[str, Any] = {
+            "room_id": room_id,
+            "limit": max(int(limit), 1),
+        }
+        if since_message_id:
+            params["since_message_id"] = since_message_id
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            response = await client.get(url, params=params, headers=headers)
+            response.raise_for_status()
+            return response.json() if response.content else {}
 
 
 class SocialMemoryClient:

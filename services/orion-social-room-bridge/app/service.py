@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 import logging
 from dataclasses import dataclass
@@ -7,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
+import httpx
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.social_autonomy import SocialTurnPolicyDecisionV1
@@ -77,6 +79,12 @@ class SocialRoomBridgeService:
         self._clock = clock or time.time
         self._seen: dict[str, float] = {}
         self._room_state: dict[str, RoomState] = {}
+        self._poll_task: asyncio.Task | None = None
+        self._poll_last_seen_message_id: int | None = (
+            int(settings.social_bridge_callsyne_poll_since_message_id)
+            if str(settings.social_bridge_callsyne_poll_since_message_id).isdigit()
+            else None
+        )
         self.policy = SocialTurnPolicyEvaluator(settings=settings)
 
     async def start(self) -> None:
@@ -87,8 +95,17 @@ class SocialRoomBridgeService:
                 enforce_catalog=self.settings.orion_bus_enforce_catalog,
             )
             await self.bus.connect()
+        if self.settings.social_bridge_callsyne_poll_enabled and self._poll_task is None:
+            self._poll_task = asyncio.create_task(self._poll_callsyne_loop(), name="callsyne-poll-loop")
 
     async def stop(self) -> None:
+        if self._poll_task is not None:
+            self._poll_task.cancel()
+            try:
+                await self._poll_task
+            except asyncio.CancelledError:
+                pass
+            self._poll_task = None
         if self.bus is not None:
             await self.bus.close()
             self.bus = None
@@ -445,12 +462,16 @@ class SocialRoomBridgeService:
                 "gif_interpretation": gif_interpretation.model_dump(mode="json") if gif_interpretation else None,
             }
         except Exception as exc:
+            response_snippet = ""
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
+                response_snippet = exc.response.text[:240].replace("\n", " ").strip()
             logger.warning(
-                "room_outbound_post_failed room_id=%s inbound_message_id=%s correlation_id=%s error=%s",
+                "room_outbound_post_failed room_id=%s inbound_message_id=%s correlation_id=%s error=%s response_snippet=%s",
                 message.room_id,
                 message.message_id,
                 correlation_id,
                 exc,
+                response_snippet,
             )
             await self._publish(
                 self.settings.room_delivery_channel,
@@ -466,7 +487,108 @@ class SocialRoomBridgeService:
                     gif_policy=gif_policy,
                 ),
             )
+            if self.settings.social_bridge_return_2xx_on_delivery_failure:
+                return {
+                    "status": "delivery_failed",
+                    "message_id": message.message_id,
+                    "correlation_id": correlation_id,
+                    "error": str(exc),
+                }
             raise
+
+    async def _poll_callsyne_loop(self) -> None:
+        logger.info(
+            "callsyne_poll_started room_id=%s interval_sec=%s path=%s",
+            self.settings.social_bridge_callsyne_poll_room_id,
+            self.settings.social_bridge_callsyne_poll_interval_sec,
+            self.settings.social_bridge_callsyne_poll_path,
+        )
+        interval = max(float(self.settings.social_bridge_callsyne_poll_interval_sec), 0.5)
+        while True:
+            await self.poll_callsyne_once()
+            await asyncio.sleep(interval)
+
+    async def poll_callsyne_once(self) -> None:
+        since_message_id = str(self._poll_last_seen_message_id) if self._poll_last_seen_message_id is not None else (
+            self.settings.social_bridge_callsyne_poll_since_message_id.strip() or None
+        )
+        try:
+            raw = await self.callsyne_client.fetch_recent_messages(
+                path=self.settings.social_bridge_callsyne_poll_path,
+                room_id=self.settings.social_bridge_callsyne_poll_room_id,
+                limit=self.settings.social_bridge_callsyne_poll_limit,
+                since_message_id=since_message_id,
+            )
+            messages = self._extract_callsyne_messages(raw)
+            logger.info(
+                "callsyne_poll_fetch_ok room_id=%s fetched=%s since_message_id=%s",
+                self.settings.social_bridge_callsyne_poll_room_id,
+                len(messages),
+                since_message_id or "",
+            )
+        except Exception as exc:
+            logger.warning(
+                "callsyne_poll_fetch_failed room_id=%s error=%s",
+                self.settings.social_bridge_callsyne_poll_room_id,
+                exc,
+            )
+            return
+
+        seen_max = self._poll_last_seen_message_id
+        for payload in messages:
+            payload = dict(payload or {})
+            message_id_raw = str(payload.get("message_id") or payload.get("id") or "").strip()
+            if not message_id_raw.isdigit():
+                logger.info(
+                    "callsyne_poll_message_skipped reason=missing_numeric_message_id message_id=%s",
+                    message_id_raw,
+                )
+                continue
+            message_id_num = int(message_id_raw)
+            if seen_max is not None and message_id_num <= seen_max:
+                logger.info(
+                    "callsyne_poll_message_skipped reason=already_seen message_id=%s",
+                    message_id_raw,
+                )
+                continue
+            if not payload.get("room_id"):
+                payload["room_id"] = self.settings.social_bridge_callsyne_poll_room_id
+            normalized = self.normalize_callsyne_message(payload)
+            logger.info(
+                "callsyne_poll_message_seen room_id=%s message_id=%s sender_id=%s",
+                normalized.room_id,
+                normalized.message_id,
+                normalized.sender_id,
+            )
+            if self.settings.social_bridge_callsyne_poll_skip_self and self._is_self_message(normalized):
+                logger.info(
+                    "callsyne_poll_message_skipped reason=self_message room_id=%s message_id=%s",
+                    normalized.room_id,
+                    normalized.message_id,
+                )
+                seen_max = max(seen_max or message_id_num, message_id_num)
+                continue
+            result = await self.process_callsyne_message(payload)
+            logger.info(
+                "callsyne_poll_process_result room_id=%s message_id=%s status=%s reason=%s",
+                normalized.room_id,
+                normalized.message_id,
+                result.get("status"),
+                result.get("reason"),
+            )
+            seen_max = max(seen_max or message_id_num, message_id_num)
+
+        self._poll_last_seen_message_id = seen_max
+
+    def _extract_callsyne_messages(self, raw: Any) -> list[Dict[str, Any]]:
+        if isinstance(raw, list):
+            return [item for item in raw if isinstance(item, dict)]
+        if isinstance(raw, dict):
+            for key in ("messages", "items", "data", "results"):
+                values = raw.get(key)
+                if isinstance(values, list):
+                    return [item for item in values if isinstance(item, dict)]
+        return []
 
     def _policy_decision(
         self,
@@ -590,6 +712,9 @@ class SocialRoomBridgeService:
             return True
         if message.reply_to_sender_id and message.reply_to_sender_id in self.settings.social_bridge_self_participant_ids:
             return True
+        text = str(message.text or "").strip().lower()
+        if any(alias in text for alias in ("oríon", "orion", "@orion", "orion-sapienform")):
+            return True
         return bool(message.metadata.get("reply_target_is_orion"))
 
     def _dedupe_key(self, message: CallSyneRoomMessageV1) -> str:
@@ -628,9 +753,9 @@ class SocialRoomBridgeService:
         gif_interpretation: SocialGifInterpretationV1 | None = None,
     ) -> Dict[str, Any]:
         continuity_anchor = f"{message.platform} room {message.room_id} thread {message.thread_id or 'room'}"
-        return {
+        payload = {
             "messages": [{"role": "user", "content": message.text}],
-            "mode": "brain",
+            "mode": self.settings.social_bridge_hub_mode,
             "chat_profile": "social_room",
             "user_id": message.sender_id,
             "use_recall": self.settings.social_bridge_use_recall,
@@ -669,6 +794,10 @@ class SocialRoomBridgeService:
             "social_gif_interpretation": gif_interpretation.model_dump(mode="json") if gif_interpretation else None,
             "continuity_anchor": continuity_anchor,
         }
+        hub_verb = self.settings.social_bridge_hub_verb.strip()
+        if hub_verb:
+            payload["verbs"] = [hub_verb]
+        return payload
 
     def _participant(self, message: CallSyneRoomMessageV1) -> ExternalRoomParticipantV1:
         return ExternalRoomParticipantV1(

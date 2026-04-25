@@ -108,6 +108,15 @@ _ensure_logging()
 workflow_schedule_metrics = WorkflowScheduleMetrics()
 
 
+def _normalized_llm_route(preferred: str | None, fallback: str) -> str:
+    route = str(preferred or fallback or "").strip().lower()
+    if route in {"chat_quick", "quick_chat"}:
+        return "quick"
+    if route in {"chat", "quick", "metacog"}:
+        return route
+    return "chat"
+
+
 def _cfg() -> ChassisConfig:
     os.environ["ORION_BUS_ENFORCE_CATALOG"] = "true" if settings.orion_bus_enforce_catalog else "false"
     return ChassisConfig(
@@ -659,6 +668,7 @@ async def lifespan(app: FastAPI):
         plan = build_plan_for_verb(verb_name)
         request_id = str(parent.correlation_id)
         timeout_sec = float(settings.actions_exec_timeout_seconds)
+        daily_llm_route = _normalized_llm_route(settings.actions_daily_llm_route, settings.actions_llm_route)
 
         def _plan_envelope(reply_channel: str, attempt: int) -> BaseEnvelope:
             req = PlanExecutionRequest(
@@ -669,6 +679,7 @@ async def lifespan(app: FastAPI):
                     user_id=settings.actions_recipient_group,
                     extra={
                         "mode": "brain",
+                        "llm_route": daily_llm_route,
                         "session_id": settings.actions_session_id,
                         "verb": verb_name,
                         "trace_id": request_id,
@@ -697,13 +708,17 @@ async def lifespan(app: FastAPI):
         return final_text, payload
 
     async def _run_journal(parent: BaseEnvelope, *, trigger) -> dict[str, Any]:
+        journal_llm_route = _normalized_llm_route(settings.actions_journal_llm_route, settings.actions_llm_route)
         req = build_compose_request(
             trigger,
             session_id=settings.actions_journal_session_id,
             user_id=settings.actions_recipient_group,
             trace_id=str(parent.correlation_id),
             recall_profile=settings.actions_recall_profile,
-            options={"timeout_sec": float(settings.actions_exec_timeout_seconds)},
+            options={
+                "timeout_sec": float(settings.actions_exec_timeout_seconds),
+                "llm_route": journal_llm_route,
+            },
         )
         reply_channel = new_reply_channel("orion:cortex:result")
         req_env = parent.derive_child(kind="cortex.orch.request", source=src, payload=req, reply_to=reply_channel)

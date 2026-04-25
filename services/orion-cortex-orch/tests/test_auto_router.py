@@ -7,9 +7,10 @@ import pytest
 from app.decision_router import DecisionRouter, _instruction_runbook_heuristic
 from app.orchestrator import build_plan_request
 from app import main as orch_main
+from orion.substrate import mutation_control_surface
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.verbs.models import VerbResultV1
-from orion.schemas.cortex.contracts import CortexClientRequest
+from orion.schemas.cortex.contracts import AutoDepthDecisionV1, CortexClientRequest
 from orion.schemas.cortex.schemas import PlanExecutionRequest
 
 
@@ -71,6 +72,27 @@ def test_hub_auto_depth2_engineering_heuristic_and_plan_shape():
     assert routed.request.verb == "agent_runtime"
     plan_req = build_plan_request(routed.request, "corr")
     assert [s.step_name for s in plan_req.plan.steps] == ["planner_react", "agent_chain"]
+
+
+def test_auto_router_respects_live_routing_threshold_gate(monkeypatch):
+    router = DecisionRouter(_FakeBus())
+    mutation_control_surface.set_chat_reflective_lane_threshold(value=0.95, actor="test_router_gate")
+    monkeypatch.setattr(
+        DecisionRouter,
+        "heuristic_router",
+        lambda self, req, shortlist: AutoDepthDecisionV1(
+            execution_depth=2,
+            primary_verb=None,
+            confidence=0.85,
+            reason="heuristic:engineering",
+            source="heuristic",
+        ),
+    )
+    req = _req(text="debug this docker compose stack trace and fix it")
+    routed = asyncio.run(router.route(req, correlation_id="c-threshold-gate", source=ServiceRef(name="orch", version="0", node="n")))
+    assert routed.request.verb == "chat_general"
+    assert routed.decision.execution_depth == 0
+    assert "routing_threshold_gate" in routed.decision.reason
 
 
 def test_build_plan_request_preserves_delivery_pack_in_args_extra():

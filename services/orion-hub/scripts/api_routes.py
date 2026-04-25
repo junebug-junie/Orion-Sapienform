@@ -4,7 +4,8 @@ import json
 import logging
 import os
 import ipaddress
-from datetime import datetime, timezone
+import threading
+from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 from typing import Optional, Any, List, Dict, Tuple
 from urllib.parse import urlparse
@@ -51,7 +52,7 @@ from orion.schemas.notify import (
 
 from orion.core.schemas.substrate_review_queue import GraphReviewCyclePolicyV1
 from orion.core.schemas.substrate_review_runtime import GraphReviewRuntimeRequestV1
-from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryQueryV1
+from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryQueryV1, GraphReviewTelemetryRecordV1
 from orion.core.schemas.frontier_expansion import FrontierTargetZoneV1
 from orion.core.schemas.substrate_policy_adoption import (
     SubstratePolicyAdoptionRequestV1,
@@ -60,6 +61,7 @@ from orion.core.schemas.substrate_policy_adoption import (
 )
 from orion.core.schemas.substrate_policy_comparison import SubstratePolicyComparisonRequestV1
 from orion.core.schemas.substrate_review_runtime import GraphReviewRuntimeSurfaceV1
+from orion.core.schemas.substrate_mutation import MutationPressureV1
 from orion.substrate import build_substrate_policy_store_from_env, build_substrate_store_from_env
 from orion.substrate.consolidation import GraphConsolidationEvaluator
 from orion.substrate.policy_comparison import SubstratePolicyComparisonService
@@ -68,6 +70,17 @@ from orion.substrate.review_bootstrap import GraphReviewBootstrapper
 from orion.substrate.review_runtime import GraphReviewRuntimeExecutor
 from orion.substrate.review_schedule import GraphReviewScheduler
 from orion.substrate.review_telemetry import GraphReviewCalibrationAnalyzer, GraphReviewTelemetryRecorder
+from orion.substrate.mutation_apply import PatchApplier
+from orion.substrate.mutation_decision import DecisionEngine
+from orion.substrate.mutation_detectors import MutationDetectors
+from orion.substrate.mutation_monitor import PostAdoptionMonitor
+from orion.substrate.mutation_pressure import PressureAccumulator
+from orion.substrate.mutation_proposals import ProposalFactory
+from orion.substrate.mutation_queue import SubstrateMutationStore
+from orion.substrate.mutation_scoring import ClassSpecificScorer
+from orion.substrate.mutation_trials import ReplayCorpusRegistry, SubstrateTrialRunner
+from orion.substrate.mutation_worker import AdaptationCycleBudget, SubstrateAdaptationWorker
+from orion.substrate.mutation_control_surface import inspect_chat_reflective_lane_threshold
 
 logger = logging.getLogger("orion-hub.api")
 PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc)
@@ -146,6 +159,12 @@ SUBSTRATE_REVIEW_BOOTSTRAPPER = GraphReviewBootstrapper(
     scheduler=SUBSTRATE_REVIEW_RUNTIME_EXECUTOR.scheduler,
     semantic_store=SUBSTRATE_SEMANTIC_STORE,
 )
+SUBSTRATE_MUTATION_STORE = SubstrateMutationStore(
+    sql_db_path=str(os.getenv("SUBSTRATE_MUTATION_SQL_DB_PATH", "")).strip() or None,
+    postgres_url=_resolve_control_plane_postgres_url(),
+)
+SUBSTRATE_MUTATION_SURFACES: Dict[str, Dict[str, Any]] = {}
+SUBSTRATE_AUTONOMY_LOCAL_CYCLE_LOCK = threading.Lock()
 
 
 def _thought_debug_enabled() -> bool:
@@ -199,6 +218,17 @@ class SubstrateReviewSmokeCheckRequest(BaseModel):
 
 class SubstrateReviewBootstrapRequest(BaseModel):
     limit: int = Field(default=12, ge=1, le=32)
+
+
+class SubstrateMutationExecuteRequest(BaseModel):
+    dry_run: bool = True
+    max_signals: int = Field(default=32, ge=1, le=256)
+    max_proposals: int = Field(default=8, ge=1, le=32)
+    max_trials: int = Field(default=8, ge=1, le=32)
+    apply_enabled: bool = False
+    telemetry: list[Dict[str, Any]] = Field(default_factory=list)
+    class_metrics: Dict[str, Dict[str, float]] = Field(default_factory=dict)
+    post_adoption_delta_by_target_surface: Dict[str, float] = Field(default_factory=dict)
 
 
 class SubstratePolicyAdoptHubRequest(BaseModel):
@@ -1762,6 +1792,521 @@ def _substrate_runtime_status_payload(*, queue_limit: int = 20, telemetry_limit:
     }
 
 
+def _mutation_manual_apply_policy_allows() -> bool:
+    return str(os.getenv("SUBSTRATE_MUTATION_MANUAL_APPLY_ENABLED", "false")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _require_mutation_operator_guard(token: str | None) -> None:
+    expected = str(os.getenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", "")).strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="mutation_operator_token_not_configured")
+    if not token or token.strip() != expected:
+        raise HTTPException(status_code=403, detail="operator_guard_rejected")
+
+
+class _ManualCyclePatchApplier(PatchApplier):
+    def __init__(self, *, surfaces: dict[str, dict[str, Any]], allow_apply: bool, blocked_reason: str | None = None) -> None:
+        super().__init__(surfaces=surfaces)
+        self.allow_apply = bool(allow_apply)
+        self.blocked_reason = blocked_reason
+        self.attempted = 0
+        self.blocked = 0
+        self.completed = 0
+
+    def apply(self, *, proposal, decision):  # type: ignore[override]
+        if decision.action == "auto_promote":
+            self.attempted += 1
+        if not self.allow_apply:
+            if decision.action == "auto_promote":
+                self.blocked += 1
+            return None
+        adoption = super().apply(proposal=proposal, decision=decision)
+        if decision.action == "auto_promote":
+            if adoption is None:
+                self.blocked += 1
+            else:
+                self.completed += 1
+        return adoption
+
+
+class _ScheduledCyclePatchApplier(PatchApplier):
+    def __init__(self, *, surfaces: dict[str, dict[str, Any]], allow_apply: bool) -> None:
+        super().__init__(surfaces=surfaces)
+        self.allow_apply = bool(allow_apply)
+        self.attempted = 0
+        self.blocked = 0
+        self.completed = 0
+
+    def apply(self, *, proposal, decision):  # type: ignore[override]
+        if decision.action == "auto_promote":
+            self.attempted += 1
+        if not self.allow_apply:
+            if decision.action == "auto_promote":
+                self.blocked += 1
+            return None
+        adoption = super().apply(proposal=proposal, decision=decision)
+        if decision.action == "auto_promote":
+            if adoption is None:
+                self.blocked += 1
+            else:
+                self.completed += 1
+        return adoption
+
+
+def _env_flag(name: str, *, default: bool = False) -> bool:
+    raw = str(os.getenv(name, "true" if default else "false")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, *, default: int, minimum: int = 1, maximum: int = 256) -> int:
+    raw = str(os.getenv(name, str(default))).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def _emit_substrate_autonomy_scheduler_log(*, payload: Dict[str, Any]) -> None:
+    logger.info("substrate_mutation_scheduler %s", json.dumps(payload, sort_keys=True, default=str))
+
+
+def substrate_autonomy_runtime_supported() -> tuple[bool, str]:
+    if not SUBSTRATE_MUTATION_STORE.postgres_url:
+        return False, "postgres_url_unset"
+    if SUBSTRATE_MUTATION_STORE.source_kind() != "postgres":
+        return False, f"unsupported_store_kind:{SUBSTRATE_MUTATION_STORE.source_kind()}"
+    if SUBSTRATE_MUTATION_STORE.degraded():
+        return False, "mutation_store_degraded"
+    return True, "supported"
+
+
+def execute_substrate_mutation_scheduled_cycle(
+    *,
+    now: datetime | None = None,
+    telemetry_override: list[Dict[str, Any]] | None = None,
+    class_metrics_override: Dict[str, Dict[str, float]] | None = None,
+) -> Dict[str, Any]:
+    tick_now = now or datetime.now(timezone.utc)
+    tick_id = f"mutation-scheduler-{uuid4()}"
+    interval_sec = float(str(os.getenv("SUBSTRATE_AUTONOMY_INTERVAL_SEC", "30")).strip() or "30")
+    if not _env_flag("SUBSTRATE_AUTONOMY_ENABLED", default=False):
+        payload = {
+            "event": "mutation_scheduler_tick",
+            "tick_id": tick_id,
+            "status": "disabled",
+            "interval_sec": interval_sec,
+            "at": tick_now.isoformat(),
+        }
+        _emit_substrate_autonomy_scheduler_log(payload=payload)
+        return payload
+    supported, reason = substrate_autonomy_runtime_supported()
+    if not supported:
+        payload = {
+            "event": "mutation_scheduler_tick",
+            "tick_id": tick_id,
+            "status": "unsafe_mode_noop",
+            "reason": reason,
+            "interval_sec": interval_sec,
+            "at": tick_now.isoformat(),
+            "store_kind": SUBSTRATE_MUTATION_STORE.source_kind(),
+            "store_degraded": SUBSTRATE_MUTATION_STORE.degraded(),
+        }
+        _emit_substrate_autonomy_scheduler_log(payload=payload)
+        return payload
+
+    lock_acquired = SUBSTRATE_AUTONOMY_LOCAL_CYCLE_LOCK.acquire(blocking=False)
+    if not lock_acquired:
+        payload = {
+            "event": "mutation_scheduler_tick",
+            "tick_id": tick_id,
+            "status": "blocked",
+            "reason": "local_cycle_lock_not_acquired",
+            "interval_sec": interval_sec,
+            "at": tick_now.isoformat(),
+        }
+        _emit_substrate_autonomy_scheduler_log(payload=payload)
+        return payload
+
+    traces: list[dict[str, Any]] = []
+    try:
+        proposals_enabled = _env_flag("SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED", default=True)
+        apply_enabled = _env_flag("SUBSTRATE_AUTONOMY_APPLY_ENABLED", default=False)
+        monitor_enabled = _env_flag("SUBSTRATE_AUTONOMY_MONITOR_ENABLED", default=True)
+
+        applier = _ScheduledCyclePatchApplier(
+            surfaces=SUBSTRATE_MUTATION_SURFACES,
+            allow_apply=apply_enabled,
+        )
+        corpus = ReplayCorpusRegistry(
+            corpus_by_class={
+                "routing_threshold_patch": "replay-routing-v1",
+                "recall_weighting_patch": "replay-recall-v1",
+                "graph_consolidation_param_patch": "replay-consolidation-v1",
+                "approved_prompt_profile_variant_promotion": "replay-prompt-profile-v1",
+            },
+            baseline_metric_ref_by_class={
+                "routing_threshold_patch": "baseline-routing-v1",
+                "recall_weighting_patch": "baseline-recall-v1",
+                "graph_consolidation_param_patch": "baseline-consolidation-v1",
+                "approved_prompt_profile_variant_promotion": "baseline-prompt-profile-v1",
+            },
+        )
+        worker = SubstrateAdaptationWorker(
+            store=SUBSTRATE_MUTATION_STORE,
+            detectors=MutationDetectors(),
+            pressure=PressureAccumulator(),
+            proposals=ProposalFactory(),
+            trial_runner=SubstrateTrialRunner(scorer=ClassSpecificScorer(), corpus_registry=corpus),
+            decision_engine=DecisionEngine(),
+            applier=applier,
+            monitor=PostAdoptionMonitor(),
+            budget=AdaptationCycleBudget(
+                max_signals=_env_int("SUBSTRATE_AUTONOMY_MAX_SIGNALS", default=32),
+                max_proposals=0 if not proposals_enabled else _env_int("SUBSTRATE_AUTONOMY_MAX_PROPOSALS", default=8, maximum=64),
+                max_trials=_env_int("SUBSTRATE_AUTONOMY_MAX_TRIALS", default=8, maximum=64),
+                max_adoptions=_env_int("SUBSTRATE_AUTONOMY_MAX_ADOPTIONS", default=1, maximum=8),
+            ),
+            kill_switch_env="SUBSTRATE_AUTONOMY_ENABLED",
+            trace_logger=traces.append,
+        )
+
+        if telemetry_override is not None:
+            telemetry = [GraphReviewTelemetryRecordV1.model_validate(item or {}) for item in telemetry_override]
+        else:
+            telemetry = SUBSTRATE_REVIEW_TELEMETRY_STORE.query(
+                GraphReviewTelemetryQueryV1(
+                    limit=worker.budget.max_signals,
+                    invocation_surface="operator_review",
+                )
+            )
+
+        _emit_substrate_autonomy_scheduler_log(
+            payload={
+                "event": "mutation_scheduler_tick",
+                "tick_id": tick_id,
+                "status": "running",
+                "interval_sec": interval_sec,
+                "at": tick_now.isoformat(),
+                "proposals_enabled": proposals_enabled,
+                "apply_enabled": apply_enabled,
+                "monitor_enabled": monitor_enabled,
+            }
+        )
+        result = worker.run_cycle(
+            telemetry=telemetry,
+            measured_metrics_by_proposal={},
+            measured_metrics_by_class=class_metrics_override or None,
+            post_adoption_delta_by_target_surface={} if monitor_enabled else {},
+            replay_telemetry=telemetry,
+            now=tick_now,
+        )
+        scheduler_summary = {
+            "event": "mutation_scheduler_cycle_finished",
+            "tick_id": tick_id,
+            "status": "completed",
+            "notes": list(result.get("notes") or []),
+            "signals_processed": int(result.get("signals", 0)),
+            "proposals_created": int(result.get("proposals", 0)),
+            "trials_executed": int(result.get("trials", 0)),
+            "adoptions_completed": int(result.get("adoptions", 0)),
+            "decisions_made": len([event for event in traces if event.get("event") == "mutation_decision_recorded"]),
+            "applies_attempted": applier.attempted,
+            "applies_blocked": applier.blocked,
+            "applies_executed": applier.completed,
+            "db_lock_acquired": any(
+                event.get("event") == "mutation_lock_acquire" and bool(event.get("lock_acquired"))
+                for event in traces
+            ),
+            "db_lock_blocked": any(
+                event.get("event") == "mutation_lock_acquire" and not bool(event.get("lock_acquired"))
+                for event in traces
+            ),
+        }
+        _emit_substrate_autonomy_scheduler_log(payload=scheduler_summary)
+        return {
+            "tick_id": tick_id,
+            "status": "completed",
+            "result": result,
+            "summary": scheduler_summary,
+            "trace": traces,
+        }
+    finally:
+        SUBSTRATE_AUTONOMY_LOCAL_CYCLE_LOCK.release()
+
+
+def _mutation_lineage_id_from_event(event: Dict[str, Any]) -> str:
+    for key in ("lineage_id", "signal_id", "proposal_id", "pressure_id", "queue_item_id", "trial_id", "decision_id", "rollback_id"):
+        value = event.get(key)
+        if value is not None and str(value).strip():
+            return str(value)
+    return "unknown"
+
+
+def _emit_mutation_lifecycle_logs(*, route_invocation_id: str, events: list[Dict[str, Any]]) -> None:
+    bounded = events[:200]
+    for event in bounded:
+        payload = {
+            "event_kind": "substrate_mutation_lifecycle_v1",
+            "route_invocation_id": route_invocation_id,
+            "event": event.get("event"),
+            "cycle_id": event.get("cycle_id"),
+            "lineage_id": _mutation_lineage_id_from_event(event),
+            "signal_id": event.get("signal_id"),
+            "pressure_key": event.get("pressure_key"),
+            "proposal_id": event.get("proposal_id"),
+            "queue_item_id": event.get("queue_item_id"),
+            "trial_id": event.get("trial_id"),
+            "decision": event.get("decision"),
+            "queue_status_before": event.get("queue_status_before"),
+            "queue_status_after": event.get("queue_status_after"),
+            "surface_key": event.get("surface_key"),
+            "blocked_reason": event.get("blocked_reason"),
+            "applied": event.get("applied"),
+            "notes": event.get("notes"),
+        }
+        logger.info("substrate_mutation_lifecycle %s", json.dumps(payload, sort_keys=True, default=str))
+
+
+def _execute_substrate_mutation_cycle(*, request: SubstrateMutationExecuteRequest) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    route_invocation_id = f"mutation-manual-{uuid4()}"
+    before_signal_count = len(SUBSTRATE_MUTATION_STORE._signals)
+    before_pressure_keys = set(SUBSTRATE_MUTATION_STORE._pressures.keys())
+    before_queue_status_by_id = {item.queue_item_id: item.status for item in SUBSTRATE_MUTATION_STORE._queue.values()}
+
+    apply_policy_allowed = _mutation_manual_apply_policy_allows()
+    apply_allowed = bool((not request.dry_run) and request.apply_enabled and apply_policy_allowed)
+    apply_blockers: list[str] = []
+    if request.apply_enabled and request.dry_run:
+        apply_blockers.append("dry_run_forces_apply_disabled")
+    if request.apply_enabled and not apply_policy_allowed:
+        apply_blockers.append("manual_apply_policy_disallows_override")
+
+    traces: list[dict[str, Any]] = []
+    applier = _ManualCyclePatchApplier(
+        surfaces=SUBSTRATE_MUTATION_SURFACES,
+        allow_apply=apply_allowed,
+        blocked_reason=";".join(apply_blockers) if apply_blockers else None,
+    )
+    corpus = ReplayCorpusRegistry(
+        corpus_by_class={
+            "routing_threshold_patch": "replay-routing-v1",
+            "recall_weighting_patch": "replay-recall-v1",
+            "graph_consolidation_param_patch": "replay-consolidation-v1",
+            "approved_prompt_profile_variant_promotion": "replay-prompt-profile-v1",
+        },
+        baseline_metric_ref_by_class={
+            "routing_threshold_patch": "baseline-routing-v1",
+            "recall_weighting_patch": "baseline-recall-v1",
+            "graph_consolidation_param_patch": "baseline-consolidation-v1",
+            "approved_prompt_profile_variant_promotion": "baseline-prompt-profile-v1",
+        },
+    )
+    worker = SubstrateAdaptationWorker(
+        store=SUBSTRATE_MUTATION_STORE,
+        detectors=MutationDetectors(),
+        pressure=PressureAccumulator(),
+        proposals=ProposalFactory(),
+        trial_runner=SubstrateTrialRunner(scorer=ClassSpecificScorer(), corpus_registry=corpus),
+        decision_engine=DecisionEngine(),
+        applier=applier,
+        monitor=PostAdoptionMonitor(),
+        budget=AdaptationCycleBudget(
+            max_signals=request.max_signals,
+            max_proposals=request.max_proposals,
+            max_trials=request.max_trials,
+            max_adoptions=1,
+        ),
+        trace_logger=traces.append,
+    )
+
+    telemetry: list[GraphReviewTelemetryRecordV1]
+    if request.telemetry:
+        telemetry = []
+        for item in request.telemetry[: request.max_signals]:
+            payload = dict(item or {})
+            payload.setdefault("invocation_surface", "operator_review")
+            payload.setdefault("execution_outcome", "failed")
+            payload.setdefault("selection_reason", "manual_mutation_route")
+            payload.setdefault("runtime_duration_ms", 10)
+            payload.setdefault("anchor_scope", "orion")
+            payload.setdefault("subject_ref", "entity:orion")
+            payload.setdefault("target_zone", "autonomy_graph")
+            telemetry.append(GraphReviewTelemetryRecordV1.model_validate(payload))
+    else:
+        telemetry = SUBSTRATE_REVIEW_TELEMETRY_STORE.query(
+            GraphReviewTelemetryQueryV1(limit=request.max_signals, invocation_surface="operator_review")
+        )
+    result_first = worker.run_cycle(
+        telemetry=telemetry,
+        measured_metrics_by_proposal={},
+        measured_metrics_by_class=request.class_metrics or None,
+        post_adoption_delta_by_target_surface=request.post_adoption_delta_by_target_surface or None,
+        replay_telemetry=telemetry,
+        now=now,
+    )
+    # Queue items are created with due_at ~= current time; run one immediate settle pass to deterministically
+    # execute trial/decision/apply paths within a single manual invocation.
+    result_second = worker.run_cycle(
+        telemetry=[],
+        measured_metrics_by_proposal={},
+        measured_metrics_by_class=request.class_metrics or None,
+        post_adoption_delta_by_target_surface=request.post_adoption_delta_by_target_surface or None,
+        replay_telemetry=telemetry,
+        now=now + timedelta(milliseconds=1),
+    )
+    result = {
+        "signals": int(result_first.get("signals", 0)) + int(result_second.get("signals", 0)),
+        "proposals": int(result_first.get("proposals", 0)) + int(result_second.get("proposals", 0)),
+        "trials": int(result_first.get("trials", 0)) + int(result_second.get("trials", 0)),
+        "adoptions": int(result_first.get("adoptions", 0)) + int(result_second.get("adoptions", 0)),
+        "notes": list(result_first.get("notes") or []) + list(result_second.get("notes") or []),
+    }
+    _emit_mutation_lifecycle_logs(route_invocation_id=route_invocation_id, events=traces)
+
+    pressure_updates = [event for event in traces if event.get("event") == "mutation_pressure_recorded"]
+    proposal_events = [event for event in traces if event.get("event") == "mutation_proposal_enqueued"]
+    trial_events = [event for event in traces if event.get("event") == "mutation_trial_recorded"]
+    decision_events = [event for event in traces if event.get("event") == "mutation_decision_recorded"]
+    apply_block_events = [event for event in traces if event.get("event") == "mutation_apply_blocked"]
+    rollback_events = [event for event in traces if event.get("event") == "mutation_rollback_recorded"]
+    queue_item_ids = sorted({str(event.get("queue_item_id")) for event in traces if event.get("queue_item_id")})
+    queue_status_changes: list[Dict[str, str]] = []
+    for item in SUBSTRATE_MUTATION_STORE._queue.values():
+        before_status = before_queue_status_by_id.get(item.queue_item_id)
+        if before_status is not None and before_status != item.status:
+            queue_status_changes.append(
+                {
+                    "queue_item_id": item.queue_item_id,
+                    "before": before_status,
+                    "after": item.status,
+                }
+            )
+    blockers = list(result.get("notes") or [])
+    blockers.extend(apply_blockers)
+    blockers.extend(str(event.get("blocked_reason")) for event in apply_block_events if event.get("blocked_reason"))
+
+    return {
+        "generated_at": now.isoformat(),
+        "request": {
+            "route_invocation_id": route_invocation_id,
+            "dry_run": request.dry_run,
+            "max_signals": request.max_signals,
+            "max_proposals": request.max_proposals,
+            "max_trials": request.max_trials,
+            "apply_enabled_requested": request.apply_enabled,
+            "apply_enabled_effective": apply_allowed,
+            "apply_policy_allowed": apply_policy_allowed,
+            "single_cycle": True,
+            "invocation_surface": "operator_review",
+        },
+        "summary": {
+            "signals_produced": int(result.get("signals", 0)),
+            "pressures_updated": len(pressure_updates),
+            "proposals_created": len(proposal_events),
+            "queue_items_touched": queue_item_ids,
+            "queue_status_changes": queue_status_changes,
+            "trials_run": len(trial_events),
+            "decisions_made": len(decision_events),
+            "applies_attempted": applier.attempted,
+            "applies_blocked": applier.blocked,
+            "applies_completed": applier.completed,
+            "monitoring_windows_opened": int(result.get("adoptions", 0)),
+            "rollbacks_recorded": len(rollback_events),
+            "kill_switch_or_policy_blockers": blockers,
+            "pressure_keys_before": sorted(before_pressure_keys),
+            "pressure_keys_after": sorted(SUBSTRATE_MUTATION_STORE._pressures.keys()),
+            "signal_count_before": before_signal_count,
+            "signal_count_after": len(SUBSTRATE_MUTATION_STORE._signals),
+        },
+        "source": {
+            "mutation_store_kind": SUBSTRATE_MUTATION_STORE.source_kind(),
+            "mutation_store_degraded": SUBSTRATE_MUTATION_STORE.degraded(),
+            "mutation_store_error": SUBSTRATE_MUTATION_STORE.last_error(),
+            "review_telemetry_kind": SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind(),
+        },
+        "trace": {
+            "events": traces,
+            "notes": list(result.get("notes") or []),
+        },
+    }
+
+
+def _mutation_lineage_payload(*, proposal_id: str | None = None, limit: int = 20) -> Dict[str, Any]:
+    if proposal_id:
+        lifecycle = SUBSTRATE_MUTATION_STORE.lifecycle_for_proposal(proposal_id)
+        lifecycles = [lifecycle] if lifecycle is not None else []
+    else:
+        lifecycles = SUBSTRATE_MUTATION_STORE.recent_lifecycles(limit=limit)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {
+            "lifecycles": lifecycles,
+            "active_surfaces": SUBSTRATE_MUTATION_STORE.active_surfaces_snapshot(),
+            "recent_blocked_applies": SUBSTRATE_MUTATION_STORE.recent_blocked_applies(limit=limit),
+            "recent_rollbacks": SUBSTRATE_MUTATION_STORE.recent_rollbacks(limit=limit),
+        },
+    }
+
+
+def _routing_replay_inspection_payload(*, limit: int = 50) -> Dict[str, Any]:
+    telemetry = SUBSTRATE_REVIEW_TELEMETRY_STORE.query(
+        GraphReviewTelemetryQueryV1(
+            limit=max(1, min(limit, 200)),
+            invocation_surface="operator_review",
+        )
+    )
+    routing_proposals = [
+        proposal
+        for proposal in SUBSTRATE_MUTATION_STORE._proposals.values()
+        if proposal.mutation_class == "routing_threshold_patch"
+    ]
+    routing_proposals.sort(key=lambda item: item.created_at, reverse=True)
+    proposal = routing_proposals[0] if routing_proposals else ProposalFactory().from_pressure(
+        MutationPressureV1(
+            anchor_scope="orion",
+            subject_ref="entity:orion",
+            target_surface="routing",
+            pressure_kind="runtime_failure",
+            pressure_score=5.0,
+            evidence_refs=["telemetry:replay_inspection_seed"],
+            source_signal_ids=["signal:replay_inspection_seed"],
+        )
+    )
+    if proposal is None:
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "data": {"error": "routing_proposal_unavailable"},
+        }
+    corpus = ReplayCorpusRegistry(
+        corpus_by_class={"routing_threshold_patch": "replay-routing-v1"},
+        baseline_metric_ref_by_class={"routing_threshold_patch": "baseline-routing-v1"},
+    )
+    trial_runner = SubstrateTrialRunner(
+        scorer=ClassSpecificScorer(),
+        corpus_registry=corpus,
+    )
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "data": trial_runner.inspect_routing_replay(
+            proposal=proposal,
+            replay_records=telemetry,
+        ),
+    }
+
+
 def _execute_substrate_review_cycle(*, allow_followup: bool, explicit_queue_item_id: str | None = None) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     SUBSTRATE_REVIEW_QUEUE_STORE.refresh_from_storage()
@@ -2119,3 +2664,84 @@ def api_substrate_review_runtime_smoke_check(request: SubstrateReviewSmokeCheckR
             "semantic_error": semantic_probe.error,
         },
     }
+
+
+@router.post("/api/substrate/mutation-runtime/execute-once")
+def api_substrate_mutation_runtime_execute_once(
+    request: SubstrateMutationExecuteRequest | None = None,
+    x_orion_operator_token: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    _require_mutation_operator_guard(x_orion_operator_token)
+    req = request or SubstrateMutationExecuteRequest()
+    return _execute_substrate_mutation_cycle(request=req)
+
+
+@router.get("/api/substrate/mutation-runtime/lineage")
+def api_substrate_mutation_runtime_lineage(
+    proposal_id: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=200),
+) -> Dict[str, Any]:
+    return _mutation_lineage_payload(proposal_id=proposal_id, limit=limit)
+
+
+@router.get("/api/substrate/mutation-runtime/active-surfaces")
+def api_substrate_mutation_runtime_active_surfaces() -> Dict[str, Any]:
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=200,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {
+            "active_surfaces": SUBSTRATE_MUTATION_STORE.active_surfaces_snapshot(),
+        },
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/blocked-applies")
+def api_substrate_mutation_runtime_blocked_applies(limit: int = Query(default=20, ge=1, le=200)) -> Dict[str, Any]:
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {
+            "recent_blocked_applies": SUBSTRATE_MUTATION_STORE.recent_blocked_applies(limit=limit),
+        },
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/rollbacks")
+def api_substrate_mutation_runtime_rollbacks(limit: int = Query(default=20, ge=1, le=200)) -> Dict[str, Any]:
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {
+            "recent_rollbacks": SUBSTRATE_MUTATION_STORE.recent_rollbacks(limit=limit),
+        },
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/live-routing-surface")
+def api_substrate_mutation_runtime_live_routing_surface() -> Dict[str, Any]:
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "data": inspect_chat_reflective_lane_threshold(),
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/routing-replay-inspect")
+def api_substrate_mutation_runtime_routing_replay_inspect(
+    limit: int = Query(default=50, ge=1, le=200),
+) -> Dict[str, Any]:
+    return _routing_replay_inspection_payload(limit=limit)

@@ -302,6 +302,53 @@ def _try_parse_object(text: str) -> dict[str, Any] | None:
     return direct if isinstance(direct, dict) else None
 
 
+def _decode_loose_json_string(value: str) -> str:
+    text = str(value or "")
+    try:
+        return json.loads(f'"{text}"')
+    except Exception:
+        return text.replace('\\"', '"').replace("\\n", "\n").replace("\\t", "\t")
+
+
+def _coerce_loose_journal_draft(text: str) -> dict[str, Any] | None:
+    candidate = (text or "").strip()
+    if not candidate:
+        return None
+
+    mode_match = re.search(r'"mode"\s*:\s*"([^"]+)"', candidate, flags=re.DOTALL)
+    if not mode_match:
+        return None
+    mode = str(mode_match.group(1) or "").strip()
+    if not mode:
+        return None
+
+    title: str | None = None
+    title_null_match = re.search(r'"title"\s*:\s*null\b', candidate, flags=re.IGNORECASE)
+    if title_null_match:
+        title = None
+    else:
+        title_match = re.search(r'"title"\s*:\s*"((?:\\.|[^"\\])*)"', candidate, flags=re.DOTALL)
+        if title_match:
+            title = _decode_loose_json_string(title_match.group(1))
+
+    body_match = re.search(r'"body"\s*:\s*"((?:\\.|[^"\\])*)"', candidate, flags=re.DOTALL)
+    if body_match:
+        body = _decode_loose_json_string(body_match.group(1)).strip()
+    else:
+        body_start = re.search(r'"body"\s*:\s*"?', candidate, flags=re.DOTALL)
+        if not body_start:
+            return None
+        body = candidate[body_start.end() :].strip().rstrip("}").strip().strip('"').strip()
+    if not body:
+        return None
+
+    return {
+        "mode": mode,
+        "title": title,
+        "body": body,
+    }
+
+
 def _missing_required_key_from_error(message: str) -> str | None:
     prefix = "journal_draft_missing_required_key:"
     if not isinstance(message, str) or not message.startswith(prefix):
@@ -371,6 +418,21 @@ def _parse_journal_draft_json(final_text: str) -> tuple[dict[str, Any], _DraftPa
                     object_extraction_attempted=extraction_attempted,
                 )
 
+    for text in attempts:
+        repaired = _coerce_loose_journal_draft(text)
+        if isinstance(repaired, dict):
+            _validate_journal_draft_payload(repaired)
+            return repaired, _DraftParseDiagnostics(
+                raw_length=len(final_text or ""),
+                response_text_source="final_text",
+                reasoning_fields_present=False,
+                fences_stripped=fences_stripped,
+                think_tags_detected=think_tags_detected,
+                think_blocks_stripped=think_blocks_stripped,
+                leading_non_json_stripped=leading_non_json_stripped,
+                object_extraction_attempted=extraction_attempted,
+            )
+
     raise ValueError("journal_draft_parse_failed")
 
 
@@ -380,10 +442,14 @@ def _select_draft_text(payload: dict[str, Any]) -> tuple[str | None, str]:
         if isinstance(value, str) and value.strip():
             return value, key
 
-    nested_candidates = (
+    nested_candidates = [
         ("result", payload.get("result")),
         ("cortex_result", payload.get("cortex_result")),
-    )
+    ]
+    output_payload = payload.get("output")
+    if isinstance(output_payload, dict):
+        nested_candidates.append(("output", output_payload))
+        nested_candidates.append(("output.result", output_payload.get("result")))
     for container_key, container in nested_candidates:
         if not isinstance(container, dict):
             continue
@@ -392,12 +458,48 @@ def _select_draft_text(payload: dict[str, Any]) -> tuple[str | None, str]:
             if isinstance(value, str) and value.strip():
                 return value, f"{container_key}.{key}"
 
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        skill_result = metadata.get("skill_result")
+        if isinstance(skill_result, dict):
+            # Some workflow paths return structured draft fields under metadata.skill_result
+            # instead of a final_text string.
+            mode = str(skill_result.get("mode") or "").strip()
+            title = str(skill_result.get("title") or "").strip()
+            body = str(skill_result.get("body") or "").strip()
+            if mode and title and body:
+                return json.dumps(
+                    {"mode": mode, "title": title, "body": body},
+                    ensure_ascii=False,
+                ), "metadata.skill_result"
+
     return None, "missing"
 
 
 def draft_from_cortex_result(payload: dict[str, Any]) -> JournalEntryDraftV1:
     final_text, text_source = _select_draft_text(payload)
     if not isinstance(final_text, str) or not final_text.strip():
+        result_payload = payload.get("result")
+        output_payload = payload.get("output")
+        metadata_payload = payload.get("metadata")
+        skill_result_payload = metadata_payload.get("skill_result") if isinstance(metadata_payload, dict) else None
+        logger.error(
+            "journal_compose_missing_final_text corr=%s verb=%s status=%s ok=%s top_keys=%s result_keys=%s output_keys=%s output_result_keys=%s metadata_keys=%s metadata_skill_result_keys=%s",
+            payload.get("correlation_id"),
+            payload.get("verb"),
+            payload.get("status"),
+            payload.get("ok"),
+            sorted(payload.keys()) if isinstance(payload, dict) else None,
+            sorted(result_payload.keys()) if isinstance(result_payload, dict) else None,
+            sorted(output_payload.keys()) if isinstance(output_payload, dict) else None,
+            (
+                sorted((output_payload.get("result") or {}).keys())
+                if isinstance(output_payload, dict) and isinstance(output_payload.get("result"), dict)
+                else None
+            ),
+            sorted(metadata_payload.keys()) if isinstance(metadata_payload, dict) else None,
+            sorted(skill_result_payload.keys()) if isinstance(skill_result_payload, dict) else None,
+        )
         raise ValueError("cortex_orch_missing_final_text")
     reasoning_fields_present = bool(
         (isinstance(payload.get("reasoning_content"), str) and payload.get("reasoning_content").strip())

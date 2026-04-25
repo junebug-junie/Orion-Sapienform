@@ -25,6 +25,7 @@ from orion.schemas.cortex.contracts import (
     OutputModeDecisionV1,
 )
 from orion.schemas.cognition.answer_contract import AnswerContract
+from orion.substrate.mutation_control_surface import get_chat_reflective_lane_threshold
 
 from .output_mode_classifier import classify_output_mode
 from .settings import get_settings
@@ -305,6 +306,19 @@ class DecisionRouter:
                     "reason": f"{clamped.reason}+output_mode_tool_lane",
                 }
             )
+        routing_threshold = get_chat_reflective_lane_threshold()
+        if int(clamped.execution_depth) >= 2 and float(clamped.confidence) < float(routing_threshold):
+            clamped = clamped.model_copy(
+                update={
+                    "execution_depth": 0,
+                    "primary_verb": None,
+                    "reason": f"{clamped.reason}+routing_threshold_gate",
+                }
+            )
+            rewritten.options["routing_threshold_gate"] = {
+                "threshold": float(routing_threshold),
+                "decision_confidence": float(clamped.confidence),
+            }
 
         rewritten.options["execution_depth"] = clamped.execution_depth
 

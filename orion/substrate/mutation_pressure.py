@@ -27,9 +27,7 @@ class PressureAccumulator:
         for ref in signal.evidence_refs:
             if ref not in evidence_refs:
                 evidence_refs.append(ref)
-        cooldown_until = current.cooldown_until if current else None
-        if next_score >= self._policy.activation_threshold:
-            cooldown_until = t + timedelta(seconds=self._policy.cooldown_seconds)
+        cooldown_until = current.cooldown_until if current and (current.cooldown_until is None or current.cooldown_until > t) else None
         return MutationPressureV1(
             pressure_id=current.pressure_id if current else f"substrate-mutation-pressure-{signal.signal_id}",
             anchor_scope=signal.anchor_scope,
@@ -51,3 +49,7 @@ class PressureAccumulator:
         if pressure.cooldown_until and pressure.cooldown_until > t:
             return False
         return True
+
+    def mark_proposal_emitted(self, pressure: MutationPressureV1, *, now: datetime | None = None) -> MutationPressureV1:
+        t = now or datetime.now(timezone.utc)
+        return pressure.model_copy(update={"cooldown_until": t + timedelta(seconds=self._policy.cooldown_seconds), "updated_at": t})

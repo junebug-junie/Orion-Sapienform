@@ -125,6 +125,94 @@ Hub now includes a compact **Substrate Review** debug row in the main runtime de
 - `/substrate` remains the primary standalone inspection page; Hub modal is a convenience control surface.
 - In-shell navigation now includes a `#substrate` tab that embeds `/substrate` via iframe so switching tabs preserves Hub shell/session context.
 
+### 5.1 Substrate Mutation V2.1 Lineage Inspection
+
+Read-only admin endpoints for mutation lifecycle inspection (manual route only, no scheduler loop):
+
+- `GET /api/substrate/mutation-runtime/lineage?limit=20`
+- `GET /api/substrate/mutation-runtime/lineage?proposal_id=<proposal-id>`
+- `GET /api/substrate/mutation-runtime/active-surfaces`
+- `GET /api/substrate/mutation-runtime/blocked-applies?limit=20`
+- `GET /api/substrate/mutation-runtime/rollbacks?limit=20`
+- `GET /api/substrate/mutation-runtime/routing-replay-inspect?limit=50`
+
+Structured lifecycle logs are emitted with prefix `substrate_mutation_lifecycle` and include stable lineage keys (`lineage_id`, `proposal_id`, `queue_item_id`, `trial_id`, `decision`, `surface_key`, `blocked_reason`).
+
+#### SQL lineage queries (developer examples)
+
+One proposal lifecycle (swap `<proposal-id>`):
+
+```sql
+SELECT 'proposal' AS stage, payload_json
+FROM substrate_mutation_proposal
+WHERE proposal_id = '<proposal-id>'
+UNION ALL
+SELECT 'queue' AS stage, payload_json
+FROM substrate_mutation_queue
+WHERE payload_json::text LIKE '%' || '<proposal-id>' || '%'
+UNION ALL
+SELECT 'trial' AS stage, payload_json
+FROM substrate_mutation_trial
+WHERE payload_json::text LIKE '%' || '<proposal-id>' || '%'
+UNION ALL
+SELECT 'decision' AS stage, payload_json
+FROM substrate_mutation_decision
+WHERE payload_json::text LIKE '%' || '<proposal-id>' || '%'
+UNION ALL
+SELECT 'adoption' AS stage, payload_json
+FROM substrate_mutation_adoption
+WHERE payload_json::text LIKE '%' || '<proposal-id>' || '%'
+UNION ALL
+SELECT 'rollback' AS stage, payload_json
+FROM substrate_mutation_rollback
+WHERE payload_json::text LIKE '%' || '<proposal-id>' || '%';
+```
+
+Active live mutations by target surface:
+
+```sql
+SELECT target_surface, adoption_id, updated_at
+FROM substrate_mutation_active_surface
+ORDER BY updated_at DESC;
+```
+
+Recent blocked applies (auto-promote decisions that did not reach adoption):
+
+```sql
+SELECT d.created_at, d.decision_id, d.payload_json
+FROM substrate_mutation_decision d
+LEFT JOIN substrate_mutation_adoption a
+  ON a.payload_json::text LIKE '%' || (d.payload_json->>'proposal_id') || '%'
+WHERE d.payload_json->>'action' = 'auto_promote'
+  AND a.adoption_id IS NULL
+ORDER BY d.created_at DESC
+LIMIT 50;
+```
+
+Recent rollbacks:
+
+```sql
+SELECT rollback_id, created_at, payload_json
+FROM substrate_mutation_rollback
+ORDER BY created_at DESC
+LIMIT 50;
+```
+
+### 5.2 Scheduled Autonomy Safety Posture (single-leader)
+
+Scheduled mutation autonomy is intentionally fail-closed for non-shared control-plane persistence:
+
+- `SUBSTRATE_AUTONOMY_ENABLED=true` requires mutation store posture backed by shared Postgres.
+- If unsupported/degraded (for example memory/sqlite fallback), scheduler ticks no-op with structured `substrate_mutation_scheduler` log status `unsafe_mode_noop`.
+- Hub startup logs an explicit warning when autonomy is enabled but runtime posture is unsafe.
+
+Live control-surface inspection:
+
+- `GET /api/substrate/mutation-runtime/live-routing-surface`
+  - Returns current live value for `routing.chat_reflective_lane_threshold`, including control-surface store source/degraded metadata.
+- `GET /api/substrate/mutation-runtime/routing-replay-inspect`
+  - Returns routing replay corpus sample + replay-derived evaluator metrics for `routing_threshold_patch`.
+
 ---
 
 ## 🚀 Running Hub

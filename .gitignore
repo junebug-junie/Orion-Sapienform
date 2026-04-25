@@ -68,6 +68,7 @@ wheels/
 *.spec
 venv/
 venv*/ 
+.venv/
 env/
 env*/
 poetry.lock

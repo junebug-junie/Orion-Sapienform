@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     actions_max_concurrency: int = Field(2, alias="ACTIONS_MAX_CONCURRENCY")
 
     actions_recall_profile: str = Field("collapse_mirror.v1", alias="ACTIONS_RECALL_PROFILE")
+    actions_llm_route: str = Field("chat", alias="ACTIONS_LLM_ROUTE")
+    actions_daily_llm_route: str | None = Field(None, alias="ACTIONS_DAILY_LLM_ROUTE")
+    actions_journal_llm_route: str | None = Field(None, alias="ACTIONS_JOURNAL_LLM_ROUTE")
     actions_exec_timeout_seconds: float = Field(240.0, alias="ACTIONS_EXEC_TIMEOUT_SECONDS")
     actions_daily_timezone: str = Field("America/Denver", alias="ACTIONS_DAILY_TIMEZONE")
     actions_daily_run_on_startup: bool = Field(False, alias="ACTIONS_DAILY_RUN_ON_STARTUP")

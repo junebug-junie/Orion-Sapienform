@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 MutationLaneV1 = Literal["operational", "cognitive"]
 MutationRiskTierV1 = Literal["low", "medium", "high"]
-MutationLifecycleStateV1 = Literal["proposed", "queued", "trialed", "approved", "applied", "rolled_back", "rejected"]
+MutationLifecycleStateV1 = Literal["proposed", "queued", "trialed", "pending_review", "approved", "applied", "rolled_back", "rejected"]
 MutationClassV1 = Literal[
     "routing_threshold_patch",
     "recall_weighting_patch",

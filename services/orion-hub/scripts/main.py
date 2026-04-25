@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import subprocess
+import asyncio
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
@@ -12,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from scripts.settings import settings
 from scripts.api_routes import router as api_router
+import scripts.api_routes as api_routes_runtime
 from scripts.websocket_handler import websocket_endpoint
 from scripts.service_logs_ws import service_logs_websocket_endpoint
 from scripts.biometrics_cache import BiometricsCache
@@ -85,6 +87,7 @@ html_content: str = "<html><body><h1>Error loading UI</h1></body></html>"
 biometrics_cache: Optional[BiometricsCache] = None
 notification_cache: Optional[NotificationCache] = None
 presence_state: Optional["PresenceState"] = None
+substrate_autonomy_task: Optional[asyncio.Task] = None
 
 
 class PresenceState:
@@ -130,7 +133,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, presence_state
+    global bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, presence_state, substrate_autonomy_task
 
     # ------------------------------------------------------------
     # Orion Bus Initialization
@@ -177,6 +180,34 @@ async def startup_event():
 
     presence_state = PresenceState()
 
+    if settings.SUBSTRATE_AUTONOMY_ENABLED:
+        supported, reason = api_routes_runtime.substrate_autonomy_runtime_supported()
+        if not supported:
+            logger.warning(
+                "substrate_autonomy_scheduler_noop reason=%s store_kind=%s store_degraded=%s",
+                reason,
+                api_routes_runtime.SUBSTRATE_MUTATION_STORE.source_kind(),
+                api_routes_runtime.SUBSTRATE_MUTATION_STORE.degraded(),
+            )
+        else:
+            interval_sec = max(1.0, float(settings.SUBSTRATE_AUTONOMY_INTERVAL_SEC))
+
+            async def _run_substrate_autonomy_scheduler() -> None:
+                while True:
+                    try:
+                        api_routes_runtime.execute_substrate_mutation_scheduled_cycle()
+                    except Exception as exc:  # advisory runtime loop; never crash service startup
+                        logger.warning("substrate_autonomy_scheduler_error error=%s", exc)
+                    await asyncio.sleep(interval_sec)
+
+            substrate_autonomy_task = asyncio.create_task(
+                _run_substrate_autonomy_scheduler(),
+                name="hub-substrate-autonomy-scheduler",
+            )
+            logger.info("substrate_autonomy_scheduler_enabled interval_sec=%s", interval_sec)
+    else:
+        logger.info("substrate_autonomy_scheduler_disabled reason=env_disabled")
+
 
     # ------------------------------------------------------------
     # Load UI HTML Template
@@ -212,7 +243,14 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus, biometrics_cache, notification_cache
+    global bus, biometrics_cache, notification_cache, substrate_autonomy_task
+    if substrate_autonomy_task is not None:
+        substrate_autonomy_task.cancel()
+        try:
+            await substrate_autonomy_task
+        except asyncio.CancelledError:
+            pass
+        substrate_autonomy_task = None
     if biometrics_cache is not None:
         await biometrics_cache.stop()
     if notification_cache is not None:

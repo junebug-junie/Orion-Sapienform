@@ -213,6 +213,24 @@ class TestJournalerSchemasAndWorker(unittest.TestCase):
         self.assertEqual(draft.title, "Grounded Arc")
         self.assertEqual(draft.body, "Kept going.")
 
+    def test_draft_from_cortex_result_recovers_loose_json_with_null_title(self):
+        payload = {
+            "ok": True,
+            "status": "success",
+            "final_text": (
+                '{\n'
+                '  "mode": "daily",\n'
+                '  "title": null,\n'
+                '  "body": \n'
+                '"Today had a lot of context switching but steady progress."\n'
+                '}'
+            ),
+        }
+        draft = draft_from_cortex_result(payload)
+        self.assertEqual(draft.mode, "daily")
+        self.assertIsNone(draft.title)
+        self.assertIn("steady progress", draft.body)
+
     def test_draft_from_cortex_result_uses_final_answer_not_reasoning_field(self):
         payload = {
             "ok": True,
@@ -243,6 +261,34 @@ class TestJournalerSchemasAndWorker(unittest.TestCase):
         draft = draft_from_cortex_result(payload)
         self.assertEqual(draft.title, "Wrapped")
         self.assertEqual(draft.body, "From cortex_result.")
+
+    def test_draft_from_cortex_result_reads_output_result_final_text(self):
+        payload = {
+            "ok": True,
+            "status": "success",
+            "output": {
+                "result": {"final_text": '{"mode":"manual","title":"OutputNested","body":"From output.result."}'}
+            },
+        }
+        draft = draft_from_cortex_result(payload)
+        self.assertEqual(draft.title, "OutputNested")
+        self.assertEqual(draft.body, "From output.result.")
+
+    def test_draft_from_cortex_result_uses_metadata_skill_result_fallback(self):
+        payload = {
+            "ok": True,
+            "status": "success",
+            "metadata": {
+                "skill_result": {
+                    "mode": "manual",
+                    "title": "SkillResult",
+                    "body": "From metadata skill_result.",
+                }
+            },
+        }
+        draft = draft_from_cortex_result(payload)
+        self.assertEqual(draft.title, "SkillResult")
+        self.assertEqual(draft.body, "From metadata skill_result.")
 
 
     def test_draft_from_cortex_result_missing_required_key_fails_clearly(self):

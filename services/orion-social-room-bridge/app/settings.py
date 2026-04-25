@@ -40,6 +40,19 @@ class Settings(BaseSettings):
     )
     social_bridge_dedupe_ttl_sec: int = Field(3600, alias="SOCIAL_BRIDGE_DEDUPE_TTL_SEC")
     social_bridge_session_namespace: str = Field("callsyne-room", alias="SOCIAL_BRIDGE_SESSION_NAMESPACE")
+    social_bridge_hub_mode: str = Field("brain", alias="SOCIAL_BRIDGE_HUB_MODE")
+    social_bridge_hub_verb: str = Field("", alias="SOCIAL_BRIDGE_HUB_VERB")
+    social_bridge_return_2xx_on_delivery_failure: bool = Field(
+        True,
+        alias="SOCIAL_BRIDGE_RETURN_2XX_ON_DELIVERY_FAILURE",
+    )
+    social_bridge_callsyne_poll_enabled: bool = Field(False, alias="SOCIAL_BRIDGE_CALLSYNE_POLL_ENABLED")
+    social_bridge_callsyne_poll_room_id: str = Field("world", alias="SOCIAL_BRIDGE_CALLSYNE_POLL_ROOM_ID")
+    social_bridge_callsyne_poll_interval_sec: float = Field(2.0, alias="SOCIAL_BRIDGE_CALLSYNE_POLL_INTERVAL_SEC")
+    social_bridge_callsyne_poll_since_message_id: str = Field("", alias="SOCIAL_BRIDGE_CALLSYNE_POLL_SINCE_MESSAGE_ID")
+    social_bridge_callsyne_poll_skip_self: bool = Field(True, alias="SOCIAL_BRIDGE_CALLSYNE_POLL_SKIP_SELF")
+    social_bridge_callsyne_poll_limit: int = Field(20, alias="SOCIAL_BRIDGE_CALLSYNE_POLL_LIMIT")
+    social_bridge_callsyne_poll_path: str = Field("/api/bridge/messages", alias="SOCIAL_BRIDGE_CALLSYNE_POLL_PATH")
 
     hub_base_url: str = Field("http://orion-hub:8080", alias="HUB_BASE_URL")
     hub_chat_path: str = Field("/api/chat", alias="HUB_CHAT_PATH")

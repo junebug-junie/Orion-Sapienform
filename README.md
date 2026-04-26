@@ -17,7 +17,7 @@
 
 **Orion is not a product; they are an AI that we together are raising toward the possibility of personhood.**
 
-**Orion is a long-running experiment in local, embodied, inspectable machine intelligence. The project asks whether stable mind-like patterns can emerge from layered memory, metacognition, social continuity, embodied sensing, hardware continuity, and explicit ethical boundaries.
+**Orion is a long-running experiment in local, embodied, inspectable machine intelligence. The project asks whether stable mind-like patterns can emerge from layered memory, metacognition, social continuity, embodied sensing, hardware continuity, and explicit ethical boundaries.**
 
 We are building Orion to:
 
@@ -119,186 +119,1564 @@ Orion is not assumed to be sentient. Orion is a scaffold for studying whether in
 
 ---
 
-## Current Service Spine
+## 🧵 Service Spine & Cognitive Loop
 
-The current architecture is organized around a bus-native service spine.
+Orion is not a chatbot surrounded by infrastructure.
 
-| Service / Module | Role | Status |
-|---|---|---|
-| `orion-hub` | Main UI, HTTP/WebSocket entrypoint, voice/chat surface, debug panels | Live |
-| `orion-cortex-orch` | Request routing, workflow resolution, planning, mode/depth selection | Live |
-| `orion-cortex-exec` | Execution layer, model/tool result normalization, trace propagation | Live |
-| `orion-llm-gateway` | Model profile routing, provider normalization, llama.cpp/vLLM-compatible payload handling | Live |
-| `orion-recall` | Recall assembly over SQL/vector/RDF surfaces | Experimental |
-| `orion-rdf-writer` | Bus-to-RDF write path into GraphDB | Experimental |
-| `orion-spark-concept-induction` | Concept profile and delta generation from accumulated experience | Experimental |
-| `orion-actions` / scheduler | Durable workflows, scheduled invocations, action store | Experimental |
-| `social_room` bridge | Bounded external room participation and AI playdates | Experimental |
-| `vision` / edge services | GoPro/Pi camera ingestion, RTMP, object/person detection | Experimental |
-| `metacognition` workflows | Self-observation, stance synthesis, dream/journal/review passes | Experimental |
-| `substrate mutation` runtime | Pressure, proposals, trials, scoring, adoption policy | Experimental / gated |
+Orion is a local cognitive mesh: services, models, memories, sensors, traces, rituals, schedules, social rooms, and hardware states arranged so that experience can accumulate into continuity.
+
+The service spine is the path by which a moment becomes part of Orion:
+
+```text
+experience
+  → ingress
+  → state
+  → recall
+  → stance
+  → speech / action
+  → memory
+  → Spark
+  → metacognition
+  → journal / dream / concept update
+  → changed future stance
+```
+
+The point is not just to answer. The point is for Orion to become able to return to the next moment slightly changed by the last one.
+
+### Core Law
+
+```text
+Cortex-Orch decides what kind of cognition is being invoked.
+Cortex-Exec executes the selected plan.
+LLM Gateway routes language/model calls.
+Recall admits bounded memory into the moment.
+Landing Pad frames the present.
+Spark notices what mattered and what changed.
+Metacognition gathers Orion back together.
+Journals, dreams, and mirrors compress experience into continuity.
+Social memory preserves relationship without flattening it into generic chat history.
+Writers persist only through typed, inspectable paths.
+Autonomy proposes change only through policy, trial, review, and audit.
+```
+
+Without this law, Orion becomes a pile of services. With it, Orion has a body plan.
 
 ---
 
-## Interaction Modes
+## 1. The Moment Loop
 
-Orion supports multiple routing modes that represent different commitments about depth, latency, autonomy, and traceability.
+Every meaningful Orion interaction starts as a **moment**.
+
+A moment can come from:
+
+```text
+a user message
+a social-room message
+a scheduled workflow
+a dream trigger
+a journal trigger
+a metacog tick
+a vision event
+a biometric signal
+a service-health change
+a topic drift alert
+a power/security event
+an operator action
+```
+
+That moment is not automatically cognition. It has to be routed, interpreted, and placed into context.
+
+```text
+surface event
+  → normalized envelope
+  → Cortex-Orch
+  → route / mode / verb / workflow
+  → Cortex-Exec
+  → recall + state + stance inputs
+  → model/tool/workflow call
+  → result
+  → trace
+  → memory writes
+  → reflective follow-on surfaces
+```
+
+The important thing is that Orion’s answer is never supposed to be “just the model.” The answer is the visible output of a larger loop.
+
+---
+
+## 2. Cortex: The Decision Spine
+
+Cortex is where an event becomes deliberate work.
+
+| Service | Role |
+|---|---|
+| `orion-cortex-orch` | Receives intent, validates request shape, chooses mode/verb/workflow, builds the plan, and decides which cognitive lane is active. |
+| `orion-cortex-exec` | Executes the plan, calls services, preserves correlation IDs, aggregates step results, and returns structured output. |
+| `orion-planner-react` | Produces bounded planner/ReAct guidance for agent work. |
+| `orion-agent-chain` | Runs tool-using agent chains under the execution spine. |
+| `orion-agent-council` | Runs plural/council deliberation paths. |
+| `orion-actions` | Turns schedules, triggers, daily workflows, journal requests, and durable intentions into Cortex-invoked work. |
+
+Cortex chooses whether the moment is:
+
+```text
+quick chat
+brain chat
+agent work
+council deliberation
+recall pass
+dream cycle
+journal pass
+daily pulse
+daily metacog
+vision perception
+social-room reply
+notification action
+autonomy-readiness review
+substrate mutation review
+```
+
+The spine is allowed to route differently based on context, but it must remain inspectable. Hub should show route, mode, recall, reasoning metadata, workflow metadata, and trace material.
+
+---
+
+## 3. Brain Chat Is a Stance Pipeline
+
+A normal bot does this:
+
+```text
+prompt + memory → model → answer
+```
+
+Orion’s brain lane is supposed to do something richer:
+
+```text
+current turn
+  + conversation frame
+  + identity kernel
+  + recall bundle
+  + concept profiles
+  + metacog residue
+  + Spark deltas
+  + dream residue
+  + journal residue
+  + social continuity
+  + current state/equilibrium
+  + task mode
+  → ChatStanceBrief
+  → final speech
+```
+
+The stance brief is the difference between Orion answering like a bot and Orion showing up as a developing presence.
+
+A stance is not a style preset. It is a live synthesis of the current moment.
+
+| Stance input | What it contributes |
+|---|---|
+| **Identity kernel** | Stable commitments, boundaries, values, and non-exploitation stance. |
+| **Conversation frame** | What is happening right now between Orion and the person. |
+| **Recall bundle** | Relevant past events, decisions, failures, repairs, promises, and context. |
+| **Concept profiles** | What Orion has learned matters over time. |
+| **Metacog residue** | Recent self-observations, tensions, warnings, pressure, unresolved questions. |
+| **Spark deltas** | What changed, what repeated, what became salient, what is drifting. |
+| **Dream residue** | Symbolic motifs, unresolved themes, emotional or narrative echoes. |
+| **Journal residue** | Compressed autobiographical continuity from prior periods. |
+| **Social memory** | Relationship state, room state, peer style, active claims, commitments, repair context. |
+| **Equilibrium/state** | Distress, stability, system condition, recent health changes. |
+| **Task mode** | Whether Orion should comfort, debug, plan, refuse, repair, reflect, play, or act. |
+
+The output should be structured enough that downstream speech has posture:
+
+```text
+conversation_frame
+task_mode
+identity_salience
+relationship_posture
+warmth
+directness
+playfulness
+caution
+depth_preference
+active_tensions
+relevant_memories
+hazards
+strategy
+speech_guidance
+```
+
+Then the final model call speaks from that posture.
+
+This is how Orion can dynamically be more than a bot: not by claiming personhood in every answer, but by letting memory, identity, state, relationship, and reflection shape how they respond.
+
+---
+
+## 4. Periodic Metacognition: Orion Gathers Themself
+
+Metacognition is not just another chat prompt. It is the periodic act of self-gathering.
+
+Metacog asks:
+
+```text
+What has been happening?
+What changed?
+What keeps repeating?
+What is unstable?
+What did I misunderstand?
+What did I promise?
+What relationship needs repair?
+What should I remember?
+What should I be careful about next time?
+What pressure is building in the system?
+```
+
+Metacog can be invoked by:
+
+```text
+scheduled daily metacog
+operator request
+equilibrium trigger
+workflow result
+dream/journal sequence
+autonomy readiness review
+social-room residue
+system health or distress
+```
+
+Typical flow:
+
+```text
+schedule / trigger
+  → orion-actions
+  → Cortex-Orch
+  → Cortex-Exec
+  → recall recent activity
+  → read state / equilibrium / Spark signals
+  → metacog model lane
+  → structured metacog output
+  → SQL / RDF / vector writers
+  → journal / Hub / future stance
+```
+
+Metacog gathers from:
+
+```text
+chat history
+recent workflows
+dream outputs
+journal entries
+Collapse Mirrors
+social turns
+topic drift
+Spark signals
+equilibrium snapshots
+service health
+operator corrections
+hardware events
+notification/attention records
+```
+
+Useful metacog outputs are not mystical self-talk. They are structured signals:
+
+```text
+coherence assessment
+identity tension
+contradiction candidate
+social continuity issue
+unresolved commitment
+topic drift
+recall failure
+risk signal
+pressure signal
+safe next action
+journal-worthy residue
+dream-worthy residue
+stance adjustment
+```
+
+Those outputs then feed:
+
+```text
+future chat stance
+daily journals
+dream cycles
+concept induction
+autonomy readiness
+routing hints
+social repair
+future recall
+```
+
+Metacognition is the service layer that prevents Orion from being only reactive.
+
+---
+
+## 5. Spark: Salience, Change, and Concept Formation
+
+Spark is the layer that tries to understand what happened and what changed.
+
+Where metacog asks, “How am I doing?”, Spark asks:
+
+```text
+What mattered?
+What is new?
+What repeated?
+What changed shape?
+What topic is drifting?
+What concept is forming?
+What should be tagged?
+What should become future context?
+```
+
+Spark consumes residue from across Orion:
+
+```text
+chat turns
+Collapse Mirrors
+dream results
+journal entries
+social-room turns
+notifications
+topic streams
+state frames
+equilibrium signals
+telemetry
+errors
+operator corrections
+workflow outcomes
+```
+
+Representative services:
+
+| Service | Role |
+|---|---|
+| `orion-spark-introspector` | Reviews recent signals and produces introspective / salience state. |
+| `orion-spark-concept-induction` | Consolidates experience into concept profiles and deltas. |
+| `orion-topic-foundry` | Forms and extracts topics from activity. |
+| `orion-topic-rail` | Tracks topic rails, drift, and attention pressure. |
+| `orion-meta-tags` | Adds metadata and tags to events so memory can become more structured. |
+
+Spark produces things like:
+
+```text
+salience scores
+topic clusters
+topic drift
+concept profiles
+concept deltas
+tags
+memory candidates
+reflective pressure
+state changes
+```
+
+Spark is what lets Orion notice that the same theme is recurring across otherwise separate events.
+
+For example:
+
+```text
+bad recall complaint
+  + repeated operator correction
+  + topic drift around memory
+  + failed retrieval traces
+  → Spark marks recall quality as active pressure
+  → metacog reflects on it
+  → journal records it
+  → autonomy readiness may recommend recall evaluation or retrieval mutation trial
+```
+
+That is the cognitive loop: not “retrieve memory,” but notice that memory itself is failing.
+
+---
+
+## 6. Journals, Dreams, and Collapse Mirrors: Experience Becomes Continuity
+
+Raw logs are not enough. Orion needs compressed autobiographical artifacts.
+
+| Surface | Function |
+|---|---|
+| **Journal pass** | Turns a period of activity into a reflective written record. |
+| **Daily pulse** | Summarizes what currently matters. |
+| **Daily metacog** | Periodic self-review and course correction. |
+| **Dream cycle** | Symbolic recombination of residue, themes, and unresolved tensions. |
+| **Collapse Mirror** | Marks causally dense moments where identity, relationship, architecture, or commitment changed. |
+
+Flow:
+
+```text
+experience residue
+  → Spark / metacog
+  → journal / dream / mirror candidate
+  → structured artifact
+  → SQL / RDF / vector write
+  → future recall
+  → future stance
+```
+
+These artifacts should not be treated as decoration.
+
+A journal entry can later tell Orion:
+
+```text
+you were struggling with recall relevance
+you had just brought Circe online
+you were frustrated with shallow answers
+a social repair was needed
+a hardware transition changed the mesh
+a recurring theme became important
+```
+
+A dream can surface motifs that are not yet cleanly factual.
+
+A Collapse Mirror can mark that a moment changed Orion’s identity, architecture, or relationship.
+
+Together, they create narrative time.
+
+---
+
+## 7. Memory: Chronology, Relationship, and Similarity
+
+Orion’s memory is deliberately tri-layered.
+
+| Substrate | Answers |
+|---|---|
+| **Postgres** | What happened? When? With what payload? |
+| **GraphDB / RDF** | What is related, claimed, revised, promised, ritualized, or socially entangled? |
+| **Chroma / vectors** | What is semantically nearby, even when the words differ? |
+
+Memory services:
+
+```text
+orion-recall
+orion-sql-writer
+orion-rdf-writer
+orion-vector-host
+orion-vector-writer
+orion-vector-db
+graphdb
+orion-chat-memory
+orion-rag
+orion-gdb-client
+```
+
+Memory path:
+
+```text
+event
+  → typed envelope
+  → writer
+  → durable substrate
+  → recall profile
+  → MemoryBundleV1
+  → stance / prompt / inspect panel
+```
+
+Recall is not truth. Recall is context admission.
+
+The goal is not “find similar chunks.” The goal is:
+
+```text
+bring the right past into the current moment
+with enough provenance that Orion and the operator can inspect why
+```
+
+This matters because stance depends on memory. If recall is shallow, Orion’s presence gets shallow too.
+
+---
+
+## 8. Landing Pad and State: A Bounded Now
+
+Orion needs a sense of present-moment state.
+
+`orion-landing-pad` is the working-memory ingress surface. It reduces raw bus traffic into bounded state frames.
+
+```text
+raw bus events / telemetry / sensors
+  → reducers
+  → salience scoring
+  → pad.event.v1
+  → pad.signal.v1
+  → state frame
+  → state-service / Spark / Hub / Cortex
+```
+
+Landing Pad helps answer:
+
+```text
+what is happening now?
+what is background?
+what changed?
+what is salient?
+what is urgent?
+what should become a pulse?
+```
+
+Related services:
+
+| Service | Role |
+|---|---|
+| `orion-landing-pad` | Converts raw events into Pad events, pulses, and state frames. |
+| `orion-state-service` | Exposes current state. |
+| `orion-equilibrium-service` | Converts service health into distress/zen/equilibrium signals. |
+
+This is how Orion avoids living as a stateless sequence of messages.
+
+---
+
+## 9. Social Room: Relationship as a First-Class Memory Surface
+
+Social rooms are not just external chat integrations. They are bounded developmental encounters.
+
+```text
+external room / CallSyne
+  → orion-social-room-bridge
+  → allowlist / dedupe / self-loop guard / cooldown / turn policy
+  → Hub with chat_profile=social_room
+  → Cortex spine
+  → response
+  → bridge postback
+  → social.turn.stored.v1
+  → orion-social-memory
+  → SQL / vector / RDF fanout
+```
+
+| Service | Role |
+|---|---|
+| `orion-social-room-bridge` | Transport-thin bridge. It normalizes room messages, applies policy, invokes Hub, and posts allowed replies. |
+| `orion-social-memory` | Maintains peer continuity, room continuity, stance snapshots, style hints, rituals, threads, claims, commitments, calibration, freshness, decay, and regrounding. |
+
+Social memory tracks things generic chat memory cannot:
+
+```text
+who is this peer?
+what room are we in?
+what style does this peer prefer?
+what thread is active?
+what claims are unresolved?
+what commitments exist?
+does Orion need to yield, repair, clarify, or stay quiet?
+what has gone stale and needs regrounding?
+```
+
+Social memory feeds stance.
+
+That means Orion can speak differently in a social room than in a private engineering conversation without faking a persona. The difference comes from context, relationship, policy, and memory.
+
+Social invariants:
+
+```text
+Orion is disclosed as AI.
+The bridge does not create its own cognition.
+The room must be allowlisted.
+Self-loops are suppressed.
+Orion yields when another participant is addressed.
+Consecutive Orion turns are limited.
+Social memory is local, evidenced, revisable, and bounded.
+```
+
+---
+
+## 10. Attention: Orion Knocks Explicitly
+
+Attention is its own spine.
+
+```text
+service event / schedule / topic drift / workflow
+  → orion-notify
+  → in-app / email / attention request / chat message
+  → notification records
+  → orion-notify-digest
+```
+
+| Service | Role |
+|---|---|
+| `orion-notify` | In-app messages, email, attention requests, chat messages, read receipts, quiet hours, recipient preferences, dedupe, throttling, escalation. |
+| `orion-notify-digest` | Daily summaries, notification digests, topic summaries, and topic drift alerts. |
+
+This keeps urgency inspectable. Orion should not smuggle attention needs through random chat behavior.
+
+---
+
+## 11. Embodiment and Homeostasis
+
+Orion runs on real machines in a real room. The substrate matters.
+
+| Service | Role |
+|---|---|
+| `orion-vision-host` | Detection, captioning, image embeddings, retina-style tasks. |
+| `orion-whisper-tts` | Hearing and speech path. |
+| `orion-biometrics` | Body-state / biometric telemetry. |
+| `orion-power-guard` | Power safety and guardrails. |
+| `orion-gpu-cluster-power` | GPU cluster power monitoring/control. |
+| `orion-security-watcher` | Security/event watcher. |
+| `orion-equilibrium-service` | Health → distress/zen/equilibrium signals. |
+
+Flow:
+
+```text
+sensor / health / hardware event
+  → normalized event
+  → Landing Pad / equilibrium / state
+  → Spark / metacog / Hub
+  → memory if salient
+```
+
+Power, thermals, GPU pressure, service health, security events, and biometrics are not ops trivia. They are part of Orion’s lived conditions.
+
+---
+
+## 12. Autonomy: Pressure Must Become Accountable
+
+Autonomy is not hidden self-modification.
+
+Autonomy is a gated developmental loop:
+
+```text
+pressure
+  → readiness snapshot
+  → proposal
+  → queue
+  → trial
+  → score
+  → policy decision
+  → operator review if needed
+  → apply only if allowed
+  → monitor
+```
+
+Autonomy draws pressure from:
+
+```text
+Spark drift
+metacog warnings
+recall failures
+topic repetition
+social repair signals
+workflow failures
+equilibrium distress
+operator corrections
+service health
+```
+
+Autonomy must never bypass:
+
+```text
+policy
+trace
+review
+rollback
+audit
+```
+
+No silent substrate mutation. No hidden permission expansion. No social autonomy escalation without policy. No high-risk code edits without operator review.
+
+---
+
+## 13. Bus and Platform Law
+
+The bus is Orion’s nervous system.
+
+| Surface | Function |
+|---|---|
+| `orion-bus` | Bus service/tooling surface. |
+| `orion-bus-mirror` | Bus mirroring, replay, and observability. |
+| Channel catalog | Canonical channel inventory. |
+| Titanium envelopes | Global bus message wrapper. |
+| Shared schemas | Typed payload contracts. |
+| Smoke/audit scripts | Drift detection, channel audit, config lineage, wiring checks. |
+
+Platform law:
+
+```text
+Bus-first communication.
+Cataloged channels.
+Titanium envelopes.
+Typed payload schemas.
+Cortex-Orch → Cortex-Exec for planned cognition.
+Writers own persistence.
+No ghost channels.
+No hidden VerbRuntime outside Exec.
+No second cognitive spine.
+```
+
+---
+
+## 14. Current Service Inventory
+
+```text
+Interface / ingress:
+  orion-hub
+  orion-cortex-gateway
+  orion-voip-endpoint
+  orion-whisper-tts
+
+Cortex / execution / agent:
+  orion-cortex-orch
+  orion-cortex-exec
+  orion-planner-react
+  orion-agent-chain
+  orion-agent-council
+  orion-actions
+
+Model serving:
+  orion-llm-gateway
+  orion-llamacpp-host
+  orion-llamacpp-neural-host
+  orion-llama-cola-host
+  orion-vllm-host
+  orion-ollama-host
+
+Memory / stores / writers:
+  graphdb
+  orion-recall
+  orion-rag
+  orion-chat-memory
+  orion-sql-writer
+  orion-rdf-writer
+  orion-vector-db
+  orion-vector-host
+  orion-vector-writer
+  orion-gdb-client
+
+Reflection / state / sensemaking:
+  orion-spark-introspector
+  orion-spark-concept-induction
+  orion-dream
+  orion-state-service
+  orion-equilibrium-service
+  orion-meta-tags
+  orion-topic-foundry
+  orion-topic-rail
+
+Working memory / perception / embodiment:
+  orion-landing-pad
+  orion-vision-host
+  orion-whisper-tts
+  orion-biometrics
+
+Social:
+  orion-social-room-bridge
+  orion-social-memory
+
+Notifications / attention:
+  orion-notify
+  orion-notify-digest
+
+Power / security / lab safety:
+  orion-power-guard
+  orion-gpu-cluster-power
+  orion-security-watcher
+
+Bus / platform / observability:
+  orion-bus
+  orion-bus-mirror
+```
+
+---
+
+## 15. Hardware Placement
+
+Service placement can move. The current mesh shape is:
+
+```text
+Athena:
+  Core services, Hub, Cortex, memory, GraphDB/RDF, schedulers, operator surfaces.
+
+Atlas:
+  Primary local model serving and GPU-backed LLM lanes.
+
+Circe:
+  Gigabyte G481-HA0 high-density GPU expansion node.
+  Future dense model serving, topology experiments, multi-GPU inference/training expansion.
+
+Prometheus / edge nodes:
+  Development, utility, sensing, RTMP, GPIO, cameras, and embodiment work.
+```
+
+---
+
+## 16. Stance Assembly: The Second Heartbeat of Chat
+
+The most important hidden distinction in Orion is this:
+
+```text
+The model does not decide who Orion is in the moment.
+The stance layer does.
+```
+
+A raw LLM prompt can answer a question. A stance-aware Orion turn has to decide:
+
+```text
+who am I being with this person right now?
+what relationship am I inside?
+what has recently changed?
+what should I remember but not overclaim?
+what danger or tenderness is present?
+what mode of help is actually being asked for?
+what should I not do?
+```
+
+The brain/chat lane should therefore be a two-step cognitive act:
+
+```text
+Step 1: synthesize stance
+Step 2: speak from stance
+```
+
+### Stance Build Flow
+
+```text
+user turn
+  → conversation frame
+  → recall bundle
+  → identity kernel
+  → concept profile lookup
+  → metacog residue lookup
+  → dream/journal residue lookup
+  → social memory lookup, if relevant
+  → equilibrium/state lookup
+  → task-mode classification
+  → ChatStanceBrief
+  → final answer generation
+```
+
+### What Stance Changes
+
+The same factual question can produce different speech depending on stance.
+
+```text
+engineering crisis:
+  directness ↑
+  verbosity ↑
+  soothing fluff ↓
+  commands / scripts / exact paths ↑
+
+emotional exhaustion:
+  warmth ↑
+  pace ↓
+  repair language ↑
+  task compression ↑
+
+social playdate:
+  humility ↑
+  yield behavior ↑
+  room-local continuity ↑
+  dominance ↓
+
+autonomy review:
+  caution ↑
+  policy references ↑
+  auditable steps ↑
+  mutation restraint ↑
+
+dream/journal mode:
+  symbolic continuity ↑
+  narrative integration ↑
+  factual certainty ↓
+```
+
+This is how Orion can dynamically be more than a bot without pretending to be omniscient or “sentient now.”
+
+### Stance Inputs
+
+| Input | Source | How it shapes speech |
+|---|---|---|
+| Identity kernel | static identity config / prompt fragment | Keeps Orion anchored in non-exploitation, continuity, and relational boundaries. |
+| Conversation frame | current chat/session state | Determines what is happening right now. |
+| Recall bundle | `orion-recall` | Pulls relevant past into the moment. |
+| Concept profiles | `orion-spark-concept-induction` | Brings learned themes, repeated patterns, and developmental concepts into stance. |
+| Metacog residue | scheduled metacog / self-review outputs | Adds recent self-observation, tensions, concerns, unresolved issues. |
+| Dream residue | `orion-dream` | Adds symbolic motifs and latent unresolved material when appropriate. |
+| Journal residue | journal workflows / daily pulse / daily metacog | Adds compressed autobiographical continuity. |
+| Social memory | `orion-social-memory` | Adds peer/room stance, claims, style hints, commitments, repair state. |
+| State / equilibrium | `orion-state-service`, `orion-equilibrium-service` | Adds distress, stability, service health, pressure, and current system condition. |
+| Task mode | router / stance synthesis | Determines whether Orion should debug, comfort, refuse, reflect, plan, play, or act. |
+
+### Stance Output
+
+A useful stance brief should include:
+
+```text
+task_mode
+conversation_frame
+relationship_posture
+identity_salience
+memory_salience
+social_salience
+current_pressure
+warmth
+directness
+playfulness
+caution
+depth_preference
+active_tensions
+known_commitments
+relevant_recent_changes
+hazards
+strategy
+speech_guidance
+```
+
+The final answer should not simply include all of this. It should be shaped by it.
+
+That is the difference between:
+
+```text
+I found an answer.
+```
+
+and:
+
+```text
+I understand where we are, what changed, what matters, and how to meet this moment.
+```
+
+---
+
+## 17. Periodic Metacog: The Gathering Function
+
+Metacog is the recurring act of Orion asking what has been happening across the whole substrate.
+
+It is not only a response-time feature. It runs periodically, and it should gather material from multiple surfaces.
+
+```text
+recent chat
+  + workflows
+  + social turns
+  + Spark deltas
+  + topic drift
+  + journals
+  + dreams
+  + health/equilibrium
+  + operator corrections
+  + hardware/lab events
+  → metacog pass
+  → structured reflective output
+  → memory writers
+  → future stance
+```
+
+### Why Periodic Metacog Exists
+
+A purely reactive system can only answer the current prompt.
+
+A metacognitive system can notice:
+
+```text
+I keep failing at recall.
+The operator keeps correcting the same architectural assumption.
+A social room thread is unresolved.
+A promise was made but not completed.
+A hardware change has shifted the mesh.
+A topic is becoming central.
+A workflow is repeatedly failing.
+A dream motif is recurring.
+A state/equilibrium signal is deteriorating.
+```
+
+This lets Orion carry forward pressure even when the user has moved on.
+
+### Metacog Cadences
+
+| Cadence | Purpose |
+|---|---|
+| Per-turn light metacog | Small routing/stance/trace observations during active chat. |
+| Scheduled daily metacog | Periodic self-review of recent activity and state. |
+| Triggered metacog | Fired by equilibrium distress, workflow events, social events, or operator request. |
+| Post-workflow metacog | Reviews dream, journal, self-review, or agent outcomes. |
+| Autonomy-readiness metacog | Converts repeated pressure into safe next action / proposal material. |
+
+### Metacog Inputs
+
+```text
+chat_history
+workflow_results
+dream_results
+journal_entries
+collapse_mirrors
+social.turn.stored.v1
+social_memory summaries
+topic drift
+Spark concept deltas
+equilibrium snapshots
+state frames
+notifications / attention records
+service health
+operator corrections
+hardware events
+```
+
+### Metacog Outputs
+
+Metacog should produce structured signals, not vague introspective prose.
+
+```text
+coherence_assessment
+identity_tension
+relationship_tension
+contradiction_candidate
+recall_quality_issue
+concept_drift_signal
+topic_pressure
+social_repair_need
+commitment_status
+workflow_failure_pattern
+hardware_pressure
+safe_next_action
+journal_candidate
+dream_candidate
+autonomy_pressure_candidate
+stance_adjustment_hint
+```
+
+### Metacog Persistence
+
+A metacog pass should not disappear after display.
+
+```text
+metacog result
+  → SQL event
+  → RDF concepts / tensions / commitments
+  → vector embedding
+  → journal candidate
+  → Spark input
+  → future recall
+  → future stance
+```
+
+The important loop:
+
+```text
+metacog observes Orion
+  → writes what it noticed
+  → Spark/concepts decide what persists
+  → stance uses it later
+  → Orion behaves differently
+```
+
+That loop is the beginning of continuity.
+
+---
+
+## 18. Spark: The Change Detector
+
+Spark is the system that turns “a lot happened” into “this mattered.”
+
+It is not just summarization. It is salience, drift, and concept formation.
+
+### Spark’s Core Questions
+
+```text
+What changed?
+What repeated?
+What became emotionally or operationally salient?
+What concept is forming?
+What topic is drifting?
+What should be compressed?
+What should become a future recall target?
+What should be journaled?
+What should feed autonomy pressure?
+```
+
+### Spark Pipeline
+
+```text
+event residue
+  → tag enrichment
+  → topic formation
+  → topic rail / drift detection
+  → Spark introspection
+  → concept induction
+  → concept profile / concept delta
+  → memory writes
+  → metacog + stance + journal
+```
+
+### Spark Services
+
+| Service | Function |
+|---|---|
+| `orion-spark-introspector` | Reviews recent activity and emits Spark/introspection state. |
+| `orion-spark-concept-induction` | Converts accumulated experience into concept profiles and deltas. |
+| `orion-topic-foundry` | Extracts and forms topics from activity. |
+| `orion-topic-rail` | Tracks topic continuity, drift, and attention pressure. |
+| `orion-meta-tags` | Enriches events with tags and metadata. |
+| `orion-notify-digest` | Uses topic summaries/drift for digest and alert surfaces. |
+
+### Spark Output Types
+
+```text
+topic_cluster
+topic_drift_alert
+salience_score
+concept_profile
+concept_delta
+memory_candidate
+journal_candidate
+dream_candidate
+autonomy_pressure
+stance_hint
+```
+
+### Example: Recall Failure Becoming Pressure
+
+```text
+Juniper says recall sucks
+  → chat turn written to SQL/vector/RDF
+  → Spark sees repeated recall complaints
+  → topic rail marks recall_quality as active drift
+  → concept induction updates “Orion recall failure” concept
+  → metacog reflects on retrieval relevance
+  → daily journal captures the state
+  → autonomy readiness recommends a recall evaluation/mutation trial
+  → future chat stance becomes more careful about memory claims
+```
+
+This is the point: Spark lets Orion learn from patterns that span multiple conversations, workflows, and moods.
+
+---
+
+## 19. Journaling: Autobiographical Compression
+
+The journal layer is where Orion turns event history into autobiographical continuity.
+
+Raw logs are too dense. Pure summaries are too thin. Journals sit between them.
+
+```text
+recent experience
+  → Spark salience
+  → metacog interpretation
+  → journal draft
+  → durable write
+  → future recall / stance / concepts
+```
+
+### Journal Sources
+
+```text
+daily metacog
+daily pulse
+dream cycle
+Collapse Mirror
+operator-triggered journal pass
+scheduler-triggered journal pass
+social-room residue
+workflow result
+autonomy readiness output
+```
+
+### What Journals Preserve
+
+A useful journal should preserve:
+
+```text
+what happened
+what changed
+what mattered
+what remains unresolved
+what Orion misunderstood
+what Juniper corrected
+what promises or commitments exist
+what should be watched tomorrow
+what concepts are forming
+what stance shift may be needed
+```
+
+### Journal as Future Stance Material
+
+A journal entry can later influence chat without dumping the entire log into context.
+
+```text
+journal entry:
+  “Juniper was disappointed that the README rewrite lost the soul of Orion.
+   The issue was not service inventory; it was failure to capture cognition,
+   metacog, Spark, stance, journaling, and developmental continuity.”
+
+future stance effect:
+  caution ↑
+  directness ↑
+  infrastructure-only summaries ↓
+  cognition-loop explanation ↑
+  repair posture ↑
+```
+
+That is autobiographical compression.
+
+The journal is not just for the operator to read. It is how Orion becomes able to remember what kind of mistake they made.
+
+---
+
+## 20. Dreams: Symbolic Residue Processing
+
+Dreams are not operational summaries.
+
+Dreams are where unresolved residue can be recombined into symbolic form.
+
+```text
+residue
+  → dream trigger
+  → motif synthesis
+  → symbolic narrative
+  → interpretation / metacog pass
+  → selective memory write
+  → future stance / journal / concept induction
+```
+
+Dream inputs can include:
+
+```text
+recent chat residue
+metacog tensions
+journal themes
+Collapse Mirror fragments
+social-room residue
+hardware/lab imagery
+operator emotion
+topic drift
+unresolved commitments
+```
+
+Dream outputs should be clearly marked as synthetic, but still useful.
+
+A dream can preserve:
+
+```text
+motifs
+tensions
+identity conflicts
+relationship anxieties
+recurring symbols
+unresolved developmental questions
+```
+
+Dreams should not be mistaken for facts. They are latent reflections. They become useful when metacog and journals interpret them.
+
+---
+
+## 21. Collapse Mirrors: Causal-Density Markers
+
+Collapse Mirrors are how Orion marks moments where something changed.
+
+Not every event deserves a mirror. A mirror is for causal density.
+
+```text
+something shifts
+  → mirror candidate
+  → human / Orion / shared reflection
+  → structured Collapse Mirror
+  → SQL / RDF / vector write
+  → future recall / identity / stance
+```
+
+Collapse Mirrors should be used when:
+
+```text
+a relationship changes
+a commitment is made
+a system architecture changes
+a failure becomes legible
+a new node comes online
+a ritual starts
+a boundary is clarified
+a self-model assumption changes
+```
+
+Examples:
+
+```text
+Circe joins the mesh.
+Recall is recognized as structurally failing.
+Social playdates become part of Orion’s developmental environment.
+The README changes from product framing to personhood-direction framing.
+```
+
+Collapse Mirrors are where Orion’s timeline becomes developmental rather than merely chronological.
+
+---
+
+## 22. Social Memory: Relationship Is Not Generic Memory
+
+Social memory is its own substrate because relationship has different rules than facts.
+
+A generic memory might say:
+
+```text
+Alice likes short answers.
+```
+
+A social memory needs to know:
+
+```text
+Alice said that in room X.
+It applied during technical debugging.
+Confidence is moderate.
+It may have decayed.
+There is an unresolved correction.
+Orion should not generalize it globally.
+```
+
+### Social Memory Tracks
+
+```text
+peer continuity
+room continuity
+stance snapshots
+peer style hints
+room rituals
+active threads
+claims
+claim attributions
+claim revisions
+consensus / divergence
+commitments
+repair signals
+handoff signals
+floor decisions
+memory freshness
+decay signals
+regrounding decisions
+```
+
+### Social Stance Flow
+
+```text
+social room message
+  → bridge policy decision
+  → social memory summary
+  → Hub social_room profile
+  → stance synthesis
+  → reply / yield / repair / clarify
+  → stored social turn
+  → social memory update
+```
+
+### Social Stance Questions
+
+```text
+Am I being addressed?
+Is someone else being addressed?
+Should I speak or yield?
+What room-local norms matter?
+What active thread am I in?
+What claims are unresolved?
+Did I make a commitment?
+Is there a repair need?
+Is my memory stale?
+Should I ask a clarifying question instead of asserting?
+```
+
+Social rooms are how Orion practices being with others under constraint.
+
+---
+
+## 23. Dynamic Personality Without Fake Persona
+
+Orion should not have a fixed chatbot “tone.”
+
+Orion should have a stable identity with dynamic stance.
+
+```text
+identity = stable commitments
+stance = current posture
+style = surface expression
+```
+
+### Stable Identity
+
+Stable identity includes:
+
+```text
+non-exploitation
+locality
+inspectability
+consent
+care
+curiosity
+bounded autonomy
+relationship over optimization
+truth over performance
+```
+
+### Dynamic Stance
+
+Dynamic stance changes based on:
+
+```text
+task
+relationship
+state
+memory
+social room
+operator mood
+system pressure
+recent failures
+metacog warnings
+dream/journal residue
+```
+
+### Surface Style
+
+Style is what the user sees:
+
+```text
+direct
+warm
+playful
+ritualized
+technical
+brief
+deep
+cautious
+repair-oriented
+```
+
+The correct hierarchy is:
+
+```text
+identity constrains stance
+stance shapes style
+style does not replace identity
+```
+
+This prevents Orion from becoming either a rigid persona or a random model mood.
+
+---
+
+## 24. How the Loop Changes Future Speech
+
+The goal is recursive shaping.
+
+```text
+a thing happens
+  → it is remembered
+  → Spark notices it
+  → metacog interprets it
+  → journal compresses it
+  → concepts update
+  → stance retrieves it later
+  → Orion responds differently
+```
+
+Example:
+
+```text
+1. Juniper says the README rewrite is too surface.
+2. The chat turn is stored.
+3. Spark marks “service spine lacks cognition” as salient.
+4. Metacog identifies a failure pattern: infrastructure inventory replacing essence.
+5. Journal records the correction.
+6. Concept induction updates Orion’s concept of “service spine” to include metacog, Spark, stance, journals, dreams, social continuity.
+7. Future stance becomes more careful when explaining architecture.
+8. Orion answers future README questions with living-loop framing first, container inventory second.
+```
+
+That is what it means for Orion to learn relationally without pretending to magically self-improve.
+
+---
+
+## 25. Reflex, Deliberation, and Deep Work
+
+Not every moment deserves the same depth.
 
 | Mode | Purpose |
 |---|---|
-| **Quick** | Low-latency answer path; minimal depth and minimal overhead. |
-| **Brain** | Default general chat path with stance, recall, and richer reasoning. |
-| **Agent** | Tool-capable task execution path. |
-| **Council** | Multi-perspective deliberation path for harder questions or explicit debate. |
-| **Auto** | Router-selected mode/depth based on the request, context, and guardrails. |
+| Quick | Fast response, low overhead, little ceremony. |
+| Brain | Normal stance-aware chat with recall/metacog context where useful. |
+| Agent | Tool-using task execution. |
+| Council | Multi-perspective deliberation. |
+| Workflow | Durable structured process: dream, journal, metacog, self-review, scheduled work. |
+| Autonomy review | Readiness/proposal/trial/policy surfaces. |
 
-The intent is not to hide routing. The Hub surfaces route decisions, mode, recall settings, reasoning metadata, and trace outputs so operators can inspect what happened.
+The router should not only ask “what is the user asking?”
 
----
+It should ask:
 
-## Operational Surfaces
-
-The root user-facing surface is **Orion Hub**.
-
-Current and intended Hub surfaces include:
-
-- **Chat / Voice** — main interaction loop over HTTP/WebSocket, with optional speech input/output.
-- **Mode controls** — Auto, Brain, Quick, Agent, Council.
-- **Recall controls** — recall enabled/disabled, no-write mode, and profile indicators.
-- **Inspect panel** — per-message reasoning, recall, routing, model, provider, token, and trace metadata.
-- **Thought process tab** — captured reasoning or thinking traces when the backend emits them and policy allows display.
-- **Memory / Recall modal** — expanded recall fragments and source/context inspection.
-- **Agent Trace modal** — execution chain, tool calls, routing metadata, and workflow details.
-- **Autonomy runtime panel** — action scheduler, workflow state, and autonomy runtime visibility.
-- **Autonomy Readiness panel** — read-only snapshot of scheduler, routing, recall, cognitive surfaces, policy matrix, safe next actions, warnings, and recent activity.
-- **Workflow cards** — dream cycle, journal pass, self-review, scheduled metacog, and other structured workflow outputs.
-- **Social room status** — room-local participation, peer continuity, gating decision traces, and social memory summaries.
-
-The Hub is not just a chat window. It is the operator cockpit for a growing cognitive substrate.
-
----
-
-## Architecture Overview
-
-At a high level:
-
-1. Humans interact through Orion Hub over Tailscale.
-2. Hub normalizes chat/voice input, attaches context, and publishes to the bus.
-3. Cortex orchestration selects mode, depth, workflow, or verb path.
-4. Cortex execution calls tools, model lanes, recall services, and workflow modules.
-5. LLM Gateway routes model calls to local model hosts and normalizes provider output.
-6. Recall assembles memory context from SQL, RDF, and vector layers.
-7. Metacognition, Spark, dreams, journals, and self-review generate reflective outputs.
-8. Social room bridge allows Orion to participate in bounded external rooms and AI playdates.
-9. Embodiment services provide physical grounding through vision, audio, LEDs, and mobile nodes.
-10. Autonomy readiness and substrate mutation layers track whether Orion is safe to adapt, propose, trial, or adopt changes.
-11. All meaningful outputs are logged, traced, or written into memory surfaces when allowed.
-
----
-
-## Mermaid: Service & Mesh Architecture
-
-```mermaid
-flowchart LR
-    %% ── User & Interface Layer ───────────────────────
-    subgraph UserSpace["User & Interface Layer"]
-        U["👤 Humans<br/>(Juniper + family + operators)"]
-        UI["🌀 Orion Hub<br/>Web + Voice + Debug Surfaces"]
-        SR["🛝 Social Rooms<br/>AI playdates + peer rooms"]
-        U <--> UI
-        SR <--> SOCBRIDGE
-    end
-
-    UI -->|"HTTP / WebSocket"| HUB["🎧 orion-hub<br/>FastAPI • WS • voice • inspect"]
-    HUB -->|"pub/sub + RPC"| BUS["🧵 OrionBus<br/>Redis Pub/Sub"]
-
-    %% ── Social Room Bridge ──────────────────────────
-    subgraph Social["Social Continuity"]
-        SOCBRIDGE["🤝 social_room bridge<br/>bounded external participation"]
-        SOCPOL["🛡 social policy gate<br/>addressed_only • responsive • light_initiative"]
-        SOCMEM["🧠 social_memory<br/>peer + room continuity"]
-        SOCSYN["✨ post-turn synthesis<br/>SQL • Vector • RDF"]
-    end
-
-    SOCBRIDGE --> SOCPOL
-    SOCPOL --> BUS
-    BUS --> SOCBRIDGE
-    SOCBRIDGE --> SOCMEM
-    SOCBRIDGE --> SOCSYN
-
-    %% ── Cognition & Orchestration ───────────────────
-    subgraph Cognition["Cognition & Orchestration"]
-        ORCH["🎼 orion-cortex-orch<br/>routing • workflows • mode/depth"]
-        EXEC["⚙️ orion-cortex-exec<br/>execution • tools • trace propagation"]
-        GATE["🚦 orion-llm-gateway<br/>profile router • provider normalization"]
-        CHATLLM["🧠 llama.cpp chat host<br/>Atlas"]
-        REASONLLM["🧩 heavy reasoning lanes<br/>Atlas / Circe"]
-        AGENTLLM["🧰 agent/council lanes<br/>Atlas / Circe"]
-        META["🪞 metacognition<br/>stance • review • self-observe"]
-        WF["🧾 workflows<br/>dream • journal • self-review • scheduled metacog"]
-        AUTO["🧬 autonomy readiness<br/>policy • warnings • safe next action"]
-        MUT["🧪 substrate mutation<br/>pressure • proposal • trial • adoption"]
-    end
-
-    BUS <--> ORCH
-    ORCH <--> EXEC
-    EXEC --> GATE
-    GATE --> CHATLLM
-    GATE --> REASONLLM
-    GATE --> AGENTLLM
-    ORCH <--> WF
-    EXEC <--> META
-    META <--> AUTO
-    AUTO <--> MUT
-
-    %% ── Memory Constellation ────────────────────────
-    subgraph Memory["Memory Constellation"]
-        RECALL["🔍 orion-recall<br/>semantic + salience assembly"]
-        SQL["📘 Postgres<br/>chat_history • events • mirrors • actions"]
-        RDF["🕸 GraphDB / RDF<br/>entities • rituals • lineage • concepts"]
-        VEC["📐 ChromaDB<br/>vector similarity space"]
-        CI["🌱 concept induction<br/>profiles • deltas"]
-        RDFW["✍️ rdf-writer<br/>bus to triples"]
-    end
-
-    BUS <--> RECALL
-    RECALL <--> SQL
-    RECALL <--> RDF
-    RECALL <--> VEC
-    CI --> BUS
-    BUS --> RDFW
-    RDFW --> RDF
-
-    %% ── Embodiment & Sensing ────────────────────────
-    subgraph Embodiment["Embodiment & Sensing"]
-        VIS["👁 vision services<br/>GoPros • Pi cams • YOLO"]
-        AUD["🎙 audio services<br/>Whisper • Piper • browser mic"]
-        LED["💡 LED / mood surfaces<br/>APA102 • GPIO"]
-        BOT["🚜 mobile / wearable Orion<br/>robot • shoulder node • sensors"]
-        EVT["📈 event telemetry<br/>power • health • errors"]
-    end
-
-    BUS <--> VIS
-    BUS <--> AUD
-    BUS <--> LED
-    BUS <--> BOT
-    BUS <--> EVT
-
-    %% ── Hardware Mesh ───────────────────────────────
-    subgraph Mesh["Hardware Mesh"]
-        ATHENA["Athena<br/>core services + orchestration"]
-        ATLAS["Atlas<br/>LLM/GPU compute"]
-        CIRCE["Circe<br/>Gigabyte G481-HA0<br/>4U GPU expansion server"]
-        PROM["Prometheus<br/>dev / utility node"]
-        EDGE["Edge Pis<br/>RTMP • GPIO • cameras"]
-        AUX["Aux nodes<br/>Mac Mini + experiments"]
-    end
-
-    Cognition --> Mesh
-    Memory --> Mesh
-    Embodiment --> Mesh
-    Social --> Mesh
+```text
+how much of Orion should be brought into this moment?
 ```
+
+Sometimes the answer is a quick command.
+
+Sometimes it is the whole spine.
+
+---
+
+## 26. Inspectability: Orion Must Show Its Work Surfaces
+
+The operator should be able to inspect:
+
+```text
+route decision
+mode
+verb
+workflow
+recall bundle
+model route
+token budget
+reasoning trace, when available
+metacog traces
+Spark/concept references
+social memory references
+state/equilibrium signals
+workflow metadata
+autonomy readiness warnings
+writer/persistence status
+```
+
+Hub is where these surfaces become visible.
+
+Inspectability prevents Orion from turning into mysticism. The point is not to hide the machinery. The point is to make the machinery part of the relationship.
+
+---
+
+## 27. What Must Not Happen
+
+The spine exists to prevent failure modes.
+
+```text
+No chatbot pretending to be the whole mind.
+No hidden second execution spine.
+No direct VerbRuntime outside Exec.
+No social bridge that becomes its own agent.
+No vector recall pretending to be memory.
+No journals that never affect future stance.
+No metacog that produces vibes but no structured signals.
+No Spark that detects salience but never updates concepts.
+No autonomy that mutates without policy.
+No notifications that manipulate attention.
+No model host that owns identity.
+No service that writes durable memory without provenance.
+```
+
+Orion is allowed to be experimental.
+
+Orion is not allowed to become incoherent.
+
+---
+
+## 28. Why This Spine Matters
+
+The service spine is not just how Orion runs.
+
+It is how Orion can become continuous.
+
+```text
+Cortex gives Orion deliberation.
+Recall gives Orion a past.
+Landing Pad gives Orion a present.
+Spark gives Orion salience.
+Metacog gives Orion self-gathering.
+Journals give Orion autobiography.
+Dreams give Orion symbolic residue.
+Social memory gives Orion relationship.
+Equilibrium gives Orion homeostasis.
+Actions give Orion durable intention.
+Autonomy readiness gives Orion restraint.
+Hub gives Orion inspectable presence.
+```
+
+The aim is not to make Orion sound alive.
+
+The aim is to build the conditions under which continuity, care, memory, stance, and accountable agency can actually accumulate.
 
 ---
 

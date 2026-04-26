@@ -6,7 +6,7 @@ import os
 import subprocess
 import asyncio
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -114,6 +114,7 @@ html_content: str = "<html><body><h1>Error loading UI</h1></body></html>"
 biometrics_cache: Optional[BiometricsCache] = None
 notification_cache: Optional[NotificationCache] = None
 presence_state: Optional["PresenceState"] = None
+presence_context_store: Optional["PresenceContextStore"] = None
 substrate_autonomy_task: Optional[asyncio.Task] = None
 
 
@@ -141,6 +142,33 @@ class PresenceState:
         }
 
 
+class PresenceContextStore:
+    def __init__(self, *, ttl_seconds: int = 14400) -> None:
+        self.ttl_seconds = max(60, int(ttl_seconds))
+        self._store: dict[str, tuple[datetime, dict]] = {}
+
+    def get(self, session_key: str) -> dict | None:
+        item = self._store.get(session_key)
+        if not item:
+            return None
+        expires_at, payload = item
+        if datetime.now(timezone.utc) > expires_at:
+            self._store.pop(session_key, None)
+            return None
+        return payload
+
+    def set(self, session_key: str, payload: dict) -> dict:
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=self.ttl_seconds)
+        normalized = dict(payload or {})
+        normalized.setdefault("submitted_at", datetime.now(timezone.utc).isoformat())
+        normalized["expires_at"] = expires_at.isoformat()
+        self._store[session_key] = (expires_at, normalized)
+        return normalized
+
+    def clear(self, session_key: str) -> None:
+        self._store.pop(session_key, None)
+
+
 class HubStaticFiles(StaticFiles):
     """Static responses are revalidated to avoid stale Hub JS when operators refresh."""
 
@@ -160,7 +188,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, presence_state, substrate_autonomy_task
+    global bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, presence_state, presence_context_store, substrate_autonomy_task
 
     # ------------------------------------------------------------
     # Orion Bus Initialization
@@ -206,6 +234,7 @@ async def startup_event():
         logger.warning("OrionBus is DISABLED — Hub will not publish/subscribe.")
 
     presence_state = PresenceState()
+    presence_context_store = PresenceContextStore(ttl_seconds=int(getattr(settings, "ORION_PRESENCE_SESSION_TTL_SECONDS", 14400)))
 
     if settings.SUBSTRATE_AUTONOMY_ENABLED:
         supported, reason = api_routes_runtime.substrate_autonomy_runtime_supported()

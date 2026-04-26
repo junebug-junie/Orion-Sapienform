@@ -25,6 +25,8 @@ let selectedPacks = [];
 let selectedVerbs = [];
 let modeVerbOverride = null;
 let orionSessionId = localStorage.getItem('orion_sid') || null;
+let browserClientId = localStorage.getItem('orion_browser_client_id') || null;
+let presenceContext = null;
 let cognitionLibrary = { packs: {}, verbs: [], map: {} };
 let selectedBiometricsNode = "cluster";
 let lastBiometricsPayload = null;
@@ -97,6 +99,23 @@ loadDismissedIds();
   const recallToggle = document.getElementById('recallToggle');
   const recallRequiredToggle = document.getElementById('recallRequiredToggle');
   const noWriteToggle = document.getElementById('noWriteToggle');
+  const presenceOpenButton = document.getElementById('presenceOpenButton');
+  const presenceStatusChip = document.getElementById('presenceStatusChip');
+  const presenceModalRoot = document.getElementById('presenceModalRoot');
+  const presenceModalBackdrop = document.getElementById('presenceModalBackdrop');
+  const presenceModalClose = document.getElementById('presenceModalClose');
+  const presenceRequestorName = document.getElementById('presenceRequestorName');
+  const presenceAudienceMode = document.getElementById('presenceAudienceMode');
+  const presencePresetSolo = document.getElementById('presencePresetSolo');
+  const presencePresetKids = document.getElementById('presencePresetKids');
+  const presencePresetSpouse = document.getElementById('presencePresetSpouse');
+  const presencePresetFamily = document.getElementById('presencePresetFamily');
+  const presencePresetGuest = document.getElementById('presencePresetGuest');
+  const presenceAddCompanionButton = document.getElementById('presenceAddCompanionButton');
+  const presenceCompanionRows = document.getElementById('presenceCompanionRows');
+  const presenceSessionOnlyToggle = document.getElementById('presenceSessionOnlyToggle');
+  const presenceSaveButton = document.getElementById('presenceSaveButton');
+  const presenceClearButton = document.getElementById('presenceClearButton');
   const recallModeSelect = document.getElementById('recallModeSelect');
   const recallProfileSelect = document.getElementById('recallProfileSelect');
   const runtimeDebugPanelToggle = document.getElementById('runtimeDebugPanelToggle');
@@ -173,6 +192,9 @@ loadDismissedIds();
   const autonomyReadinessOverview = document.getElementById('autonomyReadinessOverview');
   const autonomyReadinessWarnings = document.getElementById('autonomyReadinessWarnings');
   const recallCanaryPanel = document.getElementById('recallCanaryPanel');
+  const recallCanaryProfileSelect = document.getElementById('recallCanaryProfileSelect');
+  const recallCanaryProfileEmptyState = document.getElementById('recallCanaryProfileEmptyState');
+  const recallCanarySafetyBadges = document.getElementById('recallCanarySafetyBadges');
   const recallCanaryQueryInput = document.getElementById('recallCanaryQueryInput');
   const recallCanaryRunButton = document.getElementById('recallCanaryRunButton');
   const recallCanaryStatusMeta = document.getElementById('recallCanaryStatusMeta');
@@ -186,6 +208,7 @@ loadDismissedIds();
   const recallCanaryJudgmentBothBad = document.getElementById('recallCanaryJudgmentBothBad');
   const recallCanaryJudgmentInconclusive = document.getElementById('recallCanaryJudgmentInconclusive');
   const cognitiveReviewPanel = document.getElementById('cognitiveReviewPanel');
+  const cognitiveReviewOpenModal = document.getElementById('cognitiveReviewOpenModal');
   const cognitiveReviewStatusMeta = document.getElementById('cognitiveReviewStatusMeta');
   const cognitiveReviewStatusSummary = document.getElementById('cognitiveReviewStatusSummary');
   const cognitiveProposalIdInput = document.getElementById('cognitiveProposalIdInput');
@@ -196,6 +219,32 @@ loadDismissedIds();
   const cognitiveReviewSupersedeButton = document.getElementById('cognitiveReviewSupersedeButton');
   const cognitiveDraftList = document.getElementById('cognitiveDraftList');
   const cognitiveStanceNoteList = document.getElementById('cognitiveStanceNoteList');
+  const cognitiveReviewModalRoot = document.getElementById('cognitiveReviewModalRoot');
+  const cognitiveReviewModalBackdrop = document.getElementById('cognitiveReviewModalBackdrop');
+  const cognitiveReviewModalDialog = document.getElementById('cognitiveReviewModalDialog');
+  const cognitiveReviewModalMeta = document.getElementById('cognitiveReviewModalMeta');
+  const cognitiveReviewModalClose = document.getElementById('cognitiveReviewModalClose');
+  const cognitiveReviewModalRefresh = document.getElementById('cognitiveReviewModalRefresh');
+  const cognitiveReviewModalStatusMeta = document.getElementById('cognitiveReviewModalStatusMeta');
+  const cognitiveReviewModalStatusSummary = document.getElementById('cognitiveReviewModalStatusSummary');
+  const cognitiveReviewModalProposalIdInput = document.getElementById('cognitiveReviewModalProposalIdInput');
+  const cognitiveReviewModalRationaleInput = document.getElementById('cognitiveReviewModalRationaleInput');
+  const cognitiveReviewModalAcceptDraftButton = document.getElementById('cognitiveReviewModalAcceptDraftButton');
+  const cognitiveReviewModalRejectButton = document.getElementById('cognitiveReviewModalRejectButton');
+  const cognitiveReviewModalArchiveButton = document.getElementById('cognitiveReviewModalArchiveButton');
+  const cognitiveReviewModalSupersedeButton = document.getElementById('cognitiveReviewModalSupersedeButton');
+  const cognitiveReviewModalDraftList = document.getElementById('cognitiveReviewModalDraftList');
+  const cognitiveReviewModalStanceNoteList = document.getElementById('cognitiveReviewModalStanceNoteList');
+  const autonomyConstitutionOpenModal = document.getElementById('autonomyConstitutionOpenModal');
+  const autonomyConstitutionModalRoot = document.getElementById('autonomyConstitutionModalRoot');
+  const autonomyConstitutionModalBackdrop = document.getElementById('autonomyConstitutionModalBackdrop');
+  const autonomyConstitutionModalDialog = document.getElementById('autonomyConstitutionModalDialog');
+  const autonomyConstitutionModalMeta = document.getElementById('autonomyConstitutionModalMeta');
+  const autonomyConstitutionModalRefresh = document.getElementById('autonomyConstitutionModalRefresh');
+  const autonomyConstitutionModalClose = document.getElementById('autonomyConstitutionModalClose');
+  const autonomyConstitutionModalSummary = document.getElementById('autonomyConstitutionModalSummary');
+  const autonomyConstitutionModalInvariants = document.getElementById('autonomyConstitutionModalInvariants');
+  const autonomyConstitutionModalSurfaces = document.getElementById('autonomyConstitutionModalSurfaces');
   const substrateReviewDebugOpenModal = document.getElementById('substrateReviewDebugOpenModal');
   const substrateReviewModalRoot = document.getElementById('substrateReviewModalRoot');
   const substrateReviewModalBackdrop = document.getElementById('substrateReviewModalBackdrop');
@@ -216,6 +265,9 @@ loadDismissedIds();
   const attentionCount = document.getElementById('attentionCount');
   const messageList = document.getElementById('messageList');
   const messageFilter = document.getElementById('messageFilter');
+  const worldPulseStatus = document.getElementById('worldPulseStatus');
+  const worldPulseSummary = document.getElementById('worldPulseSummary');
+  const worldPulseRunButton = document.getElementById('worldPulseRunButton');
   const toastContainer = document.getElementById('toastContainer');
   const agentTraceApi = window.OrionAgentTrace || {};
   const socialInspectionApi = window.OrionSocialInspection || {};
@@ -298,6 +350,8 @@ loadDismissedIds();
   let lastAutonomyReadinessSnapshot = null;
   let lastRecallCanaryRunId = null;
   let selectedRecallCanaryJudgment = null;
+  let lastRecallCanarySelectedProfile = null;
+  const RECALL_CANARY_PROFILE_STORAGE_KEY = 'orion_recall_canary_profile_v1';
 
   // Controls
   const speedControl = document.getElementById('speedControl');
@@ -1949,6 +2003,8 @@ loadDismissedIds();
       || isModalVisible(autonomyDebugModalRoot)
       || isModalVisible(chatStanceDebugModalRoot)
       || isModalVisible(substrateReviewModalRoot)
+      || isModalVisible(cognitiveReviewModalRoot)
+      || isModalVisible(autonomyConstitutionModalRoot)
       || isModalVisible(agentTraceModal);
     document.body.classList.toggle('overflow-hidden', shouldLock);
   }
@@ -2711,17 +2767,63 @@ loadDismissedIds();
     });
   }
 
+  function hydrateRecallCanaryProfileSelect(data = {}) {
+    if (!recallCanaryProfileSelect) return;
+    const profiles = Array.isArray(data.available_profiles) ? data.available_profiles : [];
+    const defaultProfileId = data.default_canary_profile_id ? String(data.default_canary_profile_id) : '';
+    const storedProfileId = localStorage.getItem(RECALL_CANARY_PROFILE_STORAGE_KEY) || '';
+    recallCanaryProfileSelect.innerHTML = '';
+    profiles.forEach((profile) => {
+      const option = document.createElement('option');
+      const profileId = String(profile.profile_id || '');
+      const label = String(profile.label || profileId || 'Unnamed profile');
+      const status = String(profile.status || 'shadow_canary_review_only');
+      option.value = profileId;
+      option.textContent = `${label} — ${status}`;
+      recallCanaryProfileSelect.appendChild(option);
+    });
+    let selectedValue = '';
+    if (storedProfileId && profiles.some((profile) => String(profile.profile_id) === storedProfileId)) {
+      selectedValue = storedProfileId;
+    } else if (defaultProfileId && profiles.some((profile) => String(profile.profile_id) === defaultProfileId)) {
+      selectedValue = defaultProfileId;
+    } else if (profiles.length > 0) {
+      selectedValue = String(profiles[0].profile_id || '');
+    }
+    if (selectedValue) {
+      recallCanaryProfileSelect.value = selectedValue;
+      localStorage.setItem(RECALL_CANARY_PROFILE_STORAGE_KEY, selectedValue);
+      lastRecallCanarySelectedProfile = profiles.find((profile) => String(profile.profile_id) === selectedValue) || null;
+    } else {
+      lastRecallCanarySelectedProfile = null;
+    }
+    if (recallCanaryProfileEmptyState) {
+      recallCanaryProfileEmptyState.classList.toggle('hidden', profiles.length > 0);
+    }
+    if (recallCanaryRunButton) {
+      const disabled = !(profiles.length > 0 && !!selectedValue);
+      recallCanaryRunButton.disabled = disabled;
+      recallCanaryRunButton.classList.toggle('opacity-50', disabled);
+      recallCanaryRunButton.classList.toggle('cursor-not-allowed', disabled);
+    }
+    if (recallCanarySafetyBadges) {
+      recallCanarySafetyBadges.textContent = 'Production recall remains V1 · Selected profile is canary/shadow only · No production promotion';
+    }
+  }
+
   function renderRecallCanaryStatus(payload) {
     if (!recallCanaryPanel || !recallCanarySummary || !recallCanaryStatusMeta) return;
     const data = payload && payload.data ? payload.data : {};
     const judgmentCounts = data.judgment_counts || {};
     const recommended = ((lastAutonomyReadinessSnapshot && lastAutonomyReadinessSnapshot.recall && lastAutonomyReadinessSnapshot.recall.manual_canary && lastAutonomyReadinessSnapshot.recall.manual_canary.recommended_canary_action) || '--');
-    recallCanaryStatusMeta.textContent = `runs=${data.run_count ?? 0} · review_artifacts=${data.review_artifact_count ?? 0} · recommended=${recommended}`;
+    recallCanaryStatusMeta.textContent = `runs=${data.run_count ?? 0} · review_artifacts=${data.review_artifact_count ?? 0} · recommended=${recommended} · production_recall_mode=${data.production_recall_mode || 'v1'} · recall_live_apply_enabled=${String(data.recall_live_apply_enabled === true)}`;
+    hydrateRecallCanaryProfileSelect(data);
     recallCanarySummary.innerHTML = '';
     [
       `judgments: v2_better=${judgmentCounts.v2_better ?? 0}, v1_better=${judgmentCounts.v1_better ?? 0}, tie=${judgmentCounts.tie ?? 0}, both_bad=${judgmentCounts.both_bad ?? 0}, inconclusive=${judgmentCounts.inconclusive ?? 0}`,
       `failure modes: ${JSON.stringify(data.failure_mode_counts || {})}`,
       `last review artifact: ${data.last_review_artifact_at || '--'}`,
+      `selected profile: ${lastRecallCanarySelectedProfile ? `${lastRecallCanarySelectedProfile.label || lastRecallCanarySelectedProfile.profile_id} (${lastRecallCanarySelectedProfile.status || 'shadow_canary_review_only'})` : '--'}`,
     ].forEach((line) => {
       const row = document.createElement('div');
       row.className = 'autonomy-readiness-row';
@@ -2736,62 +2838,224 @@ loadDismissedIds();
     return payload;
   }
 
-  async function refreshCognitiveReviewPanel() {
-    if (!cognitiveReviewPanel || !cognitiveReviewStatusMeta || !cognitiveReviewStatusSummary) return;
+  async function refreshCognitiveReviewPanelInto({
+    statusMetaEl,
+    statusSummaryEl,
+    draftListEl,
+    stanceNoteListEl,
+  }) {
+    if (!statusMetaEl || !statusSummaryEl) return;
     const status = await api('/api/substrate/cognitive-proposals/status');
+    const proposals = await api('/api/substrate/cognitive-proposals?limit=8');
     const statusData = (status && status.data) || {};
     const posture = statusData.review_posture || {};
-    cognitiveReviewStatusMeta.textContent = `live_apply_enabled=${String(statusData.live_apply_enabled === true)} · recommended=${String(posture.recommended_action || 'monitor')}`;
-    cognitiveReviewStatusSummary.innerHTML = '';
+    const proposalRows = ((proposals && proposals.data && proposals.data.recent_cognitive_proposals) || []).slice(0, 8);
+    statusMetaEl.textContent = `live_apply_enabled=${String(statusData.live_apply_enabled === true)} · recommended=${String(posture.recommended_action || 'monitor')}`;
+    statusSummaryEl.innerHTML = '';
     const lines = [
       `pending_review=${Number(posture.pending_review_count || 0)}`,
       `active_drafts=${Number(posture.active_draft_count || 0)}`,
       `active_stance_notes=${Number(posture.active_stance_note_count || 0)}`,
+      proposalRows.length ? `proposals=${proposalRows.map((row) => row.proposal_id).join(', ')}` : 'No cognitive proposals yet',
     ];
     lines.forEach((line) => {
       const row = document.createElement('div');
       row.className = 'autonomy-readiness-row';
       row.textContent = line;
-      cognitiveReviewStatusSummary.appendChild(row);
+      statusSummaryEl.appendChild(row);
     });
-    if (cognitiveDraftList) {
+    if (draftListEl) {
       const drafts = await api('/api/substrate/cognitive-drafts?limit=8');
       const rows = ((drafts && drafts.data && drafts.data.drafts) || []).slice(0, 8);
-      cognitiveDraftList.textContent = rows.length
+      draftListEl.textContent = rows.length
         ? rows.map((row) => `${row.draft_id} · ${row.state} · ${row.proposal_class}`).join('\n')
-        : 'No drafts loaded.';
+        : 'No accepted drafts yet.';
     }
-    if (cognitiveStanceNoteList) {
+    if (stanceNoteListEl) {
       const notes = await api('/api/substrate/cognitive-stance-notes?limit=8');
       const rows = ((notes && notes.data && notes.data.stance_notes) || []).slice(0, 8);
-      cognitiveStanceNoteList.textContent = rows.length
+      stanceNoteListEl.textContent = rows.length
         ? rows.map((row) => `${row.stance_note_id} · ${row.status} · ${row.visibility}`).join('\n')
-        : 'No stance notes loaded.';
+        : 'No active stance notes yet.';
     }
   }
 
-  async function submitCognitiveProposalReview(decision) {
-    const proposalId = (cognitiveProposalIdInput && cognitiveProposalIdInput.value ? cognitiveProposalIdInput.value.trim() : '');
+  async function refreshCognitiveReviewPanel() {
+    if (!cognitiveReviewPanel) return;
+    await refreshCognitiveReviewPanelInto({
+      statusMetaEl: cognitiveReviewStatusMeta,
+      statusSummaryEl: cognitiveReviewStatusSummary,
+      draftListEl: cognitiveDraftList,
+      stanceNoteListEl: cognitiveStanceNoteList,
+    });
+  }
+
+  async function refreshCognitiveReviewModal() {
+    await refreshCognitiveReviewPanelInto({
+      statusMetaEl: cognitiveReviewModalStatusMeta,
+      statusSummaryEl: cognitiveReviewModalStatusSummary,
+      draftListEl: cognitiveReviewModalDraftList,
+      stanceNoteListEl: cognitiveReviewModalStanceNoteList,
+    });
+    console.log('event=cognitive_review_modal_data_requested source=ui');
+  }
+
+  async function submitCognitiveProposalReview(decision, source = 'panel') {
+    const proposalId = source === 'modal'
+      ? (cognitiveReviewModalProposalIdInput && cognitiveReviewModalProposalIdInput.value ? cognitiveReviewModalProposalIdInput.value.trim() : '')
+      : (cognitiveProposalIdInput && cognitiveProposalIdInput.value ? cognitiveProposalIdInput.value.trim() : '');
     if (!proposalId) throw new Error('proposal_id is required');
     await api(`/api/substrate/cognitive-proposals/${encodeURIComponent(proposalId)}/review`, {
       method: 'POST',
       body: JSON.stringify({
         decision,
-        rationale: cognitiveReviewRationaleInput ? cognitiveReviewRationaleInput.value || '' : '',
+        rationale: source === 'modal'
+          ? (cognitiveReviewModalRationaleInput ? cognitiveReviewModalRationaleInput.value || '' : '')
+          : (cognitiveReviewRationaleInput ? cognitiveReviewRationaleInput.value || '' : ''),
       }),
     });
     await refreshCognitiveReviewPanel();
+    await refreshCognitiveReviewModal();
     await refreshAutonomyReadinessPanel();
+  }
+
+  function ensureCognitiveReviewModalRootOnBody() {
+    if (!cognitiveReviewModalRoot || !document.body) return;
+    if (cognitiveReviewModalRoot.parentElement !== document.body) {
+      document.body.appendChild(cognitiveReviewModalRoot);
+    }
+  }
+
+  function openCognitiveReviewModal() {
+    if (!cognitiveReviewModalRoot) return;
+    closeMemoryDebugModal();
+    closeAutonomyDebugModal();
+    closeChatStanceDebugModal();
+    closeSubstrateReviewModal();
+    ensureCognitiveReviewModalRootOnBody();
+    cognitiveReviewModalRoot.style.position = 'fixed';
+    cognitiveReviewModalRoot.style.inset = '0';
+    cognitiveReviewModalRoot.style.zIndex = '2147483646';
+    if (cognitiveReviewModalBackdrop) {
+      cognitiveReviewModalBackdrop.style.position = 'fixed';
+      cognitiveReviewModalBackdrop.style.inset = '0';
+      cognitiveReviewModalBackdrop.style.zIndex = '2147483646';
+    }
+    if (cognitiveReviewModalDialog) {
+      cognitiveReviewModalDialog.style.position = 'fixed';
+      cognitiveReviewModalDialog.style.zIndex = '2147483647';
+    }
+    if (cognitiveReviewModalMeta) {
+      cognitiveReviewModalMeta.textContent = 'Review/draft/context only. No live cognitive apply. No identity/policy/prompt rewrite.';
+    }
+    refreshCognitiveReviewModal().catch((err) => {
+      if (cognitiveReviewModalStatusMeta) cognitiveReviewModalStatusMeta.textContent = `Cognitive review unavailable: ${String(err.message || err)}`;
+    });
+    cognitiveReviewModalRoot.classList.remove('hidden');
+    cognitiveReviewModalRoot.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
+  }
+
+  function closeCognitiveReviewModal() {
+    if (!cognitiveReviewModalRoot) return;
+    cognitiveReviewModalRoot.classList.add('hidden');
+    cognitiveReviewModalRoot.setAttribute('aria-hidden', 'true');
+    syncDebugModalScrollLock();
+  }
+
+  function ensureAutonomyConstitutionModalRootOnBody() {
+    if (!autonomyConstitutionModalRoot || !document.body) return;
+    if (autonomyConstitutionModalRoot.parentElement !== document.body) {
+      document.body.appendChild(autonomyConstitutionModalRoot);
+    }
+  }
+
+  function renderAutonomyConstitution(payload) {
+    const data = payload || {};
+    const summary = data.summary || {};
+    const surfaces = Array.isArray(data.surfaces) ? data.surfaces : [];
+    const invariants = Array.isArray(data.safety_invariants) ? data.safety_invariants : [];
+    const warnings = Array.isArray(data.warnings) ? data.warnings : [];
+    if (autonomyConstitutionModalMeta) {
+      autonomyConstitutionModalMeta.textContent = `schema=${data.schema_version || '--'} loaded_at=${data.loaded_at || '--'} source=${data.source || '--'}`;
+    }
+    if (autonomyConstitutionModalSummary) {
+      autonomyConstitutionModalSummary.textContent = [
+        `live_apply_surfaces=${JSON.stringify(summary.live_apply_surfaces || [])}`,
+        `blocked_surfaces=${JSON.stringify(summary.blocked_surfaces || [])}`,
+        `protected_surfaces=${JSON.stringify(summary.protected_surfaces || [])}`,
+        `human_required_surfaces=${JSON.stringify(summary.human_required_surfaces || [])}`,
+      ].join(' · ');
+    }
+    if (autonomyConstitutionModalInvariants) {
+      autonomyConstitutionModalInvariants.textContent = invariants.length
+        ? invariants.map((row) => `- ${String(row)}`).join('\n')
+        : 'No policy surfaces loaded.';
+    }
+    if (autonomyConstitutionModalSurfaces) {
+      autonomyConstitutionModalSurfaces.textContent = surfaces.length
+        ? surfaces.map((row) => `${row.surface} | category=${row.category} | status=${row.status} | propose=${row.propose} | trial=${row.trial} | apply=${row.apply} | rollback=${row.rollback} | human_required=${String(row.human_required)} | forbidden=${JSON.stringify(row.forbidden || [])}`).join('\n')
+        : 'No policy surfaces loaded.';
+      if (warnings.length) {
+        autonomyConstitutionModalSurfaces.textContent += `\n\nwarnings=${warnings.join(' | ')}`;
+      }
+    }
+  }
+
+  async function refreshAutonomyConstitutionModal() {
+    const payload = await substrateReviewFetch('/api/substrate/autonomy-constitution');
+    renderAutonomyConstitution(payload || {});
+    return payload;
+  }
+
+  function openAutonomyConstitutionModal() {
+    if (!autonomyConstitutionModalRoot) return;
+    closeMemoryDebugModal();
+    closeAutonomyDebugModal();
+    closeChatStanceDebugModal();
+    closeSubstrateReviewModal();
+    closeCognitiveReviewModal();
+    ensureAutonomyConstitutionModalRootOnBody();
+    autonomyConstitutionModalRoot.style.position = 'fixed';
+    autonomyConstitutionModalRoot.style.inset = '0';
+    autonomyConstitutionModalRoot.style.zIndex = '2147483646';
+    if (autonomyConstitutionModalBackdrop) {
+      autonomyConstitutionModalBackdrop.style.position = 'fixed';
+      autonomyConstitutionModalBackdrop.style.inset = '0';
+      autonomyConstitutionModalBackdrop.style.zIndex = '2147483646';
+    }
+    if (autonomyConstitutionModalDialog) {
+      autonomyConstitutionModalDialog.style.position = 'fixed';
+      autonomyConstitutionModalDialog.style.zIndex = '2147483647';
+    }
+    refreshAutonomyConstitutionModal().catch((err) => {
+      if (autonomyConstitutionModalMeta) autonomyConstitutionModalMeta.textContent = `Autonomy constitution unavailable: ${String(err.message || err)}`;
+      if (autonomyConstitutionModalSummary) autonomyConstitutionModalSummary.textContent = 'Autonomy constitution unavailable';
+    });
+    autonomyConstitutionModalRoot.classList.remove('hidden');
+    autonomyConstitutionModalRoot.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
+  }
+
+  function closeAutonomyConstitutionModal() {
+    if (!autonomyConstitutionModalRoot) return;
+    autonomyConstitutionModalRoot.classList.add('hidden');
+    autonomyConstitutionModalRoot.setAttribute('aria-hidden', 'true');
+    syncDebugModalScrollLock();
   }
 
   async function runRecallCanaryQuery() {
     const queryText = (recallCanaryQueryInput && recallCanaryQueryInput.value ? recallCanaryQueryInput.value.trim() : '');
     if (!queryText) throw new Error('Canary query text is required');
+    const profileId = (recallCanaryProfileSelect && recallCanaryProfileSelect.value ? recallCanaryProfileSelect.value.trim() : '');
+    if (!profileId) throw new Error('Recall profile is required');
     const payload = await substrateReviewFetch('/api/substrate/recall-canary/query', {
       method: 'POST',
-      body: JSON.stringify({ query_text: queryText }),
+      body: JSON.stringify({ query_text: queryText, profile_id: profileId }),
     });
     lastRecallCanaryRunId = payload && payload.data ? payload.data.canary_run_id : null;
+    lastRecallCanarySelectedProfile = payload && payload.data ? (payload.data.selected_profile || null) : null;
+    localStorage.setItem(RECALL_CANARY_PROFILE_STORAGE_KEY, profileId);
     await refreshRecallCanaryStatus();
     return payload;
   }
@@ -4454,6 +4718,17 @@ loadDismissedIds();
       render: renderThoughtProcessSection,
     });
     addSection('reasoning', 'Reasoning', meta.reasoning || meta.reasoning_trace || meta.reasoningTrace);
+    addSection('situation', 'Situation', meta.situation_brief || meta.situationBrief);
+    addSection('presence', 'Presence', meta.presence_context || meta.presenceContext);
+    addSection('conversation_phase', 'Conversation phase', meta.temporal_phase || (meta.situation_brief || {}).conversation_phase);
+    addSection('time_place', 'Time/place', { time: (meta.situation_brief || {}).time, place: (meta.situation_brief || {}).place });
+    addSection('weather', 'Weather/environment', (meta.situation_brief || {}).environment);
+    addSection('agenda', 'Agenda', (meta.situation_brief || {}).agenda);
+    addSection('lab', 'Lab context', (meta.situation_brief || {}).lab);
+    addSection('surface', 'Surface', (meta.situation_brief || {}).surface);
+    addSection('affordances', 'Affordances', meta.situation_affordances || (meta.situation_brief || {}).affordances);
+    addSection('provider_diagnostics', 'Provider diagnostics', (meta.situation_brief || {}).diagnostics);
+    addSection('situation_fragment', 'Prompt fragment injected', meta.situation_prompt_fragment || meta.situationPromptFragment);
     addSection('recall', 'Recall', meta.recallDebug || meta.recall_debug || meta.memoryDigest || meta.memory_digest);
     addSection('agent_trace', 'Agent Trace', meta.agentTrace || meta.agent_trace);
     addSection('routing', 'Routing', meta.routingDebug || meta.routing_debug);
@@ -5537,6 +5812,46 @@ loadDismissedIds();
     }
   }
 
+  async function loadWorldPulseLatest() {
+    if (!worldPulseStatus || !worldPulseSummary) return;
+    try {
+      const resp = await fetch(`${API_BASE_URL}/api/world-pulse/latest`);
+      if (!resp.ok) {
+        worldPulseStatus.textContent = 'No world pulse run available.';
+        worldPulseSummary.textContent = '';
+        return;
+      }
+      const data = await resp.json();
+      const digest = data && data.digest ? data.digest : {};
+      worldPulseStatus.textContent = `Run ${data?.run?.run_id || 'unknown'} • ${data?.run?.status || 'unknown'}`;
+      worldPulseSummary.textContent = `${digest?.title || 'Daily World Pulse'}\n${digest?.executive_summary || ''}`;
+    } catch (err) {
+      worldPulseStatus.textContent = 'Failed to load world pulse.';
+      worldPulseSummary.textContent = '';
+      console.warn('Failed to load world pulse latest', err);
+    }
+  }
+
+  async function triggerWorldPulseRun() {
+    if (!worldPulseStatus) return;
+    worldPulseStatus.textContent = 'Starting world pulse run...';
+    try {
+      const resp = await fetch(`${API_BASE_URL}/api/world-pulse/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dry_run: true, requested_by: 'hub' }),
+      });
+      if (!resp.ok) {
+        worldPulseStatus.textContent = 'World pulse run failed.';
+        return;
+      }
+      await loadWorldPulseLatest();
+    } catch (err) {
+      worldPulseStatus.textContent = 'World pulse run failed.';
+      console.warn('Failed to trigger world pulse run', err);
+    }
+  }
+
   function formatMetric(value) {
     if (value === null || value === undefined || Number.isNaN(value)) return "--";
     return `${(Number(value) * 100).toFixed(0)}%`;
@@ -6175,6 +6490,25 @@ loadDismissedIds();
       }
     });
   }
+  if (recallCanaryProfileSelect) {
+    recallCanaryProfileSelect.addEventListener('change', () => {
+      const selectedValue = recallCanaryProfileSelect.value ? String(recallCanaryProfileSelect.value) : '';
+      if (!selectedValue) {
+        lastRecallCanarySelectedProfile = null;
+        localStorage.removeItem(RECALL_CANARY_PROFILE_STORAGE_KEY);
+        if (recallCanaryRunButton) {
+          recallCanaryRunButton.disabled = true;
+          recallCanaryRunButton.classList.add('opacity-50', 'cursor-not-allowed');
+        }
+        return;
+      }
+      localStorage.setItem(RECALL_CANARY_PROFILE_STORAGE_KEY, selectedValue);
+      if (recallCanaryRunButton) {
+        recallCanaryRunButton.disabled = false;
+        recallCanaryRunButton.classList.remove('opacity-50', 'cursor-not-allowed');
+      }
+    });
+  }
   if (recallCanaryRecordJudgmentButton) {
     recallCanaryRecordJudgmentButton.addEventListener('click', async () => {
       try {
@@ -6201,7 +6535,7 @@ loadDismissedIds();
   if (cognitiveReviewAcceptDraftButton) {
     cognitiveReviewAcceptDraftButton.addEventListener('click', async () => {
       try {
-        await submitCognitiveProposalReview('accept_as_draft');
+        await submitCognitiveProposalReview('accept_as_draft', 'panel');
       } catch (err) {
         if (cognitiveReviewStatusMeta) cognitiveReviewStatusMeta.textContent = `Accept draft failed: ${String(err.message || err)}`;
       }
@@ -6210,7 +6544,7 @@ loadDismissedIds();
   if (cognitiveReviewRejectButton) {
     cognitiveReviewRejectButton.addEventListener('click', async () => {
       try {
-        await submitCognitiveProposalReview('reject');
+        await submitCognitiveProposalReview('reject', 'panel');
       } catch (err) {
         if (cognitiveReviewStatusMeta) cognitiveReviewStatusMeta.textContent = `Reject failed: ${String(err.message || err)}`;
       }
@@ -6219,7 +6553,7 @@ loadDismissedIds();
   if (cognitiveReviewArchiveButton) {
     cognitiveReviewArchiveButton.addEventListener('click', async () => {
       try {
-        await submitCognitiveProposalReview('archive');
+        await submitCognitiveProposalReview('archive', 'panel');
       } catch (err) {
         if (cognitiveReviewStatusMeta) cognitiveReviewStatusMeta.textContent = `Archive failed: ${String(err.message || err)}`;
       }
@@ -6228,11 +6562,109 @@ loadDismissedIds();
   if (cognitiveReviewSupersedeButton) {
     cognitiveReviewSupersedeButton.addEventListener('click', async () => {
       try {
-        await submitCognitiveProposalReview('supersede');
+        await submitCognitiveProposalReview('supersede', 'panel');
       } catch (err) {
         if (cognitiveReviewStatusMeta) cognitiveReviewStatusMeta.textContent = `Supersede failed: ${String(err.message || err)}`;
       }
     });
+  }
+  ensureCognitiveReviewModalRootOnBody();
+  if (cognitiveReviewOpenModal) {
+    cognitiveReviewOpenModal.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openCognitiveReviewModal();
+    });
+  }
+  if (cognitiveReviewModalClose) {
+    cognitiveReviewModalClose.addEventListener('click', closeCognitiveReviewModal);
+  }
+  if (cognitiveReviewModalRefresh) {
+    cognitiveReviewModalRefresh.addEventListener('click', async () => {
+      try {
+        await refreshCognitiveReviewModal();
+      } catch (err) {
+        if (cognitiveReviewModalStatusMeta) cognitiveReviewModalStatusMeta.textContent = `Refresh failed: ${String(err.message || err)}`;
+      }
+    });
+  }
+  if (cognitiveReviewModalBackdrop) {
+    cognitiveReviewModalBackdrop.addEventListener('click', closeCognitiveReviewModal);
+  }
+  if (cognitiveReviewModalRoot) {
+    cognitiveReviewModalRoot.addEventListener('click', (event) => {
+      if (event.target === cognitiveReviewModalRoot) closeCognitiveReviewModal();
+    });
+  }
+  if (cognitiveReviewModalDialog) {
+    cognitiveReviewModalDialog.addEventListener('click', (event) => event.stopPropagation());
+  }
+  if (cognitiveReviewModalAcceptDraftButton) {
+    cognitiveReviewModalAcceptDraftButton.addEventListener('click', async () => {
+      try {
+        await submitCognitiveProposalReview('accept_as_draft', 'modal');
+      } catch (err) {
+        if (cognitiveReviewModalStatusMeta) cognitiveReviewModalStatusMeta.textContent = `Accept draft failed: ${String(err.message || err)}`;
+      }
+    });
+  }
+  if (cognitiveReviewModalRejectButton) {
+    cognitiveReviewModalRejectButton.addEventListener('click', async () => {
+      try {
+        await submitCognitiveProposalReview('reject', 'modal');
+      } catch (err) {
+        if (cognitiveReviewModalStatusMeta) cognitiveReviewModalStatusMeta.textContent = `Reject failed: ${String(err.message || err)}`;
+      }
+    });
+  }
+  if (cognitiveReviewModalArchiveButton) {
+    cognitiveReviewModalArchiveButton.addEventListener('click', async () => {
+      try {
+        await submitCognitiveProposalReview('archive', 'modal');
+      } catch (err) {
+        if (cognitiveReviewModalStatusMeta) cognitiveReviewModalStatusMeta.textContent = `Archive failed: ${String(err.message || err)}`;
+      }
+    });
+  }
+  if (cognitiveReviewModalSupersedeButton) {
+    cognitiveReviewModalSupersedeButton.addEventListener('click', async () => {
+      try {
+        await submitCognitiveProposalReview('supersede', 'modal');
+      } catch (err) {
+        if (cognitiveReviewModalStatusMeta) cognitiveReviewModalStatusMeta.textContent = `Supersede failed: ${String(err.message || err)}`;
+      }
+    });
+  }
+  ensureAutonomyConstitutionModalRootOnBody();
+  if (autonomyConstitutionOpenModal) {
+    autonomyConstitutionOpenModal.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openAutonomyConstitutionModal();
+    });
+  }
+  if (autonomyConstitutionModalClose) {
+    autonomyConstitutionModalClose.addEventListener('click', closeAutonomyConstitutionModal);
+  }
+  if (autonomyConstitutionModalRefresh) {
+    autonomyConstitutionModalRefresh.addEventListener('click', async () => {
+      try {
+        await refreshAutonomyConstitutionModal();
+      } catch (err) {
+        if (autonomyConstitutionModalMeta) autonomyConstitutionModalMeta.textContent = `Refresh failed: ${String(err.message || err)}`;
+      }
+    });
+  }
+  if (autonomyConstitutionModalBackdrop) {
+    autonomyConstitutionModalBackdrop.addEventListener('click', closeAutonomyConstitutionModal);
+  }
+  if (autonomyConstitutionModalRoot) {
+    autonomyConstitutionModalRoot.addEventListener('click', (event) => {
+      if (event.target === autonomyConstitutionModalRoot) closeAutonomyConstitutionModal();
+    });
+  }
+  if (autonomyConstitutionModalDialog) {
+    autonomyConstitutionModalDialog.addEventListener('click', (event) => event.stopPropagation());
   }
   ensureSubstrateReviewModalRootOnBody();
   if (substrateReviewDebugOpenModal) {
@@ -6415,6 +6847,14 @@ loadDismissedIds();
       closeSubstrateReviewModal();
       return;
     }
+    if (event.key === 'Escape' && cognitiveReviewModalRoot && !cognitiveReviewModalRoot.classList.contains('hidden')) {
+      closeCognitiveReviewModal();
+      return;
+    }
+    if (event.key === 'Escape' && autonomyConstitutionModalRoot && !autonomyConstitutionModalRoot.classList.contains('hidden')) {
+      closeAutonomyConstitutionModal();
+      return;
+    }
     if (event.key === 'Escape' && scheduleModal && !scheduleModal.classList.contains('hidden')) {
       closeScheduleModal();
       return;
@@ -6492,6 +6932,11 @@ loadDismissedIds();
               autonomySelectedSubject: d.autonomy_selected_subject,
               autonomyRepositoryStatus: d.autonomy_repository_status,
               chatStanceDebug: d.chat_stance_debug,
+              situationBrief: d.situation_brief,
+              situationPromptFragment: d.situation_prompt_fragment,
+              presenceContext: d.presence_context,
+              temporalPhase: d.temporal_phase,
+              situationAffordances: d.situation_affordances,
             });
             updateMemoryPanelFromResponse(d);
             syncSocialInspectionFromRouteDebug(d.routing_debug);
@@ -6523,6 +6968,183 @@ loadDismissedIds();
     };
   }
 
+  function ensureBrowserClientId() {
+    if (browserClientId) return browserClientId;
+    browserClientId = `browser_${Math.random().toString(36).slice(2, 10)}`;
+    localStorage.setItem('orion_browser_client_id', browserClientId);
+    return browserClientId;
+  }
+
+  function audienceChipLabel(mode) {
+    switch (mode) {
+      case 'kid_present': return 'Kid present';
+      case 'family': return 'Family';
+      case 'spouse_present': return 'Spouse present';
+      case 'guest_present': return 'Guest present';
+      case 'mixed_group': return 'Mixed group';
+      default: return 'Solo';
+    }
+  }
+
+  function syncPresenceChip() {
+    if (!presenceStatusChip) return;
+    const mode = presenceContext && presenceContext.audience_mode ? presenceContext.audience_mode : 'solo';
+    presenceStatusChip.textContent = audienceChipLabel(mode);
+  }
+
+  function buildPresencePreset(mode) {
+    const base = {
+      kind: 'presence.context.v1',
+      requestor: {
+        display_name: (presenceRequestorName && presenceRequestorName.value ? presenceRequestorName.value : 'Juniper'),
+        relationship_to_orion: 'primary_operator',
+        source: 'hub_manual',
+        confidence: 'medium',
+      },
+      companions: [],
+      audience_mode: mode,
+      source: 'hub_manual',
+      persist_to_memory: false,
+      privacy_mode: (presenceSessionOnlyToggle && presenceSessionOnlyToggle.checked) ? 'session_only' : 'persist_allowed',
+    };
+    if (mode === 'kid_present') base.companions = [{ display_name: 'Kid', relationship: 'child', role: 'listener', age_band: 'child' }];
+    if (mode === 'spouse_present') base.companions = [{ display_name: 'Spouse', relationship: 'spouse', role: 'participant', age_band: 'adult' }];
+    if (mode === 'family') base.companions = [
+      { display_name: 'Spouse', relationship: 'spouse', role: 'participant', age_band: 'adult' },
+      { display_name: 'Kid', relationship: 'child', role: 'listener', age_band: 'child' },
+    ];
+    return base;
+  }
+
+  function renderPresenceCompanions(companions = []) {
+    if (!presenceCompanionRows) return;
+    presenceCompanionRows.innerHTML = '';
+    companions.forEach((item, idx) => {
+      const row = document.createElement('div');
+      row.className = 'grid grid-cols-1 gap-1 rounded border border-gray-700 bg-gray-900/40 p-2 md:grid-cols-6';
+      row.innerHTML = `
+        <input data-presence-field="display_name" data-presence-index="${idx}" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[11px]" placeholder="Name" value="${item.display_name || ''}" />
+        <input data-presence-field="relationship" data-presence-index="${idx}" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[11px]" placeholder="relationship" value="${item.relationship || 'other'}" />
+        <input data-presence-field="role" data-presence-index="${idx}" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[11px]" placeholder="role" value="${item.role || 'nearby'}" />
+        <input data-presence-field="age_band" data-presence-index="${idx}" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[11px]" placeholder="age_band" value="${item.age_band || 'unknown'}" />
+        <input data-presence-field="context_note" data-presence-index="${idx}" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[11px]" placeholder="context note" value="${item.context_note || ''}" />
+        <button data-presence-remove="${idx}" class="rounded border border-rose-500/50 bg-rose-500/10 px-2 py-1 text-[10px] text-rose-200" type="button">Remove</button>
+      `;
+      presenceCompanionRows.appendChild(row);
+    });
+  }
+
+  function collectPresenceCompanions() {
+    if (!presenceCompanionRows) return [];
+    const rows = {};
+    presenceCompanionRows.querySelectorAll('input[data-presence-index]').forEach((el) => {
+      const idx = String(el.dataset.presenceIndex || '');
+      const field = String(el.dataset.presenceField || '');
+      if (!rows[idx]) rows[idx] = {};
+      rows[idx][field] = String(el.value || '').trim();
+    });
+    return Object.values(rows).filter((row) => row.display_name);
+  }
+
+  async function loadPresenceContext() {
+    ensureBrowserClientId();
+    try {
+      const headers = {};
+      if (orionSessionId) headers['X-Orion-Session-Id'] = orionSessionId;
+      const resp = await fetch(`${API_BASE_URL}/api/presence`, { headers });
+      if (!resp.ok) return;
+      presenceContext = await resp.json();
+      if (presenceAudienceMode && presenceContext && presenceContext.audience_mode) {
+        presenceAudienceMode.value = presenceContext.audience_mode;
+      }
+      if (presenceRequestorName && presenceContext && presenceContext.requestor) {
+        presenceRequestorName.value = presenceContext.requestor.display_name || 'Juniper';
+      }
+      renderPresenceCompanions((presenceContext && presenceContext.companions) || []);
+      syncPresenceChip();
+    } catch (err) {
+      console.warn('[Presence] load failed', err);
+      if (presenceStatusChip) presenceStatusChip.textContent = 'Presence unavailable';
+    }
+  }
+
+  async function savePresenceContext(payload) {
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (orionSessionId) headers['X-Orion-Session-Id'] = orionSessionId;
+      const resp = await fetch(`${API_BASE_URL}/api/presence`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ ...payload, browser_client_id: ensureBrowserClientId() }),
+      });
+      if (!resp.ok) return;
+      presenceContext = await resp.json();
+      syncPresenceChip();
+    } catch (err) {
+      console.warn('[Presence] save failed', err);
+      if (presenceStatusChip) presenceStatusChip.textContent = 'Presence unavailable';
+    }
+  }
+  if (presenceOpenButton && presenceModalRoot) {
+    presenceOpenButton.addEventListener('click', () => {
+      presenceModalRoot.classList.remove('hidden');
+      presenceModalRoot.setAttribute('aria-hidden', 'false');
+    });
+  }
+  if (presenceModalClose && presenceModalRoot) {
+    presenceModalClose.addEventListener('click', () => {
+      presenceModalRoot.classList.add('hidden');
+      presenceModalRoot.setAttribute('aria-hidden', 'true');
+    });
+  }
+  if (presenceModalBackdrop && presenceModalRoot) {
+    presenceModalBackdrop.addEventListener('click', () => {
+      presenceModalRoot.classList.add('hidden');
+      presenceModalRoot.setAttribute('aria-hidden', 'true');
+    });
+  }
+  if (presencePresetSolo) presencePresetSolo.addEventListener('click', () => { if (presenceAudienceMode) presenceAudienceMode.value = 'solo'; renderPresenceCompanions([]); });
+  if (presencePresetKids) presencePresetKids.addEventListener('click', () => { if (presenceAudienceMode) presenceAudienceMode.value = 'kid_present'; renderPresenceCompanions(buildPresencePreset('kid_present').companions); });
+  if (presencePresetSpouse) presencePresetSpouse.addEventListener('click', () => { if (presenceAudienceMode) presenceAudienceMode.value = 'spouse_present'; renderPresenceCompanions(buildPresencePreset('spouse_present').companions); });
+  if (presencePresetFamily) presencePresetFamily.addEventListener('click', () => { if (presenceAudienceMode) presenceAudienceMode.value = 'family'; renderPresenceCompanions(buildPresencePreset('family').companions); });
+  if (presencePresetGuest) presencePresetGuest.addEventListener('click', () => { if (presenceAudienceMode) presenceAudienceMode.value = 'guest_present'; renderPresenceCompanions([{display_name:'Guest', relationship:'guest', role:'participant', age_band:'adult'}]); });
+  if (presenceAddCompanionButton) {
+    presenceAddCompanionButton.addEventListener('click', () => {
+      const current = collectPresenceCompanions();
+      current.push({ display_name: `Companion ${current.length + 1}`, relationship: 'other', role: 'nearby', age_band: 'unknown' });
+      renderPresenceCompanions(current);
+    });
+  }
+  if (presenceCompanionRows) {
+    presenceCompanionRows.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const removeIdx = target.getAttribute('data-presence-remove');
+      if (removeIdx === null) return;
+      const current = collectPresenceCompanions();
+      current.splice(Number(removeIdx), 1);
+      renderPresenceCompanions(current);
+    });
+  }
+  if (presenceSaveButton) {
+    presenceSaveButton.addEventListener('click', async () => {
+      const mode = presenceAudienceMode ? presenceAudienceMode.value : 'solo';
+      const payload = buildPresencePreset(mode);
+      payload.companions = collectPresenceCompanions();
+      await savePresenceContext(payload);
+      if (presenceModalRoot) presenceModalRoot.classList.add('hidden');
+    });
+  }
+  if (presenceClearButton) {
+    presenceClearButton.addEventListener('click', async () => {
+      const headers = {};
+      if (orionSessionId) headers['X-Orion-Session-Id'] = orionSessionId;
+      await fetch(`${API_BASE_URL}/api/presence`, { method: 'DELETE', headers });
+      await loadPresenceContext();
+    });
+  }
+  loadPresenceContext();
+
   async function submitExplicitChatText(text, opts = {}) {
     const value = String(text || '').trim();
     if (!value) return;
@@ -6537,6 +7159,7 @@ loadDismissedIds();
        text_input: value,
        mode: requestMode,
        session_id: orionSessionId,
+       browser_client_id: ensureBrowserClientId(),
        disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
        no_write: noWriteToggle ? noWriteToggle.checked : false,
        use_recall: recallToggle ? recallToggle.checked : false,
@@ -6545,6 +7168,8 @@ loadDismissedIds();
        recall_required: recallRequiredToggle ? recallRequiredToggle.checked : false,
        packs: selectedPacks,
        verbs: effectiveVerbs,
+       presence_context: presenceContext,
+       surface_context: { surface: 'hub_desktop', input_modality: 'typed' },
     };
 
     if (socket && socket.readyState === WebSocket.OPEN) {
@@ -6594,6 +7219,11 @@ loadDismissedIds();
                 autonomySelectedSubject: d.autonomy_selected_subject,
                 autonomyRepositoryStatus: d.autonomy_repository_status,
                 chatStanceDebug: d.chat_stance_debug,
+                situationBrief: d.situation_brief,
+                situationPromptFragment: d.situation_prompt_fragment,
+                presenceContext: d.presence_context,
+                temporalPhase: d.temporal_phase,
+                situationAffordances: d.situation_affordances,
               });
               syncSocialInspectionFromRouteDebug(d.routing_debug);
             } else if(d.error) appendMessage('System', d.error, 'text-red-400');
@@ -6626,11 +7256,14 @@ loadDismissedIds();
                audio: reader.result.split(',')[1],
                mode: currentMode,
                session_id: orionSessionId,
+               browser_client_id: ensureBrowserClientId(),
                no_write: noWriteToggle ? noWriteToggle.checked : false,
                use_recall: recallToggle ? recallToggle.checked : false,
                recall_mode: recallModeSelect && recallModeSelect.value !== "auto" ? recallModeSelect.value : null,
                recall_profile: recallProfileSelect && recallProfileSelect.value !== "auto" ? recallProfileSelect.value : null,
-               recall_required: recallRequiredToggle ? recallRequiredToggle.checked : false
+               recall_required: recallRequiredToggle ? recallRequiredToggle.checked : false,
+               presence_context: presenceContext,
+               surface_context: { surface: 'hub_desktop', input_modality: 'spoken' },
              }));
              updateStatus('Audio sent.');
            } else {
@@ -6945,6 +7578,7 @@ loadDismissedIds();
       await loadNotifications();
       await loadChatMessages();
       await loadPendingAttention();
+      await loadWorldPulseLatest();
       if (notificationFilter) {
         notificationFilter.addEventListener('change', renderNotifications);
       }
@@ -6952,6 +7586,11 @@ loadDismissedIds();
         messageFilter.addEventListener('change', () => {
           renderChatMessages();
           loadChatMessages();
+        });
+      }
+      if (worldPulseRunButton) {
+        worldPulseRunButton.addEventListener('click', () => {
+          triggerWorldPulseRun();
         });
       }
       setAllCanvasSizes();

@@ -62,6 +62,7 @@ from .chat_stance import (
     identity_kernel_with_fallbacks,
     parse_chat_stance_brief_with_debug,
 )
+from .situation import build_situation_for_ctx
 
 logger = logging.getLogger("orion.cortex.exec")
 
@@ -1947,6 +1948,45 @@ async def call_step_services(
 
         # IMPORTANT: render prompts per-service so MetacogContextService mutations take effect
         if step.verb_name in {"chat_general", "chat_quick"}:
+            try:
+                if not isinstance(ctx.get("presence_context"), dict):
+                    md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+                    if isinstance(md.get("presence_context"), dict):
+                        ctx["presence_context"] = md.get("presence_context")
+                situation_brief, situation_fragment = build_situation_for_ctx(ctx, settings)
+                if situation_brief:
+                    ctx["situation_brief"] = situation_brief
+                    ctx["presence_context"] = situation_brief.get("presence")
+                    ctx["temporal_phase"] = (situation_brief.get("conversation_phase") or {}).get("phase_change")
+                    ctx["situation_affordances"] = situation_brief.get("affordances") or []
+                if situation_fragment:
+                    ctx["situation_prompt_fragment"] = situation_fragment
+            except Exception as situation_exc:
+                logger.warning("situation_context_build_failed corr_id=%s error=%s", correlation_id, situation_exc)
+            world_capsule = None
+            if settings.world_pulse_stance_enabled:
+                md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+                candidate = md.get("world_context_capsule") if isinstance(md.get("world_context_capsule"), dict) else None
+                if isinstance(candidate, dict):
+                    topics = candidate.get("salient_topics") if isinstance(candidate.get("salient_topics"), list) else []
+                    filtered = []
+                    for topic in topics:
+                        if not isinstance(topic, dict):
+                            continue
+                        confidence = float(topic.get("confidence") or 0.0)
+                        if confidence < float(settings.world_pulse_stance_min_confidence):
+                            continue
+                        filtered.append(topic)
+                        if len(filtered) >= int(settings.world_pulse_stance_max_topics):
+                            break
+                    if filtered:
+                        world_capsule = dict(candidate)
+                        world_capsule["salient_topics"] = filtered
+            if world_capsule:
+                ctx["world_context_capsule"] = world_capsule
+                ctx["world_context_capsule_loaded"] = True
+            else:
+                ctx["world_context_capsule_loaded"] = False
             journal_ctx = ctx.get("journal_pageindex_context") if isinstance(ctx.get("journal_pageindex_context"), dict) else {}
             selected_entries = journal_ctx.get("selected_entries") if isinstance(journal_ctx, dict) else []
             pageindex_result_count = len(selected_entries) if isinstance(selected_entries, list) else 0

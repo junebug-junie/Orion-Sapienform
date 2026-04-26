@@ -177,6 +177,8 @@
               <input type="checkbox" id="textToSpeechToggle" class="h-3 w-3 text-red-600 rounded bg-gray-700 border-gray-600" />
               <span>TTS</span>
             </label>
+            <button id="presenceOpenButton" type="button" class="rounded border border-indigo-500/40 bg-indigo-500/10 px-2 py-1 text-[10px] font-semibold text-indigo-200 hover:bg-indigo-500/20">Presence</button>
+            <span id="presenceStatusChip" class="rounded-full border border-gray-600 bg-gray-700/40 px-2 py-0.5 text-[10px] text-gray-200">Solo</span>
           </div>
         </div>
 
@@ -485,6 +487,13 @@
               <span class="uppercase tracking-wide">Autonomy Readiness</span>
               <span id="autonomyReadinessCaret" class="text-gray-500">▾</span>
             </button>
+            <button
+              id="autonomyConstitutionOpenModal"
+              class="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-200 hover:bg-indigo-500/20"
+              type="button"
+            >
+              Policy Matrix
+            </button>
           </div>
           <div id="autonomyReadinessBody" class="hidden space-y-3 text-xs text-gray-300">
             <div id="autonomyReadinessMeta" class="text-[10px] text-gray-500">Loading autonomy readiness snapshot…</div>
@@ -498,6 +507,14 @@
 
         <div id="recallCanaryPanel" class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-3">
           <div class="text-xs uppercase tracking-wide text-gray-400">Recall Canary</div>
+          <div class="grid grid-cols-1 gap-2 text-[11px]">
+            <label for="recallCanaryProfileSelect" class="text-gray-400">Recall profile</label>
+            <select id="recallCanaryProfileSelect" class="w-full bg-gray-900/60 border border-gray-700 rounded p-2 text-[11px] text-gray-200">
+              <option value="">Loading recall profiles...</option>
+            </select>
+            <div id="recallCanaryProfileEmptyState" class="hidden text-[10px] text-amber-300">No recall profiles available for canary testing.</div>
+            <div id="recallCanarySafetyBadges" class="text-[10px] text-gray-400">Production recall remains V1 · Shadow/canary only · No production promotion</div>
+          </div>
           <div class="grid grid-cols-1 gap-2">
             <textarea id="recallCanaryQueryInput" class="w-full bg-gray-900/60 border border-gray-700 rounded p-2 text-[11px] text-gray-200" rows="2" placeholder="Manual canary query..."></textarea>
             <button id="recallCanaryRunButton" class="rounded border border-indigo-500/40 bg-indigo-500/10 px-2 py-1 text-[11px] text-indigo-200 hover:bg-indigo-500/20" type="button">Run Canary Query</button>
@@ -530,7 +547,16 @@
         </div>
 
         <div id="cognitiveReviewPanel" class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-3">
-          <div class="text-xs uppercase tracking-wide text-gray-400">Cognitive Proposal Review</div>
+          <div class="flex items-center justify-between gap-2">
+            <div class="text-xs uppercase tracking-wide text-gray-400">Cognitive Proposal Review</div>
+            <button
+              id="cognitiveReviewOpenModal"
+              class="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-200 hover:bg-indigo-500/20"
+              type="button"
+            >
+              Modal
+            </button>
+          </div>
           <div id="cognitiveReviewStatusMeta" class="text-[10px] text-gray-500">Loading cognitive proposal status…</div>
           <div id="cognitiveReviewStatusSummary" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-1">No data yet.</div>
           <textarea id="cognitiveProposalIdInput" class="w-full bg-gray-900/60 border border-gray-700 rounded p-2 text-[11px] text-gray-200" rows="1" placeholder="proposal id"></textarea>
@@ -608,6 +634,15 @@
           </select>
         </div>
         <div id="messageList" class="space-y-2 max-h-72 overflow-y-auto text-xs"></div>
+      </div>
+
+      <div class="w-full bg-gray-900 rounded-2xl shadow-lg p-5 space-y-3">
+        <div class="flex items-center justify-between">
+          <h3 class="text-lg font-semibold text-white">Daily World Pulse</h3>
+          <button id="worldPulseRunButton" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Run</button>
+        </div>
+        <div id="worldPulseStatus" class="text-xs text-gray-500">No run loaded.</div>
+        <div id="worldPulseSummary" class="text-xs text-gray-300 whitespace-pre-wrap"></div>
       </div>
 
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -2403,6 +2438,120 @@
             <pre id="substrateReviewResultRaw" class="mt-2 whitespace-pre-wrap break-words text-[10px] text-gray-200 max-h-64 overflow-y-auto">--</pre>
           </details>
         </section>
+      </div>
+    </div>
+  </div>
+
+  <div id="cognitiveReviewModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
+    <div id="cognitiveReviewModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
+    <div id="cognitiveReviewModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121] mx-auto flex w-auto max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
+      <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
+        <div>
+          <div class="text-xs uppercase tracking-[0.24em] text-fuchsia-300">Cognitive proposal review</div>
+          <div id="cognitiveReviewModalMeta" class="mt-1 text-[11px] text-gray-400">Review/draft/context only. No live cognitive apply.</div>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="cognitiveReviewModalRefresh" class="rounded-lg border border-indigo-500/50 bg-indigo-500/10 px-3 py-1 text-[11px] text-indigo-100 hover:bg-indigo-500/20" type="button">Refresh</button>
+          <button id="cognitiveReviewModalClose" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-800" type="button">Close</button>
+        </div>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4 space-y-3 text-xs text-gray-300">
+        <div class="rounded-xl border border-fuchsia-500/30 bg-fuchsia-500/5 px-3 py-2 text-[11px] text-fuchsia-100">
+          Review/draft/context only · No live cognitive apply · No identity/policy/prompt rewrite
+        </div>
+        <div id="cognitiveReviewModalStatusMeta" class="text-[11px] text-gray-400">Loading cognitive proposal status...</div>
+        <div id="cognitiveReviewModalStatusSummary" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-1">No cognitive proposals yet.</div>
+        <textarea id="cognitiveReviewModalProposalIdInput" class="w-full bg-gray-900/60 border border-gray-700 rounded p-2 text-[11px] text-gray-200" rows="1" placeholder="proposal id"></textarea>
+        <textarea id="cognitiveReviewModalRationaleInput" class="w-full bg-gray-900/60 border border-gray-700 rounded p-2 text-[11px] text-gray-200" rows="2" placeholder="Operator note / rationale"></textarea>
+        <div class="grid grid-cols-2 gap-2">
+          <button id="cognitiveReviewModalAcceptDraftButton" class="rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-200" type="button">Accept as Draft</button>
+          <button id="cognitiveReviewModalRejectButton" class="rounded border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-[10px] text-rose-200" type="button">Reject</button>
+          <button id="cognitiveReviewModalArchiveButton" class="rounded border border-gray-600 bg-gray-700/40 px-2 py-1 text-[10px] text-gray-200" type="button">Archive</button>
+          <button id="cognitiveReviewModalSupersedeButton" class="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-200" type="button">Supersede</button>
+        </div>
+        <div>
+          <div class="mb-1 text-[10px] uppercase tracking-wide text-gray-500">Drafts</div>
+          <pre id="cognitiveReviewModalDraftList" class="whitespace-pre-wrap break-words rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] text-gray-200">No accepted drafts yet.</pre>
+        </div>
+        <div>
+          <div class="mb-1 text-[10px] uppercase tracking-wide text-gray-500">Stance notes</div>
+          <pre id="cognitiveReviewModalStanceNoteList" class="whitespace-pre-wrap break-words rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] text-gray-200">No active stance notes yet.</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="autonomyConstitutionModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
+    <div id="autonomyConstitutionModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
+    <div id="autonomyConstitutionModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121] mx-auto flex w-auto max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
+      <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
+        <div>
+          <div class="text-xs uppercase tracking-[0.24em] text-cyan-300">Autonomy constitution</div>
+          <div id="autonomyConstitutionModalMeta" class="mt-1 text-[11px] text-gray-400">Read-only policy matrix and safety invariants.</div>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="autonomyConstitutionModalRefresh" class="rounded-lg border border-indigo-500/50 bg-indigo-500/10 px-3 py-1 text-[11px] text-indigo-100 hover:bg-indigo-500/20" type="button">Refresh</button>
+          <button id="autonomyConstitutionModalClose" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-800" type="button">Close</button>
+        </div>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4 space-y-3 text-xs text-gray-300">
+        <div id="autonomyConstitutionModalSummary" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px]">Autonomy constitution unavailable.</div>
+        <pre id="autonomyConstitutionModalInvariants" class="whitespace-pre-wrap break-words rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] text-gray-200">No policy surfaces loaded.</pre>
+        <pre id="autonomyConstitutionModalSurfaces" class="whitespace-pre-wrap break-words rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] text-gray-200">No policy surfaces loaded.</pre>
+      </div>
+    </div>
+  </div>
+
+  <div id="presenceModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
+    <div id="presenceModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
+    <div id="presenceModalDialog" class="fixed inset-x-4 top-10 bottom-10 z-[121] mx-auto flex w-auto max-w-4xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
+      <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
+        <div>
+          <div class="text-xs uppercase tracking-[0.24em] text-indigo-300">Presence / Situation</div>
+          <div class="mt-1 text-[11px] text-gray-400">Session-local audience context. Keep minor details generic by default.</div>
+        </div>
+        <button id="presenceModalClose" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-800" type="button">Close</button>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4 space-y-3 text-xs text-gray-300">
+        <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <label class="space-y-1">
+            <span class="text-[10px] uppercase tracking-wide text-gray-500">Requestor name</span>
+            <input id="presenceRequestorName" class="w-full rounded border border-gray-700 bg-gray-900/60 px-2 py-1 text-gray-100" value="Juniper" />
+          </label>
+          <label class="space-y-1">
+            <span class="text-[10px] uppercase tracking-wide text-gray-500">Audience mode</span>
+            <select id="presenceAudienceMode" class="w-full rounded border border-gray-700 bg-gray-900/60 px-2 py-1 text-gray-100">
+              <option value="solo">Solo</option>
+              <option value="kid_present">Kid present</option>
+              <option value="family">Family</option>
+              <option value="spouse_present">Spouse present</option>
+              <option value="guest_present">Guest present</option>
+              <option value="mixed_group">Mixed group</option>
+            </select>
+          </label>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button id="presencePresetSolo" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[11px]" type="button">Just me</button>
+          <button id="presencePresetKids" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[11px]" type="button">With kids</button>
+          <button id="presencePresetSpouse" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[11px]" type="button">With spouse</button>
+          <button id="presencePresetFamily" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[11px]" type="button">Family</button>
+          <button id="presencePresetGuest" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[11px]" type="button">Guest/custom</button>
+        </div>
+        <div class="space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="text-[10px] uppercase tracking-wide text-gray-500">Companions</span>
+            <button id="presenceAddCompanionButton" class="rounded border border-gray-700 bg-gray-900 px-2 py-1 text-[10px]" type="button">Add companion</button>
+          </div>
+          <div id="presenceCompanionRows" class="space-y-2"></div>
+        </div>
+        <label class="flex items-center gap-2 text-[11px]">
+          <input id="presenceSessionOnlyToggle" type="checkbox" checked class="h-3 w-3 rounded border-gray-600 bg-gray-700" />
+          Session-only
+        </label>
+        <div class="flex gap-2">
+          <button id="presenceSaveButton" class="rounded border border-indigo-500/40 bg-indigo-500/10 px-3 py-1 text-[11px] text-indigo-100" type="button">Save</button>
+          <button id="presenceClearButton" class="rounded border border-gray-700 bg-gray-900 px-3 py-1 text-[11px] text-gray-200" type="button">Clear</button>
+        </div>
       </div>
     </div>
   </div>

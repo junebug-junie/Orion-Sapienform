@@ -97,6 +97,27 @@ def build_mutation_cognition_context(*, store: SubstrateMutationStore | None = N
         None,
     )
     readiness = dict((active_shadow_profile.readiness_snapshot if active_shadow_profile is not None else {}))
+    active_stance_notes = [
+        item
+        for item in sorted(mutation_store._cognitive_stance_notes.values(), key=lambda row: row.updated_at, reverse=True)
+        if item.status == "active"
+    ][:8]
+    bounded_notes = [
+        {
+            "stance_note_id": row.stance_note_id,
+            "source_proposal_id": row.source_proposal_id,
+            "source_draft_id": row.source_draft_id,
+            "summary": str(row.summary)[:280],
+            "note": str(row.note)[:800],
+            "visibility": row.visibility,
+            "ttl_turns": row.ttl_turns,
+            "context_role": "operator_accepted_cognitive_draft_context",
+            "authoritative": False,
+            "lineage": dict(row.lineage or {}),
+            "updated_at": row.updated_at.isoformat(),
+        }
+        for row in active_stance_notes
+    ]
     return {
         "mutation_scope": "routing_threshold_patch_only",
         "live_ramp_active": bool(
@@ -131,6 +152,12 @@ def build_mutation_cognition_context(*, store: SubstrateMutationStore | None = N
         "latest_production_candidate_review_status": (
             latest_candidate_review.status if latest_candidate_review is not None else None
         ),
+        "cognitive_stance_notes": bounded_notes,
+        "cognitive_stance_notes_summary": {
+            "active_count": len(active_stance_notes),
+            "included_count": len(bounded_notes),
+            "authoritative": False,
+        },
         "production_recall_mode": "v1",
         "recall_live_apply_enabled": False,
     }

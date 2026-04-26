@@ -642,3 +642,28 @@ def test_recall_canary_status_rollups_shape() -> None:
     assert "failure_mode_counts" in data
     assert "recent_judgments" in data
     assert "review_artifact_count" in data
+
+
+def test_cognitive_status_and_public_aliases_are_bounded_and_read_only() -> None:
+    status = api_routes.api_substrate_cognitive_proposals_status(limit=10)
+    listing = api_routes.api_substrate_cognitive_proposals(limit=5)
+    assert status["data"]["schema_version"] == "cognitive_proposal_status.v1"
+    assert status["data"]["live_apply_enabled"] is False
+    assert status["data"]["safety"]["cognitive_live_apply_forbidden"] is True
+    assert "review_posture" in status["data"]
+    assert "recent_cognitive_proposals" in listing["data"]
+
+
+def test_cognitive_review_action_returns_safety_block(monkeypatch) -> None:
+    monkeypatch.setenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", "secret")
+    proposal = api_routes.SUBSTRATE_MUTATION_STORE.get_proposal("proposal-cog-1")
+    if proposal is None:
+        pytest.skip("cognitive fixture proposal not available")
+    payload = api_routes.api_substrate_cognitive_proposal_review(
+        "proposal-cog-1",
+        api_routes.CognitiveProposalReviewActionRequest(decision="accept_as_draft", rationale="bounded review"),
+        x_orion_operator_token="secret",
+    )
+    assert payload["data"]["review_recorded"] is True
+    assert payload["data"]["safety"]["production_default_unchanged"] is True
+    assert payload["data"]["safety"]["apply_performed"] is False

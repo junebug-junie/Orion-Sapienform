@@ -224,3 +224,21 @@ def test_template_and_js_include_recall_canary_controls_without_unsafe_actions()
     assert "function runRecallCanaryQuery()" in app_js
     assert "function recordRecallCanaryJudgment()" in app_js
     assert "function createRecallCanaryReviewArtifact()" in app_js
+
+
+def test_template_and_js_include_cognitive_review_panel_without_unsafe_actions() -> None:
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert 'id="cognitiveReviewPanel"' in template
+    assert 'id="cognitiveReviewStatusMeta"' in template
+    assert 'id="cognitiveProposalIdInput"' in template
+    assert 'id="cognitiveReviewAcceptDraftButton"' in template
+    assert 'id="cognitiveReviewRejectButton"' in template
+    assert 'id="cognitiveReviewArchiveButton"' in template
+    assert 'id="cognitiveReviewSupersedeButton"' in template
+    assert "function refreshCognitiveReviewPanel()" in app_js
+    assert "function submitCognitiveProposalReview(decision)" in app_js
+    assert "Promote to Production" not in template
+    assert "Make V2 Default" not in template
+    assert "Apply Recall Patch" not in template

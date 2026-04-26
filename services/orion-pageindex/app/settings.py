@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Optional
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -17,13 +19,15 @@ class Settings(BaseSettings):
     PAGEINDEX_REPO_PATH: str = Field(default="/opt/PageIndex")
     PAGEINDEX_RUN_SCRIPT: str = Field(default="run_pageindex.py")
     PAGEINDEX_PYTHON_BIN: str = Field(default="python3")
-    PAGEINDEX_BUILD_ARGS: str = Field(default="--md_path {md_path} --output_dir {artifact_dir}")
-    PAGEINDEX_QUERY_ARGS: str = Field(default="--md_path {md_path} --output_dir {artifact_dir} --query {query}")
+    PAGEINDEX_BUILD_ARGS: str = Field(default="--md_path {md_path}")
+    PAGEINDEX_QUERY_ARGS: str = Field(default="--md_path {md_path}")
     PAGEINDEX_TIMEOUT_SEC: int = Field(default=120)
+    PAGEINDEX_ALLOW_EMPTY_REBUILD: bool = Field(default=False)
 
     JOURNAL_PG_DSN: str = Field(
         default="postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney"
     )
+    PAGEINDEX_SQL_DATABASE_URL: Optional[str] = Field(default=None)
     # Denormalized journal retrieval table consumed by pageindex corpus export.
     JOURNAL_INDEX_TABLE: str = Field(default="journal_entry_index")
 

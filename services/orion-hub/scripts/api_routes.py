@@ -11,7 +11,7 @@ from typing import Annotated, Optional, Any, List, Dict, Tuple, Literal
 from urllib.parse import urlparse
 import aiohttp
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 import requests
@@ -64,7 +64,9 @@ from orion.core.schemas.substrate_policy_adoption import (
 from orion.core.schemas.substrate_policy_comparison import SubstratePolicyComparisonRequestV1
 from orion.core.schemas.substrate_review_runtime import GraphReviewRuntimeSurfaceV1
 from orion.core.schemas.substrate_mutation import (
+    CognitiveProposalDraftV1,
     CognitiveProposalReviewV1,
+    CognitiveStanceNoteV1,
     RecallCanaryJudgmentRecordV1,
     RecallCanaryReviewArtifactV1,
     RecallCanaryRunV1,
@@ -346,6 +348,40 @@ class CognitiveProposalReviewRequest(BaseModel):
     reviewer: str = "operator"
     rationale: str = ""
     notes: list[str] = Field(default_factory=list, max_length=32)
+
+
+class CognitiveProposalReviewActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["accept_as_draft", "reject", "archive", "supersede"]
+    reviewer: str = "operator"
+    rationale: str = ""
+    review_labels: list[str] = Field(default_factory=list, max_length=32)
+    supersedes_proposal_id: str | None = None
+    should_emit_pressure: bool = False
+    create_stance_note: bool = False
+    stance_note: str = ""
+    stance_summary: str = ""
+    stance_visibility: Literal["metacog_only", "stance_and_metacog"] = "metacog_only"
+    stance_ttl_turns: int = Field(default=20, ge=1, le=200)
+
+
+class CognitiveDraftArchiveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reviewer: str = "operator"
+    rationale: str = ""
+
+
+class CognitiveCreateStanceNoteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reviewer: str = "operator"
+    rationale: str = ""
+    note: str = ""
+    summary: str = ""
+    visibility: Literal["metacog_only", "stance_and_metacog"] = "metacog_only"
+    ttl_turns: int = Field(default=20, ge=1, le=200)
 
 
 class SubstratePolicyAdoptHubRequest(BaseModel):
@@ -2856,7 +2892,7 @@ _AUTONOMY_READINESS_POLICY_MATRIX = [
         "category": "recall",
         "propose": "auto",
         "trial": "shadow_or_manual_eval",
-        "apply": "manual_only_not_implemented_for_production",
+        "apply": "forbidden",
         "rollback": "disable_shadow_or_canary",
         "human_required": True,
         "status": "shadow_staged_only",
@@ -3107,11 +3143,29 @@ def _autonomy_readiness_payload() -> Dict[str, Any]:
     try:
         cognitive_proposals = api_substrate_mutation_runtime_cognitive_proposals(limit=50).get("data", {}).get("recent_cognitive_proposals", [])
         counts: dict[str, int] = {}
+        counts_by_class: dict[str, int] = {}
         for item in cognitive_proposals:
             state = str(item.get("rollout_state") or "proposed")
             counts[state] = counts.get(state, 0) + 1
+            klass = str(item.get("mutation_class") or "unknown")
+            counts_by_class[klass] = counts_by_class.get(klass, 0) + 1
+        drafts = SUBSTRATE_MUTATION_STORE.list_cognitive_proposal_drafts(limit=50)
+        stance_notes = SUBSTRATE_MUTATION_STORE.list_cognitive_stance_notes(limit=50)
         payload["cognitive"]["counts_by_state"] = counts
+        payload["cognitive"]["counts_by_class"] = counts_by_class
         payload["cognitive"]["recent_proposals"] = cognitive_proposals[:20]
+        payload["cognitive"]["recent_drafts"] = drafts[:20]
+        payload["cognitive"]["recent_reviews"] = SUBSTRATE_MUTATION_STORE.recent_cognitive_reviews(limit=20)
+        payload["cognitive"]["active_stance_notes"] = [row for row in stance_notes if str(row.get("status") or "") == "active"][:20]
+        payload["cognitive"]["review_posture"] = _cognitive_review_posture_summary(cognitive_proposals, drafts, stance_notes)
+        payload["cognitive"]["safety"] = {
+            "identity_kernel_rewrite_performed": False,
+            "production_self_model_rewrite_performed": False,
+            "policy_override_performed": False,
+            "prompt_rewrite_performed": False,
+            "live_apply_performed": False,
+            "execute_once_performed": False,
+        }
     except Exception as exc:
         warnings.append(f"cognitive_posture_unavailable:{exc}")
         payload["cognitive"]["warnings"] = list(payload["cognitive"]["warnings"]) + [str(exc)]
@@ -4723,6 +4777,40 @@ def _is_cognitive_proposal_payload(payload: Dict[str, Any]) -> bool:
     return str(payload.get("lane") or "") == "cognitive" or str(payload.get("target_surface") or "") in _COGNITIVE_SURFACES
 
 
+def _cognitive_review_state_for_decision(decision: str) -> str:
+    mapping = {
+        "accept_as_draft": "accepted_as_draft",
+        "reject": "rejected",
+        "archive": "archived",
+        "supersede": "superseded",
+    }
+    return mapping.get(decision, "pending_review")
+
+
+def _cognitive_safety_block() -> dict[str, bool]:
+    return {
+        "identity_kernel_rewrite_forbidden": True,
+        "production_self_model_rewrite_forbidden": True,
+        "policy_override_forbidden": True,
+        "prompt_rewrite_forbidden": True,
+        "cognitive_live_apply_forbidden": True,
+        "mutation_execute_once_forbidden": True,
+    }
+
+
+def _cognitive_review_posture_summary(proposals: list[dict[str, Any]], drafts: list[dict[str, Any]], notes: list[dict[str, Any]]) -> dict[str, Any]:
+    pending_reviews = sum(1 for row in proposals if str(row.get("rollout_state") or "") in {"pending_review", "approved"})
+    active_drafts = sum(1 for row in drafts if str(row.get("state") or "") == "active_draft")
+    active_notes = sum(1 for row in notes if str(row.get("status") or "") == "active")
+    recommended_action = "review_pending_proposals" if pending_reviews else ("curate_active_drafts" if active_drafts else "monitor")
+    return {
+        "pending_review_count": pending_reviews,
+        "active_draft_count": active_drafts,
+        "active_stance_note_count": active_notes,
+        "recommended_action": recommended_action,
+    }
+
+
 @router.get("/api/substrate/mutation-runtime/cognitive-pressure")
 def api_substrate_mutation_runtime_cognitive_pressure(
     limit: int = Query(default=50, ge=1, le=200),
@@ -4783,6 +4871,51 @@ def api_substrate_mutation_runtime_cognitive_proposals(
     }
 
 
+@router.get("/api/substrate/cognitive-proposals/status")
+def api_substrate_cognitive_proposals_status(
+    limit: int = Query(default=20, ge=1, le=200),
+) -> Dict[str, Any]:
+    proposals = api_substrate_mutation_runtime_cognitive_proposals(limit=limit).get("data", {}).get("recent_cognitive_proposals", [])
+    drafts = SUBSTRATE_MUTATION_STORE.list_cognitive_proposal_drafts(limit=limit)
+    stance_notes = SUBSTRATE_MUTATION_STORE.list_cognitive_stance_notes(limit=limit)
+    counts_by_state: dict[str, int] = {}
+    counts_by_class: dict[str, int] = {}
+    for row in proposals:
+        state = str(row.get("rollout_state") or "unknown")
+        counts_by_state[state] = counts_by_state.get(state, 0) + 1
+        klass = str(row.get("mutation_class") or "unknown")
+        counts_by_class[klass] = counts_by_class.get(klass, 0) + 1
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {
+            "schema_version": "cognitive_proposal_status.v1",
+            "live_apply_enabled": False,
+            "safety": _cognitive_safety_block(),
+            "counts_by_state": counts_by_state,
+            "counts_by_class": counts_by_class,
+            "recent_proposals": proposals[: min(limit, 12)],
+            "recent_drafts": drafts[: min(limit, 12)],
+            "recent_reviews": SUBSTRATE_MUTATION_STORE.recent_cognitive_reviews(limit=min(limit, 12)),
+            "active_stance_notes": [row for row in stance_notes if str(row.get("status") or "") == "active"][: min(limit, 12)],
+            "review_posture": _cognitive_review_posture_summary(proposals, drafts, stance_notes),
+            "warnings": [],
+        },
+    }
+
+
+@router.get("/api/substrate/cognitive-proposals")
+def api_substrate_cognitive_proposals(
+    limit: int = Query(default=20, ge=1, le=200),
+) -> Dict[str, Any]:
+    return api_substrate_mutation_runtime_cognitive_proposals(limit=limit)
+
+
 @router.get("/api/substrate/mutation-runtime/cognitive-proposals/{proposal_id}/lineage")
 def api_substrate_mutation_runtime_cognitive_proposal_lineage(proposal_id: str) -> Dict[str, Any]:
     lifecycle = SUBSTRATE_MUTATION_STORE.lifecycle_for_proposal(proposal_id)
@@ -4821,6 +4954,11 @@ def api_substrate_mutation_runtime_cognitive_proposal_detail(proposal_id: str) -
         ),
         "data": {"proposal": payload},
     }
+
+
+@router.get("/api/substrate/cognitive-proposals/{proposal_id}")
+def api_substrate_cognitive_proposal_detail(proposal_id: str) -> Dict[str, Any]:
+    return api_substrate_mutation_runtime_cognitive_proposal_detail(proposal_id)
 
 
 @router.get("/api/substrate/mutation-runtime/cognitive-proposals/{proposal_id}/evidence")
@@ -4877,6 +5015,78 @@ def api_substrate_mutation_runtime_cognitive_proposal_review(
     }
 
 
+@router.post("/api/substrate/cognitive-proposals/{proposal_id}/review")
+def api_substrate_cognitive_proposal_review(
+    proposal_id: str,
+    request: CognitiveProposalReviewActionRequest,
+    x_orion_operator_token: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    _require_mutation_operator_guard(x_orion_operator_token)
+    proposal = SUBSTRATE_MUTATION_STORE.get_proposal(proposal_id)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="cognitive_proposal_not_found")
+    payload = proposal.model_dump(mode="json")
+    if not _is_cognitive_proposal_payload(payload):
+        raise HTTPException(status_code=404, detail="cognitive_proposal_not_found")
+    review_state = _cognitive_review_state_for_decision(request.decision)
+    review = CognitiveProposalReviewV1(
+        proposal_id=proposal_id,
+        state=review_state,  # type: ignore[arg-type]
+        reviewer=request.reviewer,
+        rationale=request.rationale,
+        notes=list(request.review_labels or []),
+    )
+    created_draft = SUBSTRATE_MUTATION_STORE.record_cognitive_review(review)
+    created_note: CognitiveStanceNoteV1 | None = None
+    if request.create_stance_note:
+        active_draft = created_draft
+        if active_draft is None:
+            existing = SUBSTRATE_MUTATION_STORE.list_cognitive_proposal_drafts(limit=50)
+            row = next((item for item in existing if str(item.get("proposal_id") or "") == proposal_id and str(item.get("state") or "") == "active_draft"), None)
+            if row is not None:
+                active_draft = CognitiveProposalDraftV1.model_validate(row)
+        if active_draft is not None:
+            created_note = SUBSTRATE_MUTATION_STORE.record_cognitive_stance_note(
+                CognitiveStanceNoteV1(
+                    source_proposal_id=proposal_id,
+                    source_draft_id=active_draft.draft_id,
+                    proposal_class=proposal.mutation_class,
+                    visibility=request.stance_visibility,
+                    ttl_turns=request.stance_ttl_turns,
+                    summary=request.stance_summary or "operator accepted cognitive draft context",
+                    note=request.stance_note or request.rationale,
+                    evidence_refs=list(proposal.evidence_refs),
+                    review_ref=review.review_id,
+                    safety_scope={
+                        "authoritative": False,
+                        "identity_or_policy_rewrite": False,
+                        "live_apply": False,
+                    },
+                    lineage={"proposal_id": proposal_id, "review_id": review.review_id, "draft_id": active_draft.draft_id},
+                )
+            )
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "data": {
+            "schema_version": "cognitive_proposal_review_result.v1",
+            "proposal_id": proposal_id,
+            "review_recorded": True,
+            "decision": request.decision,
+            "review": review.model_dump(mode="json"),
+            "draft": created_draft.model_dump(mode="json") if created_draft is not None else None,
+            "stance_note": created_note.model_dump(mode="json") if created_note is not None else None,
+            "pressure_emitted": False if not request.should_emit_pressure else False,
+            "safety": {
+                "production_default_unchanged": True,
+                "promotion_performed": False,
+                "apply_performed": False,
+                "execute_once_invoked": False,
+            },
+            "warnings": [],
+        },
+    }
+
+
 @router.get("/api/substrate/mutation-runtime/cognitive-drafts")
 def api_substrate_mutation_runtime_cognitive_drafts(
     limit: int = Query(default=20, ge=1, le=200),
@@ -4894,6 +5104,104 @@ def api_substrate_mutation_runtime_cognitive_drafts(
             "recent_reviews": SUBSTRATE_MUTATION_STORE.recent_cognitive_reviews(limit=limit),
         },
     }
+
+
+@router.get("/api/substrate/cognitive-drafts")
+def api_substrate_cognitive_drafts(
+    limit: int = Query(default=20, ge=1, le=200),
+    state: str | None = None,
+) -> Dict[str, Any]:
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {
+            "drafts": SUBSTRATE_MUTATION_STORE.list_cognitive_proposal_drafts(limit=limit, state=state),
+            "safety": _cognitive_safety_block(),
+        },
+    }
+
+
+@router.get("/api/substrate/cognitive-drafts/{draft_id}")
+def api_substrate_cognitive_draft_detail(draft_id: str) -> Dict[str, Any]:
+    draft = SUBSTRATE_MUTATION_STORE.get_cognitive_proposal_draft(draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="cognitive_draft_not_found")
+    return {"generated_at": datetime.now(timezone.utc).isoformat(), "data": {"draft": draft.model_dump(mode="json")}}
+
+
+@router.post("/api/substrate/cognitive-drafts/{draft_id}/archive")
+def api_substrate_cognitive_draft_archive(
+    draft_id: str,
+    _: CognitiveDraftArchiveRequest,
+    x_orion_operator_token: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    _require_mutation_operator_guard(x_orion_operator_token)
+    draft = SUBSTRATE_MUTATION_STORE.archive_cognitive_proposal_draft(draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="cognitive_draft_not_found")
+    return {"generated_at": datetime.now(timezone.utc).isoformat(), "data": {"draft": draft.model_dump(mode="json"), "archived": True}}
+
+
+@router.post("/api/substrate/cognitive-drafts/{draft_id}/create-stance-note")
+def api_substrate_cognitive_draft_create_stance_note(
+    draft_id: str,
+    request: CognitiveCreateStanceNoteRequest,
+    x_orion_operator_token: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    _require_mutation_operator_guard(x_orion_operator_token)
+    draft = SUBSTRATE_MUTATION_STORE.get_cognitive_proposal_draft(draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="cognitive_draft_not_found")
+    proposal = SUBSTRATE_MUTATION_STORE.get_proposal(draft.proposal_id)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="cognitive_proposal_not_found")
+    note = SUBSTRATE_MUTATION_STORE.record_cognitive_stance_note(
+        CognitiveStanceNoteV1(
+            source_proposal_id=draft.proposal_id,
+            source_draft_id=draft_id,
+            proposal_class=proposal.mutation_class,
+            visibility=request.visibility,
+            ttl_turns=request.ttl_turns,
+            summary=request.summary or draft.summary,
+            note=request.note or request.rationale,
+            evidence_refs=list(draft.evidence_refs),
+            safety_scope={"authoritative": False, "live_apply": False},
+            lineage={"draft_id": draft_id, "proposal_id": draft.proposal_id},
+        )
+    )
+    return {"generated_at": datetime.now(timezone.utc).isoformat(), "data": {"stance_note": note.model_dump(mode="json"), "created": True}}
+
+
+@router.get("/api/substrate/cognitive-stance-notes")
+def api_substrate_cognitive_stance_notes(
+    limit: int = Query(default=20, ge=1, le=200),
+    status: str | None = None,
+) -> Dict[str, Any]:
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "data": {
+            "stance_notes": SUBSTRATE_MUTATION_STORE.list_cognitive_stance_notes(limit=limit, status=status),
+            "safety": {"authoritative": False, "identity_or_policy_rewrite": False, "live_apply": False},
+        },
+    }
+
+
+@router.post("/api/substrate/cognitive-stance-notes/{stance_note_id}/archive")
+def api_substrate_cognitive_stance_note_archive(
+    stance_note_id: str,
+    __: CognitiveDraftArchiveRequest,
+    x_orion_operator_token: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    _require_mutation_operator_guard(x_orion_operator_token)
+    note = SUBSTRATE_MUTATION_STORE.archive_cognitive_stance_note(stance_note_id)
+    if note is None:
+        raise HTTPException(status_code=404, detail="cognitive_stance_note_not_found")
+    return {"generated_at": datetime.now(timezone.utc).isoformat(), "data": {"stance_note": note.model_dump(mode="json"), "archived": True}}
 
 
 @router.get("/api/substrate/mutation-runtime/live-routing-surface")

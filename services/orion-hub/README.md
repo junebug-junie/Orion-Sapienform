@@ -492,6 +492,39 @@ Safety guarantees for canary workflows:
 - No endpoint in this path applies recall mutation patches.
 - Canary artifact creation is evidence-only and operator-bounded.
 
+### Cognitive Proposal Review Ritual (operator-only, draft/stance only)
+
+Inspect cognitive posture:
+
+```bash
+curl -sS "http://localhost:8080/api/substrate/cognitive-proposals/status" | jq .
+```
+
+Review a proposal as draft-only evidence (no apply):
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/substrate/cognitive-proposals/<proposal_id>/review" \
+  -H "content-type: application/json" \
+  -H "X-Orion-Operator-Token: $SUBSTRATE_MUTATION_OPERATOR_TOKEN" \
+  -d '{"decision":"accept_as_draft","rationale":"bounded operator review","review_labels":["safety_ok"]}'
+```
+
+Inspect drafts and create bounded stance note context:
+
+```bash
+curl -sS "http://localhost:8080/api/substrate/cognitive-drafts?limit=20" | jq .
+curl -sS -X POST "http://localhost:8080/api/substrate/cognitive-drafts/<draft_id>/create-stance-note" \
+  -H "content-type: application/json" \
+  -H "X-Orion-Operator-Token: $SUBSTRATE_MUTATION_OPERATOR_TOKEN" \
+  -d '{"summary":"bounded stance context","note":"non-authoritative operator-approved context","visibility":"metacog_only","ttl_turns":20}'
+```
+
+Safety guarantees for cognitive review workflow:
+- No endpoint in this path rewrites identity kernel, policy constraints, or production self-model.
+- No endpoint in this path invokes mutation execute-once.
+- No endpoint in this path performs cognitive live apply.
+- Stance notes are non-authoritative bounded context and can be archived.
+
 Safety guarantees for this flow:
 - Production recall remains `v1`; no endpoint in this workflow switches production default.
 - Candidate review creation only persists operator review artifacts.

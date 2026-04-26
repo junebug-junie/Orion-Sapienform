@@ -529,6 +529,22 @@
           </div>
         </div>
 
+        <div id="cognitiveReviewPanel" class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-3">
+          <div class="text-xs uppercase tracking-wide text-gray-400">Cognitive Proposal Review</div>
+          <div id="cognitiveReviewStatusMeta" class="text-[10px] text-gray-500">Loading cognitive proposal status…</div>
+          <div id="cognitiveReviewStatusSummary" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-1">No data yet.</div>
+          <textarea id="cognitiveProposalIdInput" class="w-full bg-gray-900/60 border border-gray-700 rounded p-2 text-[11px] text-gray-200" rows="1" placeholder="proposal id"></textarea>
+          <textarea id="cognitiveReviewRationaleInput" class="w-full bg-gray-900/60 border border-gray-700 rounded p-2 text-[11px] text-gray-200" rows="2" placeholder="Operator rationale"></textarea>
+          <div class="grid grid-cols-2 gap-2">
+            <button id="cognitiveReviewAcceptDraftButton" class="rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-200" type="button">Accept as Draft</button>
+            <button id="cognitiveReviewRejectButton" class="rounded border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-[10px] text-rose-200" type="button">Reject</button>
+            <button id="cognitiveReviewArchiveButton" class="rounded border border-gray-600 bg-gray-700/40 px-2 py-1 text-[10px] text-gray-200" type="button">Archive</button>
+            <button id="cognitiveReviewSupersedeButton" class="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-200" type="button">Supersede</button>
+          </div>
+          <div id="cognitiveDraftList" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-1">No drafts loaded.</div>
+          <div id="cognitiveStanceNoteList" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-1">No stance notes loaded.</div>
+        </div>
+
         <div class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-3">
           <div class="flex items-center justify-between gap-3">
             <div>

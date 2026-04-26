@@ -54,11 +54,13 @@ class StatusResponse(BaseModel):
     last_build_completed_at: datetime | None
     build_success: bool
     build_error: str | None = None
+    db_url_present: bool | None = None
+    db_env_key: str | None = None
 
 
 class QueryRequest(BaseModel):
     query: str
-    allow_fallback: bool = False
+    allow_fallback: bool = True
     top_k: int = 8
 
 

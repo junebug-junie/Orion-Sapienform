@@ -942,6 +942,41 @@ def build_chat_stance_debug_payload(
     autonomy_debug = autonomy.get("debug") if isinstance(autonomy.get("debug"), dict) else {}
     reasoning = stance_inputs.get("reasoning_summary") if isinstance(stance_inputs.get("reasoning_summary"), dict) else {}
     identity = stance_inputs.get("identity") if isinstance(stance_inputs.get("identity"), dict) else {}
+    journal_pageindex_ctx = ctx.get("journal_pageindex_context") if isinstance(ctx.get("journal_pageindex_context"), dict) else {}
+    jp_selected_entries = journal_pageindex_ctx.get("selected_entries") if isinstance(journal_pageindex_ctx.get("selected_entries"), list) else []
+    jp_selected_blocks = journal_pageindex_ctx.get("selected_blocks") if isinstance(journal_pageindex_ctx.get("selected_blocks"), list) else []
+    jp_entry_ids = [
+        str(item.get("entry_id"))
+        for item in jp_selected_entries
+        if isinstance(item, dict) and str(item.get("entry_id") or "").strip()
+    ]
+    jp_block_ids = [
+        str(item.get("block_id"))
+        for item in jp_selected_blocks
+        if isinstance(item, dict) and str(item.get("block_id") or "").strip()
+    ]
+    jp_impl = None
+    for block in jp_selected_blocks:
+        if not isinstance(block, dict):
+            continue
+        provenance = block.get("provenance") if isinstance(block.get("provenance"), dict) else {}
+        engine = str(provenance.get("engine") or "").strip()
+        if engine:
+            jp_impl = engine
+            break
+    if not jp_impl and journal_pageindex_ctx:
+        jp_impl = "native_fallback" if bool(journal_pageindex_ctx.get("fallback_invoked")) else "service"
+    jp_evidence_lines = _unique(
+        (
+            _compact(
+                (item.get("excerpt") if isinstance(item, dict) else "")
+                or (item.get("text") if isinstance(item, dict) else ""),
+                limit=180,
+            )
+            for item in jp_selected_blocks[:8]
+        ),
+        limit=6,
+    )
 
     user_message = _compact(ctx.get("user_message") or "", limit=600)
     memory_digest = ctx.get("memory_digest")
@@ -956,6 +991,7 @@ def build_chat_stance_debug_payload(
                 "social": social,
                 "social_bridge": social_bridge,
                 "reflective": reflective,
+                "journal_pageindex": {"impl": jp_impl, "entry_ids": jp_entry_ids, "evidence_lines": jp_evidence_lines},
                 "autonomy": autonomy_summary,
                 "reasoning": reasoning,
             }.items()
@@ -1024,6 +1060,16 @@ def build_chat_stance_debug_payload(
                 "tensions": list(reflective.get("tensions") or []),
                 "dream_motifs": list(reflective.get("dream_motifs") or []),
             },
+            "journal_pageindex": {
+                "context_present": bool(journal_pageindex_ctx),
+                "impl": jp_impl,
+                "fallback_invoked": bool(journal_pageindex_ctx.get("fallback_invoked")) if journal_pageindex_ctx else False,
+                "selected_entry_count": len(jp_entry_ids),
+                "selected_block_count": len(jp_block_ids),
+                "selected_entry_ids": jp_entry_ids[:8],
+                "selected_block_ids": jp_block_ids[:12],
+                "evidence_lines": jp_evidence_lines,
+            },
             "autonomy": {
                 "summary": autonomy_summary,
                 "selected_subject": ctx.get("chat_autonomy_selected_subject"),
@@ -1051,6 +1097,8 @@ def build_chat_stance_debug_payload(
         "lineage_summary": [
             f"concept/self injected: {len((concept.get('self') or []))} items",
             f"social hazards injected: {len((social.get('hazards') or []))} items",
+            f"journal pageindex context present: {'yes' if bool(journal_pageindex_ctx) else 'no'}",
+            f"journal pageindex selected entries: {len(jp_entry_ids)}",
             f"autonomy summary present: {'yes' if bool(autonomy_summary) else 'no'}",
             f"mutation adaptation context present: {'yes' if bool(mutation_adaptation) else 'no'}",
             f"reasoning summary used: {'yes' if bool(ctx.get('chat_reasoning_summary_used')) else 'no'}",

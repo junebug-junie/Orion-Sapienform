@@ -3,12 +3,27 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from bertopic.representation import KeyBERTInspired, MaximalMarginalRelevance, PartOfSpeech
-from bertopic.vectorizers import ClassTfidfTransformer
 from sklearn.feature_extraction.text import CountVectorizer, ENGLISH_STOP_WORDS
-from sentence_transformers import SentenceTransformer
-from umap import UMAP
-from hdbscan import HDBSCAN
+try:
+    from bertopic.representation import KeyBERTInspired, MaximalMarginalRelevance, PartOfSpeech
+    from bertopic.vectorizers import ClassTfidfTransformer
+except ImportError:  # pragma: no cover - exercised in minimal test envs
+    KeyBERTInspired = None
+    MaximalMarginalRelevance = None
+    PartOfSpeech = None
+    ClassTfidfTransformer = None
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:  # pragma: no cover - exercised in minimal test envs
+    SentenceTransformer = None
+try:
+    from umap import UMAP
+except ImportError:  # pragma: no cover - exercised in minimal test envs
+    UMAP = None
+try:
+    from hdbscan import HDBSCAN
+except ImportError:  # pragma: no cover - exercised in minimal test envs
+    HDBSCAN = None
 
 from app.services.embedding_client import VectorHostEmbeddingProvider
 from app.settings import settings
@@ -16,6 +31,11 @@ import logging
 
 
 logger = logging.getLogger("topic-foundry.topic_engine")
+
+
+def _require_topic_engine_runtime() -> None:
+    if UMAP is None or HDBSCAN is None:
+        raise RuntimeError("umap-learn and hdbscan are required for Topic Foundry runtime")
 
 
 class VectorHostEmbeddingModel:
@@ -116,6 +136,7 @@ def _build_vectorizer(meta: Dict[str, Any]) -> CountVectorizer:
     return vectorizer
 
 def build_topic_engine(model_meta: Optional[Dict[str, Any]] = None) -> TopicEngineParts:
+    _require_topic_engine_runtime()
     meta = model_meta or {}
     embedding_backend = str(meta.get("embedding_backend") or settings.topic_foundry_embedding_backend).strip().lower()
     embedding_model_name = str(meta.get("embedding_model") or settings.topic_foundry_embedding_model).strip()
@@ -124,6 +145,8 @@ def build_topic_engine(model_meta: Optional[Dict[str, Any]] = None) -> TopicEngi
     representation = str(meta.get("representation") or settings.topic_foundry_representation).strip().lower()
 
     if embedding_backend == "st":
+        if SentenceTransformer is None:
+            raise RuntimeError("sentence-transformers dependency is required for embedding_backend='st'")
         embedding_model = SentenceTransformer(embedding_model_name)
     else:
         provider = VectorHostEmbeddingProvider(
@@ -163,14 +186,22 @@ def build_topic_engine(model_meta: Optional[Dict[str, Any]] = None) -> TopicEngi
     ctfidf_model = None
     vectorizer_model = None
     if representation == "keybert":
+        if KeyBERTInspired is None:
+            raise RuntimeError("bertopic dependency is required for representation='keybert'")
         representation_model = KeyBERTInspired()
     elif representation == "mmr":
+        if MaximalMarginalRelevance is None:
+            raise RuntimeError("bertopic dependency is required for representation='mmr'")
         representation_model = MaximalMarginalRelevance(diversity=0.3)
     elif representation == "pos":
+        if PartOfSpeech is None:
+            raise RuntimeError("bertopic dependency is required for representation='pos'")
         representation_model = PartOfSpeech("en_core_web_sm")
     elif representation == "llm":
         representation_model = None
     else:
+        if ClassTfidfTransformer is None:
+            raise RuntimeError("bertopic dependency is required for representation='ctfidf'")
         representation_model = None
         vectorizer_model = _build_vectorizer(meta)
         ctfidf_model = ClassTfidfTransformer(reduce_frequent_words=True)

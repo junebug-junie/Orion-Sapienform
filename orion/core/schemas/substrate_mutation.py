@@ -258,6 +258,47 @@ class CognitiveDraftRecommendationV1(BaseModel):
     notes: list[str] = Field(default_factory=list, max_length=64)
 
 
+class CognitiveProposalDraftV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    draft_id: str = Field(default_factory=lambda: f"substrate-mutation-cognitive-proposal-draft-{uuid4()}")
+    proposal_id: str
+    proposal_class: MutationClassV1
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_by: Literal["operator_review"] = "operator_review"
+    state: Literal["active_draft", "archived", "superseded"] = "active_draft"
+    title: str = ""
+    summary: str = ""
+    draft_content: dict[str, Any] = Field(default_factory=dict)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=128)
+    review_refs: list[str] = Field(default_factory=list, max_length=128)
+    safety_scope: dict[str, Any] = Field(default_factory=dict)
+    lineage: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list, max_length=64)
+
+
+class CognitiveStanceNoteV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    stance_note_id: str = Field(default_factory=lambda: f"substrate-mutation-cognitive-stance-note-{uuid4()}")
+    source_proposal_id: str
+    source_draft_id: str | None = None
+    proposal_class: MutationClassV1
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    visibility: Literal["metacog_only", "stance_and_metacog"] = "metacog_only"
+    status: Literal["active", "archived", "expired"] = "active"
+    ttl_turns: int = Field(default=20, ge=1, le=200)
+    summary: str = ""
+    note: str = ""
+    evidence_refs: list[str] = Field(default_factory=list, max_length=128)
+    review_ref: str | None = None
+    safety_scope: dict[str, Any] = Field(default_factory=dict)
+    lineage: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list, max_length=64)
+
+
 class RecallStrategyProfileV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

@@ -185,6 +185,17 @@ loadDismissedIds();
   const recallCanaryJudgmentTie = document.getElementById('recallCanaryJudgmentTie');
   const recallCanaryJudgmentBothBad = document.getElementById('recallCanaryJudgmentBothBad');
   const recallCanaryJudgmentInconclusive = document.getElementById('recallCanaryJudgmentInconclusive');
+  const cognitiveReviewPanel = document.getElementById('cognitiveReviewPanel');
+  const cognitiveReviewStatusMeta = document.getElementById('cognitiveReviewStatusMeta');
+  const cognitiveReviewStatusSummary = document.getElementById('cognitiveReviewStatusSummary');
+  const cognitiveProposalIdInput = document.getElementById('cognitiveProposalIdInput');
+  const cognitiveReviewRationaleInput = document.getElementById('cognitiveReviewRationaleInput');
+  const cognitiveReviewAcceptDraftButton = document.getElementById('cognitiveReviewAcceptDraftButton');
+  const cognitiveReviewRejectButton = document.getElementById('cognitiveReviewRejectButton');
+  const cognitiveReviewArchiveButton = document.getElementById('cognitiveReviewArchiveButton');
+  const cognitiveReviewSupersedeButton = document.getElementById('cognitiveReviewSupersedeButton');
+  const cognitiveDraftList = document.getElementById('cognitiveDraftList');
+  const cognitiveStanceNoteList = document.getElementById('cognitiveStanceNoteList');
   const substrateReviewDebugOpenModal = document.getElementById('substrateReviewDebugOpenModal');
   const substrateReviewModalRoot = document.getElementById('substrateReviewModalRoot');
   const substrateReviewModalBackdrop = document.getElementById('substrateReviewModalBackdrop');
@@ -359,9 +370,11 @@ loadDismissedIds();
   const hubTabButton = document.getElementById("hubTabButton");
   const topicStudioTabButton = document.getElementById("topicStudioTabButton");
   const serviceLogsTabButton = document.getElementById("serviceLogsTabButton");
-  const substrateTabButton = document.getElementById("substratePageLink");
-  const hubTabPanel = document.getElementById("hubTabPanel");
-  const topicStudioPanel = document.getElementById("topicStudioPanel");
+  // legacy id kept for test/backward-compat: const substrateTabButton = document.getElementById("substratePageLink");
+  const substrateLegacyTabButton = document.getElementById("substratePageLink");
+  const substrateTabButton = document.getElementById("substrateTabButton") || substrateLegacyTabButton;
+  const hubTabPanel = document.getElementById("hub") || document.getElementById("hubTabPanel");
+  const topicStudioPanel = document.getElementById("topic-studio") || document.getElementById("topicStudioPanel");
   const serviceLogsPanel = document.getElementById("service-logs");
   const substratePanel = document.getElementById("substrate");
   const substratePanelFrame = document.getElementById("substratePanelFrame");
@@ -2402,6 +2415,12 @@ loadDismissedIds();
       } else {
         chatStanceDebugModalBody.appendChild(buildChatStanceSection('Overview', model.overview || {}));
         chatStanceDebugModalBody.appendChild(buildChatStanceSection('Source Inputs by Category', model.source_inputs || {}));
+        chatStanceDebugModalBody.appendChild(
+          buildChatStanceSection(
+            'Journal PageIndex',
+            (model.source_inputs && model.source_inputs.journal_pageindex) || {}
+          )
+        );
         chatStanceDebugModalBody.appendChild(buildChatStanceSection('Synthesized Brief', model.synthesized_brief || {}));
         chatStanceDebugModalBody.appendChild(buildChatStanceSection('Enforcement / Fallback', model.enforcement || {}));
         chatStanceDebugModalBody.appendChild(buildChatStanceSection('Final Prompt Contract', model.final_prompt_contract || {}));
@@ -2715,6 +2734,54 @@ loadDismissedIds();
     const payload = await substrateReviewFetch('/api/substrate/recall-canary/status');
     renderRecallCanaryStatus(payload);
     return payload;
+  }
+
+  async function refreshCognitiveReviewPanel() {
+    if (!cognitiveReviewPanel || !cognitiveReviewStatusMeta || !cognitiveReviewStatusSummary) return;
+    const status = await api('/api/substrate/cognitive-proposals/status');
+    const statusData = (status && status.data) || {};
+    const posture = statusData.review_posture || {};
+    cognitiveReviewStatusMeta.textContent = `live_apply_enabled=${String(statusData.live_apply_enabled === true)} · recommended=${String(posture.recommended_action || 'monitor')}`;
+    cognitiveReviewStatusSummary.innerHTML = '';
+    const lines = [
+      `pending_review=${Number(posture.pending_review_count || 0)}`,
+      `active_drafts=${Number(posture.active_draft_count || 0)}`,
+      `active_stance_notes=${Number(posture.active_stance_note_count || 0)}`,
+    ];
+    lines.forEach((line) => {
+      const row = document.createElement('div');
+      row.className = 'autonomy-readiness-row';
+      row.textContent = line;
+      cognitiveReviewStatusSummary.appendChild(row);
+    });
+    if (cognitiveDraftList) {
+      const drafts = await api('/api/substrate/cognitive-drafts?limit=8');
+      const rows = ((drafts && drafts.data && drafts.data.drafts) || []).slice(0, 8);
+      cognitiveDraftList.textContent = rows.length
+        ? rows.map((row) => `${row.draft_id} · ${row.state} · ${row.proposal_class}`).join('\n')
+        : 'No drafts loaded.';
+    }
+    if (cognitiveStanceNoteList) {
+      const notes = await api('/api/substrate/cognitive-stance-notes?limit=8');
+      const rows = ((notes && notes.data && notes.data.stance_notes) || []).slice(0, 8);
+      cognitiveStanceNoteList.textContent = rows.length
+        ? rows.map((row) => `${row.stance_note_id} · ${row.status} · ${row.visibility}`).join('\n')
+        : 'No stance notes loaded.';
+    }
+  }
+
+  async function submitCognitiveProposalReview(decision) {
+    const proposalId = (cognitiveProposalIdInput && cognitiveProposalIdInput.value ? cognitiveProposalIdInput.value.trim() : '');
+    if (!proposalId) throw new Error('proposal_id is required');
+    await api(`/api/substrate/cognitive-proposals/${encodeURIComponent(proposalId)}/review`, {
+      method: 'POST',
+      body: JSON.stringify({
+        decision,
+        rationale: cognitiveReviewRationaleInput ? cognitiveReviewRationaleInput.value || '' : '',
+      }),
+    });
+    await refreshCognitiveReviewPanel();
+    await refreshAutonomyReadinessPanel();
   }
 
   async function runRecallCanaryQuery() {
@@ -6131,6 +6198,42 @@ loadDismissedIds();
   if (recallCanaryJudgmentTie) recallCanaryJudgmentTie.addEventListener('click', () => updateRecallCanaryJudgmentSelection('tie'));
   if (recallCanaryJudgmentBothBad) recallCanaryJudgmentBothBad.addEventListener('click', () => updateRecallCanaryJudgmentSelection('both_bad'));
   if (recallCanaryJudgmentInconclusive) recallCanaryJudgmentInconclusive.addEventListener('click', () => updateRecallCanaryJudgmentSelection('inconclusive'));
+  if (cognitiveReviewAcceptDraftButton) {
+    cognitiveReviewAcceptDraftButton.addEventListener('click', async () => {
+      try {
+        await submitCognitiveProposalReview('accept_as_draft');
+      } catch (err) {
+        if (cognitiveReviewStatusMeta) cognitiveReviewStatusMeta.textContent = `Accept draft failed: ${String(err.message || err)}`;
+      }
+    });
+  }
+  if (cognitiveReviewRejectButton) {
+    cognitiveReviewRejectButton.addEventListener('click', async () => {
+      try {
+        await submitCognitiveProposalReview('reject');
+      } catch (err) {
+        if (cognitiveReviewStatusMeta) cognitiveReviewStatusMeta.textContent = `Reject failed: ${String(err.message || err)}`;
+      }
+    });
+  }
+  if (cognitiveReviewArchiveButton) {
+    cognitiveReviewArchiveButton.addEventListener('click', async () => {
+      try {
+        await submitCognitiveProposalReview('archive');
+      } catch (err) {
+        if (cognitiveReviewStatusMeta) cognitiveReviewStatusMeta.textContent = `Archive failed: ${String(err.message || err)}`;
+      }
+    });
+  }
+  if (cognitiveReviewSupersedeButton) {
+    cognitiveReviewSupersedeButton.addEventListener('click', async () => {
+      try {
+        await submitCognitiveProposalReview('supersede');
+      } catch (err) {
+        if (cognitiveReviewStatusMeta) cognitiveReviewStatusMeta.textContent = `Supersede failed: ${String(err.message || err)}`;
+      }
+    });
+  }
   ensureSubstrateReviewModalRootOnBody();
   if (substrateReviewDebugOpenModal) {
     substrateReviewDebugOpenModal.addEventListener('click', (event) => {
@@ -6337,6 +6440,9 @@ loadDismissedIds();
   });
   refreshRecallCanaryStatus().catch((err) => {
     if (recallCanaryStatusMeta) recallCanaryStatusMeta.textContent = `Recall canary status unavailable: ${String(err.message || err)}`;
+  });
+  refreshCognitiveReviewPanel().catch((err) => {
+    if (cognitiveReviewStatusMeta) cognitiveReviewStatusMeta.textContent = `Cognitive review unavailable: ${String(err.message || err)}`;
   });
   renderSocialInspectionState(null);
   loadResponseFeedbackOptions();

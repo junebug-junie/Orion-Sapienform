@@ -798,6 +798,29 @@ def _render_prompt(template_str: str, ctx: Dict[str, Any]) -> str:
     return tmpl.render(**render_ctx)
 
 
+def _journal_pageindex_step_consumed_by(*, chat_verb: str, step_name: str) -> str:
+    if chat_verb == "chat_general" and step_name == "synthesize_chat_stance_brief":
+        return "reflective_summary"
+    return "none"
+
+
+def _journal_pageindex_impl_from_ctx(ctx: Dict[str, Any]) -> str | None:
+    payload = ctx.get("journal_pageindex_context") if isinstance(ctx.get("journal_pageindex_context"), dict) else {}
+    if not payload:
+        return None
+    selected_blocks = payload.get("selected_blocks") if isinstance(payload.get("selected_blocks"), list) else []
+    for block in selected_blocks:
+        if not isinstance(block, dict):
+            continue
+        provenance = block.get("provenance") if isinstance(block.get("provenance"), dict) else {}
+        engine = str(provenance.get("engine") or "").strip()
+        if engine:
+            return engine
+    if bool(payload.get("fallback_invoked")):
+        return "native_fallback"
+    return "service"
+
+
 def _last_user_message(ctx: Dict[str, Any]) -> str:
     msgs = ctx.get("messages") or []
     if isinstance(msgs, list):
@@ -1923,6 +1946,23 @@ async def call_step_services(
         reply_channel = f"orion:exec:result:{service}:{uuid4()}"
 
         # IMPORTANT: render prompts per-service so MetacogContextService mutations take effect
+        if step.verb_name in {"chat_general", "chat_quick"}:
+            journal_ctx = ctx.get("journal_pageindex_context") if isinstance(ctx.get("journal_pageindex_context"), dict) else {}
+            selected_entries = journal_ctx.get("selected_entries") if isinstance(journal_ctx, dict) else []
+            pageindex_result_count = len(selected_entries) if isinstance(selected_entries, list) else 0
+            consumed_by = _journal_pageindex_step_consumed_by(
+                chat_verb=str(step.verb_name or ""),
+                step_name=str(step.step_name or ""),
+            )
+            logger.info(
+                "chat_journal_pageindex_usage chat_verb=%s mode=%s journal_pageindex_context_present=%s journal_pageindex_impl=%s pageindex_result_count=%s consumed_by=%s",
+                step.verb_name,
+                ctx.get("mode"),
+                bool(journal_ctx),
+                _journal_pageindex_impl_from_ctx(ctx),
+                pageindex_result_count,
+                consumed_by,
+            )
         prompt = _render_prompt(step.prompt_template or "", ctx) if step.prompt_template else ""
 
         # ---- DEBUG BY EYE ----

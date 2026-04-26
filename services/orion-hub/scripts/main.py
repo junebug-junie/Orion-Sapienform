@@ -54,6 +54,22 @@ def _discover_git_sha() -> str:
         return ""
 
 
+def _ui_asset_mtime_token() -> str:
+    """Best-effort mtime token so uncommitted UI edits bust browser caches."""
+    candidates = [
+        STATIC_DIR / "js" / "app.js",
+        STATIC_DIR / "js" / "workflow-ui.js",
+        TEMPLATES_DIR / "index.html",
+    ]
+    mtimes: list[int] = []
+    for path in candidates:
+        try:
+            mtimes.append(int(path.stat().st_mtime))
+        except Exception:
+            continue
+    return str(max(mtimes)) if mtimes else ""
+
+
 def build_hub_ui_asset_version() -> str:
     """Build an explicit cache-busting token for Hub static assets."""
     explicit = os.getenv("HUB_UI_BUILD")
@@ -63,10 +79,21 @@ def build_hub_ui_asset_version() -> str:
     build_ts = os.getenv("BUILD_TIMESTAMP")
     service_version = settings.SERVICE_VERSION
 
-    for candidate in (explicit, build_id, git_sha, discovered_git_sha, build_ts, service_version):
+    # Honor explicit CI/build ids exactly.
+    for candidate in (explicit, build_id, git_sha, build_ts):
         value = str(candidate or "").strip()
         if value:
             return value
+    # For local/dev paths, include mtime token so restarts pick up UI edits.
+    mtime_token = _ui_asset_mtime_token()
+    if discovered_git_sha and mtime_token:
+        return f"{discovered_git_sha}-{mtime_token}"
+    if discovered_git_sha:
+        return discovered_git_sha
+    if service_version and mtime_token:
+        return f"{service_version}-{mtime_token}"
+    if service_version:
+        return service_version
     return "dev"
 
 

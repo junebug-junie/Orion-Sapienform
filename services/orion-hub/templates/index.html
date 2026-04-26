@@ -496,6 +496,39 @@
           </div>
         </div>
 
+        <div id="recallCanaryPanel" class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-3">
+          <div class="text-xs uppercase tracking-wide text-gray-400">Recall Canary</div>
+          <div class="grid grid-cols-1 gap-2">
+            <textarea id="recallCanaryQueryInput" class="w-full bg-gray-900/60 border border-gray-700 rounded p-2 text-[11px] text-gray-200" rows="2" placeholder="Manual canary query..."></textarea>
+            <button id="recallCanaryRunButton" class="rounded border border-indigo-500/40 bg-indigo-500/10 px-2 py-1 text-[11px] text-indigo-200 hover:bg-indigo-500/20" type="button">Run Canary Query</button>
+          </div>
+          <div id="recallCanaryStatusMeta" class="text-[10px] text-gray-500">No canary run yet.</div>
+          <div id="recallCanarySummary" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-1">No data yet.</div>
+          <div class="grid grid-cols-2 gap-2">
+            <button id="recallCanaryJudgmentV2Better" class="rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-200" type="button">V2 better</button>
+            <button id="recallCanaryJudgmentV1Better" class="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[10px] text-amber-200" type="button">V1 better</button>
+            <button id="recallCanaryJudgmentTie" class="rounded border border-gray-600 bg-gray-700/40 px-2 py-1 text-[10px] text-gray-200" type="button">Tie</button>
+            <button id="recallCanaryJudgmentBothBad" class="rounded border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-[10px] text-rose-200" type="button">Both bad</button>
+            <button id="recallCanaryJudgmentInconclusive" class="rounded border border-sky-500/40 bg-sky-500/10 px-2 py-1 text-[10px] text-sky-200 col-span-2" type="button">Inconclusive</button>
+          </div>
+          <div id="recallCanaryFailureModes" class="grid grid-cols-1 gap-1 text-[10px] text-gray-300">
+            <label><input type="checkbox" value="missing_exact_anchor" class="recall-canary-failure-mode mr-1" />missing exact anchor</label>
+            <label><input type="checkbox" value="irrelevant_semantic_neighbor" class="recall-canary-failure-mode mr-1" />irrelevant semantic neighbor</label>
+            <label><input type="checkbox" value="stale_memory" class="recall-canary-failure-mode mr-1" />stale memory</label>
+            <label><input type="checkbox" value="unsupported_memory_claim" class="recall-canary-failure-mode mr-1" />unsupported memory claim</label>
+            <label><input type="checkbox" value="insufficient_context" class="recall-canary-failure-mode mr-1" />insufficient context</label>
+            <label><input type="checkbox" value="wrong_project" class="recall-canary-failure-mode mr-1" />wrong project</label>
+            <label><input type="checkbox" value="wrong_timeframe" class="recall-canary-failure-mode mr-1" />wrong timeframe</label>
+            <label><input type="checkbox" value="empty_result" class="recall-canary-failure-mode mr-1" />empty result</label>
+            <label><input type="checkbox" value="overbroad_result" class="recall-canary-failure-mode mr-1" />overbroad result</label>
+          </div>
+          <textarea id="recallCanaryOperatorNote" class="w-full bg-gray-900/60 border border-gray-700 rounded p-2 text-[11px] text-gray-200" rows="2" placeholder="Optional operator note"></textarea>
+          <div class="flex gap-2">
+            <button id="recallCanaryRecordJudgmentButton" class="rounded border border-indigo-500/40 bg-indigo-500/10 px-2 py-1 text-[11px] text-indigo-200 hover:bg-indigo-500/20" type="button">Record Judgment</button>
+            <button id="recallCanaryCreateReviewArtifactButton" class="rounded border border-violet-500/40 bg-violet-500/10 px-2 py-1 text-[11px] text-violet-200 hover:bg-violet-500/20" type="button">Create Review Artifact (Evidence Only)</button>
+          </div>
+        </div>
+
         <div class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-3">
           <div class="flex items-center justify-between gap-3">
             <div>

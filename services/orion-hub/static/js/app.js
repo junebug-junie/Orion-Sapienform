@@ -172,6 +172,19 @@ loadDismissedIds();
   const autonomyReadinessMeta = document.getElementById('autonomyReadinessMeta');
   const autonomyReadinessOverview = document.getElementById('autonomyReadinessOverview');
   const autonomyReadinessWarnings = document.getElementById('autonomyReadinessWarnings');
+  const recallCanaryPanel = document.getElementById('recallCanaryPanel');
+  const recallCanaryQueryInput = document.getElementById('recallCanaryQueryInput');
+  const recallCanaryRunButton = document.getElementById('recallCanaryRunButton');
+  const recallCanaryStatusMeta = document.getElementById('recallCanaryStatusMeta');
+  const recallCanarySummary = document.getElementById('recallCanarySummary');
+  const recallCanaryOperatorNote = document.getElementById('recallCanaryOperatorNote');
+  const recallCanaryRecordJudgmentButton = document.getElementById('recallCanaryRecordJudgmentButton');
+  const recallCanaryCreateReviewArtifactButton = document.getElementById('recallCanaryCreateReviewArtifactButton');
+  const recallCanaryJudgmentV2Better = document.getElementById('recallCanaryJudgmentV2Better');
+  const recallCanaryJudgmentV1Better = document.getElementById('recallCanaryJudgmentV1Better');
+  const recallCanaryJudgmentTie = document.getElementById('recallCanaryJudgmentTie');
+  const recallCanaryJudgmentBothBad = document.getElementById('recallCanaryJudgmentBothBad');
+  const recallCanaryJudgmentInconclusive = document.getElementById('recallCanaryJudgmentInconclusive');
   const substrateReviewDebugOpenModal = document.getElementById('substrateReviewDebugOpenModal');
   const substrateReviewModalRoot = document.getElementById('substrateReviewModalRoot');
   const substrateReviewModalBackdrop = document.getElementById('substrateReviewModalBackdrop');
@@ -271,6 +284,9 @@ loadDismissedIds();
   let lastChatStanceDebug = null;
   let lastSubstrateReviewStatus = null;
   let lastSubstrateReviewAction = null;
+  let lastAutonomyReadinessSnapshot = null;
+  let lastRecallCanaryRunId = null;
+  let selectedRecallCanaryJudgment = null;
 
   // Controls
   const speedControl = document.getElementById('speedControl');
@@ -2607,6 +2623,7 @@ loadDismissedIds();
 
   function updateAutonomyReadinessPanel(snapshot) {
     if (!autonomyReadinessPanel || !autonomyReadinessMeta || !autonomyReadinessOverview) return;
+    lastAutonomyReadinessSnapshot = snapshot || null;
     const overall = snapshot && snapshot.overall ? snapshot.overall : {};
     const scheduler = snapshot && snapshot.scheduler ? snapshot.scheduler : {};
     const surfaces = snapshot && snapshot.surfaces ? snapshot.surfaces : {};
@@ -2620,6 +2637,7 @@ loadDismissedIds();
     const proposalOnlyCount = Array.isArray(surfaces.proposal_only) ? surfaces.proposal_only.length : 0;
     const blockedCount = Array.isArray(surfaces.blocked) ? surfaces.blocked.length : 0;
     const recallReadiness = (recall.readiness && recall.readiness.recommendation) || 'unavailable';
+    const manualCanary = recall.manual_canary || {};
     const pressureTop = Array.isArray(pressure.top_pressure_keys) && pressure.top_pressure_keys.length
       ? pressure.top_pressure_keys.slice(0, 2).map((row) => `${row.key || '--'}:${row.count ?? '--'}`).join(', ')
       : 'No data yet';
@@ -2633,6 +2651,7 @@ loadDismissedIds();
       `scheduler: enabled=${scheduler.enabled ? 'yes' : 'no'} proposals=${scheduler.proposal_enabled ? 'yes' : 'no'} apply=${scheduler.apply_enabled ? 'yes' : 'no'}`,
       `surfaces: live=${liveCount} shadow=${shadowCount} proposal-only=${proposalOnlyCount} blocked=${blockedCount}`,
       `recall: production=${recall.production_mode || 'v1'} live_apply=${recall.live_apply_enabled ? 'true' : 'false'} readiness=${recallReadiness}`,
+      `recall manual canary: runs=${manualCanary.run_count ?? 0} review_artifacts=${manualCanary.review_artifact_count ?? 0} recommended=${manualCanary.recommended_canary_action || '--'}`,
       `cognitive: live_apply=${cognitive.live_apply_enabled ? 'true' : 'false'} proposal_states=${JSON.stringify(cognitive.counts_by_state || {})}`,
       `pressure: ${pressureTop}`,
       `activity: applies=${recentApplies} rollbacks=${recentRollbacks}`,
@@ -2650,6 +2669,97 @@ loadDismissedIds();
   async function refreshAutonomyReadinessPanel() {
     const payload = await substrateReviewFetch('/api/substrate/autonomy-readiness');
     updateAutonomyReadinessPanel(payload || {});
+    return payload;
+  }
+
+  function selectedRecallCanaryFailureModes() {
+    return Array.from(document.querySelectorAll('.recall-canary-failure-mode:checked')).map((el) => el.value);
+  }
+
+  function updateRecallCanaryJudgmentSelection(judgment) {
+    selectedRecallCanaryJudgment = judgment;
+    const buttonMap = {
+      v2_better: recallCanaryJudgmentV2Better,
+      v1_better: recallCanaryJudgmentV1Better,
+      tie: recallCanaryJudgmentTie,
+      both_bad: recallCanaryJudgmentBothBad,
+      inconclusive: recallCanaryJudgmentInconclusive,
+    };
+    Object.entries(buttonMap).forEach(([key, button]) => {
+      if (!button) return;
+      button.classList.toggle('ring-2', key === judgment);
+      button.classList.toggle('ring-indigo-400', key === judgment);
+    });
+  }
+
+  function renderRecallCanaryStatus(payload) {
+    if (!recallCanaryPanel || !recallCanarySummary || !recallCanaryStatusMeta) return;
+    const data = payload && payload.data ? payload.data : {};
+    const judgmentCounts = data.judgment_counts || {};
+    const recommended = ((lastAutonomyReadinessSnapshot && lastAutonomyReadinessSnapshot.recall && lastAutonomyReadinessSnapshot.recall.manual_canary && lastAutonomyReadinessSnapshot.recall.manual_canary.recommended_canary_action) || '--');
+    recallCanaryStatusMeta.textContent = `runs=${data.run_count ?? 0} · review_artifacts=${data.review_artifact_count ?? 0} · recommended=${recommended}`;
+    recallCanarySummary.innerHTML = '';
+    [
+      `judgments: v2_better=${judgmentCounts.v2_better ?? 0}, v1_better=${judgmentCounts.v1_better ?? 0}, tie=${judgmentCounts.tie ?? 0}, both_bad=${judgmentCounts.both_bad ?? 0}, inconclusive=${judgmentCounts.inconclusive ?? 0}`,
+      `failure modes: ${JSON.stringify(data.failure_mode_counts || {})}`,
+      `last review artifact: ${data.last_review_artifact_at || '--'}`,
+    ].forEach((line) => {
+      const row = document.createElement('div');
+      row.className = 'autonomy-readiness-row';
+      row.textContent = line;
+      recallCanarySummary.appendChild(row);
+    });
+  }
+
+  async function refreshRecallCanaryStatus() {
+    const payload = await substrateReviewFetch('/api/substrate/recall-canary/status');
+    renderRecallCanaryStatus(payload);
+    return payload;
+  }
+
+  async function runRecallCanaryQuery() {
+    const queryText = (recallCanaryQueryInput && recallCanaryQueryInput.value ? recallCanaryQueryInput.value.trim() : '');
+    if (!queryText) throw new Error('Canary query text is required');
+    const payload = await substrateReviewFetch('/api/substrate/recall-canary/query', {
+      method: 'POST',
+      body: JSON.stringify({ query_text: queryText }),
+    });
+    lastRecallCanaryRunId = payload && payload.data ? payload.data.canary_run_id : null;
+    await refreshRecallCanaryStatus();
+    return payload;
+  }
+
+  async function recordRecallCanaryJudgment() {
+    if (!lastRecallCanaryRunId) throw new Error('No canary run available');
+    if (!selectedRecallCanaryJudgment) throw new Error('Select a judgment');
+    const payload = await substrateReviewFetch(`/api/substrate/recall-canary/runs/${encodeURIComponent(lastRecallCanaryRunId)}/judgment`, {
+      method: 'POST',
+      body: JSON.stringify({
+        judgment: selectedRecallCanaryJudgment,
+        failure_modes: selectedRecallCanaryFailureModes(),
+        operator_note: recallCanaryOperatorNote ? recallCanaryOperatorNote.value : '',
+        should_emit_pressure: true,
+        should_mark_review_candidate: false,
+      }),
+    });
+    await refreshRecallCanaryStatus();
+    await refreshAutonomyReadinessPanel();
+    return payload;
+  }
+
+  async function createRecallCanaryReviewArtifact() {
+    if (!lastRecallCanaryRunId) throw new Error('No canary run available');
+    const payload = await substrateReviewFetch(`/api/substrate/recall-canary/runs/${encodeURIComponent(lastRecallCanaryRunId)}/create-review-artifact`, {
+      method: 'POST',
+      body: JSON.stringify({
+        review_type: 'production_candidate_evidence',
+        include_comparison_summary: true,
+        include_operator_judgment: true,
+        operator_note: recallCanaryOperatorNote ? recallCanaryOperatorNote.value : '',
+      }),
+    });
+    await refreshRecallCanaryStatus();
+    await refreshAutonomyReadinessPanel();
     return payload;
   }
 
@@ -5989,6 +6099,38 @@ loadDismissedIds();
   if (autonomyReadinessToggle) {
     autonomyReadinessToggle.addEventListener('click', toggleAutonomyReadinessPanel);
   }
+  if (recallCanaryRunButton) {
+    recallCanaryRunButton.addEventListener('click', async () => {
+      try {
+        await runRecallCanaryQuery();
+      } catch (err) {
+        if (recallCanaryStatusMeta) recallCanaryStatusMeta.textContent = `Canary query failed: ${String(err.message || err)}`;
+      }
+    });
+  }
+  if (recallCanaryRecordJudgmentButton) {
+    recallCanaryRecordJudgmentButton.addEventListener('click', async () => {
+      try {
+        await recordRecallCanaryJudgment();
+      } catch (err) {
+        if (recallCanaryStatusMeta) recallCanaryStatusMeta.textContent = `Record judgment failed: ${String(err.message || err)}`;
+      }
+    });
+  }
+  if (recallCanaryCreateReviewArtifactButton) {
+    recallCanaryCreateReviewArtifactButton.addEventListener('click', async () => {
+      try {
+        await createRecallCanaryReviewArtifact();
+      } catch (err) {
+        if (recallCanaryStatusMeta) recallCanaryStatusMeta.textContent = `Create review artifact failed: ${String(err.message || err)}`;
+      }
+    });
+  }
+  if (recallCanaryJudgmentV2Better) recallCanaryJudgmentV2Better.addEventListener('click', () => updateRecallCanaryJudgmentSelection('v2_better'));
+  if (recallCanaryJudgmentV1Better) recallCanaryJudgmentV1Better.addEventListener('click', () => updateRecallCanaryJudgmentSelection('v1_better'));
+  if (recallCanaryJudgmentTie) recallCanaryJudgmentTie.addEventListener('click', () => updateRecallCanaryJudgmentSelection('tie'));
+  if (recallCanaryJudgmentBothBad) recallCanaryJudgmentBothBad.addEventListener('click', () => updateRecallCanaryJudgmentSelection('both_bad'));
+  if (recallCanaryJudgmentInconclusive) recallCanaryJudgmentInconclusive.addEventListener('click', () => updateRecallCanaryJudgmentSelection('inconclusive'));
   ensureSubstrateReviewModalRootOnBody();
   if (substrateReviewDebugOpenModal) {
     substrateReviewDebugOpenModal.addEventListener('click', (event) => {
@@ -6192,6 +6334,9 @@ loadDismissedIds();
   });
   refreshAutonomyReadinessPanel().catch((err) => {
     if (autonomyReadinessMeta) autonomyReadinessMeta.textContent = `Autonomy readiness unavailable: ${String(err.message || err)}`;
+  });
+  refreshRecallCanaryStatus().catch((err) => {
+    if (recallCanaryStatusMeta) recallCanaryStatusMeta.textContent = `Recall canary status unavailable: ${String(err.message || err)}`;
   });
   renderSocialInspectionState(null);
   loadResponseFeedbackOptions();

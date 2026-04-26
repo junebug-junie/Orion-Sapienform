@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from fastapi import APIRouter, HTTPException
 from psycopg2 import OperationalError
 from psycopg2 import errors as pg_errors
@@ -10,6 +11,7 @@ from app.models import (
     DatasetCreateRequest,
     DatasetCreateResponse,
     DatasetListResponse,
+    DatasetPreviewDetailResponse,
     DatasetPreviewRequest,
     DatasetPreviewResponse,
     DatasetSpec,
@@ -17,7 +19,7 @@ from app.models import (
     WindowingSpec,
 )
 from app.services.data_access import InvalidSourceTableError, validate_dataset_columns, validate_dataset_source_table
-from app.services.preview import preview_dataset
+from app.services.preview import preview_dataset, preview_doc_detail
 from app.storage.repository import create_dataset, fetch_dataset, list_datasets, update_dataset, utc_now
 
 
@@ -54,6 +56,10 @@ def create_dataset_endpoint(payload: DatasetCreateRequest) -> DatasetCreateRespo
     try:
         validate_dataset_source_table(dataset)
         validate_dataset_columns(dataset)
+    except KeyError as exc:
+        detail = {"ok": False, "error": "invalid_request", "detail": f"missing field: {exc}"}
+        logger.warning("Preview detail failed due to missing field", exc_info=True)
+        raise HTTPException(status_code=422, detail=detail) from exc
     except (InvalidSourceTableError, ValueError) as exc:
         detail = {"ok": False, "error": "invalid_source_table", "detail": str(exc) or "Invalid source_table"}
         logger.warning("Create dataset failed due to invalid source_table", exc_info=True)
@@ -93,6 +99,10 @@ def update_dataset_endpoint(dataset_id: UUID, payload: DatasetUpdateRequest) -> 
     try:
         validate_dataset_source_table(updated)
         validate_dataset_columns(updated)
+    except KeyError as exc:
+        detail = {"ok": False, "error": "invalid_request", "detail": f"missing field: {exc}"}
+        logger.warning("Preview detail failed due to missing field", exc_info=True)
+        raise HTTPException(status_code=422, detail=detail) from exc
     except (InvalidSourceTableError, ValueError) as exc:
         detail = {"ok": False, "error": "invalid_source_table", "detail": str(exc) or "Invalid source_table"}
         logger.warning("Update dataset failed due to invalid source_table", exc_info=True)
@@ -143,6 +153,10 @@ def preview_dataset_endpoint(payload: DatasetPreviewRequest) -> DatasetPreviewRe
             raise HTTPException(status_code=400, detail=detail)
         result = preview_dataset(resolved)
         return result
+    except KeyError as exc:
+        detail = {"ok": False, "error": "invalid_request", "detail": f"missing field: {exc}"}
+        logger.warning("Preview detail failed due to missing field", exc_info=True)
+        raise HTTPException(status_code=422, detail=detail) from exc
     except (InvalidSourceTableError, ValueError) as exc:
         detail = {
             "ok": False,
@@ -162,3 +176,82 @@ def preview_dataset_endpoint(payload: DatasetPreviewRequest) -> DatasetPreviewRe
     except Exception as exc:  # noqa: BLE001
         logger.exception("Preview failed unexpectedly")
         raise HTTPException(status_code=500, detail="Preview failed") from exc
+
+
+@router.get("/datasets/{dataset_id}/preview/docs/{doc_id}", response_model=DatasetPreviewDetailResponse)
+def preview_doc_detail_endpoint(
+    dataset_id: UUID,
+    doc_id: str,
+    start_at: datetime | None = None,
+    end_at: datetime | None = None,
+    windowing_mode: str = "document",
+    time_gap_minutes: int = 15,
+    max_chars: int = 6000,
+    boundary_column: str | None = None,
+    limit: int = 200,
+) -> DatasetPreviewDetailResponse:
+    logger.info(
+        "Preview detail request",
+        extra={
+            "dataset_id": str(dataset_id),
+            "doc_id": doc_id,
+            "windowing_mode": windowing_mode,
+            "time_gap_minutes": time_gap_minutes,
+            "max_chars": max_chars,
+        },
+    )
+    if not doc_id or not str(doc_id).strip():
+        raise HTTPException(status_code=404, detail="Preview doc not found")
+    dataset_spec = fetch_dataset(dataset_id)
+    if dataset_spec is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    effective_boundary = boundary_column or dataset_spec.boundary_column
+    dataset_for_preview = dataset_spec
+    if effective_boundary and dataset_spec.boundary_column != effective_boundary:
+        dataset_for_preview = dataset_spec.copy(update={"boundary_column": effective_boundary})
+
+    windowing_spec = WindowingSpec(
+        windowing_mode=windowing_mode,
+        time_gap_minutes=time_gap_minutes,
+        max_chars=max_chars,
+        boundary_column=effective_boundary,
+    )
+    resolved = DatasetPreviewRequest(
+        dataset=dataset_for_preview,
+        windowing=windowing_spec,
+        start_at=start_at,
+        end_at=end_at,
+        limit=limit,
+    )
+    try:
+        validate_dataset_source_table(dataset_for_preview)
+        validate_dataset_columns(dataset_for_preview)
+        if windowing_spec.windowing_mode.startswith("conversation") and not effective_boundary:
+            detail = {
+                "ok": False,
+                "error": "invalid_windowing",
+                "detail": f"boundary_column required for windowing_mode={windowing_spec.windowing_mode} dataset_id={dataset_spec.dataset_id}",
+            }
+            raise HTTPException(status_code=400, detail=detail)
+        detail = preview_doc_detail(resolved, doc_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="doc not found for current preview spec")
+        return detail
+    except HTTPException:
+        raise
+    except KeyError as exc:
+        detail = {"ok": False, "error": "invalid_request", "detail": f"missing field: {exc}"}
+        logger.warning("Preview detail failed due to missing field", exc_info=True)
+        raise HTTPException(status_code=422, detail=detail) from exc
+    except (InvalidSourceTableError, ValueError) as exc:
+        detail = {"ok": False, "error": "invalid_request", "detail": str(exc) or "Invalid request"}
+        logger.warning("Preview detail failed due to invalid request", exc_info=True)
+        raise HTTPException(status_code=400, detail=detail) from exc
+    except (pg_errors.UndefinedTable, pg_errors.InvalidSchemaName, pg_errors.InvalidName) as exc:
+        detail = {"ok": False, "error": "invalid_source_table", "detail": str(exc) or "Invalid source_table"}
+        logger.warning("Preview detail failed due to missing/invalid source_table", exc_info=True)
+        raise HTTPException(status_code=400, detail=detail) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Preview detail failed unexpectedly")
+        raise HTTPException(status_code=500, detail="Preview detail failed") from exc

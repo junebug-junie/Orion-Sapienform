@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -18,9 +19,25 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 for candidate in (str(REPO_ROOT), str(HUB_ROOT)):
     if candidate not in sys.path:
         sys.path.insert(0, candidate)
+hub_scripts_pkg = HUB_ROOT / "scripts" / "__init__.py"
+if (
+    "scripts" not in sys.modules
+    or not str(getattr(sys.modules.get("scripts"), "__file__", "")).startswith(str(HUB_ROOT))
+):
+    spec = importlib.util.spec_from_file_location(
+        "scripts",
+        str(hub_scripts_pkg),
+        submodule_search_locations=[str(HUB_ROOT / "scripts")],
+    )
+    if spec is not None and spec.loader is not None:
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["scripts"] = module
+        spec.loader.exec_module(module)
 
 from orion.core.schemas.substrate_review_runtime import GraphReviewRuntimeResultV1
 from scripts import api_routes
+from orion.core.schemas.substrate_mutation import MutationPressureEvidenceV1
+from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryRecordV1
 
 
 TEMPLATE_PATH = HUB_ROOT / "templates" / "index.html"
@@ -352,6 +369,121 @@ def test_mutation_lineage_readonly_endpoints(monkeypatch) -> None:
     monkeypatch.setattr(api_routes.SUBSTRATE_MUTATION_STORE, "active_surfaces_snapshot", lambda: [{"target_surface": "routing", "adoption_id": "a-1"}])
     monkeypatch.setattr(api_routes.SUBSTRATE_MUTATION_STORE, "recent_blocked_applies", lambda limit=20: [{"proposal_id": "p-1"}])
     monkeypatch.setattr(api_routes.SUBSTRATE_MUTATION_STORE, "recent_rollbacks", lambda limit=20: [{"rollback_id": "r-1"}])
+    monkeypatch.setattr(
+        api_routes.SUBSTRATE_MUTATION_STORE,
+        "recent_signals",
+        lambda limit=20, target_surface=None: [
+            {
+                "signal_id": "sig-1",
+                "detected_at": "2026-01-01T00:00:00+00:00",
+                "source_ref": "review-telemetry:tel-1",
+                "event_kind": "routing_runtime_degradation",
+                "target_surface": "routing",
+                "strength": 0.68,
+                "evidence_refs": [
+                    "pressure_event:pressure-evt-1",
+                    "telemetry:tel-1",
+                    "source_kind:runtime_degradation_signal",
+                ],
+                "metadata": {"source_kind": "runtime_degradation_signal"},
+            },
+            {
+                "signal_id": "sig-recall-1",
+                "detected_at": "2026-01-01T00:00:01+00:00",
+                "source_ref": "review-telemetry:tel-1",
+                "event_kind": "pressure_event:recall_miss_or_dissatisfaction",
+                "target_surface": "recall_strategy_profile",
+                "strength": 0.72,
+                "evidence_refs": [
+                    "pressure_event:pressure-evt-1",
+                    "recall_compare:selected_count_delta=2",
+                ],
+                "metadata": {"source_kind": "producer_pressure_event"},
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        api_routes.SUBSTRATE_MUTATION_STORE,
+        "lifecycle_for_proposal",
+        lambda proposal_id: {
+            "proposal": {"proposal_id": proposal_id, "lane": "cognitive", "target_surface": "cognitive_stance_continuity_adjustment"},
+            "signals": [{"signal_id": "sig-cog-1"}],
+            "pressure": {"pressure_kind": "stance_drift_pressure"},
+            "queue_item": None,
+            "trials": [],
+            "decisions": [{"action": "require_review"}],
+            "adoption": None,
+            "rollback": None,
+        },
+    )
+    monkeypatch.setattr(
+        api_routes.SUBSTRATE_MUTATION_STORE,
+        "_proposals",
+        {
+            "proposal-cog-1": type(
+                "_P",
+                (),
+                {
+                    "lane": "cognitive",
+                    "target_surface": "cognitive_stance_continuity_adjustment",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "model_dump": lambda self, mode="json": {
+                        "proposal_id": "proposal-cog-1",
+                        "lane": "cognitive",
+                        "target_surface": "cognitive_stance_continuity_adjustment",
+                    },
+                },
+            )()
+        },
+    )
+    monkeypatch.setattr(
+        api_routes.SUBSTRATE_MUTATION_STORE,
+        "record_cognitive_review",
+        lambda review: type(
+            "_D",
+            (),
+            {
+                "model_dump": lambda self, mode="json": {
+                    "draft_id": "draft-1",
+                    "proposal_id": review.proposal_id,
+                    "status": "draft_only_not_applied",
+                }
+            },
+        )(),
+    )
+    monkeypatch.setattr(api_routes.SUBSTRATE_MUTATION_STORE, "recent_cognitive_drafts", lambda limit=20: [{"draft_id": "draft-1"}])
+    monkeypatch.setattr(api_routes.SUBSTRATE_MUTATION_STORE, "recent_cognitive_reviews", lambda limit=20: [{"review_id": "review-1"}])
+    monkeypatch.setattr(
+        api_routes.SUBSTRATE_REVIEW_TELEMETRY_STORE,
+        "query",
+        lambda query: [
+            GraphReviewTelemetryRecordV1(
+                invocation_surface="chat_reflective_lane",
+                execution_outcome="executed",
+                selection_reason="producer_pressure_events:evt-1",
+                runtime_duration_ms=0,
+                anchor_scope="orion",
+                subject_ref="entity:orion",
+                target_zone="autonomy_graph",
+                pressure_events=[
+                    MutationPressureEvidenceV1(
+                        pressure_event_id="pressure-evt-1",
+                        source_service="orion-hub",
+                        source_event_id="feedback-1",
+                        correlation_id="corr-1",
+                        pressure_category="recall_miss_or_dissatisfaction",
+                        confidence=0.84,
+                        evidence_refs=["feedback:feedback-1"],
+                        metadata={
+                            "v1_v2_compare": {"v1_latency_ms": 120, "v2_latency_ms": 90, "selected_count_delta": 2},
+                            "anchor_plan": {"time_window_days": 1},
+                            "selected_evidence_cards": [{"id": "page-1"}],
+                        },
+                    )
+                ],
+            )
+        ],
+    )
     active = api_routes.api_substrate_mutation_runtime_active_surfaces()
     blocked = api_routes.api_substrate_mutation_runtime_blocked_applies(limit=5)
     rollbacks = api_routes.api_substrate_mutation_runtime_rollbacks(limit=5)
@@ -363,16 +495,84 @@ def test_mutation_lineage_readonly_endpoints(monkeypatch) -> None:
     monkeypatch.setattr(
         api_routes,
         "_routing_replay_inspection_payload",
-        lambda **kwargs: {"generated_at": "2026-01-01T00:00:00+00:00", "data": {"case_count": 2}},
+        lambda **kwargs: {
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "data": {
+                "case_count": 2,
+                "corpus_composition": {"rich_signal_case_count": 1, "rich_signal_coverage": 0.5},
+                "derived_metrics": {"evaluator_confidence": 0.65},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        api_routes,
+        "_routing_live_ramp_posture_payload",
+        lambda: {
+            "generated_at": "2026-01-01T00:00:00+00:00",
+            "data": {
+                "proposals_enabled": True,
+                "apply_enabled": False,
+                "last_decision": {"decision_id": "d-1"},
+                "last_adoption": None,
+                "last_rollback": None,
+                "live_surface": {"surface": "routing.chat_reflective_lane_threshold", "value": 0.5},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        api_routes,
+        "build_mutation_cognition_context",
+        lambda **kwargs: {"mutation_scope": "routing_threshold_patch_only", "live_ramp_active": True},
     )
     live = api_routes.api_substrate_mutation_runtime_live_routing_surface()
     replay = api_routes.api_substrate_mutation_runtime_routing_replay_inspect(limit=12)
+    posture = api_routes.api_substrate_mutation_runtime_routing_live_ramp_posture()
+    cognition = api_routes.api_substrate_mutation_runtime_cognition_context()
+    pressure_sources = api_routes.api_substrate_mutation_runtime_routing_pressure_sources(limit=5)
+    producer_pressure = api_routes.api_substrate_mutation_runtime_producer_pressure_events(limit=5)
+    recall_pressure = api_routes.api_substrate_mutation_runtime_recall_pressure_events(limit=5)
+    recall_proposals = api_routes.api_substrate_mutation_runtime_recall_strategy_proposals(limit=5)
+    recall_eval = api_routes.api_substrate_mutation_runtime_recall_v1_v2_latest_eval()
+    cognitive_pressure = api_routes.api_substrate_mutation_runtime_cognitive_pressure(limit=5)
+    cognitive_proposals = api_routes.api_substrate_mutation_runtime_cognitive_proposals(limit=5)
+    cognitive_detail = api_routes.api_substrate_mutation_runtime_cognitive_proposal_detail("proposal-cog-1")
+    cognitive_evidence = api_routes.api_substrate_mutation_runtime_cognitive_proposal_evidence("proposal-cog-1")
+    cognitive_lineage = api_routes.api_substrate_mutation_runtime_cognitive_proposal_lineage("proposal-cog-1")
+    cognitive_review = api_routes.api_substrate_mutation_runtime_cognitive_proposal_review(
+        "proposal-cog-1",
+        api_routes.CognitiveProposalReviewRequest(state="accepted_as_draft"),
+    )
+    cognitive_drafts = api_routes.api_substrate_mutation_runtime_cognitive_drafts(limit=5)
     assert active["data"]["active_surfaces"][0]["target_surface"] == "routing"
     assert blocked["data"]["recent_blocked_applies"][0]["proposal_id"] == "p-1"
     assert rollbacks["data"]["recent_rollbacks"][0]["rollback_id"] == "r-1"
     assert live["data"]["surface"] == "routing.chat_reflective_lane_threshold"
     assert live["data"]["value"] == 0.5
     assert replay["data"]["case_count"] == 2
+    assert replay["data"]["corpus_composition"]["rich_signal_case_count"] == 1
+    assert replay["data"]["derived_metrics"]["evaluator_confidence"] == 0.65
+    assert posture["data"]["proposals_enabled"] is True
+    assert posture["data"]["apply_enabled"] is False
+    assert posture["data"]["last_decision"]["decision_id"] == "d-1"
+    assert cognition["data"]["mutation_scope"] == "routing_threshold_patch_only"
+    assert cognition["data"]["live_ramp_active"] is True
+    assert pressure_sources["data"]["routing_pressure_sources"][0]["source_kind"] == "runtime_degradation_signal"
+    assert pressure_sources["data"]["routing_pressure_sources"][0]["derived_signal_kind"] == "routing_runtime_degradation"
+    assert producer_pressure["data"]["recent_events"][0]["pressure_event_id"] == "pressure-evt-1"
+    assert producer_pressure["data"]["recent_events"][0]["linked_signal_ids"] == ["sig-1", "sig-recall-1"]
+    assert recall_pressure["data"]["recent_recall_pressure_events"][0]["pressure_event_id"] == "pressure-evt-1"
+    assert recall_pressure["data"]["recent_recall_pressure_events"][0]["linked_signal_ids"] == ["sig-recall-1"]
+    assert recall_proposals["data"]["recent_recall_strategy_proposals"] == []
+    assert recall_eval["data"]["latest_recall_v1_v2_eval_summary"]["v1_v2_compare"]["selected_count_delta"] == 2
+    assert "recent_recall_eval_suite_rows" in recall_eval["data"]
+    assert cognitive_pressure["data"]["recent_cognitive_pressure"] == []
+    assert cognitive_proposals["data"]["recent_cognitive_proposals"][0]["lane"] == "cognitive"
+    assert cognitive_detail["data"]["proposal"]["proposal_id"] == "proposal-cog-1"
+    assert cognitive_evidence["data"]["proposal_id"] == "proposal-cog-1"
+    assert cognitive_lineage["data"]["lineage"]["proposal"]["proposal_id"] == "proposal-cog-1"
+    assert cognitive_review["data"]["review"]["state"] == "accepted_as_draft"
+    assert cognitive_review["data"]["draft_recommendation"]["status"] == "draft_only_not_applied"
+    assert cognitive_drafts["data"]["draft_recommendations"][0]["draft_id"] == "draft-1"
 
 
 def test_hub_substrate_debug_surface_does_not_embed_standalone_page() -> None:
@@ -383,3 +583,50 @@ def test_hub_substrate_debug_surface_does_not_embed_standalone_page() -> None:
     assert 'src="/substrate"' in index_html
     assert "substrate.js" not in index_html
     assert "window.OrionHub" not in app_js
+
+
+def test_autonomy_readiness_endpoint_returns_unified_read_only_snapshot() -> None:
+    payload = api_routes.api_substrate_autonomy_readiness()
+
+    assert payload["schema_version"] == "autonomy_readiness.v1"
+    assert "generated_at" in payload
+    assert "overall" in payload
+    assert "scheduler" in payload
+    assert "policy_matrix" in payload
+    assert "surfaces" in payload
+    assert "routing" in payload
+    assert "recall" in payload
+    assert "cognitive" in payload
+    assert "pressure" in payload
+    assert "recent_activity" in payload
+    assert "safe_next_actions" in payload
+    assert "warnings" in payload
+    assert payload["recall"]["production_mode"] == "v1"
+    assert payload["recall"]["live_apply_enabled"] is False
+    assert payload["cognitive"]["live_apply_enabled"] is False
+
+
+def test_autonomy_readiness_endpoint_tolerates_partial_failures(monkeypatch) -> None:
+    monkeypatch.setattr(api_routes, "_routing_live_ramp_posture_payload", lambda: (_ for _ in ()).throw(RuntimeError("routing unavailable")))
+    monkeypatch.setattr(api_routes, "readiness_from_telemetry_records", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("readiness unavailable")))
+
+    payload = api_routes.api_substrate_autonomy_readiness()
+
+    assert payload["schema_version"] == "autonomy_readiness.v1"
+    assert isinstance(payload["warnings"], list)
+    assert any("routing_posture_unavailable" in item for item in payload["warnings"])
+    assert any("recall_posture_unavailable" in item for item in payload["warnings"])
+
+
+def test_autonomy_readiness_policy_matrix_blocks_recall_and_cognitive_live_apply() -> None:
+    payload = api_routes.api_substrate_autonomy_readiness()
+    surfaces = payload["policy_matrix"]["surfaces"]
+    by_surface = {str(item.get("surface")): item for item in surfaces}
+
+    assert by_surface["routing_threshold_patch"]["apply"] == "gated_auto"
+    assert by_surface["recall_strategy_profile"]["status"] == "shadow_staged_only"
+    assert "recall_weighting_patch_live_apply" in by_surface["recall_strategy_profile"]["forbidden"]
+    assert by_surface["cognitive_self_model"]["apply"] == "forbidden"
+    assert payload["surfaces"]["live"] == [] or all(
+        row.get("surface") == "routing_threshold_patch" for row in payload["surfaces"]["live"]
+    )

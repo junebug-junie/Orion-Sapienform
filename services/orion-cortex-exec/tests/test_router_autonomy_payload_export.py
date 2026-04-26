@@ -75,6 +75,10 @@ def test_router_exports_autonomy_metadata_from_chat_stance_context(monkeypatch) 
             "overview": {"fallback_invoked": False},
             "final_prompt_contract": {"chat_stance_brief": {"task_mode": "direct_response"}},
         },
+        "chat_mutation_cognition_context": {
+            "mutation_scope": "routing_threshold_patch_only",
+            "live_ramp_active": True,
+        },
     }
     result = asyncio.run(
         runner.run_plan(
@@ -91,6 +95,7 @@ def test_router_exports_autonomy_metadata_from_chat_stance_context(monkeypatch) 
     assert result.metadata["autonomy_backend"] == "graph"
     assert result.metadata["autonomy_selected_subject"] == "orion"
     assert result.metadata["chat_stance_debug"]["overview"]["fallback_invoked"] is False
+    assert result.metadata["mutation_cognition_context"]["mutation_scope"] == "routing_threshold_patch_only"
 
 
 def test_router_omits_autonomy_metadata_when_absent(monkeypatch) -> None:

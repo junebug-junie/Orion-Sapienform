@@ -31,6 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # smartctl/nvme live under /usr/sbin; slim images often omit it from default PATH for non-root.
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV PYTHONUNBUFFERED=1
 
 # Upgrade pip
 RUN pip3 install --no-cache-dir --upgrade pip

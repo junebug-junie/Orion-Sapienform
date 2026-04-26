@@ -31,3 +31,16 @@ class RecallRequestBody(BaseModel):
 class RecallResponseBody(BaseModel):
     bundle: Dict[str, Any]
     debug: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RecallCompareRequestBody(BaseModel):
+    query_text: str = Field(..., validation_alias=AliasChoices("text", "query_text"))
+    profile: Optional[str] = None
+    session_id: Optional[str] = None
+    node_id: Optional[str] = None
+
+
+class RecallCompareResponseBody(BaseModel):
+    v1: Dict[str, Any]
+    v2: Dict[str, Any]
+    compare: Dict[str, Any]

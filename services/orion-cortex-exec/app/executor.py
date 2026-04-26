@@ -1407,6 +1407,12 @@ async def run_recall_step(
                     debug["drop_counts"] = (decision_dbg.get("dropped") or {})
                     debug["selected_summary"] = recall_dbg.get("selected_summary") or []
                     debug["latency_breakdown_ms"] = recall_dbg.get("latency_breakdown_ms") or {}
+                    pe = recall_dbg.get("pressure_events")
+                    if isinstance(pe, list) and pe:
+                        debug["pressure_events"] = pe
+                    for hoist_key in ("compare_summary", "anchor_plan_summary", "selected_evidence_cards"):
+                        if recall_dbg.get(hoist_key) is not None:
+                            debug[hoist_key] = recall_dbg.get(hoist_key)
         memory_digest = bundle.rendered if hasattr(bundle, "rendered") else ""
         debug["memory_digest"] = memory_digest
         debug["memory_digest_chars"] = len(memory_digest or "")

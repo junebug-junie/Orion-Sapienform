@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 
 from fastapi import FastAPI, HTTPException
 
@@ -9,11 +10,25 @@ from .pageindex_cli import PageIndexCliError
 from .service import JournalPageIndexService
 from .settings import settings
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, stream=sys.stdout, force=True)
 logger = logging.getLogger(settings.SERVICE_NAME)
 
 app = FastAPI(title="Orion PageIndex", version=settings.SERVICE_VERSION)
 svc = JournalPageIndexService()
+
+
+@app.on_event("startup")
+def _log_startup_config() -> None:
+    health = svc.health()
+    pageindex_proof = health.get("pageindex") if isinstance(health, dict) else {}
+    logger.info(
+        "startup service=%s pageindex_repo_path=%s installation_mode=%s health_ok=%s pageindex_proof_keys=%s",
+        settings.SERVICE_NAME,
+        settings.PAGEINDEX_REPO_PATH,
+        settings.PAGEINDEX_INSTALLATION_MODE,
+        bool(health.get("ok")) if isinstance(health, dict) else False,
+        sorted(pageindex_proof.keys()) if isinstance(pageindex_proof, dict) else [],
+    )
 
 
 @app.get("/healthz")

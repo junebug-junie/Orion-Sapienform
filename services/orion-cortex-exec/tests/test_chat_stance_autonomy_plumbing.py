@@ -73,6 +73,28 @@ def test_chat_stance_unavailable_autonomy_keeps_behavior_stable(monkeypatch) -> 
     assert fb.task_mode == "direct_response"
 
 
+def test_chat_stance_inputs_include_mutation_adaptation_context_from_metadata(monkeypatch) -> None:
+    repo = _Repo({})
+    monkeypatch.setattr(chat_stance, "build_autonomy_repository", lambda **_: repo)
+    ctx = {
+        "user_message": "help me with current routing posture",
+        "metadata": {
+            "mutation_cognition_context": {
+                "mutation_scope": "routing_threshold_patch_only",
+                "live_ramp_active": True,
+                "live_surface": {"value": 0.58},
+                "latest_routing_adoption": {"adoption_id": "adopt-1", "proposal_id": "prop-1"},
+                "latest_routing_rollback": {"rollback_id": "rb-1", "proposal_id": "prop-1"},
+            }
+        },
+    }
+    built = chat_stance.build_chat_stance_inputs(ctx)
+    assert built["mutation_adaptation"]["mutation_scope"] == "routing_threshold_patch_only"
+    assert built["mutation_adaptation"]["latest_routing_adoption"]["adoption_id"] == "adopt-1"
+    assert built["mutation_adaptation"]["latest_routing_rollback"]["rollback_id"] == "rb-1"
+    assert ctx["chat_mutation_cognition_context"]["live_ramp_active"] is True
+
+
 def test_chat_stance_autonomy_debug_contains_unavailable_reason(monkeypatch) -> None:
     monkeypatch.setenv("AUTONOMY_GRAPH_TIMEOUT_SEC", "4.5")
     monkeypatch.delenv("AUTONOMY_SUBJECT_MAX_WORKERS", raising=False)

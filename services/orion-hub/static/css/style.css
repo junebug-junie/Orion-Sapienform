@@ -61,3 +61,10 @@ input[type=range]::-moz-range-thumb {
   border-color: rgba(129, 140, 248, 0.85) !important;
   box-shadow: 0 0 0 1px rgba(129, 140, 248, 0.45);
 }
+
+.autonomy-readiness-row {
+  border: 1px solid rgba(55, 65, 81, 0.8);
+  background: rgba(3, 7, 18, 0.45);
+  border-radius: 0.5rem;
+  padding: 0.4rem 0.55rem;
+}

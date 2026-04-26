@@ -135,6 +135,13 @@ Read-only admin endpoints for mutation lifecycle inspection (manual route only, 
 - `GET /api/substrate/mutation-runtime/blocked-applies?limit=20`
 - `GET /api/substrate/mutation-runtime/rollbacks?limit=20`
 - `GET /api/substrate/mutation-runtime/routing-replay-inspect?limit=50`
+- `GET /api/substrate/mutation-runtime/routing-live-ramp-posture`
+- `GET /api/substrate/mutation-runtime/cognition-context`
+- `GET /api/substrate/mutation-runtime/routing-pressure-sources?limit=50`
+- `GET /api/substrate/mutation-runtime/producer-pressure-events?limit=50`
+- `GET /api/substrate/mutation-runtime/cognitive-pressure?limit=50`
+- `GET /api/substrate/mutation-runtime/cognitive-proposals?limit=20`
+- `GET /api/substrate/mutation-runtime/cognitive-proposals/<proposal-id>/lineage`
 
 Structured lifecycle logs are emitted with prefix `substrate_mutation_lifecycle` and include stable lineage keys (`lineage_id`, `proposal_id`, `queue_item_id`, `trial_id`, `decision`, `surface_key`, `blocked_reason`).
 
@@ -211,7 +218,28 @@ Live control-surface inspection:
 - `GET /api/substrate/mutation-runtime/live-routing-surface`
   - Returns current live value for `routing.chat_reflective_lane_threshold`, including control-surface store source/degraded metadata.
 - `GET /api/substrate/mutation-runtime/routing-replay-inspect`
-  - Returns routing replay corpus sample + replay-derived evaluator metrics for `routing_threshold_patch`.
+  - Returns routing replay corpus sample, corpus composition (rich-signal coverage), and replay-derived evaluator confidence/metrics for `routing_threshold_patch`.
+- `GET /api/substrate/mutation-runtime/routing-live-ramp-posture`
+  - Returns current ramp posture for `routing_threshold_patch` (proposals/apply gates, last decision/adoption/rollback, and live routing threshold).
+- `GET /api/substrate/mutation-runtime/cognition-context`
+  - Returns the mutation-derived context injected into cognition surfaces (routing live threshold, ramp active flags, latest routing proposal/decision/adoption/rollback, evaluator confidence/coverage).
+- `GET /api/substrate/mutation-runtime/routing-pressure-sources`
+  - Returns recent routing-lane mutation pressure inputs with provenance (`source_kind`, `evidence_refs`, `derived_signal_kind`, confidence) from runtime/social telemetry hints.
+- `GET /api/substrate/mutation-runtime/producer-pressure-events`
+  - Returns first-class producer pressure events (`source_service`, `source_event_id`, `correlation_id`, category, confidence, evidence refs) grouped by source/category and linked to generated routing mutation signals.
+- `GET /api/substrate/mutation-runtime/cognitive-pressure`
+  - Returns recent cognitive-lane pressure signals (`contradiction_pressure`, `identity_continuity_pressure`, `stance_drift_pressure`, `social_continuity_pressure`) with provenance/evidence.
+- `GET /api/substrate/mutation-runtime/cognitive-proposals`
+  - Returns recent cognitive lane proposals (proposal-only / operator-gated).
+- `GET /api/substrate/mutation-runtime/cognitive-proposals/<proposal-id>/lineage`
+  - Returns full lineage/evidence for a single cognitive proposal.
+
+Routing-only live ramp gates:
+
+- `SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED` (default `true`)
+- `SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED` (default `false`)
+- `SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED` (default `false`)
+- `SUBSTRATE_AUTONOMY_ROUTING_ROLLBACK_DELTA_THRESHOLD` (default `-0.05`)
 
 ---
 
@@ -329,6 +357,104 @@ curl -sS http://localhost:8080/api/chat \
 Expected:
 - Response includes `memory_digest` (when recall is enabled).
 - No events appear on bus patterns `orion:chat:history:*` for that request.
+
+---
+
+## Recall Strategy Staging + Shadow Ramp (Operator-Only)
+
+Safety invariants:
+- Production recall mode remains `v1`.
+- Recall strategy changes stay proposal/staging/shadow-only unless an operator explicitly acts.
+- `recall_weighting_patch` and `recall_*_candidate` live apply remain blocked by `PatchApplier`.
+
+### Stage a recall proposal into a profile
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/substrate/mutation-runtime/recall-strategy-proposals/<proposal_id>/promote-to-staged-profile" \
+  -H "content-type: application/json" \
+  -H "X-Orion-Operator-Token: $SUBSTRATE_MUTATION_OPERATOR_TOKEN" \
+  -d '{"override": false, "created_by": "operator"}'
+```
+
+### Activate staged profile for shadow compare/eval only
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/substrate/mutation-runtime/recall-strategy-profiles/<profile_id>/activate-shadow" \
+  -H "content-type: application/json" \
+  -H "X-Orion-Operator-Token: $SUBSTRATE_MUTATION_OPERATOR_TOKEN" \
+  -d '{"operator_rationale":"advance shadow ramp"}'
+```
+
+### Evaluate active shadow profile (dry-run / recording)
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/substrate/mutation-runtime/recall-shadow-profile/evaluate" \
+  -H "content-type: application/json" \
+  -H "X-Orion-Operator-Token: $SUBSTRATE_MUTATION_OPERATOR_TOKEN" \
+  -d '{"dry_run":true,"record_pressure_events":true,"corpus_limit":24}'
+```
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/substrate/mutation-runtime/recall-shadow-profile/evaluate" \
+  -H "content-type: application/json" \
+  -H "X-Orion-Operator-Token: $SUBSTRATE_MUTATION_OPERATOR_TOKEN" \
+  -d '{"dry_run":false,"record_pressure_events":true,"operator_rationale":"record latest eval telemetry"}'
+```
+
+### Review shadow eval run history
+
+```bash
+curl -sS "http://localhost:8080/api/substrate/mutation-runtime/recall-shadow-eval-runs?limit=20"
+```
+
+```bash
+curl -sS "http://localhost:8080/api/substrate/mutation-runtime/recall-shadow-eval-runs/<run_id>"
+```
+
+### Create production-candidate review artifact (operator-only, no production switch)
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/substrate/mutation-runtime/recall-strategy-profiles/<profile_id>/create-production-candidate-review" \
+  -H "content-type: application/json" \
+  -H "X-Orion-Operator-Token: $SUBSTRATE_MUTATION_OPERATOR_TOKEN" \
+  -d '{"override":false,"created_by":"operator","operator_checklist":{"eval_history_checked":true}}'
+```
+
+```bash
+curl -sS "http://localhost:8080/api/substrate/mutation-runtime/recall-production-candidate-reviews?limit=20"
+```
+
+### Inspect profile + posture endpoints
+
+- `GET /api/substrate/mutation-runtime/recall-strategy-profiles`
+- `GET /api/substrate/mutation-runtime/recall-strategy-profiles/{profile_id}`
+- `GET /api/substrate/mutation-runtime/recall-strategy-profiles/{profile_id}/lineage`
+- `GET /api/substrate/mutation-runtime/recall-shadow-profile-posture`
+- `GET /api/substrate/mutation-runtime/recall-shadow-eval-runs`
+- `GET /api/substrate/mutation-runtime/recall-shadow-eval-runs/{run_id}`
+- `GET /api/substrate/mutation-runtime/recall-production-candidate-reviews`
+- `GET /api/substrate/mutation-runtime/recall-production-candidate-reviews/{review_id}`
+- `GET /api/substrate/mutation-runtime/recall-strategy-readiness`
+- `GET /api/substrate/mutation-runtime/cognition-context`
+- `GET /api/substrate/autonomy-readiness`
+
+### Unified autonomy readiness smoke + interpretation
+
+```bash
+curl -sS "http://localhost:8080/api/substrate/autonomy-readiness" | jq .
+```
+
+How to interpret quickly:
+- `surfaces.live` should only represent routing threshold live surface(s).
+- `recall.production_mode` should remain `v1` and `recall.live_apply_enabled` should remain `false`.
+- `cognitive.live_apply_enabled` should remain `false` with proposal/draft-only posture.
+- `warnings` can be non-empty during partial subsystem outages; endpoint should still return `200`.
+- `safe_next_actions` provides bounded operator-safe next steps; it never triggers mutation/apply.
+
+Safety guarantees for this flow:
+- Production recall remains `v1`; no endpoint in this workflow switches production default.
+- Candidate review creation only persists operator review artifacts.
+- Recall live apply stays blocked by mutation apply guardrails.
 
 ---
 

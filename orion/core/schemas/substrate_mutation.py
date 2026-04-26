@@ -10,15 +10,70 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 MutationLaneV1 = Literal["operational", "cognitive"]
 MutationRiskTierV1 = Literal["low", "medium", "high"]
-MutationLifecycleStateV1 = Literal["proposed", "queued", "trialed", "pending_review", "approved", "applied", "rolled_back", "rejected"]
+MutationLifecycleStateV1 = Literal[
+    "proposed",
+    "queued",
+    "trialed",
+    "pending_review",
+    "accepted_as_draft",
+    "approved",
+    "applied",
+    "rolled_back",
+    "rejected",
+    "superseded",
+    "archived",
+]
 MutationClassV1 = Literal[
     "routing_threshold_patch",
     "recall_weighting_patch",
+    "recall_strategy_profile_candidate",
+    "recall_anchor_policy_candidate",
+    "recall_page_index_profile_candidate",
+    "recall_graph_expansion_policy_candidate",
     "graph_consolidation_param_patch",
     "approved_prompt_profile_variant_promotion",
+    "cognitive_contradiction_reconciliation",
+    "cognitive_identity_continuity_adjustment",
+    "cognitive_stance_continuity_adjustment",
+    "cognitive_social_continuity_repair",
 ]
 MutationDecisionActionV1 = Literal["reject", "hold", "require_review", "auto_promote"]
 MutationTrialStatusV1 = Literal["passed", "failed", "inconclusive"]
+MutationPressureCategoryV1 = Literal[
+    "routing_false_escalation",
+    "routing_false_downgrade",
+    "recall_miss_or_dissatisfaction",
+    "unsupported_memory_claim",
+    "irrelevant_semantic_neighbor",
+    "missing_exact_anchor",
+    "stale_memory_selected",
+    "response_truncation_or_length_finish",
+    "runtime_degradation_or_timeout",
+    "social_addressedness_gap",
+]
+RecallStrategyProfileStatusV1 = Literal["draft", "staged", "shadow_active", "rejected", "archived"]
+RecallShadowEvalRunStatusV1 = Literal["completed", "failed", "dry_run"]
+RecallProductionCandidateRecommendationV1 = Literal[
+    "keep_shadowing",
+    "expand_shadow_corpus",
+    "ready_for_manual_canary",
+    "reject_candidate",
+]
+RecallProductionCandidateReviewStatusV1 = Literal["draft", "reviewed", "rejected", "archived"]
+
+
+class MutationPressureEvidenceV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pressure_event_id: str = Field(default_factory=lambda: f"substrate-pressure-event-{uuid4()}")
+    source_service: str
+    source_event_id: str
+    correlation_id: str | None = None
+    pressure_category: MutationPressureCategoryV1
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    evidence_refs: list[str] = Field(default_factory=list, min_length=1, max_length=32)
+    observed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class MutationSignalV1(BaseModel):
@@ -51,6 +106,10 @@ class MutationPressureV1(BaseModel):
     source_signal_ids: list[str] = Field(default_factory=list, min_length=1, max_length=64)
     cooldown_until: datetime | None = None
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # Last-merged structured recall shadow/compare payload for proposal-only recall candidates.
+    recall_evidence_snapshot: dict[str, Any] = Field(default_factory=dict)
+    # Bounded FIFO of contributing recall shadow / eval-suite evidence (newest last).
+    recall_evidence_history: list[dict[str, Any]] = Field(default_factory=list, max_length=12)
 
 
 class MutationPatchV1(BaseModel):
@@ -155,3 +214,92 @@ class MutationRollbackV1(BaseModel):
     reason: str
     payload: dict[str, Any] = Field(default_factory=dict, min_length=1)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class CognitiveProposalReviewV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    review_id: str = Field(default_factory=lambda: f"substrate-mutation-cognitive-review-{uuid4()}")
+    proposal_id: str
+    state: Literal["pending_review", "accepted_as_draft", "rejected", "superseded", "archived"]
+    reviewer: str = "operator"
+    rationale: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    notes: list[str] = Field(default_factory=list, max_length=64)
+
+
+class CognitiveDraftRecommendationV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    draft_id: str = Field(default_factory=lambda: f"substrate-mutation-cognitive-draft-{uuid4()}")
+    proposal_id: str
+    mutation_class: MutationClassV1
+    affected_surface: str
+    pressure_kind: str
+    evidence_refs: list[str] = Field(default_factory=list, min_length=1, max_length=64)
+    suggested_operator_action: str
+    blast_radius: str
+    risk_tier: MutationRiskTierV1
+    reversible_recommendation: str = "draft_only_recommendation_not_applied"
+    status: Literal["draft_only_not_applied"] = "draft_only_not_applied"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    notes: list[str] = Field(default_factory=list, max_length=64)
+
+
+class RecallStrategyProfileV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    profile_id: str = Field(default_factory=lambda: f"substrate-recall-strategy-profile-{uuid4()}")
+    source_proposal_id: str
+    source_pressure_ids: list[str] = Field(default_factory=list, max_length=64)
+    source_evidence_refs: list[str] = Field(default_factory=list, max_length=128)
+    readiness_snapshot: dict[str, Any] = Field(default_factory=dict)
+    strategy_kind: str
+    recall_v2_config_snapshot: dict[str, Any] = Field(default_factory=dict)
+    anchor_policy_snapshot: dict[str, Any] = Field(default_factory=dict)
+    page_index_policy_snapshot: dict[str, Any] = Field(default_factory=dict)
+    graph_expansion_policy_snapshot: dict[str, Any] = Field(default_factory=dict)
+    eval_evidence_refs: list[str] = Field(default_factory=list, max_length=128)
+    created_by: str = "operator"
+    status: RecallStrategyProfileStatusV1 = "draft"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class RecallShadowEvalRunV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str = Field(default_factory=lambda: f"substrate-recall-shadow-eval-run-{uuid4()}")
+    profile_id: str
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    completed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    dry_run: bool = True
+    recorded_pressure_events: int = Field(default=0, ge=0, le=2048)
+    corpus_limit: int = Field(default=24, ge=1, le=512)
+    case_ids: list[str] = Field(default_factory=list, max_length=256)
+    eval_row_count: int = Field(default=0, ge=0, le=10000)
+    readiness_before: dict[str, Any] = Field(default_factory=dict)
+    readiness_after: dict[str, Any] = Field(default_factory=dict)
+    readiness_delta_summary: dict[str, Any] = Field(default_factory=dict)
+    pressure_event_refs: list[str] = Field(default_factory=list, max_length=512)
+    operator_rationale: str = ""
+    status: RecallShadowEvalRunStatusV1 = "dry_run"
+    failure_reason: str | None = None
+
+
+class RecallProductionCandidateReviewV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    review_id: str = Field(default_factory=lambda: f"substrate-recall-production-candidate-review-{uuid4()}")
+    profile_id: str
+    source_eval_run_ids: list[str] = Field(default_factory=list, max_length=256)
+    readiness_snapshot: dict[str, Any] = Field(default_factory=dict)
+    risk_summary: list[str] = Field(default_factory=list, max_length=64)
+    observed_improvements: list[str] = Field(default_factory=list, max_length=64)
+    observed_regressions: list[str] = Field(default_factory=list, max_length=64)
+    operator_checklist: dict[str, Any] = Field(default_factory=dict)
+    recommendation: RecallProductionCandidateRecommendationV1 = "keep_shadowing"
+    status: RecallProductionCandidateReviewStatusV1 = "draft"
+    created_by: str = "operator"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

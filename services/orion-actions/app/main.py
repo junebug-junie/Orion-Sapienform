@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -358,17 +359,20 @@ def _daily_notify_request(
 ) -> NotificationRequest:
     pretty = json.dumps(payload, indent=2, sort_keys=True)
     preview = "; ".join([f"{k}: {v}" for k, v in list(payload.items())[:3]])[:280]
+    full_markdown = f"## {title}\n\n```json\n{pretty}\n```\n"
+    payload_fingerprint = hashlib.sha1(pretty.encode("utf-8")).hexdigest()[:12]
     return NotificationRequest(
         source_service=settings.service_name,
         event_kind=event_kind,
         severity="info",
         title=title,
-        body_text=preview,
-        body_md=f"## {title}\n\n```json\n{pretty}\n```\n",
+        # Email transport currently prefers body_text, so keep it full for parity with Hub full view.
+        body_text=full_markdown,
+        body_md=full_markdown,
         recipient_group=settings.actions_recipient_group,
         session_id=settings.actions_session_id,
         correlation_id=correlation_id,
-        dedupe_key=dedupe_key,
+        dedupe_key=f"{dedupe_key}:{payload_fingerprint}",
         dedupe_window_seconds=int(settings.actions_notify_dedupe_window_seconds),
         tags=["actions", "daily", "json"],
         context={"payload": payload, "preview_text": preview},
@@ -599,7 +603,7 @@ def _build_scheduler_daily_journal_email_request(
         event_kind="orion.journal.daily.scheduler",
         severity="info",
         title="Orion — Daily Journal",
-        body_text=message_payload["preview_text"],
+        body_text=message_payload["full_text"],
         body_md=message_payload["full_text"],
         recipient_group=settings.actions_recipient_group,
         session_id=settings.actions_journal_session_id or settings.actions_session_id,

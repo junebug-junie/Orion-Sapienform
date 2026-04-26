@@ -804,6 +804,18 @@ def _compile_reasoning_summary(ctx: Dict[str, Any]) -> Dict[str, Any]:
         }
 
 
+def _mutation_cognition_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    direct = ctx.get("mutation_cognition_context")
+    if isinstance(direct, dict):
+        return direct
+    metadata = ctx.get("metadata")
+    if isinstance(metadata, dict):
+        nested = metadata.get("mutation_cognition_context")
+        if isinstance(nested, dict):
+            return nested
+    return {}
+
+
 def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     identity = identity_kernel_with_fallbacks(ctx)
     ctx.update(identity)
@@ -816,6 +828,7 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     reflective = _reflective_summary(ctx)
     autonomy = _load_autonomy_state(ctx)
     reasoning = _compile_reasoning_summary(ctx)
+    mutation_cognition = _mutation_cognition_from_ctx(ctx)
     social["hazards"] = _unique((social.get("hazards") or []) + list((reasoning.get("summary") or {}).get("hazards") or []), limit=8)
 
     inputs = {
@@ -834,6 +847,7 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
             "debug": autonomy["debug"],
         },
         "reasoning_summary": reasoning["summary"],
+        "mutation_adaptation": mutation_cognition,
     }
 
     ctx["chat_stance_inputs"] = inputs
@@ -850,13 +864,18 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     ctx["chat_reasoning_summary"] = reasoning["summary"]
     ctx["chat_reasoning_debug"] = reasoning["debug"]
     ctx["chat_reasoning_summary_used"] = reasoning["used"]
-    ctx["chat_endogenous_runtime"] = runtime_service().maybe_invoke(
-        ctx=ctx,
-        reasoning_summary=reasoning["summary"],
-        reflective=reflective,
-        autonomy=inputs["autonomy"],
-        concept=concept,
-    )
+    ctx["chat_mutation_cognition_context"] = mutation_cognition
+    try:
+        ctx["chat_endogenous_runtime"] = runtime_service().maybe_invoke(
+            ctx=ctx,
+            reasoning_summary=reasoning["summary"],
+            reflective=reflective,
+            autonomy=inputs["autonomy"],
+            concept=concept,
+        )
+    except Exception as exc:
+        logger.warning("chat_stance_endogenous_runtime_invoke_failed error=%s", exc)
+        ctx["chat_endogenous_runtime"] = None
     if ctx.get("endogenous_runtime_operator_review"):
         try:
             ctx["chat_endogenous_runtime_recent"] = inspect_endogenous_runtime_records(limit=8)
@@ -914,6 +933,11 @@ def build_chat_stance_debug_payload(
     social_bridge = stance_inputs.get("social_bridge") if isinstance(stance_inputs.get("social_bridge"), dict) else {}
     reflective = stance_inputs.get("reflective") if isinstance(stance_inputs.get("reflective"), dict) else {}
     autonomy = stance_inputs.get("autonomy") if isinstance(stance_inputs.get("autonomy"), dict) else {}
+    mutation_adaptation = (
+        stance_inputs.get("mutation_adaptation")
+        if isinstance(stance_inputs.get("mutation_adaptation"), dict)
+        else {}
+    )
     autonomy_summary = autonomy.get("summary") if isinstance(autonomy.get("summary"), dict) else {}
     autonomy_debug = autonomy.get("debug") if isinstance(autonomy.get("debug"), dict) else {}
     reasoning = stance_inputs.get("reasoning_summary") if isinstance(stance_inputs.get("reasoning_summary"), dict) else {}
@@ -1006,6 +1030,7 @@ def build_chat_stance_debug_payload(
                 "backend": ctx.get("chat_autonomy_backend"),
                 "compact_debug": autonomy_debug,
             },
+                "mutation_adaptation": mutation_adaptation,
             "reasoning": {
                 "summary": reasoning,
                 "hazards": list(reasoning.get("hazards") or []),
@@ -1027,6 +1052,7 @@ def build_chat_stance_debug_payload(
             f"concept/self injected: {len((concept.get('self') or []))} items",
             f"social hazards injected: {len((social.get('hazards') or []))} items",
             f"autonomy summary present: {'yes' if bool(autonomy_summary) else 'no'}",
+            f"mutation adaptation context present: {'yes' if bool(mutation_adaptation) else 'no'}",
             f"reasoning summary used: {'yes' if bool(ctx.get('chat_reasoning_summary_used')) else 'no'}",
             f"fallback applied: {'yes' if fallback_invoked or semantic_fallback else 'no'}",
         ],

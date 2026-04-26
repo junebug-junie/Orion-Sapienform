@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 import time
 from typing import Any, Dict
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -655,7 +656,14 @@ core_event_listener = Hunter(_cfg(), handler=handle_core_event, patterns=[settin
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout, force=True)
+    pageindex_base_url = str(settings.journal_pageindex_service_url or "").strip()
+    pageindex_client_enabled = bool(pageindex_base_url)
+    logger.info(
+        "startup journal_pageindex_service_base_url=%s journal_pageindex_client_enabled=%s",
+        pageindex_base_url,
+        pageindex_client_enabled,
+    )
     logger.info(
         f"Starting cortex-exec bus listener channel={settings.channel_exec_request} "
         f"bus={settings.orion_bus_url}"

@@ -7,7 +7,7 @@ import ipaddress
 import threading
 from datetime import datetime, timezone, timedelta
 from uuid import uuid4
-from typing import Optional, Any, List, Dict, Tuple
+from typing import Annotated, Optional, Any, List, Dict, Tuple, Literal
 from urllib.parse import urlparse
 import aiohttp
 
@@ -34,12 +34,14 @@ from .autonomy_payloads import extract_autonomy_payload
 from .workflow_payloads import extract_workflow_payload
 from .cortex_chat_display import hub_effective_chat_text
 from .cortex_request_builder import build_chat_request, build_continuity_messages, validate_single_verb_override
+from .mutation_cognition_context import build_mutation_cognition_context
 from .social_room import is_social_room_payload, social_room_client_meta
 from .service_logs import collect_service_inventory
 from orion.cognition.verb_activation import build_verb_list
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.collapse_mirror import CollapseMirrorEntry
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
+from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
 from orion.schemas.workflow_execution import WorkflowScheduleManageRequestV1, WorkflowScheduleManageResponseV1
 from orion.schemas.chat_response_feedback import ChatResponseFeedbackV1, build_feedback_category_options
 from orion.schemas.notify import (
@@ -61,7 +63,14 @@ from orion.core.schemas.substrate_policy_adoption import (
 )
 from orion.core.schemas.substrate_policy_comparison import SubstratePolicyComparisonRequestV1
 from orion.core.schemas.substrate_review_runtime import GraphReviewRuntimeSurfaceV1
-from orion.core.schemas.substrate_mutation import MutationPressureV1
+from orion.core.schemas.substrate_mutation import (
+    CognitiveProposalReviewV1,
+    MutationPressureEvidenceV1,
+    MutationPressureV1,
+    RecallProductionCandidateReviewV1,
+    RecallShadowEvalRunV1,
+    RecallStrategyProfileV1,
+)
 from orion.substrate import build_substrate_policy_store_from_env, build_substrate_store_from_env
 from orion.substrate.consolidation import GraphConsolidationEvaluator
 from orion.substrate.policy_comparison import SubstratePolicyComparisonService
@@ -81,6 +90,11 @@ from orion.substrate.mutation_scoring import ClassSpecificScorer
 from orion.substrate.mutation_trials import ReplayCorpusRegistry, SubstrateTrialRunner
 from orion.substrate.mutation_worker import AdaptationCycleBudget, SubstrateAdaptationWorker
 from orion.substrate.mutation_control_surface import inspect_chat_reflective_lane_threshold
+from orion.substrate.recall_strategy_readiness import (
+    compute_recall_strategy_readiness,
+    default_eval_corpus_total_cases,
+    readiness_from_telemetry_records,
+)
 
 logger = logging.getLogger("orion-hub.api")
 PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc)
@@ -181,6 +195,17 @@ def _debug_snippet(value: Any, max_len: int = 200) -> str:
         return text
     return f"{text[:max_len]}…"
 
+
+def _coerce_metacog_trace(trace: Any) -> Optional[MetacognitiveTraceV1]:
+    if isinstance(trace, MetacognitiveTraceV1):
+        return trace
+    if isinstance(trace, dict):
+        try:
+            return MetacognitiveTraceV1.model_validate(trace)
+        except Exception:
+            return None
+    return None
+
 class AttentionAckRequest(BaseModel):
     ack_type: str = Field("seen")
     note: Optional[str] = None
@@ -229,6 +254,55 @@ class SubstrateMutationExecuteRequest(BaseModel):
     telemetry: list[Dict[str, Any]] = Field(default_factory=list)
     class_metrics: Dict[str, Dict[str, float]] = Field(default_factory=dict)
     post_adoption_delta_by_target_surface: Dict[str, float] = Field(default_factory=dict)
+
+
+class RecallEvalSuiteRecordRequest(BaseModel):
+    """Operator-triggered ingest of recall_eval suite rows into mutation review telemetry (proposal-only path)."""
+
+    model_config = ConfigDict(extra="forbid")
+    rows: list[dict[str, Any]] = Field(default_factory=list, max_length=64)
+    suite_run_id: str | None = None
+
+
+class RecallProposalStageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    override: bool = False
+    operator_rationale: str = ""
+    created_by: str = "operator"
+
+
+class RecallShadowActivateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operator_rationale: str = ""
+
+
+class RecallShadowEvaluateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    corpus_limit: int | None = Field(default=None, ge=1, le=512)
+    case_ids: list[str] = Field(default_factory=list, max_length=128)
+    dry_run: bool = True
+    record_pressure_events: bool = True
+    operator_rationale: str = ""
+    eval_rows: list[dict[str, Any]] = Field(default_factory=list, max_length=512)
+
+
+class RecallProductionCandidateReviewCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    override: bool = False
+    operator_rationale: str = ""
+    created_by: str = "operator"
+    operator_checklist: dict[str, Any] = Field(default_factory=dict)
+
+
+class CognitiveProposalReviewRequest(BaseModel):
+    state: Literal["pending_review", "accepted_as_draft", "rejected", "superseded", "archived"]
+    reviewer: str = "operator"
+    rationale: str = ""
+    notes: list[str] = Field(default_factory=list, max_length=32)
 
 
 class SubstratePolicyAdoptHubRequest(BaseModel):
@@ -757,6 +831,12 @@ async def api_chat_response_feedback(payload: Dict[str, Any]):
         correlation_id=feedback_payload.target_correlation_id,
     )
     await publish_chat_response_feedback(bus, env)
+    feedback_events = _producer_pressure_events_from_feedback(feedback_payload)
+    _record_pressure_events_as_telemetry(
+        events=feedback_events,
+        correlation_id=feedback_payload.target_correlation_id,
+        source_event_id=feedback_payload.feedback_id,
+    )
     return {"ok": True, "feedback_id": feedback_payload.feedback_id}
 
 
@@ -806,6 +886,247 @@ def api_verbs(include_inactive: int = Query(default=0, ge=0, le=1)):
 # ======================================================================
 # 💬 SHARED CHAT CORE (HTTP + WS)
 # ======================================================================
+
+_PRESSURE_FEEDBACK_CATEGORIES = {
+    "fabricated_recall_memory",
+    "missed_relevant_context",
+    "lost_conversation_continuity",
+    "incomplete_truncated",
+    "wrong_tool_wrong_routing_wrong_mode",
+}
+
+
+def _build_pressure_event(
+    *,
+    category: str,
+    source_service: str,
+    source_event_id: str,
+    correlation_id: str | None,
+    confidence: float,
+    evidence_refs: list[str],
+    metadata: Dict[str, Any] | None = None,
+) -> MutationPressureEvidenceV1:
+    refs = [item for item in evidence_refs if str(item or "").strip()]
+    if not refs:
+        refs = [f"source_event:{source_event_id}"]
+    return MutationPressureEvidenceV1(
+        source_service=source_service,
+        source_event_id=source_event_id,
+        correlation_id=correlation_id,
+        pressure_category=category,  # type: ignore[arg-type]
+        confidence=max(0.0, min(float(confidence), 1.0)),
+        evidence_refs=refs[:32],
+        metadata=dict(metadata or {}),
+    )
+
+
+def _producer_pressure_events_from_chat_result(
+    *,
+    correlation_id: str | None,
+    route_debug: Dict[str, Any] | None,
+    autonomy_payload: Dict[str, Any] | None,
+    recall_debug: Dict[str, Any] | None = None,
+) -> list[MutationPressureEvidenceV1]:
+    payload = autonomy_payload if isinstance(autonomy_payload, dict) else {}
+    route = route_debug if isinstance(route_debug, dict) else {}
+    diagnostics = payload.get("runtime_response_diagnostics") if isinstance(payload.get("runtime_response_diagnostics"), dict) else {}
+    chat_stance_debug = payload.get("chat_stance_debug") if isinstance(payload.get("chat_stance_debug"), dict) else {}
+    social_bridge = (
+        (chat_stance_debug.get("source_inputs") or {}).get("social_bridge")
+        if isinstance(chat_stance_debug.get("source_inputs"), dict)
+        else {}
+    )
+    social_hazards = list((social_bridge or {}).get("hazards") or [])
+    events: list[MutationPressureEvidenceV1] = []
+    corr = str(correlation_id or "")
+    source_event_id = f"chat_result:{corr or uuid4()}"
+    if diagnostics.get("truncation_detected") or str(diagnostics.get("provider_finish_reason") or "").lower() == "length":
+        events.append(
+            _build_pressure_event(
+                category="response_truncation_or_length_finish",
+                source_service="orion-cortex-exec",
+                source_event_id=source_event_id,
+                correlation_id=correlation_id,
+                confidence=0.72,
+                evidence_refs=[
+                    f"corr:{corr}",
+                    f"finish_reason:{diagnostics.get('provider_finish_reason')}",
+                    f"truncation_detected:{bool(diagnostics.get('truncation_detected'))}",
+                ],
+                metadata={"route_mode": route.get("mode"), "trace_verb": route.get("verb")},
+            )
+        )
+    if str(diagnostics.get("status") or "").lower() in {"fail", "partial"}:
+        events.append(
+            _build_pressure_event(
+                category="runtime_degradation_or_timeout",
+                source_service="orion-cortex-exec",
+                source_event_id=source_event_id,
+                correlation_id=correlation_id,
+                confidence=0.66,
+                evidence_refs=[f"corr:{corr}", f"status:{diagnostics.get('status')}"],
+                metadata={"diagnostics": diagnostics},
+            )
+        )
+    if "self_message_loop" in social_hazards or "not_addressed" in social_hazards:
+        events.append(
+            _build_pressure_event(
+                category="social_addressedness_gap",
+                source_service="orion-cortex-exec",
+                source_event_id=source_event_id,
+                correlation_id=correlation_id,
+                confidence=0.61,
+                evidence_refs=[f"corr:{corr}", *[f"social_hazard:{item}" for item in social_hazards[:4]]],
+                metadata={"social_hazards": social_hazards[:8]},
+            )
+        )
+    recall_payload = recall_debug if isinstance(recall_debug, dict) else {}
+    nested_rd = (
+        (recall_payload.get("decision") or {}).get("recall_debug")
+        if isinstance(recall_payload.get("decision"), dict)
+        else None
+    )
+    recall_pressure_events = list(recall_payload.get("pressure_events") or [])
+    if not recall_pressure_events and isinstance(nested_rd, dict):
+        recall_pressure_events = list(nested_rd.get("pressure_events") or [])
+    compare_summary = recall_payload.get("compare_summary")
+    if not isinstance(compare_summary, dict) or not compare_summary:
+        compare_summary = (
+            (recall_payload.get("debug") or {}).get("compare_summary")
+            if isinstance(recall_payload.get("debug"), dict)
+            else {}
+        )
+    if (not isinstance(compare_summary, dict) or not compare_summary) and isinstance(nested_rd, dict):
+        compare_summary = nested_rd.get("compare_summary") or {}
+    anchor_plan = recall_payload.get("anchor_plan_summary")
+    if not isinstance(anchor_plan, dict) or not anchor_plan:
+        anchor_plan = (
+            (recall_payload.get("debug") or {}).get("anchor_plan_summary")
+            if isinstance(recall_payload.get("debug"), dict)
+            else {}
+        )
+    if (not isinstance(anchor_plan, dict) or not anchor_plan) and isinstance(nested_rd, dict):
+        anchor_plan = nested_rd.get("anchor_plan_summary") or {}
+    selected_cards = recall_payload.get("selected_evidence_cards")
+    if not isinstance(selected_cards, list) or not selected_cards:
+        selected_cards = (
+            (recall_payload.get("debug") or {}).get("selected_evidence_cards")
+            if isinstance(recall_payload.get("debug"), dict)
+            else []
+        )
+    if (not isinstance(selected_cards, list) or not selected_cards) and isinstance(nested_rd, dict):
+        selected_cards = list(nested_rd.get("selected_evidence_cards") or [])
+    for row in recall_pressure_events:
+        if not isinstance(row, dict):
+            continue
+        try:
+            event = MutationPressureEvidenceV1.model_validate(row)
+        except Exception:
+            continue
+        metadata = dict(event.metadata or {})
+        if isinstance(compare_summary, dict) and compare_summary:
+            metadata.setdefault("v1_v2_compare", compare_summary)
+        if isinstance(anchor_plan, dict) and anchor_plan:
+            metadata.setdefault("anchor_plan", anchor_plan)
+        if isinstance(selected_cards, list) and selected_cards:
+            metadata.setdefault("selected_evidence_cards", selected_cards[:8])
+        events.append(event.model_copy(update={"metadata": metadata}))
+    return events[:8]
+
+
+def _producer_pressure_events_from_feedback(feedback: ChatResponseFeedbackV1) -> list[MutationPressureEvidenceV1]:
+    categories = {str(item or "").strip() for item in feedback.categories}
+    corr = feedback.target_correlation_id
+    source_event_id = feedback.feedback_id
+    events: list[MutationPressureEvidenceV1] = []
+    if feedback.feedback_value == "down" and (categories & _PRESSURE_FEEDBACK_CATEGORIES):
+        events.append(
+            _build_pressure_event(
+                category="recall_miss_or_dissatisfaction",
+                source_service="orion-hub",
+                source_event_id=source_event_id,
+                correlation_id=corr,
+                confidence=0.84,
+                evidence_refs=[f"feedback:{feedback.feedback_id}", *[f"feedback_category:{item}" for item in sorted(categories)]],
+                metadata={"feedback_value": feedback.feedback_value},
+            )
+        )
+    if feedback.feedback_value == "down" and "wrong_tool_wrong_routing_wrong_mode" in categories:
+        events.append(
+            _build_pressure_event(
+                category="routing_false_downgrade",
+                source_service="orion-hub",
+                source_event_id=source_event_id,
+                correlation_id=corr,
+                confidence=0.7,
+                evidence_refs=[f"feedback:{feedback.feedback_id}", "feedback_category:wrong_tool_wrong_routing_wrong_mode"],
+                metadata={"feedback_value": feedback.feedback_value},
+            )
+        )
+        events.append(
+            _build_pressure_event(
+                category="routing_false_escalation",
+                source_service="orion-hub",
+                source_event_id=source_event_id,
+                correlation_id=corr,
+                confidence=0.7,
+                evidence_refs=[f"feedback:{feedback.feedback_id}", "feedback_category:wrong_tool_wrong_routing_wrong_mode"],
+                metadata={"feedback_value": feedback.feedback_value},
+            )
+        )
+    return events[:8]
+
+
+def _record_pressure_events_as_telemetry(
+    *,
+    events: list[MutationPressureEvidenceV1],
+    correlation_id: str | None,
+    source_event_id: str,
+    invocation_surface: GraphReviewRuntimeSurfaceV1 = "chat_reflective_lane",
+    ingest_notes: list[str] | None = None,
+) -> None:
+    if not events:
+        return
+    notes = list(ingest_notes or ["producer_pressure_event_ingest"])
+    try:
+        telemetry = GraphReviewTelemetryRecordV1(
+            correlation_id=correlation_id,
+            invocation_surface=invocation_surface,
+            anchor_scope="orion",
+            subject_ref="entity:orion",
+            target_zone="autonomy_graph",
+            selection_reason=f"producer_pressure_events:{source_event_id}",
+            selected_priority=50,
+            execution_outcome="executed",
+            runtime_duration_ms=0,
+            notes=notes[:64],
+            pressure_events=events,
+        )
+        SUBSTRATE_REVIEW_TELEMETRY_STORE.record(telemetry)
+    except Exception as exc:
+        logger.warning("pressure_event_telemetry_record_failed source_event_id=%s error=%s", source_event_id, exc)
+
+
+def record_chat_turn_pressure_telemetry(
+    *,
+    correlation_id: str | None,
+    route_debug: Dict[str, Any] | None,
+    autonomy_payload: Dict[str, Any] | None,
+    recall_debug: Dict[str, Any] | None,
+    source_event_id: str,
+) -> None:
+    """Shared HTTP + WebSocket path for producer pressure extraction and telemetry recording."""
+    events = _producer_pressure_events_from_chat_result(
+        correlation_id=correlation_id,
+        route_debug=route_debug,
+        autonomy_payload=autonomy_payload,
+        recall_debug=recall_debug,
+    )
+    _record_pressure_events_as_telemetry(
+        events=events,
+        correlation_id=correlation_id,
+        source_event_id=source_event_id,
+    )
 
 def _http_chat_turn_context_from_result(result: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -921,6 +1242,7 @@ async def handle_chat_request(
     )
     routed_payload = dict(payload)
     routed_payload["no_write"] = bool(no_write)
+    routed_payload["mutation_cognition_context"] = build_mutation_cognition_context(store=SUBSTRATE_MUTATION_STORE)
     req, route_debug, _ = build_chat_request(
         payload=routed_payload,
         session_id=session_id,
@@ -1071,6 +1393,21 @@ async def handle_chat_request(
             backend_counts=backend_counts,
             memory_digest=memory_digest,
         )
+        turn_ctx = _http_chat_turn_context_from_result(
+            {
+                "mode": mode,
+                "use_recall": use_recall,
+                "routing_debug": route_debug,
+                "raw": raw_result,
+            }
+        )
+        record_chat_turn_pressure_telemetry(
+            correlation_id=str(correlation_id),
+            route_debug=route_debug,
+            autonomy_payload=autonomy_payload,
+            recall_debug=recall_debug,
+            source_event_id=f"chat_result:{correlation_id}",
+        )
 
         return {
             "session_id": session_id,
@@ -1089,6 +1426,10 @@ async def handle_chat_request(
             "correlation_id": correlation_id,
             "routing_debug": route_debug,
             "metacog_traces": metacog_traces,
+            "reasoning_content": turn_ctx.get("reasoning_content"),
+            "inline_think_content": turn_ctx.get("inline_think_content"),
+            "thinking_source": turn_ctx.get("thinking_source"),
+            "reasoning_trace": turn_ctx.get("explicit_reasoning_trace"),
             **autonomy_payload,
         }
 
@@ -1209,17 +1550,19 @@ async def api_chat(
                 )
             if isinstance(metacog_traces, list):
                 for trace in metacog_traces:
-                    if not isinstance(trace, dict):
+                    coerced_trace = _coerce_metacog_trace(trace)
+                    if coerced_trace is None:
                         continue
+                    trace_debug = trace if isinstance(trace, dict) else coerced_trace.model_dump(mode="json")
                     if _thought_debug_enabled():
                         logger.info(
                             "THOUGHT_DEBUG_METACOG_PUB stage=hub_http_prepare corr=%s trace_role=%s trace_stage=%s model=%s content_len=%s content_snippet=%r",
                             final_corr_id,
-                            trace.get("trace_role") or trace.get("role"),
-                            trace.get("trace_stage") or trace.get("stage"),
-                            trace.get("model"),
-                            _debug_len(trace.get("content")),
-                            _debug_snippet(trace.get("content")),
+                            trace_debug.get("trace_role") or trace_debug.get("role"),
+                            trace_debug.get("trace_stage") or trace_debug.get("stage"),
+                            trace_debug.get("model"),
+                            _debug_len(trace_debug.get("content")),
+                            _debug_snippet(trace_debug.get("content")),
                         )
                     trace_env = BaseEnvelope(
                         kind="metacognitive.trace.v1",
@@ -1229,7 +1572,7 @@ async def api_chat(
                             version=settings.SERVICE_VERSION,
                         ),
                         correlation_id=final_corr_id,
-                        payload=trace,
+                            payload=coerced_trace,
                     )
                     await bus.publish("orion:metacog:trace", trace_env)
                 if _thought_debug_enabled() and not any(isinstance(t, dict) for t in metacog_traces):
@@ -1835,9 +2178,16 @@ class _ManualCyclePatchApplier(PatchApplier):
 
 
 class _ScheduledCyclePatchApplier(PatchApplier):
-    def __init__(self, *, surfaces: dict[str, dict[str, Any]], allow_apply: bool) -> None:
+    def __init__(
+        self,
+        *,
+        surfaces: dict[str, dict[str, Any]],
+        allow_apply: bool,
+        allowed_classes: set[str] | None = None,
+    ) -> None:
         super().__init__(surfaces=surfaces)
         self.allow_apply = bool(allow_apply)
+        self.allowed_classes = set(allowed_classes or set())
         self.attempted = 0
         self.blocked = 0
         self.completed = 0
@@ -1845,6 +2195,10 @@ class _ScheduledCyclePatchApplier(PatchApplier):
     def apply(self, *, proposal, decision):  # type: ignore[override]
         if decision.action == "auto_promote":
             self.attempted += 1
+        if self.allowed_classes and proposal.mutation_class not in self.allowed_classes:
+            if decision.action == "auto_promote":
+                self.blocked += 1
+            return None
         if not self.allow_apply:
             if decision.action == "auto_promote":
                 self.blocked += 1
@@ -1872,6 +2226,15 @@ def _env_int(name: str, *, default: int, minimum: int = 1, maximum: int = 256) -
     return max(minimum, min(maximum, value))
 
 
+def _env_float(name: str, *, default: float, minimum: float, maximum: float) -> float:
+    raw = str(os.getenv(name, str(default))).strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return max(minimum, min(maximum, value))
+
+
 def _emit_substrate_autonomy_scheduler_log(*, payload: Dict[str, Any]) -> None:
     logger.info("substrate_mutation_scheduler %s", json.dumps(payload, sort_keys=True, default=str))
 
@@ -1891,6 +2254,7 @@ def execute_substrate_mutation_scheduled_cycle(
     now: datetime | None = None,
     telemetry_override: list[Dict[str, Any]] | None = None,
     class_metrics_override: Dict[str, Dict[str, float]] | None = None,
+    post_adoption_delta_by_target_surface_override: Dict[str, float] | None = None,
 ) -> Dict[str, Any]:
     tick_now = now or datetime.now(timezone.utc)
     tick_id = f"mutation-scheduler-{uuid4()}"
@@ -1936,12 +2300,23 @@ def execute_substrate_mutation_scheduled_cycle(
     traces: list[dict[str, Any]] = []
     try:
         proposals_enabled = _env_flag("SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED", default=True)
-        apply_enabled = _env_flag("SUBSTRATE_AUTONOMY_APPLY_ENABLED", default=False)
+        routing_proposals_enabled = _env_flag("SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED", default=True)
+        cognitive_proposals_enabled = _env_flag("SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED", default=False)
+        apply_enabled_global = _env_flag("SUBSTRATE_AUTONOMY_APPLY_ENABLED", default=False)
+        routing_apply_enabled = _env_flag("SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED", default=False)
+        apply_enabled = bool(apply_enabled_global and routing_apply_enabled)
         monitor_enabled = _env_flag("SUBSTRATE_AUTONOMY_MONITOR_ENABLED", default=True)
+        routing_rollback_threshold = _env_float(
+            "SUBSTRATE_AUTONOMY_ROUTING_ROLLBACK_DELTA_THRESHOLD",
+            default=-0.05,
+            minimum=-1.0,
+            maximum=0.0,
+        )
 
         applier = _ScheduledCyclePatchApplier(
             surfaces=SUBSTRATE_MUTATION_SURFACES,
             allow_apply=apply_enabled,
+            allowed_classes={"routing_threshold_patch"},
         )
         corpus = ReplayCorpusRegistry(
             corpus_by_class={
@@ -1959,16 +2334,20 @@ def execute_substrate_mutation_scheduled_cycle(
         )
         worker = SubstrateAdaptationWorker(
             store=SUBSTRATE_MUTATION_STORE,
-            detectors=MutationDetectors(),
+            detectors=MutationDetectors(allow_cognitive_lane=cognitive_proposals_enabled),
             pressure=PressureAccumulator(),
             proposals=ProposalFactory(),
             trial_runner=SubstrateTrialRunner(scorer=ClassSpecificScorer(), corpus_registry=corpus),
             decision_engine=DecisionEngine(),
             applier=applier,
-            monitor=PostAdoptionMonitor(),
+            monitor=PostAdoptionMonitor(regression_threshold=routing_rollback_threshold),
             budget=AdaptationCycleBudget(
-                max_signals=_env_int("SUBSTRATE_AUTONOMY_MAX_SIGNALS", default=32),
-                max_proposals=0 if not proposals_enabled else _env_int("SUBSTRATE_AUTONOMY_MAX_PROPOSALS", default=8, maximum=64),
+                max_signals=0
+                if not routing_proposals_enabled
+                else _env_int("SUBSTRATE_AUTONOMY_MAX_SIGNALS", default=32),
+                max_proposals=0
+                if (not proposals_enabled or not routing_proposals_enabled)
+                else _env_int("SUBSTRATE_AUTONOMY_MAX_PROPOSALS", default=8, maximum=64),
                 max_trials=_env_int("SUBSTRATE_AUTONOMY_MAX_TRIALS", default=8, maximum=64),
                 max_adoptions=_env_int("SUBSTRATE_AUTONOMY_MAX_ADOPTIONS", default=1, maximum=8),
             ),
@@ -1985,6 +2364,11 @@ def execute_substrate_mutation_scheduled_cycle(
                     invocation_surface="operator_review",
                 )
             )
+        # Narrow ramp scope: scheduler-driven mutation autonomy is routing-class only.
+        allowed_zones = {"autonomy_graph"}
+        if cognitive_proposals_enabled:
+            allowed_zones.add("self_relationship_graph")
+        telemetry = [item for item in telemetry if item.target_zone in allowed_zones]
 
         _emit_substrate_autonomy_scheduler_log(
             payload={
@@ -1994,15 +2378,22 @@ def execute_substrate_mutation_scheduled_cycle(
                 "interval_sec": interval_sec,
                 "at": tick_now.isoformat(),
                 "proposals_enabled": proposals_enabled,
+                "routing_proposals_enabled": routing_proposals_enabled,
+                "cognitive_proposals_enabled": cognitive_proposals_enabled,
                 "apply_enabled": apply_enabled,
+                "apply_enabled_global": apply_enabled_global,
+                "routing_apply_enabled": routing_apply_enabled,
                 "monitor_enabled": monitor_enabled,
+                "routing_rollback_delta_threshold": routing_rollback_threshold,
             }
         )
         result = worker.run_cycle(
             telemetry=telemetry,
             measured_metrics_by_proposal={},
             measured_metrics_by_class=class_metrics_override or None,
-            post_adoption_delta_by_target_surface={} if monitor_enabled else {},
+            post_adoption_delta_by_target_surface=(
+                post_adoption_delta_by_target_surface_override if monitor_enabled else None
+            ),
             replay_telemetry=telemetry,
             now=tick_now,
         )
@@ -2019,6 +2410,11 @@ def execute_substrate_mutation_scheduled_cycle(
             "applies_attempted": applier.attempted,
             "applies_blocked": applier.blocked,
             "applies_executed": applier.completed,
+            "routing_proposals_enabled": routing_proposals_enabled,
+            "cognitive_proposals_enabled": cognitive_proposals_enabled,
+            "routing_apply_enabled": routing_apply_enabled,
+            "apply_enabled_global": apply_enabled_global,
+            "routing_only_scope": not cognitive_proposals_enabled,
             "db_lock_acquired": any(
                 event.get("event") == "mutation_lock_acquire" and bool(event.get("lock_acquired"))
                 for event in traces
@@ -2110,7 +2506,9 @@ def _execute_substrate_mutation_cycle(*, request: SubstrateMutationExecuteReques
     )
     worker = SubstrateAdaptationWorker(
         store=SUBSTRATE_MUTATION_STORE,
-        detectors=MutationDetectors(),
+        detectors=MutationDetectors(
+            allow_cognitive_lane=_env_flag("SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED", default=False)
+        ),
         pressure=PressureAccumulator(),
         proposals=ProposalFactory(),
         trial_runner=SubstrateTrialRunner(scorer=ClassSpecificScorer(), corpus_registry=corpus),
@@ -2305,6 +2703,333 @@ def _routing_replay_inspection_payload(*, limit: int = 50) -> Dict[str, Any]:
             replay_records=telemetry,
         ),
     }
+
+
+def _routing_live_ramp_posture_payload() -> Dict[str, Any]:
+    proposals_enabled_global = _env_flag("SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED", default=True)
+    routing_proposals_enabled = _env_flag("SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED", default=True)
+    apply_enabled_global = _env_flag("SUBSTRATE_AUTONOMY_APPLY_ENABLED", default=False)
+    routing_apply_enabled = _env_flag("SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED", default=False)
+    monitor_enabled = _env_flag("SUBSTRATE_AUTONOMY_MONITOR_ENABLED", default=True)
+    rollback_threshold = _env_float(
+        "SUBSTRATE_AUTONOMY_ROUTING_ROLLBACK_DELTA_THRESHOLD",
+        default=-0.05,
+        minimum=-1.0,
+        maximum=0.0,
+    )
+    decisions = sorted(
+        SUBSTRATE_MUTATION_STORE._decisions.values(),
+        key=lambda item: item.created_at,
+        reverse=True,
+    )
+    routing_decision = next(
+        (
+            item
+            for item in decisions
+            if (
+                (proposal := SUBSTRATE_MUTATION_STORE.get_proposal(item.proposal_id)) is not None
+                and proposal.mutation_class == "routing_threshold_patch"
+            )
+        ),
+        None,
+    )
+    adoptions = sorted(
+        SUBSTRATE_MUTATION_STORE._adoptions.values(),
+        key=lambda item: item.created_at,
+        reverse=True,
+    )
+    routing_adoption = next(
+        (
+            item
+            for item in adoptions
+            if (
+                (proposal := SUBSTRATE_MUTATION_STORE.get_proposal(item.proposal_id)) is not None
+                and proposal.mutation_class == "routing_threshold_patch"
+            )
+        ),
+        None,
+    )
+    rollbacks = sorted(
+        SUBSTRATE_MUTATION_STORE._rollbacks.values(),
+        key=lambda item: item.created_at,
+        reverse=True,
+    )
+    routing_rollback = next(
+        (
+            item
+            for item in rollbacks
+            if (
+                (proposal := SUBSTRATE_MUTATION_STORE.get_proposal(item.proposal_id)) is not None
+                and proposal.mutation_class == "routing_threshold_patch"
+            )
+        ),
+        None,
+    )
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=20,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {
+            "ramp_scope": "routing_threshold_patch_only",
+            "proposals_enabled": bool(proposals_enabled_global and routing_proposals_enabled),
+            "proposals_enabled_global": proposals_enabled_global,
+            "routing_proposals_enabled": routing_proposals_enabled,
+            "apply_enabled": bool(apply_enabled_global and routing_apply_enabled),
+            "apply_enabled_global": apply_enabled_global,
+            "routing_apply_enabled": routing_apply_enabled,
+            "monitor_enabled": monitor_enabled,
+            "routing_rollback_delta_threshold": rollback_threshold,
+            "last_decision": routing_decision.model_dump(mode="json") if routing_decision is not None else None,
+            "last_adoption": routing_adoption.model_dump(mode="json") if routing_adoption is not None else None,
+            "last_rollback": routing_rollback.model_dump(mode="json") if routing_rollback is not None else None,
+            "live_surface": inspect_chat_reflective_lane_threshold(),
+        },
+    }
+
+
+_AUTONOMY_READINESS_POLICY_MATRIX = [
+    {
+        "surface": "routing_threshold_patch",
+        "category": "routing",
+        "propose": "auto_when_gated",
+        "trial": "auto_replay",
+        "apply": "gated_auto",
+        "rollback": "auto",
+        "human_required": False,
+        "status": "live_narrow",
+        "required_gates": [
+            "SUBSTRATE_AUTONOMY_ENABLED",
+            "SUBSTRATE_AUTONOMY_APPLY_ENABLED",
+            "SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED",
+        ],
+        "forbidden": [],
+    },
+    {
+        "surface": "recall_strategy_profile",
+        "category": "recall",
+        "propose": "auto",
+        "trial": "shadow_or_manual_eval",
+        "apply": "manual_only_not_implemented_for_production",
+        "rollback": "disable_shadow_or_canary",
+        "human_required": True,
+        "status": "shadow_staged_only",
+        "required_gates": [],
+        "forbidden": [
+            "autonomous_recall_production_promotion",
+            "recall_weighting_patch_live_apply",
+        ],
+    },
+    {
+        "surface": "cognitive_self_model",
+        "category": "cognitive",
+        "propose": "auto",
+        "trial": "draft_only",
+        "apply": "forbidden",
+        "rollback": "archive_or_supersede_draft",
+        "human_required": True,
+        "status": "proposal_draft_only",
+        "required_gates": [],
+        "forbidden": [
+            "identity_kernel_rewrite",
+            "production_self_model_rewrite",
+            "policy_override",
+            "freeform_prompt_self_rewrite",
+        ],
+    },
+]
+
+
+def _autonomy_readiness_payload() -> Dict[str, Any]:
+    generated_at = datetime.now(timezone.utc).isoformat()
+    warnings: list[str] = []
+    payload: dict[str, Any] = {
+        "schema_version": "autonomy_readiness.v1",
+        "generated_at": generated_at,
+        "overall": {
+            "autonomy_level": "level_2_5_bounded_self_mutation",
+            "summary": "bounded self-mutation with routing-only narrow live apply and recall/cognitive proposal-shadow controls",
+            "safe_next_action": "build_recall_v2_manual_canary",
+            "highest_risk": "misconfigured autonomy apply gate outside routing narrow class",
+            "warnings": [],
+        },
+        "scheduler": {"enabled": False, "proposal_enabled": False, "apply_enabled": False, "source": "env/runtime", "gates": {}},
+        "policy_matrix": {"surfaces": list(_AUTONOMY_READINESS_POLICY_MATRIX)},
+        "surfaces": {"live": [], "shadow": [], "proposal_only": [], "blocked": []},
+        "routing": {
+            "current_controls": {},
+            "recent_applies": [],
+            "recent_rollbacks": [],
+            "recent_blocked_applies": [],
+            "pressure_summary": {},
+        },
+        "recall": {
+            "production_mode": "v1",
+            "live_apply_enabled": False,
+            "active_shadow_profile": None,
+            "staged_profiles": [],
+            "readiness": None,
+            "recent_eval_runs": [],
+            "production_candidate_reviews": [],
+            "warnings": [],
+        },
+        "cognitive": {
+            "live_apply_enabled": False,
+            "proposal_classes": [
+                "cognitive_contradiction_reconciliation",
+                "cognitive_identity_continuity_adjustment",
+                "cognitive_stance_continuity_adjustment",
+                "cognitive_social_continuity_repair",
+            ],
+            "counts_by_state": {},
+            "recent_proposals": [],
+            "warnings": [],
+        },
+        "pressure": {
+            "top_pressure_keys": [],
+            "recent_evidence": [],
+            "high_confidence_unresolved": [],
+            "warnings": [],
+        },
+        "recent_activity": {
+            "applies": [],
+            "rollbacks": [],
+            "blocked_applies": [],
+            "skipped": [],
+            "staged": [],
+            "reviews": [],
+        },
+        "safe_next_actions": [
+            {"rank": 1, "action": "build_recall_v2_manual_canary", "reason": "recall is shadow/eval/review capable while production apply remains blocked"},
+            {"rank": 2, "action": "run_cognitive_operator_review", "reason": "cognitive proposals are bounded to draft/review and need explicit operator workflow"},
+        ],
+        "warnings": warnings,
+    }
+    try:
+        g_autonomy = _env_flag("SUBSTRATE_AUTONOMY_ENABLED", default=False)
+        g_prop = _env_flag("SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED", default=True)
+        g_apply = _env_flag("SUBSTRATE_AUTONOMY_APPLY_ENABLED", default=False)
+        g_route_prop = _env_flag("SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED", default=True)
+        g_route_apply = _env_flag("SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED", default=False)
+        payload["scheduler"] = {
+            "enabled": bool(g_autonomy),
+            "proposal_enabled": bool(g_autonomy and g_prop),
+            "apply_enabled": bool(g_autonomy and g_apply),
+            "source": "env/runtime",
+            "gates": {
+                "SUBSTRATE_AUTONOMY_ENABLED": {"value": g_autonomy, "effective": g_autonomy},
+                "SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED": {"value": g_prop, "effective": bool(g_autonomy and g_prop)},
+                "SUBSTRATE_AUTONOMY_APPLY_ENABLED": {"value": g_apply, "effective": bool(g_autonomy and g_apply)},
+                "SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED": {"value": g_route_prop, "effective": bool(g_autonomy and g_prop and g_route_prop)},
+                "SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED": {"value": g_route_apply, "effective": bool(g_autonomy and g_apply and g_route_apply)},
+            },
+        }
+    except Exception as exc:
+        warnings.append(f"scheduler_unavailable:{exc}")
+
+    try:
+        posture = _routing_live_ramp_posture_payload()
+        payload["routing"]["current_controls"] = posture.get("data", {}).get("live_surface") or inspect_chat_reflective_lane_threshold()
+        payload["routing"]["recent_applies"] = [row.model_dump(mode="json") for row in sorted(SUBSTRATE_MUTATION_STORE._adoptions.values(), key=lambda item: item.created_at, reverse=True)[:10]]
+        payload["routing"]["recent_rollbacks"] = SUBSTRATE_MUTATION_STORE.recent_rollbacks(limit=10)
+        payload["routing"]["recent_blocked_applies"] = SUBSTRATE_MUTATION_STORE.recent_blocked_applies(limit=10)
+    except Exception as exc:
+        warnings.append(f"routing_posture_unavailable:{exc}")
+
+    try:
+        live_surfaces = []
+        for row in SUBSTRATE_MUTATION_STORE.active_surfaces_snapshot():
+            if str(row.get("target_surface")) == "routing":
+                live_surfaces.append(
+                    {
+                        "surface": "routing_threshold_patch",
+                        "control_key": "routing.chat_reflective_lane_threshold",
+                        "status": "live",
+                        "apply_mode": "gated_auto",
+                        "rollback_supported": True,
+                    }
+                )
+        active_shadow = SUBSTRATE_MUTATION_STORE.active_recall_shadow_profile()
+        staged_profiles = SUBSTRATE_MUTATION_STORE.list_recall_strategy_profiles(limit=50)
+        staged_only = [item for item in staged_profiles if str(item.get("status")) == "staged"]
+        recall_readiness = readiness_from_telemetry_records(SUBSTRATE_REVIEW_TELEMETRY_STORE.query(GraphReviewTelemetryQueryV1(limit=200)))
+        payload["surfaces"]["live"] = live_surfaces
+        payload["surfaces"]["shadow"] = (
+            [{"surface": "recall_strategy_profile", "status": "shadow_active_or_available", "production_default": "recall_v1"}]
+            if active_shadow is not None or staged_profiles
+            else []
+        )
+        payload["surfaces"]["proposal_only"] = [{"surface": "cognitive_self_model", "status": "proposal_draft_only"}]
+        payload["surfaces"]["blocked"] = [
+            {"surface": "recall_weighting_patch", "reason": "live recall apply explicitly blocked"},
+            {"surface": "identity_kernel_rewrite", "reason": "forbidden by current safety posture"},
+        ]
+        payload["recall"]["active_shadow_profile"] = active_shadow.model_dump(mode="json") if active_shadow else None
+        payload["recall"]["staged_profiles"] = staged_only[:20]
+        payload["recall"]["readiness"] = recall_readiness.model_dump(mode="json")
+        payload["recall"]["recent_eval_runs"] = SUBSTRATE_MUTATION_STORE.list_recall_shadow_eval_runs(limit=20, profile_id=(active_shadow.profile_id if active_shadow else None))
+        payload["recall"]["production_candidate_reviews"] = SUBSTRATE_MUTATION_STORE.list_recall_production_candidate_reviews(limit=20, profile_id=(active_shadow.profile_id if active_shadow else None))
+    except Exception as exc:
+        warnings.append(f"recall_posture_unavailable:{exc}")
+        payload["recall"]["warnings"] = list(payload["recall"]["warnings"]) + [str(exc)]
+
+    try:
+        cognitive_proposals = api_substrate_mutation_runtime_cognitive_proposals(limit=50).get("data", {}).get("recent_cognitive_proposals", [])
+        counts: dict[str, int] = {}
+        for item in cognitive_proposals:
+            state = str(item.get("rollout_state") or "proposed")
+            counts[state] = counts.get(state, 0) + 1
+        payload["cognitive"]["counts_by_state"] = counts
+        payload["cognitive"]["recent_proposals"] = cognitive_proposals[:20]
+    except Exception as exc:
+        warnings.append(f"cognitive_posture_unavailable:{exc}")
+        payload["cognitive"]["warnings"] = list(payload["cognitive"]["warnings"]) + [str(exc)]
+
+    try:
+        pressures = SUBSTRATE_MUTATION_STORE.recent_recall_pressures(limit=30)
+        recent_events = api_substrate_mutation_runtime_recall_pressure_events(limit=30).get("data", {}).get("recent_recall_pressure_events", [])
+        top_keys: dict[str, int] = {}
+        high_conf = []
+        for ev in recent_events:
+            key = str(ev.get("pressure_category") or "unknown")
+            top_keys[key] = top_keys.get(key, 0) + 1
+            conf = float(ev.get("confidence") or 0.0)
+            if conf >= 0.8:
+                high_conf.append({"pressure_event_id": ev.get("pressure_event_id"), "pressure_category": key, "confidence": conf})
+        ranked = sorted(top_keys.items(), key=lambda x: x[1], reverse=True)[:10]
+        payload["pressure"]["top_pressure_keys"] = [{"key": k, "count": c} for k, c in ranked]
+        payload["pressure"]["recent_evidence"] = recent_events[:20]
+        payload["pressure"]["high_confidence_unresolved"] = high_conf[:20]
+        payload["routing"]["pressure_summary"] = {"recall_pressure_count": len(pressures), "recall_event_count": len(recent_events)}
+    except Exception as exc:
+        warnings.append(f"pressure_unavailable:{exc}")
+        payload["pressure"]["warnings"] = list(payload["pressure"]["warnings"]) + [str(exc)]
+
+    payload["recent_activity"]["applies"] = payload["routing"]["recent_applies"][:10]
+    payload["recent_activity"]["rollbacks"] = payload["routing"]["recent_rollbacks"][:10]
+    payload["recent_activity"]["blocked_applies"] = payload["routing"]["recent_blocked_applies"][:10]
+    payload["recent_activity"]["staged"] = payload["recall"]["staged_profiles"][:10]
+    payload["recent_activity"]["reviews"] = payload["recall"]["production_candidate_reviews"][:10]
+    recall_ready = payload["recall"].get("readiness") or {}
+    if str(recall_ready.get("recommendation") or "") not in {"ready_for_shadow_expansion", "ready_for_operator_promotion"}:
+        payload["overall"]["safe_next_action"] = "expand_recall_shadow_corpus"
+    payload["overall"]["warnings"] = list(warnings)
+    payload["warnings"] = warnings
+    logger.info(
+        "event=autonomy_readiness_snapshot schema_version=%s generated_at=%s warning_count=%s live_surface_count=%s shadow_surface_count=%s proposal_only_count=%s blocked_surface_count=%s safe_next_action=%s",
+        payload.get("schema_version"),
+        payload.get("generated_at"),
+        len(warnings),
+        len(payload["surfaces"]["live"]),
+        len(payload["surfaces"]["shadow"]),
+        len(payload["surfaces"]["proposal_only"]),
+        len(payload["surfaces"]["blocked"]),
+        payload["overall"].get("safe_next_action"),
+    )
+    return payload
 
 
 def _execute_substrate_review_cycle(*, allow_followup: bool, explicit_queue_item_id: str | None = None) -> Dict[str, Any]:
@@ -2732,6 +3457,1086 @@ def api_substrate_mutation_runtime_rollbacks(limit: int = Query(default=20, ge=1
     }
 
 
+@router.get("/api/substrate/mutation-runtime/routing-pressure-sources")
+def api_substrate_mutation_runtime_routing_pressure_sources(
+    limit: int = Query(default=50, ge=1, le=200),
+) -> Dict[str, Any]:
+    rows = SUBSTRATE_MUTATION_STORE.recent_signals(limit=limit, target_surface="routing")
+    sources = [
+        {
+            "signal_id": row.get("signal_id"),
+            "detected_at": row.get("detected_at"),
+            "source_ref": row.get("source_ref"),
+            "source_kind": (row.get("metadata") or {}).get("source_kind"),
+            "derived_signal_kind": row.get("event_kind"),
+            "confidence": row.get("strength"),
+            "evidence_refs": list(row.get("evidence_refs") or []),
+        }
+        for row in rows
+    ]
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {
+            "routing_pressure_sources": sources,
+        },
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/producer-pressure-events")
+def api_substrate_mutation_runtime_producer_pressure_events(
+    limit: int = Query(default=50, ge=1, le=200),
+) -> Dict[str, Any]:
+    telemetry_rows = SUBSTRATE_REVIEW_TELEMETRY_STORE.query(GraphReviewTelemetryQueryV1(limit=max(limit, 200)))
+    routing_signals = SUBSTRATE_MUTATION_STORE.recent_signals(limit=500, target_surface="routing")
+    signal_links: dict[str, list[str]] = {}
+    for signal in routing_signals:
+        signal_id = str(signal.get("signal_id") or "")
+        for ref in list(signal.get("evidence_refs") or []):
+            if str(ref).startswith("pressure_event:"):
+                event_id = str(ref).split("pressure_event:", 1)[1].strip()
+                if event_id:
+                    signal_links.setdefault(event_id, []).append(signal_id)
+    events: list[dict[str, Any]] = []
+    for row in telemetry_rows:
+        if not row.pressure_events:
+            continue
+        for event in row.pressure_events:
+            events.append(
+                {
+                    "pressure_event_id": event.pressure_event_id,
+                    "source_service": event.source_service,
+                    "source_event_id": event.source_event_id,
+                    "correlation_id": event.correlation_id,
+                    "pressure_category": event.pressure_category,
+                    "confidence": event.confidence,
+                    "evidence_refs": list(event.evidence_refs),
+                    "observed_at": event.observed_at.isoformat(),
+                    "linked_signal_ids": sorted(signal_links.get(event.pressure_event_id, [])),
+                }
+            )
+    events.sort(key=lambda item: str(item.get("observed_at") or ""), reverse=True)
+    events = events[:limit]
+    grouped: dict[str, int] = {}
+    for event in events:
+        key = f"{event['source_service']}::{event['pressure_category']}"
+        grouped[key] = grouped.get(key, 0) + 1
+    grouped_rows = [
+        {"source_service": key.split("::", 1)[0], "pressure_category": key.split("::", 1)[1], "count": count}
+        for key, count in sorted(grouped.items())
+    ]
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": {
+            "telemetry": _source_meta(
+                kind=SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind(),
+                degraded=SUBSTRATE_REVIEW_TELEMETRY_STORE.degraded(),
+                limit=limit,
+                error=SUBSTRATE_REVIEW_TELEMETRY_STORE.last_error(),
+            ),
+            "mutation_signals": _source_meta(
+                kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+                degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+                limit=500,
+                error=SUBSTRATE_MUTATION_STORE.last_error(),
+            ),
+        },
+        "data": {
+            "recent_events": events,
+            "grouped_by_source_and_category": grouped_rows,
+        },
+    }
+
+
+_COGNITIVE_SURFACES = {
+    "cognitive_contradiction_reconciliation",
+    "cognitive_identity_continuity_adjustment",
+    "cognitive_stance_continuity_adjustment",
+    "cognitive_social_continuity_repair",
+}
+
+_RECALL_SURFACES = {
+    "recall_strategy_profile",
+    "recall_anchor_policy",
+    "recall_page_index_profile",
+    "recall_graph_expansion_policy",
+}
+
+_RECALL_PROPOSAL_CLASSES = {
+    "recall_strategy_profile_candidate",
+    "recall_anchor_policy_candidate",
+    "recall_page_index_profile_candidate",
+    "recall_graph_expansion_policy_candidate",
+}
+
+_RECALL_READY_RECOMMENDATIONS = {"review_candidate", "ready_for_shadow_expansion", "ready_for_operator_promotion"}
+
+
+def _strategy_kind_for_proposal(proposal: dict[str, Any]) -> str:
+    mutation_class = str(proposal.get("mutation_class") or "")
+    mapping = {
+        "recall_strategy_profile_candidate": "strategy_profile",
+        "recall_anchor_policy_candidate": "anchor_policy",
+        "recall_page_index_profile_candidate": "page_index_policy",
+        "recall_graph_expansion_policy_candidate": "graph_expansion_policy",
+    }
+    return mapping.get(mutation_class, "strategy_profile")
+
+
+def _recall_profile_from_proposal(
+    *,
+    proposal: dict[str, Any],
+    pressure: dict[str, Any] | None,
+    created_by: str,
+) -> RecallStrategyProfileV1:
+    patch = dict((proposal.get("patch") if isinstance(proposal.get("patch"), dict) else {}).get("patch") or {})
+    readiness = dict(patch.get("recall_strategy_readiness") or {})
+    source_pressure_ids: list[str] = []
+    if pressure and pressure.get("pressure_id"):
+        source_pressure_ids.append(str(pressure["pressure_id"]))
+    source_evidence_refs = [str(ref) for ref in list(proposal.get("evidence_refs") or [])][:128]
+    anchor_snapshot = dict(patch.get("anchor_plan_summary") or {})
+    page_snapshot = dict(patch.get("page_index_policy_snapshot") or {})
+    graph_snapshot = dict(patch.get("graph_expansion_policy_snapshot") or {})
+    if not page_snapshot:
+        page_snapshot = {"selected_evidence_cards_mode": "from_proposal", "selected_count": len(list(patch.get("selected_evidence_cards") or []))}
+    if not graph_snapshot:
+        graph_snapshot = {"failure_category": patch.get("failure_category")}
+    recall_config = {
+        "profile": "recall.v2.shadow",
+        "strategy_kind": _strategy_kind_for_proposal(proposal),
+        "shadow_only_status": patch.get("shadow_only_status"),
+        "not_applied_status": patch.get("not_applied_status"),
+    }
+    return RecallStrategyProfileV1(
+        source_proposal_id=str(proposal.get("proposal_id") or ""),
+        source_pressure_ids=source_pressure_ids,
+        source_evidence_refs=source_evidence_refs,
+        readiness_snapshot=readiness,
+        strategy_kind=_strategy_kind_for_proposal(proposal),
+        recall_v2_config_snapshot=recall_config,
+        anchor_policy_snapshot=anchor_snapshot,
+        page_index_policy_snapshot=page_snapshot,
+        graph_expansion_policy_snapshot=graph_snapshot,
+        eval_evidence_refs=[],
+        created_by=created_by,
+        status="staged",
+    )
+
+
+def _proposal_readiness_gate_payload(proposal: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    patch = dict((proposal.get("patch") if isinstance(proposal.get("patch"), dict) else {}).get("patch") or {})
+    readiness = dict(patch.get("recall_strategy_readiness") or {})
+    recommendation = str(readiness.get("recommendation") or "not_ready")
+    return readiness, recommendation
+
+
+def _readiness_delta_summary(*, before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    metrics = ("corpus_coverage", "precision_proxy", "irrelevant_cousin_rate", "explainability_completeness", "latency_delta_ms_mean")
+    delta: dict[str, Any] = {}
+    for key in metrics:
+        b = before.get(key)
+        a = after.get(key)
+        if isinstance(b, (int, float)) and isinstance(a, (int, float)):
+            delta[f"{key}_delta"] = round(float(a) - float(b), 4)
+    delta["recommendation_before"] = before.get("recommendation")
+    delta["recommendation_after"] = after.get("recommendation")
+    return delta
+
+
+@router.get("/api/substrate/mutation-runtime/recall-pressure-store")
+def api_substrate_mutation_runtime_recall_pressure_store(
+    limit: int = Query(default=20, ge=1, le=100),
+) -> Dict[str, Any]:
+    """Recent recall-surface mutation pressures including bounded recall_evidence_history."""
+    rows = SUBSTRATE_MUTATION_STORE.recent_recall_pressures(limit=limit)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {"recent_recall_pressures": rows},
+    }
+
+
+@router.post("/api/substrate/mutation-runtime/recall-eval-suite/record")
+def api_substrate_mutation_runtime_recall_eval_suite_record(
+    body: RecallEvalSuiteRecordRequest,
+    x_orion_operator_token: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    """
+    Record recall_eval-shaped rows as first-class mutation pressure telemetry.
+    Requires operator token and HUB_RECALL_EVAL_RECORDING_ENABLED=true (disabled by default).
+    """
+    if not bool(getattr(settings, "HUB_RECALL_EVAL_RECORDING_ENABLED", False)):
+        raise HTTPException(status_code=403, detail="recall_eval_recording_disabled")
+    _require_mutation_operator_guard(x_orion_operator_token)
+    from orion.substrate.recall_eval_bridge import pressure_evidence_from_eval_suite_rows
+
+    run_id = str(body.suite_run_id or "").strip() or f"recall-eval-{uuid4()}"
+    events = pressure_evidence_from_eval_suite_rows(body.rows, suite_run_id=run_id)
+    if not events:
+        raise HTTPException(status_code=422, detail="recall_eval_rows_empty_or_invalid")
+    recorded = 0
+    for offset in range(0, len(events), 16):
+        chunk = events[offset : offset + 16]
+        _record_pressure_events_as_telemetry(
+            events=chunk,
+            correlation_id=run_id,
+            source_event_id=f"recall_eval_suite:{run_id}:chunk{offset // 16}",
+            invocation_surface="operator_review",
+            ingest_notes=["recall_eval_suite_manual_ingest", "operator_triggered"],
+        )
+        recorded += len(chunk)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "data": {"recorded": recorded, "suite_run_id": run_id},
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/recall-pressure-events")
+def api_substrate_mutation_runtime_recall_pressure_events(
+    limit: int = Query(default=50, ge=1, le=200),
+) -> Dict[str, Any]:
+    telemetry_rows = SUBSTRATE_REVIEW_TELEMETRY_STORE.query(GraphReviewTelemetryQueryV1(limit=max(limit, 200)))
+    recall_signals = SUBSTRATE_MUTATION_STORE.recent_signals(limit=500)
+    signal_links: dict[str, list[str]] = {}
+    for signal in recall_signals:
+        if str(signal.get("target_surface") or "") not in _RECALL_SURFACES:
+            continue
+        signal_id = str(signal.get("signal_id") or "")
+        for ref in list(signal.get("evidence_refs") or []):
+            if str(ref).startswith("pressure_event:"):
+                event_id = str(ref).split("pressure_event:", 1)[1].strip()
+                if event_id:
+                    signal_links.setdefault(event_id, []).append(signal_id)
+    events: list[dict[str, Any]] = []
+    recall_categories = {
+        "recall_miss_or_dissatisfaction",
+        "unsupported_memory_claim",
+        "irrelevant_semantic_neighbor",
+        "missing_exact_anchor",
+        "stale_memory_selected",
+    }
+    for row in telemetry_rows:
+        if not row.pressure_events:
+            continue
+        for event in row.pressure_events:
+            if str(event.pressure_category) not in recall_categories:
+                continue
+            meta = dict(event.metadata or {})
+            events.append(
+                {
+                    "pressure_event_id": event.pressure_event_id,
+                    "source_service": event.source_service,
+                    "source_event_id": event.source_event_id,
+                    "correlation_id": event.correlation_id,
+                    "pressure_category": event.pressure_category,
+                    "confidence": event.confidence,
+                    "evidence_refs": list(event.evidence_refs),
+                    "metadata": meta,
+                    "observed_at": event.observed_at.isoformat(),
+                    "linked_signal_ids": sorted(signal_links.get(event.pressure_event_id, [])),
+                }
+            )
+    events.sort(key=lambda item: str(item.get("observed_at") or ""), reverse=True)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind(),
+            degraded=SUBSTRATE_REVIEW_TELEMETRY_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_REVIEW_TELEMETRY_STORE.last_error(),
+        ),
+        "data": {"recent_recall_pressure_events": events[:limit]},
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/recall-strategy-proposals")
+def api_substrate_mutation_runtime_recall_strategy_proposals(
+    limit: int = Query(default=20, ge=1, le=200),
+) -> Dict[str, Any]:
+    proposals = sorted(SUBSTRATE_MUTATION_STORE._proposals.values(), key=lambda item: item.created_at, reverse=True)
+    filtered: list[dict[str, Any]] = []
+    for proposal in proposals:
+        payload = proposal.model_dump(mode="json")
+        mutation_class = str(getattr(proposal, "mutation_class", payload.get("mutation_class")) or "")
+        target_surface = str(getattr(proposal, "target_surface", payload.get("target_surface")) or "")
+        if mutation_class in _RECALL_PROPOSAL_CLASSES or target_surface in _RECALL_SURFACES:
+            filtered.append(payload)
+        if len(filtered) >= limit:
+            break
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {"recent_recall_strategy_proposals": filtered},
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/recall-strategy-proposals/{proposal_id}/lineage")
+def api_substrate_mutation_runtime_recall_strategy_proposal_lineage(proposal_id: str) -> Dict[str, Any]:
+    lifecycle = SUBSTRATE_MUTATION_STORE.lifecycle_for_proposal(proposal_id)
+    if lifecycle is None:
+        raise HTTPException(status_code=404, detail="recall_strategy_proposal_not_found")
+    proposal = lifecycle.get("proposal") if isinstance(lifecycle, dict) else None
+    if not isinstance(proposal, dict):
+        raise HTTPException(status_code=404, detail="recall_strategy_proposal_not_found")
+    if (
+        str(proposal.get("mutation_class") or "") not in _RECALL_PROPOSAL_CLASSES
+        and str(proposal.get("target_surface") or "") not in _RECALL_SURFACES
+    ):
+        raise HTTPException(status_code=404, detail="recall_strategy_proposal_not_found")
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=1,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {"lineage": lifecycle},
+    }
+
+
+@router.post("/api/substrate/mutation-runtime/recall-strategy-proposals/{proposal_id}/promote-to-staged-profile")
+def api_substrate_mutation_runtime_recall_strategy_proposal_promote_to_staged_profile(
+    proposal_id: str,
+    request: RecallProposalStageRequest,
+    x_orion_operator_token: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    _require_mutation_operator_guard(x_orion_operator_token)
+    lifecycle = SUBSTRATE_MUTATION_STORE.lifecycle_for_proposal(proposal_id)
+    if lifecycle is None:
+        raise HTTPException(status_code=404, detail="recall_strategy_proposal_not_found")
+    proposal = lifecycle.get("proposal") if isinstance(lifecycle, dict) else None
+    if not isinstance(proposal, dict) or str(proposal.get("mutation_class") or "") not in _RECALL_PROPOSAL_CLASSES:
+        raise HTTPException(status_code=404, detail="recall_strategy_proposal_not_found")
+    queue_state = str(((lifecycle.get("queue_item") if isinstance(lifecycle.get("queue_item"), dict) else {}) or {}).get("status") or "")
+    if queue_state != "pending_review":
+        raise HTTPException(status_code=409, detail="recall_strategy_proposal_not_operator_gated")
+    readiness, recommendation = _proposal_readiness_gate_payload(proposal)
+    if recommendation not in _RECALL_READY_RECOMMENDATIONS:
+        if not request.override:
+            raise HTTPException(status_code=409, detail="recall_strategy_readiness_not_sufficient")
+    gates = list(readiness.get("gates_blocked") or [])
+    if gates and not request.override:
+        raise HTTPException(status_code=409, detail="recall_strategy_readiness_gates_blocked")
+    if request.override and not str(request.operator_rationale or "").strip():
+        raise HTTPException(status_code=422, detail="override_operator_rationale_required")
+    pressure = lifecycle.get("pressure") if isinstance(lifecycle.get("pressure"), dict) else None
+    profile = _recall_profile_from_proposal(
+        proposal=proposal,
+        pressure=pressure if isinstance(pressure, dict) else None,
+        created_by=str(request.created_by or "operator"),
+    )
+    staged = SUBSTRATE_MUTATION_STORE.stage_recall_profile(profile=profile)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=1,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {
+            "profile": staged.model_dump(mode="json"),
+            "production_recall_mode": "v1",
+            "override_applied": bool(request.override),
+            "operator_rationale": str(request.operator_rationale or ""),
+        },
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/recall-strategy-profiles")
+def api_substrate_mutation_runtime_recall_strategy_profiles(
+    limit: int = Query(default=20, ge=1, le=200),
+) -> Dict[str, Any]:
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {"profiles": SUBSTRATE_MUTATION_STORE.list_recall_strategy_profiles(limit=limit)},
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/recall-strategy-profiles/{profile_id}")
+def api_substrate_mutation_runtime_recall_strategy_profile_detail(profile_id: str) -> Dict[str, Any]:
+    profile = SUBSTRATE_MUTATION_STORE.get_recall_strategy_profile(profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="recall_strategy_profile_not_found")
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=1,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {"profile": profile.model_dump(mode="json")},
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/recall-strategy-profiles/{profile_id}/lineage")
+def api_substrate_mutation_runtime_recall_strategy_profile_lineage(profile_id: str) -> Dict[str, Any]:
+    payload = SUBSTRATE_MUTATION_STORE.recall_strategy_profile_lineage(profile_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="recall_strategy_profile_not_found")
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=1,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": payload,
+    }
+
+
+@router.post("/api/substrate/mutation-runtime/recall-strategy-profiles/{profile_id}/create-production-candidate-review")
+def api_substrate_mutation_runtime_recall_strategy_profile_create_production_candidate_review(
+    profile_id: str,
+    request: RecallProductionCandidateReviewCreateRequest,
+    x_orion_operator_token: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    _require_mutation_operator_guard(x_orion_operator_token)
+    profile = SUBSTRATE_MUTATION_STORE.get_recall_strategy_profile(profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="recall_strategy_profile_not_found")
+    runs = SUBSTRATE_MUTATION_STORE.list_recall_shadow_eval_runs(limit=200, profile_id=profile_id)
+    non_dry = [row for row in runs if not bool(row.get("dry_run")) and str(row.get("status") or "") == "completed"]
+    if profile.status not in {"shadow_active", "staged"}:
+        raise HTTPException(status_code=409, detail="recall_strategy_profile_not_reviewable")
+    if not non_dry and not request.override:
+        raise HTTPException(status_code=409, detail="recall_candidate_requires_non_dry_eval_history")
+    readiness = dict(profile.readiness_snapshot or {})
+    recommendation = str(readiness.get("recommendation") or "")
+    if recommendation not in {"ready_for_shadow_expansion", "ready_for_operator_promotion"} and not request.override:
+        raise HTTPException(status_code=409, detail="recall_candidate_readiness_not_sufficient")
+    if request.override and not str(request.operator_rationale or "").strip():
+        raise HTTPException(status_code=422, detail="override_operator_rationale_required")
+    source_run_ids = [str(row.get("run_id")) for row in non_dry[:64] if row.get("run_id")]
+    latest_non_dry = non_dry[0] if non_dry else None
+    delta = dict(latest_non_dry.get("readiness_delta_summary") or {}) if isinstance(latest_non_dry, dict) else {}
+    improvements: list[str] = []
+    regressions: list[str] = []
+    for k, v in delta.items():
+        if not str(k).endswith("_delta") or not isinstance(v, (int, float)):
+            continue
+        if float(v) > 0:
+            improvements.append(f"{k}={v}")
+        elif float(v) < 0:
+            regressions.append(f"{k}={v}")
+    review = RecallProductionCandidateReviewV1(
+        profile_id=profile_id,
+        source_eval_run_ids=source_run_ids,
+        readiness_snapshot=readiness,
+        risk_summary=list(readiness.get("gates_blocked") or [])[:64],
+        observed_improvements=improvements[:64],
+        observed_regressions=regressions[:64],
+        operator_checklist=dict(request.operator_checklist or {}),
+        recommendation=(
+            "ready_for_manual_canary"
+            if recommendation == "ready_for_operator_promotion"
+            else ("expand_shadow_corpus" if recommendation == "ready_for_shadow_expansion" else "keep_shadowing")
+        ),
+        status="draft",
+        created_by=str(request.created_by or "operator"),
+    )
+    saved = SUBSTRATE_MUTATION_STORE.record_recall_production_candidate_review(review)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=1,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {
+            "review": saved.model_dump(mode="json"),
+            "production_recall_mode": "v1",
+            "recall_live_apply_enabled": False,
+            "override_applied": bool(request.override),
+            "operator_rationale": str(request.operator_rationale or ""),
+        },
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/recall-production-candidate-reviews")
+def api_substrate_mutation_runtime_recall_production_candidate_reviews(
+    limit: int = Query(default=20, ge=1, le=200),
+    profile_id: str | None = None,
+) -> Dict[str, Any]:
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {"reviews": SUBSTRATE_MUTATION_STORE.list_recall_production_candidate_reviews(limit=limit, profile_id=profile_id)},
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/recall-production-candidate-reviews/{review_id}")
+def api_substrate_mutation_runtime_recall_production_candidate_review_detail(review_id: str) -> Dict[str, Any]:
+    review = SUBSTRATE_MUTATION_STORE.get_recall_production_candidate_review(review_id)
+    if review is None:
+        raise HTTPException(status_code=404, detail="recall_production_candidate_review_not_found")
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=1,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {"review": review.model_dump(mode="json")},
+    }
+
+
+@router.post("/api/substrate/mutation-runtime/recall-strategy-profiles/{profile_id}/activate-shadow")
+def api_substrate_mutation_runtime_recall_strategy_profile_activate_shadow(
+    profile_id: str,
+    request: RecallShadowActivateRequest,
+    x_orion_operator_token: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    _require_mutation_operator_guard(x_orion_operator_token)
+    profile = SUBSTRATE_MUTATION_STORE.get_recall_strategy_profile(profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="recall_strategy_profile_not_found")
+    if profile.status != "staged":
+        raise HTTPException(status_code=409, detail="recall_strategy_profile_not_staged")
+    activated = SUBSTRATE_MUTATION_STORE.activate_recall_shadow_profile(profile_id)
+    if activated is None:
+        raise HTTPException(status_code=404, detail="recall_strategy_profile_not_found")
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=1,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {
+            "profile": activated.model_dump(mode="json"),
+            "operator_rationale": str(request.operator_rationale or ""),
+            "production_recall_mode": "v1",
+        },
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/recall-shadow-profile-posture")
+def api_substrate_mutation_runtime_recall_shadow_profile_posture() -> Dict[str, Any]:
+    active = SUBSTRATE_MUTATION_STORE.active_recall_shadow_profile()
+    eval_summary = api_substrate_mutation_runtime_recall_v1_v2_latest_eval().get("data", {})
+    readiness = active.readiness_snapshot if active is not None else {}
+    recent_runs = SUBSTRATE_MUTATION_STORE.list_recall_shadow_eval_runs(
+        limit=5,
+        profile_id=(active.profile_id if active is not None else None),
+    )
+    recent_reviews = SUBSTRATE_MUTATION_STORE.list_recall_production_candidate_reviews(
+        limit=5,
+        profile_id=(active.profile_id if active is not None else None),
+    )
+    lineage = (
+        SUBSTRATE_MUTATION_STORE.recall_strategy_profile_lineage(active.profile_id)
+        if active is not None
+        else None
+    )
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=1,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {
+            "active_shadow_profile_id": active.profile_id if active else None,
+            "readiness_snapshot": readiness,
+            "current_recall_v2_shadow_config": (active.recall_v2_config_snapshot if active is not None else {}),
+            "last_eval_summary": eval_summary.get("latest_recall_v1_v2_eval_summary"),
+            "recent_shadow_eval_runs": recent_runs,
+            "recent_production_candidate_reviews": recent_reviews,
+            "last_proposal_source_lineage": lineage,
+            "production_recall_mode": "v1",
+            "production_recall_still_v1": True,
+        },
+    }
+
+
+@router.post("/api/substrate/mutation-runtime/recall-shadow-profile/evaluate")
+def api_substrate_mutation_runtime_recall_shadow_profile_evaluate(
+    request: RecallShadowEvaluateRequest,
+    x_orion_operator_token: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    _require_mutation_operator_guard(x_orion_operator_token)
+    active = SUBSTRATE_MUTATION_STORE.active_recall_shadow_profile()
+    if active is None:
+        raise HTTPException(status_code=409, detail="no_active_shadow_profile")
+
+    max_rows = max(1, min(int(settings.HUB_RECALL_SHADOW_EVAL_MAX_ROWS_PER_RUN), 512))
+    requested_limit = int(request.corpus_limit or settings.HUB_RECALL_SHADOW_EVAL_DEFAULT_CORPUS_LIMIT)
+    corpus_limit = max(1, min(requested_limit, max_rows))
+    eval_rows: list[dict[str, Any]] = []
+    failure_reason: str | None = None
+    run_status = "dry_run" if request.dry_run else "completed"
+    if request.eval_rows:
+        eval_rows = [dict(row) for row in request.eval_rows if isinstance(row, dict)][:max_rows]
+    else:
+        base = settings.recall_service_url
+        try:
+            resp = requests.get(f"{base}/debug/recall/eval-suite", timeout=float(settings.HUB_RECALL_SHADOW_EVAL_TIMEOUT_SEC))
+            payload = resp.json() if resp.status_code < 500 else {}
+            eval_rows = [dict(row) for row in list(payload.get("rows") or []) if isinstance(row, dict)][:max_rows]
+            if resp.status_code >= 500:
+                failure_reason = f"recall_service_status_{resp.status_code}"
+        except Exception as exc:
+            eval_rows = []
+            failure_reason = f"recall_service_unavailable:{exc.__class__.__name__}"
+    if request.case_ids:
+        keep = {str(cid) for cid in request.case_ids}
+        eval_rows = [row for row in eval_rows if str(row.get("case_id")) in keep]
+    eval_rows = eval_rows[:corpus_limit]
+    readiness_before = dict(active.readiness_snapshot or {})
+    if not eval_rows:
+        run = RecallShadowEvalRunV1(
+            profile_id=active.profile_id,
+            dry_run=bool(request.dry_run),
+            recorded_pressure_events=0,
+            corpus_limit=corpus_limit,
+            case_ids=[str(cid) for cid in request.case_ids][:256],
+            eval_row_count=0,
+            readiness_before=readiness_before,
+            readiness_after=readiness_before,
+            readiness_delta_summary={},
+            pressure_event_refs=[],
+            operator_rationale=str(request.operator_rationale or ""),
+            status="failed" if not request.dry_run else "dry_run",
+            failure_reason=failure_reason or "recall_shadow_eval_rows_empty",
+        )
+        saved_run = SUBSTRATE_MUTATION_STORE.record_recall_shadow_eval_run(run)
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "source": _source_meta(
+                kind=SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind(),
+                degraded=SUBSTRATE_REVIEW_TELEMETRY_STORE.degraded(),
+                limit=corpus_limit,
+                error=SUBSTRATE_REVIEW_TELEMETRY_STORE.last_error(),
+            ),
+            "data": {
+                "profile_id": active.profile_id,
+                "dry_run": bool(request.dry_run),
+                "record_pressure_events": bool(request.record_pressure_events),
+                "recorded_pressure_events": 0,
+                "readiness_snapshot": readiness_before,
+                "profile": active.model_dump(mode="json"),
+                "operator_rationale": str(request.operator_rationale or ""),
+                "production_recall_mode": "v1",
+                "eval_run": saved_run.model_dump(mode="json"),
+            },
+        }
+
+    from orion.substrate.recall_eval_bridge import pressure_evidence_from_eval_suite_rows
+
+    suite_run_id = f"shadow-profile-eval:{active.profile_id}:{uuid4()}"
+    events = pressure_evidence_from_eval_suite_rows(eval_rows, suite_run_id=suite_run_id)
+    compare_rows: list[dict[str, Any]] = []
+    failure_categories: list[str] = []
+    recorded = 0
+    eval_refs = list(active.eval_evidence_refs)
+    pressure_event_refs: list[str] = []
+    for ev in events:
+        meta = dict(ev.metadata or {})
+        cmp = meta.get("v1_v2_compare")
+        if isinstance(cmp, dict):
+            compare_rows.append(dict(cmp))
+            failure_categories.append(str(ev.pressure_category))
+            case_id = str(cmp.get("case_id") or "")
+            if case_id:
+                eval_refs.append(f"recall_eval_case:{case_id}")
+        if request.record_pressure_events and not request.dry_run:
+            _record_pressure_events_as_telemetry(
+                events=[ev],
+                correlation_id=str(ev.correlation_id or suite_run_id),
+                source_event_id=str(ev.source_event_id or suite_run_id),
+                invocation_surface="operator_review",
+                ingest_notes=["recall_shadow_profile_evaluate", f"profile:{active.profile_id}"],
+            )
+            recorded += 1
+            pressure_event_refs.append(f"pressure_event:{ev.pressure_event_id}")
+    readiness = compute_recall_strategy_readiness(
+        compare_rows=compare_rows,
+        failure_categories=failure_categories,
+        corpus_total_cases=default_eval_corpus_total_cases(),
+    )
+    updated = active
+    if not request.dry_run:
+        saved = SUBSTRATE_MUTATION_STORE.update_recall_strategy_profile(
+            profile_id=active.profile_id,
+            readiness_snapshot=readiness.model_dump(mode="json"),
+            eval_evidence_refs=list(dict.fromkeys(eval_refs))[-128:],
+        )
+        if saved is not None:
+            updated = saved
+    run = RecallShadowEvalRunV1(
+        profile_id=active.profile_id,
+        dry_run=bool(request.dry_run),
+        recorded_pressure_events=recorded,
+        corpus_limit=corpus_limit,
+        case_ids=[str(cid) for cid in request.case_ids][:256],
+        eval_row_count=len(eval_rows),
+        readiness_before=readiness_before,
+        readiness_after=readiness.model_dump(mode="json"),
+        readiness_delta_summary=_readiness_delta_summary(before=readiness_before, after=readiness.model_dump(mode="json")),
+        pressure_event_refs=pressure_event_refs,
+        operator_rationale=str(request.operator_rationale or ""),
+        status=run_status,  # type: ignore[arg-type]
+        failure_reason=failure_reason,
+    )
+    saved_run = SUBSTRATE_MUTATION_STORE.record_recall_shadow_eval_run(run)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind(),
+            degraded=SUBSTRATE_REVIEW_TELEMETRY_STORE.degraded(),
+            limit=corpus_limit,
+            error=SUBSTRATE_REVIEW_TELEMETRY_STORE.last_error(),
+        ),
+        "data": {
+            "profile_id": active.profile_id,
+            "dry_run": bool(request.dry_run),
+            "record_pressure_events": bool(request.record_pressure_events),
+            "recorded_pressure_events": recorded,
+            "readiness_snapshot": readiness.model_dump(mode="json"),
+            "profile": updated.model_dump(mode="json"),
+            "operator_rationale": str(request.operator_rationale or ""),
+            "production_recall_mode": "v1",
+            "eval_run": saved_run.model_dump(mode="json"),
+        },
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/recall-shadow-eval-runs")
+def api_substrate_mutation_runtime_recall_shadow_eval_runs(
+    limit: int = Query(default=20, ge=1, le=200),
+    profile_id: str | None = None,
+) -> Dict[str, Any]:
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {
+            "runs": SUBSTRATE_MUTATION_STORE.list_recall_shadow_eval_runs(limit=limit, profile_id=profile_id),
+        },
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/recall-shadow-eval-runs/{run_id}")
+def api_substrate_mutation_runtime_recall_shadow_eval_run_detail(run_id: str) -> Dict[str, Any]:
+    run = SUBSTRATE_MUTATION_STORE.get_recall_shadow_eval_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="recall_shadow_eval_run_not_found")
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=1,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {"run": run.model_dump(mode="json")},
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/recall-v1-v2-latest-eval")
+def api_substrate_mutation_runtime_recall_v1_v2_latest_eval(
+    eval_history_limit: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> Dict[str, Any]:
+    telemetry_rows = SUBSTRATE_REVIEW_TELEMETRY_STORE.query(GraphReviewTelemetryQueryV1(limit=200))
+    latest: dict[str, Any] | None = None
+    latest_ts = ""
+    latest_eval: dict[str, Any] | None = None
+    latest_eval_ts = ""
+    eval_history: list[dict[str, Any]] = []
+    for row in telemetry_rows:
+        for event in list(row.pressure_events or []):
+            meta = event.metadata if isinstance(event.metadata, dict) else {}
+            compare = meta.get("v1_v2_compare") if isinstance(meta.get("v1_v2_compare"), dict) else None
+            if not isinstance(compare, dict):
+                continue
+            observed = event.observed_at.isoformat()
+            if observed > latest_ts:
+                latest_ts = observed
+                latest = {
+                    "observed_at": observed,
+                    "pressure_event_id": event.pressure_event_id,
+                    "pressure_category": event.pressure_category,
+                    "v1_v2_compare": compare,
+                    "anchor_plan": meta.get("anchor_plan"),
+                    "selected_evidence_cards": meta.get("selected_evidence_cards"),
+                    "recall_evidence_kind": meta.get("recall_evidence_kind"),
+                }
+            if str(compare.get("source") or "") == "recall_eval_suite":
+                row_payload = {
+                    "observed_at": observed,
+                    "pressure_event_id": event.pressure_event_id,
+                    "pressure_category": event.pressure_category,
+                    "recall_eval_case": meta.get("recall_eval_case"),
+                    "v1_v2_compare": compare,
+                    "invocation_surface": row.invocation_surface,
+                    "telemetry_selection_reason": row.selection_reason,
+                }
+                eval_history.append(row_payload)
+                if observed > latest_eval_ts:
+                    latest_eval_ts = observed
+                    latest_eval = {
+                        "observed_at": observed,
+                        "pressure_event_id": event.pressure_event_id,
+                        "pressure_category": event.pressure_category,
+                        "recall_eval_case": meta.get("recall_eval_case"),
+                        "v1_v2_compare": compare,
+                    }
+    eval_history.sort(key=lambda item: str(item.get("observed_at") or ""), reverse=True)
+    hist_limit = max(1, min(int(eval_history_limit), 100))
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind(),
+            degraded=SUBSTRATE_REVIEW_TELEMETRY_STORE.degraded(),
+            limit=200,
+            error=SUBSTRATE_REVIEW_TELEMETRY_STORE.last_error(),
+        ),
+        "data": {
+            "latest_recall_v1_v2_eval_summary": latest,
+            "latest_recall_eval_suite_row": latest_eval,
+            "recent_recall_eval_suite_rows": eval_history[:hist_limit],
+        },
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/recall-strategy-readiness")
+def api_substrate_mutation_runtime_recall_strategy_readiness(
+    telemetry_limit: Annotated[int, Query(ge=10, le=500)] = 200,
+) -> Dict[str, Any]:
+    """
+    Read-only advisory readiness for Recall V2 / recall-strategy candidates from recent review telemetry.
+    Does not change routing, apply surfaces, or promotion state.
+    """
+    rows = SUBSTRATE_REVIEW_TELEMETRY_STORE.query(GraphReviewTelemetryQueryV1(limit=telemetry_limit))
+    readiness = readiness_from_telemetry_records(rows)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_REVIEW_TELEMETRY_STORE.source_kind(),
+            degraded=SUBSTRATE_REVIEW_TELEMETRY_STORE.degraded(),
+            limit=telemetry_limit,
+            error=SUBSTRATE_REVIEW_TELEMETRY_STORE.last_error(),
+        ),
+        "data": {"readiness": readiness.model_dump(mode="json")},
+    }
+
+
+def _is_cognitive_proposal_payload(payload: Dict[str, Any]) -> bool:
+    return str(payload.get("lane") or "") == "cognitive" or str(payload.get("target_surface") or "") in _COGNITIVE_SURFACES
+
+
+@router.get("/api/substrate/mutation-runtime/cognitive-pressure")
+def api_substrate_mutation_runtime_cognitive_pressure(
+    limit: int = Query(default=50, ge=1, le=200),
+) -> Dict[str, Any]:
+    rows = SUBSTRATE_MUTATION_STORE.recent_signals(limit=500)
+    filtered = [
+        {
+            "signal_id": row.get("signal_id"),
+            "event_kind": row.get("event_kind"),
+            "target_surface": row.get("target_surface"),
+            "target_zone": row.get("target_zone"),
+            "strength": row.get("strength"),
+            "source_ref": row.get("source_ref"),
+            "evidence_refs": list(row.get("evidence_refs") or []),
+            "metadata": dict(row.get("metadata") or {}),
+            "detected_at": row.get("detected_at"),
+        }
+        for row in rows
+        if str(row.get("target_surface") or "") in _COGNITIVE_SURFACES
+        or str(row.get("event_kind") or "") in {
+            "contradiction_pressure",
+            "identity_continuity_pressure",
+            "stance_drift_pressure",
+            "social_continuity_pressure",
+        }
+    ][:limit]
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {"recent_cognitive_pressure": filtered},
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/cognitive-proposals")
+def api_substrate_mutation_runtime_cognitive_proposals(
+    limit: int = Query(default=20, ge=1, le=200),
+) -> Dict[str, Any]:
+    proposals = sorted(SUBSTRATE_MUTATION_STORE._proposals.values(), key=lambda item: item.created_at, reverse=True)
+    filtered = [
+        proposal.model_dump(mode="json")
+        for proposal in proposals
+        if proposal.lane == "cognitive" or proposal.target_surface in _COGNITIVE_SURFACES
+    ][:limit]
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {"recent_cognitive_proposals": filtered},
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/cognitive-proposals/{proposal_id}/lineage")
+def api_substrate_mutation_runtime_cognitive_proposal_lineage(proposal_id: str) -> Dict[str, Any]:
+    lifecycle = SUBSTRATE_MUTATION_STORE.lifecycle_for_proposal(proposal_id)
+    if lifecycle is None:
+        raise HTTPException(status_code=404, detail="cognitive_proposal_not_found")
+    proposal = lifecycle.get("proposal") if isinstance(lifecycle, dict) else None
+    if not isinstance(proposal, dict) or not _is_cognitive_proposal_payload(proposal):
+        raise HTTPException(status_code=404, detail="cognitive_proposal_not_found")
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=1,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {"lineage": lifecycle},
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/cognitive-proposals/{proposal_id}")
+def api_substrate_mutation_runtime_cognitive_proposal_detail(proposal_id: str) -> Dict[str, Any]:
+    proposal = SUBSTRATE_MUTATION_STORE.get_proposal(proposal_id)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="cognitive_proposal_not_found")
+    payload = proposal.model_dump(mode="json")
+    if not _is_cognitive_proposal_payload(payload):
+        raise HTTPException(status_code=404, detail="cognitive_proposal_not_found")
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=1,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {"proposal": payload},
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/cognitive-proposals/{proposal_id}/evidence")
+def api_substrate_mutation_runtime_cognitive_proposal_evidence(proposal_id: str) -> Dict[str, Any]:
+    lifecycle = SUBSTRATE_MUTATION_STORE.lifecycle_for_proposal(proposal_id)
+    if lifecycle is None:
+        raise HTTPException(status_code=404, detail="cognitive_proposal_not_found")
+    proposal = lifecycle.get("proposal") if isinstance(lifecycle, dict) else None
+    if not isinstance(proposal, dict) or not _is_cognitive_proposal_payload(proposal):
+        raise HTTPException(status_code=404, detail="cognitive_proposal_not_found")
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=1,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {
+            "proposal_id": proposal_id,
+            "evidence_refs": list(proposal.get("evidence_refs") or []),
+            "signals": list((lifecycle.get("signals") if isinstance(lifecycle, dict) else []) or []),
+            "pressure": (lifecycle.get("pressure") if isinstance(lifecycle, dict) else None),
+        },
+    }
+
+
+@router.post("/api/substrate/mutation-runtime/cognitive-proposals/{proposal_id}/review")
+def api_substrate_mutation_runtime_cognitive_proposal_review(
+    proposal_id: str,
+    request: CognitiveProposalReviewRequest,
+) -> Dict[str, Any]:
+    proposal = SUBSTRATE_MUTATION_STORE.get_proposal(proposal_id)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="cognitive_proposal_not_found")
+    payload = proposal.model_dump(mode="json")
+    if not _is_cognitive_proposal_payload(payload):
+        raise HTTPException(status_code=404, detail="cognitive_proposal_not_found")
+    review = CognitiveProposalReviewV1(
+        proposal_id=proposal_id,
+        state=request.state,
+        reviewer=request.reviewer,
+        rationale=request.rationale,
+        notes=list(request.notes),
+    )
+    draft = SUBSTRATE_MUTATION_STORE.record_cognitive_review(review)
+    return {
+        "ok": True,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "data": {
+            "review": review.model_dump(mode="json"),
+            "draft_recommendation": draft.model_dump(mode="json") if draft is not None else None,
+        },
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/cognitive-drafts")
+def api_substrate_mutation_runtime_cognitive_drafts(
+    limit: int = Query(default=20, ge=1, le=200),
+) -> Dict[str, Any]:
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {
+            "draft_recommendations": SUBSTRATE_MUTATION_STORE.recent_cognitive_drafts(limit=limit),
+            "recent_reviews": SUBSTRATE_MUTATION_STORE.recent_cognitive_reviews(limit=limit),
+        },
+    }
+
+
 @router.get("/api/substrate/mutation-runtime/live-routing-surface")
 def api_substrate_mutation_runtime_live_routing_surface() -> Dict[str, Any]:
     return {
@@ -2745,3 +4550,22 @@ def api_substrate_mutation_runtime_routing_replay_inspect(
     limit: int = Query(default=50, ge=1, le=200),
 ) -> Dict[str, Any]:
     return _routing_replay_inspection_payload(limit=limit)
+
+
+@router.get("/api/substrate/mutation-runtime/cognition-context")
+def api_substrate_mutation_runtime_cognition_context() -> Dict[str, Any]:
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "data": build_mutation_cognition_context(store=SUBSTRATE_MUTATION_STORE),
+    }
+
+
+@router.get("/api/substrate/mutation-runtime/routing-live-ramp-posture")
+def api_substrate_mutation_runtime_routing_live_ramp_posture() -> Dict[str, Any]:
+    return _routing_live_ramp_posture_payload()
+
+
+@router.get("/api/substrate/autonomy-readiness")
+def api_substrate_autonomy_readiness() -> Dict[str, Any]:
+    """Unified read-only autonomy readiness posture snapshot."""
+    return _autonomy_readiness_payload()

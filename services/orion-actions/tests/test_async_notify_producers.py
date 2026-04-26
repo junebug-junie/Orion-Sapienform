@@ -146,6 +146,32 @@ def test_daily_notify_request_omits_email_channel_when_disabled() -> None:
     assert req.channels_requested is None
 
 
+def test_daily_notify_request_uses_full_body_and_payload_fingerprint_dedupe() -> None:
+    payload = {"date": "2026-04-25", "tone": "current"}
+    req = _daily_notify_request(
+        event_kind="orion.daily.pulse",
+        title="Orion — Daily Pulse",
+        dedupe_key="dedupe-key",
+        correlation_id="corr-fingerprint",
+        payload=payload,
+        include_email_channel=True,
+    )
+    assert req.body_text == req.body_md
+    assert str(req.body_text or "").startswith("## Orion — Daily Pulse")
+    assert req.dedupe_key is not None
+    assert req.dedupe_key.startswith("dedupe-key:")
+
+    req_new_payload = _daily_notify_request(
+        event_kind="orion.daily.pulse",
+        title="Orion — Daily Pulse",
+        dedupe_key="dedupe-key",
+        correlation_id="corr-fingerprint-2",
+        payload={"date": "2026-04-25", "tone": "updated"},
+        include_email_channel=True,
+    )
+    assert req_new_payload.dedupe_key != req.dedupe_key
+
+
 def test_publish_daily_outputs_requires_both_async_flags(monkeypatch) -> None:
     notify = _FakeNotify()
     monkeypatch.setattr(settings, "actions_preserve_generic_notify_enabled", True)
@@ -214,6 +240,7 @@ def test_scheduler_daily_journal_helpers_build_message_and_email_request() -> No
     )
     assert email_req.event_kind == "orion.journal.daily.scheduler"
     assert email_req.channels_requested == ["email"]
+    assert email_req.body_text == message_payload["full_text"]
 
 
 def test_scheduler_daily_journal_helper_skips_non_scheduler_or_non_daily() -> None:

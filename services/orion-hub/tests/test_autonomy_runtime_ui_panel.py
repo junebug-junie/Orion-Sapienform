@@ -175,3 +175,29 @@ def test_app_js_mounts_autonomy_modal_root_to_body_and_locks_scroll() -> None:
     assert "autonomyDebugModalDialog.style.zIndex = '2147483647';" in app_js
     assert "document.body.classList.add('overflow-hidden');" in app_js
     assert "document.body.classList.remove('overflow-hidden');" in app_js
+
+
+def test_template_includes_autonomy_readiness_panel_card() -> None:
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    assert 'id="autonomyReadinessPanel"' in template
+    assert 'id="autonomyReadinessToggle"' in template
+    assert 'id="autonomyReadinessBody"' in template
+    assert 'id="autonomyReadinessMeta"' in template
+    assert 'id="autonomyReadinessOverview"' in template
+    assert 'id="autonomyReadinessWarnings"' in template
+    assert "Autonomy Readiness" in template
+
+
+def test_app_js_wires_autonomy_readiness_fetch_toggle_and_defensive_rendering() -> None:
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "function clearAutonomyReadinessPanel()" in app_js
+    assert "function toggleAutonomyReadinessPanel()" in app_js
+    assert "function updateAutonomyReadinessPanel(snapshot)" in app_js
+    assert "function refreshAutonomyReadinessPanel()" in app_js
+    assert "substrateReviewFetch('/api/substrate/autonomy-readiness')" in app_js
+    assert "autonomyReadinessToggle.addEventListener('click', toggleAutonomyReadinessPanel);" in app_js
+    assert "clearAutonomyReadinessPanel();" in app_js
+    assert "refreshAutonomyReadinessPanel().catch((err) => {" in app_js
+    assert "const warnings = Array.isArray(snapshot && snapshot.warnings) ? snapshot.warnings : [];" in app_js

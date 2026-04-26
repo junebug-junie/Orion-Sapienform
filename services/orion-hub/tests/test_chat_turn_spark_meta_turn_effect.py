@@ -5,6 +5,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from scripts.chat_history import build_chat_turn_envelope
+from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
 
 
 def test_chat_turn_spark_meta_carries_cortex_turn_effect_like_websocket_merge():
@@ -56,3 +57,19 @@ def test_chat_turn_spark_meta_preserves_turn_effect_for_quick_trace_verb():
     assert sm.get("trace_verb") == "chat_quick"
     assert sm.get("turn_effect", {}).get("turn", {}).get("coherence") == -0.08
     assert sm.get("turn_effect_status") == "present"
+
+
+def test_chat_turn_envelope_coerces_reasoning_trace_to_schema_model():
+    cid = UUID("aaaaaaaa-1111-2222-3333-ffffffffffff")
+    env = build_chat_turn_envelope(
+        prompt="q",
+        response="a",
+        session_id="s3",
+        correlation_id=cid,
+        user_id="u1",
+        source_label="test",
+        turn_id=str(cid),
+        reasoning_trace={"trace_role": "reasoning", "trace_stage": "post_answer", "content": "trace body", "model": "m1"},
+    )
+    assert isinstance(env.payload.reasoning_trace, MetacognitiveTraceV1)
+    assert env.payload.reasoning_trace.content == "trace body"

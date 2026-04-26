@@ -15,6 +15,8 @@ def extract_autonomy_payload(cortex_result: Any) -> Dict[str, Any]:
         "autonomy_backend",
         "autonomy_selected_subject",
         "autonomy_repository_status",
+        "mutation_cognition_context",
+        "runtime_response_diagnostics",
         "chat_stance_debug",
         "turn_effect",
         "turn_effect_evidence",

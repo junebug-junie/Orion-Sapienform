@@ -11,7 +11,9 @@ from fastapi.responses import JSONResponse
 
 from orion.core.bus.bus_service_chassis import Rabbit
 
-from .http_models import RecallRequestBody, RecallResponseBody
+from .http_models import RecallCompareRequestBody, RecallCompareResponseBody, RecallRequestBody, RecallResponseBody
+from .recall_eval import run_recall_eval_case, run_recall_eval_suite
+from .recall_v2 import run_recall_v2_shadow
 from .service import chassis_cfg
 from .settings import settings
 from .worker import handle_recall, process_recall, _persist_decision
@@ -105,6 +107,54 @@ async def recall_endpoint(body: RecallRequestBody):
             "selected_ids": decision.selected_ids,
         }
     return {"bundle": bundle.model_dump(mode="json"), "debug": debug}
+
+
+@app.post("/debug/recall/compare", response_model=RecallCompareResponseBody)
+async def recall_compare_endpoint(body: RecallCompareRequestBody):
+    q = RecallQueryV1(
+        fragment=body.query_text,
+        session_id=body.session_id,
+        node_id=body.node_id,
+        verb="http.recall.compare",
+        intent=None,
+        profile=body.profile or settings.RECALL_DEFAULT_PROFILE,
+    )
+    corr = str(uuid4())
+    bundle_v1, decision_v1 = await process_recall(q, corr_id=corr, diagnostic=True)
+    bundle_v2, debug_v2 = await run_recall_v2_shadow(q)
+    compare = {
+        "query": body.query_text,
+        "selected_count_delta": len(bundle_v2.items) - len(bundle_v1.items),
+        "v1_latency_ms": decision_v1.latency_ms,
+        "v2_latency_ms": int(debug_v2.get("latency_ms") or 0),
+        "v1_backend_counts": decision_v1.backend_counts,
+        "v2_backend_counts": bundle_v2.stats.backend_counts,
+        "v1_pressure_events": list((decision_v1.recall_debug or {}).get("pressure_events") or []),
+    }
+    return {
+        "v1": {
+            "bundle": bundle_v1.model_dump(mode="json"),
+            "decision": decision_v1.model_dump(mode="json"),
+        },
+        "v2": {
+            "bundle": bundle_v2.model_dump(mode="json"),
+            "debug": debug_v2,
+            "anchors": debug_v2.get("plan"),
+            "filters": debug_v2.get("filters"),
+            "candidates": debug_v2.get("ranked_cards"),
+        },
+        "compare": compare,
+    }
+
+
+@app.post("/debug/recall/eval-case")
+async def recall_eval_case_endpoint(case: dict):
+    return await run_recall_eval_case(case)
+
+
+@app.get("/debug/recall/eval-suite")
+async def recall_eval_suite_endpoint():
+    return await run_recall_eval_suite()
 
 
 @app.get("/debug/settings")

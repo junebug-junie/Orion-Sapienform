@@ -1,0 +1,37 @@
+[
+  {
+    "case_id": "entity_cpu_replacement",
+    "query": "what did we say about CPU replacement for Athena",
+    "expected_terms": ["CPU", "Athena", "replacement"],
+    "forbidden_terms": ["unrelated", "random"],
+    "type": "entity"
+  },
+  {
+    "case_id": "project_orion_hub_debug",
+    "query": "show changes in services/orion-hub substrate debug endpoints",
+    "expected_terms": ["orion-hub", "substrate", "debug"],
+    "forbidden_terms": ["social room"],
+    "type": "project"
+  },
+  {
+    "case_id": "temporal_recent_rollbacks",
+    "query": "what happened this week with mutation rollbacks",
+    "expected_terms": ["rollback", "mutation"],
+    "forbidden_terms": ["ancient"],
+    "type": "temporal"
+  },
+  {
+    "case_id": "contradiction_sensitive_claim",
+    "query": "did we contradict ourselves on routing threshold decisions",
+    "expected_terms": ["routing", "threshold", "contradiction"],
+    "forbidden_terms": ["totally unrelated"],
+    "type": "contradiction_sensitive"
+  },
+  {
+    "case_id": "known_bad_semantic_cousin",
+    "query": "exactly where did we mention channel voice transcript mismatch",
+    "expected_terms": ["channel", "voice", "transcript"],
+    "forbidden_terms": ["generic memory", "hallucination"],
+    "type": "known_bad_current_recall"
+  }
+]

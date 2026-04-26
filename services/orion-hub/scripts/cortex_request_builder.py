@@ -359,6 +359,9 @@ def build_cortex_chat_request(
         },
         "available_workflows": workflow_registry_payload(user_invocable_only=True),
     }
+    mutation_cognition_context = payload.get("mutation_cognition_context")
+    if isinstance(mutation_cognition_context, dict) and mutation_cognition_context:
+        metadata["mutation_cognition_context"] = mutation_cognition_context
     draft_ac = build_answer_contract_draft_for_hub(prompt)
     metadata["answer_contract_draft"] = draft_ac
     logger.info(

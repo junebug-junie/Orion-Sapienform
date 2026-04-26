@@ -427,6 +427,12 @@ def _autonomy_payload_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
             payload["autonomy_selected_subject"] = None
     if repository_status:
         payload["autonomy_repository_status"] = repository_status
+    mutation_cognition = ctx.get("chat_mutation_cognition_context")
+    if isinstance(mutation_cognition, dict) and mutation_cognition:
+        payload["mutation_cognition_context"] = mutation_cognition
+    runtime_response_diagnostics = ctx.get("runtime_response_diagnostics")
+    if isinstance(runtime_response_diagnostics, dict) and runtime_response_diagnostics:
+        payload["runtime_response_diagnostics"] = runtime_response_diagnostics
     inline_think_content = ctx.get("inline_think_content")
     thinking_source = ctx.get("thinking_source")
     final_text_clean = ctx.get("chat_general_final_text_clean")
@@ -928,6 +934,13 @@ class PlanRunner:
             final_text_diag.get("final_len"),
             final_text_diag.get("result_len"),
         )
+        ctx["runtime_response_diagnostics"] = {
+            "provider_finish_reason": final_text_diag.get("provider_finish_reason"),
+            "provider_completion_tokens": final_text_diag.get("provider_completion_tokens"),
+            "truncation_detected": bool(final_text_diag.get("truncation_detected")),
+            "planning_candidate_rejected": bool(final_text_diag.get("planning_candidate_rejected")),
+            "status": overall_status,
+        }
         if overall_status == "success" and soft_failure:
             overall_status = "partial"
         if _should_fail_empty_runtime_skill_output(

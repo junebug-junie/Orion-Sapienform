@@ -77,6 +77,32 @@ def test_api_chat_response_feedback_publishes_valid_payload(monkeypatch) -> None
     assert env.payload.free_text == 'useful'
 
 
+def test_feedback_downvote_emits_pressure_event_telemetry(monkeypatch) -> None:
+    fake_bus = _FakeBus()
+    monkeypatch.setitem(sys.modules, "scripts.main", types.SimpleNamespace(bus=fake_bus))
+    recorded = []
+    monkeypatch.setattr(hub_api_routes.SUBSTRATE_REVIEW_TELEMETRY_STORE, "record", lambda entry: recorded.append(entry))
+
+    resp = asyncio.run(hub_api_routes.api_chat_response_feedback(
+        {
+            'feedback_id': 'fb-pressure',
+            'target_turn_id': 'turn-2',
+            'target_message_id': 'turn-2:assistant',
+            'target_correlation_id': 'corr-2',
+            'session_id': 'sid-2',
+            'feedback_value': 'down',
+            'categories': ['wrong_tool_wrong_routing_wrong_mode', 'missed_relevant_context'],
+            'free_text': 'route felt wrong',
+        }
+    ))
+    assert resp['ok'] is True
+    assert recorded, "expected pressure telemetry to be recorded"
+    categories = {item.pressure_category for item in recorded[-1].pressure_events}
+    assert "recall_miss_or_dissatisfaction" in categories
+    assert "routing_false_downgrade" in categories
+    assert "routing_false_escalation" in categories
+
+
 def test_api_chat_response_feedback_options_reflect_canonical_contract() -> None:
     payload = hub_api_routes.api_chat_response_feedback_options()
     assert payload['feedback_values'] == ['up', 'down']

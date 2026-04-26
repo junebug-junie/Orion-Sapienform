@@ -23,6 +23,7 @@ services:
       PAGEINDEX_QUERY_ARGS: ${PAGEINDEX_QUERY_ARGS:---md_path {md_path} --output_dir {artifact_dir} --query {query}}
       PAGEINDEX_TIMEOUT_SEC: ${PAGEINDEX_TIMEOUT_SEC:-120}
       PAGEINDEX_DATA_DIR: ${PAGEINDEX_DATA_DIR:-/data/pageindex}
+      PYTHONUNBUFFERED: 1
     volumes:
       - pageindex-data:/data/pageindex
       - ${PAGEINDEX_HOST_REPO_PATH:-/opt/PageIndex}:/opt/PageIndex:ro

@@ -8,6 +8,8 @@ import sqlite3
 from typing import Any
 
 from orion.core.schemas.substrate_mutation import (
+    CognitiveDraftRecommendationV1,
+    CognitiveProposalReviewV1,
     MutationAdoptionV1,
     MutationDecisionV1,
     MutationPressureV1,
@@ -16,7 +18,11 @@ from orion.core.schemas.substrate_mutation import (
     MutationRollbackV1,
     MutationSignalV1,
     MutationTrialV1,
+    RecallProductionCandidateReviewV1,
+    RecallShadowEvalRunV1,
+    RecallStrategyProfileV1,
 )
+from orion.substrate.recall_strategy_readiness import readiness_for_pressure
 
 
 def _utc_now() -> datetime:
@@ -39,6 +45,11 @@ class SubstrateMutationStore:
     _rollbacks: dict[str, MutationRollbackV1] = field(default_factory=dict, init=False)
     _active_surface_by_target: dict[str, str] = field(default_factory=dict, init=False)
     _blocked_applies: dict[str, dict[str, Any]] = field(default_factory=dict, init=False)
+    _cognitive_reviews: dict[str, CognitiveProposalReviewV1] = field(default_factory=dict, init=False)
+    _cognitive_drafts: dict[str, CognitiveDraftRecommendationV1] = field(default_factory=dict, init=False)
+    _recall_strategy_profiles: dict[str, RecallStrategyProfileV1] = field(default_factory=dict, init=False)
+    _recall_shadow_eval_runs: dict[str, RecallShadowEvalRunV1] = field(default_factory=dict, init=False)
+    _recall_production_candidate_reviews: dict[str, RecallProductionCandidateReviewV1] = field(default_factory=dict, init=False)
     _retention_max_blocked_applies: int = field(default=500, init=False)
     _retention_max_rollbacks: int = field(default=500, init=False)
 
@@ -132,6 +143,29 @@ class SubstrateMutationStore:
         elif decision.action == "reject":
             self._set_queue_status_for_proposal(decision.proposal_id, "rejected")
         self._persist()
+
+    def record_cognitive_review(self, review: CognitiveProposalReviewV1) -> CognitiveDraftRecommendationV1 | None:
+        self._cognitive_reviews[review.review_id] = review
+        proposal = self._proposals.get(review.proposal_id)
+        if proposal is not None:
+            self._proposals[proposal.proposal_id] = proposal.model_copy(update={"rollout_state": review.state})
+            self._set_queue_status_for_proposal(proposal.proposal_id, review.state)
+        created_draft: CognitiveDraftRecommendationV1 | None = None
+        if review.state == "accepted_as_draft" and proposal is not None:
+            created_draft = CognitiveDraftRecommendationV1(
+                proposal_id=proposal.proposal_id,
+                mutation_class=proposal.mutation_class,
+                affected_surface=proposal.target_surface,
+                pressure_kind=str(proposal.patch.patch.get("pressure_kind") or proposal.source_pressure_id),
+                evidence_refs=list(proposal.evidence_refs),
+                suggested_operator_action=str(proposal.patch.patch.get("suggested_operator_action") or "review"),
+                blast_radius=str(proposal.patch.patch.get("blast_radius") or "bounded_cognitive_surface"),
+                risk_tier=proposal.risk_tier,
+                notes=[f"review_id:{review.review_id}", f"reviewer:{review.reviewer}"],
+            )
+            self._cognitive_drafts[created_draft.draft_id] = created_draft
+        self._persist()
+        return created_draft
 
     def record_adoption(self, adoption: MutationAdoptionV1) -> list[str]:
         existing_adoption = next((item for item in self._adoptions.values() if item.proposal_id == adoption.proposal_id), None)
@@ -241,12 +275,20 @@ class SubstrateMutationStore:
         )
         adoption = next((item for item in self._adoptions.values() if item.proposal_id == proposal_id), None)
         rollback = next((item for item in self._rollbacks.values() if item.proposal_id == proposal_id), None)
+        review_rows = sorted(
+            (review for review in self._cognitive_reviews.values() if review.proposal_id == proposal_id),
+            key=lambda review: review.created_at,
+        )
+        draft_rows = sorted(
+            (draft for draft in self._cognitive_drafts.values() if draft.proposal_id == proposal_id),
+            key=lambda draft: draft.created_at,
+        )
         pressure = next((item for item in self._pressures.values() if item.pressure_id == proposal.source_pressure_id), None)
         signal_rows = [
             signal for signal in self._signals if signal.signal_id in set(proposal.source_signal_ids)
         ]
         signal_rows.sort(key=lambda signal: signal.detected_at)
-        return {
+        payload: dict[str, object] = {
             "proposal": proposal.model_dump(mode="json"),
             "pressure": pressure.model_dump(mode="json") if pressure else None,
             "signals": [signal.model_dump(mode="json") for signal in signal_rows],
@@ -255,7 +297,18 @@ class SubstrateMutationStore:
             "decisions": [decision.model_dump(mode="json") for decision in decision_rows],
             "adoption": adoption.model_dump(mode="json") if adoption else None,
             "rollback": rollback.model_dump(mode="json") if rollback else None,
+            "cognitive_reviews": [review.model_dump(mode="json") for review in review_rows],
+            "cognitive_drafts": [draft.model_dump(mode="json") for draft in draft_rows],
         }
+        if pressure is not None and str(proposal.mutation_class).startswith("recall_") and str(proposal.mutation_class).endswith(
+            "_candidate"
+        ):
+            payload["recall_pressure_evidence_lineage"] = {
+                "recall_evidence_history": [dict(item) for item in pressure.recall_evidence_history],
+                "recall_evidence_snapshot": dict(pressure.recall_evidence_snapshot),
+                "recall_strategy_readiness": readiness_for_pressure(pressure).model_dump(mode="json"),
+            }
+        return payload
 
     def recent_lifecycles(self, *, limit: int = 20) -> list[dict[str, object]]:
         proposals = sorted(self._proposals.values(), key=lambda proposal: proposal.created_at, reverse=True)
@@ -307,6 +360,158 @@ class SubstrateMutationStore:
         rows = sorted(self._rollbacks.values(), key=lambda item: item.created_at, reverse=True)[:limit]
         return [row.model_dump(mode="json") for row in rows]
 
+    def recent_signals(self, *, limit: int = 20, target_surface: str | None = None) -> list[dict[str, object]]:
+        rows = sorted(self._signals, key=lambda item: item.detected_at, reverse=True)
+        if target_surface:
+            rows = [row for row in rows if row.target_surface == target_surface]
+        return [row.model_dump(mode="json") for row in rows[:limit]]
+
+    def recent_recall_pressures(self, *, limit: int = 20) -> list[dict[str, object]]:
+        recall_surfaces = frozenset(
+            {
+                "recall",
+                "recall_strategy_profile",
+                "recall_anchor_policy",
+                "recall_page_index_profile",
+                "recall_graph_expansion_policy",
+            }
+        )
+        rows = [item for item in self._pressures.values() if item.target_surface in recall_surfaces]
+        rows.sort(key=lambda item: item.updated_at, reverse=True)
+        return [row.model_dump(mode="json") for row in rows[:limit]]
+
+    def recent_cognitive_reviews(self, *, limit: int = 20) -> list[dict[str, object]]:
+        rows = sorted(self._cognitive_reviews.values(), key=lambda item: item.created_at, reverse=True)[:limit]
+        return [row.model_dump(mode="json") for row in rows]
+
+    def recent_cognitive_drafts(self, *, limit: int = 20) -> list[dict[str, object]]:
+        rows = sorted(self._cognitive_drafts.values(), key=lambda item: item.created_at, reverse=True)[:limit]
+        return [row.model_dump(mode="json") for row in rows]
+
+    def get_recall_strategy_profile(self, profile_id: str) -> RecallStrategyProfileV1 | None:
+        return self._recall_strategy_profiles.get(profile_id)
+
+    def list_recall_strategy_profiles(self, *, limit: int = 20) -> list[dict[str, object]]:
+        rows = sorted(self._recall_strategy_profiles.values(), key=lambda item: item.updated_at, reverse=True)[:limit]
+        return [row.model_dump(mode="json") for row in rows]
+
+    def active_recall_shadow_profile(self) -> RecallStrategyProfileV1 | None:
+        rows = [row for row in self._recall_strategy_profiles.values() if row.status == "shadow_active"]
+        if not rows:
+            return None
+        return sorted(rows, key=lambda item: item.updated_at, reverse=True)[0]
+
+    def stage_recall_profile(
+        self,
+        *,
+        profile: RecallStrategyProfileV1,
+    ) -> RecallStrategyProfileV1:
+        staged = profile.model_copy(update={"status": "staged", "updated_at": _utc_now()})
+        self._recall_strategy_profiles[staged.profile_id] = staged
+        self._persist()
+        return staged
+
+    def activate_recall_shadow_profile(self, profile_id: str) -> RecallStrategyProfileV1 | None:
+        profile = self._recall_strategy_profiles.get(profile_id)
+        if profile is None:
+            return None
+        now = _utc_now()
+        for pid, row in list(self._recall_strategy_profiles.items()):
+            if pid == profile_id:
+                continue
+            if row.status == "shadow_active":
+                self._recall_strategy_profiles[pid] = row.model_copy(update={"status": "staged", "updated_at": now})
+        activated = profile.model_copy(update={"status": "shadow_active", "updated_at": now})
+        self._recall_strategy_profiles[profile_id] = activated
+        self._persist()
+        return activated
+
+    def update_recall_strategy_profile(
+        self,
+        *,
+        profile_id: str,
+        readiness_snapshot: dict[str, Any] | None = None,
+        eval_evidence_refs: list[str] | None = None,
+        status: str | None = None,
+    ) -> RecallStrategyProfileV1 | None:
+        row = self._recall_strategy_profiles.get(profile_id)
+        if row is None:
+            return None
+        patch: dict[str, Any] = {"updated_at": _utc_now()}
+        if readiness_snapshot is not None:
+            patch["readiness_snapshot"] = dict(readiness_snapshot)
+        if eval_evidence_refs is not None:
+            patch["eval_evidence_refs"] = list(eval_evidence_refs)[:128]
+        if status is not None:
+            patch["status"] = status
+        updated = row.model_copy(update=patch)
+        self._recall_strategy_profiles[profile_id] = updated
+        self._persist()
+        return updated
+
+    def recall_strategy_profile_lineage(self, profile_id: str) -> dict[str, object] | None:
+        profile = self._recall_strategy_profiles.get(profile_id)
+        if profile is None:
+            return None
+        proposal = self._proposals.get(profile.source_proposal_id)
+        pressure_rows = [row for row in self._pressures.values() if row.pressure_id in set(profile.source_pressure_ids)]
+        eval_runs = sorted(
+            [row for row in self._recall_shadow_eval_runs.values() if row.profile_id == profile_id],
+            key=lambda item: item.completed_at,
+            reverse=True,
+        )
+        reviews = sorted(
+            [row for row in self._recall_production_candidate_reviews.values() if row.profile_id == profile_id],
+            key=lambda item: item.updated_at,
+            reverse=True,
+        )
+        return {
+            "profile": profile.model_dump(mode="json"),
+            "proposal": proposal.model_dump(mode="json") if proposal else None,
+            "pressures": [row.model_dump(mode="json") for row in sorted(pressure_rows, key=lambda item: item.updated_at, reverse=True)],
+            "recent_eval_runs": [row.model_dump(mode="json") for row in eval_runs[:20]],
+            "recent_production_candidate_reviews": [row.model_dump(mode="json") for row in reviews[:20]],
+            "proposal_lineage": self.lifecycle_for_proposal(profile.source_proposal_id),
+        }
+
+    def record_recall_shadow_eval_run(self, run: RecallShadowEvalRunV1) -> RecallShadowEvalRunV1:
+        self._recall_shadow_eval_runs[run.run_id] = run
+        self._persist()
+        return run
+
+    def get_recall_shadow_eval_run(self, run_id: str) -> RecallShadowEvalRunV1 | None:
+        return self._recall_shadow_eval_runs.get(run_id)
+
+    def list_recall_shadow_eval_runs(self, *, limit: int = 20, profile_id: str | None = None) -> list[dict[str, object]]:
+        rows = list(self._recall_shadow_eval_runs.values())
+        if profile_id:
+            rows = [row for row in rows if row.profile_id == profile_id]
+        rows.sort(key=lambda item: item.completed_at, reverse=True)
+        return [row.model_dump(mode="json") for row in rows[:limit]]
+
+    def record_recall_production_candidate_review(
+        self,
+        review: RecallProductionCandidateReviewV1,
+    ) -> RecallProductionCandidateReviewV1:
+        self._recall_production_candidate_reviews[review.review_id] = review
+        self._persist()
+        return review
+
+    def get_recall_production_candidate_review(self, review_id: str) -> RecallProductionCandidateReviewV1 | None:
+        return self._recall_production_candidate_reviews.get(review_id)
+
+    def list_recall_production_candidate_reviews(
+        self,
+        *,
+        limit: int = 20,
+        profile_id: str | None = None,
+    ) -> list[dict[str, object]]:
+        rows = list(self._recall_production_candidate_reviews.values())
+        if profile_id:
+            rows = [row for row in rows if row.profile_id == profile_id]
+        rows.sort(key=lambda item: item.updated_at, reverse=True)
+        return [row.model_dump(mode="json") for row in rows[:limit]]
+
     def _persist(self) -> None:
         self._compact_artifacts()
         if self.postgres_url:
@@ -333,6 +538,17 @@ class SubstrateMutationStore:
             conn.execute("CREATE TABLE IF NOT EXISTS substrate_mutation_decision (decision_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)")
             conn.execute("CREATE TABLE IF NOT EXISTS substrate_mutation_adoption (adoption_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)")
             conn.execute("CREATE TABLE IF NOT EXISTS substrate_mutation_rollback (rollback_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)")
+            conn.execute("CREATE TABLE IF NOT EXISTS substrate_mutation_cognitive_review (review_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)")
+            conn.execute("CREATE TABLE IF NOT EXISTS substrate_mutation_cognitive_draft (draft_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS substrate_mutation_recall_strategy_profile (profile_id TEXT PRIMARY KEY, updated_at TEXT NOT NULL, payload_json TEXT NOT NULL)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS substrate_mutation_recall_shadow_eval_run (run_id TEXT PRIMARY KEY, completed_at TEXT NOT NULL, payload_json TEXT NOT NULL)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS substrate_mutation_recall_production_candidate_review (review_id TEXT PRIMARY KEY, updated_at TEXT NOT NULL, payload_json TEXT NOT NULL)"
+            )
             conn.execute("CREATE TABLE IF NOT EXISTS substrate_mutation_active_surface (target_surface TEXT PRIMARY KEY, adoption_id TEXT NOT NULL, updated_at TEXT NOT NULL)")
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS substrate_mutation_apply_block (block_key TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)"
@@ -431,6 +647,61 @@ class SubstrateMutationStore:
                     """,
                     (item.rollback_id, item.created_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
                 )
+            for item in self._cognitive_reviews.values():
+                conn.execute(
+                    """
+                    INSERT INTO substrate_mutation_cognitive_review(review_id, created_at, payload_json)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(review_id) DO UPDATE SET
+                        created_at=excluded.created_at,
+                        payload_json=excluded.payload_json
+                    """,
+                    (item.review_id, item.created_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
+                )
+            for item in self._cognitive_drafts.values():
+                conn.execute(
+                    """
+                    INSERT INTO substrate_mutation_cognitive_draft(draft_id, created_at, payload_json)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(draft_id) DO UPDATE SET
+                        created_at=excluded.created_at,
+                        payload_json=excluded.payload_json
+                    """,
+                    (item.draft_id, item.created_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
+                )
+            for item in self._recall_strategy_profiles.values():
+                conn.execute(
+                    """
+                    INSERT INTO substrate_mutation_recall_strategy_profile(profile_id, updated_at, payload_json)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(profile_id) DO UPDATE SET
+                        updated_at=excluded.updated_at,
+                        payload_json=excluded.payload_json
+                    """,
+                    (item.profile_id, item.updated_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
+                )
+            for item in self._recall_shadow_eval_runs.values():
+                conn.execute(
+                    """
+                    INSERT INTO substrate_mutation_recall_shadow_eval_run(run_id, completed_at, payload_json)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(run_id) DO UPDATE SET
+                        completed_at=excluded.completed_at,
+                        payload_json=excluded.payload_json
+                    """,
+                    (item.run_id, item.completed_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
+                )
+            for item in self._recall_production_candidate_reviews.values():
+                conn.execute(
+                    """
+                    INSERT INTO substrate_mutation_recall_production_candidate_review(review_id, updated_at, payload_json)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(review_id) DO UPDATE SET
+                        updated_at=excluded.updated_at,
+                        payload_json=excluded.payload_json
+                    """,
+                    (item.review_id, item.updated_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
+                )
             for surface, adoption_id in self._active_surface_by_target.items():
                 conn.execute(
                     """
@@ -476,6 +747,20 @@ class SubstrateMutationStore:
             self._decisions = {item.decision_id: item for item in [MutationDecisionV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_decision ORDER BY created_at ASC").fetchall()]}
             self._adoptions = {item.adoption_id: item for item in [MutationAdoptionV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_adoption ORDER BY created_at ASC").fetchall()]}
             self._rollbacks = {item.rollback_id: item for item in [MutationRollbackV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_rollback ORDER BY created_at ASC").fetchall()]}
+            self._cognitive_reviews = {item.review_id: item for item in [CognitiveProposalReviewV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_cognitive_review ORDER BY created_at ASC").fetchall()]}
+            self._cognitive_drafts = {item.draft_id: item for item in [CognitiveDraftRecommendationV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_cognitive_draft ORDER BY created_at ASC").fetchall()]}
+            self._recall_strategy_profiles = {
+                item.profile_id: item
+                for item in [RecallStrategyProfileV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_recall_strategy_profile ORDER BY updated_at ASC").fetchall()]
+            }
+            self._recall_shadow_eval_runs = {
+                item.run_id: item
+                for item in [RecallShadowEvalRunV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_recall_shadow_eval_run ORDER BY completed_at ASC").fetchall()]
+            }
+            self._recall_production_candidate_reviews = {
+                item.review_id: item
+                for item in [RecallProductionCandidateReviewV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_recall_production_candidate_review ORDER BY updated_at ASC").fetchall()]
+            }
             self._active_surface_by_target = {surface: adoption_id for (surface, adoption_id) in conn.execute("SELECT target_surface, adoption_id FROM substrate_mutation_active_surface").fetchall()}
             self._blocked_applies = {
                 str(item.get("block_key")): item
@@ -500,6 +785,11 @@ class SubstrateMutationStore:
             "CREATE TABLE IF NOT EXISTS substrate_mutation_decision (decision_id TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL, payload_json JSONB NOT NULL)",
             "CREATE TABLE IF NOT EXISTS substrate_mutation_adoption (adoption_id TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL, payload_json JSONB NOT NULL)",
             "CREATE TABLE IF NOT EXISTS substrate_mutation_rollback (rollback_id TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL, payload_json JSONB NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS substrate_mutation_cognitive_review (review_id TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL, payload_json JSONB NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS substrate_mutation_cognitive_draft (draft_id TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL, payload_json JSONB NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS substrate_mutation_recall_strategy_profile (profile_id TEXT PRIMARY KEY, updated_at TIMESTAMPTZ NOT NULL, payload_json JSONB NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS substrate_mutation_recall_shadow_eval_run (run_id TEXT PRIMARY KEY, completed_at TIMESTAMPTZ NOT NULL, payload_json JSONB NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS substrate_mutation_recall_production_candidate_review (review_id TEXT PRIMARY KEY, updated_at TIMESTAMPTZ NOT NULL, payload_json JSONB NOT NULL)",
             "CREATE TABLE IF NOT EXISTS substrate_mutation_active_surface (target_surface TEXT PRIMARY KEY, adoption_id TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL)",
             "CREATE TABLE IF NOT EXISTS substrate_mutation_apply_block (block_key TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL, payload_json JSONB NOT NULL)",
         ]
@@ -618,6 +908,71 @@ class SubstrateMutationStore:
                     ),
                     {"id": item.rollback_id, "created_at": item.created_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
                 )
+            for item in self._cognitive_reviews.values():
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO substrate_mutation_cognitive_review(review_id, created_at, payload_json)
+                        VALUES (:id, :created_at, CAST(:payload AS JSONB))
+                        ON CONFLICT (review_id) DO UPDATE SET
+                            created_at = EXCLUDED.created_at,
+                            payload_json = EXCLUDED.payload_json
+                        """
+                    ),
+                    {"id": item.review_id, "created_at": item.created_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
+                )
+            for item in self._cognitive_drafts.values():
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO substrate_mutation_cognitive_draft(draft_id, created_at, payload_json)
+                        VALUES (:id, :created_at, CAST(:payload AS JSONB))
+                        ON CONFLICT (draft_id) DO UPDATE SET
+                            created_at = EXCLUDED.created_at,
+                            payload_json = EXCLUDED.payload_json
+                        """
+                    ),
+                    {"id": item.draft_id, "created_at": item.created_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
+                )
+            for item in self._recall_strategy_profiles.values():
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO substrate_mutation_recall_strategy_profile(profile_id, updated_at, payload_json)
+                        VALUES (:id, :updated_at, CAST(:payload AS JSONB))
+                        ON CONFLICT (profile_id) DO UPDATE SET
+                            updated_at = EXCLUDED.updated_at,
+                            payload_json = EXCLUDED.payload_json
+                        """
+                    ),
+                    {"id": item.profile_id, "updated_at": item.updated_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
+                )
+            for item in self._recall_shadow_eval_runs.values():
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO substrate_mutation_recall_shadow_eval_run(run_id, completed_at, payload_json)
+                        VALUES (:id, :completed_at, CAST(:payload AS JSONB))
+                        ON CONFLICT (run_id) DO UPDATE SET
+                            completed_at = EXCLUDED.completed_at,
+                            payload_json = EXCLUDED.payload_json
+                        """
+                    ),
+                    {"id": item.run_id, "completed_at": item.completed_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
+                )
+            for item in self._recall_production_candidate_reviews.values():
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO substrate_mutation_recall_production_candidate_review(review_id, updated_at, payload_json)
+                        VALUES (:id, :updated_at, CAST(:payload AS JSONB))
+                        ON CONFLICT (review_id) DO UPDATE SET
+                            updated_at = EXCLUDED.updated_at,
+                            payload_json = EXCLUDED.payload_json
+                        """
+                    ),
+                    {"id": item.review_id, "updated_at": item.updated_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
+                )
             conn.execute(text("DELETE FROM substrate_mutation_active_surface"))
             for surface, adoption_id in self._active_surface_by_target.items():
                 conn.execute(
@@ -666,6 +1021,20 @@ class SubstrateMutationStore:
             self._decisions = {item.decision_id: item for item in [MutationDecisionV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_decision ORDER BY created_at ASC")).fetchall()]}
             self._adoptions = {item.adoption_id: item for item in [MutationAdoptionV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_adoption ORDER BY created_at ASC")).fetchall()]}
             self._rollbacks = {item.rollback_id: item for item in [MutationRollbackV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_rollback ORDER BY created_at ASC")).fetchall()]}
+            self._cognitive_reviews = {item.review_id: item for item in [CognitiveProposalReviewV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_cognitive_review ORDER BY created_at ASC")).fetchall()]}
+            self._cognitive_drafts = {item.draft_id: item for item in [CognitiveDraftRecommendationV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_cognitive_draft ORDER BY created_at ASC")).fetchall()]}
+            self._recall_strategy_profiles = {
+                item.profile_id: item
+                for item in [RecallStrategyProfileV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_recall_strategy_profile ORDER BY updated_at ASC")).fetchall()]
+            }
+            self._recall_shadow_eval_runs = {
+                item.run_id: item
+                for item in [RecallShadowEvalRunV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_recall_shadow_eval_run ORDER BY completed_at ASC")).fetchall()]
+            }
+            self._recall_production_candidate_reviews = {
+                item.review_id: item
+                for item in [RecallProductionCandidateReviewV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_recall_production_candidate_review ORDER BY updated_at ASC")).fetchall()]
+            }
             self._active_surface_by_target = {surface: adoption_id for (surface, adoption_id) in conn.execute(text("SELECT target_surface, adoption_id FROM substrate_mutation_active_surface")).fetchall()}
             self._blocked_applies = {
                 str(item.get("block_key")): item

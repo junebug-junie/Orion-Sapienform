@@ -8,9 +8,25 @@ from orion.substrate.mutation_contracts import CONTRACTS, validate_patch
 
 @dataclass
 class DecisionPolicy:
-    auto_promote_allowlist: set[str] = field(default_factory=lambda: {"routing_threshold_patch", "recall_weighting_patch", "graph_consolidation_param_patch"})
-    operator_gated_classes: set[str] = field(default_factory=lambda: {"approved_prompt_profile_variant_promotion"})
-    operator_gated_surfaces: set[str] = field(default_factory=lambda: {"policy_profile"})
+    auto_promote_allowlist: set[str] = field(default_factory=lambda: {"routing_threshold_patch", "graph_consolidation_param_patch"})
+    operator_gated_classes: set[str] = field(
+        default_factory=lambda: {
+            "approved_prompt_profile_variant_promotion",
+            "recall_strategy_profile_candidate",
+            "recall_anchor_policy_candidate",
+            "recall_page_index_profile_candidate",
+            "recall_graph_expansion_policy_candidate",
+        }
+    )
+    operator_gated_surfaces: set[str] = field(
+        default_factory=lambda: {
+            "policy_profile",
+            "cognitive_contradiction_reconciliation",
+            "cognitive_identity_continuity_adjustment",
+            "cognitive_stance_continuity_adjustment",
+            "cognitive_social_continuity_repair",
+        }
+    )
 
 
 @dataclass
@@ -40,6 +56,14 @@ class DecisionEngine:
             return MutationDecisionV1(proposal_id=proposal.proposal_id, action="reject", reason=f"trial_{trial.status}", notes=list(trial.notes))
         if not has_replay_and_baseline:
             return MutationDecisionV1(proposal_id=proposal.proposal_id, action="hold", reason="missing_replay_or_baseline")
+        if proposal.lane == "cognitive":
+            return MutationDecisionV1(
+                proposal_id=proposal.proposal_id,
+                action="require_review",
+                reason="cognitive_lane_operator_gated",
+                requires_operator_review=True,
+                notes=["cognitive_lane_proposal_only"],
+            )
 
         if proposal.mutation_class in self.policy.operator_gated_classes or proposal.target_surface in self.policy.operator_gated_surfaces:
             return MutationDecisionV1(

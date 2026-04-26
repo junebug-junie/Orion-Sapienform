@@ -121,6 +121,21 @@ def _normalize_reasoning_trace(
     return {k: v for k, v in normalized.items() if v is not None}
 
 
+def _coerce_metacognitive_trace(
+    trace: Optional[MetacognitiveTraceV1 | dict[str, Any]],
+) -> Optional[MetacognitiveTraceV1]:
+    if trace is None:
+        return None
+    if isinstance(trace, MetacognitiveTraceV1):
+        return trace
+    if isinstance(trace, dict):
+        try:
+            return MetacognitiveTraceV1.model_validate(trace)
+        except Exception:
+            return None
+    return None
+
+
 def select_reasoning_trace_for_history(
     *,
     correlation_id: UUID | str | None,
@@ -478,7 +493,9 @@ async def publish_chat_turn(bus, env: ChatHistoryTurnEnvelope) -> None:
                     selected_trace = normalized_metacog
                     break
         if selected_trace is not None and hasattr(turn_payload, "reasoning_trace"):
-            turn_payload.reasoning_trace = selected_trace
+            coerced_reasoning_trace = _coerce_metacognitive_trace(selected_trace)
+            if coerced_reasoning_trace is not None:
+                turn_payload.reasoning_trace = coerced_reasoning_trace
         print(
             "===THINK_HOP=== hop=chat_history_publish "
             f"corr={env.correlation_id} "

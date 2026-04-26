@@ -148,6 +148,10 @@ class Settings(BaseSettings):
     RECALL_VECTOR_MAX_ITEMS: int = Field(default=24, validation_alias=AliasChoices("RECALL_VECTOR_MAX_ITEMS"))
     RECALL_EXCLUDE_REJECTED: bool = Field(default=True, validation_alias=AliasChoices("RECALL_EXCLUDE_REJECTED"))
     RECALL_DURABLE_ONLY: bool = Field(default=False, validation_alias=AliasChoices("RECALL_DURABLE_ONLY"))
+    RECALL_V2_PAGEINDEX_URL: str = Field(
+        default="http://orion-athena-pageindex:8384",
+        validation_alias=AliasChoices("RECALL_V2_PAGEINDEX_URL"),
+    )
     # Emit REC_TAPE RECALL debug dumps for top-N selected items.
     RECALL_DEBUG_DUMP_TOP_N: int = Field(default=0, validation_alias=AliasChoices("RECALL_DEBUG_DUMP_TOP_N"))
 

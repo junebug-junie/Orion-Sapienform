@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from orion.core.schemas.substrate_mutation import MutationPressureEvidenceV1
 from orion.core.schemas.frontier_expansion import FrontierTargetZoneV1
 from orion.core.schemas.substrate_review_runtime import GraphReviewRuntimeOutcomeV1, GraphReviewRuntimeSurfaceV1
 
@@ -50,6 +51,7 @@ class GraphReviewTelemetryRecordV1(BaseModel):
     runtime_duration_ms: int = Field(ge=0)
     notes: List[str] = Field(default_factory=list, max_length=64)
     degraded: bool = False
+    pressure_events: List[MutationPressureEvidenceV1] = Field(default_factory=list, max_length=16)
 
 
 class GraphReviewTelemetryQueryV1(BaseModel):

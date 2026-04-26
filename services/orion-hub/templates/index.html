@@ -475,6 +475,27 @@
           </div>
         </div>
 
+        <div id="autonomyReadinessPanel" class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <button
+              id="autonomyReadinessToggle"
+              class="flex-1 flex items-center justify-between text-xs text-gray-300 hover:text-white"
+              type="button"
+            >
+              <span class="uppercase tracking-wide">Autonomy Readiness</span>
+              <span id="autonomyReadinessCaret" class="text-gray-500">▾</span>
+            </button>
+          </div>
+          <div id="autonomyReadinessBody" class="hidden space-y-3 text-xs text-gray-300">
+            <div id="autonomyReadinessMeta" class="text-[10px] text-gray-500">Loading autonomy readiness snapshot…</div>
+            <div id="autonomyReadinessOverview" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-1">No data yet.</div>
+            <div>
+              <div class="text-gray-500 mb-1">Warnings</div>
+              <div id="autonomyReadinessWarnings" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px]">No warnings.</div>
+            </div>
+          </div>
+        </div>
+
         <div class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-3">
           <div class="flex items-center justify-between gap-3">
             <div>
@@ -2346,6 +2367,7 @@
   <script src="/static/js/workflow-schedule-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/social-inspection.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/service-logs-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+<script src="/static/js/thought-process.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/app.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
 </body>
 </html>

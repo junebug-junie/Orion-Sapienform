@@ -31,12 +31,17 @@ It then **fuses** candidates into a prompt-ready `MemoryBundleV1` with per-sourc
 
 - `POST /recall` — runs recall for a query and returns `MemoryBundleV1`
 - `GET /health` / `GET /ready` — liveness/readiness
+- `POST /debug/recall/compare` — Recall V1 vs shadow Recall V2 comparison (read-only)
+- `GET /debug/recall/eval-suite` — run built-in Recall V1/V2 evaluation corpus
+- `POST /debug/recall/eval-case` — run a single ad-hoc evaluation case
 
 If you have debug enabled (recommended while wiring), you may also have:
 
 - `GET /debug/settings` — prints resolved config (GraphDB endpoint, DSN, vector collections, etc.)
 
 > **Note:** `session_id` is accepted in recall requests for backwards compatibility, but recall ignores it for retrieval and ranking.
+
+Recall V2 debug rails are shadow-only in this phase: they expose deterministic anchor/filter/lineage diagnostics and do not wire into autonomous mutation apply.
 
 ### Debugging RPC timeouts (cortex-exec ↔ recall)
 

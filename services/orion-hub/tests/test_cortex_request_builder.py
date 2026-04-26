@@ -192,6 +192,29 @@ def test_auto_mode_emits_auto_route_intent_without_forcing_supervisor() -> None:
     assert req.metadata["hub_route"]["selected_ui_route"] == "auto"
 
 
+def test_builder_includes_mutation_cognition_context_when_supplied() -> None:
+    req, debug, _ = hub_builder.build_chat_request(
+        payload={
+            "mode": "brain",
+            "mutation_cognition_context": {
+                "mutation_scope": "routing_threshold_patch_only",
+                "live_ramp_active": True,
+                "live_surface": {"value": 0.58},
+            },
+        },
+        session_id="sid-mutation-context",
+        user_id="user-ctx",
+        trace_id="trace-mutation-context",
+        default_mode="brain",
+        auto_default_enabled=False,
+        source_label="hub_http",
+        prompt="Hello",
+    )
+    assert req.metadata["mutation_cognition_context"]["mutation_scope"] == "routing_threshold_patch_only"
+    assert req.metadata["mutation_cognition_context"]["live_ramp_active"] is True
+    assert debug["mode"] == "brain"
+
+
 def test_quick_chat_selection_uses_chat_quick_verb_without_changing_brain_mode_contract() -> None:
     req, debug, _ = hub_builder.build_chat_request(
         payload={

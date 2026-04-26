@@ -26,8 +26,10 @@ from scripts.cortex_chat_display import hub_effective_chat_text
 from scripts.trace_payloads import extract_agent_trace_payload
 from scripts.autonomy_payloads import extract_autonomy_payload
 from scripts.workflow_payloads import extract_workflow_payload
+from scripts.mutation_cognition_context import build_mutation_cognition_context
 from scripts.warm_start import mini_personality_summary
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
+from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
 from orion.schemas.tts import TTSRequestPayload, TTSResultPayload, STTRequestPayload, STTResultPayload
 from orion.cognition.verb_activation import is_active
 
@@ -53,6 +55,17 @@ def _preview_text(value: str | None, limit: int = 220) -> str:
     if not value:
         return ""
     return repr(value[:limit])
+
+
+def _coerce_metacog_trace(trace: Any) -> Optional[MetacognitiveTraceV1]:
+    if isinstance(trace, MetacognitiveTraceV1):
+        return trace
+    if isinstance(trace, dict):
+        try:
+            return MetacognitiveTraceV1.model_validate(trace)
+        except Exception:
+            return None
+    return None
 
 
 #________________________
@@ -531,6 +544,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 latest_user_prompt=transcript,
                 turns=turns,
             )
+            data = dict(data)
+            data["mutation_cognition_context"] = build_mutation_cognition_context()
             chat_req, route_debug, use_recall = build_chat_request(
                 payload=data,
                 session_id=session_id,
@@ -657,6 +672,7 @@ async def websocket_endpoint(websocket: WebSocket):
             recall_debug = None
             agent_trace = None
             workflow = None
+            autonomy_payload: Dict[str, Any] = {}
             metacog_traces: List[Dict[str, Any]] = []
             reasoning_content: Optional[str] = None
             inline_think_content: Optional[str] = None
@@ -817,6 +833,18 @@ async def websocket_endpoint(websocket: WebSocket):
                 backend_counts=backend_counts,
                 memory_digest=memory_digest,
             )
+            try:
+                from scripts.api_routes import record_chat_turn_pressure_telemetry
+
+                record_chat_turn_pressure_telemetry(
+                    correlation_id=trace_id,
+                    route_debug=route_debug,
+                    autonomy_payload=autonomy_payload if isinstance(autonomy_payload, dict) else {},
+                    recall_debug=recall_debug if isinstance(recall_debug, dict) else {},
+                    source_event_id=f"chat_result_ws:{trace_id}",
+                )
+            except Exception as exc:
+                logger.warning("ws_pressure_telemetry_record_failed corr=%s error=%s", trace_id, exc)
             ws_payload = {
                 "llm_response": orion_response_text,
                 # Parity with HTTP /api/chat: lets the UI coalesce if primary string ever lags `raw.final_text`
@@ -946,15 +974,19 @@ async def websocket_endpoint(websocket: WebSocket):
                         from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
                         for trace in metacog_traces:
-                            if _thought_debug_enabled() and isinstance(trace, dict):
+                            coerced_trace = _coerce_metacog_trace(trace)
+                            if coerced_trace is None:
+                                continue
+                            trace_debug = trace if isinstance(trace, dict) else coerced_trace.model_dump(mode="json")
+                            if _thought_debug_enabled():
                                 logger.info(
                                     "THOUGHT_DEBUG_METACOG_PUB stage=hub_ws_prepare corr=%s trace_role=%s trace_stage=%s model=%s content_len=%s content_snippet=%r",
                                     trace_id,
-                                    trace.get("trace_role") or trace.get("role"),
-                                    trace.get("trace_stage") or trace.get("stage"),
-                                    trace.get("model"),
-                                    _debug_len(trace.get("content")),
-                                    _debug_snippet(trace.get("content")),
+                                    trace_debug.get("trace_role") or trace_debug.get("role"),
+                                    trace_debug.get("trace_stage") or trace_debug.get("stage"),
+                                    trace_debug.get("model"),
+                                    _debug_len(trace_debug.get("content")),
+                                    _debug_snippet(trace_debug.get("content")),
                                 )
                             trace_env = BaseEnvelope(
                                 kind="metacognitive.trace.v1",
@@ -964,7 +996,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                     version=settings.SERVICE_VERSION,
                                 ),
                                 correlation_id=trace_id,
-                                payload=trace,
+                                payload=coerced_trace,
                             )
                             _schedule_publish(bus.publish("orion:metacog:trace", trace_env), "metacog.trace")
                         if _thought_debug_enabled() and not any(isinstance(t, dict) for t in metacog_traces):

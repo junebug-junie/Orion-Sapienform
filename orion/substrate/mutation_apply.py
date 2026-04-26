@@ -21,6 +21,10 @@ class PatchApplier:
             return None
         if not proposal.patch.rollback_payload:
             return None
+        if str(proposal.mutation_class).startswith("recall_") and str(proposal.mutation_class).endswith("_candidate"):
+            return None
+        if proposal.mutation_class == "recall_weighting_patch":
+            return None
         if proposal.mutation_class == "routing_threshold_patch":
             live_threshold = get_chat_reflective_lane_threshold()
             patch_threshold = proposal.patch.patch.get("chat_reflective_lane_threshold")

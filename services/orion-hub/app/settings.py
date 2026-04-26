@@ -153,6 +153,11 @@ class Settings(BaseSettings):
     RECALL_DEFAULT_MAX_ITEMS: int = Field(default=16, alias="RECALL_DEFAULT_MAX_ITEMS")
     RECALL_DEFAULT_TIME_WINDOW_DAYS: int = Field(default=30, alias="RECALL_DEFAULT_TIME_WINDOW_DAYS")
     RECALL_DEFAULT_MODE: str = Field(default="hybrid", alias="RECALL_DEFAULT_MODE")
+    HUB_RECALL_SERVICE_URL: str = Field(default="", alias="HUB_RECALL_SERVICE_URL")
+    RECALL_SERVICE_URL: str = Field(default="http://orion-recall:8090", alias="RECALL_SERVICE_URL")
+    HUB_RECALL_SHADOW_EVAL_TIMEOUT_SEC: float = Field(default=20.0, alias="HUB_RECALL_SHADOW_EVAL_TIMEOUT_SEC")
+    HUB_RECALL_SHADOW_EVAL_MAX_ROWS_PER_RUN: int = Field(default=128, alias="HUB_RECALL_SHADOW_EVAL_MAX_ROWS_PER_RUN")
+    HUB_RECALL_SHADOW_EVAL_DEFAULT_CORPUS_LIMIT: int = Field(default=24, alias="HUB_RECALL_SHADOW_EVAL_DEFAULT_CORPUS_LIMIT")
 
     # --- Runtimes ----
     TIMEOUT_SEC: int = Field(default=300, alias="TIMEOUT_SEC")
@@ -163,6 +168,9 @@ class Settings(BaseSettings):
     HUB_CONTEXT_TURNS: int = Field(default=12, alias="HUB_CONTEXT_TURNS")
     # Hard cap to avoid runaway prompts when users paste long text
     HUB_CONTEXT_MAX_CHARS: int = Field(default=12000, alias="HUB_CONTEXT_MAX_CHARS")
+
+    # --- Recall eval → mutation telemetry (manual operator ingest; default off) ---
+    HUB_RECALL_EVAL_RECORDING_ENABLED: bool = Field(default=False, alias="HUB_RECALL_EVAL_RECORDING_ENABLED")
 
     # --- Recall Debugging ---
     HUB_DEBUG_RECALL: bool = Field(default=False, alias="HUB_DEBUG_RECALL")
@@ -183,7 +191,27 @@ class Settings(BaseSettings):
     SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED: bool = Field(default=True, alias="SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED")
     SUBSTRATE_AUTONOMY_APPLY_ENABLED: bool = Field(default=False, alias="SUBSTRATE_AUTONOMY_APPLY_ENABLED")
     SUBSTRATE_AUTONOMY_MONITOR_ENABLED: bool = Field(default=True, alias="SUBSTRATE_AUTONOMY_MONITOR_ENABLED")
+    SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED: bool = Field(
+        default=True,
+        alias="SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED",
+    )
+    SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED: bool = Field(
+        default=False,
+        alias="SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED",
+    )
+    SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED: bool = Field(
+        default=False,
+        alias="SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED",
+    )
+    SUBSTRATE_AUTONOMY_ROUTING_ROLLBACK_DELTA_THRESHOLD: float = Field(
+        default=-0.05,
+        alias="SUBSTRATE_AUTONOMY_ROUTING_ROLLBACK_DELTA_THRESHOLD",
+    )
     SUBSTRATE_AUTONOMY_INTERVAL_SEC: float = Field(default=30.0, alias="SUBSTRATE_AUTONOMY_INTERVAL_SEC")
+
+    @property
+    def recall_service_url(self) -> str:
+        return str(self.HUB_RECALL_SERVICE_URL or self.RECALL_SERVICE_URL or "http://orion-recall:8090").strip().rstrip("/")
 
 
 

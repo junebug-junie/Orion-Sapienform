@@ -165,6 +165,13 @@ loadDismissedIds();
   const substrateReviewDebugBody = document.getElementById('substrateReviewDebugBody');
   const substrateReviewDebugMeta = document.getElementById('substrateReviewDebugMeta');
   const substrateReviewDebugOverview = document.getElementById('substrateReviewDebugOverview');
+  const autonomyReadinessPanel = document.getElementById('autonomyReadinessPanel');
+  const autonomyReadinessToggle = document.getElementById('autonomyReadinessToggle');
+  const autonomyReadinessCaret = document.getElementById('autonomyReadinessCaret');
+  const autonomyReadinessBody = document.getElementById('autonomyReadinessBody');
+  const autonomyReadinessMeta = document.getElementById('autonomyReadinessMeta');
+  const autonomyReadinessOverview = document.getElementById('autonomyReadinessOverview');
+  const autonomyReadinessWarnings = document.getElementById('autonomyReadinessWarnings');
   const substrateReviewDebugOpenModal = document.getElementById('substrateReviewDebugOpenModal');
   const substrateReviewModalRoot = document.getElementById('substrateReviewModalRoot');
   const substrateReviewModalBackdrop = document.getElementById('substrateReviewModalBackdrop');
@@ -190,6 +197,7 @@ loadDismissedIds();
   const socialInspectionApi = window.OrionSocialInspection || {};
   const workflowUiApi = window.OrionWorkflowUI || {};
   const scheduleUiApi = window.OrionWorkflowScheduleUI || {};
+  const thoughtProcessApi = window.OrionThoughtProcess || {};
   const agentTraceModal = document.getElementById('agentTraceModal');
   const agentTraceModalClose = document.getElementById('agentTraceModalClose');
   const agentTraceModalMeta = document.getElementById('agentTraceModalMeta');
@@ -2067,11 +2075,11 @@ loadDismissedIds();
     if (expectedPosture === 'neutral') {
       alignmentNote = visibleCues.length
         ? 'informal stylistic cues present (neutral drive)'
-        : 'neutral drive — keyword cue check optional';
+        : 'no strong posture expected';
     } else if (expectedPosture) {
       alignmentNote = visibleCues.includes(expectedPosture)
         ? 'reply appears aligned'
-        : 'reply posture not clearly visible (heuristic)';
+        : 'reply posture not clearly visible';
     }
     return {
       expected_posture: expectedPosture,
@@ -2102,6 +2110,8 @@ loadDismissedIds();
     const availableCount = availabilityRows.filter(([, value]) => value.availability === 'available').length;
     const unavailableCount = availabilityRows.filter(([, value]) => value.availability === 'unavailable').length;
     const subjectCount = availabilityRows.length;
+    // Keep this exact fallback expression stable for UI contract tests:
+    // (safeSummary && safeSummary.dominant_drive) || (safePreview && safePreview.dominant_drive)
     const dominantDrive = String(
       (safeSummary && safeSummary.dominant_drive)
         || (safePreview && safePreview.dominant_drive)
@@ -2577,6 +2587,69 @@ loadDismissedIds();
   async function refreshSubstrateReviewStatus() {
     const payload = await substrateReviewFetch('/api/substrate/review-runtime/status');
     updateSubstrateReviewDebugPanel(payload);
+    return payload;
+  }
+
+  function clearAutonomyReadinessPanel() {
+    if (autonomyReadinessBody) autonomyReadinessBody.classList.add('hidden');
+    if (autonomyReadinessCaret) autonomyReadinessCaret.textContent = '▾';
+    if (autonomyReadinessMeta) autonomyReadinessMeta.textContent = 'No autonomy readiness snapshot loaded.';
+    if (autonomyReadinessOverview) autonomyReadinessOverview.textContent = 'No data yet.';
+    if (autonomyReadinessWarnings) autonomyReadinessWarnings.textContent = 'No warnings.';
+  }
+
+  function toggleAutonomyReadinessPanel() {
+    if (!autonomyReadinessBody) return;
+    const nextHidden = !autonomyReadinessBody.classList.contains('hidden');
+    autonomyReadinessBody.classList.toggle('hidden', nextHidden);
+    if (autonomyReadinessCaret) autonomyReadinessCaret.textContent = nextHidden ? '▾' : '▴';
+  }
+
+  function updateAutonomyReadinessPanel(snapshot) {
+    if (!autonomyReadinessPanel || !autonomyReadinessMeta || !autonomyReadinessOverview) return;
+    const overall = snapshot && snapshot.overall ? snapshot.overall : {};
+    const scheduler = snapshot && snapshot.scheduler ? snapshot.scheduler : {};
+    const surfaces = snapshot && snapshot.surfaces ? snapshot.surfaces : {};
+    const recall = snapshot && snapshot.recall ? snapshot.recall : {};
+    const cognitive = snapshot && snapshot.cognitive ? snapshot.cognitive : {};
+    const pressure = snapshot && snapshot.pressure ? snapshot.pressure : {};
+    const recent = snapshot && snapshot.recent_activity ? snapshot.recent_activity : {};
+    const warnings = Array.isArray(snapshot && snapshot.warnings) ? snapshot.warnings : [];
+    const liveCount = Array.isArray(surfaces.live) ? surfaces.live.length : 0;
+    const shadowCount = Array.isArray(surfaces.shadow) ? surfaces.shadow.length : 0;
+    const proposalOnlyCount = Array.isArray(surfaces.proposal_only) ? surfaces.proposal_only.length : 0;
+    const blockedCount = Array.isArray(surfaces.blocked) ? surfaces.blocked.length : 0;
+    const recallReadiness = (recall.readiness && recall.readiness.recommendation) || 'unavailable';
+    const pressureTop = Array.isArray(pressure.top_pressure_keys) && pressure.top_pressure_keys.length
+      ? pressure.top_pressure_keys.slice(0, 2).map((row) => `${row.key || '--'}:${row.count ?? '--'}`).join(', ')
+      : 'No data yet';
+    const recentApplies = Array.isArray(recent.applies) ? recent.applies.length : 0;
+    const recentRollbacks = Array.isArray(recent.rollbacks) ? recent.rollbacks.length : 0;
+    autonomyReadinessMeta.textContent = `schema ${(snapshot && snapshot.schema_version) || '--'} · generated ${(snapshot && snapshot.generated_at) || '--'}`;
+    autonomyReadinessOverview.innerHTML = '';
+    [
+      `overall: ${overall.summary || 'Unavailable'}`,
+      `safe next: ${overall.safe_next_action || 'Unavailable'}`,
+      `scheduler: enabled=${scheduler.enabled ? 'yes' : 'no'} proposals=${scheduler.proposal_enabled ? 'yes' : 'no'} apply=${scheduler.apply_enabled ? 'yes' : 'no'}`,
+      `surfaces: live=${liveCount} shadow=${shadowCount} proposal-only=${proposalOnlyCount} blocked=${blockedCount}`,
+      `recall: production=${recall.production_mode || 'v1'} live_apply=${recall.live_apply_enabled ? 'true' : 'false'} readiness=${recallReadiness}`,
+      `cognitive: live_apply=${cognitive.live_apply_enabled ? 'true' : 'false'} proposal_states=${JSON.stringify(cognitive.counts_by_state || {})}`,
+      `pressure: ${pressureTop}`,
+      `activity: applies=${recentApplies} rollbacks=${recentRollbacks}`,
+    ].forEach((line) => {
+      const row = document.createElement('div');
+      row.className = 'autonomy-readiness-row';
+      row.textContent = line;
+      autonomyReadinessOverview.appendChild(row);
+    });
+    if (autonomyReadinessWarnings) {
+      autonomyReadinessWarnings.textContent = warnings.length ? warnings.join(' | ') : 'No warnings.';
+    }
+  }
+
+  async function refreshAutonomyReadinessPanel() {
+    const payload = await substrateReviewFetch('/api/substrate/autonomy-readiness');
+    updateAutonomyReadinessPanel(payload || {});
     return payload;
   }
 
@@ -4194,6 +4267,15 @@ loadDismissedIds();
       if (typeof value === 'object' && !Array.isArray(value) && !Object.keys(value).length) return;
       sections.push({ key, label, value });
     };
+    const thought = thoughtProcessApi.selectThoughtProcess
+      ? thoughtProcessApi.selectThoughtProcess(meta)
+      : { text: null, source: null, metadata: {} };
+    sections.push({
+      key: 'thought_process',
+      label: 'Thought process',
+      value: thought,
+      render: renderThoughtProcessSection,
+    });
     addSection('reasoning', 'Reasoning', meta.reasoning || meta.reasoning_trace || meta.reasoningTrace);
     addSection('recall', 'Recall', meta.recallDebug || meta.recall_debug || meta.memoryDigest || meta.memory_digest);
     addSection('agent_trace', 'Agent Trace', meta.agentTrace || meta.agent_trace);
@@ -4211,6 +4293,68 @@ loadDismissedIds();
     }
   }
 
+  function createThoughtChip(label, value) {
+    if (!value) return null;
+    const chip = document.createElement('span');
+    chip.className = 'rounded-full border border-gray-700 bg-gray-800/80 px-2 py-0.5 text-[10px] text-gray-300';
+    chip.textContent = `${label}: ${value}`;
+    return chip;
+  }
+
+  function renderThoughtProcessSection(thoughtState = {}) {
+    const state = thoughtState && typeof thoughtState === 'object' ? thoughtState : {};
+    const metadata = state.metadata && typeof state.metadata === 'object' ? state.metadata : {};
+    const root = document.createElement('div');
+    root.className = 'space-y-2';
+
+    const card = document.createElement('section');
+    card.className = 'rounded-lg border border-violet-500/30 bg-violet-500/5 p-2';
+
+    const header = document.createElement('div');
+    header.className = 'flex items-center justify-between gap-2';
+    const title = document.createElement('div');
+    title.className = 'text-[10px] uppercase tracking-wide text-violet-200';
+    title.textContent = 'Thought process';
+    header.appendChild(title);
+
+    const copyButton = document.createElement('button');
+    copyButton.type = 'button';
+    copyButton.className = 'rounded-md border border-violet-400/50 bg-violet-500/15 px-2 py-1 text-[10px] font-semibold text-violet-100 hover:bg-violet-500/25 disabled:cursor-not-allowed disabled:opacity-50';
+    copyButton.textContent = 'Copy';
+    copyButton.disabled = !state.text;
+    copyButton.addEventListener('click', () => {
+      if (!state.text) return;
+      copyText(state.text, 'Thought process copied.');
+    });
+    header.appendChild(copyButton);
+    card.appendChild(header);
+
+    const chipRow = document.createElement('div');
+    chipRow.className = 'mt-2 flex flex-wrap items-center gap-1.5';
+    const chips = [
+      createThoughtChip('source', state.source),
+      createThoughtChip('mode', metadata.mode),
+      createThoughtChip('model', metadata.model),
+      createThoughtChip('provider', metadata.provider),
+      createThoughtChip('tokens', metadata.token_count),
+      createThoughtChip('chars', metadata.char_count),
+    ].filter(Boolean);
+    chips.forEach((chip) => chipRow.appendChild(chip));
+    if (chips.length) card.appendChild(chipRow);
+
+    const body = document.createElement('pre');
+    body.className = 'mt-2 rounded-md border border-violet-500/20 bg-gray-950/60 p-2 text-[11px] leading-5 text-gray-100 whitespace-pre-wrap break-words max-h-72 overflow-y-auto';
+    if (state.text) {
+      body.textContent = state.text;
+    } else {
+      body.className = 'mt-2 rounded-md border border-gray-700 bg-gray-900/50 p-2 text-[11px] leading-5 text-gray-400';
+      body.textContent = 'No model thought process was captured for this response.';
+    }
+    card.appendChild(body);
+    root.appendChild(card);
+    return root;
+  }
+
   function buildResponseInspectPanel(meta = {}) {
     const sections = extractResponseInspectSections(meta);
     if (!sections.length) return null;
@@ -4226,10 +4370,14 @@ loadDismissedIds();
     const renderContent = () => {
       const activeSection = sections.find((section) => section.key === activeKey) || sections[0];
       content.innerHTML = '';
-      const pre = document.createElement('pre');
-      pre.className = 'whitespace-pre-wrap break-words text-[10px] leading-5 text-gray-200';
-      pre.textContent = formatInspectValue(activeSection.value);
-      content.appendChild(pre);
+      if (typeof activeSection.render === 'function') {
+        content.appendChild(activeSection.render(activeSection.value, meta));
+      } else {
+        const pre = document.createElement('pre');
+        pre.className = 'whitespace-pre-wrap break-words text-[10px] leading-5 text-gray-200';
+        pre.textContent = formatInspectValue(activeSection.value);
+        content.appendChild(pre);
+      }
       tabRow.querySelectorAll('button').forEach((btn) => {
         const selected = btn.dataset.inspectTab === activeKey;
         btn.className = selected
@@ -5838,6 +5986,9 @@ loadDismissedIds();
   if (substrateReviewDebugToggle) {
     substrateReviewDebugToggle.addEventListener('click', toggleSubstrateReviewDebugPanel);
   }
+  if (autonomyReadinessToggle) {
+    autonomyReadinessToggle.addEventListener('click', toggleAutonomyReadinessPanel);
+  }
   ensureSubstrateReviewModalRootOnBody();
   if (substrateReviewDebugOpenModal) {
     substrateReviewDebugOpenModal.addEventListener('click', (event) => {
@@ -6035,8 +6186,12 @@ loadDismissedIds();
   clearMemoryDebugPanel();
   clearChatStanceDebugPanel();
   clearSubstrateReviewDebugPanel();
+  clearAutonomyReadinessPanel();
   refreshSubstrateReviewStatus().catch((err) => {
     if (substrateReviewDebugMeta) substrateReviewDebugMeta.textContent = `Substrate review status unavailable: ${String(err.message || err)}`;
+  });
+  refreshAutonomyReadinessPanel().catch((err) => {
+    if (autonomyReadinessMeta) autonomyReadinessMeta.textContent = `Autonomy readiness unavailable: ${String(err.message || err)}`;
   });
   renderSocialInspectionState(null);
   loadResponseFeedbackOptions();
@@ -6064,8 +6219,14 @@ loadDismissedIds();
               raw: d.raw,
               reasoning: d.reasoning,
               reasoningTrace: d.reasoning_trace,
+              reasoningContent: d.reasoning_content,
+              inlineThinkContent: d.inline_think_content,
+              thinkingSource: d.thinking_source,
               agentTrace: d.agent_trace,
               metacogTraces: d.metacog_traces,
+              mode: d.mode,
+              model: d.model || (d.raw && d.raw.metadata ? d.raw.metadata.model : null),
+              provider: d.provider || (d.raw && d.raw.metadata ? d.raw.metadata.provider : null),
               correlationId: d.correlation_id,
               turnId: d.turn_id || d.turnId || d.correlation_id,
               messageId: d.message_id || d.messageId || null,
@@ -6160,8 +6321,14 @@ loadDismissedIds();
                 raw: d.raw,
                 reasoning: d.reasoning,
                 reasoningTrace: d.reasoning_trace,
+                reasoningContent: d.reasoning_content,
+                inlineThinkContent: d.inline_think_content,
+                thinkingSource: d.thinking_source,
                 agentTrace: d.agent_trace,
                 metacogTraces: d.metacog_traces,
+                mode: d.mode,
+                model: d.model || (d.raw && d.raw.metadata ? d.raw.metadata.model : null),
+                provider: d.provider || (d.raw && d.raw.metadata ? d.raw.metadata.provider : null),
                 correlationId: d.correlation_id,
                 turnId: d.turn_id || d.turnId || d.correlation_id,
                 messageId: d.message_id || d.messageId || null,

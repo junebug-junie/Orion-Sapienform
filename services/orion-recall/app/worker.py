@@ -11,6 +11,7 @@ try:
 except Exception:  # pragma: no cover - optional dependency in test env
     psycopg2 = None
 from pydantic import ValidationError
+from orion.core.schemas.substrate_mutation import MutationPressureEvidenceV1
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.contracts.recall import (
@@ -66,6 +67,96 @@ logger = logging.getLogger("orion-recall.worker")
 RECALL_REQUEST_KIND = "recall.query.v1"
 RECALL_REPLY_KIND = "recall.reply.v1"
 RECALL_TELEMETRY_KIND = "recall.decision.v1"
+def _build_recall_pressure_events(
+    *,
+    q: RecallQueryV1,
+    decision: RecallDecisionV1,
+    bundle: MemoryBundleV1,
+    compare_summary: Dict[str, Any] | None = None,
+    anchor_plan: Dict[str, Any] | None = None,
+    selected_evidence_cards: list[Dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    events: list[MutationPressureEvidenceV1] = []
+    snippets = [item.snippet.lower() for item in bundle.items]
+    query_text = (q.fragment or "").lower()
+    selected_any = bool(bundle.items)
+    exact_anchor_tokens = re.findall(r"\b[A-Za-z][A-Za-z0-9_]*\d+\b|\b[A-Fa-f0-9]{7,40}\b", str(q.fragment or ""))[:8]
+    exact_anchor_hit = any(token.lower() in " ".join(snippets) for token in exact_anchor_tokens) if exact_anchor_tokens else True
+    top_source = bundle.items[0].source if bundle.items else ""
+    stale_selected = False
+    if bundle.items and bundle.items[0].ts is not None:
+        try:
+            age_hours = max(0.0, (time.time() - float(bundle.items[0].ts)) / 3600.0)
+            stale_selected = age_hours > 24.0 * 30.0
+        except Exception:
+            stale_selected = False
+
+    shared_metadata: Dict[str, Any] = {"recall_evidence_kind": "live_shadow"}
+    if isinstance(compare_summary, dict) and compare_summary:
+        shared_metadata["v1_v2_compare"] = compare_summary
+    if isinstance(anchor_plan, dict) and anchor_plan:
+        shared_metadata["anchor_plan"] = anchor_plan
+    if isinstance(selected_evidence_cards, list) and selected_evidence_cards:
+        shared_metadata["selected_evidence_cards"] = selected_evidence_cards[:8]
+
+    if not selected_any:
+        events.append(
+            MutationPressureEvidenceV1(
+                source_service=settings.SERVICE_NAME,
+                source_event_id=decision.corr_id,
+                pressure_category="recall_miss_or_dissatisfaction",
+                confidence=0.9,
+                evidence_refs=[f"recall_decision:{decision.id}", f"query:{q.fragment[:120]}"],
+                metadata={"reason": "no_selected_items", "profile": decision.profile, **shared_metadata},
+            )
+        )
+    if selected_any and query_text and not any(tok in " ".join(snippets) for tok in _extract_keywords(q.fragment)):
+        events.append(
+            MutationPressureEvidenceV1(
+                source_service=settings.SERVICE_NAME,
+                source_event_id=decision.corr_id,
+                pressure_category="unsupported_memory_claim",
+                confidence=0.72,
+                evidence_refs=[f"recall_decision:{decision.id}", f"selected_ids:{','.join(decision.selected_ids[:6])}"],
+                metadata={"reason": "selected_without_query_support", **shared_metadata},
+            )
+        )
+    if selected_any and top_source == "vector" and any("vector" in str(tag).lower() for item in bundle.items for tag in item.tags):
+        events.append(
+            MutationPressureEvidenceV1(
+                source_service=settings.SERVICE_NAME,
+                source_event_id=decision.corr_id,
+                pressure_category="irrelevant_semantic_neighbor",
+                confidence=0.55,
+                evidence_refs=[f"recall_decision:{decision.id}", f"top_source:{top_source}"],
+                metadata={"reason": "vector_top_hit_requires_anchor_validation", **shared_metadata},
+            )
+        )
+    if not exact_anchor_hit:
+        events.append(
+            MutationPressureEvidenceV1(
+                source_service=settings.SERVICE_NAME,
+                source_event_id=decision.corr_id,
+                pressure_category="missing_exact_anchor",
+                confidence=0.81,
+                evidence_refs=[f"recall_decision:{decision.id}", f"anchor_tokens:{','.join(exact_anchor_tokens[:6])}"],
+                metadata={"reason": "exact_anchor_not_in_selected", **shared_metadata},
+            )
+        )
+    if stale_selected:
+        events.append(
+            MutationPressureEvidenceV1(
+                source_service=settings.SERVICE_NAME,
+                source_event_id=decision.corr_id,
+                pressure_category="stale_memory_selected",
+                confidence=0.76,
+                evidence_refs=[f"recall_decision:{decision.id}", f"top_id:{bundle.items[0].id}"],
+                metadata={"reason": "top_item_stale", "source": bundle.items[0].source, **shared_metadata},
+            )
+        )
+    # keep bounded and first-class serialized
+    return [item.model_dump(mode="json") for item in events[:5]]
+
 
 
 def _source() -> ServiceRef:
@@ -998,6 +1089,11 @@ async def process_recall(
                 else {}
             ),
         )
+        pressure_events = _build_recall_pressure_events(q=q, decision=decision, bundle=bundle)
+        if pressure_events:
+            merged_debug = dict(decision.recall_debug or {})
+            merged_debug["pressure_events"] = pressure_events
+            decision = decision.model_copy(update={"recall_debug": merged_debug})
         _log_debug_dump(
             corr_id=decision.corr_id,
             profile=profile,
@@ -1287,6 +1383,49 @@ async def process_recall(
             else {"latency_breakdown_ms": timing_breakdown_ms}
         ),
     )
+    compare_summary: Dict[str, Any] = {}
+    anchor_plan_summary: Dict[str, Any] = {}
+    selected_cards: list[Dict[str, Any]] = []
+    should_shadow_compare = bool(
+        not bundle.items
+        or any(str(item.source or "") == "vector" for item in bundle.items[:2])
+        or bool(_anchor_tokens(q.fragment, max_tokens=6))
+    )
+    if should_shadow_compare:
+        try:
+            from .recall_v2 import run_recall_v2_shadow
+
+            shadow_bundle, shadow_debug = await run_recall_v2_shadow(q)
+            compare_summary = {
+                "v1_latency_ms": decision.latency_ms,
+                "v2_latency_ms": int(shadow_debug.get("latency_ms") or 0),
+                "selected_count_delta": len(shadow_bundle.items) - len(bundle.items),
+                "v1_selected_count": len(bundle.items),
+                "v2_selected_count": len(shadow_bundle.items),
+            }
+            anchor_plan_summary = dict(shadow_debug.get("plan") or {})
+            selected_cards = list(shadow_debug.get("ranked_cards") or [])[:6]
+        except Exception as exc:
+            logger.debug(f"recall shadow compare skipped: {exc}")
+
+    pressure_events = _build_recall_pressure_events(
+        q=q,
+        decision=decision,
+        bundle=bundle,
+        compare_summary=compare_summary,
+        anchor_plan=anchor_plan_summary,
+        selected_evidence_cards=selected_cards,
+    )
+    if pressure_events:
+        merged_debug = dict(decision.recall_debug or {})
+        merged_debug["pressure_events"] = pressure_events
+        if compare_summary:
+            merged_debug["compare_summary"] = compare_summary
+        if anchor_plan_summary:
+            merged_debug["anchor_plan_summary"] = anchor_plan_summary
+        if selected_cards:
+            merged_debug["selected_evidence_cards"] = selected_cards
+        decision = decision.model_copy(update={"recall_debug": merged_debug})
     if diagnostic:
         logger.info(
             "recall_diagnostic_summary corr_id=%s profile=%s requested_profile=%s gating=%s drop_counts=%s selected_counts=%s suppressed=%s latency_breakdown_ms=%s selected=%s",

@@ -756,8 +756,11 @@ def api_presence_connections():
 
 @router.get("/api/situation/status")
 def api_situation_status():
+    enabled = bool(settings.ORION_SITUATION_ENABLED)
     return {
-        "enabled": bool(settings.ORION_SITUATION_ENABLED),
+        "enabled": enabled,
+        "reason": None if enabled else "disabled_by_config",
+        "hub_enabled": enabled,
         "providers": {
             "time": "enabled",
             "location": "configured",
@@ -774,6 +777,19 @@ def api_situation_status():
 @router.get("/api/situation/brief")
 def api_situation_brief(x_orion_session_id: Optional[str] = Header(None)):
     from .main import presence_context_store
+
+    if not bool(settings.ORION_SITUATION_ENABLED):
+        return {
+            "kind": "situation.brief.v1",
+            "enabled": False,
+            "reason": "disabled_by_config",
+            "diagnostics": {
+                "provider_status": {"situation": "disabled_by_config"},
+                "provider_errors": {},
+                "relevance_reasons": [],
+                "generated_with_partial_context": False,
+            },
+        }
 
     session_key = str(x_orion_session_id or "anonymous")
     presence = presence_context_store.get(session_key) if presence_context_store else None

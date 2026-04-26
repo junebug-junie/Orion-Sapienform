@@ -49,11 +49,26 @@ def test_situation_status_and_brief(monkeypatch):
     monkeypatch.setitem(sys.modules, "scripts.main", types.SimpleNamespace(presence_context_store=store, presence_state=None))
     status = hub_api_routes.api_situation_status()
     assert status["enabled"] is True
+    assert status["hub_enabled"] is True
+    assert status["reason"] is None
     brief = hub_api_routes.api_situation_brief(x_orion_session_id="sid-2")
     assert brief["kind"] == "situation.brief.v1"
     assert isinstance(brief.get("time"), dict)
     assert isinstance(brief.get("conversation_phase"), dict)
     assert isinstance(brief.get("presence"), dict)
+
+
+def test_situation_status_and_brief_disabled(monkeypatch):
+    store = _Store()
+    monkeypatch.setitem(sys.modules, "scripts.main", types.SimpleNamespace(presence_context_store=store, presence_state=None))
+    monkeypatch.setattr(hub_api_routes.settings, "ORION_SITUATION_ENABLED", False)
+    status = hub_api_routes.api_situation_status()
+    assert status["enabled"] is False
+    assert status["hub_enabled"] is False
+    assert status["reason"] == "disabled_by_config"
+    brief = hub_api_routes.api_situation_brief(x_orion_session_id="sid-disabled")
+    assert brief["enabled"] is False
+    assert brief["reason"] == "disabled_by_config"
 
 
 def test_presence_invalid_payload_is_422(monkeypatch):

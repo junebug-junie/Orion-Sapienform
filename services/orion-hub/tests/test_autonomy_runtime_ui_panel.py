@@ -201,3 +201,26 @@ def test_app_js_wires_autonomy_readiness_fetch_toggle_and_defensive_rendering() 
     assert "clearAutonomyReadinessPanel();" in app_js
     assert "refreshAutonomyReadinessPanel().catch((err) => {" in app_js
     assert "const warnings = Array.isArray(snapshot && snapshot.warnings) ? snapshot.warnings : [];" in app_js
+
+
+def test_template_and_js_include_recall_canary_controls_without_unsafe_actions() -> None:
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert 'id="recallCanaryPanel"' in template
+    assert 'id="recallCanaryQueryInput"' in template
+    assert 'id="recallCanaryRunButton"' in template
+    assert 'id="recallCanaryRecordJudgmentButton"' in template
+    assert 'id="recallCanaryCreateReviewArtifactButton"' in template
+    assert 'id="recallCanaryJudgmentV2Better"' in template
+    assert 'id="recallCanaryJudgmentV1Better"' in template
+    assert 'id="recallCanaryJudgmentTie"' in template
+    assert 'id="recallCanaryJudgmentBothBad"' in template
+    assert 'id="recallCanaryJudgmentInconclusive"' in template
+    assert "Create Review Artifact (Evidence Only)" in template
+    assert "Promote to Production" not in template
+    assert "Make V2 Default" not in template
+    assert "Apply Recall Patch" not in template
+    assert "function runRecallCanaryQuery()" in app_js
+    assert "function recordRecallCanaryJudgment()" in app_js
+    assert "function createRecallCanaryReviewArtifact()" in app_js

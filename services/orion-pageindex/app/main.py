@@ -5,7 +5,14 @@ import sys
 
 from fastapi import FastAPI, HTTPException
 
-from .models import BuildResponse, QueryRequest, QueryResponse, StatusResponse
+from .models import (
+    BuildResponse,
+    ChatEpisodeBuildResponse,
+    ChatEpisodeStatusResponse,
+    QueryRequest,
+    QueryResponse,
+    StatusResponse,
+)
 from .pageindex_cli import PageIndexCliError
 from .service import JournalPageIndexService
 from .settings import settings
@@ -64,6 +71,38 @@ def journals_query(body: QueryRequest) -> QueryResponse:
         out = svc.query_journals(query=body.query, allow_fallback=body.allow_fallback, top_k=body.top_k)
         logger.info(
             "query_invoked=true query_result_count=%s fallback_invoked=%s",
+            out.query_result_count,
+            out.fallback_invoked,
+        )
+        return out
+    except PageIndexCliError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/corpora/chat_episodes/rebuild", response_model=ChatEpisodeBuildResponse)
+def rebuild_chat_episodes() -> ChatEpisodeBuildResponse:
+    out = svc.rebuild_chat_episodes()
+    logger.info(
+        "chat_episode_rebuild corpus_key=%s markdown_export_path=%s pageindex_tree_artifact_path=%s build_success=%s",
+        out.corpus_key,
+        out.markdown_export_path,
+        out.pageindex_tree_artifact_path,
+        out.build_success,
+    )
+    return out
+
+
+@app.get("/corpora/chat_episodes/status", response_model=ChatEpisodeStatusResponse)
+def chat_episodes_status() -> ChatEpisodeStatusResponse:
+    return svc.chat_episodes_status()
+
+
+@app.post("/corpora/chat_episodes/query", response_model=QueryResponse)
+def chat_episodes_query(body: QueryRequest) -> QueryResponse:
+    try:
+        out = svc.query_chat_episodes(query=body.query, allow_fallback=body.allow_fallback, top_k=body.top_k)
+        logger.info(
+            "chat_episode_query_invoked=true query_result_count=%s fallback_invoked=%s",
             out.query_result_count,
             out.fallback_invoked,
         )

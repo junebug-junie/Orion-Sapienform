@@ -65,6 +65,9 @@ from orion.core.schemas.substrate_policy_comparison import SubstratePolicyCompar
 from orion.core.schemas.substrate_review_runtime import GraphReviewRuntimeSurfaceV1
 from orion.core.schemas.substrate_mutation import (
     CognitiveProposalReviewV1,
+    RecallCanaryJudgmentRecordV1,
+    RecallCanaryReviewArtifactV1,
+    RecallCanaryRunV1,
     MutationPressureEvidenceV1,
     MutationPressureV1,
     RecallProductionCandidateReviewV1,
@@ -296,6 +299,46 @@ class RecallProductionCandidateReviewCreateRequest(BaseModel):
     operator_rationale: str = ""
     created_by: str = "operator"
     operator_checklist: dict[str, Any] = Field(default_factory=dict)
+
+
+class RecallCanaryQueryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query_text: str = Field(min_length=1, max_length=4096)
+    profile: str | None = None
+    session_id: str | None = None
+    node_id: str | None = None
+
+
+class RecallCanaryJudgmentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    judgment: Literal["v2_better", "v1_better", "tie", "both_bad", "inconclusive"]
+    failure_modes: list[
+        Literal[
+            "missing_exact_anchor",
+            "irrelevant_semantic_neighbor",
+            "stale_memory",
+            "unsupported_memory_claim",
+            "insufficient_context",
+            "wrong_project",
+            "wrong_timeframe",
+            "empty_result",
+            "overbroad_result",
+        ]
+    ] = Field(default_factory=list, max_length=32)
+    operator_note: str = ""
+    should_emit_pressure: bool = True
+    should_mark_review_candidate: bool = False
+
+
+class RecallCanaryReviewArtifactRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    review_type: str = "production_candidate_evidence"
+    operator_note: str = ""
+    include_comparison_summary: bool = True
+    include_operator_judgment: bool = True
 
 
 class CognitiveProposalReviewRequest(BaseModel):
@@ -2843,6 +2886,73 @@ _AUTONOMY_READINESS_POLICY_MATRIX = [
 ]
 
 
+def _recall_canary_rollups(*, limit: int = 50) -> dict[str, Any]:
+    runs = SUBSTRATE_MUTATION_STORE.list_recall_canary_runs(limit=limit)
+    judgments = SUBSTRATE_MUTATION_STORE.list_recall_canary_judgments(limit=limit)
+    artifacts = SUBSTRATE_MUTATION_STORE.list_recall_canary_review_artifacts(limit=limit)
+    judgment_counts: dict[str, int] = {
+        "v2_better": 0,
+        "v1_better": 0,
+        "tie": 0,
+        "both_bad": 0,
+        "inconclusive": 0,
+    }
+    failure_mode_counts: dict[str, int] = {}
+    for row in judgments:
+        key = str(row.get("judgment") or "")
+        if key in judgment_counts:
+            judgment_counts[key] = judgment_counts.get(key, 0) + 1
+        for mode in list(row.get("failure_modes") or []):
+            m = str(mode or "")
+            if not m:
+                continue
+            failure_mode_counts[m] = failure_mode_counts.get(m, 0) + 1
+    last_review_artifact_at = artifacts[0]["created_at"] if artifacts else None
+    return {
+        "run_count": len(runs),
+        "judgment_counts": judgment_counts,
+        "failure_mode_counts": failure_mode_counts,
+        "recent_runs": runs[:10],
+        "recent_judgments": judgments[:10],
+        "review_artifact_count": len(artifacts),
+        "last_review_artifact_at": last_review_artifact_at,
+    }
+
+
+def _failure_mode_to_pressure_category(mode: str | None) -> str:
+    m = str(mode or "").strip().lower()
+    if m == "missing_exact_anchor":
+        return "missing_exact_anchor"
+    if m == "irrelevant_semantic_neighbor":
+        return "irrelevant_semantic_neighbor"
+    if m in {"stale_memory", "stale_memory_selected"}:
+        return "stale_memory_selected"
+    if m == "unsupported_memory_claim":
+        return "unsupported_memory_claim"
+    return "recall_miss_or_dissatisfaction"
+
+
+def _recommended_canary_action(*, active_shadow: dict[str, Any] | None, rollups: dict[str, Any], recall_readiness: dict[str, Any]) -> str:
+    if not active_shadow:
+        return "activate_shadow_profile_first"
+    run_count = int(rollups.get("run_count") or 0)
+    if run_count <= 0:
+        return "run_more_canaries"
+    counts = rollups.get("judgment_counts") or {}
+    v2_better = int(counts.get("v2_better", 0))
+    both_bad = int(counts.get("both_bad", 0))
+    inconclusive = int(counts.get("inconclusive", 0))
+    if both_bad + inconclusive >= max(2, run_count // 2):
+        return "inspect_failures"
+    if v2_better >= max(2, run_count // 2):
+        if run_count < 5:
+            return "run_more_canaries"
+        recommendation = str((recall_readiness or {}).get("recommendation") or "")
+        if recommendation in {"ready_for_shadow_expansion", "ready_for_operator_promotion"}:
+            return "create_review_artifact"
+    return "not_ready"
+
+
 def _autonomy_readiness_payload() -> Dict[str, Any]:
     generated_at = datetime.now(timezone.utc).isoformat()
     warnings: list[str] = []
@@ -2874,6 +2984,15 @@ def _autonomy_readiness_payload() -> Dict[str, Any]:
             "readiness": None,
             "recent_eval_runs": [],
             "production_candidate_reviews": [],
+            "manual_canary": {
+                "run_count": 0,
+                "judgment_counts": {},
+                "failure_mode_counts": {},
+                "recent_judgments": [],
+                "review_artifact_count": 0,
+                "last_review_artifact_at": None,
+                "recommended_canary_action": "not_ready",
+            },
             "warnings": [],
         },
         "cognitive": {
@@ -2972,6 +3091,15 @@ def _autonomy_readiness_payload() -> Dict[str, Any]:
         payload["recall"]["readiness"] = recall_readiness.model_dump(mode="json")
         payload["recall"]["recent_eval_runs"] = SUBSTRATE_MUTATION_STORE.list_recall_shadow_eval_runs(limit=20, profile_id=(active_shadow.profile_id if active_shadow else None))
         payload["recall"]["production_candidate_reviews"] = SUBSTRATE_MUTATION_STORE.list_recall_production_candidate_reviews(limit=20, profile_id=(active_shadow.profile_id if active_shadow else None))
+        rollups = _recall_canary_rollups(limit=50)
+        payload["recall"]["manual_canary"] = {
+            **rollups,
+            "recommended_canary_action": _recommended_canary_action(
+                active_shadow=(active_shadow.model_dump(mode="json") if active_shadow else None),
+                rollups=rollups,
+                recall_readiness=recall_readiness.model_dump(mode="json"),
+            ),
+        }
     except Exception as exc:
         warnings.append(f"recall_posture_unavailable:{exc}")
         payload["recall"]["warnings"] = list(payload["recall"]["warnings"]) + [str(exc)]
@@ -4081,6 +4209,237 @@ def api_substrate_mutation_runtime_recall_shadow_profile_posture() -> Dict[str, 
             "production_recall_mode": "v1",
             "production_recall_still_v1": True,
         },
+    }
+
+
+@router.get("/api/substrate/recall-canary/status")
+def api_substrate_recall_canary_status(
+    limit: int = Query(default=20, ge=1, le=200),
+) -> Dict[str, Any]:
+    rollups = _recall_canary_rollups(limit=limit)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {
+            "schema_version": "recall_canary_status.v1",
+            **rollups,
+        },
+    }
+
+
+@router.post("/api/substrate/recall-canary/query")
+def api_substrate_recall_canary_query(
+    request: RecallCanaryQueryRequest,
+    x_orion_operator_token: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    _require_mutation_operator_guard(x_orion_operator_token)
+    base = settings.recall_service_url
+    warnings: list[str] = []
+    compare_payload: dict[str, Any] = {}
+    try:
+        resp = requests.post(
+            f"{base}/debug/recall/compare",
+            json={
+                "query_text": request.query_text,
+                "profile": request.profile,
+                "session_id": request.session_id,
+                "node_id": request.node_id,
+            },
+            timeout=float(settings.HUB_RECALL_SHADOW_EVAL_TIMEOUT_SEC),
+        )
+        compare_payload = resp.json() if resp.status_code < 500 else {}
+        if resp.status_code >= 400:
+            warnings.append(f"recall_compare_status:{resp.status_code}")
+    except Exception as exc:
+        warnings.append(f"recall_compare_unavailable:{exc.__class__.__name__}")
+    compare = dict(compare_payload.get("compare") or {})
+    v1 = dict(compare_payload.get("v1") or {})
+    v2 = dict(compare_payload.get("v2") or {})
+    active_shadow = SUBSTRATE_MUTATION_STORE.active_recall_shadow_profile()
+    run = RecallCanaryRunV1(
+        profile_id=(active_shadow.profile_id if active_shadow else None),
+        query_text=request.query_text,
+        query_profile=request.profile,
+        comparison_summary=compare,
+        v1_summary={
+            "selected_count": (((v1.get("bundle") or {}).get("items") and len((v1.get("bundle") or {}).get("items"))) or compare.get("v1_selected_count")),
+            "latency_ms": compare.get("v1_latency_ms"),
+        },
+        v2_summary={
+            "selected_count": (((v2.get("bundle") or {}).get("items") and len((v2.get("bundle") or {}).get("items"))) or compare.get("v2_selected_count")),
+            "latency_ms": compare.get("v2_latency_ms"),
+        },
+    )
+    saved = SUBSTRATE_MUTATION_STORE.record_recall_canary_run(run)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=1,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {
+            "schema_version": "recall_canary_query_result.v1",
+            "canary_run_id": saved.canary_run_id,
+            "canary_run": saved.model_dump(mode="json"),
+            "comparison": compare,
+            "v1": v1,
+            "v2": v2,
+            "warnings": warnings,
+            "safety": {
+                "production_default_unchanged": True,
+                "promotion_performed": False,
+                "apply_performed": False,
+            },
+        },
+    }
+
+
+@router.post("/api/substrate/recall-canary/runs/{canary_run_id}/judgment")
+def api_substrate_recall_canary_run_judgment(
+    canary_run_id: str,
+    request: RecallCanaryJudgmentRequest,
+    x_orion_operator_token: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    _require_mutation_operator_guard(x_orion_operator_token)
+    row = SUBSTRATE_MUTATION_STORE.get_recall_canary_run(canary_run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="recall_canary_run_not_found")
+    pressure_refs: list[str] = []
+    if request.should_emit_pressure:
+        pressure = MutationPressureEvidenceV1(
+            source_service="orion-hub",
+            source_event_id=f"recall_canary_judgment:{canary_run_id}",
+            correlation_id=f"recall_canary_judgment:{canary_run_id}",
+            pressure_category=_failure_mode_to_pressure_category(request.failure_modes[0] if request.failure_modes else None),  # type: ignore[arg-type]
+            confidence=0.75,
+            evidence_refs=[f"recall_canary_run:{canary_run_id}", f"judgment:{request.judgment}"],
+            metadata={
+                "recall_canary_judgment": request.judgment,
+                "failure_modes": list(request.failure_modes),
+                "operator_note": str(request.operator_note or ""),
+            },
+        )
+        _record_pressure_events_as_telemetry(
+            events=[pressure],
+            correlation_id=f"recall_canary_judgment:{canary_run_id}",
+            source_event_id=f"recall_canary_judgment:{canary_run_id}",
+            invocation_surface="operator_review",
+            ingest_notes=["recall_canary_judgment", f"run:{canary_run_id}"],
+        )
+        pressure_refs.append(f"pressure_event:{pressure.pressure_event_id}")
+    review_candidate_marked = False
+    if request.should_mark_review_candidate and row.profile_id:
+        profile = SUBSTRATE_MUTATION_STORE.get_recall_strategy_profile(row.profile_id)
+        if profile is not None:
+            snapshot = dict(profile.readiness_snapshot or {})
+            snapshot["manual_canary_review_candidate"] = True
+            snapshot["manual_canary_last_judgment"] = request.judgment
+            SUBSTRATE_MUTATION_STORE.update_recall_strategy_profile(
+                profile_id=profile.profile_id,
+                readiness_snapshot=snapshot,
+            )
+            review_candidate_marked = True
+    record = RecallCanaryJudgmentRecordV1(
+        canary_run_id=canary_run_id,
+        profile_id=row.profile_id,
+        query_text=row.query_text,
+        judgment=request.judgment,
+        failure_modes=list(request.failure_modes),
+        operator_note=str(request.operator_note or ""),
+        should_emit_pressure=bool(request.should_emit_pressure),
+        should_mark_review_candidate=bool(request.should_mark_review_candidate),
+        pressure_event_refs=pressure_refs,
+        review_candidate_marked=review_candidate_marked,
+    )
+    SUBSTRATE_MUTATION_STORE.record_recall_canary_judgment(record)
+    return {
+        "schema_version": "recall_canary_judgment_result.v1",
+        "canary_run_id": canary_run_id,
+        "judgment_recorded": True,
+        "pressure_emitted": bool(pressure_refs),
+        "review_candidate_marked": review_candidate_marked,
+        "warnings": [],
+    }
+
+
+@router.post("/api/substrate/recall-canary/runs/{canary_run_id}/create-review-artifact")
+def api_substrate_recall_canary_create_review_artifact(
+    canary_run_id: str,
+    request: RecallCanaryReviewArtifactRequest,
+    x_orion_operator_token: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    _require_mutation_operator_guard(x_orion_operator_token)
+    run = SUBSTRATE_MUTATION_STORE.get_recall_canary_run(canary_run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="recall_canary_run_not_found")
+    warnings: list[str] = []
+    active = SUBSTRATE_MUTATION_STORE.active_recall_shadow_profile()
+    if active is None:
+        warnings.append("no_active_shadow_profile")
+        return {
+            "schema_version": "recall_canary_review_artifact_result.v1",
+            "canary_run_id": canary_run_id,
+            "review_artifact_created": False,
+            "review_artifact_id": None,
+            "safety": {
+                "production_default_unchanged": True,
+                "promotion_performed": False,
+                "apply_performed": False,
+            },
+            "warnings": warnings,
+        }
+    latest_judgment = SUBSTRATE_MUTATION_STORE.latest_recall_canary_judgment_for_run(canary_run_id)
+    review = RecallProductionCandidateReviewV1(
+        profile_id=active.profile_id,
+        source_eval_run_ids=[],
+        readiness_snapshot=dict(active.readiness_snapshot or {}),
+        risk_summary=(list((latest_judgment.failure_modes if latest_judgment else []))[:16] if latest_judgment else []),
+        observed_improvements=([f"judgment:{latest_judgment.judgment}"] if latest_judgment else []),
+        observed_regressions=[],
+        operator_checklist={
+            "review_type": request.review_type,
+            "canary_run_id": canary_run_id,
+            "include_comparison_summary": bool(request.include_comparison_summary),
+            "include_operator_judgment": bool(request.include_operator_judgment),
+            "operator_note": str(request.operator_note or ""),
+        },
+        recommendation="keep_shadowing",
+        status="draft",
+        created_by="operator",
+    )
+    saved_review = SUBSTRATE_MUTATION_STORE.record_recall_production_candidate_review(review)
+    artifact = RecallCanaryReviewArtifactV1(
+        canary_run_id=canary_run_id,
+        profile_id=active.profile_id,
+        linked_review_id=saved_review.review_id,
+        review_type=request.review_type,
+        include_comparison_summary=bool(request.include_comparison_summary),
+        include_operator_judgment=bool(request.include_operator_judgment),
+        operator_note=str(request.operator_note or ""),
+        summary={
+            "comparison": (run.comparison_summary if request.include_comparison_summary else {}),
+            "judgment": (latest_judgment.model_dump(mode="json") if (request.include_operator_judgment and latest_judgment) else {}),
+        },
+    )
+    saved = SUBSTRATE_MUTATION_STORE.record_recall_canary_review_artifact(artifact)
+    return {
+        "schema_version": "recall_canary_review_artifact_result.v1",
+        "canary_run_id": canary_run_id,
+        "review_artifact_created": True,
+        "review_artifact_id": saved.review_artifact_id,
+        "safety": {
+            "production_default_unchanged": True,
+            "promotion_performed": False,
+            "apply_performed": False,
+        },
+        "warnings": warnings,
     }
 
 

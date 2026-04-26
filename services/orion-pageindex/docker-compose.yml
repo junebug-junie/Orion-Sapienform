@@ -13,6 +13,7 @@ services:
       NODE_NAME: ${NODE_NAME:-athena}
       PORT: ${PORT:-8360}
       JOURNAL_PG_DSN: ${JOURNAL_PG_DSN:-postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney}
+      # PageIndex reads enriched journal retrieval metadata from this table.
       JOURNAL_INDEX_TABLE: ${JOURNAL_INDEX_TABLE:-journal_entry_index}
       PAGEINDEX_IMPL: ${PAGEINDEX_IMPL:-actual}
       PAGEINDEX_INSTALLATION_MODE: ${PAGEINDEX_INSTALLATION_MODE:-cli}
@@ -23,6 +24,7 @@ services:
       PAGEINDEX_QUERY_ARGS: ${PAGEINDEX_QUERY_ARGS:---md_path {md_path} --output_dir {artifact_dir} --query {query}}
       PAGEINDEX_TIMEOUT_SEC: ${PAGEINDEX_TIMEOUT_SEC:-120}
       PAGEINDEX_DATA_DIR: ${PAGEINDEX_DATA_DIR:-/data/pageindex}
+      CHAT_EPISODES_MARKDOWN_PATH: ${CHAT_EPISODES_MARKDOWN_PATH:-/data/pageindex/chat_episodes/chat_episode_corpus.md}
       PYTHONUNBUFFERED: 1
     volumes:
       - pageindex-data:/data/pageindex

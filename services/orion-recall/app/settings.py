@@ -148,6 +148,7 @@ class Settings(BaseSettings):
     RECALL_VECTOR_MAX_ITEMS: int = Field(default=24, validation_alias=AliasChoices("RECALL_VECTOR_MAX_ITEMS"))
     RECALL_EXCLUDE_REJECTED: bool = Field(default=True, validation_alias=AliasChoices("RECALL_EXCLUDE_REJECTED"))
     RECALL_DURABLE_ONLY: bool = Field(default=False, validation_alias=AliasChoices("RECALL_DURABLE_ONLY"))
+    # Recall V2 may consume enriched journal provenance emitted via pageindex query results.
     RECALL_V2_PAGEINDEX_URL: str = Field(
         default="http://orion-athena-pageindex:8384",
         validation_alias=AliasChoices("RECALL_V2_PAGEINDEX_URL"),

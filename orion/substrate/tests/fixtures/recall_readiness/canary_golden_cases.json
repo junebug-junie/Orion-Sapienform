@@ -1,0 +1,26 @@
+[
+  {
+    "case_id": "v1_miss_v2_anchor",
+    "expect_recommendation_floor": "review_candidate"
+  },
+  {
+    "case_id": "v1_good_v2_irrelevant_neighbor",
+    "expect_failure_mode": "irrelevant_semantic_neighbor"
+  },
+  {
+    "case_id": "both_empty",
+    "expect_failure_mode": "missing_exact_anchor"
+  },
+  {
+    "case_id": "v1_stale_v2_fresher_anchor",
+    "expect_failure_mode": "stale_memory_selected"
+  },
+  {
+    "case_id": "v2_error_v1_success",
+    "expect_failure_mode": "recall_miss_or_dissatisfaction"
+  },
+  {
+    "case_id": "both_overlap_good",
+    "expect_recommendation_floor": "review_candidate"
+  }
+]

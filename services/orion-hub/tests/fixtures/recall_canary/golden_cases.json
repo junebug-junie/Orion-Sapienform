@@ -1,0 +1,50 @@
+[
+  {
+    "case_id": "v1_miss_v2_anchor",
+    "query_text": "Find the exact anchored change from last sprint",
+    "compare": {"v1_latency_ms": 120, "v2_latency_ms": 95, "selected_count_delta": 1},
+    "v1": {"selected_count": 0, "top_card": null},
+    "v2": {"selected_count": 1, "top_card": "anchor:exact"},
+    "expected_judgment": "v2_better"
+  },
+  {
+    "case_id": "v1_good_v2_irrelevant_neighbor",
+    "query_text": "What was merged for project atlas yesterday?",
+    "compare": {"v1_latency_ms": 90, "v2_latency_ms": 88, "selected_count_delta": 0},
+    "v1": {"selected_count": 1, "top_card": "atlas:merge"},
+    "v2": {"selected_count": 1, "top_card": "neighbor:irrelevant"},
+    "expected_judgment": "v1_better"
+  },
+  {
+    "case_id": "both_empty",
+    "query_text": "Unknown lookup key that should fail",
+    "compare": {"v1_latency_ms": 50, "v2_latency_ms": 55, "selected_count_delta": 0},
+    "v1": {"selected_count": 0, "top_card": null},
+    "v2": {"selected_count": 0, "top_card": null},
+    "expected_judgment": "both_bad"
+  },
+  {
+    "case_id": "v1_stale_v2_fresher_anchor",
+    "query_text": "Latest on runtime queue policy",
+    "compare": {"v1_latency_ms": 110, "v2_latency_ms": 108, "selected_count_delta": 0},
+    "v1": {"selected_count": 1, "top_card": "stale:policy"},
+    "v2": {"selected_count": 1, "top_card": "anchor:fresh-policy"},
+    "expected_judgment": "v2_better"
+  },
+  {
+    "case_id": "v2_error_v1_success",
+    "query_text": "Return known roadmap item",
+    "compare": {"v1_latency_ms": 80, "v2_latency_ms": 0, "selected_count_delta": -1},
+    "v1": {"selected_count": 1, "top_card": "roadmap:ok"},
+    "v2": {"selected_count": 0, "top_card": null, "error": "timeout"},
+    "expected_judgment": "v1_better"
+  },
+  {
+    "case_id": "both_overlap_good",
+    "query_text": "Show overlapping top cards",
+    "compare": {"v1_latency_ms": 98, "v2_latency_ms": 92, "selected_count_delta": 0},
+    "v1": {"selected_count": 2, "top_card": "shared:card-a"},
+    "v2": {"selected_count": 2, "top_card": "shared:card-a"},
+    "expected_judgment": "tie"
+  }
+]

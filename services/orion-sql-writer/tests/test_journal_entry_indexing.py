@@ -94,9 +94,21 @@ def test_index_payload_builds_with_trigger_and_chat_stance() -> None:
         stance_summary="brief reflective frame",
     )
     payload = build_journal_entry_index_payload(_base_write(), trigger=trigger, chat_stance=stance)
+    assert payload["trigger_kind"] == "notify_summary"
+    assert payload["trigger_summary"] == "notify summary"
     assert payload["conversation_frame"] == "reflective"
+    assert payload["task_mode"] == "reflective_dialogue"
+    assert payload["identity_salience"] == "high"
     assert payload["answer_strategy"] == "concise_reflection"
+    assert payload["stance_summary"] == "brief reflective frame"
     assert payload["active_identity_facets"] == ["identity continuity"]
+    assert payload["active_growth_axes"] == ["stability"]
+    assert payload["active_relationship_facets"] == ["trust"]
+    assert payload["social_posture"] == ["warm"]
+    assert payload["reflective_themes"] == ["integration"]
+    assert payload["active_tensions"] == ["speed_vs_depth"]
+    assert payload["dream_motifs"] == ["bridge"]
+    assert payload["response_hazards"] == ["overgeneralization"]
 
 
 def test_index_payload_gracefully_handles_missing_optional_stance_fields() -> None:
@@ -163,6 +175,11 @@ def test_journal_write_populates_journal_entry_index(monkeypatch) -> None:
     index_row = [row for table, row in writes if table == "journal_entry_index"][0]
     assert index_row["trigger_kind"] == "manual"
     assert index_row["conversation_frame"] == "technical"
+    assert index_row["task_mode"] == "direct_response"
+    assert index_row["identity_salience"] == "medium"
+    assert index_row["stance_summary"] == "short"
+    assert index_row["active_identity_facets"] == ["identity"]
+    assert index_row["response_hazards"] == ["drift"]
 
 
 def test_simple_filtered_retrieval_sql_shape() -> None:

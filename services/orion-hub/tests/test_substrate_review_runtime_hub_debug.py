@@ -604,6 +604,8 @@ def test_autonomy_readiness_endpoint_returns_unified_read_only_snapshot() -> Non
     assert payload["recall"]["production_mode"] == "v1"
     assert payload["recall"]["live_apply_enabled"] is False
     assert payload["cognitive"]["live_apply_enabled"] is False
+    assert "manual_canary" in payload["recall"]
+    assert "recommended_canary_action" in payload["recall"]["manual_canary"]
 
 
 def test_autonomy_readiness_endpoint_tolerates_partial_failures(monkeypatch) -> None:
@@ -630,3 +632,13 @@ def test_autonomy_readiness_policy_matrix_blocks_recall_and_cognitive_live_apply
     assert payload["surfaces"]["live"] == [] or all(
         row.get("surface") == "routing_threshold_patch" for row in payload["surfaces"]["live"]
     )
+
+
+def test_recall_canary_status_rollups_shape() -> None:
+    payload = api_routes.api_substrate_recall_canary_status(limit=20)
+    data = payload["data"]
+    assert data["schema_version"] == "recall_canary_status.v1"
+    assert "judgment_counts" in data
+    assert "failure_mode_counts" in data
+    assert "recent_judgments" in data
+    assert "review_artifact_count" in data

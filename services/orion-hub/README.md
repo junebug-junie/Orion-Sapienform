@@ -451,6 +451,47 @@ How to interpret quickly:
 - `warnings` can be non-empty during partial subsystem outages; endpoint should still return `200`.
 - `safe_next_actions` provides bounded operator-safe next steps; it never triggers mutation/apply.
 
+### Manual Recall Canary + Operator Judgment (evidence-only)
+
+Run manual canary query (operator-token guarded, no production mutation):
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/substrate/recall-canary/query" \
+  -H "content-type: application/json" \
+  -H "X-Orion-Operator-Token: $SUBSTRATE_MUTATION_OPERATOR_TOKEN" \
+  -d '{"query_text":"what changed in recall shadow posture today?"}'
+```
+
+Inspect canary status rollups:
+
+```bash
+curl -sS "http://localhost:8080/api/substrate/recall-canary/status?limit=20" | jq .
+```
+
+Record operator judgment for a canary run:
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/substrate/recall-canary/runs/<canary_run_id>/judgment" \
+  -H "content-type: application/json" \
+  -H "X-Orion-Operator-Token: $SUBSTRATE_MUTATION_OPERATOR_TOKEN" \
+  -d '{"judgment":"v2_better","failure_modes":["missing_exact_anchor"],"operator_note":"v2 surfaced anchored card","should_emit_pressure":true,"should_mark_review_candidate":false}'
+```
+
+Create review artifact from canary run (evidence/review only):
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/substrate/recall-canary/runs/<canary_run_id>/create-review-artifact" \
+  -H "content-type: application/json" \
+  -H "X-Orion-Operator-Token: $SUBSTRATE_MUTATION_OPERATOR_TOKEN" \
+  -d '{"review_type":"production_candidate_evidence","include_comparison_summary":true,"include_operator_judgment":true}'
+```
+
+Safety guarantees for canary workflows:
+- No endpoint in this path promotes Recall V2 to production.
+- No endpoint in this path switches production recall default away from `v1`.
+- No endpoint in this path applies recall mutation patches.
+- Canary artifact creation is evidence-only and operator-bounded.
+
 Safety guarantees for this flow:
 - Production recall remains `v1`; no endpoint in this workflow switches production default.
 - Candidate review creation only persists operator review artifacts.

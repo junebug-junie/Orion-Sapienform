@@ -60,6 +60,18 @@ RecallProductionCandidateRecommendationV1 = Literal[
     "reject_candidate",
 ]
 RecallProductionCandidateReviewStatusV1 = Literal["draft", "reviewed", "rejected", "archived"]
+RecallCanaryJudgmentV1 = Literal["v2_better", "v1_better", "tie", "both_bad", "inconclusive"]
+RecallCanaryFailureModeV1 = Literal[
+    "missing_exact_anchor",
+    "irrelevant_semantic_neighbor",
+    "stale_memory",
+    "unsupported_memory_claim",
+    "insufficient_context",
+    "wrong_project",
+    "wrong_timeframe",
+    "empty_result",
+    "overbroad_result",
+]
 
 
 class MutationPressureEvidenceV1(BaseModel):
@@ -303,3 +315,50 @@ class RecallProductionCandidateReviewV1(BaseModel):
     created_by: str = "operator"
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class RecallCanaryRunV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    canary_run_id: str = Field(default_factory=lambda: f"substrate-recall-canary-run-{uuid4()}")
+    profile_id: str | None = None
+    query_text: str
+    query_profile: str | None = None
+    source: str = "operator_manual_canary"
+    comparison_summary: dict[str, Any] = Field(default_factory=dict)
+    v1_summary: dict[str, Any] = Field(default_factory=dict)
+    v2_summary: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class RecallCanaryJudgmentRecordV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    judgment_id: str = Field(default_factory=lambda: f"substrate-recall-canary-judgment-{uuid4()}")
+    canary_run_id: str
+    profile_id: str | None = None
+    query_text: str = ""
+    judgment: RecallCanaryJudgmentV1
+    failure_modes: list[RecallCanaryFailureModeV1] = Field(default_factory=list, max_length=32)
+    operator_note: str = ""
+    should_emit_pressure: bool = True
+    should_mark_review_candidate: bool = False
+    pressure_event_refs: list[str] = Field(default_factory=list, max_length=64)
+    review_candidate_marked: bool = False
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class RecallCanaryReviewArtifactV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    review_artifact_id: str = Field(default_factory=lambda: f"substrate-recall-canary-review-artifact-{uuid4()}")
+    canary_run_id: str
+    profile_id: str | None = None
+    linked_review_id: str | None = None
+    review_type: str = "production_candidate_evidence"
+    include_comparison_summary: bool = True
+    include_operator_judgment: bool = True
+    operator_note: str = ""
+    summary: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

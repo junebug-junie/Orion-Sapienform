@@ -24,9 +24,11 @@ class Settings(BaseSettings):
     JOURNAL_PG_DSN: str = Field(
         default="postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney"
     )
+    # Denormalized journal retrieval table consumed by pageindex corpus export.
     JOURNAL_INDEX_TABLE: str = Field(default="journal_entry_index")
 
     PAGEINDEX_DATA_DIR: str = Field(default="/data/pageindex")
+    CHAT_EPISODES_MARKDOWN_PATH: str = Field(default="/data/pageindex/chat_episodes/chat_episode_corpus.md")
 
 
 settings = Settings()

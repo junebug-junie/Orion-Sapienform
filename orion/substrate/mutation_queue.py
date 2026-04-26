@@ -18,6 +18,9 @@ from orion.core.schemas.substrate_mutation import (
     MutationRollbackV1,
     MutationSignalV1,
     MutationTrialV1,
+    RecallCanaryJudgmentRecordV1,
+    RecallCanaryReviewArtifactV1,
+    RecallCanaryRunV1,
     RecallProductionCandidateReviewV1,
     RecallShadowEvalRunV1,
     RecallStrategyProfileV1,
@@ -50,6 +53,9 @@ class SubstrateMutationStore:
     _recall_strategy_profiles: dict[str, RecallStrategyProfileV1] = field(default_factory=dict, init=False)
     _recall_shadow_eval_runs: dict[str, RecallShadowEvalRunV1] = field(default_factory=dict, init=False)
     _recall_production_candidate_reviews: dict[str, RecallProductionCandidateReviewV1] = field(default_factory=dict, init=False)
+    _recall_canary_runs: dict[str, RecallCanaryRunV1] = field(default_factory=dict, init=False)
+    _recall_canary_judgments: dict[str, RecallCanaryJudgmentRecordV1] = field(default_factory=dict, init=False)
+    _recall_canary_review_artifacts: dict[str, RecallCanaryReviewArtifactV1] = field(default_factory=dict, init=False)
     _retention_max_blocked_applies: int = field(default=500, init=False)
     _retention_max_rollbacks: int = field(default=500, init=False)
 
@@ -465,12 +471,18 @@ class SubstrateMutationStore:
             key=lambda item: item.updated_at,
             reverse=True,
         )
+        canary_runs = sorted(
+            [row for row in self._recall_canary_runs.values() if row.profile_id == profile_id],
+            key=lambda item: item.updated_at,
+            reverse=True,
+        )
         return {
             "profile": profile.model_dump(mode="json"),
             "proposal": proposal.model_dump(mode="json") if proposal else None,
             "pressures": [row.model_dump(mode="json") for row in sorted(pressure_rows, key=lambda item: item.updated_at, reverse=True)],
             "recent_eval_runs": [row.model_dump(mode="json") for row in eval_runs[:20]],
             "recent_production_candidate_reviews": [row.model_dump(mode="json") for row in reviews[:20]],
+            "recent_canary_runs": [row.model_dump(mode="json") for row in canary_runs[:20]],
             "proposal_lineage": self.lifecycle_for_proposal(profile.source_proposal_id),
         }
 
@@ -512,6 +524,54 @@ class SubstrateMutationStore:
         rows.sort(key=lambda item: item.updated_at, reverse=True)
         return [row.model_dump(mode="json") for row in rows[:limit]]
 
+    def record_recall_canary_run(self, run: RecallCanaryRunV1) -> RecallCanaryRunV1:
+        self._recall_canary_runs[run.canary_run_id] = run
+        self._persist()
+        return run
+
+    def get_recall_canary_run(self, canary_run_id: str) -> RecallCanaryRunV1 | None:
+        return self._recall_canary_runs.get(canary_run_id)
+
+    def list_recall_canary_runs(self, *, limit: int = 20) -> list[dict[str, object]]:
+        rows = sorted(self._recall_canary_runs.values(), key=lambda item: item.created_at, reverse=True)
+        return [row.model_dump(mode="json") for row in rows[:limit]]
+
+    def record_recall_canary_judgment(self, row: RecallCanaryJudgmentRecordV1) -> RecallCanaryJudgmentRecordV1:
+        self._recall_canary_judgments[row.judgment_id] = row
+        self._persist()
+        return row
+
+    def list_recall_canary_judgments(self, *, limit: int = 20, canary_run_id: str | None = None) -> list[dict[str, object]]:
+        rows = list(self._recall_canary_judgments.values())
+        if canary_run_id:
+            rows = [item for item in rows if item.canary_run_id == canary_run_id]
+        rows.sort(key=lambda item: item.created_at, reverse=True)
+        return [row.model_dump(mode="json") for row in rows[:limit]]
+
+    def latest_recall_canary_judgment_for_run(self, canary_run_id: str) -> RecallCanaryJudgmentRecordV1 | None:
+        rows = [item for item in self._recall_canary_judgments.values() if item.canary_run_id == canary_run_id]
+        if not rows:
+            return None
+        rows.sort(key=lambda item: item.created_at, reverse=True)
+        return rows[0]
+
+    def record_recall_canary_review_artifact(self, row: RecallCanaryReviewArtifactV1) -> RecallCanaryReviewArtifactV1:
+        self._recall_canary_review_artifacts[row.review_artifact_id] = row
+        self._persist()
+        return row
+
+    def list_recall_canary_review_artifacts(
+        self,
+        *,
+        limit: int = 20,
+        canary_run_id: str | None = None,
+    ) -> list[dict[str, object]]:
+        rows = list(self._recall_canary_review_artifacts.values())
+        if canary_run_id:
+            rows = [item for item in rows if item.canary_run_id == canary_run_id]
+        rows.sort(key=lambda item: item.created_at, reverse=True)
+        return [row.model_dump(mode="json") for row in rows[:limit]]
+
     def _persist(self) -> None:
         self._compact_artifacts()
         if self.postgres_url:
@@ -548,6 +608,15 @@ class SubstrateMutationStore:
             )
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS substrate_mutation_recall_production_candidate_review (review_id TEXT PRIMARY KEY, updated_at TEXT NOT NULL, payload_json TEXT NOT NULL)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS substrate_mutation_recall_canary_run (canary_run_id TEXT PRIMARY KEY, updated_at TEXT NOT NULL, payload_json TEXT NOT NULL)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS substrate_mutation_recall_canary_judgment (judgment_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS substrate_mutation_recall_canary_review_artifact (review_artifact_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, payload_json TEXT NOT NULL)"
             )
             conn.execute("CREATE TABLE IF NOT EXISTS substrate_mutation_active_surface (target_surface TEXT PRIMARY KEY, adoption_id TEXT NOT NULL, updated_at TEXT NOT NULL)")
             conn.execute(
@@ -702,6 +771,39 @@ class SubstrateMutationStore:
                     """,
                     (item.review_id, item.updated_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
                 )
+            for item in self._recall_canary_runs.values():
+                conn.execute(
+                    """
+                    INSERT INTO substrate_mutation_recall_canary_run(canary_run_id, updated_at, payload_json)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(canary_run_id) DO UPDATE SET
+                        updated_at=excluded.updated_at,
+                        payload_json=excluded.payload_json
+                    """,
+                    (item.canary_run_id, item.updated_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
+                )
+            for item in self._recall_canary_judgments.values():
+                conn.execute(
+                    """
+                    INSERT INTO substrate_mutation_recall_canary_judgment(judgment_id, created_at, payload_json)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(judgment_id) DO UPDATE SET
+                        created_at=excluded.created_at,
+                        payload_json=excluded.payload_json
+                    """,
+                    (item.judgment_id, item.created_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
+                )
+            for item in self._recall_canary_review_artifacts.values():
+                conn.execute(
+                    """
+                    INSERT INTO substrate_mutation_recall_canary_review_artifact(review_artifact_id, created_at, payload_json)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(review_artifact_id) DO UPDATE SET
+                        created_at=excluded.created_at,
+                        payload_json=excluded.payload_json
+                    """,
+                    (item.review_artifact_id, item.created_at.isoformat(), json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)),
+                )
             for surface, adoption_id in self._active_surface_by_target.items():
                 conn.execute(
                     """
@@ -761,6 +863,18 @@ class SubstrateMutationStore:
                 item.review_id: item
                 for item in [RecallProductionCandidateReviewV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_recall_production_candidate_review ORDER BY updated_at ASC").fetchall()]
             }
+            self._recall_canary_runs = {
+                item.canary_run_id: item
+                for item in [RecallCanaryRunV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_recall_canary_run ORDER BY updated_at ASC").fetchall()]
+            }
+            self._recall_canary_judgments = {
+                item.judgment_id: item
+                for item in [RecallCanaryJudgmentRecordV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_recall_canary_judgment ORDER BY created_at ASC").fetchall()]
+            }
+            self._recall_canary_review_artifacts = {
+                item.review_artifact_id: item
+                for item in [RecallCanaryReviewArtifactV1.model_validate(json.loads(p)) for (p,) in conn.execute("SELECT payload_json FROM substrate_mutation_recall_canary_review_artifact ORDER BY created_at ASC").fetchall()]
+            }
             self._active_surface_by_target = {surface: adoption_id for (surface, adoption_id) in conn.execute("SELECT target_surface, adoption_id FROM substrate_mutation_active_surface").fetchall()}
             self._blocked_applies = {
                 str(item.get("block_key")): item
@@ -790,6 +904,9 @@ class SubstrateMutationStore:
             "CREATE TABLE IF NOT EXISTS substrate_mutation_recall_strategy_profile (profile_id TEXT PRIMARY KEY, updated_at TIMESTAMPTZ NOT NULL, payload_json JSONB NOT NULL)",
             "CREATE TABLE IF NOT EXISTS substrate_mutation_recall_shadow_eval_run (run_id TEXT PRIMARY KEY, completed_at TIMESTAMPTZ NOT NULL, payload_json JSONB NOT NULL)",
             "CREATE TABLE IF NOT EXISTS substrate_mutation_recall_production_candidate_review (review_id TEXT PRIMARY KEY, updated_at TIMESTAMPTZ NOT NULL, payload_json JSONB NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS substrate_mutation_recall_canary_run (canary_run_id TEXT PRIMARY KEY, updated_at TIMESTAMPTZ NOT NULL, payload_json JSONB NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS substrate_mutation_recall_canary_judgment (judgment_id TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL, payload_json JSONB NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS substrate_mutation_recall_canary_review_artifact (review_artifact_id TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL, payload_json JSONB NOT NULL)",
             "CREATE TABLE IF NOT EXISTS substrate_mutation_active_surface (target_surface TEXT PRIMARY KEY, adoption_id TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL)",
             "CREATE TABLE IF NOT EXISTS substrate_mutation_apply_block (block_key TEXT PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL, payload_json JSONB NOT NULL)",
         ]
@@ -973,6 +1090,45 @@ class SubstrateMutationStore:
                     ),
                     {"id": item.review_id, "updated_at": item.updated_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
                 )
+            for item in self._recall_canary_runs.values():
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO substrate_mutation_recall_canary_run(canary_run_id, updated_at, payload_json)
+                        VALUES (:id, :updated_at, CAST(:payload AS JSONB))
+                        ON CONFLICT (canary_run_id) DO UPDATE SET
+                            updated_at = EXCLUDED.updated_at,
+                            payload_json = EXCLUDED.payload_json
+                        """
+                    ),
+                    {"id": item.canary_run_id, "updated_at": item.updated_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
+                )
+            for item in self._recall_canary_judgments.values():
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO substrate_mutation_recall_canary_judgment(judgment_id, created_at, payload_json)
+                        VALUES (:id, :created_at, CAST(:payload AS JSONB))
+                        ON CONFLICT (judgment_id) DO UPDATE SET
+                            created_at = EXCLUDED.created_at,
+                            payload_json = EXCLUDED.payload_json
+                        """
+                    ),
+                    {"id": item.judgment_id, "created_at": item.created_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
+                )
+            for item in self._recall_canary_review_artifacts.values():
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO substrate_mutation_recall_canary_review_artifact(review_artifact_id, created_at, payload_json)
+                        VALUES (:id, :created_at, CAST(:payload AS JSONB))
+                        ON CONFLICT (review_artifact_id) DO UPDATE SET
+                            created_at = EXCLUDED.created_at,
+                            payload_json = EXCLUDED.payload_json
+                        """
+                    ),
+                    {"id": item.review_artifact_id, "created_at": item.created_at, "payload": json.dumps(item.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)},
+                )
             conn.execute(text("DELETE FROM substrate_mutation_active_surface"))
             for surface, adoption_id in self._active_surface_by_target.items():
                 conn.execute(
@@ -1034,6 +1190,18 @@ class SubstrateMutationStore:
             self._recall_production_candidate_reviews = {
                 item.review_id: item
                 for item in [RecallProductionCandidateReviewV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_recall_production_candidate_review ORDER BY updated_at ASC")).fetchall()]
+            }
+            self._recall_canary_runs = {
+                item.canary_run_id: item
+                for item in [RecallCanaryRunV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_recall_canary_run ORDER BY updated_at ASC")).fetchall()]
+            }
+            self._recall_canary_judgments = {
+                item.judgment_id: item
+                for item in [RecallCanaryJudgmentRecordV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_recall_canary_judgment ORDER BY created_at ASC")).fetchall()]
+            }
+            self._recall_canary_review_artifacts = {
+                item.review_artifact_id: item
+                for item in [RecallCanaryReviewArtifactV1.model_validate(json.loads(p)) for (p,) in conn.execute(text("SELECT payload_json::text FROM substrate_mutation_recall_canary_review_artifact ORDER BY created_at ASC")).fetchall()]
             }
             self._active_surface_by_target = {surface: adoption_id for (surface, adoption_id) in conn.execute(text("SELECT target_surface, adoption_id FROM substrate_mutation_active_surface")).fetchall()}
             self._blocked_applies = {

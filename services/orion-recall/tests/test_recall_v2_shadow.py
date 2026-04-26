@@ -56,10 +56,32 @@ def test_recall_v2_shadow_exposes_explainable_ranked_cards(monkeypatch) -> None:
     monkeypatch.setattr("app.recall_v2.fetch_rdf_chatturn_exact_matches", lambda **kwargs: [])
     monkeypatch.setattr("app.recall_v2.fetch_vector_fragments", lambda **kwargs: [])
     monkeypatch.setattr("app.recall_v2.fetch_rdf_fragments", lambda **kwargs: [])
-    monkeypatch.setattr("app.recall_v2._pageindex_candidates", lambda plan, top_k=8: [{"id": "page-1", "source": "pageindex_lexical", "source_ref": "pageindex", "text": "Athena routing threshold notes", "score": 0.8, "tags": ["pageindex"]}])
+    monkeypatch.setattr(
+        "app.recall_v2._pageindex_candidates",
+        lambda plan, top_k=8: [
+            {
+                "id": "page-1",
+                "source": "pageindex_lexical",
+                "source_ref": "pageindex",
+                "text": "Athena routing threshold notes",
+                "score": 0.8,
+                "tags": ["pageindex"],
+                "meta": {
+                    "entry_id": "entry-1",
+                    "heading": "Reflective heading",
+                    "provenance": {
+                        "reflective_themes": ["continuity"],
+                        "active_tensions": ["speed_vs_depth"],
+                    },
+                },
+            }
+        ],
+    )
 
     bundle, debug = asyncio.run(run_recall_v2_shadow(RecallQueryV1(fragment="Athena routing threshold", profile="reflect.v1")))
     assert bundle.items
     cards = list(debug.get("ranked_cards") or [])
     assert cards
     assert isinstance(cards[0].get("why_selected"), dict)
+    assert cards[0].get("source") == "pageindex_lexical"
+    assert "pageindex" in list(cards[0].get("tags") or [])

@@ -52,7 +52,7 @@ If self-study runs in a flattened container layout, set `ORION_REPO_ROOT` to the
 ### Self-study GraphDB readback
 `self_retrieve` can read persisted self-study RDF back from GraphDB when either `RECALL_RDF_ENDPOINT_URL` or `GRAPHDB_URL` / `GRAPHDB_REPO` are present in the environment. If that persisted backend is unavailable, Cortex Exec falls back explicitly to the in-process self-study snapshot path instead of silently widening trust semantics.
 
-### Backfill Journal PageIndex-indcies
+### Backfill Journal PageIndex indices
 ```docker exec -i orion-athena-sql-writer python - <<'PY'
 from app.db import get_session, remove_session
 from app.models import JournalEntrySQL, JournalEntryIndexSQL
@@ -88,6 +88,7 @@ try:
             correlation_id=row.correlation_id,
         )
 
+        # Generates enriched index metadata (trigger/stance/facets) used by orion-pageindex export.
         index_payload = build_journal_entry_index_payload(
             payload,
             trigger=None,

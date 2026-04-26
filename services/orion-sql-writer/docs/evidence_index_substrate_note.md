@@ -28,6 +28,7 @@ The worker calls `build_evidence_units(kind, payload)` and persists resulting no
 Journal-specific `journal_entry_index` remains intact for compatibility.
 In parallel, journal writes now also emit normalized `evidence_units` rows through the journal adapter.
 This gives a no-downtime migration path for retrieval consumers.
+`orion-pageindex` continues to consume `journal_entry_index` directly, including enriched trigger/stance/facet metadata used by journal corpus export.
 
 ## Follow-up to become standalone `orion-evidence-index`
 

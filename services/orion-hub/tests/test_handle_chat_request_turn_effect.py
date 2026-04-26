@@ -268,3 +268,24 @@ def test_recall_eval_suite_record_writes_pressure_events(monkeypatch) -> None:
         str((e.metadata or {}).get("recall_evidence_kind")) == "eval_suite" for e in recorded[-1].pressure_events
     )
 
+
+def test_tripwire_normal_chat_path_does_not_invoke_mutation_cycle_or_review_execute_once(monkeypatch) -> None:
+    calls = {"scheduled": 0, "mutation": 0, "review": 0}
+
+    def _scheduled(*args, **kwargs):
+        calls["scheduled"] += 1
+
+    def _mutation(*args, **kwargs):
+        calls["mutation"] += 1
+
+    def _review(*args, **kwargs):
+        calls["review"] += 1
+
+    monkeypatch.setattr(api_routes, "execute_substrate_mutation_scheduled_cycle", _scheduled)
+    monkeypatch.setattr(api_routes, "_execute_substrate_mutation_cycle", _mutation)
+    monkeypatch.setattr(api_routes, "_execute_substrate_review_cycle", _review)
+    payload = {"mode": "brain", "messages": [{"role": "user", "content": "hello"}]}
+    out = asyncio.run(handle_chat_request(_TurnEffectClient(), payload, "sid-tripwire", no_write=True))
+    assert out["correlation_id"]
+    assert calls == {"scheduled": 0, "mutation": 0, "review": 0}
+

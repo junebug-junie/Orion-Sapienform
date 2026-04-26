@@ -113,7 +113,22 @@ def test_service_backed_path_is_primary(monkeypatch) -> None:
                     "excerpt": "Service excerpt about reflective continuity.",
                     "created_at": "2026-03-10T12:00:00Z",
                     "source_kind": "journal.entry.index",
-                    "provenance": {"reflective_themes": ["continuity"]},
+                    "provenance": {
+                        "reflective_themes": ["continuity"],
+                        "trigger_kind": "manual",
+                        "trigger_summary": "manual summary",
+                        "conversation_frame": "reflective",
+                        "task_mode": "reflective_dialogue",
+                        "identity_salience": "high",
+                        "stance_summary": "brief reflective frame",
+                        "active_identity_facets": ["identity continuity"],
+                        "active_growth_axes": ["stability"],
+                        "active_relationship_facets": ["trust"],
+                        "social_posture": ["warm"],
+                        "active_tensions": ["speed_vs_depth"],
+                        "dream_motifs": ["bridge"],
+                        "response_hazards": ["overgeneralization"],
+                    },
                 }
             ],
         },
@@ -130,6 +145,12 @@ def test_service_backed_path_is_primary(monkeypatch) -> None:
     pageindex = ctx.get("journal_pageindex_context") or {}
     assert [item["entry_id"] for item in pageindex.get("selected_entries") or []] == ["entry-service"]
     assert [item["block_id"] for item in pageindex.get("selected_blocks") or []] == ["entry-service::node::1"]
+    selected_entry = (pageindex.get("selected_entries") or [])[0]
+    assert selected_entry["reflective_themes"] == ["continuity"]
+    assert selected_entry["active_identity_facets"] == ["identity continuity"]
+    assert selected_entry["active_tensions"] == ["speed_vs_depth"]
+    assert selected_entry["dream_motifs"] == ["bridge"]
+    assert selected_entry["stance_summary"] == "brief reflective frame"
     assert pageindex.get("fallback_invoked") is False
 
 
@@ -217,7 +238,11 @@ def test_service_shape_stays_chat_stance_compatible(monkeypatch) -> None:
                     "excerpt": "Service excerpt about reflective continuity.",
                     "created_at": "2026-03-10T12:00:00Z",
                     "source_kind": "journal.entry.index",
-                    "provenance": {"reflective_themes": ["continuity"]},
+                    "provenance": {
+                        "reflective_themes": ["continuity"],
+                        "active_identity_facets": ["identity continuity"],
+                        "active_tensions": ["speed_vs_depth"],
+                    },
                 }
             ],
         },

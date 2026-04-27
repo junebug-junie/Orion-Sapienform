@@ -28,8 +28,15 @@ services:
       - TOPIC_FOUNDRY_DRIFT_DAEMON=${TOPIC_FOUNDRY_DRIFT_DAEMON}
       - TOPIC_FOUNDRY_DRIFT_POLL_SECONDS=${TOPIC_FOUNDRY_DRIFT_POLL_SECONDS}
       - TOPIC_FOUNDRY_DRIFT_WINDOW_HOURS=${TOPIC_FOUNDRY_DRIFT_WINDOW_HOURS}
+      - TOPIC_FOUNDRY_CHAT_CORPUS_OUTPUT_DIR=${TOPIC_FOUNDRY_CHAT_CORPUS_OUTPUT_DIR:-/data/topic-foundry/chat_corpus_builder}
+      - TOPIC_FOUNDRY_CHAT_CORPUS_MARKDOWN_PATH=${TOPIC_FOUNDRY_CHAT_CORPUS_MARKDOWN_PATH:-/data/pageindex/chat_episodes/chat_episode_corpus.md}
+      - TOPIC_FOUNDRY_CHAT_CORPUS_MAX_ROWS=${TOPIC_FOUNDRY_CHAT_CORPUS_MAX_ROWS:-5000}
+      - TOPIC_FOUNDRY_CHAT_CORPUS_LOOP_ENABLED=${TOPIC_FOUNDRY_CHAT_CORPUS_LOOP_ENABLED:-true}
+      - TOPIC_FOUNDRY_CHAT_CORPUS_INTERVAL_SECONDS=${TOPIC_FOUNDRY_CHAT_CORPUS_INTERVAL_SECONDS:-1800}
     volumes:
       - /mnt/telemetry/models/topic-foundry:/mnt/telemetry/models/topic-foundry
+      - topic-foundry-data:/data/topic-foundry
+      - pageindex-data:/data/pageindex
     env_file:
       - .env
     ports:
@@ -41,6 +48,37 @@ services:
       timeout: 10s
       retries: 3
 
+  topic-foundry-chat-corpus-builder:
+    build:
+      context: ../..
+      dockerfile: services/orion-topic-foundry/Dockerfile
+    container_name: orion-${NODE_NAME}-chat-corpus-builder
+    restart: unless-stopped
+    networks:
+      - app-net
+    command: >
+      python -m app.pipelines.chat_corpus_builder.cli
+      --output-dir ${TOPIC_FOUNDRY_CHAT_CORPUS_OUTPUT_DIR:-/data/topic-foundry/chat_corpus_builder}
+      --markdown-path ${TOPIC_FOUNDRY_CHAT_CORPUS_MARKDOWN_PATH:-/data/pageindex/chat_episodes/chat_episode_corpus.md}
+      --max-rows ${TOPIC_FOUNDRY_CHAT_CORPUS_MAX_ROWS:-5000}
+      --loop
+      --interval-seconds ${TOPIC_FOUNDRY_CHAT_CORPUS_INTERVAL_SECONDS:-1800}
+    environment:
+      - TOPIC_FOUNDRY_PG_DSN=${TOPIC_FOUNDRY_PG_DSN}
+      - TOPIC_FOUNDRY_CHAT_CORPUS_OUTPUT_DIR=${TOPIC_FOUNDRY_CHAT_CORPUS_OUTPUT_DIR:-/data/topic-foundry/chat_corpus_builder}
+      - TOPIC_FOUNDRY_CHAT_CORPUS_MARKDOWN_PATH=${TOPIC_FOUNDRY_CHAT_CORPUS_MARKDOWN_PATH:-/data/pageindex/chat_episodes/chat_episode_corpus.md}
+      - TOPIC_FOUNDRY_CHAT_CORPUS_MAX_ROWS=${TOPIC_FOUNDRY_CHAT_CORPUS_MAX_ROWS:-5000}
+      - TOPIC_FOUNDRY_CHAT_CORPUS_INTERVAL_SECONDS=${TOPIC_FOUNDRY_CHAT_CORPUS_INTERVAL_SECONDS:-1800}
+    env_file:
+      - .env
+    volumes:
+      - topic-foundry-data:/data/topic-foundry
+      - pageindex-data:/data/pageindex
+
 networks:
   app-net:
     external: true
+
+volumes:
+  topic-foundry-data:
+  pageindex-data:

@@ -1519,3 +1519,174 @@ channels:
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-04-05"
+
+  - name: "orion:world_pulse:run:request"
+    kind: "event"
+    schema_id: "WorldPulseRunV1"
+    message_kind: "world.pulse.run.request.v1"
+    producer_services: ["orion-actions", "orion-hub", "orion-world-pulse"]
+    consumer_services: ["orion-world-pulse"]
+    stability: "experimental"
+    since: "2026-04-26"
+
+  - name: "orion:world_pulse:run:result"
+    kind: "event"
+    schema_id: "WorldPulseRunResultV1"
+    message_kind: "world.pulse.run.result.v1"
+    producer_services: ["orion-world-pulse"]
+    consumer_services: ["orion-hub", "orion-actions", "*"]
+    stability: "experimental"
+    since: "2026-04-26"
+
+  - name: "orion:world_pulse:digest:created"
+    kind: "event"
+    schema_id: "DailyWorldPulseV1"
+    message_kind: "world.pulse.digest.created.v1"
+    producer_services: ["orion-world-pulse"]
+    consumer_services: ["orion-hub", "orion-sql-writer", "*"]
+    stability: "experimental"
+    since: "2026-04-26"
+
+  - name: "orion:world_pulse:digest:item"
+    kind: "event"
+    schema_id: "DailyWorldPulseItemV1"
+    message_kind: "world.pulse.digest.item.v1"
+    producer_services: ["orion-world-pulse"]
+    consumer_services: ["orion-sql-writer", "*"]
+    stability: "experimental"
+    since: "2026-04-27"
+
+  - name: "orion:world_pulse:article:emit"
+    kind: "event"
+    schema_id: "ArticleRecordV1"
+    message_kind: "world.pulse.article.emit.v1"
+    producer_services: ["orion-world-pulse"]
+    consumer_services: ["orion-sql-writer", "*"]
+    stability: "experimental"
+    since: "2026-04-27"
+
+  - name: "orion:world_pulse:cluster:emit"
+    kind: "event"
+    schema_id: "ArticleClusterV1"
+    message_kind: "world.pulse.cluster.emit.v1"
+    producer_services: ["orion-world-pulse"]
+    consumer_services: ["orion-sql-writer", "*"]
+    stability: "experimental"
+    since: "2026-04-27"
+
+  - name: "orion:world_pulse:digest:published"
+    kind: "event"
+    schema_id: "HubWorldPulseMessageV1"
+    message_kind: "world.pulse.digest.published.v1"
+    producer_services: ["orion-world-pulse"]
+    consumer_services: ["orion-hub", "orion-sql-writer", "*"]
+    stability: "experimental"
+    since: "2026-04-26"
+
+  - name: "orion:world_pulse:learning:emit"
+    kind: "event"
+    schema_id: "WorldLearningDeltaV1"
+    message_kind: "world.pulse.learning.emit.v1"
+    producer_services: ["orion-world-pulse"]
+    consumer_services: ["orion-sql-writer", "orion-rdf-writer", "*"]
+    stability: "experimental"
+    since: "2026-04-26"
+
+  - name: "orion:world_pulse:worth:reading"
+    kind: "event"
+    schema_id: "WorthReadingItemV1"
+    message_kind: "world.pulse.worth.reading.v1"
+    producer_services: ["orion-world-pulse"]
+    consumer_services: ["orion-sql-writer", "*"]
+    stability: "experimental"
+    since: "2026-04-27"
+
+  - name: "orion:world_pulse:worth:watching"
+    kind: "event"
+    schema_id: "WorthWatchingItemV1"
+    message_kind: "world.pulse.worth.watching.v1"
+    producer_services: ["orion-world-pulse"]
+    consumer_services: ["orion-sql-writer", "*"]
+    stability: "experimental"
+    since: "2026-04-27"
+
+  - name: "orion:world_pulse:claim:emit"
+    kind: "event"
+    schema_id: "ClaimRecordV1"
+    message_kind: "world.pulse.claim.emit.v1"
+    producer_services: ["orion-world-pulse"]
+    consumer_services: ["orion-sql-writer", "orion-rdf-writer", "*"]
+    stability: "experimental"
+    since: "2026-04-26"
+
+  - name: "orion:world_pulse:event:emit"
+    kind: "event"
+    schema_id: "EventRecordV1"
+    message_kind: "world.pulse.event.emit.v1"
+    producer_services: ["orion-world-pulse"]
+    consumer_services: ["orion-sql-writer", "orion-rdf-writer", "*"]
+    stability: "experimental"
+    since: "2026-04-26"
+
+  - name: "orion:world_pulse:entity:emit"
+    kind: "event"
+    schema_id: "EntityRecordV1"
+    message_kind: "world.pulse.entity.emit.v1"
+    producer_services: ["orion-world-pulse"]
+    consumer_services: ["orion-sql-writer", "orion-rdf-writer", "*"]
+    stability: "experimental"
+    since: "2026-04-26"
+
+  - name: "orion:world_pulse:situation:brief:upsert"
+    kind: "event"
+    schema_id: "TopicSituationBriefV1"
+    message_kind: "world.pulse.situation.brief.upsert.v1"
+    producer_services: ["orion-world-pulse"]
+    consumer_services: ["orion-sql-writer", "orion-rdf-writer", "*"]
+    stability: "experimental"
+    since: "2026-04-26"
+
+  - name: "orion:world_pulse:situation:change:emit"
+    kind: "event"
+    schema_id: "SituationChangeV1"
+    message_kind: "world.pulse.situation.change.emit.v1"
+    producer_services: ["orion-world-pulse"]
+    consumer_services: ["orion-sql-writer", "orion-rdf-writer", "*"]
+    stability: "experimental"
+    since: "2026-04-26"
+
+  - name: "orion:world_pulse:graph:upsert"
+    kind: "event"
+    schema_id: "GraphDeltaPlanV1"
+    message_kind: "world.pulse.graph.upsert.v1"
+    producer_services: ["orion-world-pulse"]
+    consumer_services: ["orion-rdf-writer", "*"]
+    stability: "experimental"
+    since: "2026-04-26"
+
+  - name: "orion:world_context:daily_capsule"
+    kind: "event"
+    schema_id: "WorldContextCapsuleV1"
+    message_kind: "world.context.daily.capsule.v1"
+    producer_services: ["orion-world-pulse"]
+    consumer_services: ["orion-cortex-exec", "orion-hub", "orion-sql-writer", "*"]
+    stability: "experimental"
+    since: "2026-04-26"
+
+  - name: "orion:world_pulse:publish:status"
+    kind: "event"
+    schema_id: "GenericPayloadV1"
+    message_kind: "world.pulse.publish.status.v1"
+    producer_services: ["orion-world-pulse"]
+    consumer_services: ["orion-sql-writer", "*"]
+    stability: "experimental"
+    since: "2026-04-27"
+
+  - name: "orion:hub:messages:create"
+    kind: "event"
+    schema_id: "HubWorldPulseMessageV1"
+    message_kind: "hub.messages.create.v1"
+    producer_services: ["orion-world-pulse"]
+    consumer_services: ["orion-hub", "orion-sql-writer", "*"]
+    stability: "experimental"
+    since: "2026-04-26"

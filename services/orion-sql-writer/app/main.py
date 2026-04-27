@@ -339,6 +339,224 @@ async def lifespan(app: FastAPI):
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS idx_evidence_units_parent_unit_id ON evidence_units (parent_unit_id);"
             )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS world_pulse_run (
+                    run_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    requested_by TEXT NULL,
+                    dry_run TEXT NULL,
+                    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    schema_version TEXT NOT NULL DEFAULT 'v1',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NULL
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS world_pulse_digest (
+                    run_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    executive_summary TEXT NOT NULL,
+                    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    schema_version TEXT NOT NULL DEFAULT 'v1',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS world_pulse_digest_item (
+                    item_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    confidence TEXT NULL,
+                    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    schema_version TEXT NOT NULL DEFAULT 'v1',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_world_pulse_digest_item_run_id ON world_pulse_digest_item (run_id);")
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS world_pulse_article (
+                    article_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    schema_version TEXT NOT NULL DEFAULT 'v1',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_world_pulse_article_run_id ON world_pulse_article (run_id);")
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_world_pulse_article_source_id ON world_pulse_article (source_id);")
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS world_pulse_article_cluster (
+                    cluster_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    article_count TEXT NOT NULL DEFAULT '0',
+                    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    schema_version TEXT NOT NULL DEFAULT 'v1',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_world_pulse_cluster_run_id ON world_pulse_article_cluster (run_id);")
+            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_world_pulse_cluster_category ON world_pulse_article_cluster (category);")
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS world_pulse_claim (
+                    claim_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    topic_id TEXT NULL,
+                    promotion_status TEXT NOT NULL,
+                    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    schema_version TEXT NOT NULL DEFAULT 'v1',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS world_pulse_event (
+                    event_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    schema_version TEXT NOT NULL DEFAULT 'v1',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS world_pulse_entity (
+                    entity_id TEXT PRIMARY KEY,
+                    canonical_name TEXT NOT NULL,
+                    entity_type TEXT NOT NULL,
+                    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    schema_version TEXT NOT NULL DEFAULT 'v1',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS world_pulse_situation_brief (
+                    topic_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    tracking_status TEXT NOT NULL,
+                    current_assessment TEXT NOT NULL,
+                    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    schema_version TEXT NOT NULL DEFAULT 'v1',
+                    created_at TIMESTAMPTZ NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS world_pulse_situation_change (
+                    change_id TEXT PRIMARY KEY,
+                    topic_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    change_type TEXT NOT NULL,
+                    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    schema_version TEXT NOT NULL DEFAULT 'v1',
+                    created_at TIMESTAMPTZ NOT NULL
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS world_pulse_learning_delta (
+                    learning_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    topic_id TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    schema_version TEXT NOT NULL DEFAULT 'v1',
+                    created_at TIMESTAMPTZ NOT NULL
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS world_pulse_worth_reading (
+                    reading_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    schema_version TEXT NOT NULL DEFAULT 'v1',
+                    created_at TIMESTAMPTZ NOT NULL
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS world_pulse_worth_watching (
+                    watch_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    schema_version TEXT NOT NULL DEFAULT 'v1',
+                    created_at TIMESTAMPTZ NOT NULL
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS world_pulse_context_capsule (
+                    capsule_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    schema_version TEXT NOT NULL DEFAULT 'v1',
+                    created_at TIMESTAMPTZ NOT NULL
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS world_pulse_publish_status (
+                    status_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    channel TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    detail TEXT NULL,
+                    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    schema_version TEXT NOT NULL DEFAULT 'v1',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS world_pulse_hub_message (
+                    message_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    executive_summary TEXT NOT NULL,
+                    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    schema_version TEXT NOT NULL DEFAULT 'v1',
+                    created_at TIMESTAMPTZ NOT NULL
+                );
+                """
+            )
         logger.info("🧬 chat_message correlation/trace columns ensured")
         retention_days = int(getattr(settings, "metacog_trace_retention_days", 0) or 0)
         if retention_days > 0:

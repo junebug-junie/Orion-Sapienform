@@ -319,3 +319,15 @@ def _similarities(embeddings: Optional[np.ndarray]) -> List[float]:
         denom = (np.linalg.norm(a) * np.linalg.norm(b))
         sims.append(float(np.dot(a, b) / denom) if denom else 0.0)
     return sims
+
+
+def _heuristic_gate_score(text: str) -> float:
+    """Bounded lightweight score used by tests and fallback heuristics."""
+    if not text:
+        return 0.0
+    tokens = [tok for tok in str(text).lower().split() if tok]
+    if not tokens:
+        return 0.0
+    unique_ratio = min(1.0, len(set(tokens)) / len(tokens))
+    length_ratio = min(1.0, len(tokens) / 40.0)
+    return round((0.6 * unique_ratio) + (0.4 * length_ratio), 4)

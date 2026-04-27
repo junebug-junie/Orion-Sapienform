@@ -11,7 +11,7 @@ PROJECT  ?= $(shell grep -E '^PROJECT=' $(ROOT_ENV) | cut -d= -f2)
 
 SVC ?= hub-app
 
-.PHONY: up down restart build status logs log shell env test-smoke-browser
+.PHONY: up down restart build status logs log shell env test-smoke-browser bootstrap-test-envs test-hub test-hub-substrate
 
 # ───────────────────────────────────────────────────────────────
 # Lifecycle
@@ -71,3 +71,15 @@ test-smoke-browser:
 	@python -m pip install playwright
 	@python -m playwright install chromium
 	@pytest -q tests/test_schedule_panel_browser_smoke.py
+
+## 🧪 Bootstrap local test environments (venv/orion_dev)
+bootstrap-test-envs:
+	@../../scripts/bootstrap_test_envs.sh
+
+## 🧪 Run default Hub substrate/runtime suite in hub-app
+test-hub:
+	@../../scripts/test_hub.sh
+
+## 🧪 Run targeted Hub/substrate suite with passthrough args
+test-hub-substrate:
+	@../../scripts/test_hub.sh $(ARGS)

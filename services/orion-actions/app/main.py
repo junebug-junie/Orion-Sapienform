@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import time
+import requests
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -531,6 +532,23 @@ def _schedule_attention_notify_request(*, signal: ScheduleAttentionSignal, corre
 
 def _journal_daily_dedupe_key(window: DailyWindow) -> str:
     return f"actions:journal:daily:{window.request_date}:{settings.node_name}"
+
+
+def _world_pulse_daily_dedupe_key(window: DailyWindow) -> str:
+    return f"actions:world_pulse:daily:{window.request_date}:{settings.node_name}"
+
+
+def _trigger_world_pulse_run(*, date: str, requested_by: str) -> bool:
+    try:
+        resp = requests.post(
+            f"{settings.world_pulse_base_url.rstrip('/')}/api/world-pulse/run",
+            json={"date": date, "dry_run": True, "requested_by": requested_by},
+            timeout=20,
+        )
+        return resp.ok
+    except Exception:
+        logger.exception("world pulse trigger failed date=%s", date)
+        return False
 
 
 def _is_scheduler_daily_journal(*, trigger: Any, write_payload: dict[str, Any], draft: dict[str, Any]) -> bool:
@@ -1513,6 +1531,29 @@ async def lifespan(app: FastAPI):
                     await _execute_daily(env, action_name=ACTION_DAILY_PULSE_V1, window=window, dedupe_key=key)
                     last_daily_run[ACTION_DAILY_PULSE_V1] = local_date
 
+                world_pulse_should_run, world_pulse_date = should_run_daily(
+                    now_utc=now_utc,
+                    tz_name=settings.actions_daily_timezone,
+                    hour_local=settings.actions_world_pulse_hour_local,
+                    minute_local=settings.actions_world_pulse_minute_local,
+                    last_ran_date=last_daily_run.get("world_pulse"),
+                )
+                if settings.actions_world_pulse_enabled and (
+                    world_pulse_should_run or (settings.actions_daily_run_on_startup and "world_pulse" not in last_daily_run)
+                ):
+                    window = build_daily_window(now_utc=now_utc, tz_name=settings.actions_daily_timezone, override_date=forced_date)
+                    dedupe_key = _world_pulse_daily_dedupe_key(window)
+                    if not deduper.try_acquire(dedupe_key):
+                        logger.info("world_pulse_scheduler_trigger_result date=%s status=deduped", window.request_date)
+                    else:
+                        ok = await asyncio.to_thread(_trigger_world_pulse_run, date=window.request_date, requested_by="scheduler")
+                        logger.info("world_pulse_scheduler_trigger_result date=%s ok=%s", window.request_date, ok)
+                        if ok:
+                            deduper.mark_done(dedupe_key)
+                            last_daily_run["world_pulse"] = world_pulse_date
+                        else:
+                            deduper.release(dedupe_key)
+
                 meta_should_run, meta_local_date = should_run_daily(
                     now_utc=now_utc,
                     tz_name=settings.actions_daily_timezone,
@@ -1536,9 +1577,19 @@ async def lifespan(app: FastAPI):
                 )
                 if settings.actions_journaling_enabled and settings.actions_journaling_daily_enabled and journal_should_run:
                     window = build_daily_window(now_utc=now_utc, tz_name=settings.actions_daily_timezone, override_date=forced_date)
+                    # Keep timezone in scheduler logic, but avoid injecting it into journal prompts
+                    # where location inferences (e.g., "Denver") can be overfit by the model.
+                    journal_seed = json.dumps(
+                        {
+                            "request_date": window.request_date,
+                            "window_start_utc": window.window_start_utc,
+                            "window_end_utc": window.window_end_utc,
+                        },
+                        sort_keys=True,
+                    )
                     trigger = build_scheduler_trigger(
-                        summary=f"Daily journal cadence for {window.request_date} in {window.timezone}.",
-                        prompt_seed=json.dumps(window.__dict__, sort_keys=True),
+                        summary=f"Daily journal cadence for {window.request_date}.",
+                        prompt_seed=journal_seed,
                         source_ref=window.request_date,
                     )
                     env = BaseEnvelope(kind="orion.actions.trigger.journal.v1", source=src, payload=trigger.model_dump(mode="json"))

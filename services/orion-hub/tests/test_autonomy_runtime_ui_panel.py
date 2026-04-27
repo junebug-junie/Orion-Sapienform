@@ -208,19 +208,112 @@ def test_template_and_js_include_recall_canary_controls_without_unsafe_actions()
     app_js = APP_JS_PATH.read_text(encoding="utf-8")
 
     assert 'id="recallCanaryPanel"' in template
+    assert 'id="recallCanaryOpenModal"' in template
+    assert 'id="recallCanaryModalRoot"' in template
+    assert 'id="recallCanaryModalClose"' in template
+    assert 'id="recallCanaryModalRefresh"' in template
+    assert 'id="recallCanaryProfileSelect"' in template
+    assert 'id="recallCanaryProfileEmptyState"' in template
+    assert 'id="recallCanarySafetyBadges"' in template
+    assert 'id="recallCanaryOperatorTokenInput"' not in template
+    assert 'id="recallCanaryRememberTokenSession"' not in template
+    assert 'id="recallCanaryToggle"' in template
+    assert 'id="recallCanaryCaret"' in template
+    assert 'id="recallCanaryBody"' in template
     assert 'id="recallCanaryQueryInput"' in template
     assert 'id="recallCanaryRunButton"' in template
+    assert 'id="recallCanaryLatestResult"' in template
+    assert 'id="recallCanaryRawResponse"' in template
+    assert 'id="recallCanaryJudgmentSelect"' in template
     assert 'id="recallCanaryRecordJudgmentButton"' in template
     assert 'id="recallCanaryCreateReviewArtifactButton"' in template
-    assert 'id="recallCanaryJudgmentV2Better"' in template
-    assert 'id="recallCanaryJudgmentV1Better"' in template
-    assert 'id="recallCanaryJudgmentTie"' in template
-    assert 'id="recallCanaryJudgmentBothBad"' in template
-    assert 'id="recallCanaryJudgmentInconclusive"' in template
+    assert 'id="recallCanaryModalActionStatus"' in template
     assert "Create Review Artifact (Evidence Only)" in template
+    assert "Use panel controls below for judgments and review artifacts." not in template
+    assert "Promote to Production" not in template
+    assert "Make Default" not in template
+    assert "Make V2 Default" not in template
+    assert "Apply Recall Patch" not in template
+    assert "Apply Recall Profile" not in template
+    assert "Enable Recall V2" not in template
+    assert "Switch Production Recall" not in template
+    assert "Production Default" not in template
+    assert "Live Apply" not in template
+    assert "Auto Promote" not in template
+    assert "function runRecallCanaryQuery()" in app_js
+    assert "function openRecallCanaryModal()" in app_js
+    assert "function closeRecallCanaryModal()" in app_js
+    assert "function refreshRecallCanaryModal()" in app_js
+    assert "recallCanaryOpenModal.addEventListener('click'" in app_js
+    assert "function hydrateRecallCanaryProfileSelect(data = {})" in app_js
+    assert "function recordRecallCanaryJudgment()" in app_js
+    assert "function createRecallCanaryReviewArtifact()" in app_js
+    assert "function renderRecallCanaryLatestResult(payload)" in app_js
+    assert "function toggleRecallCanaryPanel()" in app_js
+    assert "'X-Orion-Operator-Token': operatorToken" not in app_js
+
+
+def test_template_and_js_include_compact_messages_and_world_pulse_sections() -> None:
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert 'id="messagesToggle"' in template
+    assert 'id="messagesCaret"' in template
+    assert 'id="messagesBody" class="hidden' in template
+    assert 'id="worldPulseToggle"' in template
+    assert 'id="worldPulseCaret"' in template
+    assert 'id="worldPulseBody" class="hidden' in template
+    assert "function toggleMessagesPanel()" in app_js
+    assert "function toggleWorldPulsePanel()" in app_js
+    assert "messagesToggle.addEventListener('click', toggleMessagesPanel);" in app_js
+    assert "worldPulseToggle.addEventListener('click', toggleWorldPulsePanel);" in app_js
+    assert "messageFilter.addEventListener('click', (event) => event.stopPropagation());" in app_js
+
+
+def test_template_and_js_include_cognitive_review_panel_without_unsafe_actions() -> None:
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert 'id="cognitiveReviewPanel"' in template
+    assert 'id="cognitiveReviewStatusMeta"' not in template
+    assert 'id="cognitiveProposalIdInput"' not in template
+    assert 'id="cognitiveReviewAcceptDraftButton"' not in template
+    assert 'id="cognitiveReviewRejectButton"' not in template
+    assert 'id="cognitiveReviewArchiveButton"' not in template
+    assert 'id="cognitiveReviewSupersedeButton"' not in template
+    assert 'id="cognitiveReviewOpenModal"' in template
+    assert 'id="cognitiveReviewModalRoot"' in template
+    assert 'id="cognitiveReviewModalClose"' in template
+    assert 'id="cognitiveReviewModalRefresh"' in template
+    assert "function refreshCognitiveReviewPanel()" not in app_js
+    assert "function openCognitiveReviewModal()" in app_js
+    assert "function closeCognitiveReviewModal()" in app_js
+    assert "function refreshCognitiveReviewModal()" in app_js
+    assert "function submitCognitiveProposalReview(decision, source = 'modal')" in app_js
+    assert "Review/draft/context only" in template
+    assert "No live cognitive apply" in template
+    assert "No identity/policy/prompt rewrite" in template
     assert "Promote to Production" not in template
     assert "Make V2 Default" not in template
     assert "Apply Recall Patch" not in template
-    assert "function runRecallCanaryQuery()" in app_js
-    assert "function recordRecallCanaryJudgment()" in app_js
-    assert "function createRecallCanaryReviewArtifact()" in app_js
+    assert "Apply Cognitive Mutation" not in template
+    assert "Rewrite Identity" not in template
+    assert "Promote to Self-Model" not in template
+    assert "Change Policy" not in template
+    assert "Rewrite Prompt" not in template
+    assert "Make Cognitive Default" not in template
+
+
+def test_template_and_js_include_autonomy_constitution_modal_readonly() -> None:
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert 'id="autonomyConstitutionOpenModal"' in template
+    assert 'id="autonomyConstitutionModalRoot"' in template
+    assert 'id="autonomyConstitutionModalRefresh"' in template
+    assert 'id="autonomyConstitutionModalClose"' in template
+    assert "Autonomy constitution" in template
+    assert "function openAutonomyConstitutionModal()" in app_js
+    assert "function closeAutonomyConstitutionModal()" in app_js
+    assert "function refreshAutonomyConstitutionModal()" in app_js
+    assert "substrateReviewFetch('/api/substrate/autonomy-constitution')" in app_js

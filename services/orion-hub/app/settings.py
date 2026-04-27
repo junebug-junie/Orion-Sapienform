@@ -51,6 +51,18 @@ class Settings(BaseSettings):
         default="http://orion-topic-foundry:8615",
         alias="TOPIC_FOUNDRY_BASE_URL",
     )
+    WORLD_PULSE_BASE_URL: str = Field(
+        default="http://orion-world-pulse:8628",
+        alias="WORLD_PULSE_BASE_URL",
+    )
+    WORLD_PULSE_PROXY_TIMEOUT_SEC: float = Field(
+        default=10.0,
+        alias="WORLD_PULSE_PROXY_TIMEOUT_SEC",
+    )
+    WORLD_PULSE_UI_FIXTURE_RUN_ENABLED: bool = Field(
+        default=False,
+        alias="WORLD_PULSE_UI_FIXTURE_RUN_ENABLED",
+    )
     SOCIAL_MEMORY_BASE_URL: str = Field(
         default="http://orion-social-memory:8765",
         alias="SOCIAL_MEMORY_BASE_URL",
@@ -183,6 +195,13 @@ class Settings(BaseSettings):
     HUB_SOCIAL_STYLE_ADAPTATION_ENABLED: bool = Field(default=True, alias="HUB_SOCIAL_STYLE_ADAPTATION_ENABLED")
     HUB_SOCIAL_ROOM_RITUALS_ENABLED: bool = Field(default=True, alias="HUB_SOCIAL_ROOM_RITUALS_ENABLED")
     HUB_SOCIAL_STYLE_CONFIDENCE_FLOOR: float = Field(default=0.35, alias="HUB_SOCIAL_STYLE_CONFIDENCE_FLOOR")
+    ORION_PRESENCE_SESSION_TTL_SECONDS: int = Field(default=14400, alias="ORION_PRESENCE_SESSION_TTL_SECONDS")
+    ORION_PRESENCE_DEFAULT_REQUESTOR: str = Field(default="Juniper", alias="ORION_PRESENCE_DEFAULT_REQUESTOR")
+    ORION_PRESENCE_PERSIST_ALLOWED: bool = Field(default=False, alias="ORION_PRESENCE_PERSIST_ALLOWED")
+    ORION_SITUATION_ENABLED: bool = Field(default=True, alias="ORION_SITUATION_ENABLED")
+    ORION_SITUATION_TTL_SECONDS: int = Field(default=300, alias="ORION_SITUATION_TTL_SECONDS")
+    ORION_SITUATION_TIMEZONE: str = Field(default="America/Denver", alias="ORION_SITUATION_TIMEZONE")
+    ORION_SITUATION_WEATHER_PROVIDER: str = Field(default="stub", alias="ORION_SITUATION_WEATHER_PROVIDER")
 
     # --- No-Write Debug Mode (skip publishing chat history) ---
     HUB_DEFAULT_NO_WRITE: bool = Field(default=False, alias="HUB_DEFAULT_NO_WRITE")

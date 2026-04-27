@@ -359,6 +359,12 @@ def build_cortex_chat_request(
         },
         "available_workflows": workflow_registry_payload(user_invocable_only=True),
     }
+    if isinstance(payload.get("presence_context"), dict):
+        metadata["presence_context"] = payload.get("presence_context")
+    if isinstance(payload.get("surface_context"), dict):
+        metadata["surface_context"] = payload.get("surface_context")
+    if payload.get("browser_client_id"):
+        metadata["browser_client_id"] = str(payload.get("browser_client_id"))
     mutation_cognition_context = payload.get("mutation_cognition_context")
     if isinstance(mutation_cognition_context, dict) and mutation_cognition_context:
         metadata["mutation_cognition_context"] = mutation_cognition_context

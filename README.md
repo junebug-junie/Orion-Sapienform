@@ -2362,6 +2362,12 @@ A good change should include:
 - rollback path,
 - observability hooks.
 
+Global test command contract:
+
+- Use `python3 -m pytest` (not bare `pytest`).
+- Prefer service-scoped runs through shared runner scripts.
+- Reference: [`docs/testing.md`](docs/testing.md).
+
 ---
 
 ## Common Bus Channels and Payload Surfaces

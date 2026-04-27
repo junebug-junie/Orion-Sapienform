@@ -6,12 +6,13 @@ import os
 import ipaddress
 import threading
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from uuid import uuid4
 from typing import Annotated, Optional, Any, List, Dict, Tuple, Literal
 from urllib.parse import urlparse
 import aiohttp
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 import requests
@@ -35,6 +36,14 @@ from .workflow_payloads import extract_workflow_payload
 from .cortex_chat_display import hub_effective_chat_text
 from .cortex_request_builder import build_chat_request, build_continuity_messages, validate_single_verb_override
 from .mutation_cognition_context import build_mutation_cognition_context
+from .autonomy_constitution import (
+    COGNITIVE_LIVE_APPLY_ENABLED,
+    PRODUCTION_RECALL_MODE,
+    RECALL_LIVE_APPLY_ENABLED,
+    constitution_summary,
+    load_autonomy_constitution,
+    validate_autonomy_constitution,
+)
 from .social_room import is_social_room_payload, social_room_client_meta
 from .service_logs import collect_service_inventory
 from orion.cognition.verb_activation import build_verb_list
@@ -51,6 +60,13 @@ from orion.schemas.notify import (
     PreferenceResolutionRequest,
     RecipientProfileUpdate,
 )
+from orion.schemas.situation import (
+    ConversationPhaseContextV1,
+    PlaceContextV1,
+    PresenceContextV1,
+    SituationBriefV1,
+    TimeContextV1,
+)
 
 from orion.core.schemas.substrate_review_queue import GraphReviewCyclePolicyV1
 from orion.core.schemas.substrate_review_runtime import GraphReviewRuntimeRequestV1
@@ -64,7 +80,9 @@ from orion.core.schemas.substrate_policy_adoption import (
 from orion.core.schemas.substrate_policy_comparison import SubstratePolicyComparisonRequestV1
 from orion.core.schemas.substrate_review_runtime import GraphReviewRuntimeSurfaceV1
 from orion.core.schemas.substrate_mutation import (
+    CognitiveProposalDraftV1,
     CognitiveProposalReviewV1,
+    CognitiveStanceNoteV1,
     RecallCanaryJudgmentRecordV1,
     RecallCanaryReviewArtifactV1,
     RecallCanaryRunV1,
@@ -305,7 +323,7 @@ class RecallCanaryQueryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     query_text: str = Field(min_length=1, max_length=4096)
-    profile: str | None = None
+    profile_id: str | None = None
     session_id: str | None = None
     node_id: str | None = None
 
@@ -346,6 +364,40 @@ class CognitiveProposalReviewRequest(BaseModel):
     reviewer: str = "operator"
     rationale: str = ""
     notes: list[str] = Field(default_factory=list, max_length=32)
+
+
+class CognitiveProposalReviewActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["accept_as_draft", "reject", "archive", "supersede"]
+    reviewer: str = "operator"
+    rationale: str = ""
+    review_labels: list[str] = Field(default_factory=list, max_length=32)
+    supersedes_proposal_id: str | None = None
+    should_emit_pressure: bool = False
+    create_stance_note: bool = False
+    stance_note: str = ""
+    stance_summary: str = ""
+    stance_visibility: Literal["metacog_only", "stance_and_metacog"] = "metacog_only"
+    stance_ttl_turns: int = Field(default=20, ge=1, le=200)
+
+
+class CognitiveDraftArchiveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reviewer: str = "operator"
+    rationale: str = ""
+
+
+class CognitiveCreateStanceNoteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reviewer: str = "operator"
+    rationale: str = ""
+    note: str = ""
+    summary: str = ""
+    visibility: Literal["metacog_only", "stance_and_metacog"] = "metacog_only"
+    ttl_turns: int = Field(default=20, ge=1, le=200)
 
 
 class SubstratePolicyAdoptHubRequest(BaseModel):
@@ -421,6 +473,30 @@ async def _proxy_request(request: Request, base_url: str, path: str) -> Response
             payload = await response.read()
             content_type = response.headers.get("content-type", "application/json")
             return Response(content=payload, status_code=response.status, media_type=content_type)
+
+
+async def _proxy_world_pulse_request(path: str, request: Request) -> Response:
+    if not settings.WORLD_PULSE_BASE_URL:
+        raise HTTPException(status_code=400, detail="World Pulse base URL not configured")
+    url = f"{settings.WORLD_PULSE_BASE_URL.rstrip('/')}/{path.lstrip('/')}"
+    headers = {key: value for key, value in request.headers.items() if key.lower() not in {"host", "content-length"}}
+    body = await request.body()
+    timeout = aiohttp.ClientTimeout(total=settings.WORLD_PULSE_PROXY_TIMEOUT_SEC)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        try:
+            async with session.request(
+                request.method,
+                url,
+                params=dict(request.query_params),
+                data=body if body else None,
+                headers=headers,
+            ) as response:
+                payload = await response.read()
+                content_type = response.headers.get("content-type", "application/json")
+                return Response(content=payload, status_code=response.status, media_type=content_type)
+        except aiohttp.ClientError as exc:
+            logger.warning("World Pulse proxy error: %s", exc)
+            raise HTTPException(status_code=502, detail="World Pulse proxy request failed") from exc
 
 
 async def _fetch_landing_pad(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -539,7 +615,7 @@ def _rec_tape_rsp(
 async def root():
     """Serves the main Hub UI (index.html)."""
     from .main import html_content
-    return HTMLResponse(
+    response = HTMLResponse(
         content=html_content,
         status_code=200,
         headers={
@@ -548,6 +624,18 @@ async def root():
             "Expires": "0",
         },
     )
+    # Keep operator token out of UI/JS by using an HttpOnly session cookie.
+    expected = str(os.getenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", "")).strip()
+    if expected:
+        response.set_cookie(
+            key="orion_operator_token",
+            value=expected,
+            httponly=True,
+            samesite="strict",
+            secure=False,
+            path="/",
+        )
+    return response
 
 
 @router.get("/health")
@@ -594,12 +682,166 @@ async def api_notifications(limit: int = 50):
     return await notification_cache.get_latest(limit)
 
 
+def _default_presence_context() -> dict:
+    return {
+        "kind": "presence.context.v1",
+        "requestor": {
+            "display_name": settings.ORION_PRESENCE_DEFAULT_REQUESTOR,
+            "relationship_to_orion": "primary_operator",
+            "source": "default",
+            "confidence": "medium",
+        },
+        "companions": [],
+        "audience_mode": "solo",
+        "source": "default",
+        "persist_to_memory": False,
+        "privacy_mode": "session_only",
+    }
+
+
+def _situation_time_context(now_local: datetime) -> TimeContextV1:
+    hour = now_local.hour
+    if hour < 5:
+        label = "pre_dawn"
+        phase = "pre_dawn"
+    elif hour < 8:
+        label = "early_morning"
+        phase = "morning"
+    elif hour < 10:
+        label = "mid_morning"
+        phase = "morning"
+    elif hour < 12:
+        label = "late_morning"
+        phase = "morning"
+    elif hour < 14:
+        label = "midday"
+        phase = "midday"
+    elif hour < 16:
+        label = "early_afternoon"
+        phase = "afternoon"
+    elif hour < 18:
+        label = "late_afternoon"
+        phase = "afternoon"
+    elif hour < 21:
+        label = "evening"
+        phase = "dusk"
+    elif hour < 23:
+        label = "late_evening"
+        phase = "night"
+    else:
+        label = "night"
+        phase = "night"
+    return TimeContextV1(
+        timezone=settings.ORION_SITUATION_TIMEZONE,
+        local_datetime=now_local.isoformat(),
+        local_date=now_local.strftime("%Y-%m-%d"),
+        local_time=now_local.strftime("%H:%M"),
+        weekday=now_local.strftime("%A"),
+        is_weekend=now_local.weekday() >= 5,
+        season_local="unknown",
+        time_of_day_label=label,  # type: ignore[arg-type]
+        day_phase=phase,  # type: ignore[arg-type]
+    )
+
+
 @router.get("/api/presence")
-def api_presence():
+def api_presence(x_orion_session_id: Optional[str] = Header(None)):
+    from .main import presence_context_store
+
+    session_key = str(x_orion_session_id or "anonymous")
+    payload = presence_context_store.get(session_key) if presence_context_store else None
+    return payload or _default_presence_context()
+
+
+@router.post("/api/presence")
+def api_presence_set(payload: dict, x_orion_session_id: Optional[str] = Header(None)):
+    from .main import presence_context_store
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="presence payload must be an object")
+    session_key = str(x_orion_session_id or payload.get("browser_client_id") or "anonymous")
+    merged = _default_presence_context()
+    merged.update(payload or {})
+    companions = merged.get("companions")
+    if not isinstance(companions, list):
+        merged["companions"] = []
+    merged["persist_to_memory"] = bool(merged.get("persist_to_memory", False) and settings.ORION_PRESENCE_PERSIST_ALLOWED)
+    if presence_context_store:
+        return presence_context_store.set(session_key, merged)
+    return merged
+
+
+@router.delete("/api/presence")
+def api_presence_clear(x_orion_session_id: Optional[str] = Header(None)):
+    from .main import presence_context_store
+
+    session_key = str(x_orion_session_id or "anonymous")
+    if presence_context_store:
+        presence_context_store.clear(session_key)
+    return _default_presence_context()
+
+
+@router.get("/api/presence/connections")
+def api_presence_connections():
     from .main import presence_state
+
     if not presence_state:
         return {"active": False, "last_seen": None, "active_connections": 0}
     return presence_state.snapshot()
+
+
+@router.get("/api/situation/status")
+def api_situation_status():
+    enabled = bool(settings.ORION_SITUATION_ENABLED)
+    return {
+        "enabled": enabled,
+        "reason": None if enabled else "disabled_by_config",
+        "hub_enabled": enabled,
+        "providers": {
+            "time": "enabled",
+            "location": "configured",
+            "weather": settings.ORION_SITUATION_WEATHER_PROVIDER,
+            "agenda": "stub",
+            "lab": "stub",
+            "presence": "hub_manual",
+        },
+        "ttl_seconds": int(settings.ORION_SITUATION_TTL_SECONDS),
+        "timezone": settings.ORION_SITUATION_TIMEZONE,
+    }
+
+
+@router.get("/api/situation/brief")
+def api_situation_brief(x_orion_session_id: Optional[str] = Header(None)):
+    from .main import presence_context_store
+
+    if not bool(settings.ORION_SITUATION_ENABLED):
+        return {
+            "kind": "situation.brief.v1",
+            "enabled": False,
+            "reason": "disabled_by_config",
+            "diagnostics": {
+                "provider_status": {"situation": "disabled_by_config"},
+                "provider_errors": {},
+                "relevance_reasons": [],
+                "generated_with_partial_context": False,
+            },
+        }
+
+    session_key = str(x_orion_session_id or "anonymous")
+    presence = presence_context_store.get(session_key) if presence_context_store else None
+    now_utc = datetime.now(timezone.utc)
+    now_local = now_utc.astimezone(ZoneInfo(settings.ORION_SITUATION_TIMEZONE))
+    time_ctx = _situation_time_context(now_local)
+    brief = SituationBriefV1(
+        generated_at=now_utc,
+        ttl_seconds=int(settings.ORION_SITUATION_TTL_SECONDS),
+        source_summary={"presence": "hub_manual", "weather": "stub"},
+        presence=PresenceContextV1.model_validate(presence or _default_presence_context()),
+        time=time_ctx,
+        conversation_phase=ConversationPhaseContextV1(),
+        place=PlaceContextV1(timezone=settings.ORION_SITUATION_TIMEZONE),
+    )
+    return brief.model_dump(mode="json")
 
 
 @router.get("/api/notify/recipients")
@@ -647,6 +889,26 @@ async def proxy_topic_foundry(path: str, request: Request) -> Response:
     except aiohttp.ClientError as exc:
         logger.warning("Topic Foundry proxy error: %s", exc)
         raise HTTPException(status_code=502, detail="Topic Foundry proxy request failed") from exc
+
+
+@router.api_route("/api/world-pulse/healthz", methods=["GET"])
+async def proxy_world_pulse_healthz(request: Request) -> Response:
+    return await _proxy_world_pulse_request("healthz", request)
+
+
+@router.api_route("/api/world-pulse/latest", methods=["GET"])
+async def proxy_world_pulse_latest(request: Request) -> Response:
+    return await _proxy_world_pulse_request("api/world-pulse/latest", request)
+
+
+@router.api_route("/api/world-pulse/run", methods=["POST"])
+async def proxy_world_pulse_run(request: Request) -> Response:
+    return await _proxy_world_pulse_request("api/world-pulse/run", request)
+
+
+@router.api_route("/api/world-pulse/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+async def proxy_world_pulse(path: str, request: Request) -> Response:
+    return await _proxy_world_pulse_request(path, request)
 
 
 @router.get("/api/social-memory/inspection")
@@ -1243,6 +1505,19 @@ def _http_chat_turn_context_from_result(result: Dict[str, Any]) -> Dict[str, Any
     }
 
 
+def _workflow_is_metadata_only(workflow: Dict[str, Any] | None) -> bool:
+    """Return True when a workflow response should render as card-only metadata."""
+    if not isinstance(workflow, dict):
+        return False
+    workflow_id = str(
+        workflow.get("id")
+        or workflow.get("workflow_id")
+        or workflow.get("raw_metadata", {}).get("workflow_id")
+        or ""
+    ).strip().lower()
+    return workflow_id == "dream_cycle"
+
+
 async def handle_chat_request(
     cortex_client,
     payload: dict,
@@ -1285,6 +1560,15 @@ async def handle_chat_request(
     )
     routed_payload = dict(payload)
     routed_payload["no_write"] = bool(no_write)
+    if "presence_context" not in routed_payload:
+        try:
+            from .main import presence_context_store
+
+            stored_presence = presence_context_store.get(session_id) if presence_context_store else None
+            if stored_presence:
+                routed_payload["presence_context"] = stored_presence
+        except Exception:
+            pass
     routed_payload["mutation_cognition_context"] = build_mutation_cognition_context(store=SUBSTRATE_MUTATION_STORE)
     req, route_debug, _ = build_chat_request(
         payload=routed_payload,
@@ -1398,6 +1682,10 @@ async def handle_chat_request(
         )
         workflow = extract_workflow_payload(resp.cortex_result)
         autonomy_payload = extract_autonomy_payload(resp.cortex_result)
+        workflow_metadata_only = _workflow_is_metadata_only(workflow)
+        if workflow_metadata_only:
+            # Dream workflow surfaces via workflow panel card only (no assistant prose body).
+            text = ""
         if isinstance(workflow, dict):
             logger.info(
                 "hub_workflow_response corr=%s workflow_id=%s status=%s scheduled_count=%s persisted_count=%s rendered_path=%s",
@@ -1462,6 +1750,7 @@ async def handle_chat_request(
             "recall_debug": recall_debug,
             "agent_trace": agent_trace,
             "workflow": workflow,
+            "workflow_metadata_only": workflow_metadata_only,
             "memory_used": memory_used,
             "memory_digest": memory_digest,
             "no_write": no_write,
@@ -1513,7 +1802,8 @@ async def api_chat(
     text = result.get("text")
     correlation_id = result.get("correlation_id")
 
-    if text and getattr(bus, "enabled", False) and not no_write:
+    workflow_metadata_only = bool(result.get("workflow_metadata_only"))
+    if text and getattr(bus, "enabled", False) and not no_write and not workflow_metadata_only:
         try:
             user_messages = payload.get("messages", [])
             latest_user_prompt = ""
@@ -2195,6 +2485,14 @@ def _require_mutation_operator_guard(token: str | None) -> None:
         raise HTTPException(status_code=403, detail="operator_guard_rejected")
 
 
+def _resolve_operator_token(request: Request | None, token: str | None) -> str | None:
+    header_token = str(token or "").strip()
+    if header_token:
+        return header_token
+    cookie_token = str((request.cookies.get("orion_operator_token") if request is not None else "") or "").strip()
+    return cookie_token or None
+
+
 class _ManualCyclePatchApplier(PatchApplier):
     def __init__(self, *, surfaces: dict[str, dict[str, Any]], allow_apply: bool, blocked_reason: str | None = None) -> None:
         super().__init__(surfaces=surfaces)
@@ -2834,58 +3132,6 @@ def _routing_live_ramp_posture_payload() -> Dict[str, Any]:
     }
 
 
-_AUTONOMY_READINESS_POLICY_MATRIX = [
-    {
-        "surface": "routing_threshold_patch",
-        "category": "routing",
-        "propose": "auto_when_gated",
-        "trial": "auto_replay",
-        "apply": "gated_auto",
-        "rollback": "auto",
-        "human_required": False,
-        "status": "live_narrow",
-        "required_gates": [
-            "SUBSTRATE_AUTONOMY_ENABLED",
-            "SUBSTRATE_AUTONOMY_APPLY_ENABLED",
-            "SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED",
-        ],
-        "forbidden": [],
-    },
-    {
-        "surface": "recall_strategy_profile",
-        "category": "recall",
-        "propose": "auto",
-        "trial": "shadow_or_manual_eval",
-        "apply": "manual_only_not_implemented_for_production",
-        "rollback": "disable_shadow_or_canary",
-        "human_required": True,
-        "status": "shadow_staged_only",
-        "required_gates": [],
-        "forbidden": [
-            "autonomous_recall_production_promotion",
-            "recall_weighting_patch_live_apply",
-        ],
-    },
-    {
-        "surface": "cognitive_self_model",
-        "category": "cognitive",
-        "propose": "auto",
-        "trial": "draft_only",
-        "apply": "forbidden",
-        "rollback": "archive_or_supersede_draft",
-        "human_required": True,
-        "status": "proposal_draft_only",
-        "required_gates": [],
-        "forbidden": [
-            "identity_kernel_rewrite",
-            "production_self_model_rewrite",
-            "policy_override",
-            "freeform_prompt_self_rewrite",
-        ],
-    },
-]
-
-
 def _recall_canary_rollups(*, limit: int = 50) -> dict[str, Any]:
     runs = SUBSTRATE_MUTATION_STORE.list_recall_canary_runs(limit=limit)
     judgments = SUBSTRATE_MUTATION_STORE.list_recall_canary_judgments(limit=limit)
@@ -2917,6 +3163,38 @@ def _recall_canary_rollups(*, limit: int = 50) -> dict[str, Any]:
         "review_artifact_count": len(artifacts),
         "last_review_artifact_at": last_review_artifact_at,
     }
+
+
+def _recall_canary_profile_catalog(*, limit: int = 50) -> tuple[list[dict[str, Any]], str | None]:
+    rows = SUBSTRATE_MUTATION_STORE.list_recall_strategy_profiles(limit=limit)
+    available_profiles: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        profile_id = str(row.get("profile_id") or "").strip()
+        if not profile_id or profile_id in seen:
+            continue
+        seen.add(profile_id)
+        raw_status = str(row.get("status") or "").strip() or "staged"
+        available_profiles.append(
+            {
+                "profile_id": profile_id,
+                "label": str(row.get("source_proposal_id") or profile_id),
+                "status": "shadow_canary_review_only",
+                "description": "Recall strategy profile available for shadow/canary review only.",
+                "production_default": False,
+                "live_apply_enabled": False,
+                "profile_state": raw_status,
+            }
+        )
+    default_canary_profile_id: str | None = None
+    active = SUBSTRATE_MUTATION_STORE.active_recall_shadow_profile()
+    if active is not None:
+        active_id = str(active.profile_id or "").strip()
+        if active_id and active_id in seen:
+            default_canary_profile_id = active_id
+    if not default_canary_profile_id and available_profiles:
+        default_canary_profile_id = str(available_profiles[0].get("profile_id") or "")
+    return available_profiles, (default_canary_profile_id or None)
 
 
 def _failure_mode_to_pressure_category(mode: str | None) -> str:
@@ -2956,6 +3234,13 @@ def _recommended_canary_action(*, active_shadow: dict[str, Any] | None, rollups:
 def _autonomy_readiness_payload() -> Dict[str, Any]:
     generated_at = datetime.now(timezone.utc).isoformat()
     warnings: list[str] = []
+    constitution = load_autonomy_constitution()
+    constitution_surface_rows = [row.model_dump(mode="json") for row in constitution.surfaces]
+    logger.info(
+        "event=autonomy_readiness_policy_matrix_loaded surface_count=%s warning_count=%s",
+        len(constitution_surface_rows),
+        len(constitution.warnings),
+    )
     payload: dict[str, Any] = {
         "schema_version": "autonomy_readiness.v1",
         "generated_at": generated_at,
@@ -2967,7 +3252,7 @@ def _autonomy_readiness_payload() -> Dict[str, Any]:
             "warnings": [],
         },
         "scheduler": {"enabled": False, "proposal_enabled": False, "apply_enabled": False, "source": "env/runtime", "gates": {}},
-        "policy_matrix": {"surfaces": list(_AUTONOMY_READINESS_POLICY_MATRIX)},
+        "policy_matrix": {"surfaces": constitution_surface_rows},
         "surfaces": {"live": [], "shadow": [], "proposal_only": [], "blocked": []},
         "routing": {
             "current_controls": {},
@@ -2977,8 +3262,8 @@ def _autonomy_readiness_payload() -> Dict[str, Any]:
             "pressure_summary": {},
         },
         "recall": {
-            "production_mode": "v1",
-            "live_apply_enabled": False,
+            "production_mode": PRODUCTION_RECALL_MODE,
+            "live_apply_enabled": RECALL_LIVE_APPLY_ENABLED,
             "active_shadow_profile": None,
             "staged_profiles": [],
             "readiness": None,
@@ -2996,7 +3281,7 @@ def _autonomy_readiness_payload() -> Dict[str, Any]:
             "warnings": [],
         },
         "cognitive": {
-            "live_apply_enabled": False,
+            "live_apply_enabled": COGNITIVE_LIVE_APPLY_ENABLED,
             "proposal_classes": [
                 "cognitive_contradiction_reconciliation",
                 "cognitive_identity_continuity_adjustment",
@@ -3027,6 +3312,8 @@ def _autonomy_readiness_payload() -> Dict[str, Any]:
         ],
         "warnings": warnings,
     }
+    if constitution.warnings:
+        warnings.extend([f"constitution:{item}" for item in constitution.warnings[:16]])
     try:
         g_autonomy = _env_flag("SUBSTRATE_AUTONOMY_ENABLED", default=False)
         g_prop = _env_flag("SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED", default=True)
@@ -3107,11 +3394,29 @@ def _autonomy_readiness_payload() -> Dict[str, Any]:
     try:
         cognitive_proposals = api_substrate_mutation_runtime_cognitive_proposals(limit=50).get("data", {}).get("recent_cognitive_proposals", [])
         counts: dict[str, int] = {}
+        counts_by_class: dict[str, int] = {}
         for item in cognitive_proposals:
             state = str(item.get("rollout_state") or "proposed")
             counts[state] = counts.get(state, 0) + 1
+            klass = str(item.get("mutation_class") or "unknown")
+            counts_by_class[klass] = counts_by_class.get(klass, 0) + 1
+        drafts = SUBSTRATE_MUTATION_STORE.list_cognitive_proposal_drafts(limit=50)
+        stance_notes = SUBSTRATE_MUTATION_STORE.list_cognitive_stance_notes(limit=50)
         payload["cognitive"]["counts_by_state"] = counts
+        payload["cognitive"]["counts_by_class"] = counts_by_class
         payload["cognitive"]["recent_proposals"] = cognitive_proposals[:20]
+        payload["cognitive"]["recent_drafts"] = drafts[:20]
+        payload["cognitive"]["recent_reviews"] = SUBSTRATE_MUTATION_STORE.recent_cognitive_reviews(limit=20)
+        payload["cognitive"]["active_stance_notes"] = [row for row in stance_notes if str(row.get("status") or "") == "active"][:20]
+        payload["cognitive"]["review_posture"] = _cognitive_review_posture_summary(cognitive_proposals, drafts, stance_notes)
+        payload["cognitive"]["safety"] = {
+            "identity_kernel_rewrite_performed": False,
+            "production_self_model_rewrite_performed": False,
+            "policy_override_performed": False,
+            "prompt_rewrite_performed": False,
+            "live_apply_performed": False,
+            "execute_once_performed": False,
+        }
     except Exception as exc:
         warnings.append(f"cognitive_posture_unavailable:{exc}")
         payload["cognitive"]["warnings"] = list(payload["cognitive"]["warnings"]) + [str(exc)]
@@ -4217,6 +4522,7 @@ def api_substrate_recall_canary_status(
     limit: int = Query(default=20, ge=1, le=200),
 ) -> Dict[str, Any]:
     rollups = _recall_canary_rollups(limit=limit)
+    available_profiles, default_canary_profile_id = _recall_canary_profile_catalog(limit=50)
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "source": _source_meta(
@@ -4228,25 +4534,54 @@ def api_substrate_recall_canary_status(
         "data": {
             "schema_version": "recall_canary_status.v1",
             **rollups,
+            "available_profiles": available_profiles,
+            "default_canary_profile_id": default_canary_profile_id,
+            "production_recall_mode": PRODUCTION_RECALL_MODE,
+            "recall_live_apply_enabled": RECALL_LIVE_APPLY_ENABLED,
         },
     }
 
 
 @router.post("/api/substrate/recall-canary/query")
 def api_substrate_recall_canary_query(
+    http_request: Request,
     request: RecallCanaryQueryRequest,
     x_orion_operator_token: str | None = Header(default=None),
 ) -> Dict[str, Any]:
-    _require_mutation_operator_guard(x_orion_operator_token)
+    _require_mutation_operator_guard(_resolve_operator_token(http_request, x_orion_operator_token))
     base = settings.recall_service_url
     warnings: list[str] = []
+    available_profiles, default_canary_profile_id = _recall_canary_profile_catalog(limit=200)
+    profile_by_id: dict[str, dict[str, Any]] = {
+        str(row.get("profile_id")): dict(row) for row in available_profiles if row.get("profile_id")
+    }
+    selected_profile_id = str(request.profile_id or "").strip() or str(default_canary_profile_id or "").strip()
+    if not selected_profile_id:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "recall_canary_profile_required",
+                "message": "No recall canary profiles are available.",
+                "allowed_profile_ids": sorted(profile_by_id.keys()),
+            },
+        )
+    selected_profile = profile_by_id.get(selected_profile_id)
+    if selected_profile is None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "invalid_recall_canary_profile_id",
+                "message": f"Unknown profile_id: {selected_profile_id}",
+                "allowed_profile_ids": sorted(profile_by_id.keys()),
+            },
+        )
     compare_payload: dict[str, Any] = {}
     try:
         resp = requests.post(
             f"{base}/debug/recall/compare",
             json={
                 "query_text": request.query_text,
-                "profile": request.profile,
+                "profile": selected_profile_id,
                 "session_id": request.session_id,
                 "node_id": request.node_id,
             },
@@ -4260,11 +4595,11 @@ def api_substrate_recall_canary_query(
     compare = dict(compare_payload.get("compare") or {})
     v1 = dict(compare_payload.get("v1") or {})
     v2 = dict(compare_payload.get("v2") or {})
-    active_shadow = SUBSTRATE_MUTATION_STORE.active_recall_shadow_profile()
     run = RecallCanaryRunV1(
-        profile_id=(active_shadow.profile_id if active_shadow else None),
+        profile_id=selected_profile_id,
         query_text=request.query_text,
-        query_profile=request.profile,
+        query_profile=selected_profile_id,
+        profile_metadata=selected_profile,
         comparison_summary=compare,
         v1_summary={
             "selected_count": (((v1.get("bundle") or {}).get("items") and len((v1.get("bundle") or {}).get("items"))) or compare.get("v1_selected_count")),
@@ -4288,10 +4623,13 @@ def api_substrate_recall_canary_query(
             "schema_version": "recall_canary_query_result.v1",
             "canary_run_id": saved.canary_run_id,
             "canary_run": saved.model_dump(mode="json"),
+            "selected_profile": selected_profile,
             "comparison": compare,
             "v1": v1,
             "v2": v2,
             "warnings": warnings,
+            "production_recall_mode": PRODUCTION_RECALL_MODE,
+            "recall_live_apply_enabled": RECALL_LIVE_APPLY_ENABLED,
             "safety": {
                 "production_default_unchanged": True,
                 "promotion_performed": False,
@@ -4303,11 +4641,12 @@ def api_substrate_recall_canary_query(
 
 @router.post("/api/substrate/recall-canary/runs/{canary_run_id}/judgment")
 def api_substrate_recall_canary_run_judgment(
+    http_request: Request,
     canary_run_id: str,
     request: RecallCanaryJudgmentRequest,
     x_orion_operator_token: str | None = Header(default=None),
 ) -> Dict[str, Any]:
-    _require_mutation_operator_guard(x_orion_operator_token)
+    _require_mutation_operator_guard(_resolve_operator_token(http_request, x_orion_operator_token))
     row = SUBSTRATE_MUTATION_STORE.get_recall_canary_run(canary_run_id)
     if row is None:
         raise HTTPException(status_code=404, detail="recall_canary_run_not_found")
@@ -4371,11 +4710,12 @@ def api_substrate_recall_canary_run_judgment(
 
 @router.post("/api/substrate/recall-canary/runs/{canary_run_id}/create-review-artifact")
 def api_substrate_recall_canary_create_review_artifact(
+    http_request: Request,
     canary_run_id: str,
     request: RecallCanaryReviewArtifactRequest,
     x_orion_operator_token: str | None = Header(default=None),
 ) -> Dict[str, Any]:
-    _require_mutation_operator_guard(x_orion_operator_token)
+    _require_mutation_operator_guard(_resolve_operator_token(http_request, x_orion_operator_token))
     run = SUBSTRATE_MUTATION_STORE.get_recall_canary_run(canary_run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="recall_canary_run_not_found")
@@ -4396,8 +4736,9 @@ def api_substrate_recall_canary_create_review_artifact(
             "warnings": warnings,
         }
     latest_judgment = SUBSTRATE_MUTATION_STORE.latest_recall_canary_judgment_for_run(canary_run_id)
+    run_profile_id = str(run.profile_id or "").strip() or active.profile_id
     review = RecallProductionCandidateReviewV1(
-        profile_id=active.profile_id,
+        profile_id=run_profile_id,
         source_eval_run_ids=[],
         readiness_snapshot=dict(active.readiness_snapshot or {}),
         risk_summary=(list((latest_judgment.failure_modes if latest_judgment else []))[:16] if latest_judgment else []),
@@ -4417,13 +4758,14 @@ def api_substrate_recall_canary_create_review_artifact(
     saved_review = SUBSTRATE_MUTATION_STORE.record_recall_production_candidate_review(review)
     artifact = RecallCanaryReviewArtifactV1(
         canary_run_id=canary_run_id,
-        profile_id=active.profile_id,
+        profile_id=run_profile_id,
         linked_review_id=saved_review.review_id,
         review_type=request.review_type,
         include_comparison_summary=bool(request.include_comparison_summary),
         include_operator_judgment=bool(request.include_operator_judgment),
         operator_note=str(request.operator_note or ""),
         summary={
+            "selected_profile": dict(run.profile_metadata or {}),
             "comparison": (run.comparison_summary if request.include_comparison_summary else {}),
             "judgment": (latest_judgment.model_dump(mode="json") if (request.include_operator_judgment and latest_judgment) else {}),
         },
@@ -4723,6 +5065,45 @@ def _is_cognitive_proposal_payload(payload: Dict[str, Any]) -> bool:
     return str(payload.get("lane") or "") == "cognitive" or str(payload.get("target_surface") or "") in _COGNITIVE_SURFACES
 
 
+def _cognitive_review_state_for_decision(decision: str) -> str:
+    mapping = {
+        "accept_as_draft": "accepted_as_draft",
+        "reject": "rejected",
+        "archive": "archived",
+        "supersede": "superseded",
+    }
+    return mapping.get(decision, "pending_review")
+
+
+def _cognitive_safety_block() -> dict[str, bool]:
+    return {
+        "live_apply_enabled": False,
+        "identity_kernel_rewrite_enabled": False,
+        "production_self_model_rewrite_enabled": False,
+        "policy_override_enabled": False,
+        "freeform_prompt_self_rewrite_enabled": False,
+        "identity_kernel_rewrite_forbidden": True,
+        "production_self_model_rewrite_forbidden": True,
+        "policy_override_forbidden": True,
+        "prompt_rewrite_forbidden": True,
+        "cognitive_live_apply_forbidden": True,
+        "mutation_execute_once_forbidden": True,
+    }
+
+
+def _cognitive_review_posture_summary(proposals: list[dict[str, Any]], drafts: list[dict[str, Any]], notes: list[dict[str, Any]]) -> dict[str, Any]:
+    pending_reviews = sum(1 for row in proposals if str(row.get("rollout_state") or "") in {"pending_review", "approved"})
+    active_drafts = sum(1 for row in drafts if str(row.get("state") or "") == "active_draft")
+    active_notes = sum(1 for row in notes if str(row.get("status") or "") == "active")
+    recommended_action = "review_pending_proposals" if pending_reviews else ("curate_active_drafts" if active_drafts else "monitor")
+    return {
+        "pending_review_count": pending_reviews,
+        "active_draft_count": active_drafts,
+        "active_stance_note_count": active_notes,
+        "recommended_action": recommended_action,
+    }
+
+
 @router.get("/api/substrate/mutation-runtime/cognitive-pressure")
 def api_substrate_mutation_runtime_cognitive_pressure(
     limit: int = Query(default=50, ge=1, le=200),
@@ -4783,6 +5164,51 @@ def api_substrate_mutation_runtime_cognitive_proposals(
     }
 
 
+@router.get("/api/substrate/cognitive-proposals/status")
+def api_substrate_cognitive_proposals_status(
+    limit: int = Query(default=20, ge=1, le=200),
+) -> Dict[str, Any]:
+    proposals = api_substrate_mutation_runtime_cognitive_proposals(limit=limit).get("data", {}).get("recent_cognitive_proposals", [])
+    drafts = SUBSTRATE_MUTATION_STORE.list_cognitive_proposal_drafts(limit=limit)
+    stance_notes = SUBSTRATE_MUTATION_STORE.list_cognitive_stance_notes(limit=limit)
+    counts_by_state: dict[str, int] = {}
+    counts_by_class: dict[str, int] = {}
+    for row in proposals:
+        state = str(row.get("rollout_state") or "unknown")
+        counts_by_state[state] = counts_by_state.get(state, 0) + 1
+        klass = str(row.get("mutation_class") or "unknown")
+        counts_by_class[klass] = counts_by_class.get(klass, 0) + 1
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {
+            "schema_version": "cognitive_proposal_status.v1",
+            "live_apply_enabled": False,
+            "safety": _cognitive_safety_block(),
+            "counts_by_state": counts_by_state,
+            "counts_by_class": counts_by_class,
+            "recent_proposals": proposals[: min(limit, 12)],
+            "recent_drafts": drafts[: min(limit, 12)],
+            "recent_reviews": SUBSTRATE_MUTATION_STORE.recent_cognitive_reviews(limit=min(limit, 12)),
+            "active_stance_notes": [row for row in stance_notes if str(row.get("status") or "") == "active"][: min(limit, 12)],
+            "review_posture": _cognitive_review_posture_summary(proposals, drafts, stance_notes),
+            "warnings": [],
+        },
+    }
+
+
+@router.get("/api/substrate/cognitive-proposals")
+def api_substrate_cognitive_proposals(
+    limit: int = Query(default=20, ge=1, le=200),
+) -> Dict[str, Any]:
+    return api_substrate_mutation_runtime_cognitive_proposals(limit=limit)
+
+
 @router.get("/api/substrate/mutation-runtime/cognitive-proposals/{proposal_id}/lineage")
 def api_substrate_mutation_runtime_cognitive_proposal_lineage(proposal_id: str) -> Dict[str, Any]:
     lifecycle = SUBSTRATE_MUTATION_STORE.lifecycle_for_proposal(proposal_id)
@@ -4821,6 +5247,11 @@ def api_substrate_mutation_runtime_cognitive_proposal_detail(proposal_id: str) -
         ),
         "data": {"proposal": payload},
     }
+
+
+@router.get("/api/substrate/cognitive-proposals/{proposal_id}")
+def api_substrate_cognitive_proposal_detail(proposal_id: str) -> Dict[str, Any]:
+    return api_substrate_mutation_runtime_cognitive_proposal_detail(proposal_id)
 
 
 @router.get("/api/substrate/mutation-runtime/cognitive-proposals/{proposal_id}/evidence")
@@ -4877,6 +5308,78 @@ def api_substrate_mutation_runtime_cognitive_proposal_review(
     }
 
 
+@router.post("/api/substrate/cognitive-proposals/{proposal_id}/review")
+def api_substrate_cognitive_proposal_review(
+    proposal_id: str,
+    request: CognitiveProposalReviewActionRequest,
+    x_orion_operator_token: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    _require_mutation_operator_guard(x_orion_operator_token)
+    proposal = SUBSTRATE_MUTATION_STORE.get_proposal(proposal_id)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="cognitive_proposal_not_found")
+    payload = proposal.model_dump(mode="json")
+    if not _is_cognitive_proposal_payload(payload):
+        raise HTTPException(status_code=404, detail="cognitive_proposal_not_found")
+    review_state = _cognitive_review_state_for_decision(request.decision)
+    review = CognitiveProposalReviewV1(
+        proposal_id=proposal_id,
+        state=review_state,  # type: ignore[arg-type]
+        reviewer=request.reviewer,
+        rationale=request.rationale,
+        notes=list(request.review_labels or []),
+    )
+    created_draft = SUBSTRATE_MUTATION_STORE.record_cognitive_review(review)
+    created_note: CognitiveStanceNoteV1 | None = None
+    if request.create_stance_note:
+        active_draft = created_draft
+        if active_draft is None:
+            existing = SUBSTRATE_MUTATION_STORE.list_cognitive_proposal_drafts(limit=50)
+            row = next((item for item in existing if str(item.get("proposal_id") or "") == proposal_id and str(item.get("state") or "") == "active_draft"), None)
+            if row is not None:
+                active_draft = CognitiveProposalDraftV1.model_validate(row)
+        if active_draft is not None:
+            created_note = SUBSTRATE_MUTATION_STORE.record_cognitive_stance_note(
+                CognitiveStanceNoteV1(
+                    source_proposal_id=proposal_id,
+                    source_draft_id=active_draft.draft_id,
+                    proposal_class=proposal.mutation_class,
+                    visibility=request.stance_visibility,
+                    ttl_turns=request.stance_ttl_turns,
+                    summary=request.stance_summary or "operator accepted cognitive draft context",
+                    note=request.stance_note or request.rationale,
+                    evidence_refs=list(proposal.evidence_refs),
+                    review_ref=review.review_id,
+                    safety_scope={
+                        "authoritative": False,
+                        "identity_or_policy_rewrite": False,
+                        "live_apply": False,
+                    },
+                    lineage={"proposal_id": proposal_id, "review_id": review.review_id, "draft_id": active_draft.draft_id},
+                )
+            )
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "data": {
+            "schema_version": "cognitive_proposal_review_result.v1",
+            "proposal_id": proposal_id,
+            "review_recorded": True,
+            "decision": request.decision,
+            "review": review.model_dump(mode="json"),
+            "draft": created_draft.model_dump(mode="json") if created_draft is not None else None,
+            "stance_note": created_note.model_dump(mode="json") if created_note is not None else None,
+            "pressure_emitted": False if not request.should_emit_pressure else False,
+            "safety": {
+                "production_default_unchanged": True,
+                "promotion_performed": False,
+                "apply_performed": False,
+                "execute_once_invoked": False,
+            },
+            "warnings": [],
+        },
+    }
+
+
 @router.get("/api/substrate/mutation-runtime/cognitive-drafts")
 def api_substrate_mutation_runtime_cognitive_drafts(
     limit: int = Query(default=20, ge=1, le=200),
@@ -4894,6 +5397,104 @@ def api_substrate_mutation_runtime_cognitive_drafts(
             "recent_reviews": SUBSTRATE_MUTATION_STORE.recent_cognitive_reviews(limit=limit),
         },
     }
+
+
+@router.get("/api/substrate/cognitive-drafts")
+def api_substrate_cognitive_drafts(
+    limit: int = Query(default=20, ge=1, le=200),
+    state: str | None = None,
+) -> Dict[str, Any]:
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": _source_meta(
+            kind=SUBSTRATE_MUTATION_STORE.source_kind(),
+            degraded=SUBSTRATE_MUTATION_STORE.degraded(),
+            limit=limit,
+            error=SUBSTRATE_MUTATION_STORE.last_error(),
+        ),
+        "data": {
+            "drafts": SUBSTRATE_MUTATION_STORE.list_cognitive_proposal_drafts(limit=limit, state=state),
+            "safety": _cognitive_safety_block(),
+        },
+    }
+
+
+@router.get("/api/substrate/cognitive-drafts/{draft_id}")
+def api_substrate_cognitive_draft_detail(draft_id: str) -> Dict[str, Any]:
+    draft = SUBSTRATE_MUTATION_STORE.get_cognitive_proposal_draft(draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="cognitive_draft_not_found")
+    return {"generated_at": datetime.now(timezone.utc).isoformat(), "data": {"draft": draft.model_dump(mode="json")}}
+
+
+@router.post("/api/substrate/cognitive-drafts/{draft_id}/archive")
+def api_substrate_cognitive_draft_archive(
+    draft_id: str,
+    _: CognitiveDraftArchiveRequest,
+    x_orion_operator_token: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    _require_mutation_operator_guard(x_orion_operator_token)
+    draft = SUBSTRATE_MUTATION_STORE.archive_cognitive_proposal_draft(draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="cognitive_draft_not_found")
+    return {"generated_at": datetime.now(timezone.utc).isoformat(), "data": {"draft": draft.model_dump(mode="json"), "archived": True}}
+
+
+@router.post("/api/substrate/cognitive-drafts/{draft_id}/create-stance-note")
+def api_substrate_cognitive_draft_create_stance_note(
+    draft_id: str,
+    request: CognitiveCreateStanceNoteRequest,
+    x_orion_operator_token: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    _require_mutation_operator_guard(x_orion_operator_token)
+    draft = SUBSTRATE_MUTATION_STORE.get_cognitive_proposal_draft(draft_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="cognitive_draft_not_found")
+    proposal = SUBSTRATE_MUTATION_STORE.get_proposal(draft.proposal_id)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="cognitive_proposal_not_found")
+    note = SUBSTRATE_MUTATION_STORE.record_cognitive_stance_note(
+        CognitiveStanceNoteV1(
+            source_proposal_id=draft.proposal_id,
+            source_draft_id=draft_id,
+            proposal_class=proposal.mutation_class,
+            visibility=request.visibility,
+            ttl_turns=request.ttl_turns,
+            summary=request.summary or draft.summary,
+            note=request.note or request.rationale,
+            evidence_refs=list(draft.evidence_refs),
+            safety_scope={"authoritative": False, "live_apply": False},
+            lineage={"draft_id": draft_id, "proposal_id": draft.proposal_id},
+        )
+    )
+    return {"generated_at": datetime.now(timezone.utc).isoformat(), "data": {"stance_note": note.model_dump(mode="json"), "created": True}}
+
+
+@router.get("/api/substrate/cognitive-stance-notes")
+def api_substrate_cognitive_stance_notes(
+    limit: int = Query(default=20, ge=1, le=200),
+    status: str | None = None,
+) -> Dict[str, Any]:
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "data": {
+            "stance_notes": SUBSTRATE_MUTATION_STORE.list_cognitive_stance_notes(limit=limit, status=status),
+            "safety": {"authoritative": False, "identity_or_policy_rewrite": False, "live_apply": False},
+        },
+    }
+
+
+@router.post("/api/substrate/cognitive-stance-notes/{stance_note_id}/archive")
+def api_substrate_cognitive_stance_note_archive(
+    stance_note_id: str,
+    __: CognitiveDraftArchiveRequest,
+    x_orion_operator_token: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    _require_mutation_operator_guard(x_orion_operator_token)
+    note = SUBSTRATE_MUTATION_STORE.archive_cognitive_stance_note(stance_note_id)
+    if note is None:
+        raise HTTPException(status_code=404, detail="cognitive_stance_note_not_found")
+    return {"generated_at": datetime.now(timezone.utc).isoformat(), "data": {"stance_note": note.model_dump(mode="json"), "archived": True}}
 
 
 @router.get("/api/substrate/mutation-runtime/live-routing-surface")
@@ -4922,6 +5523,30 @@ def api_substrate_mutation_runtime_cognition_context() -> Dict[str, Any]:
 @router.get("/api/substrate/mutation-runtime/routing-live-ramp-posture")
 def api_substrate_mutation_runtime_routing_live_ramp_posture() -> Dict[str, Any]:
     return _routing_live_ramp_posture_payload()
+
+
+@router.get("/api/substrate/autonomy-constitution")
+def api_substrate_autonomy_constitution() -> Dict[str, Any]:
+    constitution = load_autonomy_constitution()
+    summary = constitution_summary(constitution)
+    payload = {
+        "schema_version": constitution.schema_version,
+        "loaded_at": constitution.loaded_at,
+        "source": constitution.source,
+        "surfaces": [row.model_dump(mode="json") for row in constitution.surfaces],
+        "safety_invariants": list(constitution.safety_invariants),
+        "summary": summary,
+        "warnings": list(constitution.warnings),
+    }
+    logger.info(
+        "event=autonomy_constitution_endpoint_generated surface_count=%s live_apply_surface_count=%s blocked_surface_count=%s protected_surface_count=%s warning_count=%s",
+        len(payload["surfaces"]),
+        len(summary.get("live_apply_surfaces") or []),
+        len(summary.get("blocked_surfaces") or []),
+        len(summary.get("protected_surfaces") or []),
+        len(payload["warnings"]),
+    )
+    return payload
 
 
 @router.get("/api/substrate/autonomy-readiness")

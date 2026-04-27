@@ -626,12 +626,51 @@ def test_autonomy_readiness_policy_matrix_blocks_recall_and_cognitive_live_apply
     by_surface = {str(item.get("surface")): item for item in surfaces}
 
     assert by_surface["routing_threshold_patch"]["apply"] == "gated_auto"
-    assert by_surface["recall_strategy_profile"]["status"] == "shadow_staged_only"
+    assert by_surface["recall_strategy_profile"]["status"] == "shadow_canary_review_only"
     assert "recall_weighting_patch_live_apply" in by_surface["recall_strategy_profile"]["forbidden"]
     assert by_surface["cognitive_self_model"]["apply"] == "forbidden"
     assert payload["surfaces"]["live"] == [] or all(
         row.get("surface") == "routing_threshold_patch" for row in payload["surfaces"]["live"]
     )
+
+
+def test_autonomy_constitution_endpoint_shape_and_invariants() -> None:
+    payload = api_routes.api_substrate_autonomy_constitution()
+    assert payload["schema_version"] == "autonomy_constitution.v1"
+    assert "surfaces" in payload
+    assert "safety_invariants" in payload
+    assert "summary" in payload
+    by_surface = {str(item.get("surface")): item for item in payload["surfaces"]}
+    assert "routing_threshold_patch" in by_surface
+    assert "recall_strategy_profile" in by_surface
+    assert "recall_weighting_patch" in by_surface
+    assert "cognitive_self_model" in by_surface
+    assert "cognitive_stance_note" in by_surface
+    assert "identity_kernel" in by_surface
+    assert "policy_safety" in by_surface
+    assert "production_prompt" in by_surface
+    assert payload["summary"]["live_apply_surfaces"] == ["routing_threshold_patch"]
+    assert by_surface["cognitive_self_model"]["apply"] == "forbidden"
+    assert by_surface["recall_weighting_patch"]["apply"] == "forbidden"
+    assert by_surface["identity_kernel"]["status"] == "protected"
+    assert by_surface["policy_safety"]["status"] == "protected"
+    assert by_surface["production_prompt"]["status"] == "protected"
+
+
+def test_constitution_validation_helper_flags_unsafe_live_apply() -> None:
+    constitution = api_routes.load_autonomy_constitution()
+    tampered = constitution.model_copy(
+        update={
+            "surfaces": [
+                row.model_copy(update={"live_apply_allowed": True})
+                if row.surface == "cognitive_self_model"
+                else row
+                for row in constitution.surfaces
+            ]
+        }
+    )
+    warnings = api_routes.validate_autonomy_constitution(tampered)
+    assert any("cognitive_live_apply_violation" in item for item in warnings)
 
 
 def test_recall_canary_status_rollups_shape() -> None:
@@ -642,3 +681,32 @@ def test_recall_canary_status_rollups_shape() -> None:
     assert "failure_mode_counts" in data
     assert "recent_judgments" in data
     assert "review_artifact_count" in data
+    assert "available_profiles" in data
+    assert "default_canary_profile_id" in data
+    assert data["production_recall_mode"] == "v1"
+    assert data["recall_live_apply_enabled"] is False
+
+
+def test_cognitive_status_and_public_aliases_are_bounded_and_read_only() -> None:
+    status = api_routes.api_substrate_cognitive_proposals_status(limit=10)
+    listing = api_routes.api_substrate_cognitive_proposals(limit=5)
+    assert status["data"]["schema_version"] == "cognitive_proposal_status.v1"
+    assert status["data"]["live_apply_enabled"] is False
+    assert status["data"]["safety"]["cognitive_live_apply_forbidden"] is True
+    assert "review_posture" in status["data"]
+    assert "recent_cognitive_proposals" in listing["data"]
+
+
+def test_cognitive_review_action_returns_safety_block(monkeypatch) -> None:
+    monkeypatch.setenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", "secret")
+    proposal = api_routes.SUBSTRATE_MUTATION_STORE.get_proposal("proposal-cog-1")
+    if proposal is None:
+        pytest.skip("cognitive fixture proposal not available")
+    payload = api_routes.api_substrate_cognitive_proposal_review(
+        "proposal-cog-1",
+        api_routes.CognitiveProposalReviewActionRequest(decision="accept_as_draft", rationale="bounded review"),
+        x_orion_operator_token="secret",
+    )
+    assert payload["data"]["review_recorded"] is True
+    assert payload["data"]["safety"]["production_default_unchanged"] is True
+    assert payload["data"]["safety"]["apply_performed"] is False

@@ -8,9 +8,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID, uuid4
 
 import numpy as np
-from hdbscan import approximate_predict
 from joblib import load as joblib_load
 from scipy.spatial.distance import jensenshannon
+try:
+    from hdbscan import approximate_predict
+except ImportError:  # pragma: no cover - exercised in minimal test envs
+    approximate_predict = None
 
 from app.models import DriftRecord, DatasetSpec, ModelSpec, WindowingSpec
 from app.services.conversation_overrides import OverrideRecord, apply_overrides, build_conversations
@@ -32,6 +35,11 @@ from orion.schemas.topic_foundry import TopicFoundryDriftAlertV1
 
 
 logger = logging.getLogger("topic-foundry.drift")
+
+
+def _require_hdbscan_predict() -> None:
+    if approximate_predict is None:
+        raise RuntimeError("hdbscan dependency is required for Topic Foundry drift prediction")
 
 
 def run_drift_check(
@@ -256,6 +264,7 @@ def _compute_current_distribution(
     clusterer = _load_clusterer(model_name, model_version)
     if clusterer is None:
         return {}, 0.0, 0.0
+    _require_hdbscan_predict()
     try:
         labels, _ = approximate_predict(clusterer, embeddings)
     except Exception as exc:  # noqa: BLE001

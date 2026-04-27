@@ -10,6 +10,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import ServiceRef
 
 from .executor import call_step_services, prepare_brain_reply_context, run_recall_step
+from .situation import mark_orion_turn
 from .recall_utils import (
     delivery_safe_recall_decision,
     has_inline_recall,
@@ -940,6 +941,14 @@ class PlanRunner:
             "truncation_detected": bool(final_text_diag.get("truncation_detected")),
             "planning_candidate_rejected": bool(final_text_diag.get("planning_candidate_rejected")),
             "status": overall_status,
+            "world_context_capsule_loaded": bool(ctx.get("world_context_capsule_loaded")),
+            "capsule_age_hours": ctx.get("capsule_age_hours"),
+            "capsule_topic_count": len((ctx.get("world_context_capsule") or {}).get("salient_topics") or [])
+            if isinstance(ctx.get("world_context_capsule"), dict)
+            else 0,
+            "capsule_filtered_reason": ctx.get("capsule_filtered_reason"),
+            "stance_world_context_items_used": ctx.get("stance_world_context_items_used"),
+            "politics_context_suppressed": bool(ctx.get("politics_context_suppressed")),
         }
         if overall_status == "success" and soft_failure:
             overall_status = "partial"
@@ -1020,6 +1029,17 @@ class PlanRunner:
                 len(metacog_traces) == 0,
             )
         metadata = _autonomy_payload_from_ctx(ctx)
+        if isinstance(ctx.get("situation_brief"), dict):
+            metadata["situation_brief"] = ctx.get("situation_brief")
+        if isinstance(ctx.get("situation_prompt_fragment"), dict) and ctx.get("situation_prompt_fragment"):
+            metadata["situation_prompt_fragment"] = ctx.get("situation_prompt_fragment")
+        if isinstance(ctx.get("presence_context"), dict):
+            metadata["presence_context"] = ctx.get("presence_context")
+        if isinstance(ctx.get("situation_affordances"), list):
+            metadata["situation_affordances"] = ctx.get("situation_affordances")
+        if ctx.get("temporal_phase") is not None:
+            metadata["temporal_phase"] = ctx.get("temporal_phase")
+        mark_orion_turn(str(ctx.get("session_id") or "global"))
 
         return PlanExecutionResult(
             verb_name=plan.verb_name,

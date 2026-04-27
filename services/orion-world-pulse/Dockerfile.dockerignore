@@ -1,0 +1,9 @@
+*
+!orion/
+!orion/**
+!services/
+!services/orion-world-pulse/
+!services/orion-world-pulse/**
+!config/
+!config/world_pulse/
+!config/world_pulse/**

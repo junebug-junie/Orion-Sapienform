@@ -783,6 +783,18 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
                 workflow = extract_workflow_payload(resp.cortex_result)
                 autonomy_payload = extract_autonomy_payload(resp.cortex_result)
+                workflow_metadata_only = bool(
+                    isinstance(workflow, dict)
+                    and str(
+                        workflow.get("id")
+                        or workflow.get("workflow_id")
+                        or workflow.get("raw_metadata", {}).get("workflow_id")
+                        or ""
+                    ).strip().lower() == "dream_cycle"
+                )
+                if workflow_metadata_only:
+                    # Dream workflow is rendered as card-only metadata in Hub.
+                    orion_response_text = ""
                 if isinstance(workflow, dict):
                     logger.info(
                         "hub_workflow_response corr=%s workflow_id=%s status=%s scheduled_count=%s persisted_count=%s rendered_path=%s source=ws",
@@ -861,6 +873,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 "recall_debug": recall_debug,
                 "agent_trace": agent_trace,
                 "workflow": workflow,
+                "workflow_metadata_only": workflow_metadata_only,
                 "no_write": no_write,
                 "routing_debug": route_debug,
                 "metacog_traces": metacog_traces,
@@ -877,7 +890,7 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_json(await _with_biometrics(ws_payload, cache=biometrics_cache))
 
             # Log to SQL (Best Effort) & Trigger Introspection
-            if bus and not no_write:
+            if bus and not no_write and not workflow_metadata_only:
                 enriched_client_meta = dict(turn_client_meta)
                 selected_reasoning_trace = explicit_reasoning_trace
                 try:
@@ -1087,10 +1100,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     logger.warning("Failed to publish assistant chat history: %s", e, exc_info=True)
 
             # 4. TTS
-            if orion_response_text and not disable_tts and tts_client:
+            if orion_response_text and not workflow_metadata_only and not disable_tts and tts_client:
                  asyncio.create_task(run_tts_remote(orion_response_text, tts_client, tts_q))
 
-            if orion_response_text:
+            if orion_response_text and not workflow_metadata_only:
                 history.append({"role": "assistant", "content": orion_response_text})
 
             # Keep history bounded (system + last 2*turns messages)

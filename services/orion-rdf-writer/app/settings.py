@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     RDF_SKIP_KINDS: str = Field(default="", env="RDF_SKIP_KINDS")
     RDF_SKIP_REJECTED: bool = Field(default=True, env="RDF_SKIP_REJECTED")
     RDF_DURABLE_ONLY: bool = Field(default=False, env="RDF_DURABLE_ONLY")
+    WORLD_PULSE_GRAPH_ENABLED: bool = Field(default=False, env="WORLD_PULSE_GRAPH_ENABLED")
+    WORLD_PULSE_GRAPH_DRY_RUN: bool = Field(default=True, env="WORLD_PULSE_GRAPH_DRY_RUN")
+    WORLD_PULSE_GRAPH_REQUIRE_POLICY_STAMP: bool = Field(default=True, env="WORLD_PULSE_GRAPH_REQUIRE_POLICY_STAMP")
+    CHANNEL_WORLD_PULSE_GRAPH: str = Field(default="orion:world_pulse:graph:upsert", env="CHANNEL_WORLD_PULSE_GRAPH")
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -79,6 +83,7 @@ class Settings(BaseSettings):
             self.CHANNEL_MEMORY_DRIVES_AUDIT,
             self.CHANNEL_MEMORY_GOALS_PROPOSED,
             "orion:metacog:trace",
+            self.CHANNEL_WORLD_PULSE_GRAPH,
         ]
         seen = set()
         ordered: List[str] = []

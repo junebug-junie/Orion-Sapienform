@@ -4,6 +4,7 @@ import os
 from datetime import datetime
 from typing import Any, Dict
 
+from .autonomy_constitution import PRODUCTION_RECALL_MODE, RECALL_LIVE_APPLY_ENABLED
 from orion.substrate.mutation_control_surface import inspect_chat_reflective_lane_threshold
 from orion.substrate.mutation_queue import SubstrateMutationStore
 
@@ -158,6 +159,6 @@ def build_mutation_cognition_context(*, store: SubstrateMutationStore | None = N
             "included_count": len(bounded_notes),
             "authoritative": False,
         },
-        "production_recall_mode": "v1",
-        "recall_live_apply_enabled": False,
+        "production_recall_mode": PRODUCTION_RECALL_MODE,
+        "recall_live_apply_enabled": RECALL_LIVE_APPLY_ENABLED,
     }

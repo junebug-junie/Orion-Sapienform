@@ -1,5 +1,7 @@
 FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
 
+ARG INSTALL_DEV_DEPS=false
+
 WORKDIR /app
 
 # Install Python + tools + network utilities + Docker CLI/Compose plugin
@@ -40,9 +42,11 @@ RUN pip3 install --no-cache-dir --upgrade pip
 
 # Copy requirements early for layer caching
 COPY services/orion-hub/requirements.txt ./requirements.txt
+COPY requirements-dev.txt /tmp/requirements-dev.txt
 
 # Install service dependencies
 RUN pip3 install --no-cache-dir -r requirements.txt
+RUN if [ "${INSTALL_DEV_DEPS}" = "true" ]; then pip3 install --no-cache-dir -r /tmp/requirements-dev.txt; fi
 
 # copy schemas into the container
 COPY orion /app/orion

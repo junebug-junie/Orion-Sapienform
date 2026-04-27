@@ -7,7 +7,16 @@ from app.state import RUN_RESULTS
 from app.services import publish_hub as publish_hub_service
 from app.services.publish_hub import publish_hub_message
 from app.services.renderers import render_email_digest, render_hub_digest
-from orion.schemas.world_pulse import DailyWorldPulseSectionsV1, DailyWorldPulseV1, WorldPulseRunResultV1, WorldPulseRunV1
+from orion.schemas.world_pulse import (
+    DailyWorldPulseItemV1,
+    DailyWorldPulseSectionsV1,
+    DailyWorldPulseV1,
+    SectionRollupV1,
+    WorthReadingItemV1,
+    WorthWatchingItemV1,
+    WorldPulseRunResultV1,
+    WorldPulseRunV1,
+)
 
 
 class _FakeBus:
@@ -35,6 +44,63 @@ def _digest() -> DailyWorldPulseV1:
         title="Daily World Pulse",
         executive_summary="summary",
         sections=DailyWorldPulseSectionsV1(),
+        items=[
+            DailyWorldPulseItemV1(
+                item_id="item-1",
+                run_id="r1",
+                title="Policy update",
+                category="us_politics",
+                summary="summary",
+                why_it_matters="matters",
+                what_changed="changed",
+                orion_read="read",
+                source_ids=["source-a"],
+                article_ids=["article-a"],
+                created_at=now,
+            )
+        ],
+        things_worth_reading=[
+            WorthReadingItemV1(
+                reading_id="read-1",
+                title="Worth reading",
+                source_id="source-a",
+                article_id="article-a",
+                url="https://example.com/read",
+                reason_selected="context",
+                reading_type="analysis",
+                trust_tier=1,
+                category="us_politics",
+                created_at=now,
+            )
+        ],
+        things_worth_watching=[
+            WorthWatchingItemV1(
+                watch_id="watch-1",
+                topic_id="topic-1",
+                title="Watch this",
+                reason="risk",
+                watch_condition="if x",
+                category="us_politics",
+                created_at=now,
+            )
+        ],
+        section_rollups=[
+            SectionRollupV1(
+                section="us_politics",
+                status="covered",
+                article_count=1,
+                cluster_count=1,
+                digest_item_count=1,
+                summary="rollup",
+                source_notes=["source stable"],
+                confidence=0.8,
+            )
+        ],
+        source_notes=["note-1"],
+        coverage_status="complete",
+        accepted_article_count=1,
+        article_cluster_count=1,
+        max_digest_items_total=12,
         orion_analysis_layer="analysis",
         created_at=now,
     )
@@ -52,7 +118,7 @@ def test_publish_hub_dry_run_returns_payload_preview(monkeypatch):
     monkeypatch.setattr(publish_hub_service.settings, "world_pulse_dry_run", True)
     monkeypatch.setattr(publish_hub_service, "OrionBusAsync", _FakeBus)
     _FakeBus.published = []
-    result = publish_hub_message(message=msg)
+    result = publish_hub_message(message=msg, dry_run=True)
     assert result["ok"] is True
     assert result["status"] == "dry_run"
     assert result["would_publish"] is True
@@ -68,7 +134,7 @@ def test_publish_hub_real_path_emits_bus_envelope(monkeypatch):
     monkeypatch.setattr(publish_hub_service.settings, "world_pulse_dry_run", False)
     monkeypatch.setattr(publish_hub_service, "OrionBusAsync", _FakeBus)
     _FakeBus.published = []
-    result = publish_hub_message(message=msg)
+    result = publish_hub_message(message=msg, dry_run=False)
     assert result["ok"] is True
     assert result["status"] == "published"
     assert len(_FakeBus.published) == 1
@@ -85,11 +151,58 @@ def test_publish_hub_message_id_is_stable_for_retry(monkeypatch):
     monkeypatch.setattr(publish_hub_service.settings, "world_pulse_dry_run", False)
     monkeypatch.setattr(publish_hub_service, "OrionBusAsync", _FakeBus)
     _FakeBus.published = []
-    first = publish_hub_message(message=msg)
-    second = publish_hub_message(message=msg)
+    first = publish_hub_message(message=msg, dry_run=False)
+    second = publish_hub_message(message=msg, dry_run=False)
     assert first["ok"] is True and second["ok"] is True
     assert len(_FakeBus.published) == 2
     assert _FakeBus.published[0][1].payload["message_id"] == _FakeBus.published[1][1].payload["message_id"]
+
+
+def test_publish_hub_uses_explicit_dry_run_over_global(monkeypatch):
+    digest = _digest()
+    msg = render_hub_digest(digest)
+    monkeypatch.setattr(publish_hub_service.settings, "world_pulse_dry_run", True)
+    monkeypatch.setattr(publish_hub_service, "OrionBusAsync", _FakeBus)
+    _FakeBus.published = []
+    result = publish_hub_message(message=msg, dry_run=False)
+    assert result["ok"] is True
+    assert result["status"] == "published"
+    assert len(_FakeBus.published) == 1
+
+
+def test_render_hub_digest_contains_structured_payload():
+    digest = _digest()
+    msg = render_hub_digest(digest)
+    structured = msg.structured_payload
+    assert structured["message_type"] == "daily_world_pulse"
+    assert structured["run_id"] == digest.run_id
+    assert structured["coverage_status"] == "complete"
+    assert structured["accepted_article_count"] == 1
+    assert len(structured["items"]) == 1
+    assert len(structured["section_rollups"]) == 1
+    assert len(structured["things_worth_reading"]) == 1
+    assert len(structured["things_worth_watching"]) == 1
+
+
+def test_render_hub_digest_backfills_aggregate_fields_when_missing():
+    digest = _digest().model_copy(
+        update={
+            "accepted_article_count": 0,
+            "article_cluster_count": 0,
+            "max_digest_items_total": 0,
+            "coverage_status": "empty",
+            "section_coverage": {},
+            "source_ids": [],
+            "section_rollups": [],
+        }
+    )
+    msg = render_hub_digest(digest)
+    structured = msg.structured_payload
+    assert structured["accepted_article_count"] == 1
+    assert structured["article_cluster_count"] == 1
+    assert structured["max_digest_items_total"] >= 1
+    assert structured["coverage_status"] != "empty"
+    assert "us_politics" in structured["section_coverage"]
 
 
 def test_publish_hub_route_disabled_returns_hub_messages_disabled(monkeypatch):

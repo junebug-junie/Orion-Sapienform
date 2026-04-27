@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     actions_daily_email_enabled: bool = Field(True, alias="ACTIONS_DAILY_EMAIL_ENABLED")
     actions_pending_attention_enabled: bool = Field(True, alias="ACTIONS_PENDING_ATTENTION_ENABLED")
     actions_preserve_generic_notify_enabled: bool = Field(True, alias="ACTIONS_PRESERVE_GENERIC_NOTIFY_ENABLED")
+    actions_world_pulse_enabled: bool = Field(False, alias="ACTIONS_WORLD_PULSE_ENABLED")
+    actions_world_pulse_hour_local: int = Field(6, alias="ACTIONS_WORLD_PULSE_HOUR_LOCAL")
+    actions_world_pulse_minute_local: int = Field(0, alias="ACTIONS_WORLD_PULSE_MINUTE_LOCAL")
+    world_pulse_base_url: str = Field("http://orion-world-pulse:8628", alias="WORLD_PULSE_BASE_URL")
 
     actions_skills_scheduler_enabled: bool = Field(True, alias="ACTIONS_SKILLS_SCHEDULER_ENABLED")
     actions_skills_run_on_startup: bool = Field(False, alias="ACTIONS_SKILLS_RUN_ON_STARTUP")

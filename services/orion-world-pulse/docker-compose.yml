@@ -1,0 +1,18 @@
+version: "3.9"
+services:
+  orion-world-pulse:
+    build:
+      context: ../..
+      dockerfile: services/orion-world-pulse/Dockerfile
+    container_name: orion-world-pulse
+    env_file:
+      - .env
+    ports:
+      - "8628:8628"
+    restart: unless-stopped
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

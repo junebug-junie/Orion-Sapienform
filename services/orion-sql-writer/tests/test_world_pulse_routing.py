@@ -21,6 +21,17 @@ def test_hub_message_route_maps_to_world_pulse_hub_table() -> None:
     assert DEFAULT_ROUTE_MAP["hub.messages.create.v1"] != "WorldPulsePublishStatusSQL"
 
 
+def test_world_pulse_extended_routes_present() -> None:
+    assert DEFAULT_ROUTE_MAP["world.pulse.article.emit.v1"] == "WorldPulseArticleSQL"
+    assert DEFAULT_ROUTE_MAP["world.pulse.cluster.emit.v1"] == "WorldPulseArticleClusterSQL"
+    assert DEFAULT_ROUTE_MAP["world.pulse.digest.item.v1"] == "WorldPulseDigestItemSQL"
+    assert DEFAULT_ROUTE_MAP["world.pulse.publish.status.v1"] == "WorldPulsePublishStatusSQL"
+    assert DEFAULT_ROUTE_MAP["world.pulse.worth.reading.v1"] == "WorldPulseWorthReadingSQL"
+    assert DEFAULT_ROUTE_MAP["world.pulse.worth.watching.v1"] == "WorldPulseWorthWatchingSQL"
+    assert "WorldPulseArticleSQL" in MODEL_MAP
+    assert "WorldPulseArticleClusterSQL" in MODEL_MAP
+
+
 def test_hub_message_payload_shape_matches_hub_message_table_fields() -> None:
     payload = {
         "message_id": "msg-1",

@@ -10,6 +10,7 @@ from app.services.dedupe import dedupe_articles
 from app.services.digest import build_digest
 from app.services.emit_graph import build_graph_delta
 from app.services.extract import extract_entity, extract_topic
+from app.services.cluster import build_article_clusters
 from app.services.renderers import render_plaintext_digest
 from orion.schemas.world_pulse import (
     ArticleRecordV1,
@@ -38,6 +39,34 @@ def _article(article_id: str, title: str) -> ArticleRecordV1:
         normalized_text_hash=f"h-{article_id}",
         content_hash=f"c-{article_id}",
         categories=["global_politics"],
+        source_trust_tier=1,
+        allowed_uses=WorldPulseAllowedUsesV1(),
+        dedupe_key=article_id,
+        extraction_status="normalized",
+        provenance={},
+        raw_metadata={},
+    )
+
+
+def _article_with(
+    article_id: str,
+    title: str,
+    *,
+    source_id: str,
+    categories: list[str],
+) -> ArticleRecordV1:
+    now = datetime.now(timezone.utc)
+    return ArticleRecordV1(
+        article_id=article_id,
+        run_id="run-1",
+        source_id=source_id,
+        source_name=source_id,
+        url=f"https://example.com/{article_id}",
+        title=title,
+        fetched_at=now,
+        normalized_text_hash=f"h-{article_id}",
+        content_hash=f"c-{article_id}",
+        categories=categories,
         source_trust_tier=1,
         allowed_uses=WorldPulseAllowedUsesV1(),
         dedupe_key=article_id,
@@ -278,3 +307,34 @@ def test_graph_delta_escapes_quotes_in_titles():
     digest = build_digest("r-quote", [item], [], [])
     delta = build_graph_delta(digest, dry_run=True, allowed_item_ids={"i-quote"})
     assert '\\"new policy\\"' in delta.triples
+
+
+def test_cluster_merges_same_topic_different_sources():
+    articles = [
+        _article_with("a1", "AI model release for safety benchmarks", source_id="npr", categories=["ai_technology"]),
+        _article_with("a2", "AI model benchmark safety update", source_id="bbc", categories=["ai_technology"]),
+        _article_with("a3", "Safety benchmarks for AI model toolkit", source_id="who", categories=["ai_technology"]),
+    ]
+    clusters = build_article_clusters(articles, clustering_policy={"enabled": True, "similarity_threshold": 0.35})
+    assert len(clusters) == 1
+    assert clusters[0].article_count == 3
+    assert clusters[0].source_count == 3
+
+
+def test_cluster_keeps_different_topics_same_section_separate():
+    articles = [
+        _article_with("a1", "AI model benchmark safety update", source_id="npr", categories=["ai_technology"]),
+        _article_with("a2", "GPU datacenter cooling roadmap", source_id="bbc", categories=["ai_technology"]),
+        _article_with("a3", "Open-source robotics competition", source_id="who", categories=["ai_technology"]),
+    ]
+    clusters = build_article_clusters(articles, clustering_policy={"enabled": True, "similarity_threshold": 0.45})
+    assert len(clusters) >= 2
+
+
+def test_cluster_cross_section_guard_blocks_merge():
+    articles = [
+        _article_with("a1", "AI policy update in congress", source_id="npr", categories=["ai_technology"]),
+        _article_with("a2", "Election policy update in congress", source_id="bbc", categories=["us_politics"]),
+    ]
+    clusters = build_article_clusters(articles, clustering_policy={"enabled": True, "similarity_threshold": 0.35, "preserve_section_boundaries": True})
+    assert len(clusters) == 2

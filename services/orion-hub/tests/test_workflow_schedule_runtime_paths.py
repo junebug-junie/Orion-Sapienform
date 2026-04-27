@@ -110,6 +110,31 @@ class _FakeWebSocket:
         self.sent.append(payload)
 
 
+class _DreamWorkflowClient:
+    async def chat(self, req, correlation_id=None):
+        result = CortexClientResult(
+            ok=True,
+            mode="brain",
+            verb="dream_cycle",
+            status="success",
+            final_text='{"narrative":"hidden dream text"}',
+            memory_used=False,
+            recall_debug={},
+            steps=[],
+            correlation_id=correlation_id or str(uuid4()),
+            metadata={
+                "workflow": {
+                    "workflow_id": "dream_cycle",
+                    "status": "completed",
+                    "scheduled": [],
+                    "persisted": ["dream.result.v1"],
+                    "main_result": "Dream synthesis complete.",
+                }
+            },
+        )
+        return CortexChatResult(cortex_result=result, final_text=result.final_text)
+
+
 def test_http_chat_path_preserves_scheduled_workflow_policy(caplog) -> None:
     caplog.set_level("INFO")
     client = _FakeCortexClient()
@@ -252,3 +277,44 @@ def test_websocket_chat_path_exports_autonomy_payload_for_brain_lane(monkeypatch
     assert latest["autonomy_backend"] == "graph"
     assert latest["autonomy_selected_subject"] == "orion"
     assert latest["autonomy_repository_status"]["source_available"] is True
+
+
+def test_handle_chat_request_marks_dream_workflow_as_metadata_only() -> None:
+    payload = {
+        "mode": "brain",
+        "session_id": "sid-http-dream",
+        "messages": [{"role": "user", "content": "run dream cycle"}],
+    }
+    result = asyncio.run(handle_chat_request(_DreamWorkflowClient(), payload, "sid-http-dream", no_write=True))
+    assert result["workflow"]["id"] == "dream_cycle"
+    assert result["workflow_metadata_only"] is True
+    assert result["text"] == ""
+
+
+def test_websocket_chat_path_sends_workflow_card_without_dream_text(monkeypatch) -> None:
+    import scripts.main as hub_main
+
+    client = _DreamWorkflowClient()
+    monkeypatch.setattr(hub_main, "bus", object())
+    monkeypatch.setattr(hub_main, "cortex_client", client)
+    monkeypatch.setattr(hub_main, "tts_client", None)
+    monkeypatch.setattr(hub_main, "biometrics_cache", None)
+    monkeypatch.setattr(hub_main, "notification_cache", None)
+    monkeypatch.setattr(hub_main, "presence_state", None)
+
+    ws = _FakeWebSocket(
+        {
+            "text_input": "dream please",
+            "mode": "brain",
+            "session_id": "sid-ws-dream",
+            "no_write": True,
+        }
+    )
+    asyncio.run(websocket_endpoint(ws))
+
+    workflow_messages = [msg for msg in ws.sent if isinstance(msg, dict) and isinstance(msg.get("workflow"), dict)]
+    assert workflow_messages
+    latest = workflow_messages[-1]
+    assert latest["workflow"]["id"] == "dream_cycle"
+    assert latest.get("workflow_metadata_only") is True
+    assert latest.get("llm_response") == ""

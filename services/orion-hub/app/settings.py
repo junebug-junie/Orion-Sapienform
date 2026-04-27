@@ -55,6 +55,14 @@ class Settings(BaseSettings):
         default="http://orion-world-pulse:8628",
         alias="WORLD_PULSE_BASE_URL",
     )
+    WORLD_PULSE_PROXY_TIMEOUT_SEC: float = Field(
+        default=10.0,
+        alias="WORLD_PULSE_PROXY_TIMEOUT_SEC",
+    )
+    WORLD_PULSE_UI_FIXTURE_RUN_ENABLED: bool = Field(
+        default=False,
+        alias="WORLD_PULSE_UI_FIXTURE_RUN_ENABLED",
+    )
     SOCIAL_MEMORY_BASE_URL: str = Field(
         default="http://orion-social-memory:8765",
         alias="SOCIAL_MEMORY_BASE_URL",

@@ -432,6 +432,15 @@ The Hub UI is a presentation surface over backend responses, not a parallel sche
 
 ---
 
+## Test commands (global runner contract)
+
+- Bootstrap shared envs for this service: `./scripts/bootstrap_test_envs.sh --service orion-actions`
+- Run service-scoped default suite: `./scripts/test_orion_actions.sh`
+- Run targeted tests: `./scripts/test_service.sh orion-actions services/orion-actions/tests/test_daily_actions.py -q`
+- Equivalent root make target: `make test SERVICE=orion-actions ARGS='services/orion-actions/tests/test_daily_actions.py -q'`
+
+---
+
 ## How to extend safely
 
 ### Add a new named workflow

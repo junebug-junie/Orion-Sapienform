@@ -284,6 +284,7 @@ async def startup_event():
             "apiBaseOverride": settings.HUB_API_BASE_OVERRIDE or "",
             "wsBaseOverride": settings.HUB_WS_BASE_OVERRIDE or "",
             "autoDefaultEnabled": bool(settings.HUB_AUTO_DEFAULT_ENABLED),
+            "worldPulseFixtureRunEnabled": bool(settings.WORLD_PULSE_UI_FIXTURE_RUN_ENABLED),
         }
         html_content = html_content.replace(
             "{{HUB_CFG}}",

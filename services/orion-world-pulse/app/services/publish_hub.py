@@ -34,10 +34,11 @@ async def _publish_hub_envelope(channel: str, envelope: BaseEnvelope) -> None:
         await bus.close()
 
 
-def publish_hub_message(*, message: HubWorldPulseMessageV1) -> dict:
+def publish_hub_message(*, message: HubWorldPulseMessageV1, dry_run: bool | None = None) -> dict:
     channel = settings.world_pulse_hub_message_channel
     envelope = _hub_envelope(message)
-    if settings.world_pulse_dry_run:
+    effective_dry_run = settings.world_pulse_dry_run if dry_run is None else dry_run
+    if effective_dry_run:
         return {
             "ok": True,
             "status": "dry_run",

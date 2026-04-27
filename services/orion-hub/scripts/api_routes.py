@@ -475,6 +475,30 @@ async def _proxy_request(request: Request, base_url: str, path: str) -> Response
             return Response(content=payload, status_code=response.status, media_type=content_type)
 
 
+async def _proxy_world_pulse_request(path: str, request: Request) -> Response:
+    if not settings.WORLD_PULSE_BASE_URL:
+        raise HTTPException(status_code=400, detail="World Pulse base URL not configured")
+    url = f"{settings.WORLD_PULSE_BASE_URL.rstrip('/')}/{path.lstrip('/')}"
+    headers = {key: value for key, value in request.headers.items() if key.lower() not in {"host", "content-length"}}
+    body = await request.body()
+    timeout = aiohttp.ClientTimeout(total=settings.WORLD_PULSE_PROXY_TIMEOUT_SEC)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        try:
+            async with session.request(
+                request.method,
+                url,
+                params=dict(request.query_params),
+                data=body if body else None,
+                headers=headers,
+            ) as response:
+                payload = await response.read()
+                content_type = response.headers.get("content-type", "application/json")
+                return Response(content=payload, status_code=response.status, media_type=content_type)
+        except aiohttp.ClientError as exc:
+            logger.warning("World Pulse proxy error: %s", exc)
+            raise HTTPException(status_code=502, detail="World Pulse proxy request failed") from exc
+
+
 async def _fetch_landing_pad(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
     base_url = settings.LANDING_PAD_URL.rstrip("/")
     url = f"{base_url}{path}"
@@ -591,7 +615,7 @@ def _rec_tape_rsp(
 async def root():
     """Serves the main Hub UI (index.html)."""
     from .main import html_content
-    return HTMLResponse(
+    response = HTMLResponse(
         content=html_content,
         status_code=200,
         headers={
@@ -600,6 +624,18 @@ async def root():
             "Expires": "0",
         },
     )
+    # Keep operator token out of UI/JS by using an HttpOnly session cookie.
+    expected = str(os.getenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", "")).strip()
+    if expected:
+        response.set_cookie(
+            key="orion_operator_token",
+            value=expected,
+            httponly=True,
+            samesite="strict",
+            secure=False,
+            path="/",
+        )
+    return response
 
 
 @router.get("/health")
@@ -855,15 +891,24 @@ async def proxy_topic_foundry(path: str, request: Request) -> Response:
         raise HTTPException(status_code=502, detail="Topic Foundry proxy request failed") from exc
 
 
+@router.api_route("/api/world-pulse/healthz", methods=["GET"])
+async def proxy_world_pulse_healthz(request: Request) -> Response:
+    return await _proxy_world_pulse_request("healthz", request)
+
+
+@router.api_route("/api/world-pulse/latest", methods=["GET"])
+async def proxy_world_pulse_latest(request: Request) -> Response:
+    return await _proxy_world_pulse_request("api/world-pulse/latest", request)
+
+
+@router.api_route("/api/world-pulse/run", methods=["POST"])
+async def proxy_world_pulse_run(request: Request) -> Response:
+    return await _proxy_world_pulse_request("api/world-pulse/run", request)
+
+
 @router.api_route("/api/world-pulse/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def proxy_world_pulse(path: str, request: Request) -> Response:
-    if not settings.WORLD_PULSE_BASE_URL:
-        raise HTTPException(status_code=400, detail="World Pulse base URL not configured")
-    try:
-        return await _proxy_request(request, settings.WORLD_PULSE_BASE_URL, path)
-    except aiohttp.ClientError as exc:
-        logger.warning("World Pulse proxy error: %s", exc)
-        raise HTTPException(status_code=502, detail="World Pulse proxy request failed") from exc
+    return await _proxy_world_pulse_request(path, request)
 
 
 @router.get("/api/social-memory/inspection")
@@ -1460,6 +1505,19 @@ def _http_chat_turn_context_from_result(result: Dict[str, Any]) -> Dict[str, Any
     }
 
 
+def _workflow_is_metadata_only(workflow: Dict[str, Any] | None) -> bool:
+    """Return True when a workflow response should render as card-only metadata."""
+    if not isinstance(workflow, dict):
+        return False
+    workflow_id = str(
+        workflow.get("id")
+        or workflow.get("workflow_id")
+        or workflow.get("raw_metadata", {}).get("workflow_id")
+        or ""
+    ).strip().lower()
+    return workflow_id == "dream_cycle"
+
+
 async def handle_chat_request(
     cortex_client,
     payload: dict,
@@ -1624,6 +1682,10 @@ async def handle_chat_request(
         )
         workflow = extract_workflow_payload(resp.cortex_result)
         autonomy_payload = extract_autonomy_payload(resp.cortex_result)
+        workflow_metadata_only = _workflow_is_metadata_only(workflow)
+        if workflow_metadata_only:
+            # Dream workflow surfaces via workflow panel card only (no assistant prose body).
+            text = ""
         if isinstance(workflow, dict):
             logger.info(
                 "hub_workflow_response corr=%s workflow_id=%s status=%s scheduled_count=%s persisted_count=%s rendered_path=%s",
@@ -1688,6 +1750,7 @@ async def handle_chat_request(
             "recall_debug": recall_debug,
             "agent_trace": agent_trace,
             "workflow": workflow,
+            "workflow_metadata_only": workflow_metadata_only,
             "memory_used": memory_used,
             "memory_digest": memory_digest,
             "no_write": no_write,
@@ -1739,7 +1802,8 @@ async def api_chat(
     text = result.get("text")
     correlation_id = result.get("correlation_id")
 
-    if text and getattr(bus, "enabled", False) and not no_write:
+    workflow_metadata_only = bool(result.get("workflow_metadata_only"))
+    if text and getattr(bus, "enabled", False) and not no_write and not workflow_metadata_only:
         try:
             user_messages = payload.get("messages", [])
             latest_user_prompt = ""
@@ -2419,6 +2483,14 @@ def _require_mutation_operator_guard(token: str | None) -> None:
         raise HTTPException(status_code=503, detail="mutation_operator_token_not_configured")
     if not token or token.strip() != expected:
         raise HTTPException(status_code=403, detail="operator_guard_rejected")
+
+
+def _resolve_operator_token(request: Request | None, token: str | None) -> str | None:
+    header_token = str(token or "").strip()
+    if header_token:
+        return header_token
+    cookie_token = str((request.cookies.get("orion_operator_token") if request is not None else "") or "").strip()
+    return cookie_token or None
 
 
 class _ManualCyclePatchApplier(PatchApplier):
@@ -4472,10 +4544,11 @@ def api_substrate_recall_canary_status(
 
 @router.post("/api/substrate/recall-canary/query")
 def api_substrate_recall_canary_query(
+    http_request: Request,
     request: RecallCanaryQueryRequest,
     x_orion_operator_token: str | None = Header(default=None),
 ) -> Dict[str, Any]:
-    _require_mutation_operator_guard(x_orion_operator_token)
+    _require_mutation_operator_guard(_resolve_operator_token(http_request, x_orion_operator_token))
     base = settings.recall_service_url
     warnings: list[str] = []
     available_profiles, default_canary_profile_id = _recall_canary_profile_catalog(limit=200)
@@ -4568,11 +4641,12 @@ def api_substrate_recall_canary_query(
 
 @router.post("/api/substrate/recall-canary/runs/{canary_run_id}/judgment")
 def api_substrate_recall_canary_run_judgment(
+    http_request: Request,
     canary_run_id: str,
     request: RecallCanaryJudgmentRequest,
     x_orion_operator_token: str | None = Header(default=None),
 ) -> Dict[str, Any]:
-    _require_mutation_operator_guard(x_orion_operator_token)
+    _require_mutation_operator_guard(_resolve_operator_token(http_request, x_orion_operator_token))
     row = SUBSTRATE_MUTATION_STORE.get_recall_canary_run(canary_run_id)
     if row is None:
         raise HTTPException(status_code=404, detail="recall_canary_run_not_found")
@@ -4636,11 +4710,12 @@ def api_substrate_recall_canary_run_judgment(
 
 @router.post("/api/substrate/recall-canary/runs/{canary_run_id}/create-review-artifact")
 def api_substrate_recall_canary_create_review_artifact(
+    http_request: Request,
     canary_run_id: str,
     request: RecallCanaryReviewArtifactRequest,
     x_orion_operator_token: str | None = Header(default=None),
 ) -> Dict[str, Any]:
-    _require_mutation_operator_guard(x_orion_operator_token)
+    _require_mutation_operator_guard(_resolve_operator_token(http_request, x_orion_operator_token))
     run = SUBSTRATE_MUTATION_STORE.get_recall_canary_run(canary_run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="recall_canary_run_not_found")

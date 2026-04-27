@@ -1,0 +1,6 @@
+#!/mnt/scripts/Orion-Sapienform/.venv-world-pulse/bin/python
+import sys
+from rdflib.tools.graphisomorphism import main
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(main())

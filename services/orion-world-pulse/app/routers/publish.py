@@ -21,7 +21,7 @@ def publish_hub(run_id: str):
         result.run.hub_publish_status = "skipped"
         return {"ok": False, "run_id": run_id, "status": "hub_messages_disabled"}
     msg = render_hub_digest(result.digest)
-    publish_result = publish_hub_message(message=msg)
+    publish_result = publish_hub_message(message=msg, dry_run=result.run.dry_run)
     result.run.hub_publish_status = str(publish_result.get("status", "failed"))
     return {"run_id": run_id, **publish_result}
 

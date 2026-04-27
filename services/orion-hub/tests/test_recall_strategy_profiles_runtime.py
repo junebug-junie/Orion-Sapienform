@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
+from starlette.requests import Request
 
 os.environ.setdefault("CHANNEL_VOICE_TRANSCRIPT", "orion:voice:transcript")
 os.environ.setdefault("CHANNEL_VOICE_LLM", "orion:voice:llm")
@@ -42,6 +43,13 @@ from orion.substrate.mutation_queue import SubstrateMutationStore
 from scripts.mutation_cognition_context import build_mutation_cognition_context
 
 FIXTURE_CANARY = HUB_ROOT / "tests" / "fixtures" / "recall_canary" / "golden_cases.json"
+
+
+def _request_with_cookie(cookie_value: str = "") -> Request:
+    headers = []
+    if cookie_value:
+        headers.append((b"cookie", f"orion_operator_token={cookie_value}".encode("utf-8")))
+    return Request({"type": "http", "method": "POST", "path": "/", "headers": headers})
 
 
 def _proposal_with_readiness(*, recommendation: str, gates: list[str]) -> tuple[SubstrateMutationStore, str]:
@@ -468,13 +476,22 @@ def test_recall_canary_query_judgment_and_review_artifact_flow(monkeypatch) -> N
 
     monkeypatch.setattr(api_routes.requests, "post", lambda *args, **kwargs: _Resp())
     query = api_routes.api_substrate_recall_canary_query(
-        api_routes.RecallCanaryQueryRequest(query_text=str(first["query_text"])),
+        _request_with_cookie(),
+        api_routes.RecallCanaryQueryRequest(query_text=str(first["query_text"]), profile_id=staged.profile_id),
         x_orion_operator_token="secret",
     )
     run_id = query["data"]["canary_run_id"]
     assert query["data"]["schema_version"] == "recall_canary_query_result.v1"
+    assert query["data"]["selected_profile"]["profile_id"] == staged.profile_id
+    assert query["data"]["selected_profile"]["status"] == "shadow_canary_review_only"
+    assert query["data"]["production_recall_mode"] == "v1"
+    assert query["data"]["recall_live_apply_enabled"] is False
     assert query["data"]["safety"]["promotion_performed"] is False
     assert query["data"]["safety"]["apply_performed"] is False
+    saved_run = store.get_recall_canary_run(run_id)
+    assert saved_run is not None
+    assert saved_run.profile_id == staged.profile_id
+    assert saved_run.profile_metadata.get("profile_id") == staged.profile_id
     emitted: list[str] = []
 
     def _fake_record(*, events, correlation_id, source_event_id, invocation_surface, ingest_notes):
@@ -482,6 +499,7 @@ def test_recall_canary_query_judgment_and_review_artifact_flow(monkeypatch) -> N
 
     monkeypatch.setattr(api_routes, "_record_pressure_events_as_telemetry", _fake_record)
     judgment = api_routes.api_substrate_recall_canary_run_judgment(
+        _request_with_cookie(),
         run_id,
         api_routes.RecallCanaryJudgmentRequest(
             judgment="v2_better",
@@ -495,6 +513,7 @@ def test_recall_canary_query_judgment_and_review_artifact_flow(monkeypatch) -> N
     assert judgment["pressure_emitted"] is True
     assert emitted
     artifact = api_routes.api_substrate_recall_canary_create_review_artifact(
+        _request_with_cookie(),
         run_id,
         api_routes.RecallCanaryReviewArtifactRequest(review_type="production_candidate_evidence"),
         x_orion_operator_token="secret",
@@ -503,10 +522,85 @@ def test_recall_canary_query_judgment_and_review_artifact_flow(monkeypatch) -> N
     assert artifact["safety"]["production_default_unchanged"] is True
     assert artifact["safety"]["promotion_performed"] is False
     assert artifact["safety"]["apply_performed"] is False
+    saved_artifacts = store.list_recall_canary_review_artifacts(limit=5)
+    assert saved_artifacts
+    assert saved_artifacts[0]["profile_id"] == staged.profile_id
+    assert (saved_artifacts[0].get("summary") or {}).get("selected_profile", {}).get("profile_id") == staged.profile_id
     status = api_routes.api_substrate_recall_canary_status(limit=20)
     assert status["data"]["run_count"] >= 1
     assert status["data"]["review_artifact_count"] >= 1
     assert status["data"]["judgment_counts"]["v2_better"] >= 1
+    assert status["data"]["production_recall_mode"] == "v1"
+    assert status["data"]["recall_live_apply_enabled"] is False
+    assert any(row.get("profile_id") == staged.profile_id for row in status["data"]["available_profiles"])
+    assert status["data"]["default_canary_profile_id"] == staged.profile_id
+
+
+def test_recall_canary_query_rejects_invalid_profile_id(monkeypatch) -> None:
+    monkeypatch.setenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", "secret")
+    store = SubstrateMutationStore()
+    staged = store.stage_recall_profile(
+        profile=api_routes.RecallStrategyProfileV1(
+            source_proposal_id="proposal-canary-invalid",
+            source_pressure_ids=[],
+            source_evidence_refs=[],
+            readiness_snapshot={"recommendation": "review_candidate", "gates_blocked": []},
+            strategy_kind="strategy_profile",
+            recall_v2_config_snapshot={"profile": "recall.v2.shadow"},
+            anchor_policy_snapshot={},
+            page_index_policy_snapshot={},
+            graph_expansion_policy_snapshot={},
+            created_by="operator",
+            status="staged",
+        )
+    )
+    monkeypatch.setattr(api_routes, "SUBSTRATE_MUTATION_STORE", store)
+    with pytest.raises(HTTPException) as exc:
+        api_routes.api_substrate_recall_canary_query(
+            _request_with_cookie(),
+            api_routes.RecallCanaryQueryRequest(query_text="test invalid", profile_id="definitely_not_a_real_profile"),
+            x_orion_operator_token="secret",
+        )
+    assert exc.value.status_code == 400
+    detail = exc.value.detail
+    assert detail["error"] == "invalid_recall_canary_profile_id"
+    assert staged.profile_id in detail["allowed_profile_ids"]
+
+
+def test_recall_canary_query_accepts_http_only_cookie_operator_token(monkeypatch) -> None:
+    monkeypatch.setenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", "secret")
+    store = SubstrateMutationStore()
+    staged = store.stage_recall_profile(
+        profile=api_routes.RecallStrategyProfileV1(
+            source_proposal_id="proposal-canary-cookie",
+            source_pressure_ids=[],
+            source_evidence_refs=[],
+            readiness_snapshot={"recommendation": "review_candidate", "gates_blocked": []},
+            strategy_kind="strategy_profile",
+            recall_v2_config_snapshot={"profile": "recall.v2.shadow"},
+            anchor_policy_snapshot={},
+            page_index_policy_snapshot={},
+            graph_expansion_policy_snapshot={},
+            created_by="operator",
+            status="staged",
+        )
+    )
+    monkeypatch.setattr(api_routes, "SUBSTRATE_MUTATION_STORE", store)
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"v1": {"bundle": {"items": []}}, "v2": {"bundle": {"items": []}}, "compare": {}}
+
+    monkeypatch.setattr(api_routes.requests, "post", lambda *args, **kwargs: _Resp())
+    result = api_routes.api_substrate_recall_canary_query(
+        _request_with_cookie("secret"),
+        api_routes.RecallCanaryQueryRequest(query_text="cookie-token-query", profile_id=staged.profile_id),
+        x_orion_operator_token=None,
+    )
+    assert result["data"]["canary_run_id"]
 
 
 def test_recall_canary_review_artifact_warns_without_active_shadow(monkeypatch) -> None:
@@ -523,6 +617,7 @@ def test_recall_canary_review_artifact_warns_without_active_shadow(monkeypatch) 
     )
     monkeypatch.setattr(api_routes, "SUBSTRATE_MUTATION_STORE", store)
     out = api_routes.api_substrate_recall_canary_create_review_artifact(
+        _request_with_cookie(),
         run.canary_run_id,
         api_routes.RecallCanaryReviewArtifactRequest(),
         x_orion_operator_token="secret",
@@ -563,15 +658,18 @@ def test_tripwire_recall_canary_endpoints_do_not_invoke_mutation_execute_cycle(m
 
     monkeypatch.setattr(api_routes.requests, "post", lambda *args, **kwargs: _Resp())
     query = api_routes.api_substrate_recall_canary_query(
+        _request_with_cookie(),
         api_routes.RecallCanaryQueryRequest(query_text="tripwire"),
         x_orion_operator_token="secret",
     )
     api_routes.api_substrate_recall_canary_run_judgment(
+        _request_with_cookie(),
         query["data"]["canary_run_id"],
         api_routes.RecallCanaryJudgmentRequest(judgment="inconclusive", should_emit_pressure=False),
         x_orion_operator_token="secret",
     )
     api_routes.api_substrate_recall_canary_create_review_artifact(
+        _request_with_cookie(),
         query["data"]["canary_run_id"],
         api_routes.RecallCanaryReviewArtifactRequest(),
         x_orion_operator_token="secret",

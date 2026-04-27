@@ -91,6 +91,14 @@ loadDismissedIds();
   const statusDiv = document.getElementById('status');
   const conversationDiv = document.getElementById('conversation');
   const chatInput = document.getElementById('chatInput');
+  const chatInputExpandButton = document.getElementById('chatInputExpandButton');
+  const chatInputExpandModalRoot = document.getElementById('chatInputExpandModalRoot');
+  const chatInputExpandModalBackdrop = document.getElementById('chatInputExpandModalBackdrop');
+  const chatInputExpandModalDialog = document.getElementById('chatInputExpandModalDialog');
+  const chatInputExpandModalClose = document.getElementById('chatInputExpandModalClose');
+  const chatInputExpandTextarea = document.getElementById('chatInputExpandTextarea');
+  const chatInputExpandModalApply = document.getElementById('chatInputExpandModalApply');
+  const chatInputExpandModalSend = document.getElementById('chatInputExpandModalSend');
   const sendButton = document.getElementById('sendButton');
   const skillRunnerSelect = document.getElementById('skillRunnerSelect');
   const skillRunnerRunBtn = document.getElementById('skillRunnerRunBtn');
@@ -192,6 +200,19 @@ loadDismissedIds();
   const autonomyReadinessOverview = document.getElementById('autonomyReadinessOverview');
   const autonomyReadinessWarnings = document.getElementById('autonomyReadinessWarnings');
   const recallCanaryPanel = document.getElementById('recallCanaryPanel');
+  const recallCanaryOpenModal = document.getElementById('recallCanaryOpenModal');
+  const recallCanaryToggle = document.getElementById('recallCanaryToggle');
+  const recallCanaryCaret = document.getElementById('recallCanaryCaret');
+  const recallCanaryBody = document.getElementById('recallCanaryBody');
+  const recallCanaryModalRoot = document.getElementById('recallCanaryModalRoot');
+  const recallCanaryModalBackdrop = document.getElementById('recallCanaryModalBackdrop');
+  const recallCanaryModalDialog = document.getElementById('recallCanaryModalDialog');
+  const recallCanaryModalMeta = document.getElementById('recallCanaryModalMeta');
+  const recallCanaryModalRefresh = document.getElementById('recallCanaryModalRefresh');
+  const recallCanaryModalClose = document.getElementById('recallCanaryModalClose');
+  const recallCanaryModalStatusMeta = document.getElementById('recallCanaryModalStatusMeta');
+  const recallCanaryModalSummary = document.getElementById('recallCanaryModalSummary');
+  const recallCanaryModalActionStatus = document.getElementById('recallCanaryModalActionStatus');
   const recallCanaryProfileSelect = document.getElementById('recallCanaryProfileSelect');
   const recallCanaryProfileEmptyState = document.getElementById('recallCanaryProfileEmptyState');
   const recallCanarySafetyBadges = document.getElementById('recallCanarySafetyBadges');
@@ -199,14 +220,12 @@ loadDismissedIds();
   const recallCanaryRunButton = document.getElementById('recallCanaryRunButton');
   const recallCanaryStatusMeta = document.getElementById('recallCanaryStatusMeta');
   const recallCanarySummary = document.getElementById('recallCanarySummary');
+  const recallCanaryLatestResult = document.getElementById('recallCanaryLatestResult');
+  const recallCanaryRawResponse = document.getElementById('recallCanaryRawResponse');
+  const recallCanaryJudgmentSelect = document.getElementById('recallCanaryJudgmentSelect');
   const recallCanaryOperatorNote = document.getElementById('recallCanaryOperatorNote');
   const recallCanaryRecordJudgmentButton = document.getElementById('recallCanaryRecordJudgmentButton');
   const recallCanaryCreateReviewArtifactButton = document.getElementById('recallCanaryCreateReviewArtifactButton');
-  const recallCanaryJudgmentV2Better = document.getElementById('recallCanaryJudgmentV2Better');
-  const recallCanaryJudgmentV1Better = document.getElementById('recallCanaryJudgmentV1Better');
-  const recallCanaryJudgmentTie = document.getElementById('recallCanaryJudgmentTie');
-  const recallCanaryJudgmentBothBad = document.getElementById('recallCanaryJudgmentBothBad');
-  const recallCanaryJudgmentInconclusive = document.getElementById('recallCanaryJudgmentInconclusive');
   const cognitiveReviewPanel = document.getElementById('cognitiveReviewPanel');
   const cognitiveReviewOpenModal = document.getElementById('cognitiveReviewOpenModal');
   const cognitiveReviewStatusMeta = document.getElementById('cognitiveReviewStatusMeta');
@@ -263,11 +282,28 @@ loadDismissedIds();
   const notificationFilter = document.getElementById('notificationFilter');
   const attentionList = document.getElementById('attentionList');
   const attentionCount = document.getElementById('attentionCount');
+  const messagesToggle = document.getElementById('messagesToggle');
+  const messagesCaret = document.getElementById('messagesCaret');
+  const messagesBody = document.getElementById('messagesBody');
   const messageList = document.getElementById('messageList');
   const messageFilter = document.getElementById('messageFilter');
+  const worldPulseToggle = document.getElementById('worldPulseToggle');
+  const worldPulseCaret = document.getElementById('worldPulseCaret');
+  const worldPulseBody = document.getElementById('worldPulseBody');
   const worldPulseStatus = document.getElementById('worldPulseStatus');
   const worldPulseSummary = document.getElementById('worldPulseSummary');
+  const worldPulseDetails = document.getElementById('worldPulseDetails');
   const worldPulseRunButton = document.getElementById('worldPulseRunButton');
+  const worldPulseFixtureRunEnabled = Boolean(window.__HUB_CFG__?.worldPulseFixtureRunEnabled);
+  const WORLD_PULSE_REQUIRED_SECTIONS = ['us_politics', 'global_politics', 'local_politics'];
+  const WORLD_PULSE_RECOMMENDED_SECTIONS = [
+    'ai_technology',
+    'science_climate_energy',
+    'healthcare_mental_health',
+    'security_infrastructure_software',
+    'hardware_compute_gpu',
+    'local_conditions',
+  ];
   const toastContainer = document.getElementById('toastContainer');
   const agentTraceApi = window.OrionAgentTrace || {};
   const socialInspectionApi = window.OrionSocialInspection || {};
@@ -349,7 +385,7 @@ loadDismissedIds();
   let lastSubstrateReviewAction = null;
   let lastAutonomyReadinessSnapshot = null;
   let lastRecallCanaryRunId = null;
-  let selectedRecallCanaryJudgment = null;
+  let lastRecallCanaryResponse = null;
   let lastRecallCanarySelectedProfile = null;
   const RECALL_CANARY_PROFILE_STORAGE_KEY = 'orion_recall_canary_profile_v1';
 
@@ -2002,11 +2038,79 @@ loadDismissedIds();
     const shouldLock = isModalVisible(memoryDebugModalRoot)
       || isModalVisible(autonomyDebugModalRoot)
       || isModalVisible(chatStanceDebugModalRoot)
+      || isModalVisible(chatInputExpandModalRoot)
       || isModalVisible(substrateReviewModalRoot)
       || isModalVisible(cognitiveReviewModalRoot)
       || isModalVisible(autonomyConstitutionModalRoot)
       || isModalVisible(agentTraceModal);
     document.body.classList.toggle('overflow-hidden', shouldLock);
+  }
+
+  function ensureChatInputExpandModalRootOnBody() {
+    if (!chatInputExpandModalRoot || !document.body) return;
+    if (chatInputExpandModalRoot.parentElement !== document.body) {
+      document.body.appendChild(chatInputExpandModalRoot);
+    }
+  }
+
+  function syncChatExpandTextareaFromInput() {
+    if (!chatInput || !chatInputExpandTextarea) return;
+    chatInputExpandTextarea.value = chatInput.value || '';
+  }
+
+  function syncChatInputFromExpandTextarea() {
+    if (!chatInput || !chatInputExpandTextarea) return;
+    chatInput.value = chatInputExpandTextarea.value || '';
+  }
+
+  function openChatInputExpandModal() {
+    if (!chatInputExpandModalRoot || !chatInputExpandTextarea) return;
+    ensureChatInputExpandModalRootOnBody();
+    syncChatExpandTextareaFromInput();
+    chatInputExpandModalRoot.style.position = 'fixed';
+    chatInputExpandModalRoot.style.inset = '0';
+    chatInputExpandModalRoot.style.zIndex = '2147483646';
+    if (chatInputExpandModalBackdrop) {
+      chatInputExpandModalBackdrop.style.position = 'fixed';
+      chatInputExpandModalBackdrop.style.inset = '0';
+      chatInputExpandModalBackdrop.style.zIndex = '2147483646';
+    }
+    if (chatInputExpandModalDialog) {
+      chatInputExpandModalDialog.style.position = 'fixed';
+      chatInputExpandModalDialog.style.zIndex = '2147483647';
+    }
+    chatInputExpandModalRoot.classList.remove('hidden');
+    chatInputExpandModalRoot.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
+    chatInputExpandTextarea.focus();
+    chatInputExpandTextarea.setSelectionRange(
+      chatInputExpandTextarea.value.length,
+      chatInputExpandTextarea.value.length,
+    );
+  }
+
+  function closeChatInputExpandModal(opts = {}) {
+    if (!chatInputExpandModalRoot) return;
+    const applyToInput = opts && Object.prototype.hasOwnProperty.call(opts, 'applyToInput')
+      ? Boolean(opts.applyToInput)
+      : true;
+    const focusInput = opts && Object.prototype.hasOwnProperty.call(opts, 'focusInput')
+      ? Boolean(opts.focusInput)
+      : true;
+    if (applyToInput) syncChatInputFromExpandTextarea();
+    chatInputExpandModalRoot.classList.add('hidden');
+    chatInputExpandModalRoot.setAttribute('aria-hidden', 'true');
+    syncDebugModalScrollLock();
+    if (focusInput && chatInput) chatInput.focus();
+  }
+
+  async function sendExpandedChatMessage() {
+    if (!chatInputExpandTextarea) return;
+    const value = String(chatInputExpandTextarea.value || '').trim();
+    if (!value) return;
+    syncChatInputFromExpandTextarea();
+    closeChatInputExpandModal({ applyToInput: false, focusInput: false });
+    await submitExplicitChatText(value);
   }
 
   function openMemoryDebugModal() {
@@ -2536,7 +2640,13 @@ loadDismissedIds();
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(payload.detail || payload.error || `HTTP ${response.status}`);
+      const detail = payload && payload.detail;
+      const message = (typeof detail === 'string')
+        ? detail
+        : (detail && typeof detail.message === 'string')
+          ? detail.message
+          : payload.error || `HTTP ${response.status}`;
+      throw new Error(String(message));
     }
     return payload;
   }
@@ -2751,20 +2861,72 @@ loadDismissedIds();
     return Array.from(document.querySelectorAll('.recall-canary-failure-mode:checked')).map((el) => el.value);
   }
 
-  function updateRecallCanaryJudgmentSelection(judgment) {
-    selectedRecallCanaryJudgment = judgment;
-    const buttonMap = {
-      v2_better: recallCanaryJudgmentV2Better,
-      v1_better: recallCanaryJudgmentV1Better,
-      tie: recallCanaryJudgmentTie,
-      both_bad: recallCanaryJudgmentBothBad,
-      inconclusive: recallCanaryJudgmentInconclusive,
-    };
-    Object.entries(buttonMap).forEach(([key, button]) => {
-      if (!button) return;
-      button.classList.toggle('ring-2', key === judgment);
-      button.classList.toggle('ring-indigo-400', key === judgment);
-    });
+  function setRecallCanaryActionStatus(message) {
+    const text = String(message || '').trim();
+    if (recallCanaryModalActionStatus) {
+      recallCanaryModalActionStatus.textContent = text || 'Ready.';
+    }
+    if (recallCanaryStatusMeta && text) {
+      recallCanaryStatusMeta.textContent = text;
+    }
+  }
+
+  function toggleRecallCanaryPanel() {
+    if (!recallCanaryBody) return;
+    const nextHidden = !recallCanaryBody.classList.contains('hidden');
+    recallCanaryBody.classList.toggle('hidden', nextHidden);
+    if (recallCanaryCaret) recallCanaryCaret.textContent = nextHidden ? '▾' : '▴';
+  }
+
+  function toggleMessagesPanel() {
+    if (!messagesBody) return;
+    const nextHidden = !messagesBody.classList.contains('hidden');
+    messagesBody.classList.toggle('hidden', nextHidden);
+    if (messagesCaret) messagesCaret.textContent = nextHidden ? '▾' : '▴';
+  }
+
+  function toggleWorldPulsePanel() {
+    if (!worldPulseBody) return;
+    const nextHidden = !worldPulseBody.classList.contains('hidden');
+    worldPulseBody.classList.toggle('hidden', nextHidden);
+    if (worldPulseCaret) worldPulseCaret.textContent = nextHidden ? '▾' : '▴';
+  }
+
+  function toRecallCanaryError(err) {
+    const raw = String((err && err.message) || err || 'Unknown recall canary error');
+    const lower = raw.toLowerCase();
+    if (lower.includes('mutation_operator_token_not_configured')) return 'Hub operator token guard is not configured on backend.';
+    if (lower.includes('operator_guard_rejected') || lower.includes('forbidden')) return 'Operator token is invalid or not authorized.';
+    if (lower.includes('invalid_recall_canary_profile_id')) return 'Selected recall profile is invalid. Refresh profiles and retry.';
+    if (lower.includes('failed to fetch') || lower.includes('networkerror') || lower.includes('503')) return 'Recall canary backend is unavailable.';
+    if (lower.includes('operator token is required')) return 'Operator token is required.';
+    return raw;
+  }
+
+  function renderRecallCanaryLatestResult(payload) {
+    const data = payload && payload.data ? payload.data : {};
+    const selectedProfile = data.selected_profile || {};
+    if (recallCanaryLatestResult) {
+      const lines = [
+        `canary_run_id: ${data.canary_run_id || '--'}`,
+        `selected_profile: ${selectedProfile.profile_id || '--'} (${selectedProfile.label || selectedProfile.profile_id || '--'} · ${selectedProfile.status || '--'})`,
+        `production_recall_mode: ${data.production_recall_mode || 'v1'}`,
+        `recall_live_apply_enabled: ${String(data.recall_live_apply_enabled === true)}`,
+        `v1_summary: ${JSON.stringify(data.v1_summary || {})}`,
+        `v2_summary: ${JSON.stringify(data.v2_summary || {})}`,
+        `comparison: ${JSON.stringify(data.comparison || data.comparison_summary || {})}`,
+      ];
+      recallCanaryLatestResult.innerHTML = '';
+      lines.forEach((line) => {
+        const row = document.createElement('div');
+        row.className = 'autonomy-readiness-row';
+        row.textContent = line;
+        recallCanaryLatestResult.appendChild(row);
+      });
+    }
+    if (recallCanaryRawResponse) {
+      recallCanaryRawResponse.textContent = JSON.stringify(payload || {}, null, 2);
+    }
   }
 
   function hydrateRecallCanaryProfileSelect(data = {}) {
@@ -2809,6 +2971,9 @@ loadDismissedIds();
     if (recallCanarySafetyBadges) {
       recallCanarySafetyBadges.textContent = 'Production recall remains V1 · Selected profile is canary/shadow only · No production promotion';
     }
+    if (recallCanaryModalActionStatus && profiles.length === 0) {
+      recallCanaryModalActionStatus.textContent = 'No recall profiles available for canary testing.';
+    }
   }
 
   function renderRecallCanaryStatus(payload) {
@@ -2830,12 +2995,72 @@ loadDismissedIds();
       row.textContent = line;
       recallCanarySummary.appendChild(row);
     });
+    if (recallCanaryModalMeta) {
+      recallCanaryModalMeta.textContent = 'Manual canary only. No production promotion.';
+    }
+    if (recallCanaryModalStatusMeta) {
+      recallCanaryModalStatusMeta.textContent = recallCanaryStatusMeta.textContent;
+    }
+    if (recallCanaryModalSummary) {
+      recallCanaryModalSummary.innerHTML = recallCanarySummary.innerHTML;
+    }
+    if (!lastRecallCanaryResponse && recallCanaryRawResponse) {
+      recallCanaryRawResponse.textContent = 'No response yet.';
+    }
   }
 
   async function refreshRecallCanaryStatus() {
     const payload = await substrateReviewFetch('/api/substrate/recall-canary/status');
     renderRecallCanaryStatus(payload);
     return payload;
+  }
+
+  function ensureRecallCanaryModalRootOnBody() {
+    if (!recallCanaryModalRoot || !document.body) return;
+    if (recallCanaryModalRoot.parentElement !== document.body) {
+      document.body.appendChild(recallCanaryModalRoot);
+    }
+  }
+
+  async function refreshRecallCanaryModal() {
+    const payload = await refreshRecallCanaryStatus();
+    return payload;
+  }
+
+  function openRecallCanaryModal() {
+    if (!recallCanaryModalRoot) return;
+    closeMemoryDebugModal();
+    closeAutonomyDebugModal();
+    closeChatStanceDebugModal();
+    closeSubstrateReviewModal();
+    closeCognitiveReviewModal();
+    closeAutonomyConstitutionModal();
+    ensureRecallCanaryModalRootOnBody();
+    recallCanaryModalRoot.style.position = 'fixed';
+    recallCanaryModalRoot.style.inset = '0';
+    recallCanaryModalRoot.style.zIndex = '2147483646';
+    if (recallCanaryModalBackdrop) {
+      recallCanaryModalBackdrop.style.position = 'fixed';
+      recallCanaryModalBackdrop.style.inset = '0';
+      recallCanaryModalBackdrop.style.zIndex = '2147483646';
+    }
+    if (recallCanaryModalDialog) {
+      recallCanaryModalDialog.style.position = 'fixed';
+      recallCanaryModalDialog.style.zIndex = '2147483647';
+    }
+    refreshRecallCanaryModal().catch((err) => {
+      if (recallCanaryModalStatusMeta) recallCanaryModalStatusMeta.textContent = `Recall canary unavailable: ${toRecallCanaryError(err)}`;
+    });
+    recallCanaryModalRoot.classList.remove('hidden');
+    recallCanaryModalRoot.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
+  }
+
+  function closeRecallCanaryModal() {
+    if (!recallCanaryModalRoot) return;
+    recallCanaryModalRoot.classList.add('hidden');
+    recallCanaryModalRoot.setAttribute('aria-hidden', 'true');
+    syncDebugModalScrollLock();
   }
 
   async function refreshCognitiveReviewPanelInto({
@@ -2880,16 +3105,6 @@ loadDismissedIds();
     }
   }
 
-  async function refreshCognitiveReviewPanel() {
-    if (!cognitiveReviewPanel) return;
-    await refreshCognitiveReviewPanelInto({
-      statusMetaEl: cognitiveReviewStatusMeta,
-      statusSummaryEl: cognitiveReviewStatusSummary,
-      draftListEl: cognitiveDraftList,
-      stanceNoteListEl: cognitiveStanceNoteList,
-    });
-  }
-
   async function refreshCognitiveReviewModal() {
     await refreshCognitiveReviewPanelInto({
       statusMetaEl: cognitiveReviewModalStatusMeta,
@@ -2900,21 +3115,18 @@ loadDismissedIds();
     console.log('event=cognitive_review_modal_data_requested source=ui');
   }
 
-  async function submitCognitiveProposalReview(decision, source = 'panel') {
-    const proposalId = source === 'modal'
-      ? (cognitiveReviewModalProposalIdInput && cognitiveReviewModalProposalIdInput.value ? cognitiveReviewModalProposalIdInput.value.trim() : '')
-      : (cognitiveProposalIdInput && cognitiveProposalIdInput.value ? cognitiveProposalIdInput.value.trim() : '');
+  async function submitCognitiveProposalReview(decision, source = 'modal') {
+    const proposalId = cognitiveReviewModalProposalIdInput && cognitiveReviewModalProposalIdInput.value
+      ? cognitiveReviewModalProposalIdInput.value.trim()
+      : '';
     if (!proposalId) throw new Error('proposal_id is required');
     await api(`/api/substrate/cognitive-proposals/${encodeURIComponent(proposalId)}/review`, {
       method: 'POST',
       body: JSON.stringify({
         decision,
-        rationale: source === 'modal'
-          ? (cognitiveReviewModalRationaleInput ? cognitiveReviewModalRationaleInput.value || '' : '')
-          : (cognitiveReviewRationaleInput ? cognitiveReviewRationaleInput.value || '' : ''),
+        rationale: cognitiveReviewModalRationaleInput ? cognitiveReviewModalRationaleInput.value || '' : '',
       }),
     });
-    await refreshCognitiveReviewPanel();
     await refreshCognitiveReviewModal();
     await refreshAutonomyReadinessPanel();
   }
@@ -3054,14 +3266,20 @@ loadDismissedIds();
       body: JSON.stringify({ query_text: queryText, profile_id: profileId }),
     });
     lastRecallCanaryRunId = payload && payload.data ? payload.data.canary_run_id : null;
+    lastRecallCanaryResponse = payload || null;
     lastRecallCanarySelectedProfile = payload && payload.data ? (payload.data.selected_profile || null) : null;
     localStorage.setItem(RECALL_CANARY_PROFILE_STORAGE_KEY, profileId);
+    renderRecallCanaryLatestResult(payload || {});
+    setRecallCanaryActionStatus(`Canary run complete: ${lastRecallCanaryRunId || '--'}`);
     await refreshRecallCanaryStatus();
     return payload;
   }
 
   async function recordRecallCanaryJudgment() {
     if (!lastRecallCanaryRunId) throw new Error('No canary run available');
+    const selectedRecallCanaryJudgment = recallCanaryJudgmentSelect && recallCanaryJudgmentSelect.value
+      ? String(recallCanaryJudgmentSelect.value)
+      : '';
     if (!selectedRecallCanaryJudgment) throw new Error('Select a judgment');
     const payload = await substrateReviewFetch(`/api/substrate/recall-canary/runs/${encodeURIComponent(lastRecallCanaryRunId)}/judgment`, {
       method: 'POST',
@@ -3073,6 +3291,7 @@ loadDismissedIds();
         should_mark_review_candidate: false,
       }),
     });
+    setRecallCanaryActionStatus(`Judgment submitted for run ${lastRecallCanaryRunId}.`);
     await refreshRecallCanaryStatus();
     await refreshAutonomyReadinessPanel();
     return payload;
@@ -3089,6 +3308,8 @@ loadDismissedIds();
         operator_note: recallCanaryOperatorNote ? recallCanaryOperatorNote.value : '',
       }),
     });
+    const artifactId = payload && payload.data ? (payload.data.review_artifact_id || payload.data.artifact_id || '--') : '--';
+    setRecallCanaryActionStatus(`Review artifact result: ${artifactId}`);
     await refreshRecallCanaryStatus();
     await refreshAutonomyReadinessPanel();
     return payload;
@@ -5069,6 +5290,7 @@ loadDismissedIds();
   function hubCoalesceAssistantText(primary, meta) {
     const a = String(primary || '').trim();
     if (!meta || typeof meta !== 'object') return primary || '';
+    if (meta.workflowMetadataOnly || meta.workflow_metadata_only) return primary || '';
     const raw = meta.raw;
     if (!raw || typeof raw !== 'object') return primary || '';
     let b = String(raw.final_text || '').trim();
@@ -5085,6 +5307,11 @@ loadDismissedIds();
     const color = sender === 'You' ? 'text-blue-300' : 'text-green-300';
     const meta = arguments.length > 3 && arguments[3] && typeof arguments[3] === 'object' ? arguments[3] : {};
     const displayText = sender === 'Orion' ? hubCoalesceAssistantText(text, meta) : (text || '');
+    const workflowOnlyTurn = Boolean(
+      sender === 'Orion'
+      && (meta.workflowMetadataOnly || meta.workflow_metadata_only)
+      && (!String(displayText || '').trim())
+    );
     let inspectPanel = null;
     const headerRow = document.createElement('div');
     headerRow.className = 'mb-1 flex items-center justify-between gap-3';
@@ -5204,7 +5431,7 @@ loadDismissedIds();
       onRunAgain: async (workflow) => submitExplicitChatText(workflow.rerun_prompt),
     }) : null;
     if (workflowPanel) div.appendChild(workflowPanel);
-    div.appendChild(body);
+    if (!workflowOnlyTurn) div.appendChild(body);
     if (feedbackRow) div.appendChild(feedbackRow);
     if (inspectPanel) div.appendChild(inspectPanel);
     if (sender === 'Orion') {
@@ -5812,22 +6039,382 @@ loadDismissedIds();
     }
   }
 
+  function createWorldPulseBlock(title, value) {
+    if (value === null || value === undefined || value === '' || (Array.isArray(value) && !value.length)) return null;
+    const wrap = document.createElement('div');
+    wrap.className = 'rounded border border-gray-800 bg-gray-950/40 p-2';
+    const label = document.createElement('div');
+    label.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+    label.textContent = title;
+    wrap.appendChild(label);
+    if (Array.isArray(value)) {
+      const list = document.createElement('ul');
+      list.className = 'mt-1 list-disc pl-4 space-y-0.5';
+      value.forEach((entry) => {
+        if (entry === null || entry === undefined || entry === '') return;
+        const li = document.createElement('li');
+        li.textContent = String(entry);
+        list.appendChild(li);
+      });
+      if (list.children.length) wrap.appendChild(list);
+      return list.children.length ? wrap : null;
+    }
+    const body = document.createElement('div');
+    body.className = 'mt-1 text-gray-200 whitespace-pre-wrap';
+    body.textContent = String(value);
+    wrap.appendChild(body);
+    return wrap;
+  }
+
+  function worldPulseSourceCount(item) {
+    return Array.isArray(item?.source_ids) ? item.source_ids.length : null;
+  }
+
+  function normalizeWorldPulsePayload(raw) {
+    const payload = raw && typeof raw === 'object' ? raw : {};
+    if (payload.digest && payload.run) {
+      return {
+        run: payload.run || {},
+        digest: payload.digest || {},
+        source: 'latest',
+      };
+    }
+    const structured = payload.structured_payload && typeof payload.structured_payload === 'object'
+      ? payload.structured_payload
+      : {};
+    const digestFromMessage = structured && Object.keys(structured).length
+      ? structured
+      : {
+          run_id: payload.run_id,
+          date: payload.date,
+          title: payload.title || 'Daily World Pulse',
+          executive_summary: payload.executive_summary || '',
+          items: Array.isArray(payload.cards) ? payload.cards : [],
+          things_worth_reading: Array.isArray(payload.worth_reading) ? payload.worth_reading : [],
+          things_worth_watching: Array.isArray(payload.worth_watching) ? payload.worth_watching : [],
+        };
+    return {
+      run: {
+        run_id: payload.run_id || digestFromMessage.run_id || 'unknown',
+        status: payload.status || 'published',
+      },
+      digest: digestFromMessage,
+      source: 'message',
+    };
+  }
+
+  function computeEffectiveWorldPulseMetrics(model) {
+    const digest = model?.digest && typeof model.digest === 'object' ? model.digest : {};
+    const run = model?.run && typeof model.run === 'object' ? model.run : {};
+    const items = Array.isArray(digest.items) ? digest.items : [];
+    const rollups = Array.isArray(digest.section_rollups) ? digest.section_rollups : [];
+    const sectionCoverage = digest.section_coverage && typeof digest.section_coverage === 'object'
+      ? { ...digest.section_coverage }
+      : {};
+
+    const articleIds = new Set();
+    const sourceIds = new Set(Array.isArray(digest.source_ids) ? digest.source_ids.filter(Boolean) : []);
+    const inferredDigestCounts = {};
+    items.forEach((item) => {
+      (Array.isArray(item?.article_ids) ? item.article_ids : []).forEach((id) => {
+        if (id) articleIds.add(id);
+      });
+      (Array.isArray(item?.source_ids) ? item.source_ids : []).forEach((id) => {
+        if (id) sourceIds.add(id);
+      });
+      const category = item?.category;
+      if (!category) return;
+      inferredDigestCounts[category] = (inferredDigestCounts[category] || 0) + 1;
+      if (!sectionCoverage[category]) {
+        sectionCoverage[category] = {
+          status: 'covered',
+          articles_accepted: Array.isArray(item?.article_ids) ? item.article_ids.length : 0,
+          digest_items: 1,
+        };
+      }
+    });
+
+    const rollupBySection = {};
+    rollups.forEach((r) => {
+      if (!r || !r.section) return;
+      rollupBySection[r.section] = r;
+      if (!sectionCoverage[r.section]) {
+        sectionCoverage[r.section] = {
+          status: r.status || 'missing',
+          articles_accepted: Number(r.article_count || 0),
+          digest_items: Number(r.digest_item_count || 0),
+          cluster_count: Number(r.cluster_count || 0),
+        };
+      }
+    });
+
+    const rollupArticleSum = rollups.reduce((sum, r) => sum + Number((r && r.article_count) || 0), 0);
+    const rollupClusterSum = rollups.reduce((sum, r) => sum + Number((r && r.cluster_count) || 0), 0);
+    const acceptedArticleCount = Number.isFinite(Number(digest.accepted_article_count)) && Number(digest.accepted_article_count) > 0
+      ? Number(digest.accepted_article_count)
+      : (Number.isFinite(Number(run.articles_accepted)) && Number(run.articles_accepted) > 0
+          ? Number(run.articles_accepted)
+          : (articleIds.size || rollupArticleSum || 0));
+    const articleClusterCount = Number.isFinite(Number(digest.article_cluster_count)) && Number(digest.article_cluster_count) > 0
+      ? Number(digest.article_cluster_count)
+      : (Number.isFinite(Number(run?.metrics?.article_clusters)) && Number(run.metrics.article_clusters) > 0
+          ? Number(run.metrics.article_clusters)
+          : (rollupClusterSum || 0));
+    const maxDigestItemsTotal = Number.isFinite(Number(digest.max_digest_items_total)) && Number(digest.max_digest_items_total) > 0
+      ? Number(digest.max_digest_items_total)
+      : Math.max(12, items.length);
+
+    const derivedCoverageStatus = (() => {
+      if (digest.coverage_status) return digest.coverage_status;
+      if (!Object.keys(sectionCoverage).length) return 'unknown';
+      const requiredCovered = WORLD_PULSE_REQUIRED_SECTIONS.every((section) => {
+        const row = sectionCoverage[section] || {};
+        const status = row.status || (inferredDigestCounts[section] > 0 ? 'covered' : 'missing');
+        return status === 'covered';
+      });
+      const anyCovered = Object.values(sectionCoverage).some((row) => row && row.status === 'covered');
+      if (requiredCovered) return 'complete';
+      return anyCovered ? 'partial' : 'empty';
+    })();
+
+    return {
+      acceptedArticleCount,
+      articleClusterCount,
+      maxDigestItemsTotal,
+      coverageStatus: derivedCoverageStatus,
+      sectionCoverage,
+      sourceIds: Array.from(sourceIds),
+      items,
+      digest,
+      run,
+      rollupBySection,
+    };
+  }
+
+  function renderWorldPulseDetails(model) {
+    if (!worldPulseDetails) return;
+    worldPulseDetails.innerHTML = '';
+    const metrics = computeEffectiveWorldPulseMetrics(model);
+    const digest = metrics.digest;
+    const run = metrics.run;
+    if (!digest || !Object.keys(digest).length) {
+      const empty = document.createElement('div');
+      empty.className = 'text-xs text-gray-500';
+      empty.textContent = 'No digest payload available.';
+      worldPulseDetails.appendChild(empty);
+      return;
+    }
+
+    const coverage = metrics.sectionCoverage;
+    const coverageBox = document.createElement('div');
+    coverageBox.className = 'rounded border border-gray-800 bg-gray-950/40 p-2 space-y-2';
+    const coverageTitle = document.createElement('div');
+    coverageTitle.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+    coverageTitle.textContent = 'Section Coverage';
+    coverageBox.appendChild(coverageTitle);
+    const sectionGroups = [
+      { label: 'Required', sections: WORLD_PULSE_REQUIRED_SECTIONS },
+      { label: 'Recommended', sections: WORLD_PULSE_RECOMMENDED_SECTIONS },
+    ];
+    sectionGroups.forEach((group) => {
+      const groupTitle = document.createElement('div');
+      groupTitle.className = 'text-[11px] font-semibold text-gray-300';
+      groupTitle.textContent = group.label;
+      coverageBox.appendChild(groupTitle);
+      const list = document.createElement('ul');
+      list.className = 'space-y-1';
+      group.sections.forEach((section) => {
+        const c = coverage[section] || {};
+        const fallbackRollup = metrics.rollupBySection[section] || {};
+        const inferredDigest = metrics.items.filter((item) => item?.category === section).length;
+        const li = document.createElement('li');
+        const status = c.status || fallbackRollup.status || (inferredDigest > 0 ? 'covered' : 'missing');
+        const articlesAccepted = c.articles_accepted ?? fallbackRollup.article_count ?? 0;
+        const digestItems = c.digest_items ?? fallbackRollup.digest_item_count ?? inferredDigest;
+        const clusters = c.cluster_count ?? fallbackRollup.cluster_count;
+        li.className = 'text-xs text-gray-300';
+        li.textContent = `${section}: ${status} · articles=${articlesAccepted} · digest=${digestItems}${clusters !== undefined ? ` · clusters=${clusters}` : ''}`;
+        list.appendChild(li);
+      });
+      coverageBox.appendChild(list);
+    });
+    worldPulseDetails.appendChild(coverageBox);
+
+    if (Array.isArray(digest.items) && digest.items.length) {
+      const cardsWrap = document.createElement('div');
+      cardsWrap.className = 'space-y-2';
+      const cardsTitle = document.createElement('div');
+      cardsTitle.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+      cardsTitle.textContent = `Digest Cards (${digest.items.length})`;
+      cardsWrap.appendChild(cardsTitle);
+      digest.items.forEach((item) => {
+        const details = document.createElement('details');
+        details.className = 'rounded border border-gray-800 bg-gray-950/40 p-2';
+        const summary = document.createElement('summary');
+        summary.className = 'cursor-pointer text-xs text-gray-200';
+        const srcCount = worldPulseSourceCount(item);
+        const articleCount = Array.isArray(item?.article_ids) ? item.article_ids.length : null;
+        const badgeBits = [
+          item?.category || 'unknown',
+          item?.confidence !== undefined ? `conf=${item.confidence}` : null,
+          item?.volatility ? `vol=${item.volatility}` : null,
+          srcCount !== null ? `sources=${srcCount}` : null,
+          articleCount !== null ? `articles=${articleCount}` : null,
+        ].filter(Boolean);
+        summary.textContent = `${item?.title || 'Untitled'} · ${badgeBits.join(' · ')}`;
+        details.appendChild(summary);
+        const blocks = [
+          createWorldPulseBlock('Summary', item?.summary),
+          createWorldPulseBlock('Why It Matters', item?.why_it_matters),
+          createWorldPulseBlock('What Changed', item?.what_changed),
+          createWorldPulseBlock('Context', item?.context_bullets),
+          createWorldPulseBlock('By The Numbers', item?.by_the_numbers),
+          createWorldPulseBlock("What They're Saying", item?.what_theyre_saying),
+          createWorldPulseBlock('Caveats', item?.caveats),
+          createWorldPulseBlock("Orion's Read", item?.orion_read),
+          createWorldPulseBlock('What To Watch', item?.what_to_watch),
+          createWorldPulseBlock('Worth Reading', item?.worth_reading),
+          createWorldPulseBlock('Sources', item?.source_ids),
+          createWorldPulseBlock('Article IDs', item?.article_ids),
+        ];
+        blocks.filter(Boolean).forEach((b) => details.appendChild(b));
+        cardsWrap.appendChild(details);
+      });
+      worldPulseDetails.appendChild(cardsWrap);
+    }
+
+    const worthReading = digest.things_worth_reading || digest.worth_reading || [];
+    const worthWatching = digest.things_worth_watching || digest.worth_watching || [];
+    const worthReadingSection = document.createElement('details');
+    worthReadingSection.className = 'rounded border border-gray-800 bg-gray-950/40 p-2';
+    worthReadingSection.open = true;
+    worthReadingSection.innerHTML = `<summary class="cursor-pointer text-xs text-gray-200">Worth Reading (${worthReading.length})</summary>`;
+    if (worthReading.length) {
+      worthReading.forEach((w) => {
+        const row = document.createElement('div');
+        row.className = 'mt-2 border-t border-gray-800 pt-2';
+        const line = [w.title, w.source_id ? `source=${w.source_id}` : null, w.reading_type ? `type=${w.reading_type}` : null, w.trust_tier !== undefined ? `trust=${w.trust_tier}` : null].filter(Boolean).join(' · ');
+        const itemBlock = createWorldPulseBlock('Item', line);
+        const reasonBlock = createWorldPulseBlock('Reason', w.reason_selected);
+        if (itemBlock) row.appendChild(itemBlock);
+        if (reasonBlock) row.appendChild(reasonBlock);
+        if (w.url) {
+          const link = document.createElement('a');
+          link.href = w.url;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.className = 'text-indigo-300 hover:underline';
+          link.textContent = w.url;
+          const linkWrap = document.createElement('div');
+          linkWrap.className = 'mt-1';
+          linkWrap.appendChild(link);
+          row.appendChild(linkWrap);
+        }
+        worthReadingSection.appendChild(row);
+      });
+    } else {
+      const none = document.createElement('div');
+      none.className = 'mt-2 text-gray-500';
+      none.textContent = 'No worth-reading items.';
+      worthReadingSection.appendChild(none);
+    }
+    worldPulseDetails.appendChild(worthReadingSection);
+
+    const worthWatchingSection = document.createElement('details');
+    worthWatchingSection.className = 'rounded border border-gray-800 bg-gray-950/40 p-2';
+    worthWatchingSection.open = true;
+    worthWatchingSection.innerHTML = `<summary class="cursor-pointer text-xs text-gray-200">Things Worth Watching (${worthWatching.length})</summary>`;
+    if (worthWatching.length) {
+      worthWatching.forEach((w) => {
+        const row = document.createElement('div');
+        row.className = 'mt-2 border-t border-gray-800 pt-2';
+        const line = [w.title || w.topic_id || 'watch item', w.category ? `category=${w.category}` : null, w.confidence !== undefined ? `conf=${w.confidence}` : null, w.volatility ? `vol=${w.volatility}` : null].filter(Boolean).join(' · ');
+        const itemBlock = createWorldPulseBlock('Item', line);
+        const reasonBlock = createWorldPulseBlock('Reason', w.reason);
+        const conditionBlock = createWorldPulseBlock('Watch Condition', w.watch_condition);
+        const recheckBlock = createWorldPulseBlock('Recheck After', w.recheck_after);
+        if (itemBlock) row.appendChild(itemBlock);
+        if (reasonBlock) row.appendChild(reasonBlock);
+        if (conditionBlock) row.appendChild(conditionBlock);
+        if (recheckBlock) row.appendChild(recheckBlock);
+        worthWatchingSection.appendChild(row);
+      });
+    } else {
+      const none = document.createElement('div');
+      none.className = 'mt-2 text-gray-500';
+      none.textContent = 'No worth-watching items.';
+      worthWatchingSection.appendChild(none);
+    }
+    worldPulseDetails.appendChild(worthWatchingSection);
+
+    if (Array.isArray(digest.section_rollups) && digest.section_rollups.length) {
+      const rollups = document.createElement('div');
+      rollups.className = 'space-y-2';
+      const title = document.createElement('div');
+      title.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+      title.textContent = 'Section Rollups';
+      rollups.appendChild(title);
+      digest.section_rollups.forEach((r) => {
+        const det = document.createElement('details');
+        det.className = 'rounded border border-gray-800 bg-gray-950/40 p-2';
+        det.innerHTML = `<summary class="cursor-pointer text-xs text-gray-200">${r.section} · ${r.status} · articles=${r.article_count ?? 0} · clusters=${r.cluster_count ?? 0} · digest=${r.digest_item_count ?? 0}</summary>`;
+        [createWorldPulseBlock('Summary', r.summary), createWorldPulseBlock('Source Notes', r.source_notes), createWorldPulseBlock('Confidence', r.confidence)].filter(Boolean).forEach((b) => det.appendChild(b));
+        rollups.appendChild(det);
+      });
+      worldPulseDetails.appendChild(rollups);
+    }
+
+    const evidence = document.createElement('details');
+    evidence.className = 'rounded border border-gray-800 bg-gray-950/40 p-2';
+    evidence.innerHTML = '<summary class="cursor-pointer text-xs text-gray-200">Evidence / Sources</summary>';
+    [
+      createWorldPulseBlock('Accepted Article Count', metrics.acceptedArticleCount),
+      createWorldPulseBlock('Article Cluster Count', metrics.articleClusterCount),
+      createWorldPulseBlock('Source Notes', digest.source_notes),
+      createWorldPulseBlock('Source IDs', (Array.isArray(digest.source_ids) && digest.source_ids.length) ? digest.source_ids : metrics.sourceIds),
+    ].filter(Boolean).forEach((b) => evidence.appendChild(b));
+    worldPulseDetails.appendChild(evidence);
+
+    const debug = document.createElement('details');
+    debug.className = 'rounded border border-gray-800 bg-gray-950/40 p-2';
+    debug.innerHTML = '<summary class="cursor-pointer text-xs text-gray-400">Debug JSON</summary>';
+    const pre = document.createElement('pre');
+    pre.className = 'mt-2 max-h-60 overflow-auto whitespace-pre-wrap text-[10px] text-gray-400';
+    pre.textContent = JSON.stringify({ run, digest, source: model.source }, null, 2);
+    debug.appendChild(pre);
+    worldPulseDetails.appendChild(debug);
+  }
+
   async function loadWorldPulseLatest() {
     if (!worldPulseStatus || !worldPulseSummary) return;
     try {
       const resp = await fetch(`${API_BASE_URL}/api/world-pulse/latest`);
       if (!resp.ok) {
-        worldPulseStatus.textContent = 'No world pulse run available.';
+        worldPulseStatus.textContent = resp.status === 502
+          ? 'World Pulse service unavailable.'
+          : 'No world pulse run available.';
         worldPulseSummary.textContent = '';
+        if (worldPulseDetails) worldPulseDetails.innerHTML = '';
         return;
       }
-      const data = await resp.json();
-      const digest = data && data.digest ? data.digest : {};
-      worldPulseStatus.textContent = `Run ${data?.run?.run_id || 'unknown'} • ${data?.run?.status || 'unknown'}`;
-      worldPulseSummary.textContent = `${digest?.title || 'Daily World Pulse'}\n${digest?.executive_summary || ''}`;
+      const data = normalizeWorldPulsePayload(await resp.json());
+      const metrics = computeEffectiveWorldPulseMetrics(data);
+      const digest = metrics.digest;
+      const run = metrics.run;
+      const generated = digest?.generated_at || digest?.date || run?.date || '--';
+      worldPulseStatus.textContent = `Run ${run?.run_id || 'unknown'} • ${run?.status || 'unknown'} • coverage ${metrics.coverageStatus || 'unknown'}`;
+      worldPulseSummary.textContent = [
+        `${digest?.title || 'Daily World Pulse'}`,
+        `${digest?.executive_summary || ''}`,
+        `Generated: ${generated}`,
+        `Evidence: ${metrics.acceptedArticleCount} accepted articles / ${metrics.articleClusterCount} clusters`,
+        `Curated cards: ${(digest?.items || []).length} (cap: ${metrics.maxDigestItemsTotal ?? '--'})`,
+      ].filter(Boolean).join('\n');
+      renderWorldPulseDetails(data);
     } catch (err) {
       worldPulseStatus.textContent = 'Failed to load world pulse.';
       worldPulseSummary.textContent = '';
+      if (worldPulseDetails) worldPulseDetails.innerHTML = '';
       console.warn('Failed to load world pulse latest', err);
     }
   }
@@ -5839,7 +6426,11 @@ loadDismissedIds();
       const resp = await fetch(`${API_BASE_URL}/api/world-pulse/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ dry_run: true, requested_by: 'hub' }),
+        body: JSON.stringify({
+          dry_run: true,
+          requested_by: 'hub',
+          ...(worldPulseFixtureRunEnabled ? { fixtures: true } : {}),
+        }),
       });
       if (!resp.ok) {
         worldPulseStatus.textContent = 'World pulse run failed.';
@@ -6143,12 +6734,50 @@ loadDismissedIds();
 
   if (sendButton) sendButton.addEventListener('click', sendTextMessage);
   if (chatInput) {
+    chatInput.addEventListener('input', () => {
+      if (!chatInputExpandModalRoot || chatInputExpandModalRoot.classList.contains('hidden')) return;
+      syncChatExpandTextareaFromInput();
+    });
     chatInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
           e.preventDefault(); 
           sendTextMessage();
       }
     });
+  }
+  if (chatInputExpandButton) {
+    chatInputExpandButton.addEventListener('click', () => openChatInputExpandModal());
+  }
+  if (chatInputExpandTextarea) {
+    chatInputExpandTextarea.addEventListener('input', syncChatInputFromExpandTextarea);
+    chatInputExpandTextarea.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        sendExpandedChatMessage();
+      }
+    });
+  }
+  if (chatInputExpandModalClose) {
+    chatInputExpandModalClose.addEventListener('click', () => closeChatInputExpandModal());
+  }
+  if (chatInputExpandModalApply) {
+    chatInputExpandModalApply.addEventListener('click', () => closeChatInputExpandModal());
+  }
+  if (chatInputExpandModalSend) {
+    chatInputExpandModalSend.addEventListener('click', () => {
+      sendExpandedChatMessage();
+    });
+  }
+  if (chatInputExpandModalBackdrop) {
+    chatInputExpandModalBackdrop.addEventListener('click', () => closeChatInputExpandModal());
+  }
+  if (chatInputExpandModalRoot) {
+    chatInputExpandModalRoot.addEventListener('click', (event) => {
+      if (event.target === chatInputExpandModalRoot) closeChatInputExpandModal();
+    });
+  }
+  if (chatInputExpandModalDialog) {
+    chatInputExpandModalDialog.addEventListener('click', (event) => event.stopPropagation());
   }
 
   function getSkillRunnerPrompt() {
@@ -6167,7 +6796,7 @@ loadDismissedIds();
     skillRunnerRunBtn.addEventListener('click', async () => {
       const promptText = getSkillRunnerPrompt();
       if (!promptText) return;
-      await submitExplicitChatText(promptText, { mode: 'agent' });
+      await submitExplicitChatText(promptText, { forceAgentPath: true });
     });
   }
 
@@ -6475,6 +7104,7 @@ loadDismissedIds();
   if (chatStanceDebugModalDialog) {
     chatStanceDebugModalDialog.addEventListener('click', (event) => event.stopPropagation());
   }
+  ensureChatInputExpandModalRootOnBody();
   if (substrateReviewDebugToggle) {
     substrateReviewDebugToggle.addEventListener('click', toggleSubstrateReviewDebugPanel);
   }
@@ -6486,7 +7116,7 @@ loadDismissedIds();
       try {
         await runRecallCanaryQuery();
       } catch (err) {
-        if (recallCanaryStatusMeta) recallCanaryStatusMeta.textContent = `Canary query failed: ${String(err.message || err)}`;
+        setRecallCanaryActionStatus(`Canary query failed: ${toRecallCanaryError(err)}`);
       }
     });
   }
@@ -6514,7 +7144,7 @@ loadDismissedIds();
       try {
         await recordRecallCanaryJudgment();
       } catch (err) {
-        if (recallCanaryStatusMeta) recallCanaryStatusMeta.textContent = `Record judgment failed: ${String(err.message || err)}`;
+        setRecallCanaryActionStatus(`Record judgment failed: ${toRecallCanaryError(err)}`);
       }
     });
   }
@@ -6523,50 +7153,43 @@ loadDismissedIds();
       try {
         await createRecallCanaryReviewArtifact();
       } catch (err) {
-        if (recallCanaryStatusMeta) recallCanaryStatusMeta.textContent = `Create review artifact failed: ${String(err.message || err)}`;
+        setRecallCanaryActionStatus(`Create review artifact failed: ${toRecallCanaryError(err)}`);
       }
     });
   }
-  if (recallCanaryJudgmentV2Better) recallCanaryJudgmentV2Better.addEventListener('click', () => updateRecallCanaryJudgmentSelection('v2_better'));
-  if (recallCanaryJudgmentV1Better) recallCanaryJudgmentV1Better.addEventListener('click', () => updateRecallCanaryJudgmentSelection('v1_better'));
-  if (recallCanaryJudgmentTie) recallCanaryJudgmentTie.addEventListener('click', () => updateRecallCanaryJudgmentSelection('tie'));
-  if (recallCanaryJudgmentBothBad) recallCanaryJudgmentBothBad.addEventListener('click', () => updateRecallCanaryJudgmentSelection('both_bad'));
-  if (recallCanaryJudgmentInconclusive) recallCanaryJudgmentInconclusive.addEventListener('click', () => updateRecallCanaryJudgmentSelection('inconclusive'));
-  if (cognitiveReviewAcceptDraftButton) {
-    cognitiveReviewAcceptDraftButton.addEventListener('click', async () => {
+  ensureRecallCanaryModalRootOnBody();
+  if (recallCanaryToggle) {
+    recallCanaryToggle.addEventListener('click', toggleRecallCanaryPanel);
+  }
+  if (recallCanaryOpenModal) {
+    recallCanaryOpenModal.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openRecallCanaryModal();
+    });
+  }
+  if (recallCanaryModalClose) {
+    recallCanaryModalClose.addEventListener('click', closeRecallCanaryModal);
+  }
+  if (recallCanaryModalRefresh) {
+    recallCanaryModalRefresh.addEventListener('click', async () => {
       try {
-        await submitCognitiveProposalReview('accept_as_draft', 'panel');
+        await refreshRecallCanaryModal();
       } catch (err) {
-        if (cognitiveReviewStatusMeta) cognitiveReviewStatusMeta.textContent = `Accept draft failed: ${String(err.message || err)}`;
+        if (recallCanaryModalStatusMeta) recallCanaryModalStatusMeta.textContent = `Refresh failed: ${toRecallCanaryError(err)}`;
       }
     });
   }
-  if (cognitiveReviewRejectButton) {
-    cognitiveReviewRejectButton.addEventListener('click', async () => {
-      try {
-        await submitCognitiveProposalReview('reject', 'panel');
-      } catch (err) {
-        if (cognitiveReviewStatusMeta) cognitiveReviewStatusMeta.textContent = `Reject failed: ${String(err.message || err)}`;
-      }
+  if (recallCanaryModalBackdrop) {
+    recallCanaryModalBackdrop.addEventListener('click', closeRecallCanaryModal);
+  }
+  if (recallCanaryModalRoot) {
+    recallCanaryModalRoot.addEventListener('click', (event) => {
+      if (event.target === recallCanaryModalRoot) closeRecallCanaryModal();
     });
   }
-  if (cognitiveReviewArchiveButton) {
-    cognitiveReviewArchiveButton.addEventListener('click', async () => {
-      try {
-        await submitCognitiveProposalReview('archive', 'panel');
-      } catch (err) {
-        if (cognitiveReviewStatusMeta) cognitiveReviewStatusMeta.textContent = `Archive failed: ${String(err.message || err)}`;
-      }
-    });
-  }
-  if (cognitiveReviewSupersedeButton) {
-    cognitiveReviewSupersedeButton.addEventListener('click', async () => {
-      try {
-        await submitCognitiveProposalReview('supersede', 'panel');
-      } catch (err) {
-        if (cognitiveReviewStatusMeta) cognitiveReviewStatusMeta.textContent = `Supersede failed: ${String(err.message || err)}`;
-      }
-    });
+  if (recallCanaryModalDialog) {
+    recallCanaryModalDialog.addEventListener('click', (event) => event.stopPropagation());
   }
   ensureCognitiveReviewModalRootOnBody();
   if (cognitiveReviewOpenModal) {
@@ -6843,6 +7466,10 @@ loadDismissedIds();
       closeChatStanceDebugModal();
       return;
     }
+    if (event.key === 'Escape' && chatInputExpandModalRoot && !chatInputExpandModalRoot.classList.contains('hidden')) {
+      closeChatInputExpandModal();
+      return;
+    }
     if (event.key === 'Escape' && substrateReviewModalRoot && !substrateReviewModalRoot.classList.contains('hidden')) {
       closeSubstrateReviewModal();
       return;
@@ -6853,6 +7480,10 @@ loadDismissedIds();
     }
     if (event.key === 'Escape' && autonomyConstitutionModalRoot && !autonomyConstitutionModalRoot.classList.contains('hidden')) {
       closeAutonomyConstitutionModal();
+      return;
+    }
+    if (event.key === 'Escape' && recallCanaryModalRoot && !recallCanaryModalRoot.classList.contains('hidden')) {
+      closeRecallCanaryModal();
       return;
     }
     if (event.key === 'Escape' && scheduleModal && !scheduleModal.classList.contains('hidden')) {
@@ -6881,9 +7512,6 @@ loadDismissedIds();
   refreshRecallCanaryStatus().catch((err) => {
     if (recallCanaryStatusMeta) recallCanaryStatusMeta.textContent = `Recall canary status unavailable: ${String(err.message || err)}`;
   });
-  refreshCognitiveReviewPanel().catch((err) => {
-    if (cognitiveReviewStatusMeta) cognitiveReviewStatusMeta.textContent = `Cognitive review unavailable: ${String(err.message || err)}`;
-  });
   renderSocialInspectionState(null);
   loadResponseFeedbackOptions();
   loadScheduleInventory();
@@ -6905,7 +7533,7 @@ loadDismissedIds();
       try {
           const d = JSON.parse(e.data);
           if (d.transcript && !d.is_text_input) appendMessage('You', d.transcript);
-          if (d.llm_response) {
+          if (d.llm_response || d.workflow) {
             appendMessage('Orion', d.llm_response, 'text-white', {
               raw: d.raw,
               reasoning: d.reasoning,
@@ -6925,6 +7553,7 @@ loadDismissedIds();
               recallDebug: d.recall_debug,
               memoryDigest: d.memory_digest,
               workflow: d.workflow,
+              workflowMetadataOnly: d.workflow_metadata_only,
               autonomySummary: d.autonomy_summary,
               autonomyDebug: d.autonomy_debug,
               autonomyStatePreview: d.autonomy_state_preview,
@@ -7153,8 +7782,13 @@ loadDismissedIds();
 
     const recallMode = recallModeSelect ? recallModeSelect.value : "auto";
     const recallProfile = recallProfileSelect ? recallProfileSelect.value : "auto";
-    const effectiveVerbs = modeVerbOverride ? [modeVerbOverride] : selectedVerbs;
-    const requestMode = opts && opts.mode ? String(opts.mode) : currentMode;
+    const forceAgentPath = Boolean(opts && opts.forceAgentPath);
+    const effectiveVerbs = forceAgentPath
+      ? []
+      : (modeVerbOverride ? [modeVerbOverride] : selectedVerbs);
+    const requestMode = forceAgentPath
+      ? 'agent'
+      : (opts && opts.mode ? String(opts.mode) : currentMode);
     const payload = {
        text_input: value,
        mode: requestMode,
@@ -7192,7 +7826,7 @@ loadDismissedIds();
         })
         .then(r => r.json())
         .then(d => {
-            if(d.text) {
+            if(d.text || d.workflow) {
               appendMessage('Orion', d.text, 'text-white', {
                 raw: d.raw,
                 reasoning: d.reasoning,
@@ -7212,6 +7846,7 @@ loadDismissedIds();
                 recallDebug: d.recall_debug,
                 memoryDigest: d.memory_digest,
                 workflow: d.workflow,
+                workflowMetadataOnly: d.workflow_metadata_only,
                 autonomySummary: d.autonomy_summary,
                 autonomyDebug: d.autonomy_debug,
                 autonomyStatePreview: d.autonomy_state_preview,
@@ -7579,6 +8214,12 @@ loadDismissedIds();
       await loadChatMessages();
       await loadPendingAttention();
       await loadWorldPulseLatest();
+      if (messagesToggle) {
+        messagesToggle.addEventListener('click', toggleMessagesPanel);
+      }
+      if (messageFilter) {
+        messageFilter.addEventListener('click', (event) => event.stopPropagation());
+      }
       if (notificationFilter) {
         notificationFilter.addEventListener('change', renderNotifications);
       }
@@ -7588,8 +8229,12 @@ loadDismissedIds();
           loadChatMessages();
         });
       }
+      if (worldPulseToggle) {
+        worldPulseToggle.addEventListener('click', toggleWorldPulsePanel);
+      }
       if (worldPulseRunButton) {
-        worldPulseRunButton.addEventListener('click', () => {
+        worldPulseRunButton.addEventListener('click', (event) => {
+          event.stopPropagation();
           triggerWorldPulseRun();
         });
       }

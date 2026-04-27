@@ -942,9 +942,13 @@ class PlanRunner:
             "planning_candidate_rejected": bool(final_text_diag.get("planning_candidate_rejected")),
             "status": overall_status,
             "world_context_capsule_loaded": bool(ctx.get("world_context_capsule_loaded")),
+            "capsule_age_hours": ctx.get("capsule_age_hours"),
             "capsule_topic_count": len((ctx.get("world_context_capsule") or {}).get("salient_topics") or [])
             if isinstance(ctx.get("world_context_capsule"), dict)
             else 0,
+            "capsule_filtered_reason": ctx.get("capsule_filtered_reason"),
+            "stance_world_context_items_used": ctx.get("stance_world_context_items_used"),
+            "politics_context_suppressed": bool(ctx.get("politics_context_suppressed")),
         }
         if overall_status == "success" and soft_failure:
             overall_status = "partial"

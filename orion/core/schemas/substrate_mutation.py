@@ -365,6 +365,7 @@ class RecallCanaryRunV1(BaseModel):
     profile_id: str | None = None
     query_text: str
     query_profile: str | None = None
+    profile_metadata: dict[str, Any] = Field(default_factory=dict)
     source: str = "operator_manual_canary"
     comparison_summary: dict[str, Any] = Field(default_factory=dict)
     v1_summary: dict[str, Any] = Field(default_factory=dict)

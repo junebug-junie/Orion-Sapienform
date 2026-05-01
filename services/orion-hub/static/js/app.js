@@ -192,6 +192,67 @@ loadDismissedIds();
   const substrateReviewDebugBody = document.getElementById('substrateReviewDebugBody');
   const substrateReviewDebugMeta = document.getElementById('substrateReviewDebugMeta');
   const substrateReviewDebugOverview = document.getElementById('substrateReviewDebugOverview');
+
+  function ensureSkillRunnerWorkflowOptions() {
+    if (!skillRunnerSelect) return;
+    const workflows = [
+      { workflowId: 'dream_cycle', prompt: 'Run your dream cycle.', label: 'Workflow · Run your dream cycle.' },
+      { workflowId: 'journal_pass', prompt: 'Do a journal pass.', label: 'Workflow · Do a journal pass.' },
+      { workflowId: 'self_review', prompt: 'Run a self review.', label: 'Workflow · Run a self review.' },
+      { workflowId: 'concept_induction_pass', prompt: 'Run concept induction.', label: 'Workflow · Run concept induction.' },
+    ];
+    const existingByWorkflowId = new Set(
+      Array.from(skillRunnerSelect.options || [])
+        .map((opt) => String(opt.dataset.workflowId || '').trim())
+        .filter(Boolean)
+    );
+    if (workflows.every((wf) => existingByWorkflowId.has(wf.workflowId))) {
+      return;
+    }
+    let workflowGroup = Array.from(skillRunnerSelect.querySelectorAll('optgroup')).find(
+      (group) => String(group.label || '').trim().toLowerCase() === 'cognitive workflows'
+    );
+    if (!workflowGroup) {
+      workflowGroup = document.createElement('optgroup');
+      workflowGroup.label = 'Cognitive workflows';
+      skillRunnerSelect.appendChild(workflowGroup);
+    }
+    workflows.forEach((wf) => {
+      if (existingByWorkflowId.has(wf.workflowId)) return;
+      const option = document.createElement('option');
+      option.value = wf.prompt;
+      option.dataset.workflowId = wf.workflowId;
+      option.textContent = wf.label;
+      workflowGroup.appendChild(option);
+    });
+  }
+  ensureSkillRunnerWorkflowOptions();
+  const selfExperimentsDebugPanel = document.getElementById('selfExperimentsDebugPanel');
+  const selfExperimentsDebugToggle = document.getElementById('selfExperimentsDebugToggle');
+  const selfExperimentsDebugCaret = document.getElementById('selfExperimentsDebugCaret');
+  const selfExperimentsDebugBody = document.getElementById('selfExperimentsDebugBody');
+  const selfExperimentsDebugMeta = document.getElementById('selfExperimentsDebugMeta');
+  const selfExperimentsDebugOverview = document.getElementById('selfExperimentsDebugOverview');
+  const selfExperimentsDebugRaw = document.getElementById('selfExperimentsDebugRaw');
+  const selfExperimentsDebugOpenModal = document.getElementById('selfExperimentsDebugOpenModal');
+  const selfExperimentsDebugRefresh = document.getElementById('selfExperimentsDebugRefresh');
+  const selfExperimentsFilterCorrelation = document.getElementById('selfExperimentsFilterCorrelation');
+  const selfExperimentsFilterDate = document.getElementById('selfExperimentsFilterDate');
+  const selfExperimentsFilterSkill = document.getElementById('selfExperimentsFilterSkill');
+  const selfExperimentsApplyFilters = document.getElementById('selfExperimentsApplyFilters');
+  const selfExperimentsTriggerPulse = document.getElementById('selfExperimentsTriggerPulse');
+  const selfExperimentsTriggerMetacog = document.getElementById('selfExperimentsTriggerMetacog');
+  const selfExperimentsActionStatus = document.getElementById('selfExperimentsActionStatus');
+  const selfExperimentsModalRoot = document.getElementById('selfExperimentsModalRoot');
+  const selfExperimentsModalBackdrop = document.getElementById('selfExperimentsModalBackdrop');
+  const selfExperimentsModalDialog = document.getElementById('selfExperimentsModalDialog');
+  const selfExperimentsModalMeta = document.getElementById('selfExperimentsModalMeta');
+  const selfExperimentsModalRefresh = document.getElementById('selfExperimentsModalRefresh');
+  const selfExperimentsModalClose = document.getElementById('selfExperimentsModalClose');
+  const selfExperimentsModalSummary = document.getElementById('selfExperimentsModalSummary');
+  const selfExperimentsModalRuns = document.getElementById('selfExperimentsModalRuns');
+  const selfExperimentsModalProvenanceTable = document.getElementById('selfExperimentsModalProvenanceTable');
+  const selfExperimentsModalRaw = document.getElementById('selfExperimentsModalRaw');
   const autonomyReadinessPanel = document.getElementById('autonomyReadinessPanel');
   const autonomyReadinessToggle = document.getElementById('autonomyReadinessToggle');
   const autonomyReadinessCaret = document.getElementById('autonomyReadinessCaret');
@@ -469,6 +530,10 @@ loadDismissedIds();
   const substratePanel = document.getElementById("substrate");
   const substratePanelFrame = document.getElementById("substratePanelFrame");
   const substratePanelRefresh = document.getElementById("substratePanelRefresh");
+  const pressureAnalyticsTabButton = document.getElementById("pressureAnalyticsTabButton");
+  const pressurePanel = document.getElementById("pressure");
+  const pressureAnalyticsFrame = document.getElementById("pressureAnalyticsFrame");
+  const pressureAnalyticsRefresh = document.getElementById("pressureAnalyticsRefresh");
   const topicFoundryBaseLabel = document.getElementById("topicFoundryBaseLabel");
   const tsDatasetSelect = document.getElementById("tsDatasetSelect");
   const tsDatasetName = document.getElementById("tsDatasetName");
@@ -710,19 +775,51 @@ loadDismissedIds();
   }
 
   function setActiveTab(tabKey) {
-    if (!hubTabPanel || !topicStudioPanel || !serviceLogsPanel || !substratePanel || !hubTabButton || !topicStudioTabButton || !serviceLogsTabButton || !substrateTabButton) return;
+    if (
+      !hubTabPanel ||
+      !topicStudioPanel ||
+      !serviceLogsPanel ||
+      !substratePanel ||
+      !pressurePanel ||
+      !hubTabButton ||
+      !topicStudioTabButton ||
+      !serviceLogsTabButton ||
+      !substrateTabButton ||
+      !pressureAnalyticsTabButton
+    ) {
+      return;
+    }
     const isHub = tabKey === "hub";
     const isTopicStudio = tabKey === "topic-studio";
     const isServiceLogs = tabKey === "service-logs";
     const isSubstrate = tabKey === "substrate";
+    const isPressure = tabKey === "pressure";
     hubTabPanel.classList.toggle("hidden", !isHub);
     topicStudioPanel.classList.toggle("hidden", !isTopicStudio);
     serviceLogsPanel.classList.toggle("hidden", !isServiceLogs);
     substratePanel.classList.toggle("hidden", !isSubstrate);
+    pressurePanel.classList.toggle("hidden", !isPressure);
     styleTabButton(hubTabButton, isHub);
     styleTabButton(topicStudioTabButton, isTopicStudio);
     styleTabButton(serviceLogsTabButton, isServiceLogs);
     styleTabButton(substrateTabButton, isSubstrate);
+    styleTabButton(pressureAnalyticsTabButton, isPressure);
+  }
+
+  function applyHashToTab() {
+    const h = window.location.hash;
+    if (h === "#topic-studio") {
+      setActiveTab("topic-studio");
+      refreshTopicStudio();
+    } else if (h === "#service-logs") {
+      setActiveTab("service-logs");
+    } else if (h === "#substrate") {
+      setActiveTab("substrate");
+    } else if (h === "#pressure") {
+      setActiveTab("pressure");
+    } else {
+      setActiveTab("hub");
+    }
   }
 
   function resolveTopicStudioSubview() {
@@ -2726,6 +2823,194 @@ loadDismissedIds();
     if (substrateReviewDebugCaret) substrateReviewDebugCaret.textContent = nextHidden ? '▾' : '▴';
   }
 
+  function clearSelfExperimentsDebugPanel() {
+    if (selfExperimentsDebugBody) selfExperimentsDebugBody.classList.add('hidden');
+    if (selfExperimentsDebugCaret) selfExperimentsDebugCaret.textContent = '▾';
+    if (selfExperimentsDebugMeta) selfExperimentsDebugMeta.textContent = 'No self-experiments status loaded.';
+    if (selfExperimentsDebugOverview) selfExperimentsDebugOverview.textContent = 'No self-experiments status loaded.';
+    if (selfExperimentsDebugRaw) selfExperimentsDebugRaw.textContent = '--';
+  }
+
+  function toggleSelfExperimentsDebugPanel() {
+    if (!selfExperimentsDebugBody) return;
+    const nextHidden = !selfExperimentsDebugBody.classList.contains('hidden');
+    selfExperimentsDebugBody.classList.toggle('hidden', nextHidden);
+    if (selfExperimentsDebugCaret) selfExperimentsDebugCaret.textContent = nextHidden ? '▾' : '▴';
+  }
+
+  function updateSelfExperimentsDebugPanel(payload) {
+    if (!selfExperimentsDebugPanel || !selfExperimentsDebugMeta || !selfExperimentsDebugOverview) return;
+    const summary = payload && payload.summary ? payload.summary : {};
+    const statusCounts = summary.status_counts || {};
+    const sourceCounts = summary.source_counts || {};
+    selfExperimentsDebugMeta.textContent = `total ${summary.total ?? 0} · validated ${statusCounts.validated ?? 0} · rejected ${statusCounts.rejected ?? 0}`;
+    selfExperimentsDebugOverview.innerHTML = '';
+    [
+      `status counts: ${JSON.stringify(statusCounts)}`,
+      `source counts: ${JSON.stringify(sourceCounts)}`,
+      `latest generated_at: ${(payload && payload.generated_at) || '--'}`,
+      `latest item: ${((payload && payload.items && payload.items[0] && payload.items[0].skill_id) || '--')} · status ${((payload && payload.items && payload.items[0] && payload.items[0].status) || '--')}`,
+      `latest hint: ${((payload && payload.items && payload.items[0] && payload.items[0].fix_hint) || '--')}`,
+    ].forEach((line) => {
+      const row = document.createElement('div');
+      row.textContent = line;
+      selfExperimentsDebugOverview.appendChild(row);
+    });
+    if (selfExperimentsDebugRaw) {
+      selfExperimentsDebugRaw.textContent = JSON.stringify(payload || {}, null, 2);
+    }
+    if (selfExperimentsModalMeta) {
+      selfExperimentsModalMeta.textContent = selfExperimentsDebugMeta ? selfExperimentsDebugMeta.textContent : 'Self experiments runtime';
+    }
+    if (selfExperimentsModalSummary) {
+      selfExperimentsModalSummary.innerHTML = '';
+      [
+        `total=${summary.total ?? 0}`,
+        `validated=${statusCounts.validated ?? 0}`,
+        `rejected=${statusCounts.rejected ?? 0}`,
+        `sources=${JSON.stringify(sourceCounts)}`,
+      ].forEach((line) => {
+        const row = document.createElement('div');
+        row.className = 'autonomy-readiness-row';
+        row.textContent = line;
+        selfExperimentsModalSummary.appendChild(row);
+      });
+    }
+    if (selfExperimentsModalRuns) {
+      const rows = Array.isArray(payload && payload.items) ? payload.items : [];
+      selfExperimentsModalRuns.innerHTML = '';
+      if (!rows.length) {
+        selfExperimentsModalRuns.textContent = 'No runs for current filters.';
+      } else {
+        rows.slice(0, 12).forEach((item) => {
+          const block = document.createElement('div');
+          block.className = 'rounded-xl border border-gray-700 bg-gray-900/50 p-3 space-y-1';
+          const provenance = item && item.provenance ? item.provenance : {};
+          const header = document.createElement('div');
+          header.className = 'text-[11px] text-gray-100';
+          header.textContent = `${item.status || '--'} · ${item.skill_id || '--'} · ${provenance.source || '--'}`;
+          const line1 = document.createElement('div');
+          line1.className = 'text-[10px] text-gray-400';
+          line1.textContent = `date=${provenance.date || '--'} corr=${provenance.correlation_id || '--'} id=${item.experiment_id || '--'}`;
+          const line2 = document.createElement('div');
+          line2.className = 'text-[10px] text-amber-200';
+          line2.textContent = `reason=${item.reason || 'none'} · fix=${item.fix_hint || '--'}`;
+          block.appendChild(header);
+          block.appendChild(line1);
+          block.appendChild(line2);
+          selfExperimentsModalRuns.appendChild(block);
+        });
+      }
+    }
+    if (selfExperimentsModalProvenanceTable) {
+      const rows = Array.isArray(payload && payload.items) ? payload.items : [];
+      selfExperimentsModalProvenanceTable.innerHTML = '';
+      if (!rows.length) {
+        selfExperimentsModalProvenanceTable.innerHTML = '<tr><td colspan="9" class="px-2 py-3 text-gray-500">No provenance rows for current filters.</td></tr>';
+      } else {
+        rows.slice(0, 30).forEach((item) => {
+          const provenance = item && item.provenance ? item.provenance : {};
+          const tr = document.createElement('tr');
+          tr.className = 'border-t border-gray-800 align-top';
+          const cells = [
+            item.created_at_utc || '--',
+            item.status || '--',
+            provenance.source || '--',
+            item.skill_id || '--',
+            provenance.correlation_id || '--',
+            provenance.date || '--',
+            provenance.node || '--',
+            item.reason || 'none',
+            item.fix_hint || '--',
+          ];
+          cells.forEach((value) => {
+            const td = document.createElement('td');
+            td.className = 'px-2 py-2 whitespace-nowrap';
+            td.textContent = String(value);
+            tr.appendChild(td);
+          });
+          selfExperimentsModalProvenanceTable.appendChild(tr);
+        });
+      }
+    }
+    if (selfExperimentsModalRaw) {
+      selfExperimentsModalRaw.textContent = JSON.stringify(payload || {}, null, 2);
+    }
+  }
+
+  async function refreshSelfExperimentsDebugStatus() {
+    const params = new URLSearchParams();
+    if (selfExperimentsFilterCorrelation && selfExperimentsFilterCorrelation.value.trim()) {
+      params.set('correlation_id', selfExperimentsFilterCorrelation.value.trim());
+    }
+    if (selfExperimentsFilterDate && selfExperimentsFilterDate.value.trim()) {
+      params.set('date', selfExperimentsFilterDate.value.trim());
+    }
+    if (selfExperimentsFilterSkill && selfExperimentsFilterSkill.value.trim()) {
+      params.set('skill_id', selfExperimentsFilterSkill.value.trim());
+    }
+    const query = params.toString() ? `?${params.toString()}` : '';
+    const payload = await substrateReviewFetch(`/api/debug/self-experiments/status${query}`);
+    updateSelfExperimentsDebugPanel(payload || {});
+    return payload;
+  }
+
+  async function triggerSelfExperimentsDaily(action) {
+    if (selfExperimentsActionStatus) selfExperimentsActionStatus.textContent = `Triggering ${action}...`;
+    const dateValue = selfExperimentsFilterDate && selfExperimentsFilterDate.value.trim()
+      ? selfExperimentsFilterDate.value.trim()
+      : '';
+    const payload = await substrateReviewFetch('/api/debug/self-experiments/trigger-daily', {
+      method: 'POST',
+      body: JSON.stringify({ action, date: dateValue || null }),
+    });
+    if (selfExperimentsActionStatus) {
+      selfExperimentsActionStatus.textContent = `Triggered ${action} · correlation_id=${payload.correlation_id || '--'}`;
+    }
+    if (selfExperimentsFilterCorrelation && payload.correlation_id) {
+      selfExperimentsFilterCorrelation.value = String(payload.correlation_id);
+    }
+    await refreshSelfExperimentsDebugStatus();
+    return payload;
+  }
+
+  function ensureSelfExperimentsModalRootOnBody() {
+    if (!selfExperimentsModalRoot || !document.body) return;
+    if (selfExperimentsModalRoot.parentElement !== document.body) {
+      document.body.appendChild(selfExperimentsModalRoot);
+    }
+  }
+
+  function openSelfExperimentsModal() {
+    if (!selfExperimentsModalRoot) return;
+    closeAutonomyDebugModal();
+    closeMemoryDebugModal();
+    closeSubstrateReviewModal();
+    ensureSelfExperimentsModalRootOnBody();
+    selfExperimentsModalRoot.style.position = 'fixed';
+    selfExperimentsModalRoot.style.inset = '0';
+    selfExperimentsModalRoot.style.zIndex = '2147483646';
+    if (selfExperimentsModalBackdrop) {
+      selfExperimentsModalBackdrop.style.position = 'fixed';
+      selfExperimentsModalBackdrop.style.inset = '0';
+      selfExperimentsModalBackdrop.style.zIndex = '2147483646';
+    }
+    if (selfExperimentsModalDialog) {
+      selfExperimentsModalDialog.style.position = 'fixed';
+      selfExperimentsModalDialog.style.zIndex = '2147483647';
+    }
+    selfExperimentsModalRoot.classList.remove('hidden');
+    selfExperimentsModalRoot.setAttribute('aria-hidden', 'false');
+    syncDebugModalScrollLock();
+  }
+
+  function closeSelfExperimentsModal() {
+    if (!selfExperimentsModalRoot) return;
+    selfExperimentsModalRoot.classList.add('hidden');
+    selfExperimentsModalRoot.setAttribute('aria-hidden', 'true');
+    syncDebugModalScrollLock();
+  }
+
   function ensureSubstrateReviewModalRootOnBody() {
     if (!substrateReviewModalRoot || !document.body) return;
     if (substrateReviewModalRoot.parentElement !== document.body) {
@@ -3070,8 +3355,8 @@ loadDismissedIds();
     stanceNoteListEl,
   }) {
     if (!statusMetaEl || !statusSummaryEl) return;
-    const status = await api('/api/substrate/cognitive-proposals/status');
-    const proposals = await api('/api/substrate/cognitive-proposals?limit=8');
+    const status = await substrateReviewFetch('/api/substrate/cognitive-proposals/status');
+    const proposals = await substrateReviewFetch('/api/substrate/cognitive-proposals?limit=8');
     const statusData = (status && status.data) || {};
     const posture = statusData.review_posture || {};
     const proposalRows = ((proposals && proposals.data && proposals.data.recent_cognitive_proposals) || []).slice(0, 8);
@@ -3090,14 +3375,14 @@ loadDismissedIds();
       statusSummaryEl.appendChild(row);
     });
     if (draftListEl) {
-      const drafts = await api('/api/substrate/cognitive-drafts?limit=8');
+      const drafts = await substrateReviewFetch('/api/substrate/cognitive-drafts?limit=8');
       const rows = ((drafts && drafts.data && drafts.data.drafts) || []).slice(0, 8);
       draftListEl.textContent = rows.length
         ? rows.map((row) => `${row.draft_id} · ${row.state} · ${row.proposal_class}`).join('\n')
         : 'No accepted drafts yet.';
     }
     if (stanceNoteListEl) {
-      const notes = await api('/api/substrate/cognitive-stance-notes?limit=8');
+      const notes = await substrateReviewFetch('/api/substrate/cognitive-stance-notes?limit=8');
       const rows = ((notes && notes.data && notes.data.stance_notes) || []).slice(0, 8);
       stanceNoteListEl.textContent = rows.length
         ? rows.map((row) => `${row.stance_note_id} · ${row.status} · ${row.visibility}`).join('\n')
@@ -3120,7 +3405,7 @@ loadDismissedIds();
       ? cognitiveReviewModalProposalIdInput.value.trim()
       : '';
     if (!proposalId) throw new Error('proposal_id is required');
-    await api(`/api/substrate/cognitive-proposals/${encodeURIComponent(proposalId)}/review`, {
+    await substrateReviewFetch(`/api/substrate/cognitive-proposals/${encodeURIComponent(proposalId)}/review`, {
       method: 'POST',
       body: JSON.stringify({
         decision,
@@ -3261,6 +3546,7 @@ loadDismissedIds();
     if (!queryText) throw new Error('Canary query text is required');
     const profileId = (recallCanaryProfileSelect && recallCanaryProfileSelect.value ? recallCanaryProfileSelect.value.trim() : '');
     if (!profileId) throw new Error('Recall profile is required');
+    setRecallCanaryActionStatus('Running canary query...');
     const payload = await substrateReviewFetch('/api/substrate/recall-canary/query', {
       method: 'POST',
       body: JSON.stringify({ query_text: queryText, profile_id: profileId }),
@@ -4910,13 +5196,19 @@ loadDismissedIds();
   function normalizeRecallProfileDisplay() {
     if (!recallProfileSelect) return;
     const options = Array.from(recallProfileSelect.options || []);
+    if (!options.some((opt) => (opt.value || '').trim().toLowerCase() === 'recall.v1')) {
+      const opt = document.createElement('option');
+      opt.value = 'recall.v1';
+      opt.textContent = 'recall.v1';
+      recallProfileSelect.insertBefore(opt, recallProfileSelect.options[1] || null);
+    }
     options.forEach((opt) => {
       if ((opt.value || '').trim().toLowerCase() === 'chat.general.v1') {
         opt.textContent = 'chat.general.v1';
       }
     });
     if (!recallProfileSelect.value || recallProfileSelect.value === 'auto') {
-      recallProfileSelect.value = 'chat.general.v1';
+      recallProfileSelect.value = 'recall.v1';
     }
   }
 
@@ -6780,13 +7072,46 @@ loadDismissedIds();
     chatInputExpandModalDialog.addEventListener('click', (event) => event.stopPropagation());
   }
 
-  function getSkillRunnerPrompt() {
-    if (!skillRunnerSelect || !skillRunnerSelect.value) return '';
-    return String(skillRunnerSelect.value);
+  function getSkillRunnerSelection() {
+    if (!skillRunnerSelect || !skillRunnerSelect.value) {
+      return { prompt: '', workflowId: null };
+    }
+    const selectedOption = skillRunnerSelect.options[skillRunnerSelect.selectedIndex];
+    const workflowId = selectedOption ? String(selectedOption.dataset.workflowId || '').trim() : '';
+    return {
+      prompt: String(skillRunnerSelect.value),
+      workflowId: workflowId || null,
+    };
+  }
+  function getSkillRunnerLaneOptions() {
+    const laneMode = String(currentMode || 'brain').toLowerCase();
+    const verbOverride = modeVerbOverride ? String(modeVerbOverride).trim() : '';
+    if (verbOverride === 'chat_quick') {
+      return {
+        mode: 'brain',
+        verbs: ['chat_quick'],
+        skillRunnerOrigin: true,
+        skillRunnerLane: 'quick',
+      };
+    }
+    if (laneMode === 'agent') {
+      return {
+        mode: 'agent',
+        verbs: [],
+        skillRunnerOrigin: true,
+        skillRunnerLane: 'agent',
+      };
+    }
+    return {
+      mode: 'brain',
+      verbs: [],
+      skillRunnerOrigin: true,
+      skillRunnerLane: 'brain',
+    };
   }
   if (skillRunnerInsertBtn && skillRunnerSelect && chatInput) {
     skillRunnerInsertBtn.addEventListener('click', () => {
-      const promptText = getSkillRunnerPrompt();
+      const { prompt: promptText } = getSkillRunnerSelection();
       if (!promptText) return;
       chatInput.value = promptText;
       chatInput.focus();
@@ -6794,9 +7119,13 @@ loadDismissedIds();
   }
   if (skillRunnerRunBtn && skillRunnerSelect) {
     skillRunnerRunBtn.addEventListener('click', async () => {
-      const promptText = getSkillRunnerPrompt();
+      const { prompt: promptText, workflowId } = getSkillRunnerSelection();
       if (!promptText) return;
-      await submitExplicitChatText(promptText, { forceAgentPath: true });
+      const runOptions = getSkillRunnerLaneOptions();
+      if (workflowId) {
+        runOptions.workflowRequestOverride = { workflow_id: workflowId };
+      }
+      await submitExplicitChatText(promptText, runOptions);
     });
   }
 
@@ -6838,6 +7167,7 @@ loadDismissedIds();
       clearAutonomyDebugPanel();
       clearChatStanceDebugPanel();
       clearSubstrateReviewDebugPanel();
+      clearSelfExperimentsDebugPanel();
     });
   }
   if (copyButton && conversationDiv) {
@@ -7107,6 +7437,76 @@ loadDismissedIds();
   ensureChatInputExpandModalRootOnBody();
   if (substrateReviewDebugToggle) {
     substrateReviewDebugToggle.addEventListener('click', toggleSubstrateReviewDebugPanel);
+  }
+  if (selfExperimentsDebugToggle) {
+    selfExperimentsDebugToggle.addEventListener('click', toggleSelfExperimentsDebugPanel);
+  }
+  if (selfExperimentsDebugRefresh) {
+    selfExperimentsDebugRefresh.addEventListener('click', async () => {
+      try {
+        await refreshSelfExperimentsDebugStatus();
+      } catch (err) {
+        if (selfExperimentsDebugMeta) selfExperimentsDebugMeta.textContent = `Self experiments unavailable: ${String(err.message || err)}`;
+      }
+    });
+  }
+  ensureSelfExperimentsModalRootOnBody();
+  if (selfExperimentsDebugOpenModal) {
+    selfExperimentsDebugOpenModal.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openSelfExperimentsModal();
+    });
+  }
+  if (selfExperimentsModalClose) {
+    selfExperimentsModalClose.addEventListener('click', closeSelfExperimentsModal);
+  }
+  if (selfExperimentsModalRefresh) {
+    selfExperimentsModalRefresh.addEventListener('click', async () => {
+      try {
+        await refreshSelfExperimentsDebugStatus();
+      } catch (err) {
+        if (selfExperimentsModalMeta) selfExperimentsModalMeta.textContent = `Self experiments unavailable: ${String(err.message || err)}`;
+      }
+    });
+  }
+  if (selfExperimentsModalBackdrop) {
+    selfExperimentsModalBackdrop.addEventListener('click', closeSelfExperimentsModal);
+  }
+  if (selfExperimentsModalRoot) {
+    selfExperimentsModalRoot.addEventListener('click', (event) => {
+      if (event.target === selfExperimentsModalRoot) closeSelfExperimentsModal();
+    });
+  }
+  if (selfExperimentsModalDialog) {
+    selfExperimentsModalDialog.addEventListener('click', (event) => event.stopPropagation());
+  }
+  if (selfExperimentsApplyFilters) {
+    selfExperimentsApplyFilters.addEventListener('click', async () => {
+      try {
+        await refreshSelfExperimentsDebugStatus();
+      } catch (err) {
+        if (selfExperimentsDebugMeta) selfExperimentsDebugMeta.textContent = `Self experiments unavailable: ${String(err.message || err)}`;
+      }
+    });
+  }
+  if (selfExperimentsTriggerPulse) {
+    selfExperimentsTriggerPulse.addEventListener('click', async () => {
+      try {
+        await triggerSelfExperimentsDaily('pulse');
+      } catch (err) {
+        if (selfExperimentsActionStatus) selfExperimentsActionStatus.textContent = `Trigger failed: ${String(err.message || err)}`;
+      }
+    });
+  }
+  if (selfExperimentsTriggerMetacog) {
+    selfExperimentsTriggerMetacog.addEventListener('click', async () => {
+      try {
+        await triggerSelfExperimentsDaily('metacog');
+      } catch (err) {
+        if (selfExperimentsActionStatus) selfExperimentsActionStatus.textContent = `Trigger failed: ${String(err.message || err)}`;
+      }
+    });
   }
   if (autonomyReadinessToggle) {
     autonomyReadinessToggle.addEventListener('click', toggleAutonomyReadinessPanel);
@@ -7474,6 +7874,10 @@ loadDismissedIds();
       closeSubstrateReviewModal();
       return;
     }
+    if (event.key === 'Escape' && selfExperimentsModalRoot && !selfExperimentsModalRoot.classList.contains('hidden')) {
+      closeSelfExperimentsModal();
+      return;
+    }
     if (event.key === 'Escape' && cognitiveReviewModalRoot && !cognitiveReviewModalRoot.classList.contains('hidden')) {
       closeCognitiveReviewModal();
       return;
@@ -7502,9 +7906,13 @@ loadDismissedIds();
   clearMemoryDebugPanel();
   clearChatStanceDebugPanel();
   clearSubstrateReviewDebugPanel();
+  clearSelfExperimentsDebugPanel();
   clearAutonomyReadinessPanel();
   refreshSubstrateReviewStatus().catch((err) => {
     if (substrateReviewDebugMeta) substrateReviewDebugMeta.textContent = `Substrate review status unavailable: ${String(err.message || err)}`;
+  });
+  refreshSelfExperimentsDebugStatus().catch((err) => {
+    if (selfExperimentsDebugMeta) selfExperimentsDebugMeta.textContent = `Self experiments unavailable: ${String(err.message || err)}`;
   });
   refreshAutonomyReadinessPanel().catch((err) => {
     if (autonomyReadinessMeta) autonomyReadinessMeta.textContent = `Autonomy readiness unavailable: ${String(err.message || err)}`;
@@ -7557,6 +7965,8 @@ loadDismissedIds();
               autonomySummary: d.autonomy_summary,
               autonomyDebug: d.autonomy_debug,
               autonomyStatePreview: d.autonomy_state_preview,
+              autonomyExecutionMode: d.autonomy_execution_mode,
+              autonomyGoalLineage: d.autonomy_goal_lineage,
               autonomyBackend: d.autonomy_backend,
               autonomySelectedSubject: d.autonomy_selected_subject,
               autonomyRepositoryStatus: d.autonomy_repository_status,
@@ -7783,9 +8193,12 @@ loadDismissedIds();
     const recallMode = recallModeSelect ? recallModeSelect.value : "auto";
     const recallProfile = recallProfileSelect ? recallProfileSelect.value : "auto";
     const forceAgentPath = Boolean(opts && opts.forceAgentPath);
+    const explicitVerbs = Array.isArray(opts && opts.verbs)
+      ? opts.verbs.map((verb) => String(verb || '').trim()).filter(Boolean)
+      : null;
     const effectiveVerbs = forceAgentPath
       ? []
-      : (modeVerbOverride ? [modeVerbOverride] : selectedVerbs);
+      : (explicitVerbs !== null ? explicitVerbs : (modeVerbOverride ? [modeVerbOverride] : selectedVerbs));
     const requestMode = forceAgentPath
       ? 'agent'
       : (opts && opts.mode ? String(opts.mode) : currentMode);
@@ -7802,9 +8215,14 @@ loadDismissedIds();
        recall_required: recallRequiredToggle ? recallRequiredToggle.checked : false,
        packs: selectedPacks,
        verbs: effectiveVerbs,
+       skill_runner_origin: Boolean(opts && opts.skillRunnerOrigin),
+       skill_runner_lane: opts && opts.skillRunnerLane ? String(opts.skillRunnerLane) : null,
        presence_context: presenceContext,
        surface_context: { surface: 'hub_desktop', input_modality: 'typed' },
     };
+    if (opts && opts.workflowRequestOverride && typeof opts.workflowRequestOverride === 'object') {
+      payload.workflow_request_override = opts.workflowRequestOverride;
+    }
 
     if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify(payload));
@@ -7850,6 +8268,8 @@ loadDismissedIds();
                 autonomySummary: d.autonomy_summary,
                 autonomyDebug: d.autonomy_debug,
                 autonomyStatePreview: d.autonomy_state_preview,
+                autonomyExecutionMode: d.autonomy_execution_mode,
+                autonomyGoalLineage: d.autonomy_goal_lineage,
                 autonomyBackend: d.autonomy_backend,
                 autonomySelectedSubject: d.autonomy_selected_subject,
                 autonomyRepositoryStatus: d.autonomy_repository_status,
@@ -8485,7 +8905,14 @@ loadDismissedIds();
   }
   setTopicStudioSubview(resolveTopicStudioSubview());
 
-  if (hubTabButton && topicStudioTabButton && serviceLogsTabButton && substrateTabButton) {
+  if (
+    hubTabButton &&
+    topicStudioTabButton &&
+    serviceLogsTabButton &&
+    substrateTabButton &&
+    pressureAnalyticsTabButton &&
+    pressurePanel
+  ) {
     hubTabButton.addEventListener("click", () => {
       setActiveTab("hub");
       history.replaceState(null, "", "#hub");
@@ -8504,21 +8931,30 @@ loadDismissedIds();
       setActiveTab("substrate");
       history.replaceState(null, "", "#substrate");
     });
-    if (window.location.hash === "#topic-studio") {
-      setActiveTab("topic-studio");
-      refreshTopicStudio();
-    } else if (window.location.hash === "#service-logs") {
-      setActiveTab("service-logs");
-    } else if (window.location.hash === "#substrate") {
-      setActiveTab("substrate");
-    } else {
-      setActiveTab("hub");
-    }
+    pressureAnalyticsTabButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      setActiveTab("pressure");
+      history.replaceState(null, "", "#pressure");
+    });
+    applyHashToTab();
+    window.addEventListener("hashchange", () => {
+      applyHashToTab();
+    });
   }
 
   if (substratePanelRefresh && substratePanelFrame) {
     substratePanelRefresh.addEventListener("click", () => {
       substratePanelFrame.contentWindow?.location.reload();
+    });
+  }
+
+  if (pressureAnalyticsRefresh && pressureAnalyticsFrame) {
+    pressureAnalyticsRefresh.addEventListener("click", () => {
+      try {
+        pressureAnalyticsFrame.contentWindow?.location.reload();
+      } catch {
+        /* ignore */
+      }
     });
   }
 

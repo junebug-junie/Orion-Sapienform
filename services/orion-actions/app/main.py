@@ -17,12 +17,15 @@ from zoneinfo import ZoneInfo
 import uvicorn
 from fastapi import FastAPI
 
+from orion.cognition.skills_manifest import build_compact_skill_catalog, load_skill_manifest
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.llm_json import parse_json_object
 from orion.journaler import (
+    JOURNAL_CREATED_KIND,
     JOURNAL_WRITE_KIND,
+    JournalEntryWriteV1,
     JournalTriggerV1,
     build_collapse_stored_trigger,
     build_compose_request,
@@ -72,6 +75,11 @@ WORKFLOW_TRIGGER_KIND = "orion.actions.trigger.workflow.v1"
 WORKFLOW_TRIGGER_CHANNEL = "orion:actions:trigger:workflow.v1"
 WORKFLOW_MANAGE_KIND = "orion.actions.manage.workflow.v1"
 WORKFLOW_MANAGE_CHANNEL = "orion:actions:manage:workflow.v1"
+
+_SKILL_MANIFEST = load_skill_manifest()
+_SKILL_IDS = {item.skill_id for item in _SKILL_MANIFEST}
+_READ_ONLY_SKILL_IDS = {item.skill_id for item in _SKILL_MANIFEST if item.read_only}
+_SKILLS_CATALOG_COMPACT = build_compact_skill_catalog()
 
 
 def _runtime_identity() -> dict[str, str]:
@@ -224,6 +232,60 @@ def _clamp_daily_metacog_payload(parsed: dict[str, Any], *, action_name: str) ->
             )
             clamped[field] = value[:limit].rstrip()
     return clamped
+
+
+def _normalize_daily_skill_selection(parsed: dict[str, Any], *, action_name: str) -> tuple[dict[str, Any], list[str]]:
+    if not isinstance(parsed, dict):
+        return parsed, []
+
+    normalized = dict(parsed)
+    invalid_fields: list[str] = []
+    if action_name == ACTION_DAILY_PULSE_V1:
+        field = "focus_skill_id"
+    elif action_name == ACTION_DAILY_METACOG_V1:
+        field = "tomorrow_experiment_skill_id"
+    else:
+        return normalized, []
+
+    raw_value = normalized.get(field)
+    if raw_value is None:
+        return normalized, []
+    value = str(raw_value).strip()
+    if not value or value.lower() in {"null", "none"}:
+        normalized[field] = None
+        return normalized, []
+    if value not in _SKILL_IDS:
+        invalid_fields.append(field)
+        normalized[field] = None
+        return normalized, invalid_fields
+    if value not in _READ_ONLY_SKILL_IDS:
+        invalid_fields.append(field)
+        normalized[field] = None
+        return normalized, invalid_fields
+    normalized[field] = value
+    return normalized, []
+
+
+def _enqueue_self_experiment(*, skill_id: str, action_name: str, parent: BaseEnvelope, request_date: str) -> None:
+    if not settings.actions_self_experiments_enabled or not settings.actions_self_experiments_url:
+        return
+    body = {
+        "skill_id": skill_id,
+        "provenance": {
+            "source": action_name,
+            "correlation_id": str(parent.correlation_id),
+            "date": request_date,
+            "node": settings.node_name,
+        },
+    }
+    try:
+        requests.post(
+            f"{settings.actions_self_experiments_url.rstrip('/')}/v1/experiments",
+            json=body,
+            timeout=float(settings.actions_self_experiments_timeout_seconds),
+        ).raise_for_status()
+    except Exception:
+        logger.exception("self_experiment_enqueue_failed action=%s skill_id=%s", action_name, skill_id)
 
 
 def _extract_daily_llm_diagnostics(plan_result_payload: dict[str, Any] | None) -> dict[str, Any]:
@@ -639,6 +701,69 @@ def _build_scheduler_daily_journal_email_request(
     )
 
 
+def _build_post_persist_journal_message_payload(
+    *,
+    entry: JournalEntryWriteV1,
+    correlation_id: str,
+) -> dict[str, Any]:
+    title_text = str(entry.title or "Journal Pass").strip()
+    body_text = str(entry.body or "").strip()
+    mode = str(entry.mode or "").strip() or "manual"
+    source_kind = str(entry.source_kind or "").strip()
+    source_ref = str(entry.source_ref or "").strip()
+    created_at = entry.created_at.isoformat() if entry.created_at else ""
+    preview = f"{title_text}: {body_text}".strip(": ").replace("\n", " ")[:280]
+    full_text = (
+        "## Orion — Journal Pass\n\n"
+        f"**Title:** {title_text}\n\n"
+        f"**Mode:** {mode}\n\n"
+        f"**Source:** {source_kind or 'journal'}"
+        f"{f' ({source_ref})' if source_ref else ''}\n\n"
+        f"**Entry ID:** {entry.entry_id}\n\n"
+        f"**Created:** {created_at}\n\n"
+        f"{body_text}"
+    )
+    return {
+        "title": "Orion — Journal Pass",
+        "preview_text": preview,
+        "full_text": full_text,
+        "severity": "info",
+        "tags": ["actions", "journal", "persisted"],
+        "session_id": settings.actions_journal_session_id or settings.actions_session_id,
+        "source_service": settings.service_name,
+        "correlation_id": correlation_id,
+    }
+
+
+def _build_post_persist_journal_email_request(
+    *,
+    entry: JournalEntryWriteV1,
+    correlation_id: str,
+) -> NotificationRequest:
+    message_payload = _build_post_persist_journal_message_payload(entry=entry, correlation_id=correlation_id)
+    return NotificationRequest(
+        source_service=settings.service_name,
+        event_kind="orion.journal.persisted",
+        severity="info",
+        title="Orion — Journal Pass",
+        body_text=message_payload["full_text"],
+        body_md=message_payload["full_text"],
+        recipient_group=settings.actions_recipient_group,
+        session_id=settings.actions_journal_session_id or settings.actions_session_id,
+        correlation_id=correlation_id,
+        tags=["actions", "journal", "persisted"],
+        channels_requested=["email"],
+        dedupe_key=f"actions:journal:persisted:{entry.entry_id}",
+        dedupe_window_seconds=int(settings.actions_notify_dedupe_window_seconds),
+        context={
+            "entry_id": str(entry.entry_id or ""),
+            "source_kind": str(entry.source_kind or ""),
+            "source_ref": str(entry.source_ref or ""),
+            "mode": str(entry.mode or ""),
+        },
+    )
+
+
 async def _publish_workflow_attention_signal(*, signal: ScheduleAttentionSignal, notify) -> None:
     req = _schedule_attention_notify_request(signal=signal, correlation_id=str(uuid4()))
     if settings.actions_preserve_generic_notify_enabled:
@@ -758,6 +883,7 @@ def _threshold_notify_skill_args(*, findings: list[str], correlation_id: str) ->
 async def lifespan(app: FastAPI):
     deduper = ActionDedupe(ttl_seconds=settings.actions_dedupe_ttl_seconds)
     journal_deduper = ActionDedupe(ttl_seconds=settings.actions_journaling_cooldown_seconds)
+    journal_post_persist_deduper = ActionDedupe(ttl_seconds=settings.actions_notify_dedupe_window_seconds)
     sem = asyncio.Semaphore(max(1, int(settings.actions_max_concurrency)))
     from orion.notify.client import NotifyClient
     notify = NotifyClient(base_url=settings.notify_url, api_token=settings.notify_api_token, timeout=10)
@@ -838,12 +964,30 @@ async def lifespan(app: FastAPI):
 
     async def _run_journal(parent: BaseEnvelope, *, trigger) -> dict[str, Any]:
         journal_llm_route = _normalized_llm_route(settings.actions_journal_llm_route, settings.actions_llm_route)
+        tk = str(getattr(trigger, "trigger_kind", "") or "")
+        sk = str(getattr(trigger, "source_kind", "") or "")
+        sched_daily = tk == "daily_summary" and sk == "scheduler"
+        if sched_daily:
+            recall_profile = settings.actions_journal_scheduler_recall_profile
+        elif tk == "metacog_digest":
+            recall_profile = settings.actions_journal_metacog_recall_profile
+        elif tk == "notify_summary":
+            recall_profile = settings.actions_journal_notify_recall_profile
+        else:
+            recall_profile = settings.actions_recall_profile
+
+        if sched_daily or tk == "metacog_digest" or tk == "notify_summary":
+            logger.info(
+                "journal_compose profile=%s trigger_kind=%s recall_enabled=true",
+                recall_profile,
+                tk,
+            )
         req = build_compose_request(
             trigger,
             session_id=settings.actions_journal_session_id,
             user_id=settings.actions_recipient_group,
             trace_id=str(parent.correlation_id),
-            recall_profile=settings.actions_recall_profile,
+            recall_profile=recall_profile,
             options={
                 "timeout_sec": float(settings.actions_exec_timeout_seconds),
                 "llm_route": journal_llm_route,
@@ -1039,8 +1183,12 @@ async def lifespan(app: FastAPI):
                 "recipient_group": settings.actions_recipient_group,
                 "session_id": settings.actions_session_id,
                 "trace_id": str(parent.correlation_id),
+                "skills_catalog_count": len(_SKILL_MANIFEST),
+                "skills_catalog_compact": _SKILLS_CATALOG_COMPACT,
             }
             parse_retry_used = False
+            skill_validation_retry_used = False
+            skill_validation_retry_reason: str | None = None
             plan_result_payload: dict[str, Any] = {}
             daily_llm_diag: dict[str, Any] = {}
             final_text = ""
@@ -1051,6 +1199,8 @@ async def lifespan(app: FastAPI):
                     parse_retry_used = True
                     attempt_context["max_tokens"] = int(attempt_context.get("max_tokens") or 1024)
                     attempt_context["daily_parse_retry"] = "truncated_generation"
+                if skill_validation_retry_reason:
+                    attempt_context["daily_skill_validation_retry"] = skill_validation_retry_reason
 
                 final_text, plan_result_payload = await _run_plan(parent, verb_name=action_name, context=attempt_context)
                 daily_llm_diag = _extract_daily_llm_diagnostics(plan_result_payload)
@@ -1071,6 +1221,20 @@ async def lifespan(app: FastAPI):
 
                 try:
                     parsed = _json_loads_strict(final_text)
+                    parsed = _clamp_daily_metacog_payload(parsed, action_name=action_name)
+                    parsed, invalid_skill_fields = _normalize_daily_skill_selection(parsed, action_name=action_name)
+                    if invalid_skill_fields and attempt == 1:
+                        skill_validation_retry_used = True
+                        skill_validation_retry_reason = (
+                            f"Invalid or non-read-only skill id in fields {invalid_skill_fields}; "
+                            "set only valid read-only skill ids from skills_catalog_compact, otherwise null."
+                        )
+                        logger.warning(
+                            "daily skill selection invalid; retrying action=%s fields=%s",
+                            action_name,
+                            ",".join(invalid_skill_fields),
+                        )
+                        continue
                     break
                 except Exception as parse_exc:
                     _log_daily_json_parse_failure(
@@ -1087,7 +1251,6 @@ async def lifespan(app: FastAPI):
 
             if parsed is None:
                 raise RuntimeError("daily_json_parse_unavailable")
-            parsed = _clamp_daily_metacog_payload(parsed, action_name=action_name)
 
             if action_name == ACTION_DAILY_PULSE_V1:
                 model = DailyPulseV1.model_validate(parsed)
@@ -1099,6 +1262,20 @@ async def lifespan(app: FastAPI):
                 title = "Orion — Daily Metacog"
 
             model_payload = model.model_dump(mode="json")
+            if action_name == ACTION_DAILY_PULSE_V1 and model.focus_skill_id:
+                _enqueue_self_experiment(
+                    skill_id=model.focus_skill_id,
+                    action_name=action_name,
+                    parent=parent,
+                    request_date=window.request_date,
+                )
+            if action_name == ACTION_DAILY_METACOG_V1 and model.tomorrow_experiment_skill_id:
+                _enqueue_self_experiment(
+                    skill_id=model.tomorrow_experiment_skill_id,
+                    action_name=action_name,
+                    parent=parent,
+                    request_date=window.request_date,
+                )
             preview_text, full_text = _daily_preview_and_markdown(title=title, payload=model_payload)
             notify_req = _daily_notify_request(
                 event_kind=event_kind,
@@ -1132,6 +1309,7 @@ async def lifespan(app: FastAPI):
                 "chat_message_ok": chat_message_accepted.ok if chat_message_accepted else None,
                 "chat_message_notification_id": str(chat_message_accepted.notification_id) if chat_message_accepted and chat_message_accepted.notification_id else None,
                 "parse_retry_used": parse_retry_used,
+                "skill_validation_retry_used": skill_validation_retry_used,
                 "llm_finish_reason": daily_llm_diag.get("finish_reason"),
                 "llm_stop_reason": daily_llm_diag.get("stop_reason"),
                 "llm_model": daily_llm_diag.get("model"),
@@ -1322,6 +1500,82 @@ async def lifespan(app: FastAPI):
         )
         return True
 
+    async def _handle_journal_created(env: BaseEnvelope) -> bool:
+        if not settings.actions_journal_post_persist_notify_enabled:
+            return False
+        try:
+            entry = JournalEntryWriteV1.model_validate(env.payload)
+        except Exception:
+            return False
+
+        dedupe_key = f"actions:journal:post_persist:{entry.entry_id}"
+        if not journal_post_persist_deduper.try_acquire(dedupe_key):
+            logger.info(
+                "journal_post_persist_dedup_skipped correlation_id=%s entry_id=%s",
+                env.correlation_id,
+                entry.entry_id,
+            )
+            return True
+
+        in_app_ok: bool | None = None
+        email_ok: bool | None = None
+        try:
+            logger.info(
+                "journal_post_persist_created_event_received correlation_id=%s entry_id=%s",
+                env.correlation_id,
+                entry.entry_id,
+            )
+            correlation_id = str(entry.correlation_id or env.correlation_id)
+            message_payload = _build_post_persist_journal_message_payload(entry=entry, correlation_id=correlation_id)
+            in_app_result = await asyncio.to_thread(_send_orion_async_message, notify=notify, **message_payload)
+            in_app_ok = bool(getattr(in_app_result, "ok", False))
+            if in_app_ok:
+                logger.info(
+                    "journal_post_persist_in_app_sent correlation_id=%s entry_id=%s notification_id=%s",
+                    correlation_id,
+                    entry.entry_id,
+                    getattr(in_app_result, "notification_id", None),
+                )
+            else:
+                logger.warning(
+                    "journal_post_persist_in_app_failed correlation_id=%s entry_id=%s detail=%s",
+                    correlation_id,
+                    entry.entry_id,
+                    getattr(in_app_result, "detail", None),
+                )
+
+            email_req = _build_post_persist_journal_email_request(entry=entry, correlation_id=correlation_id)
+            email_result = await asyncio.to_thread(notify.send, email_req)
+            email_ok = bool(getattr(email_result, "ok", False))
+            if email_ok:
+                logger.info(
+                    "journal_post_persist_email_sent correlation_id=%s entry_id=%s notification_id=%s",
+                    correlation_id,
+                    entry.entry_id,
+                    getattr(email_result, "notification_id", None),
+                )
+            else:
+                logger.warning(
+                    "journal_post_persist_email_failed correlation_id=%s entry_id=%s detail=%s",
+                    correlation_id,
+                    entry.entry_id,
+                    getattr(email_result, "detail", None),
+                )
+
+            if in_app_ok and email_ok:
+                journal_post_persist_deduper.mark_done(dedupe_key)
+            return True
+        except Exception:
+            logger.exception(
+                "journal_post_persist_delivery_failed correlation_id=%s entry_id=%s",
+                env.correlation_id,
+                entry.entry_id,
+            )
+            return True
+        finally:
+            if not (in_app_ok and email_ok):
+                journal_post_persist_deduper.release(dedupe_key)
+
     async def _dispatch_scheduled_workflow(claimed: ClaimedSchedule) -> None:
         entry = claimed.schedule
         workflow_request = dict(entry.workflow_request or {})
@@ -1453,6 +1707,9 @@ async def lifespan(app: FastAPI):
             return
         if kind == "collapse.mirror.stored.v1":
             if await _handle_journal_collapse_stored(env):
+                return
+        if kind == JOURNAL_CREATED_KIND:
+            if await _handle_journal_created(env):
                 return
 
         # fallback by payload shape/channel drift: collapse flow stays default
@@ -1639,6 +1896,8 @@ async def lifespan(app: FastAPI):
         patterns.append(WORKFLOW_TRIGGER_CHANNEL)
     if WORKFLOW_MANAGE_CHANNEL not in patterns:
         patterns.append(WORKFLOW_MANAGE_CHANNEL)
+    if settings.actions_journal_created_channel not in patterns:
+        patterns.append(settings.actions_journal_created_channel)
     hunter = Hunter(_cfg(), patterns=patterns, handler=handle_envelope)
 
     logger.info(

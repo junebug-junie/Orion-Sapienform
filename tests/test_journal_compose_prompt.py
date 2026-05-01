@@ -13,6 +13,12 @@ class TestJournalComposePrompt(unittest.TestCase):
         self.assertIn("Do not choose tools.", prompt)
         self.assertIn("Do not plan actions.", prompt)
         self.assertIn("given this already-normalized journal trigger", prompt)
+        self.assertIn("Scheduler daily entry:", prompt)
+        self.assertIn("Novelty vs repetition:", prompt)
+        self.assertIn("Automated digest-shaped journal:", prompt)
+        self.assertIn("Treat operational side-effect claims", prompt)
+        self.assertIn("Do not imply hidden automation unless the normalized trigger payload explicitly contains that signal.", prompt)
+        self.assertIn("I marked this as something to revisit in my next reflection, but no automatic alert is implied.", prompt)
         self.assertIn("no tool selection or agentic planning", verb)
 
 

@@ -36,6 +36,20 @@ class Settings(BaseSettings):
     actions_max_concurrency: int = Field(2, alias="ACTIONS_MAX_CONCURRENCY")
 
     actions_recall_profile: str = Field("collapse_mirror.v1", alias="ACTIONS_RECALL_PROFILE")
+    # Journal-specific recall: same env keys in .env_example and docker-compose `environment` → _run_journal in main.py
+    # (trigger_kind daily_summary+scheduler / metacog_digest / notify_summary).
+    actions_journal_scheduler_recall_profile: str = Field(
+        "journal.daily.grounded.v1",
+        alias="ACTIONS_JOURNAL_SCHEDULER_RECALL_PROFILE",
+    )
+    actions_journal_metacog_recall_profile: str = Field(
+        "journal.daily.grounded.v1",
+        alias="ACTIONS_JOURNAL_METACOG_RECALL_PROFILE",
+    )
+    actions_journal_notify_recall_profile: str = Field(
+        "journal.notify.grounded.v1",
+        alias="ACTIONS_JOURNAL_NOTIFY_RECALL_PROFILE",
+    )
     actions_llm_route: str = Field("chat", alias="ACTIONS_LLM_ROUTE")
     actions_daily_llm_route: str | None = Field(None, alias="ACTIONS_DAILY_LLM_ROUTE")
     actions_journal_llm_route: str | None = Field(None, alias="ACTIONS_JOURNAL_LLM_ROUTE")
@@ -77,11 +91,16 @@ class Settings(BaseSettings):
     actions_journal_session_id: str = Field("orion_journal", alias="ACTIONS_JOURNAL_SESSION_ID")
     actions_journal_author: str = Field("orion", alias="ACTIONS_JOURNAL_AUTHOR")
     actions_journal_write_channel: str = Field("orion:journal:write", alias="ACTIONS_JOURNAL_WRITE_CHANNEL")
+    actions_journal_created_channel: str = Field("orion:journal:created", alias="ACTIONS_JOURNAL_CREATED_CHANNEL")
+    actions_journal_post_persist_notify_enabled: bool = Field(True, alias="ACTIONS_JOURNAL_POST_PERSIST_NOTIFY_ENABLED")
 
     actions_workflow_schedule_store_path: str = Field("/tmp/orion-actions/workflow_schedules.json", alias="ACTIONS_WORKFLOW_SCHEDULE_STORE_PATH")
     actions_workflow_schedule_claim_batch_size: int = Field(10, alias="ACTIONS_WORKFLOW_SCHEDULE_CLAIM_BATCH_SIZE")
     actions_workflow_attention_overdue_min_seconds: int = Field(3600, alias="ACTIONS_WORKFLOW_ATTENTION_OVERDUE_MIN_SECONDS")
     actions_workflow_attention_reminder_cooldown_seconds: int = Field(21600, alias="ACTIONS_WORKFLOW_ATTENTION_REMINDER_COOLDOWN_SECONDS")
+    actions_self_experiments_enabled: bool = Field(False, alias="ACTIONS_SELF_EXPERIMENTS_ENABLED")
+    actions_self_experiments_url: str = Field("http://orion-self-experiments:7172", alias="ACTIONS_SELF_EXPERIMENTS_URL")
+    actions_self_experiments_timeout_seconds: float = Field(8.0, alias="ACTIONS_SELF_EXPERIMENTS_TIMEOUT_SECONDS")
 
     port: int = Field(7160, alias="ACTIONS_PORT")
 
@@ -89,6 +108,18 @@ class Settings(BaseSettings):
         env_file = ".env"
         extra = "ignore"
         populate_by_name = True
+
+    @field_validator(
+        "actions_journal_scheduler_recall_profile",
+        "actions_journal_metacog_recall_profile",
+        "actions_journal_notify_recall_profile",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_blank_journal_recall_profiles(cls, value: object, info: ValidationInfo) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return cls.model_fields[info.field_name].default
+        return value
 
     @field_validator(
         "actions_workflow_schedule_claim_batch_size",

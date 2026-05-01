@@ -1103,14 +1103,23 @@ async def process_recall(
         return bundle, decision
 
     fetch_started = time.time()
-    anchor_candidates, anchor_counts = await _fetch_anchor_candidates(
-        query_text=query_fragment,
-        session_id=effective_session_id,
-        node_id=q.node_id,
-        profile=profile,
-        diagnostic=diagnostic,
-        exclusion=exclusion,
-    )
+    anchor_candidates: List[Dict[str, Any]] = []
+    anchor_counts: Dict[str, int] = {}
+    if bool(profile.get("enable_anchor_candidates", True)):
+        anchor_candidates, anchor_counts = await _fetch_anchor_candidates(
+            query_text=query_fragment,
+            session_id=effective_session_id,
+            node_id=q.node_id,
+            profile=profile,
+            diagnostic=diagnostic,
+            exclusion=exclusion,
+        )
+    elif diagnostic:
+        logger.info(
+            "recall anchor rail skipped profile=%s enable_anchor_candidates=%s",
+            profile.get("profile"),
+            profile.get("enable_anchor_candidates"),
+        )
     timing_breakdown_ms["anchor_fetch"] = int((time.time() - fetch_started) * 1000)
     if anchor_candidates:
         candidates.extend(anchor_candidates)

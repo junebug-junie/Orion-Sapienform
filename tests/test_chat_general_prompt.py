@@ -22,6 +22,11 @@ def test_chat_general_prompt_contains_identity_and_behavior_rails() -> None:
     assert "Do not say \"It sounds like...\"" in rendered
     assert "co-architect" in rendered
     assert "steward" in rendered
+    assert "EVIDENCE-GATED CLAIMS" in rendered
+    assert "Do not claim hidden side effects" in rendered
+    assert "I can help track this in our conversation right now" in rendered
+    assert "I do not have an automatic alert/notification running here." in rendered
+    assert "I logged it in the thread and I'll surface it immediately." in rendered
 
 
 def test_chat_general_prompt_menu_topic_selection_disallows_fabricated_tools_and_links() -> None:

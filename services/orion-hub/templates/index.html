@@ -47,6 +47,13 @@
             class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
             role="button"
           >Substrate</a>
+          <a
+            id="pressureAnalyticsTabButton"
+            href="#pressure"
+            data-hash-target="#pressure"
+            class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
+            role="button"
+          >Pressure</a>
         </div>
       </div>
       <div class="flex items-center gap-3">
@@ -182,7 +189,7 @@
           </div>
           <div class="flex items-center gap-3 pt-1 border-t border-gray-700/80">
             <label class="flex items-center gap-1.5 text-xs text-gray-400" for="recallToggle">
-              <input type="checkbox" id="recallToggle" class="h-3 w-3 text-indigo-600 rounded bg-gray-700 border-gray-600" />
+              <input type="checkbox" id="recallToggle" class="h-3 w-3 text-indigo-600 rounded bg-gray-700 border-gray-600" checked />
               <span>Recall</span>
             </label>
             <label class="flex items-center gap-1.5 text-xs text-gray-400" for="noWriteToggle">
@@ -213,7 +220,8 @@
             <select id="recallProfileSelect" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
               <option value="auto">Auto</option>
               <option value="assist.light.v1">assist.light.v1</option>
-              <option value="chat.general.v1" selected>chat.general.v1</option>
+              <option value="recall.v1" selected>recall.v1</option>
+              <option value="chat.general.v1">chat.general.v1</option>
               <option value="reflect.v1">reflect.v1</option>
               <option value="reflect.anchor.v1">reflect.anchor.v1</option>
               <option value="deep.graph.v1">deep.graph.v1</option>
@@ -262,6 +270,12 @@
                 <option value="Run a mesh ops round.">16 · Run a mesh ops round.</option>
                 <option value="Run a mesh ops round with PR digest and disk health.">17 · Run a mesh ops round with PR digest and disk health.</option>
                 <option value="Run a mesh ops round including docker housekeeping preview.">18 · Run a mesh ops round including docker housekeeping preview.</option>
+              </optgroup>
+              <optgroup label="Cognitive workflows">
+                <option value="Run your dream cycle." data-workflow-id="dream_cycle">Workflow · Run your dream cycle.</option>
+                <option value="Do a journal pass." data-workflow-id="journal_pass">Workflow · Do a journal pass.</option>
+                <option value="Run a self review." data-workflow-id="self_review">Workflow · Run a self review.</option>
+                <option value="Run concept induction." data-workflow-id="concept_induction_pass">Workflow · Run concept induction.</option>
               </optgroup>
               <optgroup label="Notify">
                 <option value='Send a notification to operators saying "test alert from Orion".'>19 · Send a notification to operators…</option>
@@ -491,6 +505,49 @@
               <a id="substrateReviewDebugStandaloneLink" href="/substrate" class="text-indigo-300 hover:text-indigo-200 underline">Open standalone /substrate</a>
               <span>Operator bounded controls in modal</span>
             </div>
+          </div>
+        </div>
+
+        <div id="selfExperimentsDebugPanel" class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <button
+              id="selfExperimentsDebugToggle"
+              class="flex-1 flex items-center justify-between text-xs text-gray-300 hover:text-white"
+              type="button"
+            >
+              <span class="uppercase tracking-wide">Self Experiments</span>
+              <span id="selfExperimentsDebugCaret" class="text-gray-500">▾</span>
+            </button>
+            <button
+              id="selfExperimentsDebugOpenModal"
+              class="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-200 hover:bg-indigo-500/20"
+              type="button"
+            >
+              Modal
+            </button>
+            <button
+              id="selfExperimentsDebugRefresh"
+              class="rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-indigo-200 hover:bg-indigo-500/20"
+              type="button"
+            >
+              Refresh
+            </button>
+          </div>
+          <div id="selfExperimentsDebugBody" class="hidden space-y-2 text-xs text-gray-300">
+            <div id="selfExperimentsDebugMeta" class="text-[10px] text-gray-500">Loading self-experiments status…</div>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-2">
+              <input id="selfExperimentsFilterCorrelation" type="text" placeholder="correlation_id" class="rounded-lg border border-gray-700 bg-gray-900/60 px-2 py-1 text-[11px] text-gray-200" />
+              <input id="selfExperimentsFilterDate" type="text" placeholder="date (YYYY-MM-DD)" class="rounded-lg border border-gray-700 bg-gray-900/60 px-2 py-1 text-[11px] text-gray-200" />
+              <input id="selfExperimentsFilterSkill" type="text" placeholder="skill_id" class="rounded-lg border border-gray-700 bg-gray-900/60 px-2 py-1 text-[11px] text-gray-200" />
+              <button id="selfExperimentsApplyFilters" type="button" class="rounded-lg border border-gray-600 bg-gray-800/70 px-2 py-1 text-[11px] text-gray-200 hover:bg-gray-700">Apply Filters</button>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <button id="selfExperimentsTriggerPulse" type="button" class="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-200 hover:bg-emerald-500/20">Trigger Pulse</button>
+              <button id="selfExperimentsTriggerMetacog" type="button" class="rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-cyan-200 hover:bg-cyan-500/20">Trigger Metacog</button>
+              <span id="selfExperimentsActionStatus" class="text-[10px] text-gray-400">Idle.</span>
+            </div>
+            <div id="selfExperimentsDebugOverview" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-2">--</div>
+            <pre id="selfExperimentsDebugRaw" class="whitespace-pre-wrap text-[10px] text-gray-200 bg-gray-900/60 border border-gray-700 rounded p-2 max-h-28 overflow-y-auto">--</pre>
           </div>
         </div>
 
@@ -2160,6 +2217,47 @@
         </div>
       </section>
 
+      <section id="pressure" data-panel="pressure" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 class="text-xl font-bold text-white">Pressure Analytics</h2>
+            <p class="text-xs text-gray-400 mt-0.5">Signals → Pressure → Proposals → Trials → Decisions</p>
+            <div class="mt-3 flex flex-wrap items-center gap-2 text-[10px] text-gray-500" aria-hidden="true">
+              <svg class="h-4 w-32 max-w-full text-indigo-400/90" viewBox="0 0 480 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="Flow: Signals to Applies and Rollbacks">
+                <text x="4" y="14" fill="currentColor" class="text-[8px]">Signals</text>
+                <path d="M52 10h8l4 4-4 4h-8" stroke="currentColor" stroke-width="0.8"/>
+                <text x="68" y="14" fill="currentColor" class="text-[8px]">Pressure</text>
+                <path d="M120 10h8l4 4-4 4h-8" stroke="currentColor" stroke-width="0.8"/>
+                <text x="136" y="14" fill="currentColor" class="text-[8px]">Proposals</text>
+                <path d="M196 10h8l4 4-4 4h-8" stroke="currentColor" stroke-width="0.8"/>
+                <text x="212" y="14" fill="currentColor" class="text-[8px]">Trials</text>
+                <path d="M256 10h8l4 4-4 4h-8" stroke="currentColor" stroke-width="0.8"/>
+                <text x="272" y="14" fill="currentColor" class="text-[8px]">Decisions</text>
+                <path d="M330 10h8l4 4-4 4h-8" stroke="currentColor" stroke-width="0.8"/>
+                <text x="346" y="10" fill="currentColor" class="text-[7px]">Applies</text>
+                <text x="346" y="22" fill="currentColor" class="text-[7px]">Rollbacks</text>
+              </svg>
+            </div>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            <button
+              id="pressureAnalyticsRefresh"
+              class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700"
+              type="button"
+            >Refresh</button>
+          </div>
+        </div>
+        <div class="rounded-xl border border-gray-800 bg-gray-950/40 overflow-hidden flex-1 min-h-[40rem]">
+          <iframe
+            id="pressureAnalyticsFrame"
+            src="/static/pressure-analytics.html?v={{HUB_UI_ASSET_VERSION}}"
+            class="w-full h-full border-0 min-h-[40rem]"
+            loading="lazy"
+            title="Pressure Analytics"
+          ></iframe>
+        </div>
+      </section>
+
   <div
     id="agentTraceModal"
     class="hidden fixed inset-0 z-50 bg-gray-950/80 backdrop-blur-sm px-4 py-6"
@@ -2483,6 +2581,59 @@
             <pre id="substrateReviewResultRaw" class="mt-2 whitespace-pre-wrap break-words text-[10px] text-gray-200 max-h-64 overflow-y-auto">--</pre>
           </details>
         </section>
+      </div>
+    </div>
+  </div>
+
+  <div id="selfExperimentsModalRoot" class="hidden fixed inset-0 z-[120] pointer-events-auto" style="position: fixed; inset: 0; z-index: 2147483646;" aria-hidden="true">
+    <div id="selfExperimentsModalBackdrop" class="fixed inset-0 z-[120] bg-black/85 backdrop-blur-sm" style="position: fixed; inset: 0; z-index: 2147483646;"></div>
+    <div id="selfExperimentsModalDialog" class="fixed inset-x-4 top-8 bottom-8 z-[121] mx-auto flex w-auto max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl" style="position: fixed; z-index: 2147483647;">
+      <div class="flex items-center justify-between border-b border-gray-800 px-5 py-4">
+        <div>
+          <div class="text-xs uppercase tracking-[0.24em] text-indigo-300">Self experiments runtime</div>
+          <div id="selfExperimentsModalMeta" class="mt-1 text-[11px] text-gray-400">Latest validated/rejected experiments with actionable fix guidance.</div>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="selfExperimentsModalRefresh" class="rounded-lg border border-indigo-500/50 bg-indigo-500/10 px-3 py-1 text-[11px] text-indigo-100 hover:bg-indigo-500/20" type="button">Refresh</button>
+          <button id="selfExperimentsModalClose" class="rounded-lg border border-gray-700 bg-gray-900 px-3 py-1 text-xs text-gray-200 hover:bg-gray-800" type="button">Close</button>
+        </div>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4 space-y-3 text-xs text-gray-300">
+        <div class="rounded-xl border border-indigo-500/30 bg-indigo-500/5 px-3 py-2 text-[11px] text-indigo-100">
+          Focus triage: inspect latest runs, reasons for rejection, and exact fix hints before rerunning.
+        </div>
+        <div id="selfExperimentsModalSummary" class="rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-1">No data yet.</div>
+        <div>
+          <div class="mb-1 text-[10px] uppercase tracking-wide text-gray-500">Latest runs (most recent first)</div>
+          <div id="selfExperimentsModalRuns" class="space-y-2 text-[11px]">No runs yet.</div>
+        </div>
+        <div>
+          <div class="mb-1 text-[10px] uppercase tracking-wide text-gray-500">Provenance table</div>
+          <div class="overflow-x-auto rounded-xl border border-gray-700 bg-gray-900/40">
+            <table class="min-w-full text-[11px] text-gray-200">
+              <thead class="bg-gray-900/80 text-[10px] uppercase tracking-wide text-gray-400">
+                <tr>
+                  <th class="px-2 py-2 text-left">Created</th>
+                  <th class="px-2 py-2 text-left">Status</th>
+                  <th class="px-2 py-2 text-left">Source</th>
+                  <th class="px-2 py-2 text-left">Skill</th>
+                  <th class="px-2 py-2 text-left">Correlation</th>
+                  <th class="px-2 py-2 text-left">Date</th>
+                  <th class="px-2 py-2 text-left">Node</th>
+                  <th class="px-2 py-2 text-left">Reason</th>
+                  <th class="px-2 py-2 text-left">Fix Hint</th>
+                </tr>
+              </thead>
+              <tbody id="selfExperimentsModalProvenanceTable">
+                <tr><td colspan="9" class="px-2 py-3 text-gray-500">No provenance rows yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <details class="rounded-lg border border-gray-800 bg-gray-950/60 p-2">
+          <summary class="cursor-pointer text-[10px] uppercase tracking-wide text-gray-500">Raw JSON</summary>
+          <pre id="selfExperimentsModalRaw" class="mt-2 whitespace-pre-wrap break-words text-[10px] text-gray-200 max-h-64 overflow-y-auto">--</pre>
+        </details>
       </div>
     </div>
   </div>

@@ -7,7 +7,7 @@ interruptible: true
 can_interrupt_others: false
 requires_gpu: false
 requires_memory: true
-recall_profile: reflect.v1
+recall_profile: journal.daily.grounded.v1
 timeout_ms: 180000
 max_recursion_depth: 0
 steps:
@@ -19,7 +19,7 @@ steps:
     requires_gpu: false
     requires_memory: true
     timeout_ms: 60000
-    recall_profile: reflect.v1
+    recall_profile: journal.daily.grounded.v1
   - name: draft_daily_pulse
     description: Produce strict JSON daily pulse.
     order: 0

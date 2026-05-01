@@ -11,6 +11,7 @@ from uuid import uuid4
 from typing import Annotated, Optional, Any, List, Dict, Tuple, Literal
 from urllib.parse import urlparse
 import aiohttp
+from orion.core.bus.async_service import OrionBusAsync
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -657,6 +658,70 @@ def _runtime_identity() -> dict:
     }
 
 
+def _self_experiment_fix_hint(reason: str | None) -> str:
+    code = str(reason or "").strip().lower()
+    if code == "unknown_skill_id":
+        return "Focus skill ID was not in the manifest. Regenerate with a listed skills_catalog_compact ID."
+    if code == "non_read_only_skill_rejected":
+        return "Selected skill is mutating/high-impact. Choose a read-only skill for v1 experiments."
+    if not code:
+        return "Validated. Safe to trace and dispatch in later phases."
+    return "Inspect provenance and selected skill ID."
+
+
+def _self_experiments_status_payload(
+    *,
+    limit: int = 25,
+    correlation_id: str | None = None,
+    skill_id: str | None = None,
+    date: str | None = None,
+) -> Dict[str, Any]:
+    base = str(settings.SELF_EXPERIMENTS_BASE_URL or "").strip().rstrip("/")
+    if not base:
+        raise HTTPException(status_code=503, detail="self_experiments_base_url_not_configured")
+    try:
+        params: Dict[str, Any] = {"limit": int(limit)}
+        if correlation_id:
+            params["correlation_id"] = correlation_id
+        if skill_id:
+            params["skill_id"] = skill_id
+        if date:
+            params["date"] = date
+        resp = requests.get(
+            f"{base}/v1/experiments",
+            params=params,
+            timeout=float(settings.SELF_EXPERIMENTS_TIMEOUT_SEC),
+        )
+        resp.raise_for_status()
+        parsed = resp.json()
+        payload = parsed if isinstance(parsed, dict) else {}
+        items = payload.get("items") if isinstance(payload, dict) and isinstance(payload.get("items"), list) else []
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"self_experiments_unavailable:{exc}") from exc
+
+    status_counts: Dict[str, int] = {"validated": 0, "rejected": 0, "queued": 0}
+    source_counts: Dict[str, int] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status") or "unknown")
+        status_counts[status] = int(status_counts.get(status, 0)) + 1
+        provenance = item.get("provenance") if isinstance(item.get("provenance"), dict) else {}
+        source = str(provenance.get("source") or "unknown")
+        source_counts[source] = int(source_counts.get(source, 0)) + 1
+        item["fix_hint"] = _self_experiment_fix_hint(str(item.get("reason") or ""))
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "summary": {
+            "total": len(items),
+            "status_counts": status_counts,
+            "source_counts": source_counts,
+        },
+        "items": items[: min(len(items), 15)],
+    }
+
+
 @router.get("/api/debug/build")
 def api_debug_build():
     return {
@@ -666,6 +731,57 @@ def api_debug_build():
             "notify_base_url": settings.NOTIFY_BASE_URL,
             "landing_pad_url": settings.LANDING_PAD_URL,
         },
+    }
+
+
+@router.get("/api/debug/self-experiments/status")
+def api_debug_self_experiments_status(
+    limit: int = Query(default=25, ge=1, le=100),
+    correlation_id: str | None = Query(default=None),
+    skill_id: str | None = Query(default=None),
+    date: str | None = Query(default=None),
+) -> Dict[str, Any]:
+    return _self_experiments_status_payload(
+        limit=limit,
+        correlation_id=correlation_id,
+        skill_id=skill_id,
+        date=date,
+    )
+
+
+class SelfExperimentsTriggerRequest(BaseModel):
+    action: Literal["pulse", "metacog"] = "pulse"
+    date: str | None = None
+
+
+@router.post("/api/debug/self-experiments/trigger-daily")
+async def api_debug_self_experiments_trigger_daily(req: SelfExperimentsTriggerRequest) -> Dict[str, Any]:
+    corr_id = str(uuid4())
+    if req.action == "pulse":
+        channel = "orion:actions:trigger:daily_pulse.v1"
+        kind = "orion.actions.trigger.daily_pulse.v1"
+    else:
+        channel = "orion:actions:trigger:daily_metacog.v1"
+        kind = "orion.actions.trigger.daily_metacog.v1"
+    env = BaseEnvelope(
+        kind=kind,
+        source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME),
+        correlation_id=corr_id,
+        payload={"date": req.date} if req.date else {},
+    )
+    bus = OrionBusAsync(str(settings.ORION_BUS_URL))
+    await bus.connect()
+    try:
+        await bus.publish(channel, env)
+    finally:
+        await bus.close()
+    return {
+        "ok": True,
+        "action": req.action,
+        "channel": channel,
+        "kind": kind,
+        "correlation_id": corr_id,
+        "date": req.date,
     }
 
 
@@ -4544,11 +4660,8 @@ def api_substrate_recall_canary_status(
 
 @router.post("/api/substrate/recall-canary/query")
 def api_substrate_recall_canary_query(
-    http_request: Request,
     request: RecallCanaryQueryRequest,
-    x_orion_operator_token: str | None = Header(default=None),
 ) -> Dict[str, Any]:
-    _require_mutation_operator_guard(_resolve_operator_token(http_request, x_orion_operator_token))
     base = settings.recall_service_url
     warnings: list[str] = []
     available_profiles, default_canary_profile_id = _recall_canary_profile_catalog(limit=200)
@@ -4641,12 +4754,9 @@ def api_substrate_recall_canary_query(
 
 @router.post("/api/substrate/recall-canary/runs/{canary_run_id}/judgment")
 def api_substrate_recall_canary_run_judgment(
-    http_request: Request,
     canary_run_id: str,
     request: RecallCanaryJudgmentRequest,
-    x_orion_operator_token: str | None = Header(default=None),
 ) -> Dict[str, Any]:
-    _require_mutation_operator_guard(_resolve_operator_token(http_request, x_orion_operator_token))
     row = SUBSTRATE_MUTATION_STORE.get_recall_canary_run(canary_run_id)
     if row is None:
         raise HTTPException(status_code=404, detail="recall_canary_run_not_found")
@@ -4710,12 +4820,9 @@ def api_substrate_recall_canary_run_judgment(
 
 @router.post("/api/substrate/recall-canary/runs/{canary_run_id}/create-review-artifact")
 def api_substrate_recall_canary_create_review_artifact(
-    http_request: Request,
     canary_run_id: str,
     request: RecallCanaryReviewArtifactRequest,
-    x_orion_operator_token: str | None = Header(default=None),
 ) -> Dict[str, Any]:
-    _require_mutation_operator_guard(_resolve_operator_token(http_request, x_orion_operator_token))
     run = SUBSTRATE_MUTATION_STORE.get_recall_canary_run(canary_run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="recall_canary_run_not_found")

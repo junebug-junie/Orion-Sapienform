@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import asyncio
 import importlib.util
 from pathlib import Path
 
@@ -58,6 +59,25 @@ def test_template_has_substrate_review_debug_row_modal_and_standalone_link() -> 
     assert 'id="substrateReviewActionSmokeCheck"' in template
     assert 'id="substrateReviewActionRefresh"' in template
     assert 'id="substrateReviewModalSubstrateLink" href="/substrate"' in template
+    assert 'id="selfExperimentsDebugPanel"' in template
+    assert 'id="selfExperimentsDebugToggle"' in template
+    assert 'id="selfExperimentsDebugRefresh"' in template
+    assert 'id="selfExperimentsDebugOverview"' in template
+    assert 'id="selfExperimentsDebugRaw"' in template
+    assert 'id="selfExperimentsFilterCorrelation"' in template
+    assert 'id="selfExperimentsFilterDate"' in template
+    assert 'id="selfExperimentsFilterSkill"' in template
+    assert 'id="selfExperimentsApplyFilters"' in template
+    assert 'id="selfExperimentsTriggerPulse"' in template
+    assert 'id="selfExperimentsTriggerMetacog"' in template
+    assert 'id="selfExperimentsDebugOpenModal"' in template
+    assert 'id="selfExperimentsModalRoot"' in template
+    assert 'id="selfExperimentsModalBackdrop"' in template
+    assert 'id="selfExperimentsModalDialog"' in template
+    assert 'id="selfExperimentsModalSummary"' in template
+    assert 'id="selfExperimentsModalRuns"' in template
+    assert 'id="selfExperimentsModalProvenanceTable"' in template
+    assert 'id="selfExperimentsModalRaw"' in template
 
 
 def test_app_js_wires_substrate_review_debug_panel_modal_and_actions() -> None:
@@ -77,6 +97,84 @@ def test_app_js_wires_substrate_review_debug_panel_modal_and_actions() -> None:
     assert "substrateReviewActionExecuteFollowup.addEventListener('click'" in app_js
     assert "substrateReviewActionRefresh.addEventListener('click'" in app_js
     assert "substrateReviewActionSmokeCheck.addEventListener('click'" in app_js
+    assert "function clearSelfExperimentsDebugPanel()" in app_js
+    assert "function updateSelfExperimentsDebugPanel(payload)" in app_js
+    assert "function toggleSelfExperimentsDebugPanel()" in app_js
+    assert "function refreshSelfExperimentsDebugStatus()" in app_js
+    assert "function triggerSelfExperimentsDaily(action)" in app_js
+    assert "function ensureSelfExperimentsModalRootOnBody()" in app_js
+    assert "function openSelfExperimentsModal()" in app_js
+    assert "function closeSelfExperimentsModal()" in app_js
+    assert "selfExperimentsModalProvenanceTable" in app_js
+    assert "selfExperimentsDebugRefresh.addEventListener('click'" in app_js
+    assert "selfExperimentsDebugOpenModal.addEventListener('click'" in app_js
+    assert "selfExperimentsModalClose.addEventListener('click'" in app_js
+    assert "selfExperimentsApplyFilters.addEventListener('click'" in app_js
+    assert "selfExperimentsTriggerPulse.addEventListener('click'" in app_js
+    assert "selfExperimentsTriggerMetacog.addEventListener('click'" in app_js
+
+
+def test_self_experiments_debug_status_endpoint_rolls_up_counts(monkeypatch) -> None:
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {
+                "items": [
+                    {
+                        "experiment_id": "exp-1",
+                        "skill_id": "skills.system.time_now.v1",
+                        "status": "validated",
+                        "provenance": {"source": "daily_pulse_v1", "correlation_id": "c-1"},
+                    },
+                    {
+                        "experiment_id": "exp-2",
+                        "skill_id": "skills.runtime.docker_prune_stopped_containers.v1",
+                        "status": "rejected",
+                        "provenance": {"source": "daily_metacog_v1", "correlation_id": "c-2"},
+                    },
+                ]
+            }
+
+    monkeypatch.setattr(api_routes.requests, "get", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(api_routes.settings, "SELF_EXPERIMENTS_BASE_URL", "http://self-experiments.test")
+    payload = api_routes.api_debug_self_experiments_status(limit=25)
+    assert payload["summary"]["total"] == 2
+    assert payload["summary"]["status_counts"]["validated"] == 1
+    assert payload["summary"]["status_counts"]["rejected"] == 1
+    assert payload["summary"]["source_counts"]["daily_pulse_v1"] == 1
+    assert payload["items"][0]["fix_hint"]
+
+
+def test_self_experiments_trigger_daily_publishes_bus_event(monkeypatch) -> None:
+    observed: dict[str, object] = {}
+
+    class FakeBus:
+        def __init__(self, url: str) -> None:
+            observed["url"] = url
+
+        async def connect(self) -> None:
+            observed["connected"] = True
+
+        async def publish(self, channel: str, env) -> None:  # noqa: ANN001
+            observed["channel"] = channel
+            observed["kind"] = env.kind
+            observed["payload"] = env.payload
+
+        async def close(self) -> None:
+            observed["closed"] = True
+
+    monkeypatch.setattr(api_routes, "OrionBusAsync", FakeBus)
+    payload = asyncio.run(
+        api_routes.api_debug_self_experiments_trigger_daily(
+            api_routes.SelfExperimentsTriggerRequest(action="pulse", date="2026-04-27")
+        )
+    )
+    assert payload["ok"] is True
+    assert observed["channel"] == "orion:actions:trigger:daily_pulse.v1"
+    assert observed["kind"] == "orion.actions.trigger.daily_pulse.v1"
+    assert observed["payload"] == {"date": "2026-04-27"}
 
 
 def test_app_js_includes_substrate_in_shell_tab_switching_without_full_navigation() -> None:
@@ -91,7 +189,10 @@ def test_app_js_includes_substrate_in_shell_tab_switching_without_full_navigatio
     assert "event.preventDefault();" in app_js
     assert 'setActiveTab("substrate");' in app_js
     assert 'history.replaceState(null, "", "#substrate");' in app_js
-    assert 'window.location.hash === "#substrate"' in app_js
+    assert (
+        'window.location.hash === "#substrate"' in app_js
+        or 'h === "#substrate"' in app_js
+    )
 
 
 def test_app_js_supports_substrate_embed_refresh_without_merging_substrate_bundle() -> None:

@@ -1,0 +1,44 @@
+# Scheduler daily journal: same retrieval strength as reflect.v1 (vector + SQL + RDF),
+# but fusion drops journal-echo junk (lexical journal index hits, templated daily bodies).
+#
+# PageIndex over journal_entry_index is still skipped in cortex-exec for this trigger;
+# recall itself stays useful for chat / collapse / semantic memory that is not those rows.
+profile: journal.daily.grounded.v1
+
+vector_top_k: 12
+rdf_top_k: 8
+max_per_source: 4
+max_total_items: 24
+time_decay_half_life_hours: 72
+render_budget_tokens: 256
+enable_query_expansion: true
+enable_sql_timeline: true
+sql_since_minutes: 10080
+sql_top_k: 200
+
+filters:
+  exclude_sources:
+    - pageindex_lexical
+  exclude_snippet_prefixes:
+    - "## Orion — Daily Journal"
+  # Stale templated daily-journal lines that kept re-entering via vector/chat recall:
+  exclude_snippet_substrings:
+    - "the day unfolded with the usual rhythm"
+    - "usual rhythm of troubleshooting"
+    - "familiar rhythm of denver"
+  # Future: when vector rows carry trigger metadata, add e.g.
+  # exclude_meta_all_match_any:
+  #   - { trigger_kind: daily_summary, source_kind: scheduler }
+
+relevance:
+  backend_weights:
+    vector: 1.0
+    sql_timeline: 0.9
+    sql_chat: 0.6
+    rdf_chat: 0.55
+    rdf: 0.4
+  score_weight: 0.7
+  text_similarity_weight: 0.15
+  recency_weight: 0.1
+  enable_recency: true
+  recency_half_life_hours: 72

@@ -268,3 +268,73 @@ def test_workflow_request_override_preserves_concept_induction_details_for_synth
     assert workflow_request['workflow_id'] == 'concept_induction_pass'
     assert workflow_request['action'] == 'synthesize_to_journal'
     assert workflow_request['concept_induction_details']['profiles'][0]['profile_id'] == 'profile-1'
+
+
+def test_skill_runner_agent_lane_keeps_agent_mode_without_quick_override() -> None:
+    req, debug, _ = hub_builder.build_chat_request(
+        payload={
+            'mode': 'brain',
+            'skill_runner_origin': True,
+            'skill_runner_lane': 'agent',
+            'verbs': ['chat_quick'],
+        },
+        session_id='sid-skill-runner',
+        user_id='user-1',
+        trace_id='trace-skill-runner',
+        default_mode='brain',
+        auto_default_enabled=False,
+        source_label='hub_http',
+        prompt='Run this Orion skill now',
+    )
+
+    assert req.mode == 'agent'
+    assert req.verb is None
+    assert req.route_intent == 'none'
+    assert (req.options or {}).get('supervised') is True
+    assert debug['selected_ui_route'] == 'agent'
+
+
+def test_skill_runner_brain_lane_runs_in_brain_with_selected_single_verb() -> None:
+    req, debug, _ = hub_builder.build_chat_request(
+        payload={
+            'mode': 'agent',
+            'skill_runner_origin': True,
+            'skill_runner_lane': 'brain',
+            'verbs': ['chat_general'],
+        },
+        session_id='sid-skill-runner',
+        user_id='user-1',
+        trace_id='trace-skill-runner',
+        default_mode='brain',
+        auto_default_enabled=False,
+        source_label='hub_http',
+        prompt='Run this Orion skill now',
+    )
+
+    assert req.mode == 'brain'
+    assert req.verb == 'chat_general'
+    assert req.route_intent == 'none'
+    assert debug['selected_ui_route'] == 'brain'
+
+
+def test_skill_runner_quick_lane_normalizes_to_brain_chat_quick() -> None:
+    req, debug, _ = hub_builder.build_chat_request(
+        payload={
+            'mode': 'agent',
+            'skill_runner_origin': True,
+            'skill_runner_lane': 'quick',
+            'verbs': ['chat_general'],
+        },
+        session_id='sid-skill-runner',
+        user_id='user-1',
+        trace_id='trace-skill-runner',
+        default_mode='brain',
+        auto_default_enabled=False,
+        source_label='hub_http',
+        prompt='Run this Orion skill now',
+    )
+
+    assert req.mode == 'brain'
+    assert req.verb == 'chat_quick'
+    assert req.route_intent == 'none'
+    assert debug['selected_ui_route'] == 'brain'

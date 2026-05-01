@@ -1631,6 +1631,12 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
                         reply_to=None,
                     )
                     await bus.publish(settings.sql_writer_journal_created_channel, created_env)
+                    logger.info(
+                        "journal_created_event_emitted corr=%s entry_id=%s channel=%s",
+                        getattr(env, "correlation_id", None),
+                        journal_payload.entry_id,
+                        settings.sql_writer_journal_created_channel,
+                    )
                 except Exception:
                     logger.exception("Failed to emit journal created event corr=%s", getattr(env, "correlation_id", None))
             # Semantic stored event is also post-commit only.

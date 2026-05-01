@@ -562,6 +562,10 @@ def test_social_room_prompt_warns_against_over_managing_the_room() -> None:
     assert "If a plain peer reply will do the job" in rendered
     assert "Leave-open is usually better than over-managing the next move." in rendered
     assert "Let repair sound like a quick course correction" in rendered
+    assert "Treat claims about side effects" in rendered
+    assert "Do not claim those side effects happened unless current-turn metadata explicitly supports the claim." in rendered
+    assert "I don't have a notification hook here, but I can keep this as the next local follow-up in this thread." in rendered
+    assert "I've logged it and I'll surface it immediately." in rendered
 
 
 def test_social_room_prompt_renders_calibration_and_trust_boundary_grounding() -> None:

@@ -1,0 +1,32 @@
+services:
+  orion-self-experiments:
+    build:
+      context: ../..
+      dockerfile: services/orion-self-experiments/Dockerfile
+    container_name: ${PROJECT}-orion-self-experiments
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONFAULTHANDLER=1
+      - SERVICE_NAME=${SERVICE_NAME}
+      - SERVICE_VERSION=${SERVICE_VERSION}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - PORT=${PORT}
+      - EXPERIMENTS_STORE_PATH=${EXPERIMENTS_STORE_PATH}
+      - EXPERIMENTS_ALLOW_NON_READ_ONLY=${EXPERIMENTS_ALLOW_NON_READ_ONLY}
+    networks:
+      - app-net
+    ports:
+      - "7172:7172"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7172/health"]
+      start_period: 10s
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  app-net:
+    external: true

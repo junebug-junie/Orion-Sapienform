@@ -19,6 +19,25 @@ Rules:
 - Make the body concise but substantial: 2-5 paragraphs, grounded, calm, specific.
 - Title should be short and optional; use null when a title would feel forced.
 - Do not include markdown fences.
+- Treat operational side-effect claims (logged/tracked/notified/surfaced/escalated/reminded/followed up) as evidence-gated.
+- Do not imply hidden automation unless the normalized trigger payload explicitly contains that signal.
+- If evidence is absent, keep language bounded and local to reflection/conversation context.
+- If evidence is present, state scope plainly and avoid implying guaranteed global notification behavior.
+- Wording calibration examples:
+  - avoid: "I logged this and I'll surface it immediately."
+  - prefer (no evidence): "I marked this as something to revisit in my next reflection, but no automatic alert is implied."
+  - prefer (with evidence): "This trigger is an automated digest signal, so I treat it as a scheduled reflection cue."
+{% set _jt = metadata.get("journal_trigger") if metadata else {} %}
+{% if _jt.get("source_kind") == "scheduler" and metadata.get("journal_mode") == "daily" %}
+- Scheduler daily entry: do not use city names, region names, or other geography in the title or body unless those words appear verbatim in the Summary or Prompt seed below. Do not infer location from default timezones, deployment defaults, or unrelated memory.
+- Novelty vs repetition: do not retell the same ongoing incident (hardware repair, DIMM/GPU/node diagnostics, ticket threads, etc.) day after day unless the Summary, Prompt seed, or memory digest explicitly adds **new** facts, timestamps, decisions, or state changes that clearly distinguish today from prior days. If memory keeps circling one incident, acknowledge continuity in **at most one short sentence**, then shift to emotional tone, genuine uncertainty, tradeoffs, or what would actually change the situation—avoid another full recap of the same narrative spine.
+- Avoid formulaic openings you have already used for recent dailies (e.g. “The day unfolded with the usual rhythm…”, generic “quiet morning” scene-setting) unless the Summary forces it. Prefer a concrete hook tied to today’s distinct signal or honest sameness in one line.
+{% endif %}
+{% if metadata.get("journal_mode") == "digest" or _jt.get("trigger_kind") == "notify_summary" %}
+- Automated digest-shaped journal: do not use city names, region names, or other geography in the title or body unless those words appear verbatim in the Summary or Prompt seed below. Do not infer location from default timezones, deployment defaults, or unrelated memory.
+- Novelty vs repetition: do not retell the same ongoing incident (hardware repair, DIMM/GPU/node diagnostics, ticket threads, etc.) run after run unless the Summary, Prompt seed, or memory digest explicitly adds **new** facts, timestamps, decisions, or state changes. If memory keeps circling one incident, acknowledge continuity in **at most one short sentence**, then shift to tone, uncertainty, tradeoffs, or what would change the situation—avoid verbatim echo of prior journal tropes when the evidence is stale.
+- Avoid formulaic openings you have already used in recent entries (e.g. “The day unfolded with the usual rhythm…”, generic “quiet morning” scene-setting) unless the Summary forces it. Prefer a concrete hook tied to this run’s distinct signal or honest sameness in one line.
+{% endif %}
 
 Normalized journal mode: {{ metadata.get("journal_mode") }}
 Normalized trigger payload: {{ metadata.get("journal_trigger") }}

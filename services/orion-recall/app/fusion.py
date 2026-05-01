@@ -251,6 +251,36 @@ def _candidate_allowed(cand: Dict[str, Any], profile: Dict[str, Any]) -> bool:
         if source not in {str(item) for item in allowed_sources}:
             return False
 
+    excluded_sources = filters.get("exclude_sources")
+    if isinstance(excluded_sources, list) and excluded_sources:
+        blocked = {str(x) for x in excluded_sources}
+        if source in blocked:
+            return False
+
+    snippet_text = str(cand.get("text") or cand.get("snippet") or "")
+    excluded_snip = filters.get("exclude_snippet_prefixes")
+    if isinstance(excluded_snip, list):
+        stripped = snippet_text.strip()
+        for prefix in excluded_snip:
+            if isinstance(prefix, str) and prefix and stripped.startswith(prefix):
+                return False
+
+    excluded_needles = filters.get("exclude_snippet_substrings")
+    if isinstance(excluded_needles, list):
+        blob = snippet_text.lower()
+        for needle in excluded_needles:
+            if isinstance(needle, str) and needle and needle.lower() in blob:
+                return False
+
+    meta = cand.get("meta") if isinstance(cand.get("meta"), dict) else {}
+    meta_rules = filters.get("exclude_meta_all_match_any")
+    if isinstance(meta_rules, list):
+        for rule in meta_rules:
+            if not isinstance(rule, dict) or not rule:
+                continue
+            if all(str(meta.get(k)) == str(v) for k, v in rule.items()):
+                return False
+
     excluded_prefixes = filters.get("exclude_tags_prefixes")
     if isinstance(excluded_prefixes, list):
         for tag in tags:

@@ -12,6 +12,8 @@ def extract_autonomy_payload(cortex_result: Any) -> Dict[str, Any]:
         "autonomy_summary",
         "autonomy_debug",
         "autonomy_state_preview",
+        "autonomy_execution_mode",
+        "autonomy_goal_lineage",
         "autonomy_backend",
         "autonomy_selected_subject",
         "autonomy_repository_status",

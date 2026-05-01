@@ -1204,6 +1204,28 @@ def _journal_pageindex_query(user_text: str) -> bool:
     return any(marker in lowered for marker in markers)
 
 
+def _skip_journal_pageindex_for_automated_trigger(ctx: Dict[str, Any]) -> bool:
+    """Skip journal PageIndex for compose paths that would self-loop on journal_entry_index / digest echoes."""
+    md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+    jt = md.get("journal_trigger")
+    if not isinstance(jt, dict):
+        return False
+    tk = str(jt.get("trigger_kind") or "")
+    sk = str(jt.get("source_kind") or "")
+    if tk == "daily_summary" and sk == "scheduler":
+        return True
+    if tk == "metacog_digest":
+        return True
+    if tk == "notify_summary":
+        return True
+    return False
+
+
+def _scheduler_daily_journal_ctx(ctx: Dict[str, Any]) -> bool:
+    """Backward-compatible name; prefer _skip_journal_pageindex_for_automated_trigger."""
+    return _skip_journal_pageindex_for_automated_trigger(ctx)
+
+
 def _journal_pageindex_tree(recall_fragments: List[Dict[str, Any]]) -> Dict[str, Any]:
     journal_frags = [
         frag for frag in recall_fragments
@@ -1544,7 +1566,15 @@ async def run_recall_step(
         # Journal PageIndex MVP (journals-only reflective/identity/continuity lane)
         user_query = fragment_text
         try:
-            if _journal_pageindex_query(user_query):
+            if _skip_journal_pageindex_for_automated_trigger(ctx):
+                _md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+                _jt = _md.get("journal_trigger") if isinstance(_md.get("journal_trigger"), dict) else {}
+                logger.debug(
+                    "journal_pageindex_skipped_automated_trigger corr_id=%s trigger_kind=%s",
+                    correlation_id,
+                    _jt.get("trigger_kind"),
+                )
+            elif _journal_pageindex_query(user_query):
                 service_invoked = False
                 service_status = "unavailable"
                 final_impl = "native_fallback"

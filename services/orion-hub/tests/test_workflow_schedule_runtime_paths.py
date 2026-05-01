@@ -77,6 +77,11 @@ class _FakeCortexClient:
                     "active_tensions": ["scope_sprawl"],
                     "proposal_headlines": ["stabilize triage sequence"],
                 },
+                "autonomy_execution_mode": "proposal_only",
+                "autonomy_goal_lineage": {
+                    "goal_artifact_id": "goal-abc",
+                    "proposal_signature": "deadbeef01",
+                },
                 "autonomy_backend": "graph",
                 "autonomy_selected_subject": "orion",
                 "autonomy_repository_status": {
@@ -242,6 +247,8 @@ def test_http_chat_path_exports_autonomy_payload_for_brain_lane() -> None:
     assert result["autonomy_summary"]["stance_hint"] == "favor synthesis and reduction"
     assert result["autonomy_debug"]["orion"]["availability"] == "available"
     assert result["autonomy_state_preview"]["dominant_drive"] == "coherence"
+    assert result["autonomy_execution_mode"] == "proposal_only"
+    assert result["autonomy_goal_lineage"]["goal_artifact_id"] == "goal-abc"
     assert result["autonomy_backend"] == "graph"
     assert result["autonomy_selected_subject"] == "orion"
     assert result["autonomy_repository_status"]["source_available"] is True
@@ -274,6 +281,8 @@ def test_websocket_chat_path_exports_autonomy_payload_for_brain_lane(monkeypatch
     assert latest["autonomy_summary"]["stance_hint"] == "favor synthesis and reduction"
     assert latest["autonomy_debug"]["orion"]["availability"] == "available"
     assert latest["autonomy_state_preview"]["dominant_drive"] == "coherence"
+    assert latest["autonomy_execution_mode"] == "proposal_only"
+    assert latest["autonomy_goal_lineage"]["goal_artifact_id"] == "goal-abc"
     assert latest["autonomy_backend"] == "graph"
     assert latest["autonomy_selected_subject"] == "orion"
     assert latest["autonomy_repository_status"]["source_available"] is True

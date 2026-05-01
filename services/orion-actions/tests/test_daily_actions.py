@@ -15,10 +15,12 @@ from app.main import (
     _is_likely_incomplete_json,
     _json_loads_strict,
     _log_daily_json_parse_failure,
+    _normalize_daily_skill_selection,
     _should_retry_for_truncated_generation,
     build_daily_window,
     should_run_daily,
 )
+from orion.cognition.skills_manifest import load_skill_manifest
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.actions.daily import DailyMetacogV1, DailyPulseV1
 
@@ -89,6 +91,65 @@ def test_daily_schema_validation_forbid_extra_keys():
                 "unexpected": "nope",
             }
         )
+
+
+def test_daily_schema_accepts_skill_selection_fields():
+    pulse = DailyPulseV1.model_validate(
+        {
+            "date": "2026-02-14",
+            "timezone": "America/Denver",
+            "yesterday_theme": "Theme",
+            "today_focus": "Focus",
+            "focus_skill_id": "skills.system.time_now.v1",
+            "gentle_challenge": "Challenge",
+            "confidence": 0.7,
+        }
+    )
+    assert pulse.focus_skill_id == "skills.system.time_now.v1"
+
+    metacog = DailyMetacogV1.model_validate(
+        {
+            "date": "2026-02-14",
+            "timezone": "America/Denver",
+            "thinking_patterns": ["pattern"],
+            "blindspots": [],
+            "course_correction": "tighten retrieval grounding",
+            "tomorrow_experiment": "run one bounded check",
+            "tomorrow_experiment_skill_id": "skills.system.time_now.v1",
+            "confidence": 0.6,
+        }
+    )
+    assert metacog.tomorrow_experiment_skill_id == "skills.system.time_now.v1"
+
+
+def test_normalize_daily_skill_selection_rejects_unknown_and_mutating_ids():
+    unknown_pulse, unknown_invalid = _normalize_daily_skill_selection(
+        {"focus_skill_id": "skills.system.fake.v1"},
+        action_name="daily_pulse_v1",
+    )
+    assert unknown_invalid == ["focus_skill_id"]
+    assert unknown_pulse["focus_skill_id"] is None
+
+    mutating_pulse, mutating_invalid = _normalize_daily_skill_selection(
+        {"focus_skill_id": "skills.runtime.docker_prune_stopped_containers.v1"},
+        action_name="daily_pulse_v1",
+    )
+    assert mutating_invalid == ["focus_skill_id"]
+    assert mutating_pulse["focus_skill_id"] is None
+
+    valid_metacog, valid_invalid = _normalize_daily_skill_selection(
+        {"tomorrow_experiment_skill_id": "skills.system.time_now.v1"},
+        action_name="daily_metacog_v1",
+    )
+    assert valid_invalid == []
+    assert valid_metacog["tomorrow_experiment_skill_id"] == "skills.system.time_now.v1"
+
+
+def test_shared_skill_manifest_loads_entries():
+    entries = load_skill_manifest()
+    ids = {item.skill_id for item in entries}
+    assert "skills.system.time_now.v1" in ids
+    assert "skills.runtime.docker_prune_stopped_containers.v1" in ids
 
 
 def test_metacog_schema_and_json_parser():

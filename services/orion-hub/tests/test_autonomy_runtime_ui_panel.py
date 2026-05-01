@@ -61,6 +61,8 @@ def test_app_js_passes_autonomy_payload_through_orion_message_meta_ws_and_http()
     assert "autonomySummary: d.autonomy_summary," in app_js
     assert "autonomyDebug: d.autonomy_debug," in app_js
     assert "autonomyStatePreview: d.autonomy_state_preview," in app_js
+    assert "autonomyExecutionMode: d.autonomy_execution_mode," in app_js
+    assert "autonomyGoalLineage: d.autonomy_goal_lineage," in app_js
     assert "autonomyRepositoryStatus: d.autonomy_repository_status," in app_js
 
 

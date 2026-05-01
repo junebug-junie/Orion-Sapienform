@@ -67,6 +67,11 @@ class Settings(BaseSettings):
         default="http://orion-social-memory:8765",
         alias="SOCIAL_MEMORY_BASE_URL",
     )
+    SELF_EXPERIMENTS_BASE_URL: str = Field(
+        default="http://orion-self-experiments:7172",
+        alias="SELF_EXPERIMENTS_BASE_URL",
+    )
+    SELF_EXPERIMENTS_TIMEOUT_SEC: float = Field(default=6.0, alias="SELF_EXPERIMENTS_TIMEOUT_SEC")
 
     # --- Biometrics Cache (Hub) ---
     BIOMETRICS_ENABLED: bool = Field(default=True, alias="BIOMETRICS_ENABLED")

@@ -1023,23 +1023,26 @@ async def process_recall(
 ) -> Tuple[MemoryBundleV1, RecallDecisionV1]:
     selected_profile = q.profile
     intent_payload: Dict[str, Any] | None = None
-    if bool(getattr(settings, "RECALL_INTENT_ROUTING_ENABLED", True)) and not bool(
-        getattr(q, "profile_explicit", False)
-    ):
+    if bool(getattr(settings, "RECALL_INTENT_ROUTING_ENABLED", True)):
         try:
             from .intent import classify_intent_v1, intent_telemetry_payload, resolve_profile_for_intent
 
+            profile_explicit = bool(getattr(q, "profile_explicit", False))
             ic = classify_intent_v1(str(q.fragment or ""))
-            selected_profile = resolve_profile_for_intent(ic.intent, fallback_profile=q.profile)
+            if profile_explicit:
+                selected_profile = q.profile
+            else:
+                selected_profile = resolve_profile_for_intent(ic.intent, fallback_profile=q.profile)
             intent_payload = intent_telemetry_payload(
                 query_text=str(q.fragment or ""),
                 intent=ic.intent,
                 profile=selected_profile,
-                override=False,
+                override=profile_explicit,
             )
         except Exception as exc:
             logger.debug("intent routing skipped: %s", exc)
             selected_profile = q.profile
+            intent_payload = None
 
     profile = get_profile(selected_profile)
     profile_name = str(profile.get("profile") or "")

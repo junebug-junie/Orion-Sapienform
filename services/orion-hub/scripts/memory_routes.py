@@ -14,6 +14,10 @@ from scripts.session import ensure_session
 
 logger = logging.getLogger("orion-hub.memory")
 
+# Hub list paging: avoid unbounded scans from arbitrary query params.
+_MEMORY_LIST_MAX_LIMIT = 500
+_MEMORY_LIST_MAX_OFFSET = 500_000
+
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
 
@@ -89,6 +93,8 @@ async def list_cards_api(
         raise HTTPException(status_code=503, detail="bus_unavailable")
     await ensure_session(x_orion_session_id, bus)
     type_list = [t.strip() for t in types.split(",")] if types else None
+    eff_limit = min(max(limit, 1), _MEMORY_LIST_MAX_LIMIT)
+    eff_offset = min(max(offset, 0), _MEMORY_LIST_MAX_OFFSET)
     rows = await mc.list_cards(
         _pool(request),
         status=status,
@@ -96,8 +102,8 @@ async def list_cards_api(
         anchor_class=anchor_class,
         project=project,
         priority=priority,
-        limit=limit,
-        offset=offset,
+        limit=eff_limit,
+        offset=eff_offset,
     )
     return {"items": [r.model_dump(mode="json") for r in rows]}
 
@@ -146,5 +152,10 @@ async def reverse_history_api(
     if not bus:
         raise HTTPException(status_code=503, detail="bus_unavailable")
     await ensure_session(x_orion_session_id, bus)
-    entry = await mc.reverse_history(_pool(request), history_id, actor="hub_operator")
+    try:
+        entry = await mc.reverse_history(_pool(request), history_id, actor="hub_operator")
+    except LookupError:
+        raise HTTPException(status_code=404, detail="history_not_found") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return entry.model_dump(mode="json")

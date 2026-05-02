@@ -515,10 +515,18 @@ async def reverse_history(pool: asyncpg.Pool, history_id: str, *, actor: str) ->
             h = await conn.fetchrow("SELECT * FROM memory_card_history WHERE history_id = $1", hid)
             if not h:
                 raise LookupError("history not found")
-            op = h["op"]
-            if op == "create" and h["card_id"]:
+            op = str(h["op"] or "")
+            if op == "reverse_auto_promotion":
+                raise ValueError("cannot undo reverse_auto_promotion entries")
+            undone = False
+            if op == "create":
+                if not h["card_id"]:
+                    raise ValueError("create history missing card_id; cannot undo")
                 await conn.execute("DELETE FROM memory_cards WHERE card_id = $1", h["card_id"])
-            elif op == "update" and h["card_id"] and h["before"]:
+                undone = True
+            elif op == "update":
+                if not h["card_id"] or not h["before"]:
+                    raise ValueError("update history missing card_id or before snapshot; cannot undo")
                 b = h["before"]
                 if isinstance(b, str):
                     b = json.loads(b)
@@ -553,8 +561,62 @@ async def reverse_history(pool: asyncpg.Pool, history_id: str, *, actor: str) ->
                     json.dumps(b.get("subschema") or {}),
                     h["card_id"],
                 )
-            elif op == "edge_add" and h["edge_id"]:
+                undone = True
+            elif op == "edge_add":
+                if not h["edge_id"]:
+                    raise ValueError("edge_add history missing edge_id; cannot undo")
                 await conn.execute("DELETE FROM memory_card_edges WHERE edge_id = $1", h["edge_id"])
+                undone = True
+            elif op == "edge_remove":
+                raw = h["before"]
+                if isinstance(raw, str):
+                    raw = json.loads(raw)
+                if not isinstance(raw, dict) or not raw:
+                    raise ValueError("edge_remove history missing before snapshot; cannot undo")
+                b = raw
+                eid_val = b.get("edge_id") or h["edge_id"]
+                if not eid_val:
+                    raise ValueError("edge_remove history missing edge_id; cannot undo")
+                eid_uuid = UUID(str(eid_val)) if not isinstance(eid_val, UUID) else eid_val
+                present = await conn.fetchrow("SELECT 1 FROM memory_card_edges WHERE edge_id = $1", eid_uuid)
+                if present:
+                    raise ValueError("cannot undo edge_remove: edge already exists")
+                from_id = b.get("from_card_id")
+                to_id = b.get("to_card_id")
+                etype = b.get("edge_type")
+                if from_id is None or to_id is None or not etype:
+                    raise ValueError("edge_remove before snapshot missing from_card_id, to_card_id, or edge_type")
+                from_uuid = UUID(str(from_id)) if not isinstance(from_id, UUID) else from_id
+                to_uuid = UUID(str(to_id)) if not isinstance(to_id, UUID) else to_id
+                etype_s = str(etype)
+                meta = b.get("metadata") or {}
+                if isinstance(meta, str):
+                    meta = json.loads(meta)
+                if etype_s in ("parent_of", "child_of"):
+                    if await _would_cycle_parent_child(
+                        conn,
+                        from_id=from_uuid,
+                        to_id=to_uuid,
+                        edge_type=etype_s,
+                    ):
+                        raise ValueError("restoring edge would create a parent/child cycle")
+                try:
+                    await conn.execute(
+                        """
+                        INSERT INTO memory_card_edges (edge_id, from_card_id, to_card_id, edge_type, metadata)
+                        VALUES ($1, $2, $3, $4, $5::jsonb)
+                        """,
+                        eid_uuid,
+                        from_uuid,
+                        to_uuid,
+                        etype_s,
+                        json.dumps(meta if isinstance(meta, dict) else {}),
+                    )
+                except asyncpg.exceptions.UniqueViolationError as exc:
+                    raise ValueError("cannot restore edge: conflicting or duplicate edge") from exc
+                undone = True
+            if not undone:
+                raise ValueError(f"history op {op!r} is not reversible")
             new_id = uuid4()
             await conn.execute(
                 """

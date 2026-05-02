@@ -67,6 +67,7 @@ def resolve_profile_for_intent(intent: str, *, fallback_profile: str) -> str:
 
 
 def intent_telemetry_payload(*, query_text: str, intent: str, profile: str, override: bool) -> dict:
+    """Build recall.intent.v1 telemetry. ``query_hash16`` is SHA-256 of UTF-8 query text (prefix only)."""
     h = hashlib.sha256((query_text or "").encode("utf-8")).hexdigest()[:16]
     return {
         "kind": "recall.intent.v1",

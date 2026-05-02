@@ -5,7 +5,7 @@
 **Parent spec:** [Orion Memory Cards v1](2026-05-01-orion-memory-cards-v1-design.md) (approved)  
 **Companion:** [Memory Cards v1 offboarding](../guides/2026-05-01-memory-cards-v1-offboarding.md)
 
-This document scopes **only** Hub operator UX and HTTP parity for Phase 4. It does not repeat parent ground rules (§2), lane semantics (§3), data model (§4), or Phase 5–6 work. Where this doc conflicts with the parent, **the parent wins** unless this doc explicitly supersedes a *path* or *integration* detail listed below.
+This document scopes **only** Hub operator UX and HTTP parity for Phase 4. It does not repeat parent ground rules (§2), lane semantics (§3), or data model (§4). **Phase 5, Phase 6, recall/cortex hardening, and v1.5-adjacent work are out of scope** for this delta; see **§9** for the full inventory and pointers to the parent spec. Where this doc conflicts with the parent, **the parent wins** unless this doc explicitly supersedes a *path* or *integration* detail listed below.
 
 ---
 
@@ -75,7 +75,7 @@ Minimum viable behavior aligned with parent §10:
 | Highlight-to-remember | Text selection in chat transcript → modal; Stage 1 pre-fill may call **client-side** heuristics or a thin Hub endpoint if one already exists—**no** new Stage 2 LLM path |
 | Neighborhood | Cytoscape via CDN; data from neighborhood GET |
 
-**Out of scope for this delta:** Playwright UI automation (parent §14); full bulk-select polish can be incremental if approve/reject single-card paths ship first.
+**UI polish deferred with Phase 4:** Playwright UI automation (parent §14); full bulk-select polish can ship incrementally after single-card approve/reject paths. Other deferrals: **§9**.
 
 ---
 
@@ -95,11 +95,58 @@ Minimum viable behavior aligned with parent §10:
 
 ---
 
-## 9. Explicitly out of scope
+## 9. Out of scope — extended phases and adjacent work
 
-- Phase 5 auto-extractor, distiller CLI, Hub 501 → distiller wiring.
-- Phase 6 runbook, CI matrix expansion, full E2E shell (tracked separately).
-- Recall `cards_adapter` SQL optimization and Graphtri merge decision (tracked in hardening backlog—not blocking Hub route parity).
+Implementers must not expand Phase 4 Hub tasks into the areas below without a separate approved spec or plan. The **normative** descriptions remain in the parent design ([§11 Phase 5](2026-05-01-orion-memory-cards-v1-design.md), [§12 Phase 6](2026-05-01-orion-memory-cards-v1-design.md), [§14](2026-05-01-orion-memory-cards-v1-design.md)); this section is a **boundary checklist** so Hub completion does not accidentally absorb extraction, ops, or recall-scale work.
+
+### 9.1 Phase 5 — Auto-extractor and operator distiller (parent §11)
+
+| Item | Out of scope for Phase 4 Hub delta | Parent / paths |
+|------|-------------------------------------|----------------|
+| Stage 1 extractor productization | Replacing the stub in `orion/core/storage/memory_extraction.py` with full §5 regex tables; `extract_candidates` / `fingerprint` behavior as specified | Parent §5 patterns, §11 |
+| Auto-extractor pipeline | Implementing per-candidate logic in `memory_extractor.py` (fingerprint, dedupe vs existing cards, contradiction vs `always_inject`, session counting, auto-promote threshold, DAL inserts with `actor=auto_extractor`) | Parent §11 |
+| Default and safety flags | Any change that turns `ORION_AUTO_EXTRACTOR_ENABLED` on by default; enabling Stage 2 before v1.5 (`ORION_AUTO_EXTRACTOR_STAGE2_ENABLED` must keep raising `NotImplementedError`) | Parent §2, §11 |
+| Distiller CLI | Completing `services/orion-recall/scripts/distill_memory_cards.py` (JSONL detect, dry-run YAML, `--apply` via DAL with `operator_distiller` provenance) | Parent §11 |
+| Hub distill endpoint | Replacing `POST /api/memory/sessions/{id}/distill` **501** with in-process or `subprocess` invocation of the distiller | Parent §10–§11 |
+| Tests listed for Phase 5 | `tests/test_memory_extraction.py`, distiller CLI tests, extractor integration beyond “disabled / Stage 2 raises” already covered | Parent §13 |
+
+**Phase 4 allowance:** Hub may surface Activity Log rows and placeholders for “Reverse this” where product rules apply later; no requirement to implement extractor-backed flows in this delta.
+
+### 9.2 Phase 6 — Safety verification, runbook, CI, E2E (parent §12)
+
+| Item | Out of scope for Phase 4 Hub delta | Notes |
+|------|-------------------------------------|-------|
+| PR safety checklist execution | Running and attaching `rg` / `git diff` evidence from parent §12 | Phase 6 |
+| Operator runbook | Authoring `docs/superpowers/runbooks/2026-05-01-memory-cards-v1-runbook.md` | Parent §12 |
+| Real E2E smoke | Replacing placeholder `scripts/smoke_memory_cards_e2e.sh` with the full flow (schema → DAL → Hub tab → recall bundle → reverse auto-promotion) | Parent §12 |
+| CI matrix | Ensuring images install updated `requirements.txt` and running the expanded pytest set across services | [Offboarding](../guides/2026-05-01-memory-cards-v1-offboarding.md) — Phase 6 + ops |
+| Spec-listed tests not yet present | DAL roundtrip, cards backend scoring, visibility lane integration, `memory_inject` snapshot, extraction tables, `chat.general.v1` empty-store parity (where not already done) | Parent §12–§13; offboarding “Spec-listed tests not yet added” |
+
+Phase 4 Hub work **may** add or extend `services/orion-hub/tests/test_memory_api.py` as listed in §8 of this doc; it must not be blocked on the full Phase 6 checklist.
+
+### 9.3 Recall and cortex hardening (between v1 phases / parallel backlog)
+
+These items improve correctness or scale **outside** the Hub HTTP/UI slice. Track in implementation planning as **follow-on** work, not part of this delta’s exit criteria.
+
+| Item | Description | Typical owners |
+|------|-------------|----------------|
+| Visibility integration test | End-to-end assertion that intimate-scoped cards never appear for `lane="social"` across `cards_adapter`, `memory_inject`, and fusion | recall + cortex-orch tests |
+| Graphtri / browse-only paths | Product decision: merge cards with the same lane rules as multi-signal recall, or document “cards not merged” for graphtri-only paths | recall + spec note |
+| `cards_adapter` scale | Moving filters/limits into SQL vs full-table fetch + Python scoring for large datasets | recall |
+| Readiness / pool health | Operator-visible probe when `RECALL_ENABLE_CARDS` is on but the PG pool is unhealthy | recall ops |
+| `memory_inject` async migration | Optional future if `conversation_front` becomes async; snapshot test for empty `known_facts_block` byte-identical prompt | cortex-orch |
+
+### 9.4 v1.5 and parent “explicitly not in v1” (parent §14)
+
+| Item | Status |
+|------|--------|
+| Stage 2 LLM extraction | **v1.5** — not in Memory Cards v1; must not be implemented under this Phase 4 delta |
+| Playwright Hub UI tests | Explicitly not in v1 per parent §14; manual smoke only for Hub |
+| New external runtime families | Forbidden per parent §2; Phase 4 Hub must not add npm build steps, new databases, etc. |
+
+### 9.5 Profile and default churn (parent §2)
+
+Out of scope: modifying `RECALL_DEFAULT_PROFILE`, editing recall YAML profiles other than the single allowed exception (`self.factual.v1.yaml`), or adding profiles beyond what the parent already specified (e.g. `biographical.v1.yaml`). Hub Phase 4 does not change recall profile files.
 
 ---
 
@@ -115,5 +162,7 @@ Minimum viable behavior aligned with parent §10:
 ## 11. Self-review checklist (pre-merge of this doc)
 
 - [x] No placeholder TBD for required routes.
-- [x] Distill 501 and Phase 5 scope clearly deferred.
-- [x] Parent §2/§3/§12 referenced for non-Hub rules.
+- [x] Distill 501 and Phase 5 scope clearly deferred (§9.1).
+- [x] Phase 6 and recall hardening boundaries documented (§9.2–§9.3).
+- [x] v1.5 / §14 exclusions documented (§9.4); profile churn excluded (§9.5).
+- [x] Parent §2/§3/§12 referenced for non-Hub rules (§2).

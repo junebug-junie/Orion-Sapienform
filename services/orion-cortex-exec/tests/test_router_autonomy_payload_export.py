@@ -322,6 +322,25 @@ def test_router_autonomy_preview_dominant_drive_falls_back_to_active_drive(monke
     assert result.metadata["autonomy_state_preview"]["dominant_drive"] == "continuity"
 
 
+def test_autonomy_payload_includes_v2_preview_and_delta() -> None:
+    ctx = {
+        "chat_autonomy_state_v2": {
+            "schema_version": "autonomy.state.v2",
+            "dominant_drive": "coherence",
+            "active_drives": ["coherence", "continuity", "relational"],
+            "confidence": 0.5,
+            "unknowns": ["a", "b", "c", "d", "e", "f"],
+            "attention_items": [{"summary": "x"}, {"summary": "y"}],
+            "inhibited_impulses": [{"inhibition_reason": "proxy_signal_not_canonical_state"}],
+        },
+        "chat_autonomy_state_delta": {"subject": "orion", "confidence_delta": 0.1},
+    }
+    md = _autonomy_payload_from_ctx(ctx)
+    assert md["autonomy_state_v2_preview"]["dominant_drive"] == "coherence"
+    assert len(md["autonomy_state_v2_preview"]["active_drives"]) <= 3
+    assert md["autonomy_state_delta"]["confidence_delta"] == 0.1
+
+
 def test_autonomy_payload_includes_turn_effect_when_present() -> None:
     md = _autonomy_payload_from_ctx(
         {

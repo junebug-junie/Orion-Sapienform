@@ -49,6 +49,30 @@ def test_memory_history_requires_filter() -> None:
     assert resp.status_code == 400
 
 
+def test_memory_history_rejects_invalid_edge_id_uuid() -> None:
+    import scripts.main as hub_main
+
+    with TestClient(hub_main.app) as client:
+        resp = client.get(
+            "/api/memory/history?edge_id=not-a-uuid",
+            headers={"X-Orion-Session-Id": "test-session"},
+        )
+    assert resp.status_code == 400
+    assert resp.json().get("detail") == "invalid_edge_id"
+
+
+def test_memory_reverse_rejects_invalid_history_id_uuid() -> None:
+    import scripts.main as hub_main
+
+    with TestClient(hub_main.app) as client:
+        resp = client.post(
+            "/api/memory/history/not-a-uuid/reverse",
+            headers={"X-Orion-Session-Id": "test-session"},
+        )
+    assert resp.status_code == 400
+    assert resp.json().get("detail") == "invalid_history_id"
+
+
 def test_memory_distill_returns_501() -> None:
     import scripts.main as hub_main
 

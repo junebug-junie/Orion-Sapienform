@@ -1,5 +1,6 @@
 /* Orion Hub — Memory cards operator UI (Phase 4) */
 (function () {
+  let memoryCyInstance = null;
   const pathSegments = window.location.pathname.split("/").filter((p) => p.length > 0);
   const URL_PREFIX = pathSegments.length > 0 ? `/${pathSegments[0]}` : "";
   const API_BASE = window.location.origin + URL_PREFIX;
@@ -206,6 +207,14 @@
     try {
       const nb = await apiFetch(`/api/memory/cards/${encodeURIComponent(cardId)}/neighborhood?hops=1`);
       cyHost.classList.remove("hidden");
+      if (memoryCyInstance) {
+        try {
+          memoryCyInstance.destroy();
+        } catch {
+          /* ignore */
+        }
+        memoryCyInstance = null;
+      }
       cyHost.innerHTML = "";
       const nodes = [{ data: { id: String(cardId), label: "self" } }];
       const edges = [];
@@ -217,7 +226,7 @@
           edges.push({ data: { id: `${et}-${nid}-${i}`, source: String(cardId), target: nid, label: et } });
         });
       });
-      window.cytoscape({
+      memoryCyInstance = window.cytoscape({
         container: cyHost,
         elements: { nodes, edges },
         style: [

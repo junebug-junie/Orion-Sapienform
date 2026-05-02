@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List, Optional
+from uuid import UUID
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import ValidationError
@@ -16,7 +17,15 @@ from orion.core.storage import memory_cards as mc_dal
 
 from .session import ensure_session
 
+try:
+    from asyncpg.exceptions import UniqueViolationError as _AsyncpgUniqueViolationError
+except ImportError:  # pragma: no cover - optional in minimal dev envs
+    _AsyncpgUniqueViolationError = None  # type: ignore[misc, assignment]
+
 logger = logging.getLogger("orion-hub.memory")
+
+# Memory APIs are gated by Hub session only; rows are not scoped per org/project.
+# Intended for single-tenant operator Hub with a shared RECALL_PG_DSN.
 
 router = APIRouter(tags=["memory-cards"])
 
@@ -52,6 +61,13 @@ def _parse_csv(value: Optional[str]) -> Optional[List[str]]:
     return [p.strip() for p in str(value).split(",") if p.strip()]
 
 
+def _require_uuid(value: str, *, param: str) -> None:
+    try:
+        UUID(str(value).strip())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"invalid_{param}") from e
+
+
 @router.post("/api/memory/cards")
 async def memory_create_card(
     request: Request,
@@ -67,6 +83,12 @@ async def memory_create_card(
     try:
         cid = await mc_dal.insert_card(pool, card, actor="operator", op="create")
     except Exception as exc:
+        if _AsyncpgUniqueViolationError is not None and isinstance(exc, _AsyncpgUniqueViolationError):
+            logger.warning("memory_create_card duplicate error=%s", exc)
+            raise HTTPException(status_code=409, detail="duplicate_card") from exc
+        if isinstance(exc, (TimeoutError, OSError)):
+            logger.warning("memory_create_card transport error=%s", exc)
+            raise HTTPException(status_code=503, detail="memory_store_error") from exc
         logger.warning("memory_create_card_failed error=%s", exc)
         raise HTTPException(status_code=400, detail="create_failed") from exc
     row = await mc_dal.get_card(pool, str(cid))
@@ -192,9 +214,12 @@ async def memory_delete_edge(
     edge_id: str,
     x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
 ) -> Dict[str, Any]:
+    _require_uuid(edge_id, param="edge_id")
     await _need_session(x_orion_session_id)
     pool = _pool(request)
-    await mc_dal.remove_edge(pool, edge_id, actor="operator")
+    deleted = await mc_dal.remove_edge(pool, edge_id, actor="operator")
+    if not deleted:
+        raise HTTPException(status_code=404, detail="edge_not_found")
     return {"ok": True}
 
 
@@ -209,15 +234,22 @@ async def memory_list_history(
 ) -> Dict[str, Any]:
     if not card_id and not edge_id:
         raise HTTPException(status_code=400, detail="card_id_or_edge_id_required")
+    if edge_id:
+        _require_uuid(edge_id, param="edge_id")
     await _need_session(x_orion_session_id)
     pool = _pool(request)
-    rows = await mc_dal.list_history(
-        pool,
-        card_id=card_id,
-        edge_id=edge_id,
-        limit=_clamp_limit(limit),
-        offset=_clamp_offset(offset),
-    )
+    try:
+        rows = await mc_dal.list_history(
+            pool,
+            card_id=card_id,
+            edge_id=edge_id,
+            limit=_clamp_limit(limit),
+            offset=_clamp_offset(offset),
+        )
+    except ValueError as exc:
+        if str(exc) == "invalid_edge_id":
+            raise HTTPException(status_code=400, detail="invalid_edge_id") from exc
+        raise
     return {"items": [h.model_dump(mode="json") for h in rows]}
 
 
@@ -227,6 +259,7 @@ async def memory_reverse_history(
     history_id: str,
     x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
 ) -> Dict[str, Any]:
+    _require_uuid(history_id, param="history_id")
     await _need_session(x_orion_session_id)
     pool = _pool(request)
     try:
@@ -250,7 +283,10 @@ async def memory_neighborhood(
 ) -> Dict[str, Any]:
     await _need_session(x_orion_session_id)
     pool = _pool(request)
-    return await mc_dal.neighborhood(pool, id_or_slug, hops=hops)
+    try:
+        return await mc_dal.neighborhood(pool, id_or_slug, hops=hops)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="card_not_found") from None
 
 
 @router.post("/api/memory/sessions/{session_id}/distill")

@@ -23,7 +23,7 @@ from orion.core.contracts.memory_cards import (
 
 logger = logging.getLogger(__name__)
 
-_REPO_ROOT = Path(__file__).resolve().parents[4]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 _MEMORY_CARDS_SQL = _REPO_ROOT / "services" / "orion-recall" / "sql" / "memory_cards.sql"
 
 
@@ -411,12 +411,13 @@ async def add_edge(pool: asyncpg.Pool, edge: MemoryCardEdgeCreateV1, *, actor: s
             return _row_to_edge(er)
 
 
-async def remove_edge(pool: asyncpg.Pool, edge_id: str, *, actor: str) -> None:
+async def remove_edge(pool: asyncpg.Pool, edge_id: str, *, actor: str) -> bool:
+    """Delete edge by id. Returns True if a row was deleted, False if not found."""
     e_uuid = UUID(str(edge_id).strip())
     async with pool.acquire() as conn:
         row = await conn.fetchrow("SELECT * FROM memory_card_edges WHERE edge_id = $1", e_uuid)
         if not row:
-            return
+            return False
         before = await conn.fetchrow("SELECT to_jsonb(e.*) AS j FROM memory_card_edges e WHERE e.edge_id = $1", e_uuid)
         async with conn.transaction():
             await conn.execute("DELETE FROM memory_card_edges WHERE edge_id = $1", e_uuid)
@@ -430,6 +431,7 @@ async def remove_edge(pool: asyncpg.Pool, edge_id: str, *, actor: str) -> None:
                 actor,
                 json.dumps(before["j"]),
             )
+        return True
 
 
 async def list_edges(
@@ -481,8 +483,12 @@ async def list_history(
             args.append(cid)
             idx += 1
         if edge_id:
+            try:
+                e_uuid = UUID(str(edge_id).strip())
+            except ValueError as e:
+                raise ValueError("invalid_edge_id") from e
             clauses.append(f"edge_id = ${idx}")
-            args.append(UUID(str(edge_id).strip()))
+            args.append(e_uuid)
             idx += 1
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         args.extend([limit, offset])
@@ -530,8 +536,27 @@ async def reverse_history(pool: asyncpg.Pool, history_id: str, *, actor: str) ->
                 if card_j is None:
                     raise ValueError("reverse_malformed_history")
                 cid = UUID(str(card_j))
-                # Restore full row from before snapshot
-                b = before
+                # Restore full row from before snapshot (reject partial rows that would NULL NOT NULL cols)
+                b = dict(before)
+                _upd_required = (
+                    "slug",
+                    "types",
+                    "status",
+                    "confidence",
+                    "sensitivity",
+                    "priority",
+                    "visibility_scope",
+                    "provenance",
+                    "title",
+                    "summary",
+                )
+                for k in _upd_required:
+                    if b.get(k) is None:
+                        raise ValueError("reverse_malformed_history")
+                if b.get("evidence") is None:
+                    b["evidence"] = []
+                if b.get("subschema") is None:
+                    b["subschema"] = {}
                 await conn.execute(
                     """
                     UPDATE memory_cards SET
@@ -607,7 +632,7 @@ async def neighborhood(
     async with pool.acquire() as conn:
         root_id = await _resolve_card_id(conn, card_id_or_slug)
         if root_id is None:
-            return {"card_id": None, "hops": hops, "by_edge_type": {}}
+            raise LookupError("card_not_found")
         frontier = {root_id}
         seen = {root_id}
         by_type: Dict[str, List[Dict[str, Any]]] = {}

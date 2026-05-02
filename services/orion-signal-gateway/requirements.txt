@@ -1,0 +1,11 @@
+fastapi==0.115.9
+uvicorn[standard]==0.30.6
+pydantic==2.11.5
+pydantic-settings==2.5.2
+redis[hiredis]==5.0.7
+opentelemetry-api==1.27.0
+opentelemetry-sdk==1.27.0
+opentelemetry-exporter-otlp-proto-grpc==1.27.0
+loguru>0.7
+pytest==8.3.3
+pytest-asyncio>=0.23.0

@@ -47,6 +47,7 @@ Redis bus (organ channels, see settings.ORGAN_CHANNELS)
 | `__init__.py` | Package marker (minimal). |
 | `models.py` | `OrganClass`, `OrionSignalV1`, `OrionOrganRegistryEntry` (Pydantic); `notes` capped at 5. |
 | `registry.py` | `ORGAN_REGISTRY` — causal DAG + **`bus_channels` filled from service defaults** (verify against your deployment). |
+| `signal_ids.py` | `make_signal_id(organ_id, source_event_id)` — deterministic **64-hex** SHA-256 when `source_event_id` set; else **32-hex** `uuid4().hex`. |
 | `normalization.py` | Canonical **`EwmaBand`**, **`InductionTracker`**, `clamp01`; `clamp11`; `NormalizationContext` (`get_band`, `get_tracker` per `(organ_id, metric_key)`). |
 | `causal_helpers.py` | `with_missed_parent_notes(signal, prior, registry)` for §7.B-style missed-parent audit lines. |
 | `adapters/base.py` | `OrionSignalAdapter` ABC. |
@@ -67,13 +68,13 @@ Redis bus (organ channels, see settings.ORGAN_CHANNELS)
 |------|------|
 | `app/main.py` | FastAPI lifespan: `configure_tracing()` then `GatewayService`; routes `/health`, `/signals/active`. |
 | `app/instrumentation.py` | Global `TracerProvider`: OTLP if `OTEL_EXPORTER_OTLP_ENDPOINT`, console if `OTEL_CONSOLE_EXPORT`, else silent drop exporter (real span IDs). |
-| `app/settings.py` | Bus URL, `ORGAN_CHANNELS` glob list, `SIGNAL_WINDOW_SEC`, `SIGNALS_OUTPUT_CHANNEL`, OTEL envs. |
+| `app/settings.py` | Bus URL, `ORGAN_CHANNELS` glob list, `SIGNAL_WINDOW_SEC`, `SIGNALS_OUTPUT_CHANNEL`, OTEL envs, **`OTEL_DIMENSION_ALLOWLIST`** (JSON env + defaults; span `dim.*` only). |
 | `app/service.py` | `Hunter` + lazy `SignalProcessor` wiring. |
-| `app/processor.py` | Envelope dispatch; passthrough guard (`signal.` prefix, skip self-echo); `with_missed_parent_notes`; OTEL parent context from first registry parent with valid `otel_*` on **non-exogenous** signals. |
+| `app/processor.py` | Envelope dispatch; passthrough guard (`signal.` prefix, skip self-echo); `with_missed_parent_notes`; OTEL parent from **first registry-ordered parent** with valid `otel_*` on **non-exogenous** signals; on disagreeing parent **trace_id**s → `orion_signal_parent_trace_disagreement` log + optional **notes** slot; `dim.*` via allowlist + `_level`/`_trend`/`_volatility` suffix rule. |
 | `app/signal_window.py` | Latest `OrionSignalV1` per `organ_id`, TTL eviction. |
 | `app/normalization_state.py` | Per-organ `NormalizationContext` instances for adapters. |
 | `app/passthrough.py` | Validates self-hardened payloads (`OrionSignalV1` + known `organ_id`). |
-| `app/tests/` | Gateway + normalization + passthrough + OTEL (in-memory exporter) + adapter integration-style tests. |
+| `app/tests/` | Gateway integration: normalization, passthrough, OTEL (in-memory exporter), **registry DAG** (`test_registry_dag.py`). Adapter-only tests live under `orion/signals/adapters/tests/`. |
 | `otel/collector-config.yaml` | Sidecar template (OTLP, hostmetrics, prometheus/dcgm **commented**). |
 | `Dockerfile` | Build context = **repo root** (see `docker-compose.yml`). |
 | `docker-compose.yml`, `requirements.txt`, `.env_example`, `README.md`, `pytest.ini` | Ops and developer entrypoints. |
@@ -86,9 +87,11 @@ Redis bus (organ channels, see settings.ORGAN_CHANNELS)
 
 - Schema + registry + mesh-oriented `bus_channels` (still **verify** per environment).
 - Gateway bus subscription shell, window, passthrough rules, missed-parent notes, OTEL span emission and parent trace inheritance for **adapter** path.
+- **Phase 2 first-pass (in repo):** deterministic `signal_id` via `make_signal_id`; parent **trace_id** disagreement → structured warning + optional `notes`; **`OTEL_DIMENSION_ALLOWLIST`** on spans; registry **acyclic** `causal_parent_organs` + `test_registry_dag.py`; `world_pulse` definitive empty parents + notes.
 - Biometrics reference adapter + tests.
-- Stub adapters for every organ in the design tree (contract placeholders).
+- Stub adapters for every organ in the design tree (contract placeholders); stubs use **`make_signal_id`** like biometrics.
 - Collector config skeleton.
+- **CI:** workflow **`.github/workflows/orion-signal-gateway-tests.yml`** installs `services/orion-signal-gateway/requirements.txt` and runs pytest on `tests/test_biometrics_pipeline.py`, `services/orion-signal-gateway/app/tests`, and `orion/signals/adapters/tests`.
 
 ### Explicitly still next phase (per design “out of scope” + gaps)
 
@@ -97,10 +100,9 @@ Redis bus (organ channels, see settings.ORGAN_CHANNELS)
 | **Real adapters** | Replace stubs with payload shapes from each service; align `can_handle` with actual `env.kind` + channel patterns. |
 | **Hub** | Spec’s `GET /api/signals/active` and trace explorer live on Hub; gateway exposes `/signals/active` only. |
 | **End-to-end mesh** | Subscribe patterns vs real traffic; avoid duplicate processing; confirm no channel gaps. |
-| **Parent trace conflicts** | Spec: if parents disagree on `trace_id`, log / `notes` — only “first parent with OTEL” wins today. |
-| **Stub `signal_id`** | Biometrics matches spec when `source_event_id` present; Phase 2 targets **64-hex** (full SHA-256 of preimage) for deterministic ids where backward compatibility allows — audit stubs and consumers for fixed-width assumptions. |
+| **Consumer audit (`signal_id`)** | Deterministic ids are **64-hex** (SHA-256) or **32-hex** (UUID fallback). Audit Hub, substrate, logging, and UI for **fixed-width** or truncated-hash assumptions. |
 | **Wearables / DCGM** | Collector comments only; no `orion-wearable-bridge`. |
-| **CI / image** | Ensure pipeline installs `services/orion-signal-gateway/requirements.txt` (includes OTEL + `pytest-asyncio` for tests). |
+| **Image / compose** | Ensure release images that ship the gateway include the same dependency set as `requirements.txt` (CI covers tests only). |
 
 ---
 
@@ -184,4 +186,4 @@ Docker build expects **context = repository root** (`services/orion-signal-gatew
 
 ## Branch / history
 
-Implementation landed on branch **`feature/organ-signal-gateway`** (pushed to `origin`). Use `git log --oneline --follow -- orion/signals services/orion-signal-gateway` for the exact commit range if the branch is merged or renamed later.
+Original chassis landed on **`feature/organ-signal-gateway`**; Phase 2 first-pass work was stacked on **`phase2/organ-signal-gateway-phase2`** in some worktrees. **On `main`**, use `git log --oneline --follow -- orion/signals services/orion-signal-gateway orion/telemetry/biometrics_pipeline.py` after merge to see the integrated range.

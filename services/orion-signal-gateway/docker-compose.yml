@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  orion-signal-gateway:
+    build:
+      context: ../..
+      dockerfile: services/orion-signal-gateway/Dockerfile
+    environment:
+      - SERVICE_NAME=orion-signal-gateway
+      - SERVICE_VERSION=0.1.0
+      - NODE_NAME=${NODE_NAME:-athena}
+      - ORION_BUS_URL=${ORION_BUS_URL:-redis://orion-redis:6379/0}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED:-true}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    ports:
+      - "8090:8000"
+    restart: unless-stopped
+    networks:
+      - orion-net
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otel/collector-config.yaml"]
+    volumes:
+      - ./otel/collector-config.yaml:/etc/otel/collector-config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8889:8889"   # Prometheus metrics
+    networks:
+      - orion-net
+
+networks:
+  orion-net:
+    external: true
+    name: orion-net

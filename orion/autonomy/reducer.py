@@ -325,7 +325,8 @@ def reduce_autonomy_state(inp: AutonomyReducerInputV1) -> AutonomyReducerResultV
     unknowns: list[str] = []
     if not had_previous:
         unknowns.append("no_previous_state")
-    if not inp.evidence:
+    # Spec: "empty evidence list after merge" — not merely empty incoming batch.
+    if len(working.evidence_refs) == 0:
         unknowns.append("no_fresh_evidence")
     if proxy_only:
         unknowns.append("proxy_only_evidence")
@@ -347,6 +348,8 @@ def reduce_autonomy_state(inp: AutonomyReducerInputV1) -> AutonomyReducerResultV
 
     if proxy_only:
         conf -= 0.10
+    if "no_previous_state" in working.unknowns:
+        conf -= 0.05
     if "stale" in blob or "missing context" in blob:
         conf -= 0.05
     if "timeout" in blob or "unavailable" in blob:
@@ -447,7 +450,10 @@ def reduce_autonomy_state(inp: AutonomyReducerInputV1) -> AutonomyReducerResultV
         new_impulses=[c.impulse_id for c in working.candidate_impulses if c.impulse_id not in {x.impulse_id for x in baseline.candidate_impulses}],
         new_inhibitions=[i.impulse_id for i in working.inhibited_impulses if i.impulse_id not in {x.impulse_id for x in baseline.inhibited_impulses}],
         confidence_delta=round(working.confidence - baseline_conf, 6),
-        notes=(["compared vs upgrade baseline at turn start"][:1]),
+        notes=[
+            "delta compares against upgraded V1 or copied V2 baseline at turn start",
+            "changed_fields are surface diffs vs that baseline, not a persisted prior-turn snapshot",
+        ],
     )
 
     return AutonomyReducerResultV1(state=working, delta=delta)

@@ -33,9 +33,51 @@ def test_reducer_cold_start_orion_binding() -> None:
     r = reduce_autonomy_state(
         AutonomyReducerInputV1(subject="orion", previous_state=None, evidence=[], action_outcomes=[], now=fixed)
     )
-    assert r.state.confidence == 0.25
+    assert r.state.confidence == 0.20
     assert "no_previous_state" in r.state.unknowns
     assert r.state.entity_id == "self:orion"
+
+
+def test_reducer_cold_start_juniper_and_relationship_bindings() -> None:
+    fixed = datetime(2026, 5, 2, 12, 0, 0)
+    rj = reduce_autonomy_state(
+        AutonomyReducerInputV1(subject="juniper", previous_state=None, evidence=[], action_outcomes=[], now=fixed)
+    )
+    assert rj.state.entity_id == "user:juniper"
+    rr = reduce_autonomy_state(
+        AutonomyReducerInputV1(subject="relationship", previous_state=None, evidence=[], action_outcomes=[], now=fixed)
+    )
+    assert rr.state.entity_id == "relationship:orion|juniper"
+
+
+def test_reducer_no_fresh_evidence_when_merged_empty_only() -> None:
+    fixed = datetime(2026, 5, 2, 12, 0, 0)
+    cold = reduce_autonomy_state(
+        AutonomyReducerInputV1(subject="orion", previous_state=None, evidence=[], action_outcomes=[], now=fixed)
+    )
+    assert "no_fresh_evidence" in cold.state.unknowns
+    assert cold.state.evidence_refs == []
+
+    v1 = AutonomyStateV1(
+        subject="orion",
+        model_layer="self-model",
+        entity_id="self:orion",
+        latest_identity_snapshot_id="snap-1",
+        latest_drive_audit_id="audit-1",
+        latest_goal_ids=["g1"],
+        dominant_drive="coherence",
+        active_drives=["coherence"],
+        drive_pressures={"coherence": 0.3},
+        tension_kinds=[],
+        goal_headlines=[],
+        source="graph",
+        generated_at=fixed,
+    )
+    with_graph = reduce_autonomy_state(
+        AutonomyReducerInputV1(subject="orion", previous_state=v1, evidence=[], action_outcomes=[], now=fixed)
+    )
+    assert "no_fresh_evidence" not in with_graph.state.unknowns
+    assert len(with_graph.state.evidence_refs) > 0
 
 
 def test_reducer_user_message_and_infra_no_drive_pressure() -> None:

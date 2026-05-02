@@ -87,6 +87,9 @@ def test_chat_stance_autonomy_v2_reducer_exception_swallowed(monkeypatch) -> Non
 
     monkeypatch.setattr(chat_stance, "reduce_autonomy_state", _boom)
     ctx: dict = {"user_message": "hello"}
-    chat_stance.build_chat_stance_inputs(ctx)
+    built = chat_stance.build_chat_stance_inputs(ctx)
     assert "chat_autonomy_state_v2" not in ctx
-    assert ctx.get("chat_autonomy_state") is not None or ctx.get("chat_autonomy_summary") is not None
+    assert "state_v2" not in built["autonomy"]
+    assert "delta" not in built["autonomy"]
+    assert isinstance(ctx.get("chat_autonomy_state"), dict)
+    assert isinstance(ctx.get("chat_autonomy_summary"), dict)

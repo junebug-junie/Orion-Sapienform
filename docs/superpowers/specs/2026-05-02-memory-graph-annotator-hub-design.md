@@ -12,10 +12,10 @@ Operators need a **post-hoc graph annotator** in the Hub **Memory** area to turn
 
 This spec defines:
 
-1. **RDF in GraphDB** as the detailed relational store (named graphs, PROV-aware lineage); **ontology, predicates, cardinalities, projections**, and **worked examples** are **§4** and **Appendices A–D**.
+1. **RDF in GraphDB** as the detailed relational store (named graphs, PROV-aware lineage); **ontology, predicates, cardinalities, projections**, and **worked examples** are **§4** and **Appendices A–D**; **projection vs distiller and recall routing** are **§8**.
 2. **Explicit dual-write** into existing **Postgres memory cards** (`memory_cards`, `memory_card_edges`, `subschema`) so current rails keep working.
 3. **Hybrid inference:** brain-lane LLM proposes a **draft**; **ontology + validation rules** normalize and flag conflicts; the operator **commits** from the UI.
-4. **Downstream surfaces** — §8: **recall** (grounded + optional relational expansion), **memory inject**, **chat stance**, **journals**, **metacog / collapse mirrors**, **spark** introspection — so retrieval is not only shallow, time-windowed, or reference-less.
+4. **Downstream surfaces** — §9: **recall** (grounded + optional relational expansion), **memory inject**, **chat stance**, **journals**, **metacog / collapse mirrors**, **spark** introspection — so retrieval is not only shallow, time-windowed, or reference-less.
 
 ---
 
@@ -241,7 +241,7 @@ Ontology **version** is carried on approve requests; memory-graph rejects mismat
 3. **Validate:** Hub → memory-graph **validate-only** → violations + normalized preview.
 4. **Edit:** Operator adjusts nodes/edges; inferred edges visually distinct from asserted.
 5. **Approve:** memory-graph: validate → **GraphDB write** (named graph) → **Postgres projector** → success payload with `card_id`s / edge ids / graph revision id.
-6. **Consumers** read per §8.
+6. **Consumers** read per §9.
 
 ---
 
@@ -255,11 +255,75 @@ If **GraphDB fails:** no Postgres writes.
 
 ---
 
-## 8. Downstream consumers and use cases
+## 8. Projection tiers, optional distiller, and recall routing
 
-Annotated memory is useless if it only sits in Hub. This section ties **operator-approved RDF + Postgres projection** to each runtime surface. **§8.1–8.3** were in the first draft; **§8.4–8.6** extend the same substrate to journals, metacog/collapse, and spark; **§8.7** states the **product intent** — escape recall that is shallow, purely time-windowed, and **without explicit reference** (no entities, no lineage, no stance).
+### 8.1 Operator mental model (approve → artifacts)
 
-### 8.1 Recall (`orion-recall`)
+**Flow:** chat → Hub selects turn(s) → **Suggest** (brain lane → draft JSON, Appendix C) → **Validate** (SHACL + deterministic rules) → operator edits → **Approve** → **GraphDB** (canonical RDF) + **Postgres** (dual-write projection). Cards are **not** a separate mysterious artifact: they are emitted by the **projector** at approve unless an optional **distiller** pass runs afterward (§8.3).
+
+**Three tiers:**
+
+| Tier | Holds | Typical consumers |
+|------|--------|-------------------|
+| **1 — GraphDB** | Situation, entities, dispositions, `prov` | Stance SPARQL, optional recall SPARQL expansion, metacog UNION |
+| **2 — Postgres cards + edges + `subschema.memory_graph`** | Lossy projection for speed | `orion-recall` fusion, inject materialization |
+| **3 — Prompt-facing text** | `facts[]`, card title/summary lines | Conversation front, spark bundle — **not** raw Turtle |
+
+### 8.2 Proposal P — Projector only (no post-approve distiller LLM)
+
+**Runs:** validate → GraphDB → **deterministic projector** → Postgres.
+
+**Illustrative card fields** (Joey / breed / cats scenario):
+
+| Field | Example |
+|-------|---------|
+| `title` | Composed from Situation + time, e.g. `Joey / breed trust / week of 2026-04-25` |
+| `summary` | From Situation `rdfs:label` or template joining entity labels + `affectLabel` |
+| `tags` | From `entityKind` / projector mapping only |
+
+**`subschema.memory_graph.facts`** is regenerated from authoritative RDF (Appendix D).
+
+**Pros:** Reproducible, cheap, no extra hallucination surface. **Cons:** Fusion snippets may read stiff unless templates improve.
+
+### 8.3 Proposal D — Projector + optional distiller LLM
+
+Same as **P**, then optional **`distill(card_id | subgraph snapshot)`**: brain lane with **strict** instructions — `title` (≤80 chars), `summary` (≤400 chars), `tags` for retrieval; **no new entities or edges** absent from the subgraph. Output validated with **Pydantic**; reject if unknown IRIs appear.
+
+**Illustrative same memory, distiller-polished:**
+
+| Field | Example |
+|-------|---------|
+| `title` | `Joey incident shook trust in the breed` |
+| `summary` | `After Joey's behavior last week, Juniper's unsure whether to generalize distrust to the whole breed; still fond of cats in general.` |
+| `tags` | `joey`, `breed-trust`, `cats`, `last-week` |
+
+**Pros:** Nicer surfaces for ranker/fusion. **Cons:** Latency, cost, guardrails.
+
+**Normative default for v1:** implement **P**; gate **D** behind operator action or **`high_recall`** / similar priority.
+
+### 8.4 Prompt boundary
+
+**Default chat and inject paths** use **`subschema.memory_graph.facts`**, card **`title` / `summary`**, optional turn ids — **not** RDF dumps or SPARQL JSON in the system prompt. The graph powers **stance, bounded recall SPARQL, metacog, offline introspection**.
+
+### 8.5 Recall routing gap (design target; not implemented by this spec alone)
+
+Annotations provide **grounded features** (entities, relations, lineage). **`orion-recall`** still requires an explicit **selection policy** independent of this Hub feature:
+
+| Gap | Meaning |
+|-----|---------|
+| **Turn → entities / topics** | Link the current prompt to **`TypedEntity`** IRIs or card anchors — not embedding similarity alone. |
+| **Intent → substrate + depth** | Choose backends (vector, cards, SPARQL), hop depth, timeouts — lane- and profile-aware. |
+| **Fusion / ranker features** | Boost cards whose **`subschema.memory_graph.entity_refs`** overlap resolved entities; optional relational expansion only when profile enables it. |
+
+This spec **does not** replace **`orion-recall`** routing; it makes **relational recall feasible**. Router / fusion work remains a **sibling track** (primarily `services/orion-recall/`).
+
+---
+
+## 9. Downstream consumers and use cases
+
+Annotated memory is useless if it only sits in Hub. This section ties **operator-approved RDF + Postgres projection** to each runtime surface. **§9.1–9.3** were in the first draft; **§9.4–9.6** extend the same substrate to journals, metacog/collapse, and spark; **§9.7** states the **product intent** — escape recall that is shallow, purely time-windowed, and **without explicit reference** (no entities, no lineage, no stance).
+
+### 9.1 Recall (`orion-recall`)
 
 **Baseline:** Cards rail unchanged — projector fills **`title` / `summary` / `subschema.memory_graph`** so dense chunks remain token-efficient.
 
@@ -268,17 +332,17 @@ Annotated memory is useless if it only sits in Hub. This section ties **operator
 1. **Entity-linked expansion** — When the query or router extracts candidate entity strings / IRIs from the current turn, optionally run a **bounded SPARQL** pass over memory named graphs (same repo as stance): fetch **`TypedEntity`** neighborhoods + **`AffectiveDisposition`** + **`Situation`** windows linked via **`prov:wasDerivedFrom`**. Results merge into fusion as **`cards` + graph_evidence** with **timeouts** and profile flags (`RECALL_MEMORY_GRAPH_*`).
 2. **Referenceability** — Each surfaced snippet MUST retain **turn ids** / **`entity_refs`** so the model cites **why** something was retrieved, not only similarity score.
 
-### 8.2 Known facts / memory inject (`orion-cortex-orch`)
+### 9.2 Known facts / memory inject (`orion-cortex-orch`)
 
 **Baseline:** **`subschema.memory_graph.facts`** materializes as short ordered lines in **`known_facts`** / conversation-front blocks — §4.11 / Appendix D.
 
 **Intent:** Inject carries **structured facts** (who did what to whom, toward what category, when qualified) instead of only flat card prose.
 
-### 8.3 Chat stance / autonomy (`orion-cortex-exec`)
+### 9.3 Chat stance / autonomy (`orion-cortex-exec`)
 
-Extend **`chat_stance.py`** SPARQL so **`AffectiveDisposition`**, **`trustPolarity`**, **`dispositionTarget`**, and **`Situation`** edges in **memory named graphs** participate in autonomy probes — §8.3 original requirement.
+Extend **`chat_stance.py`** SPARQL so **`AffectiveDisposition`**, **`trustPolarity`**, **`dispositionTarget`**, and **`Situation`** edges in **memory named graphs** participate in autonomy probes.
 
-### 8.4 Journals (composition / daily passes)
+### 9.4 Journals (composition / daily passes)
 
 **Role:** Journal pipelines (`journal_compose_prompt.j2` and related) SHOULD gain optional context blocks built from:
 
@@ -287,14 +351,14 @@ Extend **`chat_stance.py`** SPARQL so **`AffectiveDisposition`**, **`trustPolari
 
 **Why:** Journals need **story continuity** (entities, causes, trust shifts), not only “recent chunks.” Implementation attaches by **session/time filters** + **entity overlap** with that day’s themes — exact wiring is **implementation plan** scope; **contract** is that annotation IRIs are stable inputs.
 
-### 8.5 Metacog and collapse mirrors (substrate GraphDB)
+### 9.5 Metacog and collapse mirrors (substrate GraphDB)
 
 **Role:** Metacog / collapse reasoning already traverses **GraphDB** substrate. Operator memory lives in **separate named graphs** but the **same endpoint** so SPARQL can **`OPTIONAL` / `UNION`** substrate triples with **`GRAPH ?g`** filters:
 
 - Collapse mirrors gain **human-curated interpretations** (Situation, disposition, impact) alongside automated substrate — reducing cases where collapse reflects **only** compressed artifacts without **who / toward whom / why**.
 - **Guardrail:** Queries MUST restrict **`?g`** to configured memory graph IRIs so collapse does not ingest unscoped noise.
 
-### 8.6 Spark / introspection state injections (`introspect_spark`, related)
+### 9.6 Spark / introspection state injections (`introspect_spark`, related)
 
 **Role:** Spark-style introspection **`quick`** paths often lack durable retrieval; they SHOULD optionally receive:
 
@@ -303,7 +367,7 @@ Extend **`chat_stance.py`** SPARQL so **`AffectiveDisposition`**, **`trustPolari
 
 **Intent:** Spark reasoning carries **referenced relational state**, not only ephemeral session scratch.
 
-### 8.7 Escaping shallow, timebound, reference-less recall
+### 9.7 Escaping shallow, timebound, reference-less recall
 
 **Failure mode addressed:** Vector + recency fusion returns **chunks that sound relevant** but lack **stable referents** (entities), **causal structure** (Situation), **evaluative stance** (disposition toward breed/class), or **lineage** (which turn grounded the belief).
 
@@ -321,7 +385,7 @@ Extend **`chat_stance.py`** SPARQL so **`AffectiveDisposition`**, **`trustPolari
 
 ---
 
-## 9. Hub UI (high level)
+## 10. Hub UI (high level)
 
 - **Memory tab** gains a **graph annotator** panel: turn list, graph canvas or structured inspector (implementation plan chooses component depth).
 - Actions: **Suggest**, **Validate**, **Approve**; toggles for showing **inferred** edges and **provenance** (turn ids).
@@ -329,23 +393,25 @@ Extend **`chat_stance.py`** SPARQL so **`AffectiveDisposition`**, **`trustPolari
 
 ---
 
-## 10. Testing and acceptance
+## 11. Testing and acceptance
 
 | Layer | Minimum |
 |--------|---------|
 | Unit | Projector mapping; validation rejects invalid drafts; ontology version gate. |
 | Integration | Approve round-trip: GraphDB contains triples; Postgres rows match golden exemplar. |
-| Cross-service (environment permitting) | Recall + inject + stance per §8.1–8.3; journals / metacog / spark per §8.4–8.6 when those milestones land. |
+| Cross-service (environment permitting) | Recall + inject + stance per §9.1–9.3; journals / metacog / spark per §9.4–9.6 when those milestones land. |
 
 ---
 
-## 11. Open points for implementation plan only
+## 12. Open points for implementation plan only
 
 - Exact **brain lane** verb/step names for suggest vs validate orchestration.
 - **Compensation** implementation detail (delete vs tombstone).
 - **Single deployable** memory-graph vs library-in-Hub phase A.
 - Optional **`MemoryProvenance`** enum extension (**`operator_graph`**) for ledger clarity.
-- **Prioritized rollout** among §8.4–8.6 (journals vs metacog UNION vs spark envelope) after §8.1–8.3 ship.
+- **Prioritized rollout** among §9.4–9.6 (journals vs metacog UNION vs spark envelope) after §9.1–9.3 ship.
+- Optional **distiller (D)** implementation order relative to **projector-only (P)** — §8.2–8.3.
+- **Recall routing / fusion** sibling track — §8.5; primarily `services/orion-recall/`.
 
 ---
 
@@ -493,9 +559,7 @@ Nested under **`memory_cards.subschema`** for inject/recall fast path. Regenerat
 
 ---
 
----
-
-## 12. References (code)
+## 13. References (code)
 
 - Contracts/DAL: `orion/core/contracts/memory_cards.py`, `orion/core/storage/memory_cards.py`
 - Hub memory routes: `services/orion-hub/scripts/memory_routes.py`

@@ -338,3 +338,27 @@ def test_skill_runner_quick_lane_normalizes_to_brain_chat_quick() -> None:
     assert req.verb == 'chat_quick'
     assert req.route_intent == 'none'
     assert debug['selected_ui_route'] == 'brain'
+
+def test_skill_runner_quick_lane_catalogue_gpu_uses_direct_skill_verb() -> None:
+    req, debug, _ = hub_builder.build_chat_request(
+        payload={
+            'mode': 'agent',
+            'skill_runner_origin': True,
+            'skill_runner_lane': 'quick',
+            'verbs': ['chat_quick'],
+        },
+        session_id='sid-skill-runner',
+        user_id='user-1',
+        trace_id='trace-skill-runner',
+        default_mode='brain',
+        auto_default_enabled=False,
+        source_label='hub_http',
+        prompt='Show NVIDIA GPU status on this node.',
+    )
+
+    assert req.mode == 'brain'
+    assert req.verb == 'skills.gpu.nvidia_smi_snapshot.v1'
+    assert req.route_intent == 'none'
+    assert debug['selected_ui_route'] == 'brain'
+    assert debug.get('skill_runner_catalogue_verb') == 'skills.gpu.nvidia_smi_snapshot.v1'
+

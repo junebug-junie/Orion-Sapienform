@@ -4,7 +4,7 @@ import os
 import sys
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from orion.cognition.verb_activation import is_active
 from orion.cognition.workflows import (
@@ -114,6 +114,8 @@ def _normalize_skill_runner_lane(
         return selected_ui_route, selected_verbs
     lane = str(payload.get("skill_runner_lane") or "").strip().lower()
     if lane == "quick":
+        if len(selected_verbs) == 1 and str(selected_verbs[0]).strip().startswith("skills."):
+            return "brain", selected_verbs
         return "brain", ["chat_quick"]
     if lane == "agent":
         return "agent", []
@@ -275,6 +277,23 @@ def build_cortex_chat_request(
     )
     social_room = is_social_room_payload(payload)
     selected_verbs = [str(v).strip() for v in (payload.get("verbs") or []) if str(v).strip()]
+    skill_runner_catalogue_verb: str | None = None
+    if _normalize_flag(payload.get("skill_runner_origin"), default=False):
+        try:
+            from scripts.skill_runner_catalogue import resolve_skill_runner_catalogue_verb
+        except ImportError:  # pragma: no cover - test/module-loader compatibility
+            HERE = Path(__file__).resolve().parent
+            if str(HERE) not in sys.path:
+                sys.path.insert(0, str(HERE))
+            from skill_runner_catalogue import resolve_skill_runner_catalogue_verb  # type: ignore
+
+        resolved = resolve_skill_runner_catalogue_verb(
+            prompt=str(prompt or "").strip(),
+            skill_runner_origin=True,
+        )
+        if resolved:
+            selected_verbs = [resolved]
+            skill_runner_catalogue_verb = resolved
     selected_ui_route, selected_verbs = _normalize_skill_runner_lane(
         payload=payload,
         selected_ui_route=selected_ui_route,
@@ -588,6 +607,7 @@ def build_cortex_chat_request(
         "workflow_resolution_reason": workflow_resolution_reason,
         "workflow_requested": bool(workflow_match is not None or workflow_management is not None),
         "fallback_route": "workflow_lane" if (workflow_match is not None or workflow_management is not None) else "chat_or_auto_route",
+        "skill_runner_catalogue_verb": skill_runner_catalogue_verb,
     }
     if social_room:
         debug["social_skill_allowlist"] = metadata.get("social_skill_request", {}).get("allowlist") or []
@@ -602,11 +622,31 @@ def build_cortex_chat_request(
     return req, debug, use_recall
 
 
-def validate_single_verb_override(payload: Dict[str, Any], *, node_name: str) -> Optional[Dict[str, Any]]:
+def validate_single_verb_override(
+    payload: Dict[str, Any],
+    *,
+    node_name: str,
+    prompt: str | None = None,
+) -> Optional[Dict[str, Any]]:
     selected_verbs = [str(v).strip() for v in (payload.get("verbs") or []) if str(v).strip()]
     if len(selected_verbs) != 1:
         return None
     verb = selected_verbs[0]
+    if _normalize_flag(payload.get("skill_runner_origin"), default=False) and prompt is not None:
+        try:
+            from scripts.skill_runner_catalogue import resolve_skill_runner_catalogue_verb
+        except ImportError:  # pragma: no cover - test/module-loader compatibility
+            HERE = Path(__file__).resolve().parent
+            if str(HERE) not in sys.path:
+                sys.path.insert(0, str(HERE))
+            from skill_runner_catalogue import resolve_skill_runner_catalogue_verb  # type: ignore
+
+        cat = resolve_skill_runner_catalogue_verb(
+            prompt=str(prompt).strip(),
+            skill_runner_origin=True,
+        )
+        if cat:
+            verb = cat
     if is_active(verb, node_name=node_name):
         return None
     return {

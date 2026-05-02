@@ -535,7 +535,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
             # Build outbound chat request through shared builder to keep WS/HTTP identical
-            inactive = validate_single_verb_override(data, node_name=settings.NODE_NAME)
+            inactive = validate_single_verb_override(data, node_name=settings.NODE_NAME, prompt=transcript)
             if inactive:
                 await websocket.send_json(await _with_biometrics({"error": inactive.get("message") or inactive.get("error")}, cache=biometrics_cache))
                 continue

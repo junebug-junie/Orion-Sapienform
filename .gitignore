@@ -117,3 +117,6 @@ desktop.ini
 *.orig
 
 .orion_dev/
+
+# === Superpowers specs (local design docs, not tracked) ===
+docs/superpowers/specs/

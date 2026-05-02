@@ -16,7 +16,7 @@ from .recall_eval import run_recall_eval_case, run_recall_eval_suite
 from .recall_v2 import run_recall_v2_shadow
 from .service import chassis_cfg
 from .settings import settings
-from .worker import handle_recall, process_recall, _persist_decision
+from .worker import handle_recall, process_recall, _persist_decision, set_recall_pg_pool
 
 from orion.core.contracts.recall import RecallQueryV1
 
@@ -57,8 +57,35 @@ async def lifespan(app: FastAPI):
     app.state.rabbit = rabbit
     _check_rdf_endpoint()
 
+    pool = None
+    try:
+        import asyncpg  # type: ignore
+    except Exception:
+        asyncpg = None
+    if asyncpg is not None and settings.RECALL_PG_DSN and bool(getattr(settings, "RECALL_ENABLE_CARDS", False)):
+        try:
+            pool = await asyncpg.create_pool(
+                dsn=settings.RECALL_PG_DSN,
+                min_size=1,
+                max_size=4,
+            )
+            set_recall_pg_pool(pool)
+            app.state.recall_pg_pool = pool
+            logger.info("Recall Postgres pool ready for memory cards.")
+        except Exception as exc:
+            logger.warning("Recall Postgres pool not started: %s", exc)
+            set_recall_pg_pool(None)
+    else:
+        set_recall_pg_pool(None)
+
     yield
 
+    if pool is not None:
+        try:
+            await pool.close()
+        except Exception:
+            pass
+        set_recall_pg_pool(None)
     await rabbit.stop()
 
 

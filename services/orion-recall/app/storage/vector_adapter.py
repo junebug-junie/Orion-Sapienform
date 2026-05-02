@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import math
+import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
@@ -106,6 +108,18 @@ def _parse_collections(val: str) -> List[str]:
     return [c.strip() for c in str(val).split(",") if c.strip()]
 
 
+def _collections_for_recall() -> List[str]:
+    cols = _parse_collections(settings.RECALL_VECTOR_COLLECTIONS)
+    pat = str(getattr(settings, "RECALL_VECTOR_EXCLUDE_COLLECTIONS", "") or "").strip()
+    if not pat:
+        return cols
+    try:
+        rgx = re.compile(pat)
+    except re.error:
+        return cols
+    return [c for c in cols if c and not rgx.search(c)]
+
+
 def _normalize_text(value: Any) -> str:
     text = str(value or "").strip().lower()
     return " ".join(text.split())
@@ -160,7 +174,7 @@ def fetch_vector_fragments(
     if client is None:
         return []
 
-    collections = _parse_collections(settings.RECALL_VECTOR_COLLECTIONS)
+    collections = _collections_for_recall()
     if not collections:
         return []
 
@@ -173,12 +187,16 @@ def fetch_vector_fragments(
         return []
 
     logger = logging.getLogger("orion-recall.vector")
+    n_coll = max(1, len(collections))
+    per_coll = max(1, max_items // n_coll)
 
-    for coll_name in collections:
+    def _query_one_collection(coll_name: str) -> tuple[List[Dict[str, Any]], int]:
+        local: List[Dict[str, Any]] = []
+        loc_sup = 0
         try:
             coll = client.get_or_create_collection(name=coll_name)
         except Exception:
-            continue
+            return local, loc_sup
 
         try:
             base_where: Optional[Dict[str, Any]] = None
@@ -190,89 +208,93 @@ def fetch_vector_fragments(
             def _query(where: Optional[Dict[str, Any]]) -> Dict[str, Any]:
                 return coll.query(
                     query_embeddings=[query_embedding],
-                    n_results=max_items * 2,
+                    n_results=per_coll * 2,
                     include=["documents", "metadatas", "distances"],
                     where=where,
                 )
 
             res = _query(base_where)
         except Exception:
+            return local, loc_sup
+
+        ids = (res.get("ids") or [[]])[0]
+        docs = (res.get("documents") or [[]])[0]
+        metas = (res.get("metadatas") or [[]])[0]
+        dists = (res.get("distances") or [[]])[0]
+
+        k = min(len(ids), len(docs), len(metas), len(dists) or len(ids))
+        for i in range(k):
+            nid = ids[i]
+            nid_str = str(nid)
+            ntext = docs[i] or ""
+            meta = metas[i] or {}
+            if not isinstance(meta, dict):
+                meta = {}
+            dist = dists[i] if isinstance(dists, list) and i < len(dists) else None
+
+            if settings.RECALL_EXCLUDE_REJECTED and str(meta.get("memory_status") or "").lower() == "rejected":
+                continue
+            if settings.RECALL_DURABLE_ONLY and str(meta.get("memory_tier") or "").lower() != "durable":
+                continue
+            if not _recent_enough(meta, since_ts):
+                continue
+
+            sim = None
+            if isinstance(dist, (int, float)) and not math.isnan(dist):
+                sim = max(0.0, 1.0 - float(dist))
+
+            canonical_id = str(meta.get("correlation_id") or nid_str)
+            if _is_self_hit(
+                text=ntext,
+                canonical_id=canonical_id,
+                raw_id=nid_str,
+                meta=meta,
+                exclude_ids=exclude_ids,
+                exclude_text=exclude_text,
+            ):
+                loc_sup += 1
+                continue
+            meta = dict(meta)
+            meta["collection"] = coll_name
+            tags = [
+                "vector-assoc",
+                f"collection:{coll_name}",
+            ] + ([str(meta.get("source"))] if meta.get("source") else [])
+            if canonical_id != nid_str:
+                meta["vector_doc_id"] = nid_str
+                tags.append("canon:correlation_id")
+
+            local.append(
+                {
+                    "id": canonical_id,
+                    "source": "vector",
+                    "source_ref": coll_name,
+                    "text": str(ntext)[:1200],
+                    "ts": _parse_meta_ts(meta) or since_ts,
+                    "tags": tags,
+                    "score": sim or 0.0,
+                    "meta": meta,
+                }
+            )
+        return local, loc_sup
+
+    max_workers = max(1, min(8, n_coll))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool_ex:
+        for chunk, loc_sup in pool_ex.map(_query_one_collection, collections):
+            frags.extend(chunk)
+            suppressed += loc_sup
+
+    seen: set[tuple[str, str, str]] = set()
+    deduped: List[Dict[str, Any]] = []
+    for item in sorted(frags, key=lambda x: x.get("score", 0.0), reverse=True):
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        fp = _normalize_text(item.get("text"))
+        key = (str(item.get("source_ref") or ""), str(meta.get("vector_doc_id") or item.get("id") or ""), fp[:200])
+        if key in seen:
             continue
-
-        def _append_results(
-            result: Dict[str, Any],
-            extra_tags: Optional[List[str]] = None,
-            score_multiplier: float = 1.0,
-            skip_ids: Optional[set[str]] = None,
-        ) -> int:
-            nonlocal suppressed
-            ids = (result.get("ids") or [[]])[0]
-            docs = (result.get("documents") or [[]])[0]
-            metas = (result.get("metadatas") or [[]])[0]
-            dists = (result.get("distances") or [[]])[0]
-
-            count = 0
-            k = min(len(ids), len(docs), len(metas), len(dists) or len(ids))
-            for i in range(k):
-                nid = ids[i]
-                nid_str = str(nid)
-                if skip_ids and nid_str in skip_ids:
-                    continue
-                ntext = docs[i] or ""
-                meta = metas[i] or {}
-                if not isinstance(meta, dict):
-                    meta = {}
-                dist = dists[i] if isinstance(dists, list) and i < len(dists) else None
-
-                if settings.RECALL_EXCLUDE_REJECTED and str(meta.get("memory_status") or "").lower() == "rejected":
-                    continue
-                if settings.RECALL_DURABLE_ONLY and str(meta.get("memory_tier") or "").lower() != "durable":
-                    continue
-                if not _recent_enough(meta, since_ts):
-                    continue
-
-                sim = None
-                if isinstance(dist, (int, float)) and not math.isnan(dist):
-                    sim = max(0.0, 1.0 - float(dist)) * score_multiplier
-
-                canonical_id = str(meta.get("correlation_id") or nid_str)
-                if _is_self_hit(
-                    text=ntext,
-                    canonical_id=canonical_id,
-                    raw_id=nid_str,
-                    meta=meta,
-                    exclude_ids=exclude_ids,
-                    exclude_text=exclude_text,
-                ):
-                    suppressed += 1
-                    continue
-                tags = [
-                    "vector-assoc",
-                    f"collection:{coll_name}",
-                ] + ([str(meta.get("source"))] if meta.get("source") else [])
-                if canonical_id != nid_str:
-                    meta = dict(meta)
-                    meta["vector_doc_id"] = nid_str
-                    tags.append("canon:correlation_id")
-                if extra_tags:
-                    tags.extend(extra_tags)
-
-                frags.append(
-                    {
-                        "id": canonical_id,
-                        "source": "vector",
-                        "source_ref": coll_name,
-                        "text": str(ntext)[:1200],
-                        "ts": _parse_meta_ts(meta) or since_ts,
-                        "tags": tags,
-                        "score": sim or 0.0,
-                        "meta": meta,
-                    }
-                )
-                count += 1
-            return count
-
-        _append_results(res)
+        seen.add(key)
+        deduped.append(item)
+    frags = deduped
 
     frags.sort(key=lambda x: x.get("score", 0.0), reverse=True)
     logger.debug("vector recall: collections=%s hits=%s", collections, len(frags))

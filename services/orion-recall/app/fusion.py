@@ -20,6 +20,7 @@ DEFAULT_BACKEND_WEIGHTS = {
     "sql_chat": 0.6,
     "rdf_chat": 0.4,
     "rdf": 0.3,
+    "cards": 0.0,
 }
 OVERLAP_WEIGHT = 0.15
 EXACT_MATCH_WEIGHT = 0.45
@@ -238,6 +239,15 @@ def _tag_prefix_boost(tags: List[str], profile: Dict[str, Any]) -> float:
     return boost
 
 
+def _cards_rail_enabled(profile: Dict[str, Any]) -> bool:
+    try:
+        w = _backend_weights(profile)
+        topk = int(profile.get("cards_top_k", 0) or 0)
+        return topk > 0 or float(w.get("cards", 0.0) or 0.0) > 0.0
+    except Exception:
+        return False
+
+
 def _candidate_allowed(cand: Dict[str, Any], profile: Dict[str, Any]) -> bool:
     filters = profile.get("filters")
     if not isinstance(filters, dict):
@@ -248,8 +258,12 @@ def _candidate_allowed(cand: Dict[str, Any], profile: Dict[str, Any]) -> bool:
 
     allowed_sources = filters.get("allowed_sources")
     if isinstance(allowed_sources, list) and allowed_sources:
-        if source not in {str(item) for item in allowed_sources}:
-            return False
+        allow_set = {str(item) for item in allowed_sources}
+        if source not in allow_set:
+            if source == "cards" and _cards_rail_enabled(profile):
+                pass
+            else:
+                return False
 
     excluded_sources = filters.get("exclude_sources")
     if isinstance(excluded_sources, list) and excluded_sources:
@@ -589,7 +603,19 @@ def fuse_candidates(
             )
 
     profile_name = profile.get("profile")
-    rendered = render_items(items, render_budget, profile_name=profile_name)
+    try:
+        from .settings import settings as _recall_settings
+
+        _budget_ind = bool(getattr(_recall_settings, "RECALL_RENDER_BUDGET_INDICATOR", True))
+    except Exception:
+        _budget_ind = True
+    rendered, budget_dropped = render_items(
+        items,
+        render_budget,
+        profile_name=profile_name,
+        diagnostic=diagnostic,
+        budget_indicator=_budget_ind,
+    )
     is_graphtri = bool(profile_name) and (
         str(profile_name) == "graphtri.v1" or str(profile_name).startswith("graphtri")
     )
@@ -611,22 +637,23 @@ def fuse_candidates(
             digest_has_terms,
             len(rendered),
         )
+    diag_payload: Dict[str, Any] | None = None
+    if diagnostic:
+        diag_payload = {
+            "transcript_dedupe_collapsed": transcript_dedupe_count,
+            "novelty_drop_count": novelty_drop_count,
+            "drop_counts": drop_counts,
+            "source_candidate_counts": backend_counts,
+            "source_selected_counts": selected_counts,
+            "contaminated_recall_filtered_count": contaminated_recall_filtered_count,
+            "contaminated_recall_sanitized_count": contaminated_recall_sanitized_count,
+        }
+        if budget_dropped:
+            diag_payload["budget_dropped"] = budget_dropped
     stats = MemoryBundleStatsV1(
         backend_counts=backend_counts,
         latency_ms=latency_ms,
         profile=profile.get("profile"),
-        diagnostic=(
-            {
-                "transcript_dedupe_collapsed": transcript_dedupe_count,
-                "novelty_drop_count": novelty_drop_count,
-                "drop_counts": drop_counts,
-                "source_candidate_counts": backend_counts,
-                "source_selected_counts": selected_counts,
-                "contaminated_recall_filtered_count": contaminated_recall_filtered_count,
-                "contaminated_recall_sanitized_count": contaminated_recall_sanitized_count,
-            }
-            if diagnostic
-            else None
-        ),
+        diagnostic=diag_payload,
     )
     return MemoryBundleV1(rendered=rendered, items=items, stats=stats), ranking_debug

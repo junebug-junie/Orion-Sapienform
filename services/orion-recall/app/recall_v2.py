@@ -277,7 +277,7 @@ async def run_recall_v2_shadow(query: RecallQueryV1) -> tuple[MemoryBundleV1, Di
     ]
     latency_ms = int((time.time() - started) * 1000)
     bundle = MemoryBundleV1(
-        rendered=render_items(items, 320, profile_name="recall.v2.shadow"),
+        rendered=render_items(items, 320, profile_name="recall.v2.shadow")[0],
         items=items,
         stats=MemoryBundleStatsV1(
             backend_counts=backend_counts,

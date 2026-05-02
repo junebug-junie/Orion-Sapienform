@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from scripts.settings import settings
 from scripts.api_routes import router as api_router
+from scripts.memory_routes import router as memory_router
 import scripts.api_routes as api_routes_runtime
 from scripts.websocket_handler import websocket_endpoint
 from scripts.service_logs_ws import service_logs_websocket_endpoint
@@ -295,12 +296,33 @@ async def startup_event():
         logger.error("CRITICAL: 'templates/index.html' not found.")
         html_content = "<html><body><h1>UI template missing</h1></body></html>"
 
+    if settings.RECALL_PG_DSN and str(settings.RECALL_PG_DSN).strip():
+        try:
+            import asyncpg  # type: ignore
+        except Exception:
+            asyncpg = None
+        if asyncpg is not None:
+            try:
+                pool = await asyncpg.create_pool(dsn=settings.RECALL_PG_DSN, min_size=1, max_size=6)
+                app.state.memory_pg_pool = pool
+                logger.info("Hub memory cards Postgres pool ready.")
+            except Exception as exc:
+                logger.warning("Hub memory cards pool failed: %s", exc)
+                app.state.memory_pg_pool = None
+
     logger.info("Startup complete — Hub is ready.")
 
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
     global bus, biometrics_cache, notification_cache, substrate_autonomy_task
+    pool = getattr(app.state, "memory_pg_pool", None)
+    if pool is not None:
+        try:
+            await pool.close()
+        except Exception:
+            pass
+        app.state.memory_pg_pool = None
     if substrate_autonomy_task is not None:
         substrate_autonomy_task.cancel()
         try:
@@ -325,6 +347,7 @@ async def shutdown_event() -> None:
 # ───────────────────────────────────────────────────────────────
 
 app.include_router(api_router)
+app.include_router(memory_router)
 
 # Real-time WS endpoint
 app.add_websocket_route("/ws", websocket_endpoint)

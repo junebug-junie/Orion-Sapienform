@@ -1,8 +1,29 @@
 import json
 from typing import List
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Span attributes use dim.{key}; only these keys are exported by default (phase-2 PII / cardinality).
+_DEFAULT_OTEL_DIMENSION_ALLOWLIST: tuple[str, ...] = (
+    "level",
+    "trend",
+    "volatility",
+    "valence",
+    "confidence",
+    "arousal",
+    "coherence",
+    "novelty",
+    "salience",
+    "tension",
+    "goal_pressure",
+    "pressure_coherence",
+    "pressure_continuity",
+    "pressure_relational",
+    "pressure_autonomy",
+    "pressure_capability",
+    "pressure_predictive",
+)
 
 
 class Settings(BaseSettings):
@@ -24,6 +45,8 @@ class Settings(BaseSettings):
     # OpenTelemetry (spec §5): OTLP gRPC endpoint, e.g. "http://otel-collector:4317"
     OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
     OTEL_CONSOLE_EXPORT: bool = False
+    # JSON array of dimension keys allowed as span attributes dim.* (never summary/notes on spans).
+    OTEL_DIMENSION_ALLOWLIST: List[str] = Field(default_factory=lambda: list(_DEFAULT_OTEL_DIMENSION_ALLOWLIST))
 
     SIGNALS_OUTPUT_CHANNEL: str = "orion:signals"
     SIGNALS_PASSTHROUGH_PATTERN: str = "orion:signals:*"
@@ -64,6 +87,20 @@ class Settings(BaseSettings):
                 parsed = json.loads(value)
                 if isinstance(parsed, list):
                     return parsed
+            except json.JSONDecodeError:
+                pass
+        return value  # type: ignore[return-value]
+
+    @field_validator("OTEL_DIMENSION_ALLOWLIST", mode="before")
+    @classmethod
+    def _parse_otel_dimension_allowlist(cls, value: object) -> List[str]:
+        if isinstance(value, list):
+            return [str(x) for x in value]
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, list):
+                    return [str(x) for x in parsed]
             except json.JSONDecodeError:
                 pass
         return value  # type: ignore[return-value]

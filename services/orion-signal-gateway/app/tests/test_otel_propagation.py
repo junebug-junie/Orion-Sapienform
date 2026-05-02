@@ -1,4 +1,5 @@
 """OTEL span emission and parent trace inheritance (spec §5, §3)."""
+import logging
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
@@ -90,3 +91,69 @@ async def test_emit_traced_and_parent_trace(memory_exporter: InMemorySpanExporte
     spans2 = memory_exporter.get_finished_spans()
     assert len(spans2) == 1
     assert int(trace_hex, 16) == spans2[0].context.trace_id
+
+
+@pytest.mark.asyncio
+async def test_parent_trace_disagreement_first_registry_parent_wins(
+    memory_exporter: InMemorySpanExporter, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``collapse_mirror`` parents are ``[biometrics, equilibrium]`` — first OTEL parent wins; log if traces differ."""
+    from app.normalization_state import NormalizationStateRegistry
+    from app.processor import SignalProcessor
+    from app.signal_window import SignalWindow
+
+    memory_exporter.clear()
+    bus = AsyncMock()
+    proc = SignalProcessor(
+        bus=bus,
+        signal_window=SignalWindow(30.0),
+        norm_state=NormalizationStateRegistry(),
+        output_channel_prefix="orion:signals",
+        passthrough_pattern="orion:signals:*",
+        service_ref=ServiceRef(name="orion-signal-gateway", version="0.1.0", node="n"),
+    )
+    now = datetime.now(timezone.utc)
+    trace_a = "a" * 32
+    trace_b = "c" * 32
+    span_hex = "b" * 16
+    bio = OrionSignalV1(
+        signal_id="bio1",
+        organ_id="biometrics",
+        organ_class=OrganClass.exogenous,
+        signal_kind="gpu_load",
+        dimensions={"level": 0.8},
+        otel_trace_id=trace_a,
+        otel_span_id=span_hex,
+        observed_at=now,
+        emitted_at=now,
+    )
+    eq = OrionSignalV1(
+        signal_id="eq1",
+        organ_id="equilibrium",
+        organ_class=OrganClass.hybrid,
+        signal_kind="mesh_health",
+        dimensions={"level": 0.5},
+        otel_trace_id=trace_b,
+        otel_span_id=span_hex,
+        observed_at=now,
+        emitted_at=now,
+    )
+    collapse = OrionSignalV1(
+        signal_id="cm1",
+        organ_id="collapse_mirror",
+        organ_class=OrganClass.endogenous,
+        signal_kind="cognitive_collapse",
+        dimensions={"level": 0.4},
+        observed_at=now,
+        emitted_at=now,
+    )
+    caplog.set_level(logging.WARNING)
+    await proc._emit_traced(collapse, prior={"biometrics": bio, "equilibrium": eq})
+    assert any("orion_signal_parent_trace_disagreement" in r.message for r in caplog.records)
+    spans = memory_exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert int(trace_a, 16) == spans[0].context.trace_id
+    bus.publish.assert_awaited()
+    env = bus.publish.await_args.args[1]
+    notes = env.payload.get("notes") or []
+    assert any("trace_ids disagree" in str(n).lower() for n in notes)

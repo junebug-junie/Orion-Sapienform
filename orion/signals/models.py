@@ -14,9 +14,8 @@ class OrionSignalV1(BaseModel):
     # Identity
     signal_id: str
     # Deterministic when source_event_id is present:
-    #   hashlib.sha256(f"{organ_id}:{source_event_id}".encode()).hexdigest()[:16]
-    # If source_event_id is None, fall back to str(uuid4()) — not deterministic,
-    # but avoids collision when the source event carries no stable ID.
+    #   hashlib.sha256(f"{organ_id}:{source_event_id}".encode()).hexdigest()  (full 64 hex)
+    # If source_event_id is None, fall back to uuid4().hex (32 hex chars).
 
     organ_id: str          # e.g. "biometrics", "collapse_mirror", "recall"
     organ_class: OrganClass
@@ -57,9 +56,9 @@ class OrionSignalV1(BaseModel):
     otel_span_id:        Optional[str] = None
     otel_parent_span_id: Optional[str] = None
     # otel_trace_id propagates across the causal chain:
-    # exogenous signals start a new trace; endogenous signals inherit
-    # the trace_id of their causal_parents (first parent's trace_id wins
-    # if parents disagree — rare, logged as a note).
+    # exogenous signals start a new trace; endogenous/hybrid signals inherit
+    # parent span context from the first registry-ordered parent with OTEL ids
+    # (see gateway processor); disagreeing parent trace_ids are logged + noted.
 
     # Temporal
     observed_at: datetime   # when the source event occurred

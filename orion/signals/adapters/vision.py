@@ -1,9 +1,7 @@
-import hashlib
 from datetime import datetime, timezone
 from typing import Dict, Optional
-from uuid import uuid4
-
 from orion.signals.adapters.base import OrionSignalAdapter
+from orion.signals.signal_ids import make_signal_id
 from orion.signals.models import OrionOrganRegistryEntry, OrionSignalV1
 from orion.signals.normalization import NormalizationContext
 from orion.signals.registry import ORGAN_REGISTRY
@@ -26,13 +24,10 @@ class VisionAdapter(OrionSignalAdapter):
         entry = registry.get(self.organ_id) or ORGAN_REGISTRY.get(self.organ_id)
         if entry is None:
             return None
-        src_id = payload.get("correlation_id") or payload.get("id")
+        src_raw = payload.get("correlation_id") or payload.get("id")
+        src_id = str(src_raw) if src_raw is not None else None
         now = datetime.now(timezone.utc)
-        sig_id = (
-            hashlib.sha256(f"{self.organ_id}:{src_id}".encode()).hexdigest()[:16]
-            if src_id
-            else uuid4().hex[:16]
-        )
+        sig_id = make_signal_id(self.organ_id, src_id)
         causal_parents = [
             prior_signals[p].signal_id
             for p in (entry.causal_parent_organs or [])

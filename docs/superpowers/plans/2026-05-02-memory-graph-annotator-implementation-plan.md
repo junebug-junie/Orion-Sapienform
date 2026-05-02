@@ -10,6 +10,8 @@
 
 **Spec approval:** Operator acknowledged completion (“ok”) after ontology expansion; treat §4 and Appendices A–D as normative unless revised.
 
+**Related spec sections:** **[§8](../specs/2026-05-02-memory-graph-annotator-hub-design.md)** — projector-only (**P**) vs optional distiller (**D**), prompt boundary, **recall routing gap** (sibling work in `orion-recall`). **[§9](../specs/2026-05-02-memory-graph-annotator-hub-design.md)** — downstream consumers (inject, stance, journals, etc.).
+
 ---
 
 ## Scope note (multi-subsystem)
@@ -277,7 +279,9 @@ def test_project_yields_valid_create_payload():
 
 ---
 
-### Phase F — Recall optional SPARQL
+### Phase F — Recall optional SPARQL (+ fusion/routing sibling track)
+
+**Note:** Spec **[§8.5](../specs/2026-05-02-memory-graph-annotator-hub-design.md)** defines the **recall routing gap** (entity linking, depth, fusion features). Phase F below covers **optional SPARQL expansion** only; full router/ranker work may be a **separate PR series** in `orion-recall`.
 
 ### Task F1: Bounded subgraph fetch
 

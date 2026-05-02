@@ -492,10 +492,360 @@ Safety guarantees for canary workflows:
 - No endpoint in this path applies recall mutation patches.
 - Canary artifact creation is evidence-only and operator-bounded.
 
+### Selecting a Recall Profile for Canary Testing
+
+Where to select:
+- Open Hub `Debug Panel` and find the `Recall Canary` card.
+- Use the `Recall profile` dropdown above the manual canary query box.
+
+How profiles load:
+- Hub fetches `GET /api/substrate/recall-canary/status` and reads:
+  - `data.available_profiles`
+  - `data.default_canary_profile_id`
+  - `data.production_recall_mode`
+  - `data.recall_live_apply_enabled`
+- Dropdown options render as `{label} — {status}`.
+- Last selected profile is stored in localStorage and reused only when still present in `available_profiles`.
+
+How to run with a selected profile:
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/substrate/recall-canary/query" \
+  -H "content-type: application/json" \
+  -H "X-Orion-Operator-Token: $SUBSTRATE_MUTATION_OPERATOR_TOKEN" \
+  -d '{"query_text":"what changed in recall shadow posture today?","profile_id":"<recall_profile_id>"}'
+```
+
+What to inspect in response:
+- `data.canary_run_id`
+- `data.selected_profile` (selected profile metadata)
+- `data.production_recall_mode` (must remain `v1`)
+- `data.safety.production_default_unchanged` (must be `true`)
+
+Judgment + review artifact lineage:
+- Record judgment as usual with `POST /api/substrate/recall-canary/runs/<canary_run_id>/judgment`.
+- Create evidence artifact with `POST /api/substrate/recall-canary/runs/<canary_run_id>/create-review-artifact`.
+- Artifact summaries include selected profile metadata so review lineage remains tied to the tested profile.
+
+Confirm production safety posture:
+- `production_recall_mode` remains `v1`.
+- `recall_live_apply_enabled` remains `false`.
+- No production promotion path exists in this UI lane.
+
+Troubleshoot empty dropdown:
+- If Hub shows `No recall profiles available for canary testing.`, stage at least one recall strategy profile first.
+- Re-check status payload:
+
+```bash
+curl -sS "http://localhost:8080/api/substrate/recall-canary/status" | jq '.data.available_profiles, .data.default_canary_profile_id, .data.production_recall_mode, .data.recall_live_apply_enabled'
+```
+
+Invalid profile check:
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/substrate/recall-canary/query" \
+  -H "content-type: application/json" \
+  -H "X-Orion-Operator-Token: $SUBSTRATE_MUTATION_OPERATOR_TOKEN" \
+  -d '{"query_text":"what changed in recall shadow posture today?","profile_id":"definitely_not_a_real_profile"}' | jq .
+```
+
+### Cognitive Proposal Review Ritual (operator-only, draft/stance only)
+
+Hub UI:
+- Open `Debug Panel` and use the visible `Cognitive Proposal Review` modal button.
+- The modal is the primary operator surface and is explicitly bounded to review/draft/context actions.
+- Safety labels in modal: review/draft/context only, no live cognitive apply, no identity/policy/prompt rewrite.
+
+Inspect cognitive posture:
+
+```bash
+curl -sS "http://localhost:8080/api/substrate/cognitive-proposals/status" | jq .
+```
+
+Review a proposal as draft-only evidence (no apply):
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/substrate/cognitive-proposals/<proposal_id>/review" \
+  -H "content-type: application/json" \
+  -H "X-Orion-Operator-Token: $SUBSTRATE_MUTATION_OPERATOR_TOKEN" \
+  -d '{"decision":"accept_as_draft","rationale":"bounded operator review","review_labels":["safety_ok"]}'
+```
+
+Inspect drafts and create bounded stance note context:
+
+```bash
+curl -sS "http://localhost:8080/api/substrate/cognitive-drafts?limit=20" | jq .
+curl -sS -X POST "http://localhost:8080/api/substrate/cognitive-drafts/<draft_id>/create-stance-note" \
+  -H "content-type: application/json" \
+  -H "X-Orion-Operator-Token: $SUBSTRATE_MUTATION_OPERATOR_TOKEN" \
+  -d '{"summary":"bounded stance context","note":"non-authoritative operator-approved context","visibility":"metacog_only","ttl_turns":20}'
+```
+
+Safety guarantees for cognitive review workflow:
+- No endpoint in this path rewrites identity kernel, policy constraints, or production self-model.
+- No endpoint in this path invokes mutation execute-once.
+- No endpoint in this path performs cognitive live apply.
+- Stance notes are non-authoritative bounded context and can be archived.
+
+### Autonomy Constitution / Policy Matrix
+
+The autonomy constitution is now a typed read-only artifact in:
+- `services/orion-hub/scripts/autonomy_constitution.py`
+
+It defines policy surfaces, invariants, and safety posture consumed by autonomy readiness.
+
+Hub UI:
+- Use `Policy Matrix` button in the `Autonomy Readiness` card to open the read-only constitution modal.
+
+Smoke commands:
+
+```bash
+curl -s "http://localhost:8080/api/substrate/autonomy-constitution" | jq .
+curl -s "http://localhost:8080/api/substrate/autonomy-readiness" | jq '.policy_matrix'
+curl -s "http://localhost:8080/api/substrate/cognitive-proposals/status" | jq .
+curl -s "http://localhost:8080/api/substrate/cognitive-proposals" | jq .
+curl -s "http://localhost:8080/api/substrate/cognitive-drafts" | jq .
+curl -s "http://localhost:8080/api/substrate/cognitive-stance-notes" | jq .
+```
+
+Operational refresh:
+- `docker compose restart orion-hub`
+- or `docker compose up -d --build orion-hub`
+- hard refresh browser after template/static JS updates.
+
+### Operator Runbook: Substrate Control Plane
+
+1) Inspect autonomy posture:
+- `curl -s "http://localhost:8080/api/substrate/autonomy-readiness" | jq .`
+- Confirm `surfaces.live` contains only `routing_threshold_patch`.
+
+2) View policy matrix / constitution:
+- `curl -s "http://localhost:8080/api/substrate/autonomy-constitution" | jq .`
+- In Hub, use the visible `Policy Matrix` modal launcher in `Autonomy Readiness`.
+
+3) Run recall canary:
+- `POST /api/substrate/recall-canary/query` with operator token.
+
+4) Judge recall canary output:
+- `POST /api/substrate/recall-canary/runs/<canary_run_id>/judgment`.
+
+5) Create recall review artifact (evidence only):
+- `POST /api/substrate/recall-canary/runs/<canary_run_id>/create-review-artifact`.
+
+6) Review cognitive proposals:
+- In Hub, use `Cognitive Proposal Review` modal.
+- API path: `POST /api/substrate/cognitive-proposals/<proposal_id>/review`.
+
+7) Create bounded stance notes:
+- `POST /api/substrate/cognitive-drafts/<draft_id>/create-stance-note`.
+
+8) Forbidden actions (never permitted by this lane):
+- cognitive live apply
+- recall production promotion/apply
+- identity kernel rewrite
+- production self-model rewrite
+- policy override
+- freeform production prompt rewrite
+
+9) Live mutable surface:
+- only `routing_threshold_patch` (gated).
+
+10) Routing rollback check:
+- inspect `GET /api/substrate/autonomy-readiness` routing + recent activity blocks/rollbacks.
+- inspect `GET /api/substrate/mutation-runtime/cognition-context` and `GET /api/substrate/mutation-runtime/routing-live-ramp-posture`.
+
+11) Restart/rebuild Hub after UI changes:
+- `PROJECT=orion-athena docker compose -f services/orion-hub/docker-compose.yml restart hub-app`
+- if backend script changes: `PROJECT=orion-athena docker compose -f services/orion-hub/docker-compose.yml up -d --build hub-app`
+
+12) Verify modal visibility/reachability:
+- `Autonomy Readiness`, `Policy Matrix`, `Cognitive Proposal Review`, `Recall Canary`, `Substrate Review`, and memory/recall debug modal launchers are visible in Debug Panel.
+
+13) Smoke commands:
+- `curl -s "http://localhost:8080/api/substrate/autonomy-constitution" | jq .`
+- `curl -s "http://localhost:8080/api/substrate/autonomy-readiness" | jq '.policy_matrix'`
+- `curl -s "http://localhost:8080/api/substrate/cognitive-proposals/status" | jq .`
+- `curl -s "http://localhost:8080/api/substrate/cognitive-proposals" | jq .`
+- `curl -s "http://localhost:8080/api/substrate/cognitive-drafts" | jq .`
+- `curl -s "http://localhost:8080/api/substrate/cognitive-stance-notes" | jq .`
+
+14) Test-runner troubleshooting:
+- local host may not provide `python`/`pytest`; prefer container runner:
+- `PROJECT=orion-athena docker compose -f services/orion-hub/docker-compose.yml exec hub-app python3 -m pytest --version`
+- run targeted suites with `python3 -m pytest` inside `hub-app`.
+
+15) Reproducible pytest bootstrap (no ad-hoc runtime pip installs):
+- Bootstrap local envs (if present): `./scripts/bootstrap_test_envs.sh --service orion-hub`
+- This checks `venv` and `orion_dev`, upgrades pip, installs service requirements + root dev deps, and prints python/pytest paths + versions.
+- If an env is missing, bootstrap prints a create command and continues.
+
+16) Reproducible Hub pytest in container:
+- Hub image now supports gated dev deps with `INSTALL_DEV_DEPS`.
+- Dev compose defaults to `INSTALL_DEV_DEPS=true` for `hub-app`.
+- Rebuild and verify:
+  - `PROJECT=orion-athena docker compose -f services/orion-hub/docker-compose.yml up -d --build hub-app`
+  - `PROJECT=orion-athena docker compose -f services/orion-hub/docker-compose.yml exec hub-app sh -lc 'cd /repo && python3 -m pytest --version'`
+
+17) Stable test commands:
+- Default known-good suite:
+  - `./scripts/test_hub.sh`
+- Targeted passthrough usage:
+  - `./scripts/test_hub.sh services/orion-hub/tests/test_recall_canary_profile_dropdown.py -q --tb=short`
+- Local shared-runner mode (same pytest args, no container exec):
+  - `HUB_TEST_RUNNER_MODE=local ./scripts/test_hub.sh services/orion-hub/tests/test_recall_canary_profile_dropdown.py -q --tb=short`
+- Global runner directly:
+  - `./scripts/test_service.sh orion-hub services/orion-hub/tests/test_recall_canary_profile_dropdown.py -q --tb=short`
+- Makefile helpers:
+  - `make -C services/orion-hub bootstrap-test-envs`
+  - `make -C services/orion-hub test-hub`
+  - `make -C services/orion-hub test-hub-substrate ARGS='services/orion-hub/tests/test_recall_canary_profile_dropdown.py -q --tb=short'`
+  - `make test SERVICE=orion-hub ARGS='services/orion-hub/tests/test_recall_canary_profile_dropdown.py -q --tb=short'`
+
+Rule:
+- Do not use ad-hoc `python3 -m pip install pytest` inside a running container except emergency debugging. Prefer Dockerfile/compose-managed dev deps and the scripts above.
+
+### Recall V2 Battle Test Harness
+
+Purpose:
+- Run repeatable canary-only Recall V2 battle queries against real Orion memory pain points using the existing canary query lane.
+- Produce operator-review evidence without creating judgments or artifacts automatically.
+
+Safety boundaries:
+- Production recall remains `v1`.
+- No Recall V2 promotion is performed.
+- No default/global profile mutation is performed.
+- No mutation execute-once path is invoked.
+- No live apply policy changes are performed.
+
+Before running:
+- Select a recall profile in Hub `Recall Canary` dropdown, or fetch available profiles via API:
+
+```bash
+curl -s "http://127.0.0.1:8080/api/substrate/recall-canary/status" \
+  | jq '.data.available_profiles, .data.default_canary_profile_id, .data.production_recall_mode, .data.recall_live_apply_enabled'
+```
+
+Battle fixture:
+- `services/orion-hub/tests/fixtures/recall_canary/orion_memory_battle_cases.json`
+
+Run with default canary profile:
+
+```bash
+python3 services/orion-hub/scripts/run_recall_canary_battle.py \
+  --base-url http://127.0.0.1:8080 \
+  --fixture services/orion-hub/tests/fixtures/recall_canary/orion_memory_battle_cases.json \
+  --output /tmp/recall_battle_runs.jsonl
+```
+
+Run with explicit profile:
+
+```bash
+python3 services/orion-hub/scripts/run_recall_canary_battle.py \
+  --base-url http://127.0.0.1:8080 \
+  --profile-id <profile_id> \
+  --fixture services/orion-hub/tests/fixtures/recall_canary/orion_memory_battle_cases.json \
+  --output /tmp/recall_battle_runs_explicit.jsonl
+```
+
+Behavior:
+- Loads fixture cases.
+- Fetches `/api/substrate/recall-canary/status`.
+- Uses `--profile-id` if provided, else `default_canary_profile_id`.
+- Validates selected profile before posting cases.
+- Posts only to `/api/substrate/recall-canary/query`.
+- Prints case-level rollup table and overall summary.
+- Writes JSONL output when `--output` is supplied.
+
+Operator review workflow:
+- Runner does not auto-judge or auto-create review artifacts.
+- Use existing operator workflow after reviewing output:
+  - `POST /api/substrate/recall-canary/runs/<canary_run_id>/judgment`
+  - `POST /api/substrate/recall-canary/runs/<canary_run_id>/create-review-artifact`
+
+Common failure modes to watch:
+- `missing_exact_anchor`
+- `irrelevant_semantic_neighbor`
+- `stale_memory`
+- `unsupported_memory_claim`
+- `wrong_project`
+- `wrong_timeframe`
+- `insufficient_context`
+
+### Staging a Recall Canary Profile
+
+Why profile catalog can be empty:
+- `available_profiles` is sourced from staged/shadow recall strategy profiles in mutation store.
+- Fresh runtime state (or cleared sqlite/postgres control-plane store) can yield no canary profiles.
+
+Seed a bounded default canary profile (idempotent):
+
+```bash
+python3 services/orion-hub/scripts/seed_recall_canary_profile.py --profile-id recall_v2_shadow_default
+```
+
+Verify canary status after seeding:
+
+```bash
+curl -s "http://127.0.0.1:8080/api/substrate/recall-canary/status" \
+  | jq '.data.available_profiles, .data.default_canary_profile_id, .data.production_recall_mode, .data.recall_live_apply_enabled'
+```
+
+Using Hub dropdown after seeding:
+- Open Hub `Debug Panel` -> `Recall Canary`.
+- `Recall profile` dropdown should now contain seeded profile option(s).
+
+Run battle harness with default profile:
+
+```bash
+python3 services/orion-hub/scripts/run_recall_canary_battle.py \
+  --base-url http://127.0.0.1:8080 \
+  --fixture services/orion-hub/tests/fixtures/recall_canary/orion_memory_battle_cases.json \
+  --output /tmp/recall_battle_runs.jsonl
+```
+
+Run battle harness with explicit profile:
+
+```bash
+python3 services/orion-hub/scripts/run_recall_canary_battle.py \
+  --base-url http://127.0.0.1:8080 \
+  --profile-id recall_v2_shadow_default \
+  --fixture services/orion-hub/tests/fixtures/recall_canary/orion_memory_battle_cases.json \
+  --output /tmp/recall_battle_runs_explicit.jsonl
+```
+
+Safety checks:
+- Confirm `production_recall_mode` remains `v1`.
+- Confirm `recall_live_apply_enabled` remains `false`.
+- Seeding is canary/review-only and does not perform promotion or live apply.
+
 Safety guarantees for this flow:
 - Production recall remains `v1`; no endpoint in this workflow switches production default.
 - Candidate review creation only persists operator review artifacts.
 - Recall live apply stays blocked by mutation apply guardrails.
+
+### Manual Recall Canary Console in Hub
+
+Where to open:
+- Open Hub `Debug Panel` and click `Recall Canary` -> `Modal`.
+
+Operator workflow:
+- Select a `Recall profile` from canary/shadow-only options loaded from `GET /api/substrate/recall-canary/status`.
+- Hub uses the server-configured operator token automatically for modal actions.
+- Enter a manual query and click `Run Canary Query`.
+- Review `canary_run_id`, selected profile metadata, `production_recall_mode`, `recall_live_apply_enabled`, and V1/V2/comparison summaries.
+- Set judgment (`v2_better`, `v1_better`, `tie`, `both_bad`, `inconclusive`), select failure modes, add notes, and click `Submit Judgment`.
+- Click `Create Review Artifact (Evidence Only)` only when explicitly needed.
+
+Troubleshooting:
+- Missing controls: hard refresh browser and reopen the Recall Canary modal.
+- Missing profile options: seed/stage canary profile and verify status payload has `available_profiles`.
+- Missing/invalid token: ensure `SUBSTRATE_MUTATION_OPERATOR_TOKEN` is configured in Hub runtime.
+- `mutation_operator_token_not_configured`: configure backend runtime token and restart `hub-app`.
+
+Safety posture:
+- Production recall remains `v1`.
+- Selected profiles remain shadow/canary review-only.
+- No auto-judgment, no auto artifact creation, no promotion path, and no live apply path are added by this UI.
 
 ---
 

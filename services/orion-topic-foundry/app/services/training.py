@@ -9,9 +9,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID, uuid4
 
 import numpy as np
-from hdbscan import HDBSCAN
 from joblib import dump
 from sklearn.feature_extraction.text import TfidfVectorizer
+try:
+    from hdbscan import HDBSCAN
+except ImportError:  # pragma: no cover - exercised in minimal test envs
+    HDBSCAN = None
 
 from app.models import DatasetSpec, EnrichmentSpec, ModelSpec, RunRecord, RunSpecSnapshot, RunTrainRequest, SegmentRecord, WindowingSpec
 from app.services.data_access import fetch_dataset_rows
@@ -27,6 +30,11 @@ from orion.schemas.topic_foundry import TopicFoundryRunCompleteV1
 
 
 logger = logging.getLogger("topic-foundry.training")
+
+
+def _require_hdbscan() -> None:
+    if HDBSCAN is None:
+        raise RuntimeError("hdbscan dependency is required for Topic Foundry training runtime")
 
 
 def _parse_timestamp(value: Any) -> Optional[datetime]:
@@ -56,6 +64,54 @@ def _snippet(text: str, max_chars: int = 400) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars].rstrip()
+
+
+def _compose_model_meta(
+    model_row: Dict[str, Any],
+    run_model_meta: Dict[str, Any],
+    run_model_params: Dict[str, Any],
+    mode_params: Dict[str, Any],
+) -> Dict[str, Any]:
+    merged: Dict[str, Any] = {}
+    merged.update(dict(model_row.get("model_meta") or {}))
+    merged.update(dict(run_model_meta or {}))
+    merged.update(dict((model_row.get("model_spec") or {}).get("params") or {}))
+    merged.update(dict(run_model_params or {}))
+    merged.update(dict(mode_params or {}))
+    return merged
+
+
+def _find_type_like_values(value: Any, *, path: str = "") -> List[tuple[str, Any]]:
+    findings: List[tuple[str, Any]] = []
+    if isinstance(value, type):
+        findings.append((path or "$", value))
+        return findings
+    if isinstance(value, np.dtype):
+        findings.append((path or "$", value))
+        return findings
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            findings.extend(_find_type_like_values(nested, path=child_path))
+        return findings
+    if isinstance(value, (list, tuple)):
+        for idx, nested in enumerate(value):
+            child_path = f"{path}[{idx}]" if path else f"[{idx}]"
+            findings.extend(_find_type_like_values(nested, path=child_path))
+        return findings
+    return findings
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, type):
+        return value.__name__
+    if isinstance(value, np.dtype):
+        return str(value)
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 def _compute_topic_artifacts(
@@ -307,6 +363,7 @@ def _prepare_segments(run: RunRecord, payload: RunTrainRequest) -> tuple[List[Ro
 
 
 def _build_clusterer(spec: ModelSpec) -> HDBSCAN:
+    _require_hdbscan()
     params = {"min_cluster_size": spec.min_cluster_size, "metric": spec.metric}
     params.update(spec.params)
     params.setdefault("prediction_data", True)

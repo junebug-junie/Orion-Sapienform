@@ -287,6 +287,7 @@ _STANCE_BRIEF_LIST_KEYS = frozenset(
         "dream_motifs",
         "response_priorities",
         "response_hazards",
+        "situation_response_guidance",
     }
 )
 
@@ -816,6 +817,113 @@ def _mutation_cognition_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
+def _situation_summary_from_ctx(ctx: Dict[str, Any]) -> dict[str, Any]:
+    fragment = ctx.get("situation_prompt_fragment") if isinstance(ctx.get("situation_prompt_fragment"), dict) else {}
+    brief = ctx.get("situation_brief") if isinstance(ctx.get("situation_brief"), dict) else {}
+    presence = brief.get("presence") if isinstance(brief.get("presence"), dict) else {}
+    requestor = presence.get("requestor") if isinstance(presence.get("requestor"), dict) else {}
+    companions = presence.get("companions") if isinstance(presence.get("companions"), list) else []
+    phase = brief.get("conversation_phase") if isinstance(brief.get("conversation_phase"), dict) else {}
+    time_ctx = brief.get("time") if isinstance(brief.get("time"), dict) else {}
+    place = brief.get("place") if isinstance(brief.get("place"), dict) else {}
+    environment = brief.get("environment") if isinstance(brief.get("environment"), dict) else {}
+    lab = brief.get("lab") if isinstance(brief.get("lab"), dict) else {}
+    surface = brief.get("surface") if isinstance(brief.get("surface"), dict) else {}
+    affordances_raw = brief.get("affordances") if isinstance(brief.get("affordances"), list) else []
+    affordances = []
+    has_active = False
+    for item in affordances_raw[:8]:
+        if not isinstance(item, dict):
+            continue
+        trigger = _compact(item.get("trigger_relevance"), limit=16)
+        has_active = has_active or trigger == "active"
+        affordances.append(
+            {
+                "kind": _compact(item.get("kind"), limit=48),
+                "trigger_relevance": trigger,
+                "suggestion": _compact(item.get("suggestion"), limit=140),
+                "confidence": _compact(item.get("confidence"), limit=16),
+            }
+        )
+    companions_summary = []
+    for item in companions[:4]:
+        if not isinstance(item, dict):
+            continue
+        companions_summary.append(
+            {
+                "display_name": _compact(item.get("display_name"), limit=40),
+                "role_hint": _compact(item.get("role_hint"), limit=40),
+                "age_band": _compact(item.get("age_band"), limit=20),
+            }
+        )
+    environment_summary = {
+        "current_summary": _compact(
+            ((environment.get("current_weather") or {}).get("condition") if isinstance(environment.get("current_weather"), dict) else ""),
+            limit=120,
+        ),
+        "forecast_windows_summary": _unique(
+            [
+                _compact(((environment.get("forecast_next_2h") or {}).get("summary") if isinstance(environment.get("forecast_next_2h"), dict) else ""), limit=90),
+                _compact(((environment.get("forecast_next_6h") or {}).get("summary") if isinstance(environment.get("forecast_next_6h"), dict) else ""), limit=90),
+                _compact(((environment.get("forecast_next_24h") or {}).get("summary") if isinstance(environment.get("forecast_next_24h"), dict) else ""), limit=90),
+            ],
+            limit=3,
+        ),
+        "practical_flags": environment.get("practical_flags") if isinstance(environment.get("practical_flags"), dict) else {},
+    }
+    relevance = "active" if has_active else ("background" if fragment else "none")
+    return {
+        "situation_relevance": relevance,
+        "situation_prompt_fragment": {
+            "compact_text": _compact(fragment.get("compact_text"), limit=480),
+            "should_mention": bool(fragment.get("should_mention", False)),
+            "mention_policy": _compact(fragment.get("mention_policy"), limit=40),
+            "summary_lines": _unique((fragment.get("summary_lines") or []), limit=6),
+            "relevance_notes": _unique((fragment.get("relevance_notes") or []), limit=6),
+            "caution_lines": _unique((fragment.get("caution_lines") or []), limit=6),
+        },
+        "presence": {
+            "audience_mode": _compact(presence.get("audience_mode"), limit=32),
+            "requestor": _compact(requestor.get("display_name"), limit=40),
+            "companions": companions_summary,
+            "privacy_mode": _compact(presence.get("privacy_mode"), limit=32),
+            "persist_to_memory": bool(presence.get("persist_to_memory", False)),
+        },
+        "conversation_phase": {
+            "phase_change": _compact(phase.get("phase_change"), limit=32),
+            "continuity_mode": _compact(phase.get("continuity_mode"), limit=40),
+            "topic_staleness_risk": _compact(phase.get("topic_staleness_risk"), limit=24),
+            "time_since_last_user_turn_seconds": phase.get("time_since_last_user_turn_seconds"),
+        },
+        "time": {
+            "local_datetime": _compact(time_ctx.get("local_datetime"), limit=40),
+            "time_of_day_label": _compact(time_ctx.get("time_of_day_label"), limit=24),
+            "day_phase": _compact(time_ctx.get("day_phase"), limit=24),
+            "weekday": _compact(time_ctx.get("weekday"), limit=16),
+        },
+        "place": {
+            "coarse_location": _compact(place.get("coarse_location"), limit=48),
+            "locality": _compact(place.get("locality"), limit=32),
+            "region": _compact(place.get("region"), limit=32),
+        },
+        "environment": environment_summary,
+        "lab": {
+            "available": bool(lab.get("available", False)),
+            "thermal_risk": _compact(lab.get("thermal_risk"), limit=20),
+            "power_risk": _compact(lab.get("power_risk"), limit=20),
+            "summary": _compact(
+                f"thermal={_compact(lab.get('thermal_risk'), limit=20)} power={_compact(lab.get('power_risk'), limit=20)}",
+                limit=80,
+            ),
+        },
+        "surface": {
+            "surface": _compact(surface.get("surface"), limit=40),
+            "input_modality": _compact(surface.get("input_modality"), limit=24),
+        },
+        "affordances": affordances,
+    }
+
+
 def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     identity = identity_kernel_with_fallbacks(ctx)
     ctx.update(identity)
@@ -826,6 +934,7 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     social["hazards"] = _unique((social.get("hazards") or []) + (social_bridge.get("hazards") or []), limit=8)
     social["relationship_facets"] = _unique((social.get("relationship_facets") or []) + (social_bridge.get("framing") or []), limit=8)
     reflective = _reflective_summary(ctx)
+    situation = _situation_summary_from_ctx(ctx)
     autonomy = _load_autonomy_state(ctx)
     reasoning = _compile_reasoning_summary(ctx)
     mutation_cognition = _mutation_cognition_from_ctx(ctx)
@@ -847,6 +956,7 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
             "debug": autonomy["debug"],
         },
         "reasoning_summary": reasoning["summary"],
+        "situation": situation,
         "mutation_adaptation": mutation_cognition,
     }
 
@@ -864,6 +974,7 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     ctx["chat_reasoning_summary"] = reasoning["summary"]
     ctx["chat_reasoning_debug"] = reasoning["debug"]
     ctx["chat_reasoning_summary_used"] = reasoning["used"]
+    ctx["chat_situation_summary"] = situation
     ctx["chat_mutation_cognition_context"] = mutation_cognition
     try:
         ctx["chat_endogenous_runtime"] = runtime_service().maybe_invoke(
@@ -941,7 +1052,43 @@ def build_chat_stance_debug_payload(
     autonomy_summary = autonomy.get("summary") if isinstance(autonomy.get("summary"), dict) else {}
     autonomy_debug = autonomy.get("debug") if isinstance(autonomy.get("debug"), dict) else {}
     reasoning = stance_inputs.get("reasoning_summary") if isinstance(stance_inputs.get("reasoning_summary"), dict) else {}
+    situation = stance_inputs.get("situation") if isinstance(stance_inputs.get("situation"), dict) else {}
     identity = stance_inputs.get("identity") if isinstance(stance_inputs.get("identity"), dict) else {}
+    journal_pageindex_ctx = ctx.get("journal_pageindex_context") if isinstance(ctx.get("journal_pageindex_context"), dict) else {}
+    jp_selected_entries = journal_pageindex_ctx.get("selected_entries") if isinstance(journal_pageindex_ctx.get("selected_entries"), list) else []
+    jp_selected_blocks = journal_pageindex_ctx.get("selected_blocks") if isinstance(journal_pageindex_ctx.get("selected_blocks"), list) else []
+    jp_entry_ids = [
+        str(item.get("entry_id"))
+        for item in jp_selected_entries
+        if isinstance(item, dict) and str(item.get("entry_id") or "").strip()
+    ]
+    jp_block_ids = [
+        str(item.get("block_id"))
+        for item in jp_selected_blocks
+        if isinstance(item, dict) and str(item.get("block_id") or "").strip()
+    ]
+    jp_impl = None
+    for block in jp_selected_blocks:
+        if not isinstance(block, dict):
+            continue
+        provenance = block.get("provenance") if isinstance(block.get("provenance"), dict) else {}
+        engine = str(provenance.get("engine") or "").strip()
+        if engine:
+            jp_impl = engine
+            break
+    if not jp_impl and journal_pageindex_ctx:
+        jp_impl = "native_fallback" if bool(journal_pageindex_ctx.get("fallback_invoked")) else "service"
+    jp_evidence_lines = _unique(
+        (
+            _compact(
+                (item.get("excerpt") if isinstance(item, dict) else "")
+                or (item.get("text") if isinstance(item, dict) else ""),
+                limit=180,
+            )
+            for item in jp_selected_blocks[:8]
+        ),
+        limit=6,
+    )
 
     user_message = _compact(ctx.get("user_message") or "", limit=600)
     memory_digest = ctx.get("memory_digest")
@@ -956,8 +1103,10 @@ def build_chat_stance_debug_payload(
                 "social": social,
                 "social_bridge": social_bridge,
                 "reflective": reflective,
+                "journal_pageindex": {"impl": jp_impl, "entry_ids": jp_entry_ids, "evidence_lines": jp_evidence_lines},
                 "autonomy": autonomy_summary,
                 "reasoning": reasoning,
+                "situation": situation,
             }.items()
             if isinstance(value, dict) and any(value.values())
         ]
@@ -969,6 +1118,9 @@ def build_chat_stance_debug_payload(
         "orion_identity_summary": list(ctx.get("orion_identity_summary") or []),
         "juniper_relationship_summary": list(ctx.get("juniper_relationship_summary") or []),
         "response_policy_summary": list(ctx.get("response_policy_summary") or []),
+        "situation_prompt_fragment": ctx.get("situation_prompt_fragment") if isinstance(ctx.get("situation_prompt_fragment"), dict) else None,
+        "presence_context": ctx.get("presence_context") if isinstance(ctx.get("presence_context"), dict) else None,
+        "situation_presence": ((ctx.get("situation_brief") or {}).get("presence") if isinstance(ctx.get("situation_brief"), dict) else None),
     }
 
     notes: list[str] = []
@@ -1024,6 +1176,16 @@ def build_chat_stance_debug_payload(
                 "tensions": list(reflective.get("tensions") or []),
                 "dream_motifs": list(reflective.get("dream_motifs") or []),
             },
+            "journal_pageindex": {
+                "context_present": bool(journal_pageindex_ctx),
+                "impl": jp_impl,
+                "fallback_invoked": bool(journal_pageindex_ctx.get("fallback_invoked")) if journal_pageindex_ctx else False,
+                "selected_entry_count": len(jp_entry_ids),
+                "selected_block_count": len(jp_block_ids),
+                "selected_entry_ids": jp_entry_ids[:8],
+                "selected_block_ids": jp_block_ids[:12],
+                "evidence_lines": jp_evidence_lines,
+            },
             "autonomy": {
                 "summary": autonomy_summary,
                 "selected_subject": ctx.get("chat_autonomy_selected_subject"),
@@ -1038,6 +1200,18 @@ def build_chat_stance_debug_payload(
                 "fallback_recommended": bool(reasoning.get("fallback_recommended")),
                 "used": bool(ctx.get("chat_reasoning_summary_used")),
             },
+            "situation": {
+                "situation_relevance": situation.get("situation_relevance"),
+                "situation_prompt_fragment": situation.get("situation_prompt_fragment") if isinstance(situation.get("situation_prompt_fragment"), dict) else {},
+                "presence": situation.get("presence") if isinstance(situation.get("presence"), dict) else {},
+                "conversation_phase": situation.get("conversation_phase") if isinstance(situation.get("conversation_phase"), dict) else {},
+                "time": situation.get("time") if isinstance(situation.get("time"), dict) else {},
+                "place": situation.get("place") if isinstance(situation.get("place"), dict) else {},
+                "environment": situation.get("environment") if isinstance(situation.get("environment"), dict) else {},
+                "lab": situation.get("lab") if isinstance(situation.get("lab"), dict) else {},
+                "surface": situation.get("surface") if isinstance(situation.get("surface"), dict) else {},
+                "affordances": list(situation.get("affordances") or []),
+            },
         },
         "synthesized_brief": synthesized_brief,
         "enforcement": {
@@ -1051,9 +1225,12 @@ def build_chat_stance_debug_payload(
         "lineage_summary": [
             f"concept/self injected: {len((concept.get('self') or []))} items",
             f"social hazards injected: {len((social.get('hazards') or []))} items",
+            f"journal pageindex context present: {'yes' if bool(journal_pageindex_ctx) else 'no'}",
+            f"journal pageindex selected entries: {len(jp_entry_ids)}",
             f"autonomy summary present: {'yes' if bool(autonomy_summary) else 'no'}",
             f"mutation adaptation context present: {'yes' if bool(mutation_adaptation) else 'no'}",
             f"reasoning summary used: {'yes' if bool(ctx.get('chat_reasoning_summary_used')) else 'no'}",
+            f"situation context present: {'yes' if bool(situation) else 'no'}",
             f"fallback applied: {'yes' if fallback_invoked or semantic_fallback else 'no'}",
         ],
         "raw": {
@@ -1080,6 +1257,7 @@ def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:
     reflective = ctx.get("chat_reflective_summary") if isinstance(ctx.get("chat_reflective_summary"), dict) else {}
     autonomy_summary = ctx.get("chat_autonomy_summary") if isinstance(ctx.get("chat_autonomy_summary"), dict) else {}
     reasoning_summary = ctx.get("chat_reasoning_summary") if isinstance(ctx.get("chat_reasoning_summary"), dict) else {}
+    situation = _situation_summary_from_ctx(ctx)
     identity_turn = _is_identity_sensitive_turn(user_message)
     social_posture = list(social.get("social_posture") or [])
     bridge_posture = list(social_bridge.get("posture") or [])
@@ -1118,6 +1296,20 @@ def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:
             "avoid_generic_assistant_tone",
             "maintain_grounded_specificity",
         ]
+    situation_guidance = list((situation.get("situation_prompt_fragment") or {}).get("relevance_notes") or [])[:4]
+    situation_relevance = str(situation.get("situation_relevance") or "none")
+    if situation_relevance not in {"none", "background", "active"}:
+        situation_relevance = "none"
+    if situation_relevance == "active":
+        response_priorities = _unique(
+            response_priorities
+            + [
+                "situation:adjust audience style for presence context",
+                "situation:apply active affordance only when relevant",
+            ]
+            + situation_guidance,
+            limit=8,
+        )
     autonomy_hint = _compact(autonomy_summary.get("stance_hint") or "", limit=90)
     if autonomy_hint and task_mode != "triage":
         response_priorities = _unique(response_priorities + [f"autonomy:{autonomy_hint}"], limit=8)
@@ -1129,6 +1321,13 @@ def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:
     ]
     if task_mode == "triage":
         response_hazards.extend(["self_intro_on_operational_turn", "relationship_label_recital_during_triage"])
+    if situation_relevance in {"active", "background"}:
+        response_hazards.extend(
+            [
+                "do not force irrelevant time/weather commentary",
+                "do not expose private operator context to broader audience",
+            ]
+        )
     response_hazards = _unique(
         response_hazards
         + list(autonomy_summary.get("response_hazards") or [])
@@ -1161,6 +1360,12 @@ def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:
         dream_motifs=list(reflective.get("dream_motifs") or [])[:3],
         response_priorities=response_priorities,
         response_hazards=_unique(response_hazards + list(social.get("hazards") or []) + list(social_bridge.get("hazards") or []), limit=8),
+        situation_relevance=situation_relevance,  # type: ignore[arg-type]
+        temporal_context=_compact((situation.get("conversation_phase") or {}).get("phase_change"), limit=40) or None,
+        audience_context=_compact((situation.get("presence") or {}).get("audience_mode"), limit=60) or None,
+        environmental_context=_compact((situation.get("environment") or {}).get("current_summary"), limit=120) or None,
+        operational_context=_compact((situation.get("lab") or {}).get("summary"), limit=120) or None,
+        situation_response_guidance=_unique(situation_guidance, limit=6),
         answer_strategy=answer_strategy,
         stance_summary=(
             "Answer identity questions directly as Oríon and anchor Juniper relationship continuity."

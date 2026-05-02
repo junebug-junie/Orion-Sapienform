@@ -62,6 +62,7 @@ from .chat_stance import (
     identity_kernel_with_fallbacks,
     parse_chat_stance_brief_with_debug,
 )
+from .situation import build_situation_for_ctx
 
 logger = logging.getLogger("orion.cortex.exec")
 
@@ -87,6 +88,63 @@ _SYSTEM_TELEMETRY_KEYS = {
     "metacog_draft_raw_trigger_null",
     "metacog_what_changed_summary_source",
 }
+
+
+def _filter_world_context_capsule(
+    candidate: dict[str, Any] | None,
+    *,
+    min_confidence: float,
+    max_topics: int,
+    max_age_hours: int,
+    politics_default: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    diag = {
+        "capsule_age_hours": None,
+        "capsule_filtered_reason": "none",
+        "stance_world_context_items_used": 0,
+        "politics_context_suppressed": True,
+    }
+    if not isinstance(candidate, dict):
+        diag["capsule_filtered_reason"] = "missing_capsule"
+        return None, diag
+    generated_at = candidate.get("generated_at")
+    if isinstance(generated_at, str):
+        try:
+            gen_dt = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+            diag["capsule_age_hours"] = max(0.0, (datetime.now(timezone.utc) - gen_dt).total_seconds() / 3600.0)
+        except Exception:
+            diag["capsule_filtered_reason"] = "invalid_generated_at"
+    topics = candidate.get("salient_topics") if isinstance(candidate.get("salient_topics"), list) else []
+    filtered = []
+    for topic in topics:
+        if not isinstance(topic, dict):
+            continue
+        if topic.get("expires_at"):
+            try:
+                if datetime.fromisoformat(str(topic.get("expires_at")).replace("Z", "+00:00")) <= datetime.now(timezone.utc):
+                    continue
+            except Exception:
+                continue
+        if bool(topic.get("disputed")):
+            continue
+        if bool(topic.get("do_not_volunteer")) and politics_default == "only_when_requested":
+            diag["politics_context_suppressed"] = True
+        confidence = float(topic.get("confidence") or 0.0)
+        if confidence < min_confidence:
+            continue
+        filtered.append(topic)
+        if len(filtered) >= max_topics:
+            break
+    if diag["capsule_age_hours"] is not None and float(diag["capsule_age_hours"]) > float(max_age_hours):
+        diag["capsule_filtered_reason"] = "capsule_expired"
+        return None, diag
+    if not filtered:
+        diag["capsule_filtered_reason"] = "no_eligible_topics"
+        return None, diag
+    out = dict(candidate)
+    out["salient_topics"] = filtered
+    diag["stance_world_context_items_used"] = len(filtered)
+    return out, diag
 
 _SYSTEM_ALERT_TAG_PREFIX = "metacog.alert"
 
@@ -798,6 +856,29 @@ def _render_prompt(template_str: str, ctx: Dict[str, Any]) -> str:
     return tmpl.render(**render_ctx)
 
 
+def _journal_pageindex_step_consumed_by(*, chat_verb: str, step_name: str) -> str:
+    if chat_verb == "chat_general" and step_name == "synthesize_chat_stance_brief":
+        return "reflective_summary"
+    return "none"
+
+
+def _journal_pageindex_impl_from_ctx(ctx: Dict[str, Any]) -> str | None:
+    payload = ctx.get("journal_pageindex_context") if isinstance(ctx.get("journal_pageindex_context"), dict) else {}
+    if not payload:
+        return None
+    selected_blocks = payload.get("selected_blocks") if isinstance(payload.get("selected_blocks"), list) else []
+    for block in selected_blocks:
+        if not isinstance(block, dict):
+            continue
+        provenance = block.get("provenance") if isinstance(block.get("provenance"), dict) else {}
+        engine = str(provenance.get("engine") or "").strip()
+        if engine:
+            return engine
+    if bool(payload.get("fallback_invoked")):
+        return "native_fallback"
+    return "service"
+
+
 def _last_user_message(ctx: Dict[str, Any]) -> str:
     msgs = ctx.get("messages") or []
     if isinstance(msgs, list):
@@ -1121,6 +1202,28 @@ def _journal_pageindex_query(user_text: str) -> bool:
         "stance",
     )
     return any(marker in lowered for marker in markers)
+
+
+def _skip_journal_pageindex_for_automated_trigger(ctx: Dict[str, Any]) -> bool:
+    """Skip journal PageIndex for compose paths that would self-loop on journal_entry_index / digest echoes."""
+    md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+    jt = md.get("journal_trigger")
+    if not isinstance(jt, dict):
+        return False
+    tk = str(jt.get("trigger_kind") or "")
+    sk = str(jt.get("source_kind") or "")
+    if tk == "daily_summary" and sk == "scheduler":
+        return True
+    if tk == "metacog_digest":
+        return True
+    if tk == "notify_summary":
+        return True
+    return False
+
+
+def _scheduler_daily_journal_ctx(ctx: Dict[str, Any]) -> bool:
+    """Backward-compatible name; prefer _skip_journal_pageindex_for_automated_trigger."""
+    return _skip_journal_pageindex_for_automated_trigger(ctx)
 
 
 def _journal_pageindex_tree(recall_fragments: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1469,7 +1572,15 @@ async def run_recall_step(
         # Journal PageIndex MVP (journals-only reflective/identity/continuity lane)
         user_query = fragment_text
         try:
-            if _journal_pageindex_query(user_query):
+            if _skip_journal_pageindex_for_automated_trigger(ctx):
+                _md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+                _jt = _md.get("journal_trigger") if isinstance(_md.get("journal_trigger"), dict) else {}
+                logger.debug(
+                    "journal_pageindex_skipped_automated_trigger corr_id=%s trigger_kind=%s",
+                    correlation_id,
+                    _jt.get("trigger_kind"),
+                )
+            elif _journal_pageindex_query(user_query):
                 service_invoked = False
                 service_status = "unavailable"
                 final_impl = "native_fallback"
@@ -1929,6 +2040,64 @@ async def call_step_services(
         reply_channel = f"orion:exec:result:{service}:{uuid4()}"
 
         # IMPORTANT: render prompts per-service so MetacogContextService mutations take effect
+        if step.verb_name in {"chat_general", "chat_quick"}:
+            try:
+                if not isinstance(ctx.get("presence_context"), dict):
+                    md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+                    if isinstance(md.get("presence_context"), dict):
+                        ctx["presence_context"] = md.get("presence_context")
+                situation_brief, situation_fragment = build_situation_for_ctx(ctx, settings)
+                if situation_brief:
+                    ctx["situation_brief"] = situation_brief
+                    ctx["presence_context"] = situation_brief.get("presence")
+                    ctx["temporal_phase"] = (situation_brief.get("conversation_phase") or {}).get("phase_change")
+                    ctx["situation_affordances"] = situation_brief.get("affordances") or []
+                if situation_fragment:
+                    ctx["situation_prompt_fragment"] = situation_fragment
+            except Exception as situation_exc:
+                logger.warning("situation_context_build_failed corr_id=%s error=%s", correlation_id, situation_exc)
+            world_capsule = None
+            capsule_diag = {
+                "capsule_age_hours": None,
+                "capsule_filtered_reason": "none",
+                "stance_world_context_items_used": 0,
+                "politics_context_suppressed": True,
+            }
+            if settings.world_pulse_stance_enabled:
+                md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+                candidate = md.get("world_context_capsule") if isinstance(md.get("world_context_capsule"), dict) else None
+                world_capsule, capsule_diag = _filter_world_context_capsule(
+                    candidate,
+                    min_confidence=float(settings.world_pulse_stance_min_confidence),
+                    max_topics=int(settings.world_pulse_stance_max_topics),
+                    max_age_hours=int(settings.world_pulse_stance_max_age_hours),
+                    politics_default=str(settings.world_pulse_politics_stance_default),
+                )
+            if world_capsule:
+                ctx["world_context_capsule"] = world_capsule
+                ctx["world_context_capsule_loaded"] = True
+            else:
+                ctx["world_context_capsule_loaded"] = False
+            ctx["capsule_age_hours"] = capsule_diag.get("capsule_age_hours")
+            ctx["capsule_filtered_reason"] = capsule_diag.get("capsule_filtered_reason")
+            ctx["stance_world_context_items_used"] = capsule_diag.get("stance_world_context_items_used")
+            ctx["politics_context_suppressed"] = capsule_diag.get("politics_context_suppressed")
+            journal_ctx = ctx.get("journal_pageindex_context") if isinstance(ctx.get("journal_pageindex_context"), dict) else {}
+            selected_entries = journal_ctx.get("selected_entries") if isinstance(journal_ctx, dict) else []
+            pageindex_result_count = len(selected_entries) if isinstance(selected_entries, list) else 0
+            consumed_by = _journal_pageindex_step_consumed_by(
+                chat_verb=str(step.verb_name or ""),
+                step_name=str(step.step_name or ""),
+            )
+            logger.info(
+                "chat_journal_pageindex_usage chat_verb=%s mode=%s journal_pageindex_context_present=%s journal_pageindex_impl=%s pageindex_result_count=%s consumed_by=%s",
+                step.verb_name,
+                ctx.get("mode"),
+                bool(journal_ctx),
+                _journal_pageindex_impl_from_ctx(ctx),
+                pageindex_result_count,
+                consumed_by,
+            )
         prompt = _render_prompt(step.prompt_template or "", ctx) if step.prompt_template else ""
 
         # ---- DEBUG BY EYE ----

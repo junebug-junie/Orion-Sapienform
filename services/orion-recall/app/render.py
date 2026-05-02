@@ -1,17 +1,28 @@
 from __future__ import annotations
 
 import logging
-from typing import Iterable, List, Optional, Set
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from orion.core.contracts.recall import MemoryItemV1
 
 
-def render_items(items: Iterable[MemoryItemV1], budget_tokens: int, profile_name: Optional[str] = None) -> str:
+def render_items(
+    items: Iterable[MemoryItemV1],
+    budget_tokens: int,
+    profile_name: Optional[str] = None,
+    *,
+    diagnostic: bool = False,
+    budget_indicator: bool = True,
+) -> Tuple[str, List[Dict[str, Optional[str]]]]:
     """
     Render memory items into a compact bullet list suitable for prompts.
+
+    Returns (rendered_text, budget_dropped) where budget_dropped lists items
+    skipped solely due to token budget (for diagnostics / indicator suffix).
     """
     lines: List[str] = []
     tokens_used = 0
+    budget_dropped: List[Dict[str, Optional[str]]] = []
 
     items_list = list(items)
     claims = [item for item in items_list if "claim" in (item.tags or [])]
@@ -47,6 +58,9 @@ def render_items(items: Iterable[MemoryItemV1], budget_tokens: int, profile_name
             prefix += "]"
             line = f"- {prefix} {snippet}"
             if not _append_line(line):
+                budget_dropped.append(
+                    {"id": item.id, "source": str(item.source or ""), "snippet": snippet[:160]}
+                )
                 return
             emitted_ids.add(item.id)
 
@@ -65,6 +79,7 @@ def render_items(items: Iterable[MemoryItemV1], budget_tokens: int, profile_name
             ),
             reverse=True,
         )
+
         def _is_refusal_snippet(text: str) -> bool:
             t = (text or "").lower()
             return any(
@@ -111,6 +126,9 @@ def render_items(items: Iterable[MemoryItemV1], budget_tokens: int, profile_name
                 prefix += "]"
                 line = f"- {prefix} {snippet}"
                 if not _append_line(line):
+                    budget_dropped.append(
+                        {"id": item.id, "source": str(item.source or ""), "snippet": snippet[:160]}
+                    )
                     break
                 emitted_ids.add(item.id)
         logger = logging.getLogger("orion-recall.render")
@@ -136,4 +154,11 @@ def render_items(items: Iterable[MemoryItemV1], budget_tokens: int, profile_name
         _render_group("High-salience claims", claims)
         _render_group("Recent context", others)
 
-    return "\n".join(lines)
+    rendered = "\n".join(lines)
+    n_drop = len(budget_dropped)
+    if budget_indicator and n_drop > 0 and not diagnostic:
+        est = max(len(f"\n[+{n_drop} more items dropped due to budget]".split()), 1)
+        if tokens_used + est <= budget_tokens:
+            rendered = f"{rendered}\n[+{n_drop} more items dropped due to budget]"
+
+    return rendered, budget_dropped

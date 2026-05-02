@@ -42,6 +42,12 @@ class ChatStanceBrief(BaseModel):
 
     response_priorities: list[str] = Field(default_factory=list)
     response_hazards: list[str] = Field(default_factory=list)
+    situation_relevance: Literal["none", "background", "active"] = Field(default="none")
+    temporal_context: str | None = Field(default=None)
+    audience_context: str | None = Field(default=None)
+    environmental_context: str | None = Field(default=None)
+    operational_context: str | None = Field(default=None)
+    situation_response_guidance: list[str] = Field(default_factory=list)
 
     answer_strategy: str = Field(...)
     stance_summary: str = Field(...)

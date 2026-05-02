@@ -72,6 +72,14 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("CHANNEL_DREAM_TRIGGER", "DREAM_TRIGGER_CHANNEL"),
     )
 
+    # Memory cards (always-on inject + optional auto-extractor)
+    recall_pg_dsn: str = Field("", alias="RECALL_PG_DSN")
+    orion_always_inject_token_budget: int = Field(300, alias="ORION_ALWAYS_INJECT_TOKEN_BUDGET")
+    orion_always_inject_enabled: bool = Field(True, alias="ORION_ALWAYS_INJECT_ENABLED")
+    orion_auto_extractor_enabled: bool = Field(False, alias="ORION_AUTO_EXTRACTOR_ENABLED")
+    orion_auto_extractor_stage2_enabled: bool = Field(False, alias="ORION_AUTO_EXTRACTOR_STAGE2_ENABLED")
+    orion_auto_extractor_auto_promote_threshold: int = Field(2, alias="ORION_AUTO_EXTRACTOR_AUTO_PROMOTE_THRESHOLD")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

@@ -578,10 +578,17 @@ async def _execute_dream_cycle(
     )
     final_text = payload.get("final_text") or "Dream cycle completed through the existing dream verb."
     payload_metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    dream_publish_attempted = bool(payload_metadata.get("dream_result_publish_attempted"))
+    dream_publish_error = str(payload_metadata.get("dream_result_publish_error") or "").strip() or None
     dream_persisted = bool(payload_metadata.get("dream_result_published") or payload_metadata.get("dream_persisted"))
     persisted = ["dream.result.v1"] if dream_persisted else []
     if not dream_persisted:
-        final_text = f"{final_text} Dream persistence was not confirmed by the execution payload."
+        if dream_publish_attempted and dream_publish_error:
+            final_text = f"{final_text} Dream persistence failed during publish: {dream_publish_error}"
+        elif dream_publish_attempted:
+            final_text = f"{final_text} Dream persistence publish was attempted but not confirmed by execution metadata."
+        else:
+            final_text = f"{final_text} Dream persistence was not confirmed by the execution payload."
     metadata = _workflow_metadata_base(request=_workflow_request(req), status="completed")
     metadata["workflow"] = {
         "workflow_id": workflow_id,
@@ -593,6 +600,8 @@ async def _execute_dream_cycle(
         "scheduled": [],
         "main_result": final_text,
         "dream_persistence_confirmed": dream_persisted,
+        "dream_result_publish_attempted": dream_publish_attempted,
+        "dream_result_publish_error": dream_publish_error,
     }
     return CortexClientResult(
         ok=verb_result.ok,

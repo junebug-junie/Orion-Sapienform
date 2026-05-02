@@ -289,3 +289,92 @@ def test_tripwire_normal_chat_path_does_not_invoke_mutation_cycle_or_review_exec
     assert out["correlation_id"]
     assert calls == {"scheduled": 0, "mutation": 0, "review": 0}
 
+
+def test_api_chat_skips_persistence_for_workflow_metadata_only(monkeypatch) -> None:
+    import scripts.main as hub_main
+
+    class _Bus:
+        enabled = True
+
+    async def _fake_ensure_session(_session_id, _bus):
+        return "sid-dream"
+
+    async def _fake_handle_chat_request(*_args, **_kwargs):
+        return {
+            "session_id": "sid-dream",
+            "mode": "brain",
+            "use_recall": True,
+            "text": "",
+            "workflow": {"id": "dream_cycle", "status": "completed"},
+            "workflow_metadata_only": True,
+            "correlation_id": "00000000-0000-0000-0000-00000000d001",
+        }
+
+    calls = {"history": 0, "turn": 0}
+
+    async def _fake_publish_chat_history(*_args, **_kwargs):
+        calls["history"] += 1
+
+    async def _fake_publish_chat_turn(*_args, **_kwargs):
+        calls["turn"] += 1
+
+    monkeypatch.setattr(hub_main, "bus", _Bus())
+    monkeypatch.setattr(hub_main, "cortex_client", object())
+    monkeypatch.setattr(api_routes, "ensure_session", _fake_ensure_session)
+    monkeypatch.setattr(api_routes, "handle_chat_request", _fake_handle_chat_request)
+    monkeypatch.setattr(api_routes, "publish_chat_history", _fake_publish_chat_history)
+    monkeypatch.setattr(api_routes, "publish_chat_turn", _fake_publish_chat_turn)
+
+    payload = {"messages": [{"role": "user", "content": "run dream cycle"}]}
+    result = asyncio.run(api_routes.api_chat(payload, None, None))
+    assert result["workflow_metadata_only"] is True
+    assert result["text"] == ""
+    assert calls == {"history": 0, "turn": 0}
+
+
+def test_api_chat_persists_normal_responses(monkeypatch) -> None:
+    import scripts.main as hub_main
+
+    class _Bus:
+        enabled = True
+
+    async def _fake_ensure_session(_session_id, _bus):
+        return "sid-normal"
+
+    async def _fake_handle_chat_request(*_args, **_kwargs):
+        return {
+            "session_id": "sid-normal",
+            "mode": "brain",
+            "use_recall": True,
+            "text": "normal response",
+            "workflow": None,
+            "workflow_metadata_only": False,
+            "correlation_id": "00000000-0000-0000-0000-00000000a001",
+            "routing_debug": {},
+            "memory_digest": None,
+            "metacog_traces": [],
+            "spark_meta": {},
+        }
+
+    calls = {"history": 0, "turn": 0}
+
+    async def _fake_publish_chat_history(*_args, **_kwargs):
+        calls["history"] += 1
+
+    async def _fake_publish_chat_turn(*_args, **_kwargs):
+        calls["turn"] += 1
+
+    monkeypatch.setattr(hub_main, "bus", _Bus())
+    monkeypatch.setattr(hub_main, "cortex_client", object())
+    monkeypatch.setattr(api_routes, "ensure_session", _fake_ensure_session)
+    monkeypatch.setattr(api_routes, "handle_chat_request", _fake_handle_chat_request)
+    monkeypatch.setattr(api_routes, "publish_chat_history", _fake_publish_chat_history)
+    monkeypatch.setattr(api_routes, "publish_chat_turn", _fake_publish_chat_turn)
+
+    payload = {"messages": [{"role": "user", "content": "hello"}]}
+    result = asyncio.run(api_routes.api_chat(payload, None, None))
+    assert result["workflow_metadata_only"] is False
+    assert result["text"] == "normal response"
+    assert calls["history"] == 1
+    assert calls["turn"] == 1
+

@@ -1,0 +1,21 @@
+[
+  {
+    "case_id": "accept_as_draft_with_stance_note",
+    "decision": "accept_as_draft",
+    "create_stance_note": true,
+    "expected_review_state": "accepted_as_draft",
+    "expected_draft_state": "active_draft"
+  },
+  {
+    "case_id": "reject_proposal",
+    "decision": "reject",
+    "create_stance_note": false,
+    "expected_review_state": "rejected"
+  },
+  {
+    "case_id": "archive_draft",
+    "decision": "archive",
+    "create_stance_note": false,
+    "expected_review_state": "archived"
+  }
+]

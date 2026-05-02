@@ -51,6 +51,22 @@ from app.models import (
     CalibrationProfileAuditSQL,
     JournalEntryIndexSQL,
     EvidenceUnitSQL,
+    WorldPulseClaimSQL,
+    WorldPulseArticleClusterSQL,
+    WorldPulseArticleSQL,
+    WorldPulseContextCapsuleSQL,
+    WorldPulseDigestItemSQL,
+    WorldPulseDigestSQL,
+    WorldPulseEntitySQL,
+    WorldPulseEventSQL,
+    WorldPulseHubMessageSQL,
+    WorldPulseLearningDeltaSQL,
+    WorldPulsePublishStatusSQL,
+    WorldPulseRunSQL,
+    WorldPulseSituationBriefSQL,
+    WorldPulseSituationChangeSQL,
+    WorldPulseWorthReadingSQL,
+    WorldPulseWorthWatchingSQL,
 )
 from orion.evidence_index import build_evidence_units
 
@@ -95,6 +111,20 @@ from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
 from orion.core.schemas.endogenous_runtime import EndogenousRuntimeExecutionRecordV1, EndogenousRuntimeAuditV1
 from orion.core.schemas.calibration_adoption import CalibrationProfileAuditV1
 from orion.schemas.evidence_index import EvidenceUnitV1
+from orion.schemas.world_pulse import (
+    ClaimRecordV1,
+    DailyWorldPulseItemV1,
+    DailyWorldPulseV1,
+    EntityRecordV1,
+    EventRecordV1,
+    HubWorldPulseMessageV1,
+    TopicSituationBriefV1,
+    WorldContextCapsuleV1,
+    WorldLearningDeltaV1,
+    WorldPulseRunResultV1,
+    WorthReadingItemV1,
+    WorthWatchingItemV1,
+)
 
 from app.spark_contract_metrics import SparkContractMetrics, LEGACY_KINDS
 
@@ -179,6 +209,22 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "EndogenousRuntimeAuditSQL": (EndogenousRuntimeAuditSQL, EndogenousRuntimeAuditV1),
     "CalibrationProfileAuditSQL": (CalibrationProfileAuditSQL, CalibrationProfileAuditV1),
     "EvidenceUnitSQL": (EvidenceUnitSQL, EvidenceUnitV1),
+    "WorldPulseRunSQL": (WorldPulseRunSQL, WorldPulseRunResultV1),
+    "WorldPulseDigestSQL": (WorldPulseDigestSQL, DailyWorldPulseV1),
+    "WorldPulseDigestItemSQL": (WorldPulseDigestItemSQL, DailyWorldPulseItemV1),
+    "WorldPulseArticleSQL": (WorldPulseArticleSQL, None),
+    "WorldPulseArticleClusterSQL": (WorldPulseArticleClusterSQL, None),
+    "WorldPulseClaimSQL": (WorldPulseClaimSQL, ClaimRecordV1),
+    "WorldPulseEventSQL": (WorldPulseEventSQL, EventRecordV1),
+    "WorldPulseHubMessageSQL": (WorldPulseHubMessageSQL, HubWorldPulseMessageV1),
+    "WorldPulseEntitySQL": (WorldPulseEntitySQL, EntityRecordV1),
+    "WorldPulseSituationBriefSQL": (WorldPulseSituationBriefSQL, TopicSituationBriefV1),
+    "WorldPulseSituationChangeSQL": (WorldPulseSituationChangeSQL, None),
+    "WorldPulseLearningDeltaSQL": (WorldPulseLearningDeltaSQL, WorldLearningDeltaV1),
+    "WorldPulseWorthReadingSQL": (WorldPulseWorthReadingSQL, WorthReadingItemV1),
+    "WorldPulseWorthWatchingSQL": (WorldPulseWorthWatchingSQL, WorthWatchingItemV1),
+    "WorldPulseContextCapsuleSQL": (WorldPulseContextCapsuleSQL, WorldContextCapsuleV1),
+    "WorldPulsePublishStatusSQL": (WorldPulsePublishStatusSQL, None),
     "ChatResponseFeedbackSQL": (ChatResponseFeedbackSQL, ChatResponseFeedbackV1),
 }
 
@@ -1327,6 +1373,179 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
                 if "source_message_id" not in data_to_process and env.id:
                     extra_sql_fields.setdefault("source_message_id", str(env.id))
 
+            if sql_model is WorldPulseRunSQL and isinstance(data_to_process, dict):
+                run_payload = data_to_process.get("run") if isinstance(data_to_process.get("run"), dict) else data_to_process
+                data_to_process = {
+                    "run_id": run_payload.get("run_id") or extra_sql_fields.get("correlation_id"),
+                    "status": run_payload.get("status") or "pending",
+                    "date": run_payload.get("date") or date.today().isoformat(),
+                    "requested_by": run_payload.get("requested_by"),
+                    "dry_run": str(run_payload.get("dry_run")),
+                    "payload_json": data_to_process,
+                    "schema_version": "v1",
+                }
+                schema_model = None
+            elif sql_model is WorldPulseDigestSQL and isinstance(data_to_process, dict):
+                data_to_process = {
+                    "run_id": data_to_process.get("run_id"),
+                    "title": data_to_process.get("title") or "Daily World Pulse",
+                    "date": data_to_process.get("date") or date.today().isoformat(),
+                    "executive_summary": data_to_process.get("executive_summary") or "",
+                    "payload_json": data_to_process,
+                    "schema_version": "v1",
+                }
+                schema_model = None
+            elif sql_model is WorldPulseDigestItemSQL and isinstance(data_to_process, dict):
+                data_to_process = {
+                    "item_id": data_to_process.get("item_id"),
+                    "run_id": data_to_process.get("run_id"),
+                    "category": data_to_process.get("category") or "general_world",
+                    "title": data_to_process.get("title") or "",
+                    "confidence": str(data_to_process.get("confidence") or ""),
+                    "payload_json": data_to_process,
+                    "schema_version": "v1",
+                }
+                schema_model = None
+            elif sql_model is WorldPulseArticleSQL and isinstance(data_to_process, dict):
+                data_to_process = {
+                    "article_id": data_to_process.get("article_id"),
+                    "run_id": data_to_process.get("run_id"),
+                    "source_id": data_to_process.get("source_id") or "unknown",
+                    "title": data_to_process.get("title") or "",
+                    "url": data_to_process.get("url") or "",
+                    "payload_json": data_to_process,
+                    "schema_version": "v1",
+                }
+                schema_model = None
+            elif sql_model is WorldPulseArticleClusterSQL and isinstance(data_to_process, dict):
+                data_to_process = {
+                    "cluster_id": data_to_process.get("cluster_id"),
+                    "run_id": data_to_process.get("run_id"),
+                    "category": data_to_process.get("category") or "general_world",
+                    "title": data_to_process.get("title") or "",
+                    "article_count": str(data_to_process.get("article_count") or 0),
+                    "payload_json": data_to_process,
+                    "schema_version": "v1",
+                }
+                schema_model = None
+            elif sql_model is WorldPulseClaimSQL and isinstance(data_to_process, dict):
+                data_to_process = {
+                    "claim_id": data_to_process.get("claim_id"),
+                    "run_id": data_to_process.get("run_id"),
+                    "topic_id": data_to_process.get("topic_id"),
+                    "promotion_status": data_to_process.get("promotion_status") or "observed",
+                    "payload_json": data_to_process,
+                    "schema_version": "v1",
+                }
+                schema_model = None
+            elif sql_model is WorldPulseEventSQL and isinstance(data_to_process, dict):
+                data_to_process = {
+                    "event_id": data_to_process.get("event_id"),
+                    "run_id": data_to_process.get("run_id"),
+                    "event_type": data_to_process.get("event_type") or "other",
+                    "payload_json": data_to_process,
+                    "schema_version": "v1",
+                }
+                schema_model = None
+            elif sql_model is WorldPulseEntitySQL and isinstance(data_to_process, dict):
+                data_to_process = {
+                    "entity_id": data_to_process.get("entity_id"),
+                    "canonical_name": data_to_process.get("canonical_name") or "unknown",
+                    "entity_type": data_to_process.get("entity_type") or "other",
+                    "payload_json": data_to_process,
+                    "schema_version": "v1",
+                }
+                schema_model = None
+            elif sql_model is WorldPulseSituationBriefSQL and isinstance(data_to_process, dict):
+                data_to_process = {
+                    "topic_id": data_to_process.get("topic_id"),
+                    "run_id": data_to_process.get("run_id"),
+                    "title": data_to_process.get("title") or "unknown",
+                    "status": data_to_process.get("status") or "developing",
+                    "tracking_status": data_to_process.get("tracking_status") or "candidate",
+                    "current_assessment": data_to_process.get("current_assessment") or "",
+                    "payload_json": data_to_process,
+                    "schema_version": "v1",
+                    "created_at": data_to_process.get("created_at") or datetime.now(timezone.utc),
+                    "updated_at": data_to_process.get("updated_at") or datetime.now(timezone.utc),
+                }
+                schema_model = None
+            elif sql_model is WorldPulseSituationChangeSQL and isinstance(data_to_process, dict):
+                data_to_process = {
+                    "change_id": data_to_process.get("change_id"),
+                    "topic_id": data_to_process.get("topic_id"),
+                    "run_id": data_to_process.get("run_id"),
+                    "change_type": data_to_process.get("change_type") or "new_development",
+                    "payload_json": data_to_process,
+                    "schema_version": "v1",
+                    "created_at": data_to_process.get("created_at") or datetime.now(timezone.utc),
+                }
+                schema_model = None
+            elif sql_model is WorldPulseLearningDeltaSQL and isinstance(data_to_process, dict):
+                data_to_process = {
+                    "learning_id": data_to_process.get("learning_id"),
+                    "run_id": data_to_process.get("run_id"),
+                    "topic_id": data_to_process.get("topic_id"),
+                    "category": data_to_process.get("category") or "general_world",
+                    "payload_json": data_to_process,
+                    "schema_version": "v1",
+                    "created_at": data_to_process.get("created_at") or datetime.now(timezone.utc),
+                }
+                schema_model = None
+            elif sql_model is WorldPulseWorthReadingSQL and isinstance(data_to_process, dict):
+                data_to_process = {
+                    "reading_id": data_to_process.get("reading_id"),
+                    "run_id": data_to_process.get("run_id") or "",
+                    "category": data_to_process.get("category") or "general_world",
+                    "payload_json": data_to_process,
+                    "schema_version": "v1",
+                    "created_at": data_to_process.get("created_at") or datetime.now(timezone.utc),
+                }
+                schema_model = None
+            elif sql_model is WorldPulseWorthWatchingSQL and isinstance(data_to_process, dict):
+                data_to_process = {
+                    "watch_id": data_to_process.get("watch_id"),
+                    "run_id": data_to_process.get("run_id") or "",
+                    "category": data_to_process.get("category") or "general_world",
+                    "payload_json": data_to_process,
+                    "schema_version": "v1",
+                    "created_at": data_to_process.get("created_at") or datetime.now(timezone.utc),
+                }
+                schema_model = None
+            elif sql_model is WorldPulseContextCapsuleSQL and isinstance(data_to_process, dict):
+                data_to_process = {
+                    "capsule_id": data_to_process.get("capsule_id"),
+                    "run_id": data_to_process.get("run_id"),
+                    "date": data_to_process.get("date") or date.today().isoformat(),
+                    "payload_json": data_to_process,
+                    "schema_version": "v1",
+                    "created_at": data_to_process.get("created_at") or datetime.now(timezone.utc),
+                }
+                schema_model = None
+            elif sql_model is WorldPulseHubMessageSQL and isinstance(data_to_process, dict):
+                data_to_process = {
+                    "message_id": data_to_process.get("message_id"),
+                    "run_id": data_to_process.get("run_id") or "",
+                    "title": data_to_process.get("title") or "Daily World Pulse",
+                    "date": data_to_process.get("date") or date.today().isoformat(),
+                    "executive_summary": data_to_process.get("executive_summary") or "",
+                    "payload_json": data_to_process,
+                    "schema_version": "v1",
+                    "created_at": data_to_process.get("created_at") or datetime.now(timezone.utc),
+                }
+                schema_model = None
+            elif sql_model is WorldPulsePublishStatusSQL and isinstance(data_to_process, dict):
+                data_to_process = {
+                    "status_id": data_to_process.get("message_id") or str(uuid.uuid4()),
+                    "run_id": data_to_process.get("run_id") or "",
+                    "channel": data_to_process.get("channel") or "hub",
+                    "state": data_to_process.get("state") or "published",
+                    "detail": data_to_process.get("detail"),
+                    "payload_json": data_to_process,
+                    "schema_version": "v1",
+                }
+                schema_model = None
+
             if sql_model is CollapseMirror and isinstance(data_to_process, dict):
                 base_id = (
                     data_to_process.get("id") or data_to_process.get("event_id")
@@ -1412,6 +1631,12 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
                         reply_to=None,
                     )
                     await bus.publish(settings.sql_writer_journal_created_channel, created_env)
+                    logger.info(
+                        "journal_created_event_emitted corr=%s entry_id=%s channel=%s",
+                        getattr(env, "correlation_id", None),
+                        journal_payload.entry_id,
+                        settings.sql_writer_journal_created_channel,
+                    )
                 except Exception:
                     logger.exception("Failed to emit journal created event corr=%s", getattr(env, "correlation_id", None))
             # Semantic stored event is also post-commit only.

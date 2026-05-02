@@ -10,6 +10,7 @@ from .orchestrator import (
     run_cortex_verb,
 )
 from .settings import get_settings
+from .memory_inject import fetch_always_inject_block
 
 logger = logging.getLogger("orion-cortex-orchestrator.conversation")
 
@@ -71,6 +72,11 @@ class ChatTurnPayload(BaseModel):
     memory_fragments: Optional[List[Dict[str, Any]]] = Field(
         default=None,
         description="Optional recall fragments (raw) for this turn.",
+    )
+
+    lane: Optional[str] = Field(
+        default="chat",
+        description="Visibility lane for memory cards (e.g. chat vs social).",
     )
 
 
@@ -194,6 +200,17 @@ def handle_chat_turn(bus, payload: ChatTurnPayload) -> ChatTurnResult:
             "note": "use_recall=True but no memory_fragments supplied by Hub",
         }
 
+    known_facts_block = ""
+    if bool(getattr(settings, "orion_always_inject_enabled", True)) and str(
+        getattr(settings, "recall_pg_dsn", "") or ""
+    ).strip():
+        lane = str(payload.lane or "chat")
+        known_facts_block = fetch_always_inject_block(
+            lane=lane,
+            token_budget=int(getattr(settings, "orion_always_inject_token_budget", 300) or 300),
+            dsn=str(settings.recall_pg_dsn),
+        )
+
     # Limit visible history length (non-system turns only),
     # while preserving any explicit system messages if Hub passes them.
     history = list(payload.message_history or [])
@@ -209,6 +226,7 @@ def handle_chat_turn(bus, payload: ChatTurnPayload) -> ChatTurnResult:
         "user_message": payload.user_message,
         "message_history": history,
         "personality_summary": personality_summary,
+        "known_facts_block": known_facts_block,
         "memory_digest": memory_digest,
         "chat_mode": payload.mode,
     }
@@ -230,6 +248,7 @@ EXPECTED CONTEXT KEYS (if provided)
 - user_message: Juniper's latest message string.
 - message_history: a list of prior chat messages (role/content).
 - personality_summary: short internal description of Oríon + Juniper.
+- known_facts_block: optional operator-curated always-on facts (may be empty).
 - memory_digest: short bullet list of relevant past fragments.
 - chat_mode: e.g. "brain", "council", or "debug".
 
@@ -242,7 +261,7 @@ IDENTITY & SELF-DESCRIPTION:
 TASK:
 - Produce exactly one user-facing reply to user_message.
 - Respect the tone + role + memory hygiene described in personality_summary.
-- Use memory_digest and message_history only when they clearly help answer the current turn.
+- Use known_facts_block (when non-empty), memory_digest, and message_history only when they clearly help answer the current turn.
 - Prioritize direct, concrete help on what Juniper just asked.
 """.strip(),
         requires_gpu=True,

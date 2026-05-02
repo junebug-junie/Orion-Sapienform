@@ -10,11 +10,12 @@ enable_query_expansion: false
 enable_sql_timeline: true
 time_decay_half_life_hours: 24
 backend_weights:
-  rdf: 1.2
+  rdf: 0.4
   sql_timeline: 0.2
   sql_chat: 0.0
   rdf_chat: 0.0
   vector: 0.0
+  cards: 1.5
 filters:
   allowed_sources:
     - rdf

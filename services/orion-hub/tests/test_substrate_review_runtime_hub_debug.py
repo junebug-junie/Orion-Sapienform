@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import asyncio
 import importlib.util
 from pathlib import Path
 
@@ -58,6 +59,25 @@ def test_template_has_substrate_review_debug_row_modal_and_standalone_link() -> 
     assert 'id="substrateReviewActionSmokeCheck"' in template
     assert 'id="substrateReviewActionRefresh"' in template
     assert 'id="substrateReviewModalSubstrateLink" href="/substrate"' in template
+    assert 'id="selfExperimentsDebugPanel"' in template
+    assert 'id="selfExperimentsDebugToggle"' in template
+    assert 'id="selfExperimentsDebugRefresh"' in template
+    assert 'id="selfExperimentsDebugOverview"' in template
+    assert 'id="selfExperimentsDebugRaw"' in template
+    assert 'id="selfExperimentsFilterCorrelation"' in template
+    assert 'id="selfExperimentsFilterDate"' in template
+    assert 'id="selfExperimentsFilterSkill"' in template
+    assert 'id="selfExperimentsApplyFilters"' in template
+    assert 'id="selfExperimentsTriggerPulse"' in template
+    assert 'id="selfExperimentsTriggerMetacog"' in template
+    assert 'id="selfExperimentsDebugOpenModal"' in template
+    assert 'id="selfExperimentsModalRoot"' in template
+    assert 'id="selfExperimentsModalBackdrop"' in template
+    assert 'id="selfExperimentsModalDialog"' in template
+    assert 'id="selfExperimentsModalSummary"' in template
+    assert 'id="selfExperimentsModalRuns"' in template
+    assert 'id="selfExperimentsModalProvenanceTable"' in template
+    assert 'id="selfExperimentsModalRaw"' in template
 
 
 def test_app_js_wires_substrate_review_debug_panel_modal_and_actions() -> None:
@@ -77,6 +97,84 @@ def test_app_js_wires_substrate_review_debug_panel_modal_and_actions() -> None:
     assert "substrateReviewActionExecuteFollowup.addEventListener('click'" in app_js
     assert "substrateReviewActionRefresh.addEventListener('click'" in app_js
     assert "substrateReviewActionSmokeCheck.addEventListener('click'" in app_js
+    assert "function clearSelfExperimentsDebugPanel()" in app_js
+    assert "function updateSelfExperimentsDebugPanel(payload)" in app_js
+    assert "function toggleSelfExperimentsDebugPanel()" in app_js
+    assert "function refreshSelfExperimentsDebugStatus()" in app_js
+    assert "function triggerSelfExperimentsDaily(action)" in app_js
+    assert "function ensureSelfExperimentsModalRootOnBody()" in app_js
+    assert "function openSelfExperimentsModal()" in app_js
+    assert "function closeSelfExperimentsModal()" in app_js
+    assert "selfExperimentsModalProvenanceTable" in app_js
+    assert "selfExperimentsDebugRefresh.addEventListener('click'" in app_js
+    assert "selfExperimentsDebugOpenModal.addEventListener('click'" in app_js
+    assert "selfExperimentsModalClose.addEventListener('click'" in app_js
+    assert "selfExperimentsApplyFilters.addEventListener('click'" in app_js
+    assert "selfExperimentsTriggerPulse.addEventListener('click'" in app_js
+    assert "selfExperimentsTriggerMetacog.addEventListener('click'" in app_js
+
+
+def test_self_experiments_debug_status_endpoint_rolls_up_counts(monkeypatch) -> None:
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return {
+                "items": [
+                    {
+                        "experiment_id": "exp-1",
+                        "skill_id": "skills.system.time_now.v1",
+                        "status": "validated",
+                        "provenance": {"source": "daily_pulse_v1", "correlation_id": "c-1"},
+                    },
+                    {
+                        "experiment_id": "exp-2",
+                        "skill_id": "skills.runtime.docker_prune_stopped_containers.v1",
+                        "status": "rejected",
+                        "provenance": {"source": "daily_metacog_v1", "correlation_id": "c-2"},
+                    },
+                ]
+            }
+
+    monkeypatch.setattr(api_routes.requests, "get", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(api_routes.settings, "SELF_EXPERIMENTS_BASE_URL", "http://self-experiments.test")
+    payload = api_routes.api_debug_self_experiments_status(limit=25)
+    assert payload["summary"]["total"] == 2
+    assert payload["summary"]["status_counts"]["validated"] == 1
+    assert payload["summary"]["status_counts"]["rejected"] == 1
+    assert payload["summary"]["source_counts"]["daily_pulse_v1"] == 1
+    assert payload["items"][0]["fix_hint"]
+
+
+def test_self_experiments_trigger_daily_publishes_bus_event(monkeypatch) -> None:
+    observed: dict[str, object] = {}
+
+    class FakeBus:
+        def __init__(self, url: str) -> None:
+            observed["url"] = url
+
+        async def connect(self) -> None:
+            observed["connected"] = True
+
+        async def publish(self, channel: str, env) -> None:  # noqa: ANN001
+            observed["channel"] = channel
+            observed["kind"] = env.kind
+            observed["payload"] = env.payload
+
+        async def close(self) -> None:
+            observed["closed"] = True
+
+    monkeypatch.setattr(api_routes, "OrionBusAsync", FakeBus)
+    payload = asyncio.run(
+        api_routes.api_debug_self_experiments_trigger_daily(
+            api_routes.SelfExperimentsTriggerRequest(action="pulse", date="2026-04-27")
+        )
+    )
+    assert payload["ok"] is True
+    assert observed["channel"] == "orion:actions:trigger:daily_pulse.v1"
+    assert observed["kind"] == "orion.actions.trigger.daily_pulse.v1"
+    assert observed["payload"] == {"date": "2026-04-27"}
 
 
 def test_app_js_includes_substrate_in_shell_tab_switching_without_full_navigation() -> None:
@@ -91,7 +189,10 @@ def test_app_js_includes_substrate_in_shell_tab_switching_without_full_navigatio
     assert "event.preventDefault();" in app_js
     assert 'setActiveTab("substrate");' in app_js
     assert 'history.replaceState(null, "", "#substrate");' in app_js
-    assert 'window.location.hash === "#substrate"' in app_js
+    assert (
+        'window.location.hash === "#substrate"' in app_js
+        or 'h === "#substrate"' in app_js
+    )
 
 
 def test_app_js_supports_substrate_embed_refresh_without_merging_substrate_bundle() -> None:
@@ -626,12 +727,51 @@ def test_autonomy_readiness_policy_matrix_blocks_recall_and_cognitive_live_apply
     by_surface = {str(item.get("surface")): item for item in surfaces}
 
     assert by_surface["routing_threshold_patch"]["apply"] == "gated_auto"
-    assert by_surface["recall_strategy_profile"]["status"] == "shadow_staged_only"
+    assert by_surface["recall_strategy_profile"]["status"] == "shadow_canary_review_only"
     assert "recall_weighting_patch_live_apply" in by_surface["recall_strategy_profile"]["forbidden"]
     assert by_surface["cognitive_self_model"]["apply"] == "forbidden"
     assert payload["surfaces"]["live"] == [] or all(
         row.get("surface") == "routing_threshold_patch" for row in payload["surfaces"]["live"]
     )
+
+
+def test_autonomy_constitution_endpoint_shape_and_invariants() -> None:
+    payload = api_routes.api_substrate_autonomy_constitution()
+    assert payload["schema_version"] == "autonomy_constitution.v1"
+    assert "surfaces" in payload
+    assert "safety_invariants" in payload
+    assert "summary" in payload
+    by_surface = {str(item.get("surface")): item for item in payload["surfaces"]}
+    assert "routing_threshold_patch" in by_surface
+    assert "recall_strategy_profile" in by_surface
+    assert "recall_weighting_patch" in by_surface
+    assert "cognitive_self_model" in by_surface
+    assert "cognitive_stance_note" in by_surface
+    assert "identity_kernel" in by_surface
+    assert "policy_safety" in by_surface
+    assert "production_prompt" in by_surface
+    assert payload["summary"]["live_apply_surfaces"] == ["routing_threshold_patch"]
+    assert by_surface["cognitive_self_model"]["apply"] == "forbidden"
+    assert by_surface["recall_weighting_patch"]["apply"] == "forbidden"
+    assert by_surface["identity_kernel"]["status"] == "protected"
+    assert by_surface["policy_safety"]["status"] == "protected"
+    assert by_surface["production_prompt"]["status"] == "protected"
+
+
+def test_constitution_validation_helper_flags_unsafe_live_apply() -> None:
+    constitution = api_routes.load_autonomy_constitution()
+    tampered = constitution.model_copy(
+        update={
+            "surfaces": [
+                row.model_copy(update={"live_apply_allowed": True})
+                if row.surface == "cognitive_self_model"
+                else row
+                for row in constitution.surfaces
+            ]
+        }
+    )
+    warnings = api_routes.validate_autonomy_constitution(tampered)
+    assert any("cognitive_live_apply_violation" in item for item in warnings)
 
 
 def test_recall_canary_status_rollups_shape() -> None:
@@ -642,3 +782,32 @@ def test_recall_canary_status_rollups_shape() -> None:
     assert "failure_mode_counts" in data
     assert "recent_judgments" in data
     assert "review_artifact_count" in data
+    assert "available_profiles" in data
+    assert "default_canary_profile_id" in data
+    assert data["production_recall_mode"] == "v1"
+    assert data["recall_live_apply_enabled"] is False
+
+
+def test_cognitive_status_and_public_aliases_are_bounded_and_read_only() -> None:
+    status = api_routes.api_substrate_cognitive_proposals_status(limit=10)
+    listing = api_routes.api_substrate_cognitive_proposals(limit=5)
+    assert status["data"]["schema_version"] == "cognitive_proposal_status.v1"
+    assert status["data"]["live_apply_enabled"] is False
+    assert status["data"]["safety"]["cognitive_live_apply_forbidden"] is True
+    assert "review_posture" in status["data"]
+    assert "recent_cognitive_proposals" in listing["data"]
+
+
+def test_cognitive_review_action_returns_safety_block(monkeypatch) -> None:
+    monkeypatch.setenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", "secret")
+    proposal = api_routes.SUBSTRATE_MUTATION_STORE.get_proposal("proposal-cog-1")
+    if proposal is None:
+        pytest.skip("cognitive fixture proposal not available")
+    payload = api_routes.api_substrate_cognitive_proposal_review(
+        "proposal-cog-1",
+        api_routes.CognitiveProposalReviewActionRequest(decision="accept_as_draft", rationale="bounded review"),
+        x_orion_operator_token="secret",
+    )
+    assert payload["data"]["review_recorded"] is True
+    assert payload["data"]["safety"]["production_default_unchanged"] is True
+    assert payload["data"]["safety"]["apply_performed"] is False

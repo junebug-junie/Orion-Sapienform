@@ -7,6 +7,9 @@ MONITOR
 **/tmp/
 scripts/.state/
 
+# Local git worktrees (feature isolation)
+.worktrees/
+
 .orion_dev
 
 # === Git worktrees (superpowers / local isolation) ===
@@ -72,6 +75,7 @@ wheels/
 venv/
 venv*/ 
 .venv/
+.venv-*/
 env/
 env*/
 poetry.lock
@@ -119,3 +123,6 @@ desktop.ini
 *.orig
 
 .orion_dev/
+
+# === Superpowers specs (local design docs, not tracked) ===
+docs/superpowers/specs/

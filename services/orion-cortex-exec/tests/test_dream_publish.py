@@ -115,3 +115,4 @@ def test_legacy_plan_dream_cycle_publishes_dream_result_event(monkeypatch) -> No
     assert dream_env.kind == "dream.result.v1"
     assert dream_env.payload["tldr"] == "Moonlit archive"
     assert dream_env.payload["narrative"] == "Moonlit archive."
+

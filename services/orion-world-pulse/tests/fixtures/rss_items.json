@@ -1,0 +1,16 @@
+[
+  {
+    "title": "US Senate passes AI infrastructure package",
+    "url": "https://example.com/us-ai",
+    "summary": "Policy update with GPU and datacenter implications.",
+    "author": "Staff",
+    "published_at": null
+  },
+  {
+    "title": "Utah county announces local election timeline",
+    "url": "https://example.com/utah-election",
+    "summary": "Local elections and civic operations update.",
+    "author": "Desk",
+    "published_at": null
+  }
+]

@@ -10,6 +10,7 @@ class DailyPulseV1(BaseModel):
     timezone: str = Field(min_length=1, max_length=80)
     yesterday_theme: str = Field(min_length=1, max_length=200)
     today_focus: str = Field(min_length=1, max_length=200)
+    focus_skill_id: str | None = Field(default=None, min_length=1, max_length=120)
     gentle_challenge: str = Field(min_length=1, max_length=240)
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
 
@@ -30,6 +31,7 @@ class DailyMetacogV1(BaseModel):
     blindspots: list[str] = Field(default_factory=list, max_length=5)
     course_correction: str = Field(min_length=1, max_length=300)
     tomorrow_experiment: str = Field(min_length=1, max_length=240)
+    tomorrow_experiment_skill_id: str | None = Field(default=None, min_length=1, max_length=120)
     confidence: float = Field(ge=0.0, le=1.0)
 
     @field_validator("date")

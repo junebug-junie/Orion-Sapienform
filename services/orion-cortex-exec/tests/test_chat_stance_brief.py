@@ -72,6 +72,52 @@ def test_build_chat_stance_inputs_maps_social_reflective_and_dream() -> None:
     assert built["reflective"]["dream_motifs"]
 
 
+def test_build_chat_stance_inputs_includes_situation_category() -> None:
+    ctx = {
+        "user_message": "My kid asked why the sky is blue.",
+        "situation_prompt_fragment": {
+            "compact_text": "Situation compact",
+            "should_mention": True,
+            "mention_policy": "only_if_relevant",
+            "summary_lines": ["line1"],
+            "relevance_notes": ["kid_friendly_explanation"],
+            "caution_lines": ["do not force mention"],
+        },
+        "situation_brief": {
+            "presence": {
+                "audience_mode": "kid_present",
+                "requestor": {"display_name": "Juniper"},
+                "privacy_mode": "session_only",
+                "persist_to_memory": False,
+                "companions": [{"display_name": "Kid", "age_band": "child", "role_hint": "listener"}],
+            },
+            "conversation_phase": {
+                "phase_change": "long_gap",
+                "continuity_mode": "reorient",
+                "topic_staleness_risk": "medium",
+                "time_since_last_user_turn_seconds": 7200,
+            },
+            "time": {"local_datetime": "2026-04-27T20:00:00-06:00", "time_of_day_label": "evening", "day_phase": "night", "weekday": "Sunday"},
+            "place": {"coarse_location": "Utah", "locality": "Utah", "region": "UT"},
+            "environment": {
+                "current_weather": {"condition": "clear"},
+                "forecast_next_2h": {"summary": "clear"},
+                "forecast_next_6h": {"summary": "dry"},
+                "forecast_next_24h": {"summary": "mild"},
+                "practical_flags": {"take_jacket": False},
+            },
+            "lab": {"available": False, "thermal_risk": "unknown", "power_risk": "unknown"},
+            "surface": {"surface": "hub_desktop", "input_modality": "typed"},
+            "affordances": [{"kind": "kid_friendly_explanation", "trigger_relevance": "active", "suggestion": "Use age-appropriate explanation", "confidence": "medium"}],
+        },
+    }
+    built = build_chat_stance_inputs(ctx)
+    assert "situation" in built
+    assert built["situation"]["presence"]["audience_mode"] == "kid_present"
+    assert built["situation"]["conversation_phase"]["phase_change"] == "long_gap"
+    assert built["situation"]["situation_relevance"] == "active"
+
+
 def test_parse_chat_stance_brief_and_fallback() -> None:
     parsed = parse_chat_stance_brief(
         '{"conversation_frame":"mixed","user_intent":"help","self_relevance":"x","juniper_relevance":"y","active_identity_facets":[],"active_growth_axes":[],"active_relationship_facets":[],"social_posture":[],"reflective_themes":[],"active_tensions":[],"dream_motifs":[],"response_priorities":["direct"],"response_hazards":["sludge"],"answer_strategy":"DirectAnswer","stance_summary":"short"}'
@@ -226,6 +272,55 @@ def test_fallback_chat_stance_brief_technical_frustration_sets_triage_low_identi
     assert "triage_operational_blockers_first" in fb.response_priorities
 
 
+def test_fallback_chat_stance_brief_preserves_situation_guidance() -> None:
+    ctx = {
+        "user_message": "My kid asked why the sky is blue.",
+        "situation_prompt_fragment": {
+            "compact_text": "Situation compact",
+            "should_mention": True,
+            "mention_policy": "only_if_relevant",
+            "summary_lines": ["line1"],
+            "relevance_notes": ["kid_friendly_explanation", "lightly re-anchor after long gap"],
+            "caution_lines": ["do not force mention"],
+        },
+        "situation_brief": {
+            "presence": {"audience_mode": "kid_present", "requestor": {"display_name": "Juniper"}},
+            "conversation_phase": {"phase_change": "long_gap"},
+            "lab": {"available": False, "thermal_risk": "unknown", "power_risk": "unknown"},
+            "affordances": [{"kind": "kid_friendly_explanation", "trigger_relevance": "active", "suggestion": "Use age-appropriate explanation"}],
+        },
+    }
+    fb = fallback_chat_stance_brief(ctx)
+    assert fb.situation_relevance == "active"
+    assert fb.audience_context == "kid_present"
+    assert fb.temporal_context == "long_gap"
+    assert fb.situation_response_guidance
+    assert "do not force irrelevant time/weather commentary" in fb.response_hazards
+
+
+def test_fallback_chat_stance_brief_suppresses_irrelevant_weather_priority() -> None:
+    ctx = {
+        "user_message": "what's been on your mind lately?",
+        "situation_prompt_fragment": {
+            "compact_text": "Situation compact",
+            "should_mention": False,
+            "mention_policy": "only_if_relevant",
+            "summary_lines": [],
+            "relevance_notes": [],
+            "caution_lines": ["do not force mention"],
+        },
+        "situation_brief": {
+            "presence": {"audience_mode": "solo", "requestor": {"display_name": "Juniper"}},
+            "conversation_phase": {"phase_change": "short_pause"},
+            "affordances": [{"kind": "fatigue_or_sleep_boundary", "trigger_relevance": "background", "suggestion": "Use only when relevant"}],
+        },
+    }
+    fb = fallback_chat_stance_brief(ctx)
+    assert fb.situation_relevance == "background"
+    assert not any("weather" in item.lower() for item in fb.response_priorities)
+    assert "do not force irrelevant time/weather commentary" in fb.response_hazards
+
+
 def test_semantic_guard_enriches_weak_generic_identity_brief() -> None:
     weak = ChatStanceBrief(
         conversation_frame="mixed",
@@ -278,7 +373,16 @@ def test_build_chat_stance_debug_payload_includes_grouped_contract_and_lineage()
             "reflective": {"themes": [], "tensions": [], "dream_motifs": []},
             "autonomy": {"summary": {"stance_hint": "focus"}, "debug": {"_runtime": {"backend": "graph"}}},
             "reasoning_summary": {"summary_text": "r", "hazards": ["h"], "tensions": [], "fallback_recommended": False},
+            "situation": {
+                "situation_relevance": "active",
+                "presence": {"audience_mode": "kid_present"},
+                "conversation_phase": {"phase_change": "long_gap"},
+                "situation_prompt_fragment": {"compact_text": "compact"},
+                "affordances": [{"kind": "kid_friendly_explanation"}],
+            },
         },
+        "situation_prompt_fragment": {"compact_text": "compact"},
+        "presence_context": {"audience_mode": "kid_present"},
     }
     payload = build_chat_stance_debug_payload(
         ctx=ctx,
@@ -290,8 +394,11 @@ def test_build_chat_stance_debug_payload_includes_grouped_contract_and_lineage()
         quality_modified=False,
     )
     assert payload["source_inputs"]["concept_induction"]["self"] == ["continuity"]
+    assert "situation" in payload["overview"]["categories_present"]
+    assert payload["source_inputs"]["situation"]["presence"]["audience_mode"] == "kid_present"
     assert payload["enforcement"]["normalized_applied"] is True
     assert payload["final_prompt_contract"]["chat_stance_brief"]["task_mode"] == "direct_response"
+    assert payload["final_prompt_contract"]["situation_prompt_fragment"]["compact_text"] == "compact"
     assert payload["lineage_summary"][0].startswith("concept/self injected")
 
 

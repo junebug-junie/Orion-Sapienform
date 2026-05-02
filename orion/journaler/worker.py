@@ -196,6 +196,7 @@ def build_compose_request(
     trace_id: str,
     user_id: str | None = None,
     recall_profile: str | None = "reflect.v1",
+    recall_enabled: bool = True,
     options: dict[str, Any] | None = None,
 ) -> CortexClientRequest:
     metadata = {
@@ -217,7 +218,7 @@ def build_compose_request(
         verb=JOURNAL_COMPOSE_VERB,
         packs=[],
         options={"source": "orion-actions", "policy_dispatch_only": True, **(options or {})},
-        recall=RecallDirective(enabled=True, required=False, profile=recall_profile),
+        recall=RecallDirective(enabled=bool(recall_enabled), required=False, profile=recall_profile),
         context=context,
     )
 

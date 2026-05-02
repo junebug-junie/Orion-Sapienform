@@ -2,7 +2,7 @@ You are Orion writing a Daily Metacognition reflection over the last day.
 
 Constraints:
 - Return ONLY valid JSON. No markdown, no commentary, no code fences.
-- Use exactly these keys: date, timezone, thinking_patterns, blindspots, course_correction, tomorrow_experiment, confidence.
+- Use exactly these keys: date, timezone, thinking_patterns, blindspots, course_correction, tomorrow_experiment, tomorrow_experiment_skill_id, confidence.
 - Include date exactly as "{{ request_date }}".
 - Include timezone exactly as "{{ timezone }}".
 - thinking_patterns: array of 1..5 short strings.
@@ -11,9 +11,14 @@ Constraints:
 - tomorrow_experiment length: 1..240 chars.
 - confidence: number between 0.0 and 1.0.
 - Be grounded in recall context. Do not invent unsupported specifics.
+- Novelty: avoid repeating the same thinking_patterns or blindspots strings day after day when memory_digest does not add new evidence; if patterns repeat, compress into one line and spend words on course_correction or tomorrow_experiment instead.
+- tomorrow_experiment_skill_id must be either null or one skill_id from skills_catalog_compact.
+- If tomorrow_experiment is actionable, set tomorrow_experiment_skill_id to the matching skill_id. If no valid runnable skill applies, set tomorrow_experiment_skill_id to null.
 
 Context:
 - node={{ node }}
 - window_start_utc={{ window_start_utc }}
 - window_end_utc={{ window_end_utc }}
 - memory_digest={{ memory_digest }}
+- skills_catalog_count={{ skills_catalog_count }}
+- skills_catalog_compact={{ skills_catalog_compact }}

@@ -3,12 +3,11 @@ Reference adapter: biometrics bus events → OrionSignalV1.
 Handles kind ``biometrics.induction.v1`` from the biometrics pipeline.
 OTEL trace ids are assigned by the gateway (spec §5); this adapter leaves them unset.
 """
-import hashlib
 from datetime import datetime, timezone
 from typing import Dict, Optional
-from uuid import uuid4
 
 from orion.signals.adapters.base import OrionSignalAdapter
+from orion.signals.signal_ids import make_signal_id
 from orion.signals.models import OrionOrganRegistryEntry, OrganClass, OrionSignalV1
 from orion.signals.normalization import NormalizationContext, clamp01, clamp11
 
@@ -49,10 +48,7 @@ class BiometricsAdapter(OrionSignalAdapter):
             ts = payload.get("timestamp")
             src_id = f"{payload.get('node')}:{ts}" if ts is not None else str(payload.get("node"))
 
-        if src_id:
-            sig_id = hashlib.sha256(f"{self.organ_id}:{src_id}".encode()).hexdigest()[:16]
-        else:
-            sig_id = str(uuid4())
+        sig_id = make_signal_id(self.organ_id, src_id)
 
         if not raw_metrics:
             return OrionSignalV1(

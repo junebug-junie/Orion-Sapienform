@@ -92,7 +92,7 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         service="orion-world-pulse",
         signal_kinds=["situation_state", "time_context", "environmental_context"],
         canonical_dimensions=["level", "valence", "confidence"],
-        causal_parent_organs=[],  # (external feeds, chat turn context — see note)
+        causal_parent_organs=[],
         bus_channels=[
             "orion:world_pulse:run:request",
             "orion:world_pulse:digest:published",
@@ -100,7 +100,11 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
             "orion:hub:messages:create",
             "orion:world_pulse:graph:upsert",
         ],
-        notes=["External feeds and chat turn context"]
+        notes=[
+            "Definitive DAG: no organ-bus causal parents. Situation/context ingests external feeds, "
+            "hub messages, and graph channels per orion-world-pulse contracts — not upstream "
+            "OrionSignalV1 parents in this registry."
+        ],
     ),
     "social_memory": OrionOrganRegistryEntry(
         organ_id="social_memory",

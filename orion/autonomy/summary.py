@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from orion.autonomy.models import AutonomyStateV1, AutonomySummaryV1, DriveCompetitionSummaryV1
+from orion.autonomy.models import (
+    AutonomyStateV1,
+    AutonomyStateV2,
+    AutonomySummaryV1,
+    DriveCompetitionSummaryV1,
+)
 
 # Mirrors orion.spark.concept_induction.tensions.derive_pressure_competition_tensions spread logic
 # so the summary reflects drive disagreement even when GraphDB has not yet materialized tension rows.
@@ -79,7 +84,7 @@ def _bounded_unique(values: list[str], *, limit: int) -> list[str]:
     return out
 
 
-def summarize_autonomy_state(state: AutonomyStateV1 | None) -> AutonomySummaryV1:
+def summarize_autonomy_state(state: AutonomyStateV1 | AutonomyStateV2 | None) -> AutonomySummaryV1:
     if state is None:
         return AutonomySummaryV1(
             stance_hint="maintain stable direct response",
@@ -116,6 +121,8 @@ def summarize_autonomy_state(state: AutonomyStateV1 | None) -> AutonomySummaryV1
         [_proposal_headline_for_display(goal.goal_statement) for goal in state.goal_headlines],
         limit=3,
     )
+    if isinstance(state, AutonomyStateV2) and not state.goal_headlines and state.attention_items:
+        proposal_headlines = _bounded_unique([a.summary for a in state.attention_items], limit=3)
 
     hazards: list[str] = []
     if (state.drive_pressures.get("continuity") or 0.0) >= 0.6 or dominant == "continuity":
@@ -131,13 +138,25 @@ def summarize_autonomy_state(state: AutonomyStateV1 | None) -> AutonomySummaryV1
     if state.goal_headlines:
         hazards.append("do not present proposals as commitments")
 
+    hazard_limit = 8 if isinstance(state, AutonomyStateV2) else 4
+    if isinstance(state, AutonomyStateV2):
+        if float(state.confidence) < 0.4:
+            hazards.append("avoid overconfident inner-state claims")
+        if state.unknowns:
+            hazards.append("surface uncertainty when state evidence is thin")
+        if any(
+            getattr(i, "inhibition_reason", None) == "proxy_signal_not_canonical_state"
+            for i in state.inhibited_impulses
+        ):
+            hazards.append("do not treat proxy telemetry as canonical state")
+
     return AutonomySummaryV1(
         stance_hint=stance_hint,
         dominant_drive=(state.dominant_drive or "").strip() or None,
         top_drives=top_drives,
         active_tensions=active_tensions,
         proposal_headlines=proposal_headlines,
-        response_hazards=_bounded_unique(hazards, limit=4),
+        response_hazards=_bounded_unique(hazards, limit=hazard_limit),
         raw_state_present=True,
         drive_competition=drive_competition,
     )

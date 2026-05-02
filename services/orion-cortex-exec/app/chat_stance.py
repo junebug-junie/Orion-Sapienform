@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -7,6 +8,8 @@ import re
 import time
 from typing import Any, Dict, Iterable, List
 
+from orion.autonomy.models import AutonomyEvidenceRefV1
+from orion.autonomy.reducer import AutonomyReducerInputV1, reduce_autonomy_state
 from orion.autonomy.summary import summarize_autonomy_state
 from orion.autonomy.repository import SUBJECT_BINDINGS, build_autonomy_repository
 from orion.core.schemas.reasoning_io import ReasoningWriteContextV1, ReasoningWriteRequestV1
@@ -984,6 +987,74 @@ def _situation_summary_from_ctx(ctx: Dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _build_autonomy_reducer_evidence(ctx: Dict[str, Any], autonomy: Dict[str, Any]) -> List[AutonomyEvidenceRefV1]:
+    evidence: List[AutonomyEvidenceRefV1] = []
+    msg = ctx.get("user_message") or ctx.get("message") or ""
+    if msg:
+        digest = hashlib.sha256(str(msg)[:200].encode()).hexdigest()[:16]
+        evidence.append(
+            AutonomyEvidenceRefV1(
+                evidence_id=f"user_turn:{digest}",
+                source="user_message",
+                kind="user_turn",
+                summary=str(msg)[:200],
+                confidence=0.9,
+            )
+        )
+    debug = autonomy.get("debug") if isinstance(autonomy.get("debug"), dict) else {}
+    orion_dbg = debug.get("orion") if isinstance(debug.get("orion"), dict) else {}
+    avail = str(orion_dbg.get("availability") or "").strip()
+    if avail:
+        evidence.append(
+            AutonomyEvidenceRefV1(
+                evidence_id=f"infra_health:autonomy_graph:{avail}",
+                source="infra",
+                kind="infra_health",
+                summary=f"autonomy graph availability={avail}",
+                confidence=1.0,
+            )
+        )
+    rs = ctx.get("chat_reasoning_summary") if isinstance(ctx.get("chat_reasoning_summary"), dict) else {}
+    if rs.get("fallback_recommended"):
+        evidence.append(
+            AutonomyEvidenceRefV1(
+                evidence_id="reasoning:fallback_recommended",
+                source="reasoning",
+                kind="reasoning_quality",
+                summary="reasoning fallback recommended",
+                confidence=0.6,
+            )
+        )
+    social = ctx.get("chat_social_bridge_summary") if isinstance(ctx.get("chat_social_bridge_summary"), dict) else {}
+    for hazard in social.get("hazards") or []:
+        hid = hashlib.sha256(str(hazard)[:80].encode()).hexdigest()[:12]
+        evidence.append(
+            AutonomyEvidenceRefV1(
+                evidence_id=f"social_bridge:{hid}",
+                source="social_bridge",
+                kind="relational_signal",
+                summary=str(hazard)[:200],
+                confidence=0.6,
+            )
+        )
+    return evidence
+
+
+def _run_autonomy_reducer(ctx: Dict[str, Any], autonomy: Dict[str, Any]):
+    evidence = _build_autonomy_reducer_evidence(ctx, autonomy)
+    state_obj = autonomy.get("state")
+    subj = getattr(state_obj, "subject", None) if state_obj is not None else None
+    subject = str(subj or "orion")
+    return reduce_autonomy_state(
+        AutonomyReducerInputV1(
+            subject=subject,
+            previous_state=state_obj,
+            evidence=evidence,
+            action_outcomes=[],
+        )
+    )
+
+
 def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     identity = identity_kernel_with_fallbacks(ctx)
     ctx.update(identity)
@@ -995,8 +1066,9 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     social["relationship_facets"] = _unique((social.get("relationship_facets") or []) + (social_bridge.get("framing") or []), limit=8)
     reflective = _reflective_summary(ctx)
     situation = _situation_summary_from_ctx(ctx)
-    autonomy = _load_autonomy_state(ctx)
     reasoning = _compile_reasoning_summary(ctx)
+    ctx["chat_reasoning_summary"] = reasoning["summary"]
+    autonomy = _load_autonomy_state(ctx)
     mutation_cognition = _mutation_cognition_from_ctx(ctx)
     social["hazards"] = _unique((social.get("hazards") or []) + list((reasoning.get("summary") or {}).get("hazards") or []), limit=8)
 
@@ -1022,6 +1094,16 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     mg_hints = fetch_chat_stance_memory_graph_hints()
     if mg_hints:
         inputs["memory_graph"] = {"disposition_hints": mg_hints}
+
+    if os.getenv("AUTONOMY_STATE_V2_REDUCER_ENABLED", "").strip().lower() == "true":
+        try:
+            v2_result = _run_autonomy_reducer(ctx, autonomy)
+            ctx["chat_autonomy_state_v2"] = v2_result.state.model_dump(mode="json")
+            ctx["chat_autonomy_state_delta"] = v2_result.delta.model_dump(mode="json")
+            inputs["autonomy"]["state_v2"] = ctx["chat_autonomy_state_v2"]
+            inputs["autonomy"]["delta"] = ctx["chat_autonomy_state_delta"]
+        except Exception as exc:
+            logger.warning("autonomy_reducer_v2_failed error=%s", exc)
 
     ctx["chat_stance_inputs"] = inputs
     ctx["chat_concept_summary"] = concept

@@ -447,6 +447,28 @@ def _autonomy_payload_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
         payload["final_text_clean"] = final_text_clean
     if chat_stance_debug:
         payload["chat_stance_debug"] = chat_stance_debug
+    v2_state = ctx.get("chat_autonomy_state_v2")
+    if isinstance(v2_state, dict):
+        payload["autonomy_state_v2_preview"] = {
+            "schema_version": v2_state.get("schema_version"),
+            "dominant_drive": v2_state.get("dominant_drive"),
+            "active_drives": (v2_state.get("active_drives") or [])[:3],
+            "confidence": v2_state.get("confidence"),
+            "unknowns": (v2_state.get("unknowns") or [])[:5],
+            "top_attention_summaries": [
+                item["summary"]
+                for item in (v2_state.get("attention_items") or [])[:3]
+                if isinstance(item, dict)
+            ],
+            "top_inhibition_reasons": [
+                item["inhibition_reason"]
+                for item in (v2_state.get("inhibited_impulses") or [])[:3]
+                if isinstance(item, dict)
+            ],
+        }
+    delta = ctx.get("chat_autonomy_state_delta")
+    if isinstance(delta, dict):
+        payload["autonomy_state_delta"] = delta
     # Hub merges cortex_result.metadata into chat turn spark_meta; concept-induction reads
     # payload.spark_meta.turn_effect (see orion.spark.concept_induction.tensions._extract_turn_effect).
     te = ctx.get("turn_effect")

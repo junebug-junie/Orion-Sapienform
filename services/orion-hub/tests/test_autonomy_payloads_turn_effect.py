@@ -34,3 +34,16 @@ def test_extract_autonomy_payload_includes_execution_mode_and_goal_lineage() -> 
     out = extract_autonomy_payload(cortex_result)
     assert out["autonomy_execution_mode"] == "proposal_only"
     assert out["autonomy_goal_lineage"]["goal_artifact_id"] == "goal-abc"
+
+
+def test_extract_autonomy_payload_forwards_v2_keys() -> None:
+    cortex_result = SimpleNamespace(
+        metadata={
+            "autonomy_summary": {"stance_hint": "x"},
+            "autonomy_state_v2_preview": {"dominant_drive": "coherence"},
+            "autonomy_state_delta": {"subject": "orion"},
+        }
+    )
+    payload = extract_autonomy_payload(cortex_result)
+    assert payload["autonomy_state_v2_preview"]["dominant_drive"] == "coherence"
+    assert payload["autonomy_state_delta"]["subject"] == "orion"

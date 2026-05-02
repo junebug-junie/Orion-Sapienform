@@ -717,7 +717,7 @@
           <div id="attentionList" class="space-y-2 max-h-56 overflow-y-auto text-xs"></div>
         </div>
 
-        <div class="bg-gray-900 rounded-2xl shadow-lg p-5 space-y-3">
+        <div id="hubNotificationsPanel" class="bg-gray-900 rounded-2xl shadow-lg p-5 space-y-3" data-notification-batch-threshold="5" title="Notifications reflect server recent events; refresh reloads the Hub cache, not full history.">
           <div class="flex items-center justify-between">
             <div class="text-xs uppercase tracking-wide text-gray-500">Notifications</div>
             <select id="notificationFilter" class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
@@ -885,7 +885,12 @@
       <section id="memory" data-panel="memory" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
         <div>
           <h2 class="text-xl font-bold text-white">Memory cards</h2>
-          <p class="text-xs text-gray-400 mt-1">Operator curation when <code class="text-gray-300">RECALL_PG_DSN</code> is configured on Hub.</p>
+          <div
+            id="memoryStoreBanner"
+            class="text-xs mt-2 rounded border px-2 py-2 {{HUB_MEMORY_STORE_BANNER_CLASS}}"
+            data-memory-store-ready="{{HUB_MEMORY_STORE_READY}}"
+            role="status"
+          >{{HUB_MEMORY_STORE_BANNER_TEXT}}</div>
         </div>
         <div class="flex flex-wrap gap-2 text-xs">
           <button type="button" id="memorySubviewReview" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200">Review Queue</button>

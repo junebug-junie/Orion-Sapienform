@@ -95,6 +95,7 @@ class Settings(BaseSettings):
     actions_journal_post_persist_notify_enabled: bool = Field(True, alias="ACTIONS_JOURNAL_POST_PERSIST_NOTIFY_ENABLED")
 
     actions_workflow_schedule_store_path: str = Field("/tmp/orion-actions/workflow_schedules.json", alias="ACTIONS_WORKFLOW_SCHEDULE_STORE_PATH")
+    actions_scheduler_cursor_store_path: str = Field("", alias="ACTIONS_SCHEDULER_CURSOR_STORE_PATH")
     actions_workflow_schedule_claim_batch_size: int = Field(10, alias="ACTIONS_WORKFLOW_SCHEDULE_CLAIM_BATCH_SIZE")
     actions_workflow_attention_overdue_min_seconds: int = Field(3600, alias="ACTIONS_WORKFLOW_ATTENTION_OVERDUE_MIN_SECONDS")
     actions_workflow_attention_reminder_cooldown_seconds: int = Field(21600, alias="ACTIONS_WORKFLOW_ATTENTION_REMINDER_COOLDOWN_SECONDS")

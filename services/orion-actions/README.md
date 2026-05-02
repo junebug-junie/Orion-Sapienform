@@ -44,6 +44,7 @@ Important clarification:
 ### What Actions owns
 
 - Durable schedule persistence (`ACTIONS_WORKFLOW_SCHEDULE_STORE_PATH`).
+- Durable **built-in daily scheduler cursors** (`ACTIONS_SCHEDULER_CURSOR_STORE_PATH`): last completed local calendar date per daily job so process restart alone does not re-eligible the same day after a successful run.
 - Schedule lifecycle state (`scheduled`, `paused`, `cancelled`, `completed`, etc.).
 - Due claiming and scheduler wakeup loop.
 - Bounded management operations (`list`, `cancel`, `pause`, `resume`, `update`, `history`).
@@ -51,6 +52,12 @@ Important clarification:
 - Derived schedule analytics/health from stored schedule + run history.
 - Attention notifications for degraded/failing/overdue recurring schedules.
 - Operational bridging for scheduled workflow dispatch.
+
+### Daily scheduler and restarts
+
+Built-in daily triggers (daily pulse, world pulse, daily metacog, daily journal) compare local wall time in `ACTIONS_DAILY_TIMEZONE` to configured hour/minute windows. **Before durable cursors**, in-memory `last_*` maps reset on restart; if local time is already past the cutoff, the same calendar day can be **eligible again**, which can queue duplicate downstream work and notify/email bursts. **With cursors** (default path next to the workflow schedule JSON under `/tmp/orion-actions/` in dev), a successful completion is persisted per job; restart hydrates from disk before the first scheduler tick. `ACTIONS_DAILY_RUN_ON_STARTUP` still allows an initial run when no completion is recorded for the process session, but **does not** bypass a cursor that already marks today complete. Tune `ACTIONS_DAILY_TIMEZONE`, per-job hours, and `ACTIONS_DAILY_RUN_ONCE_DATE` for operator overrides.
+
+Cursor JSON keys match the scheduler store: `daily_pulse_v1`, `world_pulse`, `daily_metacog_v1`, `daily_journal`. **Single writer:** assume one `orion-actions` replica (same as the workflow schedule store); multiple replicas would race on the same cursor file unless you add coordination or split paths in a follow-up.
 
 ### What Actions does **not** own
 

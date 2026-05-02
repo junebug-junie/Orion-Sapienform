@@ -51,7 +51,8 @@ Hub supports three modes via the `mode` field in the request:
 *   **Schema**: `HubNotificationEvent` (from `orion.schemas.notify`)
 *   **Flow**: orion-notify -> Bus -> Hub (WebSocket broadcast)
 *   **WebSocket payload**: `{ "kind": "notification", "notification": { ... } }`
-*   **HTTP history**: `GET /api/notifications?limit=50`
+*   **HTTP history**: `GET /api/notifications?limit=50` — returns a **snapshot of the Hub process in-memory deque** (`NotificationCache`) of recent bus-fed events, not a full historical inbox; a full page refresh reloads that cache. The UI shows both upstream `created_at` (when the producer ran) and Hub `received_at` (when the event was ingested) where present.
+*   **First-load batching**: On initial hydrate, if the notification count meets or exceeds the threshold, the Hub shows one summary toast instead of per-row toasts. Override the threshold by setting `data-notification-batch-threshold` on `#hubNotificationsPanel` in `templates/index.html` (default `5`).
 
 #### Chat Attention
 
@@ -357,6 +358,27 @@ curl -sS http://localhost:8080/api/chat \
 Expected:
 - Response includes `memory_digest` (when recall is enabled).
 - No events appear on bus patterns `orion:chat:history:*` for that request.
+
+### 8. Memory cards: how rows get created (Hub vs recall vs auto-extractor)
+
+**Three different paths:**
+
+1. **Recall / RAG (`memory_used`, `memory_digest`, recall canary)** — Context injected into the model at chat time. This does **not** write `memory_cards` rows. Seeing `memory_used=true` in logs or the UI only proves the recall lane ran.
+2. **Operator memory cards** — Rows in Postgres (`memory_cards`, usually `pending_review` until approved). Created when an operator uses the Hub Memory tab or calls `POST /api/memory/cards` with a valid body (same `X-Orion-Session-Id` header as the UI). Default `status` is `pending_review`, so new cards show in **Review queue**.
+3. **Stage 1 auto-extractor (optional)** — `orion-cortex-orch` subscribes to `orion:chat:history:turn` and, when `ORION_AUTO_EXTRACTOR_ENABLED=true` and `RECALL_PG_DSN` is set on **cortex-orch**, may insert `pending_review` cards from regex candidates (`orion/core/storage/memory_extraction.py`). Default is **off**; Stage 2 LLM extraction remains disabled (`NotImplementedError` if forced). Chat alone with the extractor off does **not** populate the queue — an empty Review queue with `GET /api/memory/cards` returning `200` and `items: []` is expected, not evidence Postgres is broken.
+
+**Quick end-to-end check (seed one card via Hub API):**
+
+```bash
+curl -sS -X POST "${HUB_BASE_URL:-http://localhost:8080}/api/memory/cards" \
+  -H "Content-Type: application/json" \
+  -H "X-Orion-Session-Id: ${ORION_SESSION_ID}" \
+  -d '{"types":["fact"],"title":"Seed fact","summary":"Proves memory HTTP + DB path","provenance":"operator_highlight"}'
+```
+
+Then open the Hub Memory tab → **Review queue**, or `GET /api/memory/cards?status=pending_review` with the same session header.
+
+**Automated smoke:** `scripts/smoke_memory_cards_e2e.sh` (requires `ORION_HUB_URL`, `ORION_HUB_SESSION_ID`, and `RECALL_PG_DSN` set to the same memory-store contract as Hub).
 
 ---
 

@@ -61,6 +61,11 @@ from .logic import (
 from .settings import settings
 from orion.schemas.workflow_execution import WorkflowDispatchRequestV1, WorkflowScheduleManageRequestV1, WorkflowScheduleManageResponseV1
 
+from .scheduler_cursor_store import (
+    SchedulerCursorStore,
+    resolve_scheduler_cursor_store_path,
+    scheduler_cursor_completed_local_date,
+)
 from .workflow_schedule_metrics import WorkflowScheduleMetrics
 from .workflow_schedule_store import ClaimedSchedule, ScheduleAttentionSignal, WorkflowScheduleStore
 
@@ -69,6 +74,7 @@ PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc)
 
 ACTION_DAILY_PULSE_V1 = "daily_pulse_v1"
 ACTION_DAILY_METACOG_V1 = "daily_metacog_v1"
+SCHEDULER_CURSOR_JOURNAL_KEY = "daily_journal"
 ACTION_WORKFLOW_SCHEDULE_V1 = "workflow.schedule.v1"
 ACTION_WORKFLOW_MANAGE_V1 = "workflow.manage.v1"
 WORKFLOW_TRIGGER_KIND = "orion.actions.trigger.workflow.v1"
@@ -175,6 +181,31 @@ def should_run_daily(*, now_utc: datetime, tz_name: str, hour_local: int, minute
         return False, today
     threshold = local_now.replace(hour=hour_local, minute=minute_local, second=0, microsecond=0)
     return local_now >= threshold, today
+
+
+def _scheduler_daily_structured_log(
+    *,
+    job_key: str,
+    local_date: str,
+    correlation_id: str,
+    restart_dedupe_source: str,
+) -> None:
+    """Emitted only after a daily job completes successfully (outcome=success)."""
+    logger.info(
+        "%s",
+        json.dumps(
+            {
+                "service": settings.service_name,
+                "scheduler_tick": True,
+                "job_key": job_key,
+                "local_date": local_date,
+                "restart_dedupe_source": restart_dedupe_source,
+                "correlation_id": correlation_id,
+                "outcome": "success",
+            },
+            sort_keys=True,
+        ),
+    )
 
 
 def _extract_plan_final_text(result_payload: dict[str, Any]) -> str:
@@ -895,6 +926,18 @@ async def lifespan(app: FastAPI):
         settings.actions_workflow_schedule_store_path,
         metrics=workflow_schedule_metrics,
     )
+    scheduler_cursor_store = SchedulerCursorStore(
+        resolve_scheduler_cursor_store_path(
+            settings.actions_scheduler_cursor_store_path or None,
+            workflow_schedule_store_path=settings.actions_workflow_schedule_store_path,
+        )
+    )
+    for _ck, _cv in scheduler_cursor_store.all().items():
+        if _ck == SCHEDULER_CURSOR_JOURNAL_KEY:
+            last_journal_run = _cv
+        else:
+            last_daily_run[_ck] = _cv
+    cursor_keys_at_startup = frozenset(scheduler_cursor_store.all().keys())
 
     async def _audit(
         parent: BaseEnvelope,
@@ -1022,13 +1065,13 @@ async def lifespan(app: FastAPI):
             "orch_payload": orch_payload,
         }
 
-    async def _dispatch_journal(parent: BaseEnvelope, *, trigger, audit_action: str, dedupe_key: str, reason: str | None = None) -> None:
+    async def _dispatch_journal(parent: BaseEnvelope, *, trigger, audit_action: str, dedupe_key: str, reason: str | None = None) -> bool:
         if not settings.actions_journaling_enabled:
             await _audit(parent, status="skipped", event_id=dedupe_key, action_name=audit_action, reason="journaling_disabled")
-            return
+            return False
         if not journal_deduper.try_acquire(dedupe_key):
             await _audit(parent, status="skipped", event_id=dedupe_key, action_name=audit_action, reason=reason or "journal_cooldown")
-            return
+            return False
 
         acquired = False
         t0 = time.monotonic()
@@ -1147,6 +1190,7 @@ async def lifespan(app: FastAPI):
                     "scheduler_daily_journal_email_skipped_reason": scheduler_daily_email_skip_reason,
                 },
             )
+            return True
         except Exception as exc:
             dt_ms = int((time.monotonic() - t0) * 1000)
             await _audit(
@@ -1158,18 +1202,20 @@ async def lifespan(app: FastAPI):
                 extra={"duration_ms": dt_ms},
             )
             logger.exception("Journal dispatch failed action=%s corr=%s", audit_action, parent.correlation_id)
+            return False
         finally:
             if acquired:
                 sem.release()
             journal_deduper.release(dedupe_key)
 
-    async def _execute_daily(parent: BaseEnvelope, *, action_name: str, window: DailyWindow, dedupe_key: str):
+    async def _execute_daily(parent: BaseEnvelope, *, action_name: str, window: DailyWindow, dedupe_key: str) -> bool:
         if not deduper.try_acquire(dedupe_key):
             await _audit(parent, status="skipped", event_id=dedupe_key, action_name=action_name, reason="deduped")
-            return
+            return False
 
         t0 = time.monotonic()
         acquired = False
+        completed = False
         try:
             await sem.acquire()
             acquired = True
@@ -1324,6 +1370,7 @@ async def lifespan(app: FastAPI):
             if generic_ok and chat_ok:
                 deduper.mark_done(dedupe_key)
                 await _audit(parent, status="completed", event_id=dedupe_key, action_name=action_name, extra=extra)
+                completed = True
             else:
                 reason = None
                 if accepted and not accepted.ok:
@@ -1347,6 +1394,7 @@ async def lifespan(app: FastAPI):
             if acquired:
                 sem.release()
             deduper.release(dedupe_key)
+        return completed
 
     async def _handle_collapse(env: BaseEnvelope) -> None:
         try:
@@ -1425,7 +1473,21 @@ async def lifespan(app: FastAPI):
         override_date = payload.get("date") if isinstance(payload.get("date"), str) else settings.actions_daily_run_once_date
         window = build_daily_window(tz_name=settings.actions_daily_timezone, override_date=override_date)
         dedupe_key = _daily_pulse_dedupe_key(window) if action_name == ACTION_DAILY_PULSE_V1 else _daily_metacog_dedupe_key(window)
-        await _execute_daily(env, action_name=action_name, window=window, dedupe_key=dedupe_key)
+        ok = await _execute_daily(env, action_name=action_name, window=window, dedupe_key=dedupe_key)
+        if ok:
+            tz = ZoneInfo(settings.actions_daily_timezone)
+            today_iso = datetime.now(timezone.utc).astimezone(tz).date().isoformat()
+            if override_date is None:
+                fd_for_cursor = None
+            else:
+                fd_for_cursor = str(override_date).strip() or None
+            cursor_val = scheduler_cursor_completed_local_date(
+                forced_date=fd_for_cursor,
+                window_request_date=window.request_date,
+                scheduled_local_date=today_iso,
+            )
+            last_daily_run[action_name] = cursor_val
+            scheduler_cursor_store.set_last_completed(action_name, cursor_val)
 
     async def _handle_journal_manual(env: BaseEnvelope) -> None:
         payload = env.payload if isinstance(env.payload, dict) else {}
@@ -1749,7 +1811,11 @@ async def lifespan(app: FastAPI):
         while True:
             try:
                 now_utc = datetime.now(timezone.utc)
-                forced_date = settings.actions_daily_run_once_date
+                _raw_forced = settings.actions_daily_run_once_date
+                if _raw_forced is None:
+                    forced_date = None
+                else:
+                    forced_date = str(_raw_forced).strip() or None
                 now_monotonic = time.monotonic()
                 if settings.actions_skills_scheduler_enabled and should_run_interval(
                     now_monotonic=now_monotonic,
@@ -1774,19 +1840,39 @@ async def lifespan(app: FastAPI):
                             )
                     last_skill_run_monotonic = now_monotonic
 
-                pulse_should_run, local_date = should_run_daily(
+                pulse_should_run, pulse_local_date = should_run_daily(
                     now_utc=now_utc,
                     tz_name=settings.actions_daily_timezone,
                     hour_local=settings.actions_daily_pulse_hour_local,
                     minute_local=settings.actions_daily_pulse_minute_local,
                     last_ran_date=last_daily_run.get(ACTION_DAILY_PULSE_V1),
                 )
-                if settings.actions_daily_pulse_enabled and (pulse_should_run or (settings.actions_daily_run_on_startup and ACTION_DAILY_PULSE_V1 not in last_daily_run)):
+                if settings.actions_daily_pulse_enabled and (
+                    pulse_should_run or (settings.actions_daily_run_on_startup and ACTION_DAILY_PULSE_V1 not in last_daily_run)
+                ):
                     window = build_daily_window(now_utc=now_utc, tz_name=settings.actions_daily_timezone, override_date=forced_date)
                     key = _daily_pulse_dedupe_key(window)
-                    env = BaseEnvelope(kind="orion.actions.trigger.daily_pulse.v1", source=src, payload={"date": window.request_date})
-                    await _execute_daily(env, action_name=ACTION_DAILY_PULSE_V1, window=window, dedupe_key=key)
-                    last_daily_run[ACTION_DAILY_PULSE_V1] = local_date
+                    env = BaseEnvelope(
+                        kind="orion.actions.trigger.daily_pulse.v1",
+                        source=src,
+                        correlation_id=str(uuid4()),
+                        payload={"date": window.request_date},
+                    )
+                    pulse_ok = await _execute_daily(env, action_name=ACTION_DAILY_PULSE_V1, window=window, dedupe_key=key)
+                    if pulse_ok:
+                        pulse_cursor = scheduler_cursor_completed_local_date(
+                            forced_date=forced_date,
+                            window_request_date=window.request_date,
+                            scheduled_local_date=pulse_local_date,
+                        )
+                        last_daily_run[ACTION_DAILY_PULSE_V1] = pulse_cursor
+                        scheduler_cursor_store.set_last_completed(ACTION_DAILY_PULSE_V1, pulse_cursor)
+                        _scheduler_daily_structured_log(
+                            job_key=ACTION_DAILY_PULSE_V1,
+                            local_date=pulse_cursor,
+                            correlation_id=str(env.correlation_id),
+                            restart_dedupe_source="durable" if ACTION_DAILY_PULSE_V1 in cursor_keys_at_startup else "memory",
+                        )
 
                 world_pulse_should_run, world_pulse_date = should_run_daily(
                     now_utc=now_utc,
@@ -1803,11 +1889,24 @@ async def lifespan(app: FastAPI):
                     if not deduper.try_acquire(dedupe_key):
                         logger.info("world_pulse_scheduler_trigger_result date=%s status=deduped", window.request_date)
                     else:
+                        wp_corr = str(uuid4())
                         ok = await asyncio.to_thread(_trigger_world_pulse_run, date=window.request_date, requested_by="scheduler")
                         logger.info("world_pulse_scheduler_trigger_result date=%s ok=%s", window.request_date, ok)
                         if ok:
                             deduper.mark_done(dedupe_key)
-                            last_daily_run["world_pulse"] = world_pulse_date
+                            wp_cursor = scheduler_cursor_completed_local_date(
+                                forced_date=forced_date,
+                                window_request_date=window.request_date,
+                                scheduled_local_date=world_pulse_date,
+                            )
+                            last_daily_run["world_pulse"] = wp_cursor
+                            scheduler_cursor_store.set_last_completed("world_pulse", wp_cursor)
+                            _scheduler_daily_structured_log(
+                                job_key="world_pulse",
+                                local_date=wp_cursor,
+                                correlation_id=wp_corr,
+                                restart_dedupe_source="durable" if "world_pulse" in cursor_keys_at_startup else "memory",
+                            )
                         else:
                             deduper.release(dedupe_key)
 
@@ -1818,12 +1917,32 @@ async def lifespan(app: FastAPI):
                     minute_local=settings.actions_daily_metacog_minute_local,
                     last_ran_date=last_daily_run.get(ACTION_DAILY_METACOG_V1),
                 )
-                if settings.actions_daily_metacog_enabled and (meta_should_run or (settings.actions_daily_run_on_startup and ACTION_DAILY_METACOG_V1 not in last_daily_run)):
+                if settings.actions_daily_metacog_enabled and (
+                    meta_should_run or (settings.actions_daily_run_on_startup and ACTION_DAILY_METACOG_V1 not in last_daily_run)
+                ):
                     window = build_daily_window(now_utc=now_utc, tz_name=settings.actions_daily_timezone, override_date=forced_date)
                     key = _daily_metacog_dedupe_key(window)
-                    env = BaseEnvelope(kind="orion.actions.trigger.daily_metacog.v1", source=src, payload={"date": window.request_date})
-                    await _execute_daily(env, action_name=ACTION_DAILY_METACOG_V1, window=window, dedupe_key=key)
-                    last_daily_run[ACTION_DAILY_METACOG_V1] = meta_local_date
+                    env = BaseEnvelope(
+                        kind="orion.actions.trigger.daily_metacog.v1",
+                        source=src,
+                        correlation_id=str(uuid4()),
+                        payload={"date": window.request_date},
+                    )
+                    meta_ok = await _execute_daily(env, action_name=ACTION_DAILY_METACOG_V1, window=window, dedupe_key=key)
+                    if meta_ok:
+                        meta_cursor = scheduler_cursor_completed_local_date(
+                            forced_date=forced_date,
+                            window_request_date=window.request_date,
+                            scheduled_local_date=meta_local_date,
+                        )
+                        last_daily_run[ACTION_DAILY_METACOG_V1] = meta_cursor
+                        scheduler_cursor_store.set_last_completed(ACTION_DAILY_METACOG_V1, meta_cursor)
+                        _scheduler_daily_structured_log(
+                            job_key=ACTION_DAILY_METACOG_V1,
+                            local_date=meta_cursor,
+                            correlation_id=str(env.correlation_id),
+                            restart_dedupe_source="durable" if ACTION_DAILY_METACOG_V1 in cursor_keys_at_startup else "memory",
+                        )
 
                 journal_should_run, journal_local_date = should_run_daily(
                     now_utc=now_utc,
@@ -1849,14 +1968,32 @@ async def lifespan(app: FastAPI):
                         prompt_seed=journal_seed,
                         source_ref=window.request_date,
                     )
-                    env = BaseEnvelope(kind="orion.actions.trigger.journal.v1", source=src, payload=trigger.model_dump(mode="json"))
-                    await _dispatch_journal(
+                    env = BaseEnvelope(
+                        kind="orion.actions.trigger.journal.v1",
+                        source=src,
+                        correlation_id=str(uuid4()),
+                        payload=trigger.model_dump(mode="json"),
+                    )
+                    journal_ok = await _dispatch_journal(
                         env,
                         trigger=trigger,
                         audit_action="journal.daily_summary",
                         dedupe_key=_journal_daily_dedupe_key(window),
                     )
-                    last_journal_run = journal_local_date
+                    if journal_ok:
+                        journal_cursor = scheduler_cursor_completed_local_date(
+                            forced_date=forced_date,
+                            window_request_date=window.request_date,
+                            scheduled_local_date=journal_local_date,
+                        )
+                        last_journal_run = journal_cursor
+                        scheduler_cursor_store.set_last_completed(SCHEDULER_CURSOR_JOURNAL_KEY, journal_cursor)
+                        _scheduler_daily_structured_log(
+                            job_key=SCHEDULER_CURSOR_JOURNAL_KEY,
+                            local_date=journal_cursor,
+                            correlation_id=str(env.correlation_id),
+                            restart_dedupe_source="durable" if SCHEDULER_CURSOR_JOURNAL_KEY in cursor_keys_at_startup else "memory",
+                        )
 
                 for claimed in workflow_schedule_store.claim_due(now_utc=now_utc, limit=settings.actions_workflow_schedule_claim_batch_size):
                     dispatch_env = BaseEnvelope(kind=WORKFLOW_TRIGGER_KIND, source=src, correlation_id=str(uuid4()), payload={})

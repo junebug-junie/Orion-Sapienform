@@ -38,6 +38,14 @@ const openedMessageIds = new Set();
 const dismissedMessageIds = new Set();
 const NOTIFICATION_MAX = 200;
 let notificationToastSeconds = 8;
+
+function notificationBatchHydrateThreshold() {
+  const el = document.getElementById("hubNotificationsPanel");
+  const raw = el?.dataset?.notificationBatchThreshold;
+  const n = raw !== undefined && raw !== "" ? parseInt(String(raw), 10) : NaN;
+  return Number.isFinite(n) && n >= 1 ? n : 5;
+}
+let notificationsInitialHydrateDone = false;
 const ATTENTION_EVENT_KIND = "orion.chat.attention";
 const CHAT_MESSAGE_EVENT_KIND = "orion.chat.message";
 const RECIPIENT_GROUP = "juniper_primary";
@@ -783,35 +791,46 @@ loadDismissedIds();
       !topicStudioPanel ||
       !serviceLogsPanel ||
       !substratePanel ||
-      !pressurePanel ||
-      !memoryPanel ||
       !hubTabButton ||
       !topicStudioTabButton ||
       !serviceLogsTabButton ||
-      !substrateTabButton ||
-      !pressureAnalyticsTabButton ||
-      !memoryTabButton
+      !substrateTabButton
     ) {
       return;
     }
-    const isHub = tabKey === "hub";
-    const isTopicStudio = tabKey === "topic-studio";
-    const isServiceLogs = tabKey === "service-logs";
-    const isSubstrate = tabKey === "substrate";
-    const isMemory = tabKey === "memory";
-    const isPressure = tabKey === "pressure";
+    let effectiveTab = tabKey;
+    if (tabKey === "memory" && !memoryPanel) {
+      effectiveTab = "hub";
+    }
+    if (tabKey === "pressure" && !pressurePanel) {
+      effectiveTab = "hub";
+    }
+    const isHub = effectiveTab === "hub";
+    const isTopicStudio = effectiveTab === "topic-studio";
+    const isServiceLogs = effectiveTab === "service-logs";
+    const isSubstrate = effectiveTab === "substrate";
+    const isMemory = effectiveTab === "memory";
+    const isPressure = effectiveTab === "pressure";
     hubTabPanel.classList.toggle("hidden", !isHub);
     topicStudioPanel.classList.toggle("hidden", !isTopicStudio);
     serviceLogsPanel.classList.toggle("hidden", !isServiceLogs);
     substratePanel.classList.toggle("hidden", !isSubstrate);
-    memoryPanel.classList.toggle("hidden", !isMemory);
-    pressurePanel.classList.toggle("hidden", !isPressure);
+    if (memoryPanel) {
+      memoryPanel.classList.toggle("hidden", !isMemory);
+    }
+    if (pressurePanel) {
+      pressurePanel.classList.toggle("hidden", !isPressure);
+    }
     styleTabButton(hubTabButton, isHub);
     styleTabButton(topicStudioTabButton, isTopicStudio);
     styleTabButton(serviceLogsTabButton, isServiceLogs);
     styleTabButton(substrateTabButton, isSubstrate);
-    styleTabButton(memoryTabButton, isMemory);
-    styleTabButton(pressureAnalyticsTabButton, isPressure);
+    if (memoryTabButton) {
+      styleTabButton(memoryTabButton, isMemory);
+    }
+    if (pressureAnalyticsTabButton) {
+      styleTabButton(pressureAnalyticsTabButton, isPressure);
+    }
   }
 
   function applyHashToTab() {
@@ -823,11 +842,14 @@ loadDismissedIds();
       setActiveTab("service-logs");
     } else if (h === "#substrate") {
       setActiveTab("substrate");
-    } else if (h === "#pressure") {
+    } else if (h === "#pressure" && pressurePanel && pressureAnalyticsTabButton) {
       setActiveTab("pressure");
-    } else if (h === "#memory") {
+    } else if (h === "#memory" && memoryPanel && memoryTabButton) {
       setActiveTab("memory");
     } else {
+      if (h === "#pressure" || h === "#memory") {
+        history.replaceState(null, "", "#hub");
+      }
       setActiveTab("hub");
     }
   }
@@ -4883,11 +4905,21 @@ loadDismissedIds();
     return `fallback:${createdAt}|${title}|${body}`;
   }
 
+  function sortedNotificationsForTray(list) {
+    return [...list].sort((a, b) => {
+      const ra = Date.parse(a.received_at || a.created_at || 0) || 0;
+      const rb = Date.parse(b.received_at || b.created_at || 0) || 0;
+      return rb - ra;
+    });
+  }
+
   function renderNotifications() {
     if (!notificationList) return;
     const filter = notificationFilter ? notificationFilter.value : 'all';
     notificationList.innerHTML = '';
-    const filtered = notifications.filter((n) => filter === 'all' || (n.severity || '').toLowerCase() === filter);
+    const filtered = sortedNotificationsForTray(notifications).filter(
+      (n) => filter === 'all' || (n.severity || '').toLowerCase() === filter
+    );
 
     if (filtered.length === 0) {
       const empty = document.createElement('div');
@@ -4937,8 +4969,15 @@ loadDismissedIds();
 
       const meta = document.createElement('div');
       meta.className = 'text-[10px] text-gray-400';
-      const createdAt = n.created_at ? new Date(n.created_at).toLocaleString() : '--';
-      meta.textContent = `${createdAt} • ${n.event_kind || 'event'} • ${n.source_service || 'unknown'}`;
+      meta.title =
+        'Notifications reflect server recent events; refresh reloads the Hub cache, not full history.';
+      const createdAt = n.created_at ? new Date(n.created_at).toLocaleString() : null;
+      const receivedAt = n.received_at ? new Date(n.received_at).toLocaleString() : null;
+      const timeParts = [];
+      if (createdAt) timeParts.push(`Created ${createdAt}`);
+      if (receivedAt) timeParts.push(`Received ${receivedAt}`);
+      const timeLine = timeParts.length ? timeParts.join(' · ') : '--';
+      meta.textContent = `${timeLine} • ${n.event_kind || 'event'} • ${n.source_service || 'unknown'}`;
 
       const normalizedText = normalizeTextForPreview(n.body_text || n.preview_text || '');
       const previewText = truncate(normalizedText);
@@ -6160,8 +6199,13 @@ loadDismissedIds();
       if (!resp.ok) return;
       const data = await resp.json();
       if (Array.isArray(data)) {
+        const firstHydrate = !notificationsInitialHydrateDone;
+        notificationsInitialHydrateDone = true;
         notifications = data;
         renderNotifications();
+        if (firstHydrate && data.length >= notificationBatchHydrateThreshold()) {
+          showToastText(`${data.length} notifications loaded (see tray)`);
+        }
       }
     } catch (err) {
       console.warn("Failed to load notifications", err);
@@ -8915,16 +8959,7 @@ loadDismissedIds();
   }
   setTopicStudioSubview(resolveTopicStudioSubview());
 
-  if (
-    hubTabButton &&
-    topicStudioTabButton &&
-    serviceLogsTabButton &&
-    substrateTabButton &&
-    pressureAnalyticsTabButton &&
-    pressurePanel &&
-    memoryTabButton &&
-    memoryPanel
-  ) {
+  if (hubTabButton && topicStudioTabButton && serviceLogsTabButton && substrateTabButton) {
     hubTabButton.addEventListener("click", () => {
       setActiveTab("hub");
       history.replaceState(null, "", "#hub");
@@ -8943,16 +8978,20 @@ loadDismissedIds();
       setActiveTab("substrate");
       history.replaceState(null, "", "#substrate");
     });
-    memoryTabButton.addEventListener("click", (event) => {
-      event.preventDefault();
-      setActiveTab("memory");
-      history.replaceState(null, "", "#memory");
-    });
-    pressureAnalyticsTabButton.addEventListener("click", (event) => {
-      event.preventDefault();
-      setActiveTab("pressure");
-      history.replaceState(null, "", "#pressure");
-    });
+    if (memoryTabButton) {
+      memoryTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("memory");
+        history.replaceState(null, "", "#memory");
+      });
+    }
+    if (pressureAnalyticsTabButton && pressurePanel) {
+      pressureAnalyticsTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("pressure");
+        history.replaceState(null, "", "#pressure");
+      });
+    }
     applyHashToTab();
     window.addEventListener("hashchange", () => {
       applyHashToTab();

@@ -53,25 +53,49 @@ def _anchor_class_for_entity(g: Graph, node: URIRef, mapping: Dict[str, Any]) ->
     return "concept"
 
 
+def _entity_label_by_id(draft: SuggestDraftV1, entity_id: str | None) -> str:
+    if not entity_id:
+        return ""
+    for e in draft.entities:
+        if e.id == entity_id:
+            return str(e.label or "").strip()
+    return ""
+
+
 def build_memory_graph_subschema(
     draft: SuggestDraftV1,
     *,
     named_graphs: Sequence[str],
     situation_entity_base: str,
 ) -> Dict[str, Any]:
-    """Appendix D-style projection from draft facts (deterministic v1 heuristic)."""
+    """Appendix D-style projection from draft (facts derived from entities + situations + dispositions)."""
     sit = draft.situations[0] if draft.situations else None
     facts: List[Dict[str, Any]] = []
-    if sit and sit.label:
-        facts.append(
-            {
-                "subject": "Joey",
-                "predicate": "angered",
-                "object": "Juniper",
-                "time": sit.timeQualitative or "",
+    if sit:
+        stim = _entity_label_by_id(draft, sit.stimulus_entity_id)
+        patient_pid = next((p.entity_id for p in sit.participants if p.role == "patient"), None)
+        patient_l = _entity_label_by_id(draft, patient_pid)
+        pred = (sit.affectLabel or "situation").strip()
+        if stim and patient_l:
+            row: Dict[str, Any] = {
+                "subject": stim,
+                "predicate": pred,
+                "object": patient_l,
                 "source": "situation",
             }
-        )
+            if sit.timeQualitative:
+                row["time"] = sit.timeQualitative
+            facts.append(row)
+        elif stim or sit.label:
+            row = {
+                "subject": stim or (sit.label or "situation").split(";")[0].strip()[:120],
+                "predicate": pred,
+                "object": sit.label or "",
+                "source": "situation",
+            }
+            if sit.timeQualitative:
+                row["time"] = sit.timeQualitative
+            facts.append(row)
     for disp in draft.dispositions:
         holder_l = next((e.label for e in draft.entities if e.id == disp.holder_id), "subject")
         tgt_l = next((e.label for e in draft.entities if e.id == disp.target_id), "object")

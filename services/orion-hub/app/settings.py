@@ -255,6 +255,7 @@ class Settings(BaseSettings):
     GRAPHDB_PASS: str = Field(default="", alias="GRAPHDB_PASS")
     MEMORY_GRAPH_DEFAULT_NAMED_GRAPH: str = Field(default="", alias="MEMORY_GRAPH_DEFAULT_NAMED_GRAPH")
 
+    @property
     def recall_service_url(self) -> str:
         return str(self.HUB_RECALL_SERVICE_URL or self.RECALL_SERVICE_URL or "http://orion-recall:8090").strip().rstrip("/")
 

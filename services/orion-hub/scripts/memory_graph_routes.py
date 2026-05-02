@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
+import asyncpg
+import requests
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import ValidationError
 
@@ -74,9 +76,17 @@ async def memory_graph_approve(
             graphdb_pass=str(settings.GRAPHDB_PASS or ""),
             named_graph_iri=named,
         )
-    except Exception as exc:
+    except ValueError as exc:
+        if str(exc) == "hierarchy_cycle":
+            raise HTTPException(status_code=400, detail="hierarchy_cycle") from exc
         logger.warning("memory_graph_approve_failed error=%s", exc)
-        raise HTTPException(status_code=400, detail="approve_failed") from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except asyncpg.PostgresError as exc:
+        logger.warning("memory_graph_approve_failed postgres error=%s", exc)
+        raise HTTPException(status_code=503, detail="memory_store_error") from exc
+    except requests.RequestException as exc:
+        logger.warning("memory_graph_approve_failed graphdb error=%s", exc)
+        raise HTTPException(status_code=503, detail="graphdb_unavailable") from exc
 
     if not result.ok:
         return {"ok": False, "violations": result.violations, "card_ids": []}

@@ -102,17 +102,69 @@ When verifying, prefer commands scoped to the touched service.
 
 Examples:
 - `python -m compileall services/<service_name>`
-- `pytest -q services/<service_name>/tests/<target>`
+- `./venv/bin/python -m pytest services/<service_name>/tests/<target> -q` (or `./orion_dev/bin/python`; see **Pytest invocation policy** below)
 - `npm test -- <target>`
 - a targeted service-local run command or integration command
 
 Do not run destructive commands unless explicitly requested.
 
 ## Pytest invocation policy (global)
-- Prefer `python3 -m pytest` over bare `pytest` so execution does not depend on shell PATH.
-- Prefer shared runner entrypoints when available (for example `scripts/test_service.sh <service>` or service wrappers).
-- Do not perform ad-hoc runtime `pip install pytest` except explicit emergency debugging requested by the user.
-- Keep verification service-scoped unless the task truly spans multiple services.
+
+Pytest is **not** installed by the minimal `[project.dependencies]` in `pyproject.toml`; it lives in **`requirements-dev.txt`**. System `/usr/bin/python3` often has no pytest — use a repo virtualenv that has had dev requirements installed.
+
+### Root virtualenvs (`venv` / `orion_dev`)
+
+Two conventional environments at the **repository root** (both gitignored):
+
+| Env          | Interpreter                         |
+|-------------|--------------------------------------|
+| `venv/`     | `./venv/bin/python`                  |
+| `orion_dev/`| `./orion_dev/bin/python`             |
+
+Create either if missing:
+
+```bash
+python3 -m venv venv
+# or
+python3 -m venv orion_dev
+```
+
+Install **pytest + dev deps** into that env:
+
+```bash
+./venv/bin/python -m pip install -r requirements-dev.txt
+# same pattern for orion_dev/bin/python
+```
+
+Or bootstrap **both** `venv` and `orion_dev` (and optionally a service’s `requirements.txt`) in one go:
+
+```bash
+./scripts/bootstrap_test_envs.sh
+./scripts/bootstrap_test_envs.sh --service orion-hub
+```
+
+Run tests with an explicit interpreter so you never rely on PATH:
+
+```bash
+cd /path/to/Orion-Sapienform
+PYTHONPATH=. ./venv/bin/python -m pytest tests/ -q --tb=short
+PYTHONPATH=. ./orion_dev/bin/python -m pytest tests/ -q --tb=short
+```
+
+(`PYTHONPATH=.` is required when tests import top-level packages such as `orion.*` from the repo root.)
+
+### Shared service runner
+
+`scripts/test_service.sh` picks **`orion_dev` first**, then **`venv`**, then falls back to `python3`. It also runs `bootstrap_test_envs.sh` for the given service before pytest:
+
+```bash
+./scripts/test_service.sh orion-hub
+./scripts/test_service.sh orion-hub services/orion-hub/tests/test_foo.py -q
+```
+
+Prefer `python3 -m pytest` (via one of the interpreters above) over bare `pytest`. Prefer shared runners when they match the touched service. Do not perform ad-hoc runtime `pip install pytest` except explicit emergency debugging requested by the user. Keep verification service-scoped unless the task truly spans multiple services.
+
+More detail: `docs/testing.md`.
 
 ## Required final response format
 ### Summary

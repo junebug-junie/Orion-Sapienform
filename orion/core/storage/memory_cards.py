@@ -4,13 +4,14 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 from uuid import UUID, uuid4
 
 import asyncpg
 import psycopg2
 
 from orion.core.contracts.memory_cards import (
+    EDGE_TYPES,
     MemoryCardCreateV1,
     MemoryCardEdgeCreateV1,
     MemoryCardEdgeV1,
@@ -404,6 +405,121 @@ async def change_card_status(
                 json.dumps(meta_after),
             )
         return _row_to_card(row) if row else None
+
+
+async def _insert_card_on_conn(
+    conn: asyncpg.Connection, card: MemoryCardCreateV1, *, actor: str, op: str = "create"
+) -> UUID:
+    """Insert one card + history row using an existing connection (no nested transaction)."""
+    slug = (card.slug or "").strip() or _slugify(card.title)
+    body = card.model_dump(mode="json", exclude={"slug"})
+    body["slug"] = slug
+    th_val = card.time_horizon.model_dump(mode="json") if card.time_horizon else None
+    evidence_val = [e.model_dump(mode="json") for e in card.evidence]
+    sub_val = dict(card.subschema or {})
+    row = await conn.fetchrow(
+        """
+        INSERT INTO memory_cards (
+          slug, types, anchor_class, status, confidence, sensitivity, priority,
+          visibility_scope, time_horizon, provenance, trust_source, project,
+          title, summary, still_true, anchors, tags, evidence, subschema
+        ) VALUES (
+          $1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19::jsonb
+        )
+        RETURNING card_id
+        """,
+        body["slug"],
+        body["types"],
+        body.get("anchor_class"),
+        body["status"],
+        body["confidence"],
+        body["sensitivity"],
+        body["priority"],
+        body["visibility_scope"],
+        th_val,
+        body["provenance"],
+        body.get("trust_source"),
+        body.get("project"),
+        body["title"],
+        body["summary"],
+        body.get("still_true"),
+        body.get("anchors"),
+        body.get("tags"),
+        evidence_val,
+        sub_val,
+    )
+    cid = row["card_id"]
+    snap = await conn.fetchrow("SELECT to_jsonb(mc.*) AS j FROM memory_cards mc WHERE mc.card_id = $1", cid)
+    await conn.execute(
+        """
+        INSERT INTO memory_card_history (card_id, edge_id, op, actor, "before", "after")
+        VALUES ($1, NULL, $2, $3, NULL, $4::jsonb)
+        """,
+        cid,
+        op,
+        actor,
+        json.dumps(snap["j"]),
+    )
+    return cid
+
+
+async def _add_edge_on_conn(conn: asyncpg.Connection, edge: MemoryCardEdgeCreateV1, *, actor: str) -> None:
+    if await _hierarchy_edge_would_cycle(
+        conn, from_card_id=edge.from_card_id, to_card_id=edge.to_card_id, edge_type=edge.edge_type
+    ):
+        raise ValueError("hierarchy_cycle")
+    row = await conn.fetchrow(
+        """
+        INSERT INTO memory_card_edges (from_card_id, to_card_id, edge_type, metadata)
+        VALUES ($1,$2,$3,$4::jsonb)
+        RETURNING edge_id
+        """,
+        edge.from_card_id,
+        edge.to_card_id,
+        edge.edge_type,
+        json.dumps(edge.metadata or {}),
+    )
+    eid = row["edge_id"]
+    snap = await conn.fetchrow("SELECT to_jsonb(e.*) AS j FROM memory_card_edges e WHERE e.edge_id = $1", eid)
+    await conn.execute(
+        """
+        INSERT INTO memory_card_history (card_id, edge_id, op, actor, "before", "after")
+        VALUES ($1, $2, 'edge_add', $3, NULL, $4::jsonb)
+        """,
+        edge.from_card_id,
+        eid,
+        actor,
+        json.dumps(snap["j"]),
+    )
+
+
+async def insert_cards_and_edges_batch(
+    pool: asyncpg.Pool,
+    *,
+    creates: Sequence[MemoryCardCreateV1],
+    edge_indices: Sequence[Tuple[int, int, EDGE_TYPES, Dict[str, Any]]],
+    actor: str,
+    op: str = "create",
+) -> List[UUID]:
+    """Atomically insert projection cards then edges; rolls back all Postgres writes on any failure."""
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            card_ids: List[UUID] = []
+            for card in creates:
+                cid = await _insert_card_on_conn(conn, card, actor=actor, op=op)
+                card_ids.append(cid)
+            for fi, ti, et, meta in edge_indices:
+                await _add_edge_on_conn(
+                    conn,
+                    MemoryCardEdgeCreateV1(
+                        from_card_id=card_ids[fi],
+                        to_card_id=card_ids[ti],
+                        edge_type=et,
+                        metadata=dict(meta or {}),
+                    ),
+                    actor=actor,
+                )
+            return card_ids
 
 
 async def add_edge(pool: asyncpg.Pool, edge: MemoryCardEdgeCreateV1, *, actor: str) -> MemoryCardEdgeV1:

@@ -5,10 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
-import asyncpg
-
-from orion.core.contracts.memory_cards import MemoryCardEdgeCreateV1
-from orion.core.storage.memory_cards import add_edge, insert_card
+from orion.core.storage.memory_cards import insert_cards_and_edges_batch
 from orion.memory_graph.dto import SuggestDraftV1
 from orion.memory_graph.graphdb import compensate_batch, insert_batch
 from orion.memory_graph.json_to_rdf import draft_to_graph
@@ -55,20 +52,12 @@ async def approve_memory_graph_draft(
     pack = project_graph_to_cards(g2, draft, named_graphs=[named_graph_iri])
     card_ids: List[UUID] = []
     try:
-        for c in pack.creates:
-            cid = await insert_card(pool, c, actor="operator", op="create")
-            card_ids.append(cid)
-        for fi, ti, et, meta in pack.edge_indices:
-            await add_edge(
-                pool,
-                MemoryCardEdgeCreateV1(
-                    from_card_id=card_ids[fi],
-                    to_card_id=card_ids[ti],
-                    edge_type=et,
-                    metadata=meta,
-                ),
-                actor="operator",
-            )
+        card_ids = await insert_cards_and_edges_batch(
+            pool,
+            creates=pack.creates,
+            edge_indices=pack.edge_indices,
+            actor="operator",
+        )
     except Exception:
         logger.exception("approve_memory_graph_draft postgres_failed batch=%s", batch_id)
         try:

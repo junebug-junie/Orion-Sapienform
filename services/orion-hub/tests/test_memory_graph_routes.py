@@ -10,9 +10,23 @@ from fastapi.testclient import TestClient
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 HUB_ROOT = Path(__file__).resolve().parents[1]
-for candidate in (str(REPO_ROOT), str(HUB_ROOT)):
-    if candidate not in sys.path:
-        sys.path.insert(0, candidate)
+
+
+def _ensure_hub_scripts_import_path() -> None:
+    """Repo-root ``scripts/`` shadows Hub when pytest mixes repo tests with Hub tests (import order)."""
+    for key in list(sys.modules):
+        if key == "scripts" or key.startswith("scripts."):
+            del sys.modules[key]
+    for p in (str(REPO_ROOT), str(HUB_ROOT)):
+        try:
+            sys.path.remove(p)
+        except ValueError:
+            pass
+    sys.path.insert(0, str(REPO_ROOT))
+    sys.path.insert(0, str(HUB_ROOT))
+
+
+_ensure_hub_scripts_import_path()
 
 for key, value in {
     "CHANNEL_VOICE_TRANSCRIPT": "orion:voice:transcript",
@@ -26,6 +40,7 @@ for key, value in {
 
 @pytest.mark.skipif(not Path(REPO_ROOT / "tests/fixtures/memory_graph/joey_cats_draft.json").is_file(), reason="fixture missing")
 def test_memory_graph_validate_fixture_roundtrip() -> None:
+    _ensure_hub_scripts_import_path()
     import scripts.main as hub_main
 
     raw = json.loads((REPO_ROOT / "tests/fixtures/memory_graph/joey_cats_draft.json").read_text(encoding="utf-8"))
@@ -41,6 +56,7 @@ def test_memory_graph_validate_fixture_roundtrip() -> None:
 
 
 def test_memory_graph_approve_requires_graphdb_or_named_graph() -> None:
+    _ensure_hub_scripts_import_path()
     import scripts.main as hub_main
 
     with TestClient(hub_main.app) as client:

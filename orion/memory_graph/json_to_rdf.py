@@ -143,8 +143,12 @@ def draft_to_graph(
 
     for e in draft.edges:
         pred = expand_curie(e.p)
-        g.add((eb(e.s), URIRef(pred), eb(e.o)))
+        snode, onode = eb(e.s), eb(e.o)
+        g.add((snode, URIRef(pred), onode))
+        if revision_batch:
+            g.add((snode, ORIONMEM.revisionBatch, Literal(revision_batch)))
+            g.add((onode, ORIONMEM.revisionBatch, Literal(revision_batch)))
         if e.confidence is not None:
-            g.add((eb(e.s), ORIONMEM.inferenceConfidence, Literal(float(e.confidence))))
+            g.add((snode, ORIONMEM.inferenceConfidence, Literal(float(e.confidence))))
 
     return g

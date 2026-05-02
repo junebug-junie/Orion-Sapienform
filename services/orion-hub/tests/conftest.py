@@ -9,9 +9,15 @@ _REPO_ROOT = _HUB_ROOT.parents[1]
 
 
 def pytest_configure() -> None:
+    # Drop cached imports so the corrected sys.path wins (repo-root `scripts/` namespace vs Hub package).
     for key in list(sys.modules):
         if key == "scripts" or key.startswith("scripts."):
             del sys.modules[key]
-    for p in (str(_HUB_ROOT), str(_REPO_ROOT)):
-        if p not in sys.path:
-            sys.path.insert(0, p)
+    # Remove stale entries so we can prepend Hub before cwd (`''`) and duplicate PYTHONPATH entries.
+    for p in (str(_REPO_ROOT), str(_HUB_ROOT)):
+        try:
+            sys.path.remove(p)
+        except ValueError:
+            pass
+    sys.path.insert(0, str(_REPO_ROOT))
+    sys.path.insert(0, str(_HUB_ROOT))

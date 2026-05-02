@@ -1,0 +1,20 @@
+profile: biographical.v1
+vector_top_k: 4
+rdf_top_k: 0
+sql_top_k: 0
+cards_top_k: 12
+max_per_source: 8
+max_total_items: 12
+render_budget_tokens: 280
+backend_weights:
+  cards: 1.5
+  vector: 0.3
+  sql_timeline: 0.0
+  sql_chat: 0.0
+  rdf_chat: 0.0
+  rdf: 0.0
+relevance:
+  score_weight: 0.7
+  text_similarity_weight: 0.2
+  recency_weight: 0.0
+  enable_recency: false

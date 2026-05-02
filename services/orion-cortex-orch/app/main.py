@@ -18,6 +18,7 @@ from orion.normalizers.agent_trace import build_agent_trace_summary
 from .orchestrator import call_verb_runtime, dispatch_dream_trigger, dispatch_metacog_trigger
 from .settings import get_settings
 from .decision_router import DecisionRouter
+from .memory_extractor import handle_memory_history_turn
 from .workflow_runtime import (
     execute_chat_workflow,
     execute_workflow_schedule_management,
@@ -597,6 +598,12 @@ dream_hunter = Hunter(
     patterns=[get_settings().channel_dream_trigger],
 )
 
+memory_cards_hunter = Hunter(
+    _cfg(),
+    handler=handle_memory_history_turn,
+    patterns=["orion:chat:history:turn"],
+)
+
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
@@ -608,7 +615,12 @@ async def main() -> None:
         f"bus={s.orion_bus_url}"
     )
     logger.info("orch_runtime_identity %s", json.dumps(_runtime_identity(), sort_keys=True))
-    await asyncio.gather(svc.start(), equilibrium_hunter.start(), dream_hunter.start())
+    await asyncio.gather(
+        svc.start(),
+        equilibrium_hunter.start(),
+        dream_hunter.start(),
+        memory_cards_hunter.start(),
+    )
 
 
 if __name__ == "__main__":

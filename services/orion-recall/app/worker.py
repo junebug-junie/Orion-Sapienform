@@ -37,6 +37,7 @@ try:
     from .storage.vector_adapter import fetch_vector_fragments, fetch_vector_exact_matches
     from .sql_timeline import fetch_recent_fragments, fetch_related_by_entities, fetch_exact_fragments
     from .sql_chat import fetch_chat_history_pairs, fetch_chat_messages
+    from .cards_adapter import fetch_card_fragments_guarded
 
 except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
     _IMPORT_ERROR = _e
@@ -58,11 +59,25 @@ except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
         from app.storage.vector_adapter import fetch_vector_fragments, fetch_vector_exact_matches  # type: ignore
         from app.sql_timeline import fetch_recent_fragments, fetch_related_by_entities, fetch_exact_fragments  # type: ignore
         from app.sql_chat import fetch_chat_history_pairs, fetch_chat_messages  # type: ignore
+        from app.cards_adapter import fetch_card_fragments_guarded  # type: ignore
     except ImportError:
         # IMPORTANT: raise the real root cause, not the fallback failure
         raise _IMPORT_ERROR
 
 logger = logging.getLogger("orion-recall.worker")
+
+try:
+    import asyncpg  # type: ignore
+except Exception:  # pragma: no cover
+    asyncpg = None
+
+_recall_pg_pool: Any = None
+
+
+def set_recall_pg_pool(pool: Any) -> None:
+    global _recall_pg_pool
+    _recall_pg_pool = pool
+
 
 RECALL_REQUEST_KIND = "recall.query.v1"
 RECALL_REPLY_KIND = "recall.reply.v1"
@@ -614,6 +629,23 @@ async def _fetch_anchor_candidates(
     return candidates, counts
 
 
+def _cards_fetch_enabled(profile: Dict[str, Any]) -> bool:
+    if not bool(getattr(settings, "RECALL_ENABLE_CARDS", False)):
+        return False
+    w = profile.get("backend_weights")
+    if not isinstance(w, dict):
+        w = {}
+    rel = profile.get("relevance")
+    if isinstance(rel, dict) and isinstance(rel.get("backend_weights"), dict):
+        w = {**w, **rel["backend_weights"]}
+    try:
+        wt = float(w.get("cards", 0.0) or 0.0)
+    except Exception:
+        wt = 0.0
+    topk = int(profile.get("cards_top_k", 0) or 0)
+    return topk > 0 or wt > 0.0
+
+
 async def _query_backends(
     fragment: str,
     profile: Dict[str, Any],
@@ -623,6 +655,8 @@ async def _query_backends(
     entities: List[str],
     diagnostic: bool = False,
     exclusion: Dict[str, Any] | None = None,
+    lane: str | None = None,
+    include_cards: bool = False,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     candidates: List[Dict[str, Any]] = []
     backend_counts: Dict[str, int] = {}
@@ -838,6 +872,25 @@ async def _query_backends(
             settings.RECALL_ENABLE_SQL_TIMELINE,
         )
 
+    if include_cards and _cards_fetch_enabled(profile):
+        pool = _recall_pg_pool
+        if pool is not None and asyncpg is not None:
+            try:
+                card_frags = await fetch_card_fragments_guarded(
+                    pool,
+                    fragment,
+                    profile,
+                    lane=lane,
+                    timeout_sec=float(getattr(settings, "RECALL_CARDS_TIMEOUT_SEC", 0.25) or 0.25),
+                    max_neighbors=int(getattr(settings, "RECALL_CARDS_MAX_NEIGHBORS", 6) or 6),
+                )
+                backend_counts["cards"] = len(card_frags)
+                candidates.extend(card_frags)
+            except Exception as exc:
+                logger.warning("cards fetch skipped: %s", exc)
+        elif diagnostic:
+            logger.info("recall cards skipped pool_asyncpg_available=%s", pool is not None)
+
     return candidates, backend_counts
 
 
@@ -968,7 +1021,27 @@ async def process_recall(
     corr_id: str,
     diagnostic: bool = False,
 ) -> Tuple[MemoryBundleV1, RecallDecisionV1]:
-    profile = get_profile(q.profile)
+    selected_profile = q.profile
+    intent_payload: Dict[str, Any] | None = None
+    if bool(getattr(settings, "RECALL_INTENT_ROUTING_ENABLED", True)) and not bool(
+        getattr(q, "profile_explicit", False)
+    ):
+        try:
+            from .intent import classify_intent_v1, intent_telemetry_payload, resolve_profile_for_intent
+
+            ic = classify_intent_v1(str(q.fragment or ""))
+            selected_profile = resolve_profile_for_intent(ic.intent, fallback_profile=q.profile)
+            intent_payload = intent_telemetry_payload(
+                query_text=str(q.fragment or ""),
+                intent=ic.intent,
+                profile=selected_profile,
+                override=False,
+            )
+        except Exception as exc:
+            logger.debug("intent routing skipped: %s", exc)
+            selected_profile = q.profile
+
+    profile = get_profile(selected_profile)
     profile_name = str(profile.get("profile") or "")
     query_targeting = _derive_chat_general_query(q.fragment, verb=q.verb, profile_name=profile_name)
     query_fragment = str(query_targeting.get("query_fragment") or q.fragment or "")
@@ -1069,6 +1142,7 @@ async def process_recall(
                 {
                     "profile_selected": str(profile.get("profile") or q.profile),
                     "profile_requested": q.profile,
+                    **({"recall_intent": intent_payload} if intent_payload else {}),
                     "query_expansion_enabled": enable_qe,
                     "query_targeting": {
                         **query_targeting,
@@ -1314,7 +1388,7 @@ async def process_recall(
             )
     else:
         backend_start = time.time()
-        for sig in signals:
+        for sig_i, sig in enumerate(signals):
             cand, counts = await _query_backends(
                 sig,
                 profile,
@@ -1323,6 +1397,8 @@ async def process_recall(
                 entities=_extract_entities(query_fragment),
                 diagnostic=diagnostic,
                 exclusion=exclusion,
+                lane=getattr(q, "lane", None),
+                include_cards=(sig_i == 0),
             )
             candidates.extend(cand)
             for k, v in counts.items():
@@ -1373,6 +1449,7 @@ async def process_recall(
                 "latency_breakdown_ms": timing_breakdown_ms,
                 "profile_selected": str(profile.get("profile") or q.profile),
                 "profile_requested": q.profile,
+                **({"recall_intent": intent_payload} if intent_payload else {}),
                 "query_expansion_enabled": enable_qe,
                 "query_targeting": {
                     **query_targeting,

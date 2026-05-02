@@ -7,6 +7,9 @@ MONITOR
 **/tmp/
 scripts/.state/
 
+# Local git worktrees (feature isolation)
+.worktrees/
+
 .orion_dev
 
 # === Python ===

@@ -159,6 +159,9 @@ class Settings(BaseSettings):
     HUB_RECALL_SHADOW_EVAL_MAX_ROWS_PER_RUN: int = Field(default=128, alias="HUB_RECALL_SHADOW_EVAL_MAX_ROWS_PER_RUN")
     HUB_RECALL_SHADOW_EVAL_DEFAULT_CORPUS_LIMIT: int = Field(default=24, alias="HUB_RECALL_SHADOW_EVAL_DEFAULT_CORPUS_LIMIT")
 
+    # --- Memory cards (Postgres, same DSN as recall conjourney DB) ---
+    RECALL_PG_DSN: str = Field(default="", alias="RECALL_PG_DSN")
+
     # --- Runtimes ----
     TIMEOUT_SEC: int = Field(default=300, alias="TIMEOUT_SEC")
 

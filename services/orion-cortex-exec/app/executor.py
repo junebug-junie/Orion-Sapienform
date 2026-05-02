@@ -1362,6 +1362,10 @@ async def run_recall_step(
         value = str(candidate).strip()
         if value and value not in active_turn_ids:
             active_turn_ids.append(value)
+    lane_val = recall_cfg.get("lane")
+    if lane_val is not None:
+        lane_val = str(lane_val).strip() or None
+    profile_explicit = bool(recall_cfg.get("profile_explicit"))
     req = RecallQueryV1(
         fragment=fragment_text,
         verb=str(ctx.get("verb") or recall_cfg.get("verb") or "unknown"),
@@ -1369,6 +1373,8 @@ async def run_recall_step(
         session_id=ctx.get("session_id"),
         node_id=ctx.get("node_id"),
         profile=recall_profile or recall_cfg.get("profile") or "reflect.v1",
+        lane=lane_val,
+        profile_explicit=profile_explicit,
         exclude={
             "active_turn_ids": active_turn_ids,
             "active_turn_text": fragment_text,

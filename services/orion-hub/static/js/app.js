@@ -344,6 +344,8 @@ loadDismissedIds();
   const topicStudioTabButton = document.getElementById("topicStudioTabButton");
   const serviceLogsTabButton = document.getElementById("serviceLogsTabButton");
   const substrateTabButton = document.getElementById("substratePageLink");
+  const memoryTabButton = document.getElementById("memoryTabButton");
+  const memoryPanel = document.getElementById("memory");
   const hubTabPanel = document.getElementById("hubTabPanel");
   const topicStudioPanel = document.getElementById("topicStudioPanel");
   const serviceLogsPanel = document.getElementById("service-logs");
@@ -596,14 +598,21 @@ loadDismissedIds();
     const isTopicStudio = tabKey === "topic-studio";
     const isServiceLogs = tabKey === "service-logs";
     const isSubstrate = tabKey === "substrate";
+    const isMemory = tabKey === "memory";
     hubTabPanel.classList.toggle("hidden", !isHub);
     topicStudioPanel.classList.toggle("hidden", !isTopicStudio);
     serviceLogsPanel.classList.toggle("hidden", !isServiceLogs);
     substratePanel.classList.toggle("hidden", !isSubstrate);
+    if (memoryPanel) {
+      memoryPanel.classList.toggle("hidden", !isMemory);
+    }
     styleTabButton(hubTabButton, isHub);
     styleTabButton(topicStudioTabButton, isTopicStudio);
     styleTabButton(serviceLogsTabButton, isServiceLogs);
     styleTabButton(substrateTabButton, isSubstrate);
+    if (memoryTabButton) {
+      styleTabButton(memoryTabButton, isMemory);
+    }
   }
 
   function resolveTopicStudioSubview() {
@@ -6969,6 +6978,13 @@ loadDismissedIds();
       setActiveTab("substrate");
       history.replaceState(null, "", "#substrate");
     });
+    if (memoryTabButton) {
+      memoryTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("memory");
+        history.replaceState(null, "", "#memory");
+      });
+    }
     if (window.location.hash === "#topic-studio") {
       setActiveTab("topic-studio");
       refreshTopicStudio();
@@ -6976,6 +6992,8 @@ loadDismissedIds();
       setActiveTab("service-logs");
     } else if (window.location.hash === "#substrate") {
       setActiveTab("substrate");
+    } else if (window.location.hash === "#memory") {
+      setActiveTab("memory");
     } else {
       setActiveTab("hub");
     }

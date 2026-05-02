@@ -51,6 +51,14 @@ class RecallQueryV1(BaseModel):
     session_id: Optional[str] = None
     node_id: Optional[str] = None
     profile: str = Field("reflect.v1", description="Recall profile name")
+    lane: Optional[str] = Field(
+        default=None,
+        description="Visibility lane selector (e.g. chat vs social) for memory cards scope.",
+    )
+    profile_explicit: bool = Field(
+        default=False,
+        description="When True, intent router should not override the requested recall profile.",
+    )
     exclude: Optional[Dict[str, object]] = Field(
         default=None,
         description="Optional current-turn exclusion hints (ids/text/timestamps).",

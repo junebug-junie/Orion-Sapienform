@@ -39,6 +39,8 @@ def test_agent_mode_emits_supervised_delivery_ready_request() -> None:
         "required": False,
         "mode": "hybrid",
         "profile": None,
+        "lane": "chat",
+        "profile_explicit": False,
     }
     assert debug["selected_ui_route"] == "agent"
     assert debug["supervised"] is True
@@ -72,6 +74,8 @@ def test_agent_mode_with_recall_disabled_keeps_supervised_route_and_explicit_rec
         "required": False,
         "mode": "hybrid",
         "profile": None,
+        "lane": "chat",
+        "profile_explicit": False,
     }
     assert debug["selected_ui_route"] == "agent"
     assert debug["supervised"] is True
@@ -385,6 +389,8 @@ def test_social_room_profile_forces_brain_chat_verb_and_safe_recall() -> None:
         "required": False,
         "mode": "hybrid",
         "profile": "social.room.v1",
+        "lane": "social",
+        "profile_explicit": False,
     }
     assert req.options["tool_execution_policy"] == "none"
     assert req.options["action_execution_policy"] == "none"

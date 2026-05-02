@@ -1,0 +1,79 @@
+# OpenTelemetry Collector sidecar configuration for orion-signal-gateway
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+  hostmetrics:
+    collection_interval: 30s
+    scrapers:
+      cpu:
+        metrics:
+          system.cpu.utilization:
+            enabled: true
+      memory:
+      disk:
+      network:
+      load:
+
+  # GPU metrics via DCGM contrib receiver (spec §5): enable when nvidia-dcgm-exporter is deployed.
+  # nvidia/dcgm:
+  #   endpoint: localhost:5555
+  #   collection_interval: 10s
+
+  # Prometheus scrape of mesh / DCGM sidecars (spec §5)
+  # prometheus:
+  #   config:
+  #     scrape_configs:
+  #       - job_name: "dcgm"
+  #         static_configs:
+  #           - targets: ["localhost:9400"]
+  #       - job_name: "mesh"
+  #         static_configs:
+  #           - targets: ["localhost:9090"]
+
+processors:
+  batch:
+    timeout: 10s
+    send_batch_size: 1000
+
+  resource:
+    attributes:
+      - key: service.name
+        value: "orion-signal-gateway"
+        action: upsert
+
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 256
+    spike_limit_mib: 64
+
+exporters:
+  logging:
+    verbosity: normal
+    sampling_initial: 5
+    sampling_thereafter: 200
+
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: "orion"
+
+  # otlp:
+  #   endpoint: "http://jaeger:4317"
+  #   tls:
+  #     insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch, resource]
+      exporters: [logging]
+
+    metrics:
+      receivers: [otlp, hostmetrics]
+      processors: [memory_limiter, batch, resource]
+      exporters: [logging, prometheus]

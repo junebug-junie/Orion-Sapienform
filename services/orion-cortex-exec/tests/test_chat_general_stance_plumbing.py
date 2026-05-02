@@ -39,6 +39,10 @@ def test_synthesis_prompt_is_structured_and_toolless() -> None:
     assert "active_identity_facets / active_relationship_facets / response_priorities must be explicitly populated" in prompt
     assert "task_mode=triage" in prompt
     assert "social_room_bridge_summary" in prompt
+    assert "Situation grounding is context, not mandatory content" in prompt
+    assert "If child/kid presence is active" in prompt
+    assert "Do not force time/weather/location commentary into unrelated answers" in prompt
+    assert "situation_response_guidance" in prompt
 
 
 def test_final_prompt_has_identity_no_generic_collapse_rail() -> None:

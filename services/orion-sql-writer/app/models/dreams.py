@@ -7,7 +7,7 @@ class Dream(Base):
     __tablename__ = "dreams"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    dream_date = Column(Date, nullable=False, index=True, unique=True)
+    dream_date = Column(Date, nullable=False, index=True)
 
     tldr = Column(Text, nullable=True)
     themes = Column(JSONB, nullable=True)   # List[str]

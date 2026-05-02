@@ -427,6 +427,9 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             payload=CortexExecResultPayload(ok=False, error=str(e)),
         )
 
+    dream_publish_attempted = False
+    dream_publish_ok = False
+    dream_publish_error: str | None = None
     try:
         dream_env = build_dream_publish_envelope(
             source=_source(),
@@ -437,10 +440,21 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             extra=req_env.payload.args.extra if req_env.payload.args else None,
         )
         if dream_env is not None:
+            dream_publish_attempted = True
             await svc.bus.publish(settings.channel_dream_log, dream_env)
+            dream_publish_ok = True
             logger.info("Published dream.result.v1 to %s", settings.channel_dream_log)
     except Exception as exc:
+        dream_publish_error = str(exc)
         logger.warning("dream.result.v1 publish skipped/failed corr=%s err=%s", corr_id, exc)
+    finally:
+        metadata = res.metadata if isinstance(res.metadata, dict) else {}
+        metadata = dict(metadata)
+        metadata["dream_result_publish_attempted"] = dream_publish_attempted
+        metadata["dream_result_published"] = dream_publish_ok
+        if dream_publish_error:
+            metadata["dream_result_publish_error"] = dream_publish_error
+        res.metadata = metadata
 
     if env.reply_to:
         res_payload = res.model_dump(mode="json")

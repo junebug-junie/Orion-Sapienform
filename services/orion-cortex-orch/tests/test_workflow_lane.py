@@ -1741,6 +1741,38 @@ def test_workflow_summary_never_claims_persisted_without_confirmed_write() -> No
     assert result.metadata["workflow"]["persisted"] == []
 
 
+def test_workflow_summary_marks_dream_persisted_when_publish_confirmed() -> None:
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        return DummyVerbResult(
+            payload={
+                "result": {
+                    "status": "success",
+                    "final_text": "Dream synthesis complete.",
+                    "steps": [],
+                    "memory_used": True,
+                    "recall_debug": {"profile": "dream.v1"},
+                    "metadata": {"dream_result_publish_attempted": True, "dream_result_published": True},
+                }
+            }
+        )
+
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=DummyBus(),
+            source=ServiceRef(name="cortex-orch"),
+            req=_req("dream_cycle"),
+            correlation_id="00000000-0000-0000-0000-000000009099",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_fake_call_verb_runtime,
+        )
+    )
+    assert "Persisted: dream.result.v1" in (result.final_text or "")
+    assert "Dream persistence was not confirmed" not in (result.final_text or "")
+    assert result.metadata["workflow"]["persisted"] == ["dream.result.v1"]
+    assert result.metadata["workflow"]["dream_result_publish_attempted"] is True
+
+
 def test_dream_cycle_primary_metadata_continuity(monkeypatch) -> None:
     seen_metadata: dict = {}
 

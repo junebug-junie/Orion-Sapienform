@@ -108,6 +108,12 @@ Examples:
 
 Do not run destructive commands unless explicitly requested.
 
+## Pytest invocation policy (global)
+- Prefer `python3 -m pytest` over bare `pytest` so execution does not depend on shell PATH.
+- Prefer shared runner entrypoints when available (for example `scripts/test_service.sh <service>` or service wrappers).
+- Do not perform ad-hoc runtime `pip install pytest` except explicit emergency debugging requested by the user.
+- Keep verification service-scoped unless the task truly spans multiple services.
+
 ## Required final response format
 ### Summary
 One short paragraph.

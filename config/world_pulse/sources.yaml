@@ -1,0 +1,314 @@
+version: v1
+required_sections:
+  - us_politics
+  - global_politics
+  - local_politics
+recommended_sections:
+  - ai_technology
+  - science_climate_energy
+  - healthcare_mental_health
+  - security_infrastructure_software
+  - hardware_compute_gpu
+  - local_conditions
+default_limits:
+  max_articles_per_run: 100
+trust_policy:
+  default_min_tier_for_graph: 2
+politics_policy:
+  separate_fact_from_analysis: true
+stance_policy:
+  politics_default: only_when_requested
+digest_policy:
+  max_digest_items_total: 12
+  max_digest_items_per_section: 2
+  min_digest_items_per_required_section: 1
+  max_worth_reading: 10
+  max_worth_watching: 8
+  prefer_required_sections: true
+  include_coverage_note: true
+situation_policy:
+  max_situation_changes_per_run: 25
+  group_articles_by_topic: true
+  min_articles_for_corroborated_topic: 2
+ranking_policy:
+  weights:
+    source_trust: 0.25
+    section_priority: 0.20
+    novelty: 0.20
+    local_relevance: 0.15
+    orion_relevance: 0.10
+    recency: 0.10
+clustering_policy:
+  enabled: true
+  similarity_threshold: 0.45
+  max_articles_per_cluster: 8
+  min_strong_terms: 2
+  preserve_section_boundaries: true
+  allow_cross_source_merge: true
+  weak_token_file: null
+sources:
+  - source_id: npr_us_politics
+    name: NPR Politics RSS
+    type: rss
+    strategy: rss
+    url: https://feeds.npr.org/1014/rss.xml
+    domains: ["feeds.npr.org", "www.npr.org", "npr.org"]
+    allowed_path_prefixes: ["/"]
+    categories: ["us_politics"]
+    region_scope: us
+    trust_tier: 2
+    factuality: high
+    enabled: true
+    approved: true
+    required: false
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: true
+      stance_capsule: false
+      prior_update_candidate: true
+    politics_allowed: true
+    requires_corroboration: true
+    max_articles_per_day: 8
+    fetch_timeout_seconds: 20
+    notes: "Reachable RSS feed used for US politics coverage."
+  - source_id: bbc_world
+    name: BBC World RSS
+    type: rss
+    strategy: rss
+    url: https://feeds.bbci.co.uk/news/world/rss.xml
+    domains: ["feeds.bbci.co.uk", "www.bbc.com", "www.bbc.co.uk", "bbc.com", "bbc.co.uk"]
+    allowed_path_prefixes: ["/news/world", "/news"]
+    categories: ["global_politics"]
+    region_scope: global
+    trust_tier: 2
+    factuality: high
+    enabled: true
+    approved: true
+    required: false
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: true
+      stance_capsule: false
+      prior_update_candidate: true
+    politics_allowed: true
+    requires_corroboration: true
+    max_articles_per_day: 8
+    fetch_timeout_seconds: 20
+    notes: "Reachable world RSS feed for global politics coverage."
+  - source_id: utah_governor_news
+    name: Utah Governor News RSS
+    type: rss
+    strategy: rss
+    url: https://governor.utah.gov/news/feed/
+    domains: ["governor.utah.gov", "utah.gov"]
+    allowed_path_prefixes: ["/press/", "/uncategorized/", "/news/"]
+    categories: ["local_politics", "local_conditions"]
+    region_scope: local
+    trust_tier: 1
+    factuality: high
+    enabled: true
+    approved: true
+    required: false
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: true
+      stance_capsule: false
+      prior_update_candidate: true
+    politics_allowed: true
+    requires_corroboration: false
+    max_articles_per_day: 6
+    fetch_timeout_seconds: 20
+    notes: "Reachable official Utah governor feed for local politics coverage."
+  - source_id: huggingface_blog
+    name: Hugging Face Blog RSS
+    type: rss
+    strategy: rss
+    url: https://huggingface.co/blog/feed.xml
+    domains: ["huggingface.co"]
+    allowed_path_prefixes: ["/blog/"]
+    categories: ["ai_technology"]
+    region_scope: technology
+    trust_tier: 2
+    factuality: medium
+    enabled: true
+    approved: true
+    required: false
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: true
+      stance_capsule: false
+      prior_update_candidate: true
+    politics_allowed: false
+    requires_corroboration: true
+    max_articles_per_day: 6
+    fetch_timeout_seconds: 20
+    notes: "Reachable AI product/research feed; corroboration required for claims."
+  - source_id: who_news
+    name: WHO News RSS
+    type: rss
+    strategy: rss
+    url: https://www.who.int/rss-feeds/news-english.xml
+    domains: ["www.who.int", "who.int"]
+    allowed_path_prefixes: ["/"]
+    categories: ["healthcare_mental_health"]
+    region_scope: healthcare
+    trust_tier: 1
+    factuality: high
+    enabled: true
+    approved: true
+    required: false
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: true
+      stance_capsule: false
+      prior_update_candidate: true
+    politics_allowed: false
+    requires_corroboration: false
+    max_articles_per_day: 6
+    fetch_timeout_seconds: 20
+    notes: "Reachable public-health feed used for healthcare coverage."
+  - source_id: cisa_kev_manual
+    name: CISA KEV Catalog (Manual URL)
+    type: manual
+    strategy: manual_urls
+    domains: ["www.cisa.gov", "cisa.gov"]
+    allowed_path_prefixes: ["/sites/default/files/feeds/"]
+    urls:
+      - https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
+    categories: ["security_infrastructure_software"]
+    region_scope: security
+    trust_tier: 1
+    factuality: high
+    enabled: true
+    approved: true
+    required: false
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: true
+      stance_capsule: false
+      prior_update_candidate: true
+    politics_allowed: false
+    requires_corroboration: false
+    max_articles_per_day: 3
+    notes: "Reachable CISA KEV JSON endpoint via bounded manual URL adapter."
+  - source_id: nasa_news
+    name: NASA News RSS
+    type: rss
+    strategy: rss
+    url: https://www.nasa.gov/news-release/feed/
+    domains: ["www.nasa.gov", "nasa.gov"]
+    allowed_path_prefixes: ["/news-release/"]
+    categories: ["science_climate_energy", "hardware_compute_gpu"]
+    region_scope: science
+    trust_tier: 1
+    factuality: high
+    enabled: true
+    approved: true
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: false
+      stance_capsule: false
+      prior_update_candidate: true
+    politics_allowed: false
+    requires_corroboration: false
+    max_articles_per_day: 8
+    fetch_timeout_seconds: 20
+  - source_id: noaa_newsroom
+    name: NOAA Newsroom
+    type: html
+    strategy: html_section
+    url: https://www.noaa.gov/news
+    domains: ["www.noaa.gov", "noaa.gov"]
+    allowed_path_prefixes: ["/news/"]
+    categories: ["science_climate_energy", "local_conditions"]
+    region_scope: climate
+    trust_tier: 1
+    factuality: high
+    enabled: false
+    approved: true
+    required: false
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: false
+      stance_capsule: false
+      prior_update_candidate: true
+    politics_allowed: false
+    requires_corroboration: false
+    max_articles_per_day: 6
+    html_link_limit: 120
+    notes: "403 in current environment; disabled until a stable approved endpoint is selected"
+  - source_id: usgs_releases
+    name: USGS News Releases
+    type: manual
+    strategy: manual_urls
+    domains: ["www.usgs.gov", "usgs.gov"]
+    allowed_path_prefixes: ["/news/"]
+    urls:
+      - https://www.usgs.gov/news/national-news-release
+      - https://www.usgs.gov/news/featured-story
+    categories: ["science_climate_energy", "local_conditions"]
+    region_scope: us
+    trust_tier: 1
+    factuality: high
+    enabled: true
+    approved: true
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: false
+      stance_capsule: false
+      prior_update_candidate: true
+    politics_allowed: false
+    requires_corroboration: false
+    max_articles_per_day: 4
+  - source_id: reuters
+    name: Reuters
+    type: rss
+    url: https://feeds.reuters.com/reuters/worldNews
+    domains: ["reuters.com"]
+    categories: ["global_politics", "us_politics"]
+    region_scope: global
+    trust_tier: 1
+    factuality: high
+    bias_profile: center_wire
+    enabled: false
+    approved: true
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: true
+      stance_capsule: true
+      prior_update_candidate: true
+    politics_allowed: true
+    requires_corroboration: false
+    max_articles_per_day: 10
+    notes: "Disabled: feed host failed DNS in local validation environment."
+  - source_id: local_official
+    name: Utah Government News
+    type: rss
+    url: https://www.utah.gov/news/rss.xml
+    domains: ["www.utah.gov", "utah.gov"]
+    categories: ["local_politics", "local_conditions"]
+    region_scope: local
+    trust_tier: 1
+    factuality: high
+    enabled: false
+    approved: true
+    allowed_uses:
+      digest: true
+      claim_extraction: true
+      graph_write: true
+      stance_capsule: true
+      prior_update_candidate: true
+    politics_allowed: true
+    requires_corroboration: false
+    max_articles_per_day: 10
+    notes: "Disabled: endpoint returned 404 during controlled non-fixture verification."

@@ -1,0 +1,1336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Pressure Analytics</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    body { font-family: Inter, system-ui, sans-serif; }
+  </style>
+</head>
+<body class="bg-gray-950 text-gray-200 min-h-screen">
+  <div id="pressureAnalyticsRoot" class="p-3 md:p-4 max-w-[100vw]">
+    <div class="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100/90 mb-3">
+      Read-only analytics. No mutation, adoption, recall promotion, identity rewrite, or apply action exists on this page.
+    </div>
+    <div class="rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-xs text-blue-100/90 mb-3">
+      A pressure is evidence that Orion may need investigation, a self-experiment, or operator review. Pressures do not mutate production behavior by themselves.
+    </div>
+
+    <div class="flex flex-wrap items-center gap-2 mb-3 text-xs text-gray-400">
+      <span>Last loaded: <span id="pressureLastLoaded" class="text-gray-200">—</span></span>
+      <button type="button" id="pressurePageRefresh" class="rounded border border-gray-600 bg-gray-800 px-2 py-1 text-gray-200 hover:bg-gray-700">Refresh</button>
+      <label class="inline-flex items-center gap-1.5 cursor-pointer">
+        <input type="checkbox" id="pressureAutoRefresh" class="rounded border-gray-600" />
+        <span>Auto-refresh (60s)</span>
+      </label>
+    </div>
+
+    <div class="rounded-lg border border-indigo-500/30 bg-indigo-500/10 p-3 mb-3">
+      <div class="text-[10px] uppercase text-indigo-200/90 tracking-wide mb-2">Operator takeaway</div>
+      <div id="pressureOperatorTakeaway" class="space-y-2"></div>
+      <div class="mt-2 flex flex-wrap gap-2">
+        <button type="button" disabled class="rounded border border-gray-700 bg-gray-800/70 px-2 py-1 text-[10px] text-gray-400 cursor-not-allowed" title="Requires event-level evidence fields from backend.">Inspect evidence</button>
+        <button type="button" disabled class="rounded border border-gray-700 bg-gray-800/70 px-2 py-1 text-[10px] text-gray-400 cursor-not-allowed" title="Requires orion-self-experiments proposal route.">Propose self-experiment</button>
+        <button type="button" disabled class="rounded border border-gray-700 bg-gray-800/70 px-2 py-1 text-[10px] text-gray-400 cursor-not-allowed" title="Requires pressure review/write route.">Mark as noise</button>
+      </div>
+      <div class="mt-2 flex flex-wrap gap-2 text-[10px]">
+        <a href="#pressureOpenItems" class="rounded border border-gray-700 bg-gray-900/50 px-2 py-1 text-gray-300 hover:text-white">View pressure items</a>
+        <a href="#pressureEvidenceTable" class="rounded border border-gray-700 bg-gray-900/50 px-2 py-1 text-gray-300 hover:text-white">Evidence explorer</a>
+        <a href="#pressureOpenItemsDebug" class="rounded border border-gray-700 bg-gray-900/50 px-2 py-1 text-gray-300 hover:text-white">Raw substrate debug</a>
+      </div>
+    </div>
+
+    <div class="mb-3 rounded-lg border border-indigo-500/30 bg-gray-900/50 p-3" aria-label="Flow diagram">
+      <div class="text-[10px] uppercase tracking-wide text-gray-500 mb-2">Substrate flow</div>
+      <div class="flex flex-wrap items-center justify-center gap-1 sm:gap-2 text-[11px] text-gray-300">
+        <span class="inline-flex items-center gap-1 rounded border border-cyan-500/40 bg-cyan-500/10 px-2 py-0.5">
+          <svg class="h-3.5 w-3.5 text-cyan-300" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-width="1.5" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg> Signals
+        </span>
+        <span class="text-gray-600">→</span>
+        <span class="inline-flex items-center gap-1 rounded border border-rose-500/40 bg-rose-500/10 px-2 py-0.5">Pressure</span>
+        <span class="text-gray-600">→</span>
+        <span class="inline-flex items-center gap-1 rounded border border-violet-500/40 bg-violet-500/10 px-2 py-0.5">Proposals</span>
+        <span class="text-gray-600">→</span>
+        <span class="inline-flex items-center gap-1 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-0.5">Trials</span>
+        <span class="text-gray-600">→</span>
+        <span class="inline-flex items-center gap-1 rounded border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5">Decisions</span>
+        <span class="text-gray-600">→</span>
+        <span class="inline-flex items-center gap-1 rounded border border-sky-500/40 bg-sky-500/10 px-2 py-0.5">Applies / Rollbacks</span>
+      </div>
+    </div>
+
+    <div id="pressureKpiStrip" class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-2 mb-3"></div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-3">
+      <div id="pressureLanePosture" class="grid grid-cols-1 sm:grid-cols-2 gap-2"></div>
+      <div class="rounded-lg border border-gray-800 bg-gray-900/60 p-2 text-xs" id="pressureRecallBanner">
+        <div class="text-[10px] uppercase text-gray-500 mb-1">Recall analytics / shadow evidence</div>
+        <p class="text-amber-200/90 mb-2">Recall analytics are evidence only unless promoted by an explicit proposal or apply path.</p>
+        <div id="pressureRecallPanel" class="space-y-1 text-gray-300 font-mono text-[11px]"></div>
+      </div>
+    </div>
+
+    <div class="rounded-lg border border-gray-800 bg-gray-900/40 p-2 mb-3">
+      <div class="text-[10px] uppercase text-gray-500 mb-2">Open pressure items</div>
+      <div id="pressureOpenItems" class="space-y-2"></div>
+      <details id="pressureOpenItemsDebug" class="mt-2">
+        <summary class="cursor-pointer text-[11px] text-gray-500 hover:text-gray-300">Debug backend payload snapshot</summary>
+        <pre id="pressureOpenItemsDebugJson" class="mt-2 rounded border border-gray-800 bg-gray-950/70 p-2 text-[10px] text-gray-300 max-h-56 overflow-auto"></pre>
+      </details>
+    </div>
+
+    <div class="rounded-lg border border-gray-800 bg-gray-900/40 p-2 mb-3">
+      <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
+        <span class="text-[10px] uppercase text-gray-500">Pressure timeline</span>
+        <div id="pressureTimelineFilter" class="flex flex-wrap gap-1"></div>
+      </div>
+      <div id="pressureTimeline" class="min-h-[120px] w-full overflow-x-auto"></div>
+    </div>
+
+    <div class="rounded-lg border border-gray-800 bg-gray-900/40 p-2 mb-3 overflow-x-auto">
+      <div class="text-[10px] uppercase text-gray-500 mb-2">Surface × kind</div>
+      <div id="pressureHeatmap" class="text-xs"></div>
+    </div>
+
+    <div class="rounded-lg border border-gray-800 bg-gray-900/40 p-2 mb-3">
+      <div class="text-[10px] uppercase text-gray-500 mb-2">Lifecycle funnel</div>
+      <div id="pressureLifecycleFunnel" class="space-y-2"></div>
+    </div>
+
+    <div class="grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-3 items-start">
+      <div class="rounded-lg border border-gray-800 bg-gray-900/40 p-2 min-w-0">
+        <div class="text-[10px] uppercase text-gray-500 mb-2">Evidence explorer</div>
+        <div id="pressureExplorerFilters" class="flex flex-wrap gap-2 mb-2 text-xs"></div>
+        <div class="overflow-x-auto max-h-[32rem] overflow-y-auto">
+          <table class="w-full text-left text-[11px] border-collapse">
+            <thead class="sticky top-0 bg-gray-900/95 z-10 text-gray-500">
+              <tr id="pressureEvidenceHead"></tr>
+            </thead>
+            <tbody id="pressureEvidenceTable"></tbody>
+          </table>
+        </div>
+      </div>
+      <aside
+        id="pressureInspector"
+        class="rounded-lg border border-indigo-500/30 bg-gray-900/80 p-2 text-xs min-h-[12rem] xl:sticky xl:top-2"
+      >
+        <div class="text-[10px] uppercase text-gray-500 mb-1">Inspector</div>
+        <p id="pressureInspectorEmpty" class="text-gray-500">Select Inspect or a lifecycle row.</p>
+        <div id="pressureInspectorBody" class="hidden space-y-2"></div>
+      </aside>
+    </div>
+  </div>
+
+  <script>
+(function () {
+  const ENDPOINTS = [
+    { key: "autonomyReadiness", path: "/api/substrate/autonomy-readiness", label: "autonomy-readiness" },
+    { key: "routingPressure", path: "/api/substrate/mutation-runtime/routing-pressure-sources?limit=100", label: "routing-pressure-sources" },
+    { key: "producerPressure", path: "/api/substrate/mutation-runtime/producer-pressure-events?limit=100", label: "producer-pressure-events" },
+    { key: "cognitivePressure", path: "/api/substrate/mutation-runtime/cognitive-pressure?limit=100", label: "cognitive-pressure" },
+    { key: "lineage", path: "/api/substrate/mutation-runtime/lineage?limit=50", label: "lineage" },
+    { key: "activeSurfaces", path: "/api/substrate/mutation-runtime/active-surfaces", label: "active-surfaces" },
+    { key: "blockedApplies", path: "/api/substrate/mutation-runtime/blocked-applies?limit=50", label: "blocked-applies" },
+    { key: "rollbacks", path: "/api/substrate/mutation-runtime/rollbacks?limit=50", label: "rollbacks" },
+    { key: "recallCanary", path: "/api/substrate/recall-canary/status?limit=20", label: "recall-canary/status" },
+    { key: "recallShadowPosture", path: "/api/substrate/mutation-runtime/recall-shadow-profile-posture", label: "recall-shadow-profile-posture" },
+    { key: "recallReadiness", path: "/api/substrate/mutation-runtime/recall-strategy-readiness", label: "recall-strategy-readiness" },
+    { key: "cognitionContext", path: "/api/substrate/mutation-runtime/cognition-context", label: "cognition-context" },
+  ];
+
+  const ERR_RE =
+    /failed|regression|rollback|blocked|missing|stale|unsupported|dissatisfaction|timeout|truncation|error/i;
+  const PRESSURE_KIND_MAP = {
+    recall_miss_or_dissatisfaction: {
+      label: "Recall miss / dissatisfaction detected",
+      explanation:
+        "Orion or the operator indicated that expected memory/context was not retrieved or was unsatisfactory.",
+      why_it_matters:
+        "Repeated recall misses suggest the current recall profile, source coverage, ranking, or grounding path may need evaluation.",
+      default_next_step:
+        "Inspect the evidence and generate a recall self-experiment proposal.",
+    },
+  };
+
+  function getPath(obj, paths, fallback) {
+    for (const p of paths) {
+      const parts = p.split(".");
+      let cur = obj;
+      let ok = true;
+      for (const part of parts) {
+        if (cur == null || typeof cur !== "object") { ok = false; break; }
+        cur = cur[part];
+      }
+      if (ok && cur !== undefined && cur !== null) return cur;
+    }
+    return fallback;
+  }
+
+  function safeJson(value) {
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch (e) {
+      return String(value);
+    }
+  }
+
+  function renderEndpointError(endpoint, error) {
+    const msg = error && (error.message || String(error)) || "Unknown error";
+    return '<span class="text-rose-300">' + esc(endpoint) + ": " + esc(msg) + "</span>";
+  }
+
+  function normalizeArray(payload) {
+    if (payload == null) return [];
+    if (Array.isArray(payload)) return payload;
+    if (typeof payload !== "object") return [];
+    const cands = [
+      payload.data,
+      payload.items,
+      payload.rows,
+      payload.signals,
+      payload.events,
+      payload.lifecycles,
+    ];
+    for (const c of cands) {
+      if (Array.isArray(c)) return c;
+    }
+    if (payload.data && typeof payload.data === "object") {
+      for (const k of Object.keys(payload.data)) {
+        const v = payload.data[k];
+        if (Array.isArray(v)) return v;
+      }
+    }
+    for (const k of Object.keys(payload)) {
+      if (k === "source" || k === "generated_at") continue;
+      const v = payload[k];
+      if (Array.isArray(v)) return v;
+    }
+    return [];
+  }
+
+  function extractDataArrays(obj) {
+    if (!obj || typeof obj !== "object") return [];
+    const d = obj.data;
+    if (!d || typeof d !== "object") {
+      const arr = normalizeArray(obj);
+      return arr.length ? [arr] : [];
+    }
+    const out = [];
+    for (const k of Object.keys(d)) {
+      const v = d[k];
+      if (Array.isArray(v)) out.push(v);
+    }
+    if (!out.length && typeof d === "object") {
+      for (const k of Object.keys(d)) {
+        const v = d[k];
+        if (v && typeof v === "object" && !Array.isArray(v)) {
+          for (const kk of Object.keys(v)) {
+            if (Array.isArray(v[kk])) out.push(v[kk]);
+          }
+        }
+      }
+    }
+    return out;
+  }
+
+  function normalizeTimestamp(row) {
+    if (!row || typeof row !== "object") return null;
+    const t =
+      row.detected_at ||
+      row.observed_at ||
+      row.updated_at ||
+      row.created_at ||
+      row.ts ||
+      row.time ||
+      row.at;
+    return t != null && t !== "" ? String(t) : null;
+  }
+
+  function normalizeLane(row, fallback) {
+    if (!row || typeof row !== "object") return fallback || "unknown";
+    const s = String(
+      row.lane || row._lane || getPath(row, ["target_surface", "metadata.lane"], "")
+    );
+    if (/routing/i.test(s) || s === "routing") return "routing";
+    if (/recall/i.test(s)) return "recall";
+    if (/cognitive|stance|contradiction/i.test(s)) return "cognitive";
+    if (/producer|telemetry|pressure_event/i.test(s)) return "producer";
+    if (row._lane) return String(row._lane);
+    return fallback || "unknown";
+  }
+
+  function normalizeCategory(row) {
+    if (!row || typeof row !== "object") return "—";
+    return String(
+      row.derived_signal_kind ||
+        row.event_kind ||
+        row.category ||
+        row.kind ||
+        row.pressure_kind ||
+        "—"
+    );
+  }
+
+  function normalizeSurface(row) {
+    if (!row || typeof row !== "object") return "—";
+    return String(row.target_surface || row.target_zone || row.surface || "—");
+  }
+
+  function normalizeEvidenceRefs(row) {
+    if (!row || typeof row !== "object") return [];
+    const r = row.evidence_refs;
+    if (Array.isArray(r)) return r.map(String);
+    if (r && typeof r === "object") return Object.values(r).map(String);
+    return [];
+  }
+
+  function esc(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function pressureKindInfo(kind) {
+    const k = String(kind || "").trim();
+    if (PRESSURE_KIND_MAP[k]) return PRESSURE_KIND_MAP[k];
+    return {
+      label: k ? k.replace(/_/g, " ") : "Pressure item",
+      explanation: "A pressure signal was observed by the autonomy runtime.",
+      why_it_matters: "This may indicate Orion should investigate before proposing changes.",
+      default_next_step: "Inspect the evidence and decide whether to request operator review.",
+    };
+  }
+
+  function buildEvidenceDetailFields(raw) {
+    const observed_event = getPath(raw, ["observed_event", "claim", "metadata.observed_event"], "not exposed");
+    const triggering_query = getPath(raw, ["triggering_query", "query_text", "metadata.query_text"], "not exposed");
+    const user_feedback = getPath(raw, ["user_feedback", "feedback", "metadata.user_feedback"], "not exposed");
+    const expected_context = getPath(raw, ["expected_context", "metadata.expected_context"], "not exposed");
+    const actual_context = getPath(raw, ["actual_context", "retrieved_context", "metadata.actual_context"], "not exposed");
+    const source_profile = getPath(raw, ["source_profile", "profile_id", "metadata.profile_id"], "not exposed");
+    const likely_failure_mode = getPath(raw, ["likely_failure_mode", "metadata.likely_failure_mode"], "not exposed");
+    const proposed_experiment = getPath(raw, ["proposed_experiment", "metadata.proposed_experiment"], "not exposed");
+    const fields = {
+      observed_event,
+      triggering_query,
+      user_feedback,
+      expected_context,
+      actual_context,
+      source_profile,
+      likely_failure_mode,
+      proposed_experiment,
+    };
+    const missing_evidence_fields = Object.entries(fields)
+      .filter(([, value]) => value === "not exposed" || value == null || value === "")
+      .map(([key]) => key);
+    const evidence_available = missing_evidence_fields.length < Object.keys(fields).length;
+    return { ...fields, missing_evidence_fields, evidence_available };
+  }
+
+  function dominantSummaryPhrase(kind, count) {
+    if (!count) return "No pressure events were observed.";
+    if (kind === "recall_miss_or_dissatisfaction") {
+      return `${count} recall misses or dissatisfaction signals were observed.`;
+    }
+    const label = pressureKindInfo(kind).label.toLowerCase();
+    return `${count} ${label}${count === 1 ? "" : " signals"} were observed.`;
+  }
+
+  let state = {
+    results: {},
+    errors: {},
+    timelineMode: "hour",
+    timelineFilter: "all",
+    evRows: [],
+    evFilter: { q: "", lane: "all", category: "all", surface: "all", errOnly: false },
+  };
+  let autoInt = null;
+
+  async function fetchOne(ep) {
+    const url = ep.path;
+    try {
+      const r = await fetch(url, { headers: { Accept: "application/json" } });
+      const text = await r.text();
+      let data;
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        data = { _parse_error: "invalid_json", _raw: text.slice(0, 500) };
+      }
+      if (!r.ok) {
+        return { key: ep.key, ok: false, error: new Error("HTTP " + r.status + " " + (data.detail || "")), data };
+      }
+      return { key: ep.key, ok: true, data, label: ep.label };
+    } catch (e) {
+      return { key: ep.key, ok: false, error: e, data: null };
+    }
+  }
+
+  function kpiCard(title, n, sub, endpointLabel) {
+    return (
+      '<div class="rounded border border-gray-800 bg-gray-900/50 p-2 text-xs">' +
+      '<div class="text-2xl font-semibold text-white">' + esc(String(n)) + "</div>" +
+      '<div class="text-gray-400 mt-0.5">' + esc(title) + "</div>" +
+      '<div class="text-[9px] text-gray-600 mt-1 font-mono truncate" title="' + esc(endpointLabel) + '">' +
+      esc(endpointLabel) +
+      "</div>" +
+      (sub || "") +
+      "</div>"
+    );
+  }
+
+  function buildEvidenceRows(loaded) {
+    const rows = [];
+    const rp = loaded.routingPressure;
+    if (rp && rp.ok) {
+      const d = rp.data;
+      const items =
+        (d && d.data && d.data.routing_pressure_sources) ||
+        extractDataArrays(d).flat() ||
+        normalizeArray(d);
+      for (const raw of items) {
+        if (!raw || typeof raw !== "object") continue;
+        rows.push({
+          t: normalizeTimestamp(raw),
+          lane: "routing",
+          _lane: "routing",
+          category: String(raw.derived_signal_kind || raw.event_kind || "—"),
+          friendly_label: pressureKindInfo(String(raw.derived_signal_kind || raw.event_kind || "")).label,
+          target_surface: normalizeSurface(raw),
+          source: String(raw.source_kind || raw.source_ref || raw.source || "—"),
+          conf: raw.confidence != null ? String(raw.confidence) : raw.strength != null ? String(raw.strength) : "—",
+          id: String(raw.signal_id || raw.source_ref || Math.random()),
+          ev: normalizeEvidenceRefs(raw),
+          raw: raw,
+        });
+      }
+    }
+    const pp = loaded.producerPressure;
+    if (pp && pp.ok) {
+      const d = pp.data;
+      const items =
+        (d && d.data && d.data.recent_events) ||
+        extractDataArrays(d).flat() ||
+        [];
+      for (const raw of items) {
+        if (!raw || typeof raw !== "object") continue;
+        rows.push({
+          t: normalizeTimestamp(raw),
+          lane: "producer",
+          _lane: "producer",
+          category: String(raw.pressure_category || raw.event_kind || raw.kind || "event"),
+          friendly_label: pressureKindInfo(String(raw.pressure_category || raw.event_kind || raw.kind || "")).label,
+          target_surface: normalizeSurface(raw) !== "—" ? normalizeSurface(raw) : String(raw.source_service || "producer"),
+          source: String(getPath(raw, ["source_service", "metadata.source_service", "source"], "—")),
+          conf: String(raw.confidence != null ? raw.confidence : raw.strength != null ? raw.strength : "—"),
+          id: String(raw.pressure_event_id || raw.event_id || raw.id || Math.random()),
+          ev: normalizeEvidenceRefs(raw),
+          raw: raw,
+        });
+      }
+    }
+    const cp = loaded.cognitivePressure;
+    if (cp && cp.ok) {
+      const d = cp.data;
+      const items =
+        (d && d.data && d.data.recent_cognitive_pressure) ||
+        extractDataArrays(d).flat() ||
+        normalizeArray(d);
+      for (const raw of items) {
+        if (!raw || typeof raw !== "object") continue;
+        rows.push({
+          t: normalizeTimestamp(raw),
+          lane: "cognitive",
+          _lane: "cognitive",
+          category: String(raw.event_kind || "—"),
+          friendly_label: pressureKindInfo(String(raw.event_kind || "")).label,
+          target_surface: normalizeSurface(raw),
+          source: String(raw.source_ref || "—"),
+          conf: String(raw.strength != null ? raw.strength : "—"),
+          id: String(raw.signal_id || Math.random()),
+          ev: normalizeEvidenceRefs(raw),
+          raw: raw,
+        });
+      }
+    }
+    const li = loaded.lineage;
+    if (li && li.ok) {
+      const lifecycles =
+        (li.data && li.data.data && li.data.data.lifecycles) || (li.data && li.data.lifecycles) || [];
+      for (const lc of lifecycles) {
+        if (!lc) continue;
+        const sigs = (lc.signals && Array.isArray(lc.signals) ? lc.signals : []) || [];
+        for (const raw of sigs) {
+          rows.push({
+            t: normalizeTimestamp(raw),
+            lane: "lineage",
+            _lane: "lineage",
+            category: String(raw.event_kind || "signal"),
+            friendly_label: pressureKindInfo(String(raw.event_kind || "signal")).label,
+            target_surface: normalizeSurface(raw),
+            source: "lineage",
+            conf: "—",
+            id: "sig-" + String(raw.signal_id || Math.random()),
+            ev: normalizeEvidenceRefs(raw),
+            raw: { lifecycle: true, sub: "signal", row: raw, full: lc },
+            lineageFull: lc,
+          });
+        }
+        const p = lc.proposal;
+        if (p && typeof p === "object") {
+          const mc = String(p.mutation_class || "");
+          const ts = String(p.target_surface || "");
+          const isRecall = /recall/i.test(mc) || /recall/i.test(ts);
+          rows.push({
+            t: normalizeTimestamp(p) || p.created_at,
+            lane: isRecall ? "recall" : String(p.lane || "operational"),
+            _lane: isRecall ? "recall" : "lineage",
+            category: String(p.mutation_class || "proposal"),
+            friendly_label: pressureKindInfo(String(p.mutation_class || "proposal")).label,
+            target_surface: String(p.target_surface || "—"),
+            source: "lineage",
+            conf: String(p.risk_tier || "—"),
+            id: String(p.proposal_id),
+            ev: (p.evidence_refs || []).map(String),
+            raw: { lifecycle: true, sub: "proposal", row: p, full: lc },
+            lineageFull: lc,
+          });
+        }
+      }
+    }
+    for (const r of rows) {
+      if (!r.t && r.raw && r.raw.row) {
+        r.t = normalizeTimestamp(r.raw.row) || (r.raw.row && r.raw.row.detected_at);
+      }
+      const surf = String(r.target_surface || "");
+      if (/recall/i.test(surf) || /^recall_/i.test(surf)) {
+        r.lane = "recall";
+        r._lane = "recall";
+      }
+    }
+    return rows;
+  }
+
+  function normalizePressureItems(loaded) {
+    const rows = [];
+    const addRow = (row) => {
+      if (!row || typeof row !== "object") return;
+      rows.push(row);
+    };
+
+    const producer = loaded.producerPressure;
+    if (producer && producer.ok) {
+      const events = getPath(producer, ["data.data.recent_events"], []);
+      if (Array.isArray(events)) {
+        events.forEach((event) => {
+          const evidence = normalizeEvidenceRefs(event);
+          const detail = buildEvidenceDetailFields(event);
+          addRow({
+            time: normalizeTimestamp(event),
+            source: String(event.source_service || event.source_event_id || "producer"),
+            problem: String(event.pressure_category || event.event_kind || "Issue detected"),
+            raw_kind: String(event.pressure_category || event.event_kind || ""),
+            severity: event.confidence != null ? `confidence:${event.confidence}` : "unknown",
+            status: "observed",
+            routability: getPath(event, ["routability", "route_hint"], "—"),
+            suggested_next_step: getPath(event, ["suggested_next_step", "metadata.suggested_next_step"], ""),
+            evidence_count: evidence.length || null,
+            raw_claim: event.claim || event.observed_event || "",
+            why_it_matters: event.why_it_matters || "",
+            evidence_list: evidence,
+            matched_capabilities: getPath(event, ["matched_capabilities"], []),
+            missing_capabilities: getPath(event, ["missing_capabilities"], []),
+            ...detail,
+            raw: event,
+          });
+        });
+      }
+    }
+
+    const routing = loaded.routingPressure;
+    if (routing && routing.ok) {
+      const signals = getPath(routing, ["data.data.routing_pressure_sources"], []);
+      if (Array.isArray(signals)) {
+        signals.forEach((signal) => {
+          const evidence = normalizeEvidenceRefs(signal);
+          const detail = buildEvidenceDetailFields(signal);
+          addRow({
+            time: normalizeTimestamp(signal),
+            source: String(signal.source_kind || signal.source_ref || "routing"),
+            problem: String(signal.derived_signal_kind || signal.event_kind || "Routing signal"),
+            raw_kind: String(signal.derived_signal_kind || signal.event_kind || ""),
+            severity: signal.confidence != null ? `confidence:${signal.confidence}` : "unknown",
+            status: "observed",
+            routability: getPath(signal, ["routability"], "—"),
+            suggested_next_step: getPath(signal, ["suggested_next_step"], ""),
+            evidence_count: evidence.length || null,
+            raw_claim: signal.observed_event || "",
+            why_it_matters: signal.why_it_matters || "",
+            evidence_list: evidence,
+            matched_capabilities: getPath(signal, ["matched_capabilities"], []),
+            missing_capabilities: getPath(signal, ["missing_capabilities"], []),
+            ...detail,
+            raw: signal,
+          });
+        });
+      }
+    }
+
+    const cognitive = loaded.cognitivePressure;
+    if (cognitive && cognitive.ok) {
+      const signals = getPath(cognitive, ["data.data.recent_cognitive_pressure"], []);
+      if (Array.isArray(signals)) {
+        signals.forEach((signal) => {
+          const evidence = normalizeEvidenceRefs(signal);
+          const detail = buildEvidenceDetailFields(signal);
+          addRow({
+            time: normalizeTimestamp(signal),
+            source: String(signal.source_ref || "cognitive"),
+            problem: String(signal.event_kind || "Cognitive pressure"),
+            raw_kind: String(signal.event_kind || ""),
+            severity: signal.strength != null ? `strength:${signal.strength}` : "unknown",
+            status: "observed",
+            routability: getPath(signal, ["metadata.routability"], "—"),
+            suggested_next_step: getPath(signal, ["metadata.suggested_next_step"], ""),
+            evidence_count: evidence.length || null,
+            raw_claim: getPath(signal, ["metadata.claim", "metadata.observed_event"], ""),
+            why_it_matters: getPath(signal, ["metadata.why_it_matters"], ""),
+            evidence_list: evidence,
+            matched_capabilities: getPath(signal, ["metadata.matched_capabilities"], []),
+            missing_capabilities: getPath(signal, ["metadata.missing_capabilities"], []),
+            ...detail,
+            raw: signal,
+          });
+        });
+      }
+    }
+
+    return rows;
+  }
+
+  function summarizeLifecycle(loaded) {
+    const lifecycles = getPath(loaded, ["lineage.data.data.lifecycles", "lineage.data.lifecycles"], []);
+    if (!Array.isArray(lifecycles)) {
+      return { proposalCount: 0, trialCount: 0, appliedCount: 0, rollbackCount: 0 };
+    }
+    let proposalCount = 0;
+    let trialCount = 0;
+    let appliedCount = 0;
+    let rollbackCount = 0;
+    for (const lc of lifecycles) {
+      if (!lc || typeof lc !== "object") continue;
+      if (lc.proposal) proposalCount += 1;
+      if (Array.isArray(lc.trials) && lc.trials.length) trialCount += lc.trials.length;
+      if (lc.adoption) appliedCount += 1;
+      if (lc.rollback) rollbackCount += 1;
+    }
+    return { proposalCount, trialCount, appliedCount, rollbackCount };
+  }
+
+  function renderOperatorTakeaway(items, lifecycle) {
+    const root = document.getElementById("pressureOperatorTakeaway");
+    if (!root) return;
+    const counts = {};
+    for (const item of items) {
+      const kind = String(item.raw_kind || item.problem || "unknown");
+      counts[kind] = (counts[kind] || 0) + 1;
+    }
+    const dominant = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+    const domKind = dominant ? dominant[0] : "";
+    const domCount = dominant ? dominant[1] : 0;
+    const info = pressureKindInfo(domKind);
+    const pressureCount = items.length;
+    const recStep =
+      pressureCount > 0
+        ? (info.default_next_step || "Inspect evidence and decide whether to open operator review.")
+        : "Monitor for new pressure evidence.";
+    const dominantPhrase = dominantSummaryPhrase(domKind, domCount);
+    const allMissing = items.filter((i) => i && i.evidence_available === false).length;
+    const evidenceThin = pressureCount > 0 && allMissing === pressureCount;
+    const sentence =
+      `${dominantPhrase}` +
+      ` ${lifecycle.proposalCount ? `${lifecycle.proposalCount} proposal(s) exist.` : "No proposal has been generated."}` +
+      ` ${lifecycle.trialCount ? `${lifecycle.trialCount} trial(s) are recorded.` : "No trial has been queued."}` +
+      ` ${(lifecycle.appliedCount || lifecycle.rollbackCount) ? `Production changes: ${lifecycle.appliedCount} applied, ${lifecycle.rollbackCount} rolled back.` : "No production behavior has changed."}`;
+    const showWarning = pressureCount > 0 && lifecycle.proposalCount === 0;
+    const evidenceSummary = evidenceThin
+      ? "Detailed recall evidence is not exposed by the backend yet. Only category, source, confidence, timestamp, and event count are available."
+      : "Event-level evidence fields are partially available and can be inspected in pressure item details.";
+    root.innerHTML =
+      '<div class="text-sm text-indigo-100 leading-6">' + esc(sentence) + "</div>" +
+      '<div class="text-xs text-indigo-200/90">Recommended next step: ' + esc(recStep) + "</div>" +
+      '<div class="rounded border border-indigo-400/30 bg-indigo-500/10 p-2 text-xs text-indigo-100"><span class="text-indigo-200">Evidence summary:</span> ' + esc(evidenceSummary) + "</div>" +
+      (showWarning
+        ? '<div class="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-100">Pressure has been observed, but no proposal path is currently connected.</div>'
+        : "") +
+      (evidenceThin
+        ? '<div class="rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs text-amber-100">Pressure category is available, but the evidence payload is too thin to diagnose the recall failure.</div>'
+        : "");
+  }
+
+  function renderOpenPressureItems(loaded) {
+    const root = document.getElementById("pressureOpenItems");
+    const debug = document.getElementById("pressureOpenItemsDebugJson");
+    if (!root) return;
+    const items = normalizePressureItems(loaded);
+    if (debug) {
+      debug.textContent = safeJson({
+        producerPressure: loaded.producerPressure?.data || {},
+        routingPressure: loaded.routingPressure?.data || {},
+        cognitivePressure: loaded.cognitivePressure?.data || {},
+      });
+    }
+    const lifecycle = summarizeLifecycle(loaded);
+    renderOperatorTakeaway(items, lifecycle);
+    if (!items.length) {
+      root.innerHTML =
+        '<div class="rounded border border-gray-800 bg-gray-900/40 p-3 text-xs text-gray-300">' +
+        "No detailed pressure items are currently exposed. Only aggregate counters are available from the backend." +
+        "</div>";
+      return;
+    }
+    const expHintRe = /daily_pulse|journal|focus|intent|ungrounded action claim/i;
+    root.innerHTML = items
+      .map((item, idx) => {
+        const needsExperiment = expHintRe.test(`${item.problem} ${item.source} ${safeJson(item.raw)}`);
+        const info = pressureKindInfo(item.raw_kind || item.problem);
+        const caps = Array.isArray(item.matched_capabilities) ? item.matched_capabilities : [];
+        const missing = Array.isArray(item.missing_capabilities) ? item.missing_capabilities : [];
+        const evidence = Array.isArray(item.evidence_list) ? item.evidence_list : [];
+        const lifecycleState =
+          lifecycle.proposalCount > 0
+            ? "proposal path present"
+            : "no proposal generated";
+        const missingEvidence = Array.isArray(item.missing_evidence_fields) ? item.missing_evidence_fields : [];
+        const fallbackRecallNoEvidence =
+          String(item.raw_kind || "") === "recall_miss_or_dissatisfaction" && item.evidence_available === false;
+        const happenedText = fallbackRecallNoEvidence
+          ? "A recall dissatisfaction signal was emitted, but the backend did not include the failed query, expected memory, or retrieved context."
+          : (item.observed_event && item.observed_event !== "not exposed"
+            ? String(item.observed_event)
+            : String(info.explanation || "not exposed"));
+        const failureModeText = fallbackRecallNoEvidence
+          ? "Unknown until detailed recall evidence is exposed."
+          : (item.likely_failure_mode && item.likely_failure_mode !== "not exposed"
+            ? String(item.likely_failure_mode)
+            : "not exposed");
+        const suggestedExperimentText = fallbackRecallNoEvidence
+          ? "Create a recall self-experiment using the triggering query once available."
+          : (item.proposed_experiment && item.proposed_experiment !== "not exposed"
+            ? String(item.proposed_experiment)
+            : (item.suggested_next_step || info.default_next_step || "not exposed"));
+        return (
+          '<details class="rounded border border-gray-800 bg-gray-900/40 p-2" data-open-pressure="' + idx + '">' +
+          '<summary class="cursor-pointer list-none flex flex-wrap items-center justify-between gap-2">' +
+          '<div class="min-w-0"><div class="text-xs text-white truncate">' + esc(info.label || item.problem || "Pressure item") + '</div>' +
+          '<div class="text-[10px] text-gray-500">time ' + esc(item.time || "—") + " · source " + esc(item.source || "—") + "</div></div>" +
+          '<div class="text-[10px] text-gray-400 flex gap-2"><span>severity: ' + esc(item.severity || "—") + "</span><span>status: " + esc(item.status || "—") + "</span></div>" +
+          "</summary>" +
+          '<div class="mt-2 space-y-2 text-[11px] text-gray-300">' +
+          '<div><span class="text-gray-500">Raw category:</span> ' + esc(item.raw_kind || item.problem || "—") + "</div>" +
+          '<div><span class="text-gray-500">What happened:</span> ' + esc(happenedText) + "</div>" +
+          '<div><span class="text-gray-500">Why it matters:</span> ' + esc(item.why_it_matters || info.why_it_matters || "—") + "</div>" +
+          '<div><span class="text-gray-500">Current lifecycle state:</span> ' + esc(lifecycleState) + "</div>" +
+          '<div><span class="text-gray-500">Evidence available:</span> ' + esc(item.evidence_available ? "yes" : "no") + "</div>" +
+          '<div><span class="text-gray-500">Missing evidence:</span> ' + (missingEvidence.length ? esc(missingEvidence.join(", ")) : "none") + "</div>" +
+          '<div><span class="text-gray-500">Likely failure mode:</span> ' + esc(failureModeText) + "</div>" +
+          '<div><span class="text-gray-500">Suggested experiment:</span> ' + esc(suggestedExperimentText) + "</div>" +
+          '<div><span class="text-gray-500">Routability:</span> ' + esc(item.routability || "—") + "</div>" +
+          '<div><span class="text-gray-500">Evidence count:</span> ' + esc(item.evidence_count != null ? item.evidence_count : "—") + "</div>" +
+          '<div><span class="text-gray-500">Triggering query:</span> ' + esc(item.triggering_query || "not exposed") + "</div>" +
+          '<div><span class="text-gray-500">Expected context:</span> ' + esc(item.expected_context || "not exposed") + "</div>" +
+          '<div><span class="text-gray-500">Actual context:</span> ' + esc(item.actual_context || "not exposed") + "</div>" +
+          '<div><span class="text-gray-500">Source profile:</span> ' + esc(item.source_profile || "not exposed") + "</div>" +
+          '<div><span class="text-gray-500">Evidence list:</span> ' + (evidence.length ? evidence.map((e) => `<span class="inline-block rounded border border-indigo-500/30 bg-indigo-500/10 px-1 py-0.5 mr-1 mb-1">${esc(e)}</span>`).join("") : "—") + "</div>" +
+          '<div><span class="text-gray-500">Matched capabilities:</span> ' + (caps.length ? caps.map(esc).join(", ") : "—") + "</div>" +
+          '<div><span class="text-gray-500">Missing capabilities:</span> ' + (missing.length ? missing.map(esc).join(", ") : "—") + "</div>" +
+          '<div class="flex flex-wrap gap-2 pt-1">' +
+          '<button type="button" disabled class="rounded border border-gray-700 bg-gray-800/70 px-2 py-1 text-[10px] text-gray-400 cursor-not-allowed" title="Requires event-level evidence fields from backend.">Inspect evidence</button>' +
+          (needsExperiment
+            ? '<button type="button" disabled title="Requires orion-self-experiments proposal route." class="rounded border border-gray-700 bg-gray-800/70 px-2 py-1 text-[10px] text-gray-400 cursor-not-allowed">Propose self-experiment</button>'
+            : '<button type="button" disabled title="Requires orion-self-experiments proposal route." class="rounded border border-gray-700 bg-gray-800/70 px-2 py-1 text-[10px] text-gray-400 cursor-not-allowed">Propose self-experiment</button>') +
+          '<button type="button" disabled class="rounded border border-gray-700 bg-gray-800/70 px-2 py-1 text-[10px] text-gray-400 cursor-not-allowed" title="Requires pressure review/write route.">Mark as noise</button>' +
+          "</div>" +
+          '<details><summary class="cursor-pointer text-[10px] text-gray-500">Raw JSON details</summary><pre class="mt-1 rounded border border-gray-800 bg-gray-950/70 p-2 text-[10px] max-h-40 overflow-auto">' + esc(safeJson(item.raw)) + "</pre></details>" +
+          "</div></details>"
+        );
+      })
+      .join("");
+  }
+
+  function countByHour(rows, filterLane) {
+    const buckets = {};
+    for (const r of rows) {
+      if (filterLane && filterLane !== "all" && r._lane !== filterLane) continue;
+      if (!r.t) continue;
+      const d = new Date(r.t);
+      if (Number.isNaN(d.getTime())) continue;
+      const key = state.timelineMode === "day"
+        ? d.toISOString().slice(0, 10)
+        : d.toISOString().slice(0, 13) + ":00:00.000Z";
+      buckets[key] = (buckets[key] || 0) + 1;
+    }
+    return buckets;
+  }
+
+  function renderTimeline(rows) {
+    const el = document.getElementById("pressureTimeline");
+    if (!el) return;
+    const keys = Object.keys(countByHour(rows, state.timelineFilter)).sort();
+    if (!keys.length) {
+      el.innerHTML = '<p class="text-gray-500 text-xs">No timestamped events in range.</p>';
+      return;
+    }
+    const max = Math.max(1, ...keys.map((k) => countByHour(rows, state.timelineFilter)[k]));
+    const w = Math.max(320, keys.length * 24);
+    const bars = keys
+      .map((k) => {
+        const c = countByHour(rows, state.timelineFilter)[k];
+        const h = Math.round((c / max) * 64) + 4;
+        return (
+          '<g title="' +
+          esc(k + ": " + c) +
+          '"><rect x="' +
+          keys.indexOf(k) * 24 +
+          '" y="' +
+          (72 - h) +
+          '" width="20" height="' +
+          h +
+          '" fill="rgb(99 102 241 / 0.7)"/><text x="' +
+          (keys.indexOf(k) * 24 + 2) +
+          '" y="88" fill="#9ca3af" font-size="7" transform="rotate(45 ' +
+          (keys.indexOf(k) * 24) +
+          ",80)\">" +
+          esc(k.slice(5, 16)) +
+          "</text></g>"
+        );
+      })
+      .join("");
+    el.innerHTML =
+      '<svg width="' + w + '" height="100" class="min-w-full">' + '<rect width="100%" height="100%" fill="rgb(3 7 18 / 0.5)"/>' + bars + "</svg>";
+  }
+
+  function heatmap(rows) {
+    const m = {};
+    for (const r of rows) {
+      const rowKey = r.target_surface || normalizeCategory(r) || "—";
+      const colKey = r.category || "—";
+      const k = rowKey + "||" + colKey;
+      m[k] = (m[k] || 0) + 1;
+    }
+    const rowKeys = [...new Set(Object.keys(m).map((k) => k.split("||")[0]))].sort();
+    const colKeys = [...new Set(Object.keys(m).map((k) => k.split("||")[1]))].sort().slice(0, 20);
+    let html = '<table class="w-full border border-gray-800 text-[10px]"><thead><tr><th class="border border-gray-800 p-1 bg-gray-900/80">Surface / category</th>';
+    for (const c of colKeys) {
+      html += '<th class="border border-gray-800 p-1 max-w-[7rem] truncate" title="' + esc(c) + '">' + esc(c) + "</th>";
+    }
+    html += "</tr></thead><tbody>";
+    for (const row of rowKeys) {
+      html += "<tr><td class=\"border border-gray-800 p-1 text-gray-400 max-w-[10rem] truncate\" title=\"" + esc(row) + '">' + esc(row) + "</td>";
+      for (const c of colKeys) {
+        const n = m[row + "||" + c] || 0;
+        const op = n ? Math.min(0.85, 0.12 + n * 0.08) : 0.05;
+        html +=
+          '<td class="border border-gray-800 p-1 text-center bg-gray-900/40" style="background: rgba(99,102,241,' +
+          op +
+          ')" title="' +
+          esc(row + " × " + c) +
+          '">' +
+          (n || "") +
+          "</td>";
+      }
+      html += "</tr>";
+    }
+    html += "</tbody></table>";
+    return html;
+  }
+
+  function funnelCount(lifecycles) {
+    const out = {
+      proposed: 0, queued: 0, trialed: 0, pending_review: 0, approved: 0, applied: 0, rolled_back: 0, rejected: 0
+    };
+    for (const lc of lifecycles) {
+      if (!lc) continue;
+      const p = lc.proposal || {};
+      const st = String(p.rollout_state || "").toLowerCase();
+      if (lc.rollback) {
+        out.rolled_back++;
+        continue;
+      }
+      if (st === "rolled_back") { out.rolled_back++; continue; }
+      if (st === "rejected") { out.rejected++; continue; }
+      if (lc.adoption) { out.applied++; continue; }
+      if (st === "applied") { out.applied++; continue; }
+      if (st === "approved" || st === "accepted_as_draft") { out.approved++; continue; }
+      if (st === "pending_review") { out.pending_review++; continue; }
+      if (Array.isArray(lc.trials) && lc.trials.length) { out.trialed++; continue; }
+      if (st === "trialed") { out.trialed++; continue; }
+      if (lc.queue_item) { out.queued++; continue; }
+      if (st === "queued") { out.queued++; continue; }
+      if (p.proposal_id || st) out.proposed++;
+    }
+    const max = Math.max(1, ...Object.values(out));
+    return { out, max };
+  }
+
+  function renderFunnel(loaded) {
+    const el = document.getElementById("pressureLifecycleFunnel");
+    if (!el) return;
+    const li = loaded.lineage;
+    let lifecycles = [];
+    if (li && li.ok && li.data) {
+      lifecycles = li.data.data?.lifecycles || li.data.lifecycles || extractDataArrays(li.data).flat();
+    }
+    if (!Array.isArray(lifecycles)) lifecycles = [];
+    const { out, max } = funnelCount(lifecycles);
+    const order = [
+      { k: "proposed", l: "Proposals" },
+      { k: "queued", l: "Queued" },
+      { k: "trialed", l: "Trialed" },
+      { k: "pending_review", l: "Pending review" },
+      { k: "approved", l: "Approved" },
+      { k: "applied", l: "Applied" },
+      { k: "rolled_back", l: "Rolled back" },
+      { k: "rejected", l: "Rejected" },
+    ];
+    const rows = order
+      .map(({ k, l }) => {
+        const w = Math.round((out[k] / max) * 100);
+        return (
+          '<button type="button" class="w-full text-left flex items-center gap-2 rounded border border-gray-800 bg-gray-900/30 hover:bg-gray-800/50 px-2 py-1 funnel-row" data-stage="' +
+          esc(k) +
+          '"><span class="w-32 shrink-0 text-gray-500">' +
+          esc(l) +
+          '</span><div class="flex-1 h-2 bg-gray-800 rounded overflow-hidden"><div class="h-2 bg-indigo-500/80" style="width:' +
+          w +
+          '%"></div></div><span class="text-gray-300 w-8">' +
+          out[k] +
+          "</span></button>"
+        );
+      })
+      .join("");
+    el.innerHTML = rows;
+    el.querySelectorAll(".funnel-row").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const stage = btn.getAttribute("data-stage");
+        const lcs = lifecycles.filter((LC) => {
+          const p = (LC && LC.proposal) || {};
+          const st = String(p.rollout_state || "").toLowerCase();
+          if (stage === "rolled_back" && (LC.rollback || st === "rolled_back")) return true;
+          if (stage === "rejected" && st === "rejected") return true;
+          if (stage === "applied" && (LC.adoption || st === "applied")) return true;
+          if (stage === "approved" && (st === "approved" || st === "accepted_as_draft")) return true;
+          if (stage === "pending_review" && st === "pending_review") return true;
+          if (stage === "trialed" && ((LC.trials && LC.trials.length) || st === "trialed")) return true;
+          if (stage === "queued" && (LC.queue_item || st === "queued")) return true;
+          if (stage === "proposed" && (st === "proposed" || !st)) return true;
+          return st === stage;
+        });
+        showInspector({
+          kind: "funnel",
+          title: "Lifecycle stage: " + stage,
+          evidence: [],
+          meta: { count: lcs.length },
+          raw: lcs,
+        });
+      });
+    });
+  }
+
+  function lanePostureFor(label, count, lastTs, kinds, posture) {
+    const kindText = (kinds || [])
+      .slice(0, 4)
+      .map(([a, b]) => esc(a) + " (" + b + ")")
+      .join(", ");
+    return (
+      '<div class="rounded border border-gray-800 bg-gray-900/50 p-2 text-[11px]"><div class="text-violet-300/90 text-[10px] uppercase">' +
+      esc(label) +
+      '</div><div class="text-2xl text-white">' +
+      count +
+      '</div><div class="text-gray-500 mt-0.5">Last: ' +
+      esc(lastTs || "—") +
+      "</div><div class=\"text-gray-400 text-[10px] mt-1 max-h-12 overflow-y-auto\">" +
+      (kindText || "—") +
+      '</div><div class="text-indigo-300/80 text-[9px] mt-1">' +
+      (posture ? esc(posture) : "") +
+      "</div></div>"
+    );
+  }
+
+  function showInspector(obj) {
+    const empty = document.getElementById("pressureInspectorEmpty");
+    const body = document.getElementById("pressureInspectorBody");
+    if (!empty || !body) return;
+    empty.classList.add("hidden");
+    body.classList.remove("hidden");
+    const chips = (obj.evidence || []).map((c) => '<span class="inline-block rounded border border-indigo-500/40 bg-indigo-500/10 px-1.5 py-0.5 mr-1 mb-1 break-all text-[10px]">' + esc(c) + "</span>").join("");
+    body.innerHTML =
+      "<div class=\"text-sm text-white\">" + esc(obj.title || "Record") + "</div>" +
+      (obj.subtitle ? '<div class="text-gray-500 text-[10px]">' + esc(obj.subtitle) + "</div>" : "") +
+      "<div class=\"text-[10px] text-gray-500 mt-1\">Evidence refs</div><div class=\"mt-0.5\">" + (chips || "—") + "</div>" +
+      "<div class=\"mt-2 border-t border-gray-800 pt-1\"><button type=\"button\" class=\"text-[10px] text-indigo-300\" id=\"toggleMetaSp\">metadata ▾</button> " +
+      "<pre id=\"metaBlock\" class=\"hidden mt-1 p-1 rounded bg-gray-950/80 text-[10px] max-h-40 overflow-auto\">" + esc(safeJson(obj.meta || {})) + "</pre></div>" +
+      "<div class=\"mt-1\"><button type=\"button\" class=\"text-[10px] text-indigo-300\" id=\"toggleRawSp\">raw JSON ▾</button> " +
+      "<button type=\"button\" id=\"copyJsonBtn\" class=\"text-[10px] rounded border border-gray-600 px-1.5 text-gray-300\">Copy</button> " +
+      "<pre id=\"rawBlock\" class=\"hidden mt-1 p-1 rounded bg-gray-950/80 text-[10px] max-h-56 overflow-auto\">" + esc(safeJson(obj.raw)) + "</pre></div>";
+    const rawText = safeJson(obj.raw);
+    const rawBlock = body.querySelector("#rawBlock");
+    const metaBlock = body.querySelector("#metaBlock");
+    const copyJsonBtn = body.querySelector("#copyJsonBtn");
+    if (body.querySelector("#toggleRawSp") && rawBlock) {
+      body.querySelector("#toggleRawSp").addEventListener("click", () => rawBlock.classList.toggle("hidden"));
+    }
+    if (body.querySelector("#toggleMetaSp") && metaBlock) {
+      body.querySelector("#toggleMetaSp").addEventListener("click", () => metaBlock.classList.toggle("hidden"));
+    }
+    if (copyJsonBtn) {
+      copyJsonBtn.addEventListener("click", () => {
+        void navigator.clipboard.writeText(rawText);
+      });
+    }
+  }
+
+  function filterRows(rows) {
+    const f = state.evFilter;
+    return rows.filter((r) => {
+      if (f.errOnly) {
+        const blob = safeJson(r) + (r.raw ? safeJson(r.raw) : "");
+        if (!ERR_RE.test(blob)) return false;
+      }
+      if (f.lane && f.lane !== "all") {
+        const L = String(r.lane || r._lane || "");
+        if (L !== f.lane) return false;
+      }
+      if (f.category && f.category !== "all" && String(r.category) !== f.category) return false;
+      if (f.surface && f.surface !== "all" && String(r.target_surface) !== f.surface) return false;
+      if (f.q) {
+        const b = (r.t || "") + (r.category || "") + (r.target_surface || "") + (r.id || "");
+        if (!b.toLowerCase().includes(f.q.toLowerCase())) return false;
+      }
+      return true;
+    });
+  }
+
+  function renderAll(loaded) {
+    state.results = loaded;
+    const R = (k) => loaded[k];
+    const routingN = (() => {
+      const x = R("routingPressure");
+      if (!x || !x.ok) return 0;
+      const a = (x.data && x.data.data && x.data.data.routing_pressure_sources) || null;
+      if (Array.isArray(a)) return a.length;
+      return extractDataArrays(x.data).reduce((n, arr) => n + arr.length, 0) || 0;
+    })();
+    const prodN = (() => {
+      const x = R("producerPressure");
+      if (!x || !x.ok) return 0;
+      const ev = x.data && x.data.data && x.data.data.recent_events;
+      if (Array.isArray(ev)) return ev.length;
+      return extractDataArrays(x.data).reduce((n, a) => n + a.length, 0);
+    })();
+    const cogN = (() => {
+      const x = R("cognitivePressure");
+      if (!x || !x.ok) return 0;
+      const cp = x.data && x.data.data && x.data.data.recent_cognitive_pressure;
+      if (Array.isArray(cp)) return cp.length;
+      return extractDataArrays(x.data).reduce((n, a) => n + a.length, 0);
+    })();
+    const lineage = R("lineage");
+    const lcN = 0;
+    const lifN = (lineage && lineage.ok && (lineage.data && lineage.data.data && lineage.data.data.lifecycles)) || (lineage && lineage.data && lineage.data.lifecycles) || [];
+    const lifLen = (Array.isArray(lifN) && lifN.length) || 0;
+    const surf = R("activeSurfaces");
+    const activeCnt = (() => {
+      if (!surf || !surf.ok) return 0;
+      const arr = (surf.data && surf.data.data && surf.data.data.active_surfaces) || (surf.data && surf.data.active_surfaces) || [];
+      return Array.isArray(arr) ? arr.length : 0;
+    })();
+    const blk = R("blockedApplies");
+    const blockCnt = (() => {
+      if (!blk || !blk.ok) return 0;
+      const a = (blk.data && blk.data.data && blk.data.data.recent_blocked_applies) || (blk.data && blk.data.recent_blocked_applies) || [];
+      return Array.isArray(a) ? a.length : 0;
+    })();
+    const rb = R("rollbacks");
+    const rbCnt = (() => {
+      if (!rb || !rb.ok) return 0;
+      const a = (rb.data && rb.data.data && rb.data.data.recent_rollbacks) || (rb.data && rb.data.recent_rollbacks) || [];
+      return Array.isArray(a) ? a.length : 0;
+    })();
+    const canary = R("recallCanary");
+    let canaryJ = 0, canaryRuns = 0;
+    if (canary && canary.ok) {
+      const d = (canary.data && canary.data.data) || canary.data;
+      if (d) {
+        canaryRuns = Number(d.recent_runs && d.recent_runs.length) || Number(d.judgment_rollups && Object.keys(d.judgment_rollups).length) || 0;
+        canaryJ = d.judgment_count != null ? d.judgment_count : 0;
+      }
+    }
+    const kpiEl = document.getElementById("pressureKpiStrip");
+    if (kpiEl) {
+      kpiEl.innerHTML =
+        kpiCard("Signals observed", routingN, "", "routing-pressure-sources") +
+        kpiCard("Issues detected", prodN, "", "producer-pressure-events") +
+        kpiCard("Cognitive issues", cogN, "", "cognitive-pressure") +
+        kpiCard("Recent proposals", lifLen, "", "lineage") +
+        kpiCard("Active review surfaces", activeCnt, "", "active-surfaces") +
+        kpiCard("Blocked changes", blockCnt, "", "blocked-applies") +
+        kpiCard("Rollbacks", rbCnt, "", "rollbacks") +
+        kpiCard("Recall test runs", (canaryRuns + canaryJ) || 0, "", "recall-canary/status");
+    }
+    renderOpenPressureItems(loaded);
+    const evRows = buildEvidenceRows(loaded);
+    state.evRows = evRows;
+    const byLane = (lane) => evRows.filter((r) => (r.lane || r._lane) === lane);
+    const topKinds = (arr) => {
+      const c = {};
+      for (const r of arr) {
+        const k = r.category || "—";
+        c[k] = (c[k] || 0) + 1;
+      }
+      return Object.entries(c).sort((a, b) => b[1] - a[1]);
+    };
+    const lastTs = (arr) => {
+      const t = arr.map((r) => r.t).filter(Boolean).sort();
+      return t.length ? t[t.length - 1] : "—";
+    };
+    const postureR = (() => {
+      const s = R("recallShadowPosture");
+      if (s && s.ok && s.data) return (s.data.data && s.data.data.readiness_snapshot) || s.data;
+      return null;
+    })();
+    const postStr = postureR && typeof postureR === "object" ? (postureR.summary && safeJson(postureR.summary)) || (postureR && safeJson(postureR).slice(0, 120)) : "";
+    const lp = document.getElementById("pressureLanePosture");
+    if (lp) {
+      lp.innerHTML =
+        lanePostureFor("Routing", byLane("routing").length, lastTs(byLane("routing")), topKinds(byLane("routing")), "") +
+        lanePostureFor("Recall", byLane("recall").length, lastTs(byLane("recall")), topKinds(byLane("recall")), postStr) +
+        lanePostureFor("Cognitive", byLane("cognitive").length, lastTs(byLane("cognitive")), topKinds(byLane("cognitive")), "") +
+        lanePostureFor("Producer", byLane("producer").length, lastTs(byLane("producer")), topKinds(byLane("producer")), "");
+    }
+    const hm = document.getElementById("pressureHeatmap");
+    if (hm) {
+      try {
+        hm.innerHTML = heatmap(evRows);
+      } catch (e) {
+        hm.innerHTML = renderEndpointError("heatmap", e);
+      }
+    }
+    const tf = document.getElementById("pressureTimelineFilter");
+    if (tf) {
+      const modes = [
+        { id: "all", l: "All" },
+        { id: "routing", l: "Routing" },
+        { id: "recall", l: "Recall" },
+        { id: "cognitive", l: "Cognitive" },
+        { id: "producer", l: "Producer" },
+      ];
+      tf.innerHTML = modes
+        .map(
+          (m) =>
+            '<button type="button" data-tf="' + m.id + '" class="tf-btn rounded px-1.5 py-0.5 ' +
+            (state.timelineFilter === m.id ? "bg-indigo-600 text-white" : "bg-gray-800 text-gray-400") +
+            '">' +
+            m.l +
+            "</button> "
+        )
+        .join("") +
+        ' <span class="text-gray-500 ml-1">|</span> ' +
+        '<label class="text-gray-400 ml-1">Bucket: <select id="timeBucket" class="bg-gray-800 rounded border border-gray-700 text-[10px]">' +
+        '<option value="hour"' + (state.timelineMode === "hour" ? " selected" : "") + '>Hour</option>' +
+        '<option value="day"' + (state.timelineMode === "day" ? " selected" : "") + '>Day</option></select></label>';
+      tf.querySelectorAll(".tf-btn").forEach((b) => {
+        b.addEventListener("click", () => {
+          state.timelineFilter = b.getAttribute("data-tf") || "all";
+          tf.querySelectorAll(".tf-btn").forEach((btn) => {
+            const id = btn.getAttribute("data-tf");
+            const on = id === state.timelineFilter;
+            btn.classList.toggle("bg-indigo-600", on);
+            btn.classList.toggle("text-white", on);
+            btn.classList.toggle("bg-gray-800", !on);
+            btn.classList.toggle("text-gray-400", !on);
+          });
+          renderTimeline(evRows);
+        });
+      });
+      const bu = document.getElementById("timeBucket");
+      if (bu) {
+        bu.addEventListener("change", () => {
+          state.timelineMode = bu.value;
+          renderTimeline(evRows);
+        });
+      }
+    }
+    renderTimeline(evRows);
+    renderFunnel(loaded);
+    const fil = document.getElementById("pressureExplorerFilters");
+    const catOpts = ["all", ...[...new Set(evRows.map((r) => r.category))].sort().slice(0, 30)];
+    const surOpts = ["all", ...[...new Set(evRows.map((r) => r.target_surface))].sort().slice(0, 30)];
+    if (fil) {
+      fil.innerHTML =
+        "<input type=\"search\" id=\"fevQ\" class=\"bg-gray-800 border border-gray-700 rounded px-1.5 text-[11px] max-w-[8rem]\" placeholder=\"search\" value=\"" + esc(state.evFilter.q) + '"/>' +
+        '<label class="text-gray-500"> Lane <select id="fevL" class="bg-gray-800 text-[10px] rounded border border-gray-700">' +
+        ["all", "routing", "recall", "cognitive", "producer", "lineage", "operational"]
+          .map((x) => '<option value="' + esc(x) + '"' + (state.evFilter.lane === x ? " selected" : "") + ">" + esc(x) + "</option>")
+          .join("") +
+        "</select></label>" +
+        ' <label class="text-gray-500">Category <select id="fevC" class="bg-gray-800 text-[10px] max-w-[6rem]">' + catOpts.map((c) => "<option" + (state.evFilter.category === c ? " selected" : "") + ">" + esc(c) + "</option>").join("") + "</select></label>" +
+        ' <label class="text-gray-500">Surface <select id="fevS" class="bg-gray-800 text-[10px] max-w-[6rem]">' + surOpts.map((c) => "<option" + (state.evFilter.surface === c ? " selected" : "") + ">" + esc(c) + "</option>").join("") + "</select></label>" +
+        ' <label class="inline-flex items-center gap-1 text-gray-500"><input type="checkbox" id="fevE" ' + (state.evFilter.errOnly ? " checked" : "") + "/> errors / regressions</label>";
+      const reRenderTable = () => {
+        const q = (document.getElementById("fevQ") || {}).value;
+        const lane = (document.getElementById("fevL") || {}).value;
+        const category = (document.getElementById("fevC") || {}).value;
+        const surface = (document.getElementById("fevS") || {}).value;
+        const e = document.getElementById("fevE");
+        state.evFilter = { q: q || "", lane, category, surface, errOnly: !!(e && e.checked) };
+        renderTable(evRows);
+      };
+      [document.getElementById("fevQ"), document.getElementById("fevL"), document.getElementById("fevC"), document.getElementById("fevS"), document.getElementById("fevE")].forEach((n) => {
+        if (n) n.addEventListener(n.type === "checkbox" ? "change" : "input", reRenderTable);
+      });
+    }
+    const head = document.getElementById("pressureEvidenceHead");
+    if (head) {
+      head.innerHTML = ["Time", "Lane", "Category", "Surface", "Source", "Conf", "Id", "Ev #", "Actions"]
+        .map((c) => '<th class="border-b border-gray-800 p-1.5 pr-2">' + esc(c) + "</th>")
+        .join("");
+    }
+    renderTable(evRows);
+    const rpan = document.getElementById("pressureRecallPanel");
+    if (rpan) {
+      const rc = R("recallCanary");
+      const rs = R("recallShadowPosture");
+      const rr = R("recallReadiness");
+      const ar = R("autonomyReadiness");
+      const lines = [];
+      if (rc && rc.ok) {
+        const d = (rc.data && rc.data.data) || rc.data;
+        if (d) {
+          lines.push("production_recall_mode: " + d.production_recall_mode);
+          lines.push("recall_live_apply_enabled: " + d.recall_live_apply_enabled);
+          lines.push("default_canary_profile_id: " + (d.default_canary_profile_id || "—"));
+          const ap = d.available_profiles;
+          lines.push("available_profiles count: " + (Array.isArray(ap) ? ap.length : "n/a"));
+          if (d.judgment_rollups) {
+            lines.push("judgment rollups: " + safeJson(d.judgment_rollups).slice(0, 200) + (safeJson(d.judgment_rollups).length > 200 ? "…" : ""));
+          }
+        }
+      }
+      if (rs && rs.ok) {
+        const d = (rs.data && rs.data.data) || rs.data;
+        lines.push("readiness (shadow): " + (d && d.readiness_snapshot != null ? safeJson(d.readiness_snapshot).slice(0, 240) : "—"));
+      }
+      if (rr && rr.ok) {
+        lines.push("recall strategy readiness: " + safeJson(rr.data).slice(0, 240) + (safeJson(rr.data).length > 240 ? "…" : ""));
+      }
+      if (ar && ar.ok) {
+        lines.push("autonomy readiness: " + safeJson(ar.data).slice(0, 200) + (safeJson(ar.data).length > 200 ? "…" : ""));
+      }
+      const cc = R("cognitionContext");
+      if (cc && cc.ok && cc.data) {
+        lines.push("cognition-context: " + safeJson(cc.data).slice(0, 220) + (safeJson(cc.data).length > 220 ? "…" : ""));
+      }
+      rpan.innerHTML = lines.map((l) => "<div class=\"break-all border-b border-gray-800/50 pb-0.5\">" + esc(l) + "</div>").join("") || "—";
+    }
+    for (const ep of ENDPOINTS) {
+      const st = R(ep.key);
+      if (!st || st.ok) continue;
+      if (kpiEl) {
+        kpiEl.insertAdjacentHTML("beforeend", "<div class=\"text-[10px] col-span-2 text-rose-300/90\">" + renderEndpointError(ep.path, st.error) + "</div>");
+      }
+    }
+  }
+
+  function renderTable(rows) {
+    const body = document.getElementById("pressureEvidenceTable");
+    if (!body) return;
+    const fr = filterRows(rows);
+    body.innerHTML = fr
+      .map((r, i) => {
+        const tds = [
+          esc(String(r.t || "—")),
+          esc(String(r.lane || r._lane || "—")),
+          '<div class="text-gray-100">' + esc(String(r.friendly_label || r.category || "—")) + '</div><div class="text-[10px] text-gray-500">raw: ' + esc(String(r.category || "—")) + "</div>",
+          esc(String(r.target_surface || "—")),
+          esc(String(r.source || "—")),
+          esc(String(r.conf != null ? r.conf : "—")),
+          esc(String((r.id || "").toString().slice(0, 24))),
+          esc(String((r.ev || []).length)),
+        ]
+          .map((c, idx) => '<td class="p-1.5 pr-2 max-w-[9rem] align-top border-b border-gray-800/30 text-gray-300">' + c + "</td>")
+          .join("");
+        return (
+          '<tr class="hover:bg-gray-800/20 pressure-ev-row" data-evi="' +
+          i +
+          '">' +
+          tds +
+          '<td class="p-1.5 border-b border-gray-800/30"><button type="button" class="insp text-indigo-400 hover:text-indigo-200 text-[10px]" data-evi="' +
+          i +
+          '">Inspect</button></td></tr>'
+        );
+      })
+      .join("");
+
+    body.querySelectorAll("button.insp").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        const i = Number((e.currentTarget && e.currentTarget.getAttribute("data-evi")) || -1);
+        const r = fr[i];
+        if (!r) return;
+        showInspector({
+          title: (r.lane || r._lane) + " · " + (r.category || "row"),
+          subtitle: String(r.id || ""),
+          evidence: (r.ev || []).map(String),
+          meta: { time: r.t, surface: r.target_surface, source: r.source },
+          raw: r.lineageFull || r.raw || r,
+        });
+        const ins = document.getElementById("pressureInspector");
+        if (ins) {
+          ins.scrollIntoView({ block: "nearest" });
+        }
+      });
+    });
+  }
+
+  async function runLoad() {
+    const el = document.getElementById("pressureLastLoaded");
+    const settled = await Promise.allSettled(ENDPOINTS.map((ep) => fetchOne(ep)));
+    const loaded = {};
+    settled.forEach((s, i) => {
+      const key = ENDPOINTS[i].key;
+      if (s.status === "fulfilled" && s.value) {
+        loaded[key] = s.value.ok
+          ? { ok: true, data: s.value.data, key }
+          : { ok: false, data: s.value.data, key, error: s.value.error };
+      } else {
+        const err = s.status === "rejected" ? s.reason : new Error("empty");
+        loaded[key] = { ok: false, data: null, key, error: err };
+      }
+    });
+    if (el) el.textContent = new Date().toISOString();
+    renderAll(loaded);
+  }
+
+  document.getElementById("pressurePageRefresh")?.addEventListener("click", runLoad);
+  const ar = document.getElementById("pressureAutoRefresh");
+  if (ar) {
+    ar.addEventListener("change", () => {
+      if (ar.checked) {
+        if (autoInt) clearInterval(autoInt);
+        autoInt = setInterval(runLoad, 60_000);
+      } else if (autoInt) {
+        clearInterval(autoInt);
+        autoInt = null;
+      }
+    });
+  }
+  void runLoad();
+})();
+  </script>
+</body>
+</html>

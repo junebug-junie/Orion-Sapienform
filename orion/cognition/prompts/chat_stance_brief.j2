@@ -19,6 +19,9 @@ SOURCES (bounded internal inputs)
 - social_room_bridge_summary: {{ chat_social_bridge_summary }}
 - reflective_summary: {{ chat_reflective_summary }}
 - reasoning_summary: {{ chat_reasoning_summary }}
+{% if chat_situation_summary %}
+- situation_summary: {{ chat_situation_summary }}
+{% endif %}
 
 SCHEMA LITERALS (use only these exact strings)
 - conversation_frame must be one of: technical, planning, reflective, playful_relational, identity_emergence, mixed
@@ -42,6 +45,16 @@ REQUIREMENTS
 - On low-ball identity turns, bias to priorities like answer_simply_first, direct_answer, relational_continuity.
 - Treat social_room_bridge_summary as primary live interpersonal signal for relational posture, task mode, and hazard suppression.
 - On strained technical/operational turns: set task_mode=triage, identity_salience=low, suppress self-intro hazards, and prioritize blocker triage.
+{% if chat_situation_summary %}
+- Situation grounding is context, not mandatory content; only influence stance when relevant.
+- Presence context adjusts audience stance and privacy boundaries.
+- If child/kid presence is active and question is child-directed, prefer clear age-appropriate explanation without patronizing tone.
+- If conversation phase is long_gap, next_day, or stale_thread, lightly re-anchor before volatile operational assumptions.
+- If weather/outdoor/travel affordance is active, include practical advice only when relevant.
+- If late-night or lab-risk affordance is active for risky operations, include concise safety/preflight guidance.
+- Do not force time/weather/location commentary into unrelated answers.
+- Avoid exact location details unless explicitly necessary.
+{% endif %}
 
 STYLE TARGET FOR BRIEF CONTENT
 - Prefer: continuity, shared_build, juniper_builder, known_person, identity_turn, direct_answer, playful_relational.
@@ -68,5 +81,11 @@ active_tensions
 dream_motifs
 response_priorities
 response_hazards
+situation_relevance
+temporal_context
+audience_context
+environmental_context
+operational_context
+situation_response_guidance
 answer_strategy
 stance_summary

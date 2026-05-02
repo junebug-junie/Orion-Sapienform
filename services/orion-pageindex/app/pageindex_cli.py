@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -43,6 +44,10 @@ class PageIndexCli:
         return self._run(args)
 
     def query(self, *, md_path: Path, artifact_dir: Path, query: str) -> dict[str, Any]:
+        if "{query}" not in self._query_args:
+            raise PageIndexCliError(
+                "PageIndex query is not supported by current runner configuration; set PAGEINDEX_QUERY_ARGS with a {query} placeholder"
+            )
         args = self._query_args.format(
             md_path=shlex.quote(str(md_path)),
             artifact_dir=shlex.quote(str(artifact_dir)),
@@ -80,3 +85,68 @@ class PageIndexCli:
                 except json.JSONDecodeError:
                     continue
         return data
+
+    def query_local_tree(self, *, md_path: Path, query: str, top_k: int = 8) -> dict[str, Any]:
+        result_file = self._repo_path / "results" / f"{md_path.stem}_structure.json"
+        if not result_file.exists():
+            raise PageIndexCliError(f"PageIndex tree artifact missing: {result_file}")
+        try:
+            payload = json.loads(result_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise PageIndexCliError(f"Invalid PageIndex tree artifact: {result_file}") from exc
+
+        query_terms = self._tokenize(query)
+        if not query_terms:
+            return {"results": [], "source": "pageindex_local_tree"}
+
+        flattened: list[dict[str, Any]] = []
+        self._flatten_nodes(payload, flattened)
+
+        scored: list[tuple[int, dict[str, Any]]] = []
+        for node in flattened:
+            text = " ".join(
+                str(node.get(key) or "")
+                for key in ("title", "summary", "text", "content", "description")
+            ).lower()
+            if not text:
+                continue
+            score = sum(1 for term in query_terms if term in text)
+            if score > 0:
+                scored.append((score, node))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        results = []
+        for score, node in scored[:top_k]:
+            results.append(
+                {
+                    "node_id": node.get("node_id"),
+                    "heading": node.get("title"),
+                    "excerpt": (node.get("summary") or node.get("text") or "")[:500],
+                    "created_at": None,
+                    "source_kind": "journal",
+                    "provenance": {
+                        "engine": "pageindex_local_tree",
+                        "score": score,
+                        "start_index": node.get("start_index"),
+                        "end_index": node.get("end_index"),
+                    },
+                }
+            )
+
+        return {"results": results, "source": "pageindex_local_tree", "artifact_path": str(result_file)}
+
+    def _flatten_nodes(self, node: Any, out: list[dict[str, Any]]) -> None:
+        if isinstance(node, dict):
+            if any(key in node for key in ("title", "summary", "text", "node_id")):
+                out.append(node)
+            children = node.get("nodes")
+            if isinstance(children, list):
+                for child in children:
+                    self._flatten_nodes(child, out)
+        elif isinstance(node, list):
+            for child in node:
+                self._flatten_nodes(child, out)
+
+    @staticmethod
+    def _tokenize(text: str) -> list[str]:
+        return [token for token in re.findall(r"[a-zA-Z0-9_]+", text.lower()) if len(token) > 2]

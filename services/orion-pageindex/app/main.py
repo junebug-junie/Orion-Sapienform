@@ -29,11 +29,13 @@ def _log_startup_config() -> None:
     health = svc.health()
     pageindex_proof = health.get("pageindex") if isinstance(health, dict) else {}
     logger.info(
-        "startup service=%s pageindex_repo_path=%s installation_mode=%s health_ok=%s pageindex_proof_keys=%s",
+        "startup service=%s pageindex_repo_path=%s installation_mode=%s health_ok=%s db_env_key=%s db_url_present=%s pageindex_proof_keys=%s",
         settings.SERVICE_NAME,
         settings.PAGEINDEX_REPO_PATH,
         settings.PAGEINDEX_INSTALLATION_MODE,
         bool(health.get("ok")) if isinstance(health, dict) else False,
+        health.get("db_env_key") if isinstance(health, dict) else None,
+        bool(health.get("db_url_present")) if isinstance(health, dict) else False,
         sorted(pageindex_proof.keys()) if isinstance(pageindex_proof, dict) else [],
     )
 

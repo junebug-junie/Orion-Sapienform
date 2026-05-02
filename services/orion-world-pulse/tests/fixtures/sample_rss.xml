@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Sample Feed</title>
+    <item>
+      <title>First Story</title>
+      <link>https://example.org/news/first-story</link>
+      <description>First summary.</description>
+      <pubDate>Sun, 26 Apr 2026 12:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Second Story</title>
+      <link>https://example.org/news/second-story</link>
+      <description>Second summary.</description>
+      <pubDate>Sun, 26 Apr 2026 13:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>

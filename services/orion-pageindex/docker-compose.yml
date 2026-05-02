@@ -3,8 +3,13 @@ services:
     build:
       context: ../..
       dockerfile: services/orion-pageindex/Dockerfile
+      args:
+        PAGEINDEX_REPO_URL: ${PAGEINDEX_REPO_URL:-https://github.com/VectifyAI/PageIndex.git}
+        PAGEINDEX_REF: ${PAGEINDEX_REF:-main}
     container_name: ${PROJECT:-orion}-pageindex
     restart: unless-stopped
+    networks:
+      - app-net
     env_file:
       - .env
     environment:
@@ -13,6 +18,9 @@ services:
       NODE_NAME: ${NODE_NAME:-athena}
       PORT: ${PORT:-8360}
       JOURNAL_PG_DSN: ${JOURNAL_PG_DSN:-postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney}
+      PAGEINDEX_SQL_DATABASE_URL: ${PAGEINDEX_SQL_DATABASE_URL:-}
+      ENDOGENOUS_RUNTIME_SQL_DATABASE_URL: ${ENDOGENOUS_RUNTIME_SQL_DATABASE_URL:-}
+      SQL_DATABASE_URL: ${SQL_DATABASE_URL:-}
       # PageIndex reads enriched journal retrieval metadata from this table.
       JOURNAL_INDEX_TABLE: ${JOURNAL_INDEX_TABLE:-journal_entry_index}
       PAGEINDEX_IMPL: ${PAGEINDEX_IMPL:-actual}
@@ -20,17 +28,21 @@ services:
       PAGEINDEX_REPO_PATH: ${PAGEINDEX_REPO_PATH:-/opt/PageIndex}
       PAGEINDEX_RUN_SCRIPT: ${PAGEINDEX_RUN_SCRIPT:-run_pageindex.py}
       PAGEINDEX_PYTHON_BIN: ${PAGEINDEX_PYTHON_BIN:-python3}
-      PAGEINDEX_BUILD_ARGS: ${PAGEINDEX_BUILD_ARGS:---md_path {md_path} --output_dir {artifact_dir}}
-      PAGEINDEX_QUERY_ARGS: ${PAGEINDEX_QUERY_ARGS:---md_path {md_path} --output_dir {artifact_dir} --query {query}}
+      PAGEINDEX_BUILD_ARGS: ${PAGEINDEX_BUILD_ARGS:---md_path {md_path}}
+      PAGEINDEX_QUERY_ARGS: ${PAGEINDEX_QUERY_ARGS:---md_path {md_path}}
       PAGEINDEX_TIMEOUT_SEC: ${PAGEINDEX_TIMEOUT_SEC:-120}
+      PAGEINDEX_ALLOW_EMPTY_REBUILD: ${PAGEINDEX_ALLOW_EMPTY_REBUILD:-false}
       PAGEINDEX_DATA_DIR: ${PAGEINDEX_DATA_DIR:-/data/pageindex}
       CHAT_EPISODES_MARKDOWN_PATH: ${CHAT_EPISODES_MARKDOWN_PATH:-/data/pageindex/chat_episodes/chat_episode_corpus.md}
       PYTHONUNBUFFERED: 1
     volumes:
       - pageindex-data:/data/pageindex
-      - ${PAGEINDEX_HOST_REPO_PATH:-/opt/PageIndex}:/opt/PageIndex:ro
     ports:
       - "8360:8360"
 
 volumes:
   pageindex-data:
+
+networks:
+  app-net:
+    external: true

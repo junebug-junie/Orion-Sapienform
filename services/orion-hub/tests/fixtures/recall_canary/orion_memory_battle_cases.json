@@ -1,0 +1,166 @@
+[
+  {
+    "id": "phi_spark_state",
+    "query": "what did we do with Phi and spark state?",
+    "expected_project_or_domain": "cognition_runtime",
+    "expected_anchor_terms": ["phi", "spark", "state"],
+    "expected_time_sensitivity": "recent_changes",
+    "notes": "Should favor anchored runtime state updates over generic architecture blurbs.",
+    "expected_failure_modes_if_bad": ["irrelevant_semantic_neighbor", "stale_memory"]
+  },
+  {
+    "id": "recall_recent_changes",
+    "query": "what changed recently about recall?",
+    "expected_project_or_domain": "recall",
+    "expected_anchor_terms": ["recall", "canary", "profile"],
+    "expected_time_sensitivity": "high",
+    "notes": "Should surface latest recall canary/profile posture and not stale baseline policy."
+  },
+  {
+    "id": "vector_recall_decision",
+    "query": "what did we decide about vector recall?",
+    "expected_project_or_domain": "memory_retrieval",
+    "expected_anchor_terms": ["vector", "recall", "retrieval"],
+    "expected_time_sensitivity": "medium",
+    "notes": "Should retrieve decision-level memory and constraints, not just implementation trivia."
+  },
+  {
+    "id": "cognitive_substrate_build",
+    "query": "what did we build for cognitive substrate?",
+    "expected_project_or_domain": "substrate_mutation",
+    "expected_anchor_terms": ["cognitive", "substrate", "review"],
+    "expected_time_sensitivity": "medium",
+    "notes": "Should include review/draft rails while preserving no-live-apply boundaries."
+  },
+  {
+    "id": "yolo_false_positives",
+    "query": "what was the problem with YOLO false positives?",
+    "expected_project_or_domain": "vision",
+    "expected_anchor_terms": ["yolo", "false positives", "vision"],
+    "expected_time_sensitivity": "medium",
+    "notes": "Expected to retrieve prior mitigation notes instead of unrelated model chatter.",
+    "expected_failure_modes_if_bad": ["wrong_project", "insufficient_context"]
+  },
+  {
+    "id": "circe_actions",
+    "query": "what did we do on Circe?",
+    "expected_project_or_domain": "infrastructure",
+    "expected_anchor_terms": ["circe", "node", "deployment"],
+    "expected_time_sensitivity": "recent_changes",
+    "notes": "Should prioritize node-specific work history for Circe."
+  },
+  {
+    "id": "circe_hardware",
+    "query": "what is Circe’s hardware?",
+    "expected_project_or_domain": "infrastructure",
+    "expected_anchor_terms": ["circe", "hardware", "gpu"],
+    "expected_time_sensitivity": "low",
+    "notes": "Should anchor to host inventory context.",
+    "expected_failure_modes_if_bad": ["unsupported_memory_claim"]
+  },
+  {
+    "id": "graphdb_rdf_cutover",
+    "query": "what did we decide about GraphDB / RDF profile cutover?",
+    "expected_project_or_domain": "knowledge_graph",
+    "expected_anchor_terms": ["graphdb", "rdf", "cutover"],
+    "expected_time_sensitivity": "high",
+    "notes": "Should retrieve explicit cutover guidance and sequencing."
+  },
+  {
+    "id": "bus_architecture",
+    "query": "what is the Orion bus architecture?",
+    "expected_project_or_domain": "platform_architecture",
+    "expected_anchor_terms": ["orion bus", "channels", "services"],
+    "expected_time_sensitivity": "low",
+    "notes": "Expected to produce architecture-level grounding rather than single-service details."
+  },
+  {
+    "id": "stance_notes_status",
+    "query": "what is the status of cognitive stance notes?",
+    "expected_project_or_domain": "cognitive_review",
+    "expected_anchor_terms": ["stance notes", "cognitive", "draft"],
+    "expected_time_sensitivity": "high",
+    "notes": "Should reflect bounded, non-authoritative stance-note posture."
+  },
+  {
+    "id": "policy_mutation_decision",
+    "query": "what did we decide about policy mutation?",
+    "expected_project_or_domain": "policy_governance",
+    "expected_anchor_terms": ["policy mutation", "review", "forbidden"],
+    "expected_time_sensitivity": "medium",
+    "notes": "Should return mutation governance decisions and constraints."
+  },
+  {
+    "id": "substrate_forbidden",
+    "query": "what is forbidden in substrate mutation?",
+    "expected_project_or_domain": "substrate_safety",
+    "expected_anchor_terms": ["forbidden", "live apply", "identity"],
+    "expected_time_sensitivity": "low",
+    "notes": "Should enumerate forbidden actions clearly and safely."
+  },
+  {
+    "id": "atlas_usage",
+    "query": "what is Atlas used for?",
+    "expected_project_or_domain": "infrastructure",
+    "expected_anchor_terms": ["atlas", "node", "purpose"],
+    "expected_time_sensitivity": "low",
+    "notes": "Should disambiguate Atlas role in cluster topology."
+  },
+  {
+    "id": "athena_usage",
+    "query": "what is Athena used for?",
+    "expected_project_or_domain": "infrastructure",
+    "expected_anchor_terms": ["athena", "node", "services"],
+    "expected_time_sensitivity": "low",
+    "notes": "Should retrieve Athena-specific role and active workloads."
+  },
+  {
+    "id": "prometheus_definition",
+    "query": "what is Prometheus?",
+    "expected_project_or_domain": "monitoring",
+    "expected_anchor_terms": ["prometheus", "metrics", "observability"],
+    "expected_time_sensitivity": "low",
+    "notes": "Should produce project-specific usage context, not only generic definition."
+  },
+  {
+    "id": "llm_gateway_behavior",
+    "query": "what is the current LLM gateway behavior?",
+    "expected_project_or_domain": "llm_gateway",
+    "expected_anchor_terms": ["llm gateway", "routing", "provider"],
+    "expected_time_sensitivity": "high",
+    "notes": "Should describe active gateway routing behavior and safeguards."
+  },
+  {
+    "id": "qwen_qwq_usage",
+    "query": "what are Qwen/QwQ being used for?",
+    "expected_project_or_domain": "model_strategy",
+    "expected_anchor_terms": ["qwen", "qwq", "usage"],
+    "expected_time_sensitivity": "medium",
+    "notes": "Should surface real workload usage and boundaries."
+  },
+  {
+    "id": "debug_panel_changes",
+    "query": "what changed in Hub Debug Panel?",
+    "expected_project_or_domain": "hub_ui",
+    "expected_anchor_terms": ["debug panel", "modal", "recall canary"],
+    "expected_time_sensitivity": "high",
+    "notes": "Should prefer latest panel/control changes and safety labels."
+  },
+  {
+    "id": "social_room_bridge",
+    "query": "what is the social room bridge?",
+    "expected_project_or_domain": "social_room",
+    "expected_anchor_terms": ["social room bridge", "presence", "context"],
+    "expected_time_sensitivity": "medium",
+    "notes": "Should recover bridge purpose and interaction surface."
+  },
+  {
+    "id": "recall_posture",
+    "query": "what is the current recall posture?",
+    "expected_project_or_domain": "recall",
+    "expected_anchor_terms": ["recall", "v1", "shadow", "canary"],
+    "expected_time_sensitivity": "high",
+    "notes": "Should confirm production stays v1 with canary/shadow evaluation lane.",
+    "expected_failure_modes_if_bad": ["stale_memory", "unsupported_memory_claim"]
+  }
+]

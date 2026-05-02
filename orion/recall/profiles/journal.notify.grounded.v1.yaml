@@ -1,0 +1,40 @@
+# Notify-driven journal (orion.digest.daily → notify_summary): same fusion as journal.daily.grounded.v1
+# plus lines that echo the deterministic digest email template.
+profile: journal.notify.grounded.v1
+
+vector_top_k: 12
+rdf_top_k: 8
+max_per_source: 4
+max_total_items: 24
+time_decay_half_life_hours: 72
+render_budget_tokens: 256
+enable_query_expansion: true
+enable_sql_timeline: true
+sql_since_minutes: 10080
+sql_top_k: 200
+
+filters:
+  exclude_sources:
+    - pageindex_lexical
+  exclude_snippet_prefixes:
+    - "## Orion — Daily Journal"
+  exclude_snippet_substrings:
+    - "the day unfolded with the usual rhythm"
+    - "usual rhythm of troubleshooting"
+    - "familiar rhythm of denver"
+    - "orion daily digest"
+    - "top event kinds:"
+    - "counts by severity:"
+
+relevance:
+  backend_weights:
+    vector: 1.0
+    sql_timeline: 0.9
+    sql_chat: 0.6
+    rdf_chat: 0.55
+    rdf: 0.4
+  score_weight: 0.7
+  text_similarity_weight: 0.15
+  recency_weight: 0.1
+  enable_recency: true
+  recency_half_life_hours: 72

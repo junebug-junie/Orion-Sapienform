@@ -156,6 +156,20 @@ class Settings(BaseSettings):
     # Emit REC_TAPE RECALL debug dumps for top-N selected items.
     RECALL_DEBUG_DUMP_TOP_N: int = Field(default=0, validation_alias=AliasChoices("RECALL_DEBUG_DUMP_TOP_N"))
 
+    # ── Memory cards (Postgres) ───────────────────────────────────────
+    RECALL_ENABLE_CARDS: bool = Field(default=False, validation_alias=AliasChoices("RECALL_ENABLE_CARDS"))
+    RECALL_CARDS_TIMEOUT_SEC: float = Field(default=0.25, validation_alias=AliasChoices("RECALL_CARDS_TIMEOUT_SEC"))
+    RECALL_CARDS_MAX_NEIGHBORS: int = Field(default=6, validation_alias=AliasChoices("RECALL_CARDS_MAX_NEIGHBORS"))
+    RECALL_INTENT_ROUTING_ENABLED: bool = Field(default=True, validation_alias=AliasChoices("RECALL_INTENT_ROUTING_ENABLED"))
+    RECALL_VECTOR_EXCLUDE_COLLECTIONS: str = Field(
+        default="",
+        validation_alias=AliasChoices("RECALL_VECTOR_EXCLUDE_COLLECTIONS"),
+    )
+    RECALL_RENDER_BUDGET_INDICATOR: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("RECALL_RENDER_BUDGET_INDICATOR"),
+    )
+
     # ── RDF / GraphDB (recall-specific) ───────────────────────────────
     RECALL_RDF_ENDPOINT_URL: Optional[str] = Field(default=None, validation_alias=AliasChoices("RECALL_RDF_ENDPOINT_URL"))
     RECALL_RDF_TIMEOUT_SEC: float = Field(default=5.0, validation_alias=AliasChoices("RECALL_RDF_TIMEOUT_SEC"))

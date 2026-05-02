@@ -30,14 +30,28 @@ else:
     return repo
 
 
+class _FakeDbRepo:
+    def __init__(self, entries):
+        self._entries = entries
+
+    def fetch_entries(self):
+        return self._entries
+
+    def stats(self):
+        return {"count": len(self._entries), "latest_created_at": None}
+
+
 def test_health_proves_pageindex_presence(monkeypatch, tmp_path: Path) -> None:
     repo = _fake_repo(tmp_path)
     from app import service as service_module
     service_module.settings.PAGEINDEX_REPO_PATH = str(repo)
     service_module.settings.PAGEINDEX_DATA_DIR = str(tmp_path / "data")
+    monkeypatch.setenv("PAGEINDEX_SQL_DATABASE_URL", "postgresql://test")
 
     svc = service_module.JournalPageIndexService()
     health = svc.health()
+    assert health["ok"] is True
+    assert health["db_url_present"] is True
     assert health["pageindex"]["repo_exists"] is True
     assert health["pageindex"]["run_script_exists"] is True
 
@@ -47,9 +61,10 @@ def test_markdown_export_generation(monkeypatch, tmp_path: Path) -> None:
     from app import service as service_module
     service_module.settings.PAGEINDEX_REPO_PATH = str(repo)
     service_module.settings.PAGEINDEX_DATA_DIR = str(tmp_path / "data")
+    monkeypatch.setenv("PAGEINDEX_SQL_DATABASE_URL", "postgresql://test")
 
     svc = service_module.JournalPageIndexService()
-    svc._repo.fetch_entries = lambda: [
+    entries = [
         JournalEntry(
             entry_id="entry-1",
             created_at=datetime(2026, 4, 13, tzinfo=timezone.utc),
@@ -74,6 +89,7 @@ def test_markdown_export_generation(monkeypatch, tmp_path: Path) -> None:
             body="Body text",
         )
     ]
+    service_module.JournalPageIndexService._repo_for_dsn = staticmethod(lambda _dsn: _FakeDbRepo(entries))
     out = svc.rebuild_journals()
     md = Path(out.markdown_export_path).read_text(encoding="utf-8")
     assert "# Orion Journal Corpus" in md
@@ -100,9 +116,10 @@ def test_rebuild_status_and_query(monkeypatch, tmp_path: Path) -> None:
     from app import service as service_module
     service_module.settings.PAGEINDEX_REPO_PATH = str(repo)
     service_module.settings.PAGEINDEX_DATA_DIR = str(tmp_path / "data")
+    monkeypatch.setenv("PAGEINDEX_SQL_DATABASE_URL", "postgresql://test")
 
     svc = service_module.JournalPageIndexService()
-    svc._repo.fetch_entries = lambda: [
+    entries = [
         JournalEntry(
             entry_id="entry-1",
             created_at=datetime(2026, 4, 13, tzinfo=timezone.utc),
@@ -113,6 +130,7 @@ def test_rebuild_status_and_query(monkeypatch, tmp_path: Path) -> None:
             body="Body text",
         )
     ]
+    service_module.JournalPageIndexService._repo_for_dsn = staticmethod(lambda _dsn: _FakeDbRepo(entries))
     build = svc.rebuild_journals()
     assert build.build_success is True
 
@@ -131,9 +149,10 @@ def test_markdown_export_is_null_safe_for_new_metadata(monkeypatch, tmp_path: Pa
 
     service_module.settings.PAGEINDEX_REPO_PATH = str(repo)
     service_module.settings.PAGEINDEX_DATA_DIR = str(tmp_path / "data")
+    monkeypatch.setenv("PAGEINDEX_SQL_DATABASE_URL", "postgresql://test")
 
     svc = service_module.JournalPageIndexService()
-    svc._repo.fetch_entries = lambda: [
+    entries = [
         JournalEntry(
             entry_id="entry-2",
             created_at=datetime(2026, 4, 14, tzinfo=timezone.utc),
@@ -144,6 +163,7 @@ def test_markdown_export_is_null_safe_for_new_metadata(monkeypatch, tmp_path: Pa
             body="Body text",
         )
     ]
+    service_module.JournalPageIndexService._repo_for_dsn = staticmethod(lambda _dsn: _FakeDbRepo(entries))
     out = svc.rebuild_journals()
     md = Path(out.markdown_export_path).read_text(encoding="utf-8")
     assert "- trigger_kind: " in md
@@ -157,15 +177,17 @@ def test_unavailable_pageindex_fails(monkeypatch, tmp_path: Path) -> None:
     from app import service as service_module
     service_module.settings.PAGEINDEX_REPO_PATH = str(tmp_path / "missing")
     service_module.settings.PAGEINDEX_DATA_DIR = str(tmp_path / "data")
+    monkeypatch.setenv("PAGEINDEX_SQL_DATABASE_URL", "postgresql://test")
 
     svc = service_module.JournalPageIndexService()
-    svc._repo.fetch_entries = lambda: [
+    entries = [
         JournalEntry(
             entry_id="entry-1",
             created_at=datetime(2026, 4, 13, tzinfo=timezone.utc),
             body="Body text",
         )
     ]
+    service_module.JournalPageIndexService._repo_for_dsn = staticmethod(lambda _dsn: _FakeDbRepo(entries))
     build = svc.rebuild_journals()
     assert build.build_success is False
     assert "run script missing" in (build.build_error or "").lower()
@@ -176,9 +198,11 @@ def test_actual_pageindex_cli_invocation_path(monkeypatch, tmp_path: Path) -> No
     from app import service as service_module
     service_module.settings.PAGEINDEX_REPO_PATH = str(repo)
     service_module.settings.PAGEINDEX_DATA_DIR = str(tmp_path / "data")
+    monkeypatch.setenv("PAGEINDEX_SQL_DATABASE_URL", "postgresql://test")
 
     svc = service_module.JournalPageIndexService()
-    svc._repo.fetch_entries = lambda: []
+    service_module.JournalPageIndexService._repo_for_dsn = staticmethod(lambda _dsn: _FakeDbRepo([]))
+    service_module.settings.PAGEINDEX_ALLOW_EMPTY_REBUILD = True
     svc.rebuild_journals()
     status_data = json.loads((Path(tmp_path / "data") / "journals_status.json").read_text(encoding="utf-8"))
     assert status_data["pageindex_impl"] == "actual"
@@ -221,3 +245,56 @@ def test_chat_episodes_rebuild_fails_without_markdown(monkeypatch, tmp_path: Pat
     build = svc.rebuild_chat_episodes()
     assert build.build_success is False
     assert "not found" in (build.build_error or "").lower()
+
+
+def test_health_degrades_when_db_url_missing(monkeypatch, tmp_path: Path) -> None:
+    repo = _fake_repo(tmp_path)
+    from app import service as service_module
+    service_module.settings.PAGEINDEX_REPO_PATH = str(repo)
+    service_module.settings.PAGEINDEX_DATA_DIR = str(tmp_path / "data")
+    monkeypatch.delenv("PAGEINDEX_SQL_DATABASE_URL", raising=False)
+    monkeypatch.delenv("ENDOGENOUS_RUNTIME_SQL_DATABASE_URL", raising=False)
+    monkeypatch.delenv("SQL_DATABASE_URL", raising=False)
+    service_module.settings.JOURNAL_PG_DSN = ""
+    svc = service_module.JournalPageIndexService()
+    health = svc.health()
+    assert health["ok"] is False
+    assert health["db_url_present"] is False
+
+
+def test_status_reports_db_missing(monkeypatch, tmp_path: Path) -> None:
+    from app import service as service_module
+    service_module.settings.PAGEINDEX_DATA_DIR = str(tmp_path / "data")
+    monkeypatch.delenv("PAGEINDEX_SQL_DATABASE_URL", raising=False)
+    monkeypatch.delenv("ENDOGENOUS_RUNTIME_SQL_DATABASE_URL", raising=False)
+    monkeypatch.delenv("SQL_DATABASE_URL", raising=False)
+    service_module.settings.JOURNAL_PG_DSN = ""
+    svc = service_module.JournalPageIndexService()
+    status = svc.status()
+    assert status.build_success is False
+    assert status.db_url_present is False
+    assert "database URL missing" in (status.build_error or "")
+
+
+def test_rebuild_refuses_zero_rows_by_default(monkeypatch, tmp_path: Path) -> None:
+    repo = _fake_repo(tmp_path)
+    from app import service as service_module
+    service_module.settings.PAGEINDEX_REPO_PATH = str(repo)
+    service_module.settings.PAGEINDEX_DATA_DIR = str(tmp_path / "data")
+    service_module.settings.PAGEINDEX_ALLOW_EMPTY_REBUILD = False
+    monkeypatch.setenv("PAGEINDEX_SQL_DATABASE_URL", "postgresql://test")
+    service_module.JournalPageIndexService._repo_for_dsn = staticmethod(lambda _dsn: _FakeDbRepo([]))
+    svc = service_module.JournalPageIndexService()
+    build = svc.rebuild_journals()
+    assert build.build_success is False
+    assert "0 rows" in (build.build_error or "")
+
+
+def test_compose_wiring_includes_db_env_and_repo_mount() -> None:
+    compose_path = Path(__file__).resolve().parents[1] / "docker-compose.yml"
+    text = compose_path.read_text(encoding="utf-8")
+    assert "PAGEINDEX_SQL_DATABASE_URL" in text
+    assert "ENDOGENOUS_RUNTIME_SQL_DATABASE_URL" in text
+    assert "SQL_DATABASE_URL" in text
+    assert "PAGEINDEX_INSTALLATION_MODE: ${PAGEINDEX_INSTALLATION_MODE:-cli}" in text
+    assert "PAGEINDEX_REF: ${PAGEINDEX_REF:-main}" in text

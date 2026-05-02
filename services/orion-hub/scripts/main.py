@@ -6,13 +6,14 @@ import os
 import subprocess
 import asyncio
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from scripts.settings import settings
 from scripts.api_routes import router as api_router
+from scripts.memory_routes import router as memory_router
 import scripts.api_routes as api_routes_runtime
 from scripts.websocket_handler import websocket_endpoint
 from scripts.service_logs_ws import service_logs_websocket_endpoint
@@ -54,6 +55,22 @@ def _discover_git_sha() -> str:
         return ""
 
 
+def _ui_asset_mtime_token() -> str:
+    """Best-effort mtime token so uncommitted UI edits bust browser caches."""
+    candidates = [
+        STATIC_DIR / "js" / "app.js",
+        STATIC_DIR / "js" / "workflow-ui.js",
+        TEMPLATES_DIR / "index.html",
+    ]
+    mtimes: list[int] = []
+    for path in candidates:
+        try:
+            mtimes.append(int(path.stat().st_mtime))
+        except Exception:
+            continue
+    return str(max(mtimes)) if mtimes else ""
+
+
 def build_hub_ui_asset_version() -> str:
     """Build an explicit cache-busting token for Hub static assets."""
     explicit = os.getenv("HUB_UI_BUILD")
@@ -63,10 +80,21 @@ def build_hub_ui_asset_version() -> str:
     build_ts = os.getenv("BUILD_TIMESTAMP")
     service_version = settings.SERVICE_VERSION
 
-    for candidate in (explicit, build_id, git_sha, discovered_git_sha, build_ts, service_version):
+    # Honor explicit CI/build ids exactly.
+    for candidate in (explicit, build_id, git_sha, build_ts):
         value = str(candidate or "").strip()
         if value:
             return value
+    # For local/dev paths, include mtime token so restarts pick up UI edits.
+    mtime_token = _ui_asset_mtime_token()
+    if discovered_git_sha and mtime_token:
+        return f"{discovered_git_sha}-{mtime_token}"
+    if discovered_git_sha:
+        return discovered_git_sha
+    if service_version and mtime_token:
+        return f"{service_version}-{mtime_token}"
+    if service_version:
+        return service_version
     return "dev"
 
 
@@ -87,6 +115,7 @@ html_content: str = "<html><body><h1>Error loading UI</h1></body></html>"
 biometrics_cache: Optional[BiometricsCache] = None
 notification_cache: Optional[NotificationCache] = None
 presence_state: Optional["PresenceState"] = None
+presence_context_store: Optional["PresenceContextStore"] = None
 substrate_autonomy_task: Optional[asyncio.Task] = None
 
 
@@ -114,6 +143,33 @@ class PresenceState:
         }
 
 
+class PresenceContextStore:
+    def __init__(self, *, ttl_seconds: int = 14400) -> None:
+        self.ttl_seconds = max(60, int(ttl_seconds))
+        self._store: dict[str, tuple[datetime, dict]] = {}
+
+    def get(self, session_key: str) -> dict | None:
+        item = self._store.get(session_key)
+        if not item:
+            return None
+        expires_at, payload = item
+        if datetime.now(timezone.utc) > expires_at:
+            self._store.pop(session_key, None)
+            return None
+        return payload
+
+    def set(self, session_key: str, payload: dict) -> dict:
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=self.ttl_seconds)
+        normalized = dict(payload or {})
+        normalized.setdefault("submitted_at", datetime.now(timezone.utc).isoformat())
+        normalized["expires_at"] = expires_at.isoformat()
+        self._store[session_key] = (expires_at, normalized)
+        return normalized
+
+    def clear(self, session_key: str) -> None:
+        self._store.pop(session_key, None)
+
+
 class HubStaticFiles(StaticFiles):
     """Static responses are revalidated to avoid stale Hub JS when operators refresh."""
 
@@ -133,7 +189,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, presence_state, substrate_autonomy_task
+    global bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, presence_state, presence_context_store, substrate_autonomy_task
 
     # ------------------------------------------------------------
     # Orion Bus Initialization
@@ -179,6 +235,7 @@ async def startup_event():
         logger.warning("OrionBus is DISABLED — Hub will not publish/subscribe.")
 
     presence_state = PresenceState()
+    presence_context_store = PresenceContextStore(ttl_seconds=int(getattr(settings, "ORION_PRESENCE_SESSION_TTL_SECONDS", 14400)))
 
     if settings.SUBSTRATE_AUTONOMY_ENABLED:
         supported, reason = api_routes_runtime.substrate_autonomy_runtime_supported()
@@ -228,6 +285,7 @@ async def startup_event():
             "apiBaseOverride": settings.HUB_API_BASE_OVERRIDE or "",
             "wsBaseOverride": settings.HUB_WS_BASE_OVERRIDE or "",
             "autoDefaultEnabled": bool(settings.HUB_AUTO_DEFAULT_ENABLED),
+            "worldPulseFixtureRunEnabled": bool(settings.WORLD_PULSE_UI_FIXTURE_RUN_ENABLED),
         }
         html_content = html_content.replace(
             "{{HUB_CFG}}",
@@ -238,12 +296,33 @@ async def startup_event():
         logger.error("CRITICAL: 'templates/index.html' not found.")
         html_content = "<html><body><h1>UI template missing</h1></body></html>"
 
+    if settings.RECALL_PG_DSN and str(settings.RECALL_PG_DSN).strip():
+        try:
+            import asyncpg  # type: ignore
+        except Exception:
+            asyncpg = None
+        if asyncpg is not None:
+            try:
+                pool = await asyncpg.create_pool(dsn=settings.RECALL_PG_DSN, min_size=1, max_size=6)
+                app.state.memory_pg_pool = pool
+                logger.info("Hub memory cards Postgres pool ready.")
+            except Exception as exc:
+                logger.warning("Hub memory cards pool failed: %s", exc)
+                app.state.memory_pg_pool = None
+
     logger.info("Startup complete — Hub is ready.")
 
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
     global bus, biometrics_cache, notification_cache, substrate_autonomy_task
+    pool = getattr(app.state, "memory_pg_pool", None)
+    if pool is not None:
+        try:
+            await pool.close()
+        except Exception:
+            pass
+        app.state.memory_pg_pool = None
     if substrate_autonomy_task is not None:
         substrate_autonomy_task.cancel()
         try:
@@ -268,6 +347,7 @@ async def shutdown_event() -> None:
 # ───────────────────────────────────────────────────────────────
 
 app.include_router(api_router)
+app.include_router(memory_router)
 
 # Real-time WS endpoint
 app.add_websocket_route("/ws", websocket_endpoint)

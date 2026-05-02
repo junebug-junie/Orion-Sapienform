@@ -307,6 +307,10 @@ class CapabilitiesResponse(BaseModel):
     service: str
     version: str
     node: str
+    capabilities: Dict[str, Any] = Field(default_factory=dict)
+    backends: Dict[str, Any] = Field(default_factory=dict)
+    supported_metrics: List[str] = Field(default_factory=list)
+    default_metric: Optional[str] = None
     llm_enabled: bool
     llm_transport: str
     llm_bus_route: Optional[str] = None

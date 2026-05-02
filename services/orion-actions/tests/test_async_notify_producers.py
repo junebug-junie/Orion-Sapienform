@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from app.main import (
     ACTION_DAILY_METACOG_V1,
     ACTION_DAILY_PULSE_V1,
+    _build_post_persist_journal_email_request,
+    _build_post_persist_journal_message_payload,
     _daily_notify_request,
     _build_scheduler_daily_journal_email_request,
     _build_scheduler_daily_journal_message_payload,
@@ -18,6 +20,7 @@ from app.main import (
 )
 from app.workflow_schedule_store import WorkflowScheduleStore
 from orion.journaler import build_manual_trigger, build_scheduler_trigger
+from orion.journaler.schemas import JournalEntryWriteV1
 from orion.schemas.workflow_execution import WorkflowDispatchRequestV1
 
 
@@ -255,6 +258,29 @@ def test_scheduler_daily_journal_helper_skips_non_scheduler_or_non_daily() -> No
     }
     draft = {"mode": "manual", "title": "Manual Journal", "body": "Operator-authored note."}
     assert _is_scheduler_daily_journal(trigger=manual_trigger, write_payload=write_payload, draft=draft) is False
+
+
+def test_post_persist_journal_helpers_build_message_and_email_request() -> None:
+    entry = JournalEntryWriteV1(
+        entry_id="entry-post-1",
+        author="orion",
+        mode="manual",
+        title="Journal Pass Entry",
+        body="Captured insight text.",
+        source_kind="manual",
+        source_ref="manual-1",
+        correlation_id="corr-post-1",
+    )
+    message_payload = _build_post_persist_journal_message_payload(entry=entry, correlation_id="corr-post-1")
+    assert message_payload["title"] == "Orion — Journal Pass"
+    assert "Journal Pass Entry" in message_payload["preview_text"]
+    assert "Entry ID" in message_payload["full_text"]
+
+    email_req = _build_post_persist_journal_email_request(entry=entry, correlation_id="corr-post-1")
+    assert email_req.event_kind == "orion.journal.persisted"
+    assert email_req.channels_requested == ["email"]
+    assert email_req.dedupe_key == "actions:journal:persisted:entry-post-1"
+    assert email_req.body_text == message_payload["full_text"]
 
 
 def test_send_pending_attention_routes_to_attention_request() -> None:

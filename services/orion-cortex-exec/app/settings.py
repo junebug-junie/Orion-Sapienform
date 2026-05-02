@@ -64,6 +64,30 @@ class Settings(BaseSettings):
     notify_url: str = Field("http://orion-notify:7140", alias="NOTIFY_URL")
     notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
     orion_tz: str = Field("America/Denver", alias="ORION_TZ")
+    orion_situation_enabled: bool = Field(True, alias="ORION_SITUATION_ENABLED")
+    orion_situation_ttl_seconds: int = Field(300, alias="ORION_SITUATION_TTL_SECONDS")
+    orion_situation_prompt_max_chars: int = Field(1200, alias="ORION_SITUATION_PROMPT_MAX_CHARS")
+    orion_situation_timezone: str = Field("America/Denver", alias="ORION_SITUATION_TIMEZONE")
+    orion_situation_location_label: str = Field("Unknown", alias="ORION_SITUATION_LOCATION_LABEL")
+    orion_situation_locality: str | None = Field(None, alias="ORION_SITUATION_LOCALITY")
+    orion_situation_region: str | None = Field(None, alias="ORION_SITUATION_REGION")
+    orion_situation_country: str | None = Field(None, alias="ORION_SITUATION_COUNTRY")
+    orion_situation_location_precision: str = Field("city", alias="ORION_SITUATION_LOCATION_PRECISION")
+    orion_situation_weather_enabled: bool = Field(True, alias="ORION_SITUATION_WEATHER_ENABLED")
+    orion_situation_weather_provider: str = Field("stub", alias="ORION_SITUATION_WEATHER_PROVIDER")
+    orion_situation_weather_lat: float | None = Field(None, alias="ORION_SITUATION_WEATHER_LAT")
+    orion_situation_weather_lon: float | None = Field(None, alias="ORION_SITUATION_WEATHER_LON")
+    orion_situation_weather_ttl_seconds: int = Field(600, alias="ORION_SITUATION_WEATHER_TTL_SECONDS")
+    orion_situation_umbrella_precip_prob_threshold: int = Field(40, alias="ORION_SITUATION_UMBRELLA_PRECIP_PROB_THRESHOLD")
+    orion_situation_jacket_temp_f_threshold: int = Field(55, alias="ORION_SITUATION_JACKET_TEMP_F_THRESHOLD")
+    orion_situation_high_wind_mph_threshold: int = Field(25, alias="ORION_SITUATION_HIGH_WIND_MPH_THRESHOLD")
+    orion_situation_hot_car_temp_f_threshold: int = Field(80, alias="ORION_SITUATION_HOT_CAR_TEMP_F_THRESHOLD")
+    orion_situation_agenda_enabled: bool = Field(False, alias="ORION_SITUATION_AGENDA_ENABLED")
+    orion_situation_lab_context_enabled: bool = Field(True, alias="ORION_SITUATION_LAB_CONTEXT_ENABLED")
+    orion_situation_lab_provider: str = Field("stub", alias="ORION_SITUATION_LAB_PROVIDER")
+    orion_presence_session_ttl_seconds: int = Field(14400, alias="ORION_PRESENCE_SESSION_TTL_SECONDS")
+    orion_presence_default_requestor: str = Field("Juniper", alias="ORION_PRESENCE_DEFAULT_REQUESTOR")
+    orion_presence_persist_allowed: bool = Field(False, alias="ORION_PRESENCE_PERSIST_ALLOWED")
     skills_command_timeout_sec: float = Field(8.0, alias="SKILLS_COMMAND_TIMEOUT_SEC")
     skills_mesh_ops_timeout_sec: float = Field(12.0, alias="SKILLS_MESH_OPS_TIMEOUT_SEC")
     docker_sock_path: str = Field("/var/run/docker.sock", alias="DOCKER_SOCK_PATH")
@@ -113,6 +137,14 @@ class Settings(BaseSettings):
     endogenous_runtime_sql_database_url: str = Field(
         "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney",
         alias="ENDOGENOUS_RUNTIME_SQL_DATABASE_URL",
+    )
+    world_pulse_stance_enabled: bool = Field(False, alias="WORLD_PULSE_STANCE_ENABLED")
+    world_pulse_stance_max_topics: int = Field(5, alias="WORLD_PULSE_STANCE_MAX_TOPICS")
+    world_pulse_stance_min_confidence: float = Field(0.65, alias="WORLD_PULSE_STANCE_MIN_CONFIDENCE")
+    world_pulse_stance_max_age_hours: int = Field(36, alias="WORLD_PULSE_STANCE_MAX_AGE_HOURS")
+    world_pulse_politics_stance_default: str = Field(
+        "only_when_requested",
+        alias="WORLD_PULSE_POLITICS_STANCE_DEFAULT",
     )
 
     class Config:

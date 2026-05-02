@@ -36,6 +36,24 @@ from .endogenous_runtime_record import EndogenousRuntimeRecordSQL
 from .endogenous_runtime_audit import EndogenousRuntimeAuditSQL
 from .calibration_profile_audit import CalibrationProfileAuditSQL
 from .calibration_profile_state import CalibrationProfileStateSQL
+from .world_pulse import (
+    WorldPulseArticleClusterSQL,
+    WorldPulseArticleSQL,
+    WorldPulseClaimSQL,
+    WorldPulseContextCapsuleSQL,
+    WorldPulseDigestItemSQL,
+    WorldPulseDigestSQL,
+    WorldPulseEntitySQL,
+    WorldPulseEventSQL,
+    WorldPulseHubMessageSQL,
+    WorldPulseLearningDeltaSQL,
+    WorldPulsePublishStatusSQL,
+    WorldPulseRunSQL,
+    WorldPulseSituationBriefSQL,
+    WorldPulseSituationChangeSQL,
+    WorldPulseWorthReadingSQL,
+    WorldPulseWorthWatchingSQL,
+)
 
 __all__ = [
     "CollapseEnrichment",
@@ -70,4 +88,20 @@ __all__ = [
     "EndogenousRuntimeAuditSQL",
     "CalibrationProfileAuditSQL",
     "CalibrationProfileStateSQL",
+    "WorldPulseRunSQL",
+    "WorldPulseDigestSQL",
+    "WorldPulseDigestItemSQL",
+    "WorldPulseArticleSQL",
+    "WorldPulseArticleClusterSQL",
+    "WorldPulseClaimSQL",
+    "WorldPulseEventSQL",
+    "WorldPulseHubMessageSQL",
+    "WorldPulseEntitySQL",
+    "WorldPulseSituationBriefSQL",
+    "WorldPulseSituationChangeSQL",
+    "WorldPulseLearningDeltaSQL",
+    "WorldPulseWorthReadingSQL",
+    "WorldPulseWorthWatchingSQL",
+    "WorldPulseContextCapsuleSQL",
+    "WorldPulsePublishStatusSQL",
 ]

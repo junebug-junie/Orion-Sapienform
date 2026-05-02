@@ -104,6 +104,24 @@ def _normalize_mode(value: Any, *, default_mode: str, auto_default_enabled: bool
     return "auto" if auto_default_enabled else default_mode
 
 
+def _normalize_skill_runner_lane(
+    *,
+    payload: Dict[str, Any],
+    selected_ui_route: str,
+    selected_verbs: list[str],
+) -> tuple[str, list[str]]:
+    if not _normalize_flag(payload.get("skill_runner_origin"), default=False):
+        return selected_ui_route, selected_verbs
+    lane = str(payload.get("skill_runner_lane") or "").strip().lower()
+    if lane == "quick":
+        return "brain", ["chat_quick"]
+    if lane == "agent":
+        return "agent", []
+    if lane == "brain":
+        return "brain", selected_verbs
+    return selected_ui_route, selected_verbs
+
+
 def _normalize_flag(value: Any, *, default: bool = False) -> bool:
     if value is None:
         return default
@@ -256,6 +274,12 @@ def build_cortex_chat_request(
         auto_default_enabled=auto_default_enabled,
     )
     social_room = is_social_room_payload(payload)
+    selected_verbs = [str(v).strip() for v in (payload.get("verbs") or []) if str(v).strip()]
+    selected_ui_route, selected_verbs = _normalize_skill_runner_lane(
+        payload=payload,
+        selected_ui_route=selected_ui_route,
+        selected_verbs=selected_verbs,
+    )
     if social_room:
         selected_ui_route = "brain"
     mode = selected_ui_route
@@ -288,8 +312,6 @@ def build_cortex_chat_request(
         options["tool_execution_policy"] = "none"
         options["action_execution_policy"] = "none"
         options["no_write_active"] = True
-
-    selected_verbs = [str(v).strip() for v in (payload.get("verbs") or []) if str(v).strip()]
 
     workflow_match = None
     workflow_management = None
@@ -359,6 +381,12 @@ def build_cortex_chat_request(
         },
         "available_workflows": workflow_registry_payload(user_invocable_only=True),
     }
+    if isinstance(payload.get("presence_context"), dict):
+        metadata["presence_context"] = payload.get("presence_context")
+    if isinstance(payload.get("surface_context"), dict):
+        metadata["surface_context"] = payload.get("surface_context")
+    if payload.get("browser_client_id"):
+        metadata["browser_client_id"] = str(payload.get("browser_client_id"))
     mutation_cognition_context = payload.get("mutation_cognition_context")
     if isinstance(mutation_cognition_context, dict) and mutation_cognition_context:
         metadata["mutation_cognition_context"] = mutation_cognition_context

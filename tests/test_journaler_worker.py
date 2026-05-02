@@ -73,6 +73,20 @@ class TestJournalerSchemasAndWorker(unittest.TestCase):
         self.assertEqual(req.context.metadata["journal_mode"], "manual")
         self.assertTrue(req.recall.enabled)
 
+    def test_compose_request_recall_can_be_disabled_explicitly(self):
+        trigger = build_scheduler_trigger(summary="Daily journal cadence for 2026-04-26.", source_ref="2026-04-26")
+        self.assertEqual(journal_mode_for_trigger(trigger), "daily")
+        req = build_compose_request(
+            trigger,
+            session_id="journal-session",
+            user_id="juniper_primary",
+            trace_id="corr-1",
+            recall_profile="reflect.v1",
+            recall_enabled=False,
+        )
+        self.assertEqual(req.context.metadata["journal_trigger"]["source_kind"], "scheduler")
+        self.assertFalse(req.recall.enabled)
+
     def test_stored_collapse_trigger_maps_to_response_mode(self):
         trigger = build_collapse_stored_trigger(
             CollapseMirrorStoredV1(

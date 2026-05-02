@@ -66,6 +66,18 @@ class Settings(BaseSettings):
     )
     BIOMETRICS_PUSH_INTERVAL_SEC: float = Field(default=5.0, alias="BIOMETRICS_PUSH_INTERVAL_SEC")
 
+    # --- Organ signal gateway inspect (Phase 2b Hub) ---
+    SIGNALS_INSPECT_ENABLED: bool = Field(default=True, alias="SIGNALS_INSPECT_ENABLED")
+    SIGNALS_INSPECT_SUBSCRIBE_PATTERN: str = Field(
+        default="orion:signals:*",
+        alias="SIGNALS_INSPECT_SUBSCRIBE_PATTERN",
+    )
+    SIGNALS_INSPECT_WINDOW_SEC: float = Field(default=45.0, alias="SIGNALS_INSPECT_WINDOW_SEC")
+    SIGNALS_TRACE_CACHE_ENABLED: bool = Field(default=True, alias="SIGNALS_TRACE_CACHE_ENABLED")
+    TRACE_CACHE_MAX_TRACES: int = Field(default=200, alias="TRACE_CACHE_MAX_TRACES")
+    TRACE_CACHE_TTL_SEC: float = Field(default=300.0, alias="TRACE_CACHE_TTL_SEC")
+    TRACE_CACHE_MAX_SIGNALS_PER_TRACE: int = Field(default=64, alias="TRACE_CACHE_MAX_SIGNALS_PER_TRACE")
+
     # --- In-app Notifications (Hub) ---
     NOTIFY_IN_APP_ENABLED: bool = Field(default=True, alias="NOTIFY_IN_APP_ENABLED")
     NOTIFY_IN_APP_CHANNEL: str = Field(default="orion:notify:in_app", alias="NOTIFY_IN_APP_CHANNEL")

@@ -98,7 +98,7 @@ Redis bus (organ channels, see settings.ORGAN_CHANNELS)
 | Area | Notes |
 |------|--------|
 | **Real adapters** | Replace stubs with payload shapes from each service; align `can_handle` with actual `env.kind` + channel patterns. |
-| **Hub** | Spec’s `GET /api/signals/active` and trace explorer live on Hub; gateway exposes `/signals/active` only. |
+| **Hub** | **`GET /api/signals/active`** and **`GET /api/signals/trace/{trace_id}`** on Hub (`services/orion-hub/scripts/signals_inspect_cache.py`, `api_routes.py`) with in-memory cache + bounded trace store (`TRACE_CACHE_*`, `SIGNALS_INSPECT_*` in Hub settings). Gateway still exposes **`/signals/active`** for local operator reads. |
 | **End-to-end mesh** | Subscribe patterns vs real traffic; avoid duplicate processing; confirm no channel gaps. |
 | **Consumer audit (`signal_id`)** | Deterministic ids are **64-hex** (SHA-256) or **32-hex** (UUID fallback). Audit Hub, substrate, logging, and UI for **fixed-width** or truncated-hash assumptions. |
 | **Wearables / DCGM** | Collector comments only; no `orion-wearable-bridge`. |

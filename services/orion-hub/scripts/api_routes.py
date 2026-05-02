@@ -3381,6 +3381,31 @@ async def substrate_page() -> HTMLResponse:
     )
 
 
+@router.get("/api/signals/active")
+async def api_signals_active() -> Dict[str, Any]:
+    """Latest ``OrionSignalV1`` per ``organ_id`` from Hub in-memory cache (Phase 2b)."""
+    import scripts.main as hub_main
+
+    cache = getattr(hub_main, "signals_inspect_cache", None)
+    if cache is None or not cache.enabled:
+        return {"as_of": datetime.now(timezone.utc).isoformat(), "signals": {}}
+    return await cache.get_active()
+
+
+@router.get("/api/signals/trace/{trace_id}")
+async def api_signals_trace(trace_id: str) -> Dict[str, Any]:
+    """Rolling trace cache by ``otel_trace_id`` (bounded by ``TRACE_CACHE_*`` settings)."""
+    import scripts.main as hub_main
+
+    cache = getattr(hub_main, "signals_inspect_cache", None)
+    if cache is None or not cache.enabled or not cache.trace_enabled:
+        raise HTTPException(status_code=503, detail="signals_trace_cache_disabled")
+    body = await cache.get_trace(trace_id)
+    if body is None:
+        raise HTTPException(status_code=404, detail="trace_not_cached")
+    return body
+
+
 @router.get("/api/substrate/overview")
 def api_substrate_overview(limit: int = Query(default=10, ge=1, le=100)) -> Dict[str, Any]:
     return _graphdb_overview_payload(limit=limit)

@@ -29,6 +29,8 @@ def extract_autonomy_payload(cortex_result: Any) -> Dict[str, Any]:
         "presence_context",
         "temporal_phase",
         "situation_affordances",
+        "autonomy_state_v2_preview",
+        "autonomy_state_delta",
     ):
         value = metadata.get(key)
         if value is not None:

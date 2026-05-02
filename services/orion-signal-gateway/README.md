@@ -100,7 +100,7 @@ Default wiring uses Redis **pub/sub** (see mesh compose). Expect **at-most-once*
 
 ## Graduation / dedupe
 
-First-party consumers should treat **`signal_id`** (and when present **`source_event_id`**) as the idempotency key. Optional gateway flag **`suppress_adapted_when_passthrough`** (future) may dedupe by `(organ_id, source_event_id)`; until then, consumers dedupe on ingest.
+First-party consumers should treat **`signal_id`** (and when present **`source_event_id`**) as the idempotency key. Set **`SUPPRESS_ADAPTED_WHEN_PASSTHROUGH=true`** (with **`PASSTHROUGH_DEDUPE_WINDOW_SEC`**) to skip adapter emits when a passthrough for the same **`(organ_id, source_event_id)`** was seen recently; otherwise consumers dedupe on ingest.
 
 ## Self-hardening graduation
 

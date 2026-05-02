@@ -521,11 +521,14 @@ loadDismissedIds();
   const hubTabButton = document.getElementById("hubTabButton");
   const topicStudioTabButton = document.getElementById("topicStudioTabButton");
   const serviceLogsTabButton = document.getElementById("serviceLogsTabButton");
-  // legacy id kept for test/backward-compat: const substrateTabButton = document.getElementById("substratePageLink");
   const substrateLegacyTabButton = document.getElementById("substratePageLink");
-  const substrateTabButton = document.getElementById("substrateTabButton") || substrateLegacyTabButton;
+  const substrateTabButton =
+    document.getElementById("substrateTabButton") || substrateLegacyTabButton;
+  const memoryTabButton = document.getElementById("memoryTabButton");
+  const memoryPanel = document.getElementById("memory");
   const hubTabPanel = document.getElementById("hub") || document.getElementById("hubTabPanel");
-  const topicStudioPanel = document.getElementById("topic-studio") || document.getElementById("topicStudioPanel");
+  const topicStudioPanel =
+    document.getElementById("topic-studio") || document.getElementById("topicStudioPanel");
   const serviceLogsPanel = document.getElementById("service-logs");
   const substratePanel = document.getElementById("substrate");
   const substratePanelFrame = document.getElementById("substratePanelFrame");
@@ -781,11 +784,13 @@ loadDismissedIds();
       !serviceLogsPanel ||
       !substratePanel ||
       !pressurePanel ||
+      !memoryPanel ||
       !hubTabButton ||
       !topicStudioTabButton ||
       !serviceLogsTabButton ||
       !substrateTabButton ||
-      !pressureAnalyticsTabButton
+      !pressureAnalyticsTabButton ||
+      !memoryTabButton
     ) {
       return;
     }
@@ -793,16 +798,19 @@ loadDismissedIds();
     const isTopicStudio = tabKey === "topic-studio";
     const isServiceLogs = tabKey === "service-logs";
     const isSubstrate = tabKey === "substrate";
+    const isMemory = tabKey === "memory";
     const isPressure = tabKey === "pressure";
     hubTabPanel.classList.toggle("hidden", !isHub);
     topicStudioPanel.classList.toggle("hidden", !isTopicStudio);
     serviceLogsPanel.classList.toggle("hidden", !isServiceLogs);
     substratePanel.classList.toggle("hidden", !isSubstrate);
+    memoryPanel.classList.toggle("hidden", !isMemory);
     pressurePanel.classList.toggle("hidden", !isPressure);
     styleTabButton(hubTabButton, isHub);
     styleTabButton(topicStudioTabButton, isTopicStudio);
     styleTabButton(serviceLogsTabButton, isServiceLogs);
     styleTabButton(substrateTabButton, isSubstrate);
+    styleTabButton(memoryTabButton, isMemory);
     styleTabButton(pressureAnalyticsTabButton, isPressure);
   }
 
@@ -817,6 +825,8 @@ loadDismissedIds();
       setActiveTab("substrate");
     } else if (h === "#pressure") {
       setActiveTab("pressure");
+    } else if (h === "#memory") {
+      setActiveTab("memory");
     } else {
       setActiveTab("hub");
     }
@@ -8911,7 +8921,9 @@ loadDismissedIds();
     serviceLogsTabButton &&
     substrateTabButton &&
     pressureAnalyticsTabButton &&
-    pressurePanel
+    pressurePanel &&
+    memoryTabButton &&
+    memoryPanel
   ) {
     hubTabButton.addEventListener("click", () => {
       setActiveTab("hub");
@@ -8930,6 +8942,11 @@ loadDismissedIds();
       event.preventDefault();
       setActiveTab("substrate");
       history.replaceState(null, "", "#substrate");
+    });
+    memoryTabButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      setActiveTab("memory");
+      history.replaceState(null, "", "#memory");
     });
     pressureAnalyticsTabButton.addEventListener("click", (event) => {
       event.preventDefault();

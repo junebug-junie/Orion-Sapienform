@@ -14,4 +14,4 @@ pydantic-settings==2.5.2
 tzdata==2025.3
 SQLAlchemy==2.0.43
 psycopg2-binary==2.9.9
-asyncpg==0.29.*
+asyncpg==0.29.0

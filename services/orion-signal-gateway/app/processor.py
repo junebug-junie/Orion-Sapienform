@@ -1,5 +1,6 @@
 """Signal processing loop: adapts raw bus events into OrionSignalV1 and emits them."""
 import logging
+import time
 from typing import Optional, Tuple
 
 from opentelemetry import trace
@@ -52,6 +53,37 @@ class SignalProcessor:
         self._passthrough_pattern = passthrough_pattern
         self._source = service_ref
         self._passthrough = PassthroughValidator()
+        self._passthrough_dedupe_mono: dict[tuple[str, str], float] = {}
+
+    def _prune_passthrough_dedupe(self) -> None:
+        now = time.monotonic()
+        for k, exp in list(self._passthrough_dedupe_mono.items()):
+            if exp < now:
+                self._passthrough_dedupe_mono.pop(k, None)
+
+    def _passthrough_dedupe_key(self, signal: OrionSignalV1) -> Optional[tuple[str, str]]:
+        sid = (signal.source_event_id or "").strip()
+        if not sid:
+            return None
+        return (signal.organ_id, sid)
+
+    def _should_suppress_adapted(self, signal: OrionSignalV1) -> bool:
+        if not settings.SUPPRESS_ADAPTED_WHEN_PASSTHROUGH:
+            return False
+        key = self._passthrough_dedupe_key(signal)
+        if key is None:
+            return False
+        self._prune_passthrough_dedupe()
+        return self._passthrough_dedupe_mono.get(key, 0.0) > time.monotonic()
+
+    def _record_passthrough_dedupe(self, signal: OrionSignalV1) -> None:
+        if not settings.SUPPRESS_ADAPTED_WHEN_PASSTHROUGH:
+            return
+        key = self._passthrough_dedupe_key(signal)
+        if key is None:
+            return
+        self._prune_passthrough_dedupe()
+        self._passthrough_dedupe_mono[key] = time.monotonic() + float(settings.PASSTHROUGH_DEDUPE_WINDOW_SEC)
 
     def _resolve_parent_otel_context(
         self, signal: OrionSignalV1, prior: dict[str, OrionSignalV1]
@@ -136,6 +168,7 @@ class SignalProcessor:
                 return
             signal = self._passthrough.validate(payload)
             if signal is not None:
+                self._record_passthrough_dedupe(signal)
                 await self._emit_passthrough(signal)
             return
 
@@ -153,6 +186,13 @@ class SignalProcessor:
                     norm_ctx=norm_ctx,
                 )
                 if signal is not None:
+                    if self._should_suppress_adapted(signal):
+                        logger.debug(
+                            "Suppressing adapted signal organ=%s kind=%s (recent passthrough same source_event_id)",
+                            signal.organ_id,
+                            signal.signal_kind,
+                        )
+                        break
                     signal = with_missed_parent_notes(signal, prior, ORGAN_REGISTRY)
                     await self._emit_traced(signal, prior=prior)
                     break

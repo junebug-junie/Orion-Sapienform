@@ -186,9 +186,13 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         service="orion-cortex-exec",
         signal_kinds=["metacog_perception", "coherence_state", "goal_pressure"],
         canonical_dimensions=["coherence", "tension", "goal_pressure", "confidence"],
-        causal_parent_organs=["social_memory", "recall"],
+        # recall omitted here to keep static causal_parent_organs acyclic (recall→autonomy→graph_cognition).
+        causal_parent_organs=["social_memory"],
         bus_channels=["orion:cognition:trace", "orion:metacog:trace"],
-        notes=[]
+        notes=[
+            "Recall-linked metacog is carried via autonomy/recall in the mesh; not duplicated as a "
+            "registry parent edge to avoid a recall↔graph_cognition cycle in static DAG validation."
+        ],
     ),
     "autonomy": OrionOrganRegistryEntry(
         organ_id="autonomy",
@@ -278,12 +282,16 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         service="orion-planner-react",
         signal_kinds=["plan_state", "goal_progress"],
         canonical_dimensions=["level", "confidence", "surprise"],
-        causal_parent_organs=["autonomy", "agent_chain"],
+        # agent_chain omitted to keep static DAG acyclic (agent_chain already lists planner as parent).
+        causal_parent_organs=["autonomy"],
         bus_channels=[
             "orion:exec:request:PlannerReactService",
             "orion:exec:result:PlannerReactService",
         ],
-        notes=[]
+        notes=[
+            "agent_chain is not listed as a causal parent to avoid a planner↔agent_chain cycle in static "
+            "DAG validation; execution outcomes still reach planner via autonomy and bus contracts."
+        ],
     ),
     "topic_foundry": OrionOrganRegistryEntry(
         organ_id="topic_foundry",
@@ -313,6 +321,6 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
 #     → collapse_mirror [endogenous]
 #       → journaler [endogenous]
 #         → recall [endogenous]    ← also receives: autonomy, social_memory
-#           → chat_stance [endogenous]   ← also receives: autonomy, equilibrium, social_memory, spark
+#           → chat_stance [endogenous]   ← also receives: autonomy, equilibrium, social_memory, spark_introspector
 #             → (chat turn output)
 #               → recall [next turn]   ← temporal feedback loop

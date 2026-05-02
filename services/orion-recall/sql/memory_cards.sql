@@ -1,4 +1,7 @@
--- Memory Cards v1 — idempotent DDL for conjourney Postgres
+-- Memory cards schema (Orion Memory Cards v1). Idempotent DDL for apply_memory_cards_schema.
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 CREATE TABLE IF NOT EXISTS memory_cards (
     card_id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     slug             text UNIQUE NOT NULL,
@@ -40,8 +43,8 @@ CREATE TABLE IF NOT EXISTS memory_card_history (
     edge_id    uuid REFERENCES memory_card_edges(edge_id) ON DELETE SET NULL,
     op         text NOT NULL,
     actor      text NOT NULL,
-    before     jsonb,
-    after      jsonb,
+    "before"   jsonb,
+    "after"    jsonb,
     created_at timestamptz NOT NULL DEFAULT now()
 );
 

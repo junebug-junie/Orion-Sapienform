@@ -19,6 +19,7 @@ from scripts.websocket_handler import websocket_endpoint
 from scripts.service_logs_ws import service_logs_websocket_endpoint
 from scripts.biometrics_cache import BiometricsCache
 from scripts.notification_cache import NotificationCache
+from scripts.signals_inspect_cache import SignalsInspectCache
 
 from orion.core.bus.async_service import OrionBusAsync
 from scripts.bus_clients.cortex_client import CortexGatewayClient
@@ -114,6 +115,7 @@ tts_client: Optional[TTSClient] = None
 html_content: str = "<html><body><h1>Error loading UI</h1></body></html>"
 biometrics_cache: Optional[BiometricsCache] = None
 notification_cache: Optional[NotificationCache] = None
+signals_inspect_cache: Optional[SignalsInspectCache] = None
 presence_state: Optional["PresenceState"] = None
 presence_context_store: Optional["PresenceContextStore"] = None
 substrate_autonomy_task: Optional[asyncio.Task] = None
@@ -189,7 +191,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, presence_state, presence_context_store, substrate_autonomy_task
+    global bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, signals_inspect_cache, presence_state, presence_context_store, substrate_autonomy_task
 
     # ------------------------------------------------------------
     # Orion Bus Initialization
@@ -226,11 +228,34 @@ async def startup_event():
             if settings.NOTIFY_IN_APP_ENABLED:
                 await notification_cache.start(bus)
 
+            sic: Optional[SignalsInspectCache] = None
+            try:
+                sic = SignalsInspectCache(
+                    enabled=settings.SIGNALS_INSPECT_ENABLED,
+                    subscribe_pattern=settings.SIGNALS_INSPECT_SUBSCRIBE_PATTERN,
+                    window_sec=settings.SIGNALS_INSPECT_WINDOW_SEC,
+                    trace_enabled=settings.SIGNALS_TRACE_CACHE_ENABLED,
+                    trace_max_traces=settings.TRACE_CACHE_MAX_TRACES,
+                    trace_ttl_sec=settings.TRACE_CACHE_TTL_SEC,
+                    trace_max_signals_per_trace=settings.TRACE_CACHE_MAX_SIGNALS_PER_TRACE,
+                )
+                await sic.start(bus)
+                signals_inspect_cache = sic
+            except Exception as exc:
+                logger.warning("signals_inspect_cache_start_failed error=%s", exc)
+                if sic is not None:
+                    try:
+                        await sic.stop()
+                    except Exception:
+                        pass
+                signals_inspect_cache = None
+
         except Exception as e:
             logger.error(f"Failed to initialize OrionBus: {e}")
             bus = None
             cortex_client = None
             tts_client = None
+            signals_inspect_cache = None
     else:
         logger.warning("OrionBus is DISABLED — Hub will not publish/subscribe.")
 
@@ -296,32 +321,39 @@ async def startup_event():
         logger.error("CRITICAL: 'templates/index.html' not found.")
         html_content = "<html><body><h1>UI template missing</h1></body></html>"
 
-    if settings.RECALL_PG_DSN and str(settings.RECALL_PG_DSN).strip():
+    dsn = str(getattr(settings, "RECALL_PG_DSN", "") or "").strip()
+    if dsn:
         try:
             import asyncpg  # type: ignore
         except Exception:
             asyncpg = None
         if asyncpg is not None:
             try:
-                pool = await asyncpg.create_pool(dsn=settings.RECALL_PG_DSN, min_size=1, max_size=6)
-                app.state.memory_pg_pool = pool
-                logger.info("Hub memory cards Postgres pool ready.")
+                app.state.memory_pg_pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=6)
+                logger.info("memory_pg_pool_ready dsn_configured=true")
             except Exception as exc:
-                logger.warning("Hub memory cards pool failed: %s", exc)
+                logger.error("memory_pg_pool_failed error=%s", exc)
                 app.state.memory_pg_pool = None
+        else:
+            app.state.memory_pg_pool = None
+            logger.warning("memory_pg_pool_skipped reason=asyncpg_import_failed")
+    else:
+        app.state.memory_pg_pool = None
+        logger.info("memory_pg_pool_skipped reason=RECALL_PG_DSN_unset")
 
     logger.info("Startup complete — Hub is ready.")
 
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus, biometrics_cache, notification_cache, substrate_autonomy_task
+    global bus, biometrics_cache, notification_cache, signals_inspect_cache, substrate_autonomy_task
     pool = getattr(app.state, "memory_pg_pool", None)
     if pool is not None:
         try:
             await pool.close()
-        except Exception:
-            pass
+            logger.info("memory_pg_pool_closed")
+        except Exception as exc:
+            logger.warning("memory_pg_pool_close_error error=%s", exc)
         app.state.memory_pg_pool = None
     if substrate_autonomy_task is not None:
         substrate_autonomy_task.cancel()
@@ -334,6 +366,8 @@ async def shutdown_event() -> None:
         await biometrics_cache.stop()
     if notification_cache is not None:
         await notification_cache.stop()
+    if signals_inspect_cache is not None:
+        await signals_inspect_cache.stop()
     if bus is not None:
         try:
             await bus.close()

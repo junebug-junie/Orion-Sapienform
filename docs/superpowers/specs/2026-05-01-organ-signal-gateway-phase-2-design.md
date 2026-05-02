@@ -54,7 +54,7 @@ Errata for phase-1 doc contradictions (test tree, limitations) are **closed in t
 
 | Issue | Hardening deliverable |
 |--------|------------------------|
-| **16-hex `signal_id`** | Document collision probability; **prefer** widening to **32-hex** (full SHA-256 hex of the same preimage) for newly emitted signals where backward compatibility allows; otherwise document **merge/dedupe** behavior when collision detected (metric + log). |
+| **16-hex `signal_id`** | Document collision probability; **prefer** widening to **64-hex** (full SHA-256 hex of the same preimage) for newly emitted signals where backward compatibility allows; otherwise document **merge/dedupe** behavior when collision detected (metric + log). |
 | **Graduation duplicates** | Specify policy: **(preferred)** optional gateway behavior **`suppress_adapted_when_passthrough`** keyed by `(organ_id, source_event_id)` or dedupe window; **or** require **consumers** to dedupe by `signal_id` / `source_event_id`. Pick one default for Orion first-party consumers and document. |
 | **Collector vs biometrics** | Document **single source of truth** for GPU narrative: organ-bus biometrics adapter vs DCGM/hostmetrics. Default stance: **mesh causal chain** uses **gateway-emitted biometrics signals**; collector metrics are **parallel infra telemetry** for dashboards, not alternate parents in the DAG unless explicitly wired. |
 | **`notes` max 5** | Define **append priority** when adapter, gateway, and validation compete: e.g. **(1)** gateway safety / lineage, **(2)** adapter degradation, **(3)** validation; **drop from lowest priority** with one **`notes`** entry recording truncation (`notes_truncated: true` is not in schema — use a final slot text like `"[truncated]"` within the five strings) or merge last two. |
@@ -106,7 +106,7 @@ Before or alongside each adapter milestone:
 
 - Adapters stay in **`orion/signals/adapters/`**; stateless; **`NormalizationContext`** owned by gateway.
 - **Graceful degradation:** malformed or partial payloads → valid `OrionSignalV1` with low `confidence` (e.g. `0.1`) and a **`notes`** entry; drop only truly irrelevant events.
-- **`signal_id`:** Follow phase-1 rules (deterministic from `source_event_id` when present; UUID otherwise). When touching stub code, align short-hex inconsistencies called out in offboarding.
+- **`signal_id`:** Follow phase-1 rules (deterministic from `source_event_id` when present; UUID otherwise). When touching stub code, align **16- vs 64-hex** inconsistencies called out in offboarding and the **First pass → Important** row (prefer **64-hex** full SHA-256 of the preimage where compatibility allows).
 - **OTEL on adapter path:** Adapters do not set `otel_*`; gateway continues to own span creation. Endogenous adapters still resolve causal parents from `prior_signals` for `causal_parents` IDs.
 
 ### Parent trace disagreement (small hardening in 2a)

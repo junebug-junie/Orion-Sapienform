@@ -7,6 +7,10 @@
 
 This document scopes **only** Hub operator UX and HTTP parity for Phase 4. It does not repeat parent ground rules (§2), lane semantics (§3), or data model (§4). **Phase 5, Phase 6, recall/cortex hardening, and v1.5-adjacent work are out of scope** for this delta; see **§9** for the full inventory and pointers to the parent spec. Where this doc conflicts with the parent, **the parent wins** unless this doc explicitly supersedes a *path* or *integration* detail listed below.
 
+### Post-merge note — Stage 1 auto-extractor wiring (2026-05-02)
+
+A minimal **Stage 1** consumer is implemented in `services/orion-cortex-orch/app/memory_extractor.py`: when `ORION_AUTO_EXTRACTOR_ENABLED=true`, `RECALL_PG_DSN` is configured on cortex-orch, and a `chat.history` turn envelope is received on `orion:chat:history:turn`, regex candidates from `orion/core/storage/memory_extraction.py` (currently only the `_PLACE` / “lives in” style pattern) may insert `pending_review` rows with `provenance=auto_extractor` and `subschema.auto_extractor_fingerprint` for dedupe (`card_exists_by_fingerprint` in `orion/core/storage/memory_cards.py`). Defaults remain **off** per parent §2. **Still explicitly deferred** vs parent §11 / this doc §9.1: full §5 pattern tables, session counting and auto-promote thresholds, contradiction handling vs `always_inject`, Stage 2 LLM extraction (`ORION_AUTO_EXTRACTOR_STAGE2_ENABLED` must keep raising `NotImplementedError`), distiller CLI + Hub `501` distill endpoint, and operator distiller productization.
+
 ---
 
 ## 1. Purpose

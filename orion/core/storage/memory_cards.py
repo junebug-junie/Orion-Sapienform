@@ -23,13 +23,26 @@ from orion.core.contracts.memory_cards import (
 
 logger = logging.getLogger(__name__)
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-_MEMORY_CARDS_SQL = _REPO_ROOT / "services" / "orion-recall" / "sql" / "memory_cards.sql"
+
+def _memory_cards_sql_path() -> Path:
+    """DDL path: bundled under this package (Hub Docker COPY orion only) or repo services/orion-recall."""
+    here = Path(__file__).resolve().parent
+    bundled = here / "sql" / "memory_cards.sql"
+    if bundled.is_file():
+        return bundled
+    repo_root = Path(__file__).resolve().parents[3]
+    legacy = repo_root / "services" / "orion-recall" / "sql" / "memory_cards.sql"
+    return legacy
 
 
 def apply_memory_cards_schema(dsn: str) -> None:
     """Apply idempotent DDL using psycopg2 (sync bootstrap)."""
-    sql = _MEMORY_CARDS_SQL.read_text(encoding="utf-8")
+    sql_path = _memory_cards_sql_path()
+    if not sql_path.is_file():
+        raise FileNotFoundError(
+            f"memory_cards DDL not found at {sql_path} (expected bundled sql/memory_cards.sql or repo services/orion-recall/sql/memory_cards.sql)"
+        )
+    sql = sql_path.read_text(encoding="utf-8")
     with psycopg2.connect(dsn) as conn:
         conn.autocommit = True
         with conn.cursor() as cur:
@@ -214,6 +227,23 @@ async def insert_card(pool: asyncpg.Pool, card: MemoryCardCreateV1, *, actor: st
                 json.dumps(snap["j"]),
             )
             return cid
+
+
+async def card_exists_by_fingerprint(pool: asyncpg.Pool, fingerprint: str) -> bool:
+    """True if any row has subschema.auto_extractor_fingerprint matching (Stage 1 dedupe)."""
+    fp = (fingerprint or "").strip()
+    if not fp:
+        return False
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT 1 FROM memory_cards
+            WHERE subschema ->> 'auto_extractor_fingerprint' = $1
+            LIMIT 1
+            """,
+            fp,
+        )
+        return row is not None
 
 
 async def get_card(pool: asyncpg.Pool, card_id_or_slug: str) -> Optional[MemoryCardV1]:

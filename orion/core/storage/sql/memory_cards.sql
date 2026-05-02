@@ -1,5 +1,5 @@
 -- Memory cards schema (Orion Memory Cards v1). Idempotent DDL for apply_memory_cards_schema.
--- Hub / shared DAL also ship a copy at orion/core/storage/sql/memory_cards.sql — keep them in sync when editing DDL.
+-- Kept beside orion.core.storage so Hub Docker images (COPY orion /app/orion) include DDL without services/orion-recall.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 

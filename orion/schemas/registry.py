@@ -359,6 +359,7 @@ from orion.schemas.telemetry.spark import SparkStateSnapshotV1, SparkTelemetryPa
 from orion.schemas.telemetry.spark_ack import SparkStateSnapshotAckV1
 from orion.schemas.telemetry.spark_candidate import SparkCandidateV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
+from orion.signals.models import OrionSignalV1
 from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1, SystemHealthV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
@@ -867,6 +868,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "DockerPruneSnapshotV1": DockerPruneSnapshotV1,
     "MeshOpsRoundResultV1": MeshOpsRoundResultV1,
     "OpsMeshRoundJournalEntryV1": OpsMeshRoundJournalEntryV1,
+    "OrionSignalV1": OrionSignalV1,
     "TopicSummaryEventV1": TopicSummaryEventV1,
     "TopicShiftEventV1": TopicShiftEventV1,
     "TopicRailAssignedV1": TopicRailAssignedV1,

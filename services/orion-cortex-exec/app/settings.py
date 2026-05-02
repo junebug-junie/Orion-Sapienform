@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -146,6 +146,13 @@ class Settings(BaseSettings):
         "only_when_requested",
         alias="WORLD_PULSE_POLITICS_STANCE_DEFAULT",
     )
+
+    @field_validator("orion_situation_weather_lat", "orion_situation_weather_lon", mode="before")
+    @classmethod
+    def _blank_env_float_to_none(cls, value: object) -> object:
+        if value is None or value == "":
+            return None
+        return value
 
     class Config:
         env_file = ".env"

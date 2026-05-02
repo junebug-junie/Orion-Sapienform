@@ -19,8 +19,10 @@ from .session import ensure_session
 
 try:
     from asyncpg.exceptions import UniqueViolationError as _AsyncpgUniqueViolationError
+    from asyncpg.exceptions import UndefinedTableError as _AsyncpgUndefinedTableError
 except ImportError:  # pragma: no cover - optional in minimal dev envs
     _AsyncpgUniqueViolationError = None  # type: ignore[misc, assignment]
+    _AsyncpgUndefinedTableError = None  # type: ignore[misc, assignment]
 
 logger = logging.getLogger("orion-hub.memory")
 
@@ -35,6 +37,13 @@ def _pool(request: Request):
     if pool is None:
         raise HTTPException(status_code=503, detail="memory_store_unavailable")
     return pool
+
+
+def _http_if_missing_memory_schema(exc: BaseException) -> None:
+    """Raise 503 if exc is UndefinedTableError; otherwise no-op (caller re-raises or handles)."""
+    if _AsyncpgUndefinedTableError is not None and isinstance(exc, _AsyncpgUndefinedTableError):
+        logger.warning("memory_schema_missing error=%s", exc)
+        raise HTTPException(status_code=503, detail="memory_schema_missing") from exc
 
 
 def _clamp_limit(limit: int, *, default: int = 200, cap: int = 500) -> int:
@@ -83,6 +92,7 @@ async def memory_create_card(
     try:
         cid = await mc_dal.insert_card(pool, card, actor="operator", op="create")
     except Exception as exc:
+        _http_if_missing_memory_schema(exc)
         if _AsyncpgUniqueViolationError is not None and isinstance(exc, _AsyncpgUniqueViolationError):
             logger.warning("memory_create_card duplicate error=%s", exc)
             raise HTTPException(status_code=409, detail="duplicate_card") from exc
@@ -112,16 +122,20 @@ async def memory_list_cards(
     await _need_session(x_orion_session_id)
     pool = _pool(request)
     type_list = _parse_csv(types)
-    rows = await mc_dal.list_cards(
-        pool,
-        status=status,
-        types=type_list,
-        anchor_class=anchor_class,
-        project=project,
-        priority=priority,
-        limit=_clamp_limit(limit),
-        offset=_clamp_offset(offset),
-    )
+    try:
+        rows = await mc_dal.list_cards(
+            pool,
+            status=status,
+            types=type_list,
+            anchor_class=anchor_class,
+            project=project,
+            priority=priority,
+            limit=_clamp_limit(limit),
+            offset=_clamp_offset(offset),
+        )
+    except Exception as exc:
+        _http_if_missing_memory_schema(exc)
+        raise
     return {"items": [r.model_dump(mode="json") for r in rows]}
 
 
@@ -133,12 +147,18 @@ async def memory_get_card(
 ) -> Dict[str, Any]:
     await _need_session(x_orion_session_id)
     pool = _pool(request)
-    card = await mc_dal.get_card(pool, id_or_slug)
-    if not card:
-        raise HTTPException(status_code=404, detail="card_not_found")
-    edges_out = await mc_dal.list_edges(pool, card_id=str(card.card_id), direction="out")
-    edges_in = await mc_dal.list_edges(pool, card_id=str(card.card_id), direction="in")
-    hist = await mc_dal.list_history(pool, card_id=str(card.card_id), limit=50, offset=0)
+    try:
+        card = await mc_dal.get_card(pool, id_or_slug)
+        if not card:
+            raise HTTPException(status_code=404, detail="card_not_found")
+        edges_out = await mc_dal.list_edges(pool, card_id=str(card.card_id), direction="out")
+        edges_in = await mc_dal.list_edges(pool, card_id=str(card.card_id), direction="in")
+        hist = await mc_dal.list_history(pool, card_id=str(card.card_id), limit=50, offset=0)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _http_if_missing_memory_schema(exc)
+        raise
     return {
         "card": card.model_dump(mode="json"),
         "edges_out": [e.model_dump(mode="json") for e in edges_out],
@@ -160,7 +180,11 @@ async def memory_patch_card(
         patch = MemoryCardPatchV1.model_validate(body)
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=e.errors()) from e
-    updated = await mc_dal.update_card(pool, id_or_slug, patch, actor="operator")
+    try:
+        updated = await mc_dal.update_card(pool, id_or_slug, patch, actor="operator")
+    except Exception as exc:
+        _http_if_missing_memory_schema(exc)
+        raise
     if not updated:
         raise HTTPException(status_code=404, detail="card_not_found")
     return updated.model_dump(mode="json")
@@ -179,9 +203,13 @@ async def memory_change_status(
         ch = MemoryCardStatusChangeV1.model_validate(body)
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=e.errors()) from e
-    updated = await mc_dal.change_card_status(
-        pool, card_id, new_status=ch.status, actor="operator", reason=ch.reason
-    )
+    try:
+        updated = await mc_dal.change_card_status(
+            pool, card_id, new_status=ch.status, actor="operator", reason=ch.reason
+        )
+    except Exception as exc:
+        _http_if_missing_memory_schema(exc)
+        raise
     if not updated:
         raise HTTPException(status_code=404, detail="card_not_found")
     return updated.model_dump(mode="json")
@@ -205,6 +233,9 @@ async def memory_add_edge(
         if str(exc) == "hierarchy_cycle":
             raise HTTPException(status_code=400, detail="hierarchy_cycle") from exc
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        _http_if_missing_memory_schema(exc)
+        raise
     return created.model_dump(mode="json")
 
 
@@ -217,7 +248,11 @@ async def memory_delete_edge(
     _require_uuid(edge_id, param="edge_id")
     await _need_session(x_orion_session_id)
     pool = _pool(request)
-    deleted = await mc_dal.remove_edge(pool, edge_id, actor="operator")
+    try:
+        deleted = await mc_dal.remove_edge(pool, edge_id, actor="operator")
+    except Exception as exc:
+        _http_if_missing_memory_schema(exc)
+        raise
     if not deleted:
         raise HTTPException(status_code=404, detail="edge_not_found")
     return {"ok": True}
@@ -250,6 +285,9 @@ async def memory_list_history(
         if str(exc) == "invalid_edge_id":
             raise HTTPException(status_code=400, detail="invalid_edge_id") from exc
         raise
+    except Exception as exc:
+        _http_if_missing_memory_schema(exc)
+        raise
     return {"items": [h.model_dump(mode="json") for h in rows]}
 
 
@@ -271,6 +309,9 @@ async def memory_reverse_history(
         if msg == "reverse_unsupported_op":
             raise HTTPException(status_code=400, detail="reverse_unsupported") from exc
         raise HTTPException(status_code=400, detail=msg) from exc
+    except Exception as exc:
+        _http_if_missing_memory_schema(exc)
+        raise
     return entry.model_dump(mode="json")
 
 
@@ -287,6 +328,9 @@ async def memory_neighborhood(
         return await mc_dal.neighborhood(pool, id_or_slug, hops=hops)
     except LookupError:
         raise HTTPException(status_code=404, detail="card_not_found") from None
+    except Exception as exc:
+        _http_if_missing_memory_schema(exc)
+        raise
 
 
 @router.post("/api/memory/sessions/{session_id}/distill")

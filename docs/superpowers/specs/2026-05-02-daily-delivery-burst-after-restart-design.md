@@ -38,7 +38,7 @@ These statements are the shared mental model for implementation and docs.
 
 ### 3.2 Observability (minimal)
 
-- On each scheduler iteration (or only when a daily job **fires**), emit **structured logs** including: `service`, `scheduler_tick`, `local_date` (per job), `job_key` (e.g. `daily_pulse`, `world_pulse`, `daily_journal`), `restart_dedupe_source` (`memory` vs `durable` once Pillar 2 exists), and **`correlation_id`** where already available.
+- When a daily job **completes successfully**, emit **structured logs** including: `service`, `scheduler_tick`, `local_date` (the persisted cursor date for that job), `job_key` (store keys: `daily_pulse_v1`, `world_pulse`, `daily_metacog_v1`, `daily_journal`), `restart_dedupe_source` (`memory` = no cursor row for that job in the JSON file at process start; `durable` = a row existed at start), `outcome` (`success`), and **`correlation_id`** where already available.
 - Optional metric counters (if the stack already exposes Prometheus elsewhere, align with that pattern; **do not** introduce a new metrics system solely for this spec).
 
 ---
@@ -92,7 +92,7 @@ Reduce the feeling of a **spam burst** when the tray hydrates from `/api/notific
 ### 5.2 Requirements
 
 1. **Display `created_at` vs `received_at`:** `NotificationCache` already sets `received_at` when the Hub ingests the bus message. The UI should show **both** (compact: “Created … · Received …”) where both exist.
-2. **Initial load batching:** On first `loadNotifications()` after page load, if **N ≥ configurable threshold** (default **5**), show **one** summary toast or banner: “**N notifications** loaded (see tray)” instead of firing **N** individual toasts (if toasts are driven per notification today).
+2. **Initial load batching:** On first `loadNotifications()` after page load, if **N ≥ configurable threshold** (default **5**, overridable via `data-notification-batch-threshold` on `#hubNotificationsPanel` in Hub templates), show **one** summary toast or banner: “**N notifications** loaded (see tray)” instead of firing **N** individual toasts (if toasts are driven per notification today).
 3. **Tray ordering:** Keep **newest-first** by `received_at` (fallback `created_at`) unless operator toggles sort (optional; default fixed sort is acceptable for v1).
 4. **Copy:** Tooltip or footnote: “Notifications reflect **server** recent events; refresh reloads the Hub cache, not full history.”
 

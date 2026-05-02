@@ -40,3 +40,10 @@ def fingerprint(card: MemoryCardV1) -> str:
     anchor = (card.anchor_class or "").lower()
     h = hashlib.sha256(f"{anchor}|{norm}".encode("utf-8")).hexdigest()
     return h
+
+
+def fingerprint_from_candidate(cand: CandidateCard) -> str:
+    """Same normalization as fingerprint(MemoryCardV1) for summary + anchor_class."""
+    norm = " ".join((cand.summary or "").lower().split())
+    anchor = (cand.anchor_class or "").lower()
+    return hashlib.sha256(f"{anchor}|{norm}".encode("utf-8")).hexdigest()

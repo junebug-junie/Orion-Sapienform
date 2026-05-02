@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   orion-signal-gateway:
     build:
@@ -12,11 +10,12 @@ services:
       - ORION_BUS_URL=${ORION_BUS_URL:-redis://orion-redis:6379/0}
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED:-true}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    # Uvicorn listens on 8000 inside the image. Default 8879 avoids common 809x host binds (Recall, planner, etc.).
     ports:
-      - "8090:8000"
+      - "${SIGNAL_GATEWAY_HTTP_PORT:-8879}:8000"
     restart: unless-stopped
     networks:
-      - orion-net
+      - app-net
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
@@ -28,9 +27,9 @@ services:
       - "4318:4318"   # OTLP HTTP
       - "8889:8889"   # Prometheus metrics
     networks:
-      - orion-net
+      - app-net
 
 networks:
-  orion-net:
+  app-net:
     external: true
-    name: orion-net
+    name: app-net

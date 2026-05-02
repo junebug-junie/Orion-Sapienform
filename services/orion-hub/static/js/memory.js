@@ -42,6 +42,18 @@
     el.classList.toggle("text-gray-400", !isErr);
   }
 
+  function formatMemoryApiError(err) {
+    const detail = err && err.body && err.body.detail;
+    if (detail === "memory_schema_missing" || (err && err.status === 503 && detail === "memory_schema_missing")) {
+      return "Memory tables are missing or DDL failed. Restart Hub after Postgres is up (Hub applies schema on startup), or check DB permissions (e.g. pgcrypto).";
+    }
+    if (detail === "memory_store_unavailable" || (err && err.status === 503 && detail === "memory_store_unavailable")) {
+      return "Memory store is unavailable. Configure RECALL_PG_DSN on Hub and restart (see the notice under “Memory cards”).";
+    }
+    if (typeof detail === "string") return detail;
+    return (err && err.message) || "Request failed";
+  }
+
   function showSubview(review, all, log, key) {
     [review, all, log].forEach((p) => p && p.classList.add("hidden"));
     const map = { review, all: all, log };
@@ -110,7 +122,7 @@
       });
       setStatus(statusEl, `Loaded ${items.length} card(s).`, false);
     } catch (e) {
-      setStatus(statusEl, e.body?.detail || e.message || "Failed to load", true);
+      setStatus(statusEl, formatMemoryApiError(e), true);
     }
   }
 
@@ -144,7 +156,7 @@
         })));
         setStatus(statusEl, `${items.length} card(s)`, false);
       } catch (e) {
-        setStatus(statusEl, e.body?.detail || e.message || "Failed", true);
+        setStatus(statusEl, formatMemoryApiError(e), true);
       }
     }
     controls.querySelector("#memReloadAll").addEventListener("click", reload);
@@ -189,7 +201,7 @@
                 });
                 row.querySelector("#memHistLoad").click();
               } catch (err) {
-                setStatus(statusEl, err.body?.detail || err.message, true);
+                setStatus(statusEl, formatMemoryApiError(err), true);
               }
             });
             line.appendChild(b);
@@ -197,7 +209,7 @@
           out.appendChild(line);
         });
       } catch (e) {
-        setStatus(statusEl, e.body?.detail || e.message, true);
+        setStatus(statusEl, formatMemoryApiError(e), true);
       }
     });
   }

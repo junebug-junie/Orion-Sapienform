@@ -31,7 +31,9 @@ cd services/orion-signal-gateway
 docker-compose up --build
 ```
 
-Requires the `orion-net` Docker network to exist. Service is reachable at `http://localhost:8090`.
+Requires the `app-net` Docker network to exist (see `docker-compose.yml`).
+
+The container runs Uvicorn on **port 8000**. Compose publishes it on the host as **`SIGNAL_GATEWAY_HTTP_PORT` → 8000** (default **8879** to stay clear of common **809x** ports). Override in `.env` if needed. Gateway URL: `http://localhost:8879` with the defaults.
 
 ### Local (uvicorn)
 
@@ -55,6 +57,7 @@ Copy `.env_example` to `.env` and adjust:
 
 | Variable               | Default                      | Description                       |
 |------------------------|------------------------------|-----------------------------------|
+| `SIGNAL_GATEWAY_HTTP_PORT` | `8879`                   | Host port mapped to container `8000` (compose / curl) |
 | `SERVICE_NAME`         | `orion-signal-gateway`       | Reported in OTEL spans            |
 | `SERVICE_VERSION`      | `0.1.0`                      |                                   |
 | `NODE_NAME`            | `athena`                     | Physical node identifier          |

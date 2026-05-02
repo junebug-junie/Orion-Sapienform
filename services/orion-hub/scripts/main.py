@@ -1,5 +1,6 @@
 # scripts/main.py
 
+import html
 import json
 import logging
 import os
@@ -13,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from scripts.settings import settings
 from scripts.api_routes import router as api_router
+from orion.core.storage.memory_cards import apply_memory_cards_schema
 from scripts.memory_routes import router as memory_router
 import scripts.api_routes as api_routes_runtime
 from scripts.websocket_handler import websocket_endpoint
@@ -331,6 +333,11 @@ async def startup_event():
             try:
                 app.state.memory_pg_pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=6)
                 logger.info("memory_pg_pool_ready dsn_configured=true")
+                try:
+                    apply_memory_cards_schema(dsn)
+                    logger.info("memory_cards_schema_applied ok=true")
+                except Exception as schema_exc:
+                    logger.error("memory_cards_schema_apply_failed error=%s", schema_exc, exc_info=True)
             except Exception as exc:
                 logger.error("memory_pg_pool_failed error=%s", exc)
                 app.state.memory_pg_pool = None
@@ -340,6 +347,28 @@ async def startup_event():
     else:
         app.state.memory_pg_pool = None
         logger.info("memory_pg_pool_skipped reason=RECALL_PG_DSN_unset")
+
+    pool_ok = getattr(app.state, "memory_pg_pool", None) is not None
+    dsn_configured = bool(dsn)
+    if pool_ok:
+        banner_class = "border-emerald-800/60 bg-emerald-950/30 text-emerald-100"
+        banner_text = "Memory store connected. Operator curation and /api/memory/* are available."
+    else:
+        banner_class = "border-amber-800/60 bg-amber-950/40 text-amber-100"
+        if not dsn_configured:
+            banner_text = (
+                "Memory store unavailable: RECALL_PG_DSN is not set. "
+                "Set it to your conjourney Postgres URL (same DB recall uses), then restart Hub."
+            )
+        else:
+            banner_text = (
+                "Memory store unavailable: RECALL_PG_DSN is set but Postgres did not open a pool. "
+                "Check Hub logs, credentials, and database reachability."
+            )
+    if "{{HUB_MEMORY_STORE_READY}}" in html_content:
+        html_content = html_content.replace("{{HUB_MEMORY_STORE_READY}}", "true" if pool_ok else "false")
+        html_content = html_content.replace("{{HUB_MEMORY_STORE_BANNER_CLASS}}", banner_class)
+        html_content = html_content.replace("{{HUB_MEMORY_STORE_BANNER_TEXT}}", html.escape(banner_text))
 
     logger.info("Startup complete — Hub is ready.")
 

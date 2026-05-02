@@ -52,7 +52,8 @@ processors:
     spike_limit_mib: 64
 
 exporters:
-  logging:
+  # logging exporter removed in recent collector distros; debug is the supported console exporter.
+  debug:
     verbosity: normal
     sampling_initial: 5
     sampling_thereafter: 200
@@ -71,9 +72,9 @@ service:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch, resource]
-      exporters: [logging]
+      exporters: [debug]
 
     metrics:
       receivers: [otlp, hostmetrics]
       processors: [memory_limiter, batch, resource]
-      exporters: [logging, prometheus]
+      exporters: [debug, prometheus]

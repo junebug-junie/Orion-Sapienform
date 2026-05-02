@@ -15,7 +15,7 @@ This spec defines:
 1. **RDF in GraphDB** as the detailed relational store (named graphs, PROV-aware lineage); **ontology, predicates, cardinalities, projections**, and **worked examples** are **§4** and **Appendices A–D**.
 2. **Explicit dual-write** into existing **Postgres memory cards** (`memory_cards`, `memory_card_edges`, `subschema`) so current rails keep working.
 3. **Hybrid inference:** brain-lane LLM proposes a **draft**; **ontology + validation rules** normalize and flag conflicts; the operator **commits** from the UI.
-4. **Three downstream consumers** treated as first-class in v1: **orion-recall**, **cortex-orch known-facts / memory inject**, **cortex-exec chat stance / autonomy GraphDB path** — each with **documented read contracts** so schemas stay aligned.
+4. **Downstream surfaces** — §8: **recall** (grounded + optional relational expansion), **memory inject**, **chat stance**, **journals**, **metacog / collapse mirrors**, **spark** introspection — so retrieval is not only shallow, time-windowed, or reference-less.
 
 ---
 
@@ -255,21 +255,69 @@ If **GraphDB fails:** no Postgres writes.
 
 ---
 
-## 8. Downstream consumers (v1 scope)
+## 8. Downstream consumers and use cases
+
+Annotated memory is useless if it only sits in Hub. This section ties **operator-approved RDF + Postgres projection** to each runtime surface. **§8.1–8.3** were in the first draft; **§8.4–8.6** extend the same substrate to journals, metacog/collapse, and spark; **§8.7** states the **product intent** — escape recall that is shallow, purely time-windowed, and **without explicit reference** (no entities, no lineage, no stance).
 
 ### 8.1 Recall (`orion-recall`)
 
-- Continue **cards** backend on Postgres projection.
-- Add **optional** SPARQL expansion (memory-graph or recall-local client) **bounded** by named graph + query timeout — **only** when enabled via settings/profile to avoid latency surprises.
+**Baseline:** Cards rail unchanged — projector fills **`title` / `summary` / `subschema.memory_graph`** so dense chunks remain token-efficient.
+
+**Deep retrieval (not “nearby vectors only”):**
+
+1. **Entity-linked expansion** — When the query or router extracts candidate entity strings / IRIs from the current turn, optionally run a **bounded SPARQL** pass over memory named graphs (same repo as stance): fetch **`TypedEntity`** neighborhoods + **`AffectiveDisposition`** + **`Situation`** windows linked via **`prov:wasDerivedFrom`**. Results merge into fusion as **`cards` + graph_evidence** with **timeouts** and profile flags (`RECALL_MEMORY_GRAPH_*`).
+2. **Referenceability** — Each surfaced snippet MUST retain **turn ids** / **`entity_refs`** so the model cites **why** something was retrieved, not only similarity score.
 
 ### 8.2 Known facts / memory inject (`orion-cortex-orch`)
 
-- Extend materialization to consume **new subschema/edge projections** from projector mapping (exact prompt shaping in implementation plan).
-- Preserve existing timeouts and visibility rules from Memory Cards v1.
+**Baseline:** **`subschema.memory_graph.facts`** materializes as short ordered lines in **`known_facts`** / conversation-front blocks — §4.11 / Appendix D.
+
+**Intent:** Inject carries **structured facts** (who did what to whom, toward what category, when qualified) instead of only flat card prose.
 
 ### 8.3 Chat stance / autonomy (`orion-cortex-exec`)
 
-- Ensure annotated entities appear in **same GraphDB endpoint/repo** stance uses, with **queries updated** to include memory named graphs **without** collapsing unrelated substrate noise.
+Extend **`chat_stance.py`** SPARQL so **`AffectiveDisposition`**, **`trustPolarity`**, **`dispositionTarget`**, and **`Situation`** edges in **memory named graphs** participate in autonomy probes — §8.3 original requirement.
+
+### 8.4 Journals (composition / daily passes)
+
+**Role:** Journal pipelines (`journal_compose_prompt.j2` and related) SHOULD gain optional context blocks built from:
+
+- **`subschema.memory_graph`** on cards promoted for narrative arcs, **and/or**
+- **Small SPARQL selects** (bounded) over Situations + entities that **`prov:wasDerivedFrom`** journal-relevant utterances.
+
+**Why:** Journals need **story continuity** (entities, causes, trust shifts), not only “recent chunks.” Implementation attaches by **session/time filters** + **entity overlap** with that day’s themes — exact wiring is **implementation plan** scope; **contract** is that annotation IRIs are stable inputs.
+
+### 8.5 Metacog and collapse mirrors (substrate GraphDB)
+
+**Role:** Metacog / collapse reasoning already traverses **GraphDB** substrate. Operator memory lives in **separate named graphs** but the **same endpoint** so SPARQL can **`OPTIONAL` / `UNION`** substrate triples with **`GRAPH ?g`** filters:
+
+- Collapse mirrors gain **human-curated interpretations** (Situation, disposition, impact) alongside automated substrate — reducing cases where collapse reflects **only** compressed artifacts without **who / toward whom / why**.
+- **Guardrail:** Queries MUST restrict **`?g`** to configured memory graph IRIs so collapse does not ingest unscoped noise.
+
+### 8.6 Spark / introspection state injections (`introspect_spark`, related)
+
+**Role:** Spark-style introspection **`quick`** paths often lack durable retrieval; they SHOULD optionally receive:
+
+- A compact **`memory_graph`** bundle (same **`facts`** + **`entity_refs`** as inject), **or**
+- **One-hop SPARQL JSON** summary from memory graphs when spark envelope marks **`memory_graph_enrichment: true`**.
+
+**Intent:** Spark reasoning carries **referenced relational state**, not only ephemeral session scratch.
+
+### 8.7 Escaping shallow, timebound, reference-less recall
+
+**Failure mode addressed:** Vector + recency fusion returns **chunks that sound relevant** but lack **stable referents** (entities), **causal structure** (Situation), **evaluative stance** (disposition toward breed/class), or **lineage** (which turn grounded the belief).
+
+**Mechanisms from this spec:**
+
+| Mechanism | Effect |
+|-----------|--------|
+| **`prov:wasDerivedFrom`** + utterance ids | Every durable fact traces to **evidence**, not orphan summarization. |
+| **`TypedEntity` + `generalizationOf`** | General vs instance (“this breed” vs Joey) is explicit for stance and metacog. |
+| **`AffectiveDisposition`** | Trust / ambivalence is queryable, not buried in prose. |
+| **Dual-write `subschema.memory_graph`** | Fast paths (inject, spark, journals) read **structured** projections without SPARQL on hot paths. |
+| **Optional SPARQL expansion in recall** | Multi-hop **relational** retrieval when profile enables it — bounded, not uncontrolled graph explosion. |
+
+**Non-goal:** This does not replace vector recall; it **grounds** it when operators invest in annotation.
 
 ---
 
@@ -287,7 +335,7 @@ If **GraphDB fails:** no Postgres writes.
 |--------|---------|
 | Unit | Projector mapping; validation rejects invalid drafts; ontology version gate. |
 | Integration | Approve round-trip: GraphDB contains triples; Postgres rows match golden exemplar. |
-| Cross-service (environment permitting) | Recall sees cards; inject shows new lines; stance query returns annotated entity binding. |
+| Cross-service (environment permitting) | Recall + inject + stance per §8.1–8.3; journals / metacog / spark per §8.4–8.6 when those milestones land. |
 
 ---
 
@@ -297,8 +345,7 @@ If **GraphDB fails:** no Postgres writes.
 - **Compensation** implementation detail (delete vs tombstone).
 - **Single deployable** memory-graph vs library-in-Hub phase A.
 - Optional **`MemoryProvenance`** enum extension (**`operator_graph`**) for ledger clarity.
-
----
+- **Prioritized rollout** among §8.4–8.6 (journals vs metacog UNION vs spark envelope) after §8.1–8.3 ship.
 
 ---
 

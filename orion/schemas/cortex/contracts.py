@@ -19,6 +19,14 @@ class RecallDirective(BaseModel):
     profile: Optional[str] = None
     time_window_days: int = 90
     max_items: int = 8
+    lane: Optional[str] = Field(
+        default=None,
+        description="Recall visibility lane (e.g. chat vs social) for memory cards.",
+    )
+    profile_explicit: bool = Field(
+        default=False,
+        description="When True, skip automatic recall profile overrides in the orchestrator.",
+    )
 
 
 class CortexClientContext(BaseModel):

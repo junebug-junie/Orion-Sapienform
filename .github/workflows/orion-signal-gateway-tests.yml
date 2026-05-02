@@ -1,0 +1,58 @@
+name: orion-signal-gateway-tests
+
+on:
+  pull_request:
+    paths:
+      - "orion/signals/**"
+      - "orion/telemetry/biometrics_pipeline.py"
+      - "services/orion-signal-gateway/**"
+      - "services/orion-hub/scripts/signals_inspect_cache.py"
+      - "services/orion-hub/tests/test_signals_inspect_api.py"
+      - "services/orion-hub/pytest.ini"
+      - ".github/workflows/orion-signal-gateway-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/signals/**"
+      - "orion/telemetry/biometrics_pipeline.py"
+      - "services/orion-signal-gateway/**"
+      - "services/orion-hub/scripts/signals_inspect_cache.py"
+      - "services/orion-hub/tests/test_signals_inspect_api.py"
+      - "services/orion-hub/pytest.ini"
+      - ".github/workflows/orion-signal-gateway-tests.yml"
+
+jobs:
+  signal-gateway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install gateway test deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-signal-gateway/requirements.txt
+      - name: Pytest (gateway + adapter + biometrics shim)
+        run: |
+          PYTHONPATH=.:services/orion-signal-gateway python -m pytest -q \
+            tests/test_biometrics_pipeline.py \
+            services/orion-signal-gateway/app/tests \
+            orion/signals/adapters/tests
+
+  hub-signals-inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install minimal deps (cache unit test)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pytest-asyncio pydantic pydantic-settings
+      - name: Pytest Hub signals inspect cache
+        run: |
+          PYTHONPATH=. python -m pytest -q \
+            -c services/orion-hub/pytest.ini \
+            services/orion-hub/tests/test_signals_inspect_api.py

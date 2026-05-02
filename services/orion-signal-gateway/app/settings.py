@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     SIGNALS_OUTPUT_CHANNEL: str = "orion:signals"
     SIGNALS_PASSTHROUGH_PATTERN: str = "orion:signals:*"
     SIGNAL_WINDOW_SEC: float = 30.0
+    SUPPRESS_ADAPTED_WHEN_PASSTHROUGH: bool = False
+    PASSTHROUGH_DEDUPE_WINDOW_SEC: float = 30.0
 
     ORGAN_CHANNELS: List[str] = [
         "orion:biometrics:*",

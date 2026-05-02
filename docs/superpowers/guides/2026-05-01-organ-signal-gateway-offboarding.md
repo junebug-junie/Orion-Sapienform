@@ -1,7 +1,16 @@
 # Organ Signal Gateway — offboarding / next-phase guide
 
 **Audience:** Engineers picking up after the `feature/organ-signal-gateway` work (shared library + gateway service).  
-**Design source of truth:** [Organ Signal Gateway design](../specs/2026-05-01-organ-signal-gateway-design.md).
+**Design source of truth (phase 1 chassis):** [Organ Signal Gateway design](../specs/2026-05-01-organ-signal-gateway-design.md).  
+**Phase 2 (adapters + Hub inspect):** [Organ Signal Gateway — Phase 2](../specs/2026-05-01-organ-signal-gateway-phase-2-design.md) — milestones, acceptance for **2a done**, first-pass Critical / Important / Minor tables, and 2b scope.
+
+### Authority / read order (next-phase handoff)
+
+1. **Phase 2 spec** — [2026-05-01-organ-signal-gateway-phase-2-design.md](../specs/2026-05-01-organ-signal-gateway-phase-2-design.md): **§ Phase 2a milestones**, **§ Phase 2a completion criteria**, **§ Phase 2b**, **First pass** tables (production-ready gate), **File map**, **Self-review**.
+2. **Phase 1 spec** — schema, gateway chassis, Hub JSON shapes: [2026-05-01-organ-signal-gateway-design.md](../specs/2026-05-01-organ-signal-gateway-design.md).
+3. **This guide** — inventory, channel pattern `orion:signals:{organ_id}`, what exists vs stub.
+
+If the active program is **memory cards v1** instead of signal-gateway phase 2, use [Orion memory cards v1](../specs/2026-05-01-orion-memory-cards-v1-design.md) as the requirements doc for that track.
 
 This document maps **what was created**, **what is real vs stub**, **how it wires into the mesh**, and **suggested next-phase workstreams** so planning does not rediscover context from scratch.
 
@@ -38,6 +47,7 @@ Redis bus (organ channels, see settings.ORGAN_CHANNELS)
 | `__init__.py` | Package marker (minimal). |
 | `models.py` | `OrganClass`, `OrionSignalV1`, `OrionOrganRegistryEntry` (Pydantic); `notes` capped at 5. |
 | `registry.py` | `ORGAN_REGISTRY` — causal DAG + **`bus_channels` filled from service defaults** (verify against your deployment). |
+| `signal_ids.py` | `make_signal_id(organ_id, source_event_id)` — deterministic **64-hex** SHA-256 when `source_event_id` set; else **32-hex** `uuid4().hex`. |
 | `normalization.py` | Canonical **`EwmaBand`**, **`InductionTracker`**, `clamp01`; `clamp11`; `NormalizationContext` (`get_band`, `get_tracker` per `(organ_id, metric_key)`). |
 | `causal_helpers.py` | `with_missed_parent_notes(signal, prior, registry)` for §7.B-style missed-parent audit lines. |
 | `adapters/base.py` | `OrionSignalAdapter` ABC. |
@@ -58,13 +68,13 @@ Redis bus (organ channels, see settings.ORGAN_CHANNELS)
 |------|------|
 | `app/main.py` | FastAPI lifespan: `configure_tracing()` then `GatewayService`; routes `/health`, `/signals/active`. |
 | `app/instrumentation.py` | Global `TracerProvider`: OTLP if `OTEL_EXPORTER_OTLP_ENDPOINT`, console if `OTEL_CONSOLE_EXPORT`, else silent drop exporter (real span IDs). |
-| `app/settings.py` | Bus URL, `ORGAN_CHANNELS` glob list, `SIGNAL_WINDOW_SEC`, `SIGNALS_OUTPUT_CHANNEL`, OTEL envs. |
+| `app/settings.py` | Bus URL, `ORGAN_CHANNELS` glob list, `SIGNAL_WINDOW_SEC`, `SIGNALS_OUTPUT_CHANNEL`, OTEL envs, **`OTEL_DIMENSION_ALLOWLIST`** (JSON env + defaults; span `dim.*` only). |
 | `app/service.py` | `Hunter` + lazy `SignalProcessor` wiring. |
-| `app/processor.py` | Envelope dispatch; passthrough guard (`signal.` prefix, skip self-echo); `with_missed_parent_notes`; OTEL parent context from first registry parent with valid `otel_*` on **non-exogenous** signals. |
+| `app/processor.py` | Envelope dispatch; passthrough guard (`signal.` prefix, skip self-echo); `with_missed_parent_notes`; OTEL parent from **first registry-ordered parent** with valid `otel_*` on **non-exogenous** signals; on disagreeing parent **trace_id**s → `orion_signal_parent_trace_disagreement` log + optional **notes** slot; `dim.*` via allowlist + `_level`/`_trend`/`_volatility` suffix rule. |
 | `app/signal_window.py` | Latest `OrionSignalV1` per `organ_id`, TTL eviction. |
 | `app/normalization_state.py` | Per-organ `NormalizationContext` instances for adapters. |
 | `app/passthrough.py` | Validates self-hardened payloads (`OrionSignalV1` + known `organ_id`). |
-| `app/tests/` | Gateway + normalization + passthrough + OTEL (in-memory exporter) + adapter integration-style tests. |
+| `app/tests/` | Gateway integration: normalization, passthrough, OTEL (in-memory exporter), **registry DAG** (`test_registry_dag.py`). Adapter-only tests live under `orion/signals/adapters/tests/`. |
 | `otel/collector-config.yaml` | Sidecar template (OTLP, hostmetrics, prometheus/dcgm **commented**). |
 | `Dockerfile` | Build context = **repo root** (see `docker-compose.yml`). |
 | `docker-compose.yml`, `requirements.txt`, `.env_example`, `README.md`, `pytest.ini` | Ops and developer entrypoints. |
@@ -77,48 +87,81 @@ Redis bus (organ channels, see settings.ORGAN_CHANNELS)
 
 - Schema + registry + mesh-oriented `bus_channels` (still **verify** per environment).
 - Gateway bus subscription shell, window, passthrough rules, missed-parent notes, OTEL span emission and parent trace inheritance for **adapter** path.
+- **Phase 2 first-pass (in repo):** deterministic `signal_id` via `make_signal_id`; parent **trace_id** disagreement → structured warning + optional `notes`; **`OTEL_DIMENSION_ALLOWLIST`** on spans; registry **acyclic** `causal_parent_organs` + `test_registry_dag.py`; `world_pulse` definitive empty parents + notes.
 - Biometrics reference adapter + tests.
-- Stub adapters for every organ in the design tree (contract placeholders).
+- Stub adapters for every organ in the design tree (contract placeholders); stubs use **`make_signal_id`** like biometrics.
 - Collector config skeleton.
+- **CI:** workflow **`.github/workflows/orion-signal-gateway-tests.yml`** installs `services/orion-signal-gateway/requirements.txt` and runs pytest on `tests/test_biometrics_pipeline.py`, `services/orion-signal-gateway/app/tests`, and `orion/signals/adapters/tests`.
 
 ### Explicitly still next phase (per design “out of scope” + gaps)
 
 | Area | Notes |
 |------|--------|
 | **Real adapters** | Replace stubs with payload shapes from each service; align `can_handle` with actual `env.kind` + channel patterns. |
-| **Hub** | Spec’s `GET /api/signals/active` and trace explorer live on Hub; gateway exposes `/signals/active` only. |
+| **Hub** | **`GET /api/signals/active`** and **`GET /api/signals/trace/{trace_id}`** on Hub (`services/orion-hub/scripts/signals_inspect_cache.py`, `api_routes.py`) with in-memory cache + bounded trace store (`TRACE_CACHE_*`, `SIGNALS_INSPECT_*` in Hub settings). Gateway still exposes **`/signals/active`** for local operator reads. |
 | **End-to-end mesh** | Subscribe patterns vs real traffic; avoid duplicate processing; confirm no channel gaps. |
-| **Parent trace conflicts** | Spec: if parents disagree on `trace_id`, log / `notes` — only “first parent with OTEL” wins today. |
-| **Stub `signal_id`** | Biometrics matches spec when `source_event_id` present; some stubs still use short hex when id missing. |
+| **Consumer audit (`signal_id`)** | Deterministic ids are **64-hex** (SHA-256) or **32-hex** (UUID fallback). Audit Hub, substrate, logging, and UI for **fixed-width** or truncated-hash assumptions. |
 | **Wearables / DCGM** | Collector comments only; no `orion-wearable-bridge`. |
-| **CI / image** | Ensure pipeline installs `services/orion-signal-gateway/requirements.txt` (includes OTEL + `pytest-asyncio` for tests). |
+| **Image / compose** | Ensure release images that ship the gateway include the same dependency set as `requirements.txt` (CI covers tests only). |
 
 ---
 
-## Planning the next phase (suggested workstreams)
+## Phase 2a — milestones and acceptance (from spec; do not drift)
 
-1. **Channel verification pass** — For each `ORGAN_REGISTRY[*].bus_channels`, confirm payloads on those channels match what the corresponding adapter expects; tighten `ORGAN_CHANNELS` in gateway `settings.py` to avoid noise and double-handling.
+The following is aligned with **§ Phase 2a** and **§ Phase 2a completion criteria** in [Phase 2 design](../specs/2026-05-01-organ-signal-gateway-phase-2-design.md). Treat the Phase 2 spec tables (**First pass** Critical / Important / Minor) as the **checklist** for production-ready vs partial implementation.
 
-2. **Adapter implementation order** — Biometrics is the template. High-value next organs from the design: **equilibrium**, **collapse_mirror**, **recall**, **chat_stance** (hardest — cortex cooperation), then the rest.
+### Milestones (depth-first, mergeable)
 
-3. **Hub inspect** — Subscribe Hub to `orion:signals:*`, keep latest-per-organ window, implement `/api/signals/active` and optional trace cache for `/api/signals/trace/{trace_id}` as in the spec.
+| ID | Organ(s) | Intent |
+|----|----------|--------|
+| **M1** | `equilibrium` | First **hybrid** organ with a real bus contract: real payloads, registry `bus_channels` verified against deployment, dimensions and `signal_kind` aligned with `ORGAN_REGISTRY`. |
+| **M2** | `collapse_mirror` | First **endogenous** organ in the slice that depends on **biometrics** + **equilibrium** in `prior_signals`; **causal_parents** and **shared OTEL trace** with upstream signals validated in tests or staging. |
+| **M3** | `journaler` **or** `recall` (order **TBD by contract clarity**) | Implement whichever has the **clearer, documented** bus (or result) contract first; the other follows in the same phase or as **2a.1** if **2a** acceptance is already met without it. Resolve with evidence (actual bus payloads / runbooks), not merge-time guesswork. |
+| **M4** | `chat_stance` | **Last:** requires an explicit **cortex / router payload contract** subsection (channel, field paths, degradation rules) before implementation. Adapter degrades to low `confidence` + `notes` when fields are missing, per phase-1 design rules. |
 
+**Biometrics** remains the reference adapter for the slice. **Channel verification** (actual Redis channel names, representative payloads, `bus_channels` + `ORGAN_CHANNELS` alignment) gates **every** milestone — see Phase 2 spec § “Channel verification”.
+
+### When **2a** is “done” (acceptance bar)
+
+**2a is complete** when all of the following hold (verbatim structure from Phase 2 §4):
+
+1. **M1 and M2 are merged** with fixture-backed adapter tests and updated channel documentation.
+2. **End-to-end proof:** Under a **scripted test harness** (preferred) or **documented staging procedure**, the gateway produces hardened signals on **`orion:signals:{organ_id}`** for at least **three distinct organ_ids** in the primary chain (e.g. biometrics, equilibrium, collapse_mirror) such that **one OTEL `trace_id`** spans those signals in order (exogenous start → derived children), within the configured signal window. The procedure or **test name** must be referenced in the **implementation plan appendix** for this spec (Phase 2 doc).
+3. **M3 and/or M4:** If **M3** is not merged when (1)–(2) hold, **2a** may still be marked complete only if the written proof in (2) lists which organs are covered and **M3/M4** are scheduled as **2a.1** with dates or ticket references. If the team prefers a stricter bar, **require M3 merged** before 2a complete; **pick one interpretation in the implementation plan and do not leave it ambiguous.**
+
+**Default interpretation in the Phase 2 spec:** **(1)+(2) required**; **M3 strongly encouraged**; **M4 may slip to 2a.1** if the `chat_stance` contract is not ready, **provided** (2) still holds for three organs **without** counting duplicate kinds on the same organ.
+
+**Production-ready vs functional milestones:** Merging **M1** on a branch advertised as **multi-replica HA** without meeting **First pass → Critical (multi-instance)** is **out of spec**. The **functional** 2a bar above can be met on a **singleton** gateway while first-pass items are still in flight; the **production-ready gate** (Phase 2 “First pass” introduction) applies before any GA / customer-facing HA claim.
+
+## Phase 2b — Hub inspect (from spec)
+
+- **Preconditions:** Stable gateway output pattern (e.g. **`orion:signals:{organ_id}`**); Hub parses **`OrionSignalV1`** JSON (prefer **`orion.signals.models`**).
+- **Ship by default:** **`GET /api/signals/active`** — in-memory latest-per-organ, response shape per phase-1 spec (`as_of`, sparse `signals` map), **same auth posture** as other operator-read Hub routes (e.g. align with `/api/substrate/*` unless security review dictates stricter RBAC). Implementation sketch: subscriber on Hub Redis lifecycle, route colocated with Hub FastAPI patterns (e.g. `services/orion-hub/scripts/api_routes.py`).
+- **Stretch:** **`GET /api/signals/trace/{trace_id}`** — only with **mandatory** `TRACE_CACHE_MAX_TRACES`, `TRACE_CACHE_TTL_SEC`, `TRACE_CACHE_MAX_SIGNALS_PER_TRACE` and full **200** / `complete` / `gaps` / **404** semantics per Phase 2 **First pass → Critical (Hub trace cache)**.
+
+## Planning the next phase (workstreams — summary)
+
+1. **First-pass / production-ready gate** — Close gaps in Phase 2 **First pass** tables (Critical / Important / Minor): code, doc-only, or **waived + documented risk**; do not treat rows as done until spec + README / Helm match.
+2. **M1 → M2 → M3 (order by contract) → M4 (after contract)** — As in the milestone table above; use Phase 2 **Channel verification** before each merge.
+3. **Hub (2b)** — After gateway output is stable: subscribe to `orion:signals:{organ_id}` pattern, implement **`GET /api/signals/active`**; trace endpoint only if stretch criteria are met.
 4. **Downstream consumers** — `orion-heartbeat`, `orion-cortex-exec`, research harness: consume `OrionSignalV1` from signals channels or import `orion.signals.models` for typed reads.
-
 5. **Hardening graduation** — When an organ emits valid `signal.*` kinds itself, registry `notes` can track status; gateway passthrough path is already there.
+6. **Observability** — Wire `OTEL_EXPORTER_OTLP_ENDPOINT` to your collector; span attribute privacy per Phase 2 **OTEL_DIMENSION_ALLOWLIST** (or equivalent); collector vs organ-bus biometrics precedence per Phase 2 **First pass → Important**.
 
-6. **Observability** — Wire `OTEL_EXPORTER_OTLP_ENDPOINT` to your collector; enable commented DCGM/Prometheus receivers when exporters exist.
+**Risks to carry forward (from phase 2 work):** deterministic **`signal_id`** length (**64-hex** full SHA-256 when preimage-based) — audit consumers (Hub, substrate, logging) for fixed-width assumptions; OTEL **`dim.*`** suffix rule (`*_level` / `*_trend` / `*_volatility`) — review adapters for sensitive or high-cardinality keys matching those patterns.
 
 ---
 
 ## Commands (verification)
 
-From repo root (with `.orion_dev` or equivalent venv that has gateway deps + OTEL):
+From repo root, with **`PYTHONPATH=.`** after installing gateway deps (Phase 2 **canonical test roots**):
 
 ```bash
 pip install -r services/orion-signal-gateway/requirements.txt
-pytest orion/signals/adapters/tests services/orion-signal-gateway tests/test_biometrics_pipeline.py -q
+PYTHONPATH=. python3 -m pytest -q services/orion-signal-gateway/app/tests orion/signals/adapters/tests
 ```
+
+Optional: include `tests/test_biometrics_pipeline.py` if you are validating the telemetry shim against shared normalization.
 
 Local API (adjust `PYTHONPATH` / `--app-dir` as in `README.md`):
 
@@ -143,4 +186,4 @@ Docker build expects **context = repository root** (`services/orion-signal-gatew
 
 ## Branch / history
 
-Implementation landed on branch **`feature/organ-signal-gateway`** (pushed to `origin`). Use `git log --oneline --follow -- orion/signals services/orion-signal-gateway` for the exact commit range if the branch is merged or renamed later.
+Original chassis landed on **`feature/organ-signal-gateway`**; Phase 2 first-pass work was stacked on **`phase2/organ-signal-gateway-phase2`** in some worktrees. **On `main`**, use `git log --oneline --follow -- orion/signals services/orion-signal-gateway orion/telemetry/biometrics_pipeline.py` after merge to see the integrated range.

@@ -1,161 +1,298 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, Dict, List, Optional
+from uuid import UUID
 
-import asyncpg
 from fastapi import APIRouter, Header, HTTPException, Query, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ValidationError
 
-from orion.core.contracts.memory_cards import MemoryCardV1
-import orion.core.storage.memory_cards as mc
+from orion.core.contracts.memory_cards import (
+    MemoryCardCreateV1,
+    MemoryCardEdgeCreateV1,
+    MemoryCardPatchV1,
+    MemoryCardStatusChangeV1,
+)
+from orion.core.storage import memory_cards as mc_dal
 
-from scripts.session import ensure_session
+from .session import ensure_session
+
+try:
+    from asyncpg.exceptions import UniqueViolationError as _AsyncpgUniqueViolationError
+except ImportError:  # pragma: no cover - optional in minimal dev envs
+    _AsyncpgUniqueViolationError = None  # type: ignore[misc, assignment]
 
 logger = logging.getLogger("orion-hub.memory")
 
-# Hub list paging: avoid unbounded scans from arbitrary query params.
-_MEMORY_LIST_MAX_LIMIT = 500
-_MEMORY_LIST_MAX_OFFSET = 500_000
+# Memory APIs are gated by Hub session only; rows are not scoped per org/project.
+# Intended for single-tenant operator Hub with a shared RECALL_PG_DSN.
 
-router = APIRouter(prefix="/api/memory", tags=["memory"])
+router = APIRouter(tags=["memory-cards"])
 
 
-def _pool(request: Request) -> asyncpg.Pool:
+def _pool(request: Request):
     pool = getattr(request.app.state, "memory_pg_pool", None)
     if pool is None:
-        raise HTTPException(status_code=503, detail="memory_cards_pool_unavailable")
+        raise HTTPException(status_code=503, detail="memory_store_unavailable")
     return pool
 
 
-class MemoryCardCreateBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    slug: str
-    types: list[str]
-    title: str
-    summary: str
-    provenance: str = "operator_highlight"
-    status: str = "pending_review"
-    confidence: str = "likely"
-    sensitivity: str = "private"
-    priority: str = "episodic_detail"
-    visibility_scope: list[str] = Field(default_factory=lambda: ["chat"])
-    anchor_class: Optional[str] = None
-    tags: Optional[list[str]] = None
+def _clamp_limit(limit: int, *, default: int = 200, cap: int = 500) -> int:
+    if limit <= 0:
+        return default
+    return min(limit, cap)
 
 
-@router.post("/cards")
-async def create_card(
+def _clamp_offset(offset: int) -> int:
+    if offset < 0:
+        return 0
+    return min(offset, 100_000)
+
+
+async def _need_session(x_orion_session_id: Optional[str]) -> str:
+    from .main import bus
+
+    return await ensure_session(x_orion_session_id, bus)
+
+
+def _parse_csv(value: Optional[str]) -> Optional[List[str]]:
+    if value is None or not str(value).strip():
+        return None
+    return [p.strip() for p in str(value).split(",") if p.strip()]
+
+
+def _require_uuid(value: str, *, param: str) -> None:
+    try:
+        UUID(str(value).strip())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"invalid_{param}") from e
+
+
+@router.post("/api/memory/cards")
+async def memory_create_card(
     request: Request,
-    body: MemoryCardCreateBody,
-    x_orion_session_id: Optional[str] = Header(None),
-):
-    from scripts.main import bus
+    body: Dict[str, Any],
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+) -> Dict[str, Any]:
+    await _need_session(x_orion_session_id)
+    pool = _pool(request)
+    try:
+        card = MemoryCardCreateV1.model_validate(body)
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=e.errors()) from e
+    try:
+        cid = await mc_dal.insert_card(pool, card, actor="operator", op="create")
+    except Exception as exc:
+        if _AsyncpgUniqueViolationError is not None and isinstance(exc, _AsyncpgUniqueViolationError):
+            logger.warning("memory_create_card duplicate error=%s", exc)
+            raise HTTPException(status_code=409, detail="duplicate_card") from exc
+        if isinstance(exc, (TimeoutError, OSError)):
+            logger.warning("memory_create_card transport error=%s", exc)
+            raise HTTPException(status_code=503, detail="memory_store_error") from exc
+        logger.warning("memory_create_card_failed error=%s", exc)
+        raise HTTPException(status_code=400, detail="create_failed") from exc
+    row = await mc_dal.get_card(pool, str(cid))
+    if not row:
+        raise HTTPException(status_code=500, detail="create_missing_row")
+    return row.model_dump(mode="json")
 
-    if not bus:
-        raise HTTPException(status_code=503, detail="bus_unavailable")
-    await ensure_session(x_orion_session_id, bus)
-    card = MemoryCardV1(
-        slug=body.slug,
-        types=body.types,
-        title=body.title,
-        summary=body.summary,
-        provenance=body.provenance,
-        status=body.status,
-        confidence=body.confidence,
-        sensitivity=body.sensitivity,
-        priority=body.priority,
-        visibility_scope=body.visibility_scope,
-        anchor_class=body.anchor_class,
-        tags=body.tags,
-        evidence=[],
-    )
-    cid = await mc.insert_card(_pool(request), card, actor="hub_operator")
-    return {"card_id": str(cid)}
 
-
-@router.get("/cards")
-async def list_cards_api(
+@router.get("/api/memory/cards")
+async def memory_list_cards(
     request: Request,
-    x_orion_session_id: Optional[str] = Header(None),
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
     status: Optional[str] = None,
-    types: Optional[str] = Query(None, description="Comma-separated"),
+    types: Optional[str] = None,
     anchor_class: Optional[str] = None,
     project: Optional[str] = None,
     priority: Optional[str] = None,
-    limit: int = 200,
-    offset: int = 0,
-):
-    from scripts.main import bus
-
-    if not bus:
-        raise HTTPException(status_code=503, detail="bus_unavailable")
-    await ensure_session(x_orion_session_id, bus)
-    type_list = [t.strip() for t in types.split(",")] if types else None
-    eff_limit = min(max(limit, 1), _MEMORY_LIST_MAX_LIMIT)
-    eff_offset = min(max(offset, 0), _MEMORY_LIST_MAX_OFFSET)
-    rows = await mc.list_cards(
-        _pool(request),
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> Dict[str, Any]:
+    await _need_session(x_orion_session_id)
+    pool = _pool(request)
+    type_list = _parse_csv(types)
+    rows = await mc_dal.list_cards(
+        pool,
         status=status,
         types=type_list,
         anchor_class=anchor_class,
         project=project,
         priority=priority,
-        limit=eff_limit,
-        offset=eff_offset,
+        limit=_clamp_limit(limit),
+        offset=_clamp_offset(offset),
     )
     return {"items": [r.model_dump(mode="json") for r in rows]}
 
 
-@router.get("/cards/{id_or_slug}")
-async def get_card_api(
+@router.get("/api/memory/cards/{id_or_slug}")
+async def memory_get_card(
     request: Request,
     id_or_slug: str,
-    x_orion_session_id: Optional[str] = Header(None),
-):
-    from scripts.main import bus
-
-    if not bus:
-        raise HTTPException(status_code=503, detail="bus_unavailable")
-    await ensure_session(x_orion_session_id, bus)
-    card = await mc.get_card(_pool(request), id_or_slug)
-    if not card or not card.card_id:
-        raise HTTPException(status_code=404, detail="not_found")
-    edges = await mc.list_edges(_pool(request), card_id=str(card.card_id), direction="both")
-    hist = await mc.list_history(_pool(request), card_id=str(card.card_id), limit=10)
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+) -> Dict[str, Any]:
+    await _need_session(x_orion_session_id)
+    pool = _pool(request)
+    card = await mc_dal.get_card(pool, id_or_slug)
+    if not card:
+        raise HTTPException(status_code=404, detail="card_not_found")
+    edges_out = await mc_dal.list_edges(pool, card_id=str(card.card_id), direction="out")
+    edges_in = await mc_dal.list_edges(pool, card_id=str(card.card_id), direction="in")
+    hist = await mc_dal.list_history(pool, card_id=str(card.card_id), limit=50, offset=0)
     return {
         "card": card.model_dump(mode="json"),
-        "edges": [e.model_dump(mode="json") for e in edges],
+        "edges_out": [e.model_dump(mode="json") for e in edges_out],
+        "edges_in": [e.model_dump(mode="json") for e in edges_in],
         "history": [h.model_dump(mode="json") for h in hist],
     }
 
 
-@router.post("/sessions/{session_id}/distill")
-async def distill_stub(session_id: str, x_orion_session_id: Optional[str] = Header(None)):
-    from scripts.main import bus
+@router.patch("/api/memory/cards/{id_or_slug}")
+async def memory_patch_card(
+    request: Request,
+    id_or_slug: str,
+    body: Dict[str, Any],
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+) -> Dict[str, Any]:
+    await _need_session(x_orion_session_id)
+    pool = _pool(request)
+    try:
+        patch = MemoryCardPatchV1.model_validate(body)
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=e.errors()) from e
+    updated = await mc_dal.update_card(pool, id_or_slug, patch, actor="operator")
+    if not updated:
+        raise HTTPException(status_code=404, detail="card_not_found")
+    return updated.model_dump(mode="json")
 
-    if not bus:
-        raise HTTPException(status_code=503, detail="bus_unavailable")
-    await ensure_session(x_orion_session_id, bus)
-    raise HTTPException(status_code=501, detail="distill_cli_phase5")
+
+@router.post("/api/memory/cards/{card_id}/status")
+async def memory_change_status(
+    request: Request,
+    card_id: str,
+    body: Dict[str, Any],
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+) -> Dict[str, Any]:
+    await _need_session(x_orion_session_id)
+    pool = _pool(request)
+    try:
+        ch = MemoryCardStatusChangeV1.model_validate(body)
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=e.errors()) from e
+    updated = await mc_dal.change_card_status(
+        pool, card_id, new_status=ch.status, actor="operator", reason=ch.reason
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="card_not_found")
+    return updated.model_dump(mode="json")
 
 
-@router.post("/history/{history_id}/reverse")
-async def reverse_history_api(
+@router.post("/api/memory/edges")
+async def memory_add_edge(
+    request: Request,
+    body: Dict[str, Any],
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+) -> Dict[str, Any]:
+    await _need_session(x_orion_session_id)
+    pool = _pool(request)
+    try:
+        edge = MemoryCardEdgeCreateV1.model_validate(body)
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=e.errors()) from e
+    try:
+        created = await mc_dal.add_edge(pool, edge, actor="operator")
+    except ValueError as exc:
+        if str(exc) == "hierarchy_cycle":
+            raise HTTPException(status_code=400, detail="hierarchy_cycle") from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return created.model_dump(mode="json")
+
+
+@router.delete("/api/memory/edges/{edge_id}")
+async def memory_delete_edge(
+    request: Request,
+    edge_id: str,
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+) -> Dict[str, Any]:
+    _require_uuid(edge_id, param="edge_id")
+    await _need_session(x_orion_session_id)
+    pool = _pool(request)
+    deleted = await mc_dal.remove_edge(pool, edge_id, actor="operator")
+    if not deleted:
+        raise HTTPException(status_code=404, detail="edge_not_found")
+    return {"ok": True}
+
+
+@router.get("/api/memory/history")
+async def memory_list_history(
+    request: Request,
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+    card_id: Optional[str] = None,
+    edge_id: Optional[str] = None,
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> Dict[str, Any]:
+    if not card_id and not edge_id:
+        raise HTTPException(status_code=400, detail="card_id_or_edge_id_required")
+    if edge_id:
+        _require_uuid(edge_id, param="edge_id")
+    await _need_session(x_orion_session_id)
+    pool = _pool(request)
+    try:
+        rows = await mc_dal.list_history(
+            pool,
+            card_id=card_id,
+            edge_id=edge_id,
+            limit=_clamp_limit(limit),
+            offset=_clamp_offset(offset),
+        )
+    except ValueError as exc:
+        if str(exc) == "invalid_edge_id":
+            raise HTTPException(status_code=400, detail="invalid_edge_id") from exc
+        raise
+    return {"items": [h.model_dump(mode="json") for h in rows]}
+
+
+@router.post("/api/memory/history/{history_id}/reverse")
+async def memory_reverse_history(
     request: Request,
     history_id: str,
-    x_orion_session_id: Optional[str] = Header(None),
-):
-    from scripts.main import bus
-
-    if not bus:
-        raise HTTPException(status_code=503, detail="bus_unavailable")
-    await ensure_session(x_orion_session_id, bus)
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+) -> Dict[str, Any]:
+    _require_uuid(history_id, param="history_id")
+    await _need_session(x_orion_session_id)
+    pool = _pool(request)
     try:
-        entry = await mc.reverse_history(_pool(request), history_id, actor="hub_operator")
+        entry = await mc_dal.reverse_history(pool, history_id, actor="operator")
     except LookupError:
         raise HTTPException(status_code=404, detail="history_not_found") from None
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        msg = str(exc)
+        if msg == "reverse_unsupported_op":
+            raise HTTPException(status_code=400, detail="reverse_unsupported") from exc
+        raise HTTPException(status_code=400, detail=msg) from exc
     return entry.model_dump(mode="json")
+
+
+@router.get("/api/memory/cards/{id_or_slug}/neighborhood")
+async def memory_neighborhood(
+    request: Request,
+    id_or_slug: str,
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+    hops: int = Query(default=1, ge=1, le=3),
+) -> Dict[str, Any]:
+    await _need_session(x_orion_session_id)
+    pool = _pool(request)
+    try:
+        return await mc_dal.neighborhood(pool, id_or_slug, hops=hops)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="card_not_found") from None
+
+
+@router.post("/api/memory/sessions/{session_id}/distill")
+async def memory_distill_stub(
+    session_id: str,
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+) -> Dict[str, Any]:
+    await _need_session(x_orion_session_id)
+    raise HTTPException(status_code=501, detail="distill_not_implemented")

@@ -83,6 +83,18 @@ class Settings(BaseSettings):
     )
     BIOMETRICS_PUSH_INTERVAL_SEC: float = Field(default=5.0, alias="BIOMETRICS_PUSH_INTERVAL_SEC")
 
+    # --- Organ signal gateway inspect (Phase 2b Hub) ---
+    SIGNALS_INSPECT_ENABLED: bool = Field(default=True, alias="SIGNALS_INSPECT_ENABLED")
+    SIGNALS_INSPECT_SUBSCRIBE_PATTERN: str = Field(
+        default="orion:signals:*",
+        alias="SIGNALS_INSPECT_SUBSCRIBE_PATTERN",
+    )
+    SIGNALS_INSPECT_WINDOW_SEC: float = Field(default=45.0, alias="SIGNALS_INSPECT_WINDOW_SEC")
+    SIGNALS_TRACE_CACHE_ENABLED: bool = Field(default=True, alias="SIGNALS_TRACE_CACHE_ENABLED")
+    TRACE_CACHE_MAX_TRACES: int = Field(default=200, alias="TRACE_CACHE_MAX_TRACES")
+    TRACE_CACHE_TTL_SEC: float = Field(default=300.0, alias="TRACE_CACHE_TTL_SEC")
+    TRACE_CACHE_MAX_SIGNALS_PER_TRACE: int = Field(default=64, alias="TRACE_CACHE_MAX_SIGNALS_PER_TRACE")
+
     # --- In-app Notifications (Hub) ---
     NOTIFY_IN_APP_ENABLED: bool = Field(default=True, alias="NOTIFY_IN_APP_ENABLED")
     NOTIFY_IN_APP_CHANNEL: str = Field(default="orion:notify:in_app", alias="NOTIFY_IN_APP_CHANNEL")
@@ -175,6 +187,9 @@ class Settings(BaseSettings):
     HUB_RECALL_SHADOW_EVAL_TIMEOUT_SEC: float = Field(default=20.0, alias="HUB_RECALL_SHADOW_EVAL_TIMEOUT_SEC")
     HUB_RECALL_SHADOW_EVAL_MAX_ROWS_PER_RUN: int = Field(default=128, alias="HUB_RECALL_SHADOW_EVAL_MAX_ROWS_PER_RUN")
     HUB_RECALL_SHADOW_EVAL_DEFAULT_CORPUS_LIMIT: int = Field(default=24, alias="HUB_RECALL_SHADOW_EVAL_DEFAULT_CORPUS_LIMIT")
+
+    # --- Memory cards (Postgres, same DSN as recall conjourney DB) ---
+    RECALL_PG_DSN: str = Field(default="", alias="RECALL_PG_DSN")
 
     # --- Runtimes ----
     TIMEOUT_SEC: int = Field(default=300, alias="TIMEOUT_SEC")

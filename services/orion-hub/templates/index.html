@@ -48,6 +48,13 @@
             role="button"
           >Substrate</a>
           <a
+            id="memoryTabButton"
+            href="#memory"
+            data-hash-target="#memory"
+            class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
+            role="button"
+          >Memory</a>
+          <a
             id="pressureAnalyticsTabButton"
             href="#pressure"
             data-hash-target="#pressure"
@@ -873,6 +880,24 @@
     
 
         </div>
+      </section>
+
+      <section id="memory" data-panel="memory" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
+        <div>
+          <h2 class="text-xl font-bold text-white">Memory cards</h2>
+          <p class="text-xs text-gray-400 mt-1">Operator curation when <code class="text-gray-300">RECALL_PG_DSN</code> is configured on Hub.</p>
+        </div>
+        <div class="flex flex-wrap gap-2 text-xs">
+          <button type="button" id="memorySubviewReview" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200">Review Queue</button>
+          <button type="button" id="memorySubviewAll" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200">All Cards</button>
+          <button type="button" id="memorySubviewLog" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200">Activity Log</button>
+        </div>
+        <div id="memoryStatus" class="text-xs text-gray-400 min-h-[1.25rem]"></div>
+        <div id="memoryReviewPanel" class="memory-subview flex flex-col gap-2 text-sm"></div>
+        <div id="memoryAllPanel" class="memory-subview hidden flex-col gap-2 text-sm"></div>
+        <div id="memoryLogPanel" class="memory-subview hidden flex-col gap-2 text-sm"></div>
+        <div id="memoryDetail" class="hidden border border-gray-700 rounded-lg p-3 text-xs text-gray-200 max-h-64 overflow-auto"></div>
+        <div id="memoryCytoscapeHost" class="hidden h-72 w-full border border-gray-800 rounded-lg bg-black/40"></div>
       </section>
 
       <section id="topic-studio" data-panel="topic-studio" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-6 min-h-[56rem]">
@@ -2830,7 +2855,9 @@
   <script src="/static/js/workflow-schedule-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/social-inspection.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/service-logs-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
-<script src="/static/js/thought-process.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/thought-process.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script src="/static/js/memory.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/app.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
 </body>
 </html>

@@ -53,11 +53,11 @@ class RecallQueryV1(BaseModel):
     profile: str = Field("reflect.v1", description="Recall profile name")
     lane: Optional[str] = Field(
         default=None,
-        description="Visibility lane (e.g. chat, social); set by orchestrator for memory cards.",
+        description="Visibility lane (e.g. chat, social); set by orchestrator for memory cards scope.",
     )
     profile_explicit: bool = Field(
         default=False,
-        description="When True, intent router must not override the requested profile.",
+        description="When True, intent router must not override the requested recall profile.",
     )
     exclude: Optional[Dict[str, object]] = Field(
         default=None,

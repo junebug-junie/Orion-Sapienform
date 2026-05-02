@@ -300,6 +300,10 @@ def build_cortex_chat_request(
         recall_payload["required"] = False
         recall_payload["mode"] = "hybrid"
         recall_payload["profile"] = SOCIAL_ROOM_RECALL_PROFILE if use_recall else None
+    recall_payload["lane"] = "social" if social_room else "chat"
+    recall_payload["profile_explicit"] = _normalize_flag(
+        payload.get("recall_profile_explicit"), default=False
+    )
 
     options = dict(payload.get("options") or {}) if isinstance(payload.get("options"), dict) else {}
     no_write_active = bool(payload.get("no_write", False))

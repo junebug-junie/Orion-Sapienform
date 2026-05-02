@@ -1,6 +1,7 @@
 """Hub Skill Runner: exact catalogue prompt -> concrete skill verb (direct exec, no chat_quick).
 
 Keys MUST match option ``value=`` strings in ``services/orion-hub/templates/index.html``.
+See ``docs/operator_skill_prompt_catalogue.md`` (kept in sync with the Hub Skill Runner dropdown).
 """
 
 from __future__ import annotations

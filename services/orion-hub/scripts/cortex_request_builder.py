@@ -124,6 +124,21 @@ def _normalize_skill_runner_lane(
     return selected_ui_route, selected_verbs
 
 
+def _import_skill_runner_catalogue_resolver():
+    """Load resolve_skill_runner_catalogue_verb for both package and script-local imports."""
+    try:
+        from scripts.skill_runner_catalogue import resolve_skill_runner_catalogue_verb
+
+        return resolve_skill_runner_catalogue_verb
+    except ImportError:  # pragma: no cover - test/module-loader compatibility
+        HERE = Path(__file__).resolve().parent
+        if str(HERE) not in sys.path:
+            sys.path.insert(0, str(HERE))
+        from skill_runner_catalogue import resolve_skill_runner_catalogue_verb  # type: ignore
+
+        return resolve_skill_runner_catalogue_verb
+
+
 def _normalize_flag(value: Any, *, default: bool = False) -> bool:
     if value is None:
         return default
@@ -279,14 +294,7 @@ def build_cortex_chat_request(
     selected_verbs = [str(v).strip() for v in (payload.get("verbs") or []) if str(v).strip()]
     skill_runner_catalogue_verb: str | None = None
     if _normalize_flag(payload.get("skill_runner_origin"), default=False):
-        try:
-            from scripts.skill_runner_catalogue import resolve_skill_runner_catalogue_verb
-        except ImportError:  # pragma: no cover - test/module-loader compatibility
-            HERE = Path(__file__).resolve().parent
-            if str(HERE) not in sys.path:
-                sys.path.insert(0, str(HERE))
-            from skill_runner_catalogue import resolve_skill_runner_catalogue_verb  # type: ignore
-
+        resolve_skill_runner_catalogue_verb = _import_skill_runner_catalogue_resolver()
         resolved = resolve_skill_runner_catalogue_verb(
             prompt=str(prompt or "").strip(),
             skill_runner_origin=True,
@@ -633,14 +641,7 @@ def validate_single_verb_override(
         return None
     verb = selected_verbs[0]
     if _normalize_flag(payload.get("skill_runner_origin"), default=False) and prompt is not None:
-        try:
-            from scripts.skill_runner_catalogue import resolve_skill_runner_catalogue_verb
-        except ImportError:  # pragma: no cover - test/module-loader compatibility
-            HERE = Path(__file__).resolve().parent
-            if str(HERE) not in sys.path:
-                sys.path.insert(0, str(HERE))
-            from skill_runner_catalogue import resolve_skill_runner_catalogue_verb  # type: ignore
-
+        resolve_skill_runner_catalogue_verb = _import_skill_runner_catalogue_resolver()
         cat = resolve_skill_runner_catalogue_verb(
             prompt=str(prompt).strip(),
             skill_runner_origin=True,

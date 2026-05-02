@@ -1663,7 +1663,7 @@ async def handle_chat_request(
         (user_prompt or "")[:120],
     )
 
-    inactive = validate_single_verb_override(payload, node_name=settings.NODE_NAME)
+    inactive = validate_single_verb_override(payload, node_name=settings.NODE_NAME, prompt=user_prompt)
     if inactive:
         return inactive
 

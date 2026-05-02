@@ -15,7 +15,7 @@ Orion Cognition Layer is the semantic, introspective, and planning subsystem of 
 
 This module is designed to remain lightweight and independent from the Execution Cortex, while providing the cognitive backbone that the Cortex routes and executes.
 
-**Operator-facing prompts** (agent mode, live skills) are catalogued in [`docs/operator_skill_prompt_catalgoe.md`](../../docs/operator_skill_prompt_catalgoe.md) at repo root.
+**Operator-facing prompts** (agent mode, live skills) are catalogued in [`docs/operator_skill_prompt_catalogue.md`](../../docs/operator_skill_prompt_catalogue.md) at repo root.
 
 ---
 

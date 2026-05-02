@@ -3,9 +3,10 @@
 ## Purpose
 
 - This is the operator-facing prompt catalogue for live Orion skills.
-- These prompts are intended to be run in **agent** mode.
+- From **Hub Skill Runner**, matching prompts are dispatched as **explicit `skills.*` verbs** (direct cortex-exec execution), independent of Quick Chat / `chat_quick` or other conversational lanes.
+- Autonomous Orion may still reach the same concrete skills via planner / agent-chain / supervisor tool choice; this document does not require changing those paths.
 - Results depend on runtime dependencies and service availability.
-- The planner may route through semantic verbs, but these prompts are the canonical operator entry points.
+- The planner may route through semantic verbs when the operator is not using the Skill Runner catalogue shortcuts above.
 
 ## System / runtime
 

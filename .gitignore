@@ -9,6 +9,9 @@ scripts/.state/
 
 .orion_dev
 
+# === Git worktrees (superpowers / local isolation) ===
+.worktrees/
+
 # === Python ===
 __pycache__/
 *.py[cod]

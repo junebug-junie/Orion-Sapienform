@@ -1,0 +1,165 @@
+@prefix owl:   <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:   <http://www.w3.org/2001/XMLSchema#> .
+@prefix sh:    <http://www.w3.org/ns/shacl#> .
+@prefix prov:  <http://www.w3.org/ns/prov#> .
+@prefix schema: <https://schema.org/> .
+@prefix orionmem: <https://orion.local/ns/mem/v2026-05#> .
+
+<https://orion.local/ns/mem/v2026-05/> a owl:Ontology ;
+  owl:versionIRI <https://orion.local/ns/mem/v2026-05/> ;
+  rdfs:label "Orion operator memory extension v2026-05" ;
+  rdfs:comment "Imports: PROV-O via owl:imports. Schema.org terms use the schema: prefix; full ontology import omitted to keep GraphDB loads small — same IRIs as schema.org." ;
+  owl:imports <http://www.w3.org/ns/prov-o#> .
+
+# --- Classes ---
+
+orionmem:UtteranceSlice a owl:Class ;
+  rdfs:subClassOf prov:Entity ;
+  rdfs:label "Utterance slice" .
+
+orionmem:TypedEntity a owl:Class ;
+  rdfs:subClassOf schema:Thing , prov:Entity ;
+  rdfs:label "Typed entity" .
+
+orionmem:NamingLink a owl:Class ;
+  rdfs:subClassOf prov:Entity ;
+  rdfs:label "Naming link" .
+
+orionmem:Situation a owl:Class ;
+  rdfs:subClassOf prov:Entity ;
+  rdfs:label "Annotated situation" .
+
+orionmem:AffectiveDisposition a owl:Class ;
+  rdfs:subClassOf prov:Entity ;
+  rdfs:label "Affective disposition" .
+
+orionmem:ImpactAssertion a owl:Class ;
+  rdfs:subClassOf prov:Entity ;
+  rdfs:label "Impact assertion" .
+
+orionmem:InferenceActivity a owl:Class ;
+  rdfs:subClassOf prov:Activity ;
+  rdfs:label "Inference activity" .
+
+orionmem:Revision a owl:Class ;
+  rdfs:label "Graph revision batch marker" .
+
+# --- Object properties (§4.5) ---
+
+prov:wasDerivedFrom a owl:ObjectProperty ;
+  rdfs:domain rdfs:Resource ;
+  rdfs:range rdfs:Resource .
+
+prov:wasGeneratedBy a owl:ObjectProperty ;
+  rdfs:domain rdfs:Resource ;
+  rdfs:range prov:Activity .
+
+prov:wasAttributedTo a owl:ObjectProperty ;
+  rdfs:domain prov:Entity ;
+  rdfs:range prov:Agent .
+
+orionmem:inSituation a owl:ObjectProperty ;
+  rdfs:domain orionmem:TypedEntity ;
+  rdfs:range orionmem:Situation .
+
+orionmem:stimulusEntity a owl:ObjectProperty ;
+  rdfs:domain orionmem:Situation ;
+  rdfs:range orionmem:TypedEntity .
+
+orionmem:aboutEntity a owl:ObjectProperty ;
+  rdfs:domain orionmem:Situation ;
+  rdfs:range orionmem:TypedEntity .
+
+orionmem:targetOfNegativeAffect a owl:ObjectProperty ;
+  rdfs:domain orionmem:Situation ;
+  rdfs:range orionmem:TypedEntity .
+
+orionmem:contradictsSituation a owl:ObjectProperty ;
+  rdfs:domain orionmem:Situation ;
+  rdfs:range orionmem:Situation .
+
+orionmem:generalizationOf a owl:ObjectProperty ;
+  rdfs:domain orionmem:TypedEntity ;
+  rdfs:range orionmem:TypedEntity .
+
+orionmem:specializationOf a owl:ObjectProperty ;
+  rdfs:domain orionmem:TypedEntity ;
+  rdfs:range orionmem:TypedEntity .
+
+orionmem:dispositionToward a owl:ObjectProperty ;
+  rdfs:domain orionmem:TypedEntity ;
+  rdfs:range orionmem:AffectiveDisposition .
+
+orionmem:dispositionTarget a owl:ObjectProperty ;
+  rdfs:domain orionmem:AffectiveDisposition ;
+  rdfs:range orionmem:TypedEntity .
+
+schema:about a owl:ObjectProperty ;
+  rdfs:domain orionmem:Situation ;
+  rdfs:range orionmem:TypedEntity .
+
+schema:subjectOf a owl:ObjectProperty ;
+  rdfs:domain orionmem:TypedEntity ;
+  rdfs:range orionmem:Situation .
+
+orionmem:denotes a owl:ObjectProperty ;
+  rdfs:domain orionmem:NamingLink ;
+  rdfs:range orionmem:TypedEntity .
+
+orionmem:inRevision a owl:ObjectProperty ;
+  rdfs:domain rdfs:Resource ;
+  rdfs:range orionmem:Revision .
+
+# --- Datatype properties (§4.6) ---
+
+orionmem:participantRole a owl:DatatypeProperty ;
+  rdfs:domain orionmem:TypedEntity ;
+  rdfs:range xsd:string .
+
+orionmem:surfaceForm a owl:DatatypeProperty ;
+  rdfs:range xsd:string .
+
+orionmem:entityKind a owl:DatatypeProperty ;
+  rdfs:domain orionmem:TypedEntity ;
+  rdfs:range xsd:string .
+
+orionmem:coreferenceGroup a owl:DatatypeProperty ;
+  rdfs:range xsd:string .
+
+orionmem:affectLabel a owl:DatatypeProperty ;
+  rdfs:range xsd:string .
+
+orionmem:affectPolarity a owl:DatatypeProperty ;
+  rdfs:range xsd:float .
+
+orionmem:intensity a owl:DatatypeProperty ;
+  rdfs:range xsd:float .
+
+orionmem:impactSummary a owl:DatatypeProperty ;
+  rdfs:range xsd:string .
+
+orionmem:occurredAt a owl:DatatypeProperty ;
+  rdfs:range xsd:dateOrDateTime .
+
+orionmem:timeQualitative a owl:DatatypeProperty ;
+  rdfs:range xsd:string .
+
+orionmem:trustPolarity a owl:DatatypeProperty ;
+  rdfs:domain orionmem:AffectiveDisposition ;
+  rdfs:range xsd:string .
+
+orionmem:inferenceConfidence a owl:DatatypeProperty ;
+  rdfs:range xsd:float .
+
+orionmem:assertionMode a owl:DatatypeProperty ;
+  rdfs:range xsd:string .
+
+orionmem:revisionBatch a owl:DatatypeProperty ;
+  rdfs:domain rdfs:Resource ;
+  rdfs:range xsd:string .
+
+orionmem:batchId a owl:DatatypeProperty ;
+  rdfs:domain orionmem:Revision ;
+  rdfs:range xsd:string .

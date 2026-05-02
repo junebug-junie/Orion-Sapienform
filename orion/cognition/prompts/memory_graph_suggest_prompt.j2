@@ -1,0 +1,18 @@
+{# Appendix C — emit ONLY JSON, no markdown fences or prose. #}
+You are extracting a structured memory-graph draft for operator review.
+
+Ontology version MUST be exactly: "orionmem-2026-05".
+
+Output a single JSON object with keys:
+- ontology_version (string)
+- utterance_ids (array of turn id strings)
+- entities (array of objects: id urn:uuid:..., label, entityKind, optional generalizes_to)
+- situations (array: id, utterance_ids, optional stimulus_entity_id, about_entity_ids, target_of_negative_affect_ids, affectLabel, timeQualitative, occurredAt, label, participants with entity_id and role)
+- edges (array: s, p as CURIE like orionmem:generalizationOf, o, optional confidence)
+- dispositions (optional array: id, holder_id, target_id, trustPolarity, description)
+- utterance_text_by_id (object mapping turn id to excerpt text)
+
+Use CURIE predicates from the orionmem / prov / schema namespaces only; prefer edges declared in the ontology release.
+
+User turn / context:
+{{ user_message }}

@@ -1,0 +1,66 @@
+@prefix rdf:   <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:  <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sh:    <http://www.w3.org/ns/shacl#> .
+@prefix xsd:   <http://www.w3.org/2001/XMLSchema#> .
+@prefix prov:  <http://www.w3.org/ns/prov#> .
+@prefix schema: <https://schema.org/> .
+@prefix orionmem: <https://orion.local/ns/mem/v2026-05#> .
+
+orionmem:TypedEntityShape a sh:NodeShape ;
+  sh:targetClass orionmem:TypedEntity ;
+  sh:property [
+    sh:path rdfs:label ;
+    sh:minCount 1 ;
+  ] ;
+  sh:property [
+    sh:path orionmem:entityKind ;
+    sh:minCount 1 ;
+  ] .
+
+orionmem:SituationShape a sh:NodeShape ;
+  sh:targetClass orionmem:Situation ;
+  sh:property [
+    sh:path prov:wasDerivedFrom ;
+    sh:minCount 1 ;
+  ] .
+
+orionmem:UtteranceSliceShape a sh:NodeShape ;
+  sh:targetClass orionmem:UtteranceSlice ;
+  sh:property [
+    sh:path schema:text ;
+    sh:minCount 1 ;
+  ] .
+
+orionmem:AffectiveDispositionShape a sh:NodeShape ;
+  sh:targetClass orionmem:AffectiveDisposition ;
+  sh:property [
+    sh:path orionmem:trustPolarity ;
+    sh:minCount 1 ;
+  ] ;
+  sh:property [
+    sh:path orionmem:dispositionTarget ;
+    sh:minCount 1 ;
+    sh:maxCount 1 ;
+  ] ;
+  sh:property [
+    sh:path prov:wasDerivedFrom ;
+    sh:minCount 1 ;
+  ] .
+
+orionmem:ImpactAssertionShape a sh:NodeShape ;
+  sh:targetClass orionmem:ImpactAssertion ;
+  sh:property [
+    sh:path orionmem:impactSummary ;
+    sh:minCount 1 ;
+  ] ;
+  sh:property [
+    sh:path prov:wasDerivedFrom ;
+    sh:minCount 1 ;
+  ] .
+
+orionmem:InferenceActivityShape a sh:NodeShape ;
+  sh:targetClass orionmem:InferenceActivity ;
+  sh:property [
+    sh:path prov:startedAtTime ;
+    sh:minCount 1 ;
+  ] .

@@ -64,6 +64,22 @@ def fetch_always_inject_block(*, lane: str, token_budget: int, dsn: str) -> str:
             (lane,),
         )
         rows = cur.fetchall() or []
+        cur.execute(
+            """
+            SELECT subschema
+            FROM memory_cards
+            WHERE status = 'active'
+              AND subschema ? 'memory_graph'
+              AND (
+                visibility_scope @> ARRAY['all']::text[]
+                OR %s = ANY(visibility_scope)
+              )
+            ORDER BY updated_at DESC
+            LIMIT 48
+            """,
+            (lane,),
+        )
+        mg_rows = cur.fetchall() or []
         cur.close()
         conn.close()
     except Exception as exc:
@@ -82,6 +98,39 @@ def fetch_always_inject_block(*, lane: str, token_budget: int, dsn: str) -> str:
         if est > float(token_budget):
             break
         bullets.append(line)
+    for (sub_raw,) in mg_rows:
+        sub: dict
+        if isinstance(sub_raw, str):
+            try:
+                sub = json.loads(sub_raw)
+            except Exception:
+                sub = {}
+        elif isinstance(sub_raw, dict):
+            sub = sub_raw
+        else:
+            sub = {}
+        mg = sub.get("memory_graph") if isinstance(sub.get("memory_graph"), dict) else {}
+        facts = mg.get("facts") if isinstance(mg.get("facts"), list) else []
+        for fact in facts:
+            if not isinstance(fact, dict):
+                continue
+            subj = str(fact.get("subject") or "").strip()
+            pred = str(fact.get("predicate") or "").strip()
+            obj = str(fact.get("object") or "").strip()
+            pol = str(fact.get("polarity") or "").strip()
+            tim = str(fact.get("time") or "").strip()
+            bits = [subj, pred, obj]
+            line = "- " + " ".join(b for b in bits if b)
+            if tim:
+                line += f" ({tim})"
+            if pol:
+                line += f" [{pol}]"
+            est += max(len(line.split()), 1) * 1.3
+            if est > float(token_budget):
+                break
+            bullets.append(line)
+        if est > float(token_budget):
+            break
     if not bullets:
         return ""
     return "[Known facts about Juniper]\n" + "\n".join(bullets) + "\n"

@@ -1,0 +1,74 @@
+{
+  "ontology_version": "orionmem-2026-05",
+  "utterance_ids": ["t42"],
+  "entities": [
+    {
+      "id": "urn:uuid:a0000001-0000-4000-8000-000000000001",
+      "label": "Joey",
+      "entityKind": "animal",
+      "generalizes_to": "urn:uuid:a0000002-0000-4000-8000-000000000002"
+    },
+    {
+      "id": "urn:uuid:a0000002-0000-4000-8000-000000000002",
+      "label": "this breed",
+      "entityKind": "breed"
+    },
+    {
+      "id": "urn:uuid:a0000003-0000-4000-8000-000000000003",
+      "label": "cats",
+      "entityKind": "collective"
+    },
+    {
+      "id": "urn:uuid:a0000004-0000-4000-8000-000000000004",
+      "label": "Juniper",
+      "entityKind": "person"
+    }
+  ],
+  "situations": [
+    {
+      "id": "urn:uuid:b0000001-0000-4000-8000-000000000001",
+      "label": "Joey angered Juniper; cats and breed trust uncertain",
+      "utterance_ids": ["t42"],
+      "stimulus_entity_id": "urn:uuid:a0000001-0000-4000-8000-000000000001",
+      "about_entity_ids": ["urn:uuid:a0000003-0000-4000-8000-000000000003"],
+      "target_of_negative_affect_ids": ["urn:uuid:a0000002-0000-4000-8000-000000000002"],
+      "affectLabel": "annoyance",
+      "timeQualitative": "last_week",
+      "occurredAt": "2026-04-25",
+      "participants": [
+        {
+          "entity_id": "urn:uuid:a0000001-0000-4000-8000-000000000001",
+          "role": "stimulus"
+        },
+        {
+          "entity_id": "urn:uuid:a0000004-0000-4000-8000-000000000004",
+          "role": "patient"
+        },
+        {
+          "entity_id": "urn:uuid:a0000003-0000-4000-8000-000000000003",
+          "role": "topic"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "s": "urn:uuid:a0000001-0000-4000-8000-000000000001",
+      "p": "orionmem:generalizationOf",
+      "o": "urn:uuid:a0000002-0000-4000-8000-000000000002",
+      "confidence": 0.72
+    }
+  ],
+  "dispositions": [
+    {
+      "id": "urn:uuid:c0000001-0000-4000-8000-000000000001",
+      "holder_id": "urn:uuid:a0000004-0000-4000-8000-000000000004",
+      "target_id": "urn:uuid:a0000002-0000-4000-8000-000000000002",
+      "trustPolarity": "ambivalent",
+      "description": "Uncertain whether to trust this breed after Joey incident."
+    }
+  ],
+  "utterance_text_by_id": {
+    "t42": "…cats… Joey … pissed me off … last week … trust … breed …"
+  }
+}

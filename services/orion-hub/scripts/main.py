@@ -16,6 +16,7 @@ from scripts.settings import settings
 from scripts.api_routes import router as api_router
 from orion.core.storage.memory_cards import apply_memory_cards_schema
 from scripts.memory_routes import router as memory_router
+from scripts.memory_graph_routes import router as memory_graph_router
 import scripts.api_routes as api_routes_runtime
 from scripts.websocket_handler import websocket_endpoint
 from scripts.service_logs_ws import service_logs_websocket_endpoint
@@ -411,6 +412,7 @@ async def shutdown_event() -> None:
 
 app.include_router(api_router)
 app.include_router(memory_router)
+app.include_router(memory_graph_router)
 
 # Real-time WS endpoint
 app.add_websocket_route("/ws", websocket_endpoint)

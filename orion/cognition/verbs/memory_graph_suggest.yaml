@@ -1,0 +1,37 @@
+name: memory_graph_suggest
+label: Memory graph suggest (brain draft JSON)
+description: >
+  Produces Appendix C JSON only for operator memory graph annotation (ontology orionmem-2026-05).
+
+category: ExecutiveControl
+priority: medium
+
+interruptible: true
+can_interrupt_others: false
+
+requires_gpu: true
+requires_memory: true
+
+recall_profile: chat.general.v1
+
+timeout_ms: 120000
+max_recursion_depth: 0
+
+services:
+  - LLMGatewayService
+
+prompt_template: memory_graph_suggest_prompt.j2
+
+personality_file: orion/cognition/personality/orion_identity.yaml
+
+plan:
+  - name: llm_memory_graph_suggest
+    description: Single-pass JSON draft for memory-graph annotation.
+    order: 0
+    prompt_template: memory_graph_suggest_prompt.j2
+    services:
+      - LLMGatewayService
+    requires_gpu: true
+    requires_memory: true
+
+safety_rules: []

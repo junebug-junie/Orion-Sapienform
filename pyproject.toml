@@ -68,6 +68,8 @@ fastembed = "==0.2.7"
 redis = { version = "5.0.7", extras = ["hiredis"] }
 requests = "==2.32.3"
 rdflib = "==7.0.0"
+pyshacl = ">=0.26.0,<1.0.0"
+pyyaml = ">=6.0.1,<7.0.0"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

@@ -20,6 +20,7 @@ DEFAULT_BACKEND_WEIGHTS = {
     "sql_chat": 0.6,
     "rdf_chat": 0.4,
     "rdf": 0.3,
+    "memory_graph_sparql": 0.35,
     "cards": 0.0,
 }
 OVERLAP_WEIGHT = 0.15

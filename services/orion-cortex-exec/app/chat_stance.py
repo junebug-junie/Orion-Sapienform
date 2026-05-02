@@ -115,6 +115,66 @@ def resolve_autonomy_subquery_max_workers() -> int:
     return max(1, min(3, _env_int("AUTONOMY_SUBQUERY_MAX_WORKERS", 1)))
 
 
+def fetch_chat_stance_memory_graph_hints() -> List[str]:
+    """Optional AffectiveDisposition labels from operator memory named graphs (env CHAT_STANCE_MEMORY_GRAPH_GRAPHS)."""
+    raw = (os.getenv("CHAT_STANCE_MEMORY_GRAPH_GRAPHS") or "").strip()
+    graphs = [x.strip() for x in raw.split(",") if x.strip()]
+    if not graphs:
+        return []
+    cfg = resolve_autonomy_graphdb_config()
+    endpoint = cfg.get("endpoint")
+    if not endpoint:
+        return []
+    vals = " ".join(f"<{g}>" for g in graphs)
+    sparql = f"""
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX orionmem: <https://orion.local/ns/mem/v2026-05#>
+SELECT DISTINCT ?lab ?tp WHERE {{
+  VALUES ?g {{ {vals} }}
+  GRAPH ?g {{
+    ?s a orionmem:AffectiveDisposition .
+    OPTIONAL {{ ?s rdfs:label ?lab . }}
+    OPTIONAL {{ ?s orionmem:trustPolarity ?tp . }}
+  }}
+}}
+LIMIT 12
+""".strip()
+    try:
+        import json as _json
+        import urllib.error
+        import urllib.parse
+        import urllib.request
+
+        data = urllib.parse.urlencode({"query": sparql}).encode("utf-8")
+        req = urllib.request.Request(
+            str(endpoint),
+            data=data,
+            headers={"Accept": "application/sparql-results+json", "Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        user = cfg.get("user") or ""
+        password = cfg.get("password") or ""
+        if user or password:
+            import base64
+
+            tok = base64.b64encode(f"{user}:{password}".encode("utf-8")).decode("ascii")
+            req.add_header("Authorization", f"Basic {tok}")
+        with urllib.request.urlopen(req, timeout=_env_float("CHAT_STANCE_MEMORY_GRAPH_TIMEOUT_SEC", 2.0)) as resp:
+            payload = _json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception as exc:
+        logger.debug("chat_stance_memory_graph_hints_failed error=%s", exc)
+        return []
+    bindings = (payload.get("results") or {}).get("bindings") or []
+    hints: List[str] = []
+    for b in bindings:
+        lab = (b.get("lab") or {}).get("value") or ""
+        tp = (b.get("tp") or {}).get("value") or ""
+        line = " ".join(x for x in [lab, tp] if x).strip()
+        if line:
+            hints.append(line)
+    return hints
+
+
 def resolve_autonomy_graphdb_config() -> dict[str, Any]:
     endpoint_raw = (
         os.getenv("GRAPHDB_QUERY_ENDPOINT")
@@ -959,6 +1019,9 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
         "situation": situation,
         "mutation_adaptation": mutation_cognition,
     }
+    mg_hints = fetch_chat_stance_memory_graph_hints()
+    if mg_hints:
+        inputs["memory_graph"] = {"disposition_hints": mg_hints}
 
     ctx["chat_stance_inputs"] = inputs
     ctx["chat_concept_summary"] = concept

@@ -156,6 +156,16 @@ class Settings(BaseSettings):
     # Emit REC_TAPE RECALL debug dumps for top-N selected items.
     RECALL_DEBUG_DUMP_TOP_N: int = Field(default=0, validation_alias=AliasChoices("RECALL_DEBUG_DUMP_TOP_N"))
 
+    RECALL_MEMORY_GRAPH_SPARQL_ENABLED: bool = Field(
+        default=False, validation_alias=AliasChoices("RECALL_MEMORY_GRAPH_SPARQL_ENABLED")
+    )
+    RECALL_MEMORY_GRAPH_NAMED_GRAPHS: str = Field(
+        default="", validation_alias=AliasChoices("RECALL_MEMORY_GRAPH_NAMED_GRAPHS")
+    )
+    RECALL_MEMORY_GRAPH_SPARQL_TIMEOUT_SEC: float = Field(
+        default=2.0, validation_alias=AliasChoices("RECALL_MEMORY_GRAPH_SPARQL_TIMEOUT_SEC")
+    )
+
     # ── Memory cards (Postgres) ───────────────────────────────────────
     RECALL_ENABLE_CARDS: bool = Field(default=False, validation_alias=AliasChoices("RECALL_ENABLE_CARDS"))
     RECALL_CARDS_TIMEOUT_SEC: float = Field(default=0.25, validation_alias=AliasChoices("RECALL_CARDS_TIMEOUT_SEC"))

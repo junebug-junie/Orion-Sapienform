@@ -1,0 +1,27 @@
+{
+  "memory_graph": {
+    "ontology_version": "orionmem-2026-05",
+    "named_graphs": ["https://orion.example/ns/memory/ng/session/abc"],
+    "situation_id": "urn:uuid:b0000001-0000-4000-8000-000000000001",
+    "utterance_ids": ["t42"],
+    "facts": [
+      {
+        "subject": "Joey",
+        "predicate": "angered",
+        "object": "Juniper",
+        "time": "last_week",
+        "source": "situation"
+      },
+      {
+        "subject": "Juniper",
+        "predicate": "trust_toward",
+        "object": "this breed",
+        "polarity": "ambivalent"
+      }
+    ],
+    "entity_refs": {
+      "joey": "https://orion.example/ns/mem/entity/a0000001-0000-4000-8000-000000000001",
+      "breed": "https://orion.example/ns/mem/entity/a0000002-0000-4000-8000-000000000002"
+    }
+  }
+}

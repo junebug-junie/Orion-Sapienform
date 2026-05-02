@@ -1,0 +1,28 @@
+# RDF → Memory Cards v1 — §4.9–4.10 defaults (editable without code).
+
+entity_iri_base: https://orion.example/ns/mem/entity/
+utterance_prefix: https://orion.local/ns/mem/utterance/
+
+rdf_type_to_card_types:
+  "https://orion.local/ns/mem/v2026-05#Situation":
+    - event
+  "https://orion.local/ns/mem/v2026-05#TypedEntity":
+    - anchor
+  "https://orion.local/ns/mem/v2026-05#AffectiveDisposition":
+    - belief
+
+entity_kind_to_anchor_class:
+  person: person
+  animal: concept
+  breed: concept
+  collective: concept
+  abstract: concept
+  pet: concept
+  taxon: concept
+
+predicate_to_edge_type:
+  "https://orion.local/ns/mem/v2026-05#generalizationOf": parent_of
+  "https://orion.local/ns/mem/v2026-05#specializationOf": child_of
+  "http://www.w3.org/ns/prov#wasDerivedFrom": derived_from
+  "https://schema.org/about": associated_with
+  "https://orion.local/ns/mem/v2026-05#aboutEntity": associated_with

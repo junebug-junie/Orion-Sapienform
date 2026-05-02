@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -1407,6 +1408,16 @@ async def process_recall(
             for k, v in counts.items():
                 backend_counts_total[k] = backend_counts_total.get(k, 0) + v
         timing_breakdown_ms["backend_fetch"] = int((time.time() - backend_start) * 1000)
+
+    if getattr(settings, "RECALL_MEMORY_GRAPH_SPARQL_ENABLED", False):
+        try:
+            from .memory_graph_sparql import fetch_memory_graph_sparql_candidates
+
+            mg_extra = await asyncio.to_thread(fetch_memory_graph_sparql_candidates, query_fragment, settings)
+            candidates.extend(mg_extra)
+            backend_counts_total["memory_graph_sparql"] = len(mg_extra)
+        except Exception as exc:
+            logger.debug("memory_graph_sparql augment skipped: %s", exc)
 
     suppression_start = time.time()
     candidates, suppressed = _suppress_self_hits(

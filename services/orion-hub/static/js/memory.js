@@ -276,5 +276,76 @@
       showSubview(review, all, log, "log");
       loadLog(log, statusEl);
     });
+
+    const draftTa = document.getElementById("memoryGraphDraftJson");
+    const graphOut = document.getElementById("memoryGraphAnnotatorOut");
+    const vBtn = document.getElementById("memoryGraphValidateBtn");
+    const aBtn = document.getElementById("memoryGraphApproveBtn");
+    const sBtn = document.getElementById("memoryGraphSuggestBtn");
+    function graphSetOut(obj, isErr) {
+      if (!graphOut) return;
+      graphOut.textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
+      graphOut.classList.toggle("text-red-400", !!isErr);
+      graphOut.classList.toggle("text-gray-400", !isErr);
+    }
+    if (vBtn && draftTa) {
+      vBtn.addEventListener("click", async () => {
+        graphSetOut("…", false);
+        try {
+          const raw = draftTa.value.trim();
+          const body = JSON.parse(raw);
+          const data = await apiFetch("/api/memory/graph/validate", { method: "POST", body: JSON.stringify(body) });
+          graphSetOut(data, !data.ok);
+        } catch (e) {
+          graphSetOut(e.body || e.message || String(e), true);
+        }
+      });
+    }
+    if (aBtn && draftTa) {
+      aBtn.addEventListener("click", async () => {
+        graphSetOut("…", false);
+        try {
+          const raw = draftTa.value.trim();
+          const body = JSON.parse(raw);
+          const data = await apiFetch("/api/memory/graph/approve", { method: "POST", body: JSON.stringify(body) });
+          graphSetOut(data, !data.ok);
+        } catch (e) {
+          graphSetOut(e.body || e.message || String(e), true);
+        }
+      });
+    }
+    if (sBtn && draftTa) {
+      sBtn.addEventListener("click", async () => {
+        graphSetOut("…", false);
+        try {
+          const raw = draftTa.value.trim() || "Suggest an Appendix C memory graph draft from context.";
+          const headers = { "Content-Type": "application/json", ...sessionHeader() };
+          const payload = {
+            mode: "brain",
+            verbs: ["memory_graph_suggest"],
+            messages: [{ role: "user", content: raw }],
+            use_recall: false,
+            no_write: true,
+          };
+          const res = await fetch(`${API_BASE}/api/chat`, { method: "POST", headers, body: JSON.stringify(payload) });
+          const text = await res.text();
+          let data = null;
+          try {
+            data = text ? JSON.parse(text) : null;
+          } catch {
+            data = { raw: text };
+          }
+          if (!res.ok) {
+            graphSetOut(data || text, true);
+            return;
+          }
+          const t = (data && (data.text || (data.raw && data.raw.final_text))) || text;
+          draftTa.value = typeof t === "string" ? t : JSON.stringify(t, null, 2);
+          graphSetOut({ ok: true, note: "Replaced textarea with model response (trim JSON if wrapped)." }, false);
+        } catch (e) {
+          graphSetOut(e.message || String(e), true);
+        }
+      });
+    }
   });
 })();

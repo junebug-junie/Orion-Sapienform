@@ -67,6 +67,7 @@ from app.models import (
     WorldPulseSituationChangeSQL,
     WorldPulseWorthReadingSQL,
     WorldPulseWorthWatchingSQL,
+    MindRunSQL,
 )
 from orion.evidence_index import build_evidence_units
 
@@ -111,6 +112,7 @@ from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
 from orion.core.schemas.endogenous_runtime import EndogenousRuntimeExecutionRecordV1, EndogenousRuntimeAuditV1
 from orion.core.schemas.calibration_adoption import CalibrationProfileAuditV1
 from orion.schemas.evidence_index import EvidenceUnitV1
+from orion.schemas.mind.artifact import MindRunArtifactV1
 from orion.schemas.world_pulse import (
     ClaimRecordV1,
     DailyWorldPulseItemV1,
@@ -142,7 +144,7 @@ logger = logging.getLogger("sql-writer")
 _SPARK_CONTRACT_METRICS = SparkContractMetrics()
 COLLAPSE_STORED_KIND = "collapse.mirror.stored.v1"
 SOCIAL_TURN_STORED_KIND = "social.turn.stored.v1"
-INSERT_ONLY_MODELS = {JournalEntrySQL, SocialRoomTurnSQL, ChatResponseFeedbackSQL}
+INSERT_ONLY_MODELS = {JournalEntrySQL, SocialRoomTurnSQL, ChatResponseFeedbackSQL, MindRunSQL}
 
 
 def _thought_debug_enabled() -> bool:
@@ -225,6 +227,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "WorldPulseWorthWatchingSQL": (WorldPulseWorthWatchingSQL, WorthWatchingItemV1),
     "WorldPulseContextCapsuleSQL": (WorldPulseContextCapsuleSQL, WorldContextCapsuleV1),
     "WorldPulsePublishStatusSQL": (WorldPulsePublishStatusSQL, None),
+    "MindRunSQL": (MindRunSQL, MindRunArtifactV1),
     "ChatResponseFeedbackSQL": (ChatResponseFeedbackSQL, ChatResponseFeedbackV1),
 }
 

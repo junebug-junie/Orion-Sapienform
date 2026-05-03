@@ -22,6 +22,13 @@ from orion.schemas.cortex.schemas import (
     PlanExecutionArgs
 )
 from .clients import CortexExecClient, StateServiceClient
+from .mind_runtime import (
+    _mind_enabled_exact,
+    build_mind_run_request,
+    call_orion_mind_http,
+    merge_mind_brief_into_plan_metadata,
+    publish_mind_run_artifact,
+)
 from .settings import get_settings
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, RecallDirective
@@ -481,6 +488,34 @@ async def call_verb_runtime(
             note="state_service_unavailable",
         ).model_dump(mode="json")
         plan_request.context["metadata"].pop("orion_state_pending", None)
+
+    cr_meta = client_request.context.metadata if isinstance(client_request.context.metadata, dict) else {}
+    if _mind_enabled_exact(cr_meta):
+        mind_req = build_mind_run_request(client_request, plan_request, correlation_id)
+        try:
+            mind_res = await call_orion_mind_http(mind_req)
+            merge_mind_brief_into_plan_metadata(plan_request, mind_res)
+            try:
+                await publish_mind_run_artifact(
+                    bus,
+                    source=source,
+                    correlation_id=correlation_id,
+                    causality_chain=causality_chain,
+                    trace=trace,
+                    client_request=client_request,
+                    mind_req=mind_req,
+                    mind_res=mind_res,
+                )
+            except Exception as pub_exc:
+                logger.warning(
+                    "mind_artifact_publish_failed corr=%s err=%s",
+                    correlation_id,
+                    pub_exc,
+                )
+                plan_request.context.setdefault("metadata", {})["mind_artifact_persist_failed"] = True
+        except Exception as mind_exc:
+            logger.warning("mind_http_failed corr=%s err=%s", correlation_id, mind_exc)
+            plan_request.context.setdefault("metadata", {})["mind_invocation_failed"] = str(mind_exc)
 
     verb_request, envelope = build_verb_request(
         client_request=client_request,

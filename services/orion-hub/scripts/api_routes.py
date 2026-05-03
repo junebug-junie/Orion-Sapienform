@@ -19,6 +19,8 @@ from pydantic import BaseModel, ConfigDict, Field
 import requests
 
 from .settings import settings
+from .grafana_tempo_link import build_grafana_tempo_trace_explore_url
+from .otel_trace_id import is_valid_otel_trace_id, normalize_otel_trace_id
 from .session import ensure_session
 from .chat_history import (
     build_chat_history_envelope,
@@ -3821,10 +3823,44 @@ async def api_signals_trace(trace_id: str) -> Dict[str, Any]:
     cache = getattr(hub_main, "signals_inspect_cache", None)
     if cache is None or not cache.enabled or not cache.trace_enabled:
         raise HTTPException(status_code=503, detail="signals_trace_cache_disabled")
+    tid_check = normalize_otel_trace_id(trace_id)
+    if not is_valid_otel_trace_id(tid_check):
+        raise HTTPException(status_code=400, detail="invalid_otel_trace_id")
     body = await cache.get_trace(trace_id)
     if body is None:
         raise HTTPException(status_code=404, detail="trace_not_cached")
+    base = str(settings.HUB_OTEL_GRAFANA_BASE_URL or "").strip()
+    if base:
+        url = build_grafana_tempo_trace_explore_url(
+            grafana_base_url=base,
+            trace_id=body.get("trace_id", trace_id),
+            datasource_uid=str(settings.HUB_OTEL_GRAFANA_DATASOURCE_UID or "tempo"),
+            grafana_org_id=int(settings.HUB_OTEL_GRAFANA_ORG_ID or 1),
+        )
+        if url:
+            body = {**body, "grafana_explore_trace_url": url}
     return body
+
+
+@router.get("/api/observability/grafana-tempo-trace/{trace_id}")
+def api_observability_grafana_tempo_trace(trace_id: str) -> Dict[str, Any]:
+    """
+    Stable Grafana Explore (Tempo) deep link for a 32-char hex ``otel_trace_id``.
+    Does not require the trace to be present in Hub's signal cache.
+    """
+    base = str(settings.HUB_OTEL_GRAFANA_BASE_URL or "").strip()
+    if not base:
+        raise HTTPException(status_code=503, detail="grafana_base_url_not_configured")
+    url = build_grafana_tempo_trace_explore_url(
+        grafana_base_url=base,
+        trace_id=trace_id,
+        datasource_uid=str(settings.HUB_OTEL_GRAFANA_DATASOURCE_UID or "tempo"),
+        grafana_org_id=int(settings.HUB_OTEL_GRAFANA_ORG_ID or 1),
+    )
+    if not url:
+        raise HTTPException(status_code=400, detail="invalid_otel_trace_id")
+    tid = normalize_otel_trace_id(trace_id)
+    return {"trace_id": tid, "grafana_explore_trace_url": url}
 
 
 @router.get("/api/substrate/overview")

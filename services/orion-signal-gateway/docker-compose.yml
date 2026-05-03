@@ -10,15 +10,66 @@ services:
       - ORION_BUS_URL=${ORION_BUS_URL:-redis://orion-redis:6379/0}
       - ORION_BUS_ENABLED=${ORION_BUS_ENABLED:-true}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # OTLP to sidecar collector (Phase 0 wiring — matches .env_example / README)
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      - OTEL_CONSOLE_EXPORT=${OTEL_CONSOLE_EXPORT:-false}
+      # Quoted default so compose parsers keep valid JSON for app/settings.py
+      - 'OTEL_DIMENSION_ALLOWLIST=${OTEL_DIMENSION_ALLOWLIST:-["level","trend","volatility","confidence"]}'
     # Uvicorn listens on 8000 inside the image. Default 8879 avoids common 809x host binds (Recall, planner, etc.).
     ports:
       - "${SIGNAL_GATEWAY_HTTP_PORT:-8879}:8000"
+    restart: unless-stopped
+    depends_on:
+      otel-collector:
+        condition: service_started
+    networks:
+      - app-net
+
+  otel-tempo:
+    image: grafana/tempo:2.7.1
+    command: ["-target=all", "-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./otel/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "${TEMPO_HTTP_PORT:-3200}:3200"
+      - "${TEMPO_OTLP_GRPC_PORT:-14317}:4317"
+      - "${TEMPO_OTLP_HTTP_PORT:-14318}:4318"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3200/ready"]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+    networks:
+      - app-net
+
+  otel-grafana:
+    image: grafana/grafana:11.5.2
+    environment:
+      # Local dev default is anonymous admin — set GRAFANA_ANONYMOUS_ENABLED=false for shared nets,
+      # then configure GF_SECURITY_ADMIN_PASSWORD / login (see README).
+      GF_AUTH_ANONYMOUS_ENABLED: ${GRAFANA_ANONYMOUS_ENABLED:-true}
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./otel/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_HTTP_PORT:-3001}:3000"
+    depends_on:
+      otel-tempo:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - app-net
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:latest
+    # Pinned (not :latest). Bump deliberately when upgrading collector semantics.
+    # Image digest for reproducibility (pair with tag): sha256:d2da12c4336a79758826700be9e21ecf4a9f7d945b7f8a58ba55ee3fa45427c8
+    image: otel/opentelemetry-collector-contrib:0.115.1
     command: ["--config=/etc/otel/collector-config.yaml"]
     volumes:
       - ./otel/collector-config.yaml:/etc/otel/collector-config.yaml:ro
@@ -26,8 +77,15 @@ services:
       - "4317:4317"   # OTLP gRPC
       - "4318:4318"   # OTLP HTTP
       - "8889:8889"   # Prometheus metrics
+    depends_on:
+      otel-tempo:
+        condition: service_healthy
     networks:
       - app-net
+
+volumes:
+  tempo-data:
+  grafana-data:
 
 networks:
   app-net:

@@ -81,6 +81,8 @@ The README intentionally mixes live systems, experimental systems, and aspiratio
 | **Edge Pis** | RTMP, GPIO, cameras, LED control, embodiment experiments | Experimental |
 | **Mac Mini / auxiliary nodes** | Support services, experiments, fallback compute | Experimental |
 
+**Operator observability (OpenTelemetry):** the `services/orion-signal-gateway` Docker Compose file can run Grafana Tempo, Grafana, and the OpenTelemetry Collector (pinned images) and export gateway spans to Tempo. Orion Hub can generate Grafana Explore links for a 32-character hex `otel_trace_id` when `HUB_OTEL_GRAFANA_BASE_URL` (and optionally `HUB_OTEL_GRAFANA_ORG_ID`) is set. See `services/orion-signal-gateway/README.md`, `services/orion-signal-gateway/scripts/smoke_otel_phase1.sh` (stack health), and `services/orion-signal-gateway/scripts/e2e_otel_phase1.py` (OTLP → Tempo check).
+
 Orion is intentionally a messy local mesh, not a sterile cloud deployment. Hardware churn, power constraints, broken risers, disks, GPU topology, service movement, and repairs are part of the developmental environment.
 
 ---

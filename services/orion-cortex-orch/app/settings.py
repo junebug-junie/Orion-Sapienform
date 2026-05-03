@@ -72,6 +72,13 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("CHANNEL_DREAM_TRIGGER", "DREAM_TRIGGER_CHANNEL"),
     )
 
+    # Orion Mind (HTTP control-plane; Orch is sole canonical caller for binding runs)
+    orion_mind_base_url: str = Field("", alias="ORION_MIND_BASE_URL")
+    orion_mind_timeout_sec: float = Field(45.0, alias="ORION_MIND_TIMEOUT_SEC")
+    mind_n_loops_default: int = Field(1, alias="MIND_N_LOOPS_DEFAULT")
+    mind_wall_ms_default: int = Field(120_000, alias="MIND_WALL_MS_DEFAULT")
+    orion_mind_max_response_bytes: int = Field(2_000_000, alias="ORION_MIND_MAX_RESPONSE_BYTES")
+
     # Memory cards (always-on inject + optional auto-extractor)
     recall_pg_dsn: str = Field("", alias="RECALL_PG_DSN")
     orion_always_inject_token_budget: int = Field(300, alias="ORION_ALWAYS_INJECT_TOKEN_BUDGET")

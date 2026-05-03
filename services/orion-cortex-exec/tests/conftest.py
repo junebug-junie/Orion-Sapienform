@@ -3,6 +3,19 @@ import sys
 from types import ModuleType
 
 SERVICE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+
+def _purge_app_modules_if_wrong_service(expected_subdir: str) -> None:
+    mod = sys.modules.get("app")
+    loc = (getattr(mod, "__file__", "") or "").replace("\\", "/")
+    if mod is not None and expected_subdir not in loc:
+        for key in list(sys.modules):
+            if key == "app" or key.startswith("app."):
+                del sys.modules[key]
+
+
+_purge_app_modules_if_wrong_service("/orion-cortex-exec/")
+
 if SERVICE_DIR not in sys.path:
     sys.path.insert(0, SERVICE_DIR)
 

@@ -62,17 +62,18 @@ exporters:
     endpoint: "0.0.0.0:8889"
     namespace: "orion"
 
-  # otlp:
-  #   endpoint: "http://jaeger:4317"
-  #   tls:
-  #     insecure: true
+  # Grafana Tempo (dev/staging default stack per docs/superpowers/specs/2026-05-03-hub-otel-*.md)
+  otlp/tempo:
+    endpoint: "otel-tempo:4317"
+    tls:
+      insecure: true
 
 service:
   pipelines:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch, resource]
-      exporters: [debug]
+      exporters: [debug, otlp/tempo]
 
     metrics:
       receivers: [otlp, hostmetrics]

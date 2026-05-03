@@ -9,3 +9,4 @@ loguru>=0.7
 spacy==3.8.13
 psycopg2-binary==2.9.9
 asyncpg==0.29.0
+httpx>=0.27.0,<0.28.0

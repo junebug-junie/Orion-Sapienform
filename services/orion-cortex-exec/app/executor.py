@@ -13,7 +13,7 @@ import logging
 import re
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple, Union, get_args, get_origin
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, get_args, get_origin
 from uuid import uuid4
 
 from jinja2 import Environment
@@ -44,6 +44,7 @@ from orion.schemas.telemetry.turn_effect_explanations import (
     summarize_explanations,
 )
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
+from orion.schemas.chat_stance import ChatStanceBrief
 from orion.schemas.metacog_patches import MetacogDraftTextPatchV1, MetacogEnrichScorePatchV1
 
 from orion.cognition.personality.identity_context import build_identity_context, load_identity_file
@@ -1868,6 +1869,65 @@ def _local_skill_payload_failure_reason(skill_payload: Dict[str, Any]) -> str | 
     return None
 
 
+def _attempt_mind_handoff_chat_stance_shortcut(
+    *,
+    step: ExecutionStep,
+    service: str,
+    ctx: Dict[str, Any],
+    merged_result: Dict[str, Any],
+    logs: List[str],
+    correlation_id: str,
+    spark_vector: list[float] | None,
+    t0: float,
+    record_scoped_step: Callable[..., None],
+    node_name: str,
+) -> StepExecutionResult | None:
+    """If Orch supplied a validated Mind handoff, skip the LLM stance synthesis step."""
+    if (
+        service == "LLMGatewayService"
+        and str(step.verb_name or "") == "chat_general"
+        and str(step.step_name or "") == "synthesize_chat_stance_brief"
+    ):
+        md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+        if md.get("mind_skip_stance_synthesis") is True and isinstance(md.get("mind_handoff"), dict):
+            sp = md["mind_handoff"].get("stance_payload")
+            if isinstance(sp, dict):
+                try:
+                    parsed_brief = ChatStanceBrief.model_validate(sp)
+                except Exception:
+                    parsed_brief = None
+                if parsed_brief is not None:
+                    synthesized_brief = parsed_brief.model_dump(mode="json")
+                    ctx["chat_stance_brief"] = synthesized_brief
+                    ctx["chat_stance_debug"] = build_chat_stance_debug_payload(
+                        ctx=ctx,
+                        synthesized_brief=synthesized_brief,
+                        final_brief=synthesized_brief,
+                        fallback_invoked=False,
+                        normalized_applied=False,
+                        semantic_fallback=False,
+                        quality_modified=False,
+                        parse_error=None,
+                    )
+                    merged_result["LLMGatewayService"] = {"skipped": True, "reason": "mind_handoff_stance_payload"}
+                    merged_result["ChatStanceBrief"] = ctx["chat_stance_brief"]
+                    merged_result["ChatStanceDebug"] = ctx["chat_stance_debug"]
+                    logs.append("exec <- mind_handoff stance_payload (LLM stance synthesis skipped)")
+                    record_scoped_step("success", None, merged_result, logs)
+                    return StepExecutionResult(
+                        status="success",
+                        verb_name=step.verb_name,
+                        step_name=step.step_name,
+                        order=step.order,
+                        result=merged_result,
+                        spark_vector=spark_vector,
+                        latency_ms=int((time.time() - t0) * 1000),
+                        node=node_name,
+                        logs=logs,
+                    )
+    return None
+
+
 async def call_step_services(
     bus: OrionBusAsync,
     *,
@@ -2099,6 +2159,21 @@ async def call_step_services(
                 consumed_by,
             )
         prompt = _render_prompt(step.prompt_template or "", ctx) if step.prompt_template else ""
+
+        shortcut = _attempt_mind_handoff_chat_stance_shortcut(
+            step=step,
+            service=service,
+            ctx=ctx,
+            merged_result=merged_result,
+            logs=logs,
+            correlation_id=correlation_id,
+            spark_vector=spark_vector,
+            t0=t0,
+            record_scoped_step=_record_scoped_step,
+            node_name=settings.node_name,
+        )
+        if shortcut is not None:
+            return shortcut
 
         # ---- DEBUG BY EYE ----
         if service in {"MetacogDraftService", "MetacogEnrichService"}:

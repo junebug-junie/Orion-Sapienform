@@ -95,6 +95,24 @@ class Settings(BaseSettings):
     TRACE_CACHE_TTL_SEC: float = Field(default=300.0, alias="TRACE_CACHE_TTL_SEC")
     TRACE_CACHE_MAX_SIGNALS_PER_TRACE: int = Field(default=64, alias="TRACE_CACHE_MAX_SIGNALS_PER_TRACE")
 
+    # --- OpenTelemetry / Grafana (operator deep links; spec Phase 1) ---
+    HUB_OTEL_GRAFANA_BASE_URL: str = Field(
+        default="",
+        alias="HUB_OTEL_GRAFANA_BASE_URL",
+        description="Grafana base URL (e.g. http://127.0.0.1:3001) for Tempo Explore links from Hub.",
+    )
+    HUB_OTEL_GRAFANA_DATASOURCE_UID: str = Field(
+        default="tempo",
+        alias="HUB_OTEL_GRAFANA_DATASOURCE_UID",
+        description="Grafana Tempo datasource uid (must match Explore link target).",
+    )
+    HUB_OTEL_GRAFANA_ORG_ID: int = Field(
+        default=1,
+        ge=1,
+        alias="HUB_OTEL_GRAFANA_ORG_ID",
+        description="Grafana organization id for Explore URLs (default single-org).",
+    )
+
     # --- In-app Notifications (Hub) ---
     NOTIFY_IN_APP_ENABLED: bool = Field(default=True, alias="NOTIFY_IN_APP_ENABLED")
     NOTIFY_IN_APP_CHANNEL: str = Field(default="orion:notify:in_app", alias="NOTIFY_IN_APP_CHANNEL")

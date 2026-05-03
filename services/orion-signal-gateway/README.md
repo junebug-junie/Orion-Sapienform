@@ -33,7 +33,29 @@ docker-compose up --build
 
 Requires the `app-net` Docker network to exist (see `docker-compose.yml`).
 
+The same compose file starts **`orion-redis`** (Redis 7) so the default **`ORION_BUS_URL=redis://orion-redis:6379/0`** resolves. The gateway **`depends_on`** Redis until it is healthy, then starts (OTEL collector still starts in parallel). If you already run Redis on **`app-net`** (for example from `services/orion-bus`), remove or comment out the **`orion-redis`** service here and point **`ORION_BUS_URL`** at your existing broker (for example `redis://bus-core:6379/0`).
+
 The container runs Uvicorn on **port 8000**. Compose publishes it on the host as **`SIGNAL_GATEWAY_HTTP_PORT` → 8000** (default **8879** to stay clear of common **809x** ports). Override in `.env` if needed. Gateway URL: `http://localhost:8879` with the defaults.
+
+### Observability stack (same compose file)
+
+When you run `docker compose up` in this directory, the following optional services start alongside the gateway (all on Docker network **`app-net`**):
+
+| Service | Role | Default host ports |
+|--------|------|---------------------|
+| **otel-collector** | Receives OTLP from the gateway app; forwards traces to Tempo; exposes Prometheus scrape on **`:8889`** | `4317` (gRPC), `4318` (HTTP), `8889` (metrics) |
+| **otel-tempo** | Trace backend (Grafana Tempo), OTLP ingest | `3200` (HTTP query API), `14317` (OTLP gRPC on host — avoids clashing with the collector’s `4317`), `14318` (OTLP HTTP) |
+| **otel-grafana** | Operator UI; Tempo datasource is provisioned as uid **`tempo`** | `3001` → container `3000` (`GRAFANA_HTTP_PORT`) |
+
+**Gateway app OTLP:** Compose passes **`OTEL_EXPORTER_OTLP_ENDPOINT`** (default `http://otel-collector:4317`), **`OTEL_CONSOLE_EXPORT`**, and **`OTEL_DIMENSION_ALLOWLIST`** into **`orion-signal-gateway`** so spans export to the collector without extra shell wiring. Override values via `.env` next to this compose file.
+
+**Hub deep links:** Configure Hub with **`HUB_OTEL_GRAFANA_BASE_URL`** (e.g. `http://127.0.0.1:3001`) and, if needed, **`HUB_OTEL_GRAFANA_ORG_ID`** (default `1` for single-org Grafana) so `/api/signals/trace/{trace_id}` and `/api/observability/grafana-tempo-trace/{trace_id}` return Grafana Explore URLs for the **32-character lowercase hex** `otel_trace_id`. See `services/orion-hub/.env_example`.
+
+**Metrics:** this compose file does **not** run a Prometheus server. Scrape the collector on the host at **`http://127.0.0.1:8889/metrics`** from your own Prometheus (or add a `prometheus` service in a follow-up).
+
+**Security / Grafana auth:** by default, compose sets **`GRAFANA_ANONYMOUS_ENABLED=true`** (via `.env`) for local use. For any shared or routed network, set **`GRAFANA_ANONYMOUS_ENABLED=false`**, set **`GF_SECURITY_ADMIN_PASSWORD`** (or your org’s auth), and set **`GF_AUTH_DISABLE_LOGIN_FORM=false`** so login is not disabled while anonymous is off. See [Grafana configuration](https://grafana.com/docs/grafana/latest/setup-grafana/configure-grafana/).
+
+**Phase 1 smoke (spec §8.1):** With compose up and default host ports, run `bash scripts/smoke_otel_phase1.sh` (Tempo `/ready`, Grafana `/`, collector metrics). Then run `python3 scripts/e2e_otel_phase1.py` to **POST minimal OTLP/HTTP JSON** to `:4318` and assert the trace appears in Tempo (`/api/traces/...`). That covers collector → Tempo without live gateway traffic. Full §8.1 also includes gateway-emitted spans, **`OrionSignalV1.otel_trace_id`**, Hub `/api/signals/trace/{id}` as the **Orion causal chain** (not an OTEL span tree), and opening the Hub-generated Explore link in Grafana.
 
 ### Local (uvicorn)
 
@@ -69,6 +91,11 @@ Copy `.env_example` to `.env` and adjust:
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | _(unset)_             | OTLP gRPC endpoint (e.g. `http://otel-collector:4317`) |
 | `OTEL_CONSOLE_EXPORT`    | `false`                      | Log spans to stdout (dev only)    |
 | `OTEL_DIMENSION_ALLOWLIST` | JSON list (see defaults in `app/settings.py`) | Keys permitted on spans as `dim.*`; metric keys ending in `_level`, `_trend`, `_volatility` are also emitted. Never attaches `summary`, raw payload fields, or `notes` to spans. |
+| `TEMPO_HTTP_PORT` | `3200` | Compose only: host port for Tempo HTTP/query API. |
+| `TEMPO_OTLP_GRPC_PORT` | `14317` | Compose only: host OTLP gRPC (differs from collector `4317` to avoid clashes). |
+| `TEMPO_OTLP_HTTP_PORT` | `14318` | Compose only: host OTLP HTTP. |
+| `GRAFANA_HTTP_PORT` | `3001` | Compose only: host port for Grafana. |
+| `GRAFANA_ANONYMOUS_ENABLED` | `true` | Compose only: Grafana anonymous login (set `false` + admin password on shared networks). |
 
 ## OpenTelemetry
 

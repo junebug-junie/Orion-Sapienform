@@ -54,6 +54,7 @@ from .world_pulse import (
     WorldPulseWorthReadingSQL,
     WorldPulseWorthWatchingSQL,
 )
+from .mind_run import MindRunSQL
 
 __all__ = [
     "CollapseEnrichment",
@@ -104,4 +105,5 @@ __all__ = [
     "WorldPulseWorthWatchingSQL",
     "WorldPulseContextCapsuleSQL",
     "WorldPulsePublishStatusSQL",
+    "MindRunSQL",
 ]

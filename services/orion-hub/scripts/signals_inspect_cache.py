@@ -11,18 +11,13 @@ from typing import Any, Dict, List, Optional
 from orion.core.bus.async_service import OrionBusAsync
 from orion.signals.models import OrionSignalV1
 
+from .otel_trace_id import is_valid_otel_trace_id, normalize_otel_trace_id
+
 logger = logging.getLogger("orion-hub.signals_inspect")
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _normalize_trace_id(raw: str) -> str:
-    t = (raw or "").strip().lower()
-    if t.startswith("0x"):
-        t = t[2:]
-    return t
 
 
 def _chain_item(sig: OrionSignalV1) -> Dict[str, Any]:
@@ -137,8 +132,8 @@ class SignalsInspectCache:
         async with self._lock:
             self._latest_by_organ[sig.organ_id] = sig
             if self.trace_enabled and sig.otel_trace_id:
-                tid = _normalize_trace_id(sig.otel_trace_id)
-                if len(tid) == 32 and all(c in "0123456789abcdef" for c in tid):
+                tid = normalize_otel_trace_id(sig.otel_trace_id)
+                if is_valid_otel_trace_id(tid):
                     lst = self._chains.setdefault(tid, [])
                     lst.append(sig)
                     lst.sort(key=lambda s: s.observed_at)
@@ -177,8 +172,8 @@ class SignalsInspectCache:
         return {"as_of": now.isoformat(), "signals": signals}
 
     async def get_trace(self, trace_id: str) -> Optional[Dict[str, Any]]:
-        tid = _normalize_trace_id(trace_id)
-        if len(tid) != 32 or any(c not in "0123456789abcdef" for c in tid):
+        tid = normalize_otel_trace_id(trace_id)
+        if not is_valid_otel_trace_id(tid):
             return None
         async with self._lock:
             self._evict_trace_ttl_locked()

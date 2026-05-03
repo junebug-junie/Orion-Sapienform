@@ -1,0 +1,12 @@
+profiles:
+  default:
+    route_kind: brain
+    allowed_verbs:
+      - chat_general
+    mode_suggestion: brain
+    mode_binding: advisory
+  conservative:
+    route_kind: no_chat
+    allowed_verbs: []
+    mode_suggestion: no_chat
+    mode_binding: mandatory

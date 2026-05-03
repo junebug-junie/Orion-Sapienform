@@ -545,6 +545,30 @@ async def lifespan(app: FastAPI):
             )
             conn.exec_driver_sql(
                 """
+                CREATE TABLE IF NOT EXISTS mind_runs (
+                    mind_run_id TEXT PRIMARY KEY,
+                    correlation_id TEXT NOT NULL,
+                    session_id TEXT NULL,
+                    trigger TEXT NOT NULL,
+                    ok BOOLEAN NOT NULL,
+                    error_code TEXT NULL,
+                    snapshot_hash TEXT NOT NULL DEFAULT '',
+                    router_profile_id TEXT NOT NULL DEFAULT '',
+                    result_jsonb JSONB NOT NULL,
+                    request_summary_jsonb JSONB NOT NULL,
+                    redaction_profile_id TEXT NULL,
+                    created_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_mind_runs_correlation_id ON mind_runs (correlation_id);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_mind_runs_created_at ON mind_runs (created_at_utc DESC);"
+            )
+            conn.exec_driver_sql(
+                """
                 CREATE TABLE IF NOT EXISTS world_pulse_hub_message (
                     message_id TEXT PRIMARY KEY,
                     run_id TEXT NOT NULL,

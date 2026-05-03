@@ -1,0 +1,13 @@
+# Provisioned for docker-compose `otel-grafana` (anonymous admin; dev/staging only).
+apiVersion: 1
+datasources:
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    access: proxy
+    url: http://otel-tempo:3200
+    isDefault: true
+    jsonData:
+      httpMethod: GET
+      nodeGraph:
+        enabled: true

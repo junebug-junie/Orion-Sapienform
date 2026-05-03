@@ -1,3 +1,18 @@
+# Workflow: signal-gateway + related Orion signal tests.
+#
+# Two separate jobs (different dependency sets):
+#
+#   1) signal-gateway — Full install from services/orion-signal-gateway/requirements.txt,
+#      then pytest for gateway app, signal adapters, biometrics shim.
+#
+#   2) hub-signals-inspect — Does NOT install services/orion-hub/requirements.txt (that pulls
+#      heavy hub deps e.g. faster-whisper). Instead installs only what is needed to import
+#      services/orion-hub/scripts/signals_inspect_cache.py and run test_signals_inspect_api.py:
+#        signals_inspect_cache → OrionBusAsync (orion.core.bus.async_service)
+#          → redis (async client)
+#          → enforce → catalog_loader → PyYAML (import yaml)
+#      Plus pytest stack and pydantic / pydantic-settings used by orion models and settings.
+
 name: orion-signal-gateway-tests
 
 on:
@@ -23,17 +38,18 @@ on:
 
 jobs:
   signal-gateway:
+    name: Signal gateway + adapters + biometrics
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install gateway test deps
+      - name: Install deps (services/orion-signal-gateway/requirements.txt)
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r services/orion-signal-gateway/requirements.txt
-      - name: Pytest (gateway + adapter + biometrics shim)
+      - name: Pytest
         run: |
           PYTHONPATH=.:services/orion-signal-gateway python -m pytest -q \
             tests/test_biometrics_pipeline.py \
@@ -41,18 +57,24 @@ jobs:
             orion/signals/adapters/tests
 
   hub-signals-inspect:
+    name: Hub — signals inspect cache (lightweight deps)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install minimal deps (cache unit test)
+      - name: Install deps for cache test only (see workflow header comment)
         run: |
           python -m pip install --upgrade pip
-          # scripts.signals_inspect_cache → OrionBusAsync → redis; pydantic-settings → python-dotenv
-          python -m pip install pytest pytest-asyncio pydantic pydantic-settings PyYAML "redis[hiredis]==5.0.7"
-      - name: Pytest Hub signals inspect cache
+          python -m pip install \
+            pytest \
+            pytest-asyncio \
+            pydantic \
+            pydantic-settings \
+            PyYAML \
+            "redis[hiredis]==5.0.7"
+      - name: Pytest services/orion-hub/tests/test_signals_inspect_api.py
         run: |
           PYTHONPATH=. python -m pytest -q \
             -c services/orion-hub/pytest.ini \

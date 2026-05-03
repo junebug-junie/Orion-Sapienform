@@ -390,11 +390,20 @@ channels:
 
   - name: "orion:exec:request:VisionHostService"
     kind: "request"
-    schema_id: "GenericPayloadV1"
-    producer_services: ["orion-vision-host"]
+    schema_id: "VisionTaskRequestPayload"
+    producer_services: ["orion-cortex-exec", "orion-hub", "orion-vision-host"]
     consumer_services: ["orion-vision-host"]
     stability: "experimental"
     since: "2026-01-08"
+
+  - name: "orion:vision:reply:*"
+    kind: "result"
+    schema_id: "VisionTaskResultPayload"
+    message_kind: "vision.task.result"
+    producer_services: ["orion-vision-host"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-05-03"
 
   - name: "orion:collapse:intake"
     kind: "event"

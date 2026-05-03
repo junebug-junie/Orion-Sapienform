@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import uuid
 import time
@@ -21,10 +22,10 @@ from orion.schemas.vision import (
     VisionEmbedding,
 )
 
-from .models import VisionTask
+from .models import VisionResult, VisionTask
 from .profiles import VisionProfiles
 from .runner import VisionRunner
-from .scheduler import VisionScheduler
+from .scheduler import ScheduledPick, VisionQueueFullError, VisionScheduler
 from .settings import Settings
 
 settings = Settings()
@@ -99,6 +100,147 @@ class VisionHostService:
         os.environ.setdefault("HF_HOME", settings.HF_HOME)
         os.environ.setdefault("TRANSFORMERS_CACHE", settings.TRANSFORMERS_CACHE)
 
+    def _make_execute_handler(self, task: VisionTask):
+        async def handler(pick: ScheduledPick):
+            if pick.device == "cpu":
+                return VisionResult(
+                    corr_id=task.corr_id,
+                    ok=False,
+                    task_type=task.task_type,
+                    device=None,
+                    error="No GPU available above hard floor (VRAM pressure).",
+                    meta={"error_code": "gpu_hard_floor"},
+                )
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(self.runner.execute, task, pick.device),
+                    timeout=float(settings.VISION_TIMEOUT_S),
+                )
+            except asyncio.TimeoutError:
+                return VisionResult(
+                    corr_id=task.corr_id,
+                    ok=False,
+                    task_type=task.task_type,
+                    device=pick.device,
+                    error=f"Vision inference timed out after {settings.VISION_TIMEOUT_S}s",
+                    meta={
+                        "error_code": "timeout",
+                        "timings": {"timeout_s": float(settings.VISION_TIMEOUT_S)},
+                    },
+                )
+
+        return handler
+
+    def _attach_scheduler_timings(self, res: VisionResult, t0: float) -> VisionResult:
+        sched_total = time.monotonic() - t0
+        meta = dict(res.meta or {})
+        timings = dict(meta.get("timings") or {})
+        timings["scheduler_total_s"] = round(sched_total, 4)
+        inf = meta.get("latency_s")
+        if inf is not None:
+            timings["inference_s"] = inf
+            timings["queue_wait_est_s"] = round(max(0.0, sched_total - float(inf)), 4)
+        meta["timings"] = timings
+        return res.model_copy(update={"meta": meta})
+
+    def _log_task_completion(
+        self,
+        *,
+        correlation_id: str,
+        task_type: str,
+        res: VisionResult,
+        queue_depth_at_submit: int,
+    ) -> None:
+        meta = res.meta or {}
+        line = {
+            "event": "vision_task_complete",
+            "correlation_id": correlation_id,
+            "task_type": task_type,
+            "ok": res.ok,
+            "device": res.device,
+            "error": res.error,
+            "error_code": meta.get("error_code"),
+            "queue_depth_at_submit": queue_depth_at_submit,
+            "scheduler_total_s": (meta.get("timings") or {}).get("scheduler_total_s"),
+            "inference_s": meta.get("latency_s"),
+            "queue_wait_est_s": (meta.get("timings") or {}).get("queue_wait_est_s"),
+        }
+        logger.info("[VISION_TASK] {}", json.dumps(line, default=str))
+
+    async def run_vision_task(self, task: VisionTask) -> VisionResult:
+        if not self.runner or not self.sched:
+            return VisionResult(
+                corr_id=task.corr_id,
+                ok=False,
+                task_type=task.task_type,
+                device=None,
+                error="service not ready",
+                meta={"error_code": "service_not_ready"},
+            )
+        t0 = time.monotonic()
+        q_depth = self.sched.queue_depth()
+        handler = self._make_execute_handler(task)
+        try:
+            res: VisionResult = await self.sched.submit(handler)
+        except VisionQueueFullError:
+            res = VisionResult(
+                corr_id=task.corr_id,
+                ok=False,
+                task_type=task.task_type,
+                device=None,
+                error="Scheduler queue full (VISION_MAX_QUEUE)",
+                meta={"error_code": "queue_full"},
+            )
+        except Exception as e:
+            res = VisionResult(
+                corr_id=task.corr_id,
+                ok=False,
+                task_type=task.task_type,
+                device=None,
+                error=str(e),
+                meta={"error_code": "scheduler_error"},
+            )
+        res = self._attach_scheduler_timings(res, t0)
+        self._log_task_completion(
+            correlation_id=task.corr_id,
+            task_type=task.task_type,
+            res=res,
+            queue_depth_at_submit=q_depth,
+        )
+        return res
+
+    def readiness_payload(self) -> Dict[str, Any]:
+        profiles_ok = self.profiles is not None
+        bus_ok = True
+        if settings.ORION_BUS_ENABLED:
+            bus_ok = bool(self.bus and self.bus.enabled)
+
+        degraded: list[str] = []
+        gpu_schedulable = False
+        if self.sched:
+            gpu_schedulable = self.sched.can_pick_gpu()
+            if not gpu_schedulable:
+                degraded.append("no_gpu_above_hard_floor")
+        else:
+            degraded.append("scheduler_not_started")
+
+        warm_failed = list(self.runner.warm_errors.keys()) if self.runner else []
+        if warm_failed:
+            degraded.extend([f"warm_failed:{n}" for n in warm_failed])
+
+        ready = profiles_ok and bus_ok and gpu_schedulable and not warm_failed
+
+        return {
+            "ready": ready,
+            "profiles_loaded": profiles_ok,
+            "bus_required": bool(settings.ORION_BUS_ENABLED),
+            "bus_connected": bus_ok,
+            "gpu_schedulable": gpu_schedulable,
+            "warm_failed_profiles": warm_failed,
+            "degraded_reasons": degraded,
+            "queue_depth": self.sched.queue_depth() if self.sched else 0,
+        }
+
     async def _consume_loop(self):
         if not self.bus:
             return
@@ -152,31 +294,8 @@ class VisionHostService:
             meta=payload.meta or {},
         )
 
-        async def handler(pick):
-            if pick.device == "cpu":
-                 return VisionResult(
-                    corr_id=task.corr_id,
-                    ok=False,
-                    task_type=task.task_type,
-                    device=None,
-                    error="No GPU available above hard floor (VRAM pressure).",
-                )
-
-            # Execute on thread
-            return await asyncio.to_thread(self.runner.execute, task, pick.device)
-
-        try:
-            res: VisionResult = await self.sched.submit(handler)
-            await self._publish_result(res, envelope)
-        except Exception as e:
-            err = VisionResult(
-                corr_id=task.corr_id,
-                ok=False,
-                task_type=task.task_type,
-                device=None,
-                error=str(e),
-            )
-            await self._publish_result(err, envelope)
+        res = await self.run_vision_task(task)
+        await self._publish_result(res, envelope)
 
     async def _publish_result(self, res: VisionResult, source_envelope: BaseEnvelope):
         if not self.bus:
@@ -185,15 +304,24 @@ class VisionHostService:
         # Prepare artifacts (consolidated)
         artifact_payload = self._create_artifact_payload(res, source_envelope)
 
-        # Prepare result payload
+        # Prepare result payload (bus contract: error_code + meta for failures)
+        meta_src = dict(res.meta or {})
+        error_code = meta_src.pop("error_code", None)
+        timings = meta_src.pop("timings", None)
+        meta_src.pop("latency_s", None)
+        if res.warnings:
+            meta_src["warnings"] = list(res.warnings)
+        result_meta = meta_src if meta_src else None
+
         result_payload = VisionTaskResultPayload(
             ok=res.ok,
             task_type=res.task_type,
             device=res.device,
             error=res.error,
-            # result=res.artifacts, # Deprecated
+            error_code=error_code,
             artifact=artifact_payload if res.ok else None,
-            timings=res.meta.get("timings")
+            timings=timings,
+            meta=result_meta,
         )
 
         # Publish reply
@@ -302,13 +430,21 @@ async def health():
         "bus_enabled": bool(service.bus and service.bus.enabled),
         "intake": settings.CHANNEL_VISIONHOST_INTAKE,
         "pub": settings.CHANNEL_VISIONHOST_PUB,
-         "scheduler": {
+        "scheduler": {
             "max_inflight": settings.VISION_MAX_INFLIGHT,
             "max_inflight_per_gpu": settings.VISION_MAX_INFLIGHT_PER_GPU,
             "queue_when_busy": settings.VISION_QUEUE_WHEN_BUSY,
             "max_queue": settings.VISION_MAX_QUEUE,
         },
     }
+
+
+@app.get("/ready")
+async def ready():
+    body = service.readiness_payload()
+    code = 200 if body.get("ready") else 503
+    return JSONResponse(body, status_code=code)
+
 
 @app.get("/profiles")
 async def profiles_summary():
@@ -353,19 +489,8 @@ async def http_task(payload: Dict[str, Any]):
         meta=task_payload.meta or {},
     )
 
-    async def handler(pick):
-        if pick.device == "cpu":
-            return VisionResult(
-                corr_id=task.corr_id,
-                ok=False,
-                task_type=task.task_type,
-                device=None,
-                error="No GPU available above hard floor (VRAM pressure).",
-            )
-        return await asyncio.to_thread(service.runner.execute, task, pick.device)
-
     try:
-        res: VisionResult = await service.sched.submit(handler)
+        res: VisionResult = await service.run_vision_task(task)
 
         # Also broadcast artifact if success
         if res.ok and res.artifacts and service.bus:

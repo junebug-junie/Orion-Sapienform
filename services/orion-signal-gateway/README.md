@@ -33,6 +33,8 @@ docker-compose up --build
 
 Requires the `app-net` Docker network to exist (see `docker-compose.yml`).
 
+The same compose file starts **`orion-redis`** (Redis 7) so the default **`ORION_BUS_URL=redis://orion-redis:6379/0`** resolves. The gateway **`depends_on`** Redis until it is healthy, then starts (OTEL collector still starts in parallel). If you already run Redis on **`app-net`** (for example from `services/orion-bus`), remove or comment out the **`orion-redis`** service here and point **`ORION_BUS_URL`** at your existing broker (for example `redis://bus-core:6379/0`).
+
 The container runs Uvicorn on **port 8000**. Compose publishes it on the host as **`SIGNAL_GATEWAY_HTTP_PORT` → 8000** (default **8879** to stay clear of common **809x** ports). Override in `.env` if needed. Gateway URL: `http://localhost:8879` with the defaults.
 
 ### Observability stack (same compose file)

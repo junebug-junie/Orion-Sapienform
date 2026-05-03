@@ -1,4 +1,18 @@
 services:
+  # Matches ORION_BUS_URL default redis://orion-redis:6379/0 and app/settings.py.
+  # If you already run Redis on app-net (e.g. orion-bus), remove this service and set ORION_BUS_URL.
+  orion-redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "allkeys-lru"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG || exit 1"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+    networks:
+      - app-net
+
   orion-signal-gateway:
     build:
       context: ../..
@@ -20,6 +34,8 @@ services:
       - "${SIGNAL_GATEWAY_HTTP_PORT:-8879}:8000"
     restart: unless-stopped
     depends_on:
+      orion-redis:
+        condition: service_healthy
       otel-collector:
         condition: service_started
     networks:

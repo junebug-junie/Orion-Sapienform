@@ -1,6 +1,8 @@
 services:
   orion-vision-window:
     build: .
+    ports:
+      - "8010:8000"
     environment:
       - ORION_BUS_URL=redis://redis:6379/0
       - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}

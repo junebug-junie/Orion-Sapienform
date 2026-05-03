@@ -363,5 +363,14 @@
       }
     }
     window.addEventListener("orion-hub-memory-tab-activated", refreshVisibleMemorySubview);
+    window.addEventListener("orion-hub-memory-graph-draft-import", () => {
+      const v = sessionStorage.getItem("orion_memory_graph_draft_import");
+      if (v && draftTa) draftTa.value = v;
+      sessionStorage.removeItem("orion_memory_graph_draft_import");
+      graphSetOut(
+        { ok: true, note: "Draft loaded from chat bridge. Review JSON then Validate." },
+        false
+      );
+    });
   });
 })();

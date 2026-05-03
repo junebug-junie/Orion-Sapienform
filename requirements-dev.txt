@@ -1,6 +1,8 @@
 pytest>=8.2,<10.0
+# orion-hub/tests/test_signals_inspect_api → Orion bus client (import chain needs redis + PyYAML)
+redis[hiredis]>=5.0.7,<6
+PyYAML>=6.0.1,<7.0.0
 jinja2
 # Memory-graph / SHACL validation tests (`tests/test_memory_graph_*`, `orion.memory_graph.validate`)
 rdflib==7.0.0
 pyshacl>=0.26.0,<1.0.0
-pyyaml>=6.0.1,<7.0.0

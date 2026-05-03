@@ -898,9 +898,10 @@
           <button type="button" id="memorySubviewLog" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200">Activity Log</button>
         </div>
         <div id="memoryGraphAnnotator" class="border border-gray-700 rounded-lg p-3 space-y-2 text-xs">
-          <div class="font-semibold text-gray-200">Graph annotator</div>
-          <p class="text-[10px] text-gray-500">Paste Appendix C JSON or plain turn text for Suggest. Approve requires GraphDB env on Hub.</p>
-          <textarea id="memoryGraphDraftJson" class="w-full h-40 bg-gray-950 border border-gray-700 rounded p-2 font-mono text-[10px]" placeholder="Memory graph draft JSON…"></textarea>
+          <div class="font-semibold text-gray-200">Memory graph (optional)</div>
+          <p class="text-[10px] text-gray-500"><span class="text-gray-400">Suggest</span> — type plain language or paste a chat snippet (or leave empty). The model drafts JSON here; trim any prose around it, then Validate.</p>
+          <p class="text-[10px] text-gray-500"><span class="text-gray-400">Validate / Approve</span> — need structured JSON the API accepts. Approve needs GraphDB on this Hub.</p>
+          <textarea id="memoryGraphDraftJson" class="w-full h-40 bg-gray-950 border border-gray-700 rounded p-2 font-mono text-[10px]" placeholder="Plain text for Suggest, or JSON for Validate / Approve…"></textarea>
           <div class="flex flex-wrap gap-2">
             <button type="button" id="memoryGraphValidateBtn" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200">Validate</button>
             <button type="button" id="memoryGraphApproveBtn" class="px-2 py-1 rounded border border-emerald-800 bg-emerald-900/40 text-emerald-100">Approve</button>

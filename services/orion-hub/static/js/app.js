@@ -817,6 +817,9 @@ loadDismissedIds();
     substratePanel.classList.toggle("hidden", !isSubstrate);
     if (memoryPanel) {
       memoryPanel.classList.toggle("hidden", !isMemory);
+      if (isMemory) {
+        window.dispatchEvent(new Event("orion-hub-memory-tab-activated"));
+      }
     }
     if (pressurePanel) {
       pressurePanel.classList.toggle("hidden", !isPressure);

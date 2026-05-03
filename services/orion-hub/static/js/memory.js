@@ -318,7 +318,9 @@
       sBtn.addEventListener("click", async () => {
         graphSetOut("…", false);
         try {
-          const raw = draftTa.value.trim() || "Suggest an Appendix C memory graph draft from context.";
+          const raw =
+            draftTa.value.trim() ||
+            "Draft a structured memory-graph JSON object for this session (ontology_version, entities, situations, edges). Output only JSON.";
           const headers = { "Content-Type": "application/json", ...sessionHeader() };
           const payload = {
             mode: "brain",
@@ -341,11 +343,25 @@
           }
           const t = (data && (data.text || (data.raw && data.raw.final_text))) || text;
           draftTa.value = typeof t === "string" ? t : JSON.stringify(t, null, 2);
-          graphSetOut({ ok: true, note: "Replaced textarea with model response (trim JSON if wrapped)." }, false);
+          graphSetOut(
+            { ok: true, note: "Replaced the box with the model reply. If prose wrapped the JSON, delete the wrapper lines and use Validate." },
+            false
+          );
         } catch (e) {
           graphSetOut(e.message || String(e), true);
         }
       });
     }
+
+    function refreshVisibleMemorySubview() {
+      if (review && !review.classList.contains("hidden")) {
+        loadReview(review, statusEl, detail, cyHost);
+      } else if (all && !all.classList.contains("hidden")) {
+        loadAll(all, statusEl, detail, cyHost);
+      } else if (log && !log.classList.contains("hidden")) {
+        loadLog(log, statusEl);
+      }
+    }
+    window.addEventListener("orion-hub-memory-tab-activated", refreshVisibleMemorySubview);
   });
 })();

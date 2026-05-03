@@ -5521,6 +5521,7 @@ loadDismissedIds();
     return { targetTurnId, targetMessageId, targetCorrelationId, linkageStrategy };
   }
 
+  // Single id string for data-turn-id and suggest evidence: prefers assistant message id from linkage, then meta fields, then turn id.
   function canonicalTurnIdForMemoryGraph(meta = {}) {
     const linkage = resolveFeedbackLinkage(meta);
     const id =
@@ -5838,42 +5839,65 @@ loadDismissedIds();
   }
 
   function collectConversationTurnsUpTo(anchorEl, maxTurns) {
-    if (!conversationDiv || !anchorEl) return [];
+    if (!conversationDiv || !anchorEl) return { turns: [], skippedWithoutId: 0 };
     const out = [];
+    let skippedWithoutId = 0;
     let el = anchorEl;
     while (el && out.length < maxTurns) {
-      if (el.parentElement === conversationDiv && el.dataset && el.dataset.turnId) {
-        const body = el.querySelector('p.whitespace-pre-wrap');
-        out.push({
-          turnId: el.dataset.turnId,
-          role: el.dataset.role || 'unknown',
-          text: body ? body.textContent : '',
-        });
+      if (el.parentElement === conversationDiv) {
+        if (el.dataset && el.dataset.turnId) {
+          const body = el.querySelector('p.whitespace-pre-wrap');
+          out.push({
+            turnId: el.dataset.turnId,
+            role: el.dataset.role || 'unknown',
+            text: body ? body.textContent : '',
+          });
+        } else {
+          skippedWithoutId += 1;
+        }
       }
       el = el.previousElementSibling;
     }
-    return out.reverse();
+    return { turns: out.reverse(), skippedWithoutId };
   }
 
   function closeMemoryGraphBridgeModal() {
     if (!memoryGraphBridgeModal) return;
     memoryGraphBridgeModal.classList.add('hidden');
     memoryGraphBridgeModal.setAttribute('aria-hidden', 'true');
+    const hintsEl = document.getElementById('memoryGraphBridgeChainHints');
+    if (hintsEl) {
+      hintsEl.textContent = '';
+      hintsEl.classList.add('hidden');
+    }
   }
 
   function openMemoryGraphBridgeModal(anchorDiv) {
     const list = document.getElementById('memoryGraphBridgeTurnList');
     const draftTa = document.getElementById('memoryGraphBridgeDraft');
     const statusEl = document.getElementById('memoryGraphBridgeStatus');
+    const hintsEl = document.getElementById('memoryGraphBridgeChainHints');
+    const closeForFocus = document.getElementById('memoryGraphBridgeModalClose');
     if (!memoryGraphBridgeModal || !list) return;
-    const turns = collectConversationTurnsUpTo(anchorDiv, 40);
+    const { turns, skippedWithoutId } = collectConversationTurnsUpTo(anchorDiv, 40);
     memoryGraphBridgeTurnsCache = turns;
     list.innerHTML = '';
     if (statusEl) statusEl.textContent = '';
+    if (hintsEl) {
+      hintsEl.textContent = '';
+      hintsEl.classList.add('hidden');
+    }
     if (!turns.length) {
       if (statusEl) statusEl.textContent = 'No turns with stable ids found in this thread yet.';
+      if (skippedWithoutId > 0 && hintsEl) {
+        hintsEl.textContent = `${skippedWithoutId} older message(s) have no stable turn id (often user turns). They are omitted from the chain until linkage meta is present.`;
+        hintsEl.classList.remove('hidden');
+      }
       memoryGraphBridgeModal.classList.remove('hidden');
       memoryGraphBridgeModal.setAttribute('aria-hidden', 'false');
+      if (closeForFocus && typeof closeForFocus.focus === 'function') {
+        closeForFocus.focus({ preventScroll: true });
+      }
       return;
     }
     const lastIdx = turns.length - 1;
@@ -5882,6 +5906,22 @@ loadDismissedIds();
       if (turns[j].role === 'user') {
         priorUserIdx = j;
         break;
+      }
+    }
+    const hasUserTurnInChain = turns.some((t) => t.role === 'user');
+    if (hintsEl) {
+      const hintParts = [];
+      if (skippedWithoutId > 0) {
+        hintParts.push(`${skippedWithoutId} older message(s) have no stable turn id and were skipped when building this chain.`);
+      }
+      if (!hasUserTurnInChain) {
+        hintParts.push('No user turn with a stable id appears in this chain — select turns manually, or ensure chat passes turn ids for user messages.');
+      } else if (priorUserIdx < 0) {
+        hintParts.push('No user turn directly before this reply appears in the chain (ids may start mid-thread). Adjust checkboxes as needed.');
+      }
+      if (hintParts.length) {
+        hintsEl.textContent = hintParts.join(' ');
+        hintsEl.classList.remove('hidden');
       }
     }
     turns.forEach((t, i) => {
@@ -5909,6 +5949,9 @@ loadDismissedIds();
     if (draftTa) draftTa.value = '';
     memoryGraphBridgeModal.classList.remove('hidden');
     memoryGraphBridgeModal.setAttribute('aria-hidden', 'false');
+    if (closeForFocus && typeof closeForFocus.focus === 'function') {
+      closeForFocus.focus({ preventScroll: true });
+    }
   }
 
   function setupMemoryGraphBridgeModal() {
@@ -5929,6 +5972,7 @@ loadDismissedIds();
     if (suggestBtn) {
       suggestBtn.addEventListener('click', async () => {
         if (!list || !draftTa) return;
+        if (suggestBtn.disabled) return;
         const boxes = list.querySelectorAll('input[type="checkbox"][data-turn-index]');
         const selected = [];
         boxes.forEach((cb) => {
@@ -5941,6 +5985,9 @@ loadDismissedIds();
           if (statusEl) statusEl.textContent = 'Select at least one turn.';
           return;
         }
+        const prevLabel = suggestBtn.textContent;
+        suggestBtn.disabled = true;
+        suggestBtn.textContent = 'Working…';
         if (statusEl) statusEl.textContent = 'Requesting draft…';
         const content = buildMemoryGraphSuggestUserContent(selected);
         const payload = {
@@ -5974,16 +6021,23 @@ loadDismissedIds();
           const t = (data && (data.text || (data.raw && data.raw.final_text))) || text;
           draftTa.value = typeof t === 'string' ? t : JSON.stringify(t, null, 2);
           if (statusEl) {
-            statusEl.textContent = 'Replaced the box with the model reply. If prose wrapped the JSON, delete the wrapper lines and use Validate on the Memory tab.';
+            statusEl.textContent = 'Replaced the box with the model reply. If prose wrapped the JSON, delete the wrapper lines and use Validate.';
           }
         } catch (err) {
           if (statusEl) statusEl.textContent = String(err.message || err);
+        } finally {
+          suggestBtn.disabled = false;
+          suggestBtn.textContent = prevLabel;
         }
       });
     }
     if (toMemBtn) {
       toMemBtn.addEventListener('click', () => {
         const raw = document.getElementById('memoryGraphBridgeDraft')?.value || '';
+        if (!String(raw).trim()) {
+          showToast('Add or generate a draft first (run Suggest draft), then continue.');
+          return;
+        }
         sessionStorage.setItem('orion_memory_graph_draft_import', raw);
         if (memoryTabButton) {
           memoryTabButton.click();

@@ -446,6 +446,7 @@ loadDismissedIds();
   const responseFeedbackCategoryList = document.getElementById('responseFeedbackCategoryList');
   const responseFeedbackNotes = document.getElementById('responseFeedbackNotes');
   const responseFeedbackStatus = document.getElementById('responseFeedbackStatus');
+  const memoryGraphBridgeModal = document.getElementById('memoryGraphBridgeModal');
   let lastMemoryDebugModel = null;
   let lastAgentTraceSummary = null;
   let lastAgentTraceMeta = {};
@@ -456,6 +457,7 @@ loadDismissedIds();
   let lastRecallCanaryRunId = null;
   let lastRecallCanaryResponse = null;
   let lastRecallCanarySelectedProfile = null;
+  let memoryGraphBridgeTurnsCache = [];
   const RECALL_CANARY_PROFILE_STORAGE_KEY = 'orion_recall_canary_profile_v1';
 
   // Controls
@@ -5519,6 +5521,35 @@ loadDismissedIds();
     return { targetTurnId, targetMessageId, targetCorrelationId, linkageStrategy };
   }
 
+  function canonicalTurnIdForMemoryGraph(meta = {}) {
+    const linkage = resolveFeedbackLinkage(meta);
+    const id =
+      (linkage && linkage.targetMessageId)
+      || meta.messageId
+      || meta.message_id
+      || meta.turnId
+      || meta.turn_id
+      || linkage?.targetTurnId
+      || '';
+    const s = String(id || '').trim();
+    return s || null;
+  }
+
+  function buildMemoryGraphSuggestUserContent(turns) {
+    const lines = [];
+    lines.push('Structured transcript evidence for memory graph extraction (do not invent turns).');
+    lines.push('');
+    turns.forEach((t, i) => {
+      const id = t.turnId;
+      const role = t.role || 'unknown';
+      lines.push(`--- turn ${i + 1} id=${id} role=${role} ---`);
+      lines.push(t.text || '');
+      lines.push('');
+    });
+    lines.push('Emit utterance_ids matching the ids above; fill utterance_text_by_id with excerpts.');
+    return lines.join('\n');
+  }
+
   function closeResponseFeedbackModal() {
     if (!responseFeedbackModal) return;
     responseFeedbackModal.classList.add('hidden');
@@ -5650,6 +5681,9 @@ loadDismissedIds();
     const div = document.createElement('div');
     const color = sender === 'You' ? 'text-blue-300' : 'text-green-300';
     const meta = arguments.length > 3 && arguments[3] && typeof arguments[3] === 'object' ? arguments[3] : {};
+    const turnIdForGraph = canonicalTurnIdForMemoryGraph(meta);
+    if (turnIdForGraph) div.dataset.turnId = turnIdForGraph;
+    div.dataset.role = sender === 'Orion' ? 'assistant' : 'user';
     const displayText = sender === 'Orion' ? hubCoalesceAssistantText(text, meta) : (text || '');
     const workflowOnlyTurn = Boolean(
       sender === 'Orion'
@@ -5743,6 +5777,15 @@ loadDismissedIds();
         });
         actionRow.appendChild(inspectionButton);
       }
+      const memGraphTurnId = canonicalTurnIdForMemoryGraph(meta);
+      if (memGraphTurnId) {
+        const graphBtn = document.createElement('button');
+        graphBtn.type = 'button';
+        graphBtn.className = 'rounded-full border border-violet-500/40 bg-violet-500/10 px-2 py-1 text-[10px] font-semibold text-violet-200 hover:bg-violet-500/20';
+        graphBtn.textContent = 'Memory graph';
+        graphBtn.addEventListener('click', () => openMemoryGraphBridgeModal(div));
+        actionRow.appendChild(graphBtn);
+      }
       if (actionRow.childNodes.length) {
         headerRow.appendChild(actionRow);
       }
@@ -5792,6 +5835,166 @@ loadDismissedIds();
     }
     conversationDiv.appendChild(div);
     conversationDiv.scrollTop = conversationDiv.scrollHeight;
+  }
+
+  function collectConversationTurnsUpTo(anchorEl, maxTurns) {
+    if (!conversationDiv || !anchorEl) return [];
+    const out = [];
+    let el = anchorEl;
+    while (el && out.length < maxTurns) {
+      if (el.parentElement === conversationDiv && el.dataset && el.dataset.turnId) {
+        const body = el.querySelector('p.whitespace-pre-wrap');
+        out.push({
+          turnId: el.dataset.turnId,
+          role: el.dataset.role || 'unknown',
+          text: body ? body.textContent : '',
+        });
+      }
+      el = el.previousElementSibling;
+    }
+    return out.reverse();
+  }
+
+  function closeMemoryGraphBridgeModal() {
+    if (!memoryGraphBridgeModal) return;
+    memoryGraphBridgeModal.classList.add('hidden');
+    memoryGraphBridgeModal.setAttribute('aria-hidden', 'true');
+  }
+
+  function openMemoryGraphBridgeModal(anchorDiv) {
+    const list = document.getElementById('memoryGraphBridgeTurnList');
+    const draftTa = document.getElementById('memoryGraphBridgeDraft');
+    const statusEl = document.getElementById('memoryGraphBridgeStatus');
+    if (!memoryGraphBridgeModal || !list) return;
+    const turns = collectConversationTurnsUpTo(anchorDiv, 40);
+    memoryGraphBridgeTurnsCache = turns;
+    list.innerHTML = '';
+    if (statusEl) statusEl.textContent = '';
+    if (!turns.length) {
+      if (statusEl) statusEl.textContent = 'No turns with stable ids found in this thread yet.';
+      memoryGraphBridgeModal.classList.remove('hidden');
+      memoryGraphBridgeModal.setAttribute('aria-hidden', 'false');
+      return;
+    }
+    const lastIdx = turns.length - 1;
+    let priorUserIdx = -1;
+    for (let j = lastIdx - 1; j >= 0; j -= 1) {
+      if (turns[j].role === 'user') {
+        priorUserIdx = j;
+        break;
+      }
+    }
+    turns.forEach((t, i) => {
+      const row = document.createElement('label');
+      row.className = 'flex gap-2 items-start border border-gray-800 rounded p-2';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'mt-0.5 accent-violet-400';
+      cb.dataset.turnIndex = String(i);
+      cb.checked = i === lastIdx || i === priorUserIdx;
+      const cap = document.createElement('div');
+      cap.className = 'min-w-0 flex-1';
+      const roleLine = document.createElement('div');
+      roleLine.className = 'text-[10px] text-gray-500 font-mono';
+      roleLine.textContent = `${t.role} · ${t.turnId}`;
+      const snippet = document.createElement('div');
+      snippet.className = 'text-gray-200 mt-1 break-words';
+      snippet.textContent = (t.text || '').slice(0, 600) + ((t.text || '').length > 600 ? '…' : '');
+      cap.appendChild(roleLine);
+      cap.appendChild(snippet);
+      row.appendChild(cb);
+      row.appendChild(cap);
+      list.appendChild(row);
+    });
+    if (draftTa) draftTa.value = '';
+    memoryGraphBridgeModal.classList.remove('hidden');
+    memoryGraphBridgeModal.setAttribute('aria-hidden', 'false');
+  }
+
+  function setupMemoryGraphBridgeModal() {
+    const closeBtn = document.getElementById('memoryGraphBridgeModalClose');
+    const suggestBtn = document.getElementById('memoryGraphBridgeSuggest');
+    const toMemBtn = document.getElementById('memoryGraphBridgeToMemory');
+    const draftTa = document.getElementById('memoryGraphBridgeDraft');
+    const statusEl = document.getElementById('memoryGraphBridgeStatus');
+    const list = document.getElementById('memoryGraphBridgeTurnList');
+    if (!memoryGraphBridgeModal || !closeBtn) return;
+    function close() {
+      closeMemoryGraphBridgeModal();
+    }
+    closeBtn.addEventListener('click', close);
+    memoryGraphBridgeModal.addEventListener('click', (e) => {
+      if (e.target === memoryGraphBridgeModal) close();
+    });
+    if (suggestBtn) {
+      suggestBtn.addEventListener('click', async () => {
+        if (!list || !draftTa) return;
+        const boxes = list.querySelectorAll('input[type="checkbox"][data-turn-index]');
+        const selected = [];
+        boxes.forEach((cb) => {
+          if (cb.checked) {
+            const idx = Number(cb.dataset.turnIndex);
+            if (memoryGraphBridgeTurnsCache[idx]) selected.push(memoryGraphBridgeTurnsCache[idx]);
+          }
+        });
+        if (!selected.length) {
+          if (statusEl) statusEl.textContent = 'Select at least one turn.';
+          return;
+        }
+        if (statusEl) statusEl.textContent = 'Requesting draft…';
+        const content = buildMemoryGraphSuggestUserContent(selected);
+        const payload = {
+          mode: 'brain',
+          verbs: ['memory_graph_suggest'],
+          messages: [{ role: 'user', content }],
+          use_recall: false,
+          no_write: true,
+        };
+        try {
+          const headers = {
+            'Content-Type': 'application/json',
+            ...(orionSessionId ? { 'X-Orion-Session-Id': orionSessionId } : {}),
+          };
+          const res = await fetch(`${API_BASE_URL}/api/chat`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload),
+          });
+          const text = await res.text();
+          let data = null;
+          try {
+            data = text ? JSON.parse(text) : null;
+          } catch {
+            data = { raw: text };
+          }
+          if (!res.ok) {
+            if (statusEl) statusEl.textContent = typeof data === 'object' && data ? JSON.stringify(data) : text;
+            return;
+          }
+          const t = (data && (data.text || (data.raw && data.raw.final_text))) || text;
+          draftTa.value = typeof t === 'string' ? t : JSON.stringify(t, null, 2);
+          if (statusEl) {
+            statusEl.textContent = 'Replaced the box with the model reply. If prose wrapped the JSON, delete the wrapper lines and use Validate on the Memory tab.';
+          }
+        } catch (err) {
+          if (statusEl) statusEl.textContent = String(err.message || err);
+        }
+      });
+    }
+    if (toMemBtn) {
+      toMemBtn.addEventListener('click', () => {
+        const raw = document.getElementById('memoryGraphBridgeDraft')?.value || '';
+        sessionStorage.setItem('orion_memory_graph_draft_import', raw);
+        if (memoryTabButton) {
+          memoryTabButton.click();
+        } else {
+          setActiveTab('memory');
+          history.replaceState(null, '', '#memory');
+        }
+        window.dispatchEvent(new CustomEvent('orion-hub-memory-graph-draft-import', { detail: { source: 'bridge' } }));
+        closeMemoryGraphBridgeModal();
+      });
+    }
   }
 
   function closeAgentTraceModal() {
@@ -7826,6 +8029,7 @@ loadDismissedIds();
       if (event.target === responseFeedbackModal) closeResponseFeedbackModal();
     });
   }
+  setupMemoryGraphBridgeModal();
   if (socialInspectionModal) {
     socialInspectionModal.addEventListener('click', (event) => {
       if (event.target === socialInspectionModal) closeSocialInspectionModal();
@@ -7895,6 +8099,10 @@ loadDismissedIds();
     });
   }
   document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && memoryGraphBridgeModal && !memoryGraphBridgeModal.classList.contains('hidden')) {
+      closeMemoryGraphBridgeModal();
+      return;
+    }
     if (event.key === 'Escape' && memoryDebugModalRoot && !memoryDebugModalRoot.classList.contains('hidden')) {
       closeMemoryDebugModal();
       return;

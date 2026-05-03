@@ -2863,6 +2863,24 @@
     </div>
   </div>
 
+  <div id="memoryGraphBridgeModal" class="hidden fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4" aria-hidden="true">
+  <div class="bg-gray-900 border border-gray-700 rounded-xl max-w-lg w-full max-h-[90vh] overflow-hidden flex flex-col shadow-xl">
+    <div class="flex items-center justify-between px-4 py-2 border-b border-gray-800">
+      <div class="text-sm font-semibold text-white">Memory graph from chat</div>
+      <button type="button" id="memoryGraphBridgeModalClose" class="text-gray-400 hover:text-white text-lg leading-none">&times;</button>
+    </div>
+    <div class="p-4 overflow-y-auto flex-1 space-y-3 text-xs text-gray-300">
+      <div id="memoryGraphBridgeTurnList" class="space-y-2"></div>
+      <textarea id="memoryGraphBridgeDraft" class="w-full h-36 bg-gray-950 border border-gray-700 rounded p-2 font-mono text-[10px]" placeholder="Draft JSON appears here after Suggest…"></textarea>
+      <pre id="memoryGraphBridgeStatus" class="text-[10px] text-gray-500 whitespace-pre-wrap"></pre>
+    </div>
+    <div class="flex flex-wrap gap-2 px-4 py-3 border-t border-gray-800">
+      <button type="button" id="memoryGraphBridgeSuggest" class="px-3 py-1 rounded border border-indigo-700 bg-indigo-900/40 text-indigo-100 text-xs">Suggest draft</button>
+      <button type="button" id="memoryGraphBridgeToMemory" class="px-3 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200 text-xs">Continue on Memory tab</button>
+    </div>
+  </div>
+</div>
+
   <script>
     window.__HUB_CFG__ = {{HUB_CFG}};
     window.__HUB_UI_VERSION__ = "{{HUB_UI_ASSET_VERSION}}";

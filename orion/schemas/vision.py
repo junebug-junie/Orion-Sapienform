@@ -106,6 +106,19 @@ class VisionWindowPayload(BaseModel):
     artifact_ids: List[str]
     # For one-shot flow, it's helpful to carry the full artifacts if needed,
     # but the schema usually just has IDs. We'll stick to IDs + summary for payload.
+    # --- Optional projection envelope (vision_window_snapshot.v1); omitted on legacy payloads ---
+    schema_version: Optional[str] = Field(
+        default=None,
+        description="When set, e.g. vision_window_snapshot.v1 — orion-vision-window projection contract.",
+    )
+    stream_id: Optional[str] = None
+    source_node: Optional[str] = None
+    camera_id: Optional[str] = None
+    cursor: Optional[str] = None
+    upstream_event_ids: List[str] = Field(default_factory=list)
+    artifact_uris: List[str] = Field(default_factory=list)
+    freshness: Optional[Dict[str, Any]] = None
+    meta: Optional[Dict[str, Any]] = None
 
 
 class VisionEventBundleItem(BaseModel):

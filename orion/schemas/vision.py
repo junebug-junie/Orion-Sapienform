@@ -66,9 +66,17 @@ class VisionTaskResultPayload(BaseModel):
     task_type: str
     device: Optional[str] = None
     error: Optional[str] = None
+    error_code: Optional[str] = Field(
+        default=None,
+        description="Stable machine-readable failure reason when ok=false (mirrors runner/service meta).",
+    )
     # result: Optional[Dict[str, Any]] = None # Deprecating in favor of typed artifact
     artifact: Optional[VisionArtifactPayload] = None
-    timings: Optional[Dict[str, float]] = None
+    timings: Optional[Dict[str, Any]] = None
+    meta: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Optional extras (e.g. warnings); omit empty.",
+    )
 
 
 class VisionFramePointerPayload(BaseModel):

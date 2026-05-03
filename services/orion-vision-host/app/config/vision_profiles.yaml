@@ -1,5 +1,8 @@
 version: "1.0.0"
 
+# NOTE: The canonical fleet profile file is repo-root config/vision_profiles.yaml (copied into the image).
+# Sections such as runtime.adaptive_degrade there are documentation-only for vision-host — see README.md.
+
 runtime:
   default_device: "cuda:0"
   default_dtype: "auto"

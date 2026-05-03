@@ -37,8 +37,8 @@ class Settings(BaseSettings):
     VISION_PROFILES_PATH: str = "/app/config/vision_profiles.yaml"
     VISION_ENABLED_PROFILES: str = "pipeline_retina_fast,retina_detect_open_vocab,embed_image,vlm_caption"
 
-    # VLM / Captioning
-    VISION_VLM_MODEL_ID: str = "HuggingFaceM4/idefics2-8b" # Placeholder default, likely overridden by env
+    # VLM / Captioning (default is ~2.7B BLIP-2; override for your VRAM — avoid 8B-class defaults on small GPUs)
+    VISION_VLM_MODEL_ID: str = "Salesforce/blip2-opt-2.7b"
     VISION_VLM_MAX_TOKENS: int = 128
     VISION_VLM_TEMPERATURE: float = 0.4
 

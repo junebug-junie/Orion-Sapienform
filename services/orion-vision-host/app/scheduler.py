@@ -9,6 +9,12 @@ from loguru import logger
 from .gpu import GpuInspector
 
 
+class VisionQueueFullError(RuntimeError):
+    """Raised when the bounded async queue cannot accept another pending task."""
+
+    pass
+
+
 @dataclass
 class ScheduledPick:
     device: str
@@ -69,6 +75,16 @@ class VisionScheduler:
         for idx in self._gpu_indices:
             self._gpu_sems[idx] = asyncio.Semaphore(max_inflight_per_gpu)
 
+    def queue_depth(self) -> int:
+        """Pending items waiting on the worker (best-effort backlog indicator)."""
+        return self._queue.qsize()
+
+    def can_pick_gpu(self) -> bool:
+        """True if VRAM policy allows scheduling onto at least one configured CUDA device."""
+        if not self._gpu_indices:
+            return False
+        return self._pick_gpu_index() is not None
+
     async def start(self) -> None:
         if self._queue_task is None:
             self._queue_task = asyncio.create_task(self._queue_worker(), name="visionhost-queue-worker")
@@ -82,6 +98,8 @@ class VisionScheduler:
             self._queue_task.cancel()
             try:
                 await self._queue_task
+            except asyncio.CancelledError:
+                pass
             except Exception:
                 pass
             self._queue_task = None
@@ -157,7 +175,7 @@ class VisionScheduler:
             try:
                 self._queue.put_nowait((run_once, fut))
             except asyncio.QueueFull:
-                raise RuntimeError("VisionHost queue is full")
+                raise VisionQueueFullError("VisionHost queue is full")
             return await fut
 
         return await run_once()

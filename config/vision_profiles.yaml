@@ -28,6 +28,10 @@ runtime:
     soft_floor_mb: 2200                   # degrade when free below this
     hard_floor_mb: 1400                   # refuse heavy tasks when free below this
 
+  # -----------------------------------------------------------------
+  # NOT ENFORCED by services/orion-vision-host today (documentation-only).
+  # VRAM refuse/scheduling uses runtime.scheduler + vram_budget above.
+  # -----------------------------------------------------------------
   adaptive_degrade:
     enabled: true
     steps:

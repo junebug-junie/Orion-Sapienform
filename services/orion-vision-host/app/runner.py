@@ -74,23 +74,72 @@ class VisionRunner:
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
 
         self.models = ModelManager()
+        self.warm_errors: Dict[str, str] = {}
 
     def _is_enabled(self, name: str) -> bool:
         return name in self.enabled
 
     def warm_profiles(self) -> List[str]:
         """
-        Warm only profiles that have warm_on_start=true AND are enabled.
-        We keep this conservative: warm does not force-load placeholders.
+        Load weights for profiles with warm_on_start=true that are enabled and implemented.
+        Failures are recorded in ``warm_errors`` (profile name -> message) without stopping other profiles.
         """
-        warmed = []
+        self.warm_errors.clear()
+        warmed: List[str] = []
+        devices = settings.devices
+        device = devices[0] if devices else settings.VISION_DEFAULT_DEVICE
+
+        if not device.startswith("cuda"):
+            logger.warning("[WARM] skipping CUDA model warmup (primary device is not CUDA)")
+            return warmed
+
         for name, p in self.profiles.profiles.items():
             if not self._is_enabled(name) or not p.enabled or not p.warm_on_start:
                 continue
-            # Only warm the implemented backends; others remain lazy.
-            if p.kind in ("embedding", "detect_open_vocab", "caption_frame"):
+            if p.kind not in ("embedding", "detect_open_vocab", "caption_frame"):
+                continue
+            try:
+                self._warm_profile_backend(p, device)
                 warmed.append(name)
+            except Exception as e:
+                msg = str(e)
+                logger.warning(f"[WARM] profile={name} kind={p.kind} err={msg}")
+                self.warm_errors[name] = msg
         return warmed
+
+    def _warm_profile_backend(self, p: ProfileDef, device: str) -> None:
+        dtype = p.dtype or settings.VISION_DTYPE
+        if p.kind == "embedding":
+            model_id = (
+                p.model_id if p.model_id and not p.model_id.startswith("REPLACE_ME") else self.DEFAULT_EMBED_MODEL
+            )
+            self.models.load_siglip_image_embedder(
+                profile_name=p.name,
+                device=device,
+                dtype=dtype,
+                model_id=model_id,
+                fallback_model_id=self.DEFAULT_EMBED_FALLBACK,
+            )
+        elif p.kind == "detect_open_vocab":
+            model_id = (
+                p.model_id if p.model_id and not p.model_id.startswith("REPLACE_ME") else self.DEFAULT_GDINO_MODEL
+            )
+            self.models.load_grounding_dino(
+                profile_name=p.name,
+                device=device,
+                dtype=dtype,
+                model_id=model_id,
+            )
+        elif p.kind == "caption_frame":
+            model_id = settings.VISION_VLM_MODEL_ID
+            if p.model_id and not p.model_id.startswith("REPLACE_ME"):
+                model_id = p.model_id
+            self.models.load_vlm_captioner(
+                profile_name=p.name,
+                device=device,
+                dtype=dtype,
+                model_id=model_id,
+            )
 
     def execute(self, task: VisionTask, device: str) -> VisionResult:
         t0 = time.time()
@@ -107,6 +156,7 @@ class VisionRunner:
                         task_type=task.task_type,
                         device=device,
                         error=f"pipeline disabled: {target}",
+                        meta={"error_code": "pipeline_disabled"},
                     )
                 artifacts = self._run_pipeline(self.profiles.get_pipeline(target), task.request, device, warnings)
             else:
@@ -117,6 +167,7 @@ class VisionRunner:
                         task_type=task.task_type,
                         device=device,
                         error=f"profile disabled: {target}",
+                        meta={"error_code": "profile_disabled"},
                     )
                 artifacts = self._run_profile(self.profiles.get_profile(target), task.request, device, warnings)
 
@@ -127,8 +178,9 @@ class VisionRunner:
                 task_type=task.task_type,
                 device=device,
                 error=f"unknown task/profile: {target}",
+                meta={"error_code": "unknown_task"},
             )
-        except Exception as e:
+        except FileNotFoundError as e:
             return VisionResult(
                 corr_id=task.corr_id,
                 ok=False,
@@ -136,6 +188,32 @@ class VisionRunner:
                 device=device,
                 error=str(e),
                 warnings=warnings,
+                meta={"error_code": "image_not_found"},
+            )
+        except ValueError as e:
+            msg = str(e)
+            code = "missing_image_path" if "image_path" in msg else "request_validation"
+            return VisionResult(
+                corr_id=task.corr_id,
+                ok=False,
+                task_type=task.task_type,
+                device=device,
+                error=msg,
+                warnings=warnings,
+                meta={"error_code": code},
+            )
+        except Exception as e:
+            msg = str(e)
+            lower = msg.lower()
+            code = "cuda_oom" if "out of memory" in lower else "inference_error"
+            return VisionResult(
+                corr_id=task.corr_id,
+                ok=False,
+                task_type=task.task_type,
+                device=device,
+                error=msg,
+                warnings=warnings,
+                meta={"error_code": code},
             )
 
         dt = time.time() - t0

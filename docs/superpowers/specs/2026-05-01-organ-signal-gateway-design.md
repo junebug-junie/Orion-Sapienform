@@ -1,6 +1,6 @@
 # Design: Orion Organ Signal Gateway
 
-**Date:** 2026-05-01
+**Date:** 2026-05-01 (§7 biometrics path + distillation linkage: 2026-05-04)
 **Status:** Draft — pending user review
 **Scope:** New service `services/orion-signal-gateway/` + `orion/signals/` shared library + OTEL collector sidecar config + Hub inspect endpoint designs
 
@@ -22,13 +22,15 @@ A signal normalization gateway that sits between raw organ telemetry and every d
 - Not a replacement for any existing organ service. The gateway is read-only against all organs. Ablation = disable the gateway. Every existing organ continues working unchanged.
 - Not a wearable biosignal implementation. The OTEL custom receiver for wearables is designed here but implemented next phase.
 - Not a Hub UI implementation. The Hub inspect endpoints are designed here but not built this phase.
-- Not a new persistence layer. The gateway maintains an in-memory signal window; nothing is written to the graph or SQL.
+- Not a new persistence layer **for the gateway**. The gateway maintains an in-memory signal window; it does not write signals to the graph or SQL. Separately, **`orion-sql-writer`** persists certain organ bus kinds (including biometrics telemetry/summary/induction) to Postgres; see **§7**.
 
 ---
 
 ## Relationship to Phase 2 (errata pointer)
 
 Adapter implementations, Hub inspect routes, milestone sequencing, and **first-pass** production contracts (multi-instance model A/B, bus semantics, canonical test layout, Hub trace cache constants, OTEL dimension allowlist, deterministic **`signal_id`** as **64-hex** full SHA-256 when preimage-based, `world_pulse` / `spark_introspector` registry alignment) are specified in **[Organ Signal Gateway — Phase 2](2026-05-01-organ-signal-gateway-phase-2-design.md)** and the **[offboarding / inventory guide](../guides/2026-05-01-organ-signal-gateway-offboarding.md)**. Where Phase 2 explicitly closes contradictions (e.g. file map, test roots), treat Phase 2 as superseding ambiguous or stale rows in this document for implementation and CI layout.
+
+**Biometrics bus, SQL, aggregation, distillation:** **§7** ties **`orion-biometrics`**, **`orion-sql-writer`**, hub/state/spark consumers, planned **skill-adjacent** augmentation, and **metric distillation** in **`orion-signal-gateway`** (`processor.py` + biometrics adapter).
 
 ---
 
@@ -454,7 +456,71 @@ Response shape:
 
 ---
 
-## 7. Testing
+## 7. Biometrics persistence, downstream aggregation, skill-adjacent augmentation, and metric distillation
+
+This section records how **`orion-biometrics`** and **`orion-sql-writer`** relate to the gateway design, what aggregation exists today beyond the gateway’s in-memory window, a planned direction for **deterministic skill-style probes** without LLM cost, and how **metric distillation** is implemented in **`orion-signal-gateway`**. It does **not** change the gateway contract: the gateway remains read-only on organs and keeps its own **signal window** for `OrionSignalV1`; historical **SQL** is a **parallel** persistence path for raw/summary/induction bus kinds.
+
+### 7.1 Skill-adjacent augmentation of `orion-biometrics` (direction)
+
+**Intent:** Reuse the same **deterministic** `skills.*` verbs that the **Hub Skill Runner** dispatches (catalogue prompt → concrete verb → **orion-cortex-exec**), but trigger them on a **timer** from the biometrics service (or a tightly coupled worker), **without** planner or LLM calls. Examples in the same operational family as **`skills.mesh.mesh_ops_round.v1`** include **mesh** (`tailscale_mesh_status`), **storage** (`disk_health_snapshot`), **repo** (`github_recent_prs`), and **runtime** (`docker.ps_status`, `docker_prune_stopped_containers`, GPU snapshot skills).
+
+**Why adjacent, not identical, to Skill Runner:** Skill Runner is a **Hub UX** path (`skill_runner_origin` / `skill_runner_lane` in `services/orion-hub/scripts/cortex_request_builder.py`). Biometrics augmentation is the same **verb surface**, different **scheduler** (service tick vs operator click).
+
+**Related precedent:** **`orion-actions`** schedules **`skills.biometrics.snapshot.v1`** on a cadence for periodic skills — same “no chat, timed skill” pattern, different data plane (HTTP snapshot vs extending the biometrics publish loop).
+
+**Design forks (not decided here):** where the verbs **execute** (extra privileges in `orion-biometrics` vs HTTP to cortex-exec), how **probes are grouped** (one envelope vs many), and **dimension cardinality** for new signals (see §7.5 and registry `canonical_dimensions` when new `signal_kind` values are added).
+
+### 7.2 Postgres persistence (`orion-sql-writer`) — what lands in tables today
+
+**Service:** `services/orion-sql-writer` subscribes to bus channels and maps **`env.kind`** (catalog kinds) to SQLAlchemy models via **`SQL_WRITER_ROUTE_MAP_JSON`** / defaults in `app/settings.py`.
+
+**Biometrics-related rows (default routes):**
+
+| Bus kind (representative) | SQL model | Table |
+|---|---|---|
+| `biometrics.telemetry` | `BiometricsTelemetry` | `orion_biometrics` |
+| `biometrics.summary.v1` | `BiometricsSummarySQL` | `orion_biometrics_summary` |
+| `biometrics.induction.v1` | `BiometricsInductionSQL` | `orion_biometrics_induction` |
+
+**Channels (typical):** legacy raw publish `orion:telemetry:biometrics`; summary/induction on `orion:biometrics:summary` and `orion:biometrics:induction` (see `services/orion-biometrics/README.md` and `services/orion-sql-writer/README.md`).
+
+**Not in the default writer map:** **`biometrics.sample.v1`** (expanded CPU/mem/disk/net/temps/power sample on `orion:biometrics:sample`) — useful on the bus for rich consumers but **not** persisted to Postgres unless routes are extended. **`biometrics.cluster.v1`** (hub role-weighted cluster aggregate) is likewise **not** in the default sql-writer route map; cluster history is **not** automatically in SQL.
+
+**Implication for augmentation:** new probe data should either **fit** existing JSONB-friendly columns and kinds, **extend** `BiometricsSampleV1` / telemetry payloads with explicit **low-cardinality** facet keys, or introduce a **new catalog kind + table** if probes must not overload `orion_biometrics` semantics.
+
+### 7.3 Downstream aggregation (outside the gateway) — implemented vs gaps
+
+**Per-node (inside `orion-biometrics`):** `BiometricsPipeline` (`orion/telemetry/biometrics_pipeline.py`) turns each **`BiometricsSampleV1`** into **`BiometricsSummaryV1`** and **`BiometricsInductionV1`**, which are published on their channels. This is **stream processing**, not a SQL rollup.
+
+**Hub / cluster mode:** When **`BIOMETRICS_MODE`** is `hub` or `both`, **`BiometricsHub`** in `services/orion-biometrics/app/main.py` subscribes to per-node **summary** and **induction** channels, tracks latest by node, and on **`CLUSTER_PUBLISH_INTERVAL`** emits **`biometrics.cluster.v1`** (role-weighted pressures/headroom/composites) and may emit **`spark.signal.v1`** from composite strain. This is the primary **cross-node aggregate** on the **bus**, not in Postgres by default.
+
+**Live caches:** **`orion-state-service`** ingests summary/induction/cluster for API-style consumers. **`orion-hub`** **`BiometricsCache`** (`services/orion-hub/scripts/biometrics_cache.py`) holds summaries/induction/cluster for WebSockets/UI with staleness settings (`BIOMETRICS_*` in Hub settings).
+
+**Spark:** **`SparkEngine.record_biometrics`** (`orion/spark/spark_engine.py`) consumes normalized biometrics for **cognitive substrate** stress / self-field — not a time-series or SQL aggregation layer.
+
+**Gap:** There is **no** separate superpowers spec in-repo that defines **long-horizon SQL or warehouse rollups** for biometrics (e.g. hourly percentiles across nodes). **`docs/superpowers/specs/2026-05-03-hub-otel-traces-metrics-observability-design.md`** covers **Hub OTEL** observability; it does **not** subsume biometrics table aggregation.
+
+### 7.4 Metric distillation — `orion-signal-gateway` implementation and biometrics adapter
+
+**Terminology:** **Distillation** here means reducing organ output to **bounded numeric `dimensions` on `OrionSignalV1`**, and exporting only a **safe, low-cardinality subset** of those dimensions as **OTEL span attributes** (`dim.*`), never attaching raw payload blobs, `summary`, or `notes` text to spans (see Phase 2 **PII / sensitive dimensions** hardening).
+
+**Adapter-side (biometrics reference):** `orion/signals/adapters/biometrics.py` consumes **`biometrics.induction.v1`**-shaped payloads (channel match + `metrics` dict). For each metric name in `metrics`, it runs **`NormalizationContext.get_tracker(organ_id, metric_name)`** and maps **`InductionMetricState`** to three floats:
+
+- `{metric_name}_level` ∈ [0, 1]
+- `{metric_name}_trend` ∈ [-1, 1] (derived from tracker trend)
+- `{metric_name}_volatility` ∈ [0, 1]
+
+Those keys populate **`OrionSignalV1.dimensions`** for **`signal_kind`** `biometrics_state` (single combined signal per induction event today).
+
+**Gateway-side (OTEL export filter):** `services/orion-signal-gateway/app/processor.py` function **`_otel_dimension_exportable`**: a dimension key is exported as `dim.{key}` if it is in **`OTEL_DIMENSION_ALLOWLIST`** **or** its name ends with **`_level`**, **`_trend`**, or **`_volatility`** — matching the adapter’s decomposition suffixes so distilled triples can reach the collector without listing every metric name in the allowlist.
+
+**Collector vs organ-bus biometrics:** DCGM / `hostmetrics` in **`services/orion-signal-gateway/otel/collector-config.yaml`** remain **parallel infra metrics** for Prometheus-style dashboards. The **mesh causal chain** in this spec still treats **gateway-adapted organ-bus biometrics** as the narrative source for `OrionSignalV1` unless the registry explicitly adds collector-derived parents (Phase 2 “Collector vs biometrics” row).
+
+**Future alignment with §7.1:** Skill-augmented probes should either (a) **feed** the existing induction/`metrics` shape so the same distillation path applies, or (b) define **new adapter + registry entries** with their own **`canonical_dimensions`** and distillation rules, with an explicit **cardinality budget** for `_level` / `_trend` / `_volatility` suffixes or allowlist entries.
+
+---
+
+## 8. Testing
 
 ### A. Adapter unit tests (`orion/signals/adapters/tests/`)
 
@@ -484,7 +550,7 @@ Response shape:
 
 ---
 
-## 8. Known limitations
+## 9. Known limitations
 
 1. **Chat stance and recall adapters require cortex cooperation.** Chat stance is assembled per-turn inside `orion-cortex-exec` and not emitted as a standalone bus event. The adapter subscribes to the cortex router output channel. If the router payload does not carry the expected fields, the adapter degrades gracefully (low-confidence signal with notes).
 
@@ -506,7 +572,7 @@ Response shape:
 - Hub inspect endpoint implementation
 - `orion-wearable-bridge` service implementation
 - OTEL backend deployment (Jaeger, Grafana Tempo)
-- Signal persistence layer (graph or SQL storage of historical signals)
+- Signal persistence layer for **`OrionSignalV1`** (graph or SQL storage of gateway-emitted signals); **§7** documents existing **organ-bus** biometrics persistence via **`orion-sql-writer`** as an independent path
 - Signal-based alerting or policy gates
 - Migration of existing correlation ID infrastructure to full OTEL adoption
 
@@ -520,9 +586,10 @@ Response shape:
 | `orion/signals/registry.py` | `ORGAN_REGISTRY` dict, all organ entries |
 | `orion/signals/normalization.py` | `EwmaBand`, `InductionTracker` (moved from telemetry), `NormalizationContext`, `clamp01`, `clamp11` |
 | `orion/signals/adapters/base.py` | `OrionSignalAdapter` ABC |
-| `orion/signals/adapters/*.py` | One file per organ (specified, not implemented) |
+| `orion/signals/adapters/biometrics.py` | Reference adapter: `biometrics.induction.v1` `metrics` → per-metric `_level` / `_trend` / `_volatility` on `OrionSignalV1` (**§7.4**) |
+| `orion/signals/adapters/*.py` | One file per other organ (specified, not all implemented) |
 | `services/orion-signal-gateway/app/service.py` | Bus chassis, subscription management |
-| `services/orion-signal-gateway/app/processor.py` | Signal processing loop, adapter dispatch |
+| `services/orion-signal-gateway/app/processor.py` | Signal processing loop, adapter dispatch; OTEL **`dim.*`** export uses allowlist + **`_level` / `_trend` / `_volatility`** suffix rule (**§7.4**) |
 | `services/orion-signal-gateway/app/normalization_state.py` | Per-organ `NormalizationContext` registry |
 | `services/orion-signal-gateway/app/signal_window.py` | In-memory recent signals by organ_id (30s window) |
 | `services/orion-signal-gateway/app/passthrough.py` | Validator for self-hardened organ signals on `signals.*` |

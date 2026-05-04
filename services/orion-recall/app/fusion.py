@@ -11,8 +11,10 @@ from orion.core.contracts.recall import MemoryBundleStatsV1, MemoryBundleV1, Mem
 
 try:
     from .render import render_items
+    from .snippet_dedupe import duplicate_orion_reply_assistant
 except ImportError:  # pragma: no cover - fallback when not in package context
     from render import render_items  # type: ignore
+    from snippet_dedupe import duplicate_orion_reply_assistant  # type: ignore
 
 DEFAULT_BACKEND_WEIGHTS = {
     "vector": 1.0,
@@ -410,6 +412,7 @@ def fuse_candidates(
     drop_counts: Dict[str, int] = {}
     selected_counts: Dict[str, int] = {}
     novelty_drop_count = 0
+    duplicate_orion_reply_drop_count = 0
     contaminated_recall_filtered_count = 0
     contaminated_recall_sanitized_count = 0
 
@@ -527,6 +530,7 @@ def fuse_candidates(
         )
 
     selected_transcripts: List[str] = []
+    selected_orion_assistants: List[str] = []
     for idx, cand in enumerate(ranked_candidates, start=1):
         source = str(cand.get("source") or "unknown")
         drop_reason = ""
@@ -541,16 +545,27 @@ def fuse_candidates(
         snippet = str(cand.get("text") or cand.get("snippet") or "")
         transcript_like = _is_transcript_like(cand, snippet)
         transcript_norm = ""
+        asst_norm = ""
         if selected and transcript_like:
             user, assistant = _extract_transcript_parts(snippet)
             transcript_norm = _normalize_whitespace(
                 f"user:{user.lower()}|orion:{assistant.lower()}" if (user or assistant) else snippet.lower()
             )
+            asst_norm = _normalize_whitespace(assistant)
             duplicate_transcript = any(_materially_same_transcript(transcript_norm, prev) for prev in selected_transcripts)
+            duplicate_orion = False
+            if asst_norm and len(asst_norm) >= 20:
+                duplicate_orion = any(
+                    duplicate_orion_reply_assistant(asst_norm, prev) for prev in selected_orion_assistants
+                )
             if duplicate_transcript:
                 selected = False
                 drop_reason = "transcript_novelty"
                 novelty_drop_count += 1
+            elif duplicate_orion:
+                selected = False
+                drop_reason = "duplicate_orion_reply"
+                duplicate_orion_reply_drop_count += 1
 
         if selected:
             composite_score = float(cand["_relevance"]["composite_score"])
@@ -582,6 +597,8 @@ def fuse_candidates(
             items.append(item)
             if transcript_like and transcript_norm:
                 selected_transcripts.append(transcript_norm)
+            if transcript_like and asst_norm:
+                selected_orion_assistants.append(asst_norm)
         elif drop_reason:
             drop_counts[drop_reason] = drop_counts.get(drop_reason, 0) + 1
 
@@ -643,6 +660,7 @@ def fuse_candidates(
         diag_payload = {
             "transcript_dedupe_collapsed": transcript_dedupe_count,
             "novelty_drop_count": novelty_drop_count,
+            "duplicate_orion_reply_drop_count": duplicate_orion_reply_drop_count,
             "drop_counts": drop_counts,
             "source_candidate_counts": backend_counts,
             "source_selected_counts": selected_counts,

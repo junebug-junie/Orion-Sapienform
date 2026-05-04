@@ -76,3 +76,21 @@ def test_fusion_keeps_distinct_non_transcript_items():
     bundle, _ = fuse_candidates(candidates=cands, profile=_profile(), query_text="GraphDB", diagnostic=True)
 
     assert len(bundle.items) == 2
+
+
+def test_fusion_dedupes_identical_orion_across_distinct_user_turns():
+    """Vector often returns many rows with the same assistant catchphrase; digest must not amplify repetition."""
+    orion_body = (
+        "Ain't nothin' but a hound dog, but I'm here for the chips and queso. You good? "
+        "(You just called me silly—did you forget the jalapeño kick? I'm still waiting for that second helping.)"
+    )
+    t1 = f'ExactUserText: "sup" OrionResponse: "{orion_body}"'
+    t2 = f'ExactUserText: "lol you silly" OrionResponse: "{orion_body}"'
+    cands = [
+        {"id": "vec-a", "source": "vector", "text": t1, "score": 0.15, "tags": []},
+        {"id": "vec-b", "source": "vector", "text": t2, "score": 0.13, "tags": []},
+    ]
+
+    bundle, _ = fuse_candidates(candidates=cands, profile=_profile(), query_text="queso", diagnostic=True)
+
+    assert len(bundle.items) == 1

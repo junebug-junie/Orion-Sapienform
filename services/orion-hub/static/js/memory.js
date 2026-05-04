@@ -355,11 +355,34 @@
             graphSetOut(data || text, true);
             return;
           }
-          const t = (data && (data.text || (data.raw && data.raw.final_text))) || text;
-          draftTa.value = typeof t === "string" ? t : JSON.stringify(t, null, 2);
+          const coalesce =
+            window.OrionMemoryGraphDraftUI && typeof window.OrionMemoryGraphDraftUI.coalesceChatSuggestDraft === "function"
+              ? window.OrionMemoryGraphDraftUI.coalesceChatSuggestDraft(data)
+              : null;
+          let draftText = "";
+          let suggestErr = "";
+          if (coalesce) {
+            draftText = coalesce.draftText || "";
+            suggestErr = coalesce.error || "";
+          } else {
+            const t = (data && (data.text || (data.raw && data.raw.final_text))) || "";
+            draftText = typeof t === "string" ? t.trim() : "";
+          }
+          if (suggestErr) {
+            draftTa.value = "";
+            if (memoryDraftViz && memoryDraftViz.refresh) memoryDraftViz.refresh();
+            graphSetOut({ ok: false, error: suggestErr }, true);
+            return;
+          }
+          draftTa.value = draftText;
           if (memoryDraftViz && memoryDraftViz.refresh) memoryDraftViz.refresh();
           graphSetOut(
-            { ok: true, note: "Replaced the box with the model reply. If prose wrapped the JSON, delete the wrapper lines and use Validate." },
+            {
+              ok: true,
+              note: draftText
+                ? "Replaced the box with the model reply. If prose wrapped the JSON, delete the wrapper lines and use Validate."
+                : "Empty response — check gateway / model logs.",
+            },
             false
           );
         } catch (e) {

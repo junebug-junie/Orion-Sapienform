@@ -173,6 +173,7 @@ def test_hub_ui_asset_version_helper_returns_non_empty_token(monkeypatch) -> Non
     import scripts.main as hub_main
 
     monkeypatch.setenv("HUB_UI_BUILD", "build-20260330")
+    monkeypatch.setattr(hub_main, "_ui_asset_mtime_token", lambda: "")
     assert hub_main.build_hub_ui_asset_version() == "build-20260330"
 
 
@@ -184,7 +185,17 @@ def test_hub_ui_asset_version_prefers_build_id_when_explicit_build_absent(monkey
     monkeypatch.delenv("GIT_SHA", raising=False)
     monkeypatch.delenv("SOURCE_COMMIT", raising=False)
     monkeypatch.delenv("BUILD_TIMESTAMP", raising=False)
+    monkeypatch.setattr(hub_main, "_ui_asset_mtime_token", lambda: "")
     assert hub_main.build_hub_ui_asset_version() == "ci-4821"
+
+
+def test_hub_ui_asset_version_appends_mtime_after_build_id(monkeypatch) -> None:
+    import scripts.main as hub_main
+
+    monkeypatch.delenv("HUB_UI_BUILD", raising=False)
+    monkeypatch.setenv("BUILD_ID", "ci-4821")
+    monkeypatch.setattr(hub_main, "_ui_asset_mtime_token", lambda: "1730000000")
+    assert hub_main.build_hub_ui_asset_version() == "ci-4821-1730000000"
 
 
 def test_root_response_disables_html_caching() -> None:

@@ -14,6 +14,7 @@ from .situation import mark_orion_turn
 from .recall_utils import (
     delivery_safe_recall_decision,
     has_inline_recall,
+    plan_ctx_latest_user_text,
     recall_enabled_value,
     resolve_profile,
     should_run_recall,
@@ -700,7 +701,7 @@ class PlanRunner:
             plan.steps,
             output_mode=ctx.get("output_mode"),
             verb_profile=verb_recall_profile,
-            user_text=(ctx.get("raw_user_text") or ""),
+            user_text=plan_ctx_latest_user_text(ctx),
             runtime_mode=mode,
         )
         selected_profile = recall_policy["profile"]

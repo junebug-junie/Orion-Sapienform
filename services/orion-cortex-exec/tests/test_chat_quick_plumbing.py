@@ -19,9 +19,14 @@ def test_chat_quick_plan_collects_metacog_then_runs_llm_gateway() -> None:
 
 def test_chat_quick_prompt_has_identity_context_and_no_stance_dependency() -> None:
     prompt = Path("orion/cognition/prompts/chat_quick.j2").read_text(encoding="utf-8")
+    assert "template_revision=2026-05-04" in prompt
     assert "orion_identity_summary" in prompt
     assert "juniper_relationship_summary" in prompt
     assert "response_policy_summary" in prompt
     assert "Do not synthesize a formal stance brief." in prompt
     assert "Do not imitate the full chat_general stance-brief style." in prompt
     assert "chat_stance_brief" not in prompt
+
+
+# Regression guardrails for exec-side context (message_history, recall user_text) live in
+# tests/test_chat_prompt_context_guardrails.py — extend there when adding chat prompt variables.

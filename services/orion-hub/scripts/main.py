@@ -64,6 +64,7 @@ def _ui_asset_mtime_token() -> str:
     """Best-effort mtime token so uncommitted UI edits bust browser caches."""
     candidates = [
         STATIC_DIR / "js" / "app.js",
+        STATIC_DIR / "js" / "memory-graph-draft-ui.js",
         STATIC_DIR / "js" / "workflow-ui.js",
         TEMPLATES_DIR / "index.html",
     ]
@@ -84,14 +85,18 @@ def build_hub_ui_asset_version() -> str:
     discovered_git_sha = _discover_git_sha()
     build_ts = os.getenv("BUILD_TIMESTAMP")
     service_version = settings.SERVICE_VERSION
+    mtime_token = _ui_asset_mtime_token()
 
-    # Honor explicit CI/build ids exactly.
+    # CI/build ids identify a build, but volume-mounted static/ can change without
+    # a new image. Append the max mtime of key UI files so each Hub restart (and
+    # any template reload) can surface a new ?v= for script tags.
     for candidate in (explicit, build_id, git_sha, build_ts):
         value = str(candidate or "").strip()
         if value:
+            if mtime_token:
+                return f"{value}-{mtime_token}"
             return value
     # For local/dev paths, include mtime token so restarts pick up UI edits.
-    mtime_token = _ui_asset_mtime_token()
     if discovered_git_sha and mtime_token:
         return f"{discovered_git_sha}-{mtime_token}"
     if discovered_git_sha:

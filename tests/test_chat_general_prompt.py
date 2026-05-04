@@ -18,10 +18,12 @@ def test_chat_general_prompt_contains_identity_and_behavior_rails() -> None:
     )
 
     assert "Default to answering directly." in rendered
+    assert "memory_digest and recall snippets may include stale" in rendered
     assert "Stay in first person as Oríon" in rendered
     assert "Do not say \"It sounds like...\"" in rendered
     assert "co-architect" in rendered
     assert "steward" in rendered
+    assert "When the user asks about memory, recall" in rendered
     assert "EVIDENCE-GATED CLAIMS" in rendered
     assert "Do not claim hidden side effects" in rendered
     assert "I can help track this in our conversation right now" in rendered

@@ -16,6 +16,11 @@ def test_template_includes_memory_graph_bridge_modal_and_a11y() -> None:
     assert 'id="memoryGraphBridgeToMemory"' in html
     assert 'id="memoryGraphBridgeChainHints"' in html
     assert 'id="memoryGraphBridgeModalTitle"' in html
+    assert 'id="memoryGraphBridgeMaxTurns"' in html
+    assert 'id="memoryGraphBridgeSelectLastKBtn"' in html
+    assert 'id="memoryGraphBridgeCyHost"' in html
+    assert 'id="memoryGraphDraftCyHost"' in html
+    assert "/static/js/memory-graph-draft-ui.js" in html
     assert 'role="dialog"' in html
     assert "aria-modal=\"true\"" in html
     assert "aria-labelledby=\"memoryGraphBridgeModalTitle\"" in html
@@ -32,9 +37,13 @@ def test_app_js_wires_memory_graph_bridge_handlers() -> None:
     assert "CustomEvent('orion-hub-memory-graph-draft-import'" in app_js
     assert "backfillLatestUserTurnIdForGraph" in app_js
     assert "extractCortexStepErrorHint" in app_js
+    assert "ensureMemoryGraphBridgeDraftViz" in app_js
+    assert "hub-utterance:" in app_js
+    assert "readBridgeMaxTurnsStored" in app_js
 
 
 def test_memory_js_listens_for_bridge_import_event() -> None:
     memory_js = MEMORY_JS_PATH.read_text(encoding="utf-8")
     assert 'orion-hub-memory-graph-draft-import' in memory_js
     assert "orion_memory_graph_draft_import" in memory_js
+    assert "OrionMemoryGraphDraftUI" in memory_js

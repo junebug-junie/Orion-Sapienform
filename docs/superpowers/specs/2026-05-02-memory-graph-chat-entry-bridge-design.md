@@ -2,8 +2,8 @@
 
 **Date:** 2026-05-02  
 **Status:** Draft — operator review  
-**Related:** [Memory graph annotator (Hub) + dual-write GraphDB](./2026-05-02-memory-graph-annotator-hub-design.md)  
-**Decision:** Smallest change that removes paste-as-primary workflow (**option C**): optimize for minimal surface area; Approve location unconstrained.
+**Related:** [Memory graph annotator (Hub) + dual-write GraphDB](./2026-05-02-memory-graph-annotator-hub-design.md), [Draft viz + bridge turn depth / ids (2026-05-03)](./2026-05-03-memory-graph-draft-viz-and-bridge-turns-design.md)  
+**Decision:** Smallest change that removes paste-as-primary workflow (**option C**): optimize for minimal surface area; Approve location unconstrained. **Normative depth, cap, persistence, “Select last K”, and user-bubble `hub-utterance:*` ids** are defined in the 2026-05-03 spec; the “e.g. 5 turns” below is a **default token target**, not the hard maximum.
 
 ---
 
@@ -38,7 +38,7 @@ The backend shape **`SuggestDraftV1`** already includes **`utterance_ids`** and 
 
 - On **assistant** bubbles (same row as existing feedback / inspect affordances where layout fits), add **“Memory graph…”** (or shorter **“Graph…”**).
 - Click opens a **modal** that shows:
-  - **Chain selector:** Default = clicked assistant turn + optional **previous N user/assistant turns** (checkboxes or “include prior user message”) capped (e.g. 5 turns) to control tokens.
+  - **Chain selector:** Default = clicked assistant turn + optional **previous N user/assistant turns** (checkboxes or “include prior user message”). **Default N ≈ 5** for token control on first visit; operators may raise **N** up to a **hard cap** with persistence — see [2026-05-03 spec §5](./2026-05-03-memory-graph-draft-viz-and-bridge-turns-design.md#5-bridge-configurable-depth-and-selection).
   - **Evidence preview:** Read-only concatenation of turn texts with **stable ids** displayed monospaced (`message_id` / `turnId` / `correlationId` — whatever `resolveFeedbackLinkage` and message meta already expose for feedback).
 
 ### 3.2 Suggest from modal
@@ -74,7 +74,7 @@ Hub DOM (turn meta) → modal selection
   → Validate / Approve unchanged (memory_graph_routes.py)
 ```
 
-**Provenance:** Turn ids must match what **approve** / **json_to_rdf** can attach as `prov:wasDerivedFrom` — if meta only has correlation ids, document the **canonical id choice** in the implementation plan (single rule: prefer `message_id` when present, else `turnId`, else synthetic session-scoped index with warning banner).
+**Provenance:** Turn ids must match what **approve** / **json_to_rdf** can attach as `prov:wasDerivedFrom` — if meta only has correlation ids, document the **canonical id choice** in the implementation plan (single rule: prefer `message_id` when present, else `turnId`, else synthetic session-scoped index with warning banner). **User bubbles without server meta:** use `hub-utterance:<uuid>` and session-local semantics per [2026-05-03 spec §3](./2026-05-03-memory-graph-draft-viz-and-bridge-turns-design.md#3-id-strategy-for-user-and-assistant-turns-decision).
 
 ---
 

@@ -897,17 +897,28 @@
           <button type="button" id="memorySubviewAll" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200">All Cards</button>
           <button type="button" id="memorySubviewLog" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200">Activity Log</button>
         </div>
-        <div id="memoryGraphAnnotator" class="border border-gray-700 rounded-lg p-3 space-y-2 text-xs">
+        <div id="memoryGraphAnnotator" class="border border-gray-700 rounded-lg p-3 space-y-3 text-xs">
           <div class="font-semibold text-gray-200">Memory graph (optional)</div>
           <p class="text-[10px] text-gray-500"><span class="text-gray-400">Suggest</span> — type plain language or paste a chat snippet (or leave empty). The model drafts JSON here; trim any prose around it, then Validate.</p>
           <p class="text-[10px] text-gray-500"><span class="text-gray-400">Validate / Approve</span> — need structured JSON the API accepts. Approve needs GraphDB on this Hub.</p>
-          <textarea id="memoryGraphDraftJson" class="w-full h-40 bg-gray-950 border border-gray-700 rounded p-2 font-mono text-[10px]" placeholder="Plain text for Suggest, or JSON for Validate / Approve…"></textarea>
-          <div class="flex flex-wrap gap-2">
-            <button type="button" id="memoryGraphValidateBtn" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200">Validate</button>
-            <button type="button" id="memoryGraphApproveBtn" class="px-2 py-1 rounded border border-emerald-800 bg-emerald-900/40 text-emerald-100">Approve</button>
-            <button type="button" id="memoryGraphSuggestBtn" class="px-2 py-1 rounded border border-indigo-700 bg-indigo-900/30 text-indigo-100">Suggest</button>
+          <div id="memoryGraphDraftParseBanner" class="hidden text-[11px] rounded border px-2 py-1 whitespace-pre-wrap border-gray-700 text-gray-400 bg-gray-950/60" role="status"></div>
+          <div class="grid grid-cols-1 xl:grid-cols-2 gap-3 items-start">
+            <div class="space-y-2 min-w-0">
+              <div class="text-[10px] uppercase tracking-wide text-gray-500">Draft</div>
+              <textarea id="memoryGraphDraftJson" class="w-full min-h-[11rem] bg-gray-950 border border-gray-700 rounded p-2 font-mono text-xs leading-relaxed" placeholder="Plain text for Suggest, or JSON for Validate / Approve…"></textarea>
+              <div class="flex flex-wrap gap-2">
+                <button type="button" id="memoryGraphValidateBtn" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200">Validate</button>
+                <button type="button" id="memoryGraphApproveBtn" class="px-2 py-1 rounded border border-emerald-800 bg-emerald-900/40 text-emerald-100">Approve</button>
+                <button type="button" id="memoryGraphSuggestBtn" class="px-2 py-1 rounded border border-indigo-700 bg-indigo-900/30 text-indigo-100">Suggest</button>
+              </div>
+              <pre id="memoryGraphAnnotatorOut" class="text-xs text-gray-400 whitespace-pre-wrap max-h-48 overflow-auto border border-gray-800 rounded p-2 bg-gray-950/30"></pre>
+            </div>
+            <div class="space-y-2 min-w-0">
+              <div class="text-[10px] uppercase tracking-wide text-gray-500">Graph preview</div>
+              <div id="memoryGraphDraftCyHost" class="h-56 w-full border border-gray-800 rounded-lg bg-black/40"></div>
+              <div id="memoryGraphDraftDetail" class="min-h-[7rem] border border-gray-800 rounded-lg p-2 bg-gray-950/50 text-gray-200"></div>
+            </div>
           </div>
-          <pre id="memoryGraphAnnotatorOut" class="text-[10px] text-gray-400 whitespace-pre-wrap max-h-48 overflow-auto"></pre>
         </div>
         <div id="memoryStatus" class="text-xs text-gray-400 min-h-[1.25rem]"></div>
         <div id="memoryReviewPanel" class="memory-subview flex flex-col gap-2 text-sm"></div>
@@ -2865,7 +2876,7 @@
 
   <div id="memoryGraphBridgeModal" class="hidden fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4" aria-hidden="true">
     <div
-      class="bg-gray-900 border border-gray-700 rounded-xl max-w-lg w-full max-h-[90vh] overflow-hidden flex flex-col shadow-xl"
+      class="bg-gray-900 border border-gray-700 rounded-xl max-w-5xl w-full max-h-[92vh] overflow-hidden flex flex-col shadow-xl"
       role="dialog"
       aria-modal="true"
       aria-labelledby="memoryGraphBridgeModalTitle"
@@ -2875,10 +2886,35 @@
         <button type="button" id="memoryGraphBridgeModalClose" class="text-gray-400 hover:text-white text-lg leading-none" aria-label="Close">&times;</button>
       </div>
       <div class="p-4 overflow-y-auto flex-1 space-y-3 text-xs text-gray-300">
+        <div class="flex flex-wrap items-end gap-3 text-[11px]">
+          <label class="flex flex-col gap-1 text-gray-400">
+            Max turns in chain (≤80)
+            <input id="memoryGraphBridgeMaxTurns" type="number" min="1" max="80" step="1"
+              class="w-24 bg-gray-950 border border-gray-700 rounded px-2 py-1 text-gray-100 font-mono" />
+          </label>
+          <label class="flex flex-col gap-1 text-gray-400">
+            Select last K turns
+            <input id="memoryGraphBridgeSelectLastKInput" type="number" min="1" step="1"
+              class="w-24 bg-gray-950 border border-gray-700 rounded px-2 py-1 text-gray-100 font-mono" placeholder="K" />
+          </label>
+          <button type="button" id="memoryGraphBridgeSelectLastKBtn"
+            class="px-3 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200">Apply K</button>
+        </div>
         <p id="memoryGraphBridgeChainHints" class="hidden text-[10px] text-amber-200/90 whitespace-pre-wrap" role="status"></p>
-        <div id="memoryGraphBridgeTurnList" class="space-y-2"></div>
-        <textarea id="memoryGraphBridgeDraft" class="w-full h-36 bg-gray-950 border border-gray-700 rounded p-2 font-mono text-[10px]" placeholder="Draft JSON appears here after Suggest…"></textarea>
-        <pre id="memoryGraphBridgeStatus" class="text-[10px] text-gray-500 whitespace-pre-wrap"></pre>
+        <div id="memoryGraphBridgeTurnList" class="space-y-2 max-h-48 overflow-y-auto border border-gray-800 rounded-lg p-2"></div>
+        <div id="memoryGraphBridgeParseBanner" class="hidden text-[11px] rounded border px-2 py-1 whitespace-pre-wrap border-gray-700 text-gray-400 bg-gray-950/60" role="status"></div>
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
+          <div class="space-y-2 min-w-0">
+            <div class="text-[10px] uppercase tracking-wide text-gray-500">Draft JSON</div>
+            <textarea id="memoryGraphBridgeDraft" class="w-full min-h-[11rem] bg-gray-950 border border-gray-700 rounded p-2 font-mono text-xs leading-relaxed" placeholder="Draft JSON appears here after Suggest…"></textarea>
+          </div>
+          <div class="space-y-2 min-w-0">
+            <div class="text-[10px] uppercase tracking-wide text-gray-500">Preview graph &amp; selection</div>
+            <div id="memoryGraphBridgeCyHost" class="h-52 w-full border border-gray-800 rounded-lg bg-black/40"></div>
+            <div id="memoryGraphBridgeDetail" class="min-h-[7rem] border border-gray-800 rounded-lg p-2 bg-gray-950/50 text-gray-200"></div>
+          </div>
+        </div>
+        <pre id="memoryGraphBridgeStatus" class="text-xs text-gray-500 whitespace-pre-wrap"></pre>
       </div>
       <div class="flex flex-wrap gap-2 px-4 py-3 border-t border-gray-800">
         <button type="button" id="memoryGraphBridgeSuggest" class="px-3 py-1 rounded border border-indigo-700 bg-indigo-900/40 text-indigo-100 text-xs">Suggest draft</button>
@@ -2898,6 +2934,7 @@
   <script src="/static/js/service-logs-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/thought-process.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script src="/static/js/memory-graph-draft-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/memory.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/app.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
 </body>

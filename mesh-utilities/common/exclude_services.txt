@@ -5,10 +5,10 @@ orion-llamacpp-neural-host
 #orion-security-watcher
 orion-vllm-host
 orion-vision-council
-orion-vision-host
+#orion-vision-host
 orion-vision-retina
 orion-vision-scribe
-orion-vision-window
+#orion-vision-window
 orion-rag
 orion-ollama-host
 orion-voip-endpoint

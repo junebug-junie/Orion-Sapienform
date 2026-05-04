@@ -5,6 +5,11 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from orion.core.contracts.recall import MemoryItemV1
 
+try:
+    from .snippet_dedupe import OrionDigestDeduper
+except ImportError:  # pragma: no cover
+    from snippet_dedupe import OrionDigestDeduper  # type: ignore
+
 
 def render_items(
     items: Iterable[MemoryItemV1],
@@ -27,6 +32,7 @@ def render_items(
     items_list = list(items)
     claims = [item for item in items_list if "claim" in (item.tags or [])]
     others = [item for item in items_list if item not in claims]
+    orion_deduper = OrionDigestDeduper()
     is_graphtri = bool(profile_name) and (
         str(profile_name) == "graphtri.v1" or str(profile_name).startswith("graphtri")
     )
@@ -51,6 +57,8 @@ def render_items(
                 continue
             snippet = (item.snippet or "").strip().replace("\n", " ")
             if not snippet:
+                continue
+            if not orion_deduper.should_emit_snippet(snippet):
                 continue
             prefix = f"[{item.source}"
             if item.source_ref:
@@ -119,6 +127,8 @@ def render_items(
                     skipped_refusal += 1
                     continue
                 if not snippet:
+                    continue
+                if not orion_deduper.should_emit_snippet(snippet):
                     continue
                 prefix = f"[{item.source}"
                 if item.source_ref:

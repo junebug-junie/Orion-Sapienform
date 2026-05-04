@@ -39,7 +39,8 @@ def test_app_js_wires_memory_graph_bridge_handlers() -> None:
     assert "extractCortexStepErrorHint" in app_js
     assert "ensureMemoryGraphBridgeDraftViz" in app_js
     assert "hub-utterance:" in app_js
-    assert "readBridgeMaxTurnsStored" in app_js
+    assert "rebuildMemoryGraphBridgeTurnList" in app_js
+    assert "memoryGraphBridgeAnchorDiv" in app_js
 
 
 def test_memory_js_listens_for_bridge_import_event() -> None:

@@ -14,7 +14,7 @@ requires_memory: true
 
 recall_profile: chat.general.v1
 
-timeout_ms: 120000
+timeout_ms: 180000
 max_recursion_depth: 0
 
 services:

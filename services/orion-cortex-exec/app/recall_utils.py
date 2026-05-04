@@ -1,8 +1,35 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from orion.schemas.cortex.schemas import ExecutionStep
+
+
+def plan_ctx_latest_user_text(ctx: Dict[str, Any]) -> str:
+    """
+    Best-effort latest user utterance from exec plan context.
+
+    Mirrors orchestrator `_user_text_for_classifier` behavior: some callers populate
+    `user_message` but omit `raw_user_text`. Recall gating and guards must not treat
+    that as an empty query.
+    """
+    raw = ctx.get("raw_user_text")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    um = ctx.get("user_message")
+    if isinstance(um, str) and um.strip():
+        return um.strip()
+    msgs = ctx.get("messages") or []
+    if isinstance(msgs, list):
+        for m in reversed(msgs):
+            if not isinstance(m, dict):
+                continue
+            if str(m.get("role") or "").strip().lower() != "user":
+                continue
+            content = m.get("content") or m.get("text") or ""
+            if isinstance(content, str) and content.strip():
+                return content.strip()[:10000]
+    return ""
 
 
 def _normalize_bool(value: Any, *, default: bool = False) -> bool:
@@ -122,9 +149,11 @@ def should_run_recall(
     needs_memory = any(step.requires_memory for step in steps)
     if not enabled_or_required:
         return False, "disabled_by_client"
-    if not (needs_memory or recall_required):
-        return False, "no_memory_required"
-    return True, "enabled"
+    if needs_memory or recall_required:
+        return True, "enabled"
+    # recall_enabled is True (otherwise enabled_or_required would be False): honor explicit client toggle
+    # even when verb YAML omitted requires_memory on every step.
+    return True, "enabled_client_explicit"
 
 
 def delivery_safe_recall_decision(

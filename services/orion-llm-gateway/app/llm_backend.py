@@ -151,21 +151,45 @@ def _resolve_route(body: ChatBody) -> Tuple[str, Optional[RouteTarget], bool, st
     return resolved_route, None, False, route_source
 
 
-def _timeout_summary() -> str:
+def _timeout_summary(read_sec: Optional[float] = None) -> str:
+    r = read_sec if read_sec is not None else float(getattr(settings, "read_timeout_sec", 60.0) or 60.0)
     return (
         f"connect:{getattr(settings, 'connect_timeout_sec', 10.0)} "
-        f"read:{getattr(settings, 'read_timeout_sec', 60.0)}"
+        f"read:{r}"
     )
 
 
-def _common_http_client() -> httpx.Client:
+def _resolve_http_read_timeout_sec(body: Optional[ChatBody]) -> float:
     """
-    Returns an HTTP client using the configured timeouts from settings.
+    HTTP read timeout for upstream OpenAI-compatible / Ollama calls.
+
+    Callers (e.g. cortex-exec) may set options['gateway_read_timeout_sec'] so the
+    gateway does not abort before the bus RPC timeout that wraps this request.
     """
+    default = float(getattr(settings, "read_timeout_sec", 60.0) or 60.0)
+    if body is None:
+        return max(30.0, min(default, 900.0))
+    opts = getattr(body, "options", None) or {}
+    raw = opts.get("gateway_read_timeout_sec")
+    if raw is None:
+        return max(30.0, min(default, 900.0))
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return max(30.0, min(default, 900.0))
+    return max(30.0, min(v, 900.0))
+
+
+def _common_http_client(body: Optional[ChatBody] = None) -> httpx.Client:
+    """
+    Returns an HTTP client using configured timeouts; optional ChatBody can
+    override read timeout via options['gateway_read_timeout_sec'].
+    """
+    read_sec = _resolve_http_read_timeout_sec(body)
     return httpx.Client(
         timeout=httpx.Timeout(
             connect=getattr(settings, "connect_timeout_sec", 10.0),
-            read=getattr(settings, "read_timeout_sec", 60.0),
+            read=read_sec,
             write=10.0,
             pool=10.0,
         )
@@ -736,7 +760,7 @@ def _execute_ollama_chat(
     logger.info(f"[LLM-GW] ollama req model={model} msgs={len(body.messages or [])} url={url}")
 
     try:
-        with _common_http_client() as client:
+        with _common_http_client(body) as client:
             r = client.post(url, json=payload)
             if r.status_code == 404:
                 return {
@@ -764,7 +788,7 @@ def _execute_ollama_chat(
             served_by,
             url,
             body.trace_id,
-            _timeout_summary(),
+            _timeout_summary(_resolve_http_read_timeout_sec(body)),
         )
         return {
             "text": "[Error: ollama timed out after waiting]",
@@ -833,7 +857,7 @@ def _execute_openai_chat(
     )
 
     try:
-        with _common_http_client() as client:
+        with _common_http_client(body) as client:
             r = client.post(url, json=payload)
 
             if r.status_code == 404:
@@ -996,7 +1020,7 @@ def _execute_openai_chat(
             served_by,
             url,
             body.trace_id,
-            _timeout_summary(),
+            _timeout_summary(_resolve_http_read_timeout_sec(body)),
         )
         return {
             "text": f"[Error: {backend_name} timed out after waiting]",
@@ -1059,7 +1083,7 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
                     base_url,
                     model,
                     body.trace_id,
-                    _timeout_summary(),
+                    _timeout_summary(_resolve_http_read_timeout_sec(body)),
                 )
                 result = _execute_openai_chat(
                     body,
@@ -1084,7 +1108,7 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
                 base_url,
                 model,
                 body.trace_id,
-                _timeout_summary(),
+                _timeout_summary(_resolve_http_read_timeout_sec(body)),
             )
             result = _execute_ollama_chat(
                 body,
@@ -1119,7 +1143,7 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
                     base_url,
                     model,
                     body.trace_id,
-                    _timeout_summary(),
+                    _timeout_summary(_resolve_http_read_timeout_sec(body)),
                 )
                 result = _execute_openai_chat(
                     body,
@@ -1144,7 +1168,7 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
                 base_url,
                 model,
                 body.trace_id,
-                _timeout_summary(),
+                _timeout_summary(_resolve_http_read_timeout_sec(body)),
             )
             result = _execute_ollama_chat(
                 body,
@@ -1177,7 +1201,7 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
         route_url,
         model,
         body.trace_id,
-        _timeout_summary(),
+        _timeout_summary(_resolve_http_read_timeout_sec(body)),
     )
     result = _execute_openai_chat(
         body,

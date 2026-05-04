@@ -834,6 +834,40 @@ def _inject_identity_context(ctx: Dict[str, Any]) -> None:
         logger.debug("identity_context_ready logging failed", exc_info=True)
 
 
+def _format_message_history_for_chat_prompt(messages: Any) -> str:
+    """
+    Compact transcript for chat_general / chat_quick Jinja (message_history).
+    Skips system rows so the mini-personality stub does not crowd out real turns.
+    """
+    if not isinstance(messages, list) or not messages:
+        return ""
+    lines: List[str] = []
+    for m in messages[-24:]:
+        d: Dict[str, Any] | None = None
+        if isinstance(m, dict):
+            d = m
+        elif isinstance(m, LLMMessage):
+            d = m.model_dump(mode="json")
+        elif hasattr(m, "model_dump"):
+            try:
+                raw = m.model_dump(mode="json")
+                d = raw if isinstance(raw, dict) else None
+            except Exception:
+                d = None
+        if not d:
+            continue
+        role = str(d.get("role") or "").strip().lower()
+        if role not in {"user", "assistant"}:
+            continue
+        content = str(d.get("content") or "").strip()
+        if not content:
+            continue
+        if len(content) > 800:
+            content = content[:797] + "..."
+        lines.append(f"{role.upper()}: {content}")
+    return "\n".join(lines)
+
+
 def _render_prompt(template_str: str, ctx: Dict[str, Any]) -> str:
     env = Environment(autoescape=False)
 
@@ -1042,7 +1076,12 @@ def _append_memory_digest(prompt: str, memory_digest: str) -> str:
     prompt_text = prompt or ""
     if "RELEVANT MEMORY" in prompt_text or digest in prompt_text:
         return prompt
-    return f"{prompt_text}\n\n# RELEVANT MEMORY (retrieved)\n{digest}\n"
+    return (
+        f"{prompt_text}\n\n"
+        "# RELEVANT MEMORY (retrieved; supplemental only — prioritize the latest user question; "
+        "ignore unrelated older banter unless the user clearly continues that thread)\n"
+        f"{digest}\n"
+    )
 
 
 def _extract_llm_text(res: Any) -> str:
@@ -2158,6 +2197,7 @@ async def call_step_services(
                 pageindex_result_count,
                 consumed_by,
             )
+            ctx["message_history"] = _format_message_history_for_chat_prompt(ctx.get("messages"))
         prompt = _render_prompt(step.prompt_template or "", ctx) if step.prompt_template else ""
 
         shortcut = _attempt_mind_handoff_chat_stance_shortcut(
@@ -3119,6 +3159,7 @@ async def call_step_services(
                     len(prompt or ""),
                 )
 
+                gateway_read_timeout_sec = max(45.0, min(float(effective_timeout) - 5.0, 900.0))
                 request_object = ChatRequestPayload(
                     model=req_model,
                     profile=(
@@ -3134,6 +3175,7 @@ async def call_step_services(
                         "stream": False,
                         "response_format": ctx.get("response_format") if isinstance(ctx.get("response_format"), dict) else None,
                         "return_json": bool(ctx.get("return_json")) if ctx.get("return_json") is not None else None,
+                        "gateway_read_timeout_sec": gateway_read_timeout_sec,
                     },
                 )
 

@@ -18,6 +18,9 @@
     if (!trimmed) {
       return { ok: false, object: null, mode: null, warning: "Empty draft." };
     }
+    if (trimmed.startsWith("[Error:")) {
+      return { ok: false, object: null, mode: null, warning: trimmed };
+    }
     try {
       const o = JSON.parse(trimmed);
       if (o !== null && typeof o === "object" && !Array.isArray(o)) {
@@ -73,6 +76,50 @@
     return { ok: false, object: null, mode: null, warning: "Could not parse a single JSON object." };
   }
 
+  /**
+   * Pull gateway/LLM failure text from cortex-exec raw.steps (e.g. "[Error: llamacpp timed out…]").
+   */
+  function extractLlmGatewayErrorFromRaw(raw) {
+    if (!raw || typeof raw !== "object") return "";
+    const topErr = raw.error != null ? String(raw.error).trim() : "";
+    const parts = [];
+    if (topErr) parts.push(topErr);
+    const steps = raw.steps;
+    if (!Array.isArray(steps)) {
+      return parts.filter(Boolean).join(" · ") || "";
+    }
+    steps.forEach((step) => {
+      if (!step || typeof step !== "object") return;
+      if (step.error != null) parts.push(String(step.error));
+      const res = step.result;
+      if (!res || typeof res !== "object") return;
+      Object.keys(res).forEach((svcKey) => {
+        const block = res[svcKey];
+        if (!block || typeof block !== "object") return;
+        const c = String(block.content || "").trim();
+        if (c.startsWith("[Error:") || /timed out|timeout|error/i.test(c)) parts.push(c);
+      });
+    });
+    const merged = parts.filter(Boolean);
+    return merged.filter((v, i, a) => a.indexOf(v) === i).join(" · ");
+  }
+
+  /**
+   * Prefer top-level `text` / raw.final_text only. Never fall back to the full HTTP response body
+   * (that leaks the whole JSON envelope into the draft textarea and breaks the graph preview).
+   */
+  function coalesceChatSuggestDraft(data) {
+    const raw = data && typeof data.raw === "object" ? data.raw : null;
+    let draft = "";
+    if (typeof (data && data.text) === "string" && data.text.trim()) draft = data.text.trim();
+    else if (raw && typeof raw.final_text === "string" && raw.final_text.trim()) draft = raw.final_text.trim();
+    const stepErr = raw ? extractLlmGatewayErrorFromRaw(raw) : "";
+    if (!draft && stepErr) return { draftText: "", error: stepErr };
+    if (draft && draft.startsWith("[Error:")) return { draftText: "", error: draft };
+    if (stepErr && (!draft || draft === "{}")) return { draftText: "", error: stepErr };
+    return { draftText: draft, error: null };
+  }
+
   function draftToCyElements(obj) {
     const nodes = [];
     const edges = [];
@@ -118,7 +165,7 @@
     return { nodes, edges };
   }
 
-  function draftToCyElements(obj) {
+  function renderDetail(selection, obj, onApply) {
     const wrap = document.createElement("div");
     wrap.className = "space-y-2 text-[11px]";
 
@@ -352,7 +399,11 @@
       if (!nodes.length && !edges.length) {
         const p = document.createElement("p");
         p.className = "text-gray-500 text-[11px]";
-        p.textContent = "Parsed JSON has no entities, situations, edges, or dispositions to show.";
+        const keys = parsed.object && typeof parsed.object === "object" ? Object.keys(parsed.object) : [];
+        const emptyShape = keys.length === 0;
+        p.textContent = emptyShape
+          ? "Parsed JSON is an empty object — nothing to draw. If Suggest failed upstream, check the status line for [Error: …] / timeout, then retry."
+          : "Parsed JSON has no entities, situations, edges, or dispositions to show.";
         cyHost.appendChild(p);
         return;
       }
@@ -428,5 +479,7 @@
     parseMemoryGraphDraftJson,
     draftToCyElements,
     attach,
+    coalesceChatSuggestDraft,
+    extractLlmGatewayErrorFromRaw,
   };
 })();

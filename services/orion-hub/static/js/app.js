@@ -458,6 +458,7 @@ loadDismissedIds();
   let lastRecallCanaryResponse = null;
   let lastRecallCanarySelectedProfile = null;
   let memoryGraphBridgeTurnsCache = [];
+  let memoryGraphBridgeAnchorDiv = null;
   const MEMORY_GRAPH_BRIDGE_MAX_TURNS_CAP = 80;
   const MEMORY_GRAPH_BRIDGE_MAX_TURNS_DEFAULT = 40;
   const LS_MEMORY_GRAPH_BRIDGE_MAX_TURNS = 'orion_memory_graph_bridge_max_turns';
@@ -5956,6 +5957,7 @@ loadDismissedIds();
 
   function closeMemoryGraphBridgeModal() {
     if (!memoryGraphBridgeModal) return;
+    memoryGraphBridgeAnchorDiv = null;
     memoryGraphBridgeModal.classList.add('hidden');
     memoryGraphBridgeModal.setAttribute('aria-hidden', 'true');
     const hintsEl = document.getElementById('memoryGraphBridgeChainHints');
@@ -5965,19 +5967,16 @@ loadDismissedIds();
     }
   }
 
-  function openMemoryGraphBridgeModal(anchorDiv) {
+  function rebuildMemoryGraphBridgeTurnList() {
     const list = document.getElementById('memoryGraphBridgeTurnList');
-    const draftTa = document.getElementById('memoryGraphBridgeDraft');
     const statusEl = document.getElementById('memoryGraphBridgeStatus');
     const hintsEl = document.getElementById('memoryGraphBridgeChainHints');
-    const closeForFocus = document.getElementById('memoryGraphBridgeModalClose');
-    if (!memoryGraphBridgeModal || !list) return;
+    if (!list || !memoryGraphBridgeAnchorDiv) return;
     const maxTurnsInputEl = document.getElementById('memoryGraphBridgeMaxTurns');
-    if (maxTurnsInputEl) maxTurnsInputEl.value = String(readBridgeMaxTurnsStored());
     let maxTurns = parseInt(maxTurnsInputEl && maxTurnsInputEl.value ? maxTurnsInputEl.value : '', 10);
     if (!Number.isFinite(maxTurns)) maxTurns = readBridgeMaxTurnsStored();
     maxTurns = Math.min(MEMORY_GRAPH_BRIDGE_MAX_TURNS_CAP, Math.max(1, maxTurns));
-    const { turns, skippedWithoutId } = collectConversationTurnsUpTo(anchorDiv, maxTurns);
+    const { turns, skippedWithoutId } = collectConversationTurnsUpTo(memoryGraphBridgeAnchorDiv, maxTurns);
     memoryGraphBridgeTurnsCache = turns;
     list.innerHTML = '';
     if (statusEl) statusEl.textContent = '';
@@ -5990,11 +5989,6 @@ loadDismissedIds();
       if (skippedWithoutId > 0 && hintsEl) {
         hintsEl.textContent = `${skippedWithoutId} older message(s) have no stable turn id (often user turns). They are omitted from the chain until linkage meta is present.`;
         hintsEl.classList.remove('hidden');
-      }
-      memoryGraphBridgeModal.classList.remove('hidden');
-      memoryGraphBridgeModal.setAttribute('aria-hidden', 'false');
-      if (closeForFocus && typeof closeForFocus.focus === 'function') {
-        closeForFocus.focus({ preventScroll: true });
       }
       const viz0 = ensureMemoryGraphBridgeDraftViz();
       if (viz0 && viz0.refresh) requestAnimationFrame(() => viz0.refresh());
@@ -6046,14 +6040,24 @@ loadDismissedIds();
       row.appendChild(cap);
       list.appendChild(row);
     });
-    if (draftTa) draftTa.value = '';
+    const viz = ensureMemoryGraphBridgeDraftViz();
+    if (viz && viz.refresh) requestAnimationFrame(() => viz.refresh());
+  }
+
+  function openMemoryGraphBridgeModal(anchorDiv) {
+    const draftTa = document.getElementById('memoryGraphBridgeDraft');
+    const closeForFocus = document.getElementById('memoryGraphBridgeModalClose');
+    if (!memoryGraphBridgeModal || !document.getElementById('memoryGraphBridgeTurnList')) return;
+    memoryGraphBridgeAnchorDiv = anchorDiv;
+    const maxTurnsInputEl = document.getElementById('memoryGraphBridgeMaxTurns');
+    if (maxTurnsInputEl) maxTurnsInputEl.value = String(readBridgeMaxTurnsStored());
+    rebuildMemoryGraphBridgeTurnList();
+    if (memoryGraphBridgeTurnsCache.length > 0 && draftTa) draftTa.value = '';
     memoryGraphBridgeModal.classList.remove('hidden');
     memoryGraphBridgeModal.setAttribute('aria-hidden', 'false');
     if (closeForFocus && typeof closeForFocus.focus === 'function') {
       closeForFocus.focus({ preventScroll: true });
     }
-    const viz = ensureMemoryGraphBridgeDraftViz();
-    if (viz && viz.refresh) requestAnimationFrame(() => viz.refresh());
   }
 
   function setupMemoryGraphBridgeModal() {
@@ -6067,13 +6071,22 @@ loadDismissedIds();
     const maxTurnsInput = document.getElementById('memoryGraphBridgeMaxTurns');
     if (maxTurnsInput) {
       maxTurnsInput.value = String(readBridgeMaxTurnsStored());
-      maxTurnsInput.addEventListener('change', () => {
-        let v = parseInt(maxTurnsInput.value, 10);
-        if (!Number.isFinite(v)) v = MEMORY_GRAPH_BRIDGE_MAX_TURNS_DEFAULT;
+      function syncBridgeMaxTurnsFromInput(opts) {
+        const strict = Boolean(opts && opts.strict);
+        const raw = String(maxTurnsInput.value || '').trim();
+        if (raw === '' && !strict) return;
+        let v = parseInt(raw, 10);
+        if (!Number.isFinite(v)) {
+          if (!strict) return;
+          v = MEMORY_GRAPH_BRIDGE_MAX_TURNS_DEFAULT;
+        }
         v = Math.min(MEMORY_GRAPH_BRIDGE_MAX_TURNS_CAP, Math.max(1, v));
         maxTurnsInput.value = String(v);
         localStorage.setItem(LS_MEMORY_GRAPH_BRIDGE_MAX_TURNS, String(v));
-      });
+        rebuildMemoryGraphBridgeTurnList();
+      }
+      maxTurnsInput.addEventListener('input', () => syncBridgeMaxTurnsFromInput({ strict: false }));
+      maxTurnsInput.addEventListener('change', () => syncBridgeMaxTurnsFromInput({ strict: true }));
     }
     const selKBtn = document.getElementById('memoryGraphBridgeSelectLastKBtn');
     const selKIn = document.getElementById('memoryGraphBridgeSelectLastKInput');
@@ -6151,15 +6164,28 @@ loadDismissedIds();
             return;
           }
           const raw = data && data.raw;
-          const t = (data && (data.text || (raw && raw.final_text))) || text;
-          const out = typeof t === 'string' ? t.trim() : '';
-          const stepErr = !out && raw && typeof raw === 'object' ? extractCortexStepErrorHint(raw) : '';
-          if (!out && stepErr) {
+          const coalesce = window.OrionMemoryGraphDraftUI && typeof window.OrionMemoryGraphDraftUI.coalesceChatSuggestDraft === 'function'
+            ? window.OrionMemoryGraphDraftUI.coalesceChatSuggestDraft(data)
+            : null;
+          let out = '';
+          let suggestError = '';
+          if (coalesce) {
+            out = coalesce.draftText || '';
+            suggestError = coalesce.error || '';
+          } else {
+            const t = (data && (data.text || (raw && raw.final_text))) || '';
+            out = typeof t === 'string' ? t.trim() : '';
+            const stepErr = !out && raw && typeof raw === 'object' ? extractCortexStepErrorHint(raw) : '';
+            if (!out && stepErr) suggestError = stepErr;
+          }
+          if (suggestError) {
             draftTa.value = '';
-            if (statusEl) statusEl.textContent = `Suggest failed (no draft text). ${stepErr}`;
+            const vDraft = ensureMemoryGraphBridgeDraftViz();
+            if (vDraft && vDraft.refresh) vDraft.refresh();
+            if (statusEl) statusEl.textContent = `Suggest failed: ${suggestError}`;
             return;
           }
-          draftTa.value = typeof t === 'string' ? t : JSON.stringify(t, null, 2);
+          draftTa.value = out;
           const vDraft = ensureMemoryGraphBridgeDraftViz();
           if (vDraft && vDraft.refresh) vDraft.refresh();
           if (statusEl) {
@@ -8672,7 +8698,7 @@ loadDismissedIds();
        browser_client_id: ensureBrowserClientId(),
        disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
        no_write: noWriteToggle ? noWriteToggle.checked : false,
-       use_recall: recallToggle ? recallToggle.checked : false,
+       use_recall: recallToggle ? recallToggle.checked : true,
        recall_mode: recallMode !== "auto" ? recallMode : null,
        recall_profile: recallProfile !== "auto" ? recallProfile : null,
        recall_required: recallRequiredToggle ? recallRequiredToggle.checked : false,
@@ -8776,7 +8802,7 @@ loadDismissedIds();
                session_id: orionSessionId,
                browser_client_id: ensureBrowserClientId(),
                no_write: noWriteToggle ? noWriteToggle.checked : false,
-               use_recall: recallToggle ? recallToggle.checked : false,
+               use_recall: recallToggle ? recallToggle.checked : true,
                recall_mode: recallModeSelect && recallModeSelect.value !== "auto" ? recallModeSelect.value : null,
                recall_profile: recallProfileSelect && recallProfileSelect.value !== "auto" ? recallProfileSelect.value : null,
                recall_required: recallRequiredToggle ? recallRequiredToggle.checked : false,

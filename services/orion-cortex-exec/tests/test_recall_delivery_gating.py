@@ -41,6 +41,20 @@ def test_delivery_required_recall_switches_to_assist_light_profile() -> None:
     assert decision["profile_source"] == "delivery_safe_default"
 
 
+def test_client_recall_on_runs_without_requires_memory_steps() -> None:
+    from app.recall_utils import should_run_recall
+
+    step = ExecutionStep(
+        verb_name="chat_quick",
+        step_name="llm_chat_quick",
+        description="chat",
+        order=0,
+        services=["LLMGatewayService"],
+        requires_memory=False,
+    )
+    assert should_run_recall({"enabled": True}, [step]) == (True, "enabled_client_explicit")
+
+
 def test_reflective_modes_keep_normal_recall_behavior() -> None:
     decision = delivery_safe_recall_decision(
         {"enabled": True},

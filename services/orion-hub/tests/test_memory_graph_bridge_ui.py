@@ -30,6 +30,8 @@ def test_app_js_wires_memory_graph_bridge_handlers() -> None:
     assert "setupMemoryGraphBridgeModal();" in app_js
     assert "closeMemoryGraphBridgeModal();" in app_js
     assert "CustomEvent('orion-hub-memory-graph-draft-import'" in app_js
+    assert "backfillLatestUserTurnIdForGraph" in app_js
+    assert "extractCortexStepErrorHint" in app_js
 
 
 def test_memory_js_listens_for_bridge_import_event() -> None:

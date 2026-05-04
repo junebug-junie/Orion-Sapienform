@@ -5677,14 +5677,73 @@ loadDismissedIds();
     return a || b;
   }
 
+  function memoryGraphCorrelationBase(meta) {
+    if (!meta || typeof meta !== 'object') return '';
+    const raw = meta.raw;
+    return String(
+      meta.correlationId
+      || meta.correlation_id
+      || meta.turnId
+      || meta.turn_id
+      || (raw && typeof raw === 'object' ? raw.correlation_id : null)
+      || '',
+    ).trim();
+  }
+
+  /** Pair the latest You-line with this Orion turn (WS/HTTP never sent user meta). */
+  function backfillLatestUserTurnIdForGraph(threadRoot, correlationId) {
+    const base = String(correlationId || '').trim();
+    if (!threadRoot || !base) return;
+    let el = threadRoot.lastElementChild;
+    while (el) {
+      const role = el.dataset && el.dataset.role;
+      if (role === 'user') {
+        if (!el.dataset.turnId) el.dataset.turnId = `${base}:user`;
+        return;
+      }
+      if (role === 'assistant' && el.dataset.turnId) return;
+      el = el.previousElementSibling;
+    }
+  }
+
+  function extractCortexStepErrorHint(raw) {
+    if (!raw || typeof raw !== 'object') return '';
+    const topErr = raw.error != null ? String(raw.error).trim() : '';
+    const steps = raw.steps;
+    const parts = [];
+    if (topErr) parts.push(topErr);
+    if (!Array.isArray(steps)) {
+      return parts.filter(Boolean).join(' · ') || '';
+    }
+    steps.forEach((step) => {
+      if (!step || typeof step !== 'object') return;
+      if (step.error != null) parts.push(String(step.error));
+      const res = step.result;
+      if (!res || typeof res !== 'object') return;
+      Object.keys(res).forEach((svcKey) => {
+        const block = res[svcKey];
+        if (!block || typeof block !== 'object') return;
+        const c = String(block.content || '').trim();
+        if (c.startsWith('[Error:') || /timed out|timeout|error/i.test(c)) parts.push(c);
+      });
+    });
+    const merged = parts.filter(Boolean);
+    if (!merged.length) return '';
+    return merged.filter((v, i, a) => a.indexOf(v) === i).join(' · ');
+  }
+
   function appendMessage(sender, text, colorClass = 'text-white') {
     if (!conversationDiv) return;
+    const meta = arguments.length > 3 && arguments[3] && typeof arguments[3] === 'object' ? arguments[3] : {};
+    if (sender === 'Orion') {
+      const corr = memoryGraphCorrelationBase(meta);
+      if (corr) backfillLatestUserTurnIdForGraph(conversationDiv, corr);
+    }
     const div = document.createElement('div');
     const color = sender === 'You' ? 'text-blue-300' : 'text-green-300';
-    const meta = arguments.length > 3 && arguments[3] && typeof arguments[3] === 'object' ? arguments[3] : {};
     const turnIdForGraph = canonicalTurnIdForMemoryGraph(meta);
     if (turnIdForGraph) div.dataset.turnId = turnIdForGraph;
-    div.dataset.role = sender === 'Orion' ? 'assistant' : 'user';
+    div.dataset.role = sender === 'Orion' ? 'assistant' : (sender === 'You' ? 'user' : 'system');
     const displayText = sender === 'Orion' ? hubCoalesceAssistantText(text, meta) : (text || '');
     const workflowOnlyTurn = Boolean(
       sender === 'Orion'
@@ -6018,10 +6077,20 @@ loadDismissedIds();
             if (statusEl) statusEl.textContent = typeof data === 'object' && data ? JSON.stringify(data) : text;
             return;
           }
-          const t = (data && (data.text || (data.raw && data.raw.final_text))) || text;
+          const raw = data && data.raw;
+          const t = (data && (data.text || (raw && raw.final_text))) || text;
+          const out = typeof t === 'string' ? t.trim() : '';
+          const stepErr = !out && raw && typeof raw === 'object' ? extractCortexStepErrorHint(raw) : '';
+          if (!out && stepErr) {
+            draftTa.value = '';
+            if (statusEl) statusEl.textContent = `Suggest failed (no draft text). ${stepErr}`;
+            return;
+          }
           draftTa.value = typeof t === 'string' ? t : JSON.stringify(t, null, 2);
           if (statusEl) {
-            statusEl.textContent = 'Replaced the box with the model reply. If prose wrapped the JSON, delete the wrapper lines and use Validate.';
+            statusEl.textContent = out
+              ? 'Replaced the box with the model reply. If prose wrapped the JSON, delete the wrapper lines and use Validate.'
+              : 'Empty response — check gateway / model logs.';
           }
         } catch (err) {
           if (statusEl) statusEl.textContent = String(err.message || err);

@@ -458,6 +458,10 @@ loadDismissedIds();
   let lastRecallCanaryResponse = null;
   let lastRecallCanarySelectedProfile = null;
   let memoryGraphBridgeTurnsCache = [];
+  const MEMORY_GRAPH_BRIDGE_MAX_TURNS_CAP = 80;
+  const MEMORY_GRAPH_BRIDGE_MAX_TURNS_DEFAULT = 40;
+  const LS_MEMORY_GRAPH_BRIDGE_MAX_TURNS = 'orion_memory_graph_bridge_max_turns';
+  let memoryGraphBridgeDraftViz = null;
   const RECALL_CANARY_PROFILE_STORAGE_KEY = 'orion_recall_canary_profile_v1';
 
   // Controls
@@ -5743,6 +5747,12 @@ loadDismissedIds();
     const color = sender === 'You' ? 'text-blue-300' : 'text-green-300';
     const turnIdForGraph = canonicalTurnIdForMemoryGraph(meta);
     if (turnIdForGraph) div.dataset.turnId = turnIdForGraph;
+    else if (sender === 'You') {
+      const uuid = (window.crypto && typeof window.crypto.randomUUID === 'function')
+        ? window.crypto.randomUUID()
+        : `u${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+      div.dataset.turnId = `hub-utterance:${uuid}`;
+    }
     div.dataset.role = sender === 'Orion' ? 'assistant' : (sender === 'You' ? 'user' : 'system');
     const displayText = sender === 'Orion' ? hubCoalesceAssistantText(text, meta) : (text || '');
     const workflowOnlyTurn = Boolean(
@@ -5920,6 +5930,30 @@ loadDismissedIds();
     return { turns: out.reverse(), skippedWithoutId };
   }
 
+  function readBridgeMaxTurnsStored() {
+    const raw = localStorage.getItem(LS_MEMORY_GRAPH_BRIDGE_MAX_TURNS);
+    let n = raw ? parseInt(raw, 10) : MEMORY_GRAPH_BRIDGE_MAX_TURNS_DEFAULT;
+    if (!Number.isFinite(n)) n = MEMORY_GRAPH_BRIDGE_MAX_TURNS_DEFAULT;
+    return Math.min(MEMORY_GRAPH_BRIDGE_MAX_TURNS_CAP, Math.max(1, n));
+  }
+
+  function ensureMemoryGraphBridgeDraftViz() {
+    if (!window.OrionMemoryGraphDraftUI) return null;
+    if (memoryGraphBridgeDraftViz) return memoryGraphBridgeDraftViz;
+    const ta = document.getElementById('memoryGraphBridgeDraft');
+    const cy = document.getElementById('memoryGraphBridgeCyHost');
+    const det = document.getElementById('memoryGraphBridgeDetail');
+    const ban = document.getElementById('memoryGraphBridgeParseBanner');
+    if (!ta || !cy || !det) return null;
+    memoryGraphBridgeDraftViz = window.OrionMemoryGraphDraftUI.attach({
+      draftTextarea: ta,
+      cyHost: cy,
+      detailHost: det,
+      bannerEl: ban,
+    });
+    return memoryGraphBridgeDraftViz;
+  }
+
   function closeMemoryGraphBridgeModal() {
     if (!memoryGraphBridgeModal) return;
     memoryGraphBridgeModal.classList.add('hidden');
@@ -5938,7 +5972,12 @@ loadDismissedIds();
     const hintsEl = document.getElementById('memoryGraphBridgeChainHints');
     const closeForFocus = document.getElementById('memoryGraphBridgeModalClose');
     if (!memoryGraphBridgeModal || !list) return;
-    const { turns, skippedWithoutId } = collectConversationTurnsUpTo(anchorDiv, 40);
+    const maxTurnsInputEl = document.getElementById('memoryGraphBridgeMaxTurns');
+    if (maxTurnsInputEl) maxTurnsInputEl.value = String(readBridgeMaxTurnsStored());
+    let maxTurns = parseInt(maxTurnsInputEl && maxTurnsInputEl.value ? maxTurnsInputEl.value : '', 10);
+    if (!Number.isFinite(maxTurns)) maxTurns = readBridgeMaxTurnsStored();
+    maxTurns = Math.min(MEMORY_GRAPH_BRIDGE_MAX_TURNS_CAP, Math.max(1, maxTurns));
+    const { turns, skippedWithoutId } = collectConversationTurnsUpTo(anchorDiv, maxTurns);
     memoryGraphBridgeTurnsCache = turns;
     list.innerHTML = '';
     if (statusEl) statusEl.textContent = '';
@@ -5957,6 +5996,8 @@ loadDismissedIds();
       if (closeForFocus && typeof closeForFocus.focus === 'function') {
         closeForFocus.focus({ preventScroll: true });
       }
+      const viz0 = ensureMemoryGraphBridgeDraftViz();
+      if (viz0 && viz0.refresh) requestAnimationFrame(() => viz0.refresh());
       return;
     }
     const lastIdx = turns.length - 1;
@@ -6011,6 +6052,8 @@ loadDismissedIds();
     if (closeForFocus && typeof closeForFocus.focus === 'function') {
       closeForFocus.focus({ preventScroll: true });
     }
+    const viz = ensureMemoryGraphBridgeDraftViz();
+    if (viz && viz.refresh) requestAnimationFrame(() => viz.refresh());
   }
 
   function setupMemoryGraphBridgeModal() {
@@ -6021,6 +6064,35 @@ loadDismissedIds();
     const statusEl = document.getElementById('memoryGraphBridgeStatus');
     const list = document.getElementById('memoryGraphBridgeTurnList');
     if (!memoryGraphBridgeModal || !closeBtn) return;
+    const maxTurnsInput = document.getElementById('memoryGraphBridgeMaxTurns');
+    if (maxTurnsInput) {
+      maxTurnsInput.value = String(readBridgeMaxTurnsStored());
+      maxTurnsInput.addEventListener('change', () => {
+        let v = parseInt(maxTurnsInput.value, 10);
+        if (!Number.isFinite(v)) v = MEMORY_GRAPH_BRIDGE_MAX_TURNS_DEFAULT;
+        v = Math.min(MEMORY_GRAPH_BRIDGE_MAX_TURNS_CAP, Math.max(1, v));
+        maxTurnsInput.value = String(v);
+        localStorage.setItem(LS_MEMORY_GRAPH_BRIDGE_MAX_TURNS, String(v));
+      });
+    }
+    const selKBtn = document.getElementById('memoryGraphBridgeSelectLastKBtn');
+    const selKIn = document.getElementById('memoryGraphBridgeSelectLastKInput');
+    if (selKBtn && selKIn) {
+      selKBtn.addEventListener('click', () => {
+        const turnList = document.getElementById('memoryGraphBridgeTurnList');
+        if (!turnList) return;
+        let k = parseInt(selKIn.value, 10);
+        const boxes = turnList.querySelectorAll('input[type="checkbox"][data-turn-index]');
+        const n = boxes.length;
+        if (!n) return;
+        if (!Number.isFinite(k) || k < 1) k = n;
+        k = Math.min(k, n);
+        boxes.forEach((cb, i) => {
+          cb.checked = i >= n - k;
+        });
+      });
+    }
+    ensureMemoryGraphBridgeDraftViz();
     function close() {
       closeMemoryGraphBridgeModal();
     }
@@ -6037,11 +6109,12 @@ loadDismissedIds();
         boxes.forEach((cb) => {
           if (cb.checked) {
             const idx = Number(cb.dataset.turnIndex);
-            if (memoryGraphBridgeTurnsCache[idx]) selected.push(memoryGraphBridgeTurnsCache[idx]);
+            const row = memoryGraphBridgeTurnsCache[idx];
+            if (row && row.turnId && String(row.turnId).trim()) selected.push(row);
           }
         });
         if (!selected.length) {
-          if (statusEl) statusEl.textContent = 'Select at least one turn.';
+          if (statusEl) statusEl.textContent = 'Select at least one turn with a stable id.';
           return;
         }
         const prevLabel = suggestBtn.textContent;
@@ -6087,6 +6160,8 @@ loadDismissedIds();
             return;
           }
           draftTa.value = typeof t === 'string' ? t : JSON.stringify(t, null, 2);
+          const vDraft = ensureMemoryGraphBridgeDraftViz();
+          if (vDraft && vDraft.refresh) vDraft.refresh();
           if (statusEl) {
             statusEl.textContent = out
               ? 'Replaced the box with the model reply. If prose wrapped the JSON, delete the wrapper lines and use Validate.'

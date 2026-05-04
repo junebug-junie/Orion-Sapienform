@@ -282,6 +282,20 @@
     const vBtn = document.getElementById("memoryGraphValidateBtn");
     const aBtn = document.getElementById("memoryGraphApproveBtn");
     const sBtn = document.getElementById("memoryGraphSuggestBtn");
+    let memoryDraftViz = null;
+    if (window.OrionMemoryGraphDraftUI && draftTa) {
+      const cyH = document.getElementById("memoryGraphDraftCyHost");
+      const det = document.getElementById("memoryGraphDraftDetail");
+      const ban = document.getElementById("memoryGraphDraftParseBanner");
+      if (cyH && det) {
+        memoryDraftViz = window.OrionMemoryGraphDraftUI.attach({
+          draftTextarea: draftTa,
+          cyHost: cyH,
+          detailHost: det,
+          bannerEl: ban,
+        });
+      }
+    }
     function graphSetOut(obj, isErr) {
       if (!graphOut) return;
       graphOut.textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
@@ -343,6 +357,7 @@
           }
           const t = (data && (data.text || (data.raw && data.raw.final_text))) || text;
           draftTa.value = typeof t === "string" ? t : JSON.stringify(t, null, 2);
+          if (memoryDraftViz && memoryDraftViz.refresh) memoryDraftViz.refresh();
           graphSetOut(
             { ok: true, note: "Replaced the box with the model reply. If prose wrapped the JSON, delete the wrapper lines and use Validate." },
             false
@@ -367,6 +382,7 @@
       const v = sessionStorage.getItem("orion_memory_graph_draft_import");
       if (v && draftTa) draftTa.value = v;
       sessionStorage.removeItem("orion_memory_graph_draft_import");
+      if (memoryDraftViz && memoryDraftViz.refresh) memoryDraftViz.refresh();
       graphSetOut(
         { ok: true, note: "Draft loaded from chat bridge. Review JSON then Validate." },
         false

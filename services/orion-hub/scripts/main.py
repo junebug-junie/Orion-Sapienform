@@ -65,6 +65,7 @@ def _ui_asset_mtime_token() -> str:
     candidates = [
         STATIC_DIR / "js" / "app.js",
         STATIC_DIR / "js" / "memory-graph-draft-ui.js",
+        STATIC_DIR / "js" / "organ-signals-graph-ui.js",
         STATIC_DIR / "js" / "workflow-ui.js",
         TEMPLATES_DIR / "index.html",
     ]

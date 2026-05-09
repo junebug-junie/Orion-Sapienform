@@ -1001,7 +1001,8 @@ loadDismissedIds();
   }
 
   async function fetchMindRunDetail(mindRunId) {
-    const response = await fetch(`${API_BASE_URL}/api/mind/runs/${encodeURIComponent(mindRunId)}`);
+    const headers = orionSessionId ? { 'X-Orion-Session-Id': orionSessionId } : {};
+    const response = await fetch(`${API_BASE_URL}/api/mind/runs/${encodeURIComponent(mindRunId)}`, { headers });
     if (!response.ok) {
       const detail = await response.text();
       throw new Error(`status ${response.status} ${detail || ""}`.trim());
@@ -1020,7 +1021,8 @@ loadDismissedIds();
     mindRunsModalList.innerHTML = "";
     try {
       const params = new URLSearchParams({ correlation_id: correlationId, limit: "200" });
-      const response = await fetch(`${API_BASE_URL}/api/mind/runs?${params.toString()}`);
+      const headers = orionSessionId ? { 'X-Orion-Session-Id': orionSessionId } : {};
+      const response = await fetch(`${API_BASE_URL}/api/mind/runs?${params.toString()}`, { headers });
       if (!response.ok) {
         const detail = await response.text();
         throw new Error(`status ${response.status} ${detail || ""}`.trim());
@@ -1219,7 +1221,8 @@ loadDismissedIds();
       if (prefs.trigger) params.set("trigger", prefs.trigger);
       if (prefs.error_code) params.set("error_code", prefs.error_code);
       if (prefs.router_profile_id) params.set("router_profile_id", prefs.router_profile_id);
-      const response = await fetch(`${API_BASE_URL}/api/mind/runs/recent?${params.toString()}`);
+      const headers = orionSessionId ? { 'X-Orion-Session-Id': orionSessionId } : {};
+      const response = await fetch(`${API_BASE_URL}/api/mind/runs/recent?${params.toString()}`, { headers });
       if (!response.ok) {
         const detail = await response.text();
         throw new Error(`status ${response.status} ${detail || ""}`.trim());

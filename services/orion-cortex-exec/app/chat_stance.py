@@ -16,7 +16,23 @@ from orion.core.schemas.reasoning_io import ReasoningWriteContextV1, ReasoningWr
 from orion.core.schemas.reasoning_summary import ReasoningSummaryRequestV1, ReasoningSummaryV1
 from orion.reasoning import InMemoryReasoningRepository, ReasoningSummaryCompiler
 from orion.schemas.chat_stance import ChatStanceBrief
-from orion.spark.concept_induction.profile_repository import build_concept_profile_repository
+from orion.substrate import build_substrate_store_from_env
+from orion.substrate.relational import (
+    CONCEPT_INDUCED,
+    GRAPHDB_DURABLE,
+    OPERATOR_STATIC,
+    SNAPSHOT_EPHEMERAL,
+    CognitiveUnificationLayer,
+    ProducerEntryV1,
+    ProducerRegistryV1,
+    UnifiedRelationalBeliefSetV1,
+    map_identity_yaml_to_substrate,
+    map_orionmem_to_substrate,
+    map_recall_bundle_to_substrate,
+    map_self_study_to_substrate,
+    map_social_ctx_to_substrate,
+)
+from orion.substrate.relational.adapters.spark_ctx import map_spark_ctx_to_substrate
 
 from .endogenous_runtime import (
     consume_endogenous_runtime_for_reflective_review,
@@ -81,6 +97,138 @@ _LITERAL_TO_COMPACT = (
 )
 
 logger = logging.getLogger("orion.cortex.exec.chat_stance")
+
+# ---------------------------------------------------------------------------
+# Cognitive Unification Layer — process-level singleton
+# ---------------------------------------------------------------------------
+# The registry is built once; the durable store comes from env (GraphDB when
+# configured, else in-memory).  snapshot_ephemeral nodes are re-materialized per
+# call from ctx in CognitiveUnificationLayer.beliefs_for_stance.
+
+_UNIFICATION_LAYER: CognitiveUnificationLayer | None = None
+
+
+def _build_unification_registry() -> ProducerRegistryV1:
+    """Construct the ProducerRegistryV1 wiring all known producer lanes."""
+    from orion.substrate.relational.adapters.autonomy_ctx import map_autonomy_ctx_to_substrate
+    from orion.substrate.relational.adapters.concept_induction_ctx import map_concept_induction_ctx_to_substrate
+
+    return ProducerRegistryV1(
+        producers=[
+            ProducerEntryV1(
+                producer_id="identity_yaml",
+                trust_tier=OPERATOR_STATIC,
+                anchor_scopes=("orion",),
+                freshness_ttl_sec=86400,
+                pull_on_cold=True,
+                adapter_fn=map_identity_yaml_to_substrate,
+            ),
+            ProducerEntryV1(
+                producer_id="self_study",
+                trust_tier=GRAPHDB_DURABLE,
+                anchor_scopes=("orion",),
+                freshness_ttl_sec=300,
+                pull_on_cold=True,
+                adapter_fn=map_self_study_to_substrate,
+            ),
+            ProducerEntryV1(
+                producer_id="autonomy",
+                trust_tier=GRAPHDB_DURABLE,
+                anchor_scopes=("orion", "relationship", "juniper"),
+                freshness_ttl_sec=300,
+                pull_on_cold=True,
+                adapter_fn=map_autonomy_ctx_to_substrate,
+            ),
+            ProducerEntryV1(
+                producer_id="concept_induction",
+                trust_tier=CONCEPT_INDUCED,
+                anchor_scopes=("orion", "relationship", "juniper"),
+                freshness_ttl_sec=300,
+                pull_on_cold=True,
+                adapter_fn=map_concept_induction_ctx_to_substrate,
+            ),
+            ProducerEntryV1(
+                producer_id="spark",
+                trust_tier=CONCEPT_INDUCED,
+                anchor_scopes=("orion",),
+                freshness_ttl_sec=300,
+                pull_on_cold=True,
+                adapter_fn=map_spark_ctx_to_substrate,
+            ),
+            ProducerEntryV1(
+                producer_id="orionmem",
+                trust_tier=SNAPSHOT_EPHEMERAL,
+                anchor_scopes=("orion", "relationship"),
+                freshness_ttl_sec=120,
+                pull_on_cold=True,
+                adapter_fn=map_orionmem_to_substrate,
+            ),
+            ProducerEntryV1(
+                producer_id="recall",
+                trust_tier=SNAPSHOT_EPHEMERAL,
+                anchor_scopes=("orion", "relationship", "juniper"),
+                freshness_ttl_sec=0,
+                pull_on_cold=False,
+                adapter_fn=map_recall_bundle_to_substrate,
+            ),
+            ProducerEntryV1(
+                producer_id="social",
+                trust_tier=SNAPSHOT_EPHEMERAL,
+                anchor_scopes=("relationship",),
+                freshness_ttl_sec=0,
+                pull_on_cold=False,
+                adapter_fn=map_social_ctx_to_substrate,
+            ),
+        ]
+    )
+
+
+def _get_unification_layer() -> CognitiveUnificationLayer:
+    """Return (or initialise) the process-level CognitiveUnificationLayer."""
+    global _UNIFICATION_LAYER
+    if _UNIFICATION_LAYER is None:
+        registry = _build_unification_registry()
+        store = build_substrate_store_from_env()
+        _UNIFICATION_LAYER = CognitiveUnificationLayer(registry=registry, store=store)
+    return _UNIFICATION_LAYER
+
+
+def _unified_beliefs_for_stance(ctx: Dict[str, Any]) -> UnifiedRelationalBeliefSetV1 | None:
+    """Call the CognitiveUnificationLayer and return the unified belief set.
+
+    Always returns a result or None on total initialisation failure.
+    Individual producer failures are reflected in ``degraded_producers``
+    and the affected anchor slice ``degraded`` flag.
+    """
+    try:
+        layer = _get_unification_layer()
+        beliefs = layer.beliefs_for_stance(
+            anchors=("orion", "relationship", "juniper"),
+            ctx=ctx,
+            timeout_sec=_env_float("UNIFIED_BELIEFS_TIMEOUT_SEC", 5.0),
+        )
+    except Exception as exc:
+        logger.warning("unified_beliefs_for_stance_failed error=%s", exc)
+        return None
+
+    if beliefs and beliefs.cold_anchors:
+        from orion.substrate.tier_outcomes_bus import publish_substrate_tier_outcomes_sync
+
+        tier_map = {a: s.tier_outcomes for a, s in beliefs.anchors.items() if s.tier_outcomes}
+        publish_substrate_tier_outcomes_sync(
+            generated_at=beliefs.generated_at,
+            cold_anchors=list(beliefs.cold_anchors),
+            tier_outcomes=tier_map,
+            degraded_producers=list(beliefs.degraded_producers),
+            ctx=ctx,
+        )
+        logger.debug(
+            "substrate_tier_outcomes_bus cold_anchors=%s degraded=%s",
+            beliefs.cold_anchors,
+            beliefs.degraded_producers,
+        )
+
+    return beliefs
 
 
 def _env_float(name: str, default: float) -> float:
@@ -432,6 +580,146 @@ def identity_kernel_with_fallbacks(ctx: Dict[str, Any]) -> dict[str, list[str]]:
     }
 
 
+def _project_identity_from_beliefs(
+    beliefs: UnifiedRelationalBeliefSetV1 | None,
+    ctx: Dict[str, Any],
+) -> dict[str, list[str]]:
+    """Projection helper: read identity summaries from unified beliefs → same shape as identity_kernel_with_fallbacks."""
+    if beliefs is not None:
+        orion_slice = beliefs.anchors.get("orion")
+        if orion_slice:
+            for snap in orion_slice.snapshots:
+                if getattr(snap, "snapshot_source", "") == "identity_yaml":
+                    meta = snap.metadata or {}
+                    orion_s = [str(v) for v in (meta.get("orion_identity_summary") or []) if str(v).strip()]
+                    juniper_s = [str(v) for v in (meta.get("juniper_relationship_summary") or []) if str(v).strip()]
+                    policy_s = [str(v) for v in (meta.get("response_policy_summary") or []) if str(v).strip()]
+                    if orion_s:
+                        return {
+                            "orion_identity_summary": _unique(orion_s, limit=10),
+                            "juniper_relationship_summary": _unique(juniper_s, limit=10) or list(FALLBACK_JUNIPER_RELATIONSHIP_SUMMARY),
+                            "response_policy_summary": _unique(policy_s, limit=10) or list(FALLBACK_RESPONSE_POLICY_SUMMARY),
+                        }
+    return identity_kernel_with_fallbacks(ctx)
+
+
+def _project_memory_graph_hints_from_beliefs(beliefs: UnifiedRelationalBeliefSetV1 | None) -> List[str]:
+    """Projection helper: read orionmem hints from unified beliefs, replacing network SPARQL call."""
+    if beliefs is None:
+        return []
+    hints: List[str] = []
+    for anchor_key in ("orion", "relationship"):
+        anchor_slice = beliefs.anchors.get(anchor_key)
+        if not anchor_slice:
+            continue
+        for snap in anchor_slice.snapshots:
+            if getattr(snap, "snapshot_source", "") != "orionmem":
+                continue
+            meta = snap.metadata or {}
+            label = str(meta.get("label") or "").strip()
+            tp = str(meta.get("trustPolarity") or "").strip()
+            line = " ".join(x for x in [label, tp] if x).strip()
+            if line and line not in hints:
+                hints.append(line)
+    return hints[:12]
+
+
+def _project_recall_from_beliefs(
+    beliefs: UnifiedRelationalBeliefSetV1 | None,
+    ctx: Dict[str, Any],
+) -> dict[str, list[str]]:
+    """Projection helper: read recall fragments from unified beliefs → same shape as _reflective_summary."""
+    if beliefs is not None:
+        themes: list[str] = []
+        tensions: list[str] = []
+        dream_motifs: list[str] = []
+        for anchor_key in ("orion", "relationship", "juniper"):
+            anchor_slice = beliefs.anchors.get(anchor_key)
+            if not anchor_slice:
+                continue
+            for node in anchor_slice.concepts:
+                src = str((node.metadata or {}).get("recall_source") or "").lower()
+                if "journal" in src or "metacog" in src:
+                    label = getattr(node, "label", "") or ""
+                    if label:
+                        themes.append(label)
+            for node in anchor_slice.tensions:
+                src = str((node.metadata or {}).get("recall_source") or "").lower()
+                if src:
+                    label = str((node.metadata or {}).get("label") or "").strip()
+                    if label:
+                        tensions.append(label)
+            for node in anchor_slice.events:
+                if getattr(node, "event_type", "") == "dream":
+                    summary = str(getattr(node, "summary", "") or "").strip()
+                    if summary:
+                        dream_motifs.append(summary)
+        recall_result = {
+            "themes": _unique(themes, limit=6),
+            "tensions": _unique(tensions, limit=6),
+            "dream_motifs": _unique(dream_motifs, limit=4),
+        }
+        if recall_result["themes"] or recall_result["tensions"] or recall_result["dream_motifs"]:
+            return recall_result
+    return _reflective_summary(ctx)
+
+
+def _project_social_from_beliefs(
+    beliefs: UnifiedRelationalBeliefSetV1 | None,
+    ctx: Dict[str, Any],
+) -> tuple[dict[str, list[str]], Dict[str, Any]]:
+    """Projection helper: read social signals from unified beliefs → same shapes as _social_summary + _social_bridge_summary."""
+    if beliefs is not None:
+        rel_slice = beliefs.anchors.get("relationship")
+        if rel_slice:
+            for snap in rel_slice.snapshots:
+                if getattr(snap, "snapshot_source", "") == "social_bridge":
+                    meta = snap.metadata or {}
+                    posture = [str(v) for v in (meta.get("posture") or []) if str(v).strip()]
+                    hazards = [str(v) for v in (meta.get("hazards") or []) if str(v).strip()]
+                    framing = [str(v) for v in (meta.get("framing") or []) if str(v).strip()]
+                    relationship_facets = [str(v) for v in (meta.get("relationship_facets") or []) if str(v).strip()]
+                    turn_decision = str(meta.get("turn_decision") or "")
+                    orientation_summary = str(meta.get("orientation_summary") or "")
+                    style_summary = str(meta.get("style_summary") or "")
+
+                    social = {
+                        "social_posture": _unique(posture, limit=8),
+                        "relationship_facets": _unique(relationship_facets, limit=8),
+                        "hazards": _unique(hazards, limit=8),
+                    }
+                    social_bridge = {
+                        "posture": _unique(posture, limit=8),
+                        "hazards": _unique(hazards, limit=8),
+                        "framing": _unique(framing, limit=8),
+                        "turn_decision": turn_decision,
+                        "summary": _unique([orientation_summary, style_summary, turn_decision], limit=3),
+                    }
+                    # Supplement with ctx keys that are not replicated on the snapshot (e.g.
+                    # ``active_relationship_facets``, bridge heuristics) so downstream contracts
+                    # match the pre-unification path.
+                    leg_soc = _social_summary(ctx)
+                    leg_bridge = _social_bridge_summary(ctx)
+                    social["social_posture"] = _unique(social["social_posture"] + leg_soc["social_posture"], limit=8)
+                    social["relationship_facets"] = _unique(
+                        social["relationship_facets"] + leg_soc["relationship_facets"], limit=8
+                    )
+                    social["hazards"] = _unique(social["hazards"] + leg_soc["hazards"], limit=8)
+                    social_bridge["posture"] = _unique(
+                        social_bridge["posture"] + list(leg_bridge.get("posture") or []), limit=8
+                    )
+                    social_bridge["hazards"] = _unique(
+                        social_bridge["hazards"] + list(leg_bridge.get("hazards") or []), limit=8
+                    )
+                    social_bridge["framing"] = _unique(
+                        social_bridge["framing"] + list(leg_bridge.get("framing") or []), limit=8
+                    )
+                    return social, social_bridge
+    social = _social_summary(ctx)
+    social_bridge = _social_bridge_summary(ctx)
+    return social, social_bridge
+
+
 def _is_identity_sensitive_turn(user_message: str) -> bool:
     text = (user_message or "").lower()
     if not text:
@@ -439,9 +727,149 @@ def _is_identity_sensitive_turn(user_message: str) -> bool:
     return any(re.search(pattern, text) for pattern in _IDENTITY_QUESTION_PATTERNS)
 
 
+def _project_concept_from_beliefs(
+    beliefs: UnifiedRelationalBeliefSetV1 | None,
+    ctx: Dict[str, Any] | None,
+) -> dict[str, list[str]] | None:
+    """Projection helper: read induced concepts from unified beliefs → same shape as _concept_summary_from_store.
+
+    Returns None if beliefs are empty / degraded for concept producers, signalling
+    the caller should fall through to the direct repository path.
+    """
+    if beliefs is None:
+        return None
+
+    buckets: dict[str, list[str]] = {"self": [], "relationship": [], "growth": [], "tension": []}
+    any_concepts = False
+
+    for anchor_key, anchor_slice in beliefs.anchors.items():
+        for node in anchor_slice.concepts:
+            if node.node_kind not in ("concept",):
+                continue
+            label = _compact(getattr(node, "label", "") or "", limit=80)
+            if not label:
+                continue
+            any_concepts = True
+            ctype = str((node.metadata or {}).get("concept_type") or "").lower()
+            if ctype in {"tension", "conflict"}:
+                buckets["tension"].append(label)
+            elif ctype in {"growth", "development", "emergence", "goal"}:
+                buckets["growth"].append(label)
+            elif anchor_key == "relationship" or ctype in {"relationship", "social"}:
+                buckets["relationship"].append(label)
+            else:
+                buckets["self"].append(label)
+
+    if not any_concepts:
+        return None
+    return {k: _unique(v, limit=6) for k, v in buckets.items()}
+
+
+def _project_autonomy_from_beliefs(
+    beliefs: UnifiedRelationalBeliefSetV1 | None,
+    ctx: Dict[str, Any],
+) -> Dict[str, Any] | None:
+    """Projection helper: reconstruct autonomy dict from unified beliefs.
+
+    Aggregates drive/goal/tension/snapshot nodes across orion, relationship, and
+    juniper anchors (matching the autonomy adapter's subject coverage).
+
+    Returns None if beliefs have no autonomy nodes, signalling the caller to
+    fall through to the direct ``_load_autonomy_state`` path.
+    """
+    if beliefs is None:
+        return None
+
+    drives: list[Any] = []
+    goals: list[Any] = []
+    tensions: list[Any] = []
+    snapshots: list[Any] = []
+    any_degraded = False
+
+    for anchor_key in ("orion", "relationship", "juniper"):
+        sl = beliefs.anchors.get(anchor_key)
+        if not sl:
+            continue
+        if sl.degraded:
+            any_degraded = True
+        drives.extend([n for n in sl.drives if n.node_kind == "drive"])
+        goals.extend([n for n in sl.goals if n.node_kind == "goal"])
+        tensions.extend([n for n in sl.tensions if n.node_kind == "tension"])
+        snapshots.extend([s for s in sl.snapshots if getattr(s, "snapshot_source", "") == "autonomy"])
+
+    if not any([drives, goals, tensions, snapshots]):
+        return None
+
+    seen_drive: set[str] = set()
+    drive_labels: list[str] = []
+    for d in drives:
+        dk = str(getattr(d, "drive_kind", "") or "")
+        if dk and dk not in seen_drive:
+            seen_drive.add(dk)
+            drive_labels.append(dk)
+
+    seen_tension: set[str] = set()
+    tension_labels: list[str] = []
+    for t in tensions:
+        tk = str(getattr(t, "tension_kind", "") or "")
+        if tk and tk not in seen_tension:
+            seen_tension.add(tk)
+            tension_labels.append(tk)
+
+    seen_goal_sig: set[str] = set()
+    goal_texts: list[str] = []
+    for g in goals:
+        sig = str((g.metadata or {}).get("proposal_signature") or "").strip().lower()
+        gt = str(getattr(g, "goal_text", "") or "")[:120]
+        if not gt:
+            continue
+        key = sig or gt[:64].lower()
+        if key not in seen_goal_sig:
+            seen_goal_sig.add(key)
+            goal_texts.append(gt)
+
+    dominant_drive: str | None = None
+    for snap in snapshots:
+        dd = str((snap.metadata or {}).get("dominant_drive") or "").strip()
+        if dd:
+            dominant_drive = dd
+            break
+
+    summary = summarize_autonomy_state(None)
+    if drive_labels or tension_labels or goal_texts:
+        summary = summary.model_copy(
+            update={
+                "top_drives": drive_labels[:3],
+                "dominant_drive": dominant_drive or (drive_labels[0] if drive_labels else None),
+                "active_tensions": tension_labels[:4],
+                "proposal_headlines": goal_texts[:3],
+                "raw_state_present": bool(snapshots),
+            }
+        )
+
+    return {
+        "state": None,
+        "summary": summary,
+        "debug": {
+            "backend": "substrate",
+            "source": "unified_beliefs",
+            "drives_from_beliefs": len(drives),
+            "goals_from_beliefs": len(goals),
+            "tensions_from_beliefs": len(tensions),
+            "degraded": any_degraded,
+        },
+        "backend": "substrate",
+        "selected_subject": "orion",
+        "repository_status": {"source_available": True, "source_path": "substrate"},
+        "partial_used": False,
+    }
+
+
 def _concept_summary_from_store(ctx: Dict[str, Any] | None = None) -> dict[str, list[str]]:
     ctx = ctx if isinstance(ctx, dict) else {}
     try:
+        from orion.spark.concept_induction.profile_repository import build_concept_profile_repository  # noqa: PLC0415
+
         repository = build_concept_profile_repository()
     except Exception:
         return {"self": [], "relationship": [], "growth": [], "tension": []}
@@ -1056,21 +1484,41 @@ def _run_autonomy_reducer(ctx: Dict[str, Any], autonomy: Dict[str, Any]):
 
 
 def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
-    identity = identity_kernel_with_fallbacks(ctx)
+    # Single unified beliefs call replaces independent producer fan-outs for
+    # identity, orionmem, recall, and social lanes.
+    beliefs = _unified_beliefs_for_stance(ctx)
+
+    identity = _project_identity_from_beliefs(beliefs, ctx)
     ctx.update(identity)
-    concept = _concept_summary_from_store(ctx)
-    social = _social_summary(ctx)
-    social_bridge = _social_bridge_summary(ctx)
+    concept = _project_concept_from_beliefs(beliefs, ctx) or _concept_summary_from_store(ctx)
+    social, social_bridge = _project_social_from_beliefs(beliefs, ctx)
     social["social_posture"] = _unique((social.get("social_posture") or []) + (social_bridge.get("posture") or []), limit=8)
     social["hazards"] = _unique((social.get("hazards") or []) + (social_bridge.get("hazards") or []), limit=8)
     social["relationship_facets"] = _unique((social.get("relationship_facets") or []) + (social_bridge.get("framing") or []), limit=8)
-    reflective = _reflective_summary(ctx)
+    reflective = _project_recall_from_beliefs(beliefs, ctx)
     situation = _situation_summary_from_ctx(ctx)
     reasoning = _compile_reasoning_summary(ctx)
     ctx["chat_reasoning_summary"] = reasoning["summary"]
-    autonomy = _load_autonomy_state(ctx)
+    autonomy = _project_autonomy_from_beliefs(beliefs, ctx) or _load_autonomy_state(ctx)
     mutation_cognition = _mutation_cognition_from_ctx(ctx)
     social["hazards"] = _unique((social.get("hazards") or []) + list((reasoning.get("summary") or {}).get("hazards") or []), limit=8)
+
+    # Log unified beliefs diagnostics (quiet warm path; louder when cold or degraded)
+    if beliefs is not None:
+        payload = json.dumps(
+            {
+                "cold_anchors": beliefs.cold_anchors,
+                "degraded_producers": beliefs.degraded_producers,
+                "lineage": beliefs.lineage,
+            },
+            sort_keys=True,
+        )
+        if beliefs.cold_anchors or beliefs.degraded_producers:
+            logger.info("unified_beliefs_for_stance %s", payload)
+        else:
+            logger.debug("unified_beliefs_for_stance %s", payload)
+    ctx["chat_unified_beliefs_lineage"] = beliefs.lineage if beliefs is not None else []
+    ctx["chat_unified_beliefs_degraded"] = beliefs.degraded_producers if beliefs is not None else []
 
     inputs = {
         "identity": {
@@ -1091,7 +1539,7 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
         "situation": situation,
         "mutation_adaptation": mutation_cognition,
     }
-    mg_hints = fetch_chat_stance_memory_graph_hints()
+    mg_hints = _project_memory_graph_hints_from_beliefs(beliefs) or fetch_chat_stance_memory_graph_hints()
     if mg_hints:
         inputs["memory_graph"] = {"disposition_hints": mg_hints}
 

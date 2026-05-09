@@ -5,7 +5,7 @@ from typing import Iterable
 
 from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, SubstrateEdgeV1, SubstrateGraphRecordV1
 
-from .reconcile import EdgeMergeDecision, NodeMergeDecision, SubstrateIdentityResolver, merge_edge, merge_node
+from .reconcile import EdgeMergeDecision, NodeMergeDecision, SubstrateIdentityResolver, merge_edge, merge_node, tier_rank_decision
 from .graphdb_store import build_substrate_store_from_env
 from .store import SubstrateGraphStore
 
@@ -59,10 +59,11 @@ class SubstrateGraphMaterializer:
                 nodes_created += 1
                 node_decisions.append(NodeMergeDecision(canonical_node_id=canonical_node.node_id, merged=False, reason="created"))
             else:
+                tc, to = tier_rank_decision(existing_node, node)
                 canonical_node = merge_node(existing_node, node, source_graph_id=record.graph_id)
                 self._store.upsert_node(identity_key=identity_key, node=canonical_node)
                 nodes_merged += 1
-                node_decisions.append(NodeMergeDecision(canonical_node_id=canonical_node.node_id, merged=True, reason="identity_match" if identity_key else "node_id_match"))
+                node_decisions.append(NodeMergeDecision(canonical_node_id=canonical_node.node_id, merged=True, reason="identity_match" if identity_key else "node_id_match", tier_conflict=tc, tier_outcome=to))
 
             canonical_id_by_input_id[node.node_id] = canonical_node.node_id
 

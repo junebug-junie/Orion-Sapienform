@@ -131,6 +131,9 @@ def test_parse_chat_stance_brief_and_fallback() -> None:
 
 
 def test_build_chat_stance_inputs_falls_back_when_identity_missing() -> None:
+    from app import chat_stance
+
+    chat_stance._UNIFICATION_LAYER = None
     ctx = {"user_message": "who are you and who am i"}
     built = build_chat_stance_inputs(ctx)
     assert built["identity"]["orion"]
@@ -141,6 +144,10 @@ def test_build_chat_stance_inputs_falls_back_when_identity_missing() -> None:
 
 def test_build_chat_stance_inputs_uses_repository_seam(monkeypatch) -> None:
     from app import chat_stance
+    import orion.spark.concept_induction.profile_repository as profile_repo
+
+    chat_stance._UNIFICATION_LAYER = None
+
     from orion.core.schemas.concept_induction import ConceptProfile
 
     profile = ConceptProfile.model_validate(
@@ -180,13 +187,16 @@ def test_build_chat_stance_inputs_uses_repository_seam(monkeypatch) -> None:
                 for subject in subjects
             ]
 
-    monkeypatch.setattr(chat_stance, "build_concept_profile_repository", lambda: FakeRepository())
+    monkeypatch.setattr(profile_repo, "build_concept_profile_repository", lambda: FakeRepository())
     built = chat_stance.build_chat_stance_inputs({"user_message": "who are you"})
     assert "continuity" in built["concept_induction"]["self"]
 
 
 def test_chat_stance_shadow_mode_uses_local_result_and_passes_observer(monkeypatch) -> None:
     from app import chat_stance
+    import orion.spark.concept_induction.profile_repository as profile_repo
+
+    chat_stance._UNIFICATION_LAYER = None
 
     class FakeRepository:
         def __init__(self) -> None:
@@ -234,7 +244,7 @@ def test_chat_stance_shadow_mode_uses_local_result_and_passes_observer(monkeypat
             ]
 
     fake_repository = FakeRepository()
-    monkeypatch.setattr(chat_stance, "build_concept_profile_repository", lambda: fake_repository)
+    monkeypatch.setattr(profile_repo, "build_concept_profile_repository", lambda: fake_repository)
     built = chat_stance.build_chat_stance_inputs(
         {
             "user_message": "who are you",

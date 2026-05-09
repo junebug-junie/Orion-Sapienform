@@ -472,6 +472,7 @@ loadDismissedIds();
   const MEMORY_GRAPH_SUGGEST_INPUT_PER_TURN_CHARS = 1800;
   const LS_MEMORY_GRAPH_BRIDGE_MAX_TURNS = 'orion_memory_graph_bridge_max_turns';
   let memoryGraphBridgeDraftViz = null;
+  let organSignalsGraphCtl = null;
   const RECALL_CANARY_PROFILE_STORAGE_KEY = 'orion_recall_canary_profile_v1';
 
   // Controls
@@ -552,6 +553,8 @@ loadDismissedIds();
   const memoryPanel = document.getElementById("memory");
   const mindTabButton = document.getElementById("mindTabButton");
   const mindPanel = document.getElementById("mind");
+  const signalsTabButton = document.getElementById("signalsTabButton");
+  const signalsPanel = document.getElementById("signals");
   const mindHoursInput = document.getElementById("mindHoursInput");
   const mindRefreshButton = document.getElementById("mindRefreshButton");
   const mindFilterOk = document.getElementById("mindFilterOk");
@@ -838,6 +841,9 @@ loadDismissedIds();
     if (tabKey === "mind" && !mindPanel) {
       effectiveTab = "hub";
     }
+    if (tabKey === "signals" && !signalsPanel) {
+      effectiveTab = "hub";
+    }
     const isHub = effectiveTab === "hub";
     const isTopicStudio = effectiveTab === "topic-studio";
     const isServiceLogs = effectiveTab === "service-logs";
@@ -845,6 +851,7 @@ loadDismissedIds();
     const isMemory = effectiveTab === "memory";
     const isPressure = effectiveTab === "pressure";
     const isMind = effectiveTab === "mind";
+    const isSignals = effectiveTab === "signals";
     hubTabPanel.classList.toggle("hidden", !isHub);
     topicStudioPanel.classList.toggle("hidden", !isTopicStudio);
     serviceLogsPanel.classList.toggle("hidden", !isServiceLogs);
@@ -861,6 +868,15 @@ loadDismissedIds();
         refreshMindRuns();
       }
     }
+    if (signalsPanel) {
+      signalsPanel.classList.toggle("hidden", !isSignals);
+      if (isSignals && window.OrionOrganSignalsGraphUI) {
+        const ctl = ensureOrganSignalsGraph();
+        if (ctl && typeof ctl.refresh === "function") {
+          ctl.refresh();
+        }
+      }
+    }
     if (pressurePanel) {
       pressurePanel.classList.toggle("hidden", !isPressure);
     }
@@ -873,6 +889,9 @@ loadDismissedIds();
     }
     if (mindTabButton) {
       styleTabButton(mindTabButton, isMind);
+    }
+    if (signalsTabButton) {
+      styleTabButton(signalsTabButton, isSignals);
     }
     if (pressureAnalyticsTabButton) {
       styleTabButton(pressureAnalyticsTabButton, isPressure);
@@ -1258,8 +1277,10 @@ loadDismissedIds();
       setActiveTab("memory");
     } else if (h === "#mind" && mindPanel && mindTabButton) {
       setActiveTab("mind");
+    } else if (h === "#signals" && signalsPanel && signalsTabButton) {
+      setActiveTab("signals");
     } else {
-      if (h === "#pressure" || h === "#memory" || h === "#mind") {
+      if (h === "#pressure" || h === "#memory" || h === "#mind" || h === "#signals") {
         history.replaceState(null, "", "#hub");
       }
       setActiveTab("hub");
@@ -6398,6 +6419,28 @@ loadDismissedIds();
     return memoryGraphBridgeDraftViz;
   }
 
+  function ensureOrganSignalsGraph() {
+    if (!window.OrionOrganSignalsGraphUI) {
+      return null;
+    }
+    if (organSignalsGraphCtl) {
+      return organSignalsGraphCtl;
+    }
+    const cyHost = document.getElementById("organSignalsCyHost");
+    if (!cyHost) {
+      return null;
+    }
+    organSignalsGraphCtl = window.OrionOrganSignalsGraphUI.attach({
+      apiBaseUrl: API_BASE_URL,
+      cyHost,
+      statusEl: document.getElementById("organSignalsStatus"),
+      detailEl: document.getElementById("organSignalsDetail"),
+      refreshBtn: document.getElementById("organSignalsRefreshBtn"),
+      autoRefreshCheckbox: document.getElementById("organSignalsAutoRefresh"),
+    });
+    return organSignalsGraphCtl;
+  }
+
   function closeMemoryGraphBridgeModal() {
     if (!memoryGraphBridgeModal) return;
     memoryGraphBridgeAnchorDiv = null;
@@ -9931,6 +9974,13 @@ loadDismissedIds();
         event.preventDefault();
         setActiveTab("mind");
         history.replaceState(null, "", "#mind");
+      });
+    }
+    if (signalsTabButton && signalsPanel) {
+      signalsTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("signals");
+        history.replaceState(null, "", "#signals");
       });
     }
     if (pressureAnalyticsTabButton && pressurePanel) {

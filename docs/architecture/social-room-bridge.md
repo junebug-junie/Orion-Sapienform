@@ -38,9 +38,10 @@ Inbound webhook bodies are normalized so `room_id` can also appear as `channel_k
 1. Run `orion-social-room-bridge` on the Docker `app-net` used by Hub (and optionally `orion-social-memory`).
 2. Publish **`POST https://<your-host>/webhooks/callsyne/room-message`** (port **8764** by default, or reverse-proxy TLS on 443).
 3. Set **`CALLSYNE_WEBHOOK_TOKEN`** in Orion and configure CallSyne to send the same value in header **`X-Callsyne-Webhook-Token`**.
-4. Rollout: set **`SOCIAL_BRIDGE_DRY_RUN=true`** until Hub replies look correct, then set **`SOCIAL_BRIDGE_DRY_RUN=false`** to post back through the bridge API.
-5. **`SOCIAL_BRIDGE_ROOM_ALLOWLIST`** must include the exact room/channel key CallSyne sends on each message.
-6. **`SOCIAL_BRIDGE_SELF_PARTICIPANT_IDS`** must list the CallSyne Orion bot user id(s) to suppress self-loops.
+4. Set **`CALLSYNE_WEBHOOK_HMAC_SECRET`** to require outbound payload signature validation from CallSyne (`HMAC-SHA256` over raw request body). Configure header/prefix with **`CALLSYNE_WEBHOOK_SIGNATURE_HEADER`** (default `X-Callsyne-Signature`) and **`CALLSYNE_WEBHOOK_SIGNATURE_PREFIX`** (default `sha256=`) if CallSyne uses different naming.
+5. Rollout: set **`SOCIAL_BRIDGE_DRY_RUN=true`** until Hub replies look correct, then set **`SOCIAL_BRIDGE_DRY_RUN=false`** to post back through the bridge API.
+6. **`SOCIAL_BRIDGE_ROOM_ALLOWLIST`** must include the exact room/channel key CallSyne sends on each message.
+7. **`SOCIAL_BRIDGE_SELF_PARTICIPANT_IDS`** must list the CallSyne Orion bot user id(s) to suppress self-loops.
 
 **Smoke checks**
 

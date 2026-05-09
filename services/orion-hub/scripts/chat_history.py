@@ -589,7 +589,7 @@ async def publish_social_room_turn(
             node=settings.NODE_NAME,
             version=settings.SERVICE_VERSION,
         ),
-        payload=turn,
+        payload=turn.model_dump(mode="json"),
     )
     try:
         await bus.publish(SOCIAL_ROOM_TURN_CHANNEL, env)

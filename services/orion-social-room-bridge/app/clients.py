@@ -8,7 +8,7 @@ from orion.schemas.social_bridge import ExternalRoomPostRequestV1
 
 
 def _callsyne_bridge_post_body(request: ExternalRoomPostRequestV1) -> Dict[str, Any]:
-    """Shape for POST /api/bridge/messages: required room_id + text; optional fields omitted when empty."""
+    """Shape for POST /api/bridge/messages using top-level snake_case fields."""
     meta = dict(request.metadata or {})
     media_hint = meta.pop("media_hint", None)
     body: Dict[str, Any] = {
@@ -17,8 +17,8 @@ def _callsyne_bridge_post_body(request: ExternalRoomPostRequestV1) -> Dict[str, 
     }
     if request.reply_to_message_id and str(request.reply_to_message_id).isdigit():
         body["reply_to_message_id"] = int(str(request.reply_to_message_id))
-    if request.thread_id:
-        body["thread_id"] = request.thread_id
+    if request.thread_id and str(request.thread_id).isdigit():
+        body["thread_id"] = int(str(request.thread_id))
     if media_hint:
         body["media_hint"] = media_hint
     if request.correlation_id:

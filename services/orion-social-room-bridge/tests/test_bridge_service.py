@@ -1531,7 +1531,6 @@ def test_callsyne_bridge_post_body_minimal_and_media_hint() -> None:
     assert body == {
         "room_id": "room-1",
         "text": "hello",
-        "thread_id": "t-a",
         "media_hint": {"kind": "gif", "query": "lol"},
         "metadata": {"gif_intent": "laugh_with", "correlation_id": "corr-x"},
     }
@@ -1552,6 +1551,7 @@ def test_callsyne_bridge_post_body_numeric_reply_id_only() -> None:
         )
     )
     assert numeric["reply_to_message_id"] == 12345
+    assert "thread_id" not in numeric
     non_numeric = _callsyne_bridge_post_body(
         ExternalRoomPostRequestV1(
             platform="callsyne",

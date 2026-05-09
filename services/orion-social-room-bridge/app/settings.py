@@ -66,6 +66,15 @@ class Settings(BaseSettings):
         alias="CALLSYNE_POST_PATH_TEMPLATE",
     )
     callsyne_webhook_token: str = Field("", alias="CALLSYNE_WEBHOOK_TOKEN")
+    callsyne_webhook_hmac_secret: str = Field("", alias="CALLSYNE_WEBHOOK_HMAC_SECRET")
+    callsyne_webhook_signature_header: str = Field(
+        "X-Callsyne-Signature",
+        alias="CALLSYNE_WEBHOOK_SIGNATURE_HEADER",
+    )
+    callsyne_webhook_signature_prefix: str = Field(
+        "sha256=",
+        alias="CALLSYNE_WEBHOOK_SIGNATURE_PREFIX",
+    )
 
     social_memory_base_url: str = Field("http://orion-social-memory:8765", alias="SOCIAL_MEMORY_BASE_URL")
     social_memory_timeout_sec: float = Field(3.0, alias="SOCIAL_MEMORY_TIMEOUT_SEC")

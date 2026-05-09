@@ -49,21 +49,34 @@ Existing:
 - `GET /api/mind/runs/{mind_run_id}`
 - `GET /api/mind/runs?correlation_id=&limit=`
 
-**New (v1):** `GET /api/mind/runs/recent` (exact path may mirror naming above), **session-gated**, query parameters at minimum:
+**New (v1):** `GET /api/mind/runs/recent`, **session-gated**, canonical query parameters:
 
-- `since_utc` / `until_utc` **or** `hours` (implementer picks one style; document in plan),
+- required: `hours` (int, bounded to a safe max, e.g. `1..168`),
 - optional filters: `ok` (bool), `trigger`, `error_code`, `router_profile_id`,
-- `limit` (bounded, e.g. max 500) and optional **cursor** for pagination if needed.
+- pagination: `limit` (bounded, e.g. max 500) and optional opaque `cursor`.
+
+**Response contract (v1):**
+
+- `items`: summary projection only (`mind_run_id`, `correlation_id`, `created_at_utc`, `ok`, `trigger`, `error_code`, `router_profile_id`),
+- `next_cursor`: nullable opaque cursor for pagination,
+- `aggregates`: window-level totals for the same filter (`total_runs`, `ok_count`, `failed_count`, top small lists for `error_code` and `router_profile_id`, and time-bucket counts used by chart).
+
+`/recent` **must not** return heavy detail fields such as `result_jsonb` or `request_summary_jsonb`; run interior remains `GET /api/mind/runs/{mind_run_id}`.
 
 SQL: filter `mind_runs` by `created_at_utc` and optional columns; `ORDER BY created_at_utc DESC`. Use existing index on `(created_at_utc DESC)` from Mind spec; add migration only if profiling requires it.
 
-**Security:** Same rules as other Mind routes — no anonymous cross-session leakage; session must be established first.
+**Security / authorization:** session existence alone is not sufficient. `GET /api/mind/runs/recent` must enforce one explicit v1 policy:
+
+1. operator-authorized global view, **or**
+2. strict session-scoped query (`WHERE session_id = current_session_id`) when operator authz is unavailable.
+
+No anonymous access and no implicit cross-session leakage.
 
 ## 4. Global Mind tab (UX)
 
 1. **Controls:** Time range selector, filters (ok / trigger / error_code / router_profile_id), refresh.
-2. **Summary tiles:** For the **current filtered window** — total runs, ok vs failed counts, top `error_code` (small list), top `router_profile_id` (small list).
-3. **Time-bucket chart:** Count of runs per bucket (e.g. hour or day) over the selected window; cap number of buckets for performance.
+2. **Summary tiles:** For the **current filtered window** (from server `aggregates`) — total runs, ok vs failed counts, top `error_code` (small list), top `router_profile_id` (small list).
+3. **Time-bucket chart:** Use server-provided bucket counts for the selected filtered window (e.g. hour or day); cap number of buckets for performance.
 4. **Table:** One row per run (key columns: `created_at_utc`, `ok`, `trigger`, `error_code`, `router_profile_id`, `correlation_id`, `mind_run_id` truncated + copy). Row click opens **same drill-down viewer** as modal (inline expand, drawer, or secondary column — implementer chooses; document in plan).
 5. **Operator help (static):** Short copy + link to Mind service spec on how Mind is invoked (Orch + `mind_enabled`); no server config in v1.
 
@@ -79,7 +92,7 @@ Persist **only** in the browser (namespaced keys, e.g. `orion.hub.mind.*`):
 ## 5. Chat-anchored modal (UX)
 
 - **Affordance:** Control on **assistant** bubbles (minimum); whether **user** bubbles show the chip is **implementation default: assistant only** unless product extends with clear empty-state (“no runs yet”) for user-only correlations.
-- **Open:** Reads `correlation_id` from the same metadata path Inspect / Memory graph use for that bubble.
+- **Open:** Reads `correlation_id` from the same metadata path Inspect / Memory graph use for that bubble. If `correlation_id` is missing, hide or disable the affordance and show “Mind data unavailable for this message” (no API call).
 - **Body:**
   1. **List:** `GET /api/mind/runs?correlation_id=&limit=` — vertical list, newest first; show `ok`, `trigger`, `created_at_utc`, short error if any.
   2. **Drill-down:** Selecting a row loads `GET /api/mind/runs/{mind_run_id}` if not already in row payload; render **loop-oriented** trajectory (`result_jsonb`), plus decision, brief, timing/diagnostics if present. Prefer **collapsible sections** over a single monolithic `<pre>` where practical; keep raw JSON available (copy button).
@@ -98,7 +111,7 @@ Persist **only** in the browser (namespaced keys, e.g. `orion.hub.mind.*`):
 
 | Layer | Minimum |
 |-------|---------|
-| **Hub API** | Tests for `GET .../recent`: seeded rows, ordering, filter by `ok` / `trigger`, bound on `limit`, session required. |
+| **Hub API** | Tests for `GET .../recent`: seeded rows, ordering, filter by `ok` / `trigger`, bound on `limit`, canonical `hours` validation, session required, authorization/scoping policy enforced (no cross-session leakage unless explicitly operator-authorized), and summary-only payload (no `result_jsonb` / `request_summary_jsonb`). |
 | **Client** | If repo has patterns for DOM/modal smoke, add load check for new script + tab panel ids; otherwise document manual checklist. |
 | **Manual** | Mind-enabled turn → row in `mind_runs` → modal lists run → drill matches DB; tab chart counts align with table for same window. |
 

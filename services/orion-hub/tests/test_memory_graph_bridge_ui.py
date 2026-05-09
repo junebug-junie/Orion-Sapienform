@@ -41,6 +41,12 @@ def test_app_js_wires_memory_graph_bridge_handlers() -> None:
     assert "hub-utterance:" in app_js
     assert "rebuildMemoryGraphBridgeTurnList" in app_js
     assert "memoryGraphBridgeAnchorDiv" in app_js
+    assert "MEMORY_GRAPH_SUGGEST_TIMEOUT_MS" in app_js
+    assert "MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS" in app_js
+    assert "MEMORY_GRAPH_SUGGEST_INPUT_PER_TURN_CHARS" in app_js
+    assert "Input clipped for reliability" in app_js
+    assert "AbortController" in app_js
+    assert "Suggest timed out" in app_js
 
 
 def test_memory_js_listens_for_bridge_import_event() -> None:
@@ -48,3 +54,9 @@ def test_memory_js_listens_for_bridge_import_event() -> None:
     assert 'orion-hub-memory-graph-draft-import' in memory_js
     assert "orion_memory_graph_draft_import" in memory_js
     assert "OrionMemoryGraphDraftUI" in memory_js
+    assert "MEMORY_GRAPH_SUGGEST_TIMEOUT_MS" in memory_js
+    assert "MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS" in memory_js
+    assert "boundedSuggestPrompt" in memory_js
+    assert "Prompt input was clipped" in memory_js
+    assert "AbortController" in memory_js
+    assert "Suggest timed out" in memory_js

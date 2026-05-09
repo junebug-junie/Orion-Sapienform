@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 
 from .session import ensure_session
 
@@ -36,7 +36,7 @@ async def list_recent_mind_runs(
     trigger: Optional[str] = Query(None, min_length=1, max_length=64),
     error_code: Optional[str] = Query(None, min_length=1, max_length=128),
     router_profile_id: Optional[str] = Query(None, min_length=1, max_length=128),
-    x_orion_session_id: Optional[str] = None,
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
 ) -> dict[str, Any]:
     session_id = await _need_session(x_orion_session_id)
     pool = _pool(request)
@@ -163,7 +163,7 @@ async def list_recent_mind_runs(
 
 
 @router.get("/api/mind/runs/{mind_run_id}")
-async def get_mind_run(mind_run_id: str, request: Request, x_orion_session_id: Optional[str] = None) -> dict[str, Any]:
+async def get_mind_run(mind_run_id: str, request: Request, x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id")) -> dict[str, Any]:
     session_id = await _need_session(x_orion_session_id)
     pool = _pool(request)
     async with pool.acquire() as conn:
@@ -187,7 +187,7 @@ async def list_mind_runs(
     request: Request,
     correlation_id: str = Query(..., min_length=4),
     limit: int = Query(50, ge=1, le=200),
-    x_orion_session_id: Optional[str] = None,
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
 ) -> list[dict[str, Any]]:
     session_id = await _need_session(x_orion_session_id)
     pool = _pool(request)

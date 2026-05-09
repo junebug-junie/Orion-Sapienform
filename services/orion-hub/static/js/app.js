@@ -467,6 +467,9 @@ loadDismissedIds();
   let memoryGraphBridgeAnchorDiv = null;
   const MEMORY_GRAPH_BRIDGE_MAX_TURNS_CAP = 80;
   const MEMORY_GRAPH_BRIDGE_MAX_TURNS_DEFAULT = 40;
+  const MEMORY_GRAPH_SUGGEST_TIMEOUT_MS = 45000;
+  const MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS = 12000;
+  const MEMORY_GRAPH_SUGGEST_INPUT_PER_TURN_CHARS = 1800;
   const LS_MEMORY_GRAPH_BRIDGE_MAX_TURNS = 'orion_memory_graph_bridge_max_turns';
   let memoryGraphBridgeDraftViz = null;
   const RECALL_CANARY_PROFILE_STORAGE_KEY = 'orion_recall_canary_profile_v1';
@@ -5945,13 +5948,36 @@ loadDismissedIds();
     const lines = [];
     lines.push('Structured transcript evidence for memory graph extraction (do not invent turns).');
     lines.push('');
-    turns.forEach((t, i) => {
+    let remaining = MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS;
+    let clippedTurns = 0;
+    let omittedTurns = 0;
+    for (let i = 0; i < turns.length; i += 1) {
+      const t = turns[i];
       const id = t.turnId;
       const role = t.role || 'unknown';
       lines.push(`--- turn ${i + 1} id=${id} role=${role} ---`);
-      lines.push(t.text || '');
+      if (remaining <= 0) {
+        lines.push('[omitted: input budget exhausted]');
+        lines.push('');
+        omittedTurns += 1;
+        continue;
+      }
+      const raw = String(t.text || '');
+      const perTurn = raw.length > MEMORY_GRAPH_SUGGEST_INPUT_PER_TURN_CHARS
+        ? `${raw.slice(0, MEMORY_GRAPH_SUGGEST_INPUT_PER_TURN_CHARS)}…`
+        : raw;
+      if (perTurn.length < raw.length) clippedTurns += 1;
+      const capped = perTurn.length > remaining ? `${perTurn.slice(0, Math.max(0, remaining - 1))}…` : perTurn;
+      if (capped.length < perTurn.length) clippedTurns += 1;
+      lines.push(capped);
       lines.push('');
-    });
+      remaining -= capped.length;
+    }
+    if (clippedTurns > 0 || omittedTurns > 0) {
+      lines.push(
+        `[Input clipped for reliability: clipped_turns=${clippedTurns}, omitted_turns=${omittedTurns}, max_total_chars=${MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS}, max_per_turn_chars=${MEMORY_GRAPH_SUGGEST_INPUT_PER_TURN_CHARS}]`
+      );
+    }
     lines.push('Emit utterance_ids matching the ids above; fill utterance_text_by_id with excerpts.');
     return lines.join('\n');
   }
@@ -6564,11 +6590,27 @@ loadDismissedIds();
             'Content-Type': 'application/json',
             ...(orionSessionId ? { 'X-Orion-Session-Id': orionSessionId } : {}),
           };
-          const res = await fetch(`${API_BASE_URL}/api/chat`, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(payload),
-          });
+          const controller = typeof AbortController === 'function' ? new AbortController() : null;
+          const timerId = controller
+            ? setTimeout(() => {
+              try {
+                controller.abort();
+              } catch (_) {
+                /* ignore */
+              }
+            }, MEMORY_GRAPH_SUGGEST_TIMEOUT_MS)
+            : null;
+          let res;
+          try {
+            res = await fetch(`${API_BASE_URL}/api/chat`, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(payload),
+              ...(controller ? { signal: controller.signal } : {}),
+            });
+          } finally {
+            if (timerId != null) clearTimeout(timerId);
+          }
           const text = await res.text();
           let data = null;
           try {
@@ -6611,7 +6653,13 @@ loadDismissedIds();
               : 'Empty response — check gateway / model logs.';
           }
         } catch (err) {
-          if (statusEl) statusEl.textContent = String(err.message || err);
+          if (statusEl) {
+            if (err && err.name === 'AbortError') {
+              statusEl.textContent = `Suggest timed out after ${Math.round(MEMORY_GRAPH_SUGGEST_TIMEOUT_MS / 1000)}s. Try fewer turns or retry when the model gateway is responsive.`;
+            } else {
+              statusEl.textContent = String(err.message || err);
+            }
+          }
         } finally {
           suggestBtn.disabled = false;
           suggestBtn.textContent = prevLabel;
@@ -8105,7 +8153,11 @@ loadDismissedIds();
       updateStatus(`Switched to ${modeLabel} mode.`);
     });
   });
-  const defaultModeButton = Array.from(modeButtons).find((btn) => (btn.dataset.mode || 'brain') === currentMode && !btn.dataset.verbOverride)
+  const defaultModeButton = Array.from(modeButtons).find((btn) =>
+    (btn.dataset.mode || 'brain') === currentMode
+    && (btn.dataset.verbOverride || null) === modeVerbOverride
+  )
+    || Array.from(modeButtons).find((btn) => (btn.dataset.mode || 'brain') === currentMode && !btn.dataset.verbOverride)
     || modeButtons[0];
   applyModeButtonSelection(defaultModeButton);
 

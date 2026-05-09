@@ -1637,6 +1637,63 @@ def _workflow_is_metadata_only(workflow: Dict[str, Any] | None) -> bool:
     return workflow_id == "dream_cycle"
 
 
+def _memory_graph_timeout_hint(raw_result: Dict[str, Any] | None, text: str | None) -> str:
+    parts: List[str] = []
+    if isinstance(text, str) and text.strip():
+        parts.append(text.strip())
+    raw = raw_result if isinstance(raw_result, dict) else {}
+    top_error = raw.get("error")
+    if top_error is not None:
+        parts.append(str(top_error))
+    final_text = raw.get("final_text")
+    if isinstance(final_text, str) and final_text.strip():
+        parts.append(final_text.strip())
+    steps = raw.get("steps")
+    if isinstance(steps, list):
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            step_error = step.get("error")
+            if step_error is not None:
+                parts.append(str(step_error))
+            result = step.get("result")
+            if not isinstance(result, dict):
+                continue
+            for block in result.values():
+                if not isinstance(block, dict):
+                    continue
+                content = block.get("content")
+                if content is not None:
+                    parts.append(str(content))
+                block_error = block.get("error")
+                if block_error is not None:
+                    parts.append(str(block_error))
+    merged: List[str] = []
+    for item in parts:
+        normalized = str(item or "").strip()
+        if normalized and normalized not in merged:
+            merged.append(normalized)
+    return " | ".join(merged)
+
+
+def _should_retry_memory_graph_quick(
+    req: CortexChatRequest,
+    *,
+    raw_result: Dict[str, Any] | None,
+    text: str | None,
+) -> Tuple[bool, str]:
+    if str(req.verb or "").strip().lower() != "memory_graph_suggest":
+        return False, ""
+    options = req.options if isinstance(req.options, dict) else {}
+    if str(options.get("llm_route") or "").strip():
+        return False, ""
+    hint = _memory_graph_timeout_hint(raw_result, text)
+    lower = hint.lower()
+    if "timed out" in lower or "timeout" in lower:
+        return True, hint
+    return False, ""
+
+
 async def handle_chat_request(
     cortex_client,
     payload: dict,
@@ -1775,6 +1832,37 @@ async def handle_chat_request(
 
         # Extract Text — prefer longest answer if top-level vs nested diverge (parity with curl `raw.final_text`)
         text = hub_effective_chat_text(resp)
+
+        should_retry_quick, retry_hint = _should_retry_memory_graph_quick(
+            req,
+            raw_result=raw_result,
+            text=text,
+        )
+        if should_retry_quick:
+            retry_req = req.model_copy(deep=True)
+            retry_options = dict(retry_req.options or {})
+            retry_options["llm_route"] = "quick"
+            retry_options["memory_graph_retry_from"] = "chat_timeout"
+            retry_req.options = retry_options
+            retry_corr_id = str(uuid4())
+            logger.warning(
+                "memory_graph_suggest_retry_quick corr=%s retry_corr=%s reason=%s",
+                corr_id,
+                retry_corr_id,
+                (retry_hint or "")[:240],
+            )
+            resp = await cortex_client.chat(retry_req, correlation_id=retry_corr_id)
+            raw_result = resp.cortex_result.model_dump(mode="json")
+            text = hub_effective_chat_text(resp)
+            corr_id = retry_corr_id
+            if isinstance(route_debug, dict):
+                route_debug = dict(route_debug)
+                route_debug["memory_graph_retry_quick"] = True
+                route_debug["memory_graph_retry_reason"] = (retry_hint or "")[:240]
+                route_debug_options = dict(route_debug.get("options") or {})
+                route_debug_options["llm_route"] = "quick"
+                route_debug_options["memory_graph_retry_from"] = "chat_timeout"
+                route_debug["options"] = route_debug_options
 
         # Use the correlation_id from the response (gateway) if available
         # or it might be passed back from the client logic if modified to do so.

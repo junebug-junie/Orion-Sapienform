@@ -57,6 +57,78 @@ class _ReasoningBrainClient:
         return CortexChatResult(cortex_result=result, final_text="brain")
 
 
+class _MemoryGraphRetryClient:
+    def __init__(self) -> None:
+        self.calls = []
+
+    async def chat(self, req, correlation_id=None):
+        options = dict(req.options or {})
+        self.calls.append(options)
+        if str(options.get("llm_route") or "").strip().lower() == "quick":
+            result = CortexClientResult(
+                ok=True,
+                mode="brain",
+                verb="memory_graph_suggest",
+                status="success",
+                final_text='{"ontology_version":"orionmem-2026-05","utterance_ids":["t1"]}',
+                correlation_id=correlation_id or "corr-mg-retry",
+            )
+            return CortexChatResult(cortex_result=result, final_text=result.final_text)
+
+        result = CortexClientResult(
+            ok=True,
+            mode="brain",
+            verb="memory_graph_suggest",
+            status="success",
+            final_text="",
+            steps=[
+                {
+                    "step_name": "llm_memory_graph_suggest",
+                    "verb_name": "memory_graph_suggest",
+                    "order": 0,
+                    "status": "success",
+                    "result": {
+                        "LLMGatewayService": {
+                            "content": "[Error: llamacpp timed out after waiting]",
+                        }
+                    },
+                }
+            ],
+            correlation_id=correlation_id or "corr-mg-initial",
+        )
+        return CortexChatResult(cortex_result=result, final_text="")
+
+
+class _MemoryGraphNoRetryClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def chat(self, req, correlation_id=None):
+        self.calls += 1
+        result = CortexClientResult(
+            ok=True,
+            mode="brain",
+            verb="memory_graph_suggest",
+            status="success",
+            final_text="",
+            steps=[
+                {
+                    "step_name": "llm_memory_graph_suggest",
+                    "verb_name": "memory_graph_suggest",
+                    "order": 0,
+                    "status": "success",
+                    "result": {
+                        "LLMGatewayService": {
+                            "content": "[Error: llamacpp timed out after waiting]",
+                        }
+                    },
+                }
+            ],
+            correlation_id=correlation_id or "corr-mg-no-retry",
+        )
+        return CortexChatResult(cortex_result=result, final_text="")
+
+
 def test_handle_chat_request_exports_turn_effect_into_result_payload() -> None:
     payload = {"mode": "brain", "messages": [{"role": "user", "content": "hello"}]}
     out = asyncio.run(handle_chat_request(_TurnEffectClient(), payload, "sid-1", no_write=True))
@@ -78,6 +150,39 @@ def test_handle_chat_request_preserves_brain_reasoning_trace() -> None:
     out = asyncio.run(handle_chat_request(_ReasoningBrainClient(), payload, "sid-brain", no_write=True))
     assert out["reasoning_trace"]["content"] == "brain trace"
     assert out["reasoning_content"] is None
+
+
+def test_handle_chat_request_retries_memory_graph_suggest_on_timeout() -> None:
+    client = _MemoryGraphRetryClient()
+    payload = {
+        "mode": "brain",
+        "verbs": ["memory_graph_suggest"],
+        "messages": [{"role": "user", "content": "memory graph test"}],
+        "use_recall": False,
+        "no_write": True,
+    }
+    out = asyncio.run(handle_chat_request(client, payload, "sid-mg-retry", no_write=True))
+    assert len(client.calls) == 2
+    assert client.calls[0].get("llm_route") is None
+    assert client.calls[1].get("llm_route") == "quick"
+    assert out["text"].startswith('{"ontology_version"')
+    assert out["routing_debug"]["memory_graph_retry_quick"] is True
+    assert out["routing_debug"]["options"]["llm_route"] == "quick"
+
+
+def test_handle_chat_request_does_not_retry_memory_graph_with_explicit_llm_route() -> None:
+    client = _MemoryGraphNoRetryClient()
+    payload = {
+        "mode": "brain",
+        "verbs": ["memory_graph_suggest"],
+        "messages": [{"role": "user", "content": "memory graph test"}],
+        "options": {"llm_route": "quick"},
+        "use_recall": False,
+        "no_write": True,
+    }
+    out = asyncio.run(handle_chat_request(client, payload, "sid-mg-no-retry", no_write=True))
+    assert client.calls == 1
+    assert out["text"] == ""
 
 
 def test_handle_chat_request_records_first_class_pressure_events(monkeypatch) -> None:

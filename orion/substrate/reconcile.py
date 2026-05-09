@@ -10,11 +10,21 @@ from orion.core.schemas.cognitive_substrate import (
 )
 
 
+_TIER_RANK_NAMES: dict[int, str] = {
+    1: "operator_static",
+    2: "graphdb_durable",
+    3: "concept_induced",
+    4: "snapshot_ephemeral",
+}
+
+
 @dataclass(frozen=True)
 class NodeMergeDecision:
     canonical_node_id: str
     merged: bool
     reason: str
+    tier_conflict: bool = False
+    tier_outcome: str = ""
 
 
 @dataclass(frozen=True)
@@ -75,7 +85,40 @@ class SubstrateIdentityResolver:
         return f"{edge.source.node_id}|{edge.predicate}|{edge.target.node_id}"
 
 
+def tier_rank_decision(existing: BaseSubstrateNodeV1, incoming: BaseSubstrateNodeV1) -> tuple[bool, str]:
+    """Return (tier_conflict, tier_outcome) for a proposed merge.
+
+    ``tier_conflict`` is True when the incoming node has lower authority (higher rank number)
+    than the existing node, meaning the existing node is protected.
+    """
+    existing_rank: int | None = existing.provenance.tier_rank
+    incoming_rank: int | None = incoming.provenance.tier_rank
+    if existing_rank is not None and incoming_rank is not None:
+        if incoming_rank > existing_rank:
+            tier_name = _TIER_RANK_NAMES.get(existing_rank, f"tier{existing_rank}")
+            return True, f"{tier_name}_protected"
+        if incoming_rank < existing_rank:
+            tier_name = _TIER_RANK_NAMES.get(incoming_rank, f"tier{incoming_rank}")
+            return False, f"{tier_name}_accepted"
+        return False, "symmetric_tier"
+    return False, ""
+
+
 def merge_node(existing: BaseSubstrateNodeV1, incoming: BaseSubstrateNodeV1, *, source_graph_id: str) -> BaseSubstrateNodeV1:
+    # Tier-rank policy:
+    #   incoming_rank > existing_rank  → lower authority: existing is protected, keep existing signals
+    #   incoming_rank < existing_rank  → higher authority: incoming wins on confidence/salience
+    #   same or no tier info           → take max (existing behaviour)
+    existing_rank: int | None = existing.provenance.tier_rank
+    incoming_rank: int | None = incoming.provenance.tier_rank
+
+    tier_protected, _ = tier_rank_decision(existing, incoming)
+    tier_promoted = (
+        existing_rank is not None
+        and incoming_rank is not None
+        and incoming_rank < existing_rank
+    )
+
     lineage = list(existing.metadata.get("materialization_lineage") or [])
     lineage.append(
         {
@@ -88,14 +131,25 @@ def merge_node(existing: BaseSubstrateNodeV1, incoming: BaseSubstrateNodeV1, *, 
     lineage = lineage[-50:]
 
     merged_evidence_refs = sorted({*existing.provenance.evidence_refs, *incoming.provenance.evidence_refs})
-    merged_provenance = existing.provenance.model_copy(update={"evidence_refs": merged_evidence_refs})
+    # When incoming has higher authority (lower tier rank), adopt incoming provenance as base.
+    prov_base = incoming.provenance if tier_promoted else existing.provenance
+    merged_provenance = prov_base.model_copy(update={"evidence_refs": merged_evidence_refs})
 
     valid_from_candidates = [value for value in (existing.temporal.valid_from, incoming.temporal.valid_from) if value is not None]
     valid_to_candidates = [value for value in (existing.temporal.valid_to, incoming.temporal.valid_to) if value is not None]
+
+    # Tier-rank policy on valid_from: higher-authority wins (same cases as confidence).
+    if tier_protected:
+        merged_valid_from = existing.temporal.valid_from
+    elif tier_promoted:
+        merged_valid_from = incoming.temporal.valid_from
+    else:
+        merged_valid_from = min(valid_from_candidates) if valid_from_candidates else None
+
     merged_temporal = existing.temporal.model_copy(
         update={
             "observed_at": max(existing.temporal.observed_at, incoming.temporal.observed_at),
-            "valid_from": min(valid_from_candidates) if valid_from_candidates else None,
+            "valid_from": merged_valid_from,
             "valid_to": max(valid_to_candidates) if valid_to_candidates else None,
         }
     )
@@ -105,11 +159,19 @@ def merge_node(existing: BaseSubstrateNodeV1, incoming: BaseSubstrateNodeV1, *, 
 
     merged_signals = existing.signals.model_copy(
         update={
-            "confidence": max(existing.signals.confidence, incoming.signals.confidence),
-            "salience": max(existing.signals.salience, incoming.signals.salience),
+            "confidence": (
+                existing.signals.confidence if tier_protected
+                else incoming.signals.confidence if tier_promoted
+                else max(existing.signals.confidence, incoming.signals.confidence)
+            ),
+            "salience": (
+                existing.signals.salience if tier_protected
+                else incoming.signals.salience if tier_promoted
+                else max(existing.signals.salience, incoming.signals.salience)
+            ),
             "activation": existing.signals.activation.model_copy(
                 update={
-                    "activation": max(existing.signals.activation.activation, incoming.signals.activation.activation),
+                    "activation": existing.signals.activation.activation if tier_protected else max(existing.signals.activation.activation, incoming.signals.activation.activation),
                     "recency_score": max(existing.signals.activation.recency_score, incoming.signals.activation.recency_score),
                     "decay_half_life_seconds": existing.signals.activation.decay_half_life_seconds
                     or incoming.signals.activation.decay_half_life_seconds,

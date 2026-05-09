@@ -567,17 +567,39 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {iri} ?p ?o . }} }} }}
 DEFAULT_SUBSTRATE_STORE_BACKEND = "in_memory"
 
 
+def _resolve_substrate_graphdb_endpoint() -> str:
+    endpoint = str(os.getenv("SUBSTRATE_GRAPHDB_ENDPOINT", "")).strip()
+    if endpoint:
+        return endpoint
+    base = str(os.getenv("GRAPHDB_URL", "")).strip()
+    repo = str(os.getenv("GRAPHDB_REPO", "")).strip()
+    if base and repo:
+        return f"{base.rstrip('/')}/repositories/{repo}"
+    return ""
+
+
 def build_substrate_store_from_env() -> SubstrateGraphStore:
-    backend = str(os.getenv("SUBSTRATE_STORE_BACKEND", DEFAULT_SUBSTRATE_STORE_BACKEND)).strip().lower()
-    if backend in {"graphdb", "graph_db", "rdf"}:
-        endpoint = str(os.getenv("SUBSTRATE_GRAPHDB_ENDPOINT", "")).strip()
+    """Return GraphDB-backed store when configured; otherwise in-memory.
+
+    Resolution order:
+    - ``SUBSTRATE_STORE_BACKEND=in_memory`` (or ``memory`` / ``mem``) → always in-memory.
+    - ``SUBSTRATE_STORE_BACKEND=graphdb`` (aliases) → GraphDB if endpoint resolvable, else in-memory with warning.
+    - Backend unset / empty → GraphDB when ``SUBSTRATE_GRAPHDB_ENDPOINT`` or ``GRAPHDB_URL``+``GRAPHDB_REPO``
+      resolves; otherwise in-memory (preserves dev default when no GraphDB env).
+    - Any other explicit backend string → in-memory.
+    """
+    backend = str(os.getenv("SUBSTRATE_STORE_BACKEND", "")).strip().lower()
+    endpoint = _resolve_substrate_graphdb_endpoint()
+
+    if backend in {"in_memory", "memory", "mem", "local"}:
+        return InMemorySubstrateGraphStore()
+
+    use_graphdb = backend in {"graphdb", "graph_db", "rdf"} or (backend == "" and bool(endpoint))
+
+    if use_graphdb:
         if not endpoint:
-            base = str(os.getenv("GRAPHDB_URL", "")).strip()
-            repo = str(os.getenv("GRAPHDB_REPO", "")).strip()
-            if base and repo:
-                endpoint = f"{base.rstrip('/')}/repositories/{repo}"
-        if not endpoint:
-            logger.warning("SUBSTRATE_STORE_BACKEND=graphdb but endpoint missing; falling back to in-memory store")
+            if backend in {"graphdb", "graph_db", "rdf"}:
+                logger.warning("SUBSTRATE_STORE_BACKEND=graphdb but endpoint missing; falling back to in-memory store")
             return InMemorySubstrateGraphStore()
         cfg = GraphDBSubstrateStoreConfig(
             endpoint=endpoint,
@@ -587,4 +609,9 @@ def build_substrate_store_from_env() -> SubstrateGraphStore:
             password=str(os.getenv("SUBSTRATE_GRAPHDB_PASS", "")).strip() or None,
         )
         return GraphDBSubstrateStore(cfg)
+
+    if backend == DEFAULT_SUBSTRATE_STORE_BACKEND or backend == "":
+        return InMemorySubstrateGraphStore()
+
+    logger.warning("Unknown SUBSTRATE_STORE_BACKEND=%r; using in-memory store", backend)
     return InMemorySubstrateGraphStore()

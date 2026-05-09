@@ -116,6 +116,7 @@ class SubstrateProvenanceV1(BaseModel):
     correlation_id: Optional[str] = None
     trace_id: Optional[str] = None
     evidence_refs: List[str] = Field(default_factory=list)
+    tier_rank: Optional[int] = Field(default=None, description="Trust tier rank (1=operator_static … 4=snapshot_ephemeral). Lower = higher authority. Omit for pre-tier nodes.")
 
 
 class SubstrateSignalBundleV1(BaseModel):

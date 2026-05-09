@@ -263,3 +263,22 @@ def test_materializer_falls_back_to_in_memory_when_graphdb_not_configured(monkey
 
     store = build_substrate_store_from_env()
     assert isinstance(store, InMemorySubstrateGraphStore)
+
+
+def test_build_substrate_store_auto_graphdb_when_url_and_repo_without_backend(monkeypatch):
+    monkeypatch.delenv("SUBSTRATE_STORE_BACKEND", raising=False)
+    monkeypatch.delenv("SUBSTRATE_GRAPHDB_ENDPOINT", raising=False)
+    monkeypatch.setenv("GRAPHDB_URL", "http://graphdb.test")
+    monkeypatch.setenv("GRAPHDB_REPO", "collapse")
+
+    store = build_substrate_store_from_env()
+    assert isinstance(store, GraphDBSubstrateStore)
+
+
+def test_build_substrate_store_explicit_in_memory_overrides_graphdb_env(monkeypatch):
+    monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "in_memory")
+    monkeypatch.setenv("GRAPHDB_URL", "http://graphdb.test")
+    monkeypatch.setenv("GRAPHDB_REPO", "collapse")
+
+    store = build_substrate_store_from_env()
+    assert isinstance(store, InMemorySubstrateGraphStore)

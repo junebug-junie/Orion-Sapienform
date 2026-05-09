@@ -55,6 +55,13 @@
             role="button"
           >Memory</a>
           <a
+            id="mindTabButton"
+            href="#mind"
+            data-hash-target="#mind"
+            class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
+            role="button"
+          >Mind</a>
+          <a
             id="pressureAnalyticsTabButton"
             href="#pressure"
             data-hash-target="#pressure"
@@ -928,6 +935,69 @@
         <div id="memoryCytoscapeHost" class="hidden h-72 w-full border border-gray-800 rounded-lg bg-black/40"></div>
       </section>
 
+      <section id="mind" data-panel="mind" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-bold text-white">Mind runs</h2>
+            <p class="text-xs text-gray-400">Recent Mind execution summaries for this session.</p>
+          </div>
+          <div class="flex items-center gap-2 text-xs">
+            <label for="mindHoursInput" class="text-gray-400">Window</label>
+            <select id="mindHoursInput" class="bg-gray-800 text-gray-200 border border-gray-700 rounded px-2 py-1">
+              <option value="6">Last 6h</option>
+              <option value="24" selected>Last 24h</option>
+              <option value="72">Last 72h</option>
+              <option value="168">Last 7d</option>
+            </select>
+            <button type="button" id="mindRefreshButton" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700">Refresh</button>
+          </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-2 text-xs">
+          <label class="text-gray-400" for="mindFilterOk">ok</label>
+          <select id="mindFilterOk" class="bg-gray-800 text-gray-200 border border-gray-700 rounded px-2 py-1">
+            <option value="">all</option>
+            <option value="true">true</option>
+            <option value="false">false</option>
+          </select>
+          <label class="text-gray-400" for="mindFilterTrigger">trigger</label>
+          <input id="mindFilterTrigger" class="bg-gray-800 text-gray-200 border border-gray-700 rounded px-2 py-1" placeholder="user_turn" />
+          <label class="text-gray-400" for="mindFilterErrorCode">error</label>
+          <input id="mindFilterErrorCode" class="bg-gray-800 text-gray-200 border border-gray-700 rounded px-2 py-1" placeholder="timeout" />
+          <label class="text-gray-400" for="mindFilterRouterProfileId">router</label>
+          <input id="mindFilterRouterProfileId" class="bg-gray-800 text-gray-200 border border-gray-700 rounded px-2 py-1" placeholder="default" />
+        </div>
+        <label class="inline-flex items-center gap-2 text-xs text-gray-300">
+          <input id="mindDefaultOnSendToggle" type="checkbox" class="rounded border border-gray-600 bg-gray-800" />
+          Default Mind on send for this browser
+        </label>
+        <div id="mindStatus" class="text-xs text-gray-400 min-h-[1.25rem]">Select Mind tab to load runs.</div>
+        <div id="mindSummaryTiles" class="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
+          <div class="rounded border border-gray-700 bg-gray-950/40 p-2"><span class="text-gray-400">Total</span> <span id="mindSummaryTotal" class="ml-2 font-semibold text-gray-100">0</span></div>
+          <div class="rounded border border-gray-700 bg-gray-950/40 p-2"><span class="text-gray-400">OK</span> <span id="mindSummaryOk" class="ml-2 font-semibold text-emerald-200">0</span></div>
+          <div class="rounded border border-gray-700 bg-gray-950/40 p-2"><span class="text-gray-400">Failed</span> <span id="mindSummaryFailed" class="ml-2 font-semibold text-rose-200">0</span></div>
+        </div>
+        <div class="overflow-auto rounded border border-gray-800">
+          <table class="min-w-full text-xs text-left text-gray-200">
+            <thead class="bg-gray-950/70 text-gray-400 uppercase tracking-wide">
+              <tr>
+                <th class="px-3 py-2">Created</th>
+                <th class="px-3 py-2">OK</th>
+                <th class="px-3 py-2">Trigger</th>
+                <th class="px-3 py-2">Error</th>
+                <th class="px-3 py-2">Router Profile</th>
+                <th class="px-3 py-2">Correlation</th>
+                <th class="px-3 py-2">Run ID</th>
+              </tr>
+            </thead>
+            <tbody id="mindRunsTableBody">
+              <tr>
+                <td colspan="7" class="px-3 py-3 text-gray-500">No runs loaded yet.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <section id="topic-studio" data-panel="topic-studio" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-6 min-h-[56rem]">
         <div id="topicStudioError" class="hidden bg-red-900/20 border border-red-700/60 rounded-xl px-4 py-2 text-[11px] text-red-200"></div>
         <div id="topicStudioRoot">
@@ -1403,6 +1473,32 @@
         </section>
       </div>
     </div>
+
+  <div id="mindRunsModal" class="hidden fixed inset-0 z-[74] bg-black/80 p-4 md:p-8" aria-hidden="true">
+    <div class="mx-auto flex h-full w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl">
+      <div class="flex items-start justify-between gap-4 border-b border-gray-800 px-5 py-4">
+        <div>
+          <div class="text-xs uppercase tracking-[0.24em] text-indigo-300">Mind runs</div>
+          <h2 class="mt-1 text-lg font-semibold text-white">Correlation-scoped Mind runs</h2>
+          <div id="mindRunsModalMeta" class="mt-1 text-[11px] text-gray-400">Select a run to inspect details.</div>
+        </div>
+        <button id="mindRunsModalClose" type="button" class="rounded-full border border-gray-700 bg-gray-900 px-3 py-1 text-sm text-gray-300 hover:bg-gray-800 hover:text-white">Close</button>
+      </div>
+      <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4 space-y-4">
+        <div id="mindRunsModalStatus" class="text-xs text-gray-400">No correlation selected.</div>
+        <div class="grid grid-cols-1 gap-4 xl:grid-cols-2">
+          <section class="rounded-2xl border border-gray-800 bg-gray-900/40 p-4">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Runs</div>
+            <div id="mindRunsModalList" class="mt-3 space-y-2"></div>
+          </section>
+          <section class="rounded-2xl border border-gray-800 bg-gray-900/40 p-4">
+            <div class="text-xs uppercase tracking-wide text-gray-500">Details</div>
+            <div id="mindRunsModalDetails" class="mt-3 text-xs text-gray-300">Select a run.</div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </div>
   </div>
 
   <div id="scheduleEditModal" class="hidden fixed inset-0 z-[71] bg-black/80 p-4 md:p-8" aria-hidden="true">

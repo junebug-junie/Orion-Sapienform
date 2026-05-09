@@ -151,6 +151,12 @@ loadDismissedIds();
   const memoryDebugModalClose = document.getElementById('memoryDebugModalClose');
   const memoryDebugModalMeta = document.getElementById('memoryDebugModalMeta');
   const memoryDebugModalBody = document.getElementById('memoryDebugModalBody');
+  const mindRunsModal = document.getElementById('mindRunsModal');
+  const mindRunsModalClose = document.getElementById('mindRunsModalClose');
+  const mindRunsModalMeta = document.getElementById('mindRunsModalMeta');
+  const mindRunsModalStatus = document.getElementById('mindRunsModalStatus');
+  const mindRunsModalList = document.getElementById('mindRunsModalList');
+  const mindRunsModalDetails = document.getElementById('mindRunsModalDetails');
   const agentTraceDebugPanel = document.getElementById('agentTraceDebugPanel');
   const agentTraceDebugToggle = document.getElementById('agentTraceDebugToggle');
   const agentTraceDebugOpenModal = document.getElementById('agentTraceDebugOpenModal');
@@ -541,6 +547,20 @@ loadDismissedIds();
     document.getElementById("substrateTabButton") || substrateLegacyTabButton;
   const memoryTabButton = document.getElementById("memoryTabButton");
   const memoryPanel = document.getElementById("memory");
+  const mindTabButton = document.getElementById("mindTabButton");
+  const mindPanel = document.getElementById("mind");
+  const mindHoursInput = document.getElementById("mindHoursInput");
+  const mindRefreshButton = document.getElementById("mindRefreshButton");
+  const mindFilterOk = document.getElementById("mindFilterOk");
+  const mindFilterTrigger = document.getElementById("mindFilterTrigger");
+  const mindFilterErrorCode = document.getElementById("mindFilterErrorCode");
+  const mindFilterRouterProfileId = document.getElementById("mindFilterRouterProfileId");
+  const mindDefaultOnSendToggle = document.getElementById("mindDefaultOnSendToggle");
+  const mindStatus = document.getElementById("mindStatus");
+  const mindSummaryTotal = document.getElementById("mindSummaryTotal");
+  const mindSummaryOk = document.getElementById("mindSummaryOk");
+  const mindSummaryFailed = document.getElementById("mindSummaryFailed");
+  const mindRunsTableBody = document.getElementById("mindRunsTableBody");
   const hubTabPanel = document.getElementById("hub") || document.getElementById("hubTabPanel");
   const topicStudioPanel =
     document.getElementById("topic-studio") || document.getElementById("topicStudioPanel");
@@ -812,12 +832,16 @@ loadDismissedIds();
     if (tabKey === "pressure" && !pressurePanel) {
       effectiveTab = "hub";
     }
+    if (tabKey === "mind" && !mindPanel) {
+      effectiveTab = "hub";
+    }
     const isHub = effectiveTab === "hub";
     const isTopicStudio = effectiveTab === "topic-studio";
     const isServiceLogs = effectiveTab === "service-logs";
     const isSubstrate = effectiveTab === "substrate";
     const isMemory = effectiveTab === "memory";
     const isPressure = effectiveTab === "pressure";
+    const isMind = effectiveTab === "mind";
     hubTabPanel.classList.toggle("hidden", !isHub);
     topicStudioPanel.classList.toggle("hidden", !isTopicStudio);
     serviceLogsPanel.classList.toggle("hidden", !isServiceLogs);
@@ -826,6 +850,12 @@ loadDismissedIds();
       memoryPanel.classList.toggle("hidden", !isMemory);
       if (isMemory) {
         window.dispatchEvent(new Event("orion-hub-memory-tab-activated"));
+      }
+    }
+    if (mindPanel) {
+      mindPanel.classList.toggle("hidden", !isMind);
+      if (isMind) {
+        refreshMindRuns();
       }
     }
     if (pressurePanel) {
@@ -838,8 +868,372 @@ loadDismissedIds();
     if (memoryTabButton) {
       styleTabButton(memoryTabButton, isMemory);
     }
+    if (mindTabButton) {
+      styleTabButton(mindTabButton, isMind);
+    }
     if (pressureAnalyticsTabButton) {
       styleTabButton(pressureAnalyticsTabButton, isPressure);
+    }
+  }
+
+  function formatMindTs(value) {
+    if (!value) return "—";
+    try {
+      return new Date(value).toLocaleString();
+    } catch {
+      return String(value);
+    }
+  }
+
+  const MIND_PREFS_STORAGE_KEY = "orion.hub.mind.prefs.v1";
+  let mindModalLastFocus = null;
+  let mindFocusTrapHandler = null;
+  let latestMindRows = [];
+
+  function loadMindPrefs() {
+    try {
+      const raw = window.localStorage.getItem(MIND_PREFS_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveMindPrefs(next) {
+    try {
+      window.localStorage.setItem(MIND_PREFS_STORAGE_KEY, JSON.stringify(next || {}));
+    } catch {
+      // Ignore storage failures.
+    }
+  }
+
+  function applyMindPrefsToControls() {
+    const prefs = loadMindPrefs();
+    if (mindHoursInput && Number(prefs.hours) > 0) {
+      mindHoursInput.value = String(prefs.hours);
+    }
+    if (mindFilterOk && typeof prefs.ok === "string") {
+      mindFilterOk.value = prefs.ok;
+    }
+    if (mindFilterTrigger && typeof prefs.trigger === "string") {
+      mindFilterTrigger.value = prefs.trigger;
+    }
+    if (mindFilterErrorCode && typeof prefs.error_code === "string") {
+      mindFilterErrorCode.value = prefs.error_code;
+    }
+    if (mindFilterRouterProfileId && typeof prefs.router_profile_id === "string") {
+      mindFilterRouterProfileId.value = prefs.router_profile_id;
+    }
+    if (mindDefaultOnSendToggle) {
+      mindDefaultOnSendToggle.checked = prefs.default_mind_on_send === true;
+    }
+  }
+
+  function persistMindPrefsFromControls() {
+    const prefs = {
+      hours: Math.max(1, Number(mindHoursInput?.value || 24)),
+      ok: String(mindFilterOk?.value || ""),
+      trigger: String(mindFilterTrigger?.value || "").trim(),
+      error_code: String(mindFilterErrorCode?.value || "").trim(),
+      router_profile_id: String(mindFilterRouterProfileId?.value || "").trim(),
+      default_mind_on_send: Boolean(mindDefaultOnSendToggle && mindDefaultOnSendToggle.checked),
+    };
+    saveMindPrefs(prefs);
+    return prefs;
+  }
+
+  function mindCorrelationFromMeta(meta) {
+    if (!meta || typeof meta !== "object") return "";
+    const raw = meta.raw && typeof meta.raw === "object" ? meta.raw : null;
+    return String(
+      meta.correlationId
+      || meta.correlation_id
+      || meta.turnId
+      || meta.turn_id
+      || (raw ? raw.correlation_id : "")
+      || "",
+    ).trim();
+  }
+
+  function openMindRunsModal(correlationId, triggerEl = null) {
+    if (!mindRunsModal || !correlationId) return;
+    mindModalLastFocus = triggerEl && typeof triggerEl.focus === "function" ? triggerEl : document.activeElement;
+    mindRunsModal.classList.remove("hidden");
+    mindRunsModal.setAttribute("aria-hidden", "false");
+    if (mindRunsModalMeta) {
+      mindRunsModalMeta.textContent = `Correlation: ${String(correlationId)}`;
+    }
+    if (mindRunsModalDetails) {
+      mindRunsModalDetails.textContent = "Select a run.";
+    }
+    enableMindModalFocusTrap();
+    refreshMindRunsForCorrelation(correlationId);
+    syncDebugModalScrollLock();
+  }
+
+  function closeMindRunsModal() {
+    if (!mindRunsModal) return;
+    disableMindModalFocusTrap();
+    mindRunsModal.classList.add("hidden");
+    mindRunsModal.setAttribute("aria-hidden", "true");
+    syncDebugModalScrollLock();
+    if (mindModalLastFocus && typeof mindModalLastFocus.focus === "function") {
+      mindModalLastFocus.focus();
+    }
+  }
+
+  function renderMindRunDetails(run) {
+    if (!mindRunsModalDetails) return;
+    if (!run || typeof run !== "object") {
+      mindRunsModalDetails.textContent = "No run details.";
+      return;
+    }
+    const parts = [];
+    const safeRunId = escapeHtml(run.mind_run_id || "—");
+    const safeStatus = escapeHtml(run.ok ? "ok" : "failed");
+    const safeCreated = escapeHtml(formatMindTs(run.created_at_utc));
+    parts.push(`<div class="text-[11px] text-gray-400">Run ${safeRunId} · ${safeStatus} · ${safeCreated}</div>`);
+    parts.push(`<details class="rounded border border-gray-800 bg-gray-950/40 p-2" open><summary class="cursor-pointer text-[11px] text-gray-300">Decision / brief</summary><pre class="mt-2 whitespace-pre-wrap text-[11px] text-gray-200">${escapeHtml(JSON.stringify(run.request_summary_jsonb || {}, null, 2))}</pre></details>`);
+    parts.push(`<details class="rounded border border-gray-800 bg-gray-950/40 p-2" open><summary class="cursor-pointer text-[11px] text-gray-300">Trajectory / result</summary><pre class="mt-2 whitespace-pre-wrap text-[11px] text-gray-200">${escapeHtml(JSON.stringify(run.result_jsonb || {}, null, 2))}</pre></details>`);
+    parts.push(`<details class="rounded border border-gray-800 bg-gray-950/40 p-2"><summary class="cursor-pointer text-[11px] text-gray-300">Raw run payload</summary><pre class="mt-2 whitespace-pre-wrap text-[11px] text-gray-200">${escapeHtml(JSON.stringify(run, null, 2))}</pre></details>`);
+    mindRunsModalDetails.innerHTML = parts.join("");
+  }
+
+  async function fetchMindRunDetail(mindRunId) {
+    const response = await fetch(`${API_BASE_URL}/api/mind/runs/${encodeURIComponent(mindRunId)}`);
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`status ${response.status} ${detail || ""}`.trim());
+    }
+    return await response.json();
+  }
+
+  async function refreshMindRunsForCorrelation(correlationId) {
+    if (!mindRunsModalList || !mindRunsModalStatus) return;
+    if (!correlationId) {
+      mindRunsModalStatus.textContent = "No correlation id available for this message.";
+      mindRunsModalList.innerHTML = "";
+      return;
+    }
+    mindRunsModalStatus.textContent = "Loading runs...";
+    mindRunsModalList.innerHTML = "";
+    try {
+      const params = new URLSearchParams({ correlation_id: correlationId, limit: "200" });
+      const response = await fetch(`${API_BASE_URL}/api/mind/runs?${params.toString()}`);
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(`status ${response.status} ${detail || ""}`.trim());
+      }
+      const rows = await response.json();
+      if (!Array.isArray(rows) || rows.length === 0) {
+        mindRunsModalStatus.textContent = "No Mind runs for this correlation yet.";
+        mindRunsModalList.innerHTML = '<div class="text-xs text-gray-500">No runs yet.</div>';
+        if (mindRunsModalDetails) {
+          mindRunsModalDetails.textContent = "Select a run.";
+        }
+        return;
+      }
+      mindRunsModalStatus.textContent = `Loaded ${rows.length} run(s).`;
+      rows.forEach((row) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "w-full rounded border border-gray-800 bg-gray-950/40 px-3 py-2 text-left hover:bg-gray-900/70";
+        const runIdDiv = document.createElement("div");
+        runIdDiv.className = "text-[11px] text-gray-200 font-mono";
+        runIdDiv.textContent = row.mind_run_id || "—";
+        btn.appendChild(runIdDiv);
+        const summaryDiv = document.createElement("div");
+        summaryDiv.className = "mt-1 text-[11px] text-gray-400";
+        const summaryParts = [
+          formatMindTs(row.created_at_utc),
+          row.ok ? "ok" : "failed",
+          row.trigger || "—",
+        ];
+        if (row.error_code) summaryParts.push(row.error_code);
+        summaryDiv.textContent = summaryParts.join(" · ");
+        btn.appendChild(summaryDiv);
+        btn.addEventListener("click", async () => {
+          if (!row.mind_run_id) {
+            if (mindRunsModalStatus) mindRunsModalStatus.textContent = "Run row missing id.";
+            return;
+          }
+          if (mindRunsModalStatus) mindRunsModalStatus.textContent = `Loading run ${row.mind_run_id}...`;
+          try {
+            const detail = await fetchMindRunDetail(row.mind_run_id);
+            renderMindRunDetails(detail);
+            if (mindRunsModalStatus) mindRunsModalStatus.textContent = `Loaded run ${row.mind_run_id}.`;
+          } catch (err) {
+            if (mindRunsModalStatus) mindRunsModalStatus.textContent = `Failed to load run detail: ${String(err.message || err)}`;
+          }
+        });
+        mindRunsModalList.appendChild(btn);
+      });
+      const firstRun = rows[0];
+      if (firstRun && firstRun.mind_run_id) {
+        if (mindRunsModalStatus) mindRunsModalStatus.textContent = `Loading run ${firstRun.mind_run_id}...`;
+        try {
+          const detail = await fetchMindRunDetail(firstRun.mind_run_id);
+          renderMindRunDetails(detail);
+          if (mindRunsModalStatus) mindRunsModalStatus.textContent = `Loaded ${rows.length} run(s).`;
+        } catch (err) {
+          renderMindRunDetails(null);
+          if (mindRunsModalStatus) {
+            mindRunsModalStatus.textContent = `Loaded ${rows.length} run(s); failed initial detail load: ${String(err.message || err)}`;
+          }
+        }
+      } else {
+        renderMindRunDetails(null);
+      }
+    } catch (err) {
+      mindRunsModalStatus.textContent = `Failed to load runs: ${String(err.message || err)}`;
+      mindRunsModalList.innerHTML = '<div class="text-xs text-rose-300">Could not load runs.</div>';
+    }
+  }
+
+  function escapeHtml(value) {
+    return String(value || "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;");
+  }
+
+  function getMindModalTabbables() {
+    if (!mindRunsModal) return [];
+    const selectors = [
+      "button",
+      "[href]",
+      "input",
+      "select",
+      "textarea",
+      '[tabindex]:not([tabindex="-1"])',
+    ];
+    return Array.from(mindRunsModal.querySelectorAll(selectors.join(","))).filter((el) => {
+      if (!(el instanceof HTMLElement)) return false;
+      if (el.hasAttribute("disabled")) return false;
+      return !el.classList.contains("hidden");
+    });
+  }
+
+  function enableMindModalFocusTrap() {
+    if (!mindRunsModal) return;
+    const closeBtn = mindRunsModalClose instanceof HTMLElement ? mindRunsModalClose : null;
+    (closeBtn || getMindModalTabbables()[0])?.focus?.();
+    if (mindFocusTrapHandler) return;
+    mindFocusTrapHandler = (event) => {
+      if (event.key !== "Tab" || !mindRunsModal || mindRunsModal.classList.contains("hidden")) return;
+      const tabbables = getMindModalTabbables();
+      if (!tabbables.length) return;
+      const first = tabbables[0];
+      const last = tabbables[tabbables.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey && active === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", mindFocusTrapHandler);
+  }
+
+  function disableMindModalFocusTrap() {
+    if (!mindFocusTrapHandler) return;
+    document.removeEventListener("keydown", mindFocusTrapHandler);
+    mindFocusTrapHandler = null;
+  }
+
+  function renderMindRows(items) {
+    if (!mindRunsTableBody) return;
+    latestMindRows = Array.isArray(items) ? items : [];
+    if (!Array.isArray(items) || items.length === 0) {
+      mindRunsTableBody.innerHTML = '<tr><td colspan="7" class="px-3 py-3 text-gray-500">No Mind runs in this window.</td></tr>';
+      return;
+    }
+    mindRunsTableBody.textContent = "";
+    items.forEach((row) => {
+      const tr = document.createElement("tr");
+      tr.className = "border-t border-gray-800";
+
+      const createdTd = document.createElement("td");
+      createdTd.className = "px-3 py-2 whitespace-nowrap";
+      createdTd.textContent = formatMindTs(row.created_at_utc);
+      tr.appendChild(createdTd);
+
+      const okTd = document.createElement("td");
+      okTd.className = `px-3 py-2 ${row.ok ? "text-emerald-200" : "text-rose-200"}`;
+      okTd.textContent = row.ok ? "yes" : "no";
+      tr.appendChild(okTd);
+
+      const triggerTd = document.createElement("td");
+      triggerTd.className = "px-3 py-2";
+      triggerTd.textContent = row.trigger || "—";
+      tr.appendChild(triggerTd);
+
+      const errorTd = document.createElement("td");
+      errorTd.className = "px-3 py-2";
+      errorTd.textContent = row.error_code || "—";
+      tr.appendChild(errorTd);
+
+      const routerTd = document.createElement("td");
+      routerTd.className = "px-3 py-2";
+      routerTd.textContent = row.router_profile_id || "—";
+      tr.appendChild(routerTd);
+
+      const corrTd = document.createElement("td");
+      corrTd.className = "px-3 py-2 font-mono text-[11px]";
+      corrTd.textContent = row.correlation_id || "—";
+      tr.appendChild(corrTd);
+
+      const runTd = document.createElement("td");
+      runTd.className = "px-3 py-2 font-mono text-[11px]";
+      const openButton = document.createElement("button");
+      openButton.type = "button";
+      openButton.className = "mind-run-open text-indigo-300 hover:text-indigo-100";
+      openButton.textContent = row.mind_run_id || "—";
+      openButton.addEventListener("click", (event) => {
+        const corr = String(row.correlation_id || "").trim();
+        if (!corr) {
+          if (mindStatus) mindStatus.textContent = "Mind data unavailable for this row.";
+          return;
+        }
+        openMindRunsModal(corr, event.currentTarget);
+      });
+      runTd.appendChild(openButton);
+      tr.appendChild(runTd);
+
+      mindRunsTableBody.appendChild(tr);
+    });
+  }
+
+  async function refreshMindRuns() {
+    if (!mindPanel || !mindStatus) return;
+    const prefs = persistMindPrefsFromControls();
+    const hours = Math.max(1, Number(prefs.hours || 24));
+    mindStatus.textContent = "Loading Mind runs...";
+    try {
+      const params = new URLSearchParams({ hours: String(hours), limit: "200" });
+      if (prefs.ok === "true") params.set("ok", "true");
+      else if (prefs.ok === "false") params.set("ok", "false");
+      if (prefs.trigger) params.set("trigger", prefs.trigger);
+      if (prefs.error_code) params.set("error_code", prefs.error_code);
+      if (prefs.router_profile_id) params.set("router_profile_id", prefs.router_profile_id);
+      const response = await fetch(`${API_BASE_URL}/api/mind/runs/recent?${params.toString()}`);
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(`status ${response.status} ${detail || ""}`.trim());
+      }
+      const payload = await response.json();
+      renderMindRows(payload.items || []);
+      const aggregates = payload.aggregates || {};
+      if (mindSummaryTotal) mindSummaryTotal.textContent = String(aggregates.total_runs || 0);
+      if (mindSummaryOk) mindSummaryOk.textContent = String(aggregates.ok_count || 0);
+      if (mindSummaryFailed) mindSummaryFailed.textContent = String(aggregates.failed_count || 0);
+      mindStatus.textContent = `Loaded ${Array.isArray(payload.items) ? payload.items.length : 0} run(s).`;
+    } catch (error) {
+      renderMindRows([]);
+      mindStatus.textContent = `Failed to load Mind runs: ${error.message || error}`;
     }
   }
 
@@ -856,8 +1250,10 @@ loadDismissedIds();
       setActiveTab("pressure");
     } else if (h === "#memory" && memoryPanel && memoryTabButton) {
       setActiveTab("memory");
+    } else if (h === "#mind" && mindPanel && mindTabButton) {
+      setActiveTab("mind");
     } else {
-      if (h === "#pressure" || h === "#memory") {
+      if (h === "#pressure" || h === "#memory" || h === "#mind") {
         history.replaceState(null, "", "#hub");
       }
       setActiveTab("hub");
@@ -2177,6 +2573,7 @@ loadDismissedIds();
     const shouldLock = isModalVisible(memoryDebugModalRoot)
       || isModalVisible(autonomyDebugModalRoot)
       || isModalVisible(chatStanceDebugModalRoot)
+      || isModalVisible(mindRunsModal)
       || isModalVisible(chatInputExpandModalRoot)
       || isModalVisible(substrateReviewModalRoot)
       || isModalVisible(cognitiveReviewModalRoot)
@@ -5857,6 +6254,23 @@ loadDismissedIds();
         graphBtn.addEventListener('click', () => openMemoryGraphBridgeModal(div));
         actionRow.appendChild(graphBtn);
       }
+      const mindCorrelationId = mindCorrelationFromMeta(meta);
+      if (mindCorrelationId) {
+        const mindButton = document.createElement('button');
+        mindButton.type = 'button';
+        mindButton.className = 'rounded-full border border-indigo-500/40 bg-indigo-500/10 px-2 py-1 text-[10px] font-semibold text-indigo-200 hover:bg-indigo-500/20';
+        mindButton.textContent = 'Mind';
+        mindButton.addEventListener('click', () => openMindRunsModal(mindCorrelationId, mindButton));
+        actionRow.appendChild(mindButton);
+      } else {
+        const disabledMindButton = document.createElement('button');
+        disabledMindButton.type = 'button';
+        disabledMindButton.className = 'rounded-full border border-gray-700 bg-gray-800 px-2 py-1 text-[10px] font-semibold text-gray-400';
+        disabledMindButton.textContent = 'Mind';
+        disabledMindButton.disabled = true;
+        disabledMindButton.title = 'Mind data unavailable for this message';
+        actionRow.appendChild(disabledMindButton);
+      }
       if (actionRow.childNodes.length) {
         headerRow.appendChild(actionRow);
       }
@@ -7837,6 +8251,32 @@ loadDismissedIds();
   if (memoryPanelToggle) {
     memoryPanelToggle.addEventListener('click', toggleMemoryPanel);
   }
+  applyMindPrefsToControls();
+  if (mindRefreshButton) {
+    mindRefreshButton.addEventListener("click", () => {
+      refreshMindRuns();
+    });
+  }
+  [mindHoursInput, mindFilterOk, mindFilterTrigger, mindFilterErrorCode, mindFilterRouterProfileId].forEach((el) => {
+    if (!el) return;
+    el.addEventListener("change", () => {
+      persistMindPrefsFromControls();
+      if (window.location.hash === "#mind") refreshMindRuns();
+    });
+  });
+  if (mindDefaultOnSendToggle) {
+    mindDefaultOnSendToggle.addEventListener("change", () => {
+      persistMindPrefsFromControls();
+    });
+  }
+  if (mindRunsModalClose) {
+    mindRunsModalClose.addEventListener("click", closeMindRunsModal);
+  }
+  if (mindRunsModal) {
+    mindRunsModal.addEventListener("click", (event) => {
+      if (event.target === mindRunsModal) closeMindRunsModal();
+    });
+  }
   ensureMemoryDebugModalRootOnBody();
   if (memoryDebugOpenModal) {
     memoryDebugOpenModal.addEventListener('click', (event) => {
@@ -8335,6 +8775,10 @@ loadDismissedIds();
       closeSocialInspectionModal();
       return;
     }
+    if (event.key === 'Escape' && mindRunsModal && !mindRunsModal.classList.contains('hidden')) {
+      closeMindRunsModal();
+      return;
+    }
     if (event.key === 'Escape' && responseFeedbackModal && !responseFeedbackModal.classList.contains('hidden')) {
       closeResponseFeedbackModal();
       return;
@@ -8709,6 +9153,13 @@ loadDismissedIds();
        presence_context: presenceContext,
        surface_context: { surface: 'hub_desktop', input_modality: 'typed' },
     };
+    if (mindDefaultOnSendToggle && mindDefaultOnSendToggle.checked) {
+      payload.context = payload.context && typeof payload.context === "object" ? payload.context : {};
+      payload.context.metadata = payload.context.metadata && typeof payload.context.metadata === "object"
+        ? payload.context.metadata
+        : {};
+      payload.context.metadata.mind_enabled = true;
+    }
     if (opts && opts.workflowRequestOverride && typeof opts.workflowRequestOverride === 'object') {
       payload.workflow_request_override = opts.workflowRequestOverride;
     }
@@ -9418,6 +9869,13 @@ loadDismissedIds();
         event.preventDefault();
         setActiveTab("memory");
         history.replaceState(null, "", "#memory");
+      });
+    }
+    if (mindTabButton && mindPanel) {
+      mindTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("mind");
+        history.replaceState(null, "", "#mind");
       });
     }
     if (pressureAnalyticsTabButton && pressurePanel) {

@@ -1,16 +1,32 @@
 services:
   orion-vision-window:
-    build: .
-    ports:
-      - "8010:8000"
+    build:
+      context: ../..
+      dockerfile: services/orion-vision-window/Dockerfile
+    container_name: ${PROJECT}-vision-window
+    restart: unless-stopped
+    env_file:
+      - .env
     environment:
-      - ORION_BUS_URL=redis://redis:6379/0
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED:-true}
+      - ORION_BUS_URL=${ORION_BUS_URL}
       - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
-      - CHANNEL_WINDOW_INTAKE=orion:vision:artifacts
-      - CHANNEL_WINDOW_PUB=orion:vision:windows
-      - CHANNEL_WINDOW_REQUEST=orion:exec:request:VisionWindowService
-    volumes:
-      - ./app:/app/app
-      - ../../orion:/app/orion
-    depends_on:
-      - redis
+      - CHANNEL_WINDOW_INTAKE=${CHANNEL_WINDOW_INTAKE:-orion:vision:artifacts}
+      - CHANNEL_WINDOW_PUB=${CHANNEL_WINDOW_PUB:-orion:vision:windows}
+      - CHANNEL_WINDOW_REQUEST=${CHANNEL_WINDOW_REQUEST:-orion:exec:request:VisionWindowService}
+    networks:
+      - app-net
+    ports:
+      # Default 8019 avoids collision with orion-vector-writer (PORT=8010).
+      - "${VISION_WINDOW_HTTP_PORT:-8019}:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      start_period: 15s
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  app-net:
+    external: true

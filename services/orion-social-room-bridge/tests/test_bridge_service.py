@@ -58,6 +58,12 @@ class _FailingCallSyneClient(_FakeCallSyneClient):
         raise RuntimeError("post failed")
 
 
+class _FailingHubClient(_FakeHubClient):
+    async def chat(self, *, payload, session_id: str):
+        self.calls.append((payload, session_id))
+        raise TimeoutError("hub timed out")
+
+
 class _FakeBus:
     enabled = True
 
@@ -1517,6 +1523,89 @@ def test_normalize_channel_key_in_metadata() -> None:
     assert msg.room_id == "zip-123-social"
 
 
+def test_normalize_camel_case_callsyne_payload_fields() -> None:
+    svc = SocialRoomBridgeService(
+        settings=_settings(SOCIAL_BRIDGE_ROOM_ALLOWLIST="world"),
+        hub_client=_FakeHubClient(),
+        callsyne_client=_FakeCallSyneClient(),
+        bus=_FakeBus(),
+    )
+    msg = svc.normalize_callsyne_message(
+        {
+            "roomId": "world",
+            "threadId": "thread-camel-1",
+            "messageId": "m-camel-1",
+            "senderId": "peer-camel",
+            "senderName": "Camel Peer",
+            "senderKind": "peer_ai",
+            "text": "@Orion hello from camel case",
+            "mentionsOrion": True,
+            "createdAt": "2026-05-09T07:20:00Z",
+        }
+    )
+    assert msg.room_id == "world"
+    assert msg.message_id == "m-camel-1"
+    assert msg.sender_id == "peer-camel"
+    assert msg.mentions_orion is True
+
+    result = asyncio.run(
+        svc.process_callsyne_message(
+            {
+                "roomId": "world",
+                "messageId": "m-camel-2",
+                "senderId": "peer-camel",
+                "senderName": "Camel Peer",
+                "text": "@Orion can you hear me?",
+                "mentionsOrion": True,
+            }
+        )
+    )
+    assert result["status"] == "ok"
+    assert result["message_id"] == "m-camel-2"
+
+
+def test_normalize_pascal_case_and_nested_message_payload_fields() -> None:
+    svc = SocialRoomBridgeService(
+        settings=_settings(SOCIAL_BRIDGE_ROOM_ALLOWLIST="world"),
+        hub_client=_FakeHubClient(),
+        callsyne_client=_FakeCallSyneClient(),
+        bus=_FakeBus(),
+    )
+    msg = svc.normalize_callsyne_message(
+        {
+            "RoomId": "world",
+            "message": {
+                "id": "m-nested-1",
+                "text": "@Orion nested message shape",
+                "senderId": "peer-nested",
+                "senderName": "Nested Peer",
+            },
+            "mentionsOrion": True,
+        }
+    )
+    assert msg.room_id == "world"
+    assert msg.message_id == "m-nested-1"
+    assert msg.text == "@Orion nested message shape"
+    assert msg.sender_id == "peer-nested"
+
+    result = asyncio.run(
+        svc.process_callsyne_message(
+            {
+                "RoomId": "world",
+                "message": {
+                    "id": "m-nested-2",
+                    "text": "@Orion nested live",
+                    "senderId": "peer-nested",
+                    "senderName": "Nested Peer",
+                },
+                "mentionsOrion": True,
+            }
+        )
+    )
+    assert result["status"] == "ok"
+    assert result["message_id"] == "m-nested-2"
+
+
 def test_callsyne_bridge_post_body_minimal_and_media_hint() -> None:
     req = ExternalRoomPostRequestV1(
         platform="callsyne",
@@ -1595,6 +1684,29 @@ def test_delivery_failure_raises_when_disabled() -> None:
         assert False, "expected RuntimeError"
     except RuntimeError:
         pass
+
+
+def test_hub_timeout_returns_structured_200_payload_and_allows_retry() -> None:
+    bus = _FakeBus()
+    failing_hub = _FailingHubClient()
+    callsyne = _FakeCallSyneClient()
+    svc = SocialRoomBridgeService(
+        settings=_settings(SOCIAL_BRIDGE_RETURN_2XX_ON_DELIVERY_FAILURE=True),
+        hub_client=failing_hub,
+        callsyne_client=callsyne,
+        bus=bus,
+    )
+
+    first = asyncio.run(svc.process_callsyne_message(_payload(message_id="msg-hub-timeout-1")))
+    assert first["status"] == "delivery_failed"
+    assert first["reason"] == "hub_request_failed"
+    assert callsyne.posts == []
+
+    # Swap in healthy hub and send same message ID again; dedupe should not block retry.
+    svc.hub_client = _FakeHubClient(reply_text="Recovered reply after timeout.")
+    second = asyncio.run(svc.process_callsyne_message(_payload(message_id="msg-hub-timeout-1")))
+    assert second["status"] == "ok"
+    assert len(callsyne.posts) == 1
 
 
 def test_polling_fallback_dedupes_and_skips_self_messages() -> None:

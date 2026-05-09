@@ -104,6 +104,8 @@ class Settings(BaseSettings):
     docker_prune_default_until: str = Field("72h", alias="ORION_ACTIONS_DOCKER_PRUNE_DEFAULT_UNTIL")
     docker_protected_labels: str = Field("orion.keep=true,keep=true,protected=true", alias="ORION_ACTIONS_DOCKER_PROTECTED_LABELS")
     skills_allow_mutating_runtime_housekeeping: bool = Field(False, alias="SKILLS_ALLOW_MUTATING_RUNTIME_HOUSEKEEPING")
+    skills_allow_mesh_service_scripts: bool = Field(False, alias="SKILLS_ALLOW_MESH_SERVICE_SCRIPTS")
+    skills_mesh_service_script_timeout_sec: float = Field(900.0, alias="SKILLS_MESH_SERVICE_SCRIPT_TIMEOUT_SEC")
     biometrics_service_url: str = Field("http://orion-athena-biometrics:8100", alias="BIOMETRICS_SERVICE_URL")
     # PageIndex query provenance includes enriched journal trigger/stance/facet metadata.
     journal_pageindex_service_url: str = Field("http://orion-pageindex:8360", alias="JOURNAL_PAGEINDEX_SERVICE_URL")

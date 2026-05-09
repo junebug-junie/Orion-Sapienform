@@ -1,0 +1,17 @@
+name: skills.mesh.up_all_services.v1
+label: Skills — Mesh Bring Up All Docker Stacks
+description: Run mesh-utilities/common/up_all_services.sh from repo root (policy-gated; mutates Docker stacks).
+category: ExecutiveControl
+priority: medium
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+timeout_ms: 900000
+max_recursion_depth: 0
+services: []
+plan:
+  - name: skills.mesh.up_all_services.v1
+    description: Execute mesh up_all_services.sh with repo-root cwd.
+    order: 0
+    services: []

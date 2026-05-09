@@ -25,6 +25,8 @@ SKILL_RUNNER_CATALOGUE_VERBS: dict[str, str] = {
     "Run a mesh ops round.": "skills.mesh.mesh_ops_round.v1",
     "Run a mesh ops round with PR digest and disk health.": "skills.mesh.mesh_ops_round.v1",
     "Run a mesh ops round including docker housekeeping preview.": "skills.mesh.mesh_ops_round.v1",
+    "Bring up all Docker services via mesh-utilities.": "skills.mesh.up_all_services.v1",
+    "Refresh service environment files via mesh-utilities.": "skills.mesh.refresh_service_envs.v1",
     'Send a notification to operators saying "test alert from Orion".': "skills.system.notify_chat_message.v1",
     (
         "Run skills.chat.discussion_window.v1 on chat_history_log with lookback_seconds 3600 and max_turns 30 "

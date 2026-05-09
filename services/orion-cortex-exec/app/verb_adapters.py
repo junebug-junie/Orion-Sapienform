@@ -37,6 +37,7 @@ from orion.schemas.self_study import (
 from orion.notify.client import NotifyClient
 
 from .router import PlanRouter
+from . import self_study as self_study_module
 from .self_study import run_self_concept_induce, run_self_concept_reflect, run_self_repo_inspect, run_self_retrieve
 from .self_study_policy import (
     build_self_study_consumer_context,
@@ -673,7 +674,7 @@ class SafeCommandRunner:
         self.allowed_commands = set(allowed_commands)
         self.timeout_sec = float(timeout_sec)
 
-    def run(self, command: list[str]) -> subprocess.CompletedProcess[str]:
+    def run(self, command: list[str], *, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
         if not command:
             raise PermissionError("empty_command")
         binary = str(command[0]).strip()
@@ -692,6 +693,7 @@ class SafeCommandRunner:
             text=True,
             timeout=self.timeout_sec,
             check=False,
+            cwd=cwd,
         )
 
 
@@ -1968,6 +1970,188 @@ class DockerPruneStoppedContainersVerb(BaseVerb[PlanExecutionRequest, SkillVerbO
             status="success" if ok_exec else "fail",
             error=None if ok_exec else {"message": "docker_rm_failed", "detail": "; ".join(rm_summaries)[:400]},
         ), []
+
+
+def _allowlisted_mesh_service_script_paths() -> set[Path]:
+    root = self_study_module.REPO_ROOT.resolve()
+    return {
+        (root / "mesh-utilities" / "common" / "up_all_services.sh").resolve(),
+        (root / "mesh-utilities" / "common" / "refresh_service_envs.sh").resolve(),
+    }
+
+
+async def _run_mesh_util_shell_skill(
+    *,
+    ctx: VerbContext,
+    skill_name: str,
+    script_relpath: str,
+) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+    _ = ctx  # reserved for correlation / tracing
+    observed = _utc_now_iso()
+    if not settings.skills_allow_mesh_service_scripts:
+        result = {
+            "node_name": settings.node_name,
+            "skill": skill_name,
+            "script": script_relpath,
+            "observed_at_utc": observed,
+            "status": "blocked",
+            "policy_blocked": True,
+            "user_facing_summary": (
+                "Mesh service scripts are disabled (SKILLS_ALLOW_MESH_SERVICE_SCRIPTS=false). "
+                "Set SKILLS_ALLOW_MESH_SERVICE_SCRIPTS=true on cortex-exec to run this action."
+            ),
+        }
+        return _skill_result_output(
+            skill_name=skill_name,
+            result=result,
+            ok=False,
+            status="blocked",
+            error={"message": "mesh_script_disabled_by_policy"},
+        ), []
+
+    repo_root = self_study_module.REPO_ROOT.resolve()
+    script_path = (repo_root / script_relpath).resolve()
+    allowed = _allowlisted_mesh_service_script_paths()
+    if script_path not in allowed:
+        result = {
+            "node_name": settings.node_name,
+            "skill": skill_name,
+            "script": script_relpath,
+            "resolved_path": str(script_path),
+            "observed_at_utc": observed,
+            "status": "error",
+            "user_facing_summary": "Script path is not allow-listed for this skill.",
+        }
+        return _skill_result_output(
+            skill_name=skill_name,
+            result=result,
+            ok=False,
+            status="fail",
+            error={"message": "mesh_script_not_allowlisted", "path": str(script_path)},
+        ), []
+
+    if not script_path.is_file():
+        result = {
+            "node_name": settings.node_name,
+            "skill": skill_name,
+            "script": script_relpath,
+            "resolved_path": str(script_path),
+            "observed_at_utc": observed,
+            "status": "missing",
+            "user_facing_summary": (
+                f"Script not found at {script_path}. "
+                "Set ORION_REPO_ROOT if the Orion repo is mounted elsewhere."
+            ),
+        }
+        return _skill_result_output(
+            skill_name=skill_name,
+            result=result,
+            ok=False,
+            status="unavailable",
+            error={"message": "mesh_script_missing", "path": str(script_path)},
+        ), []
+
+    bash_bin = shutil.which("bash") or "/bin/bash"
+    bash_path = Path(bash_bin)
+    if not bash_path.is_file() or not os.access(bash_path, os.X_OK):
+        result = {
+            "node_name": settings.node_name,
+            "skill": skill_name,
+            "observed_at_utc": observed,
+            "status": "unavailable",
+            "user_facing_summary": "bash executable not found; cannot run mesh utility script.",
+        }
+        return _skill_result_output(
+            skill_name=skill_name,
+            result=result,
+            ok=False,
+            status="unavailable",
+            error={"message": "bash_missing", "detail": bash_bin},
+        ), []
+
+    timeout_sec = float(settings.skills_mesh_service_script_timeout_sec or 900)
+    runner = SafeCommandRunner(allowed_commands={"bash"}, timeout_sec=timeout_sec)
+
+    def _invoke() -> subprocess.CompletedProcess[str]:
+        return runner.run([bash_bin, str(script_path)], cwd=str(repo_root))
+
+    try:
+        proc = await asyncio.to_thread(_invoke)
+    except Exception as exc:
+        result = {
+            "node_name": settings.node_name,
+            "skill": skill_name,
+            "script": script_relpath,
+            "observed_at_utc": _utc_now_iso(),
+            "status": "unavailable",
+            "user_facing_summary": f"Failed to invoke mesh script: {exc!s}",
+        }
+        return _skill_result_output(
+            skill_name=skill_name,
+            result=result,
+            ok=False,
+            status="unavailable",
+            error={"message": "mesh_script_invoke_error", "detail": str(exc)},
+        ), []
+
+    ok = proc.returncode == 0
+    out = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    max_len = 16000
+    if len(out) > max_len:
+        out = out[: max_len - 40] + "\n...(stdout/stderr truncated)..."
+
+    summary = (
+        f"Finished mesh script ({script_relpath}) with exit {proc.returncode}. "
+        f"{'OK' if ok else 'Failed — see output tail.'}"
+    )
+    result = {
+        "node_name": settings.node_name,
+        "skill": skill_name,
+        "script": script_relpath,
+        "repo_root": str(repo_root),
+        "cwd": str(repo_root),
+        "command": f"bash {script_path}",
+        "exit_code": proc.returncode,
+        "user_facing_summary": summary,
+        "stdout_stderr_tail": out,
+        "observed_at_utc": _utc_now_iso(),
+        "status": "success" if ok else "failed",
+    }
+    return _skill_result_output(
+        skill_name=skill_name,
+        result=result,
+        ok=ok,
+        status="success" if ok else "fail",
+        error=None if ok else {"message": "mesh_script_nonzero_exit", "exit_code": proc.returncode},
+    ), []
+
+
+@verb("skills.mesh.up_all_services.v1")
+class MeshUpAllServicesVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
+    input_model = PlanExecutionRequest
+    output_model = SkillVerbOutput
+
+    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+        _ = payload
+        return await _run_mesh_util_shell_skill(
+            ctx=ctx,
+            skill_name="skills.mesh.up_all_services.v1",
+            script_relpath="mesh-utilities/common/up_all_services.sh",
+        )
+
+
+@verb("skills.mesh.refresh_service_envs.v1")
+class MeshRefreshServiceEnvsVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
+    input_model = PlanExecutionRequest
+    output_model = SkillVerbOutput
+
+    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+        _ = payload
+        return await _run_mesh_util_shell_skill(
+            ctx=ctx,
+            skill_name="skills.mesh.refresh_service_envs.v1",
+            script_relpath="mesh-utilities/common/refresh_service_envs.sh",
+        )
 
 
 @verb("skills.mesh.mesh_ops_round.v1")

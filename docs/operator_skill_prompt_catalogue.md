@@ -129,6 +129,18 @@ These prompts target the **read-only** bounded SQL skill `skills.chat.discussion
     - Intended concrete skill: `skills.chat.discussion_window.v1`
     - Expected result: same as (20) with a 24-hour lookback
 
+## Mesh service scripts
+
+22. Bring up all Docker services via mesh-utilities.
+
+    - Intended concrete skill: `skills.mesh.up_all_services.v1`
+    - Expected result: `mesh-utilities/common/up_all_services.sh` output or precise policy/runtime failure; requires `SKILLS_ALLOW_MESH_SERVICE_SCRIPTS=true` on cortex-exec and repo root (`ORION_REPO_ROOT` when needed)
+
+23. Refresh service environment files via mesh-utilities.
+
+    - Intended concrete skill: `skills.mesh.refresh_service_envs.v1`
+    - Expected result: `mesh-utilities/common/refresh_service_envs.sh` output or precise policy/runtime failure; same policy flag as (22)
+
 ## Notes
 
 - These prompts are examples, not the only valid phrasings.
@@ -141,4 +153,5 @@ These prompts target the **read-only** bounded SQL skill `skills.chat.discussion
   - Notify service for notifications
   - Landing pad RPC/service for landing pad
   - Postgres / `DATABASE_URL` (or exec `ENDOGENOUS_RUNTIME_SQL_DATABASE_URL`) for `skills.chat.discussion_window.v1`
+  - `SKILLS_ALLOW_MESH_SERVICE_SCRIPTS=true` (and mounted repo / `ORION_REPO_ROOT`) for mesh service script skills (22–23)
 - Prefer precise failure messages over generic refusal.

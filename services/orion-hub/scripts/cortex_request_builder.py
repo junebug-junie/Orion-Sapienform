@@ -421,6 +421,10 @@ def build_cortex_chat_request(
     mutation_cognition_context = payload.get("mutation_cognition_context")
     if isinstance(mutation_cognition_context, dict) and mutation_cognition_context:
         metadata["mutation_cognition_context"] = mutation_cognition_context
+    _client_context = payload.get("context")
+    _client_meta = _client_context.get("metadata") if isinstance(_client_context, dict) else None
+    if isinstance(_client_meta, dict) and _client_meta.get("mind_enabled") is True:
+        metadata["mind_enabled"] = True
     draft_ac = build_answer_contract_draft_for_hub(prompt)
     metadata["answer_contract_draft"] = draft_ac
     logger.info(

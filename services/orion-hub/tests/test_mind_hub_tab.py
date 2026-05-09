@@ -20,6 +20,15 @@ INDEX_HTML = HUB_ROOT / "templates" / "index.html"
 APP_JS = HUB_ROOT / "static" / "js" / "app.js"
 
 
+def test_mind_runs_modal_is_sibling_of_schedule_modal_not_nested() -> None:
+    """mindRunsModal must not live under #scheduleModal.hidden or it never paints."""
+    index_html = INDEX_HTML.read_text(encoding="utf-8")
+    assert (
+        'id="scheduleModalHistory"' in index_html
+        and "</section>\n      </div>\n    </div>\n  </div>\n\n  <div id=\"mindRunsModal\"" in index_html
+    ), "scheduleModal shell must close (three divs) before mindRunsModal in index.html"
+
+
 def test_index_has_mind_tab_and_panel() -> None:
     index_html = INDEX_HTML.read_text(encoding="utf-8")
     assert 'id="mindTabButton"' in index_html

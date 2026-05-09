@@ -4,6 +4,8 @@
   const pathSegments = window.location.pathname.split("/").filter((p) => p.length > 0);
   const URL_PREFIX = pathSegments.length > 0 ? `/${pathSegments[0]}` : "";
   const API_BASE = window.location.origin + URL_PREFIX;
+  const MEMORY_GRAPH_SUGGEST_TIMEOUT_MS = 45000;
+  const MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS = 12000;
 
   function sessionHeader() {
     const sid = localStorage.getItem("orion_sid");
@@ -52,6 +54,17 @@
     }
     if (typeof detail === "string") return detail;
     return (err && err.message) || "Request failed";
+  }
+
+  function boundedSuggestPrompt(raw) {
+    const text = String(raw || "");
+    if (text.length <= MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS) {
+      return { value: text, clipped: false };
+    }
+    return {
+      value: `${text.slice(0, MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS)}…`,
+      clipped: true,
+    };
   }
 
   function showSubview(review, all, log, key) {
@@ -335,15 +348,37 @@
           const raw =
             draftTa.value.trim() ||
             "Draft a structured memory-graph JSON object for this session (ontology_version, entities, situations, edges). Output only JSON.";
+          const bounded = boundedSuggestPrompt(raw);
           const headers = { "Content-Type": "application/json", ...sessionHeader() };
           const payload = {
             mode: "brain",
             verbs: ["memory_graph_suggest"],
-            messages: [{ role: "user", content: raw }],
+            messages: [{ role: "user", content: bounded.value }],
             use_recall: false,
             no_write: true,
           };
-          const res = await fetch(`${API_BASE}/api/chat`, { method: "POST", headers, body: JSON.stringify(payload) });
+          const controller = typeof AbortController === "function" ? new AbortController() : null;
+          const timerId =
+            controller != null
+              ? setTimeout(() => {
+                  try {
+                    controller.abort();
+                  } catch (_) {
+                    /* ignore */
+                  }
+                }, MEMORY_GRAPH_SUGGEST_TIMEOUT_MS)
+              : null;
+          let res;
+          try {
+            res = await fetch(`${API_BASE}/api/chat`, {
+              method: "POST",
+              headers,
+              body: JSON.stringify(payload),
+              ...(controller ? { signal: controller.signal } : {}),
+            });
+          } finally {
+            if (timerId != null) clearTimeout(timerId);
+          }
           const text = await res.text();
           let data = null;
           try {
@@ -380,12 +415,26 @@
             {
               ok: true,
               note: draftText
-                ? "Replaced the box with the model reply. If prose wrapped the JSON, delete the wrapper lines and use Validate."
+                ? bounded.clipped
+                  ? `Replaced the box with the model reply. Prompt input was clipped to ${MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS} chars to avoid model gateway timeouts.`
+                  : "Replaced the box with the model reply. If prose wrapped the JSON, delete the wrapper lines and use Validate."
                 : "Empty response — check gateway / model logs.",
             },
             false
           );
         } catch (e) {
+          if (e && e.name === "AbortError") {
+            graphSetOut(
+              {
+                ok: false,
+                error: `Suggest timed out after ${Math.round(
+                  MEMORY_GRAPH_SUGGEST_TIMEOUT_MS / 1000
+                )}s. Try fewer turns or retry when the model gateway is responsive.`,
+              },
+              true
+            );
+            return;
+          }
           graphSetOut(e.message || String(e), true);
         }
       });

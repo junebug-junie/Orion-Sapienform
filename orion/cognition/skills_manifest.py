@@ -40,6 +40,8 @@ def _family_for_skill(skill_id: str) -> str:
         return "runtime_housekeeping"
     if "mesh_ops_round" in sid:
         return "runtime_housekeeping"
+    if "up_all_services" in sid or "refresh_service_envs" in sid:
+        return "runtime_housekeeping"
     if "nvidia_smi" in sid or "gpu.nvidia" in sid:
         return "gpu_presence"
     if "biometrics.raw_recent" in sid or ("biometrics" in sid and "raw_recent" in sid):
@@ -67,6 +69,8 @@ def _risk_for_skill(skill_id: str) -> tuple[str, bool, bool]:
     sid = str(skill_id or "").lower()
     if "docker_prune_stopped_containers" in sid:
         return "high_impact", False, False
+    if "up_all_services" in sid or "refresh_service_envs" in sid:
+        return "high_impact", False, False
     if "notify" in sid:
         return "benign_actuation", False, False
     return "read_only", True, True
@@ -93,7 +97,11 @@ def load_skill_manifest(*, verbs_dir: Path | None = None) -> list[SkillManifestE
                 idempotent=idempotent,
                 risk_class=risk_class,
                 requires_confirmation=(risk_class == "high_impact"),
-                requires_execute_opt_in=("docker_prune_stopped_containers" in skill_id.lower()),
+                requires_execute_opt_in=(
+                    "docker_prune_stopped_containers" in skill_id.lower()
+                    or "up_all_services" in skill_id.lower()
+                    or "refresh_service_envs" in skill_id.lower()
+                ),
                 input_schema=raw.get("input_schema") if isinstance(raw.get("input_schema"), dict) else {},
                 output_schema=raw.get("output_schema") if isinstance(raw.get("output_schema"), dict) else {},
             )

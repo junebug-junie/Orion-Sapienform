@@ -19,5 +19,5 @@ def test_skill_runner_catalogue_keys_are_verbatim_in_index_html() -> None:
 
 
 def test_skill_runner_catalogue_entry_count_matches_non_workflow_options() -> None:
-    """21 operator catalogue skills (excludes placeholder, workflows, and free-text rows)."""
-    assert len(SKILL_RUNNER_CATALOGUE_VERBS) == 21
+    """23 operator catalogue skills (excludes placeholder, workflows, and free-text rows)."""
+    assert len(SKILL_RUNNER_CATALOGUE_VERBS) == 23

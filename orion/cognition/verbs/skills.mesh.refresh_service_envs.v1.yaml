@@ -1,0 +1,17 @@
+name: skills.mesh.refresh_service_envs.v1
+label: Skills — Mesh Refresh Service .env Files
+description: Run mesh-utilities/common/refresh_service_envs.sh (policy-gated; overwrites service .env from .env_example).
+category: ExecutiveControl
+priority: medium
+interruptible: true
+can_interrupt_others: false
+requires_gpu: false
+requires_memory: false
+timeout_ms: 300000
+max_recursion_depth: 0
+services: []
+plan:
+  - name: skills.mesh.refresh_service_envs.v1
+    description: Execute mesh refresh_service_envs.sh with repo-root cwd.
+    order: 0
+    services: []

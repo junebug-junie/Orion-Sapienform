@@ -435,3 +435,50 @@ def test_mesh_ops_round_partial_failure_without_journal():
     data = json.loads(out.final_text)
     assert data["overall_health"] == "degraded"
     assert "mesh_presence_failed" in data["partial_failures"]
+
+
+def test_mesh_up_all_services_policy_blocked(monkeypatch):
+    monkeypatch.setattr(verb_adapters.settings, "skills_allow_mesh_service_scripts", False)
+    req = _plan_request("skills.mesh.up_all_services.v1")
+    ctx = VerbContext(meta={"correlation_id": str(uuid4())})
+    out, _ = asyncio.run(verb_adapters.MeshUpAllServicesVerb().execute(ctx, req))
+    data = json.loads(out.final_text)
+    assert data["status"] == "blocked"
+    assert data["policy_blocked"] is True
+    assert out.ok is False
+
+
+def test_mesh_up_all_services_runs_allowlisted_script(monkeypatch, tmp_path):
+    script_dir = tmp_path / "mesh-utilities" / "common"
+    script_dir.mkdir(parents=True)
+    script = script_dir / "up_all_services.sh"
+    script.write_text("#!/usr/bin/env bash\necho mesh_up_ok\n", encoding="utf-8")
+    script.chmod(0o755)
+    monkeypatch.setattr(verb_adapters.self_study_module, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(verb_adapters.settings, "skills_allow_mesh_service_scripts", True)
+    monkeypatch.setattr(verb_adapters.settings, "skills_mesh_service_script_timeout_sec", 15.0)
+    req = _plan_request("skills.mesh.up_all_services.v1")
+    ctx = VerbContext(meta={"correlation_id": str(uuid4())})
+    out, _ = asyncio.run(verb_adapters.MeshUpAllServicesVerb().execute(ctx, req))
+    data = json.loads(out.final_text)
+    assert out.ok is True
+    assert data["status"] == "success"
+    assert "mesh_up_ok" in (data.get("stdout_stderr_tail") or "")
+
+
+def test_mesh_refresh_service_envs_runs_allowlisted_script(monkeypatch, tmp_path):
+    script_dir = tmp_path / "mesh-utilities" / "common"
+    script_dir.mkdir(parents=True)
+    script = script_dir / "refresh_service_envs.sh"
+    script.write_text("#!/usr/bin/env bash\necho env_refresh_ok\n", encoding="utf-8")
+    script.chmod(0o755)
+    monkeypatch.setattr(verb_adapters.self_study_module, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(verb_adapters.settings, "skills_allow_mesh_service_scripts", True)
+    monkeypatch.setattr(verb_adapters.settings, "skills_mesh_service_script_timeout_sec", 15.0)
+    req = _plan_request("skills.mesh.refresh_service_envs.v1")
+    ctx = VerbContext(meta={"correlation_id": str(uuid4())})
+    out, _ = asyncio.run(verb_adapters.MeshRefreshServiceEnvsVerb().execute(ctx, req))
+    data = json.loads(out.final_text)
+    assert out.ok is True
+    assert data["status"] == "success"
+    assert "env_refresh_ok" in (data.get("stdout_stderr_tail") or "")

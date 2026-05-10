@@ -674,7 +674,13 @@ class SafeCommandRunner:
         self.allowed_commands = set(allowed_commands)
         self.timeout_sec = float(timeout_sec)
 
-    def run(self, command: list[str], *, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
+    def run(
+        self,
+        command: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         if not command:
             raise PermissionError("empty_command")
         binary = str(command[0]).strip()
@@ -687,14 +693,16 @@ class SafeCommandRunner:
             resolved = shutil.which(base)
         if not resolved:
             raise FileNotFoundError(base)
-        return subprocess.run(
-            [resolved, *command[1:]],
-            capture_output=True,
-            text=True,
-            timeout=self.timeout_sec,
-            check=False,
-            cwd=cwd,
-        )
+        run_kw: dict[str, Any] = {
+            "capture_output": True,
+            "text": True,
+            "timeout": self.timeout_sec,
+            "check": False,
+            "cwd": cwd,
+        }
+        if env is not None:
+            run_kw["env"] = env
+        return subprocess.run([resolved, *command[1:]], **run_kw)
 
 
 def _skill_args(payload: PlanExecutionRequest) -> Dict[str, Any]:
@@ -1972,6 +1980,20 @@ class DockerPruneStoppedContainersVerb(BaseVerb[PlanExecutionRequest, SkillVerbO
         ), []
 
 
+def _mesh_service_scripts_child_env() -> dict[str, str]:
+    """Child env for mesh-utilities scripts invoked from cortex-exec skills.
+
+    Appends ``orion-hub`` to ``EXCLUDE_SERVICES_ADD`` so shared helper scripts
+    stay unchanged while the skills runner skips Hub bring-up and env refresh.
+    """
+    out = os.environ.copy()
+    parts = (out.get("EXCLUDE_SERVICES_ADD") or "").split()
+    if "orion-hub" not in parts:
+        parts.append("orion-hub")
+    out["EXCLUDE_SERVICES_ADD"] = " ".join(parts)
+    return out
+
+
 def _allowlisted_mesh_service_script_paths() -> set[Path]:
     root = self_study_module.REPO_ROOT.resolve()
     return {
@@ -2073,7 +2095,11 @@ async def _run_mesh_util_shell_skill(
     runner = SafeCommandRunner(allowed_commands={"bash"}, timeout_sec=timeout_sec)
 
     def _invoke() -> subprocess.CompletedProcess[str]:
-        return runner.run([bash_bin, str(script_path)], cwd=str(repo_root))
+        return runner.run(
+            [bash_bin, str(script_path)],
+            cwd=str(repo_root),
+            env=_mesh_service_scripts_child_env(),
+        )
 
     try:
         proc = await asyncio.to_thread(_invoke)

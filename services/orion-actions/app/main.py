@@ -46,9 +46,11 @@ from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
 from .logic import (
     ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1,
     SKILL_BIOMETRICS_SNAPSHOT_V1,
+    SKILL_DOCKER_PS_STATUS_V1,
     SKILL_GPU_NVIDIA_SMI_SNAPSHOT_V1,
     SKILL_NOTIFY_CHAT_MESSAGE_V1,
     ActionDedupe,
+    scheduler_docker_findings,
     build_audit_envelope,
     build_cortex_orch_envelope,
     build_skill_cortex_orch_envelope,
@@ -1827,8 +1829,17 @@ async def lifespan(app: FastAPI):
                     wait_for_result = bool(settings.actions_skills_notify_enabled)
                     biometrics_result = await _dispatch_scheduled_skill(skill_parent, verb_name=SKILL_BIOMETRICS_SNAPSHOT_V1, wait_for_result=wait_for_result, metadata={"schedule": "periodic_skills"})
                     gpu_result = await _dispatch_scheduled_skill(skill_parent, verb_name=SKILL_GPU_NVIDIA_SMI_SNAPSHOT_V1, wait_for_result=wait_for_result, metadata={"schedule": "periodic_skills"})
+                    docker_result: dict[str, Any] = {}
+                    if settings.actions_skills_docker_health_enabled and wait_for_result:
+                        docker_result = await _dispatch_scheduled_skill(
+                            skill_parent,
+                            verb_name=SKILL_DOCKER_PS_STATUS_V1,
+                            wait_for_result=True,
+                            metadata={"schedule": "periodic_skills"},
+                        )
                     if wait_for_result:
                         findings = _scheduler_threshold_findings(biometrics_snapshot=biometrics_result, gpu_snapshot=gpu_result)
+                        findings = [*findings, *scheduler_docker_findings(docker_result)]
                         if findings:
                             await _audit(skill_parent, status="threshold_detected", event_id=str(skill_parent.correlation_id), action_name="skills.periodic.thresholds", extra={"findings": findings})
                             notify_parent = BaseEnvelope(kind="orion.actions.trigger.skills.notify.v1", source=src, payload={"findings": findings})

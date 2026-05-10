@@ -4,7 +4,8 @@
   const pathSegments = window.location.pathname.split("/").filter((p) => p.length > 0);
   const URL_PREFIX = pathSegments.length > 0 ? `/${pathSegments[0]}` : "";
   const API_BASE = window.location.origin + URL_PREFIX;
-  const MEMORY_GRAPH_SUGGEST_TIMEOUT_MS = 45000;
+  // Match `orion/cognition/verbs/memory_graph_suggest.yaml` timeout_ms (hub fetch must not abort first).
+  const MEMORY_GRAPH_SUGGEST_TIMEOUT_MS = 180000;
   const MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS = 12000;
 
   function sessionHeader() {
@@ -429,7 +430,7 @@
                 ok: false,
                 error: `Suggest timed out after ${Math.round(
                   MEMORY_GRAPH_SUGGEST_TIMEOUT_MS / 1000
-                )}s. Try fewer turns or retry when the model gateway is responsive.`,
+                )}s (browser fetch limit). Retry when the model gateway is responsive; reduce selected bridge turns only if the compiled prompt is very large.`,
               },
               true
             );

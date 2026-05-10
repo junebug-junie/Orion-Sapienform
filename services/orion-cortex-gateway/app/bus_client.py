@@ -173,13 +173,20 @@ class BusClient:
         # Start a background task for subscription
         asyncio.create_task(self._consume_gateway_request())
 
+    async def _gateway_dispatch_one(self, message: Dict[str, Any]) -> None:
+        try:
+            await self.handle_gateway_request(message)
+        except Exception as e:
+            logger.error("gateway_dispatch_task_failed err=%s", e, exc_info=True)
+
     async def _consume_gateway_request(self):
         logger.info(f"Gateway consumer loop started. Listening on channel: {self.settings.channel_gateway_request}")
         while True:
             try:
                 async with self.bus.subscribe(self.settings.channel_gateway_request) as pubsub:
                     async for msg in self.bus.iter_messages(pubsub):
-                        await self.handle_gateway_request(msg)
+                        # Do not serialize Hub chats: a slow brain/orch path must not block other corr ids.
+                        asyncio.create_task(self._gateway_dispatch_one(msg))
             except asyncio.CancelledError:
                 logger.info("Gateway consumer cancelled")
                 break

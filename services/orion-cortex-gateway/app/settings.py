@@ -27,8 +27,12 @@ class Settings(BaseSettings):
     )
 
     gateway_rpc_timeout_sec: float = Field(
-        120.0,
-        alias="CORTEX_GATEWAY_RPC_TIMEOUT_SEC"
+        360.0,
+        alias="CORTEX_GATEWAY_RPC_TIMEOUT_SEC",
+        description=(
+            "Gateway → orch bus RPC wait. Must cover worst-case multi-step verbs "
+            "(e.g. chat_quick: two steps × verb timeout_ms from YAML, often 180s each)."
+        ),
     )
 
     # Bus Intake (Gateway <- Client)

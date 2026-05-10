@@ -203,7 +203,14 @@
             <div class="flex flex-wrap gap-1">
               <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="auto">Auto</button>
               <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="brain">Brain</button>
-              <button class="mode-btn mode-btn-quick px-2 py-1 rounded bg-indigo-500/30 text-indigo-100 border border-indigo-400/60 shadow-[0_0_12px_rgba(99,102,241,0.3)] hover:bg-indigo-500/40 transition-colors" data-mode="brain" data-verb-override="chat_quick">Quick</button>
+              <div class="relative inline-flex rounded border border-indigo-400/60 shadow-[0_0_12px_rgba(99,102,241,0.3)]" id="quickModeGroup">
+                <button type="button" class="mode-btn mode-btn-quick px-2 py-1 rounded-l rounded-r-none bg-indigo-500/30 text-indigo-100 hover:bg-indigo-500/40 transition-colors" data-mode="brain" data-verb-override="chat_quick" id="quickModeBtn" title="Quick (fast lane)">Quick</button>
+                <button type="button" class="mode-btn-quick px-1.5 py-1 rounded-r bg-indigo-500/30 text-indigo-100 border-l border-indigo-400/50 hover:bg-indigo-500/40 transition-colors text-[10px]" id="quickModeMenuBtn" aria-haspopup="menu" aria-expanded="false" aria-label="Quick lane options" title="More quick options">▾</button>
+                <div id="quickModeMenu" class="hidden absolute left-0 top-full z-50 mt-1 min-w-[12.5rem] rounded-md border border-indigo-400/50 bg-gray-900 py-1 text-left shadow-xl" role="menu">
+                  <button type="button" class="quick-variant-item block w-full px-3 py-2 text-left text-[11px] text-indigo-100 hover:bg-indigo-600/35" data-quick-variant="fast" role="menuitem">Quick (fast)</button>
+                  <button type="button" class="quick-variant-item block w-full px-3 py-2 text-left text-[11px] text-indigo-100 hover:bg-indigo-600/35" data-quick-variant="stance" role="menuitem">Quick + stance</button>
+                </div>
+              </div>
               <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="agent">Agent</button>
               <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="council">Council</button>
             </div>

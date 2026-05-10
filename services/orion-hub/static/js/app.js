@@ -467,7 +467,8 @@ loadDismissedIds();
   let memoryGraphBridgeAnchorDiv = null;
   const MEMORY_GRAPH_BRIDGE_MAX_TURNS_CAP = 80;
   const MEMORY_GRAPH_BRIDGE_MAX_TURNS_DEFAULT = 40;
-  const MEMORY_GRAPH_SUGGEST_TIMEOUT_MS = 45000;
+  // Match `orion/cognition/verbs/memory_graph_suggest.yaml` timeout_ms (hub fetch must not abort first).
+  const MEMORY_GRAPH_SUGGEST_TIMEOUT_MS = 180000;
   const MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS = 12000;
   const MEMORY_GRAPH_SUGGEST_INPUT_PER_TURN_CHARS = 1800;
   const LS_MEMORY_GRAPH_BRIDGE_MAX_TURNS = 'orion_memory_graph_bridge_max_turns';
@@ -6713,7 +6714,7 @@ loadDismissedIds();
         } catch (err) {
           if (statusEl) {
             if (err && err.name === 'AbortError') {
-              statusEl.textContent = `Suggest timed out after ${Math.round(MEMORY_GRAPH_SUGGEST_TIMEOUT_MS / 1000)}s. Try fewer turns or retry when the model gateway is responsive.`;
+              statusEl.textContent = `Suggest timed out after ${Math.round(MEMORY_GRAPH_SUGGEST_TIMEOUT_MS / 1000)}s (browser fetch limit). Retry when the model gateway is responsive; reduce selected bridge turns only if the compiled prompt is very large.`;
             } else {
               statusEl.textContent = String(err.message || err);
             }

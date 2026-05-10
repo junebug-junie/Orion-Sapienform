@@ -210,7 +210,11 @@ class Settings(BaseSettings):
     RECALL_PG_DSN: str = Field(default="", alias="RECALL_PG_DSN")
 
     # --- Runtimes ----
-    TIMEOUT_SEC: int = Field(default=300, alias="TIMEOUT_SEC")
+    TIMEOUT_SEC: int = Field(
+        default=400,
+        alias="TIMEOUT_SEC",
+        description="Bus RPC wait (cortex gateway, TTS, …). Should exceed gateway orch timeout for long LLM runs.",
+    )
 
 
     # --- Hub Prompt Context (UI-side rolling history) ---

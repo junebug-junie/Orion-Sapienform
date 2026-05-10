@@ -1475,12 +1475,17 @@ async def run_recall_step(
     step_name: str = "recall",
     step_order: int = -1,
     diagnostic: bool = False,
+    rpc_timeout_sec: float | None = None,
 ) -> Tuple[StepExecutionResult, Dict[str, Any], str]:
     t0 = time.time()
     recall_client = RecallClient(bus)
     reply_channel = f"orion:exec:result:RecallService:{uuid4()}"
 
-    recall_timeout = float(settings.step_timeout_ms) / 1000.0
+    if rpc_timeout_sec is not None:
+        recall_timeout = max(1.0, float(rpc_timeout_sec))
+    else:
+        # Preserve legacy behavior: plan step budget drives recall RPC wait unless caller passes rpc_timeout_sec.
+        recall_timeout = float(settings.step_timeout_ms) / 1000.0
 
     fragment_text = _last_user_message(ctx) or ""
     _log_grounding_snapshot(
@@ -2679,6 +2684,8 @@ async def call_step_services(
 
             if service == "MetacogContextService":
                 logs.append("exec -> MetacogContextService")
+                # chat_quick: keep metacog hydration from dominating wall time (pad/state RPCs).
+                _metacog_rpc_timeout = 6.0 if str(step.verb_name or "") == "chat_quick" else 20.0
 
                 trigger_data = ctx.get("trigger") or ctx.get("args", {}).get("trigger", {})
 
@@ -2714,7 +2721,7 @@ async def call_step_services(
                         settings.channel_pad_rpc_request,
                         pad_env,
                         reply_channel=pad_reply_channel,
-                        timeout_sec=20.0,
+                        timeout_sec=_metacog_rpc_timeout,
                     )
                     pad_dec = bus.codec.decode(pad_msg.get("data"))
                     if pad_dec.ok:
@@ -2747,7 +2754,7 @@ async def call_step_services(
                         settings.channel_pad_rpc_request,
                         pad_stats_env,
                         reply_channel=pad_stats_reply_channel,
-                        timeout_sec=20.0,
+                        timeout_sec=_metacog_rpc_timeout,
                     )
                     pad_stats_dec = bus.codec.decode(pad_stats_msg.get("data"))
                     if pad_stats_dec.ok:
@@ -2788,7 +2795,7 @@ async def call_step_services(
                         settings.channel_state_request,
                         state_env,
                         reply_channel=state_reply_channel,
-                        timeout_sec=20.0,
+                        timeout_sec=_metacog_rpc_timeout,
                     )
                     state_dec = bus.codec.decode(state_msg.get("data"))
                     if state_dec.ok:
@@ -3514,6 +3521,11 @@ def ensure_chat_stance_pipeline_ctx(ctx: Dict[str, Any]) -> None:
     build_chat_stance_inputs(ctx)
 
 
+def prepare_chat_quick_reply_context(ctx: Dict[str, Any]) -> None:
+    """Hub quick lane: identity YAML only — no stance/autonomy graph (must stay fast; GraphDB-free)."""
+    _inject_identity_context(ctx)
+
+
 def prepare_brain_reply_context(ctx: Dict[str, Any], *, force_refresh: bool = False) -> Dict[str, Any] | None:
     """
     Canonical preparation hook for brain-lane reply context.
@@ -3543,6 +3555,8 @@ def _should_prepare_brain_reply_context(*, step: ExecutionStep, ctx: Dict[str, A
     if mode != "brain":
         return False
     verb_name = str(step.verb_name or "").strip().lower()
+    if verb_name == "chat_quick":
+        return False
     if verb_name.startswith("skills.runtime."):
         return False
     return True

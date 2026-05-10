@@ -81,6 +81,7 @@ class Settings(BaseSettings):
     actions_skills_notify_enabled: bool = Field(False, alias="ACTIONS_SKILLS_NOTIFY_ENABLED")
     actions_skills_gpu_mem_threshold: float = Field(0.9, alias="ACTIONS_SKILLS_GPU_MEM_THRESHOLD")
     actions_skills_biometrics_stability_threshold: float = Field(0.3, alias="ACTIONS_SKILLS_BIOMETRICS_STABILITY_THRESHOLD")
+    actions_skills_docker_health_enabled: bool = Field(False, alias="ACTIONS_SKILLS_DOCKER_HEALTH_ENABLED")
 
     actions_journaling_enabled: bool = Field(True, alias="ACTIONS_JOURNALING_ENABLED")
     actions_journaling_daily_enabled: bool = Field(False, alias="ACTIONS_JOURNALING_DAILY_ENABLED")

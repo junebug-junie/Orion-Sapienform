@@ -427,12 +427,12 @@ watch -n 1 nvidia-smi
 
 `services/orion-llamacpp-host/Dockerfile` pins the base to:
 
-- `ghcr.io/ggml-org/llama.cpp:server-cuda-b8660` by default (override with `LLAMACPP_IMAGE_TAG` at build time)
+- `ghcr.io/ggml-org/llama.cpp:server-cuda-b8740` by default (override with `LLAMACPP_IMAGE_TAG` at build time)
 
 Why this pin:
 
 - Qwen3-related flags such as `--reasoning-budget` and `--chat-template-kwargs` follow upstream llama.cpp PRs and release notes; treat the design doc as the narrative source of truth instead of stale single “build number” claims.
-- `server-cuda-b8660` is a fixed non-HEAD CUDA server image tag aligned with the Dockerfile default.
+- `server-cuda-b8740` is a fixed non-HEAD CUDA server image tag aligned with the Dockerfile default (newer than `b8660` on GHCR for Qwen3 thinking / `--reasoning-budget` / `--chat-template-kwargs` fixes).
 - Existing Qwen2/Qwen2.5 GGUF workflows remain in the same llama.cpp runtime family and OpenAI-compatible `llama-server` surface.
 
 After `docker build`, record the exact server binary in ops notes (output varies by image tag):
@@ -455,7 +455,7 @@ docker compose \
 ### Optional explicit build tag override
 
 ```bash
-LLAMACPP_IMAGE_TAG=server-cuda-b8660 docker compose \
+LLAMACPP_IMAGE_TAG=server-cuda-b8740 docker compose \
   --env-file services/orion-llamacpp-host/.env_example \
   -f services/orion-llamacpp-host/docker-compose.yml \
   build orion-llamacpp-host

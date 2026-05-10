@@ -1,10 +1,10 @@
 # services/orion-llamacpp-host/Dockerfile
 
 # Pinned target for Qwen3 GGUF support + CUDA image stability.
-# Default pin: server-cuda-b8660 from ghcr.io/ggml-org/llama.cpp (see LLAMACPP_IMAGE_TAG).
+# Default pin: server-cuda-b8740 from ghcr.io/ggml-org/llama.cpp (see LLAMACPP_IMAGE_TAG).
 # Qwen3 capability floor (e.g. --reasoning-budget, --chat-template-kwargs) tracks upstream
 # llama.cpp PRs/changelog, not a single misleading "build number" here—see README + design doc.
-ARG LLAMACPP_IMAGE_TAG=server-cuda-b8660
+ARG LLAMACPP_IMAGE_TAG=server-cuda-b8740
 FROM ghcr.io/ggml-org/llama.cpp:${LLAMACPP_IMAGE_TAG}
 
 # Install Python + pip (base image is minimal)

@@ -78,7 +78,16 @@
 
   /**
    * Pull gateway/LLM failure text from cortex-exec raw.steps (e.g. "[Error: llamacpp timed out…]").
+   * Do not scan full model JSON for the word "error" — memory-graph drafts legitimately contain it.
    */
+  function contentLooksLikeGatewayFailureBlurb(c) {
+    const s = String(c || "").trim();
+    if (!s) return false;
+    if (s.startsWith("[Error:")) return true;
+    const head = s.length > 600 ? `${s.slice(0, 600)}…` : s;
+    return /\b(timed out|timeout)\b/i.test(head);
+  }
+
   function extractLlmGatewayErrorFromRaw(raw) {
     if (!raw || typeof raw !== "object") return "";
     const topErr = raw.error != null ? String(raw.error).trim() : "";
@@ -96,23 +105,94 @@
       Object.keys(res).forEach((svcKey) => {
         const block = res[svcKey];
         if (!block || typeof block !== "object") return;
+        const be = block.error;
+        if (be != null) {
+          if (typeof be === "string" && be.trim()) parts.push(be.trim());
+          else if (typeof be === "object" && typeof be.message === "string" && be.message.trim()) {
+            parts.push(be.message.trim());
+          }
+        }
         const c = String(block.content || "").trim();
-        if (c.startsWith("[Error:") || /timed out|timeout|error/i.test(c)) parts.push(c);
+        if (contentLooksLikeGatewayFailureBlurb(c)) parts.push(c);
       });
     });
     const merged = parts.filter(Boolean);
     return merged.filter((v, i, a) => a.indexOf(v) === i).join(" · ");
   }
 
+  function looksLikeMemoryGraphDraftObject(obj) {
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;
+    return (
+      typeof obj.ontology_version === "string" ||
+      Array.isArray(obj.entities) ||
+      Array.isArray(obj.situations) ||
+      Array.isArray(obj.edges) ||
+      Array.isArray(obj.dispositions) ||
+      Array.isArray(obj.utterance_ids)
+    );
+  }
+
   /**
-   * Prefer top-level `text` / raw.final_text only. Never fall back to the full HTTP response body
-   * (that leaks the whole JSON envelope into the draft textarea and breaks the graph preview).
+   * When Hub `text` / raw.final_text are empty, recover JSON from step payloads (same source cortex-exec uses).
+   */
+  function extractLlmGatewayDraftFromSteps(raw) {
+    if (!raw || typeof raw !== "object") return "";
+    const steps = raw.steps;
+    if (!Array.isArray(steps)) return "";
+    for (let si = steps.length - 1; si >= 0; si -= 1) {
+      const step = steps[si];
+      if (!step || typeof step !== "object") continue;
+      const res = step.result;
+      if (!res || typeof res !== "object") continue;
+      const keys = Object.keys(res);
+      for (let ki = 0; ki < keys.length; ki += 1) {
+        const block = res[keys[ki]];
+        if (!block || typeof block !== "object") continue;
+        const candidate =
+          (typeof block.content === "string" && block.content.trim() && block.content) ||
+          (typeof block.final_text === "string" && block.final_text.trim() && block.final_text) ||
+          (typeof block.text === "string" && block.text.trim() && block.text) ||
+          "";
+        const s = String(candidate || "").trim();
+        if (!s || contentLooksLikeGatewayFailureBlurb(s)) continue;
+        const parsed = parseMemoryGraphDraftJson(s);
+        if (parsed.ok && parsed.object && looksLikeMemoryGraphDraftObject(parsed.object)) {
+          return JSON.stringify(parsed.object);
+        }
+      }
+    }
+    return "";
+  }
+
+  /**
+   * Prefer top-level `text` / raw.final_text; then step payloads. Never use the full HTTP envelope as draft text.
    */
   function coalesceChatSuggestDraft(data) {
-    const raw = data && typeof data.raw === "object" ? data.raw : null;
+    if (!data || typeof data !== "object") {
+      return { draftText: "", error: "Empty response." };
+    }
+    if (typeof data.error === "string" && data.error.trim()) {
+      const hasText = typeof data.text === "string" && data.text.trim();
+      const rawEarly = data.raw && typeof data.raw === "object" ? data.raw : null;
+      const hasRawFinal =
+        rawEarly && typeof rawEarly.final_text === "string" && String(rawEarly.final_text).trim();
+      const hasSteps = rawEarly && Array.isArray(rawEarly.steps) && rawEarly.steps.length > 0;
+      if (!hasText && !hasRawFinal && !hasSteps) {
+        const msg = [typeof data.message === "string" ? data.message.trim() : "", data.error.trim()]
+          .filter(Boolean)
+          .join(" — ");
+        return { draftText: "", error: msg || data.error.trim() };
+      }
+    }
+
+    const raw = data.raw && typeof data.raw === "object" ? data.raw : null;
     let draft = "";
-    if (typeof (data && data.text) === "string" && data.text.trim()) draft = data.text.trim();
+    if (typeof data.text === "string" && data.text.trim()) draft = data.text.trim();
     else if (raw && typeof raw.final_text === "string" && raw.final_text.trim()) draft = raw.final_text.trim();
+    if (!draft && raw) {
+      const fromSteps = extractLlmGatewayDraftFromSteps(raw);
+      if (fromSteps) draft = fromSteps;
+    }
     const stepErr = raw ? extractLlmGatewayErrorFromRaw(raw) : "";
     if (!draft && stepErr) return { draftText: "", error: stepErr };
     if (draft && draft.startsWith("[Error:")) return { draftText: "", error: draft };

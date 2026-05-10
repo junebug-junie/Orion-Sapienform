@@ -6158,6 +6158,14 @@ loadDismissedIds();
     }
   }
 
+  function contentLooksLikeGatewayFailureBlurb(c) {
+    const s = String(c || '').trim();
+    if (!s) return false;
+    if (s.startsWith('[Error:')) return true;
+    const head = s.length > 600 ? `${s.slice(0, 600)}…` : s;
+    return /\b(timed out|timeout)\b/i.test(head);
+  }
+
   function extractCortexStepErrorHint(raw) {
     if (!raw || typeof raw !== 'object') return '';
     const topErr = raw.error != null ? String(raw.error).trim() : '';
@@ -6175,8 +6183,15 @@ loadDismissedIds();
       Object.keys(res).forEach((svcKey) => {
         const block = res[svcKey];
         if (!block || typeof block !== 'object') return;
+        const be = block.error;
+        if (be != null) {
+          if (typeof be === 'string' && be.trim()) parts.push(be.trim());
+          else if (typeof be === 'object' && typeof be.message === 'string' && be.message.trim()) {
+            parts.push(be.message.trim());
+          }
+        }
         const c = String(block.content || '').trim();
-        if (c.startsWith('[Error:') || /timed out|timeout|error/i.test(c)) parts.push(c);
+        if (contentLooksLikeGatewayFailureBlurb(c)) parts.push(c);
       });
     });
     const merged = parts.filter(Boolean);

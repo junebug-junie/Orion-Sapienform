@@ -52,6 +52,7 @@ Important clarification:
 - Derived schedule analytics/health from stored schedule + run history.
 - Attention notifications for degraded/failing/overdue recurring schedules.
 - Operational bridging for scheduled workflow dispatch.
+- Periodic **threshold** path: when `ACTIONS_SKILLS_NOTIFY_ENABLED` is true, each `ACTIONS_SKILLS_INTERVAL_SECONDS` tick waits for biometrics and GPU snapshots via Cortex and merges threshold findings into one notify. If `ACTIONS_SKILLS_DOCKER_HEALTH_ENABLED` is also true, the same tick runs `skills.docker.ps_status.v1` and appends findings for running containers whose Docker `status` includes `(unhealthy)`. When notify is off, the Docker snapshot is not requested. Docker requires the same `orion-cortex-exec` Docker engine access as manual runs of that skill.
 
 ### Daily scheduler and restarts
 

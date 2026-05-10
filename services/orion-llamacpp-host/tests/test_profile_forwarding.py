@@ -183,3 +183,46 @@ def test_qwen3_8b_balanced_profile_forwards_enable_thinking_false(monkeypatch):
     assert json.loads(kwargs_val) == {"enable_thinking": False}
     assert "--reasoning-budget" in cmd
     assert _find_flag_value(cmd, "--reasoning-budget") == "0"
+    assert "--jinja" in cmd
+    assert cmd.index("--jinja") < cmd.index("--chat-template-kwargs")
+
+
+def test_qwen3_implicit_budget_off_emits_jinja_and_budget(monkeypatch):
+    """Synthetic profile: only chat_template_kwargs={'enable_thinking': False} → policy emits --jinja and --reasoning-budget 0."""
+    main = importlib.import_module("app.main")
+    settings_mod = importlib.import_module("app.settings")
+    profiles_mod = importlib.import_module("app.profiles")
+
+    profile = profiles_mod.LLMProfile(
+        name="synthetic-qwen3-implicit-off",
+        backend="llamacpp",
+        model_id="/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf",
+        gpu=profiles_mod.GPUConfig(num_gpus=1),
+        llamacpp=profiles_mod.LlamaCppConfig(
+            chat_template_kwargs={"enable_thinking": False},
+        ),
+    )
+
+    monkeypatch.setattr(main, "_ensure_model_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _server_bin: {
+            "--jinja",
+            "--chat-template-kwargs",
+            "--reasoning-budget",
+        },
+    )
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _server_bin: 6000)
+    monkeypatch.setattr(
+        settings_mod.settings,
+        "llamacpp_model_path_override",
+        "/models/gguf/Qwen_Qwen3-8B-Q4_K_M.gguf",
+    )
+
+    cmd, _env = main.build_llama_server_cmd_and_env(profile)
+    assert "--jinja" in cmd
+    assert "--reasoning-budget" in cmd
+    assert _find_flag_value(cmd, "--reasoning-budget") == "0"
+    assert "--chat-template-kwargs" in cmd
+    assert cmd.index("--jinja") < cmd.index("--chat-template-kwargs")

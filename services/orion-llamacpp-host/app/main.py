@@ -21,6 +21,7 @@ from huggingface_hub import hf_hub_download
 
 from .settings import settings
 from .profiles import LLMProfile, LlamaCppConfig
+from .thinking_policy import resolve_thinking_launch_policy
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -221,6 +222,12 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
         if value is not None:
             cmd.append(value)
 
+    policy = resolve_thinking_launch_policy(cfg, supported_flags)
+
+    def ensure_jinja() -> None:
+        if "--jinja" not in cmd:
+            append_flag("--jinja")
+
     reasoning_format_emitted = False
     if cfg.reasoning is not None:
         if is_b5332_compatible:
@@ -228,17 +235,21 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
         else:
             append_flag("--reasoning", cfg.reasoning)
     if cfg.reasoning_format is not None:
-        append_flag("--jinja")
+        ensure_jinja()
         append_flag("--reasoning-format", cfg.reasoning_format)
         reasoning_format_emitted = "--reasoning-format" in cmd
     if cfg.chat_template_kwargs is not None:
         # Do not gate on legacy build numbers: if the binary advertises --chat-template-kwargs in
         # --help, append_flag emits it (per-profile enable_thinking / Qwen3 template kwargs). Older
         # builds without the flag log a skip from append_flag and keep default template behavior.
+        if policy.require_jinja:
+            ensure_jinja()
         append_flag("--chat-template-kwargs", json.dumps(cfg.chat_template_kwargs, separators=(",", ":")))
 
-    if cfg.reasoning_budget is not None:
-        append_flag("--reasoning-budget", str(int(cfg.reasoning_budget)))
+    if policy.effective_reasoning_budget is not None:
+        if policy.require_jinja:
+            ensure_jinja()
+        append_flag("--reasoning-budget", str(int(policy.effective_reasoning_budget)))
 
     if reasoning_format_emitted and "--jinja" not in cmd:
         logger.warning("--reasoning-format requested but --jinja could not be emitted")
@@ -287,12 +298,31 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
             "(unsupported by this llama-server or missing from --help). Qwen3 may stay in default thinking; "
             "upgrade llama-server or set reasoning_budget: 0 if supported."
         )
-    if cfg.reasoning_budget is not None and "--reasoning-budget" not in cmd:
+    if policy.effective_reasoning_budget is not None and "--reasoning-budget" not in cmd:
         logger.error(
             "Profile requested reasoning_budget but --reasoning-budget was not emitted; "
             "upgrade llama-server to a build that supports this flag."
         )
 
+    if (
+        cfg.chat_template_kwargs is not None
+        and cfg.chat_template_kwargs.get("enable_thinking") is False
+        and policy.effective_reasoning_budget is None
+        and supported_flags is not None
+        and "--reasoning-budget" not in supported_flags
+    ):
+        logger.warning(
+            "Profile requests enable_thinking=false via chat_template_kwargs but this llama-server "
+            "binary does not advertise --reasoning-budget; thinking may remain on until llama-server "
+            "is upgraded to a build that supports --reasoning-budget."
+        )
+
+    logger.info(
+        "thinking_launch_policy intent=%s effective_reasoning_budget=%s jinja_in_cmd=%s",
+        policy.intent_label,
+        policy.effective_reasoning_budget,
+        "--jinja" in cmd,
+    )
     logger.info("Effective llama-server argv: %s", " ".join(cmd))
 
     return cmd, env

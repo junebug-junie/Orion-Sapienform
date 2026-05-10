@@ -493,7 +493,7 @@ Fast checks (no live GPU endpoint required beyond what the tests already expect)
 ./scripts/test_service.sh orion-llamacpp-host services/orion-llamacpp-host/tests/ -q --tb=short
 ```
 
-Live verification against a running container and GGUF on disk (script added in a follow-up task; env vars below are the intended contract):
+Live verification against a **local Docker** build and GGUF on disk:
 
 ```bash
 IMAGE=orion-llamacpp-host:0.1.0 \
@@ -505,3 +505,13 @@ bash services/orion-llamacpp-host/scripts/verify_qwen3_thinking_off_live.sh
 - `IMAGE` defaults to `orion-llamacpp-host:0.1.0` if unset.
 - `MODEL_QWEN3_PATH` must point at the Qwen3 GGUF you are validating.
 - `CUDA_VISIBLE_DEVICES` selects the GPU visible inside the check (adjust per host).
+
+**Atlas quick lane (live, no Docker):** hit the **running** `llama-server` on the Hub/quick worker (Tailscale or host IP, port from `ATLAS_FAST_HOST_PORT`, usually `8013`). Per-request `chat_template_kwargs` is sent in the JSON body so thinking can be forced off **without** restarting the worker (requires `server-cuda-b8740`+ class binary and Qwen3-capable profile).
+
+```bash
+export ATLAS_LLAMACPP_QUICK_URL=http://<atlas-host>:8013
+export ATLAS_QUICK_CHAT_MODEL=<exact-model-id-the-server-uses>
+bash services/orion-llamacpp-host/scripts/verify_atlas_quick_llamacpp_thinking_off.sh
+```
+
+**Via `orion-llm-gateway` (bus):** callers may pass `options.chat_template_kwargs` (e.g. `{"enable_thinking": false}`) on `ChatRequestPayload`; the gateway forwards that field to `llamacpp` / `llama-cola` OpenAI-compatible backends on each request.

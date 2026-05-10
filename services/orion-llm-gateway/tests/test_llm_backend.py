@@ -116,6 +116,30 @@ class TestLLMBackendExecution(unittest.TestCase):
         self.assertEqual(payload["response_format"], {"type": "json_object"})
 
     @patch("app.llm_backend._common_http_client")
+    def test_execute_openai_chat_forwards_chat_template_kwargs_for_llamacpp(self, mock_client_factory):
+        mock_client = MagicMock()
+        mock_client_factory.return_value.__enter__.return_value = mock_client
+        mock_client.post.return_value.status_code = 200
+        mock_client.post.return_value.json.return_value = {
+            "choices": [{"message": {"content": "LIVE-GATE-B-OK"}}]
+        }
+
+        body = ChatBody(
+            messages=[ChatMessage(role="user", content="Reply with exactly: LIVE-GATE-B-OK")],
+            options={"chat_template_kwargs": {"enable_thinking": False}, "max_tokens": 64, "temperature": 0.2},
+        )
+        _execute_openai_chat(
+            body=body,
+            model="Qwen_Qwen3-8B-Q4_K_M.gguf",
+            base_url="http://localhost",
+            backend_name="llamacpp",
+        )
+        mock_client.post.assert_called_once()
+        _args, kwargs = mock_client.post.call_args
+        payload = kwargs["json"]
+        self.assertEqual(payload.get("chat_template_kwargs"), {"enable_thinking": False})
+
+    @patch("app.llm_backend._common_http_client")
     def test_execute_openai_chat_passes_response_format_for_llama_cola(self, mock_client_factory):
         # Setup mock
         mock_client = MagicMock()

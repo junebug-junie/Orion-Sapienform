@@ -99,3 +99,11 @@ Run against the **same Docker image** intended for production and a **reference 
 ---
 
 **Next step after you approve this file:** invoke **writing-plans** to produce an implementation plan with file-level tasks and verification commands.
+
+---
+
+## Appendix (implementation, 2026-05-10)
+
+- Default CUDA pin raised to **`ghcr.io/ggml-org/llama.cpp:server-cuda-b8740`** (`Dockerfile` / compose / `.env_example`).
+- **`orion-llm-gateway`** forwards **`options.chat_template_kwargs`** on `ChatRequestPayload` to **`llamacpp`** and **`llama-cola`** `/v1/chat/completions` payloads for **per-request** thinking control (no host restart).
+- **Atlas live check:** `services/orion-llamacpp-host/scripts/verify_atlas_quick_llamacpp_thinking_off.sh` with `ATLAS_LLAMACPP_QUICK_URL` + `ATLAS_QUICK_CHAT_MODEL` hits the quick worker’s HTTP API directly.

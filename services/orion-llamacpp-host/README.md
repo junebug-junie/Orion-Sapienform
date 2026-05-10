@@ -425,15 +425,23 @@ watch -n 1 nvidia-smi
 
 ## Pinned llama.cpp CUDA base image
 
-`services/orion-llamacpp-host/Dockerfile` now pins to:
+`services/orion-llamacpp-host/Dockerfile` pins the base to:
 
-- `ghcr.io/ggerganov/llama.cpp:server-cuda-b5401` (via `LLAMACPP_IMAGE_TAG` build arg)
+- `ghcr.io/ggml-org/llama.cpp:server-cuda-b8740` by default (override with `LLAMACPP_IMAGE_TAG` at build time)
 
 Why this pin:
 
-- Qwen docs list `b5092` as the minimum for Qwen3/Qwen3MoE support.
-- `b5401` is above that floor while remaining a fixed non-HEAD build.
+- Qwen3-related flags such as `--reasoning-budget` and `--chat-template-kwargs` follow upstream llama.cpp PRs and release notes; treat the design doc as the narrative source of truth instead of stale single “build number” claims.
+- `server-cuda-b8740` is a fixed non-HEAD CUDA server image tag aligned with the Dockerfile default (newer than `b8660` on GHCR for Qwen3 thinking / `--reasoning-budget` / `--chat-template-kwargs` fixes).
 - Existing Qwen2/Qwen2.5 GGUF workflows remain in the same llama.cpp runtime family and OpenAI-compatible `llama-server` surface.
+
+After `docker build`, record the exact server binary in ops notes (output varies by image tag):
+
+```bash
+docker run --rm <image> /app/llama-server --version
+```
+
+Replace `<image>` with the tag you built (for example `orion-llamacpp-host:0.1.0`). Paste the printed version into your runbook; do not copy a version string from this README unless you have just run the command and captured real output.
 
 ### Build with the pinned target
 
@@ -447,7 +455,7 @@ docker compose \
 ### Optional explicit build tag override
 
 ```bash
-LLAMACPP_IMAGE_TAG=server-cuda-b5401 docker compose \
+LLAMACPP_IMAGE_TAG=server-cuda-b8740 docker compose \
   --env-file services/orion-llamacpp-host/.env_example \
   -f services/orion-llamacpp-host/docker-compose.yml \
   build orion-llamacpp-host
@@ -455,7 +463,7 @@ LLAMACPP_IMAGE_TAG=server-cuda-b5401 docker compose \
 
 ### Rollback
 
-If regression appears, rollback to prior known-good image tag:
+If regression appears, rollback to your organization’s last known-good base tag. Legacy example (older pin only—replace with the tag you actually used):
 
 ```bash
 LLAMACPP_IMAGE_TAG=server-cuda-b4719 docker compose \
@@ -474,3 +482,36 @@ MODEL_QWEN3_PATH=/mnt/telemetry/llm-cache/gguf/Qwen3-30B-A3B-Q4_K_M.gguf \
 IMAGE=orion-llamacpp-host:0.1.0 \
 services/orion-llamacpp-host/scripts/validate_llamacpp_upgrade.sh
 ```
+
+### Verifying thinking off after upgrade
+
+Design background: [docs/2026-05-09-orion-llamacpp-host-rebuild-design.md](../../docs/2026-05-09-orion-llamacpp-host-rebuild-design.md).
+
+Fast checks (no live GPU endpoint required beyond what the tests already expect):
+
+```bash
+./scripts/test_service.sh orion-llamacpp-host services/orion-llamacpp-host/tests/ -q --tb=short
+```
+
+Live verification against a **local Docker** build and GGUF on disk:
+
+```bash
+IMAGE=orion-llamacpp-host:0.1.0 \
+MODEL_QWEN3_PATH=/path/to/your/Qwen3.gguf \
+CUDA_VISIBLE_DEVICES=0 \
+bash services/orion-llamacpp-host/scripts/verify_qwen3_thinking_off_live.sh
+```
+
+- `IMAGE` defaults to `orion-llamacpp-host:0.1.0` if unset.
+- `MODEL_QWEN3_PATH` must point at the Qwen3 GGUF you are validating.
+- `CUDA_VISIBLE_DEVICES` selects the GPU visible inside the check (adjust per host).
+
+**Atlas quick lane (live, no Docker):** hit the **running** `llama-server` on the Hub/quick worker (Tailscale or host IP, port from `ATLAS_FAST_HOST_PORT`, usually `8013`). Per-request `chat_template_kwargs` is sent in the JSON body so thinking can be forced off **without** restarting the worker (requires `server-cuda-b8740`+ class binary and Qwen3-capable profile).
+
+```bash
+export ATLAS_LLAMACPP_QUICK_URL=http://<atlas-host>:8013
+export ATLAS_QUICK_CHAT_MODEL=<exact-model-id-the-server-uses>
+bash services/orion-llamacpp-host/scripts/verify_atlas_quick_llamacpp_thinking_off.sh
+```
+
+**Via `orion-llm-gateway` (bus):** callers may pass `options.chat_template_kwargs` (e.g. `{"enable_thinking": false}`) on `ChatRequestPayload`; the gateway forwards that field to `llamacpp` / `llama-cola` OpenAI-compatible backends on each request.

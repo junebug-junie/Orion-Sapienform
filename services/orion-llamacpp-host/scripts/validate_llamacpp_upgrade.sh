@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Validates a built orion-llamacpp-host image for:
 # 1) pinned build tag/version visibility
 # 2) CUDA availability
@@ -92,4 +94,11 @@ echo "[6/7] llama-server startup (Qwen3)"
 run_server_boot "${MODEL_QWEN3_PATH}" "qwen3"
 
 echo "[7/7] Basic inference checks complete for both model families."
-echo "Done. Review output for any changed warnings/flags." 
+
+if [[ "${VERIFY_QWEN3_THINKING_OFF:-}" == "1" && -n "${MODEL_QWEN3_PATH:-}" ]]; then
+  echo "[optional] Qwen3 thinking-off live gates (VERIFY_QWEN3_THINKING_OFF=1)"
+  IMAGE="${IMAGE}" MODEL_QWEN3_PATH="${MODEL_QWEN3_PATH}" CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" \
+    bash "${SCRIPT_DIR}/verify_qwen3_thinking_off_live.sh"
+fi
+
+echo "Done. Review output for any changed warnings/flags."

@@ -17,6 +17,52 @@ ACTIONS_RESPOND_TO_JUNIPER_CORTEX_VERB = "actions.respond_to_juniper_collapse_mi
 SKILL_BIOMETRICS_SNAPSHOT_V1 = "skills.biometrics.snapshot.v1"
 SKILL_GPU_NVIDIA_SMI_SNAPSHOT_V1 = "skills.gpu.nvidia_smi_snapshot.v1"
 SKILL_NOTIFY_CHAT_MESSAGE_V1 = "skills.system.notify_chat_message.v1"
+SKILL_DOCKER_PS_STATUS_V1 = "skills.docker.ps_status.v1"
+
+
+def _docker_short_id(raw: Any) -> str:
+    if raw is None:
+        return "unknown"
+    s = str(raw).strip()
+    if not s:
+        return "unknown"
+    hex_chars: list[str] = []
+    for ch in s:
+        if ch in "0123456789abcdefABCDEF":
+            hex_chars.append(ch.lower())
+            if len(hex_chars) >= 12:
+                return "".join(hex_chars[:12])
+    return "unknown"
+
+
+def scheduler_docker_findings(skill_result: Dict[str, Any]) -> list[str]:
+    """Derive periodic-scheduler finding strings from skills.docker.ps_status.v1 result."""
+    if not isinstance(skill_result, dict) or not skill_result.get("available"):
+        return []
+    containers = skill_result.get("containers")
+    if not isinstance(containers, list) or not containers:
+        return []
+    out: list[str] = []
+    for item in containers:
+        if not isinstance(item, dict):
+            continue
+        status = item.get("status")
+        if not isinstance(status, str) or "(unhealthy)" not in status.lower():
+            continue
+        state_val = item.get("state")
+        if isinstance(state_val, str) and state_val.strip():
+            if state_val.strip().lower() != "running":
+                continue
+        else:
+            if not status.lower().startswith("up "):
+                continue
+        name_raw = item.get("name")
+        name = str(name_raw).strip() if name_raw is not None else ""
+        if not name:
+            name = "unnamed"
+        short_id = _docker_short_id(item.get("id"))
+        out.append(f"docker_unhealthy:{name}:{short_id}")
+    return out
 
 
 @dataclass(frozen=True)

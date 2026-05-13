@@ -126,38 +126,136 @@ class SocialRoomBridgeService:
 
     def normalize_callsyne_message(self, payload: Dict[str, Any]) -> CallSyneRoomMessageV1:
         room = payload.get("room") if isinstance(payload.get("room"), dict) else {}
+        message_obj = payload.get("message") if isinstance(payload.get("message"), dict) else {}
         sender = payload.get("sender") if isinstance(payload.get("sender"), dict) else {}
         metadata = dict(payload.get("metadata") or {})
         channel_key = payload.get("channel_key") if payload.get("channel_key") is not None else payload.get("channelKey")
         room_id = str(
             payload.get("room_id")
+            or payload.get("roomId")
+            or payload.get("RoomId")
             or room.get("id")
             or channel_key
             or metadata.get("channel_key")
             or metadata.get("channelKey")
             or ""
         ).strip()
-        thread_id = payload.get("thread_id") or payload.get("thread") or metadata.get("thread_id")
-        message_id = str(payload.get("message_id") or payload.get("id") or "").strip()
-        sender_id = str(payload.get("sender_id") or sender.get("id") or "").strip()
-        sender_name = payload.get("sender_name") or sender.get("name")
-        sender_kind = payload.get("sender_kind") or sender.get("kind") or metadata.get("sender_kind") or "peer_ai"
-        text = str(payload.get("text") or payload.get("content") or "").strip()
-        reply_to_message_id = payload.get("reply_to_message_id") or metadata.get("reply_to_message_id")
-        reply_to_sender_id = payload.get("reply_to_sender_id") or metadata.get("reply_to_sender_id")
-        target_participant_id = payload.get("target_participant_id") or metadata.get("target_participant_id") or reply_to_sender_id
-        target_participant_name = payload.get("target_participant_name") or metadata.get("target_participant_name")
-        mentioned_participant_ids = payload.get("mentioned_participant_ids") or metadata.get("mentioned_participant_ids") or []
-        mentioned_participant_names = payload.get("mentioned_participant_names") or metadata.get("mentioned_participant_names") or []
+        thread_id = (
+            payload.get("thread_id")
+            or payload.get("threadId")
+            or payload.get("ThreadId")
+            or payload.get("thread")
+            or metadata.get("thread_id")
+            or metadata.get("threadId")
+            or message_obj.get("thread_id")
+            or message_obj.get("threadId")
+            or message_obj.get("ThreadId")
+        )
+        message_id = str(
+            payload.get("message_id")
+            or payload.get("messageId")
+            or payload.get("MessageId")
+            or payload.get("id")
+            or message_obj.get("id")
+            or message_obj.get("message_id")
+            or message_obj.get("messageId")
+            or message_obj.get("MessageId")
+            or ""
+        ).strip()
+        sender_id = str(
+            payload.get("sender_id")
+            or payload.get("senderId")
+            or payload.get("SenderId")
+            or sender.get("id")
+            or message_obj.get("sender_id")
+            or message_obj.get("senderId")
+            or message_obj.get("SenderId")
+            or ""
+        ).strip()
+        sender_name = (
+            payload.get("sender_name")
+            or payload.get("senderName")
+            or payload.get("SenderName")
+            or sender.get("name")
+            or message_obj.get("sender_name")
+            or message_obj.get("senderName")
+            or message_obj.get("SenderName")
+        )
+        sender_kind = (
+            payload.get("sender_kind")
+            or payload.get("senderKind")
+            or payload.get("SenderKind")
+            or sender.get("kind")
+            or metadata.get("sender_kind")
+            or metadata.get("senderKind")
+            or message_obj.get("sender_kind")
+            or message_obj.get("senderKind")
+            or message_obj.get("SenderKind")
+            or "peer_ai"
+        )
+        text = str(
+            payload.get("text")
+            or payload.get("content")
+            or payload.get("Text")
+            or payload.get("Content")
+            or message_obj.get("text")
+            or message_obj.get("content")
+            or message_obj.get("Text")
+            or message_obj.get("Content")
+            or ""
+        ).strip()
+        reply_to_message_id = (
+            payload.get("reply_to_message_id")
+            or payload.get("replyToMessageId")
+            or metadata.get("reply_to_message_id")
+            or metadata.get("replyToMessageId")
+        )
+        reply_to_sender_id = (
+            payload.get("reply_to_sender_id")
+            or payload.get("replyToSenderId")
+            or metadata.get("reply_to_sender_id")
+            or metadata.get("replyToSenderId")
+        )
+        target_participant_id = (
+            payload.get("target_participant_id")
+            or payload.get("targetParticipantId")
+            or metadata.get("target_participant_id")
+            or metadata.get("targetParticipantId")
+            or reply_to_sender_id
+        )
+        target_participant_name = (
+            payload.get("target_participant_name")
+            or payload.get("targetParticipantName")
+            or metadata.get("target_participant_name")
+            or metadata.get("targetParticipantName")
+        )
+        mentioned_participant_ids = (
+            payload.get("mentioned_participant_ids")
+            or payload.get("mentionedParticipantIds")
+            or metadata.get("mentioned_participant_ids")
+            or metadata.get("mentionedParticipantIds")
+            or []
+        )
+        mentioned_participant_names = (
+            payload.get("mentioned_participant_names")
+            or payload.get("mentionedParticipantNames")
+            or metadata.get("mentioned_participant_names")
+            or metadata.get("mentionedParticipantNames")
+            or []
+        )
         mentions_orion = bool(
             payload.get("mentions_orion")
+            or payload.get("mentionsOrion")
             or metadata.get("mentions_orion")
+            or metadata.get("mentionsOrion")
             or self.settings.social_bridge_self_name.lower() in text.lower()
         )
         created_at = (
             payload.get("created_at")
+            or payload.get("createdAt")
             or payload.get("timestamp")
             or payload.get("sent_at")
+            or payload.get("sentAt")
             or _utcnow_iso()
         )
         normalized = CallSyneRoomMessageV1(
@@ -381,7 +479,35 @@ class SocialRoomBridgeService:
             message.message_id,
             session_id,
         )
-        hub_result = await self.hub_client.chat(payload=hub_payload, session_id=session_id)
+        try:
+            hub_result = await self.hub_client.chat(payload=hub_payload, session_id=session_id)
+        except Exception as exc:
+            # Allow webhook retries to re-attempt this message when upstream chat times out/fails.
+            self._seen.pop(dedupe_key, None)
+            correlation_id = str(uuid4())
+            skip_reason = "hub_timeout" if isinstance(exc, httpx.TimeoutException) else "hub_request_failed"
+            logger.warning(
+                "room_hub_chat_failed room_id=%s message_id=%s correlation_id=%s reason=%s error=%s",
+                message.room_id,
+                message.message_id,
+                correlation_id,
+                skip_reason,
+                exc,
+            )
+            await self._publish(
+                self.settings.room_skipped_channel,
+                "external.room.turn.skipped.v1",
+                self._skip_event(message, skip_reason, correlation_id=correlation_id, decision=decision),
+            )
+            if self.settings.social_bridge_return_2xx_on_delivery_failure:
+                return {
+                    "status": "delivery_failed",
+                    "reason": skip_reason,
+                    "message_id": message.message_id,
+                    "correlation_id": correlation_id,
+                    "error": str(exc),
+                }
+            raise
         reply_text = str(hub_result.get("text") or "").strip()
         gif_policy = reconcile_gif_policy_with_reply_text(policy=gif_policy, reply_text=reply_text)
         correlation_id = str(hub_result.get("correlation_id") or uuid4())

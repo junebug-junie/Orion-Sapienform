@@ -48,6 +48,7 @@ from .autonomy_constitution import (
     validate_autonomy_constitution,
 )
 from .social_room import is_social_room_payload, social_room_client_meta
+from . import social_room_inspection_cache
 from .service_logs import collect_service_inventory
 from orion.cognition.verb_activation import build_verb_list
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -2048,6 +2049,9 @@ async def api_chat(
                     trace_verb=(result.get("routing_debug") or {}).get("verb"),
                     memory_digest=result.get("memory_digest"),
                 )
+                _social_room_id = str((payload.get("external_room") or {}).get("room_id") or "").strip()
+                if _social_room_id and result.get("routing_debug"):
+                    social_room_inspection_cache.store(_social_room_id, result["routing_debug"])
             if latest_user_prompt:
                 envelopes.append(
                     build_chat_history_envelope(
@@ -2186,6 +2190,31 @@ async def api_chat(
             )
 
     return result
+
+
+# ======================================================================
+# 🔭 SOCIAL ROOM INSPECTION — latest routing_debug poll endpoint
+# ======================================================================
+@router.get("/api/social-room/inspection/latest")
+async def api_social_room_inspection_latest(
+    room_id: Optional[str] = Query(default=None),
+):
+    """
+    Return the most recent social-room routing_debug (which contains
+    social_inspection) stored after the last Hub social-room chat turn.
+
+    The Hub UI polls this endpoint so the Social Inspection panel updates
+    even when the turn was routed through orion-social-room-bridge rather
+    than the Hub WebSocket.
+    """
+    entry = (
+        social_room_inspection_cache.get(room_id)
+        if room_id
+        else social_room_inspection_cache.get_latest()
+    )
+    if entry is None:
+        return {"routing_debug": None, "stored_at": None, "room_id": None}
+    return entry
 
 
 @router.get("/api/workflow/schedules")

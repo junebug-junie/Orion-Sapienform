@@ -452,7 +452,10 @@ def test_mesh_up_all_services_runs_allowlisted_script(monkeypatch, tmp_path):
     script_dir = tmp_path / "mesh-utilities" / "common"
     script_dir.mkdir(parents=True)
     script = script_dir / "up_all_services.sh"
-    script.write_text("#!/usr/bin/env bash\necho mesh_up_ok\n", encoding="utf-8")
+    script.write_text(
+        "#!/usr/bin/env bash\nset -u\necho \"EXCLUDE_SERVICES_ADD=${EXCLUDE_SERVICES_ADD:-}\"\necho mesh_up_ok\n",
+        encoding="utf-8",
+    )
     script.chmod(0o755)
     monkeypatch.setattr(verb_adapters.self_study_module, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(verb_adapters.settings, "skills_allow_mesh_service_scripts", True)
@@ -463,14 +466,19 @@ def test_mesh_up_all_services_runs_allowlisted_script(monkeypatch, tmp_path):
     data = json.loads(out.final_text)
     assert out.ok is True
     assert data["status"] == "success"
-    assert "mesh_up_ok" in (data.get("stdout_stderr_tail") or "")
+    tail = data.get("stdout_stderr_tail") or ""
+    assert "orion-hub" in tail
+    assert "mesh_up_ok" in tail
 
 
 def test_mesh_refresh_service_envs_runs_allowlisted_script(monkeypatch, tmp_path):
     script_dir = tmp_path / "mesh-utilities" / "common"
     script_dir.mkdir(parents=True)
     script = script_dir / "refresh_service_envs.sh"
-    script.write_text("#!/usr/bin/env bash\necho env_refresh_ok\n", encoding="utf-8")
+    script.write_text(
+        "#!/usr/bin/env bash\nset -u\necho \"EXCLUDE_SERVICES_ADD=${EXCLUDE_SERVICES_ADD:-}\"\necho env_refresh_ok\n",
+        encoding="utf-8",
+    )
     script.chmod(0o755)
     monkeypatch.setattr(verb_adapters.self_study_module, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(verb_adapters.settings, "skills_allow_mesh_service_scripts", True)
@@ -481,4 +489,6 @@ def test_mesh_refresh_service_envs_runs_allowlisted_script(monkeypatch, tmp_path
     data = json.loads(out.final_text)
     assert out.ok is True
     assert data["status"] == "success"
-    assert "env_refresh_ok" in (data.get("stdout_stderr_tail") or "")
+    tail = data.get("stdout_stderr_tail") or ""
+    assert "orion-hub" in tail
+    assert "env_refresh_ok" in tail

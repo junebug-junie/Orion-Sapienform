@@ -11409,4 +11409,28 @@ loadDismissedIds();
     });
   }
 
+  // ─────────────────────────────────────────────────────────────────────
+  // Social Room Inspection — bridge-turn polling
+  // Polls /api/social-room/inspection/latest every 8 s so the Social
+  // Inspection panel updates for turns routed through the bridge (which
+  // bypass the Hub WebSocket used for direct UI turns).
+  // ─────────────────────────────────────────────────────────────────────
+  let _socialInspectionPollLastStoredAt = null;
+  async function _pollSocialRoomInspection() {
+    if (!socialInspectionApi.shouldShowSocialInspection) return;
+    try {
+      const res = await fetch('/api/social-room/inspection/latest');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data || !data.routing_debug || !data.stored_at) return;
+      if (data.stored_at === _socialInspectionPollLastStoredAt) return;
+      _socialInspectionPollLastStoredAt = data.stored_at;
+      syncSocialInspectionFromRouteDebug(data.routing_debug);
+    } catch (_) {
+      // network hiccup — ignore, will retry next interval
+    }
+  }
+  setInterval(_pollSocialRoomInspection, 8000);
+
 });
+

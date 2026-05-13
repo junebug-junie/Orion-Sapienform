@@ -43,3 +43,17 @@ def test_release_deletes_inflight():
         redis.delete.assert_awaited_once()
 
     asyncio.run(_go())
+
+
+def test_mark_done_sets_key_with_ttl():
+    async def _go() -> None:
+        redis = MagicMock()
+        redis.set = AsyncMock(return_value=True)
+        await ig.mark_done(redis, prefix="p", trace_id="t1", status="ok", ttl_sec=3600)
+        redis.set.assert_awaited_once()
+        args, kwargs = redis.set.await_args
+        assert args[0] == ig._done_key("p", "t1")
+        assert args[1] == "ok"
+        assert kwargs.get("ex") == 3600
+
+    asyncio.run(_go())

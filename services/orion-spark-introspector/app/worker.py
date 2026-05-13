@@ -65,6 +65,7 @@ _VALENCE_ANCHORS_EXPIRES_AT: float = 0.0
 _INTRO_SEM: asyncio.Semaphore | None = None
 _CANDIDATE_CACHE_LOCK = asyncio.Lock()
 _TISSUE_LOCK = asyncio.Lock()
+_INTRO_DROP_SERIALIZER: asyncio.Lock | None = None
 _LAST_HEAVY_INTRO_MONO: float = 0.0
 _REDIS_CLIENT: Redis | None = None
 
@@ -88,23 +89,37 @@ async def _redis_for_idempotency() -> Redis | None:
     return _REDIS_CLIENT
 
 
+def _intro_drop_serializer() -> asyncio.Lock:
+    global _INTRO_DROP_SERIALIZER
+    if _INTRO_DROP_SERIALIZER is None:
+        _INTRO_DROP_SERIALIZER = asyncio.Lock()
+    return _INTRO_DROP_SERIALIZER
+
+
 async def _try_acquire_intro_sem() -> bool:
     """
     Acquire intro semaphore without accidentally blocking when DROP_ON_PRESSURE
     and ACQUIRE_TIMEOUT_SEC<=0 (immediate drop if busy).
+
+    The locked()+acquire() sequence runs under a per-event-loop serializer lock
+    so two concurrent handlers cannot both observe a free semaphore then block on acquire().
     """
     sem = _intro_sem()
     acquire_timeout = float(settings.spark_introspection_acquire_timeout_sec)
 
     if settings.spark_introspection_drop_on_pressure and acquire_timeout <= 0:
-        if sem.locked():
-            return False
-        await sem.acquire()
-        return True
+        async with _intro_drop_serializer():
+            if sem.locked():
+                return False
+            await sem.acquire()
+            return True
 
     if acquire_timeout > 0:
-        await asyncio.wait_for(sem.acquire(), timeout=acquire_timeout)
-        return True
+        try:
+            await asyncio.wait_for(sem.acquire(), timeout=acquire_timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
 
     await sem.acquire()
     return True
@@ -1235,11 +1250,6 @@ async def handle_semantic_upsert(env: BaseEnvelope) -> None:
     x = np.linspace(-3, 3, wave_len)
     waveform = (np.exp(-x**2) * arousal_hint).astype(np.float32)
 
-    emb_expect = TISSUE.embedding_expectations.get(channel_key)
-    if emb_expect is not None and emb_expect.shape != emb.shape:
-        TISSUE.embedding_expectations[channel_key] = np.zeros((emb.shape[0],), dtype=np.float32)
-        TISSUE.last_embedding_input.pop(channel_key, None)
-
     feat_dim = 32
     feature_vec = np.zeros(feat_dim, dtype=np.float32)
 
@@ -1269,22 +1279,28 @@ async def handle_semantic_upsert(env: BaseEnvelope) -> None:
         stimulus[0] += gain * v_semantic
         stimulus[1] -= gain * v_semantic
 
-    TISSUE.propagate(
-        stimulus,
-        steps=2,
-        learning_rate=0.1,
-        channel_key=channel_key,
-        embedding=emb,
-        distress=0.0,
-    )
+    async with _TISSUE_LOCK:
+        emb_expect = TISSUE.embedding_expectations.get(channel_key)
+        if emb_expect is not None and emb_expect.shape != emb.shape:
+            TISSUE.embedding_expectations[channel_key] = np.zeros((emb.shape[0],), dtype=np.float32)
+            TISSUE.last_embedding_input.pop(channel_key, None)
 
-    phi_stats = {k: float(v) for k, v in (TISSUE.phi() or {}).items()}
-    phi_stats = _apply_signal_deltas(phi_stats)
-    tissue_valence = float(phi_stats.get("valence", 0.0))
-    arousal_display = max(0.0, min(1.0, 0.15 + (1.2 * novelty)))
-    coherence_stat = float(phi_stats.get("coherence", coherence))
-    tissue_novelty = float(phi_stats.get("novelty", novelty))
-    TISSUE.snapshot()
+        TISSUE.propagate(
+            stimulus,
+            steps=2,
+            learning_rate=0.1,
+            channel_key=channel_key,
+            embedding=emb,
+            distress=0.0,
+        )
+
+        phi_stats = {k: float(v) for k, v in (TISSUE.phi() or {}).items()}
+        phi_stats = _apply_signal_deltas(phi_stats)
+        tissue_valence = float(phi_stats.get("valence", 0.0))
+        arousal_display = max(0.0, min(1.0, 0.15 + (1.2 * novelty)))
+        coherence_stat = float(phi_stats.get("coherence", coherence))
+        tissue_novelty = float(phi_stats.get("novelty", novelty))
+        TISSUE.snapshot()
 
     try:
         telemetry_id = str(uuid4())

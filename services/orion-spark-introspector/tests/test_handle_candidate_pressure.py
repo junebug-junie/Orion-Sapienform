@@ -131,6 +131,27 @@ def test_semaphore_busy_drop_logs_degraded(caplog, monkeypatch):
     assert any("spark_introspection_degraded" in r.message and "semaphore_busy" in r.message for r in caplog.records)
 
 
+def test_try_acquire_intro_sem_concurrent_drop_only_one_slot(monkeypatch):
+    """DROP_ON_PRESSURE + zero timeout: two waiters must not both acquire (non-blocking semantics)."""
+    monkeypatch.setattr(spark_worker.settings, "spark_introspection_drop_on_pressure", True)
+    monkeypatch.setattr(spark_worker.settings, "spark_introspection_acquire_timeout_sec", 0.0)
+    monkeypatch.setattr(spark_worker.settings, "spark_introspection_max_inflight", 1)
+
+    async def _go() -> None:
+        spark_worker._INTRO_SEM = None
+
+        async def one() -> bool:
+            return await spark_worker._try_acquire_intro_sem()
+
+        a, b = await asyncio.gather(one(), one())
+        assert sum(1 for x in (a, b) if x) == 1
+        sem = spark_worker._intro_sem()
+        if a or b:
+            sem.release()
+
+    asyncio.run(_go())
+
+
 def test_enable_heavy_false_skips_bus(monkeypatch):
     emit = AsyncMock()
     tissue = AsyncMock()

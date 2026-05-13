@@ -184,6 +184,12 @@ class GraphAutonomyRepository:
             "yes",
             "on",
         }
+        raw_short_consumers = (
+            os.getenv("AUTONOMY_SHORT_CIRCUIT_CONSUMERS") or "chat_stance,autonomy_ctx_adapter"
+        ).strip()
+        self._short_circuit_consumers = frozenset(
+            part.strip().lower() for part in raw_short_consumers.split(",") if part.strip()
+        )
         self._query_client = query_client or (
             GraphQueryClient(
                 GraphQueryConfig(
@@ -547,15 +553,24 @@ LIMIT {self._goals_limit}
     def list_latest(self, subjects: Sequence[str], *, observer: dict[str, str] | None = None) -> list[AutonomyLookupV1]:
         corr = str((observer or {}).get("correlation_id") or "-")
         consumer = str((observer or {}).get("consumer") or "")
+        consumer_key = consumer.strip().lower()
         ordered_subjects = list(subjects)
         preferred_order = [name for name in ("orion", "relationship", "juniper") if name in ordered_subjects]
-        short_circuit_allowed = self._chat_stance_short_circuit and consumer == "chat_stance" and bool(preferred_order)
+        fanout = str((observer or {}).get("autonomy_subject_fanout") or "full").strip().lower()
+        bounded = fanout == "bounded"
+        short_circuit_allowed = (
+            self._chat_stance_short_circuit
+            and consumer_key in self._short_circuit_consumers
+            and bool(preferred_order)
+            and bounded
+        )
         started = time.perf_counter()
         logger.info(
-            "autonomy_graph_subject_fanout_start subjects=%s execution_mode=concurrent workers=%s correlation_id=%s short_circuit_allowed=%s",
+            "autonomy_graph_subject_fanout_start subjects=%s execution_mode=concurrent workers=%s correlation_id=%s autonomy_subject_fanout=%s short_circuit_allowed=%s",
             list(subjects),
             self._subject_max_workers,
             corr,
+            fanout,
             short_circuit_allowed,
         )
         results_by_subject: dict[str, AutonomyLookupV1] = {}

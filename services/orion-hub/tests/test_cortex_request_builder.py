@@ -241,6 +241,26 @@ def test_quick_chat_selection_uses_chat_quick_verb_without_changing_brain_mode_c
     assert debug["verb"] == "chat_quick"
 
 
+def test_chat_quick_full_stance_option_passes_to_cortex_request() -> None:
+    req, _, _ = hub_builder.build_chat_request(
+        payload={
+            "mode": "brain",
+            "verbs": ["chat_quick"],
+            "options": {"chat_quick_full_stance": True, "other_flag": 1},
+        },
+        session_id="sid-qfs",
+        user_id="user-qfs",
+        trace_id="trace-qfs",
+        default_mode="brain",
+        auto_default_enabled=False,
+        source_label="hub_ws",
+        prompt="Quick with stance",
+    )
+    assert req.verb == "chat_quick"
+    assert req.options.get("chat_quick_full_stance") is True
+    assert req.options.get("other_flag") == 1
+
+
 def test_social_room_profile_forces_brain_chat_verb_and_safe_recall() -> None:
     req, debug, _ = hub_builder.build_chat_request(
         payload={

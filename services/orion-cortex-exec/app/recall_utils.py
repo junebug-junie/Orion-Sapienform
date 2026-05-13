@@ -112,6 +112,46 @@ def _resolve_explicit_profile(recall_cfg: Dict[str, Any]) -> Tuple[Optional[str]
     return profile, "inherited"
 
 
+def resolve_recall_bus_rpc_wait_sec(
+    *,
+    verb: str | None,
+    step_timeout_ms: int,
+    rpc_timeout_override: float | None,
+    recall_rpc_timeout_sec: float,
+    chat_quick_recall_rpc_timeout_sec: float,
+) -> float:
+    """Bounded wait for RecallService bus RPC (min of plan step budget and lane-specific recall cap)."""
+    step_budget = max(1.0, float(step_timeout_ms) / 1000.0)
+    if rpc_timeout_override is not None:
+        return max(1.0, min(float(rpc_timeout_override), step_budget))
+    lane_cap = (
+        float(chat_quick_recall_rpc_timeout_sec)
+        if str(verb or "").strip().lower() == "chat_quick"
+        else float(recall_rpc_timeout_sec)
+    )
+    return max(1.0, min(step_budget, lane_cap))
+
+
+def apply_chat_quick_recall_profile_clamp(
+    *,
+    plan_verb_name: str | None,
+    recall_cfg: Dict[str, Any],
+    profile: str,
+    profile_source: str,
+    quick_profile: str,
+) -> Tuple[str, str]:
+    """Interactive chat_quick: default to a low-latency recall profile unless the client marked profile explicit."""
+    if str(plan_verb_name or "").strip().lower() != "chat_quick":
+        return profile, profile_source
+    _explicit_profile, explicit_source = _resolve_explicit_profile(recall_cfg)
+    if explicit_source == "explicit" or _normalize_bool(recall_cfg.get("profile_explicit"), default=False):
+        return profile, profile_source
+    qp = str(quick_profile or "").strip()
+    if not qp:
+        return profile, profile_source
+    return qp, "chat_quick_latency_default"
+
+
 def resolve_profile(
     recall_cfg: Dict[str, Any],
     *,
@@ -164,11 +204,20 @@ def delivery_safe_recall_decision(
     verb_profile: Optional[str] = None,
     user_text: str | None = None,
     runtime_mode: str | None = None,
+    plan_verb_name: str | None = None,
+    chat_quick_recall_profile: str = "assist.light.v1",
 ) -> Dict[str, Any]:
     recall_required = bool(recall_cfg.get("required", False))
     recall_enabled = recall_enabled_value(recall_cfg)
     explicit_profile, explicit_source = _resolve_explicit_profile(recall_cfg)
     base_profile, profile_source = resolve_profile(recall_cfg, verb_profile=verb_profile, runtime_mode=runtime_mode)
+    base_profile, profile_source = apply_chat_quick_recall_profile_clamp(
+        plan_verb_name=plan_verb_name,
+        recall_cfg=recall_cfg,
+        profile=base_profile,
+        profile_source=profile_source,
+        quick_profile=chat_quick_recall_profile,
+    )
     base_should_run, base_reason = should_run_recall(recall_cfg, steps)
 
     if output_mode in DELIVERY_SAFE_OUTPUT_MODES and not explicit_profile:

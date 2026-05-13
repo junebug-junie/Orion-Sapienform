@@ -20,3 +20,13 @@ def test_non_runtime_brain_step_keeps_context_prep_enabled():
         services=["LLMGatewayService"],
     )
     assert _should_prepare_brain_reply_context(step=step, ctx={"mode": "brain"}) is True
+
+
+def test_chat_quick_skips_heavy_brain_reply_context_prep():
+    step = ExecutionStep(
+        verb_name="chat_quick",
+        step_name="llm_chat_quick",
+        order=1,
+        services=["LLMGatewayService"],
+    )
+    assert _should_prepare_brain_reply_context(step=step, ctx={"mode": "brain"}) is False

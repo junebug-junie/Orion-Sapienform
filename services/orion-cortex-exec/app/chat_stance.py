@@ -8,6 +8,7 @@ import re
 import time
 from typing import Any, Dict, Iterable, List
 
+from orion.autonomy.fanout_policy import autonomy_subject_fanout_from_runtime_ctx
 from orion.autonomy.models import AutonomyEvidenceRefV1
 from orion.autonomy.reducer import AutonomyReducerInputV1, reduce_autonomy_state
 from orion.autonomy.summary import summarize_autonomy_state
@@ -1135,6 +1136,7 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
         "consumer": "chat_stance",
         "correlation_id": str(ctx.get("correlation_id") or ctx.get("trace_id") or ""),
         "session_id": str(ctx.get("session_id") or ""),
+        "autonomy_subject_fanout": autonomy_subject_fanout_from_runtime_ctx(ctx),
     }
     lookups = repository.list_latest(subjects, observer=observer)
     by_subject = {lookup.subject: lookup for lookup in lookups}

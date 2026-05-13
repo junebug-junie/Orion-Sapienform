@@ -51,7 +51,7 @@ from orion.cognition.personality.identity_context import build_identity_context,
 from .settings import settings
 from .clients import AgentChainClient, LLMGatewayClient, RecallClient, PlannerReactClient
 from .pageindex_client import JournalPageIndexClient
-from .recall_utils import resolve_profile
+from .recall_utils import apply_chat_quick_recall_profile_clamp, resolve_profile, resolve_recall_bus_rpc_wait_sec
 from .core_event_cache import format_recent_turn_effect_alerts, get_core_event_cache
 from .trace_cache import get_trace_cache
 from .spark_narrative import spark_phi_hint, spark_phi_narrative
@@ -1475,12 +1475,22 @@ async def run_recall_step(
     step_name: str = "recall",
     step_order: int = -1,
     diagnostic: bool = False,
+    rpc_timeout_sec: float | None = None,
 ) -> Tuple[StepExecutionResult, Dict[str, Any], str]:
+    """RecallService bus RPC. If ``rpc_timeout_sec`` is omitted, wait is ``min(STEP_TIMEOUT_MS, lane cap)``:
+    ``CHAT_QUICK_RECALL_TIMEOUT_SEC`` for ``ctx['verb'] == chat_quick``, else ``RECALL_RPC_TIMEOUT_SEC``.
+    """
     t0 = time.time()
     recall_client = RecallClient(bus)
     reply_channel = f"orion:exec:result:RecallService:{uuid4()}"
 
-    recall_timeout = float(settings.step_timeout_ms) / 1000.0
+    recall_timeout = resolve_recall_bus_rpc_wait_sec(
+        verb=ctx.get("verb"),
+        step_timeout_ms=settings.step_timeout_ms,
+        rpc_timeout_override=rpc_timeout_sec,
+        recall_rpc_timeout_sec=settings.recall_rpc_timeout_sec,
+        chat_quick_recall_rpc_timeout_sec=settings.chat_quick_recall_rpc_timeout_sec,
+    )
 
     fragment_text = _last_user_message(ctx) or ""
     _log_grounding_snapshot(
@@ -2679,6 +2689,8 @@ async def call_step_services(
 
             if service == "MetacogContextService":
                 logs.append("exec -> MetacogContextService")
+                # chat_quick: keep metacog hydration from dominating wall time (pad/state RPCs).
+                _metacog_rpc_timeout = 6.0 if str(step.verb_name or "") == "chat_quick" else 20.0
 
                 trigger_data = ctx.get("trigger") or ctx.get("args", {}).get("trigger", {})
 
@@ -2714,7 +2726,7 @@ async def call_step_services(
                         settings.channel_pad_rpc_request,
                         pad_env,
                         reply_channel=pad_reply_channel,
-                        timeout_sec=20.0,
+                        timeout_sec=_metacog_rpc_timeout,
                     )
                     pad_dec = bus.codec.decode(pad_msg.get("data"))
                     if pad_dec.ok:
@@ -2747,7 +2759,7 @@ async def call_step_services(
                         settings.channel_pad_rpc_request,
                         pad_stats_env,
                         reply_channel=pad_stats_reply_channel,
-                        timeout_sec=20.0,
+                        timeout_sec=_metacog_rpc_timeout,
                     )
                     pad_stats_dec = bus.codec.decode(pad_stats_msg.get("data"))
                     if pad_stats_dec.ok:
@@ -2788,7 +2800,7 @@ async def call_step_services(
                         settings.channel_state_request,
                         state_env,
                         reply_channel=state_reply_channel,
-                        timeout_sec=20.0,
+                        timeout_sec=_metacog_rpc_timeout,
                     )
                     state_dec = bus.codec.decode(state_msg.get("data"))
                     if state_dec.ok:
@@ -2972,6 +2984,14 @@ async def call_step_services(
                     is_recall_step=True,
                     runtime_mode=ctx.get("mode"),
                 )
+                plan_verb = ctx.get("verb") or step.verb_name
+                resolved_profile, profile_source = apply_chat_quick_recall_profile_clamp(
+                    plan_verb_name=str(plan_verb) if plan_verb is not None else None,
+                    recall_cfg=recall_cfg,
+                    profile=resolved_profile,
+                    profile_source=profile_source,
+                    quick_profile=settings.chat_quick_recall_profile,
+                )
                 logs.append(
                     f"rpc -> RecallService (reply={reply_channel}, profile={resolved_profile}, source={profile_source})"
                 )
@@ -2985,6 +3005,7 @@ async def call_step_services(
                     step_name=step.step_name,
                     step_order=step.order,
                     diagnostic=diagnostic,
+                    rpc_timeout_sec=None,
                 )
                 merged_result["RecallService"] = recall_debug
                 logs.extend(recall_step.logs)
@@ -3514,6 +3535,11 @@ def ensure_chat_stance_pipeline_ctx(ctx: Dict[str, Any]) -> None:
     build_chat_stance_inputs(ctx)
 
 
+def prepare_chat_quick_reply_context(ctx: Dict[str, Any]) -> None:
+    """Hub quick lane: identity YAML only — no stance/autonomy graph (must stay fast; GraphDB-free)."""
+    _inject_identity_context(ctx)
+
+
 def prepare_brain_reply_context(ctx: Dict[str, Any], *, force_refresh: bool = False) -> Dict[str, Any] | None:
     """
     Canonical preparation hook for brain-lane reply context.
@@ -3543,6 +3569,8 @@ def _should_prepare_brain_reply_context(*, step: ExecutionStep, ctx: Dict[str, A
     if mode != "brain":
         return False
     verb_name = str(step.verb_name or "").strip().lower()
+    if verb_name == "chat_quick":
+        return False
     if verb_name.startswith("skills.runtime."):
         return False
     return True

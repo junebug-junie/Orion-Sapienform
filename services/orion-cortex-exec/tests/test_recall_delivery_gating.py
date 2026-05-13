@@ -82,6 +82,45 @@ def test_concrete_ops_query_disables_default_reflective_recall() -> None:
     assert decision["reason"] == "concrete_ops_default_disabled"
 
 
+def test_chat_quick_clamps_inherited_profile_to_low_latency_default() -> None:
+    decision = delivery_safe_recall_decision(
+        {"enabled": True, "profile": "reflect.v1"},
+        [_memory_step()],
+        output_mode="direct_answer",
+        verb_profile="chat.general.v1",
+        plan_verb_name="chat_quick",
+        chat_quick_recall_profile="assist.light.v1",
+    )
+    assert decision["run_recall"] is True
+    assert decision["profile"] == "assist.light.v1"
+    assert decision["profile_source"] == "chat_quick_latency_default"
+
+
+def test_chat_quick_keeps_explicit_client_profile() -> None:
+    decision = delivery_safe_recall_decision(
+        {"enabled": True, "profile": "deep.graph.v1", "profile_explicit": True},
+        [_memory_step()],
+        verb_profile="chat.general.v1",
+        plan_verb_name="chat_quick",
+        chat_quick_recall_profile="assist.light.v1",
+    )
+    assert decision["profile"] == "deep.graph.v1"
+    assert decision["profile_source"] == "explicit"
+
+
+def test_chat_general_not_subject_to_chat_quick_profile_clamp() -> None:
+    decision = delivery_safe_recall_decision(
+        {"enabled": True, "profile": "reflect.v1"},
+        [_memory_step()],
+        output_mode="direct_answer",
+        verb_profile="chat.general.v1",
+        plan_verb_name="chat_general",
+        chat_quick_recall_profile="assist.light.v1",
+    )
+    assert decision["profile"] == "chat.general.v1"
+    assert decision["profile_source"] == "verb"
+
+
 def test_agent_mode_uses_chat_general_profile_when_inherited_reflect_arrives() -> None:
     decision = delivery_safe_recall_decision(
         {"enabled": True, "profile": "reflect.v1", "mode": "hybrid"},

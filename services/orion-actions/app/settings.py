@@ -5,6 +5,33 @@ from functools import lru_cache
 from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings
 
+# Docker Compose often passes `${VAR}` as "" when VAR is unset on the host; Pydantic
+# cannot parse that as bool. Blank strings fall back to the field default.
+_BLANK_ENV_BOOL_FIELDS = (
+    "orion_bus_enabled",
+    "orion_bus_enforce_catalog",
+    "actions_daily_run_on_startup",
+    "actions_daily_pulse_enabled",
+    "actions_daily_metacog_enabled",
+    "actions_async_messages_enabled",
+    "actions_daily_async_messages_enabled",
+    "actions_daily_email_enabled",
+    "actions_pending_attention_enabled",
+    "actions_preserve_generic_notify_enabled",
+    "actions_world_pulse_enabled",
+    "actions_skills_scheduler_enabled",
+    "actions_skills_run_on_startup",
+    "actions_skills_notify_enabled",
+    "actions_skills_docker_health_enabled",
+    "actions_journaling_enabled",
+    "actions_journaling_daily_enabled",
+    "actions_journaling_collapse_dense_only",
+    "actions_scheduler_daily_journal_messages_enabled",
+    "actions_scheduler_daily_journal_email_enabled",
+    "actions_journal_post_persist_notify_enabled",
+    "actions_self_experiments_enabled",
+)
+
 
 class Settings(BaseSettings):
     service_name: str = Field("orion-actions", alias="SERVICE_NAME")
@@ -110,6 +137,13 @@ class Settings(BaseSettings):
         env_file = ".env"
         extra = "ignore"
         populate_by_name = True
+
+    @field_validator(*_BLANK_ENV_BOOL_FIELDS, mode="before")
+    @classmethod
+    def _coerce_blank_env_bools(cls, value: object, info: ValidationInfo) -> object:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return cls.model_fields[info.field_name].default
+        return value
 
     @field_validator(
         "actions_journal_scheduler_recall_profile",

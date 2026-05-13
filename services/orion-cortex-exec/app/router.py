@@ -9,7 +9,12 @@ from typing import Any, Dict, List
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import ServiceRef
 
-from .executor import call_step_services, prepare_brain_reply_context, run_recall_step
+from .executor import (
+    call_step_services,
+    prepare_brain_reply_context,
+    prepare_chat_quick_reply_context,
+    run_recall_step,
+)
 from .situation import mark_orion_turn
 from .recall_utils import (
     delivery_safe_recall_decision,
@@ -703,6 +708,8 @@ class PlanRunner:
             verb_profile=verb_recall_profile,
             user_text=plan_ctx_latest_user_text(ctx),
             runtime_mode=mode,
+            plan_verb_name=plan.verb_name,
+            chat_quick_recall_profile=settings.chat_quick_recall_profile,
         )
         selected_profile = recall_policy["profile"]
         profile_source = recall_policy["profile_source"]
@@ -750,7 +757,15 @@ class PlanRunner:
 
         ctx["verb"] = plan.verb_name
         if mode == "brain" and not _is_runtime_skill_verb(plan.verb_name):
-            prepare_brain_reply_context(ctx)
+            if str(plan.verb_name or "").strip().lower() == "chat_quick":
+                opts_now = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
+                hub_full = bool(opts_now.get("chat_quick_full_stance"))
+                if hub_full:
+                    prepare_brain_reply_context(ctx)
+                else:
+                    prepare_chat_quick_reply_context(ctx)
+            else:
+                prepare_brain_reply_context(ctx)
         existing_scope = str(ctx.get("_run_scope_corr_id") or "")
         if existing_scope and existing_scope != correlation_id:
             logger.warning(
@@ -811,6 +826,7 @@ class PlanRunner:
                 recall_cfg=recall_cfg,
                 recall_profile=selected_profile,
                 diagnostic=diagnostic,
+                rpc_timeout_sec=None,
             )
             step_results.append(recall_step)
             memory_used = recall_step.status == "success"
@@ -848,6 +864,15 @@ class PlanRunner:
             if recall_step.status != "success":
                 overall_status = "fail" if recall_required else "partial"
                 soft_failure = not recall_required
+                if not recall_required:
+                    ctx["recall_soft_failed"] = True
+                    ctx["memory_used"] = False
+                    logger.info(
+                        "recall_fail_open_continuing corr=%s verb=%s recall_error=%s",
+                        correlation_id,
+                        plan.verb_name,
+                        recall_step.error,
+                    )
                 if recall_required:
                     return PlanExecutionResult(
                         verb_name=plan.verb_name,

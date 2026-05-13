@@ -24,6 +24,8 @@ let currentMode = "brain";
 let selectedPacks = [];
 let selectedVerbs = [];
 let modeVerbOverride = null;
+/** Hub quick lane: 'fast' = light prep; 'stance' = full brain/stance prep (slower, richer). */
+let chatQuickVariant = 'fast';
 let orionSessionId = localStorage.getItem('orion_sid') || null;
 let browserClientId = localStorage.getItem('orion_browser_client_id') || null;
 let presenceContext = null;
@@ -8100,6 +8102,7 @@ loadDismissedIds();
         verbs: ['chat_quick'],
         skillRunnerOrigin: true,
         skillRunnerLane: 'quick',
+        options: { chat_quick_full_stance: chatQuickVariant === 'stance' },
       };
     }
     if (laneMode === 'agent') {
@@ -8189,6 +8192,23 @@ loadDismissedIds();
 
   // Mode Switching
   const modeButtons = document.querySelectorAll('.mode-btn');
+  function closeQuickModeMenu() {
+    const menu = document.getElementById('quickModeMenu');
+    const chev = document.getElementById('quickModeMenuBtn');
+    if (menu) menu.classList.add('hidden');
+    if (chev) chev.setAttribute('aria-expanded', 'false');
+  }
+  function syncQuickMainButtonLabel() {
+    const b = document.getElementById('quickModeBtn');
+    if (!b) return;
+    if (chatQuickVariant === 'stance') {
+      b.textContent = 'Quick+';
+      b.title = 'Quick + stance (full brain prep)';
+    } else {
+      b.textContent = 'Quick';
+      b.title = 'Quick (fast lane)';
+    }
+  }
   function applyModeButtonSelection(selectedBtn) {
     modeButtons.forEach((b) => {
       b.classList.remove('bg-indigo-600', 'text-white', 'mode-btn-active');
@@ -8198,9 +8218,19 @@ loadDismissedIds();
         b.classList.add('bg-gray-700', 'text-gray-200');
       }
     });
+    const qChevron = document.getElementById('quickModeMenuBtn');
+    if (qChevron) {
+      qChevron.classList.remove('bg-indigo-600', 'text-white');
+      qChevron.classList.add('bg-indigo-500/30', 'text-indigo-100');
+    }
+    closeQuickModeMenu();
     if (selectedBtn) {
       selectedBtn.classList.add('mode-btn-active', 'text-white');
       selectedBtn.classList.remove('bg-gray-700', 'text-gray-200');
+      if (selectedBtn.id === 'quickModeBtn' && qChevron) {
+        qChevron.classList.add('bg-indigo-600', 'text-white');
+        qChevron.classList.remove('bg-indigo-500/30', 'text-indigo-100');
+      }
     }
   }
   modeButtons.forEach((btn) => {
@@ -8212,6 +8242,37 @@ loadDismissedIds();
       updateStatus(`Switched to ${modeLabel} mode.`);
     });
   });
+  const quickMenuBtn = document.getElementById('quickModeMenuBtn');
+  const quickModeMenu = document.getElementById('quickModeMenu');
+  if (quickMenuBtn && quickModeMenu) {
+    quickMenuBtn.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      quickModeMenu.classList.toggle('hidden');
+      quickMenuBtn.setAttribute('aria-expanded', String(!quickModeMenu.classList.contains('hidden')));
+    });
+    document.querySelectorAll('.quick-variant-item').forEach((item) => {
+      item.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const v = String(item.getAttribute('data-quick-variant') || '').trim();
+        if (v !== 'fast' && v !== 'stance') return;
+        chatQuickVariant = v;
+        currentMode = 'brain';
+        modeVerbOverride = 'chat_quick';
+        syncQuickMainButtonLabel();
+        const qMain = document.getElementById('quickModeBtn');
+        applyModeButtonSelection(qMain);
+        updateStatus(v === 'stance' ? 'Quick + stance (full prep).' : 'Quick (fast lane).');
+      });
+    });
+    document.addEventListener('mousedown', (e) => {
+      const g = document.getElementById('quickModeGroup');
+      if (!g || !quickModeMenu || quickModeMenu.classList.contains('hidden')) return;
+      if (g.contains(e.target)) return;
+      closeQuickModeMenu();
+    });
+  }
   const defaultModeButton = Array.from(modeButtons).find((btn) =>
     (btn.dataset.mode || 'brain') === currentMode
     && (btn.dataset.verbOverride || null) === modeVerbOverride
@@ -8219,6 +8280,7 @@ loadDismissedIds();
     || Array.from(modeButtons).find((btn) => (btn.dataset.mode || 'brain') === currentMode && !btn.dataset.verbOverride)
     || modeButtons[0];
   applyModeButtonSelection(defaultModeButton);
+  syncQuickMainButtonLabel();
 
   // --- 4. Logic Functions ---
 
@@ -9246,6 +9308,10 @@ loadDismissedIds();
     const effectiveVerbs = forceAgentPath
       ? []
       : (explicitVerbs !== null ? explicitVerbs : (modeVerbOverride ? [modeVerbOverride] : selectedVerbs));
+    const isChatQuickSend =
+      Array.isArray(effectiveVerbs) &&
+      effectiveVerbs.length === 1 &&
+      String(effectiveVerbs[0] || '').trim().toLowerCase() === 'chat_quick';
     const requestMode = forceAgentPath
       ? 'agent'
       : (opts && opts.mode ? String(opts.mode) : currentMode);
@@ -9267,6 +9333,12 @@ loadDismissedIds();
        presence_context: presenceContext,
        surface_context: { surface: 'hub_desktop', input_modality: 'typed' },
     };
+    const optFromOpts = opts && opts.options && typeof opts.options === 'object' ? { ...opts.options } : {};
+    if (isChatQuickSend) {
+      payload.options = { ...optFromOpts, chat_quick_full_stance: chatQuickVariant === 'stance' };
+    } else if (Object.keys(optFromOpts).length > 0) {
+      payload.options = optFromOpts;
+    }
     if (mindDefaultOnSendToggle && mindDefaultOnSendToggle.checked) {
       payload.context = payload.context && typeof payload.context === "object" ? payload.context : {};
       payload.context.metadata = payload.context.metadata && typeof payload.context.metadata === "object"
@@ -9361,7 +9433,7 @@ loadDismissedIds();
         reader.readAsDataURL(blob);
         reader.onloadend = () => {
            if(socket && socket.readyState === WebSocket.OPEN) {
-              socket.send(JSON.stringify({
+              const audioPayload = {
                audio: reader.result.split(',')[1],
                mode: currentMode,
                session_id: orionSessionId,
@@ -9373,7 +9445,17 @@ loadDismissedIds();
                recall_required: recallRequiredToggle ? recallRequiredToggle.checked : false,
                presence_context: presenceContext,
                surface_context: { surface: 'hub_desktop', input_modality: 'spoken' },
-             }));
+              };
+              const audioLaneVerbs = modeVerbOverride ? [modeVerbOverride] : selectedVerbs;
+              const audioIsChatQuick =
+                Array.isArray(audioLaneVerbs) &&
+                audioLaneVerbs.length === 1 &&
+                String(audioLaneVerbs[0] || '').trim().toLowerCase() === 'chat_quick';
+              if (audioIsChatQuick) {
+                audioPayload.verbs = ['chat_quick'];
+                audioPayload.options = { chat_quick_full_stance: chatQuickVariant === 'stance' };
+              }
+              socket.send(JSON.stringify(audioPayload));
              updateStatus('Audio sent.');
            } else {
                updateStatus('Offline. Cannot send audio.');

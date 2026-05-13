@@ -708,6 +708,8 @@ class PlanRunner:
             verb_profile=verb_recall_profile,
             user_text=plan_ctx_latest_user_text(ctx),
             runtime_mode=mode,
+            plan_verb_name=plan.verb_name,
+            chat_quick_recall_profile=settings.chat_quick_recall_profile,
         )
         selected_profile = recall_policy["profile"]
         profile_source = recall_policy["profile_source"]
@@ -816,11 +818,6 @@ class PlanRunner:
                 recall_reason,
                 recall_policy["recall_gating_reason"],
             )
-            recall_rpc_cap = (
-                float(settings.chat_quick_recall_rpc_timeout_sec)
-                if str(plan.verb_name or "").strip().lower() == "chat_quick"
-                else None
-            )
             recall_step, recall_debug, _ = await run_recall_step(
                 bus,
                 source=source,
@@ -829,7 +826,7 @@ class PlanRunner:
                 recall_cfg=recall_cfg,
                 recall_profile=selected_profile,
                 diagnostic=diagnostic,
-                rpc_timeout_sec=recall_rpc_cap,
+                rpc_timeout_sec=None,
             )
             step_results.append(recall_step)
             memory_used = recall_step.status == "success"
@@ -867,6 +864,15 @@ class PlanRunner:
             if recall_step.status != "success":
                 overall_status = "fail" if recall_required else "partial"
                 soft_failure = not recall_required
+                if not recall_required:
+                    ctx["recall_soft_failed"] = True
+                    ctx["memory_used"] = False
+                    logger.info(
+                        "recall_fail_open_continuing corr=%s verb=%s recall_error=%s",
+                        correlation_id,
+                        plan.verb_name,
+                        recall_step.error,
+                    )
                 if recall_required:
                     return PlanExecutionResult(
                         verb_name=plan.verb_name,

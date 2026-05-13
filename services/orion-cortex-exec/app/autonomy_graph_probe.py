@@ -23,7 +23,10 @@ def run_probe(subjects: list[str]) -> list[dict[str, object]]:
         subject_max_workers=resolve_autonomy_subject_max_workers(),
         subquery_max_workers=resolve_autonomy_subquery_max_workers(),
     )
-    lookups = repository.list_latest(subjects, observer={"consumer": "autonomy_graph_probe"})
+    lookups = repository.list_latest(
+        subjects,
+        observer={"consumer": "autonomy_graph_probe", "autonomy_subject_fanout": "full"},
+    )
     return [
         {
             "subject": item.subject,

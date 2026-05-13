@@ -1323,6 +1323,8 @@ class Supervisor:
             verb_profile=verb_recall_profile,
             user_text=_last_user_message(ctx),
             runtime_mode=ctx.get("mode") or req.metadata.get("mode") or "agent",
+            plan_verb_name=req.verb_name,
+            chat_quick_recall_profile=settings.chat_quick_recall_profile,
         )
         selected_profile = recall_policy["profile"]
         profile_source = recall_policy["profile_source"]
@@ -1350,9 +1352,19 @@ class Supervisor:
                 recall_cfg=recall_cfg,
                 recall_profile=selected_profile,
                 diagnostic=bool(ctx.get("diagnostic")),
+                rpc_timeout_sec=None,
             )
             step_results.append(recall_step)
             memory_used = recall_step.status == "success"
+            if recall_step.status != "success" and not recall_required:
+                ctx["recall_soft_failed"] = True
+                ctx["memory_used"] = False
+                logger.info(
+                    "supervisor_recall_fail_open_continuing corr=%s verb=%s recall_error=%s",
+                    correlation_id,
+                    req.verb_name,
+                    recall_step.error,
+                )
             if recall_required and recall_step.status != "success":
                 return PlanExecutionResult(
                     verb_name=req.verb_name,

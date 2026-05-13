@@ -16,6 +16,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+from orion.autonomy.fanout_policy import autonomy_subject_fanout_from_runtime_ctx
 from orion.core.schemas.cognitive_substrate import (
     DriveNodeV1,
     GoalNodeV1,
@@ -194,7 +195,12 @@ def map_autonomy_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV1
 
     correlation_id = str(ctx.get("correlation_id") or ctx.get("trace_id") or "")
     session_id = str(ctx.get("session_id") or "")
-    observer = {"consumer": "autonomy_ctx_adapter", "correlation_id": correlation_id, "session_id": session_id}
+    observer = {
+        "consumer": "autonomy_ctx_adapter",
+        "correlation_id": correlation_id,
+        "session_id": session_id,
+        "autonomy_subject_fanout": autonomy_subject_fanout_from_runtime_ctx(ctx),
+    }
 
     try:
         lookups = repository.list_latest(list(_SUBJECTS), observer=observer)

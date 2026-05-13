@@ -120,6 +120,20 @@ class Settings(BaseSettings):
     turn_effect_alerts_dedupe_window_sec: int = Field(600, alias="TURN_EFFECT_ALERTS_DEDUPE_WINDOW_SEC")
     turn_effect_alerts_dedupe_eps: float = Field(0.02, alias="TURN_EFFECT_ALERTS_DEDUPE_EPS")
 
+    # Spark heavy introspection pressure / idempotency (Phase 1 lane isolation)
+    spark_introspection_enable_heavy: bool = Field(True, alias="SPARK_INTROSPECTION_ENABLE_HEAVY")
+    spark_introspection_max_inflight: int = Field(1, alias="SPARK_INTROSPECTION_MAX_INFLIGHT")
+    spark_introspection_timeout_sec: float = Field(45.0, alias="SPARK_INTROSPECTION_TIMEOUT_SEC")
+    spark_introspection_queue_max_age_sec: float = Field(180.0, alias="SPARK_INTROSPECTION_QUEUE_MAX_AGE_SEC")
+    spark_introspection_drop_on_pressure: bool = Field(True, alias="SPARK_INTROSPECTION_DROP_ON_PRESSURE")
+    spark_introspection_acquire_timeout_sec: float = Field(0.0, alias="SPARK_INTROSPECTION_ACQUIRE_TIMEOUT_SEC")
+    spark_introspection_min_interval_sec: float = Field(0.0, alias="SPARK_INTROSPECTION_MIN_INTERVAL_SEC")
+    spark_introspection_idempotency_enable: bool = Field(True, alias="SPARK_INTROSPECTION_IDEMPOTENCY_ENABLE")
+    spark_introspection_redis_url: str | None = Field(None, alias="SPARK_INTROSPECTION_REDIS_URL")
+    spark_introspection_key_prefix: str = Field("spark:introspection", alias="SPARK_INTROSPECTION_KEY_PREFIX")
+    spark_introspection_inflight_ttl_sec: int = Field(300, alias="SPARK_INTROSPECTION_INFLIGHT_TTL_SEC")
+    spark_introspection_done_ttl_sec: int = Field(86400, alias="SPARK_INTROSPECTION_DONE_TTL_SEC")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

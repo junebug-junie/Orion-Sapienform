@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
+
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
 from app import worker as spark_worker
 from app.worker import handle_candidate

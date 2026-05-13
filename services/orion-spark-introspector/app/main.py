@@ -65,7 +65,9 @@ async def lifespan(app: FastAPI):
         _cfg(),
         patterns=patterns,
         handler=multiplexer,
+        concurrent_handlers=True,
     )
+    logger.info("Spark Introspector Hunter concurrent_handlers=True")
     logger.info(f"Starting Spark Introspector Hunter patterns={patterns}")
 
     # Run Hunter in background

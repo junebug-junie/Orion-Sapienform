@@ -3576,6 +3576,12 @@ def _should_prepare_brain_reply_context(*, step: ExecutionStep, ctx: Dict[str, A
     verb_name = str(step.verb_name or "").strip().lower()
     if verb_name == "chat_quick":
         return False
+    # Spark introspection uses mode=brain but only renders introspect_spark.j2 from
+    # context.metadata (prompt/response/spark_meta). Full brain stance + unified
+    # beliefs (GraphDB/recall/social) is wasted work and dominated latency after the
+    # 2026-05-09 cognitive unification layer landed in build_chat_stance_inputs.
+    if verb_name == "introspect_spark":
+        return False
     if verb_name.startswith("skills.runtime."):
         return False
     return True

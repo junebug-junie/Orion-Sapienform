@@ -202,6 +202,11 @@ def _unified_beliefs_for_stance(ctx: Dict[str, Any]) -> UnifiedRelationalBeliefS
     and the affected anchor slice ``degraded`` flag.
     """
     try:
+        from orion.substrate.relational.layer import _lightweight_belief_set, _skip_unified_beliefs_ctx
+
+        if _skip_unified_beliefs_ctx(ctx):
+            return _lightweight_belief_set(("orion", "relationship", "juniper"))
+
         layer = _get_unification_layer()
         beliefs = layer.beliefs_for_stance(
             anchors=("orion", "relationship", "juniper"),

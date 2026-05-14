@@ -432,11 +432,8 @@ def build_cortex_chat_request(
                 "skill_runner_deterministic_requires_skill_verb",
                 "Skill Runner deterministic lane requires a catalogue prompt that resolves to exactly one skills.* verb.",
             )
-        if mode != "brain":
-            raise HubRequestValidationError(
-                "skill_runner_deterministic_requires_brain_mode",
-                "Skill Runner deterministic lane only runs in brain mode.",
-            )
+        mode = "brain"
+        selected_ui_route = "brain"
         options["force_agent_chain"] = False
         options.pop("supervised", None)
 

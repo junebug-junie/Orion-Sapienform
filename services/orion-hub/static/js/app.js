@@ -8094,10 +8094,9 @@ loadDismissedIds();
     };
   }
   function getSkillRunnerLaneOptions({ workflowId } = {}) {
-    // Catalogue prompts: always deterministic lane (brain + catalogue skills.* only; never chat_quick / agent).
+    // Catalogue prompts: deterministic lane (catalogue skills.* only; hub ignores chat UI mode for this send).
     if (!workflowId) {
       return {
-        mode: 'brain',
         verbs: [],
         skillRunnerOrigin: true,
         skillRunnerLane: 'deterministic',
@@ -9324,9 +9323,10 @@ loadDismissedIds();
     const requestMode = forceAgentPath
       ? 'agent'
       : (opts && opts.mode ? String(opts.mode) : currentMode);
+    const omitChatUiMode =
+      Boolean(opts && opts.skillRunnerOrigin && String(opts.skillRunnerLane || '').toLowerCase() === 'deterministic');
     const payload = {
        text_input: value,
-       mode: requestMode,
        session_id: orionSessionId,
        browser_client_id: ensureBrowserClientId(),
        disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
@@ -9342,6 +9342,9 @@ loadDismissedIds();
        presence_context: presenceContext,
        surface_context: { surface: 'hub_desktop', input_modality: 'typed' },
     };
+    if (!omitChatUiMode) {
+      payload.mode = requestMode;
+    }
     const optFromOpts = opts && opts.options && typeof opts.options === 'object' ? { ...opts.options } : {};
     if (isChatQuickSend) {
       payload.options = { ...optFromOpts, chat_quick_full_stance: chatQuickVariant === 'stance' };

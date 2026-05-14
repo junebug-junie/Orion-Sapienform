@@ -3,12 +3,12 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import asyncpg
 from orion.core.bus.bus_service_chassis import BaseChassis, ChassisConfig
 from orion.core.bus.codec import OrionCodec
 from orion.schemas.substrate_telemetry import SubstrateTierOutcomesPayloadV1
 
 from . import db
+from .pg_pool import pool
 from .settings import settings
 
 logger = logging.getLogger("orion.substrate.telemetry")
@@ -32,12 +32,9 @@ class SubstrateTelemetryService(BaseChassis):
     async def _retention_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                conn = await asyncpg.connect(dsn=settings.postgres_uri)
-                try:
+                async with pool().acquire() as conn:
                     await db.ensure_schema(conn)
                     await db.global_retention_sweep(conn, max_age_days=settings.retention_days)
-                finally:
-                    await conn.close()
             except Exception as exc:
                 logger.warning("substrate_telemetry_retention_sweep_failed err=%s", exc)
             try:
@@ -61,8 +58,7 @@ class SubstrateTelemetryService(BaseChassis):
             logger.warning("substrate_telemetry_payload_invalid err=%s", exc)
             return
         src = env.source
-        conn = await asyncpg.connect(dsn=settings.postgres_uri)
-        try:
+        async with pool().acquire() as conn:
             await db.ensure_schema(conn)
             await db.insert_event(
                 conn,
@@ -80,8 +76,6 @@ class SubstrateTelemetryService(BaseChassis):
                 correlation_id=env.correlation_id,
                 keep_newest=settings.per_correlation_row_cap,
             )
-        finally:
-            await conn.close()
 
     async def _run(self) -> None:
         ret_task = asyncio.create_task(self._retention_loop(), name="substrate-telemetry-retention")

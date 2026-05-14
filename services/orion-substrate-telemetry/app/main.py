@@ -9,6 +9,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from . import db
+from .pg_pool import close_pool, init_pool, pool
 from .service import SubstrateTelemetryService
 from .settings import settings
 
@@ -39,11 +40,15 @@ def _row_to_json(r: asyncpg.Record) -> dict[str, Any]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await init_pool()
+    async with pool().acquire() as conn:
+        await db.ensure_schema(conn)
     await svc.start_background()
     try:
         yield
     finally:
         await svc.stop()
+        await close_pool()
 
 
 app = FastAPI(title="orion-substrate-telemetry", lifespan=lifespan)
@@ -58,12 +63,9 @@ async def latest(
         cid = UUID(correlation_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="invalid_correlation_id")
-    conn = await asyncpg.connect(dsn=settings.postgres_uri)
-    try:
+    async with pool().acquire() as conn:
         await db.ensure_schema(conn)
         row = await db.fetch_latest(conn, correlation_id=cid)
-    finally:
-        await conn.close()
     if row is None:
         raise HTTPException(status_code=404, detail="not_found")
     return JSONResponse(_row_to_json(row))
@@ -79,12 +81,9 @@ async def history(
         cid = UUID(correlation_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="invalid_correlation_id")
-    conn = await asyncpg.connect(dsn=settings.postgres_uri)
-    try:
+    async with pool().acquire() as conn:
         await db.ensure_schema(conn)
         rows = await db.fetch_history(conn, correlation_id=cid, limit=limit)
-    finally:
-        await conn.close()
     return JSONResponse({"correlation_id": str(cid), "items": [_row_to_json(r) for r in rows]})
 
 

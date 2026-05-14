@@ -64,7 +64,6 @@ async def latest(
     except ValueError:
         raise HTTPException(status_code=400, detail="invalid_correlation_id")
     async with pool().acquire() as conn:
-        await db.ensure_schema(conn)
         row = await db.fetch_latest(conn, correlation_id=cid)
     if row is None:
         raise HTTPException(status_code=404, detail="not_found")
@@ -82,7 +81,6 @@ async def history(
     except ValueError:
         raise HTTPException(status_code=400, detail="invalid_correlation_id")
     async with pool().acquire() as conn:
-        await db.ensure_schema(conn)
         rows = await db.fetch_history(conn, correlation_id=cid, limit=limit)
     return JSONResponse({"correlation_id": str(cid), "items": [_row_to_json(r) for r in rows]})
 

@@ -33,7 +33,6 @@ class SubstrateTelemetryService(BaseChassis):
         while not self._stop.is_set():
             try:
                 async with pool().acquire() as conn:
-                    await db.ensure_schema(conn)
                     await db.global_retention_sweep(conn, max_age_days=settings.retention_days)
             except Exception as exc:
                 logger.warning("substrate_telemetry_retention_sweep_failed err=%s", exc)
@@ -59,7 +58,6 @@ class SubstrateTelemetryService(BaseChassis):
             return
         src = env.source
         async with pool().acquire() as conn:
-            await db.ensure_schema(conn)
             await db.insert_event(
                 conn,
                 correlation_id=env.correlation_id,

@@ -663,11 +663,26 @@ def api_substrate_tier_outcomes_latest(correlation_id: str = Query(...)) -> dict
     if tok:
         headers["X-Telemetry-Token"] = tok
     url = f"{base}/v1/substrate/tier-outcomes/latest"
-    r = requests.get(url, params={"correlation_id": correlation_id}, headers=headers, timeout=5.0)
-    if r.status_code == 404:
-        return {"ok": True, "status": "absent"}
-    r.raise_for_status()
-    return {"ok": True, "data": r.json()}
+    try:
+        r = requests.get(url, params={"correlation_id": correlation_id}, headers=headers, timeout=5.0)
+        if r.status_code == 404:
+            return {"ok": True, "status": "absent"}
+        if r.status_code >= 400:
+            return {
+                "ok": False,
+                "error": "substrate_telemetry_upstream_http",
+                "status_code": r.status_code,
+            }
+        try:
+            data = r.json()
+        except ValueError:
+            return {"ok": False, "error": "substrate_telemetry_upstream_invalid_json"}
+        if not isinstance(data, dict):
+            return {"ok": False, "error": "substrate_telemetry_upstream_non_object"}
+        return {"ok": True, "data": data}
+    except requests.RequestException as exc:
+        logger.warning("substrate_telemetry_proxy_request_failed err=%s", exc)
+        return {"ok": False, "error": "substrate_telemetry_upstream_unavailable"}
 
 
 def _runtime_identity() -> dict:

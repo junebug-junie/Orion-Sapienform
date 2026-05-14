@@ -5,7 +5,7 @@ from uuid import UUID
 
 import asyncpg
 
-# Table name matches settings.substrate_telemetry_table in Task 2
+# DDL for fixed table `substrate_tier_outcomes_events` (v1).
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS substrate_tier_outcomes_events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -66,8 +66,7 @@ LIMIT $2::int;
 """
 
 
-async def ensure_schema(conn: asyncpg.Connection, *, table: str = "substrate_tier_outcomes_events") -> None:
-    assert table == "substrate_tier_outcomes_events"
+async def ensure_schema(conn: asyncpg.Connection) -> None:
     await conn.execute(CREATE_TABLE_SQL)
 
 

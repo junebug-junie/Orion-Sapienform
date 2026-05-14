@@ -633,6 +633,7 @@ def fuse_candidates(
         profile_name=profile_name,
         diagnostic=diagnostic,
         budget_indicator=_budget_ind,
+        render_transcript_user_only=bool(profile.get("render_transcript_user_only")),
     )
     is_graphtri = bool(profile_name) and (
         str(profile_name) == "graphtri.v1" or str(profile_name).startswith("graphtri")

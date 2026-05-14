@@ -69,6 +69,12 @@ def test_dream_v1_profile_loads():
     assert int(prof.get("render_budget_tokens") or 0) >= 256
 
 
+def test_recall_v1_hub_alias_maps_to_chat_general():
+    """Hub default option value ``recall.v1`` must resolve to the on-disk chat profile, not RECALL_DEFAULT_PROFILE."""
+    assert get_profile("recall.v1").get("profile") == "chat.general.v1"
+    assert get_profile("RECALL.V1").get("profile") == "chat.general.v1"
+
+
 def test_chat_general_profile_is_narrower_than_reflect_profile():
     chat = get_profile("chat.general.v1")
     reflect = get_profile("reflect.v1")

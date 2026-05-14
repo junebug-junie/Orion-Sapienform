@@ -189,7 +189,7 @@ profiles:
       device_ids: [0]
       max_model_len: 16384
       max_batch_tokens: 512
-      max_concurrent_requests: 1
+      max_concurrent_requests: 4
       gpu_memory_fraction: 0.88
 
     llamacpp:
@@ -202,7 +202,7 @@ profiles:
       ctx_size: 16384
       n_gpu_layers: 99
       threads: 8
-      n_parallel: 1
+      n_parallel: 4
       batch_size: 512
 
       chat_template_kwargs:

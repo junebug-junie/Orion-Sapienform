@@ -15,6 +15,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from .models import ChatBody, ChatMessage, GenerateBody, ExecStepPayload
 from .settings import settings
 from .profiles import LLMProfileRegistry, LLMProfile
+from .lane_routes import resolve_llm_lane_route
 
 from orion.spark.integration import (
     ingest_chat_and_get_state,
@@ -1046,6 +1047,74 @@ def _execute_openai_chat(
 # ─────────────────────────────────────────────
 
 def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
+    route_table = get_route_targets()
+    lane_routing = bool(getattr(settings, "llm_lane_routing_enabled", False)) and bool(route_table)
+    if lane_routing:
+        decision = resolve_llm_lane_route(
+            body.options,
+            body.route,
+            llm_lane_default=str(getattr(settings, "llm_lane_default", "chat") or "chat"),
+            llm_route_default=str(getattr(settings, "llm_route_default", "chat") or "chat"),
+            llm_allow_background_to_chat_fallback=bool(
+                getattr(settings, "llm_allow_background_to_chat_fallback", False)
+            ),
+            llm_route_spark_served_by=getattr(settings, "llm_route_spark_served_by", None),
+            llm_route_background_served_by=getattr(settings, "llm_route_background_served_by", None),
+            llm_route_agent_served_by=getattr(settings, "llm_route_agent_served_by", None),
+            route_table_keys=set(route_table.keys()),
+            route_served_by={k: t.served_by for k, t in route_table.items()},
+        )
+        corr = getattr(body, "trace_id", None)
+        logger.info(
+            "llm_gateway_lane_route corr=%s trace_id=%s requested_lane=%s resolved_lane=%s served_by=%s status=%s reason=%s fallback_used=%s",
+            corr,
+            corr,
+            decision.requested_llm_lane,
+            decision.resolved_llm_lane,
+            decision.served_by,
+            decision.route_status,
+            decision.reason,
+            decision.fallback_used,
+        )
+        if decision.fallback_used and "emergency_chat_fallback" in decision.reason:
+            logger.warning(
+                "LLM_ALLOW_BACKGROUND_TO_CHAT_FALLBACK emergency path corr=%s trace_id=%s reason=%s served_by=%s",
+                corr,
+                corr,
+                decision.reason,
+                decision.served_by,
+            )
+        if decision.route_table_key is None:
+            logger.info(
+                "llm_gateway_lane_rejected corr=%s trace_id=%s requested_lane=%s status=%s reason=%s",
+                corr,
+                corr,
+                decision.requested_llm_lane,
+                decision.route_status,
+                decision.reason,
+            )
+            return {
+                "text": "",
+                "content": "",
+                "spark_meta": {},
+                "raw": {
+                    "error": "llm_route_unavailable",
+                    "details": {
+                        "llm_lane": decision.resolved_llm_lane,
+                        "route_status": decision.route_status,
+                        "reason": decision.reason,
+                        "client_route": body.route,
+                        "chat_fallback_allowed": bool(
+                            getattr(settings, "llm_allow_background_to_chat_fallback", False)
+                            and (body.options or {}).get("allow_chat_fallback")
+                        ),
+                    },
+                },
+                "route": body.route,
+                "served_by": None,
+            }
+        body = body.model_copy(update={"route": decision.route_table_key})
+
     route, route_target, has_route_table, route_source = _resolve_route(body)
     effective_profile_name = body.profile_name
     if (

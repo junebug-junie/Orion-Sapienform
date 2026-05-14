@@ -80,6 +80,13 @@ class Settings(BaseSettings):
     llm_route_latents_url: Optional[str] = Field(None, alias="LLM_ROUTE_LATENTS_URL")
     llm_route_specialist_url: Optional[str] = Field(None, alias="LLM_ROUTE_SPECIALIST_URL")
     llm_route_chat_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_CHAT_SERVED_BY")
+    # Phase 3: optional lane labels used to match route-table entries by served_by
+    llm_route_spark_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_SPARK_SERVED_BY")
+    llm_route_background_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_BACKGROUND_SERVED_BY")
+    llm_route_agent_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_AGENT_SERVED_BY")
+    llm_allow_background_to_chat_fallback: bool = Field(False, alias="LLM_ALLOW_BACKGROUND_TO_CHAT_FALLBACK")
+    llm_lane_default: str = Field("chat", alias="LLM_LANE_DEFAULT")
+    llm_lane_routing_enabled: bool = Field(False, alias="LLM_LANE_ROUTING_ENABLED")
     llm_route_metacog_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_METACOG_SERVED_BY")
     llm_route_latents_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_LATENTS_SERVED_BY")
     llm_route_specialist_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_SPECIALIST_SERVED_BY")

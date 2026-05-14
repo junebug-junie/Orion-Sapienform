@@ -124,6 +124,7 @@ def test_introspect_spark_uses_quick_route() -> None:
     assert result.status == "success"
     sent_req = llm_chat.await_args.kwargs["req"]
     assert sent_req.route == "quick"
+    assert sent_req.options.get("llm_lane") == "spark"
 
 
 def test_ctx_override_max_tokens_takes_precedence() -> None:

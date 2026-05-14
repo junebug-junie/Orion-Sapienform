@@ -1329,6 +1329,7 @@ async def handle_candidate(env: BaseEnvelope) -> None:
 
     continuity = _build_introspection_context(candidate=candidate, correlation_id=str(env.correlation_id) if env.correlation_id else None)
     _lane = str(settings.spark_introspection_execution_lane or "spark").strip().lower() or "spark"
+    _llm_lane = str(settings.spark_introspection_llm_lane or "spark").strip().lower() or "spark"
     ctx = CortexClientContext(
         messages=[LLMMessage(role="user", content=prompt)],
         raw_user_text=prompt,
@@ -1358,9 +1359,12 @@ async def handle_candidate(env: BaseEnvelope) -> None:
             "source": "spark-introspector",
             "purpose": "introspect",
             "execution_lane": _lane,
+            "llm_lane": _llm_lane,
             "priority": "low",
             "post_turn": True,
             "allow_degrade": True,
+            "allow_chat_fallback": bool(settings.spark_introspection_allow_chat_fallback),
+            "max_tokens": int(settings.spark_introspection_max_tokens),
             "timeout_sec": 45,
         },
         recall={"enabled": False, "required": False},
@@ -1376,10 +1380,11 @@ async def handle_candidate(env: BaseEnvelope) -> None:
     )
 
     logger.info(
-        "spark_introspection_dispatch corr=%s trace_id=%s execution_lane=%s priority=low",
+        "spark_introspection_dispatch corr=%s trace_id=%s execution_lane=%s llm_lane=%s priority=low",
         env.correlation_id,
         candidate.trace_id,
         _lane,
+        _llm_lane,
     )
 
     codec = OrionCodec()

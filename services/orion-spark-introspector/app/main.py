@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import logging
 import random
 from datetime import datetime, timezone
@@ -8,20 +10,39 @@ from uuid import uuid4
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, APIRouter
+from fastapi import APIRouter, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.bus.codec import OrionCodec
+from orion.core.bus.queue_service_chassis import QueueRabbit
+from orion.core.bus.work_queue import RedisStreamWorkQueue
 
+from . import introspection_guard as ig
 from .conn_manager import manager
+from .queue_worker import get_spark_queue_status, handle_spark_introspection_job
 from .settings import settings
-from .worker import handle_candidate, handle_semantic_upsert, handle_signal, handle_trace, set_publisher_bus
+from .worker import (
+    _PRODUCER_BOOT_ID,
+    close_spark_stream_wq,
+    handle_candidate,
+    handle_semantic_upsert,
+    handle_signal,
+    handle_trace,
+    set_publisher_bus,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("orion-spark-introspector")
+
+
+def _debug_token_equal(provided: str, expected: str) -> bool:
+    """Constant-time compare on fixed-length SHA-256 digests (avoids length leaks from compare_digest)."""
+    pe = provided.encode("utf-8")
+    ee = expected.encode("utf-8")
+    return hmac.compare_digest(hashlib.sha256(pe).digest(), hashlib.sha256(ee).digest())
 
 
 def _cfg() -> ChassisConfig:
@@ -71,14 +92,62 @@ async def lifespan(app: FastAPI):
     # Run Hunter in background
     hunter_task = asyncio.create_task(svc.start())
 
+    queue_task: asyncio.Task | None = None
+    qr: QueueRabbit | None = None
+    if settings.spark_introspection_queue_enabled:
+        cons = (settings.spark_introspection_queue_consumer or "").strip()
+        consumer = cons if cons else f"spark-introspector:{settings.node_name}:{_PRODUCER_BOOT_ID}"
+        logger.info(
+            "spark_queue_worker_enabled stream=%s group=%s consumer=%s",
+            settings.spark_introspection_queue_stream,
+            settings.spark_introspection_queue_group,
+            consumer,
+        )
+        wq = RedisStreamWorkQueue(
+            settings.spark_introspection_redis_url or settings.orion_bus_url,
+            codec=OrionCodec(),
+        )
+        qr = QueueRabbit(
+            _cfg(),
+            stream=settings.spark_introspection_queue_stream,
+            group=settings.spark_introspection_queue_group,
+            consumer=consumer,
+            handler=handle_spark_introspection_job,
+            work_queue=wq,
+            concurrent_handlers=True,
+            max_inflight=max(1, int(settings.spark_introspection_queue_max_inflight)),
+            read_count=max(1, int(settings.spark_introspection_queue_read_count)),
+            block_ms=int(settings.spark_introspection_queue_block_ms),
+            max_attempts=int(settings.spark_introspection_queue_max_attempts),
+            dlq_stream=settings.spark_introspection_queue_dlq,
+            reclaim_pending=bool(settings.spark_introspection_queue_reclaim_pending),
+            reclaim_min_idle_ms=int(settings.spark_introspection_queue_reclaim_min_idle_ms),
+            stale_policy=str(settings.spark_introspection_queue_stale_policy),
+            heartbeat_enabled=False,
+        )
+        queue_task = asyncio.create_task(qr.start())
+    else:
+        logger.info("spark_queue_worker_disabled reason=queue_disabled")
+
     yield
 
-    # Cleanup
+    # Stop PubSub intake first so new candidates are not accepted while the queue worker drains.
     hunter_task.cancel()
     try:
         await hunter_task
     except asyncio.CancelledError:
         pass
+
+    if qr is not None:
+        await qr.stop()
+    if queue_task is not None:
+        try:
+            await queue_task
+        except asyncio.CancelledError:
+            pass
+    await close_spark_stream_wq()
+    await ig.close_redis_client()
+
     await pub_bus.close()
 
 
@@ -102,6 +171,27 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         logger.warning(f"WebSocket error: {e}")
         manager.disconnect(websocket)
+
+@router.get("/debug/spark/introspection-queue")
+async def spark_introspection_queue_debug(
+    x_spark_introspection_debug_token: str | None = Header(
+        default=None,
+        alias="X-Spark-Introspection-Debug-Token",
+    ),
+):
+    if not settings.spark_introspection_queue_debug_enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    expected = (settings.spark_introspection_queue_debug_token or "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="debug endpoint enabled but SPARK_INTROSPECTION_QUEUE_DEBUG_TOKEN is unset",
+        )
+    provided = (x_spark_introspection_debug_token or "").strip()
+    if not _debug_token_equal(provided, expected):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+    return await get_spark_queue_status()
+
 
 @router.post("/api/test-pulse")
 async def trigger_test_pulse():

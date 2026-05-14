@@ -106,6 +106,9 @@ class Settings(BaseSettings):
     # How long to wait for Cortex-Orch RPC reply
     cortex_timeout_sec: float = Field(120.0, alias="CORTEX_TIMEOUT_SEC")
 
+    # Stamped into orch request metadata (orch resolver remains authoritative)
+    spark_introspection_execution_lane: str = Field("spark", alias="SPARK_INTROSPECTION_EXECUTION_LANE")
+
     # Web UI
     port: int = Field(8444, alias="PORT")
 

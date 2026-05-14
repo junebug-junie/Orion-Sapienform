@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from pydantic import Field, AliasChoices
 from pydantic_settings import BaseSettings
+
+_logger = logging.getLogger("orion.cortex.orch.settings")
 
 
 class Settings(BaseSettings):
@@ -34,6 +37,19 @@ class Settings(BaseSettings):
         "orion:cortex:exec:request",
         validation_alias=AliasChoices("CORTEX_EXEC_REQUEST_CHANNEL", "CHANNEL_EXEC_REQUEST"),
     )
+    channel_exec_request_chat: str = Field(
+        "orion:cortex:exec:request:chat",
+        alias="CHANNEL_EXEC_REQUEST_CHAT",
+    )
+    channel_exec_request_spark: str = Field(
+        "orion:cortex:exec:request:spark",
+        alias="CHANNEL_EXEC_REQUEST_SPARK",
+    )
+    channel_exec_request_background: str = Field(
+        "orion:cortex:exec:request:background",
+        alias="CHANNEL_EXEC_REQUEST_BACKGROUND",
+    )
+    exec_lane_routing_enabled: bool = Field(False, alias="EXEC_LANE_ROUTING_ENABLED")
     channel_exec_result_prefix: str = Field(
         "orion:exec:result",
         validation_alias=AliasChoices("CORTEX_EXEC_RESULT_PREFIX", "EXEC_RESULT_PREFIX"),
@@ -91,6 +107,24 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         extra = "ignore"
+
+    def exec_request_channel_for_lane(self, lane: str) -> str:
+        """Resolve Redis channel for PlanExecution RPC to cortex-exec (lane-isolated or legacy)."""
+        if not self.exec_lane_routing_enabled:
+            return self.channel_exec_request
+        key = (lane or "background").strip().lower()
+        if key == "chat":
+            return self.channel_exec_request_chat
+        if key == "spark":
+            return self.channel_exec_request_spark
+        if key == "background":
+            return self.channel_exec_request_background
+        _logger.warning(
+            "exec_request_channel_for_lane_unknown lane=%r normalized=%r using_background_channel",
+            lane,
+            key,
+        )
+        return self.channel_exec_request_background
 
 
 @lru_cache(maxsize=1)

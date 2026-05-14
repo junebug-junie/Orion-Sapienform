@@ -135,6 +135,30 @@ channels:
     stability: "experimental"
     since: "2026-01-08"
 
+  - name: "orion:cortex:exec:request:chat"
+    kind: "request"
+    schema_id: "CortexExecRequestPayload"
+    producer_services: ["orion-cortex-orch"]
+    consumer_services: ["orion-cortex-exec"]
+    stability: "experimental"
+    since: "2026-05-13"
+
+  - name: "orion:cortex:exec:request:spark"
+    kind: "request"
+    schema_id: "CortexExecRequestPayload"
+    producer_services: ["orion-cortex-orch"]
+    consumer_services: ["orion-cortex-exec"]
+    stability: "experimental"
+    since: "2026-05-13"
+
+  - name: "orion:cortex:exec:request:background"
+    kind: "request"
+    schema_id: "CortexExecRequestPayload"
+    producer_services: ["orion-cortex-orch"]
+    consumer_services: ["orion-cortex-exec"]
+    stability: "experimental"
+    since: "2026-05-13"
+
   - name: "orion:exec:request:LLMGatewayService"
     kind: "request"
     schema_id: "ChatRequestPayload"

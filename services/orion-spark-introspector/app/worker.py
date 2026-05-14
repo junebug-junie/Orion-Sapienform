@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import numpy as np
 from pydantic import BaseModel, Field, ValidationError
@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, ValidationError
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, Envelope, ServiceRef
 from orion.core.bus.codec import OrionCodec
+from orion.core.bus.work_queue import RedisStreamWorkQueue
 from orion.schemas.platform import CoreEventV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.spark import SparkTelemetryPayload, SparkStateSnapshotV1
@@ -32,6 +33,12 @@ from orion.spark.signal_mapper import SignalMapper
 from orion.spark.surface_encoding import SurfaceEncoding
 from orion.spark.introspection_metadata import build_introspection_context
 
+from . import introspection_guard as ig
+from .queue_jobs import (
+    SparkIntrospectionJobV1,
+    build_idempotency_key,
+    build_spark_introspection_job_envelope,
+)
 from .settings import settings
 from .conn_manager import manager
 
@@ -41,6 +48,10 @@ _pub_bus: Optional[OrionBusAsync] = None
 
 # Restart semantics: new UUID per producer (service) boot.
 _PRODUCER_BOOT_ID = str(uuid4())
+_LAST_HEAVY_INTRO_MONO: float = 0.0
+_intro_sem: Optional[asyncio.Semaphore] = None
+_stream_wq: Optional[RedisStreamWorkQueue] = None
+_warned_queue_inline_both: bool = False
 _SEQ: int = 0
 _ACTIVE_SIGNALS: List[Dict[str, Any]] = []
 _TURN_EFFECT_ALERT_LAST: Dict[str, float] = {}
@@ -1265,6 +1276,410 @@ async def handle_semantic_upsert(env: BaseEnvelope) -> None:
     )
 
 
+def _get_intro_sem() -> asyncio.Semaphore:
+    global _intro_sem
+    if _intro_sem is None:
+        _intro_sem = asyncio.Semaphore(max(1, int(settings.spark_introspection_max_inflight)))
+    return _intro_sem
+
+
+async def _try_acquire_intro_sem() -> bool:
+    sem = _get_intro_sem()
+    drop = bool(settings.spark_introspection_drop_on_pressure)
+    tmo = float(settings.spark_introspection_acquire_timeout_sec)
+    if drop and tmo <= 0.0:
+        if sem.locked():
+            return False
+        await sem.acquire()
+        return True
+    if tmo <= 0.0 and not drop:
+        await sem.acquire()
+        return True
+    try:
+        await asyncio.wait_for(sem.acquire(), timeout=tmo)
+        return True
+    except asyncio.TimeoutError:
+        return False
+
+
+async def get_stream_enqueue_wq() -> RedisStreamWorkQueue:
+    global _stream_wq
+    if _stream_wq is None:
+        url = settings.spark_introspection_redis_url or settings.orion_bus_url
+        mx = settings.spark_introspection_queue_maxlen
+        _stream_wq = RedisStreamWorkQueue(
+            url,
+            codec=OrionCodec(),
+            default_maxlen=int(mx) if mx is not None else None,
+        )
+        await _stream_wq.connect()
+    return _stream_wq
+
+
+async def close_spark_stream_wq() -> None:
+    global _stream_wq
+    if _stream_wq is not None:
+        await _stream_wq.close()
+        _stream_wq = None
+
+
+def _resolve_cortex_correlation_uuid(
+    *,
+    correlation_id: str | None,
+    source_env: BaseEnvelope,
+    trace_id: str,
+) -> UUID:
+    """
+    Correlation id stamped on cortex / publish envelopes.
+
+    Prefer explicit ``correlation_id`` (e.g. from queued job payload), then the
+    candidate envelope's correlation id. If neither is a valid UUID, derive a
+    stable UUID from ``trace_id`` so observability stays deterministic.
+    """
+    if correlation_id:
+        try:
+            return UUID(str(correlation_id).strip())
+        except ValueError:
+            pass
+    cid = source_env.correlation_id
+    if isinstance(cid, UUID):
+        return cid
+    try:
+        return UUID(str(cid).strip())
+    except Exception:
+        return uuid5(NAMESPACE_URL, f"orion:spark:introspect:correlation:{trace_id}")
+
+
+async def run_heavy_spark_introspection(
+    *,
+    candidate: SparkCandidatePayload,
+    source_env: BaseEnvelope,
+    correlation_id: str | None,
+    bus: OrionBusAsync | None = None,
+    from_queue: bool = False,
+    job: SparkIntrospectionJobV1 | None = None,
+) -> dict[str, Any]:
+    """
+    Heavy cortex/orch/LLM introspection with Phase 1 guards. Does not run lightweight telemetry/tissue.
+
+    ``correlation_id`` (e.g. from a queued job payload) is preferred for cortex / publish envelopes when
+    it is a valid UUID; otherwise :func:`_resolve_cortex_correlation_uuid` falls back to ``source_env``
+    or a stable UUIDv5 derived from ``trace_id``.
+
+    When ``job`` is set (queue worker path), cortex request ``options`` and execution / LLM lanes are
+    taken from the job snapshot; otherwise they come from service settings.
+    """
+    global _LAST_HEAVY_INTRO_MONO
+    trace_id = str(candidate.trace_id)
+    cortex_corr = _resolve_cortex_correlation_uuid(
+        correlation_id=correlation_id,
+        source_env=source_env,
+        trace_id=trace_id,
+    )
+    corr_out = str(cortex_corr)
+
+    if not settings.spark_introspection_enable_heavy:
+        logger.info(
+            "spark_queue_degraded trace_id=%s reason=heavy_disabled",
+            trace_id,
+        )
+        return {
+            "ok": True,
+            "status": "degraded",
+            "reason": "heavy_disabled",
+            "trace_id": trace_id,
+            "correlation_id": corr_out,
+        }
+
+    redis = await ig.get_redis_client(settings)
+    if settings.spark_introspection_idempotency_enable and redis is None:
+        logger.warning(
+            "spark_introspection_skipped trace_id=%s reason=redis_unavailable",
+            trace_id,
+        )
+        return {
+            "ok": True,
+            "status": "skipped",
+            "reason": "redis_unavailable",
+            "trace_id": trace_id,
+            "correlation_id": corr_out,
+        }
+
+    meta = candidate.spark_meta or {}
+    cand_ts = _coerce_epoch_ts(meta.get("as_of_ts") or meta.get("timestamp"))
+    age_sec = time.time() - float(cand_ts)
+    if age_sec > float(settings.spark_introspection_queue_max_age_sec):
+        logger.info(
+            "spark_introspection_skipped trace_id=%s reason=stale age_sec=%.1f max_age_sec=%s",
+            trace_id,
+            age_sec,
+            settings.spark_introspection_queue_max_age_sec,
+        )
+        return {
+            "ok": True,
+            "status": "skipped",
+            "reason": "stale",
+            "trace_id": trace_id,
+            "correlation_id": corr_out,
+        }
+
+    if await ig.is_done(redis, settings=settings, trace_id=trace_id):
+        logger.info(
+            "spark_queue_skip_redis_done trace_id=%s job_id=na",
+            trace_id,
+        )
+        return {
+            "ok": True,
+            "status": "skipped",
+            "reason": "redis_done",
+            "trace_id": trace_id,
+            "correlation_id": corr_out,
+        }
+
+    if float(settings.spark_introspection_min_interval_sec) > 0.0:
+        gap = time.monotonic() - _LAST_HEAVY_INTRO_MONO
+        if gap < float(settings.spark_introspection_min_interval_sec):
+            return {
+                "ok": True,
+                "status": "skipped",
+                "reason": "min_interval",
+                "trace_id": trace_id,
+                "correlation_id": corr_out,
+            }
+
+    sem_acquired = False
+    claimed = False
+    try:
+        sem_acquired = await _try_acquire_intro_sem()
+        if not sem_acquired:
+            logger.info(
+                "spark_introspection_degraded trace_id=%s reason=pressure_drop",
+                trace_id,
+            )
+            return {
+                "ok": True,
+                "status": "degraded",
+                "reason": "pressure_drop",
+                "trace_id": trace_id,
+                "correlation_id": corr_out,
+            }
+
+        owner = f"{settings.node_name}:{_PRODUCER_BOOT_ID}"
+        claimed = await ig.try_claim_inflight(redis, settings=settings, trace_id=trace_id, owner=owner)
+        if not claimed:
+            logger.info(
+                "spark_introspection_skipped trace_id=%s reason=inflight_not_claimed",
+                trace_id,
+            )
+            return {
+                "ok": True,
+                "status": "skipped",
+                "reason": "inflight_not_claimed",
+                "trace_id": trace_id,
+                "correlation_id": corr_out,
+            }
+
+        reply_channel = f"orion:spark:introspector:reply:{candidate.trace_id}"
+        prompt = "Analyze the state shift."
+        from orion.core.bus.bus_schemas import LLMMessage
+        from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest
+
+        if job is not None:
+            _lane = str(job.execution_lane or "spark").strip().lower() or "spark"
+            _llm_lane = str(job.llm_lane or "spark").strip().lower() or "spark"
+            allow_chat_fallback_opt = bool(job.allow_chat_fallback)
+            allow_degrade_opt = bool(job.allow_degrade)
+            max_tokens_opt = (
+                int(job.max_tokens)
+                if job.max_tokens is not None
+                else int(settings.spark_introspection_max_tokens)
+            )
+            timeout_opt = (
+                float(job.timeout_sec)
+                if job.timeout_sec is not None
+                else float(settings.spark_introspection_timeout_sec)
+            )
+        else:
+            _lane = str(settings.spark_introspection_execution_lane or "spark").strip().lower() or "spark"
+            _llm_lane = str(settings.spark_introspection_llm_lane or "spark").strip().lower() or "spark"
+            allow_chat_fallback_opt = bool(settings.spark_introspection_allow_chat_fallback)
+            allow_degrade_opt = True
+            max_tokens_opt = int(settings.spark_introspection_max_tokens)
+            timeout_opt = float(settings.spark_introspection_timeout_sec)
+
+        continuity = _build_introspection_context(
+            candidate=candidate,
+            correlation_id=str(cortex_corr),
+        )
+        ctx = CortexClientContext(
+            messages=[LLMMessage(role="user", content=prompt)],
+            raw_user_text=prompt,
+            user_message=prompt,
+            trace_id=candidate.trace_id,
+            session_id=continuity.get("session_id"),
+            user_id=continuity.get("user_id"),
+            metadata={
+                "prompt": candidate.prompt,
+                "response": candidate.response,
+                "spark_meta": candidate.spark_meta or {},
+                "spark_source": candidate.source or "spark-introspector",
+                "introspection_context": continuity,
+                "execution_lane": _lane,
+                "source_lane": _lane,
+                "post_turn": True,
+                "spark_candidate_trace_id": candidate.trace_id,
+            },
+        )
+
+        client_req = CortexClientRequest(
+            mode="brain",
+            verb_name="introspect_spark",
+            packs=[],
+            context=ctx,
+            options={
+                "source": "spark-introspector",
+                "purpose": "introspect",
+                "execution_lane": _lane,
+                "llm_lane": _llm_lane,
+                "priority": "low",
+                "post_turn": True,
+                "allow_degrade": allow_degrade_opt,
+                "allow_chat_fallback": allow_chat_fallback_opt,
+                "max_tokens": max_tokens_opt,
+                "timeout_sec": timeout_opt,
+            },
+            recall={"enabled": False, "required": False},
+        )
+
+        req = BaseEnvelope(
+            kind="cortex.orch.request",
+            source=_svc_ref(),
+            correlation_id=cortex_corr,
+            causality_chain=source_env.causality_chain,
+            reply_to=reply_channel,
+            payload=client_req.model_dump(mode="json"),
+        )
+
+        logger.info(
+            "spark_introspection_dispatch corr=%s trace_id=%s execution_lane=%s llm_lane=%s priority=low from_queue=%s",
+            cortex_corr,
+            candidate.trace_id,
+            _lane,
+            _llm_lane,
+            from_queue,
+        )
+
+        rpc_owned = bus is None
+        codec = OrionCodec()
+        rpc_bus = bus if bus is not None else OrionBusAsync(
+            settings.orion_bus_url, enabled=settings.orion_bus_enabled, codec=codec
+        )
+        if rpc_owned:
+            await rpc_bus.connect()
+
+        introspection = "Introspection yielded no text."
+        try:
+            msg = await asyncio.wait_for(
+                rpc_bus.rpc_request(
+                    settings.channel_cortex_request,
+                    req,
+                    reply_channel=reply_channel,
+                    timeout_sec=float(settings.cortex_timeout_sec),
+                ),
+                timeout=timeout_opt,
+            )
+            decoded = codec.decode(msg.get("data"))
+            if not decoded.ok or not decoded.envelope:
+                logger.warning("Cortex reply decode failed: %s", decoded.error)
+                introspection = "Error: Introspection decode failed."
+            else:
+                found_text = _extract_introspection_text(decoded.envelope)
+                if found_text:
+                    introspection = found_text
+
+            publish_target = _pub_bus if (_pub_bus and _pub_bus.enabled) else rpc_bus
+
+            if introspection:
+                final_payload = {
+                    "kind": "spark_introspect",
+                    "trace_id": candidate.trace_id,
+                    "source": "spark-introspector",
+                    "prompt": candidate.prompt,
+                    "response": candidate.response,
+                    "introspection": introspection,
+                    "spark_meta": candidate.spark_meta,
+                }
+
+                completed = BaseEnvelope(
+                    kind="legacy.message",
+                    source=_svc_ref(),
+                    correlation_id=cortex_corr,
+                    causality_chain=source_env.causality_chain,
+                    payload=final_payload,
+                )
+                if _is_publishable_channel(settings.channel_spark_candidate):
+                    await publish_target.publish(settings.channel_spark_candidate, completed)
+                else:
+                    logger.warning(
+                        "Skipping spark candidate publish for non-concrete channel=%s",
+                        settings.channel_spark_candidate,
+                    )
+
+                try:
+                    ws_introspection = {
+                        "type": "introspection.update",
+                        "correlation_id": candidate.trace_id,
+                        "text": introspection,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "metadata": candidate.spark_meta or {},
+                    }
+                    await manager.broadcast(ws_introspection)
+                except Exception as ex:
+                    logger.warning("Failed to broadcast introspection: %s", ex)
+
+                logger.info("[%s] Spark introspection published", candidate.trace_id)
+                await ig.mark_done(redis, settings=settings, trace_id=trace_id)
+                _LAST_HEAVY_INTRO_MONO = time.monotonic()
+
+        except asyncio.TimeoutError:
+            logger.warning("spark_introspection_timeout trace_id=%s", trace_id)
+            return {
+                "ok": True,
+                "status": "degraded",
+                "reason": "timeout",
+                "trace_id": trace_id,
+                "correlation_id": corr_out,
+            }
+        except Exception as rpc_error:
+            logger.error("Introspection RPC failed: %s", rpc_error)
+            if isinstance(rpc_error, (ConnectionError, OSError)):
+                raise
+            return {
+                "ok": True,
+                "status": "degraded",
+                "reason": f"rpc_error:{rpc_error}",
+                "trace_id": trace_id,
+                "correlation_id": corr_out,
+            }
+        finally:
+            if rpc_owned:
+                await rpc_bus.close()
+
+        return {
+            "ok": True,
+            "status": "complete",
+            "reason": "published",
+            "trace_id": trace_id,
+            "correlation_id": corr_out,
+        }
+
+    finally:
+        if claimed:
+            await ig.release_inflight(redis, settings=settings, trace_id=trace_id)
+        if sem_acquired:
+            _get_intro_sem().release()
+
+
 async def handle_candidate(env: BaseEnvelope) -> None:
     raw = env.payload if isinstance(env.payload, dict) else {}
     if env.kind == "legacy.message" and isinstance(raw.get("payload"), dict):
@@ -1319,141 +1734,95 @@ async def handle_candidate(env: BaseEnvelope) -> None:
     if candidate.introspection:
         return
 
-    reply_channel = f"orion:spark:introspector:reply:{candidate.trace_id}"
+    global _warned_queue_inline_both
+    q_on = bool(settings.spark_introspection_queue_enabled)
+    inline_on = bool(settings.spark_introspection_inline_heavy_enabled)
+    if q_on and inline_on and not _warned_queue_inline_both:
+        logger.warning(
+            "spark_queue_inline_both_enabled preferring_queue trace_id=%s",
+            trace_id,
+        )
+        _warned_queue_inline_both = True
 
-    # [DEPRECATED]
-    # prompt = _build_llm_prompt(candidate)
-    prompt = "Analyze the state shift."
-    from orion.core.bus.bus_schemas import LLMMessage
-    from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest
+    corr_s = str(env.correlation_id) if env.correlation_id else None
 
-    continuity = _build_introspection_context(candidate=candidate, correlation_id=str(env.correlation_id) if env.correlation_id else None)
-    _lane = str(settings.spark_introspection_execution_lane or "spark").strip().lower() or "spark"
-    _llm_lane = str(settings.spark_introspection_llm_lane or "spark").strip().lower() or "spark"
-    ctx = CortexClientContext(
-        messages=[LLMMessage(role="user", content=prompt)],
-        raw_user_text=prompt,
-        user_message=prompt,
-        trace_id=candidate.trace_id,
-        session_id=continuity.get("session_id"),
-        user_id=continuity.get("user_id"),
-        metadata={
-            "prompt": candidate.prompt,
-            "response": candidate.response,
-            "spark_meta": candidate.spark_meta or {},
-            "spark_source": candidate.source or "spark-introspector",
-            "introspection_context": continuity,
-            "execution_lane": _lane,
-            "source_lane": _lane,
-            "post_turn": True,
-            "spark_candidate_trace_id": candidate.trace_id,
-        },
-    )
+    if q_on:
+        try:
+            job_env = build_spark_introspection_job_envelope(candidate, env, settings, _svc_ref())
+            work = (job_env.trace or {}).get("work") or {}
+            if not isinstance(work, dict):
+                work = {}
+            job_id = str(work.get("job_id", ""))
+            idem = str(work.get("idempotency_key", build_idempotency_key(trace_id)))
+            expires_at = str(work.get("expires_at", ""))
+            wq = await get_stream_enqueue_wq()
+            mx = settings.spark_introspection_queue_maxlen
+            sess = (candidate.spark_meta or {}).get("session_id") or (candidate.spark_meta or {}).get(
+                "conversation_id"
+            )
+            msg_id = await wq.enqueue(
+                settings.spark_introspection_queue_stream,
+                job_env,
+                maxlen=int(mx) if mx is not None else None,
+                extra_fields={
+                    "lane": "spark",
+                    "job_id": job_id,
+                    "idempotency_key": idem,
+                    "trace_id": trace_id,
+                    "session_id": str(sess or ""),
+                },
+            )
+            logger.info(
+                "spark_queue_enqueue trace_id=%s correlation_id=%s stream=%s message_id=%s job_id=%s idempotency_key=%s expires_at=%s",
+                trace_id,
+                corr_s,
+                settings.spark_introspection_queue_stream,
+                msg_id,
+                job_id,
+                idem,
+                expires_at,
+            )
+            return
+        except Exception as ex:
+            logger.error(
+                "spark_queue_enqueue_failed trace_id=%s correlation_id=%s stream=%s error=%s",
+                trace_id,
+                corr_s,
+                settings.spark_introspection_queue_stream,
+                ex,
+            )
+            if inline_on:
+                await run_heavy_spark_introspection(
+                    candidate=candidate,
+                    source_env=env,
+                    correlation_id=corr_s,
+                    bus=None,
+                    from_queue=False,
+                )
+            else:
+                logger.info(
+                    "spark_queue_enqueue_failed_skip trace_id=%s correlation_id=%s reason=no_inline_fallback",
+                    trace_id,
+                    corr_s,
+                )
+            return
 
-    client_req = CortexClientRequest(
-        mode="brain",
-        verb_name="introspect_spark",
-        packs=[],
-        context=ctx,
-        options={
-            "source": "spark-introspector",
-            "purpose": "introspect",
-            "execution_lane": _lane,
-            "llm_lane": _llm_lane,
-            "priority": "low",
-            "post_turn": True,
-            "allow_degrade": True,
-            "allow_chat_fallback": bool(settings.spark_introspection_allow_chat_fallback),
-            "max_tokens": int(settings.spark_introspection_max_tokens),
-            "timeout_sec": 45,
-        },
-        recall={"enabled": False, "required": False},
-    )
-
-    req = BaseEnvelope(
-        kind="cortex.orch.request",
-        source=_svc_ref(),
-        correlation_id=env.correlation_id,
-        causality_chain=env.causality_chain,
-        reply_to=reply_channel,
-        payload=client_req.model_dump(mode="json"),
-    )
+    if inline_on:
+        await run_heavy_spark_introspection(
+            candidate=candidate,
+            source_env=env,
+            correlation_id=corr_s,
+            bus=None,
+            from_queue=False,
+        )
+        return
 
     logger.info(
-        "spark_introspection_dispatch corr=%s trace_id=%s execution_lane=%s llm_lane=%s priority=low",
-        env.correlation_id,
-        candidate.trace_id,
-        _lane,
-        _llm_lane,
+        "spark_introspection_skipped trace_id=%s reason=heavy_paths_disabled queue_enabled=%s inline_heavy=%s",
+        trace_id,
+        q_on,
+        inline_on,
     )
-
-    codec = OrionCodec()
-    bus = OrionBusAsync(settings.orion_bus_url, enabled=settings.orion_bus_enabled, codec=codec)
-    await bus.connect()
-
-    introspection = "Introspection yielded no text."
-
-    try:
-        msg = await bus.rpc_request(
-            settings.channel_cortex_request,
-            req,
-            reply_channel=reply_channel,
-            timeout_sec=float(settings.cortex_timeout_sec),
-        )
-        decoded = codec.decode(msg.get("data"))
-        if not decoded.ok or not decoded.envelope:
-            logger.warning("Cortex reply decode failed: %s", decoded.error)
-            introspection = "Error: Introspection decode failed."
-        else:
-            found_text = _extract_introspection_text(decoded.envelope)
-            if found_text:
-                introspection = found_text
-
-    except Exception as rpc_error:
-        logger.error("Introspection RPC failed: %s", rpc_error)
-        introspection = f"Introspection unavailable (RPC Error: {rpc_error})"
-
-    if introspection:
-        final_payload = {
-            "kind": "spark_introspect",
-            "trace_id": candidate.trace_id,
-            "source": "spark-introspector",
-            "prompt": candidate.prompt,
-            "response": candidate.response,
-            "introspection": introspection,
-            "spark_meta": candidate.spark_meta,
-        }
-
-        completed = BaseEnvelope(
-            kind="legacy.message",
-            source=_svc_ref(),
-            correlation_id=env.correlation_id,
-            causality_chain=env.causality_chain,
-            payload=final_payload,
-        )
-        if _is_publishable_channel(settings.channel_spark_candidate):
-            await bus.publish(settings.channel_spark_candidate, completed)
-        else:
-            logger.warning(
-                "Skipping spark candidate publish for non-concrete channel=%s",
-                settings.channel_spark_candidate,
-            )
-
-        try:
-            ws_introspection = {
-                "type": "introspection.update",
-                "correlation_id": candidate.trace_id,
-                "text": introspection,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "metadata": candidate.spark_meta or {},
-            }
-            await manager.broadcast(ws_introspection)
-        except Exception as ex:
-            logger.warning("Failed to broadcast introspection: %s", ex)
-
-        logger.info("[%s] Spark introspection published", candidate.trace_id)
-
-    await bus.close()
 
 
 async def handle_signal(env: BaseEnvelope) -> None:

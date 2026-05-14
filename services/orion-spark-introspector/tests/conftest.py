@@ -24,3 +24,6 @@ if REPO_ROOT not in sys.path:
 
 os.environ.setdefault("SERVICE_NAME", "spark-introspector")
 os.environ.setdefault("ORION_BUS_ENABLED", "false")
+
+# main.py mounts StaticFiles relative to CWD (app/static)
+os.chdir(SERVICE_DIR)

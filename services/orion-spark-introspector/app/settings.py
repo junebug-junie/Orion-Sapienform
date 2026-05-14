@@ -112,6 +112,47 @@ class Settings(BaseSettings):
     spark_introspection_allow_chat_fallback: bool = Field(False, alias="SPARK_INTROSPECTION_ALLOW_CHAT_FALLBACK")
     spark_introspection_max_tokens: int = Field(384, alias="SPARK_INTROSPECTION_MAX_TOKENS")
 
+    # Phase 1 heavy-path controls (semaphore, Redis idempotency, staleness)
+    spark_introspection_enable_heavy: bool = Field(True, alias="SPARK_INTROSPECTION_ENABLE_HEAVY")
+    spark_introspection_max_inflight: int = Field(1, alias="SPARK_INTROSPECTION_MAX_INFLIGHT")
+    spark_introspection_timeout_sec: float = Field(45.0, alias="SPARK_INTROSPECTION_TIMEOUT_SEC")
+    spark_introspection_queue_max_age_sec: float = Field(180.0, alias="SPARK_INTROSPECTION_QUEUE_MAX_AGE_SEC")
+    spark_introspection_drop_on_pressure: bool = Field(True, alias="SPARK_INTROSPECTION_DROP_ON_PRESSURE")
+    spark_introspection_acquire_timeout_sec: float = Field(0.0, alias="SPARK_INTROSPECTION_ACQUIRE_TIMEOUT_SEC")
+    spark_introspection_min_interval_sec: float = Field(0.0, alias="SPARK_INTROSPECTION_MIN_INTERVAL_SEC")
+    spark_introspection_idempotency_enable: bool = Field(True, alias="SPARK_INTROSPECTION_IDEMPOTENCY_ENABLE")
+    spark_introspection_redis_url: Optional[str] = Field(None, alias="SPARK_INTROSPECTION_REDIS_URL")
+    spark_introspection_key_prefix: str = Field("spark:introspection", alias="SPARK_INTROSPECTION_KEY_PREFIX")
+    spark_introspection_inflight_ttl_sec: int = Field(300, alias="SPARK_INTROSPECTION_INFLIGHT_TTL_SEC")
+    spark_introspection_done_ttl_sec: int = Field(86400, alias="SPARK_INTROSPECTION_DONE_TTL_SEC")
+
+    # Phase 4C queue-backed heavy introspection
+    spark_introspection_queue_enabled: bool = Field(False, alias="SPARK_INTROSPECTION_QUEUE_ENABLED")
+    spark_introspection_queue_stream: str = Field(
+        "orion:queue:spark:introspection", alias="SPARK_INTROSPECTION_QUEUE_STREAM"
+    )
+    spark_introspection_queue_group: str = Field(
+        "spark-introspector-workers", alias="SPARK_INTROSPECTION_QUEUE_GROUP"
+    )
+    spark_introspection_queue_consumer: str = Field("", alias="SPARK_INTROSPECTION_QUEUE_CONSUMER")
+    spark_introspection_queue_dlq: str = Field(
+        "orion:queue:spark:introspection:dlq", alias="SPARK_INTROSPECTION_QUEUE_DLQ"
+    )
+    spark_introspection_queue_maxlen: Optional[int] = Field(None, alias="SPARK_INTROSPECTION_QUEUE_MAXLEN")
+    spark_introspection_queue_read_count: int = Field(1, alias="SPARK_INTROSPECTION_QUEUE_READ_COUNT")
+    spark_introspection_queue_block_ms: int = Field(5000, alias="SPARK_INTROSPECTION_QUEUE_BLOCK_MS")
+    spark_introspection_queue_max_inflight: int = Field(1, alias="SPARK_INTROSPECTION_QUEUE_MAX_INFLIGHT")
+    spark_introspection_queue_max_attempts: int = Field(3, alias="SPARK_INTROSPECTION_QUEUE_MAX_ATTEMPTS")
+    spark_introspection_queue_reclaim_pending: bool = Field(True, alias="SPARK_INTROSPECTION_QUEUE_RECLAIM_PENDING")
+    spark_introspection_queue_reclaim_min_idle_ms: int = Field(
+        120_000, alias="SPARK_INTROSPECTION_QUEUE_RECLAIM_MIN_IDLE_MS"
+    )
+    spark_introspection_queue_stale_policy: str = Field("drop", alias="SPARK_INTROSPECTION_QUEUE_STALE_POLICY")
+    spark_introspection_inline_heavy_enabled: bool = Field(True, alias="SPARK_INTROSPECTION_INLINE_HEAVY_ENABLED")
+    # GET /debug/spark/introspection-queue — off by default; when on, requires shared secret (header or query).
+    spark_introspection_queue_debug_enabled: bool = Field(False, alias="SPARK_INTROSPECTION_QUEUE_DEBUG_ENABLE")
+    spark_introspection_queue_debug_token: Optional[str] = Field(None, alias="SPARK_INTROSPECTION_QUEUE_DEBUG_TOKEN")
+
     # Web UI
     port: int = Field(8444, alias="PORT")
 

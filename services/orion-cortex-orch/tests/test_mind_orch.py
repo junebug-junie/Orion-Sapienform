@@ -350,3 +350,43 @@ def test_merge_skips_stance_when_payload_invalid(monkeypatch) -> None:
     meta = captured.get("metadata") or {}
     assert meta.get("mind_stance_payload_invalid") is True
     assert meta.get("mind_skip_stance_synthesis") is False
+
+
+def test_build_mind_run_request_merges_substrate_telemetry_facet() -> None:
+    _orch_prep()
+    from app.mind_runtime import build_mind_run_request
+    from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientContext
+    from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionRequest
+    from orion.schemas.cortex.types import ExecutionStep
+
+    cr = CortexClientRequest(
+        verb="chat",
+        mode="brain",
+        context=CortexClientContext(
+            messages=[LLMMessage(role="user", content="hi")],
+            session_id="s",
+            trace_id="t",
+            user_message="hi",
+            metadata={"mind_enabled": True},
+        ),
+    )
+    plan = ExecutionPlan(
+        verb_name="chat",
+        steps=[
+            ExecutionStep(
+                verb_name="chat",
+                step_name="noop",
+                order=0,
+                services=[],
+            )
+        ],
+    )
+    pr = PlanExecutionRequest(plan=plan, context={})
+    req = build_mind_run_request(
+        cr,
+        pr,
+        "550e8400-e29b-41d4-a716-446655440000",
+        substrate_telemetry_facet={"status": "absent"},
+    )
+    facets = (req.snapshot_inputs or {}).get("facets") or {}
+    assert facets.get("substrate_telemetry") == {"status": "absent"}

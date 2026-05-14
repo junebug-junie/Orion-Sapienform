@@ -27,10 +27,45 @@ def _mind_enabled_exact(metadata: dict[str, Any] | None) -> bool:
     return metadata is not None and metadata.get("mind_enabled") is True
 
 
+async def fetch_substrate_telemetry_facet_for_mind(correlation_id: str) -> dict[str, Any] | None:
+    """GET latest row from telemetry service; return None on 404/misconfig so Mind omits facet."""
+    s = get_settings()
+    base = (s.orion_substrate_telemetry_base_url or "").rstrip("/")
+    if not base:
+        return None
+    url = f"{base}/v1/substrate/tier-outcomes/latest"
+    params = {"correlation_id": correlation_id}
+    headers: dict[str, str] = {}
+    tok = (s.orion_substrate_telemetry_read_token or "").strip()
+    if tok:
+        headers["X-Telemetry-Token"] = tok
+    timeout_sec = max(0.1, min(10.0, float(s.orion_substrate_telemetry_timeout_sec)))
+    timeout = httpx.Timeout(timeout_sec)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.get(url, params=params, headers=headers)
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        row = resp.json()
+    return {
+        "status": "present",
+        "generated_at": row.get("generated_at"),
+        "cold_anchors": row.get("cold_anchors"),
+        "tier_outcomes": row.get("tier_outcomes"),
+        "degraded_producers": row.get("degraded_producers"),
+        "source_service": row.get("source_service"),
+        "source_node": row.get("source_node"),
+        "received_at_utc": row.get("received_at_utc"),
+        "row_id": row.get("id"),
+    }
+
+
 def build_mind_run_request(
     client_request: CortexClientRequest,
     plan_request: PlanExecutionRequest,
     correlation_id: str,
+    *,
+    substrate_telemetry_facet: dict[str, Any] | None = None,
 ) -> MindRunRequestV1:
     """Construct a bounded v1 request; snapshot is inline JSON only (v1)."""
     meta = client_request.context.metadata if isinstance(client_request.context.metadata, dict) else {}
@@ -60,6 +95,11 @@ def build_mind_run_request(
         llm_enabled_per_loop=list(extra_policy.get("llm_enabled_per_loop") or []),
         router_profile_id=router_profile,
     )
+    if substrate_telemetry_facet is not None:
+        existing = snapshot.get("facets")
+        facets: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
+        facets["substrate_telemetry"] = substrate_telemetry_facet
+        snapshot["facets"] = facets
     return MindRunRequestV1(
         correlation_id=correlation_id,
         session_id=client_request.context.session_id,

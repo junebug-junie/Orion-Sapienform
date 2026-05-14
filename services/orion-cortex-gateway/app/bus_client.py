@@ -299,7 +299,10 @@ class BusClient:
                 verb = req.verb
             else:
                 verb = req.verb or "chat_general"
-            packs = req.packs if req.packs is not None else ["executive_pack"]
+            if req.packs is not None:
+                packs = list(req.packs)
+            else:
+                packs = ["executive_pack"]
             messages = _context_messages_from_chat_request(req)
 
             context = CortexClientContext(

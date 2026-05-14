@@ -627,7 +627,7 @@ def build_cortex_chat_request(
         session_id=session_id,
         user_id=user_id,
         trace_id=trace_id,
-        packs=None if deterministic_requested else payload.get("packs"),
+        packs=[] if deterministic_requested else payload.get("packs"),
         verb=verb_override,
         options=options,
         recall=recall_payload,

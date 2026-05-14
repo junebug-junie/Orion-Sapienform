@@ -919,7 +919,7 @@ def test_skill_runner_deterministic_lane_catalogue_success() -> None:
     assert req.recall["enabled"] is False
     assert req.recall.get("required") is False
     assert req.recall.get("profile") is None
-    assert req.packs is None
+    assert req.packs == []
     assert debug["skill_runner_deterministic"] is True
     assert debug["skill_runner_lane_requested"] == "deterministic"
 
@@ -984,4 +984,4 @@ def test_skill_runner_deterministic_lane_strips_recall_and_packs_from_payload() 
     assert req.recall["enabled"] is False
     assert req.recall.get("required") is False
     assert req.recall.get("profile") is None
-    assert req.packs is None
+    assert req.packs == []

@@ -9042,6 +9042,25 @@ loadDismissedIds();
   loadScheduleInventory();
 
   // --- WebSocket ---
+  function resolveAssistantDisplayText(d) {
+    if (!d || typeof d !== 'object') return '';
+    const top = String(d.llm_response ?? d.text ?? '').trim();
+    const raw = d.raw && typeof d.raw === 'object' ? d.raw : {};
+    const nested = String(raw.final_text ?? '').trim();
+    let pick = nested.length > top.length ? nested : top;
+    if (pick) return pick;
+    const meta = raw.metadata && typeof raw.metadata === 'object' ? raw.metadata : {};
+    const sr = meta.skill_result != null ? meta.skill_result : meta.skillResult;
+    if (sr !== undefined && sr !== null) {
+      try {
+        return typeof sr === 'string' ? String(sr).trim() : JSON.stringify(sr);
+      } catch (_) {
+        return String(sr);
+      }
+    }
+    return '';
+  }
+
   function setupWebSocket() {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${proto}//${window.location.host}${URL_PREFIX}/ws`;
@@ -9057,9 +9076,10 @@ loadDismissedIds();
     socket.onmessage = (e) => {
       try {
           const d = JSON.parse(e.data);
+          const displayText = resolveAssistantDisplayText(d);
           if (d.transcript && !d.is_text_input) appendMessage('You', d.transcript);
-          if (d.llm_response || d.workflow) {
-            appendMessage('Orion', d.llm_response, 'text-white', {
+          if (displayText || d.workflow) {
+            appendMessage('Orion', displayText || '', 'text-white', {
               raw: d.raw,
               reasoning: d.reasoning,
               reasoningTrace: d.reasoning_trace,
@@ -9382,8 +9402,9 @@ loadDismissedIds();
         })
         .then(r => r.json())
         .then(d => {
-            if(d.text || d.workflow) {
-              appendMessage('Orion', d.text, 'text-white', {
+            const displayText = resolveAssistantDisplayText(d);
+            if(displayText || d.workflow) {
+              appendMessage('Orion', displayText || '', 'text-white', {
                 raw: d.raw,
                 reasoning: d.reasoning,
                 reasoningTrace: d.reasoning_trace,

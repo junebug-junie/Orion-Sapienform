@@ -27,6 +27,7 @@ from .mind_runtime import (
     _mind_enabled_exact,
     build_mind_run_request,
     call_orion_mind_http,
+    fetch_substrate_telemetry_facet_for_mind,
     merge_mind_brief_into_plan_metadata,
     publish_mind_run_artifact,
 )
@@ -539,7 +540,18 @@ async def call_verb_runtime(
 
     cr_meta = client_request.context.metadata if isinstance(client_request.context.metadata, dict) else {}
     if _mind_enabled_exact(cr_meta):
-        mind_req = build_mind_run_request(client_request, plan_request, correlation_id)
+        substrate_facet: dict[str, Any] | None = None
+        inline = cr_meta.get("substrate_telemetry_facet")
+        if isinstance(inline, dict):
+            substrate_facet = inline
+        else:
+            substrate_facet = await fetch_substrate_telemetry_facet_for_mind(correlation_id)
+        mind_req = build_mind_run_request(
+            client_request,
+            plan_request,
+            correlation_id,
+            substrate_telemetry_facet=substrate_facet,
+        )
         try:
             mind_res = await call_orion_mind_http(mind_req)
             merge_mind_brief_into_plan_metadata(plan_request, mind_res)

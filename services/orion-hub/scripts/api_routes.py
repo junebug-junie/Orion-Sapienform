@@ -653,6 +653,38 @@ def health():
     return {"status": "ok", "service": settings.SERVICE_NAME}
 
 
+@router.get("/api/substrate/tier-outcomes/latest")
+def api_substrate_tier_outcomes_latest(correlation_id: str = Query(...)) -> dict[str, Any]:
+    base = (os.environ.get("SUBSTRATE_TELEMETRY_BASE_URL") or "").rstrip("/")
+    if not base:
+        return {"ok": False, "error": "substrate_telemetry_unconfigured"}
+    headers: dict[str, str] = {}
+    tok = (os.environ.get("SUBSTRATE_TELEMETRY_READ_TOKEN") or "").strip()
+    if tok:
+        headers["X-Telemetry-Token"] = tok
+    url = f"{base}/v1/substrate/tier-outcomes/latest"
+    try:
+        r = requests.get(url, params={"correlation_id": correlation_id}, headers=headers, timeout=5.0)
+        if r.status_code == 404:
+            return {"ok": True, "status": "absent"}
+        if r.status_code >= 400:
+            return {
+                "ok": False,
+                "error": "substrate_telemetry_upstream_http",
+                "status_code": r.status_code,
+            }
+        try:
+            data = r.json()
+        except ValueError:
+            return {"ok": False, "error": "substrate_telemetry_upstream_invalid_json"}
+        if not isinstance(data, dict):
+            return {"ok": False, "error": "substrate_telemetry_upstream_non_object"}
+        return {"ok": True, "data": data}
+    except requests.RequestException as exc:
+        logger.warning("substrate_telemetry_proxy_request_failed err=%s", exc)
+        return {"ok": False, "error": "substrate_telemetry_upstream_unavailable"}
+
+
 def _runtime_identity() -> dict:
     return {
         "service": settings.SERVICE_NAME,

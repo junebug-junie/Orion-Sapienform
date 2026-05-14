@@ -350,3 +350,160 @@ def test_merge_skips_stance_when_payload_invalid(monkeypatch) -> None:
     meta = captured.get("metadata") or {}
     assert meta.get("mind_stance_payload_invalid") is True
     assert meta.get("mind_skip_stance_synthesis") is False
+
+
+def test_build_mind_run_request_merges_substrate_telemetry_facet() -> None:
+    _orch_prep()
+    from app.mind_runtime import build_mind_run_request
+    from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientContext
+    from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionRequest
+    from orion.schemas.cortex.types import ExecutionStep
+
+    cr = CortexClientRequest(
+        verb="chat",
+        mode="brain",
+        context=CortexClientContext(
+            messages=[LLMMessage(role="user", content="hi")],
+            session_id="s",
+            trace_id="t",
+            user_message="hi",
+            metadata={"mind_enabled": True},
+        ),
+    )
+    plan = ExecutionPlan(
+        verb_name="chat",
+        steps=[
+            ExecutionStep(
+                verb_name="chat",
+                step_name="noop",
+                order=0,
+                services=[],
+            )
+        ],
+    )
+    pr = PlanExecutionRequest(plan=plan, context={})
+    req = build_mind_run_request(
+        cr,
+        pr,
+        "550e8400-e29b-41d4-a716-446655440000",
+        substrate_telemetry_facet={"status": "absent"},
+    )
+    facets = (req.snapshot_inputs or {}).get("facets") or {}
+    assert facets.get("substrate_telemetry") == {"status": "absent"}
+
+
+def test_orch_inline_substrate_telemetry_facet_skips_http_fetch(monkeypatch) -> None:
+    _orch_prep()
+    import app.orchestrator as orchestrator
+    from app.orchestrator import call_verb_runtime
+
+    async def fake_maybe_fetch_state(*args, **kwargs):
+        return None
+
+    mr = MindRunResultV1(
+        mind_run_id=uuid4(),
+        ok=True,
+        brief=MindHandoffBriefV1(
+            machine_contract={"mind.route_kind": "brain"},
+            stance_payload={
+                "conversation_frame": "technical",
+                "user_intent": "u",
+                "self_relevance": "s",
+                "juniper_relevance": "j",
+                "answer_strategy": "a",
+                "stance_summary": "st",
+            },
+        ),
+    )
+    called: dict = {}
+    fetch_calls: list[str] = []
+
+    async def fake_call_mind(req):
+        called["req"] = req
+        return mr
+
+    async def fake_publish(*args, **kwargs):
+        called["publish"] = True
+
+    async def fake_fetch_substrate_telemetry(_cid: str):
+        fetch_calls.append(_cid)
+        raise AssertionError("fetch_substrate_telemetry_facet_for_mind must not run when inline facet is set")
+
+    monkeypatch.setattr(orchestrator, "_maybe_fetch_state", fake_maybe_fetch_state)
+    monkeypatch.setattr(orchestrator, "call_orion_mind_http", fake_call_mind)
+    monkeypatch.setattr(orchestrator, "publish_mind_run_artifact", fake_publish)
+    monkeypatch.setattr(orchestrator, "fetch_substrate_telemetry_facet_for_mind", fake_fetch_substrate_telemetry)
+
+    class _PubSub:
+        def __init__(self, channel: str) -> None:
+            self.channel = channel
+
+    class _SubCtx:
+        def __init__(self, channel: str) -> None:
+            self.pubsub = _PubSub(channel)
+
+        async def __aenter__(self):
+            return self.pubsub
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _FakeBus:
+        def __init__(self) -> None:
+            self.published: list = []
+            self.codec = SimpleNamespace(decode=lambda d: SimpleNamespace(ok=True, envelope=d, error=None))
+
+        def subscribe(self, channel: str):
+            return _SubCtx(channel)
+
+        async def publish(self, channel: str, env: BaseEnvelope) -> None:
+            self.published.append((channel, env))
+
+        async def iter_messages(self, pubsub: _PubSub):
+            _ch, env = self.published[0]
+            yield {"data": BaseEnvelope(
+                kind="verb.result",
+                source=ServiceRef(name="cortex-exec", version="0", node="n"),
+                correlation_id=env.correlation_id,
+                payload=VerbResultV1(
+                    verb="legacy.plan",
+                    ok=True,
+                    output={"result": {"status": "success", "steps": [], "final_text": "ok", "metadata": {}}},
+                    request_id=env.payload["request_id"],
+                ).model_dump(mode="json"),
+            )}
+
+    inline_facet = {"status": "inline", "tier_outcomes": {"x": ["y"]}}
+    req = CortexClientRequest(
+        mode="brain",
+        route_intent="none",
+        verb="chat_general",
+        packs=[],
+        options={},
+        recall=RecallDirective(enabled=False, required=False, mode="hybrid", profile=None),
+        context=CortexClientContext(
+            messages=[LLMMessage(role="user", content="hi")],
+            raw_user_text="hi",
+            user_message="hi",
+            session_id="s1",
+            user_id="u1",
+            trace_id="t1",
+            metadata={"mind_enabled": True, "substrate_telemetry_facet": inline_facet},
+        ),
+    )
+
+    bus = _FakeBus()
+    source = ServiceRef(name="cortex-orch", version="0", node="n")
+    asyncio.run(
+        call_verb_runtime(
+            bus,
+            source=source,
+            client_request=req,
+            correlation_id="22222222-2222-2222-2222-222222222222",
+            timeout_sec=30.0,
+        )
+    )
+    assert fetch_calls == []
+    assert "req" in called
+    facets = (called["req"].snapshot_inputs or {}).get("facets") or {}
+    assert facets.get("substrate_telemetry") == inline_facet

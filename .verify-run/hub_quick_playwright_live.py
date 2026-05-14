@@ -9,6 +9,74 @@ import time
 from playwright.sync_api import sync_playwright
 
 
+def _run_fast_two_turns(
+    *,
+    base_url: str,
+    headless: bool,
+    timeout_ms: int,
+    probe1: str | None,
+    probe2: str | None,
+) -> int:
+    """Quick (fast) only: send probe1, wait for reply, immediately send probe2, wait again. Prints per-turn wall ms."""
+    ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    p1 = (probe1 or "").strip() or f"pw-2turn-a-{ts}-{time.time():.0f}"
+    p2 = (probe2 or "").strip() or f"pw-2turn-b-{ts}-{time.time():.0f}"
+    print(f"TRACE_PROBE_TURN1={p1}", flush=True)
+    print(f"TRACE_PROBE_TURN2={p2}", flush=True)
+
+    wait_js = """(probe) => {
+      const root = document.getElementById('conversation');
+      if (!root) return false;
+      const kids = [...root.children];
+      let userIdx = -1;
+      for (let i = 0; i < kids.length; i++) {
+        const el = kids[i];
+        if (el.getAttribute('data-role') === 'user' && (el.innerText || '').includes(probe)) {
+          userIdx = i;
+          break;
+        }
+      }
+      if (userIdx < 0) return false;
+      for (let j = userIdx + 1; j < kids.length; j++) {
+        const el = kids[j];
+        if (el.getAttribute('data-role') === 'assistant') {
+          const body = el.querySelector('p.whitespace-pre-wrap');
+          const txt = (body && body.textContent) ? body.textContent.trim() : (el.innerText || '').trim();
+          return txt.length > 15;
+        }
+      }
+      return false;
+    }"""
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=headless)
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.goto(f"{base_url.rstrip('/')}/", wait_until="domcontentloaded", timeout=timeout_ms)
+        page.wait_for_selector("#quickModeBtn", state="visible", timeout=timeout_ms)
+        page.wait_for_selector("#chatInput", state="visible", timeout=timeout_ms)
+        page.click("#quickModeBtn")
+        page.wait_for_timeout(300)
+
+        for turn, probe in ((1, p1), (2, p2)):
+            t0 = time.perf_counter()
+            page.fill("#chatInput", probe)
+            page.click("#sendButton")
+            try:
+                page.wait_for_function(wait_js, arg=probe, timeout=timeout_ms)
+            except Exception as exc:
+                print(f"TURN{turn}_FAIL", repr(exc))
+                print("--- #status ---")
+                print(page.inner_text("#status")[:2000])
+                browser.close()
+                return 1
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            print(f"TURN{turn}_WALL_MS", round(elapsed_ms, 1), "PROBE", probe, flush=True)
+
+        print("--- #status ---", page.inner_text("#status")[:400], flush=True)
+        browser.close()
+    return 0
+
+
 def _run_one(
     *,
     base_url: str,
@@ -200,10 +268,33 @@ def main() -> int:
         default="",
         help="Exact user text to send (for log correlation). Default: auto-generated.",
     )
+    ap.add_argument(
+        "--two-fast-turns",
+        action="store_true",
+        help="Quick (fast) only: two back-to-back user messages; prints TURN1_WALL_MS / TURN2_WALL_MS (second often slower).",
+    )
+    ap.add_argument(
+        "--probe2",
+        default="",
+        help="Second user message (with --two-fast-turns). Default: auto-generated.",
+    )
     args = ap.parse_args()
 
     headless = not args.headed
     probe_opt = args.probe.strip() or None
+    probe2_opt = args.probe2.strip() or None
+
+    if args.two_fast_turns:
+        if args.variant not in ("fast", "both"):
+            print("--two-fast-turns requires --variant fast (ignoring stance).", flush=True)
+        return _run_fast_two_turns(
+            base_url=args.base_url,
+            headless=headless,
+            timeout_ms=args.timeout_ms,
+            probe1=probe_opt,
+            probe2=probe2_opt,
+        )
+
     if args.variant == "both":
         a = _run_one(
             base_url=args.base_url,

@@ -113,6 +113,7 @@ loadDismissedIds();
   const skillRunnerSelect = document.getElementById('skillRunnerSelect');
   const skillRunnerRunBtn = document.getElementById('skillRunnerRunBtn');
   const skillRunnerInsertBtn = document.getElementById('skillRunnerInsertBtn');
+  const skillRunnerDeterministicOnly = document.getElementById('skillRunnerDeterministicOnly');
   const textToSpeechToggle = document.getElementById('textToSpeechToggle');
   const recallToggle = document.getElementById('recallToggle');
   const recallRequiredToggle = document.getElementById('recallRequiredToggle');
@@ -8094,6 +8095,14 @@ loadDismissedIds();
     };
   }
   function getSkillRunnerLaneOptions() {
+    if (skillRunnerDeterministicOnly && skillRunnerDeterministicOnly.checked) {
+      return {
+        mode: 'brain',
+        verbs: [],
+        skillRunnerOrigin: true,
+        skillRunnerLane: 'deterministic',
+      };
+    }
     const laneMode = String(currentMode || 'brain').toLowerCase();
     const verbOverride = modeVerbOverride ? String(modeVerbOverride).trim() : '';
     if (verbOverride === 'chat_quick') {
@@ -8132,6 +8141,14 @@ loadDismissedIds();
     skillRunnerRunBtn.addEventListener('click', async () => {
       const { prompt: promptText, workflowId } = getSkillRunnerSelection();
       if (!promptText) return;
+      if (workflowId && skillRunnerDeterministicOnly && skillRunnerDeterministicOnly.checked) {
+        appendMessage(
+          'System',
+          'Deterministic Skill Runner cannot run cognitive workflows. Uncheck "Deterministic lane" or pick a catalogue skill (non-workflow) row.',
+          'text-amber-400',
+        );
+        return;
+      }
       const runOptions = getSkillRunnerLaneOptions();
       if (workflowId) {
         runOptions.workflowRequestOverride = { workflow_id: workflowId };

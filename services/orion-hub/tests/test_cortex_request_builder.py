@@ -4,6 +4,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "cortex_request_builder.py"
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -892,3 +894,65 @@ def test_social_room_artifact_dialogue_can_confirm_pending_proposal() -> None:
     assert req.metadata["social_skill_selection"]["selected_skill"] == "social_artifact_dialogue"
     assert "carry forward" in req.metadata["social_skill_result"]["summary"].lower()
     assert debug["social_artifact_confirmation"]["decision_state"] == "accepted"
+
+
+def test_skill_runner_deterministic_lane_catalogue_success() -> None:
+    prompt = "What time is it right now?"
+    req, debug, _ = hub_builder.build_chat_request(
+        payload={
+            "mode": "brain",
+            "skill_runner_origin": True,
+            "skill_runner_lane": "deterministic",
+        },
+        session_id="sid-sr-det",
+        user_id="user-1",
+        trace_id="trace-sr-det",
+        default_mode="brain",
+        auto_default_enabled=False,
+        source_label="hub_http",
+        prompt=prompt,
+    )
+    assert req.mode == "brain"
+    assert req.verb == "skills.system.time_now.v1"
+    assert req.options.get("force_agent_chain") is False
+    assert "supervised" not in req.options
+    assert debug["skill_runner_deterministic"] is True
+    assert debug["skill_runner_lane_requested"] == "deterministic"
+
+
+def test_skill_runner_deterministic_lane_rejects_workflow_prompt() -> None:
+    with pytest.raises(hub_builder.HubRequestValidationError) as exc:
+        hub_builder.build_chat_request(
+            payload={
+                "mode": "brain",
+                "skill_runner_origin": True,
+                "skill_runner_lane": "deterministic",
+            },
+            session_id="sid-sr-det-wf",
+            user_id="user-1",
+            trace_id="trace-sr-det-wf",
+            default_mode="brain",
+            auto_default_enabled=False,
+            source_label="hub_http",
+            prompt="Run through your concept induction graphs",
+        )
+    assert exc.value.code == "skill_runner_deterministic_no_workflow"
+
+
+def test_skill_runner_deterministic_lane_requires_catalogue_match() -> None:
+    with pytest.raises(hub_builder.HubRequestValidationError) as exc:
+        hub_builder.build_chat_request(
+            payload={
+                "mode": "brain",
+                "skill_runner_origin": True,
+                "skill_runner_lane": "deterministic",
+            },
+            session_id="sid-sr-det-miss",
+            user_id="user-1",
+            trace_id="trace-sr-det-miss",
+            default_mode="brain",
+            auto_default_enabled=False,
+            source_label="hub_http",
+            prompt="Not a catalogue skill runner prompt.",
+        )
+    assert exc.value.code == "skill_runner_deterministic_requires_skill_verb"

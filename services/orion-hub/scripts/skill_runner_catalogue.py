@@ -2,6 +2,9 @@
 
 Keys MUST match option ``value=`` strings in ``services/orion-hub/templates/index.html``.
 See ``docs/operator_skill_prompt_catalogue.md`` (kept in sync with the Hub Skill Runner dropdown).
+
+Operator **deterministic** lane (``skill_runner_lane=deterministic``): same catalogue map, brain-only,
+single ``skills.*`` verb — no ``chat_quick``, no agent chain, no workflow payloads.
 """
 
 from __future__ import annotations

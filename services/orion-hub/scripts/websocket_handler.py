@@ -11,7 +11,12 @@ from typing import Any, Dict, List, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 
 from scripts.settings import settings
-from scripts.cortex_request_builder import build_chat_request, build_continuity_messages, validate_single_verb_override
+from scripts.cortex_request_builder import (
+    HubRequestValidationError,
+    build_chat_request,
+    build_continuity_messages,
+    validate_single_verb_override,
+)
 from scripts.biometrics_cache import BiometricsCache
 from scripts.chat_history import (
     build_chat_history_envelope,
@@ -551,17 +556,26 @@ async def websocket_endpoint(websocket: WebSocket):
                 if stored_presence:
                     data["presence_context"] = stored_presence
             data["mutation_cognition_context"] = build_mutation_cognition_context()
-            chat_req, route_debug, use_recall = build_chat_request(
-                payload=data,
-                session_id=session_id,
-                user_id=data.get("user_id"),
-                trace_id=trace_id,
-                default_mode="brain",
-                auto_default_enabled=bool(settings.HUB_AUTO_DEFAULT_ENABLED),
-                source_label="hub_ws",
-                prompt=prompt_with_ctx,
-                messages=continuity_messages,
-            )
+            try:
+                chat_req, route_debug, use_recall = build_chat_request(
+                    payload=data,
+                    session_id=session_id,
+                    user_id=data.get("user_id"),
+                    trace_id=trace_id,
+                    default_mode="brain",
+                    auto_default_enabled=bool(settings.HUB_AUTO_DEFAULT_ENABLED),
+                    source_label="hub_ws",
+                    prompt=prompt_with_ctx,
+                    messages=continuity_messages,
+                )
+            except HubRequestValidationError as exc:
+                await websocket.send_json(
+                    await _with_biometrics(
+                        {"error": str(exc), "error_code": exc.code},
+                        cache=biometrics_cache,
+                    )
+                )
+                continue
             workflow_request = chat_req.metadata.get("workflow_request") if isinstance(chat_req.metadata, dict) else None
             execution_policy = workflow_request.get("execution_policy") if isinstance(workflow_request, dict) else None
             logger.info(

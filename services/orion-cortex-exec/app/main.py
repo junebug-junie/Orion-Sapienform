@@ -247,6 +247,21 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             payload={"ok": False, "error": "validation_failed", "details": ve.errors()},
         )
 
+    plan_v = str(req_env.payload.plan.verb_name or "")
+    extra_v = req_env.payload.args.extra if req_env.payload.args else {}
+    if isinstance(extra_v, dict) and extra_v.get("verb"):
+        plan_v = str(extra_v.get("verb") or plan_v)
+    step_n = len(req_env.payload.plan.steps)
+    logger.info(
+        "exec_lane_intake corr=%s trace_id=%s lane=%s channel=%s verb=%s step_count=%s",
+        corr_id,
+        trace_id,
+        settings.exec_lane,
+        settings.channel_exec_request,
+        plan_v,
+        step_n,
+    )
+
     # 1. Extract Context (Handling the Pydantic stripping issue)
     raw_payload = env.payload if isinstance(env.payload, dict) else {}
     payload_context = raw_payload.get("context") or req_env.payload.context or {}
@@ -659,12 +674,17 @@ verb_runtime = VerbRuntime(
     logger=logger,
     allow_backdoor=settings.orion_verb_backdoor_enabled,
 )
-verb_listener = Hunter(
-    _cfg(),
-    handler=handle_verb_request,
-    patterns=["orion:verb:request"],
-    concurrent_handlers=True,
-)
+_lane = str(settings.exec_lane or "chat").strip().lower()
+if _lane in {"chat", "legacy", ""}:
+    verb_listener = Hunter(
+        _cfg(),
+        handler=handle_verb_request,
+        patterns=["orion:verb:request"],
+        concurrent_handlers=True,
+    )
+else:
+    verb_listener = None
+    logger.info("exec_verb_listener_disabled lane=%s (direct exec lane intake only)", settings.exec_lane)
 trace_listener = Hunter(_cfg(), handler=handle_trace, patterns=["orion:cognition:trace"])
 core_event_listener = Hunter(_cfg(), handler=handle_core_event, patterns=[settings.channel_core_events])
 
@@ -679,14 +699,17 @@ async def main() -> None:
         pageindex_client_enabled,
     )
     logger.info(
-        f"Starting cortex-exec bus listener channel={settings.channel_exec_request} "
-        f"bus={settings.orion_bus_url}"
+        "Starting cortex-exec lane=%s channel=%s bus=%s verb_intake=%s",
+        settings.exec_lane,
+        settings.channel_exec_request,
+        settings.orion_bus_url,
+        "on" if verb_listener is not None else "off",
     )
     _run_autonomy_graph_probe()
-    assert verb_listener is not None, "Verb listener not initialized"
     assert trace_listener is not None, "Trace listener not initialized"
     assert core_event_listener is not None, "Core event listener not initialized"
-    await verb_listener.start_background()
+    if verb_listener is not None:
+        await verb_listener.start_background()
     await trace_listener.start_background()
     await core_event_listener.start_background()
     await svc.start()

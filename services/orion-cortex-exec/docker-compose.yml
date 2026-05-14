@@ -46,6 +46,7 @@ services:
       ORION_BUS_ENABLED: ${ORION_BUS_ENABLED}
 
       CHANNEL_EXEC_REQUEST: ${CHANNEL_EXEC_REQUEST}
+      EXEC_LANE: ${EXEC_LANE:-legacy}
       CHANNEL_COGNITION_TRACE_PUB: ${CHANNEL_COGNITION_TRACE_PUB:-orion:cognition:trace}
       CHANNEL_METACOG_TRACE_PUB: ${CHANNEL_METACOG_TRACE_PUB:-orion:metacog:trace}
       EXEC_REQUEST_PREFIX: ${EXEC_REQUEST_PREFIX}
@@ -139,6 +140,30 @@ services:
 
     networks:
       - app-net
+
+  cortex-exec-chat:
+    extends:
+      service: cortex-exec
+    container_name: ${PROJECT}-cortex-exec-chat
+    environment:
+      EXEC_LANE: chat
+      CHANNEL_EXEC_REQUEST: orion:cortex:exec:request:chat
+
+  cortex-exec-spark:
+    extends:
+      service: cortex-exec
+    container_name: ${PROJECT}-cortex-exec-spark
+    environment:
+      EXEC_LANE: spark
+      CHANNEL_EXEC_REQUEST: orion:cortex:exec:request:spark
+
+  cortex-exec-background:
+    extends:
+      service: cortex-exec
+    container_name: ${PROJECT}-cortex-exec-background
+    environment:
+      EXEC_LANE: background
+      CHANNEL_EXEC_REQUEST: orion:cortex:exec:request:background
 
 networks:
   app-net:

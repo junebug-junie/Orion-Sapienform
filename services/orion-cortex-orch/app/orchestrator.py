@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import json
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -29,6 +30,7 @@ from .mind_runtime import (
     merge_mind_brief_into_plan_metadata,
     publish_mind_run_artifact,
 )
+from .execution_lanes import ExecutionLaneDecision, resolve_execution_lane
 from .settings import get_settings
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, RecallDirective
@@ -383,20 +385,30 @@ async def call_cortex_exec(
     client_request: CortexClientRequest,
     correlation_id: str,
     timeout_sec: float = 900.0,
+    trace: dict | None = None,
+    plan_request: PlanExecutionRequest | None = None,
 ) -> Dict[str, Any]:
-    request_object = build_plan_request(client_request, correlation_id)
+    """Dispatch PlanExecution to cortex-exec.
 
-    state_reply = await _maybe_fetch_state(bus, source=source, correlation_id=correlation_id)
-    if state_reply is not None:
-        request_object.context.setdefault("metadata", {})["orion_state"] = state_reply.model_dump(mode="json")
-        request_object.context["metadata"].pop("orion_state_pending", None)
+    When ``plan_request`` is provided (direct exec lane path), it must already include
+    state, mind, router, and lane metadata merged by :func:`call_verb_runtime`.
+    """
+    if plan_request is not None:
+        request_object = plan_request
     else:
-        request_object.context.setdefault("metadata", {})["orion_state"] = StateLatestReply(
-            ok=False,
-            status="missing",
-            note="state_service_unavailable",
-        ).model_dump(mode="json")
-        request_object.context["metadata"].pop("orion_state_pending", None)
+        request_object = build_plan_request(client_request, correlation_id)
+
+        state_reply = await _maybe_fetch_state(bus, source=source, correlation_id=correlation_id)
+        if state_reply is not None:
+            request_object.context.setdefault("metadata", {})["orion_state"] = state_reply.model_dump(mode="json")
+            request_object.context["metadata"].pop("orion_state_pending", None)
+        else:
+            request_object.context.setdefault("metadata", {})["orion_state"] = StateLatestReply(
+                ok=False,
+                status="missing",
+                note="state_service_unavailable",
+            ).model_dump(mode="json")
+            request_object.context["metadata"].pop("orion_state_pending", None)
 
     diagnostic = _diagnostic_enabled(client_request)
 
@@ -424,7 +436,7 @@ async def call_cortex_exec(
         req=request_object,
         correlation_id=correlation_id,
         timeout_sec=timeout_sec,
-        trace=None,
+        trace=trace,
     )
 
 
@@ -436,21 +448,30 @@ def build_verb_request(
     correlation_id: str,
     causality_chain: list | None = None,
     trace: dict | None = None,
+    lane_decision: ExecutionLaneDecision | None = None,
+    verb_runtime_request_id: str | None = None,
 ) -> tuple[VerbRequestV1, BaseEnvelope]:
-    request_id = str(uuid4())
+    request_id = verb_runtime_request_id or str(uuid4())
     reply_channel = f"orion:verb:result:{correlation_id}:{request_id}"
     trigger_name = client_request.verb if client_request.verb in _DIRECT_VERB_TRIGGERS else "legacy.plan"
+    meta: Dict[str, Any] = {
+        "verb": client_request.verb,
+        "mode": client_request.mode,
+        "origin": "cortex-orch",
+    }
+    if lane_decision is not None:
+        meta["execution_lane"] = lane_decision.lane
+        meta["execution_lane_reason"] = lane_decision.reason
+        opts = client_request.options if isinstance(client_request.options, dict) else {}
+        if isinstance(opts.get("priority"), str):
+            meta["priority"] = opts["priority"]
     verb_request = VerbRequestV1(
         trigger=trigger_name,
         schema_id=plan_request.__class__.__name__,
         payload=plan_request.model_dump(mode="json"),
         request_id=request_id,
         caller=source.name,
-        meta={
-            "verb": client_request.verb,
-            "mode": client_request.mode,
-            "origin": "cortex-orch",
-        },
+        meta=meta,
     )
 
     envelope = BaseEnvelope(
@@ -476,7 +497,34 @@ async def call_verb_runtime(
     timeout_sec: float = 900.0,
     router_metadata: dict[str, Any] | None = None,
 ) -> VerbResultV1:
+    settings = get_settings()
+    base_lane_decision = resolve_execution_lane(client_request)
+    lane_decision = (
+        base_lane_decision
+        if settings.exec_lane_routing_enabled
+        else replace(base_lane_decision, reason="lane_routing_disabled")
+    )
+
     plan_request = build_plan_request(client_request, correlation_id, router_metadata=router_metadata)
+    trace_id = (trace or {}).get("trace_id") or getattr(client_request.context, "trace_id", None) or correlation_id
+    mode_s = str(client_request.mode or "")
+    verb_s = str(client_request.verb or plan_request.plan.verb_name or "")
+
+    logger.info(
+        "orch_execution_lane_decision corr=%s trace_id=%s mode=%s verb=%s lane=%s reason=%s explicit=%s requested=%s",
+        correlation_id,
+        trace_id,
+        mode_s,
+        verb_s,
+        lane_decision.lane,
+        lane_decision.reason,
+        lane_decision.explicit,
+        lane_decision.requested,
+    )
+
+    plan_request.context.setdefault("metadata", {})["execution_lane"] = lane_decision.lane
+    plan_request.context["metadata"]["execution_lane_reason"] = lane_decision.reason
+
     state_reply = await _maybe_fetch_state(bus, source=source, correlation_id=correlation_id)
     if state_reply is not None:
         plan_request.context.setdefault("metadata", {})["orion_state"] = state_reply.model_dump(mode="json")
@@ -517,6 +565,43 @@ async def call_verb_runtime(
             logger.warning("mind_http_failed corr=%s err=%s", correlation_id, mind_exc)
             plan_request.context.setdefault("metadata", {})["mind_invocation_failed"] = str(mind_exc)
 
+    use_direct_exec = settings.exec_lane_routing_enabled and lane_decision.lane != "chat"
+    # Same id allocation as the verb envelope path so VerbResultV1.request_id is stable per invocation
+    # whether orch uses direct PlanExecution RPC or orion:verb:request.
+    verb_runtime_request_id = str(uuid4())
+
+    if use_direct_exec:
+        exec_channel = settings.exec_request_channel_for_lane(lane_decision.lane)
+        logger.info(
+            "orch_publish_exec_lane corr=%s trace_id=%s lane=%s channel=%s verb=%s",
+            correlation_id,
+            trace_id,
+            lane_decision.lane,
+            exec_channel,
+            verb_s,
+        )
+        exec_trace = dict(trace or {})
+        if trace_id and "trace_id" not in exec_trace:
+            exec_trace["trace_id"] = trace_id
+        raw = await call_cortex_exec(
+            bus,
+            source=source,
+            exec_request_channel=exec_channel,
+            exec_result_prefix=settings.channel_exec_result_prefix,
+            client_request=client_request,
+            correlation_id=correlation_id,
+            timeout_sec=timeout_sec,
+            trace=exec_trace or None,
+            plan_request=plan_request,
+        )
+        ok = isinstance(raw, dict) and str(raw.get("status") or "").lower() == "success"
+        return VerbResultV1(
+            verb="legacy.plan",
+            ok=ok,
+            output={"result": raw} if isinstance(raw, dict) else {"result": {}},
+            request_id=verb_runtime_request_id,
+        )
+
     verb_request, envelope = build_verb_request(
         client_request=client_request,
         plan_request=plan_request,
@@ -524,6 +609,8 @@ async def call_verb_runtime(
         correlation_id=correlation_id,
         causality_chain=causality_chain,
         trace=trace,
+        lane_decision=lane_decision,
+        verb_runtime_request_id=verb_runtime_request_id,
     )
     request_summary = {
         "corr_id": correlation_id,
@@ -539,6 +626,14 @@ async def call_verb_runtime(
         "response_profile": plan_request.context.get("response_profile"),
     }
     logger.info("orch_publish_verb_runtime %s", json.dumps(request_summary, sort_keys=True, default=str))
+    logger.info(
+        "orch_publish_verb_intake corr=%s trace_id=%s lane=%s channel=%s verb=%s",
+        correlation_id,
+        trace_id,
+        lane_decision.lane,
+        "orion:verb:request",
+        verb_s,
+    )
 
     async def _wait_for_result() -> VerbResultV1:
         reply_channel = str(envelope.reply_to or "orion:verb:result")
@@ -670,7 +765,7 @@ async def dispatch_metacog_trigger(
     settings = get_settings()
     client = CortexExecClient(
         bus,
-        request_channel=settings.channel_exec_request,
+        request_channel=settings.exec_request_channel_for_lane("background"),
         result_prefix=settings.channel_exec_result_prefix,
     )
 

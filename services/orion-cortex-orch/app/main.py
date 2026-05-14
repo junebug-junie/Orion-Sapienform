@@ -611,10 +611,17 @@ async def main() -> None:
     logger.info(
         "Starting Cortex Orch Service (Typed Client Version) "
         f"intake={s.channel_cortex_request} "
-        f"exec_channel={s.channel_exec_request} "
+        f"exec_legacy_channel={s.channel_exec_request} "
+        f"exec_lane_routing_enabled={s.exec_lane_routing_enabled} "
+        f"exec_lanes_chat={s.channel_exec_request_chat} spark={s.channel_exec_request_spark} bg={s.channel_exec_request_background} "
         f"bus={s.orion_bus_url}"
     )
     logger.info("orch_runtime_identity %s", json.dumps(_runtime_identity(), sort_keys=True))
+    if s.exec_lane_routing_enabled:
+        logger.warning(
+            "exec_lane_routing_enabled=true: run one cortex-exec consumer per lane (chat, spark, background) "
+            "subscribed to the lane exec channels; a missing subscriber causes PlanExecution RPC timeouts."
+        )
     await asyncio.gather(
         svc.start(),
         equilibrium_hunter.start(),

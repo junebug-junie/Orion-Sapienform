@@ -95,6 +95,10 @@ class Settings(BaseSettings):
     mind_wall_ms_default: int = Field(120_000, alias="MIND_WALL_MS_DEFAULT")
     orion_mind_max_response_bytes: int = Field(2_000_000, alias="ORION_MIND_MAX_RESPONSE_BYTES")
 
+    orion_substrate_telemetry_base_url: str = Field("", alias="ORION_SUBSTRATE_TELEMETRY_BASE_URL")
+    orion_substrate_telemetry_timeout_sec: float = Field(2.0, alias="ORION_SUBSTRATE_TELEMETRY_TIMEOUT_SEC")
+    orion_substrate_telemetry_read_token: str = Field("", alias="ORION_SUBSTRATE_TELEMETRY_READ_TOKEN")
+
     # Memory cards (always-on inject + optional auto-extractor)
     recall_pg_dsn: str = Field("", alias="RECALL_PG_DSN")
     orion_always_inject_token_budget: int = Field(300, alias="ORION_ALWAYS_INJECT_TOKEN_BUDGET")

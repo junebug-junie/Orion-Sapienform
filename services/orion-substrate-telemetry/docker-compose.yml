@@ -1,0 +1,30 @@
+services:
+  substrate-telemetry:
+    build:
+      context: ../..
+      dockerfile: services/orion-substrate-telemetry/Dockerfile
+    container_name: ${PROJECT}-substrate-telemetry
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      - "${SUBSTRATE_TELEMETRY_PORT:-8395}:${SUBSTRATE_TELEMETRY_PORT:-8395}"
+    environment:
+      - SERVICE_NAME=${SERVICE_NAME:-substrate-telemetry}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - NODE_NAME=${NODE_NAME}
+      - PORT=${SUBSTRATE_TELEMETRY_PORT:-8395}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED}
+      - CHANNEL_SUBSTRATE_TIER_OUTCOMES=${CHANNEL_SUBSTRATE_TIER_OUTCOMES:-orion:substrate:tier_outcomes}
+      - POSTGRES_URI=${POSTGRES_URI}
+      - SUBSTRATE_TELEMETRY_READ_API_TOKEN=${SUBSTRATE_TELEMETRY_READ_API_TOKEN:-}
+      - SUBSTRATE_TELEMETRY_RETENTION_DAYS=${SUBSTRATE_TELEMETRY_RETENTION_DAYS:-7}
+      - SUBSTRATE_TELEMETRY_RETENTION_SCAN_SEC=${SUBSTRATE_TELEMETRY_RETENTION_SCAN_SEC:-3600}
+      - SUBSTRATE_TELEMETRY_PER_CORR_CAP=${SUBSTRATE_TELEMETRY_PER_CORR_CAP:-100}
+      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC:-10}
+
+networks:
+  app-net:
+    name: ${NET}
+    external: true

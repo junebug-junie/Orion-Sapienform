@@ -742,6 +742,40 @@ def api_debug_build():
     }
 
 
+@router.get("/api/debug/cortex-bus-stack")
+async def api_debug_cortex_bus_stack(
+    rpc_timeout_sec: float = Query(
+        default=45.0,
+        ge=5.0,
+        le=180.0,
+        description="Seconds to wait for Hub→gateway→orch round-trip (keep below UI timeouts for probes).",
+    ),
+    run_rpc: bool = Query(default=True, description="When false, only Redis PING and PUBSUB NUMSUB."),
+) -> Dict[str, Any]:
+    """Redis reachability, subscriber counts on gateway/orch intake channels, and optional catalogue RPC probe."""
+    from scripts.cortex_bus_stack_diagnostic import run_cortex_bus_stack_diagnostic
+
+    from .main import bus
+
+    own = bus
+    if own is None or not getattr(own, "enabled", True):
+        own = None
+    return await run_cortex_bus_stack_diagnostic(
+        own_bus=own,
+        redis_url=str(settings.ORION_BUS_URL),
+        gateway_request_channel=str(settings.CORTEX_GATEWAY_REQUEST_CHANNEL),
+        gateway_result_prefix=str(settings.CORTEX_GATEWAY_RESULT_PREFIX),
+        orch_request_channel=str(settings.CORTEX_ORCH_REQUEST_CHANNEL),
+        orch_result_prefix=str(settings.CORTEX_ORCH_RESULT_PREFIX),
+        rpc_timeout_sec=float(rpc_timeout_sec),
+        run_rpc=bool(run_rpc),
+        service_name=str(settings.SERVICE_NAME),
+        service_version=str(settings.SERVICE_VERSION),
+        node_name=str(settings.NODE_NAME),
+        enforce_catalog=bool(getattr(settings, "ORION_BUS_ENFORCE_CATALOG", False)),
+    )
+
+
 @router.get("/api/debug/skill-runner-deterministic")
 def api_debug_skill_runner_deterministic(prompt: str = Query(default="", description="Exact Skill Runner catalogue prompt value")) -> Dict[str, Any]:
     """Resolve prompt to catalogue verb (no cortex). Use to verify deterministic-lane eligibility."""

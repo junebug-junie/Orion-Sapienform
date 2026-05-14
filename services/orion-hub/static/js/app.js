@@ -113,7 +113,6 @@ loadDismissedIds();
   const skillRunnerSelect = document.getElementById('skillRunnerSelect');
   const skillRunnerRunBtn = document.getElementById('skillRunnerRunBtn');
   const skillRunnerInsertBtn = document.getElementById('skillRunnerInsertBtn');
-  const skillRunnerDeterministicOnly = document.getElementById('skillRunnerDeterministicOnly');
   const textToSpeechToggle = document.getElementById('textToSpeechToggle');
   const recallToggle = document.getElementById('recallToggle');
   const recallRequiredToggle = document.getElementById('recallRequiredToggle');
@@ -8094,10 +8093,10 @@ loadDismissedIds();
       workflowId: workflowId || null,
     };
   }
-  function getSkillRunnerLaneOptions() {
-    if (skillRunnerDeterministicOnly && skillRunnerDeterministicOnly.checked) {
+  function getSkillRunnerLaneOptions({ workflowId } = {}) {
+    // Catalogue prompts: deterministic lane (catalogue skills.* only; hub ignores chat UI mode for this send).
+    if (!workflowId) {
       return {
-        mode: 'brain',
         verbs: [],
         skillRunnerOrigin: true,
         skillRunnerLane: 'deterministic',
@@ -8141,15 +8140,7 @@ loadDismissedIds();
     skillRunnerRunBtn.addEventListener('click', async () => {
       const { prompt: promptText, workflowId } = getSkillRunnerSelection();
       if (!promptText) return;
-      if (workflowId && skillRunnerDeterministicOnly && skillRunnerDeterministicOnly.checked) {
-        appendMessage(
-          'System',
-          'Deterministic Skill Runner cannot run cognitive workflows. Uncheck "Deterministic lane" or pick a catalogue skill (non-workflow) row.',
-          'text-amber-400',
-        );
-        return;
-      }
-      const runOptions = getSkillRunnerLaneOptions();
+      const runOptions = getSkillRunnerLaneOptions({ workflowId });
       if (workflowId) {
         runOptions.workflowRequestOverride = { workflow_id: workflowId };
       }
@@ -9051,6 +9042,25 @@ loadDismissedIds();
   loadScheduleInventory();
 
   // --- WebSocket ---
+  function resolveAssistantDisplayText(d) {
+    if (!d || typeof d !== 'object') return '';
+    const top = String(d.llm_response ?? d.text ?? '').trim();
+    const raw = d.raw && typeof d.raw === 'object' ? d.raw : {};
+    const nested = String(raw.final_text ?? '').trim();
+    let pick = nested.length > top.length ? nested : top;
+    if (pick) return pick;
+    const meta = raw.metadata && typeof raw.metadata === 'object' ? raw.metadata : {};
+    const sr = meta.skill_result != null ? meta.skill_result : meta.skillResult;
+    if (sr !== undefined && sr !== null) {
+      try {
+        return typeof sr === 'string' ? String(sr).trim() : JSON.stringify(sr);
+      } catch (_) {
+        return String(sr);
+      }
+    }
+    return '';
+  }
+
   function setupWebSocket() {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${proto}//${window.location.host}${URL_PREFIX}/ws`;
@@ -9066,9 +9076,10 @@ loadDismissedIds();
     socket.onmessage = (e) => {
       try {
           const d = JSON.parse(e.data);
+          const displayText = resolveAssistantDisplayText(d);
           if (d.transcript && !d.is_text_input) appendMessage('You', d.transcript);
-          if (d.llm_response || d.workflow) {
-            appendMessage('Orion', d.llm_response, 'text-white', {
+          if (displayText || d.workflow) {
+            appendMessage('Orion', displayText || '', 'text-white', {
               raw: d.raw,
               reasoning: d.reasoning,
               reasoningTrace: d.reasoning_trace,
@@ -9332,24 +9343,28 @@ loadDismissedIds();
     const requestMode = forceAgentPath
       ? 'agent'
       : (opts && opts.mode ? String(opts.mode) : currentMode);
+    const omitChatUiMode =
+      Boolean(opts && opts.skillRunnerOrigin && String(opts.skillRunnerLane || '').toLowerCase() === 'deterministic');
     const payload = {
        text_input: value,
-       mode: requestMode,
        session_id: orionSessionId,
        browser_client_id: ensureBrowserClientId(),
        disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
        no_write: noWriteToggle ? noWriteToggle.checked : false,
-       use_recall: recallToggle ? recallToggle.checked : true,
-       recall_mode: recallMode !== "auto" ? recallMode : null,
-       recall_profile: recallProfile !== "auto" ? recallProfile : null,
-       recall_required: recallRequiredToggle ? recallRequiredToggle.checked : false,
-       packs: selectedPacks,
+       use_recall: omitChatUiMode ? false : (recallToggle ? recallToggle.checked : true),
+       recall_mode: omitChatUiMode ? null : (recallMode !== "auto" ? recallMode : null),
+       recall_profile: omitChatUiMode ? null : (recallProfile !== "auto" ? recallProfile : null),
+       recall_required: omitChatUiMode ? false : (recallRequiredToggle ? recallRequiredToggle.checked : false),
+       packs: omitChatUiMode ? [] : selectedPacks,
        verbs: effectiveVerbs,
        skill_runner_origin: Boolean(opts && opts.skillRunnerOrigin),
        skill_runner_lane: opts && opts.skillRunnerLane ? String(opts.skillRunnerLane) : null,
        presence_context: presenceContext,
        surface_context: { surface: 'hub_desktop', input_modality: 'typed' },
     };
+    if (!omitChatUiMode) {
+      payload.mode = requestMode;
+    }
     const optFromOpts = opts && opts.options && typeof opts.options === 'object' ? { ...opts.options } : {};
     if (isChatQuickSend) {
       payload.options = { ...optFromOpts, chat_quick_full_stance: chatQuickVariant === 'stance' };
@@ -9387,8 +9402,9 @@ loadDismissedIds();
         })
         .then(r => r.json())
         .then(d => {
-            if(d.text || d.workflow) {
-              appendMessage('Orion', d.text, 'text-white', {
+            const displayText = resolveAssistantDisplayText(d);
+            if(displayText || d.workflow) {
+              appendMessage('Orion', displayText || '', 'text-white', {
                 raw: d.raw,
                 reasoning: d.reasoning,
                 reasoningTrace: d.reasoning_trace,

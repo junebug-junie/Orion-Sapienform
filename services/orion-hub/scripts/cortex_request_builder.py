@@ -323,6 +323,11 @@ def build_cortex_chat_request(
         selected_ui_route = "brain"
     mode = selected_ui_route
 
+    skill_runner_lane_raw = str(payload.get("skill_runner_lane") or "").strip().lower()
+    deterministic_requested = _normalize_flag(payload.get("skill_runner_origin"), default=False) and (
+        skill_runner_lane_raw == "deterministic"
+    )
+
     raw_recall = payload.get("use_recall", None)
     if raw_recall is None:
         use_recall = True
@@ -332,6 +337,8 @@ def build_cortex_chat_request(
         use_recall = bool(raw_recall)
     else:
         use_recall = str(raw_recall).strip().lower() in {"1", "true", "yes", "y", "on"}
+    if deterministic_requested:
+        use_recall = False
 
     recall_payload = _build_recall_payload(payload, use_recall=use_recall, route_mode=selected_ui_route)
     if social_room:
@@ -343,6 +350,11 @@ def build_cortex_chat_request(
     recall_payload["profile_explicit"] = _normalize_flag(
         payload.get("recall_profile_explicit"), default=False
     )
+    if deterministic_requested:
+        recall_payload["enabled"] = False
+        recall_payload["required"] = False
+        recall_payload["profile"] = None
+        recall_payload["profile_explicit"] = False
 
     options = dict(payload.get("options") or {}) if isinstance(payload.get("options"), dict) else {}
     no_write_active = bool(payload.get("no_write", False))
@@ -417,10 +429,6 @@ def build_cortex_chat_request(
         route_intent = "none"
         options.pop("route_intent", None)
 
-    skill_runner_lane_raw = str(payload.get("skill_runner_lane") or "").strip().lower()
-    deterministic_requested = _normalize_flag(payload.get("skill_runner_origin"), default=False) and (
-        skill_runner_lane_raw == "deterministic"
-    )
     if deterministic_requested:
         if workflow_request_override is not None or workflow_match is not None or workflow_management is not None:
             raise HubRequestValidationError(
@@ -432,11 +440,8 @@ def build_cortex_chat_request(
                 "skill_runner_deterministic_requires_skill_verb",
                 "Skill Runner deterministic lane requires a catalogue prompt that resolves to exactly one skills.* verb.",
             )
-        if mode != "brain":
-            raise HubRequestValidationError(
-                "skill_runner_deterministic_requires_brain_mode",
-                "Skill Runner deterministic lane only runs in brain mode.",
-            )
+        mode = "brain"
+        selected_ui_route = "brain"
         options["force_agent_chain"] = False
         options.pop("supervised", None)
 
@@ -622,7 +627,7 @@ def build_cortex_chat_request(
         session_id=session_id,
         user_id=user_id,
         trace_id=trace_id,
-        packs=payload.get("packs"),
+        packs=[] if deterministic_requested else payload.get("packs"),
         verb=verb_override,
         options=options,
         recall=recall_payload,

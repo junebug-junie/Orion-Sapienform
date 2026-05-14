@@ -9,6 +9,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
 
 from scripts.settings import settings
 from scripts.cortex_request_builder import (
@@ -39,6 +40,26 @@ from orion.schemas.tts import TTSRequestPayload, TTSResultPayload, STTRequestPay
 from orion.cognition.verb_activation import is_active
 
 logger = logging.getLogger("orion-hub.ws")
+
+
+async def _safe_ws_send_json(websocket: WebSocket, payload: Any) -> bool:
+    """Send JSON only if the socket is still open; avoids RuntimeError after client disconnect."""
+    if websocket.client_state != WebSocketState.CONNECTED:
+        logger.warning(
+            "ws_send_json_skipped reason=not_connected client_state=%s application_state=%s",
+            websocket.client_state,
+            getattr(websocket, "application_state", None),
+        )
+        return False
+    try:
+        await websocket.send_json(payload)
+        return True
+    except RuntimeError as exc:
+        msg = str(exc).lower()
+        if "send" in msg and ("close" in msg or "disconnect" in msg or "not connected" in msg):
+            logger.warning("ws_send_json_skipped runtime_error=%s", exc)
+            return False
+        raise
 
 
 def _thought_debug_enabled() -> bool:
@@ -831,9 +852,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     )
             except Exception as e:
                 logger.error(f"Chat RPC Error: {e}")
-                await websocket.send_json(
-                    await _with_biometrics({"error": f"Chat failed: {str(e)}"}, cache=biometrics_cache)
+                err_payload = await _with_biometrics(
+                    {"error": f"Chat failed: {str(e)}"}, cache=biometrics_cache
                 )
+                if not await _safe_ws_send_json(websocket, err_payload):
+                    logger.info("chat_rpc_error_not_delivered_ws_closed corr=%s", trace_id)
                 continue
 
             # 3. Response & Logging

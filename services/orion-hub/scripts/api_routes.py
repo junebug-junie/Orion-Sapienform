@@ -653,6 +653,23 @@ def health():
     return {"status": "ok", "service": settings.SERVICE_NAME}
 
 
+@router.get("/api/substrate/tier-outcomes/latest")
+def api_substrate_tier_outcomes_latest(correlation_id: str = Query(...)) -> dict[str, Any]:
+    base = (os.environ.get("SUBSTRATE_TELEMETRY_BASE_URL") or "").rstrip("/")
+    if not base:
+        return {"ok": False, "error": "substrate_telemetry_unconfigured"}
+    headers: dict[str, str] = {}
+    tok = (os.environ.get("SUBSTRATE_TELEMETRY_READ_TOKEN") or "").strip()
+    if tok:
+        headers["X-Telemetry-Token"] = tok
+    url = f"{base}/v1/substrate/tier-outcomes/latest"
+    r = requests.get(url, params={"correlation_id": correlation_id}, headers=headers, timeout=5.0)
+    if r.status_code == 404:
+        return {"ok": True, "status": "absent"}
+    r.raise_for_status()
+    return {"ok": True, "data": r.json()}
+
+
 def _runtime_identity() -> dict:
     return {
         "service": settings.SERVICE_NAME,

@@ -916,6 +916,10 @@ def test_skill_runner_deterministic_lane_catalogue_success() -> None:
     assert req.verb == "skills.system.time_now.v1"
     assert req.options.get("force_agent_chain") is False
     assert "supervised" not in req.options
+    assert req.recall["enabled"] is False
+    assert req.recall.get("required") is False
+    assert req.recall.get("profile") is None
+    assert req.packs is None
     assert debug["skill_runner_deterministic"] is True
     assert debug["skill_runner_lane_requested"] == "deterministic"
 
@@ -956,3 +960,28 @@ def test_skill_runner_deterministic_lane_requires_catalogue_match() -> None:
             prompt="Not a catalogue skill runner prompt.",
         )
     assert exc.value.code == "skill_runner_deterministic_requires_skill_verb"
+
+
+def test_skill_runner_deterministic_lane_strips_recall_and_packs_from_payload() -> None:
+    req, _, _ = hub_builder.build_chat_request(
+        payload={
+            "mode": "brain",
+            "skill_runner_origin": True,
+            "skill_runner_lane": "deterministic",
+            "use_recall": True,
+            "recall_required": True,
+            "recall_profile": "reflect.v1",
+            "packs": ["executive_pack"],
+        },
+        session_id="sid-sr-det-strip",
+        user_id="user-1",
+        trace_id="trace-sr-det-strip",
+        default_mode="brain",
+        auto_default_enabled=False,
+        source_label="hub_http",
+        prompt="What time is it right now?",
+    )
+    assert req.recall["enabled"] is False
+    assert req.recall.get("required") is False
+    assert req.recall.get("profile") is None
+    assert req.packs is None

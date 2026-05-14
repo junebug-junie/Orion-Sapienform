@@ -113,7 +113,6 @@ loadDismissedIds();
   const skillRunnerSelect = document.getElementById('skillRunnerSelect');
   const skillRunnerRunBtn = document.getElementById('skillRunnerRunBtn');
   const skillRunnerInsertBtn = document.getElementById('skillRunnerInsertBtn');
-  const skillRunnerDeterministicOnly = document.getElementById('skillRunnerDeterministicOnly');
   const textToSpeechToggle = document.getElementById('textToSpeechToggle');
   const recallToggle = document.getElementById('recallToggle');
   const recallRequiredToggle = document.getElementById('recallRequiredToggle');
@@ -8094,8 +8093,9 @@ loadDismissedIds();
       workflowId: workflowId || null,
     };
   }
-  function getSkillRunnerLaneOptions() {
-    if (skillRunnerDeterministicOnly && skillRunnerDeterministicOnly.checked) {
+  function getSkillRunnerLaneOptions({ workflowId } = {}) {
+    // Catalogue prompts: always deterministic lane (brain + catalogue skills.* only; never chat_quick / agent).
+    if (!workflowId) {
       return {
         mode: 'brain',
         verbs: [],
@@ -8141,15 +8141,7 @@ loadDismissedIds();
     skillRunnerRunBtn.addEventListener('click', async () => {
       const { prompt: promptText, workflowId } = getSkillRunnerSelection();
       if (!promptText) return;
-      if (workflowId && skillRunnerDeterministicOnly && skillRunnerDeterministicOnly.checked) {
-        appendMessage(
-          'System',
-          'Deterministic Skill Runner cannot run cognitive workflows. Uncheck "Deterministic lane" or pick a catalogue skill (non-workflow) row.',
-          'text-amber-400',
-        );
-        return;
-      }
-      const runOptions = getSkillRunnerLaneOptions();
+      const runOptions = getSkillRunnerLaneOptions({ workflowId });
       if (workflowId) {
         runOptions.workflowRequestOverride = { workflow_id: workflowId };
       }

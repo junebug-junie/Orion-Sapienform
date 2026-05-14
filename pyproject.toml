@@ -78,3 +78,6 @@ build-backend = "poetry.core.masonry.api"
 [tool.pytest.ini_options]
 testpaths = ["tests", "orion/substrate/relational/tests"]
 norecursedirs = ["scripts", "orion/cognition/tests"]
+markers = [
+    "integration: optional tests requiring external services (set RUN_INTEGRATION=1)",
+]

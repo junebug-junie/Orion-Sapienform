@@ -1746,7 +1746,7 @@ channels:
     schema_id: "SubstrateTierOutcomesPayloadV1"
     message_kind: "substrate.tier_outcomes.v1"
     producer_services: ["orion-cortex-exec"]
-    consumer_services: ["orion-mind", "orion-hub", "*"]
+    consumer_services: ["orion-substrate-telemetry"]
     stability: "experimental"
     since: "2026-05-09"
 

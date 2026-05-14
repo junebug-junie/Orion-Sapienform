@@ -14,6 +14,21 @@ except ImportError:  # pragma: no cover - fallback for test harness
     from settings import settings  # type: ignore
 
 
+# Hub UI historically labels the default lane as ``recall.v1``; on-disk profile is ``chat.general.v1``.
+_PROFILE_ALIASES: Dict[str, str] = {
+    "recall.v1": "chat.general.v1",
+}
+
+
+def _canonical_profile_name(name: str | None) -> str | None:
+    if not name:
+        return None
+    key = str(name).strip()
+    if not key:
+        return None
+    return _PROFILE_ALIASES.get(key.lower(), key)
+
+
 def _read_profile(path: Path) -> Dict[str, Any]:
     with path.open("r", encoding="utf-8") as f:
         if path.suffix in {".yaml", ".yml"}:
@@ -98,6 +113,9 @@ def load_profiles() -> Dict[str, Dict[str, Any]]:
 
 def get_profile(name: str | None) -> Dict[str, Any]:
     profiles = load_profiles()
-    if name and name in profiles:
-        return profiles[name]
+    canonical = _canonical_profile_name(name)
+    if canonical and canonical in profiles:
+        return profiles[canonical]
+    if name and str(name).strip() in profiles:
+        return profiles[str(name).strip()]
     return profiles.get(settings.RECALL_DEFAULT_PROFILE, {})

@@ -20,6 +20,35 @@ def normalize_compare_text(text: str) -> str:
     return t.lower()
 
 
+_TRANSCRIPT_PAIR_RE = re.compile(
+    r'ExactUserText:\s*"(.*?)"\s*OrionResponse:\s*"(.*?)"',
+    flags=re.IGNORECASE | re.DOTALL,
+)
+
+
+def transcript_snippet_user_lean(snippet: str, *, max_user: int = 280) -> str | None:
+    """
+    If snippet matches transcript-shaped vector rows, return a compact user-only line.
+
+    Used for low-latency recall profiles: past OrionResponse text is retrieval signal for
+    ranking but should not be pasted back into the prompt as if it were script to repeat.
+    """
+    raw = (snippet or "").strip()
+    if not raw:
+        return None
+    if "exactusertext:" not in raw.lower() or "orionresponse:" not in raw.lower():
+        return None
+    m = _TRANSCRIPT_PAIR_RE.search(" ".join(raw.split()))
+    if not m:
+        return None
+    user = (m.group(1) or "").strip()
+    if not user:
+        return None
+    if max_user > 0 and len(user) > max_user:
+        user = user[: max_user - 1].rstrip() + "…"
+    return f'Older_user_turn: "{user}"'
+
+
 def extract_orion_assistant_from_snippet(snippet: str) -> str:
     """OrionResponse body for ExactUserText/OrionResponse rows; robust if inner quotes exist."""
     raw = _WS.sub(" ", (snippet or "").strip())

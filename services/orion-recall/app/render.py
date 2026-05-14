@@ -6,9 +6,9 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 from orion.core.contracts.recall import MemoryItemV1
 
 try:
-    from .snippet_dedupe import OrionDigestDeduper
+    from .snippet_dedupe import OrionDigestDeduper, transcript_snippet_user_lean
 except ImportError:  # pragma: no cover
-    from snippet_dedupe import OrionDigestDeduper  # type: ignore
+    from snippet_dedupe import OrionDigestDeduper, transcript_snippet_user_lean  # type: ignore
 
 
 def render_items(
@@ -18,6 +18,7 @@ def render_items(
     *,
     diagnostic: bool = False,
     budget_indicator: bool = True,
+    render_transcript_user_only: bool = False,
 ) -> Tuple[str, List[Dict[str, Optional[str]]]]:
     """
     Render memory items into a compact bullet list suitable for prompts.
@@ -58,6 +59,10 @@ def render_items(
             snippet = (item.snippet or "").strip().replace("\n", " ")
             if not snippet:
                 continue
+            if render_transcript_user_only:
+                lean = transcript_snippet_user_lean(snippet)
+                if lean:
+                    snippet = lean
             if not orion_deduper.should_emit_snippet(snippet):
                 continue
             prefix = f"[{item.source}"
@@ -123,6 +128,10 @@ def render_items(
                 if item.id in emitted_ids:
                     continue
                 snippet = (item.snippet or "").strip().replace("\n", " ")
+                if render_transcript_user_only:
+                    lean = transcript_snippet_user_lean(snippet)
+                    if lean:
+                        snippet = lean
                 if _is_refusal_snippet(snippet):
                     skipped_refusal += 1
                     continue

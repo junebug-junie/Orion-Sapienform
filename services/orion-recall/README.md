@@ -116,7 +116,7 @@ They control:
 
 | Profile | What it’s for | RDF | SQL timeline | Vector |
 | :--- | :--- | :---: | :---: | :---: |
-| `assist.light.v1` | low-latency, minimal context | off | off | on |
+| `assist.light.v1` | low-latency, minimal context | off | off | off |
 | `chat.general.v1` | normal conversational recall | on | off | on |
 | `reflect.v1` | reflection / sensemaking w/ some history | on | on | on |
 | `deep.graph.v1` | “catch me up” / architecture / deep state | on (more) | on (more) | on |

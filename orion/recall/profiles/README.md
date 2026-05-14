@@ -163,15 +163,13 @@ Weighted toward:
 
 ---
 
-## assist.light.v1 — QA + Semantic Matching
+## assist.light.v1 — Latency lane (no vector)
 Use for:
-- factual questions
-- task/QA
-- instruction following
+- `chat_quick` and other paths that must avoid Chroma/vector round-trips
 
-Weighted toward:
-- vector
-- similarity
+Behavior:
+- `vector_top_k: 0` — recall worker does not call the vector backend
+- transcript-shaped digests from other backends (e.g. sql_chat) still respect `render_transcript_user_only` when enabled
 
 ---
 

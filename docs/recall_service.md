@@ -65,7 +65,7 @@ Profiles live in `orion/recall/profiles/*.yaml`:
 
 - `reflect.v1`: balanced vector+RDF
 - `reflect.anchor.v1`: anchor-forward (vector + timeline emphasis)
-- `assist.light.v1`: cheap, vector-focused
+- `assist.light.v1`: low-latency lane — `vector_top_k: 0` (no vector/Chroma calls); RDF/SQL per profile flags
 - `deep.graph.v1`: RDF-heavy neighborhood
 - `dream.v1`: dream-cycle recall — higher render budget and item cap than `reflect.v1`, stronger `sql_timeline` + `vector`, lower recency pressure than `chat.general.v1`; used by cognition verb `dream_cycle`
 

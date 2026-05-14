@@ -13,6 +13,13 @@ if str(_REPO) not in sys.path:
 
 from app.fusion import fuse_candidates
 from app import worker
+from app.profiles import get_profile, load_profiles
+
+
+def test_assist_light_profile_vector_top_k_zero() -> None:
+    load_profiles.cache_clear()
+    p = get_profile("assist.light.v1")
+    assert int(p.get("vector_top_k", -1)) == 0
 
 
 def _profile(**overrides):

@@ -41,3 +41,24 @@ def test_memory_digest_emits_orion_catchphrase_once() -> None:
     text, _ = render_items(items, 2000, profile_name="chat.general.v1")
     assert text.count("chips and queso") == 1
     assert text.count("vector:orion_chat_turns") == 1
+
+
+def test_render_transcript_user_only_hides_orion_response() -> None:
+    items = [
+        MemoryItemV1(
+            id="a",
+            source="vector",
+            source_ref="orion_chat_turns",
+            score=0.15,
+            snippet='ExactUserText: "good night" OrionResponse: "Do not echo this assistant line."',
+        ),
+    ]
+    text, _ = render_items(
+        items,
+        2000,
+        profile_name="assist.light.v1",
+        render_transcript_user_only=True,
+    )
+    assert "Do not echo this assistant line" not in text
+    assert "Older_user_turn" in text
+    assert "good night" in text

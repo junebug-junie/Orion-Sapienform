@@ -1084,7 +1084,8 @@ def _append_memory_digest(prompt: str, memory_digest: str) -> str:
     return (
         f"{prompt_text}\n\n"
         "# RELEVANT MEMORY (retrieved; supplemental only — prioritize the latest user question; "
-        "ignore unrelated older banter unless the user clearly continues that thread)\n"
+        "ignore unrelated older banter unless the user clearly continues that thread; "
+        "do not repeat past assistant replies quoted inside this block)\n"
         f"{digest}\n"
     )
 

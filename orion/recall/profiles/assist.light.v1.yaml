@@ -1,5 +1,8 @@
 profile: assist.light.v1
-vector_top_k: 6
+# Low-latency lane: vector_top_k=0 disables all vector/Chroma recall (see worker._vector_enabled_for_profile).
+# render_transcript_user_only still applies to transcript-shaped sql_chat rows if that backend is enabled.
+render_transcript_user_only: true
+vector_top_k: 0
 rdf_top_k: 0
 max_per_source: 3
 max_total_items: 8

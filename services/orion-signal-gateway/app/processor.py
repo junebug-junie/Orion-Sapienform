@@ -201,6 +201,7 @@ class SignalProcessor:
 
     async def _emit_passthrough(self, signal: OrionSignalV1) -> None:
         """Self-hardened signal: re-emit without adapting (spec §2); keep existing OTEL fields."""
+        # Dedupe key recorded in handle_envelope before this call when suppress mode is on.
         await self._publish(signal)
 
     async def _emit_traced(self, signal: OrionSignalV1, *, prior: dict[str, OrionSignalV1]) -> None:

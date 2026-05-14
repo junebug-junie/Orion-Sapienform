@@ -37,6 +37,15 @@ from orion.schemas.social_gif import (
 
 logger = logging.getLogger("orion-hub.request-builder")
 
+
+class HubRequestValidationError(ValueError):
+    """Hub refused to build a CortexChatRequest (client can fix payload and retry)."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(message)
+
+
 try:
     from scripts.social_room import (
         SOCIAL_ROOM_PROFILE,
@@ -113,6 +122,9 @@ def _normalize_skill_runner_lane(
     if not _normalize_flag(payload.get("skill_runner_origin"), default=False):
         return selected_ui_route, selected_verbs
     lane = str(payload.get("skill_runner_lane") or "").strip().lower()
+    # Deterministic lane: exact catalogue -> single skills.* verb, brain only (never chat_quick / agent).
+    if lane == "deterministic":
+        return "brain", selected_verbs
     if lane == "quick":
         if len(selected_verbs) == 1 and str(selected_verbs[0]).strip().startswith("skills."):
             return "brain", selected_verbs
@@ -405,6 +417,29 @@ def build_cortex_chat_request(
         route_intent = "none"
         options.pop("route_intent", None)
 
+    skill_runner_lane_raw = str(payload.get("skill_runner_lane") or "").strip().lower()
+    deterministic_requested = _normalize_flag(payload.get("skill_runner_origin"), default=False) and (
+        skill_runner_lane_raw == "deterministic"
+    )
+    if deterministic_requested:
+        if workflow_request_override is not None or workflow_match is not None or workflow_management is not None:
+            raise HubRequestValidationError(
+                "skill_runner_deterministic_no_workflow",
+                "Skill Runner deterministic lane only supports catalogue skills (not workflows or schedule ops).",
+            )
+        if not verb_override or not str(verb_override).strip().startswith("skills."):
+            raise HubRequestValidationError(
+                "skill_runner_deterministic_requires_skill_verb",
+                "Skill Runner deterministic lane requires a catalogue prompt that resolves to exactly one skills.* verb.",
+            )
+        if mode != "brain":
+            raise HubRequestValidationError(
+                "skill_runner_deterministic_requires_brain_mode",
+                "Skill Runner deterministic lane only runs in brain mode.",
+            )
+        options["force_agent_chain"] = False
+        options.pop("supervised", None)
+
     metadata: Dict[str, Any] = {
         "source": source_label,
         "hub_route": {
@@ -620,6 +655,12 @@ def build_cortex_chat_request(
         "workflow_requested": bool(workflow_match is not None or workflow_management is not None),
         "fallback_route": "workflow_lane" if (workflow_match is not None or workflow_management is not None) else "chat_or_auto_route",
         "skill_runner_catalogue_verb": skill_runner_catalogue_verb,
+        "skill_runner_lane_requested": (
+            (skill_runner_lane_raw or None)
+            if _normalize_flag(payload.get("skill_runner_origin"), default=False)
+            else None
+        ),
+        "skill_runner_deterministic": bool(deterministic_requested),
     }
     if social_room:
         debug["social_skill_allowlist"] = metadata.get("social_skill_request", {}).get("allowlist") or []

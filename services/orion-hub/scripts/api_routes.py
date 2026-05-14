@@ -37,7 +37,12 @@ from .trace_payloads import extract_agent_trace_payload
 from .autonomy_payloads import extract_autonomy_payload
 from .workflow_payloads import extract_workflow_payload
 from .cortex_chat_display import hub_effective_chat_text
-from .cortex_request_builder import build_chat_request, build_continuity_messages, validate_single_verb_override
+from .cortex_request_builder import (
+    HubRequestValidationError,
+    build_chat_request,
+    build_continuity_messages,
+    validate_single_verb_override,
+)
 from .mutation_cognition_context import build_mutation_cognition_context
 from .autonomy_constitution import (
     COGNITIVE_LIVE_APPLY_ENABLED,
@@ -734,6 +739,21 @@ def api_debug_build():
             "notify_base_url": settings.NOTIFY_BASE_URL,
             "landing_pad_url": settings.LANDING_PAD_URL,
         },
+    }
+
+
+@router.get("/api/debug/skill-runner-deterministic")
+def api_debug_skill_runner_deterministic(prompt: str = Query(default="", description="Exact Skill Runner catalogue prompt value")) -> Dict[str, Any]:
+    """Resolve prompt to catalogue verb (no cortex). Use to verify deterministic-lane eligibility."""
+    from scripts.skill_runner_catalogue import resolve_skill_runner_catalogue_verb
+
+    p = str(prompt or "").strip()
+    verb = resolve_skill_runner_catalogue_verb(prompt=p, skill_runner_origin=True)
+    ok = bool(verb and str(verb).strip().startswith("skills."))
+    return {
+        "prompt": p,
+        "catalogue_verb": verb,
+        "deterministic_eligible": ok,
     }
 
 
@@ -1746,17 +1766,20 @@ async def handle_chat_request(
         except Exception:
             pass
     routed_payload["mutation_cognition_context"] = build_mutation_cognition_context(store=SUBSTRATE_MUTATION_STORE)
-    req, route_debug, _ = build_chat_request(
-        payload=routed_payload,
-        session_id=session_id,
-        user_id=payload.get("user_id"),
-        trace_id=None,
-        default_mode="brain",
-        auto_default_enabled=bool(settings.HUB_AUTO_DEFAULT_ENABLED),
-        source_label="hub_http",
-        prompt=user_prompt,
-        messages=continuity_messages,
-    )
+    try:
+        req, route_debug, _ = build_chat_request(
+            payload=routed_payload,
+            session_id=session_id,
+            user_id=payload.get("user_id"),
+            trace_id=None,
+            default_mode="brain",
+            auto_default_enabled=bool(settings.HUB_AUTO_DEFAULT_ENABLED),
+            source_label="hub_http",
+            prompt=user_prompt,
+            messages=continuity_messages,
+        )
+    except HubRequestValidationError as exc:
+        return {"error": str(exc), "error_code": exc.code}
     workflow_request = req.metadata.get("workflow_request") if isinstance(req.metadata, dict) else None
     execution_policy = workflow_request.get("execution_policy") if isinstance(workflow_request, dict) else None
     logger.info(

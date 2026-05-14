@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     SIGNALS_OUTPUT_CHANNEL: str = "orion:signals"
     SIGNALS_PASSTHROUGH_PATTERN: str = "orion:signals:*"
     SIGNAL_WINDOW_SEC: float = 30.0
+    # When True, skip adapter emit if a recent passthrough for the same (organ_id, source_event_id) exists.
     SUPPRESS_ADAPTED_WHEN_PASSTHROUGH: bool = False
     PASSTHROUGH_DEDUPE_WINDOW_SEC: float = 30.0
 

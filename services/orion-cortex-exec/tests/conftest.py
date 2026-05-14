@@ -56,3 +56,12 @@ def _stub_spacy_for_router_imports() -> None:
 
 
 _stub_spacy_for_router_imports()
+
+
+def pytest_sessionstart(session):
+    """Service .env often sets large LLM_CHAT_* dev budgets; unit tests expect canonical caps."""
+    from app.settings import settings
+
+    settings.llm_chat_quick_max_tokens = 384
+    settings.llm_chat_general_max_tokens = 768
+    settings.llm_chat_fallback_max_tokens = 512

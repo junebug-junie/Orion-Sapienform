@@ -108,6 +108,9 @@ class Settings(BaseSettings):
 
     # Stamped into orch request metadata (orch resolver remains authoritative)
     spark_introspection_execution_lane: str = Field("spark", alias="SPARK_INTROSPECTION_EXECUTION_LANE")
+    spark_introspection_llm_lane: str = Field("spark", alias="SPARK_INTROSPECTION_LLM_LANE")
+    spark_introspection_allow_chat_fallback: bool = Field(False, alias="SPARK_INTROSPECTION_ALLOW_CHAT_FALLBACK")
+    spark_introspection_max_tokens: int = Field(384, alias="SPARK_INTROSPECTION_MAX_TOKENS")
 
     # Web UI
     port: int = Field(8444, alias="PORT")

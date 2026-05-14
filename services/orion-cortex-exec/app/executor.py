@@ -13,6 +13,7 @@ import logging
 import re
 import time
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union, get_args, get_origin
 from uuid import uuid4
 
@@ -64,6 +65,7 @@ from .chat_stance import (
     parse_chat_stance_brief_with_debug,
 )
 from .situation import build_situation_for_ctx
+from .llm_lane import resolve_llm_lane_for_step
 
 logger = logging.getLogger("orion.cortex.exec")
 
@@ -292,6 +294,9 @@ def _resolve_llm_chat_max_tokens(step: ExecutionStep, ctx: Dict[str, Any]) -> Tu
 
     if step.verb_name == "chat_quick":
         return int(settings.llm_chat_quick_max_tokens), requested, "settings.llm_chat_quick_max_tokens"
+
+    if step.verb_name == "chat_general" and step.step_name == "synthesize_chat_stance_brief":
+        return int(settings.llm_chat_quick_max_tokens), requested, "settings.llm_chat_quick_max_tokens_stance_brief"
 
     if step.verb_name == "chat_general" and step.step_name == "llm_chat_general":
         return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens"
@@ -1432,6 +1437,12 @@ async def _journal_pageindex_select_with_llm(
     reply_channel = f"orion:exec:result:LLMGatewayService:{uuid4()}"
 
     async def _call(kind: str, payload_items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        _pj_step = SimpleNamespace(verb_name="journal_pageindex", step_name="llm_select")
+        _pj_lane = resolve_llm_lane_for_step(
+            step=_pj_step,
+            ctx={"execution_lane": "background", "options": {}, "verb": "journal_pageindex"},
+            settings=settings,
+        )
         req = ChatRequestPayload(
             profile="deterministic_json",
             messages=[
@@ -1439,7 +1450,7 @@ async def _journal_pageindex_select_with_llm(
                 LLMMessage(role="user", content=_journal_pageindex_llm_prompt(kind, query_text, payload_items)),
             ],
             raw_user_text=query_text,
-            options={"temperature": 0.0, "max_tokens": 250},
+            options={"temperature": 0.0, "max_tokens": 250, **_pj_lane},
         )
         resp = await llm.chat(
             source=source,
@@ -2264,6 +2275,9 @@ async def call_step_services(
                 )
                 #messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
 
+                _md_step = SimpleNamespace(verb_name="log_orion_metacognition", step_name="metacog_draft")
+                _md_lane = resolve_llm_lane_for_step(step=_md_step, ctx=ctx, settings=settings)
+
                 request_object = ChatRequestPayload(
                     model=req_model,
                     profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
@@ -2275,6 +2289,7 @@ async def call_step_services(
                         "max_tokens": 1024,
                         "response_format": {"type": "json_object"},
                         "stream": False,
+                        **_md_lane,
                     },
                 )
 
@@ -2452,6 +2467,9 @@ async def call_step_services(
                     phase="enrich",
                 )
 
+                _me_step = SimpleNamespace(verb_name="log_orion_metacognition", step_name="metacog_enrich")
+                _me_lane = resolve_llm_lane_for_step(step=_me_step, ctx=ctx, settings=settings)
+
                 request_object = ChatRequestPayload(
                     model=req_model,
                     profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
@@ -2462,7 +2480,8 @@ async def call_step_services(
                         "temperature": 0.5,
                         "max_tokens": 1024,
                         "stream": False,
-                        "response_format": {"type": "json_object"}
+                        "response_format": {"type": "json_object"},
+                        **_me_lane,
                     },
                 )
 
@@ -3134,32 +3153,17 @@ async def call_step_services(
                     llm_route,
                     llm_route_override or None,
                 )
+                lane_opts = resolve_llm_lane_for_step(step=step, ctx=ctx, settings=settings)
                 logger.info(
-                    "llm_chat_budget corr_id=%s verb=%s step=%s requested_max_tokens=%s effective_max_tokens=%s source=%s",
+                    "exec_llm_lane_decision corr=%s trace_id=%s execution_lane=%s llm_lane=%s verb=%s step=%s priority=%s allow_chat_fallback=%s",
                     correlation_id,
+                    correlation_id,
+                    lane_opts.get("execution_lane"),
+                    lane_opts.get("llm_lane"),
                     step.verb_name,
                     step.step_name,
-                    requested_max_tokens,
-                    effective_max_tokens,
-                    max_tokens_source,
-                )
-
-                effective_max_tokens, requested_max_tokens, max_tokens_source = _resolve_llm_chat_max_tokens(step, ctx)
-                prompt_token_count = _safe_int(ctx.get("prompt_token_count"))
-                logger.info(
-                    "llm_chat_budget corr_id=%s mode=%s verb=%s step=%s route=%s requested_max_tokens=%s effective_max_tokens=%s max_tokens_source=%s profile=%s model=%s prompt_token_count=%s prompt_char_count=%s",
-                    correlation_id,
-                    ctx.get("mode"),
-                    step.verb_name,
-                    step.step_name,
-                    llm_route,
-                    requested_max_tokens,
-                    effective_max_tokens,
-                    max_tokens_source,
-                    ctx.get("profile_name"),
-                    req_model,
-                    prompt_token_count,
-                    len(prompt or ""),
+                    lane_opts.get("priority"),
+                    lane_opts.get("allow_chat_fallback"),
                 )
 
                 effective_max_tokens, requested_max_tokens, max_tokens_source = _resolve_llm_chat_max_tokens(step, ctx)
@@ -3197,6 +3201,7 @@ async def call_step_services(
                         "response_format": ctx.get("response_format") if isinstance(ctx.get("response_format"), dict) else None,
                         "return_json": bool(ctx.get("return_json")) if ctx.get("return_json") is not None else None,
                         "gateway_read_timeout_sec": gateway_read_timeout_sec,
+                        **lane_opts,
                     },
                 )
 

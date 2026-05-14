@@ -11,6 +11,7 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -46,6 +47,7 @@ from .self_study_policy import (
     resolve_self_study_consumer_policy,
 )
 from .settings import settings
+from .llm_lane import resolve_llm_lane_for_step
 from .workflow_journal_exec import maybe_publish_workflow_journal_write
 
 logger = logging.getLogger("orion.cortex.exec.verb_adapters")
@@ -506,6 +508,11 @@ class RespondToJuniperCollapseMirrorVerb(BaseVerb[PlanExecutionRequest, JuniperC
             memory_rendered, recall_debug = _decode_recall(recall_decoded.envelope.payload if isinstance(recall_decoded.envelope.payload, dict) else {})
 
             llm_reply = f"orion:exec:result:LLMGatewayService:{uuid4()}"
+            _cm_lane = resolve_llm_lane_for_step(
+                step=SimpleNamespace(verb_name="log_orion_metacognition", step_name="collapse_mirror_llm"),
+                ctx={"execution_lane": "background", "options": {}},
+                settings=settings,
+            )
             llm_env = BaseEnvelope(
                 kind="llm.chat.request",
                 source=source,
@@ -529,7 +536,7 @@ class RespondToJuniperCollapseMirrorVerb(BaseVerb[PlanExecutionRequest, JuniperC
                     raw_user_text=entry.summary,
                     route="metacog",
                     profile=settings.atlas_metacog_profile_name,
-                    options={"max_tokens": 512, "temperature": 0.3},
+                    options={"max_tokens": 512, "temperature": 0.3, **_cm_lane},
                     session_id=str(metadata.get("session_id") or "collapse_mirror"),
                     user_id=None,
                 ).model_dump(mode="json"),

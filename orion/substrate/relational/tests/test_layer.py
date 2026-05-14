@@ -373,3 +373,22 @@ class TestTtlStaleness:
         call_count["n"] = 0
         layer.beliefs_for_stance(anchors=["orion"])
         assert call_count["n"] == 1
+
+
+def test_beliefs_for_stance_skips_producers_for_introspect_spark():
+    def boom(ctx: dict[str, Any]) -> SubstrateGraphRecordV1 | None:
+        raise AssertionError("producer must not run when skipping unified beliefs")
+
+    layer, _ = _make_layer([
+        ProducerEntryV1(
+            producer_id="ephemeral_only",
+            trust_tier=SNAPSHOT_EPHEMERAL,
+            anchor_scopes=("orion",),
+            freshness_ttl_sec=0,
+            pull_on_cold=False,
+            adapter_fn=boom,
+        ),
+    ])
+    beliefs = layer.beliefs_for_stance(anchors=["orion"], ctx={"verb": "introspect_spark"})
+    assert beliefs.lineage == ["skipped:introspect_spark_or_unified_beliefs_disabled"]
+    assert not beliefs.anchors["orion"].concepts

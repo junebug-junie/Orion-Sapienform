@@ -155,6 +155,29 @@ class TestSocialAdapter:
 
 
 # ---------------------------------------------------------------------------
+# autonomy_ctx adapter — hard skip for spark introspection (no GraphDB)
+# ---------------------------------------------------------------------------
+
+
+class TestAutonomyCtxAdapterSkip:
+    def test_skips_for_introspect_spark_verb(self):
+        from orion.substrate.relational.adapters.autonomy_ctx import map_autonomy_ctx_to_substrate
+
+        assert map_autonomy_ctx_to_substrate({"verb": "introspect_spark", "correlation_id": "c1"}) is None
+
+    def test_skips_for_spark_lane(self):
+        from orion.substrate.relational.adapters.autonomy_ctx import map_autonomy_ctx_to_substrate
+
+        assert map_autonomy_ctx_to_substrate({"verb": "chat_general", "execution_lane": "spark"}) is None
+
+    def test_skips_for_flags(self):
+        from orion.substrate.relational.adapters.autonomy_ctx import map_autonomy_ctx_to_substrate
+
+        assert map_autonomy_ctx_to_substrate({"verb": "x", "skip_autonomy_context": True}) is None
+        assert map_autonomy_ctx_to_substrate({"verb": "x", "options": {"skip_unified_beliefs": True}}) is None
+
+
+# ---------------------------------------------------------------------------
 # Existing adapter smoke tests (registered, unchanged)
 # ---------------------------------------------------------------------------
 

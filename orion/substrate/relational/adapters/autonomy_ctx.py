@@ -151,6 +151,31 @@ def _map_autonomy_state_to_nodes(state: Any, *, anchor: str) -> list[Any]:
 
 def map_autonomy_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV1 | None:
     """Fetch autonomy state for all subjects and map to substrate nodes (graphdb_durable)."""
+    verb = str(ctx.get("verb") or ctx.get("requested_verb") or "").strip().lower()
+    opts = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
+    lane = str(
+        ctx.get("execution_lane")
+        or ctx.get("llm_lane")
+        or opts.get("execution_lane")
+        or opts.get("llm_lane")
+        or ""
+    ).strip().lower()
+    if (
+        verb == "introspect_spark"
+        or lane == "spark"
+        or bool(ctx.get("skip_unified_beliefs"))
+        or bool(ctx.get("skip_autonomy_context"))
+        or bool(opts.get("skip_unified_beliefs"))
+        or bool(opts.get("skip_autonomy_context"))
+    ):
+        logger.info(
+            "autonomy_ctx_adapter_skip reason=spark_or_unified_beliefs_disabled verb=%s lane=%s correlation_id=%s",
+            verb,
+            lane,
+            ctx.get("correlation_id") or ctx.get("trace_id"),
+        )
+        return None
+
     try:
         from orion.autonomy.repository import build_autonomy_repository  # noqa: PLC0415 — lazy to avoid spacy at import time
     except ImportError as exc:

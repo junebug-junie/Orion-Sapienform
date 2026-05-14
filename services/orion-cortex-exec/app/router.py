@@ -764,6 +764,12 @@ class PlanRunner:
                     prepare_brain_reply_context(ctx)
                 else:
                     prepare_chat_quick_reply_context(ctx)
+            elif ctx.get("skip_brain_reply_context") or str(plan.verb_name or "").strip().lower() == "introspect_spark":
+                logger.info(
+                    "router_skip_prepare_brain_reply_context corr=%s verb=%s reason=spark_or_skip_flag",
+                    correlation_id,
+                    plan.verb_name,
+                )
             else:
                 prepare_brain_reply_context(ctx)
         existing_scope = str(ctx.get("_run_scope_corr_id") or "")

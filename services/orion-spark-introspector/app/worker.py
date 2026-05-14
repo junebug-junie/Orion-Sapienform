@@ -1547,6 +1547,10 @@ async def run_heavy_spark_introspection(
                 "allow_chat_fallback": allow_chat_fallback_opt,
                 "max_tokens": max_tokens_opt,
                 "timeout_sec": timeout_opt,
+                "skip_brain_reply_context": True,
+                "skip_unified_beliefs": True,
+                "skip_autonomy_context": True,
+                "skip_chat_stance_inputs": True,
             },
             recall={"enabled": False, "required": False},
         )

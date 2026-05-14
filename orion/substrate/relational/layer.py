@@ -24,6 +24,36 @@ logger = logging.getLogger("orion.substrate.relational.layer")
 _DEFAULT_ANCHORS: tuple[str, ...] = ("orion", "relationship", "juniper")
 
 
+def _skip_unified_beliefs_ctx(ctx: dict[str, Any]) -> bool:
+    """Heavy substrate / GraphDB work must not run for spark introspection or explicit skips."""
+    if bool(ctx.get("skip_unified_beliefs")):
+        return True
+    opts = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
+    if bool(opts.get("skip_unified_beliefs")):
+        return True
+    verb = str(ctx.get("verb") or ctx.get("requested_verb") or "").strip().lower()
+    if verb == "introspect_spark":
+        return True
+    lane = str(
+        ctx.get("execution_lane")
+        or ctx.get("llm_lane")
+        or opts.get("execution_lane")
+        or opts.get("llm_lane")
+        or ""
+    ).strip().lower()
+    return lane == "spark"
+
+
+def _lightweight_belief_set(anchors: Sequence[str]) -> UnifiedRelationalBeliefSetV1:
+    slices = {a: AnchorBeliefSliceV1(anchor=a) for a in anchors}
+    return UnifiedRelationalBeliefSetV1(
+        anchors=slices,
+        cold_anchors=[],
+        degraded_producers=[],
+        lineage=["skipped:introspect_spark_or_unified_beliefs_disabled"],
+    )
+
+
 def _aggregate_tier_outcomes(
     results: list[MaterializationResultV1],
     node_id_to_anchor: dict[str, str],
@@ -97,6 +127,15 @@ class CognitiveUnificationLayer:
         is marked ``degraded=True``.
         """
         ctx = ctx if isinstance(ctx, dict) else {}
+
+        if _skip_unified_beliefs_ctx(ctx):
+            anchors_resolved = tuple(anchors) if anchors else _DEFAULT_ANCHORS
+            logger.info(
+                "cognitive_unification_layer_skip reason=spark_or_unified_beliefs_disabled verb=%s correlation_id=%s",
+                ctx.get("verb"),
+                ctx.get("correlation_id") or ctx.get("trace_id"),
+            )
+            return _lightweight_belief_set(anchors_resolved)
 
         # Fresh ephemeral store per call (snapshot_ephemeral nodes are never cached)
         ephemeral_store = InMemorySubstrateGraphStore()

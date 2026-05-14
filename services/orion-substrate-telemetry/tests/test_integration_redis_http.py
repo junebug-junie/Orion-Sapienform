@@ -1,3 +1,5 @@
+"""Optional integration checks (Postgres round-trip; not full Redis→worker→HTTP E2E)."""
+
 from __future__ import annotations
 
 import os

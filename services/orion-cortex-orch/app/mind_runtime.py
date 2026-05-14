@@ -28,7 +28,11 @@ def _mind_enabled_exact(metadata: dict[str, Any] | None) -> bool:
 
 
 async def fetch_substrate_telemetry_facet_for_mind(correlation_id: str) -> dict[str, Any] | None:
-    """GET latest row from telemetry service; return None on 404/misconfig so Mind omits facet."""
+    """GET latest row from telemetry service.
+
+    Returns None when the row is absent (404) or when the fetch is misconfigured, times out,
+    or otherwise fails — telemetry is optional and must not break the verb path.
+    """
     s = get_settings()
     base = (s.orion_substrate_telemetry_base_url or "").rstrip("/")
     if not base:
@@ -41,12 +45,34 @@ async def fetch_substrate_telemetry_facet_for_mind(correlation_id: str) -> dict[
         headers["X-Telemetry-Token"] = tok
     timeout_sec = max(0.1, min(10.0, float(s.orion_substrate_telemetry_timeout_sec)))
     timeout = httpx.Timeout(timeout_sec)
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.get(url, params=params, headers=headers)
-        if resp.status_code == 404:
-            return None
-        resp.raise_for_status()
-        row = resp.json()
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(url, params=params, headers=headers)
+            if resp.status_code == 404:
+                return None
+            if resp.status_code >= 400:
+                logger.warning(
+                    "substrate_telemetry_fetch_http_status corr=%s status=%s",
+                    correlation_id,
+                    resp.status_code,
+                )
+                return None
+            row = resp.json()
+    except httpx.HTTPError as exc:
+        logger.warning("substrate_telemetry_fetch_http_err corr=%s err=%s", correlation_id, exc)
+        return None
+    except ValueError as exc:
+        logger.warning("substrate_telemetry_fetch_bad_json corr=%s err=%s", correlation_id, exc)
+        return None
+
+    if not isinstance(row, dict):
+        logger.warning(
+            "substrate_telemetry_fetch_non_object corr=%s type=%s",
+            correlation_id,
+            type(row).__name__,
+        )
+        return None
+
     return {
         "status": "present",
         "generated_at": row.get("generated_at"),

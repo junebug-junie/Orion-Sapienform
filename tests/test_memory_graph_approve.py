@@ -11,10 +11,15 @@ from orion.memory_graph.approve import approve_memory_graph_draft
 from orion.memory_graph.dto import SuggestDraftV1
 
 
-def test_compensate_batch_on_postgres_failure() -> None:
+def test_compensate_batch_on_postgres_failure(monkeypatch) -> None:
     raw = json.loads(Path("tests/fixtures/memory_graph/joey_cats_draft.json").read_text(encoding="utf-8"))
     draft = SuggestDraftV1.model_validate(raw)
     pool = MagicMock()
+    monkeypatch.setenv("MEMORY_GRAPH_APPROVAL_BACKEND", "graphdb")
+    monkeypatch.setenv("GRAPHDB_URL", "http://g")
+    monkeypatch.setenv("GRAPHDB_REPO", "r")
+    monkeypatch.delenv("RDF_STORE_GRAPH_STORE_URL", raising=False)
+    monkeypatch.delenv("RDF_STORE_UPDATE_URL", raising=False)
 
     async def boom(*args, **kwargs):
         raise RuntimeError("pg down")

@@ -292,11 +292,17 @@ def test_build_substrate_store_graphdb_backend_uses_graphdb_from_url_and_repo(mo
 
 
 def test_build_substrate_store_sparql_backend(monkeypatch):
+    fake = _FakeGraphDB()
+    monkeypatch.setattr("orion.substrate.graphdb_store.requests.post", fake.post)
     monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "sparql")
     monkeypatch.setenv("SUBSTRATE_GRAPH_QUERY_URL", "http://fuseki:3030/orion/query")
     monkeypatch.setenv("SUBSTRATE_GRAPH_UPDATE_URL", "http://fuseki:3030/orion/update")
     store = build_substrate_store_from_env()
     assert isinstance(store, SparqlSubstrateStore)
+    materializer = SubstrateGraphMaterializer(store=store)
+    materializer.apply_record(_sample_record())
+    hotspot = store.query_hotspot_region(min_salience=0.65, limit_nodes=2, limit_edges=1)
+    assert hotspot.source_kind == "sparql"
 
 
 def test_build_substrate_store_explicit_in_memory_overrides_graphdb_env(monkeypatch):

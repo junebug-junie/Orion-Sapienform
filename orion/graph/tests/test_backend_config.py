@@ -37,6 +37,19 @@ def test_only_graphdb_url_auto_does_not_select_graphdb(monkeypatch: pytest.Monke
     assert cfg.backend == "disabled"
 
 
+def test_auto_rdf_store_fuseki_derives_urls_without_explicit_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GRAPH_BACKEND", raising=False)
+    monkeypatch.delenv("RDF_STORE_QUERY_URL", raising=False)
+    monkeypatch.setenv("RDF_STORE_BACKEND", "fuseki")
+    monkeypatch.setenv("RDF_STORE_BASE_URL", "http://orion-athena-fuseki:3030")
+    monkeypatch.setenv("RDF_STORE_DATASET", "orion")
+    monkeypatch.delenv("GRAPHDB_URL", raising=False)
+    cfg = resolve_graph_backend()
+    assert cfg.backend == "fuseki"
+    assert cfg.query_url == "http://orion-athena-fuseki:3030/orion/query"
+    assert cfg.legacy_graphdb is False
+
+
 def test_explicit_graphdb_legacy(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GRAPH_BACKEND", "graphdb")
     monkeypatch.setenv("GRAPHDB_URL", "http://gdb:7200")

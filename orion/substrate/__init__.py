@@ -12,6 +12,7 @@ from .graphdb_store import (
     GraphDBSubstrateStoreConfig,
     SparqlSubstrateStore,
     SparqlSubstrateStoreConfig,
+    SubstrateSparqlBackendUnconfiguredError,
     build_substrate_store_from_env,
 )
 from .store import InMemorySubstrateGraphStore, MaterializedSubstrateGraphState, SubstrateGraphStore, SubstrateNeighborhoodSliceV1, SubstrateQueryResultV1
@@ -74,6 +75,7 @@ __all__ = [
     "GraphDBSubstrateStoreConfig",
     "SparqlSubstrateStore",
     "SparqlSubstrateStoreConfig",
+    "SubstrateSparqlBackendUnconfiguredError",
     "build_substrate_store_from_env",
     "SubstrateDynamicsEngine",
     "SubstrateDynamicsResultV1",

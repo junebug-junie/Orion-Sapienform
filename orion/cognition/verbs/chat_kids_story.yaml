@@ -1,0 +1,45 @@
+name: chat_kids_story
+label: Chat (Kids Story)
+description: >
+  Fast single-pass storytelling lane for Oríon: lightweight identity grounding,
+  SQL-heavy recall (no vector), optional memory cards for listener facts; no stance-brief synthesis.
+
+category: ExecutiveControl
+priority: medium
+
+interruptible: true
+can_interrupt_others: false
+
+requires_gpu: true
+requires_memory: true
+
+recall_profile: chat.story.kids.v1
+
+timeout_ms: 180000
+max_recursion_depth: 0
+
+services:
+  - LLMGatewayService
+
+prompt_template: chat_kids_story.j2
+
+personality_file: orion/cognition/personality/orion_identity.yaml
+
+plan:
+  - name: collect_metacog_context
+    description: >
+      Hydrate current spark/turn-effect context so story turns can propagate tension signals.
+    order: 0
+    services:
+      - MetacogContextService
+  - name: llm_chat_kids_story
+    description: >
+      Single-pass kids storytelling with anchors, recall digest, and multi-listener fairness.
+    order: 1
+    prompt_template: chat_kids_story.j2
+    services:
+      - LLMGatewayService
+    requires_gpu: true
+    requires_memory: true
+
+safety_rules: []

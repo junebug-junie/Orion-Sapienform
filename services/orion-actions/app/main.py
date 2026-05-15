@@ -128,7 +128,7 @@ workflow_schedule_metrics = WorkflowScheduleMetrics()
 
 def _normalized_llm_route(preferred: str | None, fallback: str) -> str:
     route = str(preferred or fallback or "").strip().lower()
-    if route in {"chat_quick", "quick_chat"}:
+    if route in {"chat_quick", "quick_chat", "chat_kids_story"}:
         return "quick"
     if route in {"chat", "quick", "metacog"}:
         return route

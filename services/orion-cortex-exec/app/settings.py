@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     chat_quick_recall_rpc_timeout_sec: float = Field(30.0, alias="CHAT_QUICK_RECALL_TIMEOUT_SEC")
     # Default recall profile for chat_quick when the client did not set profile_explicit (vector-light; see orion/recall/profiles).
     chat_quick_recall_profile: str = Field("assist.light.v1", alias="CHAT_QUICK_RECALL_PROFILE")
+    chat_kids_story_recall_profile: str = Field("chat.story.kids.v1", alias="CHAT_KIDS_STORY_RECALL_PROFILE")
     channel_agent_chain_intake: str = Field("orion:exec:request:AgentChainService", alias="CHANNEL_AGENT_CHAIN_INTAKE")
     channel_planner_intake: str = Field("orion:exec:request:PlannerReactService", alias="CHANNEL_PLANNER_INTAKE")
     channel_council_intake: str = Field("orion:agent-council:intake", alias="CHANNEL_COUNCIL_INTAKE")

@@ -38,6 +38,12 @@ def test_resolve_chat_quick() -> None:
     assert d.lane == "chat" and d.reason == "verb_chat"
 
 
+def test_resolve_chat_kids_story() -> None:
+    d = resolve_execution_lane(_req(verb="chat_kids_story"))
+    assert d.lane == "chat"
+    assert d.reason == "verb_chat"
+
+
 def test_resolve_introspect_spark() -> None:
     d = resolve_execution_lane(_req(verb="introspect_spark"))
     assert d.lane == "spark" and d.reason == "verb_spark"

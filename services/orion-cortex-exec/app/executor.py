@@ -52,7 +52,9 @@ from orion.cognition.personality.identity_context import build_identity_context,
 from .settings import settings
 from .clients import AgentChainClient, LLMGatewayClient, RecallClient, PlannerReactClient
 from .pageindex_client import JournalPageIndexClient
-from .recall_utils import apply_chat_quick_recall_profile_clamp, resolve_profile, resolve_recall_bus_rpc_wait_sec
+from orion.cognition.fast_chat_verbs import FAST_SINGLE_PASS_CHAT_VERBS
+
+from .recall_utils import apply_fast_chat_recall_profile_clamp, resolve_profile, resolve_recall_bus_rpc_wait_sec
 from .core_event_cache import format_recent_turn_effect_alerts, get_core_event_cache
 from .trace_cache import get_trace_cache
 from .spark_narrative import spark_phi_hint, spark_phi_narrative
@@ -293,6 +295,9 @@ def _resolve_llm_chat_max_tokens(step: ExecutionStep, ctx: Dict[str, Any]) -> Tu
         return int(settings.llm_dream_max_tokens), requested, "settings.llm_dream_max_tokens"
 
     if step.verb_name == "chat_quick":
+        return int(settings.llm_chat_quick_max_tokens), requested, "settings.llm_chat_quick_max_tokens"
+
+    if step.verb_name == "chat_kids_story":
         return int(settings.llm_chat_quick_max_tokens), requested, "settings.llm_chat_quick_max_tokens"
 
     if step.verb_name == "chat_general" and step.step_name == "synthesize_chat_stance_brief":
@@ -991,6 +996,8 @@ def _resolve_llm_max_tokens(*, ctx: Dict[str, Any], step: ExecutionStep) -> tupl
         return max(1, int(settings.llm_chat_quick_max_tokens)), "quick_default", requested
     if step.verb_name == "chat_quick":
         return max(1, int(settings.llm_chat_quick_max_tokens)), "quick_default", requested
+    if step.verb_name == "chat_kids_story":
+        return max(1, int(settings.llm_chat_quick_max_tokens)), "quick_default", requested
     if step.verb_name == "chat_general" and step.step_name == "llm_chat_general":
         return max(1, int(settings.llm_chat_general_max_tokens)), "general_default", requested
     return max(1, int(settings.llm_chat_fallback_max_tokens)), "fallback_default", requested
@@ -1490,7 +1497,7 @@ async def run_recall_step(
     rpc_timeout_sec: float | None = None,
 ) -> Tuple[StepExecutionResult, Dict[str, Any], str]:
     """RecallService bus RPC. If ``rpc_timeout_sec`` is omitted, wait is ``min(STEP_TIMEOUT_MS, lane cap)``:
-    ``CHAT_QUICK_RECALL_TIMEOUT_SEC`` for ``ctx['verb'] == chat_quick``, else ``RECALL_RPC_TIMEOUT_SEC``.
+    ``CHAT_QUICK_RECALL_TIMEOUT_SEC`` for ``ctx['verb']`` in fast single-pass chat verbs, else ``RECALL_RPC_TIMEOUT_SEC``.
     """
     t0 = time.time()
     recall_client = RecallClient(bus)
@@ -2161,7 +2168,7 @@ async def call_step_services(
         reply_channel = f"orion:exec:result:{service}:{uuid4()}"
 
         # IMPORTANT: render prompts per-service so MetacogContextService mutations take effect
-        if step.verb_name in {"chat_general", "chat_quick"}:
+        if step.verb_name in {"chat_general", "chat_quick", "chat_kids_story"}:
             try:
                 if not isinstance(ctx.get("presence_context"), dict):
                     md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
@@ -2709,8 +2716,8 @@ async def call_step_services(
 
             if service == "MetacogContextService":
                 logs.append("exec -> MetacogContextService")
-                # chat_quick: keep metacog hydration from dominating wall time (pad/state RPCs).
-                _metacog_rpc_timeout = 6.0 if str(step.verb_name or "") == "chat_quick" else 20.0
+                # Fast single-pass chat verbs: keep metacog hydration from dominating wall time (pad/state RPCs).
+                _metacog_rpc_timeout = 6.0 if str(step.verb_name or "") in FAST_SINGLE_PASS_CHAT_VERBS else 20.0
 
                 trigger_data = ctx.get("trigger") or ctx.get("args", {}).get("trigger", {})
 
@@ -3005,12 +3012,13 @@ async def call_step_services(
                     runtime_mode=ctx.get("mode"),
                 )
                 plan_verb = ctx.get("verb") or step.verb_name
-                resolved_profile, profile_source = apply_chat_quick_recall_profile_clamp(
+                resolved_profile, profile_source = apply_fast_chat_recall_profile_clamp(
                     plan_verb_name=str(plan_verb) if plan_verb is not None else None,
                     recall_cfg=recall_cfg,
                     profile=resolved_profile,
                     profile_source=profile_source,
-                    quick_profile=settings.chat_quick_recall_profile,
+                    chat_quick_recall_profile=settings.chat_quick_recall_profile,
+                    chat_kids_story_recall_profile=settings.chat_kids_story_recall_profile,
                 )
                 logs.append(
                     f"rpc -> RecallService (reply={reply_channel}, profile={resolved_profile}, source={profile_source})"
@@ -3123,7 +3131,7 @@ async def call_step_services(
                     )
                 )
                 llm_route_override = str(llm_route_override_raw or "").strip().lower()
-                if llm_route_override in {"chat_quick", "quick_chat"}:
+                if llm_route_override in {"chat_quick", "quick_chat", "chat_kids_story"}:
                     llm_route_override = "quick"
                 if llm_route_override in {"chat", "quick", "metacog"}:
                     llm_route = llm_route_override
@@ -3140,7 +3148,7 @@ async def call_step_services(
                         else "chat"
                         if step.verb_name == "chat_general" and step.step_name == "llm_chat_general"
                         else "quick"
-                        if step.verb_name in {"chat_quick", "introspect_spark"}
+                        if step.verb_name in FAST_SINGLE_PASS_CHAT_VERBS or step.verb_name == "introspect_spark"
                         else "metacog"
                         if ctx.get("mode") == "metacog"
                         else None
@@ -3575,7 +3583,7 @@ def _should_prepare_brain_reply_context(*, step: ExecutionStep, ctx: Dict[str, A
     if mode != "brain":
         return False
     verb_name = str(step.verb_name or "").strip().lower()
-    if verb_name == "chat_quick":
+    if verb_name in FAST_SINGLE_PASS_CHAT_VERBS:
         return False
     # Spark introspection uses mode=brain but only renders introspect_spark.j2 from
     # context.metadata (prompt/response/spark_meta). Full brain stance + unified

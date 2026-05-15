@@ -13,7 +13,6 @@ from orion.memory_graph.graphdb import compensate_batch, insert_batch
 from orion.memory_graph.json_to_rdf import draft_to_graph
 from orion.memory_graph.project import project_graph_to_cards
 from orion.memory_graph.rdf_target import (
-    MemoryGraphGraphDbTarget,
     MemoryGraphSparqlTarget,
     resolve_memory_graph_rdf_target,
 )
@@ -93,8 +92,9 @@ async def approve_memory_graph_draft(
     """validate → RDF graph store (Fuseki graph-store HTTP + SPARQL update, or legacy GraphDB) → Postgres.
 
     When ``RDF_STORE_GRAPH_STORE_URL`` and ``RDF_STORE_UPDATE_URL`` are set (``MEMORY_GRAPH_APPROVAL_BACKEND=auto``),
-    writes go to Fuseki. Legacy GraphDB requires ``MEMORY_GRAPH_APPROVAL_BACKEND=graphdb`` or Hub-supplied
-    ``GRAPHDB_URL`` fallback when no RDF graph-store URLs are configured.
+    writes go to Fuseki. Legacy GraphDB is used only when ``MEMORY_GRAPH_APPROVAL_BACKEND=graphdb`` and
+    ``GRAPHDB_URL`` is set in the environment (see ``resolve_memory_graph_rdf_target``). Hub must not
+    implicitly select GraphDB from stale ``GRAPHDB_URL`` while ``MEMORY_GRAPH_APPROVAL_BACKEND=auto``.
     """
     batch_id = str(uuid4())
     g2 = draft_to_graph(draft, revision_batch=batch_id)
@@ -103,14 +103,6 @@ async def approve_memory_graph_draft(
         return ApproveOutcome(ok=False, card_ids=[], violations=violations)
 
     target = resolve_memory_graph_rdf_target()
-    if target is None and graphdb_url.strip():
-        target = MemoryGraphGraphDbTarget(
-            kind="graphdb",
-            graphdb_url=graphdb_url.rstrip("/"),
-            repo=graphdb_repo,
-            user=graphdb_user,
-            password=graphdb_pass,
-        )
     if target is None:
         raise ValueError("graph_backend_unconfigured")
 

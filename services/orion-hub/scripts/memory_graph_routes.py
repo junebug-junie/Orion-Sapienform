@@ -55,7 +55,7 @@ async def memory_graph_approve(
     from orion.memory_graph.rdf_target import resolve_memory_graph_rdf_target
 
     target = resolve_memory_graph_rdf_target()
-    if target is None and not str(getattr(settings, "GRAPHDB_URL", "") or "").strip():
+    if target is None:
         raise HTTPException(status_code=503, detail="graph_backend_unconfigured")
     try:
         draft = SuggestDraftV1.model_validate(body.get("draft") or body)
@@ -90,7 +90,7 @@ async def memory_graph_approve(
         logger.warning("memory_graph_approve_failed postgres error=%s", exc)
         raise HTTPException(status_code=503, detail="memory_store_error") from exc
     except requests.RequestException as exc:
-        logger.warning("memory_graph_approve_failed graphdb error=%s", exc)
+        logger.warning("memory_graph_approve_failed rdf_http error=%s", exc)
         raise HTTPException(status_code=503, detail="rdf_graph_unavailable") from exc
 
     if not result.ok:

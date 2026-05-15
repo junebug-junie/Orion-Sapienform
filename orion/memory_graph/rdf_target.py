@@ -26,7 +26,7 @@ class MemoryGraphSparqlTarget:
 
 
 def resolve_memory_graph_rdf_target() -> MemoryGraphGraphDbTarget | MemoryGraphSparqlTarget | None:
-    """Prefer RDF store graph HTTP when configured; legacy GraphDB only when explicitly forced."""
+    """Prefer RDF store graph HTTP when configured; legacy GraphDB only when ``MEMORY_GRAPH_APPROVAL_BACKEND=graphdb``."""
     mode = (os.getenv("MEMORY_GRAPH_APPROVAL_BACKEND") or "auto").strip().lower()
     gs = (os.getenv("RDF_STORE_GRAPH_STORE_URL") or "").strip()
     up = (os.getenv("RDF_STORE_UPDATE_URL") or "").strip()

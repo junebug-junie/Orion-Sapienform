@@ -146,6 +146,11 @@ class Settings(BaseSettings):
         "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney",
         alias="ENDOGENOUS_RUNTIME_SQL_DATABASE_URL",
     )
+    # Autonomy GraphDB reads (chat stance / unified-beliefs adapter): see docs/architecture/rdf_store_v1_cutover.md
+    autonomy_graph_backend: str = Field("disabled", alias="AUTONOMY_GRAPH_BACKEND")
+    autonomy_quick_graph_timeout_sec: float = Field(3.0, alias="AUTONOMY_QUICK_GRAPH_TIMEOUT_SEC")
+    autonomy_quick_graph_subjects: str = Field("orion", alias="AUTONOMY_QUICK_GRAPH_SUBJECTS")
+    autonomy_quick_graph_subqueries: str = Field("identity", alias="AUTONOMY_QUICK_GRAPH_SUBQUERIES")
     world_pulse_stance_enabled: bool = Field(False, alias="WORLD_PULSE_STANCE_ENABLED")
     world_pulse_stance_max_topics: int = Field(5, alias="WORLD_PULSE_STANCE_MAX_TOPICS")
     world_pulse_stance_min_confidence: float = Field(0.65, alias="WORLD_PULSE_STANCE_MIN_CONFIDENCE")

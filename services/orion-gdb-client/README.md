@@ -1,6 +1,6 @@
 # Orion GraphDB Service
 
-This service integrates **GraphDB** into the Orion-Sapienform mesh for storing, reasoning, and querying collapse events in RDF.
+**RDF Store V1:** `orion-gdb-client` is a **legacy GraphDB-native writer** (direct `/repositories/{repo}/statements` posts). It is **disabled by default** (`GDB_CLIENT_ENABLED=false`) so general RDF writes do not duplicate `orion-rdf-writer`. Enable only for intentional backfill or legacy testing; do not run beside `orion-rdf-writer` unless you understand duplicate-write risk.
 
 ---
 

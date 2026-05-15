@@ -45,6 +45,7 @@ services:
     ports:
       - "${PORT}:8000"
     environment:
+      - GDB_CLIENT_ENABLED=${GDB_CLIENT_ENABLED:-false}
       - PROJECT=${PROJECT}
       - SERVICE_NAME=${SERVICE_NAME}
       - SERVICE_VERSION=${SERVICE_VERSION}
@@ -59,9 +60,7 @@ services:
       - GRAPHDB_REPO=${GRAPHDB_REPO}
       - LOG_LEVEL=${LOG_LEVEL}
       - PORT=${PORT}
-    depends_on:
-      graphdb:
-        condition: service_healthy
+    # When GDB_CLIENT_ENABLED=true, start GraphDB (or point GRAPHDB_URL at a reachable repo) before this service.
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:${PORT}/health"]
       interval: 15s

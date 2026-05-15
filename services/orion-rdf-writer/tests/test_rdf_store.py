@@ -16,6 +16,7 @@ sys.path[:0] = [str(ROOT), str(SERVICE_ROOT)]
 
 from app.rdf_store import (
     FusekiRdfStoreClient,
+    GenericSparqlRdfStoreClient,
     GraphDbRdfStoreClient,
     build_rdf_store_client,
     normalize_graph_name,
@@ -209,6 +210,49 @@ def test_fuseki_write_graph_query_uses_normalized_uri() -> None:
     asyncio.run(_run())
     assert len(captured) == 1
     assert captured[0].url.params.get("graph") == "http://conjourney.net/graph/orion/chat"
+
+
+def test_factory_generic_builds_generic_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RDF_STORE_BACKEND", "generic")
+    monkeypatch.delenv("GRAPHDB_URL", raising=False)
+    monkeypatch.setenv("RDF_STORE_GRAPH_STORE_URL", "http://rdf-store.example/orion/data")
+    s = Settings(ORION_BUS_URL="redis://example/0")
+
+    async def _call():
+        async with httpx.AsyncClient() as client:
+            return build_rdf_store_client(s, client)
+
+    c = asyncio.run(_call())
+    assert isinstance(c, GenericSparqlRdfStoreClient)
+
+
+def test_factory_rdf4j_aliases_generic(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RDF_STORE_BACKEND", "rdf4j")
+    monkeypatch.delenv("GRAPHDB_URL", raising=False)
+    monkeypatch.setenv("RDF_STORE_GRAPH_STORE_URL", "http://rdf4j.example/rdf4j-server/repositories/orion/rdf-graphs/service")
+    s = Settings(ORION_BUS_URL="redis://example/0")
+
+    async def _call():
+        async with httpx.AsyncClient() as client:
+            return build_rdf_store_client(s, client)
+
+    c = asyncio.run(_call())
+    assert isinstance(c, GenericSparqlRdfStoreClient)
+    assert c.backend == "generic"
+
+
+def test_factory_graphdb_builds_graphdb_when_url_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RDF_STORE_BACKEND", "graphdb")
+    monkeypatch.setenv("GRAPHDB_URL", "http://gdb.example:7200")
+    monkeypatch.setenv("GRAPHDB_REPO", "collapse")
+    s = Settings(ORION_BUS_URL="redis://example/0")
+
+    async def _call():
+        async with httpx.AsyncClient() as client:
+            return build_rdf_store_client(s, client)
+
+    c = asyncio.run(_call())
+    assert isinstance(c, GraphDbRdfStoreClient)
 
 
 def test_limits_helper_smoke() -> None:

@@ -53,7 +53,8 @@ async def memory_graph_approve(
 
     await ensure_session(x_orion_session_id, bus)
     if not getattr(settings, "GRAPHDB_URL", "").strip():
-        raise HTTPException(status_code=503, detail="graphdb_unconfigured")
+        # Memory graph approval is GraphDB-specific (transaction + compensation); not covered by RDF Store V1.
+        raise HTTPException(status_code=503, detail="memory_graph_approval_requires_graphdb")
     try:
         draft = SuggestDraftV1.model_validate(body.get("draft") or body)
     except ValidationError as e:

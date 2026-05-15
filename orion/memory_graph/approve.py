@@ -33,7 +33,10 @@ async def approve_memory_graph_draft(
     graphdb_pass: str = "",
     named_graph_iri: str,
 ) -> ApproveOutcome:
-    """validate → GraphDB (named graph + revision batch) → Postgres cards/edges; compensate RDF if PG fails."""
+    """validate → GraphDB (named graph + revision batch) → Postgres cards/edges; compensate RDF if PG fails.
+
+    **RDF Store V1:** GraphDB-only transactional path; not routed through ``orion-rdf-writer`` (no silent migration).
+    """
     batch_id = str(uuid4())
     g2 = draft_to_graph(draft, revision_batch=batch_id)
     violations = validate_graph(g2)

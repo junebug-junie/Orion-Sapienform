@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+
+import pytest
 from datetime import datetime, timezone
 
 from orion.core.schemas.cognitive_substrate import (
@@ -17,6 +19,7 @@ from orion.substrate.graphdb_store import (
     GraphDBSubstrateStore,
     GraphDBSubstrateStoreConfig,
     SparqlSubstrateStore,
+    SubstrateSparqlBackendUnconfiguredError,
     build_substrate_store_from_env,
 )
 from orion.substrate.materializer import SubstrateGraphMaterializer
@@ -303,6 +306,55 @@ def test_build_substrate_store_sparql_backend(monkeypatch):
     materializer.apply_record(_sample_record())
     hotspot = store.query_hotspot_region(min_salience=0.65, limit_nodes=2, limit_edges=1)
     assert hotspot.source_kind == "sparql"
+
+
+def test_build_substrate_store_sparql_backend_falls_back_to_rdf_store_urls(monkeypatch):
+    fake = _FakeGraphDB()
+    monkeypatch.setattr("orion.substrate.graphdb_store.requests.post", fake.post)
+    monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "sparql")
+    monkeypatch.delenv("SUBSTRATE_GRAPH_QUERY_URL", raising=False)
+    monkeypatch.delenv("SUBSTRATE_GRAPH_UPDATE_URL", raising=False)
+    monkeypatch.setenv("RDF_STORE_QUERY_URL", "http://fuseki:3030/orion/query")
+    monkeypatch.setenv("RDF_STORE_UPDATE_URL", "http://fuseki:3030/orion/update")
+    store = build_substrate_store_from_env()
+    assert isinstance(store, SparqlSubstrateStore)
+
+
+def test_build_substrate_store_sparql_backend_unconfigured_raises(monkeypatch):
+    monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "sparql")
+    monkeypatch.delenv("SUBSTRATE_GRAPH_QUERY_URL", raising=False)
+    monkeypatch.delenv("SUBSTRATE_GRAPH_UPDATE_URL", raising=False)
+    monkeypatch.delenv("RDF_STORE_QUERY_URL", raising=False)
+    monkeypatch.delenv("RDF_STORE_UPDATE_URL", raising=False)
+    with pytest.raises(SubstrateSparqlBackendUnconfiguredError, match="substrate_sparql_backend_unconfigured"):
+        build_substrate_store_from_env()
+
+
+def test_sparql_substrate_posts_select_to_query_url_and_update_to_update_url(monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    def capture_post(url, data=None, headers=None, auth=None, timeout=None):  # noqa: ANN001
+        ctype = (headers or {}).get("Content-Type") or ""
+        base_ct = ctype.split(";", 1)[0].strip().lower()
+        calls.append((str(url), base_ct))
+        if base_ct == "application/sparql-query":
+            return _Resp(payload={"results": {"bindings": []}})
+        if base_ct == "application/sparql-update":
+            return _Resp()
+        return _Resp(status_code=400)
+
+    monkeypatch.setattr("orion.substrate.graphdb_store.requests.post", capture_post)
+    monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "sparql")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_QUERY_URL", "http://fuseki:3030/orion/query")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_UPDATE_URL", "http://fuseki:3030/orion/update")
+    store = build_substrate_store_from_env()
+    assert isinstance(store, SparqlSubstrateStore)
+    store.get_node_by_id("missing-node")
+    store.upsert_node(identity_key=None, node=_sample_record().nodes[0])
+    query_urls = [u for u, ct in calls if ct == "application/sparql-query"]
+    update_urls = [u for u, ct in calls if ct == "application/sparql-update"]
+    assert query_urls and all(u == "http://fuseki:3030/orion/query" for u in query_urls)
+    assert update_urls and all(u == "http://fuseki:3030/orion/update" for u in update_urls)
 
 
 def test_build_substrate_store_explicit_in_memory_overrides_graphdb_env(monkeypatch):

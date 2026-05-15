@@ -134,6 +134,27 @@ services:
       CONCEPT_PROFILE_PARITY_CRITICAL_MISMATCH_CLASSES: ${CONCEPT_PROFILE_PARITY_CRITICAL_MISMATCH_CLASSES:-profile_missing_on_graph,profile_missing_on_local,query_error}
       CONCEPT_PROFILE_PARITY_SUMMARY_INTERVAL: ${CONCEPT_PROFILE_PARITY_SUMMARY_INTERVAL:-25}
 
+      # RDF / substrate (env_file `.env` is primary; defaults match Athena bridge + `.env_example`)
+      GRAPH_BACKEND: ${GRAPH_BACKEND:-fuseki}
+      RDF_STORE_BACKEND: ${RDF_STORE_BACKEND:-fuseki}
+      RDF_STORE_BASE_URL: ${RDF_STORE_BASE_URL:-}
+      RDF_STORE_DATASET: ${RDF_STORE_DATASET:-orion}
+      RDF_STORE_QUERY_URL: ${RDF_STORE_QUERY_URL:-http://orion-athena-fuseki:3030/orion/query}
+      RDF_STORE_UPDATE_URL: ${RDF_STORE_UPDATE_URL:-http://orion-athena-fuseki:3030/orion/update}
+      RDF_STORE_GRAPH_STORE_URL: ${RDF_STORE_GRAPH_STORE_URL:-http://orion-athena-fuseki:3030/orion/data}
+      RDF_STORE_USER: ${RDF_STORE_USER:-}
+      RDF_STORE_PASS: ${RDF_STORE_PASS:-}
+      GDB_CLIENT_ENABLED: ${GDB_CLIENT_ENABLED:-false}
+      AUTONOMY_GRAPH_QUERY_URL: ${AUTONOMY_GRAPH_QUERY_URL:-http://orion-athena-fuseki:3030/orion/query}
+      AUTONOMY_GRAPH_UPDATE_URL: ${AUTONOMY_GRAPH_UPDATE_URL:-http://orion-athena-fuseki:3030/orion/update}
+      SUBSTRATE_STORE_BACKEND: ${SUBSTRATE_STORE_BACKEND:-sparql}
+      SUBSTRATE_GRAPH_QUERY_URL: ${SUBSTRATE_GRAPH_QUERY_URL:-http://orion-athena-fuseki:3030/orion/query}
+      SUBSTRATE_GRAPH_UPDATE_URL: ${SUBSTRATE_GRAPH_UPDATE_URL:-http://orion-athena-fuseki:3030/orion/update}
+      SUBSTRATE_GRAPH_URI: ${SUBSTRATE_GRAPH_URI:-http://conjourney.net/graph/substrate}
+      SUBSTRATE_GRAPH_TIMEOUT_SEC: ${SUBSTRATE_GRAPH_TIMEOUT_SEC:-5.0}
+      SUBSTRATE_GRAPH_USER: ${SUBSTRATE_GRAPH_USER:-}
+      SUBSTRATE_GRAPH_PASS: ${SUBSTRATE_GRAPH_PASS:-}
+
       STEP_TIMEOUT_MS: ${STEP_TIMEOUT_MS}
       LLM_CHAT_QUICK_MAX_TOKENS: ${LLM_CHAT_QUICK_MAX_TOKENS:-384}
       LLM_CHAT_GENERAL_MAX_TOKENS: ${LLM_CHAT_GENERAL_MAX_TOKENS:-2048}

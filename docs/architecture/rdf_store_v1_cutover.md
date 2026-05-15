@@ -52,7 +52,7 @@ Copy from `services/orion-rdf-writer/.env_example` (including the **RDF Store V1
 - **Recall RDF** — `RECALL_RDF_ENDPOINT_URL` / `RECALL_RDF_QUERY_URL` or `RDF_STORE_QUERY_URL`; GraphDB URL is **not** auto-derived unless `GRAPH_BACKEND=graphdb`.
 - **Self-study / orionmem adapters** — same SPARQL resolution (`RDF_STORE_QUERY_URL` first); optional legacy GraphDB only when `GRAPH_BACKEND=graphdb`.
 - **Concept profile graph** — `CONCEPT_PROFILE_GRAPHDB_ENDPOINT` alias chain includes `RDF_STORE_QUERY_URL`.
-- **Substrate durable graph** — `SUBSTRATE_STORE_BACKEND=sparql` with `SUBSTRATE_GRAPH_QUERY_URL` + `SUBSTRATE_GRAPH_UPDATE_URL` (Fuseki). `SUBSTRATE_STORE_BACKEND=graphdb` remains explicit legacy.
+- **Substrate durable graph** — `SUBSTRATE_STORE_BACKEND=sparql` targets **Fuseki / SPARQL** over HTTP. Prefer `SUBSTRATE_GRAPH_QUERY_URL` + `SUBSTRATE_GRAPH_UPDATE_URL`; if either is unset, the builder falls back to `RDF_STORE_QUERY_URL` / `RDF_STORE_UPDATE_URL`. Named graph defaults to `SUBSTRATE_GRAPH_URI` (else `DEFAULT_SUBSTRATE_GRAPH_URI`). If `sparql` is selected but no query/update URL can be resolved, startup fails with `substrate_sparql_backend_unconfigured`. `SUBSTRATE_STORE_BACKEND=graphdb` remains explicit legacy only.
 - **Memory graph approval** — `MEMORY_GRAPH_APPROVAL_BACKEND=auto` (default): writes use `RDF_STORE_GRAPH_STORE_URL` + `RDF_STORE_UPDATE_URL` (Fuseki graph store + SPARQL update). `MEMORY_GRAPH_APPROVAL_BACKEND=graphdb` uses legacy GraphDB statements API.
 
 ## Disabled / YAML fallback
@@ -63,7 +63,7 @@ Copy from `services/orion-rdf-writer/.env_example` (including the **RDF Store V1
 
 1. Set `orion-rdf-writer` env: `RDF_STORE_BACKEND=fuseki` and the matching `RDF_STORE_*` URLs (see `.env_example`).
 2. Set `GDB_CLIENT_ENABLED=false` for `orion-gdb-client` (default) or remove the service from the running stack.
-3. Set `SUBSTRATE_STORE_BACKEND=sparql` with `SUBSTRATE_GRAPH_QUERY_URL` / `SUBSTRATE_GRAPH_UPDATE_URL` when you need durable substrate; otherwise leave unset / `in_memory`.
+3. Set `SUBSTRATE_STORE_BACKEND=sparql` when you need durable substrate (Fuseki). Provide substrate-specific query/update URLs or rely on the shared `RDF_STORE_QUERY_URL` / `RDF_STORE_UPDATE_URL` fallback; otherwise leave unset / `in_memory`.
 4. Set `AUTONOMY_GRAPH_BACKEND=auto` (or omit) and provide `RDF_STORE_QUERY_URL` or Fuseki base + dataset for stance/autonomy reads.
 5. Set Hub / recall `RDF_STORE_*` or `RECALL_RDF_*` query URLs for RDF recall; avoid implicit GraphDB.
 6. For memory graph approval, set `RDF_STORE_GRAPH_STORE_URL` + `RDF_STORE_UPDATE_URL` (or legacy `MEMORY_GRAPH_APPROVAL_BACKEND=graphdb` + `GRAPHDB_URL`).

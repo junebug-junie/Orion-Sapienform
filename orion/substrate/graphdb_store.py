@@ -31,6 +31,16 @@ class GraphDBSubstrateStoreError(RuntimeError):
     pass
 
 
+class SubstrateSparqlBackendUnconfiguredError(RuntimeError):
+    """Raised when ``SUBSTRATE_STORE_BACKEND=sparql`` but no query/update URL could be resolved."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "substrate_sparql_backend_unconfigured: set SUBSTRATE_GRAPH_QUERY_URL and "
+            "SUBSTRATE_GRAPH_UPDATE_URL (or RDF_STORE_QUERY_URL / RDF_STORE_UPDATE_URL)."
+        )
+
+
 @dataclass(frozen=True)
 class GraphDBSubstrateStoreConfig:
     endpoint: str
@@ -607,6 +617,25 @@ def _resolve_substrate_graphdb_endpoint() -> str:
     return ""
 
 
+def _resolve_substrate_sparql_http_urls() -> tuple[str, str]:
+    """Resolve Fuseki/SPARQL HTTP endpoints for the substrate store.
+
+    Prefer ``SUBSTRATE_GRAPH_*``; fall back to shared ``RDF_STORE_*`` URLs.
+    """
+    q = str(os.getenv("SUBSTRATE_GRAPH_QUERY_URL", "")).strip()
+    if not q:
+        q = str(os.getenv("RDF_STORE_QUERY_URL", "")).strip()
+    u = str(os.getenv("SUBSTRATE_GRAPH_UPDATE_URL", "")).strip()
+    if not u:
+        u = str(os.getenv("RDF_STORE_UPDATE_URL", "")).strip()
+    return q, u
+
+
+def _resolve_substrate_named_graph_uri() -> str:
+    raw = str(os.getenv("SUBSTRATE_GRAPH_URI", "")).strip() or str(os.getenv("SUBSTRATE_GRAPH_GRAPH_URI", "")).strip()
+    return raw or DEFAULT_SUBSTRATE_GRAPH_URI
+
+
 def _redact_endpoint_for_log(endpoint: str) -> str:
     """Log-safe endpoint (host + path only; strips userinfo)."""
     p = urlparse(endpoint)
@@ -626,8 +655,10 @@ def build_substrate_store_from_env() -> SubstrateGraphStore:
     Resolution:
     - ``SUBSTRATE_STORE_BACKEND`` unset / empty → in-memory (default).
     - ``in_memory`` / ``memory`` / ``mem`` / ``local`` → in-memory.
-    - ``sparql`` / ``sparql_http`` → ``SparqlSubstrateStore`` when ``SUBSTRATE_GRAPH_QUERY_URL`` and
-      ``SUBSTRATE_GRAPH_UPDATE_URL`` are set.
+    - ``sparql`` / ``sparql_http`` → ``SparqlSubstrateStore`` when query and update URLs resolve
+      (``SUBSTRATE_GRAPH_QUERY_URL`` / ``SUBSTRATE_GRAPH_UPDATE_URL``, else ``RDF_STORE_QUERY_URL`` /
+      ``RDF_STORE_UPDATE_URL``). If still missing, logs ``substrate_sparql_backend_unconfigured`` and raises
+      ``SubstrateSparqlBackendUnconfiguredError``.
     - ``graphdb`` / ``graph_db`` / ``rdf`` → ``GraphDBSubstrateStore`` when
       ``SUBSTRATE_GRAPHDB_ENDPOINT`` or ``GRAPHDB_URL``+``GRAPHDB_REPO`` resolves; else in-memory + warning.
     - Any other backend string → in-memory + warning.
@@ -644,21 +675,22 @@ def build_substrate_store_from_env() -> SubstrateGraphStore:
         return InMemorySubstrateGraphStore()
 
     if backend in {"sparql", "sparql_http"}:
-        q = str(os.getenv("SUBSTRATE_GRAPH_QUERY_URL", "")).strip()
-        u = str(os.getenv("SUBSTRATE_GRAPH_UPDATE_URL", "")).strip()
+        q, u = _resolve_substrate_sparql_http_urls()
         if not q or not u:
-            logger.warning("SUBSTRATE_STORE_BACKEND=sparql but SUBSTRATE_GRAPH_QUERY_URL/UPDATE_URL missing; in-memory fallback")
-            logger.info("substrate_store_backend_selected backend=in_memory reason=sparql_endpoint_missing")
-            return InMemorySubstrateGraphStore()
+            exc = SubstrateSparqlBackendUnconfiguredError()
+            logger.error("substrate_sparql_backend_unconfigured query_resolved=%r update_resolved=%r", bool(q), bool(u))
+            raise exc
+        graph_uri = _resolve_substrate_named_graph_uri()
         logger.info(
-            "substrate_store_backend_selected backend=sparql query_url=%s update_url=%s",
+            "substrate_store_backend_selected backend=sparql query_url=%s update_url=%s graph_uri=%s",
             _redact_endpoint_for_log(q),
             _redact_endpoint_for_log(u),
+            graph_uri,
         )
         cfg = SparqlSubstrateStoreConfig(
             query_url=q,
             update_url=u,
-            graph_uri=str(os.getenv("SUBSTRATE_GRAPH_URI", DEFAULT_SUBSTRATE_GRAPH_URI)).strip() or DEFAULT_SUBSTRATE_GRAPH_URI,
+            graph_uri=graph_uri,
             timeout_sec=float(os.getenv("SUBSTRATE_GRAPH_TIMEOUT_SEC", "5.0")),
             user=str(os.getenv("SUBSTRATE_GRAPH_USER", os.getenv("RDF_STORE_USER", ""))).strip() or None,
             password=str(os.getenv("SUBSTRATE_GRAPH_PASS", os.getenv("RDF_STORE_PASS", ""))).strip() or None,

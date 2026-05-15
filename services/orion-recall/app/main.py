@@ -40,6 +40,18 @@ def _check_rdf_endpoint() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    try:
+        from orion.graph.backend_config import strip_graph_credentials
+
+        if settings.RECALL_RDF_ENDPOINT_URL:
+            logger.info(
+                "recall_graph_backend_selected backend=sparql query_url=%s",
+                strip_graph_credentials(settings.RECALL_RDF_ENDPOINT_URL),
+            )
+    except Exception:
+        if settings.RECALL_RDF_ENDPOINT_URL:
+            logger.info("recall_graph_backend_selected backend=sparql query_url=%s", settings.RECALL_RDF_ENDPOINT_URL)
+
     rabbit = Rabbit(
         chassis_cfg(),
         request_channel=settings.RECALL_BUS_INTAKE,

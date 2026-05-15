@@ -141,7 +141,12 @@ class ConceptSettings(BaseSettings):
     )
     concept_profile_graphdb_endpoint: str = Field(
         "",
-        validation_alias=AliasChoices("CONCEPT_PROFILE_GRAPHDB_ENDPOINT", "RECALL_RDF_ENDPOINT_URL"),
+        validation_alias=AliasChoices(
+            "CONCEPT_PROFILE_GRAPHDB_ENDPOINT",
+            "RECALL_RDF_ENDPOINT_URL",
+            "RECALL_RDF_QUERY_URL",
+            "RDF_STORE_QUERY_URL",
+        ),
     )
     concept_profile_graphdb_url: str = Field(
         "",

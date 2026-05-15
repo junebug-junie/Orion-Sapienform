@@ -52,9 +52,11 @@ async def memory_graph_approve(
     from scripts.settings import settings
 
     await ensure_session(x_orion_session_id, bus)
-    if not getattr(settings, "GRAPHDB_URL", "").strip():
-        # Memory graph approval is GraphDB-specific (transaction + compensation); not covered by RDF Store V1.
-        raise HTTPException(status_code=503, detail="memory_graph_approval_requires_graphdb")
+    from orion.memory_graph.rdf_target import resolve_memory_graph_rdf_target
+
+    target = resolve_memory_graph_rdf_target()
+    if target is None and not str(getattr(settings, "GRAPHDB_URL", "") or "").strip():
+        raise HTTPException(status_code=503, detail="graph_backend_unconfigured")
     try:
         draft = SuggestDraftV1.model_validate(body.get("draft") or body)
     except ValidationError as e:
@@ -78,6 +80,8 @@ async def memory_graph_approve(
             named_graph_iri=named,
         )
     except ValueError as exc:
+        if str(exc) == "graph_backend_unconfigured":
+            raise HTTPException(status_code=503, detail="graph_backend_unconfigured") from exc
         if str(exc) == "hierarchy_cycle":
             raise HTTPException(status_code=400, detail="hierarchy_cycle") from exc
         logger.warning("memory_graph_approve_failed error=%s", exc)
@@ -87,7 +91,7 @@ async def memory_graph_approve(
         raise HTTPException(status_code=503, detail="memory_store_error") from exc
     except requests.RequestException as exc:
         logger.warning("memory_graph_approve_failed graphdb error=%s", exc)
-        raise HTTPException(status_code=503, detail="graphdb_unavailable") from exc
+        raise HTTPException(status_code=503, detail="rdf_graph_unavailable") from exc
 
     if not result.ok:
         return {"ok": False, "violations": result.violations, "card_ids": []}

@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     GRAPHDB_PASS: str | None = Field(None, env="GRAPHDB_PASS")
 
     # Backend-neutral RDF store
-    RDF_STORE_BACKEND: str = Field(default="graphdb", env="RDF_STORE_BACKEND")
+    RDF_STORE_BACKEND: str = Field(default="fuseki", env="RDF_STORE_BACKEND")
     RDF_STORE_BASE_URL: str | None = Field(default=None, env="RDF_STORE_BASE_URL")
     RDF_STORE_DATASET: str = Field(default="orion", env="RDF_STORE_DATASET")
     RDF_STORE_QUERY_URL: str | None = Field(default=None, env="RDF_STORE_QUERY_URL")

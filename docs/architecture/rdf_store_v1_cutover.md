@@ -8,17 +8,29 @@ Practical operator notes for the **V1 safety cutover**: one canonical bus-driven
 - **Role:** Only service that should perform **general** RDF materialization writes from the Orion bus (collapse/tags/chat/cortex/… → triples → store).
 - **Implementation:** `app/rdf_store.py` (`GraphDbRdfStoreClient`, `FusekiRdfStoreClient`, `GenericSparqlRdfStoreClient`; `rdf4j` → generic), factory `build_rdf_store_client()`, queue in `app/service.py`.
 
+## Active graph backend (Fuseki / SPARQL)
+
+**Fuseki is the active graph backend** for the Athena stack. Canonical HTTP surfaces:
+
+| Surface | Environment variable |
+|---------|------------------------|
+| SPARQL query | `RDF_STORE_QUERY_URL` (e.g. `http://orion-athena-fuseki:3030/orion/query`) |
+| SPARQL update | `RDF_STORE_UPDATE_URL` (e.g. `…/orion/update`) |
+| Graph Store POST (bulk RDF) | `RDF_STORE_GRAPH_STORE_URL` (e.g. `…/orion/data`) |
+
+Shared resolution and HTTP clients live in `orion/graph/backend_config.py` and `orion/graph/sparql_client.py`. **Global `GRAPHDB_URL` must never implicitly select GraphDB** for reads or writes; use `GRAPH_BACKEND=graphdb` or service-specific legacy flags only.
+
 ## Backend environment (`orion-rdf-writer`)
 
 | Variable | Purpose |
 |----------|---------|
-| `RDF_STORE_BACKEND` | `graphdb` \| `fuseki` \| `generic` \| `rdf4j` (alias of generic with URL requirements). |
+| `RDF_STORE_BACKEND` | `fuseki` (default) \| `generic` \| `rdf4j` \| `graphdb` (legacy explicit). |
 | `RDF_STORE_BASE_URL` | Fuseki base (e.g. `http://orion-athena-fuseki:3030`). |
 | `RDF_STORE_DATASET` | Fuseki dataset name (default `orion`). |
 | `RDF_STORE_GRAPH_STORE_URL` | Graph Store HTTP POST target (Fuseki data URL or generic). |
-| `RDF_STORE_QUERY_URL` | SPARQL query endpoint (optional for writes; used in health metadata). |
-| `RDF_STORE_UPDATE_URL` | SPARQL UPDATE endpoint (generic adapter fallback). |
-| `GRAPHDB_URL` / `GRAPHDB_REPO` / `GRAPHDB_USER` / `GRAPHDB_PASS` | Required when `RDF_STORE_BACKEND=graphdb` only. |
+| `RDF_STORE_QUERY_URL` | SPARQL query endpoint (health + cross-service reads). |
+| `RDF_STORE_UPDATE_URL` | SPARQL UPDATE endpoint. |
+| `GRAPHDB_URL` / `GRAPHDB_REPO` / `GRAPHDB_USER` / `GRAPHDB_PASS` | **Legacy:** required only when `RDF_STORE_BACKEND=graphdb`. |
 
 Copy from `services/orion-rdf-writer/.env_example` (including the **RDF Store V1 Cutover** block).
 
@@ -34,31 +46,29 @@ Copy from `services/orion-rdf-writer/.env_example` (including the **RDF Store V1
 - **Default:** `GDB_CLIENT_ENABLED=false` — no GraphDB wait, no repository bootstrap, **no** bus listener, `/health` includes `"enabled": false`.
 - **Enable:** `GDB_CLIENT_ENABLED=true` only for backfill or legacy tests. **Do not** run beside `orion-rdf-writer` for the same logical writes without understanding duplicate-write risk.
 
-## Explicitly out of scope for V1 (still GraphDB or in-memory)
+## Read paths (autonomy, recall, self-study, concept profile, substrate)
 
-1. **Memory graph approval** — `orion/memory_graph/approve.py` + Hub `POST /api/memory/graph/approve`. GraphDB statements API + Postgres with RDF compensation. Hub returns **`503`** with detail **`memory_graph_approval_requires_graphdb`** when `GRAPHDB_URL` is unset.
-2. **Substrate semantic store** — `orion/substrate/graphdb_store.py` `build_substrate_store_from_env()`. **GraphDB is used only when `SUBSTRATE_STORE_BACKEND=graphdb`**. Unset backend → **in-memory** even if `GRAPHDB_URL` is set (V1 blast-radius guard).
-3. **Autonomy / stance GraphDB reads** — `orion.autonomy.repository` + `services/orion-cortex-exec/app/chat_stance.py` + `orion/substrate/relational/adapters/autonomy_ctx.py`. **SPARQL autonomy reads run only when `AUTONOMY_GRAPH_BACKEND=graphdb`**. Unset or `disabled` → no GraphDB HTTP from those paths; stance uses identity/YAML fallbacks. Global `GRAPHDB_URL` / `CONCEPT_PROFILE_GRAPHDB_*` alone do **not** enable autonomy graph reads (mirrors substrate). Quick lane (`chat_quick`, `chat_kids_story` without `chat_quick_full_stance`) uses `AUTONOMY_QUICK_GRAPH_*` caps (default timeout 3s, subjects `orion`, subquery `identity`). Memory graph approval remains GraphDB-only and unchanged.
+- **Autonomy / stance** — `AUTONOMY_GRAPH_BACKEND=auto` (default in cortex-exec settings) resolves a SPARQL query URL from `AUTONOMY_GRAPH_QUERY_URL`, then `RDF_STORE_QUERY_URL`, then Fuseki derivation. `AUTONOMY_GRAPH_BACKEND=graphdb` is **legacy only**. Quick lane caps: `AUTONOMY_QUICK_GRAPH_*`.
+- **Recall RDF** — `RECALL_RDF_ENDPOINT_URL` / `RECALL_RDF_QUERY_URL` or `RDF_STORE_QUERY_URL`; GraphDB URL is **not** auto-derived unless `GRAPH_BACKEND=graphdb`.
+- **Self-study / orionmem adapters** — same SPARQL resolution (`RDF_STORE_QUERY_URL` first); optional legacy GraphDB only when `GRAPH_BACKEND=graphdb`.
+- **Concept profile graph** — `CONCEPT_PROFILE_GRAPHDB_ENDPOINT` alias chain includes `RDF_STORE_QUERY_URL`.
+- **Substrate durable graph** — `SUBSTRATE_STORE_BACKEND=sparql` with `SUBSTRATE_GRAPH_QUERY_URL` + `SUBSTRATE_GRAPH_UPDATE_URL` (Fuseki). `SUBSTRATE_STORE_BACKEND=graphdb` remains explicit legacy.
+- **Memory graph approval** — `MEMORY_GRAPH_APPROVAL_BACKEND=auto` (default): writes use `RDF_STORE_GRAPH_STORE_URL` + `RDF_STORE_UPDATE_URL` (Fuseki graph store + SPARQL update). `MEMORY_GRAPH_APPROVAL_BACKEND=graphdb` uses legacy GraphDB statements API.
 
-## Autonomy / stance GraphDB read cutover
+## Disabled / YAML fallback
 
-RDF write cutover alone is insufficient if chat stance or the unified-beliefs autonomy adapter still issues SPARQL against GraphDB: a single slow or unreachable repo can delay **pre-LLM** work by tens of seconds even when substrate is in-memory.
-
-**V1-safe default:** leave `AUTONOMY_GRAPH_BACKEND` unset or set `AUTONOMY_GRAPH_BACKEND=disabled`. No `autonomy_graph_subject_fanout_start` / `autonomy_graph_subquery` logs from autonomy in that mode; `_load_autonomy_state` returns a local empty bundle with `autonomy_graph:v1_fallback_identity_yaml` on the autonomy summary hazards for operators.
-
-**Explicit graph mode:** set `AUTONOMY_GRAPH_BACKEND=graphdb` and configure `GRAPHDB_URL` / `GRAPHDB_REPO` (or concept-profile GraphDB vars). Deep chat verbs use `AUTONOMY_GRAPH_TIMEOUT_SEC` (and existing worker envs). Quick verbs use `AUTONOMY_QUICK_GRAPH_TIMEOUT_SEC` (default `3.0`), `AUTONOMY_QUICK_GRAPH_SUBJECTS` (default `orion`), `AUTONOMY_QUICK_GRAPH_SUBQUERIES` (default `identity`) so quick chat does not run the legacy 3×3 fan-out before the LLM.
-
-Memory graph approval (`orion/memory_graph/approve.py`, Hub) stays **GraphDB-only**; this patch does not migrate it.
+`GRAPH_BACKEND=disabled` or missing SPARQL configuration yields **intentionally degraded** behavior (in-memory substrate, identity/YAML autonomy fallback, no RDF recall). That is **emergency / degraded mode**, not the Fuseki cutover target.
 
 ## Operator cutover checklist
 
-1. Set `orion-rdf-writer` env: `RDF_STORE_BACKEND=fuseki` (or `generic`) and the matching `RDF_STORE_*` URLs (see `.env_example`).
+1. Set `orion-rdf-writer` env: `RDF_STORE_BACKEND=fuseki` and the matching `RDF_STORE_*` URLs (see `.env_example`).
 2. Set `GDB_CLIENT_ENABLED=false` for `orion-gdb-client` (default) or remove the service from the running stack.
-3. Set `SUBSTRATE_STORE_BACKEND=in_memory` unless you explicitly need durable substrate in GraphDB (`graphdb` + endpoint envs).
-4. Set `AUTONOMY_GRAPH_BACKEND=disabled` on `orion-cortex-exec` (default in `docker-compose.yml`) unless you explicitly need graph-backed autonomy reads; use `AUTONOMY_GRAPH_BACKEND=graphdb` to opt in.
-5. Confirm Hub / recall GraphDB vars still satisfy **memory graph approval** if you use that API.
-6. Hit `orion-rdf-writer` **`GET /health`** — expect `rdf_store_backend`, queue snapshot fields, **no** secrets in URLs (credentials stripped).
-7. Publish a test `rdf.write.request` on `orion:rdf:enqueue` and confirm `rdf_write_enqueued` / `rdf_write_committed` log lines and stable dead-letter file size.
+3. Set `SUBSTRATE_STORE_BACKEND=sparql` with `SUBSTRATE_GRAPH_QUERY_URL` / `SUBSTRATE_GRAPH_UPDATE_URL` when you need durable substrate; otherwise leave unset / `in_memory`.
+4. Set `AUTONOMY_GRAPH_BACKEND=auto` (or omit) and provide `RDF_STORE_QUERY_URL` or Fuseki base + dataset for stance/autonomy reads.
+5. Set Hub / recall `RDF_STORE_*` or `RECALL_RDF_*` query URLs for RDF recall; avoid implicit GraphDB.
+6. For memory graph approval, set `RDF_STORE_GRAPH_STORE_URL` + `RDF_STORE_UPDATE_URL` (or legacy `MEMORY_GRAPH_APPROVAL_BACKEND=graphdb` + `GRAPHDB_URL`).
+7. Hit `orion-rdf-writer` **`GET /health`** — expect `rdf_store_backend=fuseki`, queue snapshot fields, **no** secrets in URLs (credentials stripped).
+8. Publish a test `rdf.write.request` on `orion:rdf:enqueue` and confirm `rdf_write_enqueued` / `rdf_write_committed` log lines and stable dead-letter file size.
 
 ## Rollback
 
@@ -67,6 +77,5 @@ Memory graph approval (`orion/memory_graph/approve.py`, Hub) stays **GraphDB-onl
 
 ## Remaining V2 work (do not track as V1 deliverables)
 
-- Backend-neutral memory graph approval store.
-- Backend-neutral substrate graph store.
-- Self-study / concept profile **read** cutover and GraphDB retirement once all direct read/write paths are migrated.
+- Further consolidation of per-service env aliases onto `orion.graph.backend_config`.
+- Broader operator doc pass for non-Athena deployments.

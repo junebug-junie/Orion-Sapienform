@@ -7,7 +7,13 @@ from .adapters import (
 )
 from .materializer import MaterializationResultV1, SubstrateGraphMaterializer
 from .reconcile import EdgeMergeDecision, NodeMergeDecision, SubstrateIdentityResolver
-from .graphdb_store import GraphDBSubstrateStore, GraphDBSubstrateStoreConfig, build_substrate_store_from_env
+from .graphdb_store import (
+    GraphDBSubstrateStore,
+    GraphDBSubstrateStoreConfig,
+    SparqlSubstrateStore,
+    SparqlSubstrateStoreConfig,
+    build_substrate_store_from_env,
+)
 from .store import InMemorySubstrateGraphStore, MaterializedSubstrateGraphState, SubstrateGraphStore, SubstrateNeighborhoodSliceV1, SubstrateQueryResultV1
 from .frontier_context import FrontierContextPackBuilder, FrontierContextPackV1
 from .frontier_expansion import FrontierExpansionResultV1, FrontierExpansionService
@@ -66,6 +72,8 @@ __all__ = [
     "SubstrateQueryResultV1",
     "GraphDBSubstrateStore",
     "GraphDBSubstrateStoreConfig",
+    "SparqlSubstrateStore",
+    "SparqlSubstrateStoreConfig",
     "build_substrate_store_from_env",
     "SubstrateDynamicsEngine",
     "SubstrateDynamicsResultV1",

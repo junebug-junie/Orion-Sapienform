@@ -215,7 +215,7 @@ class GraphAutonomyRepository:
     def status(self) -> AutonomyRepositoryStatus:
         return AutonomyRepositoryStatus(
             backend="graph",
-            source_path=self._endpoint or "graphdb:unconfigured",
+            source_path=self._endpoint or "graph_query:unconfigured",
             source_available=bool(self._endpoint),
         )
 
@@ -445,7 +445,7 @@ LIMIT {self._goals_limit}
                         name,
                         status,
                         row_count,
-                        self._endpoint or "graphdb:unconfigured",
+                        self._endpoint or "graph_query:unconfigured",
                         elapsed_ms,
                         self._timeout_sec,
                         correlation_id or "-",
@@ -461,7 +461,7 @@ LIMIT {self._goals_limit}
                         subject,
                         name,
                         failure_type,
-                        self._endpoint or "graphdb:unconfigured",
+                        self._endpoint or "graph_query:unconfigured",
                         elapsed_ms,
                         self._timeout_sec,
                         failure_type,

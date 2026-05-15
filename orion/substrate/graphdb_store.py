@@ -565,6 +565,35 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {iri} ?p ?o . }} }} }}
         return f"{edge.source.node_id}|{edge.predicate}|{edge.target.node_id}"
 
 
+@dataclass(frozen=True)
+class SparqlSubstrateStoreConfig:
+    query_url: str
+    update_url: str
+    graph_uri: str = DEFAULT_SUBSTRATE_GRAPH_URI
+    timeout_sec: float = 5.0
+    user: str | None = None
+    password: str | None = None
+
+
+class SparqlSubstrateStore(GraphDBSubstrateStore):
+    """Substrate store over generic SPARQL query + update endpoints (Fuseki)."""
+
+    def __init__(self, cfg: SparqlSubstrateStoreConfig) -> None:
+        super().__init__(
+            GraphDBSubstrateStoreConfig(
+                endpoint=cfg.query_url,
+                graph_uri=cfg.graph_uri,
+                timeout_sec=cfg.timeout_sec,
+                user=cfg.user,
+                password=cfg.password,
+            )
+        )
+        self._sparql_update_url = cfg.update_url.rstrip("/")
+
+    def _sparql_update_endpoint(self) -> str:
+        return self._sparql_update_url
+
+
 def _resolve_substrate_graphdb_endpoint() -> str:
     endpoint = str(os.getenv("SUBSTRATE_GRAPHDB_ENDPOINT", "")).strip()
     if endpoint:
@@ -595,6 +624,8 @@ def build_substrate_store_from_env() -> SubstrateGraphStore:
     Resolution:
     - ``SUBSTRATE_STORE_BACKEND`` unset / empty → in-memory (default).
     - ``in_memory`` / ``memory`` / ``mem`` / ``local`` → in-memory.
+    - ``sparql`` / ``sparql_http`` → ``SparqlSubstrateStore`` when ``SUBSTRATE_GRAPH_QUERY_URL`` and
+      ``SUBSTRATE_GRAPH_UPDATE_URL`` are set.
     - ``graphdb`` / ``graph_db`` / ``rdf`` → ``GraphDBSubstrateStore`` when
       ``SUBSTRATE_GRAPHDB_ENDPOINT`` or ``GRAPHDB_URL``+``GRAPHDB_REPO`` resolves; else in-memory + warning.
     - Any other backend string → in-memory + warning.
@@ -609,6 +640,28 @@ def build_substrate_store_from_env() -> SubstrateGraphStore:
     if not backend:
         logger.info("substrate_store_backend_selected backend=in_memory reason=default_v1_safety")
         return InMemorySubstrateGraphStore()
+
+    if backend in {"sparql", "sparql_http"}:
+        q = str(os.getenv("SUBSTRATE_GRAPH_QUERY_URL", "")).strip()
+        u = str(os.getenv("SUBSTRATE_GRAPH_UPDATE_URL", "")).strip()
+        if not q or not u:
+            logger.warning("SUBSTRATE_STORE_BACKEND=sparql but SUBSTRATE_GRAPH_QUERY_URL/UPDATE_URL missing; in-memory fallback")
+            logger.info("substrate_store_backend_selected backend=in_memory reason=sparql_endpoint_missing")
+            return InMemorySubstrateGraphStore()
+        logger.info(
+            "substrate_store_backend_selected backend=sparql query_url=%s update_url=%s",
+            _redact_endpoint_for_log(q),
+            _redact_endpoint_for_log(u),
+        )
+        cfg = SparqlSubstrateStoreConfig(
+            query_url=q,
+            update_url=u,
+            graph_uri=str(os.getenv("SUBSTRATE_GRAPH_URI", DEFAULT_SUBSTRATE_GRAPH_URI)).strip() or DEFAULT_SUBSTRATE_GRAPH_URI,
+            timeout_sec=float(os.getenv("SUBSTRATE_GRAPH_TIMEOUT_SEC", "5.0")),
+            user=str(os.getenv("SUBSTRATE_GRAPH_USER", os.getenv("RDF_STORE_USER", ""))).strip() or None,
+            password=str(os.getenv("SUBSTRATE_GRAPH_PASS", os.getenv("RDF_STORE_PASS", ""))).strip() or None,
+        )
+        return SparqlSubstrateStore(cfg)
 
     if backend in {"graphdb", "graph_db", "rdf"}:
         if not endpoint:

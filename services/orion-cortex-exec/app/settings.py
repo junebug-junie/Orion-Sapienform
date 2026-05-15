@@ -154,7 +154,7 @@ class Settings(BaseSettings):
         alias="ENDOGENOUS_RUNTIME_SQL_DATABASE_URL",
     )
     # Autonomy GraphDB reads (chat stance / unified-beliefs adapter): see docs/architecture/rdf_store_v1_cutover.md
-    autonomy_graph_backend: str = Field("disabled", alias="AUTONOMY_GRAPH_BACKEND")
+    autonomy_graph_backend: str = Field("auto", alias="AUTONOMY_GRAPH_BACKEND")
     autonomy_quick_graph_timeout_sec: float = Field(3.0, alias="AUTONOMY_QUICK_GRAPH_TIMEOUT_SEC")
     autonomy_quick_graph_subjects: str = Field("orion", alias="AUTONOMY_QUICK_GRAPH_SUBJECTS")
     autonomy_quick_graph_subqueries: str = Field("identity", alias="AUTONOMY_QUICK_GRAPH_SUBQUERIES")

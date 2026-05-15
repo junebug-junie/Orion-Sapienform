@@ -13,7 +13,12 @@ from orion.core.schemas.cognitive_substrate import (
     SubstrateSignalBundleV1,
     SubstrateTemporalWindowV1,
 )
-from orion.substrate.graphdb_store import GraphDBSubstrateStore, GraphDBSubstrateStoreConfig, build_substrate_store_from_env
+from orion.substrate.graphdb_store import (
+    GraphDBSubstrateStore,
+    GraphDBSubstrateStoreConfig,
+    SparqlSubstrateStore,
+    build_substrate_store_from_env,
+)
 from orion.substrate.materializer import SubstrateGraphMaterializer
 from orion.substrate.store import InMemorySubstrateGraphStore
 
@@ -284,6 +289,14 @@ def test_build_substrate_store_graphdb_backend_uses_graphdb_from_url_and_repo(mo
 
     store = build_substrate_store_from_env()
     assert isinstance(store, GraphDBSubstrateStore)
+
+
+def test_build_substrate_store_sparql_backend(monkeypatch):
+    monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "sparql")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_QUERY_URL", "http://fuseki:3030/orion/query")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_UPDATE_URL", "http://fuseki:3030/orion/update")
+    store = build_substrate_store_from_env()
+    assert isinstance(store, SparqlSubstrateStore)
 
 
 def test_build_substrate_store_explicit_in_memory_overrides_graphdb_env(monkeypatch):

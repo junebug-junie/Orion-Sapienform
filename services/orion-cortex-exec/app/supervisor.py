@@ -1325,6 +1325,7 @@ class Supervisor:
             runtime_mode=ctx.get("mode") or req.metadata.get("mode") or "agent",
             plan_verb_name=req.verb_name,
             chat_quick_recall_profile=settings.chat_quick_recall_profile,
+            chat_kids_story_recall_profile=settings.chat_kids_story_recall_profile,
         )
         selected_profile = recall_policy["profile"]
         profile_source = recall_policy["profile_source"]

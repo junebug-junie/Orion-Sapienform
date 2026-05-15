@@ -29,6 +29,17 @@ def test_resolve_recall_bus_wait_non_quick_uses_recall_cap() -> None:
     )
 
 
+def test_resolve_recall_bus_wait_chat_kids_story_uses_quick_cap() -> None:
+    w = resolve_recall_bus_rpc_wait_sec(
+        verb="chat_kids_story",
+        step_timeout_ms=120_000,
+        rpc_timeout_override=None,
+        recall_rpc_timeout_sec=90.0,
+        chat_quick_recall_rpc_timeout_sec=33.0,
+    )
+    assert w == 33.0
+
+
 def test_resolve_recall_bus_wait_override_capped_by_step_budget() -> None:
     assert (
         resolve_recall_bus_rpc_wait_sec(

@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from orion.cognition.fast_chat_verbs import FAST_SINGLE_PASS_CHAT_VERBS
 from orion.schemas.cortex.contracts import CortexClientRequest
 
 logger = logging.getLogger("orion.cortex.orch.execution_lanes")
@@ -40,7 +41,7 @@ def resolve_execution_lane(req: CortexClientRequest) -> ExecutionLaneDecision:
     verb = str(req.verb or "").strip()
     mode = str(req.mode or "").strip().lower()
 
-    if verb in {"chat_general", "chat_quick"}:
+    if verb == "chat_general" or verb in FAST_SINGLE_PASS_CHAT_VERBS:
         return ExecutionLaneDecision(lane="chat", reason="verb_chat", explicit=False, requested=None)
 
     if verb == "introspect_spark":

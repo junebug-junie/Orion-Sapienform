@@ -32,6 +32,16 @@ def test_chat_quick_skips_heavy_brain_reply_context_prep():
     assert _should_prepare_brain_reply_context(step=step, ctx={"mode": "brain"}) is False
 
 
+def test_chat_kids_story_skips_heavy_brain_reply_context_prep():
+    step = ExecutionStep(
+        verb_name="chat_kids_story",
+        step_name="llm_chat_kids_story",
+        order=1,
+        services=["LLMGatewayService"],
+    )
+    assert _should_prepare_brain_reply_context(step=step, ctx={"mode": "brain"}) is False
+
+
 def test_introspect_spark_skips_heavy_brain_reply_context_prep():
     step = ExecutionStep(
         verb_name="introspect_spark",

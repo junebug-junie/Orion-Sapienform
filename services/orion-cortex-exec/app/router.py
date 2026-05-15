@@ -710,6 +710,7 @@ class PlanRunner:
             runtime_mode=mode,
             plan_verb_name=plan.verb_name,
             chat_quick_recall_profile=settings.chat_quick_recall_profile,
+            chat_kids_story_recall_profile=settings.chat_kids_story_recall_profile,
         )
         selected_profile = recall_policy["profile"]
         profile_source = recall_policy["profile_source"]
@@ -757,13 +758,16 @@ class PlanRunner:
 
         ctx["verb"] = plan.verb_name
         if mode == "brain" and not _is_runtime_skill_verb(plan.verb_name):
-            if str(plan.verb_name or "").strip().lower() == "chat_quick":
+            verb_lc = str(plan.verb_name or "").strip().lower()
+            if verb_lc == "chat_quick":
                 opts_now = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
                 hub_full = bool(opts_now.get("chat_quick_full_stance"))
                 if hub_full:
                     prepare_brain_reply_context(ctx)
                 else:
                     prepare_chat_quick_reply_context(ctx)
+            elif verb_lc == "chat_kids_story":
+                prepare_chat_quick_reply_context(ctx)
             elif ctx.get("skip_brain_reply_context") or str(plan.verb_name or "").strip().lower() == "introspect_spark":
                 logger.info(
                     "router_skip_prepare_brain_reply_context corr=%s verb=%s reason=spark_or_skip_flag",

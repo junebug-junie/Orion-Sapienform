@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Literal, Mapping
 
+from orion.cognition.fast_chat_verbs import FAST_SINGLE_PASS_CHAT_VERBS
+
 AutonomySubjectFanout = Literal["bounded", "full"]
 
 
@@ -25,6 +27,6 @@ def autonomy_subject_fanout_from_runtime_ctx(ctx: Mapping[str, Any] | None) -> A
     verb = str(ctx.get("verb") or "").strip().lower()
     opts = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
     hub_full = bool(opts.get("chat_quick_full_stance"))
-    if verb == "chat_quick" and not hub_full:
+    if verb in FAST_SINGLE_PASS_CHAT_VERBS and not (verb == "chat_quick" and hub_full):
         return "bounded"
     return "full"

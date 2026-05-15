@@ -31,3 +31,10 @@ def test_fanout_full_chat_general() -> None:
 
 def test_fanout_full_empty_ctx() -> None:
     assert autonomy_subject_fanout_from_runtime_ctx(None) == "full"
+
+
+def test_fanout_bounded_chat_kids_story() -> None:
+    assert (
+        autonomy_subject_fanout_from_runtime_ctx({"verb": "chat_kids_story", "mode": "brain", "options": {}})
+        == "bounded"
+    )

@@ -39,6 +39,12 @@ Hub supports three modes via the `mode` field in the request:
 2.  **Agent**: Goal-oriented reasoning with packs.
 3.  **Council**: Multi-agent deliberation.
 
+#### Kids story lane (verb override)
+
+Send a single explicit verb: `verbs: ["chat_kids_story"]` with normal `messages` / recall options.
+Verb must be active on the hub node (`orion/cognition/verbs/active.yaml`). Default recall profile is
+`chat.story.kids.v1` (vector-off; SQL + timeline + optional cards) unless the client sets `profile_explicit`.
+
 ### 2. Text-to-Speech (TTS)
 
 *   **Intake**: `orion:tts:intake`

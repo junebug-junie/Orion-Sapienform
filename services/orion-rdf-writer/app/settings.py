@@ -2,12 +2,39 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 from typing import List
 
+
 class Settings(BaseSettings):
-    # RDF + GraphDB
-    GRAPHDB_URL: str = Field(..., env="GRAPHDB_URL")
+    # RDF + GraphDB (GRAPHDB_URL optional when RDF_STORE_BACKEND != graphdb)
+    GRAPHDB_URL: str | None = Field(default=None, env="GRAPHDB_URL")
     GRAPHDB_REPO: str = Field(default="collapse", env="GRAPHDB_REPO")
     GRAPHDB_USER: str | None = Field(None, env="GRAPHDB_USER")
     GRAPHDB_PASS: str | None = Field(None, env="GRAPHDB_PASS")
+
+    # Backend-neutral RDF store
+    RDF_STORE_BACKEND: str = Field(default="graphdb", env="RDF_STORE_BACKEND")
+    RDF_STORE_BASE_URL: str | None = Field(default=None, env="RDF_STORE_BASE_URL")
+    RDF_STORE_DATASET: str = Field(default="orion", env="RDF_STORE_DATASET")
+    RDF_STORE_QUERY_URL: str | None = Field(default=None, env="RDF_STORE_QUERY_URL")
+    RDF_STORE_UPDATE_URL: str | None = Field(default=None, env="RDF_STORE_UPDATE_URL")
+    RDF_STORE_GRAPH_STORE_URL: str | None = Field(default=None, env="RDF_STORE_GRAPH_STORE_URL")
+    RDF_STORE_USER: str | None = Field(default=None, env="RDF_STORE_USER")
+    RDF_STORE_PASS: str | None = Field(default=None, env="RDF_STORE_PASS")
+    RDF_STORE_TIMEOUT_SEC: float = Field(default=10.0, env="RDF_STORE_TIMEOUT_SEC")
+
+    RDF_WRITE_ASYNC_ENABLED: bool = Field(default=True, env="RDF_WRITE_ASYNC_ENABLED")
+    RDF_WRITE_QUEUE_MAXSIZE: int = Field(default=5000, env="RDF_WRITE_QUEUE_MAXSIZE")
+    RDF_WRITE_WORKERS: int = Field(default=8, env="RDF_WRITE_WORKERS")
+    RDF_WRITE_MAX_IN_FLIGHT: int = Field(default=32, env="RDF_WRITE_MAX_IN_FLIGHT")
+    RDF_WRITE_HTTP_MAX_CONNECTIONS: int = Field(default=64, env="RDF_WRITE_HTTP_MAX_CONNECTIONS")
+    RDF_WRITE_HTTP_MAX_KEEPALIVE: int = Field(default=32, env="RDF_WRITE_HTTP_MAX_KEEPALIVE")
+    RDF_WRITE_RETRY_ATTEMPTS: int = Field(default=3, env="RDF_WRITE_RETRY_ATTEMPTS")
+    RDF_WRITE_RETRY_BASE_DELAY_SEC: float = Field(default=0.25, env="RDF_WRITE_RETRY_BASE_DELAY_SEC")
+    RDF_WRITE_RETRY_MAX_DELAY_SEC: float = Field(default=5.0, env="RDF_WRITE_RETRY_MAX_DELAY_SEC")
+    RDF_WRITE_DEAD_LETTER_ENABLED: bool = Field(default=True, env="RDF_WRITE_DEAD_LETTER_ENABLED")
+    RDF_WRITE_DEAD_LETTER_PATH: str = Field(
+        default="/tmp/orion-rdf-writer-deadletter.ndjson",
+        env="RDF_WRITE_DEAD_LETTER_PATH",
+    )
 
     # === ORION BUS (Shared Core) ===
     ORION_BUS_URL: str = Field(..., env="ORION_BUS_URL")
@@ -15,27 +42,15 @@ class Settings(BaseSettings):
     ORION_BUS_ENFORCE_CATALOG: bool = Field(default=False, env="ORION_BUS_ENFORCE_CATALOG")
 
     # === LISTENER CHANNELS ===
-    # Enqueue (Direct writes)
     CHANNEL_RDF_ENQUEUE: str = Field(default="orion:rdf:enqueue", env="CHANNEL_RDF_ENQUEUE")
-    # Collapse (Raw)
     CHANNEL_EVENTS_COLLAPSE: str = Field(default="orion:collapse:intake", env="CHANNEL_EVENTS_COLLAPSE")
-    # Tagged/Enriched
     CHANNEL_EVENTS_TAGGED: str = Field(default="orion:tags:enriched", env="CHANNEL_EVENTS_TAGGED")
     CHANNEL_EVENTS_TAGGED_CHAT: str = Field(default="orion:tags:chat:enriched", env="CHANNEL_EVENTS_TAGGED_CHAT")
-    # Core Events (Filtering targets="rdf")
     CHANNEL_CORE_EVENTS: str = Field(default="orion:core:events", env="CHANNEL_CORE_EVENTS")
-
-    # Worker intake for Cortex (RPC)
     CHANNEL_WORKER_RDF: str = Field(default="orion:rdf:worker", env="CHANNEL_WORKER_RDF")
-
-    # Cognition Trace
     CHANNEL_COGNITION_TRACE_PUB: str = Field(default="orion:cognition:trace", env="CHANNEL_COGNITION_TRACE_PUB")
-
-    # Chat History
     CHANNEL_CHAT_HISTORY_TURN: str = Field(default="orion:chat:history:turn", env="CHANNEL_CHAT_HISTORY_TURN")
     CHANNEL_CHAT_HISTORY_LOG: str = Field(default="orion:chat:history:log", env="CHANNEL_CHAT_HISTORY_LOG")
-
-    # Autonomy artifact ingestion
     CHANNEL_MEMORY_IDENTITY_SNAPSHOT: str = Field(default="orion:memory:identity:snapshot", env="CHANNEL_MEMORY_IDENTITY_SNAPSHOT")
     CHANNEL_MEMORY_DRIVES_AUDIT: str = Field(default="orion:memory:drives:audit", env="CHANNEL_MEMORY_DRIVES_AUDIT")
     CHANNEL_MEMORY_GOALS_PROPOSED: str = Field(default="orion:memory:goals:proposed", env="CHANNEL_MEMORY_GOALS_PROPOSED")
@@ -45,7 +60,6 @@ class Settings(BaseSettings):
     CHANNEL_RDF_ERROR: str = Field(default="orion:rdf:error", env="CHANNEL_RDF_ERROR")
     CORTEX_LOG_CHANNEL: str = Field(default="orion:cortex:telemetry", env="CORTEX_LOG_CHANNEL")
 
-    # Service configuration
     SERVICE_NAME: str = Field(default="orion-rdf-writer", env="SERVICE_NAME")
     SERVICE_VERSION: str = Field(default="0.2.0", env="SERVICE_VERSION")
     NODE_NAME: str = Field(default="unknown")
@@ -58,14 +72,9 @@ class Settings(BaseSettings):
     WORLD_PULSE_GRAPH_REQUIRE_POLICY_STAMP: bool = Field(default=True, env="WORLD_PULSE_GRAPH_REQUIRE_POLICY_STAMP")
     CHANNEL_WORLD_PULSE_GRAPH: str = Field(default="orion:world_pulse:graph:upsert", env="CHANNEL_WORLD_PULSE_GRAPH")
 
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore"
-    )
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     def get_all_subscribe_channels(self) -> List[str]:
-        """Returns a list of all channels this service should subscribe to."""
         channels = [
             self.CHANNEL_RDF_ENQUEUE,
             "orion:rdf-collapse:enqueue",
@@ -97,5 +106,6 @@ class Settings(BaseSettings):
 
     def get_skip_kinds(self) -> List[str]:
         return [k.strip() for k in (self.RDF_SKIP_KINDS or "").split(",") if k.strip()]
+
 
 settings = Settings()

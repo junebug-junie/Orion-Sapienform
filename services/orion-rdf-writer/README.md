@@ -17,7 +17,7 @@ The **RDF Writer** service constructs the Knowledge Graph by converting incoming
 
 When `RDF_WRITE_ASYNC_ENABLED=true` (default), writes are queued and drained by a worker pool with a global in-flight semaphore, retries with exponential backoff, and optional **NDJSON dead-letter** logging (`RDF_WRITE_DEAD_LETTER_*`). If the queue is full, the service **does not** log `rdf_write_committed`; it dead-letters, logs backpressure, optionally publishes `CHANNEL_RDF_ERROR`, and drops the hot-path work for that envelope (HTTP ingest maps queue saturation to **503**).
 
-Tune `RDF_WRITE_*` and `RDF_STORE_TIMEOUT_SEC` before scaling bus traffic; see `services/rdf-store/README.md` for operator layout.
+Tune `RDF_WRITE_*` and `RDF_STORE_TIMEOUT_SEC` before scaling bus traffic; for the Fuseki operator stack see `services/orion-rdf-store/README.md`.
 
 ## Contracts
 
@@ -55,13 +55,13 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 
 ### Run via Docker
 ```bash
-docker-compose up -d orion-rdf-writer
+docker compose -f services/orion-rdf-writer/docker-compose.yml up -d rdf-writer
 ```
 
 ### Smoke Test
 Check connection to GraphDB in logs.
 ```bash
-docker-compose logs -f orion-rdf-writer | grep "Connected"
+docker compose -f services/orion-rdf-writer/docker-compose.yml logs -f rdf-writer | grep "Connected"
 ```
 
 ### Store-aware chat smoke (GraphDB or Fuseki)

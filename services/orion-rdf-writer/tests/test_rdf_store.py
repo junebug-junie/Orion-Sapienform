@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
-import asyncio
 from pathlib import Path
 
+import httpx
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -16,7 +17,6 @@ sys.path[:0] = [str(ROOT), str(SERVICE_ROOT)]
 from app.rdf_store import (
     FusekiRdfStoreClient,
     GraphDbRdfStoreClient,
-    GenericSparqlRdfStoreClient,
     build_rdf_store_client,
     normalize_graph_name,
     httpx_limits_for_settings,
@@ -32,7 +32,7 @@ def test_normalize_known_graphs() -> None:
 
 def test_normalize_absolute_unchanged() -> None:
     u = "http://example.com/g#x"
-    assert normalize_graph_name(u) is u
+    assert normalize_graph_name(u) == u
 
 
 def test_normalize_unknown_is_deterministic() -> None:
@@ -43,10 +43,13 @@ def test_factory_default_graphdb_requires_url(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("GRAPHDB_URL", "")
     monkeypatch.setenv("RDF_STORE_BACKEND", "graphdb")
     s = Settings()
-    import httpx
+
+    async def _call() -> None:
+        async with httpx.AsyncClient() as client:
+            build_rdf_store_client(s, client)
 
     with pytest.raises(ValueError):
-        build_rdf_store_client(s, httpx.AsyncClient())
+        asyncio.run(_call())
 
 
 def test_factory_fuseki_does_not_require_graphdb_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -54,9 +57,12 @@ def test_factory_fuseki_does_not_require_graphdb_url(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("RDF_STORE_BACKEND", "fuseki")
     monkeypatch.setenv("RDF_STORE_BASE_URL", "http://orion-athena-fuseki:3030")
     s = Settings()
-    import httpx
 
-    c = build_rdf_store_client(s, httpx.AsyncClient())
+    async def _call():
+        async with httpx.AsyncClient() as client:
+            return build_rdf_store_client(s, client)
+
+    c = asyncio.run(_call())
     assert isinstance(c, FusekiRdfStoreClient)
 
 
@@ -64,10 +70,13 @@ def test_factory_unknown_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RDF_STORE_BACKEND", "nope")
     monkeypatch.setenv("GRAPHDB_URL", "http://g.example")
     s = Settings()
-    import httpx
+
+    async def _call() -> None:
+        async with httpx.AsyncClient() as client:
+            build_rdf_store_client(s, client)
 
     with pytest.raises(ValueError, match="Unknown RDF_STORE_BACKEND"):
-        build_rdf_store_client(s, httpx.AsyncClient())
+        asyncio.run(_call())
 
 
 def test_rdf4j_requires_explicit_urls(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -76,10 +85,13 @@ def test_rdf4j_requires_explicit_urls(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("RDF_STORE_GRAPH_STORE_URL", raising=False)
     monkeypatch.delenv("RDF_STORE_UPDATE_URL", raising=False)
     s = Settings()
-    import httpx
+
+    async def _call() -> None:
+        async with httpx.AsyncClient() as client:
+            build_rdf_store_client(s, client)
 
     with pytest.raises(ValueError, match="rdf4j"):
-        build_rdf_store_client(s, httpx.AsyncClient())
+        asyncio.run(_call())
 
 
 def test_fuseki_endpoint_defaults() -> None:
@@ -89,10 +101,13 @@ def test_fuseki_endpoint_defaults() -> None:
         RDF_STORE_DATASET="orion",
         ORION_BUS_URL="redis://example/0",
     )
-    import httpx
 
-    c = FusekiRdfStoreClient(s, httpx.AsyncClient())
-    h = asyncio.run(c.health())
+    async def _health():
+        async with httpx.AsyncClient() as client:
+            c = FusekiRdfStoreClient(s, client)
+            return await c.health()
+
+    h = asyncio.run(_health())
     assert h["graph_store_url"].endswith("/orion/data")
     assert h["query_url"].endswith("/orion/query")
 
@@ -104,10 +119,96 @@ def test_graphdb_endpoint_shape() -> None:
         GRAPHDB_REPO="collapse",
         ORION_BUS_URL="redis://example/0",
     )
-    import httpx
 
-    c = GraphDbRdfStoreClient(s, httpx.AsyncClient())
-    assert asyncio.run(c.health())["endpoint"].endswith("/repositories/collapse/statements")
+    async def _health():
+        async with httpx.AsyncClient() as client:
+            c = GraphDbRdfStoreClient(s, client)
+            return await c.health()
+
+    assert asyncio.run(_health())["endpoint"].endswith("/repositories/collapse/statements")
+
+
+def test_rdf_store_normalize_graphdb_context_setting_default_false() -> None:
+    s = Settings(
+        ORION_BUS_URL="redis://example/0",
+        GRAPHDB_URL="http://gdb:7200",
+    )
+    assert s.RDF_STORE_NORMALIZE_GRAPHDB_CONTEXT is False
+
+
+def test_graphdb_write_context_uses_raw_compact_when_normalize_false() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200)
+
+    transport = httpx.MockTransport(handler)
+    s = Settings(
+        ORION_BUS_URL="redis://example/0",
+        GRAPHDB_URL="http://gdb:7200",
+        GRAPHDB_REPO="collapse",
+        RDF_STORE_NORMALIZE_GRAPHDB_CONTEXT=False,
+    )
+
+    async def _run() -> None:
+        async with httpx.AsyncClient(transport=transport) as client:
+            c = GraphDbRdfStoreClient(s, client)
+            await c.write_graph(".\n", "orion:chat")
+
+    asyncio.run(_run())
+    assert len(captured) == 1
+    assert captured[0].url.params.get("context") == "<orion:chat>"
+
+
+def test_graphdb_write_context_normalizes_when_flag_true() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200)
+
+    transport = httpx.MockTransport(handler)
+    s = Settings(
+        ORION_BUS_URL="redis://example/0",
+        GRAPHDB_URL="http://gdb:7200",
+        GRAPHDB_REPO="collapse",
+        RDF_STORE_NORMALIZE_GRAPHDB_CONTEXT=True,
+    )
+
+    async def _run() -> None:
+        async with httpx.AsyncClient(transport=transport) as client:
+            c = GraphDbRdfStoreClient(s, client)
+            await c.write_graph(".\n", "orion:chat")
+
+    asyncio.run(_run())
+    assert len(captured) == 1
+    assert captured[0].url.params.get("context") == "<http://conjourney.net/graph/orion/chat>"
+
+
+def test_fuseki_write_graph_query_uses_normalized_uri() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200)
+
+    transport = httpx.MockTransport(handler)
+    s = Settings(
+        ORION_BUS_URL="redis://example/0",
+        RDF_STORE_BACKEND="fuseki",
+        RDF_STORE_BASE_URL="http://orion-athena-fuseki:3030",
+        RDF_STORE_DATASET="orion",
+    )
+
+    async def _run() -> None:
+        async with httpx.AsyncClient(transport=transport) as client:
+            c = FusekiRdfStoreClient(s, client)
+            await c.write_graph(".\n", "orion:chat")
+
+    asyncio.run(_run())
+    assert len(captured) == 1
+    assert captured[0].url.params.get("graph") == "http://conjourney.net/graph/orion/chat"
 
 
 def test_limits_helper_smoke() -> None:

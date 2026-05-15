@@ -84,6 +84,10 @@ def httpx_limits_for_settings(settings: Settings) -> httpx.Limits:
 
 
 class GraphDbRdfStoreClient:
+    # GraphDB defaults keep the legacy ?context=<compact> form (e.g. <orion:chat>) for
+    # backward compatibility. Set RDF_STORE_NORMALIZE_GRAPHDB_CONTEXT=true to emit
+    # normalized absolute graph IRIs in ?context= (matching Fuseki-style naming).
+
     def __init__(self, settings: Settings, client: httpx.AsyncClient) -> None:
         self._settings = settings
         self._client = client
@@ -102,7 +106,10 @@ class GraphDbRdfStoreClient:
         )
         params: dict[str, str] = {}
         if graph_name:
-            params["context"] = f"<{graph_name}>"
+            ctx = graph_name
+            if self._settings.RDF_STORE_NORMALIZE_GRAPHDB_CONTEXT:
+                ctx = normalize_graph_name(graph_name) or graph_name
+            params["context"] = f"<{ctx}>"
         headers = {"Content-Type": "text/plain"}
         auth = _httpx_auth(self._settings.GRAPHDB_USER, self._settings.GRAPHDB_PASS)
         resp = await self._client.post(

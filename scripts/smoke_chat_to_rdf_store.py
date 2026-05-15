@@ -29,6 +29,23 @@ def _query_url() -> Optional[str]:
     return None
 
 
+def _env_nonempty(name: str) -> bool:
+    v = os.getenv(name)
+    return bool(v and str(v).strip())
+
+
+def _basic_auth() -> tuple[str, str] | None:
+    """Resolve SPARQL HTTP basic auth without defaulting to admin/admin for unknown backends."""
+    if _env_nonempty("RDF_STORE_USER") or _env_nonempty("RDF_STORE_PASS"):
+        return (os.getenv("RDF_STORE_USER") or "", os.getenv("RDF_STORE_PASS") or "")
+    backend = (os.getenv("RDF_STORE_BACKEND") or "graphdb").strip().lower()
+    if backend == "graphdb" and (_env_nonempty("GRAPHDB_USER") or _env_nonempty("GRAPHDB_PASS")):
+        return (os.getenv("GRAPHDB_USER") or "", os.getenv("GRAPHDB_PASS") or "")
+    if _env_nonempty("RECALL_RDF_USER") or _env_nonempty("RECALL_RDF_PASS"):
+        return (os.getenv("RECALL_RDF_USER") or "", os.getenv("RECALL_RDF_PASS") or "")
+    return None
+
+
 def _sparql(session_id: str) -> str:
     return f"""
     PREFIX orion: <http://conjourney.net/orion#>
@@ -81,9 +98,7 @@ async def main() -> int:
 
     timeout = float(os.getenv("RDF_STORE_TIMEOUT_SEC", "10"))
     deadline = time.monotonic() + max(5.0, timeout * 3.0)
-    auth_user = os.getenv("RDF_STORE_USER") or os.getenv("RECALL_RDF_USER") or os.getenv("GRAPHDB_USER") or "admin"
-    auth_pass = os.getenv("RDF_STORE_PASS") or os.getenv("RECALL_RDF_PASS") or os.getenv("GRAPHDB_PASS") or "admin"
-    auth = (auth_user, auth_pass)
+    auth = _basic_auth()
 
     bindings: list[Any] = []
     while time.monotonic() < deadline:

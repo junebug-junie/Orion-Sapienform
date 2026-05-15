@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     RDF_STORE_USER: str | None = Field(default=None, env="RDF_STORE_USER")
     RDF_STORE_PASS: str | None = Field(default=None, env="RDF_STORE_PASS")
     RDF_STORE_TIMEOUT_SEC: float = Field(default=10.0, env="RDF_STORE_TIMEOUT_SEC")
+    RDF_STORE_NORMALIZE_GRAPHDB_CONTEXT: bool = Field(
+        default=False,
+        env="RDF_STORE_NORMALIZE_GRAPHDB_CONTEXT",
+    )
 
     RDF_WRITE_ASYNC_ENABLED: bool = Field(default=True, env="RDF_WRITE_ASYNC_ENABLED")
     RDF_WRITE_QUEUE_MAXSIZE: int = Field(default=5000, env="RDF_WRITE_QUEUE_MAXSIZE")
@@ -32,7 +36,7 @@ class Settings(BaseSettings):
     RDF_WRITE_RETRY_MAX_DELAY_SEC: float = Field(default=5.0, env="RDF_WRITE_RETRY_MAX_DELAY_SEC")
     RDF_WRITE_DEAD_LETTER_ENABLED: bool = Field(default=True, env="RDF_WRITE_DEAD_LETTER_ENABLED")
     RDF_WRITE_DEAD_LETTER_PATH: str = Field(
-        default="/tmp/orion-rdf-writer-deadletter.ndjson",
+        default="/app/logs/orion-rdf-writer-deadletter.ndjson",
         env="RDF_WRITE_DEAD_LETTER_PATH",
     )
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# For multi-backend RDF store smoke (Fuseki / RDF_STORE_*), prefer scripts/smoke_chat_to_rdf_store.py.
+
 import argparse
 import asyncio
 import os

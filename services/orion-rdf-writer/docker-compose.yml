@@ -1,5 +1,5 @@
 # ───────────────────────────────────────────────────────────────
-# ✍️  Orion RDF Writer — Persistence Layer for GraphDB
+# ✍️  Orion RDF Writer — bus → triples → RDF store (GraphDB, Fuseki, …)
 # ───────────────────────────────────────────────────────────────
 
 services:
@@ -15,6 +15,7 @@ services:
       # Use the configurable port from the .env file
       - "${PORT}:${PORT}"
     volumes:
+      # Persistent host path for logs + dead-letter NDJSON (see RDF_WRITE_DEAD_LETTER_PATH).
       - /mnt/storage-lukewarm/rdf_logs:/app/logs
     environment:
       # --- Service Identity ---
@@ -69,6 +70,7 @@ services:
       - RDF_STORE_USER=${RDF_STORE_USER:-}
       - RDF_STORE_PASS=${RDF_STORE_PASS:-}
       - RDF_STORE_TIMEOUT_SEC=${RDF_STORE_TIMEOUT_SEC:-10.0}
+      - RDF_STORE_NORMALIZE_GRAPHDB_CONTEXT=${RDF_STORE_NORMALIZE_GRAPHDB_CONTEXT:-false}
       - RDF_WRITE_ASYNC_ENABLED=${RDF_WRITE_ASYNC_ENABLED:-true}
       - RDF_WRITE_QUEUE_MAXSIZE=${RDF_WRITE_QUEUE_MAXSIZE:-5000}
       - RDF_WRITE_WORKERS=${RDF_WRITE_WORKERS:-8}
@@ -79,7 +81,7 @@ services:
       - RDF_WRITE_RETRY_BASE_DELAY_SEC=${RDF_WRITE_RETRY_BASE_DELAY_SEC:-0.25}
       - RDF_WRITE_RETRY_MAX_DELAY_SEC=${RDF_WRITE_RETRY_MAX_DELAY_SEC:-5.0}
       - RDF_WRITE_DEAD_LETTER_ENABLED=${RDF_WRITE_DEAD_LETTER_ENABLED:-true}
-      - RDF_WRITE_DEAD_LETTER_PATH=${RDF_WRITE_DEAD_LETTER_PATH:-/tmp/orion-rdf-writer-deadletter.ndjson}
+      - RDF_WRITE_DEAD_LETTER_PATH=${RDF_WRITE_DEAD_LETTER_PATH:-/app/logs/orion-rdf-writer-deadletter.ndjson}
 
       # --- Runtime ---
       - LOG_LEVEL=${LOG_LEVEL}

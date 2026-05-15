@@ -1,0 +1,30 @@
+# ───────────────────────────────────────────────────────────────
+# Orion RDF Store — operator stack (Fuseki). Not the Python writer.
+# ───────────────────────────────────────────────────────────────
+
+networks:
+  app-net:
+    name: ${NET}
+    external: true
+
+services:
+  orion-athena-fuseki:
+    image: stain/jena-fuseki:latest
+    container_name: orion-athena-fuseki
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      - "${FUSEKI_PORT:-3030}:3030"
+    environment:
+      ADMIN_PASSWORD: ${FUSEKI_ADMIN_PASSWORD:-orion}
+      # stain/jena-fuseki documents JVM_ARGS (see Docker Hub / jena-docker Dockerfile).
+      JVM_ARGS: ${FUSEKI_JVM_ARGS:-}
+    volumes:
+      - ${FUSEKI_DATA_DIR:-/mnt/storage-lukewarm/rdf-store/fuseki}:/fuseki
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://127.0.0.1:3030/$$/ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s

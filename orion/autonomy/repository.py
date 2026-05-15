@@ -162,6 +162,7 @@ class GraphAutonomyRepository:
         goals_limit: int = 3,
         subject_max_workers: int | None = None,
         subquery_max_workers: int | None = None,
+        active_subqueries: tuple[str, ...] | None = None,
     ) -> None:
         self._endpoint = (endpoint or "").strip()
         self._timeout_sec = timeout_sec
@@ -178,6 +179,12 @@ class GraphAutonomyRepository:
             if subject_max_workers is not None
             else max(1, int(os.getenv("AUTONOMY_SUBJECT_MAX_WORKERS", "3")))
         )
+        _all_subq = ("identity", "drives", "goals")
+        if active_subqueries:
+            picked = tuple(sq for sq in _all_subq if sq in frozenset(active_subqueries))
+            self._active_subqueries: tuple[str, ...] = picked if picked else _all_subq
+        else:
+            self._active_subqueries = _all_subq
         self._chat_stance_short_circuit = str(os.getenv("AUTONOMY_CHAT_STANCE_SHORT_CIRCUIT", "true")).strip().lower() in {
             "1",
             "true",
@@ -392,11 +399,12 @@ LIMIT {self._goals_limit}
         failure_reason: str | None = None
         failure_type: str | None = None
         subquery_diagnostics: dict[str, dict[str, object]] = {}
-        subqueries = (
+        subqueries_all = (
             ("identity", self._fetch_identity),
             ("drives", self._fetch_drive_audit),
             ("goals", self._fetch_goals),
         )
+        subqueries = [pair for pair in subqueries_all if pair[0] in frozenset(self._active_subqueries)]
         subq_mode = "sequential" if self._subquery_max_workers <= 1 else "concurrent"
         logger.info(
             "autonomy_graph_subject_start subject=%s execution_mode=%s subquery_workers=%s correlation_id=%s",
@@ -668,6 +676,7 @@ def build_autonomy_repository(
     goals_limit: int = 3,
     subject_max_workers: int | None = None,
     subquery_max_workers: int | None = None,
+    active_subqueries: tuple[str, ...] | None = None,
 ) -> AutonomyRepository:
     local_repo = LocalAutonomyRepository()
     if backend == "local":
@@ -681,6 +690,7 @@ def build_autonomy_repository(
         goals_limit=goals_limit,
         subject_max_workers=subject_max_workers,
         subquery_max_workers=subquery_max_workers,
+        active_subqueries=active_subqueries,
     )
     if backend == "graph":
         return graph_repo

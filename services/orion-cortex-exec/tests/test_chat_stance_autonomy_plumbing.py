@@ -2,7 +2,17 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
 from app import chat_stance
+
+
+@pytest.fixture
+def enable_autonomy_graphdb(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gate + dummy endpoint so ``_load_autonomy_state`` exercises the graph path when repository is mocked."""
+    monkeypatch.setenv("AUTONOMY_GRAPH_BACKEND", "graphdb")
+    monkeypatch.setenv("GRAPHDB_URL", "http://graphdb.test:7200")
+    monkeypatch.setenv("GRAPHDB_REPO", "collapse")
 
 
 class _Lookup:
@@ -37,7 +47,7 @@ class _Repo:
         return _Status()
 
 
-def test_chat_stance_inputs_include_autonomy_summary_when_available(monkeypatch) -> None:
+def test_chat_stance_inputs_include_autonomy_summary_when_available(monkeypatch, enable_autonomy_graphdb) -> None:
     from orion.autonomy.models import AutonomyStateV1
 
     state = AutonomyStateV1(
@@ -61,7 +71,7 @@ def test_chat_stance_inputs_include_autonomy_summary_when_available(monkeypatch)
     assert "chat_autonomy_summary" in ctx
 
 
-def test_chat_stance_unavailable_autonomy_keeps_behavior_stable(monkeypatch) -> None:
+def test_chat_stance_unavailable_autonomy_keeps_behavior_stable(monkeypatch, enable_autonomy_graphdb) -> None:
     repo = _Repo({})
     monkeypatch.setattr(chat_stance, "build_autonomy_repository", lambda **_: repo)
 
@@ -73,7 +83,7 @@ def test_chat_stance_unavailable_autonomy_keeps_behavior_stable(monkeypatch) -> 
     assert fb.task_mode == "direct_response"
 
 
-def test_chat_stance_inputs_include_mutation_adaptation_context_from_metadata(monkeypatch) -> None:
+def test_chat_stance_inputs_include_mutation_adaptation_context_from_metadata(monkeypatch, enable_autonomy_graphdb) -> None:
     repo = _Repo({})
     monkeypatch.setattr(chat_stance, "build_autonomy_repository", lambda **_: repo)
     ctx = {
@@ -95,7 +105,7 @@ def test_chat_stance_inputs_include_mutation_adaptation_context_from_metadata(mo
     assert ctx["chat_mutation_cognition_context"]["live_ramp_active"] is True
 
 
-def test_chat_stance_autonomy_debug_contains_unavailable_reason(monkeypatch) -> None:
+def test_chat_stance_autonomy_debug_contains_unavailable_reason(monkeypatch, enable_autonomy_graphdb) -> None:
     monkeypatch.setenv("AUTONOMY_GRAPH_TIMEOUT_SEC", "4.5")
     monkeypatch.delenv("AUTONOMY_SUBJECT_MAX_WORKERS", raising=False)
     monkeypatch.setenv("AUTONOMY_SUBQUERY_MAX_WORKERS", "1")
@@ -127,7 +137,7 @@ def test_chat_stance_autonomy_debug_contains_unavailable_reason(monkeypatch) -> 
     assert "chat_autonomy_repository_status" in ctx
 
 
-def test_autonomy_lookup_turn_log_distinguishes_empty_and_unavailable(monkeypatch, caplog) -> None:
+def test_autonomy_lookup_turn_log_distinguishes(monkeypatch, enable_autonomy_graphdb, caplog) -> None:
     from orion.autonomy.models import AutonomyStateV1
 
     state = AutonomyStateV1(
@@ -212,6 +222,25 @@ def test_autonomy_graphdb_config_prefers_generic_vars(monkeypatch) -> None:
     assert cfg["user"] == "generic-user"
     assert cfg["password"] == "generic-pass"
     assert cfg["source"] == "generic_graphdb"
+
+
+def test_autonomy_graph_gate_off_skips_build_autonomy_repository(monkeypatch, caplog) -> None:
+    monkeypatch.delenv("AUTONOMY_GRAPH_BACKEND", raising=False)
+    monkeypatch.setenv("GRAPHDB_URL", "http://orion-athena-graphdb:7200")
+    monkeypatch.setenv("GRAPHDB_REPO", "collapse")
+    called = {"n": 0}
+
+    def _no_build(**_kw):
+        called["n"] += 1
+        raise AssertionError("unexpected build_autonomy_repository")
+
+    monkeypatch.setattr(chat_stance, "build_autonomy_repository", _no_build)
+    caplog.set_level(logging.INFO)
+    chat_stance.build_chat_stance_inputs(
+        {"verb": "chat_quick", "mode": "brain", "user_message": "ping", "options": {}}
+    )
+    assert called["n"] == 0
+    assert "autonomy_graph_backend_disabled" in caplog.text
 
 
 def test_autonomy_timeout_prefers_autonomy_specific_env(monkeypatch) -> None:

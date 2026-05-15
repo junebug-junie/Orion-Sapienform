@@ -3,10 +3,10 @@
 Wraps ``build_autonomy_repository`` + ``map_autonomy_artifacts_to_substrate``
 so that the autonomy producer lane can be registered in ProducerRegistryV1.
 
-The adapter builds the autonomy repository using the same env config as the
-existing ``_load_autonomy_state`` path in chat_stance.py, queries all three
-subjects (orion, relationship, juniper), maps each available ``AutonomyStateV1``
-into substrate nodes, and returns a single combined ``SubstrateGraphRecordV1``.
+When ``AUTONOMY_GRAPH_BACKEND=graphdb``, the adapter resolves SPARQL endpoint
+from env, applies quick-lane bounds for fast chat verbs, and maps each available
+``AutonomyStateV1`` into substrate nodes. When the gate is off (V1 default),
+returns ``None`` without calling GraphDB.
 """
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ from orion.substrate.adapters._common import make_temporal
 logger = logging.getLogger("orion.substrate.relational.adapters.autonomy_ctx")
 
 _TIER_RANK = 2  # graphdb_durable
-_SUBJECTS = ("orion", "relationship", "juniper")
 
 
 def _env_float(name: str, default: float) -> float:
@@ -177,42 +176,51 @@ def map_autonomy_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV1
         return None
 
     try:
+        from orion.autonomy.graph_gate import (
+            is_quick_autonomy_graph_lane,
+            log_autonomy_graph_backend_decision,
+            resolve_autonomy_graph_read_plan,
+        )
         from orion.autonomy.repository import build_autonomy_repository  # noqa: PLC0415 — lazy to avoid spacy at import time
     except ImportError as exc:
         logger.debug("autonomy_ctx_adapter_import_failed error=%s", exc)
         return None
 
+    mode = str(ctx.get("mode") or "").strip().lower()
+    plan = resolve_autonomy_graph_read_plan(ctx)
+    log_autonomy_graph_backend_decision(plan=plan, consumer="autonomy_ctx_adapter", verb=verb, mode=mode)
+
+    if plan.mode != "graphdb" or not plan.endpoint:
+        reason = plan.skipped_reason or "backend_disabled"
+        logger.info(
+            "autonomy_graph_backend_disabled consumer=autonomy_ctx_adapter reason=%s fallback=identity_yaml",
+            reason,
+        )
+        return None
+
     try:
-        endpoint_raw = (
-            os.getenv("GRAPHDB_QUERY_ENDPOINT")
-            or os.getenv("GRAPHDB_URL")
-            or os.getenv("CONCEPT_PROFILE_GRAPHDB_ENDPOINT")
-            or os.getenv("CONCEPT_PROFILE_GRAPHDB_URL")
-            or ""
-        ).strip()
-        repo = (os.getenv("GRAPHDB_REPO") or os.getenv("CONCEPT_PROFILE_GRAPHDB_REPO") or "collapse").strip() or "collapse"
-        user = (os.getenv("GRAPHDB_USER") or os.getenv("CONCEPT_PROFILE_GRAPHDB_USER") or "").strip() or None
-        password = (os.getenv("GRAPHDB_PASS") or os.getenv("CONCEPT_PROFILE_GRAPHDB_PASS") or "").strip() or None
-
-        endpoint = endpoint_raw
-        if endpoint and endpoint.rstrip("/").endswith("/repositories"):
-            endpoint = f"{endpoint.rstrip('/')}/{repo}"
-        elif endpoint and "/repositories/" not in endpoint:
-            endpoint = f"{endpoint.rstrip('/')}/repositories/{repo}"
-
         backend = (os.getenv("AUTONOMY_REPOSITORY_BACKEND") or "graph").strip().lower()
         if backend not in {"graph", "local", "shadow"}:
             backend = "graph"
 
+        subjects = list(plan.subjects)
+        if is_quick_autonomy_graph_lane(ctx):
+            subject_workers = max(1, min(_env_int("AUTONOMY_SUBJECT_MAX_WORKERS", 3), len(subjects) or 1))
+            subquery_workers = 1
+        else:
+            subject_workers = max(1, _env_int("AUTONOMY_SUBJECT_MAX_WORKERS", 3))
+            subquery_workers = max(1, min(3, _env_int("AUTONOMY_SUBQUERY_MAX_WORKERS", 1)))
+
         repository = build_autonomy_repository(
             backend=backend,
-            endpoint=endpoint or None,
-            timeout_sec=max(0.25, _env_float("AUTONOMY_GRAPH_TIMEOUT_SEC", _env_float("GRAPHDB_TIMEOUT_SEC", 4.5))),
-            user=user,
-            password=password,
+            endpoint=plan.endpoint,
+            timeout_sec=max(0.25, plan.timeout_sec),
+            user=plan.user,
+            password=plan.password,
             goals_limit=_env_int("AUTONOMY_GOALS_LIMIT", 3),
-            subject_max_workers=max(1, _env_int("AUTONOMY_SUBJECT_MAX_WORKERS", 3)),
-            subquery_max_workers=max(1, min(3, _env_int("AUTONOMY_SUBQUERY_MAX_WORKERS", 1))),
+            subject_max_workers=subject_workers,
+            subquery_max_workers=subquery_workers,
+            active_subqueries=plan.active_subqueries,
         )
     except Exception as exc:
         logger.debug("autonomy_ctx_adapter_init_failed error=%s", exc)
@@ -228,7 +236,7 @@ def map_autonomy_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV1
     }
 
     try:
-        lookups = repository.list_latest(list(_SUBJECTS), observer=observer)
+        lookups = repository.list_latest(subjects, observer=observer)
     except Exception as exc:
         logger.debug("autonomy_ctx_adapter_fetch_failed error=%s", exc)
         return None

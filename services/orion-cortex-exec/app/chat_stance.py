@@ -9,10 +9,20 @@ import time
 from typing import Any, Dict, Iterable, List
 
 from orion.autonomy.fanout_policy import autonomy_subject_fanout_from_runtime_ctx
+from orion.autonomy.graph_gate import (
+    is_quick_autonomy_graph_lane,
+    log_autonomy_graph_backend_decision,
+    resolve_autonomy_graph_read_plan,
+)
 from orion.autonomy.models import AutonomyEvidenceRefV1
 from orion.autonomy.reducer import AutonomyReducerInputV1, reduce_autonomy_state
 from orion.autonomy.summary import summarize_autonomy_state
-from orion.autonomy.repository import SUBJECT_BINDINGS, build_autonomy_repository
+from orion.autonomy.repository import (
+    AutonomyLookupV1,
+    LocalAutonomyRepository,
+    SUBJECT_BINDINGS,
+    build_autonomy_repository,
+)
 from orion.core.schemas.reasoning_io import ReasoningWriteContextV1, ReasoningWriteRequestV1
 from orion.core.schemas.reasoning_summary import ReasoningSummaryRequestV1, ReasoningSummaryV1
 from orion.reasoning import InMemoryReasoningRepository, ReasoningSummaryCompiler
@@ -1117,25 +1127,14 @@ def _reflective_summary(ctx: Dict[str, Any]) -> dict[str, list[str]]:
     }
 
 
-def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
-    started_at = time.perf_counter()
-    graphdb_cfg = resolve_autonomy_graphdb_config()
-    endpoint = graphdb_cfg["endpoint"]
-
-    backend = (os.getenv("AUTONOMY_REPOSITORY_BACKEND") or "graph").strip().lower()
-    if backend not in {"graph", "local", "shadow"}:
-        backend = "graph"
-
-    repository = build_autonomy_repository(
-        backend=backend,
-        endpoint=endpoint,
-        timeout_sec=resolve_autonomy_graph_timeout_sec(),
-        user=graphdb_cfg["user"],
-        password=graphdb_cfg["password"],
-        goals_limit=_env_int("AUTONOMY_GOALS_LIMIT", 3),
-        subject_max_workers=resolve_autonomy_subject_max_workers(),
-        subquery_max_workers=resolve_autonomy_subquery_max_workers(),
-    )
+def _load_autonomy_state_fallback_local(
+    ctx: Dict[str, Any],
+    plan: Any,
+    graphdb_cfg: dict[str, Any],
+    started_at: float,
+) -> Dict[str, Any]:
+    """No GraphDB HTTP: empty local lookups + YAML-friendly autonomy summary."""
+    repository = LocalAutonomyRepository()
     subjects = ["orion", "relationship", "juniper"]
     observer = {
         "consumer": "chat_stance",
@@ -1145,6 +1144,171 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
     }
     lookups = repository.list_latest(subjects, observer=observer)
     by_subject = {lookup.subject: lookup for lookup in lookups}
+    preferred = by_subject.get("orion")
+    if preferred is None or preferred.availability != "available":
+        preferred = by_subject.get("relationship")
+    selected_subject = preferred.subject if preferred is not None else None
+    partial_used = False
+
+    summary_base = summarize_autonomy_state(None)
+    hazard = "autonomy_graph:v1_fallback_identity_yaml"
+    hazards = list(summary_base.response_hazards or [])
+    if hazard not in hazards:
+        hazards.append(hazard)
+    summary = summary_base.model_copy(update={"response_hazards": hazards})
+
+    debug = {
+        subject: {
+            "availability": by_subject.get(subject).availability if by_subject.get(subject) else "empty",
+            "present": bool(by_subject.get(subject) and by_subject.get(subject).state is not None),
+            "unavailable_reason": by_subject.get(subject).unavailable_reason if by_subject.get(subject) else None,
+            "subqueries": (by_subject.get(subject).subquery_diagnostics or {}) if by_subject.get(subject) else {},
+        }
+        for subject in SUBJECT_BINDINGS
+    }
+    repo_status = repository.status()
+    skipped = plan.skipped_reason or "backend_disabled"
+    debug["_runtime"] = {
+        "backend": repo_status.backend,
+        "selected_subject": selected_subject,
+        "endpoint_repo": graphdb_cfg.get("endpoint") or "graphdb:unconfigured",
+        "timeout_sec": 0.0,
+        "subject_max_workers": resolve_autonomy_subject_max_workers(),
+        "subquery_max_workers": resolve_autonomy_subquery_max_workers(),
+        "repository_status": {
+            "source_available": repo_status.source_available,
+            "source_path": repo_status.source_path,
+        },
+        "autonomy_graph_backend": "disabled",
+        "autonomy_graph_cutover_mode": "v1_safe",
+        "autonomy_graph_skipped_reason": skipped,
+        "fallback": "identity_yaml",
+    }
+    exported_keys = sorted(["autonomy_backend", "autonomy_debug", "autonomy_selected_subject", "autonomy_summary"])
+    logger.info(
+        "autonomy_lookup_turn %s",
+        json.dumps(
+            {
+                "backend": repo_status.backend,
+                "source_path": repo_status.source_path,
+                "source_available": repo_status.source_available,
+                "config_source": graphdb_cfg["source"],
+                "repo": graphdb_cfg["repo"],
+                "endpoint_repo": graphdb_cfg.get("endpoint") or "graphdb:unconfigured",
+                "timeout_sec": 0.0,
+                "subject_max_workers": resolve_autonomy_subject_max_workers(),
+                "subquery_max_workers": resolve_autonomy_subquery_max_workers(),
+                "subjects_requested": subjects,
+                "states_returned": sum(1 for item in lookups if item.availability == "available"),
+                "availability_counts": {
+                    "available": sum(1 for item in lookups if item.availability == "available"),
+                    "empty": sum(1 for item in lookups if item.availability == "empty"),
+                    "unavailable": sum(1 for item in lookups if item.availability == "unavailable"),
+                    "partial": 0,
+                },
+                "unavailable_reasons": sorted(
+                    {
+                        item.unavailable_reason
+                        for item in lookups
+                        if item.availability == "unavailable" and item.unavailable_reason
+                    }
+                ),
+                "selected_subject": selected_subject,
+                "selected_subject_partial": partial_used,
+                "selected_subject_availability": preferred.availability if preferred is not None else "empty",
+                "selected_subject_unavailable_reason": preferred.unavailable_reason if preferred is not None else None,
+                "mapped_state": bool(preferred and preferred.state is not None),
+                "summary_present": bool(summary and summary.stance_hint),
+                "elapsed_ms_before_llm_emit": round((time.perf_counter() - started_at) * 1000.0, 2),
+                "subject_availability": {
+                    subject: {
+                        "availability": by_subject.get(subject).availability if by_subject.get(subject) else "empty",
+                        "unavailable_reason": by_subject.get(subject).unavailable_reason if by_subject.get(subject) else None,
+                    }
+                    for subject in subjects
+                },
+                "exported_metadata_keys": exported_keys,
+                "debug": debug,
+                "autonomy_graph_backend": "disabled",
+                "autonomy_graph_cutover_mode": "v1_safe",
+                "autonomy_graph_skipped_reason": skipped,
+            },
+            sort_keys=True,
+        ),
+    )
+    return {
+        "lookups": lookups,
+        "state": None,
+        "backend": repo_status.backend,
+        "selected_subject": selected_subject,
+        "repository_status": {
+            "backend": repo_status.backend,
+            "source_path": repo_status.source_path,
+            "source_available": repo_status.source_available,
+        },
+        "summary": summary,
+        "debug": debug,
+    }
+
+
+def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    started_at = time.perf_counter()
+    graphdb_cfg = resolve_autonomy_graphdb_config()
+    verb = str(ctx.get("verb") or "").strip().lower()
+    mode = str(ctx.get("mode") or "").strip().lower()
+    plan = resolve_autonomy_graph_read_plan(ctx)
+
+    log_autonomy_graph_backend_decision(plan=plan, consumer="chat_stance", verb=verb, mode=mode)
+
+    if plan.mode != "graphdb":
+        reason = plan.skipped_reason or "backend_disabled"
+        logger.info(
+            "autonomy_graph_backend_disabled consumer=chat_stance reason=%s fallback=identity_yaml",
+            reason,
+        )
+        logger.info(
+            "autonomy_graph_degraded consumer=chat_stance verb=%s reason=%s fallback=identity_yaml",
+            verb,
+            reason,
+        )
+        return _load_autonomy_state_fallback_local(ctx, plan, graphdb_cfg, started_at)
+
+    endpoint = plan.endpoint
+    backend = (os.getenv("AUTONOMY_REPOSITORY_BACKEND") or "graph").strip().lower()
+    if backend not in {"graph", "local", "shadow"}:
+        backend = "graph"
+
+    subjects = list(plan.subjects)
+    if is_quick_autonomy_graph_lane(ctx):
+        subject_workers = max(1, min(resolve_autonomy_subject_max_workers(), len(subjects) or 1))
+        subquery_workers = 1
+    else:
+        subject_workers = resolve_autonomy_subject_max_workers()
+        subquery_workers = resolve_autonomy_subquery_max_workers()
+    timeout_used = plan.timeout_sec
+
+    repository = build_autonomy_repository(
+        backend=backend,
+        endpoint=endpoint,
+        timeout_sec=timeout_used,
+        user=plan.user,
+        password=plan.password,
+        goals_limit=_env_int("AUTONOMY_GOALS_LIMIT", 3),
+        subject_max_workers=subject_workers,
+        subquery_max_workers=subquery_workers,
+        active_subqueries=plan.active_subqueries,
+    )
+    observer = {
+        "consumer": "chat_stance",
+        "correlation_id": str(ctx.get("correlation_id") or ctx.get("trace_id") or ""),
+        "session_id": str(ctx.get("session_id") or ""),
+        "autonomy_subject_fanout": autonomy_subject_fanout_from_runtime_ctx(ctx),
+    }
+    lookups = repository.list_latest(subjects, observer=observer)
+    by_subject = {lookup.subject: lookup for lookup in lookups}
+    for subject in SUBJECT_BINDINGS:
+        if subject not in by_subject:
+            by_subject[subject] = AutonomyLookupV1(subject=subject, state=None, availability="empty")
     preferred = by_subject.get("orion")
     if preferred is None or preferred.availability != "available":
         preferred = by_subject.get("relationship")
@@ -1159,6 +1323,21 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     summary = summarize_autonomy_state(preferred.state if preferred and preferred.availability == "available" else None)
+    if preferred and preferred.availability == "unavailable":
+        ur = (preferred.unavailable_reason or "").lower()
+        if ur in {"timeout", "connection_error"}:
+            hazard = "autonomy_graph:v1_fallback_identity_yaml"
+            hazards = list(summary.response_hazards or [])
+            if hazard not in hazards:
+                hazards.append(hazard)
+            summary = summary.model_copy(update={"response_hazards": hazards})
+            logger.info(
+                "autonomy_graph_degraded consumer=chat_stance verb=%s reason=%s elapsed_ms=%s fallback=identity_yaml",
+                verb,
+                ur,
+                round((time.perf_counter() - started_at) * 1000.0, 2),
+            )
+
     debug = {
         subject: {
             "availability": by_subject.get(subject).availability if by_subject.get(subject) else "empty",
@@ -1170,16 +1349,20 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
     }
     repo_status = repository.status()
     debug["_runtime"] = {
-            "backend": repo_status.backend,
-            "selected_subject": selected_subject,
-            "endpoint_repo": endpoint or "graphdb:unconfigured",
-            "timeout_sec": resolve_autonomy_graph_timeout_sec(),
-            "subject_max_workers": resolve_autonomy_subject_max_workers(),
-            "subquery_max_workers": resolve_autonomy_subquery_max_workers(),
-            "repository_status": {
-                "source_available": repo_status.source_available,
-                "source_path": repo_status.source_path,
+        "backend": repo_status.backend,
+        "selected_subject": selected_subject,
+        "endpoint_repo": endpoint or "graphdb:unconfigured",
+        "timeout_sec": timeout_used,
+        "subject_max_workers": subject_workers,
+        "subquery_max_workers": subquery_workers,
+        "repository_status": {
+            "source_available": repo_status.source_available,
+            "source_path": repo_status.source_path,
         },
+        "autonomy_graph_backend": "graphdb",
+        "autonomy_graph_cutover_mode": "v1_safe",
+        "autonomy_graph_skipped_reason": None,
+        "fallback": None,
     }
     exported_keys = sorted(["autonomy_backend", "autonomy_debug", "autonomy_selected_subject", "autonomy_summary"])
     if preferred and preferred.availability == "available":
@@ -1194,9 +1377,9 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
                 "config_source": graphdb_cfg["source"],
                 "repo": graphdb_cfg["repo"],
                 "endpoint_repo": endpoint or "graphdb:unconfigured",
-                "timeout_sec": resolve_autonomy_graph_timeout_sec(),
-                "subject_max_workers": resolve_autonomy_subject_max_workers(),
-                "subquery_max_workers": resolve_autonomy_subquery_max_workers(),
+                "timeout_sec": timeout_used,
+                "subject_max_workers": subject_workers,
+                "subquery_max_workers": subquery_workers,
                 "subjects_requested": subjects,
                 "states_returned": sum(1 for item in lookups if item.availability == "available"),
                 "availability_counts": {
@@ -1232,10 +1415,13 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
                         "availability": by_subject.get(subject).availability if by_subject.get(subject) else "empty",
                         "unavailable_reason": by_subject.get(subject).unavailable_reason if by_subject.get(subject) else None,
                     }
-                    for subject in subjects
+                    for subject in ["orion", "relationship", "juniper"]
                 },
                 "exported_metadata_keys": exported_keys,
                 "debug": debug,
+                "autonomy_graph_backend": "graphdb",
+                "autonomy_graph_cutover_mode": "v1_safe",
+                "autonomy_graph_skipped_reason": None,
             },
             sort_keys=True,
         ),

@@ -18,10 +18,21 @@ BOOT_ID = str(uuid.uuid4())
 @app.on_event("startup")
 def startup_event():
     """
-    Waits for GraphDB to be ready, ensures the repository exists,
-    and starts the bus listener in a background thread.
+    When ``GDB_CLIENT_ENABLED`` is true: wait for GraphDB, ensure the repository exists,
+    and start the bus listener in a background thread.
+
+    Default (V1 cutover): disabled — no GraphDB waits and no listener (canonical RDF writes
+    go through ``orion-rdf-writer``).
     """
     logger.info("🚀 Starting %s (%s)", settings.SERVICE_NAME, settings.SERVICE_VERSION)
+
+    if not settings.GDB_CLIENT_ENABLED:
+        logger.info(
+            "gdb_client_disabled reason=rdf_store_v1_cutover enable_with=GDB_CLIENT_ENABLED=true",
+        )
+        return
+
+    logger.warning("gdb_client_legacy_enabled warning=direct_graphdb_writer_duplicate_risk")
 
     wait_for_graphdb()
     ensure_repo_exists()
@@ -92,6 +103,7 @@ def health():
     return {
         "service": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,
+        "enabled": settings.GDB_CLIENT_ENABLED,
         "graphdb_repo": settings.GRAPHDB_REPO,
         "bus_enabled": settings.ORION_BUS_ENABLED,
         "bus_channels": [

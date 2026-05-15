@@ -227,6 +227,24 @@ async def init_rdf_write_pipeline() -> None:
         _write_queue = None
         _inflight_sem = None
 
+    assert _store is not None
+    try:
+        h = await _store.health()
+        graph_url = h.get("graph_store_url") or h.get("endpoint")
+        logger.info(
+            "rdf_store_backend_selected backend=%s graph_store_url=%s dataset=%s",
+            (settings.RDF_STORE_BACKEND or "").strip().lower(),
+            _strip_credentials(str(graph_url)) if graph_url else "",
+            settings.RDF_STORE_DATASET,
+        )
+    except Exception as exc:
+        logger.warning(
+            "rdf_store_backend_selected backend=%s dataset=%s (health snapshot failed: %s)",
+            (settings.RDF_STORE_BACKEND or "").strip().lower(),
+            settings.RDF_STORE_DATASET,
+            exc,
+        )
+
 
 async def shutdown_rdf_write_pipeline(*, drain_timeout_sec: float = 8.0) -> None:
     global _http_client, _store, _write_queue, _worker_tasks, _inflight_sem

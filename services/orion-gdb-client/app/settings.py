@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, field_validator
 
 
@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     Orion GDB Client configuration.
     Handles GraphDB connectivity, Redis bus, and runtime metadata.
     """
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     # === Core Identity ===
     SERVICE_NAME: str = Field(default="gdb-client", env="SERVICE_NAME")
@@ -36,16 +38,20 @@ class Settings(BaseSettings):
     # === Runtime ===
     LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
 
+    # RDF Store V1: keep this service inert unless intentionally enabling the legacy GraphDB writer.
+    GDB_CLIENT_ENABLED: bool = Field(default=False, env="GDB_CLIENT_ENABLED")
+
     @field_validator("ORION_BUS_ENABLED", mode="before")
     def parse_bool(cls, v):
         if isinstance(v, str):
             return v.lower() in ("true", "1", "yes", "on")
         return bool(v)
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    @field_validator("GDB_CLIENT_ENABLED", mode="before")
+    def parse_gdb_client_enabled(cls, v):
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes", "on")
+        return bool(v)
 
 
 settings = Settings()
-

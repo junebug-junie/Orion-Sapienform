@@ -26,8 +26,8 @@ from orion.schemas.cortex.schemas import PlanExecutionRequest, PlanExecutionResu
 from orion.schemas.platform import CoreEventV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.metacognitive_trace import MetacognitiveTraceEnvelope, MetacognitiveTraceV1
-from .router import PlanRouter
 from .settings import settings
+from .router import PlanRouter
 from .dream_publish import build_dream_publish_envelope
 from .chat_stance import resolve_autonomy_graphdb_config
 from .core_event_cache import get_core_event_cache

@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, List
 
 from orion.autonomy.fanout_policy import autonomy_subject_fanout_from_runtime_ctx
 from orion.autonomy.graph_gate import (
+    AutonomyGraphReadPlan,
     is_quick_autonomy_graph_lane,
     log_autonomy_graph_backend_decision,
     resolve_autonomy_graph_read_plan,
@@ -1129,7 +1130,7 @@ def _reflective_summary(ctx: Dict[str, Any]) -> dict[str, list[str]]:
 
 def _load_autonomy_state_fallback_local(
     ctx: Dict[str, Any],
-    plan: Any,
+    plan: AutonomyGraphReadPlan,
     graphdb_cfg: dict[str, Any],
     started_at: float,
 ) -> Dict[str, Any]:
@@ -1168,6 +1169,8 @@ def _load_autonomy_state_fallback_local(
     }
     repo_status = repository.status()
     skipped = plan.skipped_reason or "backend_disabled"
+    degraded_explicit = plan.mode == "graphdb_degraded"
+    ag_backend = "graphdb" if degraded_explicit else "disabled"
     debug["_runtime"] = {
         "backend": repo_status.backend,
         "selected_subject": selected_subject,
@@ -1179,7 +1182,8 @@ def _load_autonomy_state_fallback_local(
             "source_available": repo_status.source_available,
             "source_path": repo_status.source_path,
         },
-        "autonomy_graph_backend": "disabled",
+        "autonomy_graph_backend": ag_backend,
+        "autonomy_graph_explicit_backend": plan.explicit_backend,
         "autonomy_graph_cutover_mode": "v1_safe",
         "autonomy_graph_skipped_reason": skipped,
         "fallback": "identity_yaml",
@@ -1229,7 +1233,8 @@ def _load_autonomy_state_fallback_local(
                 },
                 "exported_metadata_keys": exported_keys,
                 "debug": debug,
-                "autonomy_graph_backend": "disabled",
+                "autonomy_graph_backend": ag_backend,
+                "autonomy_graph_explicit_backend": plan.explicit_backend,
                 "autonomy_graph_cutover_mode": "v1_safe",
                 "autonomy_graph_skipped_reason": skipped,
             },
@@ -1262,15 +1267,20 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
 
     if plan.mode != "graphdb":
         reason = plan.skipped_reason or "backend_disabled"
-        logger.info(
-            "autonomy_graph_backend_disabled consumer=chat_stance reason=%s fallback=identity_yaml",
-            reason,
-        )
-        logger.info(
-            "autonomy_graph_degraded consumer=chat_stance verb=%s reason=%s fallback=identity_yaml",
-            verb,
-            reason,
-        )
+        if plan.mode == "graphdb_degraded":
+            logger.info(
+                "autonomy_graph_backend_degraded consumer=chat_stance verb=%s mode=%s explicit=true reason=%s fallback=identity_yaml",
+                verb,
+                mode,
+                reason,
+            )
+        else:
+            logger.info(
+                "autonomy_graph_backend_blocked consumer=chat_stance verb=%s mode=%s reason=%s fallback=identity_yaml",
+                verb,
+                mode,
+                reason,
+            )
         return _load_autonomy_state_fallback_local(ctx, plan, graphdb_cfg, started_at)
 
     endpoint = plan.endpoint

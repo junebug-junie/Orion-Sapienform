@@ -192,10 +192,18 @@ def map_autonomy_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV1
 
     if plan.mode != "graphdb" or not plan.endpoint:
         reason = plan.skipped_reason or "backend_disabled"
-        logger.info(
-            "autonomy_graph_backend_disabled consumer=autonomy_ctx_adapter reason=%s fallback=identity_yaml",
-            reason,
-        )
+        if plan.mode == "graphdb_degraded":
+            logger.info(
+                "autonomy_graph_backend_degraded consumer=autonomy_ctx_adapter verb=%s explicit=true reason=%s fallback=skip_adapter",
+                verb,
+                reason,
+            )
+        else:
+            logger.info(
+                "autonomy_graph_backend_blocked consumer=autonomy_ctx_adapter verb=%s reason=%s fallback=skip_adapter",
+                verb,
+                reason,
+            )
         return None
 
     try:

@@ -240,7 +240,30 @@ def test_autonomy_graph_gate_off_skips_build_autonomy_repository(monkeypatch, ca
         {"verb": "chat_quick", "mode": "brain", "user_message": "ping", "options": {}}
     )
     assert called["n"] == 0
-    assert "autonomy_graph_backend_disabled" in caplog.text
+    assert "autonomy_graph_backend_blocked" in caplog.text
+
+
+def test_explicit_graphdb_without_endpoint_logs_degraded_not_blocked(monkeypatch, caplog) -> None:
+    monkeypatch.setenv("AUTONOMY_GRAPH_BACKEND", "graphdb")
+    for key in (
+        "GRAPHDB_QUERY_ENDPOINT",
+        "GRAPHDB_URL",
+        "CONCEPT_PROFILE_GRAPHDB_ENDPOINT",
+        "CONCEPT_PROFILE_GRAPHDB_URL",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    called = {"n": 0}
+
+    def _no_build(**_kw):
+        called["n"] += 1
+        raise AssertionError("unexpected build_autonomy_repository")
+
+    monkeypatch.setattr(chat_stance, "build_autonomy_repository", _no_build)
+    caplog.set_level(logging.INFO)
+    chat_stance.build_chat_stance_inputs({"verb": "chat_quick", "mode": "brain", "user_message": "ping", "options": {}})
+    assert called["n"] == 0
+    assert "autonomy_graph_backend_degraded" in caplog.text
+    assert "autonomy_graph_backend_blocked" not in caplog.text
 
 
 def test_autonomy_timeout_prefers_autonomy_specific_env(monkeypatch) -> None:

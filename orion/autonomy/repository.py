@@ -185,6 +185,7 @@ class GraphAutonomyRepository:
             self._active_subqueries: tuple[str, ...] = picked if picked else _all_subq
         else:
             self._active_subqueries = _all_subq
+        self._active_subqueries_set: frozenset[str] = frozenset(self._active_subqueries)
         self._chat_stance_short_circuit = str(os.getenv("AUTONOMY_CHAT_STANCE_SHORT_CIRCUIT", "true")).strip().lower() in {
             "1",
             "true",
@@ -404,7 +405,7 @@ LIMIT {self._goals_limit}
             ("drives", self._fetch_drive_audit),
             ("goals", self._fetch_goals),
         )
-        subqueries = [pair for pair in subqueries_all if pair[0] in frozenset(self._active_subqueries)]
+        subqueries = [pair for pair in subqueries_all if pair[0] in self._active_subqueries_set]
         subq_mode = "sequential" if self._subquery_max_workers <= 1 else "concurrent"
         logger.info(
             "autonomy_graph_subject_start subject=%s execution_mode=%s subquery_workers=%s correlation_id=%s",

@@ -1,6 +1,7 @@
 # services/orion-recall/app/settings.py
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
@@ -132,7 +133,7 @@ class Settings(BaseSettings):
     VECTOR_DB_PORT: int = Field(default=8000, validation_alias=AliasChoices("VECTOR_DB_PORT"))
     VECTOR_DB_COLLECTION: str = Field(default="orion_main_store", validation_alias=AliasChoices("VECTOR_DB_COLLECTION"))
 
-    GRAPHDB_URL: str = Field(default="http://orion-athena-graphdb:7200", validation_alias=AliasChoices("GRAPHDB_URL"))
+    GRAPHDB_URL: str = Field(default="", validation_alias=AliasChoices("GRAPHDB_URL"))
     GRAPHDB_REPO: str = Field(default="collapse", validation_alias=AliasChoices("GRAPHDB_REPO"))
     GRAPHDB_USER: str = Field(default="admin", validation_alias=AliasChoices("GRAPHDB_USER"))
     GRAPHDB_PASS: str = Field(default="admin", validation_alias=AliasChoices("GRAPHDB_PASS"))
@@ -182,6 +183,7 @@ class Settings(BaseSettings):
 
     # ── RDF / GraphDB (recall-specific) ───────────────────────────────
     RECALL_RDF_ENDPOINT_URL: Optional[str] = Field(default=None, validation_alias=AliasChoices("RECALL_RDF_ENDPOINT_URL"))
+    RECALL_RDF_QUERY_URL: Optional[str] = Field(default=None, validation_alias=AliasChoices("RECALL_RDF_QUERY_URL"))
     RECALL_RDF_TIMEOUT_SEC: float = Field(default=5.0, validation_alias=AliasChoices("RECALL_RDF_TIMEOUT_SEC"))
     RECALL_RDF_USER: str = Field(default="admin", validation_alias=AliasChoices("RECALL_RDF_USER", "GRAPHDB_USER"))
     RECALL_RDF_PASS: str = Field(default="admin", validation_alias=AliasChoices("RECALL_RDF_PASS", "GRAPHDB_PASS"))
@@ -232,6 +234,7 @@ class Settings(BaseSettings):
         "RECALL_VECTOR_COLLECTIONS",
         "RECALL_VECTOR_EMBEDDING_URL",
         "RECALL_RDF_ENDPOINT_URL",
+        "RECALL_RDF_QUERY_URL",
         mode="before",
     )
     @classmethod
@@ -258,10 +261,20 @@ class Settings(BaseSettings):
                 self.RECALL_SQL_TIMELINE_TABLE == "collapse_mirror"
             )
 
-        # If endpoint override isn't set, build from GraphDB URL + repo
+        if not self.RECALL_RDF_ENDPOINT_URL and self.RECALL_RDF_QUERY_URL:
+            self.RECALL_RDF_ENDPOINT_URL = str(self.RECALL_RDF_QUERY_URL).strip()
+
+        # RDF query endpoint: explicit recall URL, RECALL_RDF_QUERY_URL, RDF_STORE_QUERY_URL, or legacy GraphDB
+        # only when GRAPH_BACKEND=graphdb (never implicit GraphDB from GRAPHDB_URL alone).
         if not self.RECALL_RDF_ENDPOINT_URL:
-            base = self.GRAPHDB_URL.rstrip("/")
-            self.RECALL_RDF_ENDPOINT_URL = f"{base}/repositories/{self.GRAPHDB_REPO}"
+            q = (self.RECALL_RDF_QUERY_URL or "").strip()
+            if not q:
+                q = (os.getenv("RDF_STORE_QUERY_URL") or "").strip()
+            if q:
+                self.RECALL_RDF_ENDPOINT_URL = q
+            elif (os.getenv("GRAPH_BACKEND") or "").strip().lower() == "graphdb" and (self.GRAPHDB_URL or "").strip():
+                base = self.GRAPHDB_URL.rstrip("/")
+                self.RECALL_RDF_ENDPOINT_URL = f"{base}/repositories/{self.GRAPHDB_REPO}"
 
         return self
 

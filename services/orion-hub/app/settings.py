@@ -270,6 +270,12 @@ class Settings(BaseSettings):
     )
     SUBSTRATE_AUTONOMY_INTERVAL_SEC: float = Field(default=30.0, alias="SUBSTRATE_AUTONOMY_INTERVAL_SEC")
 
+    MEMORY_GRAPH_APPROVAL_BACKEND: str = Field(default="auto", alias="MEMORY_GRAPH_APPROVAL_BACKEND")
+    RDF_STORE_GRAPH_STORE_URL: str = Field(default="", alias="RDF_STORE_GRAPH_STORE_URL")
+    RDF_STORE_UPDATE_URL: str = Field(default="", alias="RDF_STORE_UPDATE_URL")
+    RDF_STORE_USER: str = Field(default="", alias="RDF_STORE_USER")
+    RDF_STORE_PASS: str = Field(default="", alias="RDF_STORE_PASS")
+
     # --- Memory graph annotator (GraphDB + dual-write) ---
     GRAPHDB_URL: str = Field(default="", alias="GRAPHDB_URL")
     GRAPHDB_REPO: str = Field(default="collapse", alias="GRAPHDB_REPO")

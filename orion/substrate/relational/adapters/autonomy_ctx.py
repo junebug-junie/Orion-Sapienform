@@ -3,10 +3,10 @@
 Wraps ``build_autonomy_repository`` + ``map_autonomy_artifacts_to_substrate``
 so that the autonomy producer lane can be registered in ProducerRegistryV1.
 
-When ``AUTONOMY_GRAPH_BACKEND=graphdb``, the adapter resolves SPARQL endpoint
+When ``AUTONOMY_GRAPH_BACKEND=graphdb`` or SPARQL/Fuseki endpoints resolve, the adapter resolves SPARQL endpoint
 from env, applies quick-lane bounds for fast chat verbs, and maps each available
 ``AutonomyStateV1`` into substrate nodes. When the gate is off (V1 default),
-returns ``None`` without calling GraphDB.
+returns ``None`` without calling the graph endpoint.
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ def _make_prov(*, subject: str) -> SubstrateProvenanceV1:
     return SubstrateProvenanceV1(
         authority="local_inferred",
         source_kind="autonomy.state",
-        source_channel="graphdb.sparql",
+        source_channel="sparql.graph",
         producer="autonomy_ctx_adapter",
         tier_rank=_TIER_RANK,
         evidence_refs=[f"autonomy:subject:{subject}"],
@@ -190,11 +190,17 @@ def map_autonomy_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV1
     plan = resolve_autonomy_graph_read_plan(ctx)
     log_autonomy_graph_backend_decision(plan=plan, consumer="autonomy_ctx_adapter", verb=verb, mode=mode)
 
-    if plan.mode != "graphdb" or not plan.endpoint:
+    if plan.mode not in ("graphdb", "sparql") or not plan.endpoint:
         reason = plan.skipped_reason or "backend_disabled"
         if plan.mode == "graphdb_degraded":
             logger.info(
                 "autonomy_graph_backend_degraded consumer=autonomy_ctx_adapter verb=%s explicit=true reason=%s fallback=skip_adapter",
+                verb,
+                reason,
+            )
+        elif plan.mode == "sparql_degraded":
+            logger.info(
+                "autonomy_graph_backend_degraded consumer=autonomy_ctx_adapter verb=%s reason=%s fallback=skip_adapter",
                 verb,
                 reason,
             )

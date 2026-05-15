@@ -344,39 +344,58 @@ LIMIT 12
 
 
 def resolve_autonomy_graphdb_config() -> dict[str, Any]:
-    endpoint_raw = (
-        os.getenv("GRAPHDB_QUERY_ENDPOINT")
-        or os.getenv("GRAPHDB_URL")
-        or os.getenv("CONCEPT_PROFILE_GRAPHDB_ENDPOINT")
-        or os.getenv("CONCEPT_PROFILE_GRAPHDB_URL")
-        or ""
-    ).strip()
-    repo = (
-        os.getenv("GRAPHDB_REPO")
-        or os.getenv("CONCEPT_PROFILE_GRAPHDB_REPO")
-        or "collapse"
-    ).strip() or "collapse"
-    user = (os.getenv("GRAPHDB_USER") or os.getenv("CONCEPT_PROFILE_GRAPHDB_USER") or "").strip() or None
-    password = (os.getenv("GRAPHDB_PASS") or os.getenv("CONCEPT_PROFILE_GRAPHDB_PASS") or "").strip() or None
+    """Runtime SPARQL endpoint for autonomy + memory-graph hints (legacy name).
 
-    endpoint = endpoint_raw
-    if endpoint and endpoint.rstrip("/").endswith("/repositories"):
-        endpoint = f"{endpoint.rstrip('/')}/{repo}"
-    elif endpoint and "/repositories/" not in endpoint:
-        endpoint = f"{endpoint.rstrip('/')}/repositories/{repo}"
+    When ``AUTONOMY_GRAPH_BACKEND=graphdb``, returns the GraphDB repository URL.
+    Otherwise returns the Fuseki/SPARQL query URL (never implicit GraphDB).
+    """
+    from orion.autonomy.graph_gate import autonomy_graph_backend_raw
+    from orion.graph.backend_config import resolve_autonomy_read_query_url, resolve_rdf_store_auth
 
-    if os.getenv("GRAPHDB_QUERY_ENDPOINT") or os.getenv("GRAPHDB_URL"):
-        source = "generic_graphdb"
-    elif os.getenv("CONCEPT_PROFILE_GRAPHDB_ENDPOINT") or os.getenv("CONCEPT_PROFILE_GRAPHDB_URL"):
-        source = "concept_profile_fallback"
-    else:
-        source = "unconfigured"
+    if autonomy_graph_backend_raw() == "graphdb":
+        endpoint_raw = (
+            os.getenv("GRAPHDB_QUERY_ENDPOINT")
+            or os.getenv("GRAPHDB_URL")
+            or os.getenv("CONCEPT_PROFILE_GRAPHDB_ENDPOINT")
+            or os.getenv("CONCEPT_PROFILE_GRAPHDB_URL")
+            or ""
+        ).strip()
+        repo = (
+            os.getenv("GRAPHDB_REPO")
+            or os.getenv("CONCEPT_PROFILE_GRAPHDB_REPO")
+            or "collapse"
+        ).strip() or "collapse"
+        user = (os.getenv("GRAPHDB_USER") or os.getenv("CONCEPT_PROFILE_GRAPHDB_USER") or "").strip() or None
+        password = (os.getenv("GRAPHDB_PASS") or os.getenv("CONCEPT_PROFILE_GRAPHDB_PASS") or "").strip() or None
+
+        endpoint = endpoint_raw
+        if endpoint and endpoint.rstrip("/").endswith("/repositories"):
+            endpoint = f"{endpoint.rstrip('/')}/{repo}"
+        elif endpoint and "/repositories/" not in endpoint:
+            endpoint = f"{endpoint.rstrip('/')}/repositories/{repo}"
+
+        if os.getenv("GRAPHDB_QUERY_ENDPOINT") or os.getenv("GRAPHDB_URL"):
+            source = "generic_graphdb"
+        elif os.getenv("CONCEPT_PROFILE_GRAPHDB_ENDPOINT") or os.getenv("CONCEPT_PROFILE_GRAPHDB_URL"):
+            source = "concept_profile_fallback"
+        else:
+            source = "unconfigured"
+        return {
+            "endpoint": endpoint or None,
+            "repo": repo,
+            "user": user,
+            "password": password,
+            "source": source,
+        }
+
+    q_url, src = resolve_autonomy_read_query_url()
+    u, p = resolve_rdf_store_auth()
     return {
-        "endpoint": endpoint or None,
-        "repo": repo,
-        "user": user,
-        "password": password,
-        "source": source,
+        "endpoint": q_url,
+        "repo": (os.getenv("RDF_STORE_DATASET") or "orion").strip() or "orion",
+        "user": u,
+        "password": p,
+        "source": src,
     }
 
 
@@ -1134,7 +1153,9 @@ def _load_autonomy_state_fallback_local(
     graphdb_cfg: dict[str, Any],
     started_at: float,
 ) -> Dict[str, Any]:
-    """No GraphDB HTTP: empty local lookups + YAML-friendly autonomy summary."""
+    """No remote graph HTTP: empty local lookups + YAML-friendly autonomy summary."""
+    from orion.graph.backend_config import strip_graph_credentials
+
     repository = LocalAutonomyRepository()
     subjects = ["orion", "relationship", "juniper"]
     observer = {
@@ -1169,12 +1190,20 @@ def _load_autonomy_state_fallback_local(
     }
     repo_status = repository.status()
     skipped = plan.skipped_reason or "backend_disabled"
-    degraded_explicit = plan.mode == "graphdb_degraded"
-    ag_backend = "graphdb" if degraded_explicit else "disabled"
+    if plan.mode == "graphdb_degraded":
+        ag_backend = "graphdb"
+    elif plan.mode == "sparql_degraded":
+        ag_backend = "sparql"
+    else:
+        ag_backend = "disabled"
+    ep_dbg = strip_graph_credentials(str(graphdb_cfg.get("endpoint") or "")) or (
+        "graphdb:unconfigured" if plan.mode in ("graphdb", "graphdb_degraded") else "sparql:unconfigured"
+    )
     debug["_runtime"] = {
         "backend": repo_status.backend,
         "selected_subject": selected_subject,
-        "endpoint_repo": graphdb_cfg.get("endpoint") or "graphdb:unconfigured",
+        "endpoint_repo": ep_dbg,
+        "query_url": ep_dbg,
         "timeout_sec": 0.0,
         "subject_max_workers": resolve_autonomy_subject_max_workers(),
         "subquery_max_workers": resolve_autonomy_subquery_max_workers(),
@@ -1198,7 +1227,8 @@ def _load_autonomy_state_fallback_local(
                 "source_available": repo_status.source_available,
                 "config_source": graphdb_cfg["source"],
                 "repo": graphdb_cfg["repo"],
-                "endpoint_repo": graphdb_cfg.get("endpoint") or "graphdb:unconfigured",
+                "endpoint_repo": ep_dbg,
+                "query_url": ep_dbg,
                 "timeout_sec": 0.0,
                 "subject_max_workers": resolve_autonomy_subject_max_workers(),
                 "subquery_max_workers": resolve_autonomy_subquery_max_workers(),
@@ -1265,11 +1295,18 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
 
     log_autonomy_graph_backend_decision(plan=plan, consumer="chat_stance", verb=verb, mode=mode)
 
-    if plan.mode != "graphdb":
+    if plan.mode not in ("graphdb", "sparql"):
         reason = plan.skipped_reason or "backend_disabled"
         if plan.mode == "graphdb_degraded":
             logger.info(
                 "autonomy_graph_backend_degraded consumer=chat_stance verb=%s mode=%s explicit=true reason=%s fallback=identity_yaml",
+                verb,
+                mode,
+                reason,
+            )
+        elif plan.mode == "sparql_degraded":
+            logger.info(
+                "autonomy_graph_backend_degraded consumer=chat_stance verb=%s mode=%s reason=%s fallback=identity_yaml",
                 verb,
                 mode,
                 reason,
@@ -1284,6 +1321,10 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
         return _load_autonomy_state_fallback_local(ctx, plan, graphdb_cfg, started_at)
 
     endpoint = plan.endpoint
+    from orion.graph.backend_config import strip_graph_credentials
+
+    ag_remote = "sparql" if plan.mode == "sparql" else "graphdb"
+    ep_log = strip_graph_credentials(endpoint or "") or f"{ag_remote}:unconfigured"
     backend = (os.getenv("AUTONOMY_REPOSITORY_BACKEND") or "graph").strip().lower()
     if backend not in {"graph", "local", "shadow"}:
         backend = "graph"
@@ -1361,7 +1402,8 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
     debug["_runtime"] = {
         "backend": repo_status.backend,
         "selected_subject": selected_subject,
-        "endpoint_repo": endpoint or "graphdb:unconfigured",
+        "endpoint_repo": ep_log,
+        "query_url": ep_log,
         "timeout_sec": timeout_used,
         "subject_max_workers": subject_workers,
         "subquery_max_workers": subquery_workers,
@@ -1369,7 +1411,7 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
             "source_available": repo_status.source_available,
             "source_path": repo_status.source_path,
         },
-        "autonomy_graph_backend": "graphdb",
+        "autonomy_graph_backend": ag_remote,
         "autonomy_graph_cutover_mode": "v1_safe",
         "autonomy_graph_skipped_reason": None,
         "fallback": None,
@@ -1386,7 +1428,8 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
                 "source_available": repo_status.source_available,
                 "config_source": graphdb_cfg["source"],
                 "repo": graphdb_cfg["repo"],
-                "endpoint_repo": endpoint or "graphdb:unconfigured",
+                "endpoint_repo": ep_log,
+                "query_url": ep_log,
                 "timeout_sec": timeout_used,
                 "subject_max_workers": subject_workers,
                 "subquery_max_workers": subquery_workers,
@@ -1429,7 +1472,7 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
                 },
                 "exported_metadata_keys": exported_keys,
                 "debug": debug,
-                "autonomy_graph_backend": "graphdb",
+                "autonomy_graph_backend": ag_remote,
                 "autonomy_graph_cutover_mode": "v1_safe",
                 "autonomy_graph_skipped_reason": None,
             },

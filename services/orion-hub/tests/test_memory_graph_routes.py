@@ -55,9 +55,23 @@ def test_memory_graph_validate_fixture_roundtrip() -> None:
     assert "ok" in body and "violations" in body and "preview" in body
 
 
-def test_memory_graph_approve_requires_graphdb_or_named_graph() -> None:
+def test_memory_graph_approve_requires_graph_or_named_graph(monkeypatch) -> None:
     _ensure_hub_scripts_import_path()
+    monkeypatch.setenv("MEMORY_GRAPH_APPROVAL_BACKEND", "graphdb")
+    monkeypatch.setenv("GRAPHDB_URL", "")
+    monkeypatch.setenv("RDF_STORE_GRAPH_STORE_URL", "")
+    monkeypatch.setenv("RDF_STORE_UPDATE_URL", "")
+    import importlib
+
+    import app.settings as hub_app_settings
+
+    hub_app_settings.get_settings.cache_clear()
+    import scripts.settings as scripts_settings
+
+    importlib.reload(scripts_settings)
     import scripts.main as hub_main
+
+    importlib.reload(hub_main)
 
     with TestClient(hub_main.app) as client:
         resp = client.post(

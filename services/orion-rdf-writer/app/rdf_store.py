@@ -270,7 +270,7 @@ class GenericSparqlRdfStoreClient:
 
 
 def build_rdf_store_client(settings: Settings, client: httpx.AsyncClient) -> RdfStoreClient:
-    b = (settings.RDF_STORE_BACKEND or "graphdb").strip().lower()
+    b = (settings.RDF_STORE_BACKEND or "fuseki").strip().lower()
     if b == "graphdb":
         return GraphDbRdfStoreClient(settings, client)
     if b == "fuseki":

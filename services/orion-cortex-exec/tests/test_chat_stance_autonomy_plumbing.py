@@ -183,6 +183,9 @@ def test_triage_mode_not_overridden_by_autonomy_hint(monkeypatch) -> None:
 
 
 def test_autonomy_graphdb_config_falls_back_to_concept_profile(monkeypatch) -> None:
+    monkeypatch.setenv("AUTONOMY_GRAPH_BACKEND", "graphdb")
+    monkeypatch.delenv("RDF_STORE_QUERY_URL", raising=False)
+    monkeypatch.delenv("AUTONOMY_GRAPH_QUERY_URL", raising=False)
     for key in (
         "GRAPHDB_QUERY_ENDPOINT",
         "GRAPHDB_URL",
@@ -206,6 +209,8 @@ def test_autonomy_graphdb_config_falls_back_to_concept_profile(monkeypatch) -> N
 
 
 def test_autonomy_graphdb_config_prefers_generic_vars(monkeypatch) -> None:
+    monkeypatch.setenv("AUTONOMY_GRAPH_BACKEND", "graphdb")
+    monkeypatch.delenv("RDF_STORE_QUERY_URL", raising=False)
     monkeypatch.setenv("GRAPHDB_URL", "http://generic-graphdb:7200")
     monkeypatch.setenv("GRAPHDB_REPO", "generic-repo")
     monkeypatch.setenv("GRAPHDB_USER", "generic-user")
@@ -225,7 +230,10 @@ def test_autonomy_graphdb_config_prefers_generic_vars(monkeypatch) -> None:
 
 
 def test_autonomy_graph_gate_off_skips_build_autonomy_repository(monkeypatch, caplog) -> None:
-    monkeypatch.delenv("AUTONOMY_GRAPH_BACKEND", raising=False)
+    monkeypatch.setenv("AUTONOMY_GRAPH_BACKEND", "disabled")
+    monkeypatch.delenv("RDF_STORE_QUERY_URL", raising=False)
+    monkeypatch.delenv("AUTONOMY_GRAPH_QUERY_URL", raising=False)
+    monkeypatch.delenv("RDF_STORE_BASE_URL", raising=False)
     monkeypatch.setenv("GRAPHDB_URL", "http://orion-athena-graphdb:7200")
     monkeypatch.setenv("GRAPHDB_REPO", "collapse")
     called = {"n": 0}

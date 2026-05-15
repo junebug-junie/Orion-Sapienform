@@ -62,7 +62,7 @@ services:
 
       # --- RDF store (GraphDB, Fuseki, or generic SPARQL) ---
       # V1: prefer fuseki/generic via .env; graphdb here is legacy compatibility when unset.
-      - RDF_STORE_BACKEND=${RDF_STORE_BACKEND:-graphdb}
+      - RDF_STORE_BACKEND=${RDF_STORE_BACKEND:-fuseki}
       - RDF_STORE_BASE_URL=${RDF_STORE_BASE_URL:-}
       - RDF_STORE_DATASET=${RDF_STORE_DATASET:-orion}
       - RDF_STORE_QUERY_URL=${RDF_STORE_QUERY_URL:-}

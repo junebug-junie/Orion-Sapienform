@@ -170,6 +170,23 @@ def resolve_graph_backend(environ: Mapping[str, str] | None = None) -> GraphBack
             source="RDF_STORE_QUERY_URL",
         )
 
+    if rdf_b == "fuseki":
+        base = _fuseki_base()
+        ds = _fuseki_dataset()
+        if base:
+            q, u, g, src = _derive_fuseki_urls(base, ds)
+            return GraphBackendConfig(
+                backend="fuseki",
+                query_url=_strip(env.get("RDF_STORE_QUERY_URL")) or q,
+                update_url=_strip(env.get("RDF_STORE_UPDATE_URL")) or u,
+                graph_store_url=_strip(env.get("RDF_STORE_GRAPH_STORE_URL")) or g,
+                dataset=ds,
+                user=_strip(env.get("RDF_STORE_USER")) or None,
+                password=_strip(env.get("RDF_STORE_PASS")) or None,
+                legacy_graphdb=False,
+                source=f"auto:{src}",
+            )
+
     return GraphBackendConfig(
         backend="disabled",
         query_url=None,

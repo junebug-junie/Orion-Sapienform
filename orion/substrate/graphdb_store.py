@@ -49,6 +49,7 @@ class GraphDBSubstrateStore(SubstrateGraphStore):
     def __init__(self, cfg: GraphDBSubstrateStoreConfig) -> None:
         self._cfg = cfg
         self._cache = InMemorySubstrateGraphStore()
+        self._result_source_kind = "graphdb"
 
     def _sparql_update_endpoint(self) -> str:
         """GraphDB accepts SPARQL UPDATE only on the RDF4J statements endpoint, not the repo root."""
@@ -219,7 +220,7 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {edge_iri} ?p ?o . }} }} }
         if not node_ids:
             return SubstrateQueryResultV1(
                 query_kind="focal_slice",
-                source_kind="graphdb",
+                source_kind=self._result_source_kind,
                 slice=SubstrateNeighborhoodSliceV1(nodes=[], edges=[]),
                 limits={"max_edges": edges_limit, "node_ids": 0},
             )
@@ -230,7 +231,7 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {edge_iri} ?p ?o . }} }} }
             self._refresh_cache(nodes=nodes, edges=edges)
             return SubstrateQueryResultV1(
                 query_kind="focal_slice",
-                source_kind="graphdb",
+                source_kind=self._result_source_kind,
                 slice=SubstrateNeighborhoodSliceV1(nodes=nodes, edges=edges),
                 truncated=nodes_truncated or edges_truncated,
                 limits={"max_edges": edges_limit, "node_ids": len(node_ids)},
@@ -250,7 +251,7 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {edge_iri} ?p ?o . }} }} }
             self._refresh_cache(nodes=nodes, edges=edges)
             return SubstrateQueryResultV1(
                 query_kind="hotspot_region",
-                source_kind="graphdb",
+                source_kind=self._result_source_kind,
                 slice=SubstrateNeighborhoodSliceV1(nodes=nodes, edges=edges),
                 truncated=nodes_truncated or edges_truncated,
                 limits={"limit_nodes": nodes_limit, "limit_edges": edges_limit},
@@ -273,7 +274,7 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {edge_iri} ?p ?o . }} }} }
         if not needle:
             return SubstrateQueryResultV1(
                 query_kind="provenance_neighborhood",
-                source_kind="graphdb",
+                source_kind=self._result_source_kind,
                 slice=SubstrateNeighborhoodSliceV1(nodes=[], edges=[]),
                 limits={"limit_nodes": nodes_limit, "limit_edges": edges_limit},
                 details={"evidence_ref": ""},
@@ -285,7 +286,7 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {edge_iri} ?p ?o . }} }} }
             self._refresh_cache(nodes=nodes, edges=edges)
             return SubstrateQueryResultV1(
                 query_kind="provenance_neighborhood",
-                source_kind="graphdb",
+                source_kind=self._result_source_kind,
                 slice=SubstrateNeighborhoodSliceV1(nodes=nodes, edges=edges),
                 truncated=nodes_truncated or edges_truncated,
                 limits={"limit_nodes": nodes_limit, "limit_edges": edges_limit},
@@ -322,7 +323,7 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {edge_iri} ?p ?o . }} }} }
             self._refresh_cache(nodes=nodes, edges=edges)
             return SubstrateQueryResultV1(
                 query_kind=query_kind,
-                source_kind="graphdb",
+                source_kind=self._result_source_kind,
                 slice=SubstrateNeighborhoodSliceV1(nodes=nodes, edges=edges),
                 truncated=nodes_truncated or edges_truncated,
                 limits={"limit_nodes": nodes_limit, "limit_edges": edges_limit},
@@ -588,6 +589,7 @@ class SparqlSubstrateStore(GraphDBSubstrateStore):
                 password=cfg.password,
             )
         )
+        self._result_source_kind = "sparql"
         self._sparql_update_url = cfg.update_url.rstrip("/")
 
     def _sparql_update_endpoint(self) -> str:

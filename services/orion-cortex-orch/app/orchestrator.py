@@ -15,6 +15,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, LLMMessage, ServiceRef
 from orion.core.verbs import VerbRequestV1, VerbResultV1
 from orion.cognition.plan_loader import build_plan_for_verb
+from orion.cognition.projection_builder import build_cognitive_projection_for_context
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
 from orion.schemas.cortex.schemas import (
     ExecutionPlan,
@@ -86,37 +87,36 @@ def build_agent_plan(verb_name: str | None) -> ExecutionPlan:
             ExecutionStep(
                 verb_name=resolved_verb,
                 step_name="agent_chain",
-                description="Delegate to AgentChainService (ReAct)",
+                description="Execute tool-using agent chain",
                 order=0,
                 services=["AgentChainService"],
                 prompt_template=None,
                 requires_gpu=False,
                 requires_memory=True,
                 timeout_ms=300000,
-            )
+            ),
         ],
         metadata={"mode": "agent"},
     )
 
 
 def build_council_plan(verb_name: str | None) -> ExecutionPlan:
-    """Stub council plan; routed to CouncilService."""
     resolved_verb = verb_name or "council_runtime"
     return ExecutionPlan(
         verb_name=resolved_verb,
         label=f"{resolved_verb}-council",
-        description="Council supervisor stub",
+        description="Council deliberation execution",
         category="council",
         priority="normal",
-        interruptible=False,
+        interruptible=True,
         can_interrupt_others=False,
-        timeout_ms=300000,
+        timeout_ms=180000,
         max_recursion_depth=1,
         steps=[
             ExecutionStep(
                 verb_name=resolved_verb,
-                step_name="council_supervisor",
-                description="Council supervisor placeholder",
+                step_name="council_deliberate",
+                description="Deliberate via CouncilService",
                 order=0,
                 services=["CouncilService"],
                 prompt_template=None,
@@ -429,15 +429,12 @@ async def call_cortex_exec(
         request_channel=exec_request_channel,
         result_prefix=exec_result_prefix,
     )
-
-    if diagnostic:
-        logger.info("Diagnostic PlanExecutionRequest json=%s", request_object.model_dump_json())
-    return await client.execute_plan(
+    return await client.execute(
         source=source,
         req=request_object,
         correlation_id=correlation_id,
         timeout_sec=timeout_sec,
-        trace=trace,
+        diagnostic=diagnostic,
     )
 
 
@@ -453,37 +450,32 @@ def build_verb_request(
     verb_runtime_request_id: str | None = None,
 ) -> tuple[VerbRequestV1, BaseEnvelope]:
     request_id = verb_runtime_request_id or str(uuid4())
-    reply_channel = f"orion:verb:result:{correlation_id}:{request_id}"
-    trigger_name = client_request.verb if client_request.verb in _DIRECT_VERB_TRIGGERS else "legacy.plan"
-    meta: Dict[str, Any] = {
-        "verb": client_request.verb,
-        "mode": client_request.mode,
-        "origin": "cortex-orch",
-    }
-    if lane_decision is not None:
-        meta["execution_lane"] = lane_decision.lane
-        meta["execution_lane_reason"] = lane_decision.reason
-        opts = client_request.options if isinstance(client_request.options, dict) else {}
-        if isinstance(opts.get("priority"), str):
-            meta["priority"] = opts["priority"]
+    lane = lane_decision or resolve_execution_lane(client_request)
     verb_request = VerbRequestV1(
-        trigger=trigger_name,
-        schema_id=plan_request.__class__.__name__,
+        trigger="cortex.client.request",
+        schema_id="PlanExecutionRequest",
         payload=plan_request.model_dump(mode="json"),
         request_id=request_id,
         caller=source.name,
-        meta=meta,
+        meta={
+            "mode": client_request.mode,
+            "route_intent": client_request.route_intent,
+            "user_id": client_request.context.user_id,
+            "session_id": client_request.context.session_id,
+            "trace_id": client_request.context.trace_id,
+            "exec_lane": lane.lane,
+            "exec_lane_reason": lane.reason,
+        },
     )
-
     envelope = BaseEnvelope(
         kind="verb.request",
         source=source,
         correlation_id=correlation_id,
         causality_chain=list(causality_chain or []),
         trace=dict(trace or {}),
-        reply_to=reply_channel,
         payload=verb_request.model_dump(mode="json"),
     )
+    envelope.reply_to = f"orion:verb:result:{request_id}"
     return verb_request, envelope
 
 
@@ -493,9 +485,9 @@ async def call_verb_runtime(
     source: ServiceRef,
     client_request: CortexClientRequest,
     correlation_id: str,
+    timeout_sec: float = 900.0,
     causality_chain: list | None = None,
     trace: dict | None = None,
-    timeout_sec: float = 900.0,
     router_metadata: dict[str, Any] | None = None,
 ) -> VerbResultV1:
     settings = get_settings()
@@ -692,7 +684,6 @@ async def call_verb_runtime(
                     correlation_id,
                     reply_channel,
                     verb_request.request_id,
-                    result.request_id,
                 )
         raise RuntimeError("Verb result subscription closed without a match.")
 
@@ -758,113 +749,3 @@ async def dispatch_metacog_trigger(
                 "parent_event_id": parent_event_id,
                 "trigger_correlation_id": correlation_id,
                 "trigger_trace_id": trace_id,
-                "trigger_source_service": env.source.name if env.source else None,
-                "trigger_source_node": env.source.node if env.source else None,
-                **recall_override,
-            },
-        ),
-        context={
-            "trigger": trigger.model_dump(mode="json"),
-            "verb": verb_name,
-            "trace_id": trace_id,
-            "parent_event_id": parent_event_id,
-            "trigger_correlation_id": correlation_id,
-            "trigger_trace_id": trace_id,
-        },
-    )
-
-    # 3. Execute via Cortex-Exec
-    settings = get_settings()
-    client = CortexExecClient(
-        bus,
-        request_channel=settings.exec_request_channel_for_lane("background"),
-        result_prefix=settings.channel_exec_result_prefix,
-    )
-
-    rpc_timeout = float(plan.timeout_ms) / 1000.0
-
-    await client.execute_plan(
-        source=source,
-        req=req,
-        correlation_id=correlation_id,
-        timeout_sec=rpc_timeout,
-        trace=_trace_meta(
-            trace_id=trace_id,
-            event_id=str(uuid4()),
-            parent_event_id=parent_event_id,
-            source_service=source.name,
-        ),
-    )
-    logger.info(
-        "Dispatched log_orion_metacognition trace_id=%s parent_event_id=%s timeout=%.1fs",
-        trace_id,
-        parent_event_id,
-        rpc_timeout,
-    )
-
-
-async def dispatch_dream_trigger(
-    bus: OrionBusAsync,
-    *,
-    source: ServiceRef,
-    env: BaseEnvelope,
-) -> None:
-    """
-    Normalize `dream.trigger` into the canonical Orch intake (`cortex.orch.request`, verb=dream_cycle).
-    Accepts `DreamInternalTriggerV1` or legacy `DreamTriggerPayload`.
-    """
-    payload = env.payload if isinstance(env.payload, dict) else {}
-    try:
-        internal = DreamInternalTriggerV1.model_validate(payload)
-    except Exception:
-        try:
-            legacy = DreamTriggerPayload.model_validate(payload)
-            internal = DreamInternalTriggerV1(mode=legacy.mode)
-        except Exception as exc:
-            logger.warning("Dream trigger validation failed: %s", exc)
-            return
-
-    correlation_uuid = env.correlation_id if getattr(env, "correlation_id", None) else uuid4()
-    correlation_id_str = str(correlation_uuid)
-    trace_id = (env.trace or {}).get("trace_id") or correlation_id_str
-    parent_event_id = (env.trace or {}).get("event_id") or str(getattr(env, "id", "") or "")
-
-    recall_profile = (internal.profile or "").strip() or "dream.v1"
-    recall = RecallDirective(enabled=True, required=False, profile=recall_profile)
-
-    req = CortexClientRequest(
-        mode="brain",
-        verb="dream_cycle",
-        packs=["emergent_pack"],
-        options={},
-        recall=recall,
-        context=CortexClientContext(
-            messages=[LLMMessage(role="user", content="Dream cycle.")],
-            raw_user_text="Dream cycle.",
-            trace_id=trace_id,
-            metadata={
-                "dream_trigger": internal.model_dump(mode="json"),
-                "dream_mode": internal.mode,
-            },
-        ),
-    )
-
-    orch_env = BaseEnvelope(
-        kind="cortex.orch.request",
-        source=source,
-        correlation_id=correlation_uuid,
-        causality_chain=list(env.causality_chain or []),
-        trace={
-            **(env.trace or {}),
-            "trace_id": trace_id,
-            **({"event_id": parent_event_id} if parent_event_id else {}),
-        },
-        payload=req.model_dump(mode="json"),
-    )
-    settings = get_settings()
-    await bus.publish(settings.channel_cortex_request, orch_env)
-    logger.info(
-        "Dispatched dream.trigger -> cortex.orch.request verb=dream_cycle trace_id=%s profile=%s",
-        trace_id,
-        recall_profile,
-    )

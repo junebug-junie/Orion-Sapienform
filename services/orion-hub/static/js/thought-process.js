@@ -309,6 +309,25 @@
       handoffObject.stance_summary,
       sourceInputs.mind_summary,
     ]);
+    const projectionItemCount = firstPresent([
+      root['mind.cognitive_projection_item_count'],
+      raw['mind.cognitive_projection_item_count'],
+      sourceInputs['mind.cognitive_projection_item_count'],
+      finalPromptContract['mind.cognitive_projection_item_count'],
+      asObject(mindHandoff)?.machine_contract?.['mind.cognitive_projection_item_count'],
+    ]);
+    const projectionStarved = firstPresent([
+      root['mind.projection_starved'],
+      raw['mind.projection_starved'],
+      sourceInputs['mind.projection_starved'],
+      finalPromptContract['mind.projection_starved'],
+      asObject(mindHandoff)?.machine_contract?.['mind.projection_starved'],
+    ]);
+    const degradedContractOnly = quality === 'fallback_contract_only' || contractOnly === true;
+    const visiblyDegraded = Boolean(
+      degradedContractOnly
+      && (projectionStarved === true || Number(projectionItemCount) === 0),
+    );
     return {
       present: Boolean(mindHandoff || quality || runOk !== null || contractOnly !== null || skipStance !== null),
       quality,
@@ -317,6 +336,9 @@
       skipStance,
       summary,
       handoff: mindHandoff,
+      projectionItemCount,
+      projectionStarved,
+      visiblyDegraded,
     };
   }
 
@@ -481,14 +503,20 @@
     ));
     grid.appendChild(comparisonColumn(
       'Mind handoff / quality',
-      mind.present ? 'present' : 'absent',
+      mind.visiblyDegraded ? 'degraded / contract-only' : (mind.present ? 'present' : 'absent'),
       [
         ['mind quality', mind.quality || '--'],
         ['run ok', mind.runOk === null || mind.runOk === undefined ? '--' : String(mind.runOk)],
         ['contract only', mind.contractOnly === null || mind.contractOnly === undefined ? '--' : String(mind.contractOnly)],
+        ['projection items', mind.projectionItemCount === null || mind.projectionItemCount === undefined ? '--' : String(mind.projectionItemCount)],
+        ['projection starved', mind.projectionStarved === null || mind.projectionStarved === undefined ? '--' : String(mind.projectionStarved)],
         ['skip stance synthesis', mind.skipStance === null || mind.skipStance === undefined ? '--' : String(mind.skipStance)],
       ],
-      { border: 'border-emerald-500/25', bg: 'bg-emerald-500/5', title: 'text-emerald-200' },
+      {
+        border: mind.visiblyDegraded ? 'border-rose-500/35' : 'border-emerald-500/25',
+        bg: mind.visiblyDegraded ? 'bg-rose-500/10' : 'bg-emerald-500/5',
+        title: mind.visiblyDegraded ? 'text-rose-200' : 'text-emerald-200',
+      },
     ));
     grid.appendChild(comparisonColumn(
       'Mind shadow synthesis',

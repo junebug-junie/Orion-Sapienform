@@ -66,9 +66,9 @@ def test_thought_process_js_renders_cognitive_projection_cards_and_fields() -> N
     thought_js = THOUGHT_PROCESS_JS_PATH.read_text(encoding="utf-8")
     assert "chatStanceCognitiveProjectionInspectCard" in thought_js
     assert "chatStanceCognitiveProjectionInspectModalCard" in thought_js
-    assert "payload.cognitive_projection" in thought_js
+    assert "cognitive_projection: bundle" in thought_js
     assert "root.raw" in thought_js
-    assert "raw.cognitive_projection" in thought_js
+    assert "root.raw)?.cognitive_projection" in thought_js
     assert "Cognitive Projection" in thought_js
     assert "Top projection items" in thought_js
     assert "Raw cognitive projection" in thought_js
@@ -103,6 +103,8 @@ def test_thought_process_js_comparison_extracts_legacy_and_mind_fields() -> None
     assert "mind_quality" in thought_js
     assert "mind_run_ok" in thought_js
     assert "mind_contract_only" in thought_js
+    assert "visiblyDegraded" in thought_js
+    assert "projection_starved" in thought_js
     assert "mind_skip_stance_synthesis" in thought_js
 
 
@@ -156,7 +158,7 @@ def test_mind_projection_handoff_reuses_one_populated_projection() -> None:
     shared_spine = EXEC_SHARED_SPINE_PATH.read_text(encoding="utf-8")
 
     assert "_build_cold_cognitive_projection_facet" in mind_runtime
-    assert "InMemorySubstrateGraphStore" in mind_runtime
+    assert "build_cognitive_projection_for_mind_with_diagnostics" in mind_runtime
     assert "metadata[\"cognitive_projection_facet\"] = projection" in mind_runtime
     assert "metadata[\"cognitive_projection\"] = projection" in mind_runtime
     assert "_share_cognitive_projection_with_plan(plan_request, cognitive_projection)" in mind_runtime

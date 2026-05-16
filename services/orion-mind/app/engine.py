@@ -26,8 +26,10 @@ from orion.mind.v1 import (
 logger = logging.getLogger("orion-mind.engine")
 
 _FACET_ORDER = (
+    "cognitive_projection",
     "autonomy",
     "substrate",
+    "substrate_telemetry",
     "collapse",
     "concept_induction",
     "recall_digest",
@@ -177,6 +179,29 @@ def _default_stance_from_user_text(user_text: str) -> dict[str, Any]:
     }
 
 
+def _snapshot_facets(snapshot: dict[str, Any]) -> dict[str, Any]:
+    facets = snapshot.get("facets") if isinstance(snapshot.get("facets"), dict) else {}
+    return dict(facets)
+
+
+def _cognitive_projection_debug(snapshot: dict[str, Any]) -> dict[str, Any]:
+    projection = _snapshot_facets(snapshot).get("cognitive_projection")
+    if not isinstance(projection, dict):
+        return {"present": False}
+    anchors = projection.get("anchors") if isinstance(projection.get("anchors"), dict) else {}
+    return {
+        "present": True,
+        "schema_version": projection.get("schema_version"),
+        "projection_id": projection.get("projection_id"),
+        "generated_at": projection.get("generated_at"),
+        "item_count": projection.get("item_count"),
+        "anchor_count": len(anchors),
+        "cold_anchors": projection.get("cold_anchors") if isinstance(projection.get("cold_anchors"), list) else [],
+        "degraded_producers": projection.get("degraded_producers") if isinstance(projection.get("degraded_producers"), list) else [],
+        "notes": projection.get("notes") if isinstance(projection.get("notes"), list) else [],
+    }
+
+
 def _elapsed_ms_wall_clock(t_run_start: float) -> float:
     return (time.perf_counter() - t_run_start) * 1000
 
@@ -224,6 +249,7 @@ def run_mind_deterministic(
     )
 
     bounded, _truncated = build_bounded_snapshot_inputs(dict(req.snapshot_inputs or {}), snapshot_max_bytes)
+    cognitive_projection_debug = _cognitive_projection_debug(bounded)
     snap_hash = hash_snapshot_inputs(bounded)
     phases["snapshot_ms"] = _elapsed_ms_wall_clock(t_run_start)
 
@@ -272,6 +298,10 @@ def run_mind_deterministic(
         }
         if i == 0:
             delta.update(base)
+            if cognitive_projection_debug.get("present"):
+                delta["cognitive_projection_seen"] = True
+                delta["cognitive_projection_id"] = cognitive_projection_debug.get("projection_id")
+                delta["cognitive_projection_item_count"] = cognitive_projection_debug.get("item_count")
         else:
             delta["user_intent"] = base["user_intent"]
         layers.append(delta)
@@ -341,18 +371,27 @@ def run_mind_deterministic(
         "mind.mode_suggestion": decision.mode_suggestion,
         "mind.mode_binding": decision.mode_binding,
         "mind.quality": "fallback_contract_only",
+        "mind.cognitive_projection_seen": bool(cognitive_projection_debug.get("present")),
     }
+    if cognitive_projection_debug.get("present"):
+        machine["mind.cognitive_projection_id"] = cognitive_projection_debug.get("projection_id")
+        machine["mind.cognitive_projection_item_count"] = cognitive_projection_debug.get("item_count")
     brief = MindHandoffBriefV1(
         summary_one_paragraph="Fallback contract only — no meaningful Mind synthesis produced.",
         machine_contract=machine,
         mandatory_keys=["mind.route_kind", "mind.allowed_verbs"],
-        advisory_keys=["mind.mode_suggestion", "mind.quality"],
+        advisory_keys=["mind.mode_suggestion", "mind.quality", "mind.cognitive_projection_seen"],
         stance_payload=valid.model_dump(mode="json"),
         mind_quality="fallback_contract_only",
     )
 
     phases["total_ms"] = _elapsed_ms_wall_clock(t_run_start)
-    logger.info("mind_run_end mind_run_id=%s ok=True snapshot_hash=%s quality=fallback_contract_only", mind_run_id, snap_hash)
+    logger.info(
+        "mind_run_end mind_run_id=%s ok=True snapshot_hash=%s quality=fallback_contract_only cognitive_projection_seen=%s",
+        mind_run_id,
+        snap_hash,
+        bool(cognitive_projection_debug.get("present")),
+    )
 
     return MindRunResultV1(
         mind_run_id=mind_run_id,

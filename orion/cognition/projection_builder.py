@@ -37,6 +37,7 @@ from orion.substrate.relational import (
     map_self_study_to_substrate,
     map_social_ctx_to_substrate,
 )
+from orion.cognition.projection_context import summarize_projection_inputs
 from orion.substrate.relational.layer import _lightweight_belief_set, _skip_unified_beliefs_ctx
 from orion.substrate.relational.adapters.spark_ctx import map_spark_ctx_to_substrate
 
@@ -244,8 +245,12 @@ def summarize_projection_build(
             dropped_counts_by_reason.get("short_circuit_unified_beliefs", 0) + 1
         )
     item_count = int(getattr(projection, "item_count", 0) or 0) if projection is not None else 0
+    phase = "orch_mind_preflight" if "orch.mind_runtime" in build_path else "exec_chat_stance"
+    if "exec" in build_path or "chat_stance" in build_path:
+        phase = "exec_chat_stance"
     return {
         "build_path": build_path,
+        "input_summary": summarize_projection_inputs(ctx, phase=phase),
         "projection_sources_requested": requested,
         "projection_sources_returned": returned,
         "source_counts": source_counts,

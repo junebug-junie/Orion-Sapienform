@@ -15,7 +15,8 @@ import os
 from typing import Any, Callable
 
 from orion.cognition.projection import project_unified_beliefs_for_mind
-from orion.cognition.projection_builder import unified_beliefs_for_chat_stance
+from orion.cognition.projection_builder import summarize_projection_build, unified_beliefs_for_chat_stance
+from orion.cognition.projection_context import summarize_projection_inputs
 from orion.mind.v1 import MindShadowSynthesisV1
 from orion.substrate.relational import UnifiedRelationalBeliefSetV1
 
@@ -366,6 +367,33 @@ def shared_unified_beliefs_for_stance(ctx: dict[str, Any]) -> UnifiedRelationalB
         raise
     _record_shared_spine_marker(ctx, beliefs=beliefs)
     _record_projection_snapshot(ctx, beliefs)
+    projection = ctx.get("chat_cognitive_projection") if isinstance(ctx.get("chat_cognitive_projection"), dict) else None
+    from orion.cognition.projection import CognitiveProjectionV1
+
+    projection_model = None
+    if projection is not None:
+        try:
+            projection_model = CognitiveProjectionV1.model_validate(projection)
+        except Exception:
+            projection_model = None
+    producer_outcomes = summarize_projection_build(
+        ctx,
+        beliefs=beliefs,
+        projection=projection_model,
+        build_path="orion.cortex.exec.chat_stance_shared_spine",
+    )
+    parity = {
+        "exec_chat_stance_input_summary": summarize_projection_inputs(ctx, phase="exec_chat_stance"),
+        "exec_chat_stance_producer_outcomes": producer_outcomes,
+    }
+    ctx["exec_projection_parity"] = parity
+    metadata = ctx.setdefault("metadata", {})
+    if isinstance(metadata, dict):
+        existing = metadata.get("projection_parity_diagnostics")
+        if not isinstance(existing, dict):
+            existing = {}
+        existing.update(parity)
+        metadata["projection_parity_diagnostics"] = existing
     logger.info(
         "chat_stance_shared_projection_spine_used beliefs_present=%s projection_present=%s item_count=%s cold_anchors=%s degraded=%s",
         beliefs is not None,

@@ -14,6 +14,8 @@ from orion.cognition.projection_builder import (
     build_projection_unification_registry,
     summarize_projection_build,
 )
+from orion.cognition.projection_context import enrich_projection_context, summarize_projection_inputs
+from orion.cognition.recall_prefetch import prefetch_recall_bundle_for_projection
 from orion.substrate.relational import CognitiveUnificationLayer
 from orion.substrate.store import InMemorySubstrateGraphStore
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -200,7 +202,45 @@ def _plan_projection_context(client_request: CortexClientRequest, plan_request: 
     ctx["session_id"] = client_request.context.session_id
     ctx["trace_id"] = client_request.context.trace_id
     ctx["user_id"] = client_request.context.user_id
+    ctx["orch_invoked_before_exec"] = True
+    ctx["recall_enabled"] = bool(client_request.recall.enabled)
+    plan_metadata = plan_request.plan.metadata if isinstance(plan_request.plan.metadata, dict) else {}
+    if plan_metadata.get("personality_file") and not ctx.get("personality_file"):
+        ctx["personality_file"] = plan_metadata.get("personality_file")
+    enrich_projection_context(ctx, plan_metadata=plan_metadata)
     return ctx
+
+
+async def prepare_plan_context_for_mind_projection(
+    bus: Any,
+    *,
+    source: ServiceRef,
+    client_request: CortexClientRequest,
+    plan_request: PlanExecutionRequest,
+    correlation_id: str,
+) -> None:
+    """Enrich plan ctx with Exec-parity producer inputs before Mind preflight projection."""
+    ctx = _plan_projection_context(client_request, plan_request, correlation_id)
+    settings = get_settings()
+    if settings.mind_recall_prefetch_enabled and client_request.recall.enabled:
+        recall_merge = await prefetch_recall_bundle_for_projection(
+            bus,
+            source=source,
+            ctx=ctx,
+            correlation_id=correlation_id,
+            recall_enabled=True,
+            recall_profile=client_request.recall.profile,
+            recall_channel=settings.channel_recall_intake,
+            timeout_sec=float(settings.mind_recall_prefetch_timeout_sec),
+        )
+        if isinstance(recall_merge, dict):
+            ctx.update(recall_merge)
+    plan_ctx = plan_request.context if isinstance(plan_request.context, dict) else {}
+    plan_ctx.update(ctx)
+    plan_request.context = plan_ctx
+    meta = plan_ctx.setdefault("metadata", {})
+    if isinstance(meta, dict):
+        meta["orch_preflight_input_summary"] = summarize_projection_inputs(ctx, phase="orch_mind_preflight")
 
 
 def _build_cold_cognitive_projection_facet(ctx: dict[str, Any], correlation_id: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
@@ -247,7 +287,9 @@ def resolve_cognitive_projection_for_mind(
     projection facet is ``None`` and resolution diagnostics carry the empty shell.
     """
     ctx = _plan_projection_context(client_request, plan_request, correlation_id)
+    input_summary = summarize_projection_inputs(ctx, phase="orch_mind_preflight")
     resolution = _fresh_projection_resolution()
+    resolution["orch_preflight_input_summary"] = input_summary
     meta = client_request.context.metadata if isinstance(client_request.context.metadata, dict) else {}
     build_diagnostics: dict[str, Any] = {}
 
@@ -320,6 +362,7 @@ def resolve_cognitive_projection_for_mind(
 
     resolution["cold_rebuild_failed"] = True
     resolution["resolution_path"] = "starved_before_exec"
+    resolution["orch_preflight_producer_outcomes"] = build_diagnostics
     shell_source = cold_payload if isinstance(cold_payload, dict) else warm_payload
     empty_shell: dict[str, Any] = {
         "schema_version": "cognitive.projection.v1",
@@ -443,11 +486,27 @@ def build_mind_run_request(
 
     _record_mind_projection_resolution(plan_request, resolution)
 
+    parity = {
+        "orch_preflight_input_summary": resolution.get("orch_preflight_input_summary")
+        or summarize_projection_inputs(
+            _plan_projection_context(client_request, plan_request, correlation_id),
+            phase="orch_mind_preflight",
+        ),
+        "orch_preflight_producer_outcomes": resolution.get("orch_preflight_producer_outcomes")
+        or (cognitive_projection or {}).get("projection_build_diagnostics")
+        or resolution.get("projection_build_diagnostics"),
+    }
+    plan_meta = plan_request.context.setdefault("metadata", {}) if isinstance(plan_request.context, dict) else {}
+    if isinstance(plan_meta, dict):
+        plan_meta["projection_parity_diagnostics"] = parity
+
     if cognitive_projection is not None and _projection_item_count(cognitive_projection) > 0:
         facets["cognitive_projection"] = cognitive_projection
+        facets["projection_parity_diagnostics"] = parity
         _share_cognitive_projection_with_plan(plan_request, cognitive_projection, resolution=resolution)
     else:
         facets["mind_projection_resolution"] = dict(resolution)
+        facets["projection_parity_diagnostics"] = parity
         empty_shell = resolution.get("empty_projection_shell")
         if isinstance(empty_shell, dict):
             facets["cognitive_projection_degraded"] = empty_shell

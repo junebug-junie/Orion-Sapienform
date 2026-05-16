@@ -540,6 +540,15 @@ async def call_verb_runtime(
 
     cr_meta = client_request.context.metadata if isinstance(client_request.context.metadata, dict) else {}
     if _mind_enabled_exact(cr_meta):
+        from .mind_runtime import prepare_plan_context_for_mind_projection
+
+        await prepare_plan_context_for_mind_projection(
+            bus,
+            source=source,
+            client_request=client_request,
+            plan_request=plan_request,
+            correlation_id=correlation_id,
+        )
         substrate_facet: dict[str, Any] | None = None
         inline = cr_meta.get("substrate_telemetry_facet")
         if isinstance(inline, dict):

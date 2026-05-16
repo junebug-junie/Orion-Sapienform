@@ -101,6 +101,12 @@ class Settings(BaseSettings):
 
     # Memory cards (always-on inject + optional auto-extractor)
     recall_pg_dsn: str = Field("", alias="RECALL_PG_DSN")
+    channel_recall_intake: str = Field(
+        "orion:exec:request:RecallService",
+        alias="CHANNEL_RECALL_INTAKE",
+    )
+    mind_recall_prefetch_enabled: bool = Field(True, alias="MIND_RECALL_PREFETCH_ENABLED")
+    mind_recall_prefetch_timeout_sec: float = Field(12.0, alias="MIND_RECALL_PREFETCH_TIMEOUT_SEC")
     orion_always_inject_token_budget: int = Field(300, alias="ORION_ALWAYS_INJECT_TOKEN_BUDGET")
     orion_always_inject_enabled: bool = Field(True, alias="ORION_ALWAYS_INJECT_ENABLED")
     orion_auto_extractor_enabled: bool = Field(False, alias="ORION_AUTO_EXTRACTOR_ENABLED")

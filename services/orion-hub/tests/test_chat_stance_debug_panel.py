@@ -75,3 +75,44 @@ def test_thought_process_js_renders_cognitive_projection_cards_and_fields() -> N
     assert "Degraded producers" in thought_js
     assert "Cold anchors" in thought_js
     assert "Lineage" in thought_js
+
+
+def test_thought_process_js_renders_read_only_cognitive_comparison_surface() -> None:
+    thought_js = THOUGHT_PROCESS_JS_PATH.read_text(encoding="utf-8")
+    assert "chatStanceCognitiveComparisonInspectCard" in thought_js
+    assert "chatStanceCognitiveComparisonInspectModalCard" in thought_js
+    assert "Cognitive Comparison" in thought_js
+    assert "read-only · no promotion" in thought_js
+    assert "Shared projection" in thought_js
+    assert "Legacy ChatStanceBrief" in thought_js
+    assert "Mind handoff / quality" in thought_js
+    assert "Raw comparison sources" in thought_js
+
+
+def test_thought_process_js_comparison_extracts_legacy_and_mind_fields() -> None:
+    thought_js = THOUGHT_PROCESS_JS_PATH.read_text(encoding="utf-8")
+    assert "function normalizeLegacyChatStance" in thought_js
+    assert "function normalizeMindHandoff" in thought_js
+    assert "synthesized_brief" in thought_js
+    assert "final_prompt_contract" in thought_js
+    assert "mind_handoff" in thought_js
+    assert "mind_quality" in thought_js
+    assert "mind_run_ok" in thought_js
+    assert "mind_contract_only" in thought_js
+    assert "mind_skip_stance_synthesis" in thought_js
+
+
+def test_thought_process_js_comparison_does_not_promote_mind_or_change_routing() -> None:
+    thought_js = THOUGHT_PROCESS_JS_PATH.read_text(encoding="utf-8")
+    forbidden_mutations = [
+        "mind_skip_stance_synthesis = true",
+        "mind_skip_stance_synthesis=true",
+        "meaningful_synthesis' &&",
+        'meaningful_synthesis" &&',
+        "fetch(`${API_BASE_URL}/api/chat`",
+        "fetch('/api/chat'",
+        "selectedVerbs.push",
+        "modeVerbOverride",
+    ]
+    for forbidden in forbidden_mutations:
+        assert forbidden not in thought_js

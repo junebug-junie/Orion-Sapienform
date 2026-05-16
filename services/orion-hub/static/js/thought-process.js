@@ -133,6 +133,8 @@
 (function (global) {
   const INLINE_CARD_ID = 'chatStanceCognitiveProjectionInspectCard';
   const MODAL_CARD_ID = 'chatStanceCognitiveProjectionInspectModalCard';
+  const INLINE_COMPARE_ID = 'chatStanceCognitiveComparisonInspectCard';
+  const MODAL_COMPARE_ID = 'chatStanceCognitiveComparisonInspectModalCard';
 
   function asObject(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
@@ -156,6 +158,18 @@
     } catch (_err) {
       return null;
     }
+  }
+
+  function firstPresent(values) {
+    for (let i = 0; i < values.length; i += 1) {
+      const value = values[i];
+      if (value === null || value === undefined) continue;
+      if (typeof value === 'string' && !value.trim()) continue;
+      if (Array.isArray(value) && !value.length) continue;
+      if (typeof value === 'object' && !Array.isArray(value) && !Object.keys(value).length) continue;
+      return value;
+    }
+    return null;
   }
 
   function projectionBundle(payload) {
@@ -218,6 +232,94 @@
     return out.slice(0, limit);
   }
 
+  function normalizeLegacyChatStance(payload) {
+    const root = asObject(payload) || {};
+    const raw = asObject(root.raw) || {};
+    const overview = asObject(root.overview) || asObject(raw.overview) || {};
+    const sourceInputs = asObject(root.source_inputs) || asObject(raw.source_inputs) || {};
+    const synthesizedBrief = firstPresent([
+      root.synthesized_brief,
+      raw.synthesized_brief,
+      root.chat_stance_brief,
+      raw.chat_stance_brief,
+      root.brief,
+      raw.brief,
+    ]);
+    const finalPromptContract = firstPresent([
+      root.final_prompt_contract,
+      raw.final_prompt_contract,
+      root.prompt_contract,
+      raw.prompt_contract,
+    ]);
+    const categories = asList(overview.categories_present);
+    return {
+      present: Boolean(synthesizedBrief || finalPromptContract || categories.length || Object.keys(sourceInputs).length),
+      categories,
+      fallbackInvoked: Boolean(overview.fallback_invoked),
+      normalizedApplied: Boolean(overview.normalized_applied),
+      qualityModified: Boolean(overview.quality_enforcement_modified),
+      semanticFallback: Boolean(overview.semantic_fallback),
+      sourceInputCount: Object.keys(sourceInputs).length,
+      synthesizedBrief,
+      finalPromptContract,
+    };
+  }
+
+  function normalizeMindHandoff(payload) {
+    const root = asObject(payload) || {};
+    const raw = asObject(root.raw) || {};
+    const sourceInputs = asObject(root.source_inputs) || asObject(raw.source_inputs) || {};
+    const finalPromptContract = asObject(root.final_prompt_contract) || asObject(raw.final_prompt_contract) || {};
+    const mindHandoff = firstPresent([
+      root.mind_handoff,
+      raw.mind_handoff,
+      sourceInputs.mind_handoff,
+      sourceInputs.mind,
+      finalPromptContract.mind_handoff,
+    ]);
+    const quality = firstPresent([
+      root.mind_quality,
+      raw.mind_quality,
+      sourceInputs.mind_quality,
+      finalPromptContract.mind_quality,
+      asObject(mindHandoff)?.mind_quality,
+    ]);
+    const runOk = firstPresent([
+      root.mind_run_ok,
+      raw.mind_run_ok,
+      sourceInputs.mind_run_ok,
+      finalPromptContract.mind_run_ok,
+    ]);
+    const contractOnly = firstPresent([
+      root.mind_contract_only,
+      raw.mind_contract_only,
+      sourceInputs.mind_contract_only,
+      finalPromptContract.mind_contract_only,
+    ]);
+    const skipStance = firstPresent([
+      root.mind_skip_stance_synthesis,
+      raw.mind_skip_stance_synthesis,
+      sourceInputs.mind_skip_stance_synthesis,
+      finalPromptContract.mind_skip_stance_synthesis,
+    ]);
+    const handoffObject = asObject(mindHandoff) || {};
+    const summary = firstPresent([
+      handoffObject.summary_one_paragraph,
+      handoffObject.summary,
+      handoffObject.stance_summary,
+      sourceInputs.mind_summary,
+    ]);
+    return {
+      present: Boolean(mindHandoff || quality || runOk !== null || contractOnly !== null || skipStance !== null),
+      quality,
+      runOk,
+      contractOnly,
+      skipStance,
+      summary,
+      handoff: mindHandoff,
+    };
+  }
+
   function renderProjectionCard(model, opts = {}) {
     const card = makeEl('section', 'rounded-xl border border-cyan-500/30 bg-cyan-500/5 p-3 space-y-3');
     card.id = opts.modal ? MODAL_CARD_ID : INLINE_CARD_ID;
@@ -275,26 +377,124 @@
     return card;
   }
 
+  function comparisonColumn(title, status, rows, toneClass) {
+    const section = makeEl('section', `rounded-xl border ${toneClass.border} ${toneClass.bg} p-3 space-y-2`);
+    const header = makeEl('div', 'flex items-center justify-between gap-2');
+    header.appendChild(makeEl('div', `text-[10px] uppercase tracking-wide ${toneClass.title}`, title));
+    header.appendChild(makeEl('div', 'text-[10px] text-gray-300', status));
+    section.appendChild(header);
+    rows.forEach(([label, value]) => {
+      const row = makeEl('div', 'rounded-lg border border-gray-800 bg-gray-950/50 px-2 py-1');
+      row.appendChild(makeEl('div', 'text-[10px] uppercase tracking-wide text-gray-500', label));
+      row.appendChild(makeEl('div', 'mt-0.5 text-[11px] text-gray-100 break-words', short(value)));
+      section.appendChild(row);
+    });
+    return section;
+  }
+
+  function renderComparisonCard(payload, opts = {}) {
+    const bundle = projectionBundle(payload);
+    const projection = bundle ? normalizeProjectionBundle(bundle) : null;
+    const legacy = normalizeLegacyChatStance(payload);
+    const mind = normalizeMindHandoff(payload);
+    const card = makeEl('section', 'rounded-xl border border-fuchsia-500/30 bg-fuchsia-500/5 p-3 space-y-3');
+    card.id = opts.modal ? MODAL_COMPARE_ID : INLINE_COMPARE_ID;
+
+    const header = makeEl('div', 'flex items-center justify-between gap-2');
+    header.appendChild(makeEl('div', 'text-[10px] uppercase tracking-wide text-fuchsia-200', 'Cognitive Comparison'));
+    header.appendChild(makeEl('div', 'text-[10px] text-gray-400', 'read-only · no promotion'));
+    card.appendChild(header);
+
+    const grid = makeEl('div', 'grid grid-cols-1 gap-3 xl:grid-cols-3');
+    grid.appendChild(comparisonColumn(
+      'Shared projection',
+      projection ? (projection.used ? 'active' : 'present / inactive') : 'absent',
+      [
+        ['projection id', projection && projection.projectionId],
+        ['items / anchors', projection ? `${projection.itemCount} / ${projection.anchorCount}` : '--'],
+        ['cold anchors', projection && projection.coldAnchors.length ? projection.coldAnchors.join(', ') : '--'],
+        ['degraded producers', projection && projection.degraded.length ? projection.degraded.join(', ') : '--'],
+      ],
+      { border: 'border-cyan-500/25', bg: 'bg-cyan-500/5', title: 'text-cyan-200' },
+    ));
+    grid.appendChild(comparisonColumn(
+      'Legacy ChatStanceBrief',
+      legacy.present ? 'present' : 'absent',
+      [
+        ['categories', legacy.categories.length ? legacy.categories.join(', ') : '--'],
+        ['source input count', legacy.sourceInputCount],
+        ['fallback / semantic fallback', `${legacy.fallbackInvoked ? 'yes' : 'no'} / ${legacy.semanticFallback ? 'yes' : 'no'}`],
+        ['quality modified', legacy.qualityModified ? 'yes' : 'no'],
+      ],
+      { border: 'border-indigo-500/25', bg: 'bg-indigo-500/5', title: 'text-indigo-200' },
+    ));
+    grid.appendChild(comparisonColumn(
+      'Mind handoff / quality',
+      mind.present ? 'present' : 'absent',
+      [
+        ['mind quality', mind.quality || '--'],
+        ['run ok', mind.runOk === null || mind.runOk === undefined ? '--' : String(mind.runOk)],
+        ['contract only', mind.contractOnly === null || mind.contractOnly === undefined ? '--' : String(mind.contractOnly)],
+        ['skip stance synthesis', mind.skipStance === null || mind.skipStance === undefined ? '--' : String(mind.skipStance)],
+      ],
+      { border: 'border-emerald-500/25', bg: 'bg-emerald-500/5', title: 'text-emerald-200' },
+    ));
+    card.appendChild(grid);
+
+    if (opts.modal) {
+      const raw = makeEl('details', 'rounded-lg border border-gray-800 bg-gray-950/50 p-2');
+      raw.appendChild(makeEl('summary', 'cursor-pointer text-[10px] uppercase tracking-wide text-gray-500', 'Raw comparison sources'));
+      const pre = makeEl('pre', 'mt-2 max-h-80 overflow-y-auto whitespace-pre-wrap break-words text-[10px] text-gray-300');
+      pre.textContent = JSON.stringify({
+        cognitive_projection: bundle || null,
+        legacy_chat_stance: {
+          synthesized_brief: legacy.synthesizedBrief || null,
+          final_prompt_contract: legacy.finalPromptContract || null,
+        },
+        mind: {
+          quality: mind.quality || null,
+          run_ok: mind.runOk,
+          contract_only: mind.contractOnly,
+          skip_stance_synthesis: mind.skipStance,
+          summary: mind.summary || null,
+          handoff: mind.handoff || null,
+        },
+      }, null, 2);
+      raw.appendChild(pre);
+      card.appendChild(raw);
+    }
+    return card;
+  }
+
   function payloadFromRawPre() {
     const rawPre = document.getElementById('chatStanceDebugRaw');
     return parseJson(rawPre ? rawPre.textContent : '');
   }
 
+  function removeCards() {
+    [INLINE_CARD_ID, MODAL_CARD_ID, INLINE_COMPARE_ID, MODAL_COMPARE_ID].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.remove();
+    });
+  }
+
   function renderFromPayload(payload) {
-    const bundle = projectionBundle(payload);
-    const existingInline = document.getElementById(INLINE_CARD_ID);
-    const existingModal = document.getElementById(MODAL_CARD_ID);
-    if (existingInline) existingInline.remove();
-    if (existingModal) existingModal.remove();
-    if (!bundle) return false;
-    const model = normalizeProjectionBundle(bundle);
+    const modelPayload = asObject(payload);
+    removeCards();
+    if (!modelPayload || !Object.keys(modelPayload).length) return false;
+
+    const bundle = projectionBundle(modelPayload);
+    const projection = bundle ? normalizeProjectionBundle(bundle) : null;
     const overview = document.getElementById('chatStanceDebugOverview');
     if (overview) {
-      overview.appendChild(renderProjectionCard(model, { modal: false }));
+      if (projection) overview.appendChild(renderProjectionCard(projection, { modal: false }));
+      overview.appendChild(renderComparisonCard(modelPayload, { modal: false }));
     }
     const modalBody = document.getElementById('chatStanceDebugModalBody');
     if (modalBody) {
-      modalBody.insertBefore(renderProjectionCard(model, { modal: true }), modalBody.firstChild || null);
+      const first = modalBody.firstChild || null;
+      modalBody.insertBefore(renderComparisonCard(modelPayload, { modal: true }), first);
+      if (projection) modalBody.insertBefore(renderProjectionCard(projection, { modal: true }), modalBody.firstChild || null);
     }
     return true;
   }
@@ -319,7 +519,7 @@
     refresh();
   }
 
-  const api = { attach, refresh, normalizeProjectionBundle, renderFromPayload };
+  const api = { attach, refresh, normalizeProjectionBundle, normalizeLegacyChatStance, normalizeMindHandoff, renderFromPayload };
   global.OrionChatStanceProjectionInspect = api;
   if (typeof document !== 'undefined') {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', attach);

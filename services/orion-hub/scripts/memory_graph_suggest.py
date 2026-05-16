@@ -86,7 +86,7 @@ async def _call_cortex(
         )
         return resp, None
     except TimeoutError:
-        return None, "asyncio_timeout"
+        return None, "hub_wait_for_timeout"
     except Exception as exc:  # noqa: BLE001 — surface as attempt error
         logger.warning("memory_graph_suggest_cortex_error corr=%s error=%s", corr, exc)
         return None, _short_exc(exc, limit=400)
@@ -125,7 +125,19 @@ async def run_memory_graph_suggest_with_fallback(
         prompt=str((payload.get("messages") or [{}])[-1].get("content") or ""),
     )
     if inactive:
-        return {"ok": False, "error": inactive.get("error"), "detail": inactive, "suggest_attempts": []}
+        return {
+            "ok": False,
+            "error": inactive.get("error"),
+            "detail": inactive,
+            "suggest_attempts": [
+                {
+                    "route": None,
+                    "index": 0,
+                    "phase": "verb_inactive",
+                    "error_summary": str(inactive.get("error") or "inactive_verb"),
+                }
+            ],
+        }
 
     primary = _normalize_route(getattr(settings, "MEMORY_GRAPH_SUGGEST_PRIMARY_ROUTE", None), "brain")
     fallback = _normalize_route(getattr(settings, "MEMORY_GRAPH_SUGGEST_FALLBACK_ROUTE", None), "quick")
@@ -138,7 +150,18 @@ async def run_memory_graph_suggest_with_fallback(
 
     user_messages = payload.get("messages") or []
     if not isinstance(user_messages, list) or not user_messages:
-        return {"ok": False, "error": "missing_messages", "suggest_attempts": []}
+        return {
+            "ok": False,
+            "error": "missing_messages",
+            "suggest_attempts": [
+                {
+                    "route": None,
+                    "index": 0,
+                    "phase": "request",
+                    "error_summary": "messages[] missing or empty",
+                }
+            ],
+        }
     user_prompt = str(user_messages[-1].get("content", "") or "")
 
     context_turns = int(payload.get("context_turns") or getattr(settings, "HUB_CONTEXT_TURNS", 10))

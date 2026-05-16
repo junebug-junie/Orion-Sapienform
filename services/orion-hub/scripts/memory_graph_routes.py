@@ -45,11 +45,16 @@ async def memory_graph_validate(
 
 @router.post("/api/memory/graph/suggest")
 async def memory_graph_suggest(
-    request: Request,
+    _request: Request,
     body: Dict[str, Any],
     x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
 ) -> Dict[str, Any]:
-    """Cortex Appendix C draft (brain lane first, optional quick fallback). Read-only: no GraphDB/Postgres writes."""
+    """Cortex Appendix C draft (brain lane first, optional quick fallback). Read-only: no GraphDB/Postgres writes.
+
+    ``user_id`` in the JSON body is passed through to ``build_chat_request`` for telemetry only; it is not
+    authenticated from the session header. ``diagnostic`` / ``options.diagnostic`` embed raw model text — use
+    only on trusted control-plane paths.
+    """
     from scripts.main import bus, cortex_client
     from scripts.memory_graph_suggest import run_memory_graph_suggest_with_fallback
     from scripts.settings import settings

@@ -138,3 +138,120 @@ def test_call_verb_runtime_logs_and_marks_skip_when_mind_enabled_missing(
         "mind_skipped" in r.message and "mind_enabled_not_true" in r.message and corr in r.message
         for r in caplog.records
     )
+
+
+def test_call_verb_runtime_sets_mind_requested_when_mind_enabled_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _orch_prep()
+    from app.orchestrator import call_verb_runtime
+    from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+    from orion.core.verbs.models import VerbResultV1
+    from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, LLMMessage
+    from orion.schemas.cortex.schemas import ExecutionPlan, ExecutionStep, PlanExecutionArgs, PlanExecutionRequest
+
+    class _PubSub:
+        def __init__(self, channel: str):
+            self.channel = channel
+
+    class _SubscribeCtx:
+        def __init__(self, channel: str):
+            self.pubsub = _PubSub(channel)
+
+        async def __aenter__(self):
+            return self.pubsub
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeCodec:
+        def decode(self, data):
+            return SimpleNamespace(ok=True, envelope=data, error=None)
+
+    class _FakeBus:
+        def __init__(self):
+            self.codec = _FakeCodec()
+            self.published: list[tuple[str, BaseEnvelope]] = []
+
+        def subscribe(self, channel: str):
+            return _SubscribeCtx(channel)
+
+        async def publish(self, channel: str, env: BaseEnvelope):
+            self.published.append((channel, env))
+
+        async def iter_messages(self, pubsub: _PubSub):
+            _channel, env = self.published[0]
+            reply_env = BaseEnvelope(
+                kind="verb.result",
+                source=ServiceRef(name="cortex-exec", version="0", node="n"),
+                correlation_id=env.correlation_id,
+                payload=VerbResultV1(
+                    verb="legacy.plan",
+                    ok=True,
+                    output={"result": {"status": "success", "final_text": "ok", "metadata": {}}},
+                    request_id=env.payload["request_id"],
+                ).model_dump(mode="json"),
+            )
+            yield {"data": reply_env}
+
+    captured: dict = {}
+
+    def _fake_build_plan_request(client_request, correlation_id, router_metadata=None):
+        plan = PlanExecutionRequest(
+            plan=ExecutionPlan(
+                verb_name="chat_general",
+                steps=[ExecutionStep(verb_name="chat_general", step_name="noop", order=0, services=[])],
+            ),
+            args=PlanExecutionArgs(request_id="trace-1"),
+            context={"metadata": {}},
+        )
+        captured["plan"] = plan
+        return plan
+
+    async def _noop_prepare(*args, **kwargs):
+        return None
+
+    async def _fake_mind_http(*args, **kwargs):
+        from orion.mind.v1 import MindRunResultV1
+
+        return MindRunResultV1(mind_run_id=uuid4(), ok=True, mind_quality="contract_only")
+
+    monkeypatch.setattr("app.orchestrator.build_plan_request", _fake_build_plan_request)
+    monkeypatch.setattr("app.orchestrator._maybe_fetch_state", lambda *a, **k: asyncio.sleep(0))
+    monkeypatch.setattr("app.mind_runtime.prepare_plan_context_for_mind_projection", _noop_prepare)
+    monkeypatch.setattr("app.orchestrator.build_mind_run_request", lambda *a, **k: SimpleNamespace())
+    monkeypatch.setattr("app.orchestrator.call_orion_mind_http", _fake_mind_http)
+    monkeypatch.setattr("app.orchestrator.publish_mind_run_artifact", _noop_prepare)
+    monkeypatch.setattr("app.orchestrator.merge_mind_brief_into_plan_metadata", lambda *a, **k: None)
+    async def _no_substrate(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.orchestrator.fetch_substrate_telemetry_facet_for_mind", _no_substrate)
+    monkeypatch.setattr(
+        "app.orchestrator.get_settings",
+        lambda: SimpleNamespace(exec_lane_routing_enabled=False),
+    )
+
+    asyncio.run(
+        call_verb_runtime(
+            _FakeBus(),
+            source=ServiceRef(name="cortex-orch", version="0", node="n"),
+            client_request=CortexClientRequest(
+                verb="chat_general",
+                mode="brain",
+                context=CortexClientContext(
+                    messages=[LLMMessage(role="user", content="hi")],
+                    session_id="s",
+                    trace_id="t",
+                    user_message="hi",
+                    metadata={"mind_enabled": True},
+                ),
+            ),
+            correlation_id=str(uuid4()),
+            timeout_sec=5.0,
+        )
+    )
+
+    meta = captured["plan"].context.get("metadata") or {}
+    assert meta.get("mind_requested") is True
+    assert "mind_skip_reason" not in meta

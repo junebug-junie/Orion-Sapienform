@@ -361,6 +361,23 @@ def test_autonomy_payload_omits_empty_turn_effect() -> None:
     assert md["turn_effect_missing_reason"] == "no_state_reply"
 
 
+def test_autonomy_payload_forwards_mind_status_from_ctx_metadata() -> None:
+    md = _autonomy_payload_from_ctx(
+        {
+            "metadata": {
+                "mind_requested": False,
+                "mind_skip_reason": "mind_enabled_not_true",
+                "mind_invocation_failed": "timeout",
+                "mind_artifact_persist_failed": True,
+            }
+        }
+    )
+    assert md["mind_requested"] is False
+    assert md["mind_skip_reason"] == "mind_enabled_not_true"
+    assert md["mind_invocation_failed"] == "timeout"
+    assert md["mind_artifact_persist_failed"] is True
+
+
 def test_router_exports_turn_effect_in_plan_metadata(monkeypatch) -> None:
     runner = PlanRunner()
     fake_step = StepExecutionResult(

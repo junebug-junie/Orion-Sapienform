@@ -497,6 +497,16 @@ def _autonomy_payload_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(biometrics, dict):
             reason = str(biometrics.get("reason") or reason)
         payload["turn_effect_missing_reason"] = reason
+    ctx_meta = ctx.get("metadata")
+    if isinstance(ctx_meta, dict):
+        for key in (
+            "mind_requested",
+            "mind_skip_reason",
+            "mind_invocation_failed",
+            "mind_artifact_persist_failed",
+        ):
+            if key in ctx_meta:
+                payload[key] = ctx_meta[key]
     return payload
 
 

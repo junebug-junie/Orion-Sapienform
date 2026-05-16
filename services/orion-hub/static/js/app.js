@@ -993,9 +993,12 @@ loadDismissedIds();
     if (rawMeta.mind_invocation_failed) {
       return "Mind was requested but invocation failed.";
     }
-    const mindRequested = routing.mind_requested ?? rawMeta.mind_requested;
+    const mindRequested = rawMeta.mind_requested !== undefined && rawMeta.mind_requested !== null
+      ? rawMeta.mind_requested
+      : routing.mind_requested;
     if (mindRequested === false) {
-      return "Mind was not requested for this turn.";
+      const skipReason = rawMeta.mind_skip_reason ? ` (${rawMeta.mind_skip_reason})` : "";
+      return `Mind was not requested for this turn.${skipReason}`;
     }
     return "No Mind runs for this correlation yet.";
   }

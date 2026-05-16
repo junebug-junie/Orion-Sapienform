@@ -981,7 +981,26 @@ loadDismissedIds();
     ).trim();
   }
 
-  function openMindRunsModal(correlationId, triggerEl = null) {
+  function resolveMindRunsEmptyStatus(turnMeta) {
+    const routing = turnMeta && typeof turnMeta.routingDebug === "object"
+      ? turnMeta.routingDebug
+      : (turnMeta && typeof turnMeta.routing_debug === "object" ? turnMeta.routing_debug : {});
+    const raw = turnMeta && typeof turnMeta.raw === "object" ? turnMeta.raw : {};
+    const rawMeta = raw && typeof raw.metadata === "object" ? raw.metadata : {};
+    if (rawMeta.mind_artifact_persist_failed) {
+      return "Mind ran but artifact publish failed.";
+    }
+    if (rawMeta.mind_invocation_failed) {
+      return "Mind was requested but invocation failed.";
+    }
+    const mindRequested = routing.mind_requested ?? rawMeta.mind_requested;
+    if (mindRequested === false) {
+      return "Mind was not requested for this turn.";
+    }
+    return "No Mind runs for this correlation yet.";
+  }
+
+  function openMindRunsModal(correlationId, triggerEl = null, turnMeta = null) {
     if (!mindRunsModal || !correlationId) return;
     mindModalLastFocus = triggerEl && typeof triggerEl.focus === "function" ? triggerEl : document.activeElement;
     mindRunsModal.classList.remove("hidden");
@@ -993,7 +1012,7 @@ loadDismissedIds();
       mindRunsModalDetails.textContent = "Select a run.";
     }
     enableMindModalFocusTrap();
-    refreshMindRunsForCorrelation(correlationId);
+    refreshMindRunsForCorrelation(correlationId, turnMeta);
     syncDebugModalScrollLock();
   }
 
@@ -1122,7 +1141,7 @@ loadDismissedIds();
     return await response.json();
   }
 
-  async function refreshMindRunsForCorrelation(correlationId) {
+  async function refreshMindRunsForCorrelation(correlationId, turnMeta = null) {
     if (!mindRunsModalList || !mindRunsModalStatus) return;
     if (!correlationId) {
       mindRunsModalStatus.textContent = "No correlation id available for this message.";
@@ -1141,7 +1160,7 @@ loadDismissedIds();
       }
       const rows = await response.json();
       if (!Array.isArray(rows) || rows.length === 0) {
-        mindRunsModalStatus.textContent = "No Mind runs for this correlation yet.";
+        mindRunsModalStatus.textContent = resolveMindRunsEmptyStatus(turnMeta);
         mindRunsModalList.innerHTML = '<div class="text-xs text-gray-500">No runs yet.</div>';
         if (mindRunsModalDetails) {
           mindRunsModalDetails.textContent = "Select a run.";
@@ -6416,7 +6435,7 @@ loadDismissedIds();
         mindButton.type = 'button';
         mindButton.className = 'rounded-full border border-indigo-500/40 bg-indigo-500/10 px-2 py-1 text-[10px] font-semibold text-indigo-200 hover:bg-indigo-500/20';
         mindButton.textContent = 'Mind';
-        mindButton.addEventListener('click', () => openMindRunsModal(mindCorrelationId, mindButton));
+        mindButton.addEventListener('click', () => openMindRunsModal(mindCorrelationId, mindButton, meta));
         actionRow.appendChild(mindButton);
       } else {
         const disabledMindButton = document.createElement('button');

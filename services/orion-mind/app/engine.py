@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,60 @@ _FACET_ORDER = (
     "metacog",
     "tool_outcomes",
     "misc",
+)
+
+_TECHNICAL_PATTERNS = (
+    r"\bapi\b",
+    r"\bbug\b",
+    r"\bcode\b",
+    r"\bcursor\b",
+    r"\bdebug\b",
+    r"\bdeploy\b",
+    r"\bdocker\b",
+    r"\berror\b",
+    r"\bgraphdb\b",
+    r"\blog(s)?\b",
+    r"\bpython\b",
+    r"\bschema\b",
+    r"\bservice\b",
+    r"\bsql\b",
+    r"\bstack\b",
+    r"\btimeout\b",
+)
+_PLANNING_PATTERNS = (
+    r"\bbuild\b",
+    r"\bdesign\b",
+    r"\bimplement\b",
+    r"\bnext step\b",
+    r"\bplan\b",
+    r"\bprompt\b",
+    r"\broadmap\b",
+)
+_REFLECTIVE_PATTERNS = (
+    r"\bautonomy\b",
+    r"\bcognition\b",
+    r"\bdream\b",
+    r"\bfeel\b",
+    r"\bidentity\b",
+    r"\bmeaning\b",
+    r"\bmind\b",
+    r"\borion\b",
+    r"\brelationship\b",
+)
+_RELATIONAL_PATTERNS = (
+    r"\bamanda\b",
+    r"\bbike(s)?\b",
+    r"\bfamily\b",
+    r"\bfriend\b",
+    r"\bgoing to\b",
+    r"\bhusband\b",
+    r"\bkid(s)?\b",
+    r"\blol\b",
+    r"\bshow\b",
+    r"\bthanks\b",
+    r"\bwatch\b",
+    r"\bwife\b",
+    r"[:;]-?\)",
 )
 
 
@@ -83,22 +138,71 @@ def deterministic_merge_stance(patch_structured_layers: list[dict[str, Any]]) ->
     return merged
 
 
+def _matches_any(text: str, patterns: tuple[str, ...]) -> bool:
+    return any(re.search(pattern, text) for pattern in patterns)
+
+
+def _deterministic_frame_from_user_text(user_text: str) -> tuple[str, str]:
+    """Tiny safe fallback classifier for contract-only Mind runs.
+
+    This is not meaningful synthesis. It exists only to avoid actively wrong
+    boilerplate such as marking every casual turn as technical.
+    """
+    lowered = (user_text or "").strip().lower()
+    if not lowered:
+        return "mixed", "direct_response"
+    if _matches_any(lowered, _TECHNICAL_PATTERNS):
+        return "technical", "technical_collaboration"
+    if _matches_any(lowered, _PLANNING_PATTERNS):
+        return "planning", "direct_response"
+    if _matches_any(lowered, _REFLECTIVE_PATTERNS):
+        return "reflective", "reflective_dialogue"
+    if _matches_any(lowered, _RELATIONAL_PATTERNS):
+        return "playful_relational", "playful_exchange"
+    return "mixed", "direct_response"
+
+
 def _default_stance_from_user_text(user_text: str) -> dict[str, Any]:
     ut = (user_text or "").strip()[:2000]
+    conversation_frame, task_mode = _deterministic_frame_from_user_text(ut)
     return {
-        "conversation_frame": "technical",
-        "task_mode": "direct_response",
+        "conversation_frame": conversation_frame,
+        "task_mode": task_mode,
         "identity_salience": "medium",
         "user_intent": ut or "(empty turn)",
-        "self_relevance": "Maintain coherence with Orion continuity.",
-        "juniper_relevance": "Collaborate with Juniper on the active thread.",
+        "self_relevance": "contract_only: no meaningful Mind synthesis produced.",
+        "juniper_relevance": "contract_only: preserve latest user turn without adding invented context.",
         "answer_strategy": "DirectAnswer",
-        "stance_summary": f"Deterministic stance seed ({len(ut)} chars).",
+        "stance_summary": f"Deterministic contract-only stance seed ({len(ut)} chars).",
     }
 
 
 def _elapsed_ms_wall_clock(t_run_start: float) -> float:
     return (time.perf_counter() - t_run_start) * 1000
+
+
+def _error_result(
+    *,
+    mind_run_id,
+    error_code: str,
+    diagnostics: list[str],
+    snapshot_hash: str,
+    trajectory: MindStanceTrajectoryV1 | None = None,
+    brief: MindHandoffBriefV1 | None = None,
+    timing_ms_by_phase: dict[str, float] | None = None,
+) -> MindRunResultV1:
+    return MindRunResultV1(
+        mind_run_id=mind_run_id,
+        ok=False,
+        error_code=error_code,
+        diagnostics=diagnostics,
+        snapshot_hash=snapshot_hash,
+        trajectory=trajectory or MindStanceTrajectoryV1(patches=[], merged_stance_brief={}, merge_policy="deterministic_merge"),
+        decision=MindControlDecisionV1(route_kind="no_chat", refusals=[{"code": error_code}]),
+        brief=brief or MindHandoffBriefV1(mind_quality="error"),
+        mind_quality="error",
+        timing_ms_by_phase=timing_ms_by_phase or {},
+    )
 
 
 def run_mind_deterministic(
@@ -125,15 +229,11 @@ def run_mind_deterministic(
 
     if _elapsed_ms_wall_clock(t_run_start) > wall_budget_ms:
         logger.info("mind_run_end mind_run_id=%s ok=False error=loop_budget_exceeded phase=snapshot", mind_run_id)
-        return MindRunResultV1(
+        return _error_result(
             mind_run_id=mind_run_id,
-            ok=False,
             error_code="loop_budget_exceeded",
             diagnostics=["wall_time_exceeded_after_snapshot"],
             snapshot_hash=snap_hash,
-            trajectory=MindStanceTrajectoryV1(patches=[], merged_stance_brief={}, merge_policy="deterministic_merge"),
-            decision=MindControlDecisionV1(route_kind="no_chat", refusals=[{"code": "loop_budget_exceeded"}]),
-            brief=MindHandoffBriefV1(),
             timing_ms_by_phase=phases,
         )
 
@@ -158,15 +258,12 @@ def run_mind_deterministic(
                 mind_run_id,
                 i,
             )
-            return MindRunResultV1(
+            return _error_result(
                 mind_run_id=mind_run_id,
-                ok=False,
                 error_code="loop_budget_exceeded",
                 diagnostics=[f"wall_time_exceeded_during_loop_at_index_{i}"],
                 snapshot_hash=snap_hash,
                 trajectory=MindStanceTrajectoryV1(patches=patches, merged_stance_brief={}, merge_policy="deterministic_merge"),
-                decision=MindControlDecisionV1(route_kind="no_chat", refusals=[{"code": "loop_budget_exceeded"}]),
-                brief=MindHandoffBriefV1(),
                 timing_ms_by_phase={**phases, "loops_partial_ms": (time.perf_counter() - t_loop) * 1000},
             )
         # llm_flags[i] True means LLM would run — v1 is deterministic only; no extra merge keys (avoid polluting ChatStanceBrief).
@@ -193,9 +290,8 @@ def run_mind_deterministic(
     if _elapsed_ms_wall_clock(t_run_start) > wall_budget_ms:
         logger.info("mind_run_end mind_run_id=%s ok=False error=loop_budget_exceeded phase=post_loops", mind_run_id)
         merged_partial = deterministic_merge_stance(layers)
-        return MindRunResultV1(
+        return _error_result(
             mind_run_id=mind_run_id,
-            ok=False,
             error_code="loop_budget_exceeded",
             diagnostics=["wall_time_exceeded_after_loops_before_merge"],
             snapshot_hash=snap_hash,
@@ -204,8 +300,6 @@ def run_mind_deterministic(
                 merged_stance_brief=merged_partial,
                 merge_policy="deterministic_merge",
             ),
-            decision=MindControlDecisionV1(route_kind="no_chat", refusals=[{"code": "loop_budget_exceeded"}]),
-            brief=MindHandoffBriefV1(),
             timing_ms_by_phase=phases,
         )
 
@@ -216,15 +310,13 @@ def run_mind_deterministic(
 
     if valid is None:
         logger.info("mind_run_end mind_run_id=%s ok=False error=stance_merge_invalid", mind_run_id)
-        return MindRunResultV1(
+        return _error_result(
             mind_run_id=mind_run_id,
-            ok=False,
             error_code="stance_merge_invalid",
             diagnostics=[err or "stance_merge_invalid", f"merged_keys={list(merged.keys())}"],
             snapshot_hash=snap_hash,
             trajectory=MindStanceTrajectoryV1(patches=patches, merged_stance_brief=merged, merge_policy="deterministic_merge"),
-            decision=MindControlDecisionV1(route_kind="no_chat", refusals=[{"code": "stance_merge_invalid", "detail": str(err)}]),
-            brief=MindHandoffBriefV1(),
+            brief=MindHandoffBriefV1(mind_quality="error"),
             timing_ms_by_phase=phases,
         )
 
@@ -248,17 +340,19 @@ def run_mind_deterministic(
         "mind.allowed_verbs": decision.allowed_verbs,
         "mind.mode_suggestion": decision.mode_suggestion,
         "mind.mode_binding": decision.mode_binding,
+        "mind.quality": "fallback_contract_only",
     }
     brief = MindHandoffBriefV1(
-        summary_one_paragraph="Deterministic mind run (v1).",
+        summary_one_paragraph="Fallback contract only — no meaningful Mind synthesis produced.",
         machine_contract=machine,
         mandatory_keys=["mind.route_kind", "mind.allowed_verbs"],
-        advisory_keys=["mind.mode_suggestion"],
+        advisory_keys=["mind.mode_suggestion", "mind.quality"],
         stance_payload=valid.model_dump(mode="json"),
+        mind_quality="fallback_contract_only",
     )
 
     phases["total_ms"] = _elapsed_ms_wall_clock(t_run_start)
-    logger.info("mind_run_end mind_run_id=%s ok=True snapshot_hash=%s", mind_run_id, snap_hash)
+    logger.info("mind_run_end mind_run_id=%s ok=True snapshot_hash=%s quality=fallback_contract_only", mind_run_id, snap_hash)
 
     return MindRunResultV1(
         mind_run_id=mind_run_id,
@@ -271,5 +365,6 @@ def run_mind_deterministic(
         ),
         decision=decision,
         brief=brief,
+        mind_quality="fallback_contract_only",
         timing_ms_by_phase=phases,
     )

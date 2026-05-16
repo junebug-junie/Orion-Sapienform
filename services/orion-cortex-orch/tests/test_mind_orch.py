@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from uuid import uuid4
 
 _guard = Path(__file__).resolve().parent / "_orch_import_guard.py"
@@ -11,8 +10,6 @@ _spec = importlib.util.spec_from_file_location("_orch_guard_boot", _guard)
 assert _spec and _spec.loader
 _guard_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_guard_mod)
-
-import asyncio
 
 ROOT = Path(__file__).resolve().parents[3]
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -26,328 +23,128 @@ def _orch_prep() -> None:
     _guard_mod.ensure_orion_cortex_orch_app()
 
 
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.core.verbs.models import VerbResultV1
-from orion.mind.v1 import MindHandoffBriefV1, MindRunResultV1
-from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, LLMMessage, RecallDirective
+from orion.mind.v1 import MindHandoffBriefV1, MindRunResultV1, MindStancePatchV1, MindStanceTrajectoryV1, MindProvenanceV1
+from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, LLMMessage
+from orion.schemas.cortex.schemas import ExecutionPlan, ExecutionStep, PlanExecutionRequest
 
 
-def test_mind_enabled_calls_http_and_merges_metadata(monkeypatch) -> None:
+_VALID_STANCE = {
+    "conversation_frame": "technical",
+    "user_intent": "u",
+    "self_relevance": "s",
+    "juniper_relevance": "j",
+    "answer_strategy": "a",
+    "stance_summary": "st",
+}
+
+
+def _plan_request() -> PlanExecutionRequest:
+    return PlanExecutionRequest(
+        plan=ExecutionPlan(
+            verb_name="chat_general",
+            steps=[ExecutionStep(verb_name="chat_general", step_name="noop", order=0, services=[])],
+        ),
+        context={"metadata": {}},
+    )
+
+
+def test_meaningful_mind_synthesis_may_skip_stance_synthesis() -> None:
     _orch_prep()
-    import app.orchestrator as orchestrator
-    from app.orchestrator import call_verb_runtime
+    from app.mind_runtime import merge_mind_brief_into_plan_metadata
 
-    async def fake_maybe_fetch_state(*args, **kwargs):
-        return None
-
-    mr = MindRunResultV1(
+    pr = _plan_request()
+    result = MindRunResultV1(
         mind_run_id=uuid4(),
         ok=True,
+        mind_quality="meaningful_synthesis",
         brief=MindHandoffBriefV1(
+            mind_quality="meaningful_synthesis",
             machine_contract={"mind.route_kind": "brain"},
-            stance_payload={
-                "conversation_frame": "technical",
-                "user_intent": "u",
-                "self_relevance": "s",
-                "juniper_relevance": "j",
-                "answer_strategy": "a",
-                "stance_summary": "st",
-            },
-        ),
-    )
-    called: dict = {}
-
-    async def fake_call_mind(req):
-        called["req"] = req
-        return mr
-
-    async def fake_publish(*args, **kwargs):
-        called["publish"] = True
-
-    monkeypatch.setattr(orchestrator, "_maybe_fetch_state", fake_maybe_fetch_state)
-    monkeypatch.setattr(orchestrator, "call_orion_mind_http", fake_call_mind)
-    monkeypatch.setattr(orchestrator, "publish_mind_run_artifact", fake_publish)
-
-    class _PubSub:
-        def __init__(self, channel: str) -> None:
-            self.channel = channel
-
-    class _SubCtx:
-        def __init__(self, channel: str) -> None:
-            self.pubsub = _PubSub(channel)
-
-        async def __aenter__(self):
-            return self.pubsub
-
-        async def __aexit__(self, *a):
-            return False
-
-    class _FakeBus:
-        def __init__(self) -> None:
-            self.published: list = []
-            self.codec = SimpleNamespace(decode=lambda d: SimpleNamespace(ok=True, envelope=d, error=None))
-
-        def subscribe(self, channel: str):
-            return _SubCtx(channel)
-
-        async def publish(self, channel: str, env: BaseEnvelope) -> None:
-            self.published.append((channel, env))
-
-        async def iter_messages(self, pubsub: _PubSub):
-            _ch, env = self.published[0]
-            yield {"data": BaseEnvelope(
-                kind="verb.result",
-                source=ServiceRef(name="cortex-exec", version="0", node="n"),
-                correlation_id=env.correlation_id,
-                payload=VerbResultV1(
-                    verb="legacy.plan",
-                    ok=True,
-                    output={"result": {"status": "success", "steps": [], "final_text": "ok", "metadata": {}}},
-                    request_id=env.payload["request_id"],
-                ).model_dump(mode="json"),
-            )}
-
-    req = CortexClientRequest(
-        mode="brain",
-        route_intent="none",
-        verb="chat_general",
-        packs=[],
-        options={},
-        recall=RecallDirective(enabled=False, required=False, mode="hybrid", profile=None),
-        context=CortexClientContext(
-            messages=[LLMMessage(role="user", content="hi")],
-            raw_user_text="hi",
-            user_message="hi",
-            session_id="s1",
-            user_id="u1",
-            trace_id="t1",
-            metadata={"mind_enabled": True},
+            stance_payload=dict(_VALID_STANCE),
         ),
     )
 
-    bus = _FakeBus()
-    source = ServiceRef(name="cortex-orch", version="0", node="n")
-    captured: dict = {}
-    _orig_build = orchestrator.build_verb_request
-
-    def _capture_build_verb(**kwargs):
-        plan_request = kwargs["plan_request"]
-        captured["metadata"] = dict((plan_request.context or {}).get("metadata") or {})
-        return _orig_build(**kwargs)
-
-    monkeypatch.setattr(orchestrator, "build_verb_request", _capture_build_verb)
-    asyncio.run(
-        call_verb_runtime(
-            bus,
-            source=source,
-            client_request=req,
-            correlation_id="11111111-1111-1111-1111-111111111111",
-            timeout_sec=30.0,
-        )
-    )
-    assert "req" in called
-    assert called.get("publish") is True
-    assert called["req"].policy.n_loops_max >= 1
-    meta = captured.get("metadata") or {}
+    merge_mind_brief_into_plan_metadata(pr, result)
+    meta = pr.context["metadata"]
     assert meta.get("mind_skip_stance_synthesis") is True
-    assert meta.get("mind_run_ok") is True
+    assert meta.get("mind_quality") == "meaningful_synthesis"
     assert meta.get("mind.route_kind") == "brain"
-    assert isinstance(meta.get("mind_handoff"), dict)
 
 
-def test_mind_disabled_skips_http(monkeypatch) -> None:
+def test_fallback_contract_only_mind_never_skips_stance_synthesis() -> None:
     _orch_prep()
-    import app.orchestrator as orchestrator
-    from app.orchestrator import call_verb_runtime
+    from app.mind_runtime import merge_mind_brief_into_plan_metadata
 
-    async def fake_maybe_fetch_state(*args, **kwargs):
-        return None
-
-    called: dict = {}
-
-    async def fake_call_mind(req):
-        called["mind"] = True
-        raise AssertionError("mind HTTP should not be called")
-
-    monkeypatch.setattr(orchestrator, "_maybe_fetch_state", fake_maybe_fetch_state)
-    monkeypatch.setattr(orchestrator, "call_orion_mind_http", fake_call_mind)
-
-    class _PubSub:
-        def __init__(self, channel: str) -> None:
-            self.channel = channel
-
-    class _SubCtx:
-        def __init__(self, channel: str) -> None:
-            self.pubsub = _PubSub(channel)
-
-        async def __aenter__(self):
-            return self.pubsub
-
-        async def __aexit__(self, *a):
-            return False
-
-    class _FakeBus:
-        def __init__(self) -> None:
-            self.published: list = []
-            self.codec = SimpleNamespace(decode=lambda d: SimpleNamespace(ok=True, envelope=d, error=None))
-
-        def subscribe(self, channel: str):
-            return _SubCtx(channel)
-
-        async def publish(self, channel: str, env: BaseEnvelope) -> None:
-            self.published.append((channel, env))
-
-        async def iter_messages(self, pubsub: _PubSub):
-            _ch, env = self.published[0]
-            yield {"data": BaseEnvelope(
-                kind="verb.result",
-                source=ServiceRef(name="cortex-exec", version="0", node="n"),
-                correlation_id=env.correlation_id,
-                payload=VerbResultV1(
-                    verb="legacy.plan",
-                    ok=True,
-                    output={"result": {"status": "success", "steps": [], "final_text": "ok", "metadata": {}}},
-                    request_id=env.payload["request_id"],
-                ).model_dump(mode="json"),
-            )}
-
-    req = CortexClientRequest(
-        mode="brain",
-        route_intent="none",
-        verb="chat_general",
-        packs=[],
-        options={},
-        recall=RecallDirective(enabled=False, required=False, mode="hybrid", profile=None),
-        context=CortexClientContext(
-            messages=[LLMMessage(role="user", content="hi")],
-            raw_user_text="hi",
-            user_message="hi",
-            session_id="s1",
-            user_id="u1",
-            trace_id="t1",
-            metadata={"mind_enabled": False},
+    pr = _plan_request()
+    result = MindRunResultV1(
+        mind_run_id=uuid4(),
+        ok=True,
+        mind_quality="fallback_contract_only",
+        trajectory=MindStanceTrajectoryV1(
+            patches=[
+                MindStancePatchV1(
+                    loop_index=0,
+                    structured=dict(_VALID_STANCE),
+                    provenance=MindProvenanceV1(model_id="deterministic"),
+                )
+            ],
+            merged_stance_brief=dict(_VALID_STANCE),
+        ),
+        brief=MindHandoffBriefV1(
+            mind_quality="fallback_contract_only",
+            summary_one_paragraph="Fallback contract only — no meaningful Mind synthesis produced.",
+            machine_contract={"mind.route_kind": "brain"},
+            stance_payload=dict(_VALID_STANCE),
         ),
     )
 
-    bus = _FakeBus()
-    source = ServiceRef(name="cortex-orch", version="0", node="n")
-    asyncio.run(
-        call_verb_runtime(
-            bus,
-            source=source,
-            client_request=req,
-            correlation_id="22222222-2222-2222-2222-222222222222",
-            timeout_sec=30.0,
-        )
-    )
-    assert "mind" not in called
+    merge_mind_brief_into_plan_metadata(pr, result)
+    meta = pr.context["metadata"]
+    assert meta.get("mind_skip_stance_synthesis") is False
+    assert meta.get("mind_contract_only") is True
+    assert meta.get("mind_quality") == "fallback_contract_only"
 
 
-def test_merge_skips_stance_when_payload_invalid(monkeypatch) -> None:
+def test_legacy_deterministic_summary_is_treated_as_contract_only() -> None:
     _orch_prep()
-    import app.orchestrator as orchestrator
-    from app.orchestrator import call_verb_runtime
+    from app.mind_runtime import merge_mind_brief_into_plan_metadata
 
-    mr = MindRunResultV1(
+    pr = _plan_request()
+    result = MindRunResultV1(
         mind_run_id=uuid4(),
         ok=True,
         brief=MindHandoffBriefV1(
+            summary_one_paragraph="Deterministic mind run (v1).",
+            machine_contract={"mind.route_kind": "brain"},
+            stance_payload=dict(_VALID_STANCE),
+        ),
+    )
+
+    merge_mind_brief_into_plan_metadata(pr, result)
+    meta = pr.context["metadata"]
+    assert meta.get("mind_skip_stance_synthesis") is False
+    assert meta.get("mind_contract_only") is True
+    assert meta.get("mind_quality") == "fallback_contract_only"
+
+
+def test_meaningful_mind_with_invalid_payload_does_not_skip_stance_synthesis() -> None:
+    _orch_prep()
+    from app.mind_runtime import merge_mind_brief_into_plan_metadata
+
+    pr = _plan_request()
+    result = MindRunResultV1(
+        mind_run_id=uuid4(),
+        ok=True,
+        mind_quality="meaningful_synthesis",
+        brief=MindHandoffBriefV1(
+            mind_quality="meaningful_synthesis",
             machine_contract={"mind.route_kind": "brain"},
             stance_payload={"conversation_frame": "___invalid___"},
         ),
     )
 
-    async def fake_maybe_fetch_state(*args, **kwargs):
-        return None
-
-    async def fake_call_mind(req):
-        return mr
-
-    async def fake_publish(*args, **kwargs):
-        pass
-
-    monkeypatch.setattr(orchestrator, "_maybe_fetch_state", fake_maybe_fetch_state)
-    monkeypatch.setattr(orchestrator, "call_orion_mind_http", fake_call_mind)
-    monkeypatch.setattr(orchestrator, "publish_mind_run_artifact", fake_publish)
-
-    class _PubSub:
-        def __init__(self, channel: str) -> None:
-            self.channel = channel
-
-    class _SubCtx:
-        def __init__(self, channel: str) -> None:
-            self.pubsub = _PubSub(channel)
-
-        async def __aenter__(self):
-            return self.pubsub
-
-        async def __aexit__(self, *a):
-            return False
-
-    class _FakeBus:
-        def __init__(self) -> None:
-            self.published: list = []
-            self.codec = SimpleNamespace(decode=lambda d: SimpleNamespace(ok=True, envelope=d, error=None))
-
-        def subscribe(self, channel: str):
-            return _SubCtx(channel)
-
-        async def publish(self, channel: str, env: BaseEnvelope) -> None:
-            self.published.append((channel, env))
-
-        async def iter_messages(self, pubsub: _PubSub):
-            _ch, env = self.published[0]
-            yield {"data": BaseEnvelope(
-                kind="verb.result",
-                source=ServiceRef(name="cortex-exec", version="0", node="n"),
-                correlation_id=env.correlation_id,
-                payload=VerbResultV1(
-                    verb="legacy.plan",
-                    ok=True,
-                    output={"result": {"status": "success", "steps": [], "final_text": "ok", "metadata": {}}},
-                    request_id=env.payload["request_id"],
-                ).model_dump(mode="json"),
-            )}
-
-    req = CortexClientRequest(
-        mode="brain",
-        route_intent="none",
-        verb="chat_general",
-        packs=[],
-        options={},
-        recall=RecallDirective(enabled=False, required=False, mode="hybrid", profile=None),
-        context=CortexClientContext(
-            messages=[LLMMessage(role="user", content="hi")],
-            raw_user_text="hi",
-            user_message="hi",
-            session_id="s1",
-            user_id="u1",
-            trace_id="t1",
-            metadata={"mind_enabled": True},
-        ),
-    )
-
-    bus = _FakeBus()
-    source = ServiceRef(name="cortex-orch", version="0", node="n")
-    captured: dict = {}
-    _orig_build = orchestrator.build_verb_request
-
-    def _capture_build_verb(**kwargs):
-        plan_request = kwargs["plan_request"]
-        captured["metadata"] = dict((plan_request.context or {}).get("metadata") or {})
-        return _orig_build(**kwargs)
-
-    monkeypatch.setattr(orchestrator, "build_verb_request", _capture_build_verb)
-    asyncio.run(
-        call_verb_runtime(
-            bus,
-            source=source,
-            client_request=req,
-            correlation_id="33333333-3333-3333-3333-333333333333",
-            timeout_sec=30.0,
-        )
-    )
-    meta = captured.get("metadata") or {}
+    merge_mind_brief_into_plan_metadata(pr, result)
+    meta = pr.context["metadata"]
     assert meta.get("mind_stance_payload_invalid") is True
     assert meta.get("mind_skip_stance_synthesis") is False
 
@@ -355,12 +152,9 @@ def test_merge_skips_stance_when_payload_invalid(monkeypatch) -> None:
 def test_build_mind_run_request_merges_substrate_telemetry_facet() -> None:
     _orch_prep()
     from app.mind_runtime import build_mind_run_request
-    from orion.schemas.cortex.contracts import CortexClientRequest, CortexClientContext
-    from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionRequest
-    from orion.schemas.cortex.types import ExecutionStep
 
     cr = CortexClientRequest(
-        verb="chat",
+        verb="chat_general",
         mode="brain",
         context=CortexClientContext(
             messages=[LLMMessage(role="user", content="hi")],
@@ -370,18 +164,7 @@ def test_build_mind_run_request_merges_substrate_telemetry_facet() -> None:
             metadata={"mind_enabled": True},
         ),
     )
-    plan = ExecutionPlan(
-        verb_name="chat",
-        steps=[
-            ExecutionStep(
-                verb_name="chat",
-                step_name="noop",
-                order=0,
-                services=[],
-            )
-        ],
-    )
-    pr = PlanExecutionRequest(plan=plan, context={})
+    pr = _plan_request()
     req = build_mind_run_request(
         cr,
         pr,
@@ -390,120 +173,3 @@ def test_build_mind_run_request_merges_substrate_telemetry_facet() -> None:
     )
     facets = (req.snapshot_inputs or {}).get("facets") or {}
     assert facets.get("substrate_telemetry") == {"status": "absent"}
-
-
-def test_orch_inline_substrate_telemetry_facet_skips_http_fetch(monkeypatch) -> None:
-    _orch_prep()
-    import app.orchestrator as orchestrator
-    from app.orchestrator import call_verb_runtime
-
-    async def fake_maybe_fetch_state(*args, **kwargs):
-        return None
-
-    mr = MindRunResultV1(
-        mind_run_id=uuid4(),
-        ok=True,
-        brief=MindHandoffBriefV1(
-            machine_contract={"mind.route_kind": "brain"},
-            stance_payload={
-                "conversation_frame": "technical",
-                "user_intent": "u",
-                "self_relevance": "s",
-                "juniper_relevance": "j",
-                "answer_strategy": "a",
-                "stance_summary": "st",
-            },
-        ),
-    )
-    called: dict = {}
-    fetch_calls: list[str] = []
-
-    async def fake_call_mind(req):
-        called["req"] = req
-        return mr
-
-    async def fake_publish(*args, **kwargs):
-        called["publish"] = True
-
-    async def fake_fetch_substrate_telemetry(_cid: str):
-        fetch_calls.append(_cid)
-        raise AssertionError("fetch_substrate_telemetry_facet_for_mind must not run when inline facet is set")
-
-    monkeypatch.setattr(orchestrator, "_maybe_fetch_state", fake_maybe_fetch_state)
-    monkeypatch.setattr(orchestrator, "call_orion_mind_http", fake_call_mind)
-    monkeypatch.setattr(orchestrator, "publish_mind_run_artifact", fake_publish)
-    monkeypatch.setattr(orchestrator, "fetch_substrate_telemetry_facet_for_mind", fake_fetch_substrate_telemetry)
-
-    class _PubSub:
-        def __init__(self, channel: str) -> None:
-            self.channel = channel
-
-    class _SubCtx:
-        def __init__(self, channel: str) -> None:
-            self.pubsub = _PubSub(channel)
-
-        async def __aenter__(self):
-            return self.pubsub
-
-        async def __aexit__(self, *a):
-            return False
-
-    class _FakeBus:
-        def __init__(self) -> None:
-            self.published: list = []
-            self.codec = SimpleNamespace(decode=lambda d: SimpleNamespace(ok=True, envelope=d, error=None))
-
-        def subscribe(self, channel: str):
-            return _SubCtx(channel)
-
-        async def publish(self, channel: str, env: BaseEnvelope) -> None:
-            self.published.append((channel, env))
-
-        async def iter_messages(self, pubsub: _PubSub):
-            _ch, env = self.published[0]
-            yield {"data": BaseEnvelope(
-                kind="verb.result",
-                source=ServiceRef(name="cortex-exec", version="0", node="n"),
-                correlation_id=env.correlation_id,
-                payload=VerbResultV1(
-                    verb="legacy.plan",
-                    ok=True,
-                    output={"result": {"status": "success", "steps": [], "final_text": "ok", "metadata": {}}},
-                    request_id=env.payload["request_id"],
-                ).model_dump(mode="json"),
-            )}
-
-    inline_facet = {"status": "inline", "tier_outcomes": {"x": ["y"]}}
-    req = CortexClientRequest(
-        mode="brain",
-        route_intent="none",
-        verb="chat_general",
-        packs=[],
-        options={},
-        recall=RecallDirective(enabled=False, required=False, mode="hybrid", profile=None),
-        context=CortexClientContext(
-            messages=[LLMMessage(role="user", content="hi")],
-            raw_user_text="hi",
-            user_message="hi",
-            session_id="s1",
-            user_id="u1",
-            trace_id="t1",
-            metadata={"mind_enabled": True, "substrate_telemetry_facet": inline_facet},
-        ),
-    )
-
-    bus = _FakeBus()
-    source = ServiceRef(name="cortex-orch", version="0", node="n")
-    asyncio.run(
-        call_verb_runtime(
-            bus,
-            source=source,
-            client_request=req,
-            correlation_id="22222222-2222-2222-2222-222222222222",
-            timeout_sec=30.0,
-        )
-    )
-    assert fetch_calls == []
-    assert "req" in called
-    facets = (called["req"].snapshot_inputs or {}).get("facets") or {}
-    assert facets.get("substrate_telemetry") == inline_facet

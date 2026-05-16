@@ -12,6 +12,7 @@ TrustLevelV1 = Literal["low", "med", "high"]
 HypothesisTagV1 = Literal["assumption", "hypothesis", "simulation_result"]
 MergePolicyV1 = Literal["deterministic_merge"]
 BindingV1 = Literal["advisory", "mandatory"]
+MindQualityV1 = Literal["meaningful_synthesis", "fallback_contract_only", "empty", "error"]
 
 
 class MindRunPolicyV1(BaseModel):
@@ -89,6 +90,7 @@ class MindHandoffBriefV1(BaseModel):
     mandatory_keys: list[str] = Field(default_factory=list)
     advisory_keys: list[str] = Field(default_factory=list)
     stance_payload: dict[str, Any] = Field(default_factory=dict)
+    mind_quality: MindQualityV1 = "empty"
 
 
 class MindRunResultV1(BaseModel):
@@ -100,4 +102,5 @@ class MindRunResultV1(BaseModel):
     trajectory: MindStanceTrajectoryV1 = Field(default_factory=MindStanceTrajectoryV1)
     decision: MindControlDecisionV1 = Field(default_factory=MindControlDecisionV1)
     brief: MindHandoffBriefV1 = Field(default_factory=MindHandoffBriefV1)
+    mind_quality: MindQualityV1 = "empty"
     timing_ms_by_phase: dict[str, float] = Field(default_factory=dict)

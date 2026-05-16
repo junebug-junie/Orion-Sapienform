@@ -196,6 +196,27 @@ def unified_beliefs_for_context(
     return beliefs
 
 
+def unified_beliefs_for_chat_stance(
+    ctx: dict[str, Any] | None,
+    *,
+    timeout_sec: float | None = None,
+) -> UnifiedRelationalBeliefSetV1 | None:
+    """Compatibility seam for Exec chat stance unified-belief reads.
+
+    This is the Phase-4 convergence target for
+    ``services/orion-cortex-exec/app/chat_stance.py::_unified_beliefs_for_stance``.
+    It preserves chat stance's historical anchors and cold-path telemetry behavior
+    while ensuring the registry/store/build logic is owned here rather than in the
+    service module.
+    """
+    return unified_beliefs_for_context(
+        ctx,
+        anchors=DEFAULT_PROJECTION_ANCHORS,
+        timeout_sec=timeout_sec,
+        publish_tier_outcomes=True,
+    )
+
+
 def build_cognitive_projection_for_context(
     ctx: dict[str, Any] | None,
     *,

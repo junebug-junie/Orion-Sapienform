@@ -23,7 +23,14 @@ def _orch_prep() -> None:
     _guard_mod.ensure_orion_cortex_orch_app()
 
 
-from orion.mind.v1 import MindHandoffBriefV1, MindRunResultV1, MindStancePatchV1, MindStanceTrajectoryV1, MindProvenanceV1
+from orion.mind.v1 import (
+    MindHandoffBriefV1,
+    MindProvenanceV1,
+    MindRunResultV1,
+    MindShadowSynthesisV1,
+    MindStancePatchV1,
+    MindStanceTrajectoryV1,
+)
 from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, LLMMessage
 from orion.schemas.cortex.schemas import ExecutionPlan, ExecutionStep, PlanExecutionRequest
 
@@ -73,6 +80,7 @@ def test_meaningful_mind_synthesis_may_skip_stance_synthesis() -> None:
         mind_quality="meaningful_synthesis",
         brief=MindHandoffBriefV1(
             mind_quality="meaningful_synthesis",
+            mind_authorized_for_stance_skip=True,
             machine_contract={"mind.route_kind": "brain"},
             stance_payload=dict(_VALID_STANCE),
         ),
@@ -83,6 +91,66 @@ def test_meaningful_mind_synthesis_may_skip_stance_synthesis() -> None:
     assert meta.get("mind_skip_stance_synthesis") is True
     assert meta.get("mind_quality") == "meaningful_synthesis"
     assert meta.get("mind.route_kind") == "brain"
+
+
+def test_meaningful_mind_synthesis_without_authorization_does_not_skip_stance_synthesis() -> None:
+    _orch_prep()
+    from app.mind_runtime import merge_mind_brief_into_plan_metadata
+
+    pr = _plan_request()
+    result = MindRunResultV1(
+        mind_run_id=uuid4(),
+        ok=True,
+        mind_quality="meaningful_synthesis",
+        brief=MindHandoffBriefV1(
+            mind_quality="meaningful_synthesis",
+            mind_authorized_for_stance_skip=False,
+            machine_contract={"mind.route_kind": "brain"},
+            stance_payload=dict(_VALID_STANCE),
+        ),
+    )
+
+    merge_mind_brief_into_plan_metadata(pr, result)
+    meta = pr.context["metadata"]
+    assert meta.get("mind_skip_stance_synthesis") is False
+
+
+def test_shadow_synthesis_is_preserved_but_never_skips_stance_synthesis() -> None:
+    _orch_prep()
+    from app.mind_runtime import merge_mind_brief_into_plan_metadata
+
+    pr = _plan_request()
+    shadow = MindShadowSynthesisV1(
+        present=True,
+        authorized_for_stance_skip=False,
+        stance_candidate=dict(_VALID_STANCE),
+        attention_focus=["projection item"],
+        projection_refs_used=["node-1"],
+        confidence=0.5,
+        rationale="test shadow",
+    )
+    result = MindRunResultV1(
+        mind_run_id=uuid4(),
+        ok=True,
+        mind_quality="shadow_synthesis",
+        brief=MindHandoffBriefV1(
+            mind_quality="shadow_synthesis",
+            shadow_synthesis=shadow,
+            mind_authorized_for_stance_skip=False,
+            machine_contract={"mind.route_kind": "brain", "mind.shadow_synthesis_present": True},
+            stance_payload=dict(_VALID_STANCE),
+        ),
+    )
+
+    merge_mind_brief_into_plan_metadata(pr, result)
+    meta = pr.context["metadata"]
+    assert meta.get("mind_quality") == "shadow_synthesis"
+    assert meta.get("mind_shadow_synthesis_present") is True
+    assert meta.get("mind_shadow_synthesis", {}).get("schema_version") == "mind.shadow_synthesis.v1"
+    assert meta.get("mind_shadow_synthesis", {}).get("projection_refs_used") == ["node-1"]
+    assert meta.get("mind_authorized_for_stance_skip") is False
+    assert meta.get("mind_skip_stance_synthesis") is False
+    assert meta.get("mind_contract_only") is True
 
 
 def test_fallback_contract_only_mind_never_skips_stance_synthesis() -> None:
@@ -152,6 +220,7 @@ def test_meaningful_mind_with_invalid_payload_does_not_skip_stance_synthesis() -
         mind_quality="meaningful_synthesis",
         brief=MindHandoffBriefV1(
             mind_quality="meaningful_synthesis",
+            mind_authorized_for_stance_skip=True,
             machine_contract={"mind.route_kind": "brain"},
             stance_payload={"conversation_frame": "___invalid___"},
         ),

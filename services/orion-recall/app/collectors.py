@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from typing import List
 
+from .profiles import get_profile
 from .settings import settings
+from .source_policy import recall_vector_allowed
 from .types import Fragment, RecallQuery
 from .storage.sql_adapter import fetch_sql_fragments
 from .storage.vector_adapter import fetch_vector_fragments
@@ -29,7 +31,9 @@ def collect_fragments(q: RecallQuery) -> List[Fragment]:
         )
 
     # Vector neighbors (Chroma / orion-vector-db)
-    if settings.RECALL_ENABLE_VECTOR and settings.RECALL_VECTOR_BASE_URL:
+    profile = get_profile(getattr(q, "profile", None) or settings.RECALL_DEFAULT_PROFILE)
+    vec_allowed, _ = recall_vector_allowed(profile, settings, path="collectors")
+    if vec_allowed and settings.RECALL_VECTOR_BASE_URL:
         fragments.extend(
             fetch_vector_fragments(
                 query_text=q.query_text,

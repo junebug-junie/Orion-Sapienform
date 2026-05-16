@@ -633,6 +633,8 @@ channels:
     stability: "experimental"
     since: "2026-01-08"
 
+  # RecallDecisionV1.recall_debug documented keys: RecallDebugV1 (vector_policy, source_gating).
+  # Substrate recall adapter diagnostics: RecallAdapterDiagnosticsV1 on mapped node metadata.
   - name: "orion:recall:telemetry"
     kind: "telemetry"
     schema_id: "RecallDecisionV1"

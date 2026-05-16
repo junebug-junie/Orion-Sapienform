@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class MemoryItemV1(BaseModel):
@@ -74,6 +74,81 @@ class RecallReplyV1(BaseModel):
     debug: Optional[Dict[str, Any]] = None
 
 
+RecallVectorPolicyReasonV1 = Literal[
+    "enabled",
+    "disabled_global",
+    "disabled_profile_vector_top_k_zero",
+    "disabled_profile_enable_vector_false",
+]
+
+
+class RecallVectorPolicyPathV1(BaseModel):
+    """Per-fetch-path vector gating outcome (see ``source_policy.recall_vector_allowed``)."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    allowed: bool
+    reason: RecallVectorPolicyReasonV1
+    profile: str = ""
+    vector_top_k: int = 0
+    recall_enable_vector: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("RECALL_ENABLE_VECTOR", "recall_enable_vector"),
+        serialization_alias="RECALL_ENABLE_VECTOR",
+    )
+    path: str = ""
+
+
+class RecallVectorPolicyV1(BaseModel):
+    """Path-keyed vector policy diagnostics attached under ``recall_debug.vector_policy``."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    main: Optional[RecallVectorPolicyPathV1] = None
+    anchor: Optional[RecallVectorPolicyPathV1] = None
+    graphtri: Optional[RecallVectorPolicyPathV1] = None
+    collectors: Optional[RecallVectorPolicyPathV1] = None
+    v2_shadow_exact: Optional[RecallVectorPolicyPathV1] = None
+    v2_shadow_semantic: Optional[RecallVectorPolicyPathV1] = None
+
+
+class RecallSourceGatingV1(BaseModel):
+    """Coarse source enablement labels under ``recall_debug.source_gating``."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    vector: Optional[str] = None
+    sql_timeline: Optional[str] = None
+    sql_chat: Optional[str] = None
+    rdf: Optional[str] = None
+
+
+class RecallAdapterDiagnosticsV1(BaseModel):
+    """Substrate recall adapter map/drop counters (``metadata.recall_adapter`` on first mapped node)."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    recall_fragments_seen: int = 0
+    recall_fragments_mapped: int = 0
+    recall_fragments_dropped: int = 0
+    dropped_counts_by_reason: Dict[str, int] = Field(default_factory=dict)
+    mapped_counts_by_source: Dict[str, int] = Field(default_factory=dict)
+    mapped_counts_by_node_type: Dict[str, int] = Field(default_factory=dict)
+    original_sources_seen: List[str] = Field(default_factory=list)
+
+
+class RecallDebugV1(BaseModel):
+    """Documented keys for ``RecallDecisionV1.recall_debug`` / v2 shadow debug payloads."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    vector_policy: Optional[RecallVectorPolicyV1] = None
+    source_gating: Optional[RecallSourceGatingV1] = None
+    compare_summary: Optional[Dict[str, Any]] = None
+    selected_evidence_cards: Optional[List[Dict[str, Any]]] = None
+    pressure_events: Optional[List[Dict[str, Any]]] = None
+
+
 class RecallDecisionV1(BaseModel):
     """Telemetry for recall decisions."""
 
@@ -92,7 +167,10 @@ class RecallDecisionV1(BaseModel):
     latency_ms: int = 0
     recall_debug: Dict[str, Any] = Field(
         default_factory=dict,
-        description="Bounded, structured diagnostics for recall decision explainability.",
+        description=(
+            "Bounded diagnostics for recall explainability. Documented shape: RecallDebugV1 "
+            "(vector_policy, source_gating, pressure_events, selected_evidence_cards)."
+        ),
     )
     ranking_debug: List[Dict[str, Optional[float | int | str | bool]]] = Field(
         default_factory=list,

@@ -18,6 +18,7 @@ from orion.mind.v1 import (
     MindHandoffBriefV1,
     MindRunRequestV1,
     MindRunResultV1,
+    MindShadowSynthesisV1,
     MindStancePatchV1,
     MindStanceTrajectoryV1,
     MindProvenanceV1,
@@ -184,8 +185,13 @@ def _snapshot_facets(snapshot: dict[str, Any]) -> dict[str, Any]:
     return dict(facets)
 
 
-def _cognitive_projection_debug(snapshot: dict[str, Any]) -> dict[str, Any]:
+def _cognitive_projection(snapshot: dict[str, Any]) -> dict[str, Any] | None:
     projection = _snapshot_facets(snapshot).get("cognitive_projection")
+    return projection if isinstance(projection, dict) else None
+
+
+def _cognitive_projection_debug(snapshot: dict[str, Any]) -> dict[str, Any]:
+    projection = _cognitive_projection(snapshot)
     if not isinstance(projection, dict):
         return {"present": False}
     anchors = projection.get("anchors") if isinstance(projection.get("anchors"), dict) else {}
@@ -200,6 +206,86 @@ def _cognitive_projection_debug(snapshot: dict[str, Any]) -> dict[str, Any]:
         "degraded_producers": projection.get("degraded_producers") if isinstance(projection.get("degraded_producers"), list) else [],
         "notes": projection.get("notes") if isinstance(projection.get("notes"), list) else [],
     }
+
+
+def _projection_items(projection: dict[str, Any] | None, *, limit: int = 8) -> list[dict[str, Any]]:
+    if not isinstance(projection, dict):
+        return []
+    anchors = projection.get("anchors") if isinstance(projection.get("anchors"), dict) else {}
+    items: list[dict[str, Any]] = []
+    for anchor, anchor_payload in anchors.items():
+        if not isinstance(anchor_payload, dict):
+            continue
+        for item in anchor_payload.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            enriched = dict(item)
+            enriched.setdefault("anchor", anchor)
+            items.append(enriched)
+    return sorted(
+        items,
+        key=lambda item: (float(item.get("salience") or 0.0), float(item.get("confidence") or 0.0), str(item.get("label") or "")),
+        reverse=True,
+    )[:limit]
+
+
+def _label_for_projection_item(item: dict[str, Any]) -> str:
+    for key in ("label", "summary", "node_id"):
+        value = item.get(key)
+        if value:
+            return str(value).strip()[:160]
+    return "projection item"
+
+
+def _build_shadow_synthesis(snapshot: dict[str, Any], base_stance: dict[str, Any]) -> MindShadowSynthesisV1 | None:
+    projection = _cognitive_projection(snapshot)
+    items = _projection_items(projection)
+    if not projection or not items:
+        return None
+
+    focus_items = items[:4]
+    labels = [_label_for_projection_item(item) for item in focus_items]
+    refs = [str(item.get("node_id") or item.get("item_id") or label) for item, label in zip(focus_items, labels)]
+    relationship_labels = [
+        _label_for_projection_item(item)
+        for item in focus_items
+        if str(item.get("anchor") or "").lower() == "relationship" or "relationship" in str(item.get("bucket") or "").lower()
+    ]
+    curiosity = []
+    if labels:
+        curiosity.append(f"Notice whether the turn connects to: {labels[0]}")
+    if len(labels) > 1:
+        curiosity.append(f"Consider a light follow-up around: {labels[1]}")
+
+    stance_candidate = dict(base_stance)
+    stance_candidate.update(
+        {
+            "stance_summary": "Shadow synthesis candidate from CognitiveProjectionV1; non-authoritative.",
+            "response_priorities": [
+                "use cognitive projection as context, not as truth",
+                "preserve current user turn",
+                "prefer concise, situated response",
+            ],
+            "active_relationship_facets": relationship_labels[:3],
+            "reflective_themes": labels[:4],
+        }
+    )
+    return MindShadowSynthesisV1(
+        present=True,
+        authorized_for_stance_skip=False,
+        stance_candidate=stance_candidate,
+        attention_focus=labels,
+        curiosity_candidate=curiosity,
+        relationship_frame=relationship_labels[0] if relationship_labels else None,
+        projection_refs_used=refs,
+        hazards=[
+            "shadow synthesis is non-authoritative",
+            "do not skip legacy chat stance from this candidate",
+            "do not invent facts beyond projection/source text",
+        ],
+        confidence=min(0.75, 0.35 + 0.05 * len(items)),
+        rationale="Deterministic shadow candidate extracted from top CognitiveProjectionV1 items for operator comparison.",
+    )
 
 
 def _elapsed_ms_wall_clock(t_run_start: float) -> float:
@@ -277,6 +363,7 @@ def run_mind_deterministic(
     layers: list[dict[str, Any]] = []
     t_loop = time.perf_counter()
     base = _default_stance_from_user_text(user_text)
+    shadow_synthesis = _build_shadow_synthesis(bounded, base)
     for i in range(n_loops):
         if _elapsed_ms_wall_clock(t_run_start) > wall_budget_ms:
             logger.info(
@@ -302,6 +389,9 @@ def run_mind_deterministic(
                 delta["cognitive_projection_seen"] = True
                 delta["cognitive_projection_id"] = cognitive_projection_debug.get("projection_id")
                 delta["cognitive_projection_item_count"] = cognitive_projection_debug.get("item_count")
+            if shadow_synthesis is not None:
+                delta["mind_shadow_synthesis_present"] = True
+                delta["mind_shadow_projection_refs_used"] = list(shadow_synthesis.projection_refs_used)
         else:
             delta["user_intent"] = base["user_intent"]
         layers.append(delta)
@@ -365,32 +455,46 @@ def run_mind_deterministic(
         mode_binding=mode_binding,  # type: ignore[arg-type]
         budgets={"wall_ms_remaining": float(req.policy.wall_time_ms_max), "truncated": _truncated},
     )
+    quality = "shadow_synthesis" if shadow_synthesis is not None else "fallback_contract_only"
     machine = {
         "mind.route_kind": decision.route_kind,
         "mind.allowed_verbs": decision.allowed_verbs,
         "mind.mode_suggestion": decision.mode_suggestion,
         "mind.mode_binding": decision.mode_binding,
-        "mind.quality": "fallback_contract_only",
+        "mind.quality": quality,
         "mind.cognitive_projection_seen": bool(cognitive_projection_debug.get("present")),
+        "mind.shadow_synthesis_present": shadow_synthesis is not None,
+        "mind.authorized_for_stance_skip": False,
     }
     if cognitive_projection_debug.get("present"):
         machine["mind.cognitive_projection_id"] = cognitive_projection_debug.get("projection_id")
         machine["mind.cognitive_projection_item_count"] = cognitive_projection_debug.get("item_count")
+    if shadow_synthesis is not None:
+        machine["mind.shadow_projection_refs_used"] = list(shadow_synthesis.projection_refs_used)
+        machine["mind.shadow_confidence"] = shadow_synthesis.confidence
     brief = MindHandoffBriefV1(
-        summary_one_paragraph="Fallback contract only — no meaningful Mind synthesis produced.",
+        summary_one_paragraph=(
+            "Shadow synthesis candidate produced from CognitiveProjectionV1; not authorized for stance skip."
+            if shadow_synthesis is not None
+            else "Fallback contract only — no meaningful Mind synthesis produced."
+        ),
         machine_contract=machine,
         mandatory_keys=["mind.route_kind", "mind.allowed_verbs"],
-        advisory_keys=["mind.mode_suggestion", "mind.quality", "mind.cognitive_projection_seen"],
+        advisory_keys=["mind.mode_suggestion", "mind.quality", "mind.cognitive_projection_seen", "mind.shadow_synthesis_present"],
         stance_payload=valid.model_dump(mode="json"),
-        mind_quality="fallback_contract_only",
+        mind_quality=quality,  # type: ignore[arg-type]
+        shadow_synthesis=shadow_synthesis,
+        mind_authorized_for_stance_skip=False,
     )
 
     phases["total_ms"] = _elapsed_ms_wall_clock(t_run_start)
     logger.info(
-        "mind_run_end mind_run_id=%s ok=True snapshot_hash=%s quality=fallback_contract_only cognitive_projection_seen=%s",
+        "mind_run_end mind_run_id=%s ok=True snapshot_hash=%s quality=%s cognitive_projection_seen=%s shadow_synthesis_present=%s",
         mind_run_id,
         snap_hash,
+        quality,
         bool(cognitive_projection_debug.get("present")),
+        shadow_synthesis is not None,
     )
 
     return MindRunResultV1(
@@ -404,6 +508,6 @@ def run_mind_deterministic(
         ),
         decision=decision,
         brief=brief,
-        mind_quality="fallback_contract_only",
+        mind_quality=quality,  # type: ignore[arg-type]
         timing_ms_by_phase=phases,
     )

@@ -102,7 +102,7 @@ class BusClient:
             kind="cortex.orch.request",
             source=self._service_ref(),
             correlation_id=corr,
-            causality_chain=causality_chain,
+            causality_chain=causality_chain or [],
             reply_to=reply_to,
             payload=req.model_dump(mode="json"),
         )

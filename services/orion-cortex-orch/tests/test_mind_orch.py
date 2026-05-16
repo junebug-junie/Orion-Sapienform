@@ -256,8 +256,24 @@ def test_build_mind_run_request_accepts_explicit_cognitive_projection_facet() ->
         "projection_id": "cog-proj-test",
         "generated_at": "2026-05-16T04:00:00+00:00",
         "source": "cognitive_unification_layer",
-        "anchors": {},
-        "item_count": 0,
+        "anchors": {
+            "orion": {
+                "anchor": "orion",
+                "items": [
+                    {
+                        "item_id": "item-explicit",
+                        "node_id": "node-explicit",
+                        "bucket": "concept",
+                        "node_kind": "concept",
+                        "label": "explicit",
+                        "summary": "explicit projection",
+                        "salience": 0.8,
+                        "confidence": 0.7,
+                    }
+                ],
+            }
+        },
+        "item_count": 1,
     }
     req = build_mind_run_request(
         _client_request(),
@@ -266,7 +282,8 @@ def test_build_mind_run_request_accepts_explicit_cognitive_projection_facet() ->
         cognitive_projection_facet=projection,
     )
     facets = (req.snapshot_inputs or {}).get("facets") or {}
-    assert facets.get("cognitive_projection") == projection
+    assert facets.get("cognitive_projection", {}).get("projection_id") == "cog-proj-test"
+    assert facets.get("cognitive_projection", {}).get("item_count") == 1
 
 
 def test_build_mind_run_request_accepts_inline_metadata_cognitive_projection_facet() -> None:
@@ -278,8 +295,24 @@ def test_build_mind_run_request_accepts_inline_metadata_cognitive_projection_fac
         "projection_id": "cog-proj-inline",
         "generated_at": "2026-05-16T04:00:00+00:00",
         "source": "cognitive_unification_layer",
-        "anchors": {},
-        "item_count": 0,
+        "anchors": {
+            "orion": {
+                "anchor": "orion",
+                "items": [
+                    {
+                        "item_id": "item-inline",
+                        "node_id": "node-inline",
+                        "bucket": "concept",
+                        "node_kind": "concept",
+                        "label": "inline",
+                        "summary": "inline projection",
+                        "salience": 0.8,
+                        "confidence": 0.7,
+                    }
+                ],
+            }
+        },
+        "item_count": 1,
     }
     req = build_mind_run_request(
         _client_request(metadata={"mind_enabled": True, "cognitive_projection_facet": projection}),
@@ -287,7 +320,8 @@ def test_build_mind_run_request_accepts_inline_metadata_cognitive_projection_fac
         "550e8400-e29b-41d4-a716-446655440000",
     )
     facets = (req.snapshot_inputs or {}).get("facets") or {}
-    assert facets.get("cognitive_projection") == projection
+    assert facets.get("cognitive_projection", {}).get("projection_id") == "cog-proj-inline"
+    assert facets.get("cognitive_projection", {}).get("item_count") == 1
 
 
 def test_build_mind_run_request_auto_builds_cognitive_projection(monkeypatch) -> None:
@@ -310,9 +344,20 @@ def test_build_mind_run_request_auto_builds_cognitive_projection(monkeypatch) ->
 
     def fake_build_projection(ctx, **kwargs):
         calls.append({"ctx": ctx, "kwargs": kwargs})
-        return _Projection()
+        return _Projection(), {"item_count": 0, "projection_sources_requested": ["identity_yaml"]}
 
-    monkeypatch.setattr(mind_runtime, "build_cognitive_projection_for_context", fake_build_projection)
+    def fake_cold(ctx, correlation_id):
+        return {
+            "schema_version": "cognitive.projection.v1",
+            "projection_id": "cog-proj-auto",
+            "generated_at": "2026-05-16T04:00:00+00:00",
+            "source": "cognitive_unification_layer",
+            "anchors": {},
+            "item_count": 0,
+        }, {"item_count": 0}
+
+    monkeypatch.setattr(mind_runtime, "build_cognitive_projection_for_mind_with_diagnostics", fake_build_projection)
+    monkeypatch.setattr(mind_runtime, "_build_cold_cognitive_projection_facet", fake_cold)
     req = build_mind_run_request(
         _client_request(),
         _plan_request(),
@@ -320,9 +365,112 @@ def test_build_mind_run_request_auto_builds_cognitive_projection(monkeypatch) ->
     )
 
     facets = (req.snapshot_inputs or {}).get("facets") or {}
-    assert facets.get("cognitive_projection", {}).get("projection_id") == "cog-proj-auto"
+    degraded = facets.get("cognitive_projection_degraded") or {}
+    resolution = facets.get("mind_projection_resolution") or {}
+    assert degraded.get("projection_id") == "cog-proj-auto" or resolution.get("cold_rebuild_failed") is True
+    assert resolution.get("warm_projection_empty") is True or resolution.get("inline_projection_missing") is True
     assert calls
     assert calls[0]["ctx"].get("correlation_id") == "550e8400-e29b-41d4-a716-446655440000"
     assert calls[0]["ctx"].get("user_message") == "hi"
     assert calls[0]["ctx"].get("metadata", {}).get("orion_state") == {"ok": True, "status": "present"}
-    assert calls[0]["kwargs"].get("publish_tier_outcomes") is False
+    assert calls[0]["kwargs"].get("publish_tier_outcomes") is True
+
+
+def test_build_mind_run_request_shares_populated_projection_in_plan_metadata(monkeypatch) -> None:
+    _orch_prep()
+    import app.mind_runtime as mind_runtime
+    from app.mind_runtime import build_mind_run_request
+
+    class _Projection:
+        def model_dump(self, mode: str = "json") -> dict:
+            return {
+                "schema_version": "cognitive.projection.v1",
+                "projection_id": "cog-proj-shared",
+                "generated_at": "2026-05-16T04:00:00+00:00",
+                "source": "cognitive_unification_layer",
+                "anchors": {
+                    "orion": {
+                        "anchor": "orion",
+                        "items": [
+                            {
+                                "item_id": "item-1",
+                                "node_id": "node-1",
+                                "bucket": "concept",
+                                "node_kind": "concept",
+                                "label": "shared",
+                                "summary": "shared projection",
+                                "salience": 0.8,
+                                "confidence": 0.7,
+                            }
+                        ],
+                    }
+                },
+                "item_count": 1,
+            }
+
+    monkeypatch.setattr(
+        mind_runtime,
+        "build_cognitive_projection_for_mind_with_diagnostics",
+        lambda ctx, **kwargs: (_Projection(), {"item_count": 1}),
+    )
+    plan = _plan_request()
+    build_mind_run_request(_client_request(), plan, "550e8400-e29b-41d4-a716-446655440000")
+    meta = plan.context["metadata"]
+    assert meta.get("cognitive_projection_facet", {}).get("projection_id") == "cog-proj-shared"
+    assert meta.get("cognitive_projection_source") == "orion_cortex_orch_mind_runtime"
+
+
+def test_build_mind_run_request_ignores_empty_inline_projection_shell(monkeypatch) -> None:
+    _orch_prep()
+    import app.mind_runtime as mind_runtime
+    from app.mind_runtime import build_mind_run_request
+
+    built = {
+        "schema_version": "cognitive.projection.v1",
+        "projection_id": "cog-proj-built",
+        "generated_at": "2026-05-16T04:00:00+00:00",
+        "source": "cognitive_unification_layer",
+        "anchors": {
+            "orion": {
+                "anchor": "orion",
+                "items": [
+                    {
+                        "item_id": "item-1",
+                        "node_id": "node-1",
+                        "bucket": "concept",
+                        "node_kind": "concept",
+                        "label": "x",
+                        "summary": "y",
+                        "salience": 0.5,
+                        "confidence": 0.5,
+                    }
+                ],
+            }
+        },
+        "item_count": 1,
+    }
+
+    class _Projection:
+        def model_dump(self, mode: str = "json") -> dict:
+            return dict(built)
+
+    def fake_build_projection(ctx, **kwargs):
+        return _Projection(), {"item_count": 1}
+
+    monkeypatch.setattr(mind_runtime, "build_cognitive_projection_for_mind_with_diagnostics", fake_build_projection)
+    empty_inline = {
+        "schema_version": "cognitive.projection.v1",
+        "projection_id": "cog-proj-inline-empty",
+        "generated_at": "2026-05-16T04:00:00+00:00",
+        "source": "cognitive_unification_layer",
+        "anchors": {},
+        "item_count": 0,
+    }
+    req = build_mind_run_request(
+        _client_request(metadata={"mind_enabled": True, "cognitive_projection_facet": empty_inline}),
+        _plan_request(),
+        "550e8400-e29b-41d4-a716-446655440000",
+    )
+    facets = (req.snapshot_inputs or {}).get("facets") or {}
+    assert facets.get("cognitive_projection", {}).get("projection_id") == "cog-proj-built"
+    assert facets.get("cognitive_projection", {}).get("item_count") == 1

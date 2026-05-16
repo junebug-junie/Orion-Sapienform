@@ -185,27 +185,129 @@ def _snapshot_facets(snapshot: dict[str, Any]) -> dict[str, Any]:
     return dict(facets)
 
 
+def _mind_projection_resolution(snapshot: dict[str, Any]) -> dict[str, Any]:
+    facets = _snapshot_facets(snapshot)
+    for key in ("mind_projection_resolution",):
+        value = facets.get(key)
+        if isinstance(value, dict):
+            return dict(value)
+    projection = facets.get("cognitive_projection")
+    if isinstance(projection, dict):
+        nested = projection.get("mind_projection_resolution")
+        if isinstance(nested, dict):
+            return dict(nested)
+    return {}
+
+
 def _cognitive_projection(snapshot: dict[str, Any]) -> dict[str, Any] | None:
-    projection = _snapshot_facets(snapshot).get("cognitive_projection")
-    return projection if isinstance(projection, dict) else None
+    facets = _snapshot_facets(snapshot)
+    projection = facets.get("cognitive_projection")
+    if isinstance(projection, dict) and _projection_items(projection):
+        return projection
+    degraded = facets.get("cognitive_projection_degraded")
+    if isinstance(degraded, dict):
+        return degraded
+    if isinstance(projection, dict):
+        return projection
+    return None
 
 
 def _cognitive_projection_debug(snapshot: dict[str, Any]) -> dict[str, Any]:
-    projection = _cognitive_projection(snapshot)
+    facets = _snapshot_facets(snapshot)
+    projection = facets.get("cognitive_projection")
     if not isinstance(projection, dict):
-        return {"present": False}
+        projection = facets.get("cognitive_projection_degraded")
+    resolution = _mind_projection_resolution(snapshot)
+    if not isinstance(projection, dict):
+        if resolution:
+            empty_shell = resolution.get("empty_projection_shell")
+            if isinstance(empty_shell, dict):
+                projection = empty_shell
+        if not isinstance(projection, dict):
+            return {"present": False, "resolution": resolution}
     anchors = projection.get("anchors") if isinstance(projection.get("anchors"), dict) else {}
+    build_diag = projection.get("projection_build_diagnostics")
+    if not isinstance(build_diag, dict):
+        build_diag = resolution.get("projection_build_diagnostics") if isinstance(resolution.get("projection_build_diagnostics"), dict) else {}
+    item_count = projection.get("item_count")
+    try:
+        counted = int(item_count or 0)
+    except Exception:
+        counted = 0
+    if counted <= 0:
+        counted = len(_projection_items(projection))
     return {
         "present": True,
         "schema_version": projection.get("schema_version"),
         "projection_id": projection.get("projection_id"),
         "generated_at": projection.get("generated_at"),
-        "item_count": projection.get("item_count"),
+        "item_count": counted,
         "anchor_count": len(anchors),
         "cold_anchors": projection.get("cold_anchors") if isinstance(projection.get("cold_anchors"), list) else [],
         "degraded_producers": projection.get("degraded_producers") if isinstance(projection.get("degraded_producers"), list) else [],
         "notes": projection.get("notes") if isinstance(projection.get("notes"), list) else [],
+        "build_diagnostics": build_diag if isinstance(build_diag, dict) else {},
+        "resolution": resolution,
     }
+
+
+def _projection_starvation_machine_keys(build_diag: dict[str, Any], resolution: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Surface Orch/build-time starvation diagnostics on the Mind machine contract."""
+    if not build_diag and not resolution:
+        return {}
+    keys: dict[str, Any] = {
+        "mind.projection_sources_requested": list(build_diag.get("projection_sources_requested") or []),
+        "mind.projection_sources_returned": list(build_diag.get("projection_sources_returned") or []),
+        "mind.projection_source_counts": dict(build_diag.get("source_counts") or {}),
+        "mind.projection_dropped_counts_by_reason": dict(build_diag.get("dropped_counts_by_reason") or {}),
+        "mind.projection_producer_errors": list(build_diag.get("producer_errors") or []),
+        "mind.projection_short_circuit_policy_active": bool(build_diag.get("short_circuit_policy_active")),
+        "mind.projection_build_path": build_diag.get("build_path"),
+    }
+    resolution = resolution if isinstance(resolution, dict) else {}
+    for flag in (
+        "inline_projection_missing",
+        "inline_projection_empty",
+        "inline_projection_nonempty",
+        "warm_projection_missing",
+        "warm_projection_empty",
+        "cold_rebuild_attempted",
+        "cold_rebuild_succeeded",
+        "cold_rebuild_failed",
+    ):
+        if flag in resolution:
+            keys[f"mind.projection_resolution.{flag}"] = bool(resolution.get(flag))
+    if resolution.get("resolution_path"):
+        keys["mind.projection_resolution.path"] = resolution.get("resolution_path")
+    if resolution.get("orch_invoked_before_exec"):
+        keys["mind.projection_resolution.orch_before_exec"] = True
+    return keys
+
+
+def _projection_starvation_summary(build_diag: dict[str, Any], item_count: int, resolution: dict[str, Any] | None = None) -> str:
+    if item_count > 0:
+        return ""
+    resolution = resolution if isinstance(resolution, dict) else {}
+    path = resolution.get("resolution_path") or build_diag.get("resolution_path")
+    short_circuit = bool(build_diag.get("short_circuit_policy_active"))
+    dropped = build_diag.get("dropped_counts_by_reason") if isinstance(build_diag.get("dropped_counts_by_reason"), dict) else {}
+    producer_errors = list(build_diag.get("producer_errors") or [])
+    reasons = ", ".join(f"{key}={value}" for key, value in sorted(dropped.items())[:4]) or "no_active_projection_items"
+    resolution_bits = [
+        bit
+        for bit, active in (
+            ("inline_empty", resolution.get("inline_projection_empty")),
+            ("warm_empty", resolution.get("warm_projection_empty")),
+            ("cold_failed", resolution.get("cold_rebuild_failed")),
+        )
+        if active
+    ]
+    resolution_note = f"; resolution={','.join(resolution_bits)}" if resolution_bits else ""
+    if short_circuit:
+        return f"Degraded Mind: projection short-circuited ({reasons}){resolution_note}."
+    if producer_errors:
+        return f"Degraded Mind: projection starved at Orch preflight ({reasons}); path={path}; producer_errors={producer_errors[:6]}{resolution_note}."
+    return f"Degraded Mind: projection starved at Orch preflight ({reasons}); path={path}{resolution_note}."
 
 
 def _projection_items(projection: dict[str, Any] | None, *, limit: int = 8) -> list[dict[str, Any]]:
@@ -456,6 +558,10 @@ def run_mind_deterministic(
         budgets={"wall_ms_remaining": float(req.policy.wall_time_ms_max), "truncated": _truncated},
     )
     quality = "shadow_synthesis" if shadow_synthesis is not None else "fallback_contract_only"
+    build_diag = cognitive_projection_debug.get("build_diagnostics") if isinstance(cognitive_projection_debug.get("build_diagnostics"), dict) else {}
+    resolution = cognitive_projection_debug.get("resolution") if isinstance(cognitive_projection_debug.get("resolution"), dict) else {}
+    item_count = int(cognitive_projection_debug.get("item_count") or 0)
+    projection_starved = bool(cognitive_projection_debug.get("present")) and item_count <= 0
     machine = {
         "mind.route_kind": decision.route_kind,
         "mind.allowed_verbs": decision.allowed_verbs,
@@ -465,18 +571,27 @@ def run_mind_deterministic(
         "mind.cognitive_projection_seen": bool(cognitive_projection_debug.get("present")),
         "mind.shadow_synthesis_present": shadow_synthesis is not None,
         "mind.authorized_for_stance_skip": False,
+        "mind.projection_starved": projection_starved,
+        "mind.contract_only_degraded": quality == "fallback_contract_only",
     }
     if cognitive_projection_debug.get("present"):
         machine["mind.cognitive_projection_id"] = cognitive_projection_debug.get("projection_id")
-        machine["mind.cognitive_projection_item_count"] = cognitive_projection_debug.get("item_count")
+        machine["mind.cognitive_projection_item_count"] = item_count
+    if projection_starved:
+        machine.update(_projection_starvation_machine_keys(build_diag, resolution))
     if shadow_synthesis is not None:
         machine["mind.shadow_projection_refs_used"] = list(shadow_synthesis.projection_refs_used)
         machine["mind.shadow_confidence"] = shadow_synthesis.confidence
+    starvation_summary = _projection_starvation_summary(build_diag, item_count, resolution)
     brief = MindHandoffBriefV1(
         summary_one_paragraph=(
             "Shadow synthesis candidate produced from CognitiveProjectionV1; not authorized for stance skip."
             if shadow_synthesis is not None
-            else "Fallback contract only — no meaningful Mind synthesis produced."
+            else (
+                starvation_summary
+                if starvation_summary
+                else "Fallback contract only — no meaningful Mind synthesis produced."
+            )
         ),
         machine_contract=machine,
         mandatory_keys=["mind.route_kind", "mind.allowed_verbs"],

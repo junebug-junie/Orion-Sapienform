@@ -16,6 +16,7 @@ from typing import Any, Callable
 
 from orion.cognition.projection import project_unified_beliefs_for_mind
 from orion.cognition.projection_builder import unified_beliefs_for_chat_stance
+from orion.mind.v1 import MindShadowSynthesisV1
 from orion.substrate.relational import UnifiedRelationalBeliefSetV1
 
 logger = logging.getLogger("orion.cortex.exec.chat_stance_shared_spine")
@@ -51,6 +52,171 @@ def _inline_projection_from_metadata(ctx: dict[str, Any]) -> dict[str, Any] | No
         if isinstance(value, dict):
             return value
     return None
+
+
+def _projection_items(projection: dict[str, Any] | None, *, limit: int = 8) -> list[dict[str, Any]]:
+    if not isinstance(projection, dict):
+        return []
+    anchors = projection.get("anchors") if isinstance(projection.get("anchors"), dict) else {}
+    items: list[dict[str, Any]] = []
+    for anchor, anchor_payload in anchors.items():
+        if not isinstance(anchor_payload, dict):
+            continue
+        for item in anchor_payload.get("items") or []:
+            if isinstance(item, dict):
+                enriched = dict(item)
+                enriched.setdefault("anchor", anchor)
+                items.append(enriched)
+    return sorted(
+        items,
+        key=lambda item: (float(item.get("salience") or 0.0), float(item.get("confidence") or 0.0), str(item.get("label") or "")),
+        reverse=True,
+    )[:limit]
+
+
+def _label_for_projection_item(item: dict[str, Any]) -> str:
+    for key in ("label", "summary", "node_id", "item_id"):
+        value = item.get(key)
+        if value:
+            return str(value).strip()[:160]
+    return "projection item"
+
+
+def _base_stance_for_shadow(ctx: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(ctx.get("chat_stance_brief"), dict):
+        return dict(ctx["chat_stance_brief"])
+    metadata = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+    handoff = metadata.get("mind_handoff") if isinstance(metadata, dict) else None
+    stance = handoff.get("stance_payload") if isinstance(handoff, dict) and isinstance(handoff.get("stance_payload"), dict) else None
+    if isinstance(stance, dict):
+        return dict(stance)
+    return {
+        "conversation_frame": "mixed",
+        "task_mode": "direct_response",
+        "identity_salience": "medium",
+        "user_intent": str(ctx.get("user_message") or ctx.get("raw_user_text") or "")[:2000],
+        "answer_strategy": "DirectAnswer",
+        "stance_summary": "Exec late shadow stance seed from populated CognitiveProjectionV1.",
+    }
+
+
+def _build_exec_late_shadow_synthesis(ctx: dict[str, Any]) -> MindShadowSynthesisV1 | None:
+    projection = ctx.get("chat_cognitive_projection") if isinstance(ctx.get("chat_cognitive_projection"), dict) else None
+    items = _projection_items(projection)
+    if not projection or not items:
+        return None
+    focus_items = items[:4]
+    labels = [_label_for_projection_item(item) for item in focus_items]
+    refs = [str(item.get("node_id") or item.get("item_id") or label) for item, label in zip(focus_items, labels)]
+    relationship_labels = [
+        _label_for_projection_item(item)
+        for item in focus_items
+        if str(item.get("anchor") or "").lower() == "relationship" or "relationship" in str(item.get("bucket") or "").lower()
+    ]
+    curiosity: list[str] = []
+    if labels:
+        curiosity.append(f"Notice whether the turn connects to: {labels[0]}")
+    if len(labels) > 1:
+        curiosity.append(f"Consider a light follow-up around: {labels[1]}")
+
+    stance_candidate = _base_stance_for_shadow(ctx)
+    stance_candidate.update(
+        {
+            "stance_summary": "Exec late shadow synthesis candidate from populated CognitiveProjectionV1; non-authoritative.",
+            "response_priorities": [
+                "use cognitive projection as context, not as truth",
+                "preserve current user turn",
+                "prefer concise, situated response",
+            ],
+            "active_relationship_facets": relationship_labels[:3],
+            "reflective_themes": labels[:4],
+        }
+    )
+    return MindShadowSynthesisV1(
+        present=True,
+        authorized_for_stance_skip=False,
+        stance_candidate=stance_candidate,
+        attention_focus=labels,
+        curiosity_candidate=curiosity,
+        relationship_frame=relationship_labels[0] if relationship_labels else None,
+        projection_refs_used=refs,
+        hazards=[
+            "exec late shadow synthesis is non-authoritative",
+            "do not skip legacy chat stance from this candidate",
+            "do not invent facts beyond projection/source text",
+        ],
+        confidence=min(0.75, 0.35 + 0.05 * len(items)),
+        rationale="Deterministic late shadow candidate extracted from populated Exec CognitiveProjectionV1 for operator comparison.",
+    )
+
+
+def _refresh_mind_shadow_metadata_from_projection(ctx: dict[str, Any]) -> None:
+    metadata = ctx.setdefault("metadata", {})
+    if not isinstance(metadata, dict):
+        return
+    projection = ctx.get("chat_cognitive_projection") if isinstance(ctx.get("chat_cognitive_projection"), dict) else None
+    item_count = _projection_item_count(projection)
+    if item_count <= 0:
+        return
+    existing_count = 0
+    try:
+        existing_count = int(metadata.get("mind.cognitive_projection_item_count") or 0)
+    except Exception:
+        existing_count = 0
+    if bool(metadata.get("mind_shadow_synthesis_present")) and existing_count >= item_count:
+        return
+
+    shadow = _build_exec_late_shadow_synthesis(ctx)
+    if shadow is None:
+        return
+    projection_id = projection.get("projection_id") if isinstance(projection, dict) else None
+    metadata["mind.cognitive_projection_seen"] = True
+    metadata["mind.cognitive_projection_id"] = projection_id
+    metadata["mind.cognitive_projection_item_count"] = item_count
+    metadata["mind.shadow_synthesis_present"] = True
+    metadata["mind.shadow_projection_refs_used"] = list(shadow.projection_refs_used)
+    metadata["mind.shadow_confidence"] = shadow.confidence
+    metadata["mind.authorized_for_stance_skip"] = False
+    metadata["mind_quality"] = "shadow_synthesis"
+    metadata["mind_contract_only"] = True
+    metadata["mind_run_ok"] = True
+    metadata["mind_skip_stance_synthesis"] = False
+    metadata["mind_authorized_for_stance_skip"] = False
+    metadata["mind_shadow_synthesis"] = shadow.model_dump(mode="json")
+    metadata["mind_shadow_synthesis_present"] = True
+    metadata["exec_late_mind_shadow_refreshed"] = True
+    handoff = metadata.get("mind_handoff") if isinstance(metadata.get("mind_handoff"), dict) else {}
+    handoff = dict(handoff)
+    machine = handoff.get("machine_contract") if isinstance(handoff.get("machine_contract"), dict) else {}
+    machine = dict(machine)
+    machine.update(
+        {
+            "mind.quality": "shadow_synthesis",
+            "mind.cognitive_projection_seen": True,
+            "mind.cognitive_projection_id": projection_id,
+            "mind.cognitive_projection_item_count": item_count,
+            "mind.shadow_synthesis_present": True,
+            "mind.shadow_projection_refs_used": list(shadow.projection_refs_used),
+            "mind.shadow_confidence": shadow.confidence,
+            "mind.authorized_for_stance_skip": False,
+        }
+    )
+    handoff.update(
+        {
+            "summary_one_paragraph": "Exec late shadow synthesis candidate produced from populated CognitiveProjectionV1; not authorized for stance skip.",
+            "machine_contract": machine,
+            "mind_quality": "shadow_synthesis",
+            "shadow_synthesis": shadow.model_dump(mode="json"),
+            "mind_authorized_for_stance_skip": False,
+        }
+    )
+    metadata["mind_handoff"] = handoff
+    logger.info(
+        "exec_late_mind_shadow_metadata_refreshed projection_id=%s item_count=%s refs=%s",
+        projection_id,
+        item_count,
+        list(shadow.projection_refs_used),
+    )
 
 
 def _record_shared_spine_marker(
@@ -160,11 +326,13 @@ def shared_build_chat_stance_debug_payload(*args: Any, **kwargs: Any) -> dict[st
     """Decorate legacy ChatStanceDebug with shared-spine/projection details."""
     if _ORIGINAL_DEBUG_BUILDER is None:
         raise RuntimeError("chat_stance_debug_builder_not_installed")
-    debug_payload = _ORIGINAL_DEBUG_BUILDER(*args, **kwargs)
     ctx = kwargs.get("ctx")
     if not isinstance(ctx, dict) and args:
         maybe_ctx = args[0]
         ctx = maybe_ctx if isinstance(maybe_ctx, dict) else None
+    if isinstance(ctx, dict):
+        _refresh_mind_shadow_metadata_from_projection(ctx)
+    debug_payload = _ORIGINAL_DEBUG_BUILDER(*args, **kwargs)
     if isinstance(debug_payload, dict) and isinstance(ctx, dict):
         return _inject_projection_debug(debug_payload, ctx)
     return debug_payload

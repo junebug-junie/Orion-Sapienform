@@ -49,7 +49,7 @@ def _inline_projection_from_metadata(ctx: dict[str, Any]) -> dict[str, Any] | No
     metadata = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
     for key in ("cognitive_projection_facet", "cognitive_projection"):
         value = metadata.get(key) if isinstance(metadata, dict) else None
-        if isinstance(value, dict):
+        if isinstance(value, dict) and _projection_item_count(value) > 0:
             return value
     return None
 

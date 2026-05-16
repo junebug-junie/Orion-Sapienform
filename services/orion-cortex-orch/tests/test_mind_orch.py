@@ -346,6 +346,50 @@ def test_build_mind_run_request_auto_builds_cognitive_projection(monkeypatch) ->
     assert calls[0]["kwargs"].get("publish_tier_outcomes") is True
 
 
+def test_build_mind_run_request_shares_populated_projection_in_plan_metadata(monkeypatch) -> None:
+    _orch_prep()
+    import app.mind_runtime as mind_runtime
+    from app.mind_runtime import build_mind_run_request
+
+    class _Projection:
+        def model_dump(self, mode: str = "json") -> dict:
+            return {
+                "schema_version": "cognitive.projection.v1",
+                "projection_id": "cog-proj-shared",
+                "generated_at": "2026-05-16T04:00:00+00:00",
+                "source": "cognitive_unification_layer",
+                "anchors": {
+                    "orion": {
+                        "anchor": "orion",
+                        "items": [
+                            {
+                                "item_id": "item-1",
+                                "node_id": "node-1",
+                                "bucket": "concept",
+                                "node_kind": "concept",
+                                "label": "shared",
+                                "summary": "shared projection",
+                                "salience": 0.8,
+                                "confidence": 0.7,
+                            }
+                        ],
+                    }
+                },
+                "item_count": 1,
+            }
+
+    monkeypatch.setattr(
+        mind_runtime,
+        "build_cognitive_projection_for_mind_with_diagnostics",
+        lambda ctx, **kwargs: (_Projection(), {"item_count": 1}),
+    )
+    plan = _plan_request()
+    build_mind_run_request(_client_request(), plan, "550e8400-e29b-41d4-a716-446655440000")
+    meta = plan.context["metadata"]
+    assert meta.get("cognitive_projection_facet", {}).get("projection_id") == "cog-proj-shared"
+    assert meta.get("cognitive_projection_source") == "orion_cortex_orch_mind_runtime"
+
+
 def test_build_mind_run_request_ignores_empty_inline_projection_shell(monkeypatch) -> None:
     _orch_prep()
     import app.mind_runtime as mind_runtime

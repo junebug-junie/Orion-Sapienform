@@ -158,6 +158,7 @@ def test_mind_projection_handoff_reuses_one_populated_projection() -> None:
     shared_spine = EXEC_SHARED_SPINE_PATH.read_text(encoding="utf-8")
 
     assert "_build_cold_cognitive_projection_facet" in mind_runtime
+    assert "InMemorySubstrateGraphStore" in mind_runtime
     assert "build_cognitive_projection_for_mind_with_diagnostics" in mind_runtime
     assert "metadata[\"cognitive_projection_facet\"] = projection" in mind_runtime
     assert "metadata[\"cognitive_projection\"] = projection" in mind_runtime

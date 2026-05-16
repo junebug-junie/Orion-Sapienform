@@ -11,19 +11,29 @@ from orion.graph.backend_config import (
     resolve_graph_update_url,
     strip_graph_credentials,
 )
-from orion.graph.sparql_client import GraphStoreClient, SparqlQueryClient, SparqlUpdateClient
+from orion.graph.sparql_client import (
+    GraphStoreClient,
+    SparqlHttpClient,
+    SparqlQueryClient,
+    SparqlUpdateClient,
+    redact_http_url_for_log,
+    resolve_substrate_sparql_http_basic_auth,
+)
 
 __all__ = [
     "GraphBackendConfig",
     "GraphStoreClient",
+    "SparqlHttpClient",
     "SparqlQueryClient",
     "SparqlUpdateClient",
     "is_legacy_graphdb_enabled",
+    "redact_http_url_for_log",
     "resolve_autonomy_read_query_url",
     "resolve_generic_sparql_read_query_url",
     "resolve_graph_backend",
     "resolve_graph_query_url",
     "resolve_graph_store_url",
     "resolve_graph_update_url",
+    "resolve_substrate_sparql_http_basic_auth",
     "strip_graph_credentials",
 ]

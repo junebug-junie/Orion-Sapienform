@@ -8191,7 +8191,8 @@ loadDismissedIds();
       };
     }
     const laneMode = String(currentMode || 'brain').toLowerCase();
-    const verbOverride = modeVerbOverride ? String(modeVerbOverride).trim() : '';
+    const verbOverrideRaw = modeVerbOverride ? String(modeVerbOverride).trim() : '';
+    const verbOverride = verbOverrideRaw.toLowerCase();
     if (verbOverride === 'chat_quick') {
       return {
         mode: 'brain',
@@ -8199,6 +8200,14 @@ loadDismissedIds();
         skillRunnerOrigin: true,
         skillRunnerLane: 'quick',
         options: { chat_quick_full_stance: chatQuickVariant === 'stance' },
+      };
+    }
+    if (verbOverride === 'chat_kids_story') {
+      return {
+        mode: 'brain',
+        verbs: ['chat_kids_story'],
+        skillRunnerOrigin: true,
+        skillRunnerLane: 'quick',
       };
     }
     if (laneMode === 'agent') {
@@ -9575,6 +9584,12 @@ loadDismissedIds();
               if (audioIsChatQuick) {
                 audioPayload.verbs = ['chat_quick'];
                 audioPayload.options = { chat_quick_full_stance: chatQuickVariant === 'stance' };
+              } else if (
+                Array.isArray(audioLaneVerbs) &&
+                audioLaneVerbs.length === 1 &&
+                String(audioLaneVerbs[0] || '').trim().toLowerCase() === 'chat_kids_story'
+              ) {
+                audioPayload.verbs = ['chat_kids_story'];
               }
               socket.send(JSON.stringify(audioPayload));
              updateStatus('Audio sent.');

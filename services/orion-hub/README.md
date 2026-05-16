@@ -41,7 +41,7 @@ Hub supports three modes via the `mode` field in the request:
 
 #### Kids story lane (verb override)
 
-Send a single explicit verb: `verbs: ["chat_kids_story"]` with normal `messages` / recall options.
+In the main chat UI, use the **Story** mode button (bounded fast lane, `chat_kids_story`) next to **Quick**, or send a single explicit verb: `verbs: ["chat_kids_story"]` with normal `messages` / recall options.
 Verb must be active on the hub node (`orion/cognition/verbs/active.yaml`). Default recall profile is
 `chat.story.kids.v1` (vector-off; SQL + timeline + optional cards) unless the client sets `profile_explicit`.
 

@@ -294,6 +294,8 @@ class Settings(BaseSettings):
     RDF_STORE_UPDATE_URL: str = Field(default="", alias="RDF_STORE_UPDATE_URL")
     RDF_STORE_USER: str = Field(default="", alias="RDF_STORE_USER")
     RDF_STORE_PASS: str = Field(default="", alias="RDF_STORE_PASS")
+    FUSEKI_USER: str = Field(default="", alias="FUSEKI_USER")
+    FUSEKI_PASS: str = Field(default="", alias="FUSEKI_PASS")
 
     # --- Memory graph annotator (GraphDB + dual-write) ---
     GRAPHDB_URL: str = Field(default="", alias="GRAPHDB_URL")

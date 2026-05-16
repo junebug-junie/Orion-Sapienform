@@ -243,6 +243,28 @@ def test_quick_chat_selection_uses_chat_quick_verb_without_changing_brain_mode_c
     assert debug["verb"] == "chat_quick"
 
 
+def test_chat_kids_story_single_verb_maps_to_cortex_verb() -> None:
+    req, debug, _ = hub_builder.build_chat_request(
+        payload={
+            "mode": "brain",
+            "verbs": ["chat_kids_story"],
+        },
+        session_id="sid-kids",
+        user_id="user-kids",
+        trace_id="trace-kids",
+        default_mode="brain",
+        auto_default_enabled=False,
+        source_label="hub_http",
+        prompt="Tell a short cozy story.",
+    )
+
+    assert req.mode == "brain"
+    assert req.verb == "chat_kids_story"
+    assert req.route_intent == "none"
+    assert req.options.get("chat_quick_full_stance") is None
+    assert debug["verb"] == "chat_kids_story"
+
+
 def test_chat_quick_full_stance_option_passes_to_cortex_request() -> None:
     req, _, _ = hub_builder.build_chat_request(
         payload={

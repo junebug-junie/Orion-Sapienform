@@ -12,7 +12,7 @@ TrustLevelV1 = Literal["low", "med", "high"]
 HypothesisTagV1 = Literal["assumption", "hypothesis", "simulation_result"]
 MergePolicyV1 = Literal["deterministic_merge"]
 BindingV1 = Literal["advisory", "mandatory"]
-MindQualityV1 = Literal["meaningful_synthesis", "fallback_contract_only", "empty", "error"]
+MindQualityV1 = Literal["meaningful_synthesis", "shadow_synthesis", "fallback_contract_only", "empty", "error"]
 
 
 class MindRunPolicyV1(BaseModel):
@@ -74,6 +74,26 @@ class MindStanceTrajectoryV1(BaseModel):
     merge_policy: MergePolicyV1 = "deterministic_merge"
 
 
+class MindShadowSynthesisV1(BaseModel):
+    """Non-authoritative Mind stance candidate for comparison/debug.
+
+    Shadow synthesis may inform inspection and later evaluation, but it is not
+    allowed to replace ChatStanceBrief or skip stance synthesis.
+    """
+
+    schema_version: Literal["mind.shadow_synthesis.v1"] = "mind.shadow_synthesis.v1"
+    present: bool = False
+    authorized_for_stance_skip: bool = False
+    stance_candidate: dict[str, Any] = Field(default_factory=dict)
+    attention_focus: list[str] = Field(default_factory=list)
+    curiosity_candidate: list[str] = Field(default_factory=list)
+    relationship_frame: str | None = None
+    projection_refs_used: list[str] = Field(default_factory=list)
+    hazards: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    rationale: str | None = None
+
+
 class MindControlDecisionV1(BaseModel):
     route_kind: str = "no_chat"
     allowed_verbs: list[str] = Field(default_factory=list)
@@ -91,6 +111,8 @@ class MindHandoffBriefV1(BaseModel):
     advisory_keys: list[str] = Field(default_factory=list)
     stance_payload: dict[str, Any] = Field(default_factory=dict)
     mind_quality: MindQualityV1 = "empty"
+    shadow_synthesis: MindShadowSynthesisV1 | None = None
+    mind_authorized_for_stance_skip: bool = False
 
 
 class MindRunResultV1(BaseModel):

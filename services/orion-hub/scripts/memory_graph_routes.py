@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from orion.memory_graph.approve import approve_memory_graph_draft, preview_validate_only
 from orion.memory_graph.dto import SuggestDraftV1
 
+from .mutation_cognition_context import build_mutation_cognition_context
 from .session import ensure_session
 
 logger = logging.getLogger("orion-hub.memory_graph")
@@ -40,6 +41,39 @@ async def memory_graph_validate(
         raise HTTPException(status_code=400, detail=e.errors()) from e
     ok, violations, preview = preview_validate_only(draft)
     return {"ok": ok, "violations": violations, "preview": preview}
+
+
+@router.post("/api/memory/graph/suggest")
+async def memory_graph_suggest(
+    _request: Request,
+    body: Dict[str, Any],
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+) -> Dict[str, Any]:
+    """Cortex Appendix C draft (brain lane first, optional quick fallback). Read-only: no GraphDB/Postgres writes.
+
+    ``user_id`` in the JSON body is passed through to ``build_chat_request`` for telemetry only; it is not
+    authenticated from the session header. ``diagnostic`` / ``options.diagnostic`` embed raw model text — use
+    only on trusted control-plane paths.
+    """
+    from scripts.main import bus, cortex_client
+    from scripts.memory_graph_suggest import run_memory_graph_suggest_with_fallback
+    from scripts.settings import settings
+
+    import scripts.api_routes as api_mod
+
+    if not bus or cortex_client is None:
+        raise HTTPException(status_code=503, detail="cortex_unavailable")
+    session_id = await ensure_session(x_orion_session_id, bus)
+    payload = body if isinstance(body, dict) else {}
+    mc = build_mutation_cognition_context(store=api_mod.SUBSTRATE_MUTATION_STORE)
+    return await run_memory_graph_suggest_with_fallback(
+        cortex_client=cortex_client,
+        payload=payload,
+        session_id=str(session_id),
+        user_id=str(payload.get("user_id") or "").strip() or None,
+        settings=settings,
+        mutation_context=mc,
+    )
 
 
 @router.post("/api/memory/graph/approve")

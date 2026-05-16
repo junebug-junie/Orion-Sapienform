@@ -891,3 +891,182 @@
     else attach();
   }
 })(typeof window !== 'undefined' ? window : globalThis);
+
+(function (global) {
+  const LANE_GROUNDED_SMALL = 'grounded_small';
+  const LANE_QUICK = 'quick';
+  const LANE_BRAIN = 'brain';
+
+  function asObject(value) {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  }
+
+  function isChatPayload(payload) {
+    return payload && typeof payload === 'object' && (
+      Object.prototype.hasOwnProperty.call(payload, 'text_input')
+      || Object.prototype.hasOwnProperty.call(payload, 'messages')
+      || Object.prototype.hasOwnProperty.call(payload, 'audio')
+    );
+  }
+
+  function getLane() {
+    if (typeof document === 'undefined' || !document.body) return LANE_GROUNDED_SMALL;
+    return document.body.dataset.orionChatLane || LANE_GROUNDED_SMALL;
+  }
+
+  function setLane(lane) {
+    if (typeof document === 'undefined' || !document.body) return;
+    document.body.dataset.orionChatLane = lane || LANE_GROUNDED_SMALL;
+  }
+
+  function normalizeOutboundPayload(payload) {
+    if (!isChatPayload(payload)) return payload;
+    const lane = getLane();
+    const options = asObject(payload.options) ? { ...payload.options } : {};
+    const verbs = Array.isArray(payload.verbs) ? payload.verbs.map((v) => String(v || '').trim()).filter(Boolean) : [];
+    const isLegacyQuickStance = verbs.length === 1 && verbs[0] === 'chat_quick' && options.chat_quick_full_stance === true;
+    const isDefaultBrainSend = String(payload.mode || '').toLowerCase() === 'brain' && verbs.length === 0;
+
+    if (lane === LANE_GROUNDED_SMALL || isLegacyQuickStance) {
+      payload.mode = 'brain';
+      payload.verbs = [];
+      options.llm_route = 'quick';
+      delete options.chat_quick_full_stance;
+      payload.options = options;
+      payload.surface_context = {
+        ...(asObject(payload.surface_context) || {}),
+        hub_chat_lane: LANE_GROUNDED_SMALL,
+      };
+      return payload;
+    }
+
+    if (lane === LANE_QUICK && verbs.length === 1 && verbs[0] === 'chat_quick') {
+      delete options.chat_quick_full_stance;
+      payload.options = Object.keys(options).length ? options : undefined;
+      return payload;
+    }
+
+    if (lane === LANE_BRAIN && isDefaultBrainSend) {
+      delete options.llm_route;
+      delete options.chat_quick_full_stance;
+      payload.options = Object.keys(options).length ? options : undefined;
+    }
+    return payload;
+  }
+
+  function patchWebSocketSend() {
+    if (!global.WebSocket || global.WebSocket.prototype._orionGroundedSmallPatched) return;
+    const originalSend = global.WebSocket.prototype.send;
+    global.WebSocket.prototype.send = function patchedSend(data) {
+      if (typeof data === 'string') {
+        try {
+          const parsed = JSON.parse(data);
+          normalizeOutboundPayload(parsed);
+          return originalSend.call(this, JSON.stringify(parsed));
+        } catch (_err) {
+          return originalSend.call(this, data);
+        }
+      }
+      return originalSend.call(this, data);
+    };
+    global.WebSocket.prototype._orionGroundedSmallPatched = true;
+  }
+
+  function patchFetch() {
+    if (!global.fetch || global.fetch._orionGroundedSmallPatched) return;
+    const originalFetch = global.fetch;
+    global.fetch = function patchedFetch(input, init) {
+      const url = typeof input === 'string' ? input : (input && input.url ? String(input.url) : '');
+      if (url.includes('/api/chat') && init && typeof init.body === 'string') {
+        try {
+          const parsed = JSON.parse(init.body);
+          normalizeOutboundPayload(parsed);
+          init = { ...init, body: JSON.stringify(parsed) };
+        } catch (_err) {
+          // Leave non-JSON bodies untouched.
+        }
+      }
+      return originalFetch.call(this, input, init);
+    };
+    global.fetch._orionGroundedSmallPatched = true;
+  }
+
+  function ensureBrainButton(group, afterNode) {
+    let brain = document.getElementById('brainDeepModeBtn');
+    if (brain) return brain;
+    brain = document.createElement('button');
+    brain.type = 'button';
+    brain.id = 'brainDeepModeBtn';
+    brain.className = 'mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors';
+    brain.dataset.mode = 'brain';
+    brain.dataset.llmRoute = 'chat';
+    brain.title = 'Brain (stance + deep chat lane)';
+    brain.textContent = 'Brain';
+    if (afterNode && afterNode.parentNode === group) group.insertBefore(brain, afterNode.nextSibling);
+    else group.appendChild(brain);
+    return brain;
+  }
+
+  function configureModeRow() {
+    setLane(LANE_GROUNDED_SMALL);
+    const buttons = Array.from(document.querySelectorAll('.mode-btn'));
+    const originalBrain = buttons.find((btn) => {
+      const label = String(btn.textContent || '').trim().toLowerCase();
+      return label === 'brain' && (btn.dataset.mode || '') === 'brain' && !btn.dataset.verbOverride;
+    });
+    if (originalBrain) {
+      originalBrain.id = originalBrain.id || 'groundedSmallModeBtn';
+      originalBrain.dataset.mode = 'brain';
+      originalBrain.dataset.llmRoute = 'quick';
+      originalBrain.textContent = 'Grounded Small';
+      originalBrain.title = 'Grounded Small (stance + small/quick final lane)';
+      ensureBrainButton(originalBrain.parentNode, originalBrain);
+    }
+
+    const quick = document.getElementById('quickModeBtn');
+    if (quick) {
+      quick.textContent = 'Quick';
+      quick.title = 'Quick (small single-pass lane; no stance synthesis)';
+    }
+    document.querySelectorAll('.quick-variant-item').forEach((item) => {
+      const variant = String(item.getAttribute('data-quick-variant') || '').trim();
+      if (variant === 'fast') item.textContent = 'Quick';
+      if (variant === 'stance') item.textContent = 'Grounded Small';
+    });
+
+    document.addEventListener('click', (event) => {
+      const target = event.target && event.target.closest ? event.target.closest('button') : null;
+      if (!target) return;
+      if (target.id === 'brainDeepModeBtn') {
+        setLane(LANE_BRAIN);
+        return;
+      }
+      if (target.id === 'quickModeBtn') {
+        setLane(LANE_QUICK);
+        return;
+      }
+      if (target.classList && target.classList.contains('quick-variant-item')) {
+        const variant = String(target.getAttribute('data-quick-variant') || '').trim();
+        setLane(variant === 'stance' ? LANE_GROUNDED_SMALL : LANE_QUICK);
+        return;
+      }
+      if (target.classList && target.classList.contains('mode-btn')) {
+        const mode = String(target.dataset.mode || '').trim().toLowerCase();
+        const verb = String(target.dataset.verbOverride || '').trim().toLowerCase();
+        const route = String(target.dataset.llmRoute || '').trim().toLowerCase();
+        if (mode === 'brain' && route === 'quick') setLane(LANE_GROUNDED_SMALL);
+        else if (mode === 'brain' && !verb) setLane(LANE_BRAIN);
+        else if (verb === 'chat_quick') setLane(LANE_QUICK);
+        else setLane(mode || LANE_GROUNDED_SMALL);
+      }
+    }, true);
+  }
+
+  patchWebSocketSend();
+  patchFetch();
+  if (typeof document !== 'undefined') {
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', configureModeRow);
+    else configureModeRow();
+  }
+  global.OrionHubGroundedSmallLane = { normalizeOutboundPayload, configureModeRow };
+})(typeof window !== 'undefined' ? window : globalThis);

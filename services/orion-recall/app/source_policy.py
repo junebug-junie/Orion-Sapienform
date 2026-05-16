@@ -70,6 +70,7 @@ def build_vector_policy(
         "main",
         "anchor",
         "graphtri",
+        "collectors",
         "v2_shadow_exact",
         "v2_shadow_semantic",
     ),

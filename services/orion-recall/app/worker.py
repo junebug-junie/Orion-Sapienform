@@ -510,11 +510,6 @@ def _rdf_enabled(profile: Dict[str, Any]) -> bool:
     ) and int(profile.get("rdf_top_k", 0)) > 0
 
 
-def _vector_enabled_for_profile(profile: Dict[str, Any]) -> bool:
-    allowed, _ = recall_vector_allowed(profile, settings, path="main")
-    return allowed
-
-
 def _sql_timeline_enabled_for_profile(profile: Dict[str, Any]) -> bool:
     if not settings.RECALL_ENABLE_SQL_TIMELINE:
         return False

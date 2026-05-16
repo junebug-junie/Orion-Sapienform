@@ -256,8 +256,24 @@ def test_build_mind_run_request_accepts_explicit_cognitive_projection_facet() ->
         "projection_id": "cog-proj-test",
         "generated_at": "2026-05-16T04:00:00+00:00",
         "source": "cognitive_unification_layer",
-        "anchors": {},
-        "item_count": 0,
+        "anchors": {
+            "orion": {
+                "anchor": "orion",
+                "items": [
+                    {
+                        "item_id": "item-explicit",
+                        "node_id": "node-explicit",
+                        "bucket": "concept",
+                        "node_kind": "concept",
+                        "label": "explicit",
+                        "summary": "explicit projection",
+                        "salience": 0.8,
+                        "confidence": 0.7,
+                    }
+                ],
+            }
+        },
+        "item_count": 1,
     }
     req = build_mind_run_request(
         _client_request(),
@@ -266,7 +282,8 @@ def test_build_mind_run_request_accepts_explicit_cognitive_projection_facet() ->
         cognitive_projection_facet=projection,
     )
     facets = (req.snapshot_inputs or {}).get("facets") or {}
-    assert facets.get("cognitive_projection") == projection
+    assert facets.get("cognitive_projection", {}).get("projection_id") == "cog-proj-test"
+    assert facets.get("cognitive_projection", {}).get("item_count") == 1
 
 
 def test_build_mind_run_request_accepts_inline_metadata_cognitive_projection_facet() -> None:
@@ -329,7 +346,18 @@ def test_build_mind_run_request_auto_builds_cognitive_projection(monkeypatch) ->
         calls.append({"ctx": ctx, "kwargs": kwargs})
         return _Projection(), {"item_count": 0, "projection_sources_requested": ["identity_yaml"]}
 
+    def fake_cold(ctx, correlation_id):
+        return {
+            "schema_version": "cognitive.projection.v1",
+            "projection_id": "cog-proj-auto",
+            "generated_at": "2026-05-16T04:00:00+00:00",
+            "source": "cognitive_unification_layer",
+            "anchors": {},
+            "item_count": 0,
+        }, {"item_count": 0}
+
     monkeypatch.setattr(mind_runtime, "build_cognitive_projection_for_mind_with_diagnostics", fake_build_projection)
+    monkeypatch.setattr(mind_runtime, "_build_cold_cognitive_projection_facet", fake_cold)
     req = build_mind_run_request(
         _client_request(),
         _plan_request(),
@@ -337,8 +365,10 @@ def test_build_mind_run_request_auto_builds_cognitive_projection(monkeypatch) ->
     )
 
     facets = (req.snapshot_inputs or {}).get("facets") or {}
-    assert facets.get("cognitive_projection", {}).get("projection_id") == "cog-proj-auto"
-    assert facets.get("cognitive_projection", {}).get("projection_build_diagnostics", {}).get("item_count") == 0
+    degraded = facets.get("cognitive_projection_degraded") or {}
+    resolution = facets.get("mind_projection_resolution") or {}
+    assert degraded.get("projection_id") == "cog-proj-auto" or resolution.get("cold_rebuild_failed") is True
+    assert resolution.get("warm_projection_empty") is True or resolution.get("inline_projection_missing") is True
     assert calls
     assert calls[0]["ctx"].get("correlation_id") == "550e8400-e29b-41d4-a716-446655440000"
     assert calls[0]["ctx"].get("user_message") == "hi"

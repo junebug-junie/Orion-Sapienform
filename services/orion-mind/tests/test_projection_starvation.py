@@ -56,13 +56,17 @@ def _empty_projection_with_diagnostics() -> dict:
 
 
 def test_mind_run_emits_projection_starvation_diagnostics(client: TestClient) -> None:
+    empty = _empty_projection_with_diagnostics()
     r = client.post(
         "/v1/mind/run",
         json={
             "correlation_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             "snapshot_inputs": {
                 "user_text": "hello",
-                "facets": {"cognitive_projection": _empty_projection_with_diagnostics()},
+                "facets": {
+                    "cognitive_projection_degraded": empty,
+                    "mind_projection_resolution": empty["projection_build_diagnostics"],
+                },
             },
             "policy": {"n_loops_max": 1, "wall_time_ms_max": 60000, "router_profile_id": "default"},
         },

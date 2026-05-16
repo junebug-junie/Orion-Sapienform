@@ -328,6 +328,16 @@
       degradedContractOnly
       && (projectionStarved === true || Number(projectionItemCount) === 0),
     );
+    const orchBeforeExec = firstPresent([
+      root['mind.projection_resolution.orch_before_exec'],
+      raw['mind.projection_resolution.orch_before_exec'],
+      sourceInputs['mind.projection_resolution.orch_before_exec'],
+      finalPromptContract['mind.projection_resolution.orch_before_exec'],
+      asObject(mindHandoff)?.machine_contract?.['mind.projection_resolution.orch_before_exec'],
+      root.mind_orch_before_exec,
+      raw.mind_orch_before_exec,
+      sourceInputs.mind_orch_before_exec,
+    ]);
     return {
       present: Boolean(mindHandoff || quality || runOk !== null || contractOnly !== null || skipStance !== null),
       quality,
@@ -339,6 +349,7 @@
       projectionItemCount,
       projectionStarved,
       visiblyDegraded,
+      orchBeforeExec,
     };
   }
 
@@ -470,6 +481,11 @@
     const legacy = normalizeLegacyChatStance(payload);
     const mind = normalizeMindHandoff(payload);
     const shadow = normalizeMindShadowSynthesis(payload);
+    const execRichMindStarved = Boolean(
+      projection
+      && Number(projection.itemCount) > 0
+      && mind.visiblyDegraded,
+    );
     const card = makeEl('section', 'rounded-xl border border-fuchsia-500/30 bg-fuchsia-500/5 p-3 space-y-3');
     card.id = opts.modal ? MODAL_COMPARE_ID : INLINE_COMPARE_ID;
 
@@ -477,6 +493,15 @@
     header.appendChild(makeEl('div', 'text-[10px] uppercase tracking-wide text-fuchsia-200', 'Cognitive Comparison'));
     header.appendChild(makeEl('div', 'text-[10px] text-gray-400', 'read-only · no promotion'));
     card.appendChild(header);
+    if (execRichMindStarved) {
+      card.appendChild(
+        makeEl(
+          'div',
+          'rounded-lg border border-rose-500/35 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-100',
+          'Mind starved before Exec rebuild — comparison projection is from post-Exec materialization; Mind snapshot used an empty Orch-time shell.',
+        ),
+      );
+    }
 
     const grid = makeEl('div', 'grid grid-cols-1 gap-3 xl:grid-cols-4');
     grid.appendChild(comparisonColumn(

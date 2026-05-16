@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from orion.cognition.projection import CognitiveProjectionV1, project_unified_beliefs_for_mind
+from orion.cognition.projection import project_unified_beliefs_for_mind
 from orion.cognition.projection_builder import (
     build_cognitive_projection_for_mind_with_diagnostics,
     build_projection_unification_registry,
@@ -29,6 +29,17 @@ logger = logging.getLogger("orion.cortex.orch.mind")
 
 MIND_ARTIFACT_CHANNEL = "orion:mind:artifact"
 MIND_ARTIFACT_KIND = "mind.run.artifact.v1"
+
+MIND_PROJECTION_RESOLUTION_KEYS: tuple[str, ...] = (
+    "inline_projection_missing",
+    "inline_projection_empty",
+    "inline_projection_nonempty",
+    "warm_projection_missing",
+    "warm_projection_empty",
+    "cold_rebuild_attempted",
+    "cold_rebuild_succeeded",
+    "cold_rebuild_failed",
+)
 
 
 def _mind_enabled_exact(metadata: dict[str, Any] | None) -> bool:
@@ -123,18 +134,6 @@ async def fetch_substrate_telemetry_facet_for_mind(correlation_id: str) -> dict[
     }
 
 
-def _inline_cognitive_projection_facet(metadata: dict[str, Any]) -> dict[str, Any] | None:
-    """Return caller-supplied cognitive projection only when it has active items.
-
-    Empty inline shells must not block the shared builder cold path.
-    """
-    for key in ("cognitive_projection_facet", "cognitive_projection"):
-        value = metadata.get(key)
-        if isinstance(value, dict) and _projection_item_count(value) > 0:
-            return value
-    return None
-
-
 def _projection_item_count(projection: dict[str, Any] | None) -> int:
     if not isinstance(projection, dict):
         return 0
@@ -150,6 +149,38 @@ def _projection_item_count(projection: dict[str, Any] | None) -> int:
         if isinstance(anchor_payload, dict):
             derived += len(anchor_payload.get("items") or [])
     return derived
+
+
+def _raw_inline_projection(metadata: dict[str, Any]) -> dict[str, Any] | None:
+    for key in ("cognitive_projection_facet", "cognitive_projection"):
+        value = metadata.get(key)
+        if isinstance(value, dict):
+            return value
+    return None
+
+
+def _fresh_projection_resolution() -> dict[str, Any]:
+    resolution: dict[str, Any] = {key: False for key in MIND_PROJECTION_RESOLUTION_KEYS}
+    resolution["resolved_item_count"] = 0
+    resolution["resolution_path"] = None
+    resolution["orch_invoked_before_exec"] = True
+    return resolution
+
+
+def _attach_resolution_diagnostics(
+    projection_payload: dict[str, Any],
+    *,
+    resolution: dict[str, Any],
+    build_diagnostics: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    merged_build = dict(build_diagnostics or {})
+    merged_build.update({key: resolution.get(key) for key in MIND_PROJECTION_RESOLUTION_KEYS})
+    merged_build["resolution_path"] = resolution.get("resolution_path")
+    merged_build["resolved_item_count"] = resolution.get("resolved_item_count")
+    merged_build["orch_invoked_before_exec"] = resolution.get("orch_invoked_before_exec")
+    projection_payload["projection_build_diagnostics"] = merged_build
+    projection_payload["mind_projection_resolution"] = dict(resolution)
+    return projection_payload
 
 
 def _plan_projection_context(client_request: CortexClientRequest, plan_request: PlanExecutionRequest, correlation_id: str) -> dict[str, Any]:
@@ -173,12 +204,7 @@ def _plan_projection_context(client_request: CortexClientRequest, plan_request: 
 
 
 def _build_cold_cognitive_projection_facet(ctx: dict[str, Any], correlation_id: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    """Force cold producer fan-out on a fresh in-memory durable store for this turn.
-
-    Orch and Exec run in different processes. Reusing the process singleton layer can
-    leave Mind with a warm-but-empty durable snapshot; an isolated store guarantees
-    ``pull_on_cold`` producers run before Mind snapshot construction.
-    """
+    """Force cold producer fan-out on a fresh in-memory durable store for this turn."""
     build_path = "orion.cortex.orch.mind_runtime._build_cold_cognitive_projection_facet"
     try:
         registry = build_projection_unification_registry()
@@ -188,11 +214,12 @@ def _build_cold_cognitive_projection_facet(ctx: dict[str, Any], correlation_id: 
         diagnostics = summarize_projection_build(ctx, beliefs=beliefs, projection=projection, build_path=build_path)
     except Exception as exc:
         logger.warning("mind_cognitive_projection_cold_build_failed corr=%s err=%s", correlation_id, exc)
-        return None, summarize_projection_build(ctx, beliefs=None, projection=None, build_path=build_path)
+        diagnostics = summarize_projection_build(ctx, beliefs=None, projection=None, build_path=build_path)
+        diagnostics["producer_errors"] = list(diagnostics.get("producer_errors") or []) + [f"cold_build_failed:{exc}"]
+        return None, diagnostics
     if projection is None:
         return None, diagnostics
     payload = projection.model_dump(mode="json")
-    payload["projection_build_diagnostics"] = diagnostics
     logger.info(
         "mind_cognitive_projection_cold_build corr=%s projection_id=%s item_count=%s cold_anchors=%s degraded=%s",
         correlation_id,
@@ -204,77 +231,134 @@ def _build_cold_cognitive_projection_facet(ctx: dict[str, Any], correlation_id: 
     return payload, diagnostics
 
 
+def resolve_cognitive_projection_for_mind(
+    client_request: CortexClientRequest,
+    plan_request: PlanExecutionRequest,
+    correlation_id: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Resolve a non-empty cognitive projection for Mind preflight using the shared spine.
+
+    Order:
+    1. Non-empty inline metadata projection
+    2. Warm/durable projection via ``build_cognitive_projection_for_mind_with_diagnostics``
+    3. Isolated cold rebuild before Mind is invoked
+
+    Returns ``(projection_facet_or_none, resolution_diagnostics)``. When starved, the
+    projection facet is ``None`` and resolution diagnostics carry the empty shell.
+    """
+    ctx = _plan_projection_context(client_request, plan_request, correlation_id)
+    resolution = _fresh_projection_resolution()
+    meta = client_request.context.metadata if isinstance(client_request.context.metadata, dict) else {}
+    build_diagnostics: dict[str, Any] = {}
+
+    raw_inline = _raw_inline_projection(meta)
+    if raw_inline is None:
+        resolution["inline_projection_missing"] = True
+    elif _projection_item_count(raw_inline) <= 0:
+        resolution["inline_projection_empty"] = True
+    else:
+        resolution["inline_projection_nonempty"] = True
+        resolution["resolution_path"] = "inline_metadata"
+        resolution["resolved_item_count"] = _projection_item_count(raw_inline)
+        inline_payload = dict(raw_inline)
+        inline_build = (
+            inline_payload.get("projection_build_diagnostics")
+            if isinstance(inline_payload.get("projection_build_diagnostics"), dict)
+            else summarize_projection_build(
+                ctx,
+                beliefs=None,
+                projection=None,
+                build_path="orion.cortex.orch.mind_runtime.resolve.inline_metadata",
+            )
+        )
+        inline_build["projection_sources_returned"] = ["inline_metadata"]
+        inline_build["item_count"] = _projection_item_count(inline_payload)
+        inline_payload = _attach_resolution_diagnostics(
+            inline_payload,
+            resolution=resolution,
+            build_diagnostics=inline_build,
+        )
+        return inline_payload, resolution
+
+    warm_payload: dict[str, Any] | None = None
+    try:
+        projection, build_diagnostics = build_cognitive_projection_for_mind_with_diagnostics(
+            ctx,
+            publish_tier_outcomes=True,
+            build_path="orion.cortex.orch.mind_runtime.resolve.warm_shared_spine",
+        )
+        if projection is None:
+            resolution["warm_projection_missing"] = True
+        else:
+            warm_payload = projection.model_dump(mode="json")
+            if _projection_item_count(warm_payload) <= 0:
+                resolution["warm_projection_empty"] = True
+            else:
+                resolution["resolution_path"] = "warm_shared_spine"
+                resolution["resolved_item_count"] = _projection_item_count(warm_payload)
+                return _attach_resolution_diagnostics(warm_payload, resolution=resolution, build_diagnostics=build_diagnostics), resolution
+    except Exception as exc:
+        logger.warning("mind_cognitive_projection_warm_build_failed corr=%s err=%s", correlation_id, exc)
+        resolution["warm_projection_missing"] = True
+        build_diagnostics = summarize_projection_build(
+            ctx,
+            beliefs=None,
+            projection=None,
+            build_path="orion.cortex.orch.mind_runtime.resolve.warm_shared_spine",
+        )
+        build_diagnostics["producer_errors"] = list(build_diagnostics.get("producer_errors") or []) + [f"warm_build_failed:{exc}"]
+
+    resolution["cold_rebuild_attempted"] = True
+    cold_payload, cold_diag = _build_cold_cognitive_projection_facet(ctx, correlation_id)
+    build_diagnostics = cold_diag
+    if _projection_item_count(cold_payload) > 0:
+        resolution["cold_rebuild_succeeded"] = True
+        resolution["resolution_path"] = "cold_isolated_store"
+        resolution["resolved_item_count"] = _projection_item_count(cold_payload)
+        assert cold_payload is not None
+        return _attach_resolution_diagnostics(cold_payload, resolution=resolution, build_diagnostics=build_diagnostics), resolution
+
+    resolution["cold_rebuild_failed"] = True
+    resolution["resolution_path"] = "starved_before_exec"
+    shell_source = cold_payload if isinstance(cold_payload, dict) else warm_payload
+    empty_shell: dict[str, Any] = {
+        "schema_version": "cognitive.projection.v1",
+        "projection_id": (shell_source or {}).get("projection_id") or "cog-proj-mind-starved",
+        "generated_at": (shell_source or {}).get("generated_at") or datetime.now(timezone.utc).isoformat(),
+        "source": "cognitive_unification_layer",
+        "anchors": (shell_source or {}).get("anchors") if isinstance((shell_source or {}).get("anchors"), dict) else {},
+        "item_count": 0,
+        "notes": list((shell_source or {}).get("notes") or []) + ["mind_projection_starved_at_orch_preflight"],
+    }
+    resolution["empty_projection_shell"] = _attach_resolution_diagnostics(
+        empty_shell,
+        resolution=resolution,
+        build_diagnostics=build_diagnostics,
+    )
+    resolution["projection_build_diagnostics"] = empty_shell["projection_build_diagnostics"]
+    logger.warning(
+        "mind_cognitive_projection_starved corr=%s resolution=%s",
+        correlation_id,
+        {key: resolution.get(key) for key in MIND_PROJECTION_RESOLUTION_KEYS},
+    )
+    return None, resolution
+
+
 def _build_cognitive_projection_facet(
     client_request: CortexClientRequest,
     plan_request: PlanExecutionRequest,
     correlation_id: str,
 ) -> dict[str, Any] | None:
-    meta = client_request.context.metadata if isinstance(client_request.context.metadata, dict) else {}
-    inline = _inline_cognitive_projection_facet(meta)
-    if inline is not None:
-        inline = dict(inline)
-        if not isinstance(inline.get("projection_build_diagnostics"), dict):
-            inline_payload = {k: v for k, v in inline.items() if k != "projection_build_diagnostics"}
-            try:
-                inline_projection = CognitiveProjectionV1.model_validate(inline_payload)
-                inline_diag = summarize_projection_build(
-                    _plan_projection_context(client_request, plan_request, correlation_id),
-                    beliefs=None,
-                    projection=inline_projection,
-                    build_path="orion.cortex.orch.mind_runtime.inline_cognitive_projection_facet",
-                )
-            except Exception:
-                inline_diag = summarize_projection_build(
-                    _plan_projection_context(client_request, plan_request, correlation_id),
-                    beliefs=None,
-                    projection=None,
-                    build_path="orion.cortex.orch.mind_runtime.inline_cognitive_projection_facet",
-                )
-            inline_diag["projection_sources_returned"] = ["inline_metadata"]
-            inline_diag["item_count"] = _projection_item_count(inline)
-            inline["projection_build_diagnostics"] = inline_diag
-        return inline
-    ctx = _plan_projection_context(client_request, plan_request, correlation_id)
-    projection_payload: dict[str, Any] | None = None
-    diagnostics: dict[str, Any] = {}
-    try:
-        projection, diagnostics = build_cognitive_projection_for_mind_with_diagnostics(
-            ctx,
-            publish_tier_outcomes=True,
-            build_path="orion.cortex.orch.mind_runtime._build_cognitive_projection_facet",
-        )
-        if projection is not None:
-            projection_payload = projection.model_dump(mode="json")
-            projection_payload["projection_build_diagnostics"] = diagnostics
-    except Exception as exc:
-        logger.warning("mind_cognitive_projection_build_failed corr=%s err=%s", correlation_id, exc)
-        diagnostics = summarize_projection_build(
-            ctx,
-            beliefs=None,
-            projection=None,
-            build_path="orion.cortex.orch.mind_runtime._build_cognitive_projection_facet",
-        )
-        diagnostics["producer_errors"] = list(diagnostics.get("producer_errors") or []) + [f"build_failed:{exc}"]
-
-    if _projection_item_count(projection_payload) <= 0:
-        cold_payload, cold_diag = _build_cold_cognitive_projection_facet(ctx, correlation_id)
-        if _projection_item_count(cold_payload) > _projection_item_count(projection_payload):
-            projection_payload = cold_payload
-            diagnostics = cold_diag
-
-    if isinstance(projection_payload, dict):
-        projection_payload["projection_build_diagnostics"] = diagnostics
-        if _projection_item_count(projection_payload) <= 0:
-            logger.warning(
-                "mind_cognitive_projection_starved corr=%s projection_id=%s diagnostics=%s",
-                correlation_id,
-                projection_payload.get("projection_id"),
-                diagnostics,
-            )
-    return projection_payload
+    projection, _resolution = resolve_cognitive_projection_for_mind(client_request, plan_request, correlation_id)
+    return projection
 
 
-def _share_cognitive_projection_with_plan(plan_request: PlanExecutionRequest, projection: dict[str, Any]) -> None:
+def _share_cognitive_projection_with_plan(
+    plan_request: PlanExecutionRequest,
+    projection: dict[str, Any],
+    *,
+    resolution: dict[str, Any] | None = None,
+) -> None:
     ctx = plan_request.context if isinstance(plan_request.context, dict) else {}
     metadata = ctx.setdefault("metadata", {})
     if not isinstance(metadata, dict):
@@ -282,6 +366,24 @@ def _share_cognitive_projection_with_plan(plan_request: PlanExecutionRequest, pr
     metadata["cognitive_projection_facet"] = projection
     metadata["cognitive_projection"] = projection
     metadata["cognitive_projection_source"] = "orion_cortex_orch_mind_runtime"
+    if isinstance(resolution, dict):
+        metadata["mind_projection_resolution"] = dict(resolution)
+
+
+def _record_mind_projection_resolution(plan_request: PlanExecutionRequest, resolution: dict[str, Any]) -> None:
+    ctx = plan_request.context if isinstance(plan_request.context, dict) else {}
+    metadata = ctx.setdefault("metadata", {})
+    if not isinstance(metadata, dict):
+        return
+    metadata["mind_projection_resolution"] = dict(resolution)
+    metadata["mind_projection_starved"] = _projection_item_count(
+        resolution.get("empty_projection_shell") if isinstance(resolution.get("empty_projection_shell"), dict) else None
+    ) <= 0 and bool(
+        resolution.get("cold_rebuild_failed")
+        or resolution.get("warm_projection_empty")
+        or resolution.get("inline_projection_empty")
+    )
+    metadata["mind_orch_before_exec"] = True
 
 
 def build_mind_run_request(
@@ -323,14 +425,33 @@ def build_mind_run_request(
     facets: dict[str, Any] = {}
     if substrate_telemetry_facet is not None:
         facets["substrate_telemetry"] = substrate_telemetry_facet
-    cognitive_projection = cognitive_projection_facet or _build_cognitive_projection_facet(
-        client_request,
-        plan_request,
-        correlation_id,
-    )
-    if cognitive_projection is not None:
+
+    cognitive_projection: dict[str, Any] | None = None
+    resolution = _fresh_projection_resolution()
+
+    if isinstance(cognitive_projection_facet, dict) and _projection_item_count(cognitive_projection_facet) > 0:
+        resolution["inline_projection_nonempty"] = True
+        resolution["resolution_path"] = "explicit_facet_argument"
+        resolution["resolved_item_count"] = _projection_item_count(cognitive_projection_facet)
+        cognitive_projection = _attach_resolution_diagnostics(dict(cognitive_projection_facet), resolution=resolution)
+    else:
+        cognitive_projection, resolution = resolve_cognitive_projection_for_mind(
+            client_request,
+            plan_request,
+            correlation_id,
+        )
+
+    _record_mind_projection_resolution(plan_request, resolution)
+
+    if cognitive_projection is not None and _projection_item_count(cognitive_projection) > 0:
         facets["cognitive_projection"] = cognitive_projection
-        _share_cognitive_projection_with_plan(plan_request, cognitive_projection)
+        _share_cognitive_projection_with_plan(plan_request, cognitive_projection, resolution=resolution)
+    else:
+        facets["mind_projection_resolution"] = dict(resolution)
+        empty_shell = resolution.get("empty_projection_shell")
+        if isinstance(empty_shell, dict):
+            facets["cognitive_projection_degraded"] = empty_shell
+
     if facets:
         snapshot["facets"] = facets
     return MindRunRequestV1(

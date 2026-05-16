@@ -105,6 +105,8 @@ def test_thought_process_js_comparison_extracts_legacy_and_mind_fields() -> None
     assert "mind_contract_only" in thought_js
     assert "visiblyDegraded" in thought_js
     assert "projection_starved" in thought_js
+    assert "Mind starved before Exec rebuild" in thought_js
+    assert "execRichMindStarved" in thought_js
     assert "mind_skip_stance_synthesis" in thought_js
 
 
@@ -162,7 +164,8 @@ def test_mind_projection_handoff_reuses_one_populated_projection() -> None:
     assert "build_cognitive_projection_for_mind_with_diagnostics" in mind_runtime
     assert "metadata[\"cognitive_projection_facet\"] = projection" in mind_runtime
     assert "metadata[\"cognitive_projection\"] = projection" in mind_runtime
-    assert "_share_cognitive_projection_with_plan(plan_request, cognitive_projection)" in mind_runtime
+    assert "_share_cognitive_projection_with_plan(plan_request, cognitive_projection" in mind_runtime
+    assert "resolve_cognitive_projection_for_mind" in mind_runtime
 
     assert "_inline_projection_from_metadata" in shared_spine
     assert "projection_reused_from_metadata" in shared_spine

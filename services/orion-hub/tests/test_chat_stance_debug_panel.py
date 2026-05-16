@@ -7,6 +7,8 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 TEMPLATE_PATH = REPO_ROOT / "services" / "orion-hub" / "templates" / "index.html"
 APP_JS_PATH = REPO_ROOT / "services" / "orion-hub" / "static" / "js" / "app.js"
 THOUGHT_PROCESS_JS_PATH = REPO_ROOT / "services" / "orion-hub" / "static" / "js" / "thought-process.js"
+ORCH_MIND_RUNTIME_PATH = REPO_ROOT / "services" / "orion-cortex-orch" / "app" / "mind_runtime.py"
+EXEC_SHARED_SPINE_PATH = REPO_ROOT / "services" / "orion-cortex-exec" / "app" / "chat_stance_shared_spine.py"
 
 
 def test_template_includes_chat_stance_panel_and_outer_modal_button() -> None:
@@ -147,6 +149,22 @@ def test_thought_process_js_registers_grounded_small_lane_contract() -> None:
     assert "hub_chat_lane" in thought_js
     assert "patchWebSocketSend" in thought_js
     assert "patchFetch" in thought_js
+
+
+def test_mind_projection_handoff_reuses_one_populated_projection() -> None:
+    mind_runtime = ORCH_MIND_RUNTIME_PATH.read_text(encoding="utf-8")
+    shared_spine = EXEC_SHARED_SPINE_PATH.read_text(encoding="utf-8")
+
+    assert "_build_cold_cognitive_projection_facet" in mind_runtime
+    assert "InMemorySubstrateGraphStore" in mind_runtime
+    assert "metadata[\"cognitive_projection_facet\"] = projection" in mind_runtime
+    assert "metadata[\"cognitive_projection\"] = projection" in mind_runtime
+    assert "_share_cognitive_projection_with_plan(plan_request, cognitive_projection)" in mind_runtime
+
+    assert "_inline_projection_from_metadata" in shared_spine
+    assert "projection_reused_from_metadata" in shared_spine
+    assert "orion_cortex_orch_mind_runtime" in shared_spine
+    assert "chat_stance_shared_projection_spine_reused" in shared_spine
 
 
 def test_thought_process_js_comparison_does_not_promote_mind_or_change_routing() -> None:

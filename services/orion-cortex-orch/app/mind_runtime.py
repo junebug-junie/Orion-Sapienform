@@ -8,13 +8,19 @@ from typing import Any
 
 import httpx
 
-from orion.cognition.projection_builder import build_cognitive_projection_for_context
+from orion.cognition.projection import project_unified_beliefs_for_mind
+from orion.cognition.projection_builder import (
+    build_cognitive_projection_for_context,
+    build_projection_unification_registry,
+)
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.mind.v1 import MindRunRequestV1, MindRunResultV1, MindRunPolicyV1
 from orion.schemas.chat_stance import ChatStanceBrief
 from orion.schemas.cortex.contracts import CortexClientRequest
 from orion.schemas.cortex.schemas import PlanExecutionRequest
 from orion.schemas.mind.artifact import MindRunArtifactV1
+from orion.substrate.relational import CognitiveUnificationLayer
+from orion.substrate.store import InMemorySubstrateGraphStore
 
 from .settings import get_settings
 
@@ -125,6 +131,15 @@ def _inline_cognitive_projection_facet(metadata: dict[str, Any]) -> dict[str, An
     return None
 
 
+def _projection_item_count(projection: dict[str, Any] | None) -> int:
+    if not isinstance(projection, dict):
+        return 0
+    try:
+        return int(projection.get("item_count") or 0)
+    except Exception:
+        return 0
+
+
 def _plan_projection_context(client_request: CortexClientRequest, plan_request: PlanExecutionRequest, correlation_id: str) -> dict[str, Any]:
     ctx = dict(plan_request.context or {}) if isinstance(plan_request.context, dict) else {}
     metadata = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
@@ -142,6 +157,37 @@ def _plan_projection_context(client_request: CortexClientRequest, plan_request: 
     return ctx
 
 
+def _build_cold_cognitive_projection_facet(ctx: dict[str, Any], correlation_id: str) -> dict[str, Any] | None:
+    """Build a fresh cold-path projection for Mind when Orch's warm path is empty.
+
+    Orch and Exec run in different processes. The default Orch projection can hit an
+    empty warm store while Exec later cold-materializes a populated projection for
+    ChatStanceDebug. For Mind shadow synthesis, prefer a fresh in-memory layer so
+    cold producers run for this turn and the resulting projection can be passed to
+    Exec as the shared per-turn object.
+    """
+    try:
+        registry = build_projection_unification_registry()
+        layer = CognitiveUnificationLayer(registry=registry, store=InMemorySubstrateGraphStore())
+        beliefs = layer.beliefs_for_stance(ctx=ctx, timeout_sec=5.0)
+        projection = project_unified_beliefs_for_mind(beliefs)
+    except Exception as exc:
+        logger.warning("mind_cognitive_projection_cold_build_failed corr=%s err=%s", correlation_id, exc)
+        return None
+    if projection is None:
+        return None
+    payload = projection.model_dump(mode="json")
+    logger.info(
+        "mind_cognitive_projection_cold_build corr=%s projection_id=%s item_count=%s cold_anchors=%s degraded=%s",
+        correlation_id,
+        payload.get("projection_id"),
+        payload.get("item_count"),
+        payload.get("cold_anchors"),
+        payload.get("degraded_producers"),
+    )
+    return payload
+
+
 def _build_cognitive_projection_facet(
     client_request: CortexClientRequest,
     plan_request: PlanExecutionRequest,
@@ -151,17 +197,34 @@ def _build_cognitive_projection_facet(
     inline = _inline_cognitive_projection_facet(meta)
     if inline is not None:
         return inline
+    ctx = _plan_projection_context(client_request, plan_request, correlation_id)
+    projection_payload: dict[str, Any] | None = None
     try:
         projection = build_cognitive_projection_for_context(
-            _plan_projection_context(client_request, plan_request, correlation_id),
+            ctx,
             publish_tier_outcomes=False,
         )
+        if projection is not None:
+            projection_payload = projection.model_dump(mode="json")
     except Exception as exc:
         logger.warning("mind_cognitive_projection_build_failed corr=%s err=%s", correlation_id, exc)
-        return None
-    if projection is None:
-        return None
-    return projection.model_dump(mode="json")
+
+    if _projection_item_count(projection_payload) <= 0:
+        cold_payload = _build_cold_cognitive_projection_facet(ctx, correlation_id)
+        if _projection_item_count(cold_payload) > _projection_item_count(projection_payload):
+            projection_payload = cold_payload
+
+    return projection_payload
+
+
+def _share_cognitive_projection_with_plan(plan_request: PlanExecutionRequest, projection: dict[str, Any]) -> None:
+    ctx = plan_request.context if isinstance(plan_request.context, dict) else {}
+    metadata = ctx.setdefault("metadata", {})
+    if not isinstance(metadata, dict):
+        return
+    metadata["cognitive_projection_facet"] = projection
+    metadata["cognitive_projection"] = projection
+    metadata["cognitive_projection_source"] = "orion_cortex_orch_mind_runtime"
 
 
 def build_mind_run_request(
@@ -210,6 +273,7 @@ def build_mind_run_request(
     )
     if cognitive_projection is not None:
         facets["cognitive_projection"] = cognitive_projection
+        _share_cognitive_projection_with_plan(plan_request, cognitive_projection)
     if facets:
         snapshot["facets"] = facets
     return MindRunRequestV1(

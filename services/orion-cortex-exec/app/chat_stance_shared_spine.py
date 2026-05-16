@@ -35,29 +35,69 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _projection_item_count(projection: dict[str, Any] | None) -> int:
+    if not isinstance(projection, dict):
+        return 0
+    try:
+        return int(projection.get("item_count") or 0)
+    except Exception:
+        return 0
+
+
+def _inline_projection_from_metadata(ctx: dict[str, Any]) -> dict[str, Any] | None:
+    metadata = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+    for key in ("cognitive_projection_facet", "cognitive_projection"):
+        value = metadata.get(key) if isinstance(metadata, dict) else None
+        if isinstance(value, dict):
+            return value
+    return None
+
+
 def _record_shared_spine_marker(
     ctx: dict[str, Any],
     *,
     beliefs: UnifiedRelationalBeliefSetV1 | None,
     error: str | None = None,
+    inline_projection: dict[str, Any] | None = None,
 ) -> None:
     marker = {
         "enabled": True,
         "adapter": "services/orion-cortex-exec/app/chat_stance_shared_spine.py",
         "builder": "orion.cognition.projection_builder.unified_beliefs_for_chat_stance",
-        "beliefs_present": beliefs is not None,
-        "cold_anchors": list(getattr(beliefs, "cold_anchors", []) or []) if beliefs is not None else [],
-        "degraded_producers": list(getattr(beliefs, "degraded_producers", []) or []) if beliefs is not None else [],
-        "lineage": list(getattr(beliefs, "lineage", []) or []) if beliefs is not None else [],
+        "beliefs_present": beliefs is not None or isinstance(inline_projection, dict),
+        "cold_anchors": list(getattr(beliefs, "cold_anchors", []) or []) if beliefs is not None else list((inline_projection or {}).get("cold_anchors") or []),
+        "degraded_producers": list(getattr(beliefs, "degraded_producers", []) or []) if beliefs is not None else list((inline_projection or {}).get("degraded_producers") or []),
+        "lineage": list(getattr(beliefs, "lineage", []) or []) if beliefs is not None else list((inline_projection or {}).get("lineage") or []),
         "error": error,
     }
+    if isinstance(inline_projection, dict):
+        marker["projection_source"] = "orion_cortex_orch_mind_runtime"
+        marker["projection_reused_from_metadata"] = True
     ctx["chat_stance_shared_projection_spine"] = marker
     metadata = ctx.setdefault("metadata", {})
     if isinstance(metadata, dict):
         metadata["chat_stance_shared_projection_spine"] = marker
 
 
+def _record_projection_payload(ctx: dict[str, Any], payload: dict[str, Any], *, source_label: str) -> None:
+    ctx["chat_cognitive_projection"] = payload
+    ctx["chat_cognitive_projection_debug"] = {
+        "present": True,
+        "projection_id": payload.get("projection_id"),
+        "item_count": payload.get("item_count"),
+        "anchor_count": len(payload.get("anchors") or {}),
+        "cold_anchors": list(payload.get("cold_anchors") or []),
+        "degraded_producers": list(payload.get("degraded_producers") or []),
+        "notes": list(payload.get("notes") or []),
+        "source": source_label,
+    }
+
+
 def _record_projection_snapshot(ctx: dict[str, Any], beliefs: UnifiedRelationalBeliefSetV1 | None) -> None:
+    inline_projection = _inline_projection_from_metadata(ctx)
+    if isinstance(inline_projection, dict) and _projection_item_count(inline_projection) > 0:
+        _record_projection_payload(ctx, inline_projection, source_label="orion_cortex_orch_mind_runtime")
+        return
     if beliefs is None:
         ctx["chat_cognitive_projection"] = None
         ctx["chat_cognitive_projection_debug"] = {"present": False, "reason": "beliefs_absent"}
@@ -77,17 +117,7 @@ def _record_projection_snapshot(ctx: dict[str, Any], beliefs: UnifiedRelationalB
         ctx["chat_cognitive_projection"] = None
         ctx["chat_cognitive_projection_debug"] = {"present": False, "reason": "projection_none"}
         return
-    payload = projection.model_dump(mode="json")
-    ctx["chat_cognitive_projection"] = payload
-    ctx["chat_cognitive_projection_debug"] = {
-        "present": True,
-        "projection_id": payload.get("projection_id"),
-        "item_count": payload.get("item_count"),
-        "anchor_count": len(payload.get("anchors") or {}),
-        "cold_anchors": list(payload.get("cold_anchors") or []),
-        "degraded_producers": list(payload.get("degraded_producers") or []),
-        "notes": list(payload.get("notes") or []),
-    }
+    _record_projection_payload(ctx, projection.model_dump(mode="json"), source_label="exec_shared_spine")
 
 
 def _projection_debug_bundle(ctx: dict[str, Any]) -> dict[str, Any]:
@@ -147,6 +177,16 @@ def shared_unified_beliefs_for_stance(ctx: dict[str, Any]) -> UnifiedRelationalB
     and projection snapshot in ``ctx`` so Inspect/debug surfaces can prove which
     cognitive spine served the turn.
     """
+    inline_projection = _inline_projection_from_metadata(ctx)
+    if isinstance(inline_projection, dict) and _projection_item_count(inline_projection) > 0:
+        _record_shared_spine_marker(ctx, beliefs=None, inline_projection=inline_projection)
+        _record_projection_snapshot(ctx, None)
+        logger.info(
+            "chat_stance_shared_projection_spine_reused projection_id=%s item_count=%s",
+            inline_projection.get("projection_id"),
+            inline_projection.get("item_count"),
+        )
+        return None
     try:
         beliefs = unified_beliefs_for_chat_stance(
             ctx,

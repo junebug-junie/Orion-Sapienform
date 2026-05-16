@@ -27,6 +27,35 @@ def _mind_enabled_exact(metadata: dict[str, Any] | None) -> bool:
     return metadata is not None and metadata.get("mind_enabled") is True
 
 
+def _mind_result_quality(result: MindRunResultV1) -> str:
+    brief_quality = getattr(result.brief, "mind_quality", None)
+    if isinstance(brief_quality, str) and brief_quality:
+        return brief_quality
+    result_quality = getattr(result, "mind_quality", None)
+    if isinstance(result_quality, str) and result_quality:
+        return result_quality
+    summary = (result.brief.summary_one_paragraph or "").strip().lower()
+    if summary in {
+        "deterministic mind run (v1).",
+        "fallback contract only — no meaningful mind synthesis produced.",
+    }:
+        return "fallback_contract_only"
+    if not result.ok:
+        return "error"
+    return "empty"
+
+
+def _mind_result_is_deterministic_contract_only(result: MindRunResultV1) -> bool:
+    quality = _mind_result_quality(result)
+    if quality == "fallback_contract_only":
+        return True
+    patches = list(result.trajectory.patches or [])
+    if patches and all(getattr(p.provenance, "model_id", "") == "deterministic" for p in patches):
+        return True
+    summary = (result.brief.summary_one_paragraph or "").strip()
+    return summary == "Deterministic mind run (v1)."
+
+
 async def fetch_substrate_telemetry_facet_for_mind(correlation_id: str) -> dict[str, Any] | None:
     """GET latest row from telemetry service.
 
@@ -143,16 +172,20 @@ def merge_mind_brief_into_plan_metadata(plan_request: PlanExecutionRequest, resu
     for k, v in (result.brief.machine_contract or {}).items():
         meta[str(k)] = v
     meta["mind_handoff"] = result.brief.model_dump(mode="json")
+    meta["mind_quality"] = _mind_result_quality(result)
     skip_llm_stance = False
     if result.ok:
         meta["mind_run_ok"] = True
-        sp = result.brief.stance_payload if isinstance(result.brief.stance_payload, dict) else {}
-        try:
-            ChatStanceBrief.model_validate(sp)
-            skip_llm_stance = True
-        except Exception:
-            meta["mind_stance_payload_invalid"] = True
-            skip_llm_stance = False
+        if _mind_result_quality(result) == "meaningful_synthesis" and not _mind_result_is_deterministic_contract_only(result):
+            sp = result.brief.stance_payload if isinstance(result.brief.stance_payload, dict) else {}
+            try:
+                ChatStanceBrief.model_validate(sp)
+                skip_llm_stance = True
+            except Exception:
+                meta["mind_stance_payload_invalid"] = True
+                skip_llm_stance = False
+        else:
+            meta["mind_contract_only"] = True
         meta["mind_skip_stance_synthesis"] = skip_llm_stance
     else:
         meta["mind_skip_stance_synthesis"] = False

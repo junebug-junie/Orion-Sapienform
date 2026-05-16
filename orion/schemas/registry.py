@@ -415,6 +415,7 @@ from orion.schemas.notify import (
     RecipientProfileUpdate,
 )
 from orion.schemas.topic import TopicSummaryEventV1, TopicShiftEventV1, TopicRailAssignedV1
+from orion.schemas.attention_frame import AttentionFrameV1, AttentionSignalV1
 from orion.schemas.chat_stance import ChatStanceBrief
 from orion.schemas.situation import (
     AgendaContextV1,
@@ -581,6 +582,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "RecallDirective": RecallDirective,
     "AutoRouteDecisionV1": AutoRouteDecisionV1,
     "AutoDepthDecisionV1": AutoDepthDecisionV1,
+    "AttentionFrameV1": AttentionFrameV1,
+    "AttentionSignalV1": AttentionSignalV1,
     "ChatStanceBrief": ChatStanceBrief,
     "RequestorContextV1": RequestorContextV1,
     "PresenceCompanionV1": PresenceCompanionV1,

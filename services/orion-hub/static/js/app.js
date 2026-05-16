@@ -3141,6 +3141,7 @@ loadDismissedIds();
       } else {
         chatStanceDebugModalBody.appendChild(buildChatStanceSection('Overview', model.overview || {}));
         chatStanceDebugModalBody.appendChild(buildChatStanceSection('Source Inputs by Category', model.source_inputs || {}));
+        chatStanceDebugModalBody.appendChild(buildChatStanceSection('Attention / Curiosity', (model.source_inputs && model.source_inputs.attention_frame) || {}));
         chatStanceDebugModalBody.appendChild(
           buildChatStanceSection(
             'Journal PageIndex',

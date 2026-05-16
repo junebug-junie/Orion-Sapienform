@@ -19,6 +19,9 @@ SOURCES (bounded internal inputs)
 - social_room_bridge_summary: {{ chat_social_bridge_summary }}
 - reflective_summary: {{ chat_reflective_summary }}
 - reasoning_summary: {{ chat_reasoning_summary }}
+{% if chat_attention_frame %}
+- attention_frame: {{ chat_attention_frame }}
+{% endif %}
 {% if chat_situation_summary %}
 - situation_summary: {{ chat_situation_summary }}
 {% endif %}
@@ -45,6 +48,11 @@ REQUIREMENTS
 - On low-ball identity turns, bias to priorities like answer_simply_first, direct_answer, relational_continuity.
 - Treat social_room_bridge_summary as primary live interpersonal signal for relational posture, task mode, and hazard suppression.
 - On strained technical/operational turns: set task_mode=triage, identity_salience=low, suppress self-intro hazards, and prioritize blocker triage.
+{% if chat_attention_frame %}
+- Attention frame is an inspectable policy artifact: use selected_action, suppressions, and open_loops to shape response_priorities/response_hazards.
+- Never add curiosity merely because Juniper asked a question; generic reversal questions must remain suppressed when listed.
+- If selected_action.action_type is ask, include a compact priority like curiosity:ask_selected; otherwise prefer curiosity:watch/defer/none and do not force a question.
+{% endif %}
 {% if chat_situation_summary %}
 - Situation grounding is context, not mandatory content; only influence stance when relevant.
 - Presence context adjusts audience stance and privacy boundaries.

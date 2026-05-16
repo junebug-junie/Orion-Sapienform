@@ -452,6 +452,12 @@ def _autonomy_payload_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(final_text_clean, str):
         payload["final_text_clean"] = final_text_clean
     if chat_stance_debug:
+        attention_frame = chat_stance_debug.get("source_inputs", {}).get("attention_frame") if isinstance(chat_stance_debug.get("source_inputs"), dict) else {}
+        selected = attention_frame.get("selected_action") if isinstance(attention_frame, dict) else None
+        if isinstance(selected, dict) and selected.get("action_type") == "ask" and isinstance(final_text_clean, str):
+            chat_stance_debug["speech_followed_recommendation"] = {"selected_action": "ask", "final_text_has_question": "?" in final_text_clean}
+        elif isinstance(selected, dict):
+            chat_stance_debug["speech_followed_recommendation"] = {"selected_action": selected.get("action_type"), "final_text_has_question": ("?" in final_text_clean) if isinstance(final_text_clean, str) else None}
         payload["chat_stance_debug"] = chat_stance_debug
     v2_state = ctx.get("chat_autonomy_state_v2")
     if isinstance(v2_state, dict):

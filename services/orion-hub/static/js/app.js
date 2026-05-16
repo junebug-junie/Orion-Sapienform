@@ -8104,7 +8104,8 @@ loadDismissedIds();
       };
     }
     const laneMode = String(currentMode || 'brain').toLowerCase();
-    const verbOverride = modeVerbOverride ? String(modeVerbOverride).trim() : '';
+    const verbOverrideRaw = modeVerbOverride ? String(modeVerbOverride).trim() : '';
+    const verbOverride = verbOverrideRaw.toLowerCase();
     if (verbOverride === 'chat_quick') {
       return {
         mode: 'brain',

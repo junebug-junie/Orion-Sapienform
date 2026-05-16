@@ -302,6 +302,13 @@ class Settings(BaseSettings):
     GRAPHDB_PASS: str = Field(default="", alias="GRAPHDB_PASS")
     MEMORY_GRAPH_DEFAULT_NAMED_GRAPH: str = Field(default="", alias="MEMORY_GRAPH_DEFAULT_NAMED_GRAPH")
 
+    # POST /api/memory/graph/suggest — cortex route fallback (mode stays brain; quick uses options.llm_route)
+    MEMORY_GRAPH_SUGGEST_PRIMARY_ROUTE: str = Field(default="brain", alias="MEMORY_GRAPH_SUGGEST_PRIMARY_ROUTE")
+    MEMORY_GRAPH_SUGGEST_FALLBACK_ROUTE: str = Field(default="quick", alias="MEMORY_GRAPH_SUGGEST_FALLBACK_ROUTE")
+    MEMORY_GRAPH_SUGGEST_BRAIN_TIMEOUT_SEC: float = Field(default=180.0, alias="MEMORY_GRAPH_SUGGEST_BRAIN_TIMEOUT_SEC")
+    MEMORY_GRAPH_SUGGEST_QUICK_TIMEOUT_SEC: float = Field(default=120.0, alias="MEMORY_GRAPH_SUGGEST_QUICK_TIMEOUT_SEC")
+    MEMORY_GRAPH_SUGGEST_ENABLE_FALLBACK: bool = Field(default=True, alias="MEMORY_GRAPH_SUGGEST_ENABLE_FALLBACK")
+
     @property
     def recall_service_url(self) -> str:
         return str(self.HUB_RECALL_SERVICE_URL or self.RECALL_SERVICE_URL or "http://orion-recall:8090").strip().rstrip("/")

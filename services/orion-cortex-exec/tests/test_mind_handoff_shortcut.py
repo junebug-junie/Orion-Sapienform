@@ -25,39 +25,44 @@ def _exec_prep() -> None:
 from orion.schemas.cortex.schemas import ExecutionStep
 
 
-def test_shortcut_returns_result_when_handoff_valid() -> None:
+_VALID_STANCE = {
+    "conversation_frame": "technical",
+    "user_intent": "u",
+    "self_relevance": "s",
+    "juniper_relevance": "j",
+    "answer_strategy": "DirectAnswer",
+    "stance_summary": "st",
+}
+
+
+def _step() -> ExecutionStep:
+    return ExecutionStep(
+        verb_name="chat_general",
+        step_name="synthesize_chat_stance_brief",
+        order=1,
+        services=["LLMGatewayService"],
+    )
+
+
+def test_shortcut_returns_result_when_orch_authorized_meaningful_handoff() -> None:
     _exec_prep()
     from app.executor import _attempt_mind_handoff_chat_stance_shortcut
 
     ctx = {
         "metadata": {
             "mind_skip_stance_synthesis": True,
+            "mind_quality": "meaningful_synthesis",
             "mind_handoff": {
-                "stance_payload": {
-                    "conversation_frame": "technical",
-                    "user_intent": "u",
-                    "self_relevance": "s",
-                    "juniper_relevance": "j",
-                    "answer_strategy": "DirectAnswer",
-                    "stance_summary": "st",
-                }
+                "mind_quality": "meaningful_synthesis",
+                "stance_payload": dict(_VALID_STANCE),
             },
         }
     }
     merged: dict = {}
     logs: list[str] = []
 
-    def record(*args, **kwargs):
-        pass
-
-    step = ExecutionStep(
-        verb_name="chat_general",
-        step_name="synthesize_chat_stance_brief",
-        order=1,
-        services=["LLMGatewayService"],
-    )
     out = _attempt_mind_handoff_chat_stance_shortcut(
-        step=step,
+        step=_step(),
         service="LLMGatewayService",
         ctx=ctx,
         merged_result=merged,
@@ -65,12 +70,43 @@ def test_shortcut_returns_result_when_handoff_valid() -> None:
         correlation_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
         spark_vector=None,
         t0=0.0,
-        record_scoped_step=record,
+        record_scoped_step=lambda *args, **kwargs: None,
         node_name="test-node",
     )
     assert out is not None
     assert out.status == "success"
     assert merged.get("ChatStanceBrief")
+
+
+def test_shortcut_returns_none_when_orch_did_not_authorize_skip() -> None:
+    _exec_prep()
+    from app.executor import _attempt_mind_handoff_chat_stance_shortcut
+
+    ctx = {
+        "metadata": {
+            "mind_skip_stance_synthesis": False,
+            "mind_quality": "fallback_contract_only",
+            "mind_handoff": {
+                "mind_quality": "fallback_contract_only",
+                "stance_payload": dict(_VALID_STANCE),
+            },
+        }
+    }
+    merged = {}
+    out = _attempt_mind_handoff_chat_stance_shortcut(
+        step=_step(),
+        service="LLMGatewayService",
+        ctx=ctx,
+        merged_result=merged,
+        logs=[],
+        correlation_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        spark_vector=None,
+        t0=0.0,
+        record_scoped_step=lambda *a, **k: None,
+        node_name="n",
+    )
+    assert out is None
+    assert merged == {}
 
 
 def test_shortcut_returns_none_when_payload_invalid() -> None:
@@ -80,18 +116,13 @@ def test_shortcut_returns_none_when_payload_invalid() -> None:
     ctx = {
         "metadata": {
             "mind_skip_stance_synthesis": True,
-            "mind_handoff": {"stance_payload": {"conversation_frame": "not-a-valid-frame"}},
+            "mind_quality": "meaningful_synthesis",
+            "mind_handoff": {"mind_quality": "meaningful_synthesis", "stance_payload": {"conversation_frame": "not-a-valid-frame"}},
         }
     }
     merged = {}
-    step = ExecutionStep(
-        verb_name="chat_general",
-        step_name="synthesize_chat_stance_brief",
-        order=1,
-        services=["LLMGatewayService"],
-    )
     out = _attempt_mind_handoff_chat_stance_shortcut(
-        step=step,
+        step=_step(),
         service="LLMGatewayService",
         ctx=ctx,
         merged_result=merged,

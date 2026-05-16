@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import Any, Callable
 
 from orion.cognition.projection import project_unified_beliefs_for_mind
 from orion.cognition.projection_builder import unified_beliefs_for_chat_stance
@@ -22,6 +22,7 @@ logger = logging.getLogger("orion.cortex.exec.chat_stance_shared_spine")
 
 _INSTALLED = False
 _ORIGINAL = None
+_ORIGINAL_DEBUG_BUILDER: Callable[..., dict[str, Any]] | None = None
 
 
 def _env_float(name: str, default: float) -> float:
@@ -89,6 +90,56 @@ def _record_projection_snapshot(ctx: dict[str, Any], beliefs: UnifiedRelationalB
     }
 
 
+def _projection_debug_bundle(ctx: dict[str, Any]) -> dict[str, Any]:
+    marker = ctx.get("chat_stance_shared_projection_spine")
+    if not isinstance(marker, dict):
+        metadata = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+        marker = metadata.get("chat_stance_shared_projection_spine") if isinstance(metadata, dict) else None
+    projection_debug = ctx.get("chat_cognitive_projection_debug")
+    projection = ctx.get("chat_cognitive_projection")
+    return {
+        "shared_spine": marker if isinstance(marker, dict) else {"enabled": False, "reason": "marker_absent"},
+        "projection_debug": projection_debug if isinstance(projection_debug, dict) else {"present": False, "reason": "debug_absent"},
+        "projection": projection if isinstance(projection, dict) else None,
+    }
+
+
+def _inject_projection_debug(debug_payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    bundle = _projection_debug_bundle(ctx)
+    debug_payload["cognitive_projection"] = bundle
+
+    lineage = debug_payload.get("lineage_summary")
+    if isinstance(lineage, list):
+        projection_debug = bundle.get("projection_debug") if isinstance(bundle.get("projection_debug"), dict) else {}
+        shared_spine = bundle.get("shared_spine") if isinstance(bundle.get("shared_spine"), dict) else {}
+        lineage.append(
+            "shared projection spine used: "
+            + ("yes" if bool(shared_spine.get("enabled")) and bool(shared_spine.get("beliefs_present")) else "no")
+        )
+        lineage.append(
+            f"cognitive projection items: {projection_debug.get('item_count') if projection_debug.get('present') else 0}"
+        )
+
+    raw = debug_payload.setdefault("raw", {})
+    if isinstance(raw, dict):
+        raw["cognitive_projection"] = bundle
+    return debug_payload
+
+
+def shared_build_chat_stance_debug_payload(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Decorate legacy ChatStanceDebug with shared-spine/projection details."""
+    if _ORIGINAL_DEBUG_BUILDER is None:
+        raise RuntimeError("chat_stance_debug_builder_not_installed")
+    debug_payload = _ORIGINAL_DEBUG_BUILDER(*args, **kwargs)
+    ctx = kwargs.get("ctx")
+    if not isinstance(ctx, dict) and args:
+        maybe_ctx = args[0]
+        ctx = maybe_ctx if isinstance(maybe_ctx, dict) else None
+    if isinstance(debug_payload, dict) and isinstance(ctx, dict):
+        return _inject_projection_debug(debug_payload, ctx)
+    return debug_payload
+
+
 def shared_unified_beliefs_for_stance(ctx: dict[str, Any]) -> UnifiedRelationalBeliefSetV1 | None:
     """Exec chat-stance adapter into the shared cognitive projection builder.
 
@@ -119,12 +170,12 @@ def shared_unified_beliefs_for_stance(ctx: dict[str, Any]) -> UnifiedRelationalB
 
 
 def install_chat_stance_shared_spine(*, force: bool = False) -> bool:
-    """Patch ``app.chat_stance`` to use the shared unified-beliefs builder.
+    """Patch ``app.chat_stance`` to use the shared unified-beliefs/debug builders.
 
     Returns True when the shared spine is installed or already installed.
     Returns False only when explicitly disabled by env.
     """
-    global _INSTALLED, _ORIGINAL
+    global _INSTALLED, _ORIGINAL, _ORIGINAL_DEBUG_BUILDER
 
     disabled = (os.getenv("CHAT_STANCE_SHARED_PROJECTION_SPINE_DISABLED") or "").strip().lower()
     if disabled in {"1", "true", "yes", "on"} and not force:
@@ -139,6 +190,12 @@ def install_chat_stance_shared_spine(*, force: bool = False) -> bool:
     if current is not shared_unified_beliefs_for_stance:
         _ORIGINAL = current
         setattr(chat_stance, "_unified_beliefs_for_stance", shared_unified_beliefs_for_stance)
+
+    current_debug = getattr(chat_stance, "build_chat_stance_debug_payload", None)
+    if current_debug is not shared_build_chat_stance_debug_payload:
+        _ORIGINAL_DEBUG_BUILDER = current_debug
+        setattr(chat_stance, "build_chat_stance_debug_payload", shared_build_chat_stance_debug_payload)
+
     setattr(chat_stance, "_CHAT_STANCE_SHARED_PROJECTION_SPINE", True)
     _INSTALLED = True
     logger.info("chat_stance_shared_projection_spine_installed")
@@ -147,12 +204,15 @@ def install_chat_stance_shared_spine(*, force: bool = False) -> bool:
 
 def restore_chat_stance_shared_spine_for_tests() -> None:
     """Restore the original local path in tests only."""
-    global _INSTALLED, _ORIGINAL
-    if _ORIGINAL is None:
+    global _INSTALLED, _ORIGINAL, _ORIGINAL_DEBUG_BUILDER
+    if _ORIGINAL is None and _ORIGINAL_DEBUG_BUILDER is None:
         _INSTALLED = False
         return
     from . import chat_stance
 
-    setattr(chat_stance, "_unified_beliefs_for_stance", _ORIGINAL)
+    if _ORIGINAL is not None:
+        setattr(chat_stance, "_unified_beliefs_for_stance", _ORIGINAL)
+    if _ORIGINAL_DEBUG_BUILDER is not None:
+        setattr(chat_stance, "build_chat_stance_debug_payload", _ORIGINAL_DEBUG_BUILDER)
     setattr(chat_stance, "_CHAT_STANCE_SHARED_PROJECTION_SPINE", False)
     _INSTALLED = False

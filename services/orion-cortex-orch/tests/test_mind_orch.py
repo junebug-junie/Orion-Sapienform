@@ -48,6 +48,20 @@ def _plan_request() -> PlanExecutionRequest:
     )
 
 
+def _client_request(metadata: dict | None = None) -> CortexClientRequest:
+    return CortexClientRequest(
+        verb="chat_general",
+        mode="brain",
+        context=CortexClientContext(
+            messages=[LLMMessage(role="user", content="hi")],
+            session_id="s",
+            trace_id="t",
+            user_message="hi",
+            metadata=metadata or {"mind_enabled": True},
+        ),
+    )
+
+
 def test_meaningful_mind_synthesis_may_skip_stance_synthesis() -> None:
     _orch_prep()
     from app.mind_runtime import merge_mind_brief_into_plan_metadata
@@ -153,23 +167,54 @@ def test_build_mind_run_request_merges_substrate_telemetry_facet() -> None:
     _orch_prep()
     from app.mind_runtime import build_mind_run_request
 
-    cr = CortexClientRequest(
-        verb="chat_general",
-        mode="brain",
-        context=CortexClientContext(
-            messages=[LLMMessage(role="user", content="hi")],
-            session_id="s",
-            trace_id="t",
-            user_message="hi",
-            metadata={"mind_enabled": True},
-        ),
-    )
-    pr = _plan_request()
     req = build_mind_run_request(
-        cr,
-        pr,
+        _client_request(),
+        _plan_request(),
         "550e8400-e29b-41d4-a716-446655440000",
         substrate_telemetry_facet={"status": "absent"},
     )
     facets = (req.snapshot_inputs or {}).get("facets") or {}
     assert facets.get("substrate_telemetry") == {"status": "absent"}
+
+
+def test_build_mind_run_request_accepts_explicit_cognitive_projection_facet() -> None:
+    _orch_prep()
+    from app.mind_runtime import build_mind_run_request
+
+    projection = {
+        "schema_version": "cognitive.projection.v1",
+        "projection_id": "cog-proj-test",
+        "generated_at": "2026-05-16T04:00:00+00:00",
+        "source": "cognitive_unification_layer",
+        "anchors": {},
+        "item_count": 0,
+    }
+    req = build_mind_run_request(
+        _client_request(),
+        _plan_request(),
+        "550e8400-e29b-41d4-a716-446655440000",
+        cognitive_projection_facet=projection,
+    )
+    facets = (req.snapshot_inputs or {}).get("facets") or {}
+    assert facets.get("cognitive_projection") == projection
+
+
+def test_build_mind_run_request_accepts_inline_metadata_cognitive_projection_facet() -> None:
+    _orch_prep()
+    from app.mind_runtime import build_mind_run_request
+
+    projection = {
+        "schema_version": "cognitive.projection.v1",
+        "projection_id": "cog-proj-inline",
+        "generated_at": "2026-05-16T04:00:00+00:00",
+        "source": "cognitive_unification_layer",
+        "anchors": {},
+        "item_count": 0,
+    }
+    req = build_mind_run_request(
+        _client_request(metadata={"mind_enabled": True, "cognitive_projection_facet": projection}),
+        _plan_request(),
+        "550e8400-e29b-41d4-a716-446655440000",
+    )
+    facets = (req.snapshot_inputs or {}).get("facets") or {}
+    assert facets.get("cognitive_projection") == projection

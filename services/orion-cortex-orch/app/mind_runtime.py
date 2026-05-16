@@ -115,12 +115,28 @@ async def fetch_substrate_telemetry_facet_for_mind(correlation_id: str) -> dict[
     }
 
 
+def _inline_cognitive_projection_facet(metadata: dict[str, Any]) -> dict[str, Any] | None:
+    """Return caller-supplied cognitive projection for Mind shadow mode.
+
+    This is intentionally inline-only for now. Same-turn Orch cannot see the Exec
+    chat-stance projection until after execution; later phases can add a persisted
+    projection read path. For now this creates the stable snapshot seam without
+    moving authority.
+    """
+    for key in ("cognitive_projection_facet", "cognitive_projection"):
+        value = metadata.get(key)
+        if isinstance(value, dict):
+            return value
+    return None
+
+
 def build_mind_run_request(
     client_request: CortexClientRequest,
     plan_request: PlanExecutionRequest,
     correlation_id: str,
     *,
     substrate_telemetry_facet: dict[str, Any] | None = None,
+    cognitive_projection_facet: dict[str, Any] | None = None,
 ) -> MindRunRequestV1:
     """Construct a bounded v1 request; snapshot is inline JSON only (v1)."""
     meta = client_request.context.metadata if isinstance(client_request.context.metadata, dict) else {}
@@ -150,10 +166,13 @@ def build_mind_run_request(
         llm_enabled_per_loop=list(extra_policy.get("llm_enabled_per_loop") or []),
         router_profile_id=router_profile,
     )
+    facets: dict[str, Any] = {}
     if substrate_telemetry_facet is not None:
-        existing = snapshot.get("facets")
-        facets: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
         facets["substrate_telemetry"] = substrate_telemetry_facet
+    cognitive_projection = cognitive_projection_facet or _inline_cognitive_projection_facet(meta)
+    if cognitive_projection is not None:
+        facets["cognitive_projection"] = cognitive_projection
+    if facets:
         snapshot["facets"] = facets
     return MindRunRequestV1(
         correlation_id=correlation_id,

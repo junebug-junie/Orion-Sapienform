@@ -320,6 +320,56 @@
     };
   }
 
+  function normalizeMindShadowSynthesis(payload) {
+    const root = asObject(payload) || {};
+    const raw = asObject(root.raw) || {};
+    const sourceInputs = asObject(root.source_inputs) || asObject(raw.source_inputs) || {};
+    const finalPromptContract = asObject(root.final_prompt_contract) || asObject(raw.final_prompt_contract) || {};
+    const rootHandoff = asObject(root.mind_handoff) || {};
+    const rawHandoff = asObject(raw.mind_handoff) || {};
+    const sourceHandoff = asObject(sourceInputs.mind_handoff) || asObject(sourceInputs.mind) || {};
+    const contractHandoff = asObject(finalPromptContract.mind_handoff) || {};
+    const shadow = firstPresent([
+      root.mind_shadow_synthesis,
+      raw.mind_shadow_synthesis,
+      sourceInputs.mind_shadow_synthesis,
+      finalPromptContract.mind_shadow_synthesis,
+      rootHandoff.shadow_synthesis,
+      rawHandoff.shadow_synthesis,
+      sourceHandoff.shadow_synthesis,
+      contractHandoff.shadow_synthesis,
+    ]);
+    const shadowObject = asObject(shadow) || {};
+    const presentFlag = firstPresent([
+      root.mind_shadow_synthesis_present,
+      raw.mind_shadow_synthesis_present,
+      sourceInputs.mind_shadow_synthesis_present,
+      finalPromptContract.mind_shadow_synthesis_present,
+      shadowObject.present,
+    ]);
+    const authorizedForStanceSkip = firstPresent([
+      root.mind_authorized_for_stance_skip,
+      raw.mind_authorized_for_stance_skip,
+      sourceInputs.mind_authorized_for_stance_skip,
+      finalPromptContract.mind_authorized_for_stance_skip,
+      shadowObject.authorized_for_stance_skip,
+    ]);
+    return {
+      present: Boolean(shadow || presentFlag),
+      schemaVersion: shadowObject.schema_version || '--',
+      authorizedForStanceSkip,
+      confidence: shadowObject.confidence,
+      attentionFocus: asList(shadowObject.attention_focus),
+      curiosityCandidate: asList(shadowObject.curiosity_candidate),
+      relationshipFrame: shadowObject.relationship_frame,
+      projectionRefsUsed: asList(shadowObject.projection_refs_used),
+      hazards: asList(shadowObject.hazards),
+      rationale: shadowObject.rationale,
+      stanceCandidate: asObject(shadowObject.stance_candidate),
+      shadow: shadowObject,
+    };
+  }
+
   function renderProjectionCard(model, opts = {}) {
     const card = makeEl('section', 'rounded-xl border border-cyan-500/30 bg-cyan-500/5 p-3 space-y-3');
     card.id = opts.modal ? MODAL_CARD_ID : INLINE_CARD_ID;
@@ -397,6 +447,7 @@
     const projection = bundle ? normalizeProjectionBundle(bundle) : null;
     const legacy = normalizeLegacyChatStance(payload);
     const mind = normalizeMindHandoff(payload);
+    const shadow = normalizeMindShadowSynthesis(payload);
     const card = makeEl('section', 'rounded-xl border border-fuchsia-500/30 bg-fuchsia-500/5 p-3 space-y-3');
     card.id = opts.modal ? MODAL_COMPARE_ID : INLINE_COMPARE_ID;
 
@@ -405,7 +456,7 @@
     header.appendChild(makeEl('div', 'text-[10px] text-gray-400', 'read-only · no promotion'));
     card.appendChild(header);
 
-    const grid = makeEl('div', 'grid grid-cols-1 gap-3 xl:grid-cols-3');
+    const grid = makeEl('div', 'grid grid-cols-1 gap-3 xl:grid-cols-4');
     grid.appendChild(comparisonColumn(
       'Shared projection',
       projection ? (projection.used ? 'active' : 'present / inactive') : 'absent',
@@ -439,6 +490,20 @@
       ],
       { border: 'border-emerald-500/25', bg: 'bg-emerald-500/5', title: 'text-emerald-200' },
     ));
+    grid.appendChild(comparisonColumn(
+      'Mind shadow synthesis',
+      shadow.present ? 'present' : 'absent',
+      [
+        ['schema', shadow.schemaVersion || '--'],
+        ['authorized for skip', shadow.authorizedForStanceSkip === null || shadow.authorizedForStanceSkip === undefined ? '--' : String(shadow.authorizedForStanceSkip)],
+        ['confidence', shadow.confidence === null || shadow.confidence === undefined ? '--' : shadow.confidence],
+        ['attention focus', shadow.attentionFocus.length ? shadow.attentionFocus.slice(0, 3).join(' · ') : '--'],
+        ['curiosity candidate', shadow.curiosityCandidate.length ? shadow.curiosityCandidate.slice(0, 2).join(' · ') : '--'],
+        ['projection refs', shadow.projectionRefsUsed.length ? shadow.projectionRefsUsed.slice(0, 4).join(' · ') : '--'],
+        ['hazards', shadow.hazards.length ? shadow.hazards.slice(0, 3).join(' · ') : '--'],
+      ],
+      { border: 'border-amber-500/25', bg: 'bg-amber-500/5', title: 'text-amber-200' },
+    ));
     card.appendChild(grid);
 
     if (opts.modal) {
@@ -458,6 +523,19 @@
           skip_stance_synthesis: mind.skipStance,
           summary: mind.summary || null,
           handoff: mind.handoff || null,
+        },
+        mind_shadow_synthesis: {
+          present: shadow.present,
+          authorized_for_stance_skip: shadow.authorizedForStanceSkip,
+          confidence: shadow.confidence,
+          attention_focus: shadow.attentionFocus,
+          curiosity_candidate: shadow.curiosityCandidate,
+          relationship_frame: shadow.relationshipFrame,
+          projection_refs_used: shadow.projectionRefsUsed,
+          hazards: shadow.hazards,
+          rationale: shadow.rationale,
+          stance_candidate: shadow.stanceCandidate || null,
+          raw: shadow.shadow || null,
         },
       }, null, 2);
       raw.appendChild(pre);
@@ -519,7 +597,7 @@
     refresh();
   }
 
-  const api = { attach, refresh, normalizeProjectionBundle, normalizeLegacyChatStance, normalizeMindHandoff, renderFromPayload };
+  const api = { attach, refresh, normalizeProjectionBundle, normalizeLegacyChatStance, normalizeMindHandoff, normalizeMindShadowSynthesis, renderFromPayload };
   global.OrionChatStanceProjectionInspect = api;
   if (typeof document !== 'undefined') {
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', attach);

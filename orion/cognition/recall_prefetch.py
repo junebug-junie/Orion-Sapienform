@@ -7,64 +7,86 @@ import time
 from typing import Any
 from uuid import uuid4
 
+from orion.cognition.recall_query import (
+    DEFAULT_RECALL_REPLY_PREFIX,
+    build_recall_query_v1,
+    last_user_message_from_ctx,
+    recall_ctx_merge_from_reply,
+)
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.core.contracts.recall import RecallQueryV1, RecallReplyV1
+from orion.core.contracts.recall import RecallReplyV1
 
 logger = logging.getLogger("orion.cognition.recall_prefetch")
 
 
-def _last_user_message(ctx: dict[str, Any]) -> str:
-    for key in ("user_message", "raw_user_text"):
-        value = ctx.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    messages = ctx.get("messages") or []
-    if isinstance(messages, list):
-        for message in reversed(messages):
-            if not isinstance(message, dict):
-                continue
-            if str(message.get("role") or "").strip().lower() != "user":
-                continue
-            content = message.get("content") or message.get("text") or ""
-            if isinstance(content, str) and content.strip():
-                return content.strip()
-    return ""
-
-
-def _recall_bundle_from_reply(reply: RecallReplyV1) -> dict[str, Any]:
-    recall_fragments: list[dict[str, Any]] = []
-    recall_citations: list[dict[str, Any]] = []
-    for item in reply.bundle.items[:12]:
-        snippet = str(getattr(item, "snippet", "") or "")[:480]
-        recall_fragment = {
-            "id": str(getattr(item, "id", "") or ""),
-            "snippet": snippet,
-            "score": float(getattr(item, "score", 0.0) or 0.0),
-            "tags": [str(tag) for tag in (getattr(item, "tags", []) or []) if tag],
-            "source": str(getattr(item, "source", "") or ""),
-            "source_ref": getattr(item, "source_ref", None),
-            "uri": getattr(item, "uri", None),
-        }
-        recall_fragments.append(recall_fragment)
-        recall_citations.append(
-            {
-                "id": recall_fragment["id"],
-                "source": recall_fragment["source"],
-                "source_ref": recall_fragment["source_ref"],
-                "uri": recall_fragment["uri"],
-            }
-        )
-    memory_digest = reply.bundle.rendered if hasattr(reply.bundle, "rendered") else ""
+def _fresh_prefetch_diagnostics(
+    *,
+    correlation_id: str,
+    recall_channel: str,
+    timeout_sec: float,
+    enabled: bool,
+    reason: str,
+    profile: str | None = None,
+) -> dict[str, Any]:
     return {
-        "recall_bundle": {
-            "fragments": recall_fragments,
-            "citations": recall_citations,
-            "rendered": memory_digest,
-        },
-        "memory_digest": memory_digest,
-        "recall_fragments": recall_fragments,
-        "memory_used": bool(recall_fragments),
+        "correlation_id": correlation_id,
+        "recall_channel": recall_channel,
+        "endpoint": f"bus:{recall_channel}",
+        "timeout_sec": timeout_sec,
+        "enabled": enabled,
+        "reason": reason,
+        "profile": profile,
+        "ok": False,
+        "elapsed_ms": 0,
+        "timed_out": False,
+        "exception_type": None,
+        "status_code": None,
+        "result_count": 0,
+        "bundle_keys": [],
+        "normalized_ctx_keys_written": [],
+        "recall_bundle_present_after_write": False,
+        "retryable": True,
+        "degradation_reason": None,
     }
+
+
+def log_mind_projection_prebuild_ctx_summary(
+    *,
+    correlation_id: str,
+    ctx: dict[str, Any],
+    recall_prefetch: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Structured pre-build ctx summary (after recall prefetch, before projection)."""
+    recall_bundle = ctx.get("recall_bundle") if isinstance(ctx.get("recall_bundle"), dict) else {}
+    fragments = recall_bundle.get("fragments") if isinstance(recall_bundle.get("fragments"), list) else []
+    social_keys = (
+        "social_inspection_snapshot",
+        "social_stance_snapshot",
+        "social_turn_policy",
+    )
+    summary = {
+        "correlation_id": correlation_id,
+        "orion_identity_count": len(ctx.get("orion_identity_summary") or [])
+        if isinstance(ctx.get("orion_identity_summary"), list)
+        else 0,
+        "juniper_relationship_count": len(ctx.get("juniper_relationship_summary") or [])
+        if isinstance(ctx.get("juniper_relationship_summary"), list)
+        else 0,
+        "response_policy_count": len(ctx.get("response_policy_summary") or [])
+        if isinstance(ctx.get("response_policy_summary"), list)
+        else 0,
+        "recall_bundle_present": bool(fragments),
+        "recall_result_count": len(fragments),
+        "recall_bundle_keys": list(recall_bundle.keys()) if isinstance(recall_bundle, dict) else [],
+        "situation_summary_present": isinstance(ctx.get("chat_situation_summary"), dict),
+        "social_snapshot_present": any(ctx.get(k) is not None for k in social_keys),
+        "message_count": len(ctx.get("messages") or []) if isinstance(ctx.get("messages"), list) else 0,
+        "user_message_present": bool(last_user_message_from_ctx(ctx)),
+        "session_id_present": bool(ctx.get("session_id")),
+        "recall_prefetch": recall_prefetch,
+    }
+    logger.info("mind_projection_prebuild_ctx_summary %s", summary)
+    return summary
 
 
 async def prefetch_recall_bundle_for_projection(
@@ -77,39 +99,73 @@ async def prefetch_recall_bundle_for_projection(
     recall_profile: str | None,
     recall_channel: str,
     timeout_sec: float,
-) -> dict[str, Any] | None:
-    """Run recall RPC and return ctx fragments for the recall substrate producer."""
-    if not recall_enabled:
-        return None
-    if isinstance(ctx.get("recall_bundle"), dict) and ctx["recall_bundle"].get("fragments"):
-        return None
+    recall_cfg: dict[str, Any] | None = None,
+    recall_reply_prefix: str = DEFAULT_RECALL_REPLY_PREFIX,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Run recall bus RPC; return (ctx_merge, diagnostics).
 
-    fragment_text = _last_user_message(ctx)
-    if not fragment_text:
-        return None
-
-    active_turn_ids: list[str] = []
-    for candidate in (correlation_id, ctx.get("trace_id"), ctx.get("session_id")):
-        if candidate is None:
-            continue
-        value = str(candidate).strip()
-        if value and value not in active_turn_ids:
-            active_turn_ids.append(value)
-
-    req = RecallQueryV1(
-        fragment=fragment_text,
-        verb=str(ctx.get("verb") or "unknown"),
-        intent=ctx.get("intent"),
-        session_id=ctx.get("session_id"),
-        node_id=ctx.get("node_id"),
-        profile=(recall_profile or "reflect.v1").strip() or "reflect.v1",
-        exclude={
-            "active_turn_ids": active_turn_ids,
-            "active_turn_text": fragment_text,
-            "active_turn_ts": time.time(),
-        },
+    On failure/timeout returns (None, diagnostics) without writing fake recall_bundle.
+    """
+    recall_cfg = recall_cfg if isinstance(recall_cfg, dict) else {}
+    profile = (recall_profile or recall_cfg.get("profile") or "reflect.v1").strip() or "reflect.v1"
+    diagnostics = _fresh_prefetch_diagnostics(
+        correlation_id=correlation_id,
+        recall_channel=recall_channel,
+        timeout_sec=timeout_sec,
+        enabled=recall_enabled,
+        reason="disabled" if not recall_enabled else "start",
+        profile=profile,
     )
-    reply_channel = f"orion:orch:result:RecallService:{uuid4()}"
+
+    if not recall_enabled:
+        diagnostics["reason"] = "recall_disabled"
+        diagnostics["retryable"] = False
+        return None, diagnostics
+
+    if isinstance(ctx.get("recall_bundle"), dict) and ctx["recall_bundle"].get("fragments"):
+        diagnostics["reason"] = "recall_bundle_already_present"
+        diagnostics["ok"] = True
+        diagnostics["recall_bundle_present_after_write"] = True
+        diagnostics["result_count"] = len(ctx["recall_bundle"]["fragments"])
+        return None, diagnostics
+
+    fragment_text = last_user_message_from_ctx(ctx)
+    if not fragment_text:
+        diagnostics["reason"] = "empty_query_text"
+        diagnostics["retryable"] = False
+        return None, diagnostics
+
+    reply_prefix = (recall_reply_prefix or DEFAULT_RECALL_REPLY_PREFIX).strip().rstrip(":")
+    reply_channel = f"{reply_prefix}:{uuid4()}"
+    diagnostics["recall_reply_prefix"] = reply_prefix
+    req = build_recall_query_v1(
+        ctx,
+        correlation_id=correlation_id,
+        recall_profile=recall_profile,
+        recall_cfg=recall_cfg,
+        reply_to=reply_channel,
+    )
+    if req is None:
+        diagnostics["reason"] = "query_build_failed"
+        diagnostics["retryable"] = False
+        return None, diagnostics
+
+    history_count = len(ctx.get("messages") or []) if isinstance(ctx.get("messages"), list) else 0
+    logger.info(
+        "mind_recall_prefetch_start correlation_id=%s session_id=%s recall_channel=%s endpoint=%s "
+        "timeout_sec=%s profile=%s query_preview=%r history_count=%s enabled=%s reason=%s",
+        correlation_id,
+        ctx.get("session_id"),
+        recall_channel,
+        diagnostics["endpoint"],
+        timeout_sec,
+        req.profile,
+        fragment_text[:120],
+        history_count,
+        recall_enabled,
+        diagnostics["reason"],
+    )
+
     env = BaseEnvelope(
         kind="recall.query.v1",
         source=source,
@@ -117,6 +173,7 @@ async def prefetch_recall_bundle_for_projection(
         reply_to=reply_channel,
         payload=req.model_dump(mode="json"),
     )
+    t0 = time.perf_counter()
     try:
         msg = await bus.rpc_request(
             recall_channel,
@@ -124,23 +181,100 @@ async def prefetch_recall_bundle_for_projection(
             reply_channel=reply_channel,
             timeout_sec=timeout_sec,
         )
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        diagnostics["elapsed_ms"] = elapsed_ms
         decoded = bus.codec.decode(msg.get("data"))
         if not decoded.ok:
-            logger.warning("mind_recall_prefetch_decode_failed corr=%s err=%s", correlation_id, decoded.error)
-            return None
+            diagnostics["reason"] = "decode_failed"
+            diagnostics["degradation_reason"] = str(decoded.error)
+            logger.warning(
+                "mind_recall_prefetch_result correlation_id=%s ok=false elapsed_ms=%s "
+                "exception_type=decode_error degradation_reason=%s",
+                correlation_id,
+                elapsed_ms,
+                decoded.error,
+            )
+            return None, diagnostics
         payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
         if payload.get("error"):
-            logger.warning("mind_recall_prefetch_error corr=%s payload=%s", correlation_id, payload.get("error"))
-            return None
+            diagnostics["reason"] = "recall_service_error"
+            diagnostics["degradation_reason"] = str(payload.get("error"))
+            logger.warning(
+                "mind_recall_prefetch_result correlation_id=%s ok=false elapsed_ms=%s "
+                "recall_error=%s",
+                correlation_id,
+                elapsed_ms,
+                payload.get("error"),
+            )
+            return None, diagnostics
         reply = RecallReplyV1.model_validate(payload)
-        bundle = _recall_bundle_from_reply(reply)
-        logger.info(
-            "mind_recall_prefetch_ok corr=%s fragment_count=%s profile=%s",
-            correlation_id,
-            len(bundle.get("recall_fragments") or []),
-            req.profile,
+        merge = recall_ctx_merge_from_reply(reply)
+        bundle = merge.get("recall_bundle") if isinstance(merge.get("recall_bundle"), dict) else {}
+        fragment_count = len(bundle.get("fragments") or []) if isinstance(bundle.get("fragments"), list) else 0
+        diagnostics.update(
+            {
+                "ok": True,
+                "reason": "success",
+                "result_count": fragment_count,
+                "bundle_keys": list(bundle.keys()) if isinstance(bundle, dict) else [],
+                "normalized_ctx_keys_written": list(merge.keys()),
+                "recall_bundle_present_after_write": fragment_count > 0,
+                "retryable": False,
+                "degradation_reason": None,
+            }
         )
-        return bundle
+        logger.info(
+            "mind_recall_prefetch_result correlation_id=%s ok=true elapsed_ms=%s result_count=%s "
+            "bundle_keys=%s normalized_ctx_keys_written=%s recall_bundle_present_after_write=%s",
+            correlation_id,
+            elapsed_ms,
+            fragment_count,
+            diagnostics["bundle_keys"],
+            diagnostics["normalized_ctx_keys_written"],
+            diagnostics["recall_bundle_present_after_write"],
+        )
+        return merge, diagnostics
+    except TimeoutError as exc:
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        diagnostics.update(
+            {
+                "elapsed_ms": elapsed_ms,
+                "timed_out": True,
+                "exception_type": type(exc).__name__,
+                "reason": "timeout",
+                "degradation_reason": str(exc),
+            }
+        )
+        logger.warning(
+            "mind_recall_prefetch_timeout correlation_id=%s elapsed_ms=%s timeout_sec=%s "
+            "service_url=bus:%s endpoint=%s profile=%s retryable=%s degradation_reason=%s",
+            correlation_id,
+            elapsed_ms,
+            timeout_sec,
+            recall_channel,
+            diagnostics["endpoint"],
+            req.profile,
+            diagnostics["retryable"],
+            diagnostics["degradation_reason"],
+        )
+        return None, diagnostics
     except Exception as exc:
-        logger.warning("mind_recall_prefetch_failed corr=%s err=%s", correlation_id, exc)
-        return None
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        diagnostics.update(
+            {
+                "elapsed_ms": elapsed_ms,
+                "exception_type": type(exc).__name__,
+                "reason": "exception",
+                "degradation_reason": str(exc),
+            }
+        )
+        logger.warning(
+            "mind_recall_prefetch_result correlation_id=%s ok=false elapsed_ms=%s timed_out=%s "
+            "exception_type=%s degradation_reason=%s",
+            correlation_id,
+            elapsed_ms,
+            diagnostics["timed_out"],
+            diagnostics["exception_type"],
+            diagnostics["degradation_reason"],
+        )
+        return None, diagnostics

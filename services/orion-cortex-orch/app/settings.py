@@ -105,8 +105,16 @@ class Settings(BaseSettings):
         "orion:exec:request:RecallService",
         alias="CHANNEL_RECALL_INTAKE",
     )
+    channel_recall_reply_prefix: str = Field(
+        "orion:exec:result:RecallService",
+        validation_alias=AliasChoices(
+            "CHANNEL_RECALL_REPLY_PREFIX",
+            "CHANNEL_RECALL_DEFAULT_REPLY_PREFIX",
+            "MIND_RECALL_REPLY_PREFIX",
+        ),
+    )
     mind_recall_prefetch_enabled: bool = Field(True, alias="MIND_RECALL_PREFETCH_ENABLED")
-    mind_recall_prefetch_timeout_sec: float = Field(12.0, alias="MIND_RECALL_PREFETCH_TIMEOUT_SEC")
+    mind_recall_prefetch_timeout_sec: float = Field(30.0, alias="MIND_RECALL_PREFETCH_TIMEOUT_SEC")
     orion_always_inject_token_budget: int = Field(300, alias="ORION_ALWAYS_INJECT_TOKEN_BUDGET")
     orion_always_inject_enabled: bool = Field(True, alias="ORION_ALWAYS_INJECT_ENABLED")
     orion_auto_extractor_enabled: bool = Field(False, alias="ORION_AUTO_EXTRACTOR_ENABLED")

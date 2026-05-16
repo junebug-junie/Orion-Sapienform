@@ -15,7 +15,11 @@ from orion.cognition.projection_builder import (
     summarize_projection_build,
 )
 from orion.cognition.projection_context import enrich_projection_context, summarize_projection_inputs
-from orion.cognition.recall_prefetch import prefetch_recall_bundle_for_projection
+from orion.cognition.recall_prefetch import (
+    log_mind_projection_prebuild_ctx_summary,
+    prefetch_recall_bundle_for_projection,
+)
+from orion.cognition.recall_query import recall_cfg_from_recall_directive
 from orion.substrate.relational import CognitiveUnificationLayer
 from orion.substrate.store import InMemorySubstrateGraphStore
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -222,8 +226,9 @@ async def prepare_plan_context_for_mind_projection(
     """Enrich plan ctx with Exec-parity producer inputs before Mind preflight projection."""
     ctx = _plan_projection_context(client_request, plan_request, correlation_id)
     settings = get_settings()
+    recall_prefetch_diag: dict[str, Any] | None = None
     if settings.mind_recall_prefetch_enabled and client_request.recall.enabled:
-        recall_merge = await prefetch_recall_bundle_for_projection(
+        recall_merge, recall_prefetch_diag = await prefetch_recall_bundle_for_projection(
             bus,
             source=source,
             ctx=ctx,
@@ -232,15 +237,39 @@ async def prepare_plan_context_for_mind_projection(
             recall_profile=client_request.recall.profile,
             recall_channel=settings.channel_recall_intake,
             timeout_sec=float(settings.mind_recall_prefetch_timeout_sec),
+            recall_cfg=recall_cfg_from_recall_directive(client_request.recall),
+            recall_reply_prefix=settings.channel_recall_reply_prefix,
         )
         if isinstance(recall_merge, dict):
             ctx.update(recall_merge)
+    elif not settings.mind_recall_prefetch_enabled:
+        recall_prefetch_diag = {
+            "correlation_id": correlation_id,
+            "enabled": False,
+            "reason": "MIND_RECALL_PREFETCH_ENABLED=false",
+            "ok": False,
+        }
+    elif not client_request.recall.enabled:
+        recall_prefetch_diag = {
+            "correlation_id": correlation_id,
+            "enabled": False,
+            "reason": "client_recall_disabled",
+            "ok": False,
+        }
+    prebuild_summary = log_mind_projection_prebuild_ctx_summary(
+        correlation_id=correlation_id,
+        ctx=ctx,
+        recall_prefetch=recall_prefetch_diag,
+    )
     plan_ctx = plan_request.context if isinstance(plan_request.context, dict) else {}
     plan_ctx.update(ctx)
     plan_request.context = plan_ctx
     meta = plan_ctx.setdefault("metadata", {})
     if isinstance(meta, dict):
         meta["orch_preflight_input_summary"] = summarize_projection_inputs(ctx, phase="orch_mind_preflight")
+        if recall_prefetch_diag is not None:
+            meta["recall_prefetch"] = recall_prefetch_diag
+        meta["mind_projection_prebuild_ctx_summary"] = prebuild_summary
 
 
 def _build_cold_cognitive_projection_facet(ctx: dict[str, Any], correlation_id: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:

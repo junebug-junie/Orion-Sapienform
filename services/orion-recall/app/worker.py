@@ -25,6 +25,7 @@ try:
     from .fusion import fuse_candidates
     from .profiles import get_profile
     from .settings import settings
+    from .source_policy import build_vector_policy, log_vector_skipped, recall_vector_allowed
     from .storage.rdf_adapter import (
         fetch_rdf_fragments,
         fetch_rdf_expansion_terms,
@@ -47,6 +48,7 @@ except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
         from app.fusion import fuse_candidates  # type: ignore
         from app.profiles import get_profile  # type: ignore
         from app.settings import settings  # type: ignore
+        from app.source_policy import build_vector_policy, log_vector_skipped, recall_vector_allowed  # type: ignore
         from app.storage.rdf_adapter import (  # type: ignore
             fetch_rdf_fragments,
             fetch_rdf_expansion_terms,
@@ -509,12 +511,8 @@ def _rdf_enabled(profile: Dict[str, Any]) -> bool:
 
 
 def _vector_enabled_for_profile(profile: Dict[str, Any]) -> bool:
-    if not settings.RECALL_ENABLE_VECTOR:
-        return False
-    try:
-        return int(profile.get("vector_top_k", settings.RECALL_DEFAULT_MAX_ITEMS)) > 0
-    except Exception:
-        return False
+    allowed, _ = recall_vector_allowed(profile, settings, path="main")
+    return allowed
 
 
 def _sql_timeline_enabled_for_profile(profile: Dict[str, Any]) -> bool:
@@ -576,7 +574,8 @@ async def _fetch_anchor_candidates(
     except Exception as exc:
         logger.debug(f"sql anchor fetch skipped: {exc}")
 
-    if _vector_enabled_for_profile(profile):
+    vec_allowed, vec_policy = recall_vector_allowed(profile, settings, path="anchor")
+    if vec_allowed:
         try:
             vec = fetch_vector_exact_matches(
                 tokens=tokens,
@@ -595,14 +594,8 @@ async def _fetch_anchor_candidates(
                 candidates.append(item)
         except Exception as exc:
             logger.debug(f"vector anchor fetch skipped: {exc}")
-
     elif diagnostic:
-        logger.info(
-            "anchor rail vector skipped profile=%s vector_top_k=%s global_vector_enabled=%s",
-            profile.get("profile"),
-            profile.get("vector_top_k"),
-            settings.RECALL_ENABLE_VECTOR,
-        )
+        log_vector_skipped("anchor", vec_policy, logger)
 
     if _rdf_enabled(profile) and settings.RECALL_RDF_ENDPOINT_URL:
         try:
@@ -707,7 +700,8 @@ async def _query_backends(
             logger.debug(f"rdf backend skipped: {exc}")
 
 
-    if _vector_enabled_for_profile(profile):
+    vec_allowed, vec_policy = recall_vector_allowed(profile, settings, path="main")
+    if vec_allowed:
         seeds = [fragment, *entities]
         expansions = expansion_terms[:6]
         vector_queries: List[str] = []
@@ -754,14 +748,8 @@ async def _query_backends(
                 vector_queries,
                 vec_count,
             )
-
     elif diagnostic:
-        logger.info(
-            "recall vector skipped profile=%s vector_top_k=%s global_vector_enabled=%s",
-            profile.get("profile"),
-            profile.get("vector_top_k"),
-            settings.RECALL_ENABLE_VECTOR,
-        )
+        log_vector_skipped("main", vec_policy, logger)
 
     if diagnostic:
         logger.info(
@@ -1065,7 +1053,8 @@ async def process_recall(
     effective_session_id: str | None = None
     exclusion = _parse_exclusion(q)
     source_gating: Dict[str, str] = {}
-    source_gating["vector"] = "enabled" if _vector_enabled_for_profile(profile) else "disabled_by_profile_or_global"
+    vector_policy = build_vector_policy(profile, settings)
+    source_gating["vector"] = "enabled" if vector_policy.get("main", {}).get("allowed") else "disabled_by_profile_or_global"
     source_gating["sql_timeline"] = "enabled" if _sql_timeline_enabled_for_profile(profile) else "disabled_by_profile_or_global"
     source_gating["sql_chat"] = "enabled" if _sql_chat_enabled_for_profile(profile) else "disabled_by_profile_or_global"
     source_gating["rdf"] = "enabled" if _rdf_enabled(profile) else "disabled_by_profile_or_global"
@@ -1153,6 +1142,7 @@ async def process_recall(
                         "raw_fragment": q.fragment,
                     },
                     "source_gating": source_gating,
+                    "vector_policy": vector_policy,
                     "active_turn": {
                         "ids_count": len(list(exclusion.get("active_turn_ids") or [])),
                         "text_present": bool(str(exclusion.get("active_turn_text") or "").strip()),
@@ -1245,7 +1235,8 @@ async def process_recall(
                     candidates.extend(rdf_connected)
             except Exception as exc:
                 logger.debug(f"rdf backend skipped: {exc}")
-        if _vector_enabled_for_profile(profile):
+        graphtri_vec_allowed, graphtri_vec_policy = recall_vector_allowed(profile, settings, path="graphtri")
+        if graphtri_vec_allowed:
             source_gating["vector"] = "enabled"
             vector_top_k = int(profile.get("vector_top_k", settings.RECALL_DEFAULT_MAX_ITEMS))
             per_query = max(1, vector_top_k // max(1, len(vector_queries)))
@@ -1311,12 +1302,7 @@ async def process_recall(
 
         elif diagnostic:
             source_gating["vector"] = "disabled_by_profile_or_global"
-            logger.info(
-                "graphtri vector skipped profile=%s vector_top_k=%s global_vector_enabled=%s",
-                profile.get("profile"),
-                profile.get("vector_top_k"),
-                settings.RECALL_ENABLE_VECTOR,
-            )
+            log_vector_skipped("graphtri", graphtri_vec_policy, logger)
 
         sql_attempted = False
         sql_session_id = effective_session_id
@@ -1470,6 +1456,7 @@ async def process_recall(
                     "raw_fragment": q.fragment,
                 },
                 "source_gating": source_gating,
+                "vector_policy": vector_policy,
                 "active_turn": {
                     "ids_count": len(list(exclusion.get("active_turn_ids") or [])),
                     "text_present": bool(str(exclusion.get("active_turn_text") or "").strip()),
@@ -1495,7 +1482,7 @@ async def process_recall(
         try:
             from .recall_v2 import run_recall_v2_shadow
 
-            shadow_bundle, shadow_debug = await run_recall_v2_shadow(q)
+            shadow_bundle, shadow_debug = await run_recall_v2_shadow(q, profile=profile)
             compare_summary = {
                 "v1_latency_ms": decision.latency_ms,
                 "v2_latency_ms": int(shadow_debug.get("latency_ms") or 0),

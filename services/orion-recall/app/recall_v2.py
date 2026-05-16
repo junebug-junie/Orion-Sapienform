@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import time
 from dataclasses import dataclass
@@ -10,11 +11,15 @@ import requests
 
 from orion.core.contracts.recall import MemoryBundleStatsV1, MemoryBundleV1, MemoryItemV1, RecallQueryV1
 
+from .profiles import get_profile
 from .render import render_items
 from .settings import settings
+from .source_policy import build_vector_policy, log_vector_skipped, recall_vector_allowed
 from .sql_timeline import fetch_exact_fragments, fetch_recent_fragments
 from .storage.rdf_adapter import fetch_rdf_chatturn_exact_matches, fetch_rdf_fragments
 from .storage.vector_adapter import fetch_vector_exact_matches, fetch_vector_fragments
+
+logger = logging.getLogger("orion-recall.recall_v2")
 
 
 @dataclass(frozen=True)
@@ -124,9 +129,15 @@ def _pageindex_candidates(plan: RecallV2Plan, *, top_k: int = 8) -> List[Dict[st
     return out
 
 
-async def run_recall_v2_shadow(query: RecallQueryV1) -> tuple[MemoryBundleV1, Dict[str, Any]]:
+async def run_recall_v2_shadow(
+    query: RecallQueryV1,
+    *,
+    profile: Dict[str, Any] | None = None,
+) -> tuple[MemoryBundleV1, Dict[str, Any]]:
     started = time.time()
     plan = build_recall_v2_plan(query)
+    profile = profile if isinstance(profile, dict) else get_profile(str(query.profile or settings.RECALL_DEFAULT_PROFILE))
+    vector_policy = build_vector_policy(profile, settings)
     candidates: List[Dict[str, Any]] = []
     backend_counts: Dict[str, int] = {}
     filter_debug: Dict[str, Any] = {
@@ -158,21 +169,27 @@ async def run_recall_v2_shadow(query: RecallQueryV1) -> tuple[MemoryBundleV1, Di
                     "explain": {"exact_anchor": True, "backend": "sql_timeline"},
                 }
             )
-        vector_exact = fetch_vector_exact_matches(
-            tokens=list(plan.exact_anchor_tokens),
-            max_items=8,
-            session_id=query.session_id,
-            profile_name="recall.v2.shadow",
-            node_id=query.node_id,
-        )
-        backend_counts["vector_exact_anchor"] = len(vector_exact)
-        for row in vector_exact:
-            row = dict(row)
-            row["source"] = "vector"
-            row["score"] = max(0.7, float(row.get("score") or 0.0))
-            row["tags"] = list(row.get("tags") or []) + ["exact_anchor"]
-            row["explain"] = {"exact_anchor": True, "backend": "vector"}
-            candidates.append(row)
+        exact_allowed, exact_policy = recall_vector_allowed(profile, settings, path="v2_shadow_exact")
+        if exact_allowed:
+            vector_exact = fetch_vector_exact_matches(
+                tokens=list(plan.exact_anchor_tokens),
+                max_items=8,
+                session_id=query.session_id,
+                profile_name=profile.get("profile"),
+                node_id=query.node_id,
+            )
+            backend_counts["vector_exact_anchor"] = len(vector_exact)
+            for row in vector_exact:
+                row = dict(row)
+                row["source"] = "vector"
+                row["score"] = max(0.7, float(row.get("score") or 0.0))
+                row["tags"] = list(row.get("tags") or []) + ["exact_anchor"]
+                row["explain"] = {"exact_anchor": True, "backend": "vector"}
+                candidates.append(row)
+        else:
+            backend_counts["vector_exact_anchor"] = 0
+            log_vector_skipped("v2_shadow_exact", exact_policy, logger)
+
         rdf_exact = fetch_rdf_chatturn_exact_matches(tokens=list(plan.exact_anchor_tokens), session_id=query.session_id, max_items=8)
         backend_counts["rdf_exact_anchor"] = len(rdf_exact)
         for row in rdf_exact:
@@ -187,20 +204,25 @@ async def run_recall_v2_shadow(query: RecallQueryV1) -> tuple[MemoryBundleV1, Di
     backend_counts["pageindex_lexical"] = len(pageindex)
     candidates.extend(pageindex)
 
-    vector = fetch_vector_fragments(
-        query_text=plan.query_text,
-        time_window_days=plan.time_window_days,
-        max_items=10,
-        session_id=query.session_id,
-        profile_name="recall.v2.shadow",
-        node_id=query.node_id,
-    )
-    backend_counts["vector"] = len(vector)
-    for row in vector:
-        item = dict(row)
-        item["source"] = "vector"
-        item["explain"] = {"backend": "vector", "semantic_signal": float(item.get("score") or 0.0)}
-        candidates.append(item)
+    semantic_allowed, semantic_policy = recall_vector_allowed(profile, settings, path="v2_shadow_semantic")
+    if semantic_allowed:
+        vector = fetch_vector_fragments(
+            query_text=plan.query_text,
+            time_window_days=plan.time_window_days,
+            max_items=10,
+            session_id=query.session_id,
+            profile_name=profile.get("profile"),
+            node_id=query.node_id,
+        )
+        backend_counts["vector"] = len(vector)
+        for row in vector:
+            item = dict(row)
+            item["source"] = "vector"
+            item["explain"] = {"backend": "vector", "semantic_signal": float(item.get("score") or 0.0)}
+            candidates.append(item)
+    else:
+        backend_counts["vector"] = 0
+        log_vector_skipped("v2_shadow_semantic", semantic_policy, logger)
 
     rdf = fetch_rdf_fragments(query_text=plan.query_text, max_items=8)
     backend_counts["rdf"] = len(rdf)
@@ -277,15 +299,16 @@ async def run_recall_v2_shadow(query: RecallQueryV1) -> tuple[MemoryBundleV1, Di
     ]
     latency_ms = int((time.time() - started) * 1000)
     bundle = MemoryBundleV1(
-        rendered=render_items(items, 320, profile_name="recall.v2.shadow")[0],
+        rendered=render_items(items, 320, profile_name=str(profile.get("profile") or "recall.v2.shadow"))[0],
         items=items,
         stats=MemoryBundleStatsV1(
             backend_counts=backend_counts,
             latency_ms=latency_ms,
-            profile="recall.v2.shadow",
+            profile=str(profile.get("profile") or "recall.v2.shadow"),
             diagnostic={
                 "anchors": filter_debug,
                 "ranked_cards": top_cards,
+                "vector_policy": vector_policy,
             },
         ),
     )
@@ -301,6 +324,7 @@ async def run_recall_v2_shadow(query: RecallQueryV1) -> tuple[MemoryBundleV1, Di
         "filters": filter_debug,
         "backend_counts": backend_counts,
         "ranked_cards": top_cards,
+        "vector_policy": vector_policy,
         "latency_ms": latency_ms,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }

@@ -151,6 +151,7 @@ def test_thought_process_js_registers_grounded_small_lane_contract() -> None:
     assert "payload.verbs = [];" in thought_js
     assert "delete options.chat_quick_full_stance;" in thought_js
     assert "hub_chat_lane" in thought_js
+    assert "payload.context.metadata.mind_enabled = true" in thought_js
     assert "patchWebSocketSend" in thought_js
     assert "patchFetch" in thought_js
 

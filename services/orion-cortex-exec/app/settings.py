@@ -163,6 +163,8 @@ class Settings(BaseSettings):
     rdf_store_update_url: str = Field("", alias="RDF_STORE_UPDATE_URL")
     rdf_store_user: str = Field("", alias="RDF_STORE_USER")
     rdf_store_pass: str = Field("", alias="RDF_STORE_PASS")
+    fuseki_user: str = Field("", alias="FUSEKI_USER")
+    fuseki_pass: str = Field("", alias="FUSEKI_PASS")
     gdb_client_enabled: bool = Field(False, alias="GDB_CLIENT_ENABLED")
     substrate_store_backend: str = Field("sparql", alias="SUBSTRATE_STORE_BACKEND")
     substrate_graph_query_url: str = Field("", alias="SUBSTRATE_GRAPH_QUERY_URL")

@@ -142,8 +142,10 @@ services:
       RDF_STORE_QUERY_URL: ${RDF_STORE_QUERY_URL:-http://orion-athena-fuseki:3030/orion/query}
       RDF_STORE_UPDATE_URL: ${RDF_STORE_UPDATE_URL:-http://orion-athena-fuseki:3030/orion/update}
       RDF_STORE_GRAPH_STORE_URL: ${RDF_STORE_GRAPH_STORE_URL:-http://orion-athena-fuseki:3030/orion/data}
-      RDF_STORE_USER: ${RDF_STORE_USER:-}
-      RDF_STORE_PASS: ${RDF_STORE_PASS:-}
+      RDF_STORE_USER: ${RDF_STORE_USER:-admin}
+      RDF_STORE_PASS: ${RDF_STORE_PASS:-admin}
+      FUSEKI_USER: ${FUSEKI_USER:-}
+      FUSEKI_PASS: ${FUSEKI_PASS:-}
       GDB_CLIENT_ENABLED: ${GDB_CLIENT_ENABLED:-false}
       AUTONOMY_GRAPH_QUERY_URL: ${AUTONOMY_GRAPH_QUERY_URL:-http://orion-athena-fuseki:3030/orion/query}
       AUTONOMY_GRAPH_UPDATE_URL: ${AUTONOMY_GRAPH_UPDATE_URL:-http://orion-athena-fuseki:3030/orion/update}

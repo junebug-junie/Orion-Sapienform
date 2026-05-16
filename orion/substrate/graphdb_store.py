@@ -11,6 +11,7 @@ from urllib.parse import urlparse, urlunparse
 import requests
 
 from pydantic import TypeAdapter
+from orion.graph.sparql_client import SparqlHttpClient, resolve_substrate_sparql_http_basic_auth
 from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1, SubstrateEdgeV1, SubstrateNodeV1
 
 from .store import (
@@ -584,6 +585,7 @@ class SparqlSubstrateStoreConfig:
     timeout_sec: float = 5.0
     user: str | None = None
     password: str | None = None
+    auth_source: str = "none"
 
 
 class SparqlSubstrateStore(GraphDBSubstrateStore):
@@ -601,9 +603,58 @@ class SparqlSubstrateStore(GraphDBSubstrateStore):
         )
         self._result_source_kind = "sparql"
         self._sparql_update_url = cfg.update_url.rstrip("/")
+        self._sparql_auth_source = cfg.auth_source
+        self._sparql_http = SparqlHttpClient(
+            cfg.query_url,
+            cfg.update_url,
+            timeout_sec=cfg.timeout_sec,
+            user=cfg.user,
+            password=cfg.password,
+        )
 
     def _sparql_update_endpoint(self) -> str:
         return self._sparql_update_url
+
+    def _select(self, sparql: str) -> list[dict[str, dict[str, str]]]:
+        try:
+            rows = self._sparql_http.select(sparql)
+            return rows
+        except Exception as exc:  # noqa: BLE001
+            raise GraphDBSubstrateStoreError(str(exc)) from exc
+
+    def _update(self, sparql: str) -> None:
+        try:
+            self._sparql_http.update(sparql)
+        except requests.HTTPError as exc:
+            resp = exc.response
+            if resp is not None and resp.status_code == 401:
+                hint = (
+                    "set_SUBSTRATE_GRAPH_USER_PASS_or_RDF_STORE_USER_PASS_or_FUSEKI_USER_PASS"
+                    if self._sparql_auth_source == "none"
+                    else "verify_Fuseki_update_credentials_match_server"
+                )
+                logger.warning(
+                    "substrate_sparql_update_auth_failed status=401 credential_source=%s "
+                    "update_url=%s hint=%s",
+                    self._sparql_auth_source,
+                    self._sparql_http.update_url_redacted,
+                    hint,
+                )
+            detail = ""
+            try:
+                if resp is not None:
+                    detail = (resp.text or "")[:1200]
+            except Exception:  # noqa: BLE001
+                detail = ""
+            raise GraphDBSubstrateStoreError(f"{exc}{f' | {detail}' if detail else ''}") from exc
+        except Exception as exc:  # noqa: BLE001
+            detail = ""
+            try:
+                if isinstance(exc, requests.HTTPError) and exc.response is not None:
+                    detail = (exc.response.text or "")[:1200]
+            except Exception:  # noqa: BLE001
+                detail = ""
+            raise GraphDBSubstrateStoreError(f"{exc}{f' | {detail}' if detail else ''}") from exc
 
 
 def _resolve_substrate_graphdb_endpoint() -> str:
@@ -681,19 +732,25 @@ def build_substrate_store_from_env() -> SubstrateGraphStore:
             logger.error("substrate_sparql_backend_unconfigured query_resolved=%r update_resolved=%r", bool(q), bool(u))
             raise exc
         graph_uri = _resolve_substrate_named_graph_uri()
+        auth_user, auth_pass, auth_src = resolve_substrate_sparql_http_basic_auth()
+        auth_configured = bool(auth_user and auth_pass)
         logger.info(
-            "substrate_store_backend_selected backend=sparql query_url=%s update_url=%s graph_uri=%s",
+            "substrate_store_backend_selected backend=sparql query_url=%s update_url=%s graph_uri=%s "
+            "auth_configured=%s auth_source=%s",
             _redact_endpoint_for_log(q),
             _redact_endpoint_for_log(u),
             graph_uri,
+            str(auth_configured).lower(),
+            auth_src,
         )
         cfg = SparqlSubstrateStoreConfig(
             query_url=q,
             update_url=u,
             graph_uri=graph_uri,
             timeout_sec=float(os.getenv("SUBSTRATE_GRAPH_TIMEOUT_SEC", "5.0")),
-            user=str(os.getenv("SUBSTRATE_GRAPH_USER", os.getenv("RDF_STORE_USER", ""))).strip() or None,
-            password=str(os.getenv("SUBSTRATE_GRAPH_PASS", os.getenv("RDF_STORE_PASS", ""))).strip() or None,
+            user=auth_user,
+            password=auth_pass,
+            auth_source=auth_src,
         )
         return SparqlSubstrateStore(cfg)
 

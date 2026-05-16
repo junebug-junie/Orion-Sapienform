@@ -1008,20 +1008,107 @@ loadDismissedIds();
     }
   }
 
+  /**
+   * Hub DB / transport sometimes returns jsonb columns as JSON strings; normalize to a plain value
+   * so we pretty-print objects instead of one escaped string line.
+   */
+  function parseMindJsonbField(value) {
+    if (value == null) return null;
+    if (typeof value === "string") {
+      const t = value.trim();
+      if (!t) return null;
+      try {
+        return JSON.parse(t);
+      } catch {
+        return value;
+      }
+    }
+    return value;
+  }
+
+  function mindJsonPrettyObject(parsed) {
+    if (parsed == null) return {};
+    if (typeof parsed === "object" && parsed !== null) return parsed;
+    return { _unparsed: String(parsed) };
+  }
+
+  function mindRequestOverviewHtml(reqParsed) {
+    if (!reqParsed || typeof reqParsed !== "object") return "";
+    const rows = [];
+    const push = (label, val) => {
+      if (val == null) return;
+      const s = String(val).trim();
+      if (!s) return;
+      rows.push(
+        `<div class="flex flex-col gap-0.5 border-b border-gray-800/60 pb-2 last:border-0 last:pb-0"><div class="text-[10px] uppercase tracking-wide text-gray-500">${escapeHtml(label)}</div><div class="break-words font-mono text-[11px] text-gray-200">${escapeHtml(s)}</div></div>`,
+      );
+    };
+    push("Mode", reqParsed.mode);
+    push("Verb", reqParsed.verb);
+    push("Session", reqParsed.session_id);
+    push("Correlation", reqParsed.correlation_id);
+    if (!rows.length) return "";
+    return `<div class="mb-3 space-y-2 rounded border border-gray-800 bg-gray-950/60 p-3"><div class="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Request</div><div class="mt-2 space-y-2">${rows.join("")}</div></div>`;
+  }
+
+  function mindResultOverviewHtml(resultParsed) {
+    if (!resultParsed || typeof resultParsed !== "object") return "";
+    const brief = resultParsed.brief;
+    const decision = resultParsed.decision;
+    const rows = [];
+    const push = (label, val) => {
+      if (val == null) return;
+      const s = String(val).trim();
+      if (!s) return;
+      rows.push(
+        `<div class="flex flex-col gap-0.5 border-b border-gray-800/60 pb-2 last:border-0 last:pb-0"><div class="text-[10px] uppercase tracking-wide text-gray-500">${escapeHtml(label)}</div><div class="text-[11px] text-gray-200">${escapeHtml(s)}</div></div>`,
+      );
+    };
+    if (brief && typeof brief === "object") {
+      const sp = brief.stance_payload;
+      if (sp && typeof sp === "object") {
+        push("User intent", sp.user_intent);
+        push("Stance", sp.stance_summary);
+        push("Strategy", sp.answer_strategy);
+        push("Frame", sp.conversation_frame);
+      }
+      if (typeof brief.summary_one_paragraph === "string" && brief.summary_one_paragraph.trim()) {
+        push("Mind summary", brief.summary_one_paragraph.trim());
+      }
+    }
+    if (decision && typeof decision === "object") {
+      push("Route", decision.route_kind);
+      push("Mode binding", decision.mode_binding);
+      if (Array.isArray(decision.allowed_verbs) && decision.allowed_verbs.length) {
+        push("Allowed verbs", decision.allowed_verbs.join(", "));
+      }
+      if (decision.mode_suggestion) push("Mode suggestion", decision.mode_suggestion);
+    }
+    if (!rows.length) return "";
+    return `<div class="mb-3 space-y-2 rounded border border-gray-800 bg-gray-950/60 p-3"><div class="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Stance & routing</div><div class="mt-2 space-y-2">${rows.join("")}</div></div>`;
+  }
+
   function renderMindRunDetails(run) {
     if (!mindRunsModalDetails) return;
     if (!run || typeof run !== "object") {
       mindRunsModalDetails.textContent = "No run details.";
       return;
     }
+    const reqParsed = parseMindJsonbField(run.request_summary_jsonb);
+    const resultParsed = parseMindJsonbField(run.result_jsonb);
+    const reqPretty = mindJsonPrettyObject(reqParsed);
+    const resultPretty = mindJsonPrettyObject(resultParsed);
+    const runForRaw = { ...run, request_summary_jsonb: reqPretty, result_jsonb: resultPretty };
     const parts = [];
     const safeRunId = escapeHtml(run.mind_run_id || "—");
     const safeStatus = escapeHtml(run.ok ? "ok" : "failed");
     const safeCreated = escapeHtml(formatMindTs(run.created_at_utc));
     parts.push(`<div class="text-[11px] text-gray-400">Run ${safeRunId} · ${safeStatus} · ${safeCreated}</div>`);
-    parts.push(`<details class="rounded border border-gray-800 bg-gray-950/40 p-2" open><summary class="cursor-pointer text-[11px] text-gray-300">Decision / brief</summary><pre class="mt-2 whitespace-pre-wrap text-[11px] text-gray-200">${escapeHtml(JSON.stringify(run.request_summary_jsonb || {}, null, 2))}</pre></details>`);
-    parts.push(`<details class="rounded border border-gray-800 bg-gray-950/40 p-2" open><summary class="cursor-pointer text-[11px] text-gray-300">Trajectory / result</summary><pre class="mt-2 whitespace-pre-wrap text-[11px] text-gray-200">${escapeHtml(JSON.stringify(run.result_jsonb || {}, null, 2))}</pre></details>`);
-    parts.push(`<details class="rounded border border-gray-800 bg-gray-950/40 p-2"><summary class="cursor-pointer text-[11px] text-gray-300">Raw run payload</summary><pre class="mt-2 whitespace-pre-wrap text-[11px] text-gray-200">${escapeHtml(JSON.stringify(run, null, 2))}</pre></details>`);
+    parts.push(mindRequestOverviewHtml(reqParsed));
+    parts.push(mindResultOverviewHtml(resultParsed));
+    parts.push(`<details class="rounded border border-gray-800 bg-gray-950/40 p-2" open><summary class="cursor-pointer text-[11px] text-gray-300">Decision / brief (JSON)</summary><pre class="mt-2 whitespace-pre-wrap break-words font-mono text-[11px] text-gray-200">${escapeHtml(JSON.stringify(reqPretty, null, 2))}</pre></details>`);
+    parts.push(`<details class="rounded border border-gray-800 bg-gray-950/40 p-2" open><summary class="cursor-pointer text-[11px] text-gray-300">Trajectory / result (JSON)</summary><pre class="mt-2 whitespace-pre-wrap break-words font-mono text-[11px] text-gray-200">${escapeHtml(JSON.stringify(resultPretty, null, 2))}</pre></details>`);
+    parts.push(`<details class="rounded border border-gray-800 bg-gray-950/40 p-2"><summary class="cursor-pointer text-[11px] text-gray-300">Raw run payload</summary><pre class="mt-2 whitespace-pre-wrap break-words font-mono text-[11px] text-gray-200">${escapeHtml(JSON.stringify(runForRaw, null, 2))}</pre></details>`);
     mindRunsModalDetails.innerHTML = parts.join("");
   }
 

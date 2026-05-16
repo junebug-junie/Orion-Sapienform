@@ -1591,42 +1591,16 @@ async def run_recall_step(
                     for hoist_key in ("compare_summary", "anchor_plan_summary", "selected_evidence_cards"):
                         if recall_dbg.get(hoist_key) is not None:
                             debug[hoist_key] = recall_dbg.get(hoist_key)
+        from orion.cognition.recall_query import recall_ctx_merge_from_reply
+
         memory_digest = bundle.rendered if hasattr(bundle, "rendered") else ""
         debug["memory_digest"] = memory_digest
         debug["memory_digest_chars"] = len(memory_digest or "")
-        ctx["memory_digest"] = memory_digest
-        ctx["memory_bundle"] = bundle.model_dump(mode="json")
-        ctx["memory_used"] = True
+        recall_merge = recall_ctx_merge_from_reply(res)
+        ctx.update(recall_merge)
         ctx["recall_fragments"] = [i.model_dump(mode="json") for i in bundle.items]
-
-        recall_fragments: List[Dict[str, Any]] = []
-        recall_citations: List[Dict[str, Any]] = []
-        for item in bundle.items[:12]:
-            snippet = str(getattr(item, "snippet", "") or "")[:480]
-            recall_fragment = {
-                "id": str(getattr(item, "id", "") or ""),
-                "snippet": snippet,
-                "score": float(getattr(item, "score", 0.0) or 0.0),
-                "tags": [str(t) for t in (getattr(item, "tags", []) or []) if t],
-                "source": str(getattr(item, "source", "") or ""),
-                "source_ref": getattr(item, "source_ref", None),
-                "uri": getattr(item, "uri", None),
-            }
-            recall_fragments.append(recall_fragment)
-            recall_citations.append(
-                {
-                    "id": recall_fragment["id"],
-                    "source": recall_fragment["source"],
-                    "source_ref": recall_fragment["source_ref"],
-                    "uri": recall_fragment["uri"],
-                }
-            )
-
-        ctx["recall_bundle"] = {
-            "fragments": recall_fragments,
-            "citations": recall_citations,
-            "rendered": memory_digest,
-        }
+        ctx["memory_used"] = True
+        recall_fragments = list((ctx.get("recall_bundle") or {}).get("fragments") or [])
         debug["items"] = [
             {
                 "id": frag.get("id"),

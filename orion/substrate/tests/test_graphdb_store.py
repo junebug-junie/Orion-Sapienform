@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
+from unittest.mock import MagicMock
 
 import pytest
+import requests
 from datetime import datetime, timezone
 
 from orion.core.schemas.cognitive_substrate import (
@@ -15,9 +17,11 @@ from orion.core.schemas.cognitive_substrate import (
     SubstrateSignalBundleV1,
     SubstrateTemporalWindowV1,
 )
+from orion.graph.sparql_client import SparqlHttpClient, resolve_substrate_sparql_http_basic_auth
 from orion.substrate.graphdb_store import (
     GraphDBSubstrateStore,
     GraphDBSubstrateStoreConfig,
+    GraphDBSubstrateStoreError,
     SparqlSubstrateStore,
     SubstrateSparqlBackendUnconfiguredError,
     build_substrate_store_from_env,
@@ -37,6 +41,13 @@ class _Resp:
 
     def json(self):
         return self._payload
+
+
+def _patch_sparql_session_post(monkeypatch, fake_post):  # noqa: ANN001
+    def session_post(self, url, data=None, headers=None, auth=None, timeout=None, **kwargs):  # noqa: ANN001
+        return fake_post(url, data=data, headers=headers, auth=auth, timeout=timeout)
+
+    monkeypatch.setattr("orion.graph.sparql_client.requests.Session.post", session_post)
 
 
 class _FakeGraphDB:
@@ -296,7 +307,7 @@ def test_build_substrate_store_graphdb_backend_uses_graphdb_from_url_and_repo(mo
 
 def test_build_substrate_store_sparql_backend(monkeypatch):
     fake = _FakeGraphDB()
-    monkeypatch.setattr("orion.substrate.graphdb_store.requests.post", fake.post)
+    _patch_sparql_session_post(monkeypatch, fake.post)
     monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "sparql")
     monkeypatch.setenv("SUBSTRATE_GRAPH_QUERY_URL", "http://fuseki:3030/orion/query")
     monkeypatch.setenv("SUBSTRATE_GRAPH_UPDATE_URL", "http://fuseki:3030/orion/update")
@@ -310,7 +321,7 @@ def test_build_substrate_store_sparql_backend(monkeypatch):
 
 def test_build_substrate_store_sparql_backend_falls_back_to_rdf_store_urls(monkeypatch):
     fake = _FakeGraphDB()
-    monkeypatch.setattr("orion.substrate.graphdb_store.requests.post", fake.post)
+    _patch_sparql_session_post(monkeypatch, fake.post)
     monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "sparql")
     monkeypatch.delenv("SUBSTRATE_GRAPH_QUERY_URL", raising=False)
     monkeypatch.delenv("SUBSTRATE_GRAPH_UPDATE_URL", raising=False)
@@ -343,7 +354,7 @@ def test_sparql_substrate_posts_select_to_query_url_and_update_to_update_url(mon
             return _Resp()
         return _Resp(status_code=400)
 
-    monkeypatch.setattr("orion.substrate.graphdb_store.requests.post", capture_post)
+    _patch_sparql_session_post(monkeypatch, capture_post)
     monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "sparql")
     monkeypatch.setenv("SUBSTRATE_GRAPH_QUERY_URL", "http://fuseki:3030/orion/query")
     monkeypatch.setenv("SUBSTRATE_GRAPH_UPDATE_URL", "http://fuseki:3030/orion/update")
@@ -364,3 +375,187 @@ def test_build_substrate_store_explicit_in_memory_overrides_graphdb_env(monkeypa
 
     store = build_substrate_store_from_env()
     assert isinstance(store, InMemorySubstrateGraphStore)
+
+
+def test_resolve_substrate_sparql_auth_substrate_overrides_rdf(monkeypatch):
+    monkeypatch.setenv("SUBSTRATE_GRAPH_USER", "su")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_PASS", "sp")
+    monkeypatch.setenv("RDF_STORE_USER", "ru")
+    monkeypatch.setenv("RDF_STORE_PASS", "rp")
+    monkeypatch.setenv("FUSEKI_USER", "fu")
+    monkeypatch.setenv("FUSEKI_PASS", "fp")
+    u, p, src = resolve_substrate_sparql_http_basic_auth()
+    assert (u, p, src) == ("su", "sp", "SUBSTRATE_GRAPH_USER")
+
+
+def test_resolve_substrate_sparql_auth_falls_back_to_rdf_then_fuseki(monkeypatch):
+    monkeypatch.delenv("SUBSTRATE_GRAPH_USER", raising=False)
+    monkeypatch.delenv("SUBSTRATE_GRAPH_PASS", raising=False)
+    monkeypatch.setenv("RDF_STORE_USER", "ru")
+    monkeypatch.setenv("RDF_STORE_PASS", "rp")
+    monkeypatch.setenv("FUSEKI_USER", "fu")
+    monkeypatch.setenv("FUSEKI_PASS", "fp")
+    assert resolve_substrate_sparql_http_basic_auth() == ("ru", "rp", "RDF_STORE_USER")
+
+    monkeypatch.delenv("RDF_STORE_USER", raising=False)
+    monkeypatch.delenv("RDF_STORE_PASS", raising=False)
+    assert resolve_substrate_sparql_http_basic_auth() == ("fu", "fp", "FUSEKI_USER")
+
+    monkeypatch.delenv("FUSEKI_USER", raising=False)
+    monkeypatch.delenv("FUSEKI_PASS", raising=False)
+    assert resolve_substrate_sparql_http_basic_auth() == (None, None, "none")
+
+
+def test_sparql_substrate_update_posts_basic_auth_from_substrate_env(monkeypatch):
+    auths: list[tuple | None] = []
+
+    def capture_post(url, data=None, headers=None, auth=None, timeout=None):  # noqa: ANN001
+        ctype = (headers or {}).get("Content-Type") or ""
+        base_ct = ctype.split(";", 1)[0].strip().lower()
+        auths.append(auth)
+        if base_ct == "application/sparql-query":
+            return _Resp(payload={"results": {"bindings": []}})
+        if base_ct == "application/sparql-update":
+            return _Resp()
+        return _Resp(status_code=400)
+
+    _patch_sparql_session_post(monkeypatch, capture_post)
+    monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "sparql")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_QUERY_URL", "http://fuseki:3030/orion/query")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_UPDATE_URL", "http://fuseki:3030/orion/update")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_USER", "u1")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_PASS", "p1")
+    monkeypatch.delenv("RDF_STORE_USER", raising=False)
+    monkeypatch.delenv("RDF_STORE_PASS", raising=False)
+    store = build_substrate_store_from_env()
+    assert isinstance(store, SparqlSubstrateStore)
+    store.upsert_node(identity_key=None, node=_sample_record().nodes[0])
+    assert ("u1", "p1") in auths
+
+
+def test_sparql_substrate_update_posts_basic_auth_from_rdf_store_fallback(monkeypatch):
+    auths: list[tuple | None] = []
+
+    def capture_post(url, data=None, headers=None, auth=None, timeout=None):  # noqa: ANN001
+        ctype = (headers or {}).get("Content-Type") or ""
+        base_ct = ctype.split(";", 1)[0].strip().lower()
+        auths.append(auth)
+        if base_ct == "application/sparql-query":
+            return _Resp(payload={"results": {"bindings": []}})
+        if base_ct == "application/sparql-update":
+            return _Resp()
+        return _Resp(status_code=400)
+
+    _patch_sparql_session_post(monkeypatch, capture_post)
+    monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "sparql")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_QUERY_URL", "http://fuseki:3030/orion/query")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_UPDATE_URL", "http://fuseki:3030/orion/update")
+    monkeypatch.delenv("SUBSTRATE_GRAPH_USER", raising=False)
+    monkeypatch.delenv("SUBSTRATE_GRAPH_PASS", raising=False)
+    monkeypatch.setenv("RDF_STORE_USER", "r1")
+    monkeypatch.setenv("RDF_STORE_PASS", "r2")
+    store = build_substrate_store_from_env()
+    assert isinstance(store, SparqlSubstrateStore)
+    store.upsert_node(identity_key=None, node=_sample_record().nodes[0])
+    assert ("r1", "r2") in auths
+
+
+def test_sparql_substrate_substrate_creds_override_rdf_for_auth(monkeypatch):
+    auths: list[tuple | None] = []
+
+    def capture_post(url, data=None, headers=None, auth=None, timeout=None):  # noqa: ANN001
+        ctype = (headers or {}).get("Content-Type") or ""
+        base_ct = ctype.split(";", 1)[0].strip().lower()
+        auths.append(auth)
+        if base_ct == "application/sparql-query":
+            return _Resp(payload={"results": {"bindings": []}})
+        if base_ct == "application/sparql-update":
+            return _Resp()
+        return _Resp(status_code=400)
+
+    _patch_sparql_session_post(monkeypatch, capture_post)
+    monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "sparql")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_QUERY_URL", "http://fuseki:3030/orion/query")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_UPDATE_URL", "http://fuseki:3030/orion/update")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_USER", "su")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_PASS", "sp")
+    monkeypatch.setenv("RDF_STORE_USER", "ru")
+    monkeypatch.setenv("RDF_STORE_PASS", "rp")
+    store = build_substrate_store_from_env()
+    store.upsert_node(identity_key=None, node=_sample_record().nodes[0])
+    assert ("su", "sp") in auths
+    assert ("ru", "rp") not in auths
+
+
+def test_sparql_substrate_no_auth_when_credentials_unset(monkeypatch):
+    auths: list[tuple | None] = []
+
+    def capture_post(url, data=None, headers=None, auth=None, timeout=None):  # noqa: ANN001
+        auths.append(auth)
+        ctype = (headers or {}).get("Content-Type") or ""
+        base_ct = ctype.split(";", 1)[0].strip().lower()
+        if base_ct == "application/sparql-query":
+            return _Resp(payload={"results": {"bindings": []}})
+        if base_ct == "application/sparql-update":
+            return _Resp()
+        return _Resp(status_code=400)
+
+    _patch_sparql_session_post(monkeypatch, capture_post)
+    monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "sparql")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_QUERY_URL", "http://fuseki:3030/orion/query")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_UPDATE_URL", "http://fuseki:3030/orion/update")
+    monkeypatch.delenv("SUBSTRATE_GRAPH_USER", raising=False)
+    monkeypatch.delenv("SUBSTRATE_GRAPH_PASS", raising=False)
+    monkeypatch.delenv("RDF_STORE_USER", raising=False)
+    monkeypatch.delenv("RDF_STORE_PASS", raising=False)
+    monkeypatch.delenv("FUSEKI_USER", raising=False)
+    monkeypatch.delenv("FUSEKI_PASS", raising=False)
+    store = build_substrate_store_from_env()
+    store.get_node_by_id("x")
+    store.upsert_node(identity_key=None, node=_sample_record().nodes[0])
+    assert all(a is None for a in auths)
+
+
+def test_sparql_substrate_update_401_logs_auth_diagnostic_without_password(monkeypatch, caplog):
+    import logging
+
+    def session_post(self, url, data=None, headers=None, auth=None, timeout=None, **kwargs):  # noqa: ANN001
+        ctype = (headers or {}).get("Content-Type") or ""
+        base_ct = ctype.split(";", 1)[0].strip().lower()
+        if base_ct == "application/sparql-query":
+            return _Resp(payload={"results": {"bindings": []}})
+        r = MagicMock()
+        r.status_code = 401
+        r.text = "Unauthorized body with no secrets"
+        r.raise_for_status.side_effect = requests.HTTPError(response=r)
+        return r
+
+    monkeypatch.setattr("orion.graph.sparql_client.requests.Session.post", session_post)
+    monkeypatch.setenv("SUBSTRATE_STORE_BACKEND", "sparql")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_QUERY_URL", "http://user:pass@fuseki:3030/orion/query")
+    monkeypatch.setenv("SUBSTRATE_GRAPH_UPDATE_URL", "http://user:wrong@fuseki:3030/orion/update")
+    monkeypatch.delenv("SUBSTRATE_GRAPH_USER", raising=False)
+    monkeypatch.delenv("SUBSTRATE_GRAPH_PASS", raising=False)
+    monkeypatch.delenv("RDF_STORE_USER", raising=False)
+    monkeypatch.delenv("RDF_STORE_PASS", raising=False)
+    monkeypatch.delenv("FUSEKI_USER", raising=False)
+    monkeypatch.delenv("FUSEKI_PASS", raising=False)
+    caplog.set_level(logging.WARNING, logger="orion.substrate.graphdb_store")
+    store = build_substrate_store_from_env()
+    assert isinstance(store, SparqlSubstrateStore)
+    with pytest.raises(GraphDBSubstrateStoreError):
+        store.upsert_node(identity_key=None, node=_sample_record().nodes[0])
+    joined = " ".join(f"{r.message}" for r in caplog.records)
+    assert "substrate_sparql_update_auth_failed" in joined
+    assert "credential_source=none" in joined
+    assert "user:pass" not in joined
+
+
+def test_sparql_http_client_strips_credentials_from_redacted_update_url():
+    c = SparqlHttpClient(
+        "http://fuseki:3030/orion/query",
+        "http://admin:admin@fuseki:3030/orion/update",
+    )
+    red = c.update_url_redacted
+    assert "admin" not in red
+    assert "fuseki:3030/orion/update" in red

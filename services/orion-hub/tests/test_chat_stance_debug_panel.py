@@ -86,7 +86,9 @@ def test_thought_process_js_renders_read_only_cognitive_comparison_surface() -> 
     assert "Shared projection" in thought_js
     assert "Legacy ChatStanceBrief" in thought_js
     assert "Mind handoff / quality" in thought_js
+    assert "Mind shadow synthesis" in thought_js
     assert "Raw comparison sources" in thought_js
+    assert "xl:grid-cols-4" in thought_js
 
 
 def test_thought_process_js_comparison_extracts_legacy_and_mind_fields() -> None:
@@ -102,11 +104,30 @@ def test_thought_process_js_comparison_extracts_legacy_and_mind_fields() -> None
     assert "mind_skip_stance_synthesis" in thought_js
 
 
+def test_thought_process_js_comparison_extracts_mind_shadow_synthesis_fields() -> None:
+    thought_js = THOUGHT_PROCESS_JS_PATH.read_text(encoding="utf-8")
+    assert "function normalizeMindShadowSynthesis" in thought_js
+    assert "mind_shadow_synthesis" in thought_js
+    assert "mind_shadow_synthesis_present" in thought_js
+    assert "mind_authorized_for_stance_skip" in thought_js
+    assert "authorized_for_stance_skip" in thought_js
+    assert "attention_focus" in thought_js
+    assert "curiosity_candidate" in thought_js
+    assert "relationship_frame" in thought_js
+    assert "projection_refs_used" in thought_js
+    assert "hazards" in thought_js
+    assert "stance_candidate" in thought_js
+
+
 def test_thought_process_js_comparison_does_not_promote_mind_or_change_routing() -> None:
     thought_js = THOUGHT_PROCESS_JS_PATH.read_text(encoding="utf-8")
     forbidden_mutations = [
         "mind_skip_stance_synthesis = true",
         "mind_skip_stance_synthesis=true",
+        "mind_authorized_for_stance_skip = true",
+        "mind_authorized_for_stance_skip=true",
+        "authorized_for_stance_skip = true",
+        "authorized_for_stance_skip=true",
         "meaningful_synthesis' &&",
         'meaningful_synthesis" &&',
         "fetch(`${API_BASE_URL}/api/chat`",

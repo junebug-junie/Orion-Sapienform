@@ -119,6 +119,22 @@ def test_thought_process_js_comparison_extracts_mind_shadow_synthesis_fields() -
     assert "stance_candidate" in thought_js
 
 
+def test_thought_process_js_renders_read_only_mind_shadow_evaluation_surface() -> None:
+    thought_js = THOUGHT_PROCESS_JS_PATH.read_text(encoding="utf-8")
+    assert "global.OrionMindShadowEvaluation = api;" in thought_js
+    assert "function evaluateMindShadow" in thought_js
+    assert "function renderEvaluationCard" in thought_js
+    assert "chatStanceMindShadowEvaluationCard" in thought_js
+    assert "chatStanceMindShadowEvaluationModalCard" in thought_js
+    assert "Mind shadow evaluation" in thought_js
+    assert "operator comparison · read-only" in thought_js
+    assert "read-only / no promotion" in thought_js
+    assert "Legacy category hits" in thought_js
+    assert "Legacy category gaps" in thought_js
+    assert "Raw Mind shadow evaluation" in thought_js
+    assert "Unexpected authority flag observed; shadow remains display-only in Hub." in thought_js
+
+
 def test_thought_process_js_comparison_does_not_promote_mind_or_change_routing() -> None:
     thought_js = THOUGHT_PROCESS_JS_PATH.read_text(encoding="utf-8")
     forbidden_mutations = [

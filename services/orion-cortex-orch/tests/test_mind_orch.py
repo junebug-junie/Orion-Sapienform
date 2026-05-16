@@ -44,7 +44,7 @@ def _plan_request() -> PlanExecutionRequest:
             verb_name="chat_general",
             steps=[ExecutionStep(verb_name="chat_general", step_name="noop", order=0, services=[])],
         ),
-        context={"metadata": {}},
+        context={"metadata": {"orion_state": {"ok": True, "status": "present"}}},
     )
 
 
@@ -172,6 +172,7 @@ def test_build_mind_run_request_merges_substrate_telemetry_facet() -> None:
         _plan_request(),
         "550e8400-e29b-41d4-a716-446655440000",
         substrate_telemetry_facet={"status": "absent"},
+        cognitive_projection_facet={"schema_version": "cognitive.projection.v1", "projection_id": "explicit"},
     )
     facets = (req.snapshot_inputs or {}).get("facets") or {}
     assert facets.get("substrate_telemetry") == {"status": "absent"}
@@ -218,3 +219,41 @@ def test_build_mind_run_request_accepts_inline_metadata_cognitive_projection_fac
     )
     facets = (req.snapshot_inputs or {}).get("facets") or {}
     assert facets.get("cognitive_projection") == projection
+
+
+def test_build_mind_run_request_auto_builds_cognitive_projection(monkeypatch) -> None:
+    _orch_prep()
+    import app.mind_runtime as mind_runtime
+    from app.mind_runtime import build_mind_run_request
+
+    calls: list[dict] = []
+
+    class _Projection:
+        def model_dump(self, mode: str = "json") -> dict:
+            return {
+                "schema_version": "cognitive.projection.v1",
+                "projection_id": "cog-proj-auto",
+                "generated_at": "2026-05-16T04:00:00+00:00",
+                "source": "cognitive_unification_layer",
+                "anchors": {},
+                "item_count": 0,
+            }
+
+    def fake_build_projection(ctx, **kwargs):
+        calls.append({"ctx": ctx, "kwargs": kwargs})
+        return _Projection()
+
+    monkeypatch.setattr(mind_runtime, "build_cognitive_projection_for_context", fake_build_projection)
+    req = build_mind_run_request(
+        _client_request(),
+        _plan_request(),
+        "550e8400-e29b-41d4-a716-446655440000",
+    )
+
+    facets = (req.snapshot_inputs or {}).get("facets") or {}
+    assert facets.get("cognitive_projection", {}).get("projection_id") == "cog-proj-auto"
+    assert calls
+    assert calls[0]["ctx"].get("correlation_id") == "550e8400-e29b-41d4-a716-446655440000"
+    assert calls[0]["ctx"].get("user_message") == "hi"
+    assert calls[0]["ctx"].get("metadata", {}).get("orion_state") == {"ok": True, "status": "present"}
+    assert calls[0]["kwargs"].get("publish_tier_outcomes") is False

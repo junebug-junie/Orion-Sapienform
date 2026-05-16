@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx
 
+from orion.cognition.projection_builder import build_cognitive_projection_for_context
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.mind.v1 import MindRunRequestV1, MindRunResultV1, MindRunPolicyV1
 from orion.schemas.chat_stance import ChatStanceBrief
@@ -116,18 +117,51 @@ async def fetch_substrate_telemetry_facet_for_mind(correlation_id: str) -> dict[
 
 
 def _inline_cognitive_projection_facet(metadata: dict[str, Any]) -> dict[str, Any] | None:
-    """Return caller-supplied cognitive projection for Mind shadow mode.
-
-    This is intentionally inline-only for now. Same-turn Orch cannot see the Exec
-    chat-stance projection until after execution; later phases can add a persisted
-    projection read path. For now this creates the stable snapshot seam without
-    moving authority.
-    """
+    """Return caller-supplied cognitive projection for Mind shadow mode."""
     for key in ("cognitive_projection_facet", "cognitive_projection"):
         value = metadata.get(key)
         if isinstance(value, dict):
             return value
     return None
+
+
+def _plan_projection_context(client_request: CortexClientRequest, plan_request: PlanExecutionRequest, correlation_id: str) -> dict[str, Any]:
+    ctx = dict(plan_request.context or {}) if isinstance(plan_request.context, dict) else {}
+    metadata = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+    ctx["metadata"] = dict(metadata)
+    ctx["correlation_id"] = correlation_id
+    ctx["requested_verb"] = client_request.verb or plan_request.plan.verb_name
+    ctx["verb"] = client_request.verb or plan_request.plan.verb_name
+    ctx["mode"] = client_request.mode
+    ctx["messages"] = [m.model_dump(mode="json") if hasattr(m, "model_dump") else m for m in (client_request.context.messages or [])]
+    ctx["raw_user_text"] = client_request.context.raw_user_text or None
+    ctx["user_message"] = client_request.context.user_message or None
+    ctx["session_id"] = client_request.context.session_id
+    ctx["trace_id"] = client_request.context.trace_id
+    ctx["user_id"] = client_request.context.user_id
+    return ctx
+
+
+def _build_cognitive_projection_facet(
+    client_request: CortexClientRequest,
+    plan_request: PlanExecutionRequest,
+    correlation_id: str,
+) -> dict[str, Any] | None:
+    meta = client_request.context.metadata if isinstance(client_request.context.metadata, dict) else {}
+    inline = _inline_cognitive_projection_facet(meta)
+    if inline is not None:
+        return inline
+    try:
+        projection = build_cognitive_projection_for_context(
+            _plan_projection_context(client_request, plan_request, correlation_id),
+            publish_tier_outcomes=False,
+        )
+    except Exception as exc:
+        logger.warning("mind_cognitive_projection_build_failed corr=%s err=%s", correlation_id, exc)
+        return None
+    if projection is None:
+        return None
+    return projection.model_dump(mode="json")
 
 
 def build_mind_run_request(
@@ -169,7 +203,11 @@ def build_mind_run_request(
     facets: dict[str, Any] = {}
     if substrate_telemetry_facet is not None:
         facets["substrate_telemetry"] = substrate_telemetry_facet
-    cognitive_projection = cognitive_projection_facet or _inline_cognitive_projection_facet(meta)
+    cognitive_projection = cognitive_projection_facet or _build_cognitive_projection_facet(
+        client_request,
+        plan_request,
+        correlation_id,
+    )
     if cognitive_projection is not None:
         facets["cognitive_projection"] = cognitive_projection
     if facets:

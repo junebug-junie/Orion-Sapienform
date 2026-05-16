@@ -164,6 +164,47 @@ def _normalize_flag(value: Any, *, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _coerce_mind_enabled(value: Any) -> bool:
+    """Normalize boolean-ish mind_enabled values for Hub request building."""
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _mind_requested_from_payload(payload: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+    """Inspect accepted mind_enabled locations; return requested flag + diagnostics."""
+    diagnostics: Dict[str, Any] = {
+        "mind_requested": False,
+        "mind_requested_source": None,
+        "mind_enabled_metadata_value": None,
+        "mind_enabled_metadata_type": None,
+    }
+    candidates: List[Tuple[str, Any]] = []
+    client_context = payload.get("context")
+    if isinstance(client_context, dict):
+        client_meta = client_context.get("metadata")
+        if isinstance(client_meta, dict) and "mind_enabled" in client_meta:
+            candidates.append(("payload.context.metadata.mind_enabled", client_meta.get("mind_enabled")))
+    if "mind_enabled" in payload:
+        candidates.append(("payload.mind_enabled", payload.get("mind_enabled")))
+    options = payload.get("options")
+    if isinstance(options, dict) and "mind_enabled" in options:
+        candidates.append(("payload.options.mind_enabled", options.get("mind_enabled")))
+
+    for source, raw_value in candidates:
+        diagnostics["mind_enabled_metadata_value"] = raw_value
+        diagnostics["mind_enabled_metadata_type"] = type(raw_value).__name__
+        if _coerce_mind_enabled(raw_value):
+            diagnostics["mind_requested"] = True
+            diagnostics["mind_requested_source"] = source
+            return True, diagnostics
+    return False, diagnostics
+
+
 def build_continuity_messages(
     *,
     history: Any,
@@ -464,9 +505,8 @@ def build_cortex_chat_request(
     mutation_cognition_context = payload.get("mutation_cognition_context")
     if isinstance(mutation_cognition_context, dict) and mutation_cognition_context:
         metadata["mutation_cognition_context"] = mutation_cognition_context
-    _client_context = payload.get("context")
-    _client_meta = _client_context.get("metadata") if isinstance(_client_context, dict) else None
-    if isinstance(_client_meta, dict) and _client_meta.get("mind_enabled") is True:
+    mind_requested, mind_diagnostics = _mind_requested_from_payload(payload)
+    if mind_requested:
         metadata["mind_enabled"] = True
     draft_ac = build_answer_contract_draft_for_hub(prompt)
     metadata["answer_contract_draft"] = draft_ac
@@ -669,6 +709,10 @@ def build_cortex_chat_request(
             else None
         ),
         "skill_runner_deterministic": bool(deterministic_requested),
+        "mind_requested": mind_diagnostics.get("mind_requested"),
+        "mind_requested_source": mind_diagnostics.get("mind_requested_source"),
+        "mind_enabled_metadata_value": mind_diagnostics.get("mind_enabled_metadata_value"),
+        "mind_enabled_metadata_type": mind_diagnostics.get("mind_enabled_metadata_type"),
     }
     if social_room:
         debug["social_skill_allowlist"] = metadata.get("social_skill_request", {}).get("allowlist") or []

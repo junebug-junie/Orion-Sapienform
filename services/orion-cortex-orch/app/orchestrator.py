@@ -540,6 +540,7 @@ async def call_verb_runtime(
 
     cr_meta = client_request.context.metadata if isinstance(client_request.context.metadata, dict) else {}
     if _mind_enabled_exact(cr_meta):
+        plan_request.context.setdefault("metadata", {})["mind_requested"] = True
         from .mind_runtime import prepare_plan_context_for_mind_projection
 
         await prepare_plan_context_for_mind_projection(
@@ -585,6 +586,16 @@ async def call_verb_runtime(
         except Exception as mind_exc:
             logger.warning("mind_http_failed corr=%s err=%s", correlation_id, mind_exc)
             plan_request.context.setdefault("metadata", {})["mind_invocation_failed"] = str(mind_exc)
+    else:
+        raw_mind = cr_meta.get("mind_enabled") if isinstance(cr_meta, dict) else None
+        logger.info(
+            "mind_skipped corr=%s reason=mind_enabled_not_true metadata_value=%s metadata_type=%s",
+            correlation_id,
+            raw_mind,
+            type(raw_mind).__name__ if raw_mind is not None else "missing",
+        )
+        plan_request.context.setdefault("metadata", {})["mind_requested"] = False
+        plan_request.context["metadata"]["mind_skip_reason"] = "mind_enabled_not_true"
 
     use_direct_exec = settings.exec_lane_routing_enabled and lane_decision.lane != "chat"
     # Same id allocation as the verb envelope path so VerbResultV1.request_id is stable per invocation

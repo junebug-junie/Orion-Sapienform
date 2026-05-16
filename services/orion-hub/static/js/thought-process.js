@@ -990,6 +990,9 @@
         ...(asObject(payload.surface_context) || {}),
         hub_chat_lane: LANE_GROUNDED_SMALL,
       };
+      payload.context = asObject(payload.context) || {};
+      payload.context.metadata = asObject(payload.context.metadata) || {};
+      payload.context.metadata.mind_enabled = true;
       return payload;
     }
 

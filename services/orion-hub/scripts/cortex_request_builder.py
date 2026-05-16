@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from orion.cognition.fast_chat_verbs import FAST_SINGLE_PASS_CHAT_VERBS
 from orion.cognition.verb_activation import is_active
 from orion.cognition.workflows import (
     derive_workflow_execution_policy,
@@ -127,6 +128,8 @@ def _normalize_skill_runner_lane(
         return "brain", selected_verbs
     if lane == "quick":
         if len(selected_verbs) == 1 and str(selected_verbs[0]).strip().startswith("skills."):
+            return "brain", selected_verbs
+        if len(selected_verbs) == 1 and str(selected_verbs[0]).strip().lower() in FAST_SINGLE_PASS_CHAT_VERBS:
             return "brain", selected_verbs
         return "brain", ["chat_quick"]
     if lane == "agent":

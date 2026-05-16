@@ -46,6 +46,8 @@ from orion.substrate.relational import (
 )
 from orion.substrate.relational.adapters.spark_ctx import map_spark_ctx_to_substrate
 
+from .attention_frame import attention_frame_enabled, build_attention_frame
+
 from .endogenous_runtime import (
     consume_endogenous_runtime_for_reflective_review,
     inspect_endogenous_runtime_records,
@@ -1799,6 +1801,26 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
         except Exception as exc:
             logger.warning("autonomy_reducer_v2_failed error=%s", exc)
 
+    if attention_frame_enabled():
+        try:
+            attention_frame = build_attention_frame(
+                ctx=ctx,
+                inputs=inputs,
+                belief_lineage=(beliefs.lineage if beliefs is not None else []),
+            )
+            attention_frame_payload = attention_frame.model_dump(mode="json")
+            inputs["attention_frame"] = attention_frame_payload
+            ctx["chat_attention_frame"] = attention_frame_payload
+            ctx["chat_attention_frame_debug"] = {
+                "open_loop_count": len(attention_frame.open_loops),
+                "selected_action": (attention_frame.selected_action.model_dump(mode="json") if attention_frame.selected_action else None),
+                "suppression_reasons": [s.reason for s in attention_frame.suppressions],
+            }
+        except Exception as exc:
+            logger.warning("attention_frame_build_failed error=%s", exc)
+            ctx.pop("chat_attention_frame", None)
+            ctx.pop("chat_attention_frame_debug", None)
+
     ctx["chat_stance_inputs"] = inputs
     ctx["chat_concept_summary"] = concept
     ctx["chat_social_summary"] = social
@@ -1889,6 +1911,7 @@ def build_chat_stance_debug_payload(
         else {}
     )
     autonomy_summary = autonomy.get("summary") if isinstance(autonomy.get("summary"), dict) else {}
+    attention_frame = stance_inputs.get("attention_frame") if isinstance(stance_inputs.get("attention_frame"), dict) else {}
     autonomy_debug = autonomy.get("debug") if isinstance(autonomy.get("debug"), dict) else {}
     reasoning = stance_inputs.get("reasoning_summary") if isinstance(stance_inputs.get("reasoning_summary"), dict) else {}
     situation = stance_inputs.get("situation") if isinstance(stance_inputs.get("situation"), dict) else {}
@@ -1946,6 +1969,7 @@ def build_chat_stance_debug_payload(
                 "autonomy": autonomy_summary,
                 "reasoning": reasoning,
                 "situation": situation,
+                "attention_frame": attention_frame,
             }.items()
             if isinstance(value, dict) and any(value.values())
         ]
@@ -1957,6 +1981,7 @@ def build_chat_stance_debug_payload(
         "orion_identity_summary": list(ctx.get("orion_identity_summary") or []),
         "juniper_relationship_summary": list(ctx.get("juniper_relationship_summary") or []),
         "response_policy_summary": list(ctx.get("response_policy_summary") or []),
+        "attention_frame": attention_frame if attention_frame else None,
         "situation_prompt_fragment": ctx.get("situation_prompt_fragment") if isinstance(ctx.get("situation_prompt_fragment"), dict) else None,
         "presence_context": ctx.get("presence_context") if isinstance(ctx.get("presence_context"), dict) else None,
         "situation_presence": ((ctx.get("situation_brief") or {}).get("presence") if isinstance(ctx.get("situation_brief"), dict) else None),
@@ -2039,6 +2064,14 @@ def build_chat_stance_debug_payload(
                 "fallback_recommended": bool(reasoning.get("fallback_recommended")),
                 "used": bool(ctx.get("chat_reasoning_summary_used")),
             },
+            "attention_frame": {
+                "open_loops": list(attention_frame.get("open_loops") or []),
+                "live_unknowns": list(attention_frame.get("live_unknowns") or []),
+                "selected_action": attention_frame.get("selected_action"),
+                "suppressions": list(attention_frame.get("suppressions") or []),
+                "deferred_items": list(attention_frame.get("deferred_items") or []),
+                "debug": attention_frame.get("debug") if isinstance(attention_frame.get("debug"), dict) else {},
+            },
             "situation": {
                 "situation_relevance": situation.get("situation_relevance"),
                 "situation_prompt_fragment": situation.get("situation_prompt_fragment") if isinstance(situation.get("situation_prompt_fragment"), dict) else {},
@@ -2070,6 +2103,7 @@ def build_chat_stance_debug_payload(
             f"mutation adaptation context present: {'yes' if bool(mutation_adaptation) else 'no'}",
             f"reasoning summary used: {'yes' if bool(ctx.get('chat_reasoning_summary_used')) else 'no'}",
             f"situation context present: {'yes' if bool(situation) else 'no'}",
+            f"attention frame present: {'yes' if bool(attention_frame) else 'no'}",
             f"fallback applied: {'yes' if fallback_invoked or semantic_fallback else 'no'}",
         ],
         "raw": {

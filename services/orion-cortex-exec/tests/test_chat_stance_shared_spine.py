@@ -63,6 +63,7 @@ def test_exec_app_import_installs_shared_chat_stance_spine(monkeypatch) -> None:
     assert app is not None
     assert getattr(chat_stance, "_CHAT_STANCE_SHARED_PROJECTION_SPINE") is True
     assert chat_stance._unified_beliefs_for_stance is chat_stance_shared_spine.shared_unified_beliefs_for_stance
+    assert chat_stance.build_chat_stance_debug_payload is chat_stance_shared_spine.shared_build_chat_stance_debug_payload
 
 
 def test_shared_chat_stance_spine_can_be_disabled(monkeypatch) -> None:
@@ -75,6 +76,7 @@ def test_shared_chat_stance_spine_can_be_disabled(monkeypatch) -> None:
 
     assert app is not None
     assert chat_stance._unified_beliefs_for_stance is not chat_stance_shared_spine.shared_unified_beliefs_for_stance
+    assert chat_stance.build_chat_stance_debug_payload is not chat_stance_shared_spine.shared_build_chat_stance_debug_payload
 
 
 def test_shared_spine_records_context_marker_and_projection(monkeypatch) -> None:
@@ -124,3 +126,49 @@ def test_shared_spine_records_absent_beliefs(monkeypatch) -> None:
     assert marker["beliefs_present"] is False
     assert ctx.get("chat_cognitive_projection") is None
     assert ctx.get("chat_cognitive_projection_debug") == {"present": False, "reason": "beliefs_absent"}
+
+
+def test_shared_debug_builder_injects_projection_bundle(monkeypatch) -> None:
+    monkeypatch.delenv("CHAT_STANCE_SHARED_PROJECTION_SPINE_DISABLED", raising=False)
+    _guard_mod.ensure_orion_cortex_exec_app()
+
+    from app import chat_stance_shared_spine
+
+    def fake_legacy_builder(*args, **kwargs):
+        return {
+            "overview": {},
+            "lineage_summary": [],
+            "raw": {},
+        }
+
+    monkeypatch.setattr(chat_stance_shared_spine, "_ORIGINAL_DEBUG_BUILDER", fake_legacy_builder)
+
+    ctx = {
+        "chat_stance_shared_projection_spine": {"enabled": True, "beliefs_present": True, "lineage": ["test"]},
+        "chat_cognitive_projection_debug": {"present": True, "projection_id": "proj-1", "item_count": 3, "anchor_count": 2},
+        "chat_cognitive_projection": {"schema_version": "cognitive.projection.v1", "projection_id": "proj-1", "item_count": 3},
+    }
+    debug = chat_stance_shared_spine.shared_build_chat_stance_debug_payload(ctx=ctx)
+
+    assert debug["cognitive_projection"]["shared_spine"]["enabled"] is True
+    assert debug["cognitive_projection"]["projection_debug"]["item_count"] == 3
+    assert debug["cognitive_projection"]["projection"]["projection_id"] == "proj-1"
+    assert debug["raw"]["cognitive_projection"]["projection_debug"]["projection_id"] == "proj-1"
+    assert "shared projection spine used: yes" in debug["lineage_summary"]
+    assert "cognitive projection items: 3" in debug["lineage_summary"]
+
+
+def test_shared_debug_builder_records_absent_projection(monkeypatch) -> None:
+    monkeypatch.delenv("CHAT_STANCE_SHARED_PROJECTION_SPINE_DISABLED", raising=False)
+    _guard_mod.ensure_orion_cortex_exec_app()
+
+    from app import chat_stance_shared_spine
+
+    monkeypatch.setattr(chat_stance_shared_spine, "_ORIGINAL_DEBUG_BUILDER", lambda *args, **kwargs: {"lineage_summary": [], "raw": {}})
+
+    debug = chat_stance_shared_spine.shared_build_chat_stance_debug_payload(ctx={})
+
+    assert debug["cognitive_projection"]["shared_spine"] == {"enabled": False, "reason": "marker_absent"}
+    assert debug["cognitive_projection"]["projection_debug"] == {"present": False, "reason": "debug_absent"}
+    assert "shared projection spine used: no" in debug["lineage_summary"]
+    assert "cognitive projection items: 0" in debug["lineage_summary"]

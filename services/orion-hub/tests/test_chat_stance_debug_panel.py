@@ -6,6 +6,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 TEMPLATE_PATH = REPO_ROOT / "services" / "orion-hub" / "templates" / "index.html"
 APP_JS_PATH = REPO_ROOT / "services" / "orion-hub" / "static" / "js" / "app.js"
+THOUGHT_PROCESS_JS_PATH = REPO_ROOT / "services" / "orion-hub" / "static" / "js" / "thought-process.js"
 
 
 def test_template_includes_chat_stance_panel_and_outer_modal_button() -> None:
@@ -45,3 +46,32 @@ def test_app_js_wires_chat_stance_modal_and_payload_plumbing() -> None:
     assert "chatStanceDebugToggle.addEventListener('click', toggleChatStanceDebugPanel);" in app_js
     assert "chatStanceDebugOpenModal.addEventListener('click', (event) => {" in app_js
     assert "openChatStanceDebugModal();" in app_js
+
+
+def test_thought_process_js_registers_cognitive_projection_inspect_renderer() -> None:
+    thought_js = THOUGHT_PROCESS_JS_PATH.read_text(encoding="utf-8")
+    assert "global.OrionChatStanceProjectionInspect = api;" in thought_js
+    assert "function renderProjectionCard" in thought_js
+    assert "function normalizeProjectionBundle" in thought_js
+    assert "function renderFromPayload" in thought_js
+    assert "function attach" in thought_js
+    assert "MutationObserver" in thought_js
+    assert "chatStanceDebugRaw" in thought_js
+    assert "chatStanceDebugOpenModal" in thought_js
+
+
+def test_thought_process_js_renders_cognitive_projection_cards_and_fields() -> None:
+    thought_js = THOUGHT_PROCESS_JS_PATH.read_text(encoding="utf-8")
+    assert "chatStanceCognitiveProjectionInspectCard" in thought_js
+    assert "chatStanceCognitiveProjectionInspectModalCard" in thought_js
+    assert "payload.cognitive_projection" in thought_js
+    assert "root.raw" in thought_js
+    assert "raw.cognitive_projection" in thought_js
+    assert "Cognitive Projection" in thought_js
+    assert "Top projection items" in thought_js
+    assert "Raw cognitive projection" in thought_js
+    assert "shared spine used" in thought_js
+    assert "Projection id" in thought_js
+    assert "Degraded producers" in thought_js
+    assert "Cold anchors" in thought_js
+    assert "Lineage" in thought_js

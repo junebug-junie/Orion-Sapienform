@@ -217,6 +217,48 @@ def unified_beliefs_for_chat_stance(
     )
 
 
+def summarize_projection_build(
+    ctx: dict[str, Any] | None,
+    *,
+    beliefs: UnifiedRelationalBeliefSetV1 | None,
+    projection: CognitiveProjectionV1 | None,
+    build_path: str = "orion.cognition.projection_builder",
+) -> dict[str, Any]:
+    """Compact diagnostics when a projection is empty or degraded at build time."""
+    ctx = ctx if isinstance(ctx, dict) else {}
+    registry = build_projection_unification_registry()
+    requested = [producer.producer_id for producer in registry.producers]
+    degraded = list(getattr(beliefs, "degraded_producers", []) or []) if beliefs is not None else []
+    returned = [producer_id for producer_id in requested if producer_id not in degraded]
+    source_counts: dict[str, int] = {}
+    if projection is not None:
+        for anchor_name, anchor_slice in (projection.anchors or {}).items():
+            source_counts[str(anchor_name)] = len(anchor_slice.items or [])
+    dropped_counts_by_reason: dict[str, int] = {}
+    for note in list(getattr(projection, "notes", []) or []):
+        dropped_counts_by_reason[str(note)] = dropped_counts_by_reason.get(str(note), 0) + 1
+    if beliefs is None:
+        dropped_counts_by_reason["beliefs_absent"] = dropped_counts_by_reason.get("beliefs_absent", 0) + 1
+    if _skip_unified_beliefs_ctx(ctx):
+        dropped_counts_by_reason["short_circuit_unified_beliefs"] = (
+            dropped_counts_by_reason.get("short_circuit_unified_beliefs", 0) + 1
+        )
+    item_count = int(getattr(projection, "item_count", 0) or 0) if projection is not None else 0
+    return {
+        "build_path": build_path,
+        "projection_sources_requested": requested,
+        "projection_sources_returned": returned,
+        "source_counts": source_counts,
+        "dropped_counts_by_reason": dropped_counts_by_reason,
+        "producer_errors": degraded,
+        "short_circuit_policy_active": _skip_unified_beliefs_ctx(ctx),
+        "cold_anchors": list(getattr(beliefs, "cold_anchors", []) or []) if beliefs is not None else [],
+        "lineage": list(getattr(beliefs, "lineage", []) or []) if beliefs is not None else [],
+        "item_count": item_count,
+        "projection_id": getattr(projection, "projection_id", None) if projection is not None else None,
+    }
+
+
 def build_cognitive_projection_for_context(
     ctx: dict[str, Any] | None,
     *,
@@ -238,3 +280,34 @@ def build_cognitive_projection_for_context(
         max_items_per_bucket=max_items_per_bucket,
         max_total_items=max_total_items,
     )
+
+
+def build_cognitive_projection_for_mind_with_diagnostics(
+    ctx: dict[str, Any] | None,
+    *,
+    anchors: Sequence[str] = DEFAULT_PROJECTION_ANCHORS,
+    timeout_sec: float | None = None,
+    max_items_per_bucket: int = 6,
+    max_total_items: int = 48,
+    publish_tier_outcomes: bool = True,
+    build_path: str = "orion.cognition.projection_builder.build_cognitive_projection_for_mind_with_diagnostics",
+) -> tuple[CognitiveProjectionV1 | None, dict[str, Any]]:
+    """Build projection plus starvation diagnostics for Mind convergence."""
+    beliefs = unified_beliefs_for_context(
+        ctx,
+        anchors=anchors,
+        timeout_sec=timeout_sec,
+        publish_tier_outcomes=publish_tier_outcomes,
+    )
+    projection = project_unified_beliefs_for_mind(
+        beliefs,
+        max_items_per_bucket=max_items_per_bucket,
+        max_total_items=max_total_items,
+    )
+    diagnostics = summarize_projection_build(
+        ctx,
+        beliefs=beliefs,
+        projection=projection,
+        build_path=build_path,
+    )
+    return projection, diagnostics

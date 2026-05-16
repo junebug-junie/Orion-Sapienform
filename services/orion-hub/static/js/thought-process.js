@@ -604,3 +604,290 @@
     else attach();
   }
 })(typeof window !== 'undefined' ? window : globalThis);
+
+(function (global) {
+  const INLINE_EVAL_ID = 'chatStanceMindShadowEvaluationCard';
+  const MODAL_EVAL_ID = 'chatStanceMindShadowEvaluationModalCard';
+
+  function asObject(value) {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  }
+
+  function asList(value) {
+    return Array.isArray(value) ? value : [];
+  }
+
+  function short(value, fallback = '--') {
+    const text = String(value === null || value === undefined ? '' : value).trim();
+    return text || fallback;
+  }
+
+  function makeEl(tag, className, text) {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text !== undefined && text !== null) el.textContent = String(text);
+    return el;
+  }
+
+  function firstPresent(values) {
+    for (let i = 0; i < values.length; i += 1) {
+      const value = values[i];
+      if (value === null || value === undefined) continue;
+      if (typeof value === 'string' && !value.trim()) continue;
+      if (Array.isArray(value) && !value.length) continue;
+      if (typeof value === 'object' && !Array.isArray(value) && !Object.keys(value).length) continue;
+      return value;
+    }
+    return null;
+  }
+
+  function parseJson(text) {
+    const raw = String(text || '').trim();
+    if (!raw || raw === '--' || raw.startsWith('No chat stance debug')) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      return asObject(parsed);
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  function tokensFrom(value) {
+    const seen = new Set();
+    const visit = (item) => {
+      if (item === null || item === undefined) return;
+      if (Array.isArray(item)) {
+        item.forEach(visit);
+        return;
+      }
+      if (typeof item === 'object') {
+        Object.keys(item).forEach((key) => visit(item[key]));
+        return;
+      }
+      String(item).toLowerCase().split(/[^a-z0-9_]+/).forEach((token) => {
+        if (token.length >= 3) seen.add(token);
+      });
+    };
+    visit(value);
+    return seen;
+  }
+
+  function normalizeLegacy(payload) {
+    const root = asObject(payload) || {};
+    const raw = asObject(root.raw) || {};
+    const overview = asObject(root.overview) || asObject(raw.overview) || {};
+    const sourceInputs = asObject(root.source_inputs) || asObject(raw.source_inputs) || {};
+    const synthesizedBrief = firstPresent([
+      root.synthesized_brief,
+      raw.synthesized_brief,
+      root.chat_stance_brief,
+      raw.chat_stance_brief,
+      root.brief,
+      raw.brief,
+    ]);
+    const finalPromptContract = firstPresent([
+      root.final_prompt_contract,
+      raw.final_prompt_contract,
+      root.prompt_contract,
+      raw.prompt_contract,
+    ]);
+    return {
+      present: Boolean(synthesizedBrief || finalPromptContract || asList(overview.categories_present).length || Object.keys(sourceInputs).length),
+      categories: asList(overview.categories_present),
+      synthesizedBrief,
+      finalPromptContract,
+      sourceInputs,
+    };
+  }
+
+  function normalizeShadow(payload) {
+    const root = asObject(payload) || {};
+    const raw = asObject(root.raw) || {};
+    const sourceInputs = asObject(root.source_inputs) || asObject(raw.source_inputs) || {};
+    const finalPromptContract = asObject(root.final_prompt_contract) || asObject(raw.final_prompt_contract) || {};
+    const rootHandoff = asObject(root.mind_handoff) || {};
+    const rawHandoff = asObject(raw.mind_handoff) || {};
+    const sourceHandoff = asObject(sourceInputs.mind_handoff) || asObject(sourceInputs.mind) || {};
+    const contractHandoff = asObject(finalPromptContract.mind_handoff) || {};
+    const shadow = firstPresent([
+      root.mind_shadow_synthesis,
+      raw.mind_shadow_synthesis,
+      sourceInputs.mind_shadow_synthesis,
+      finalPromptContract.mind_shadow_synthesis,
+      rootHandoff.shadow_synthesis,
+      rawHandoff.shadow_synthesis,
+      sourceHandoff.shadow_synthesis,
+      contractHandoff.shadow_synthesis,
+    ]);
+    const shadowObject = asObject(shadow) || {};
+    const presentFlag = firstPresent([
+      root.mind_shadow_synthesis_present,
+      raw.mind_shadow_synthesis_present,
+      sourceInputs.mind_shadow_synthesis_present,
+      finalPromptContract.mind_shadow_synthesis_present,
+      shadowObject.present,
+    ]);
+    const authorizedForStanceSkip = firstPresent([
+      root.mind_authorized_for_stance_skip,
+      raw.mind_authorized_for_stance_skip,
+      sourceInputs.mind_authorized_for_stance_skip,
+      finalPromptContract.mind_authorized_for_stance_skip,
+      shadowObject.authorized_for_stance_skip,
+    ]);
+    return {
+      present: Boolean(shadow || presentFlag),
+      authorizedForStanceSkip,
+      confidence: shadowObject.confidence,
+      attentionFocus: asList(shadowObject.attention_focus),
+      curiosityCandidate: asList(shadowObject.curiosity_candidate),
+      relationshipFrame: shadowObject.relationship_frame,
+      projectionRefsUsed: asList(shadowObject.projection_refs_used),
+      hazards: asList(shadowObject.hazards),
+      rationale: shadowObject.rationale,
+      stanceCandidate: asObject(shadowObject.stance_candidate),
+      raw: shadowObject,
+    };
+  }
+
+  function evaluateMindShadow(payload) {
+    const legacy = normalizeLegacy(payload);
+    const shadow = normalizeShadow(payload);
+    const shadowTokens = tokensFrom([
+      shadow.attentionFocus,
+      shadow.curiosityCandidate,
+      shadow.relationshipFrame,
+      shadow.projectionRefsUsed,
+      shadow.hazards,
+      shadow.rationale,
+      shadow.stanceCandidate,
+    ]);
+    const categoryHits = legacy.categories.filter((category) => shadowTokens.has(String(category).toLowerCase()));
+    const categoryGaps = legacy.categories.filter((category) => !shadowTokens.has(String(category).toLowerCase()));
+    const authorityFlag = shadow.authorizedForStanceSkip === true || String(shadow.authorizedForStanceSkip).toLowerCase() === 'true';
+    const notices = [];
+    if (!shadow.present) notices.push('No Mind shadow candidate emitted for this turn.');
+    if (!legacy.present) notices.push('Legacy ChatStanceBrief comparison source is absent.');
+    if (authorityFlag) notices.push('Unexpected authority flag observed; shadow remains display-only in Hub.');
+    if (shadow.hazards.length) notices.push(`${shadow.hazards.length} shadow hazard(s) surfaced.`);
+    if (shadow.projectionRefsUsed.length) notices.push(`${shadow.projectionRefsUsed.length} projection ref(s) used by shadow.`);
+    if (!notices.length) notices.push('Read-only comparison available; legacy stance remains authoritative.');
+
+    return {
+      status: shadow.present ? (legacy.present ? 'comparison available' : 'shadow only') : 'no shadow candidate',
+      authorityBoundary: authorityFlag ? 'inspect upstream flag' : 'read-only / no promotion',
+      confidence: shadow.confidence,
+      legacyCategoryHits: categoryHits,
+      legacyCategoryGaps: categoryGaps,
+      stanceCandidateKeys: Object.keys(shadow.stanceCandidate || {}),
+      projectionRefsUsed: shadow.projectionRefsUsed,
+      hazards: shadow.hazards,
+      notices,
+      rationale: shadow.rationale,
+      legacy,
+      shadow,
+    };
+  }
+
+  function renderEvaluationCard(evaluation, opts = {}) {
+    const card = makeEl('section', 'rounded-xl border border-rose-500/25 bg-rose-500/5 p-3 space-y-3');
+    card.id = opts.modal ? MODAL_EVAL_ID : INLINE_EVAL_ID;
+    const header = makeEl('div', 'flex items-center justify-between gap-2');
+    header.appendChild(makeEl('div', 'text-[10px] uppercase tracking-wide text-rose-200', 'Mind shadow evaluation'));
+    header.appendChild(makeEl('div', 'text-[10px] text-gray-400', 'operator comparison · read-only'));
+    card.appendChild(header);
+
+    const grid = makeEl('div', 'grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4');
+    [
+      ['Status', evaluation.status],
+      ['Authority boundary', evaluation.authorityBoundary],
+      ['Confidence', evaluation.confidence === null || evaluation.confidence === undefined ? '--' : evaluation.confidence],
+      ['Legacy category hits', evaluation.legacyCategoryHits.length ? evaluation.legacyCategoryHits.join(', ') : '--'],
+      ['Legacy category gaps', evaluation.legacyCategoryGaps.length ? evaluation.legacyCategoryGaps.join(', ') : '--'],
+      ['Stance candidate keys', evaluation.stanceCandidateKeys.length ? evaluation.stanceCandidateKeys.slice(0, 6).join(', ') : '--'],
+      ['Projection refs', evaluation.projectionRefsUsed.length ? evaluation.projectionRefsUsed.slice(0, 6).join(', ') : '--'],
+      ['Hazards', evaluation.hazards.length ? evaluation.hazards.slice(0, 4).join(' · ') : '--'],
+    ].forEach(([label, value]) => {
+      const row = makeEl('div', 'rounded-lg border border-gray-800 bg-gray-950/50 px-2 py-1');
+      row.appendChild(makeEl('div', 'text-[10px] uppercase tracking-wide text-gray-500', label));
+      row.appendChild(makeEl('div', 'mt-0.5 text-[11px] text-gray-100 break-words', short(value)));
+      grid.appendChild(row);
+    });
+    card.appendChild(grid);
+
+    const noticeList = makeEl('div', 'space-y-1');
+    evaluation.notices.slice(0, 5).forEach((notice) => {
+      noticeList.appendChild(makeEl('div', 'rounded border border-rose-500/20 bg-gray-950/40 px-2 py-1 text-[11px] text-gray-200', notice));
+    });
+    card.appendChild(noticeList);
+
+    if (opts.modal) {
+      const raw = makeEl('details', 'rounded-lg border border-gray-800 bg-gray-950/50 p-2');
+      raw.appendChild(makeEl('summary', 'cursor-pointer text-[10px] uppercase tracking-wide text-gray-500', 'Raw Mind shadow evaluation'));
+      const pre = makeEl('pre', 'mt-2 max-h-80 overflow-y-auto whitespace-pre-wrap break-words text-[10px] text-gray-300');
+      pre.textContent = JSON.stringify(evaluation, null, 2);
+      raw.appendChild(pre);
+      card.appendChild(raw);
+    }
+    return card;
+  }
+
+  function payloadFromRawPre() {
+    const rawPre = document.getElementById('chatStanceDebugRaw');
+    return parseJson(rawPre ? rawPre.textContent : '');
+  }
+
+  function removeCards() {
+    [INLINE_EVAL_ID, MODAL_EVAL_ID].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.remove();
+    });
+  }
+
+  function insertAfter(parent, anchorId, card) {
+    const anchor = document.getElementById(anchorId);
+    if (anchor && anchor.parentNode === parent) {
+      parent.insertBefore(card, anchor.nextSibling);
+      return;
+    }
+    parent.appendChild(card);
+  }
+
+  function renderFromPayload(payload) {
+    const modelPayload = asObject(payload);
+    removeCards();
+    if (!modelPayload || !Object.keys(modelPayload).length) return false;
+    const evaluation = evaluateMindShadow(modelPayload);
+    const overview = document.getElementById('chatStanceDebugOverview');
+    if (overview) insertAfter(overview, 'chatStanceCognitiveComparisonInspectCard', renderEvaluationCard(evaluation, { modal: false }));
+    const modalBody = document.getElementById('chatStanceDebugModalBody');
+    if (modalBody) insertAfter(modalBody, 'chatStanceCognitiveComparisonInspectModalCard', renderEvaluationCard(evaluation, { modal: true }));
+    return true;
+  }
+
+  function refresh() {
+    return renderFromPayload(payloadFromRawPre());
+  }
+
+  function attach() {
+    const rawPre = document.getElementById('chatStanceDebugRaw');
+    if (rawPre && typeof MutationObserver !== 'undefined') {
+      const observer = new MutationObserver(() => refresh());
+      observer.observe(rawPre, { childList: true, characterData: true, subtree: true });
+    }
+    const modalButton = document.getElementById('chatStanceDebugOpenModal');
+    if (modalButton) {
+      modalButton.addEventListener('click', () => {
+        setTimeout(() => refresh(), 0);
+        setTimeout(() => refresh(), 50);
+      });
+    }
+    refresh();
+  }
+
+  const api = { attach, refresh, evaluateMindShadow, renderEvaluationCard, renderFromPayload };
+  global.OrionMindShadowEvaluation = api;
+  if (typeof document !== 'undefined') {
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', attach);
+    else attach();
+  }
+})(typeof window !== 'undefined' ? window : globalThis);

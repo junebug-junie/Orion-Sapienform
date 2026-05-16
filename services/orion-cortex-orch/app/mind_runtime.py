@@ -230,10 +230,22 @@ def merge_mind_brief_into_plan_metadata(plan_request: PlanExecutionRequest, resu
         meta[str(k)] = v
     meta["mind_handoff"] = result.brief.model_dump(mode="json")
     meta["mind_quality"] = _mind_result_quality(result)
+    shadow = result.brief.shadow_synthesis
+    if shadow is not None:
+        meta["mind_shadow_synthesis"] = shadow.model_dump(mode="json")
+        meta["mind_shadow_synthesis_present"] = bool(shadow.present)
+        meta["mind_authorized_for_stance_skip"] = bool(shadow.authorized_for_stance_skip)
+    else:
+        meta["mind_shadow_synthesis_present"] = False
+        meta["mind_authorized_for_stance_skip"] = False
     skip_llm_stance = False
     if result.ok:
         meta["mind_run_ok"] = True
-        if _mind_result_quality(result) == "meaningful_synthesis" and not _mind_result_is_deterministic_contract_only(result):
+        if (
+            _mind_result_quality(result) == "meaningful_synthesis"
+            and bool(getattr(result.brief, "mind_authorized_for_stance_skip", False))
+            and not _mind_result_is_deterministic_contract_only(result)
+        ):
             sp = result.brief.stance_payload if isinstance(result.brief.stance_payload, dict) else {}
             try:
                 ChatStanceBrief.model_validate(sp)
@@ -242,7 +254,7 @@ def merge_mind_brief_into_plan_metadata(plan_request: PlanExecutionRequest, resu
                 meta["mind_stance_payload_invalid"] = True
                 skip_llm_stance = False
         else:
-            meta["mind_contract_only"] = True
+            meta["mind_contract_only"] = _mind_result_quality(result) in {"fallback_contract_only", "shadow_synthesis"}
         meta["mind_skip_stance_synthesis"] = skip_llm_stance
     else:
         meta["mind_skip_stance_synthesis"] = False

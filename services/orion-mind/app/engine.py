@@ -195,6 +195,7 @@ def _cognitive_projection_debug(snapshot: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(projection, dict):
         return {"present": False}
     anchors = projection.get("anchors") if isinstance(projection.get("anchors"), dict) else {}
+    build_diag = projection.get("projection_build_diagnostics")
     return {
         "present": True,
         "schema_version": projection.get("schema_version"),
@@ -205,7 +206,37 @@ def _cognitive_projection_debug(snapshot: dict[str, Any]) -> dict[str, Any]:
         "cold_anchors": projection.get("cold_anchors") if isinstance(projection.get("cold_anchors"), list) else [],
         "degraded_producers": projection.get("degraded_producers") if isinstance(projection.get("degraded_producers"), list) else [],
         "notes": projection.get("notes") if isinstance(projection.get("notes"), list) else [],
+        "build_diagnostics": build_diag if isinstance(build_diag, dict) else {},
     }
+
+
+def _projection_starvation_machine_keys(build_diag: dict[str, Any]) -> dict[str, Any]:
+    """Surface Orch/build-time starvation diagnostics on the Mind machine contract."""
+    if not build_diag:
+        return {}
+    return {
+        "mind.projection_sources_requested": list(build_diag.get("projection_sources_requested") or []),
+        "mind.projection_sources_returned": list(build_diag.get("projection_sources_returned") or []),
+        "mind.projection_source_counts": dict(build_diag.get("source_counts") or {}),
+        "mind.projection_dropped_counts_by_reason": dict(build_diag.get("dropped_counts_by_reason") or {}),
+        "mind.projection_producer_errors": list(build_diag.get("producer_errors") or []),
+        "mind.projection_short_circuit_policy_active": bool(build_diag.get("short_circuit_policy_active")),
+        "mind.projection_build_path": build_diag.get("build_path"),
+    }
+
+
+def _projection_starvation_summary(build_diag: dict[str, Any], item_count: int) -> str:
+    if item_count > 0:
+        return ""
+    short_circuit = bool(build_diag.get("short_circuit_policy_active"))
+    dropped = build_diag.get("dropped_counts_by_reason") if isinstance(build_diag.get("dropped_counts_by_reason"), dict) else {}
+    producer_errors = list(build_diag.get("producer_errors") or [])
+    reasons = ", ".join(f"{key}={value}" for key, value in sorted(dropped.items())[:4]) or "no_active_projection_items"
+    if short_circuit:
+        return f"Degraded Mind: projection short-circuited ({reasons})."
+    if producer_errors:
+        return f"Degraded Mind: projection starved ({reasons}); producer_errors={producer_errors[:6]}."
+    return f"Degraded Mind: projection starved at snapshot time ({reasons})."
 
 
 def _projection_items(projection: dict[str, Any] | None, *, limit: int = 8) -> list[dict[str, Any]]:
@@ -456,6 +487,9 @@ def run_mind_deterministic(
         budgets={"wall_ms_remaining": float(req.policy.wall_time_ms_max), "truncated": _truncated},
     )
     quality = "shadow_synthesis" if shadow_synthesis is not None else "fallback_contract_only"
+    build_diag = cognitive_projection_debug.get("build_diagnostics") if isinstance(cognitive_projection_debug.get("build_diagnostics"), dict) else {}
+    item_count = int(cognitive_projection_debug.get("item_count") or 0)
+    projection_starved = bool(cognitive_projection_debug.get("present")) and item_count <= 0
     machine = {
         "mind.route_kind": decision.route_kind,
         "mind.allowed_verbs": decision.allowed_verbs,
@@ -465,18 +499,27 @@ def run_mind_deterministic(
         "mind.cognitive_projection_seen": bool(cognitive_projection_debug.get("present")),
         "mind.shadow_synthesis_present": shadow_synthesis is not None,
         "mind.authorized_for_stance_skip": False,
+        "mind.projection_starved": projection_starved,
+        "mind.contract_only_degraded": quality == "fallback_contract_only",
     }
     if cognitive_projection_debug.get("present"):
         machine["mind.cognitive_projection_id"] = cognitive_projection_debug.get("projection_id")
-        machine["mind.cognitive_projection_item_count"] = cognitive_projection_debug.get("item_count")
+        machine["mind.cognitive_projection_item_count"] = item_count
+    if projection_starved:
+        machine.update(_projection_starvation_machine_keys(build_diag))
     if shadow_synthesis is not None:
         machine["mind.shadow_projection_refs_used"] = list(shadow_synthesis.projection_refs_used)
         machine["mind.shadow_confidence"] = shadow_synthesis.confidence
+    starvation_summary = _projection_starvation_summary(build_diag, item_count)
     brief = MindHandoffBriefV1(
         summary_one_paragraph=(
             "Shadow synthesis candidate produced from CognitiveProjectionV1; not authorized for stance skip."
             if shadow_synthesis is not None
-            else "Fallback contract only — no meaningful Mind synthesis produced."
+            else (
+                starvation_summary
+                if starvation_summary
+                else "Fallback contract only — no meaningful Mind synthesis produced."
+            )
         ),
         machine_contract=machine,
         mandatory_keys=["mind.route_kind", "mind.allowed_verbs"],

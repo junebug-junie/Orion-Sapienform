@@ -117,6 +117,7 @@ def test_mind_run_surfaces_cognitive_projection_seen_without_shadow_when_no_item
     assert machine.get("mind.cognitive_projection_id") == "cog-proj-empty-test"
     assert machine.get("mind.cognitive_projection_item_count") == 0
     assert machine.get("mind.shadow_synthesis_present") is False
+    assert machine.get("mind.projection_starved") is True
     assert body.get("brief", {}).get("shadow_synthesis") is None
     assert body.get("brief", {}).get("mind_authorized_for_stance_skip") is False
 

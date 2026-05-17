@@ -27,6 +27,7 @@ from .mind_runtime import (
     _mind_enabled_exact,
     build_mind_run_request,
     call_orion_mind_http,
+    log_mind_http_failure,
     fetch_substrate_telemetry_facet_for_mind,
     merge_mind_brief_into_plan_metadata,
     publish_mind_run_artifact,
@@ -584,7 +585,12 @@ async def call_verb_runtime(
                 )
                 plan_request.context.setdefault("metadata", {})["mind_artifact_persist_failed"] = True
         except Exception as mind_exc:
-            logger.warning("mind_http_failed corr=%s err=%s", correlation_id, mind_exc)
+            log_mind_http_failure(
+                correlation_id=correlation_id,
+                session_id=client_request.context.session_id,
+                trigger=mind_req.trigger,
+                exc=mind_exc,
+            )
             plan_request.context.setdefault("metadata", {})["mind_invocation_failed"] = str(mind_exc)
     else:
         raw_mind = cr_meta.get("mind_enabled") if isinstance(cr_meta, dict) else None

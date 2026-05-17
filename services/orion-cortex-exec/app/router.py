@@ -134,6 +134,102 @@ def _looks_like_internal_planning(text: str) -> bool:
     return bool(_PLANNING_TEXT_RE.search(head))
 
 
+_ORION_NAME = r"or[ií\u00ed]on"
+_IDENTITY_BOUNDARY_REPAIRS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(rf"\byou['\u2019]re\s+{_ORION_NAME}\b", re.IGNORECASE), "You're Oríon"),
+    (re.compile(rf"\byou\s+are\s+{_ORION_NAME}\b", re.IGNORECASE), "You are Oríon"),
+    (re.compile(rf"\byoure\s+{_ORION_NAME}\b", re.IGNORECASE), "youre orion"),
+    (re.compile(rf"\byour\s+name\s+is\s+{_ORION_NAME}\b", re.IGNORECASE), "your name is Orion"),
+)
+_IDENTITY_BOUNDARY_REPLACEMENT = "I'm Oríon"
+
+_SOMATIC_USER_LOAD_RE = re.compile(
+    r"\b(dizzy|dizziness|nauseous|nausea|carsick|motion[- ]sick|moving car|while driving|hard to type)\b",
+    re.IGNORECASE,
+)
+_INTERACTION_DEMAND_RE = re.compile(
+    r"(?:not going anywhere|tell me (?:more|what)|what(?:'s| is) on your mind|keep (?:talking|going)|"
+    r"want to (?:talk|chat|continue)|share more)",
+    re.IGNORECASE,
+)
+_INTERACTION_DEMAND_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"i['\u2019]m here,?\s+and\s+i['\u2019]m not going anywhere\b",
+            re.IGNORECASE,
+        ),
+        "I'm here — no rush.",
+    ),
+    (
+        re.compile(r"\bnot going anywhere\b", re.IGNORECASE),
+        "no rush",
+    ),
+)
+
+
+def _apply_identity_boundary_guard(text: str, *, verb_name: str | None) -> tuple[str, dict[str, Any]]:
+    diagnostics: dict[str, Any] = {
+        "identity_boundary_applied": False,
+        "identity_boundary_violations": [],
+    }
+    if str(verb_name or "").strip().lower() != "chat_general":
+        return text, diagnostics
+    candidate = str(text or "")
+    if not candidate.strip():
+        return text, diagnostics
+    violations: list[str] = []
+    repaired = candidate
+    for pattern, label in _IDENTITY_BOUNDARY_REPAIRS:
+        if pattern.search(repaired):
+            violations.append(label)
+            repaired = pattern.sub(_IDENTITY_BOUNDARY_REPLACEMENT, repaired)
+    if violations:
+        diagnostics["identity_boundary_applied"] = True
+        diagnostics["identity_boundary_violations"] = violations
+    return repaired, diagnostics
+
+
+def _apply_interaction_load_guard(
+    text: str,
+    *,
+    verb_name: str | None,
+    user_message: str | None,
+) -> tuple[str, dict[str, Any]]:
+    diagnostics: dict[str, Any] = {
+        "interaction_load_guard_applied": False,
+        "interaction_load_violations": [],
+    }
+    if str(verb_name or "").strip().lower() != "chat_general":
+        return text, diagnostics
+    user = str(user_message or "").strip()
+    candidate = str(text or "")
+    if not user or not candidate.strip():
+        return text, diagnostics
+    if not _SOMATIC_USER_LOAD_RE.search(user):
+        return text, diagnostics
+    if not _INTERACTION_DEMAND_RE.search(candidate):
+        return text, diagnostics
+    violations: list[str] = []
+    repaired = candidate
+    for pattern, _label in _INTERACTION_DEMAND_REPLACEMENTS:
+        for match in pattern.finditer(repaired):
+            violations.append(match.group(0))
+        repaired = pattern.sub(_label, repaired)
+    for match in _INTERACTION_DEMAND_RE.finditer(repaired):
+        phrase = match.group(0)
+        if phrase not in violations:
+            violations.append(phrase)
+    repaired = _INTERACTION_DEMAND_RE.sub("", repaired)
+    repaired = re.sub(r"\s{2,}", " ", repaired)
+    repaired = re.sub(r"\s+([,.!?])", r"\1", repaired).strip()
+    if violations and not re.search(r"\b(no rush|when you['\u2019]re steady|parked|rest|go easy)\b", repaired, re.I):
+        repaired = f"{repaired.rstrip()} Go easy — reply when you're steady.".strip()
+    if violations:
+        diagnostics["interaction_load_guard_applied"] = True
+        diagnostics["interaction_load_violations"] = violations
+    return repaired, diagnostics
+
+
 def _provider_completion_meta(payload: dict[str, Any]) -> dict[str, Any]:
     raw = payload.get("raw") if isinstance(payload.get("raw"), dict) else {}
     usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
@@ -290,6 +386,8 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
                     diagnostics["truncation_detected"] = True
                     if final_text and final_text[-1] not in ".!?…":
                         final_text = f"{final_text}…"
+                final_text, identity_diag = _apply_identity_boundary_guard(final_text, verb_name=verb_name)
+                diagnostics.update(identity_diag)
                 diagnostics["result_len"] = len(final_text)
                 diagnostics["raw_len"] = pre_len
                 diagnostics["clean_len"] = post_len
@@ -978,6 +1076,17 @@ class PlanRunner:
                 break
 
         final_text, final_text_diag = _extract_final_text(step_results, verb_name=plan.verb_name)
+        if plan.verb_name == "chat_general" and isinstance(final_text, str) and final_text.strip():
+            user_message = plan_ctx_latest_user_text(ctx)
+            final_text, load_diag = _apply_interaction_load_guard(
+                final_text,
+                verb_name=plan.verb_name,
+                user_message=user_message,
+            )
+            final_text_diag.update(load_diag)
+            if load_diag.get("interaction_load_guard_applied"):
+                final_text_diag["result_len"] = len(final_text)
+                final_text_diag["final_len"] = len(final_text)
         logger.info(
             "final_text_assembly corr_id=%s verb=%s source_service=%s source_field=%s think_tags_detected=%s think_full_block_detected=%s think_close_tag_only_detected=%s think_stripping_applied=%s planning_stripping_applied=%s planning_lines_dropped=%s planning_candidate_rejected=%s planning_candidate_rejection_reason=%s provider_has_reasoning_content=%s provider_has_reasoning_trace=%s provider_reasoning_available=%s inline_think_extracted=%s provider_completion_tokens=%s provider_finish_reason=%s truncation_detected=%s structured_output_sanitized=%s structured_output_rejected=%s structured_json_extraction_attempted=%s candidates=%s rejected_candidates=%s candidate_fields_considered=%s raw_len=%s clean_len=%s final_len=%s result_len=%s",
             correlation_id,

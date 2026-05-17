@@ -1,6 +1,15 @@
 from __future__ import annotations
 
-from app.router import _extract_final_text, _extract_reasoning_payload, _should_fail_empty_runtime_skill_output
+import pytest
+
+from app.recall_utils import plan_ctx_latest_user_text
+from app.router import (
+    _apply_identity_boundary_guard,
+    _apply_interaction_load_guard,
+    _extract_final_text,
+    _extract_reasoning_payload,
+    _should_fail_empty_runtime_skill_output,
+)
 from orion.schemas.cortex.schemas import StepExecutionResult
 
 
@@ -237,6 +246,81 @@ def test_runtime_skill_extracts_terminal_text_from_final_text_field() -> None:
     assert final_text == "{\"dry_run\":true,\"matched_container_count\":4}"
     assert diag["source_field"] == "final_text"
     assert diag["result_len"] > 0
+
+
+def test_chat_general_identity_boundary_guard_repairs_user_role_inversion() -> None:
+    final_text, diag = _extract_final_text([
+        _step({"content": "You're Oríon. I'm here, and I'm not going anywhere."})
+    ], verb_name="chat_general")
+    assert final_text.startswith("I'm Oríon.")
+    assert diag["identity_boundary_applied"] is True
+    assert "You're Oríon" in diag["identity_boundary_violations"]
+
+
+@pytest.mark.parametrize(
+    ("raw", "violation"),
+    [
+        ("You are Oríon — steady.", "You are Oríon"),
+        ("You’re Oríon here.", "You're Oríon"),
+        ("youre orion, thanks.", "youre orion"),
+        ("Your name is Orion, right?", "your name is Orion"),
+    ],
+)
+def test_identity_boundary_guard_repairs_variants(raw: str, violation: str) -> None:
+    repaired, diag = _apply_identity_boundary_guard(raw, verb_name="chat_general")
+    assert repaired.startswith("I'm Oríon")
+    assert diag["identity_boundary_applied"] is True
+    assert violation in diag["identity_boundary_violations"]
+
+
+def test_identity_boundary_guard_skips_non_chat_general() -> None:
+    raw = "You're Oríon."
+    repaired, diag = _apply_identity_boundary_guard(raw, verb_name="chat_quick")
+    assert repaired == raw
+    assert diag["identity_boundary_applied"] is False
+
+
+def test_interaction_load_guard_reduces_intimacy_when_user_somatic_distress() -> None:
+    repaired, diag = _apply_interaction_load_guard(
+        "You're Oríon. I'm here, and I'm not going anywhere.",
+        verb_name="chat_general",
+        user_message="I'm dizzy typing in a moving car",
+    )
+    assert "not going anywhere" not in repaired.lower()
+    assert diag["interaction_load_guard_applied"] is True
+    assert diag["interaction_load_violations"]
+
+
+def test_interaction_load_guard_uses_plan_ctx_latest_user_text_for_raw_only_somatic() -> None:
+    ctx = {"raw_user_text": "I'm dizzy typing in a moving car", "user_message": ""}
+    repaired, diag = _apply_interaction_load_guard(
+        "I'm here, and I'm not going anywhere.",
+        verb_name="chat_general",
+        user_message=plan_ctx_latest_user_text(ctx),
+    )
+    assert diag["interaction_load_guard_applied"] is True
+    assert "not going anywhere" not in repaired.lower()
+
+
+def test_interaction_load_guard_skips_in_car_without_distress() -> None:
+    repaired, diag = _apply_interaction_load_guard(
+        "I'm here, and I'm not going anywhere.",
+        verb_name="chat_general",
+        user_message="I left my laptop in the car",
+    )
+    assert repaired == "I'm here, and I'm not going anywhere."
+    assert diag["interaction_load_guard_applied"] is False
+
+
+def test_interaction_load_guard_skips_without_somatic_user_signal() -> None:
+    raw = "I'm here, and I'm not going anywhere."
+    repaired, diag = _apply_interaction_load_guard(
+        raw,
+        verb_name="chat_general",
+        user_message="quick question about GPUs",
+    )
+    assert repaired == raw
+    assert diag["interaction_load_guard_applied"] is False
 
 
 def test_runtime_skill_falls_back_to_status_and_error_when_terminal_text_missing() -> None:

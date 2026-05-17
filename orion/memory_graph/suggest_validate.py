@@ -104,8 +104,10 @@ def validate_for_escalation(
         if not isinstance(ent, dict):
             errors.append("entity_not_object")
             continue
-        kind = str(ent.get("entityKind") or "")
-        if kind and kind not in ENTITY_KINDS:
+        kind = str(ent.get("entityKind") or "").strip()
+        if not kind:
+            errors.append("entity_missing_entityKind")
+        elif kind not in ENTITY_KINDS:
             errors.append(f"unknown_entityKind:{kind}")
         for key in ("id", "label", "entityKind", "surfaceForms"):
             if key not in ent:
@@ -126,8 +128,10 @@ def validate_for_escalation(
         if not isinstance(edge, dict):
             errors.append("edge_not_object")
             continue
-        pred = str(edge.get("p") or "")
-        if pred and pred not in ALLOWED_PREDICATES:
+        pred = str(edge.get("p") or "").strip()
+        if not pred:
+            errors.append("edge_missing_predicate")
+        elif pred not in ALLOWED_PREDICATES:
             errors.append(f"unknown_predicate:{pred}")
         conf = edge.get("confidence")
         if conf is not None:

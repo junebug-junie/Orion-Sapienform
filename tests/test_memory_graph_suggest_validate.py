@@ -29,6 +29,32 @@ def test_unknown_predicate_escalates() -> None:
     assert any("unknown_predicate" in e for e in errors)
 
 
+def test_empty_predicate_escalates() -> None:
+    data = _fixture()
+    data["edges"][0]["p"] = ""
+    should, errors = validate_for_escalation(data, utterance_text="Joey")
+    assert should is True
+    assert "edge_missing_predicate" in errors
+
+
+def test_invalid_confidence_escalates() -> None:
+    data = _fixture()
+    data["edges"][0]["confidence"] = 1.5
+    should, errors = validate_for_escalation(data, utterance_text="Joey")
+    assert should is True
+    assert "invalid_confidence" in errors
+
+
+def test_low_confidence_does_not_escalate() -> None:
+    data = _fixture()
+    data["edges"][0]["confidence"] = 0.1
+    should, errors = validate_for_escalation(
+        data,
+        utterance_text="Joey angered Juniper last week about cats",
+    )
+    assert should is False
+
+
 def test_missing_entities_when_subjects_expected_escalates() -> None:
     data = _fixture()
     data["entities"] = []

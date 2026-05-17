@@ -355,11 +355,18 @@ async def suggest_with_escalation(
             out_ok["diagnostic_raw"] = text
         return out_ok
 
+    all_errors: List[str] = []
+    for att in attempts_meta:
+        for err in att.get("validation_errors") or []:
+            if err and err not in all_errors:
+                all_errors.append(str(err))
     return {
         "ok": False,
         "error": "memory_graph_suggest_failed",
         "attempts": attempts_meta,
         "route_used": route_used,
+        "grounding_included": include_grounding,
+        "validation_errors": all_errors,
     }
 
 

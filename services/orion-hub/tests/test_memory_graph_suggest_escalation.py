@@ -246,6 +246,37 @@ def test_brain_success_after_quick_failure_returns_brain_draft_and_metadata(
     assert out["attempts"][1].get("phase") == "success"
 
 
+def test_quick_timeout_escalates_to_brain(hub_settings, fixture_draft_text) -> None:
+    _ensure_hub_scripts_import_path()
+    from scripts.memory_graph_suggest import suggest_with_escalation
+
+    calls: List[Optional[str]] = []
+
+    async def chat(req, correlation_id=None):
+        calls.append((req.options or {}).get("llm_route"))
+        if calls[-1] == "quick":
+            raise TimeoutError("simulated quick timeout")
+        return _client_result(fixture_draft_text)
+
+    client = AsyncMock()
+    client.chat.side_effect = chat
+
+    out = asyncio.run(
+        suggest_with_escalation(
+            cortex_client=client,
+            payload=_msg_payload("Joey angered Juniper"),
+            session_id="sid-timeout",
+            user_id=None,
+            settings=hub_settings,
+            mutation_context={},
+        )
+    )
+    assert out["ok"] is True
+    assert out["route_used"] == "brain"
+    assert calls == ["quick", None]
+    assert "hub_wait_for_timeout" in str(out["attempts"][0].get("validation_errors", []))
+
+
 def test_both_fail_returns_error_and_attempts(hub_settings) -> None:
     _ensure_hub_scripts_import_path()
     from scripts.memory_graph_suggest import suggest_with_escalation

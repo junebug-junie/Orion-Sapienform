@@ -646,6 +646,16 @@ async def publish_mind_run_artifact(
         request_summary_jsonb=summary,
         created_at_utc=datetime.now(timezone.utc),
     )
+    logger.info(
+        "mind_run_artifact_publish mind_run_id=%s correlation_id=%s session_id=%s trigger=%s ok=%s error_code=%s router_profile_id=%s",
+        artifact.mind_run_id,
+        correlation_id,
+        artifact.session_id,
+        artifact.trigger,
+        artifact.ok,
+        artifact.error_code,
+        artifact.router_profile_id,
+    )
     env = BaseEnvelope(
         kind=MIND_ARTIFACT_KIND,
         source=source,

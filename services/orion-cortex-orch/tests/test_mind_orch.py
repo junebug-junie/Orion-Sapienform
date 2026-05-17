@@ -474,3 +474,52 @@ def test_build_mind_run_request_ignores_empty_inline_projection_shell(monkeypatc
     facets = (req.snapshot_inputs or {}).get("facets") or {}
     assert facets.get("cognitive_projection", {}).get("projection_id") == "cog-proj-built"
     assert facets.get("cognitive_projection", {}).get("item_count") == 1
+
+
+def test_publish_mind_run_artifact_includes_request_session_id(monkeypatch) -> None:
+    _orch_prep()
+    from datetime import datetime, timezone
+
+    from app.mind_runtime import publish_mind_run_artifact
+    from orion.mind.v1 import MindRunRequestV1, MindRunResultV1
+    from orion.core.bus.bus_schemas import ServiceRef
+
+    published: list[dict] = []
+
+    class _Bus:
+        async def publish(self, channel: str, env) -> None:
+            published.append({"channel": channel, "payload": env.payload})
+
+    mind_res = MindRunResultV1(mind_run_id=uuid4(), ok=True)
+    corr = "550e8400-e29b-41d4-a716-446655440099"
+    mind_req = MindRunRequestV1.model_validate(
+        {
+            "schema_id": "mind.run.request.v1",
+            "correlation_id": corr,
+            "trigger": "user_turn",
+            "policy": {"router_profile_id": "default"},
+            "snapshot_inputs": {},
+        }
+    )
+    client = _client_request()
+    client.context.session_id = "sess-from-request"
+
+    import asyncio
+
+    asyncio.run(
+        publish_mind_run_artifact(
+            _Bus(),
+            source=ServiceRef(service="orion-cortex-orch", instance="test"),
+            correlation_id=corr,
+            causality_chain=[],
+            trace={},
+            client_request=client,
+            mind_req=mind_req,
+            mind_res=mind_res,
+        )
+    )
+    assert published
+    artifact = published[0]["payload"]
+    assert artifact["session_id"] == "sess-from-request"
+    assert artifact["correlation_id"] == corr
+    assert datetime.fromisoformat(artifact["created_at_utc"].replace("Z", "+00:00")).tzinfo is not None

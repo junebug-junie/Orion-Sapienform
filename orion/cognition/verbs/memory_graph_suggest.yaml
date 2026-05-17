@@ -1,7 +1,7 @@
 name: memory_graph_suggest
 label: Memory graph suggest (brain draft JSON)
 description: >
-  Produces Appendix C JSON only for operator memory graph annotation (ontology orionmem-2026-05).
+  Produces memory-graph suggest JSON only for operator annotation (ontology orionmem-2026-05).
 
 category: ExecutiveControl
 priority: medium

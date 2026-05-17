@@ -6,22 +6,26 @@
       "id": "urn:uuid:a0000001-0000-4000-8000-000000000001",
       "label": "Joey",
       "entityKind": "animal",
+      "surfaceForms": ["Joey"],
       "generalizes_to": "urn:uuid:a0000002-0000-4000-8000-000000000002"
     },
     {
       "id": "urn:uuid:a0000002-0000-4000-8000-000000000002",
       "label": "this breed",
-      "entityKind": "breed"
+      "entityKind": "breed",
+      "surfaceForms": ["breed", "this breed"]
     },
     {
       "id": "urn:uuid:a0000003-0000-4000-8000-000000000003",
       "label": "cats",
-      "entityKind": "collective"
+      "entityKind": "collective",
+      "surfaceForms": ["cats"]
     },
     {
       "id": "urn:uuid:a0000004-0000-4000-8000-000000000004",
       "label": "Juniper",
-      "entityKind": "person"
+      "entityKind": "person",
+      "surfaceForms": ["Juniper", "me"]
     }
   ],
   "situations": [
@@ -31,7 +35,7 @@
       "utterance_ids": ["t42"],
       "stimulus_entity_id": "urn:uuid:a0000001-0000-4000-8000-000000000001",
       "about_entity_ids": ["urn:uuid:a0000003-0000-4000-8000-000000000003"],
-      "target_of_negative_affect_ids": ["urn:uuid:a0000002-0000-4000-8000-000000000002"],
+      "target_entity_ids": ["urn:uuid:a0000002-0000-4000-8000-000000000002"],
       "affectLabel": "annoyance",
       "timeQualitative": "last_week",
       "occurredAt": "2026-04-25",

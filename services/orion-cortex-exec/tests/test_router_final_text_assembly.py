@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.recall_utils import plan_ctx_latest_user_text
 from app.router import (
     _apply_identity_boundary_guard,
     _apply_interaction_load_guard,
@@ -288,6 +289,27 @@ def test_interaction_load_guard_reduces_intimacy_when_user_somatic_distress() ->
     assert "not going anywhere" not in repaired.lower()
     assert diag["interaction_load_guard_applied"] is True
     assert diag["interaction_load_violations"]
+
+
+def test_interaction_load_guard_uses_plan_ctx_latest_user_text_for_raw_only_somatic() -> None:
+    ctx = {"raw_user_text": "I'm dizzy typing in a moving car", "user_message": ""}
+    repaired, diag = _apply_interaction_load_guard(
+        "I'm here, and I'm not going anywhere.",
+        verb_name="chat_general",
+        user_message=plan_ctx_latest_user_text(ctx),
+    )
+    assert diag["interaction_load_guard_applied"] is True
+    assert "not going anywhere" not in repaired.lower()
+
+
+def test_interaction_load_guard_skips_in_car_without_distress() -> None:
+    repaired, diag = _apply_interaction_load_guard(
+        "I'm here, and I'm not going anywhere.",
+        verb_name="chat_general",
+        user_message="I left my laptop in the car",
+    )
+    assert repaired == "I'm here, and I'm not going anywhere."
+    assert diag["interaction_load_guard_applied"] is False
 
 
 def test_interaction_load_guard_skips_without_somatic_user_signal() -> None:

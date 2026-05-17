@@ -138,18 +138,18 @@ _ORION_NAME = r"or[ií\u00ed]on"
 _IDENTITY_BOUNDARY_REPAIRS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(rf"\byou['\u2019]re\s+{_ORION_NAME}\b", re.IGNORECASE), "You're Oríon"),
     (re.compile(rf"\byou\s+are\s+{_ORION_NAME}\b", re.IGNORECASE), "You are Oríon"),
-    (re.compile(r"\byoure\s+orion\b", re.IGNORECASE), "youre orion"),
+    (re.compile(rf"\byoure\s+{_ORION_NAME}\b", re.IGNORECASE), "youre orion"),
     (re.compile(rf"\byour\s+name\s+is\s+{_ORION_NAME}\b", re.IGNORECASE), "your name is Orion"),
 )
 _IDENTITY_BOUNDARY_REPLACEMENT = "I'm Oríon"
 
 _SOMATIC_USER_LOAD_RE = re.compile(
-    r"\b(dizzy|dizziness|nauseous|nausea|carsick|motion[- ]sick|moving car|in (?:a|the) car|while driving|hard to type|typing in)\b",
+    r"\b(dizzy|dizziness|nauseous|nausea|carsick|motion[- ]sick|moving car|while driving|hard to type)\b",
     re.IGNORECASE,
 )
 _INTERACTION_DEMAND_RE = re.compile(
     r"(?:not going anywhere|tell me (?:more|what)|what(?:'s| is) on your mind|keep (?:talking|going)|"
-    r"want to (?:talk|chat|continue)|share more|i['\u2019]m here,?\s+and)",
+    r"want to (?:talk|chat|continue)|share more)",
     re.IGNORECASE,
 )
 _INTERACTION_DEMAND_REPLACEMENTS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -1077,7 +1077,7 @@ class PlanRunner:
 
         final_text, final_text_diag = _extract_final_text(step_results, verb_name=plan.verb_name)
         if plan.verb_name == "chat_general" and isinstance(final_text, str) and final_text.strip():
-            user_message = str(ctx.get("user_message") or ctx.get("latest_user_text") or "")
+            user_message = plan_ctx_latest_user_text(ctx)
             final_text, load_diag = _apply_interaction_load_guard(
                 final_text,
                 verb_name=plan.verb_name,

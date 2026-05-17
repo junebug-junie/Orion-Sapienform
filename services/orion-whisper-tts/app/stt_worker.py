@@ -8,6 +8,7 @@ import logging
 from orion.core.bus.async_service import OrionBusAsync
 from orion.schemas.tts import STTRequestPayload, STTResultPayload
 
+from .settings import settings
 from .stt import STTEngine
 
 logger = logging.getLogger("orion-whisper-tts.stt")
@@ -58,7 +59,10 @@ async def stt_listener_worker(bus: OrionBusAsync) -> None:
                     engine = get_stt_engine()
                     return engine.transcribe(request.audio_b64, language=request.language or "en")
 
-                text = await loop.run_in_executor(None, _transcribe)
+                text = await asyncio.wait_for(
+                    loop.run_in_executor(None, _transcribe),
+                    timeout=float(settings.whisper_tts_stt_timeout_sec),
+                )
 
                 result = STTResultPayload(text=text)
                 await bus.publish(result_channel, result)

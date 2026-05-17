@@ -1003,16 +1003,50 @@ loadDismissedIds();
     return "No Mind runs for this correlation yet.";
   }
 
+  function mindSessionIdFromMeta(turnMeta) {
+    if (!turnMeta || typeof turnMeta !== "object") return null;
+    const sid = turnMeta.sessionId || turnMeta.session_id;
+    return sid ? String(sid).trim() : null;
+  }
+
+  function mindRunsApiHeaders(turnMeta = null) {
+    const headers = {};
+    if (orionSessionId) headers["X-Orion-Session-Id"] = orionSessionId;
+    return headers;
+  }
+
+  function mindRunsApiParams(correlationId, turnMeta = null) {
+    const params = new URLSearchParams({ correlation_id: String(correlationId), limit: "200" });
+    const contextSessionId = mindSessionIdFromMeta(turnMeta);
+    if (contextSessionId && contextSessionId !== orionSessionId) {
+      params.set("context_session_id", contextSessionId);
+    }
+    return params;
+  }
+
+  function mindRunsEmptyDiagnostics(correlationId, turnMeta = null) {
+    const contextSessionId = mindSessionIdFromMeta(turnMeta);
+    const lines = [
+      `Correlation: ${String(correlationId)}`,
+      `Active session: ${orionSessionId || "(none)"}`,
+    ];
+    if (contextSessionId) lines.push(`Message session: ${contextSessionId}`);
+    if (contextSessionId && orionSessionId && contextSessionId !== orionSessionId) {
+      lines.push("Session mismatch: Mind runs may be stored under the message session.");
+    }
+    return lines.join("\n");
+  }
+
   function openMindRunsModal(correlationId, triggerEl = null, turnMeta = null) {
     if (!mindRunsModal || !correlationId) return;
     mindModalLastFocus = triggerEl && typeof triggerEl.focus === "function" ? triggerEl : document.activeElement;
     mindRunsModal.classList.remove("hidden");
     mindRunsModal.setAttribute("aria-hidden", "false");
     if (mindRunsModalMeta) {
-      mindRunsModalMeta.textContent = `Correlation: ${String(correlationId)}`;
+      mindRunsModalMeta.textContent = mindRunsEmptyDiagnostics(correlationId, turnMeta);
     }
     if (mindRunsModalDetails) {
-      mindRunsModalDetails.textContent = "Select a run.";
+      mindRunsModalDetails.textContent = "Loading runs…";
     }
     enableMindModalFocusTrap();
     refreshMindRunsForCorrelation(correlationId, turnMeta);
@@ -1134,9 +1168,18 @@ loadDismissedIds();
     mindRunsModalDetails.innerHTML = parts.join("");
   }
 
-  async function fetchMindRunDetail(mindRunId) {
-    const headers = orionSessionId ? { 'X-Orion-Session-Id': orionSessionId } : {};
-    const response = await fetch(`${API_BASE_URL}/api/mind/runs/${encodeURIComponent(mindRunId)}`, { headers });
+  async function fetchMindRunDetail(mindRunId, turnMeta = null) {
+    const headers = mindRunsApiHeaders(turnMeta);
+    const params = new URLSearchParams();
+    const contextSessionId = mindSessionIdFromMeta(turnMeta);
+    if (contextSessionId && contextSessionId !== orionSessionId) {
+      params.set("context_session_id", contextSessionId);
+    }
+    const qs = params.toString();
+    const response = await fetch(
+      `${API_BASE_URL}/api/mind/runs/${encodeURIComponent(mindRunId)}${qs ? `?${qs}` : ""}`,
+      { headers },
+    );
     if (!response.ok) {
       const detail = await response.text();
       throw new Error(`status ${response.status} ${detail || ""}`.trim());
@@ -1154,19 +1197,23 @@ loadDismissedIds();
     mindRunsModalStatus.textContent = "Loading runs...";
     mindRunsModalList.innerHTML = "";
     try {
-      const params = new URLSearchParams({ correlation_id: correlationId, limit: "200" });
-      const headers = orionSessionId ? { 'X-Orion-Session-Id': orionSessionId } : {};
+      const params = mindRunsApiParams(correlationId, turnMeta);
+      const headers = mindRunsApiHeaders(turnMeta);
       const response = await fetch(`${API_BASE_URL}/api/mind/runs?${params.toString()}`, { headers });
       if (!response.ok) {
         const detail = await response.text();
-        throw new Error(`status ${response.status} ${detail || ""}`.trim());
+        throw new Error(`HTTP ${response.status}: ${detail || "(no body)"}`.trim());
       }
       const rows = await response.json();
       if (!Array.isArray(rows) || rows.length === 0) {
-        mindRunsModalStatus.textContent = resolveMindRunsEmptyStatus(turnMeta);
+        const emptyStatus = resolveMindRunsEmptyStatus(turnMeta);
+        mindRunsModalStatus.textContent = emptyStatus;
         mindRunsModalList.innerHTML = '<div class="text-xs text-gray-500">No runs yet.</div>';
         if (mindRunsModalDetails) {
-          mindRunsModalDetails.textContent = "Select a run.";
+          mindRunsModalDetails.textContent = `${emptyStatus}\n\n${mindRunsEmptyDiagnostics(correlationId, turnMeta)}`;
+        }
+        if (mindRunsModalMeta) {
+          mindRunsModalMeta.textContent = mindRunsEmptyDiagnostics(correlationId, turnMeta);
         }
         return;
       }
@@ -1196,7 +1243,7 @@ loadDismissedIds();
           }
           if (mindRunsModalStatus) mindRunsModalStatus.textContent = `Loading run ${row.mind_run_id}...`;
           try {
-            const detail = await fetchMindRunDetail(row.mind_run_id);
+            const detail = await fetchMindRunDetail(row.mind_run_id, turnMeta);
             renderMindRunDetails(detail);
             if (mindRunsModalStatus) mindRunsModalStatus.textContent = `Loaded run ${row.mind_run_id}.`;
           } catch (err) {
@@ -1209,7 +1256,7 @@ loadDismissedIds();
       if (firstRun && firstRun.mind_run_id) {
         if (mindRunsModalStatus) mindRunsModalStatus.textContent = `Loading run ${firstRun.mind_run_id}...`;
         try {
-          const detail = await fetchMindRunDetail(firstRun.mind_run_id);
+          const detail = await fetchMindRunDetail(firstRun.mind_run_id, turnMeta);
           renderMindRunDetails(detail);
           if (mindRunsModalStatus) mindRunsModalStatus.textContent = `Loaded ${rows.length} run(s).`;
         } catch (err) {
@@ -1224,6 +1271,9 @@ loadDismissedIds();
     } catch (err) {
       mindRunsModalStatus.textContent = `Failed to load runs: ${String(err.message || err)}`;
       mindRunsModalList.innerHTML = '<div class="text-xs text-rose-300">Could not load runs.</div>';
+      if (mindRunsModalDetails) {
+        mindRunsModalDetails.textContent = `${String(err.message || err)}\n\n${mindRunsEmptyDiagnostics(correlationId, turnMeta)}`;
+      }
     }
   }
 
@@ -1367,7 +1417,12 @@ loadDismissedIds();
       if (mindSummaryTotal) mindSummaryTotal.textContent = String(aggregates.total_runs || 0);
       if (mindSummaryOk) mindSummaryOk.textContent = String(aggregates.ok_count || 0);
       if (mindSummaryFailed) mindSummaryFailed.textContent = String(aggregates.failed_count || 0);
-      mindStatus.textContent = `Loaded ${Array.isArray(payload.items) ? payload.items.length : 0} run(s).`;
+      const itemCount = Array.isArray(payload.items) ? payload.items.length : 0;
+      if (itemCount === 0 && payload.diagnostics && payload.diagnostics.hint) {
+        mindStatus.textContent = `${payload.diagnostics.hint} (session ${payload.diagnostics.session_id || orionSessionId || "?"})`;
+      } else {
+        mindStatus.textContent = `Loaded ${itemCount} run(s).`;
+      }
     } catch (error) {
       renderMindRows([]);
       mindStatus.textContent = `Failed to load Mind runs: ${error.message || error}`;
@@ -6315,6 +6370,9 @@ loadDismissedIds();
   function appendMessage(sender, text, colorClass = 'text-white') {
     if (!conversationDiv) return;
     const meta = arguments.length > 3 && arguments[3] && typeof arguments[3] === 'object' ? arguments[3] : {};
+    if (orionSessionId && !meta.sessionId && !meta.session_id) {
+      meta.sessionId = orionSessionId;
+    }
     if (sender === 'Orion') {
       const corr = memoryGraphCorrelationBase(meta);
       if (corr) backfillLatestUserTurnIdForGraph(conversationDiv, corr);

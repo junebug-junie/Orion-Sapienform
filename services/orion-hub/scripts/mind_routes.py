@@ -27,6 +27,20 @@ def _pool(request: Request):
     return pool
 
 
+def _session_visibility(row_session_id: str | None, current_session_id: str) -> str:
+    if row_session_id is None:
+        return "session_null_fallback"
+    if row_session_id == current_session_id:
+        return "session_match"
+    return "session_other"
+
+
+def _mind_run_row_dict(row: Any, *, current_session_id: str) -> dict[str, Any]:
+    out = dict(row)
+    out["session_visibility"] = _session_visibility(out.get("session_id"), current_session_id)
+    return out
+
+
 @router.get("/api/mind/runs/recent")
 async def list_recent_mind_runs(
     request: Request,
@@ -150,8 +164,19 @@ async def list_recent_mind_runs(
             router_profile_id,
         )
 
-    return {
-        "items": [dict(r) for r in rows],
+    items = [dict(r) for r in rows]
+    diagnostics: dict[str, Any] | None = None
+    if not items:
+        diagnostics = {
+            "hint": (
+                "No Mind runs for current session. There may be runs under another or null session; "
+                "check DB/session or open Mind from the message that produced the run."
+            ),
+            "session_id": session_id,
+        }
+
+    payload: dict[str, Any] = {
+        "items": items,
         "next_cursor": None,
         "aggregates": {
             **dict(summary or {"total_runs": 0, "ok_count": 0, "failed_count": 0}),
@@ -160,10 +185,18 @@ async def list_recent_mind_runs(
             "time_buckets": [dict(r) for r in bucket_counts],
         },
     }
+    if diagnostics is not None:
+        payload["diagnostics"] = diagnostics
+    return payload
 
 
 @router.get("/api/mind/runs/{mind_run_id}")
-async def get_mind_run(mind_run_id: str, request: Request, x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id")) -> dict[str, Any]:
+async def get_mind_run(
+    mind_run_id: str,
+    request: Request,
+    context_session_id: Optional[str] = Query(None, min_length=4, max_length=256),
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+) -> dict[str, Any]:
     session_id = await _need_session(x_orion_session_id)
     pool = _pool(request)
     async with pool.acquire() as conn:
@@ -172,14 +205,21 @@ async def get_mind_run(mind_run_id: str, request: Request, x_orion_session_id: O
             SELECT mind_run_id, correlation_id, session_id, trigger, ok, error_code,
                    snapshot_hash, router_profile_id, result_jsonb, request_summary_jsonb,
                    redaction_profile_id, created_at_utc
-            FROM mind_runs WHERE mind_run_id = $1 AND session_id = $2
+            FROM mind_runs
+            WHERE mind_run_id = $1
+              AND (
+                session_id = $2
+                OR session_id IS NULL
+                OR ($3::text IS NOT NULL AND session_id = $3)
+              )
             """,
             mind_run_id,
             session_id,
+            context_session_id,
         )
     if row is None:
         raise HTTPException(status_code=404, detail="mind_run_not_found")
-    return dict(row)
+    return _mind_run_row_dict(row, current_session_id=session_id)
 
 
 @router.get("/api/mind/runs")
@@ -187,6 +227,7 @@ async def list_mind_runs(
     request: Request,
     correlation_id: str = Query(..., min_length=4),
     limit: int = Query(50, ge=1, le=200),
+    context_session_id: Optional[str] = Query(None, min_length=4, max_length=256),
     x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
 ) -> list[dict[str, Any]]:
     session_id = await _need_session(x_orion_session_id)
@@ -197,12 +238,19 @@ async def list_mind_runs(
             SELECT mind_run_id, correlation_id, session_id, trigger, ok, error_code,
                    snapshot_hash, router_profile_id, result_jsonb, request_summary_jsonb,
                    redaction_profile_id, created_at_utc
-            FROM mind_runs WHERE correlation_id = $1 AND session_id = $2
+            FROM mind_runs
+            WHERE correlation_id = $1
+              AND (
+                session_id = $2
+                OR session_id IS NULL
+                OR ($4::text IS NOT NULL AND session_id = $4)
+              )
             ORDER BY created_at_utc DESC
             LIMIT $3
             """,
             correlation_id,
             session_id,
             limit,
+            context_session_id,
         )
-    return [dict(r) for r in rows]
+    return [_mind_run_row_dict(r, current_session_id=session_id) for r in rows]

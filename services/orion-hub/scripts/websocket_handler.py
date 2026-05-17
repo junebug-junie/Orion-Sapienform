@@ -544,18 +544,27 @@ async def websocket_endpoint(websocket: WebSocket):
                             settings.HUB_STT_TIMEOUT_SEC,
                         )
                         await websocket.send_json(
-                            await _with_biometrics({"error": "Transcription timed out"}, cache=biometrics_cache)
+                            await _with_biometrics(
+                                {"error": "Transcription timed out", "state": "idle"},
+                                cache=biometrics_cache,
+                            )
                         )
                         continue
                     except Exception as e:
                         logger.error("voice.stt.error session_id=%s err=%s", session_id, e)
                         await websocket.send_json(
-                            await _with_biometrics({"error": "Transcription failed"}, cache=biometrics_cache)
+                            await _with_biometrics(
+                                {"error": "Transcription failed", "state": "idle"},
+                                cache=biometrics_cache,
+                            )
                         )
                         continue
                 else:
                     await websocket.send_json(
-                        await _with_biometrics({"error": "STT service unavailable"}, cache=biometrics_cache)
+                        await _with_biometrics(
+                            {"error": "STT service unavailable", "state": "idle"},
+                            cache=biometrics_cache,
+                        )
                     )
                     continue
 
@@ -573,7 +582,10 @@ async def websocket_endpoint(websocket: WebSocket):
             # 2. Chat Execution
             if not cortex_client:
                 await websocket.send_json(
-                    await _with_biometrics({"error": "Cortex disconnected (Bus offline)"}, cache=biometrics_cache)
+                    await _with_biometrics(
+                        {"error": "Cortex disconnected (Bus offline)", "state": "idle"},
+                        cache=biometrics_cache,
+                    )
                 )
                 continue
 
@@ -889,9 +901,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         or trace_verb
                     )
             except Exception as e:
-                logger.error(f"Chat RPC Error: {e}")
+                logger.error("voice.chat.error corr=%s session_id=%s err=%s", trace_id, session_id, e)
                 err_payload = await _with_biometrics(
-                    {"error": f"Chat failed: {str(e)}"}, cache=biometrics_cache
+                    {"error": f"Chat failed: {str(e)}", "state": "idle"},
+                    cache=biometrics_cache,
                 )
                 if not await _safe_ws_send_json(websocket, err_payload):
                     logger.info("chat_rpc_error_not_delivered_ws_closed corr=%s", trace_id)

@@ -9416,8 +9416,6 @@ loadDismissedIds();
       await loadPresenceContext();
     });
   }
-  loadPresenceContext();
-
   async function submitExplicitChatText(text, opts = {}) {
     const value = String(text || '').trim();
     if (!value) return;
@@ -9893,6 +9891,7 @@ loadDismissedIds();
   (async () => {
       // 1. Session
       await initSession();
+      await loadPresenceContext();
       // 2. Library (Safe)
       await loadCognitionLibrary();
       // 3. WS

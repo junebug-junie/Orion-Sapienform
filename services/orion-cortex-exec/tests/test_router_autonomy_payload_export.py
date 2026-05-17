@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock
 
-from app.router import PlanRunner, _autonomy_payload_from_ctx
+from app.router import PlanRunner, _autonomy_payload_from_ctx, _situation_grounding_metadata_from_ctx
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.schemas.cortex.schemas import ExecutionPlan, ExecutionStep, PlanExecutionArgs, PlanExecutionRequest, StepExecutionResult
 
@@ -339,6 +339,20 @@ def test_autonomy_payload_includes_v2_preview_and_delta() -> None:
     assert md["autonomy_state_v2_preview"]["dominant_drive"] == "coherence"
     assert len(md["autonomy_state_v2_preview"]["active_drives"]) <= 3
     assert md["autonomy_state_delta"]["confidence_delta"] == 0.1
+
+
+def test_situation_grounding_metadata_from_ctx() -> None:
+    md = _situation_grounding_metadata_from_ctx(
+        {
+            "presence_context": {"audience_mode": "kid_present"},
+            "situation_prompt_fragment": {"compact_text": "Presence: kid_present."},
+            "situation_brief": {"kind": "situation.brief.v1"},
+        }
+    )
+    assert md["presence_context_present"] is True
+    assert md["audience_mode"] == "kid_present"
+    assert md["situation_fragment_present"] is True
+    assert md["situation_brief"]["kind"] == "situation.brief.v1"
 
 
 def test_autonomy_payload_includes_turn_effect_when_present() -> None:

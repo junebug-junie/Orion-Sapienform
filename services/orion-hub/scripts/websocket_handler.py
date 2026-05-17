@@ -572,10 +572,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 turns=turns,
             )
             data = dict(data)
-            if "presence_context" not in data and presence_context_store:
-                stored_presence = presence_context_store.get(str(session_id or "anonymous"))
-                if stored_presence:
-                    data["presence_context"] = stored_presence
+            from scripts.presence_session import inject_session_presence
+
+            data = inject_session_presence(data, str(session_id or "anonymous"), presence_context_store)
             data["mutation_cognition_context"] = build_mutation_cognition_context()
             try:
                 chat_req, route_debug, use_recall = build_chat_request(

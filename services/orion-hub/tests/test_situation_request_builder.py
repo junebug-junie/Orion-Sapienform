@@ -32,3 +32,5 @@ def test_build_chat_request_includes_presence_metadata():
     assert req.metadata["surface_context"]["surface"] == "hub_desktop"
     assert req.metadata["browser_client_id"] == "browser-1"
     assert debug["mode"] == "brain"
+    assert debug["presence_context_present"] is True
+    assert debug["audience_mode"] == "kid_present"

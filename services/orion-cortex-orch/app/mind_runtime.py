@@ -592,12 +592,40 @@ def merge_mind_brief_into_plan_metadata(plan_request: PlanExecutionRequest, resu
         meta["mind_error_code"] = result.error_code
 
 
+def mind_http_base_url() -> str:
+    return (get_settings().orion_mind_base_url or "").rstrip("/")
+
+
+def log_mind_http_failure(
+    *,
+    correlation_id: str,
+    session_id: str | None,
+    trigger: str | None,
+    exc: BaseException,
+    base_url: str | None = None,
+) -> None:
+    configured = (base_url if base_url is not None else mind_http_base_url()) or "(unset)"
+    status_code: int | None = None
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+    logger.warning(
+        "mind_http_failed correlation_id=%s session_id=%s trigger=%s mind_base_url=%s exc_type=%s status_code=%s err=%s",
+        correlation_id,
+        session_id,
+        trigger,
+        configured,
+        type(exc).__name__,
+        status_code,
+        exc,
+    )
+
+
 async def call_orion_mind_http(req: MindRunRequestV1) -> MindRunResultV1:
-    s = get_settings()
-    base = (s.orion_mind_base_url or "").rstrip("/")
+    base = mind_http_base_url()
     if not base:
         raise RuntimeError("orion_mind_unconfigured")
     url = f"{base}/v1/mind/run"
+    s = get_settings()
     timeout_sec = float(s.orion_mind_timeout_sec)
     timeout = httpx.Timeout(
         connect=min(10.0, timeout_sec),
@@ -645,6 +673,16 @@ async def publish_mind_run_artifact(
         result_jsonb=mind_res.model_dump(mode="json"),
         request_summary_jsonb=summary,
         created_at_utc=datetime.now(timezone.utc),
+    )
+    logger.info(
+        "mind_run_artifact_publish mind_run_id=%s correlation_id=%s session_id=%s trigger=%s ok=%s error_code=%s router_profile_id=%s",
+        artifact.mind_run_id,
+        correlation_id,
+        artifact.session_id,
+        artifact.trigger,
+        artifact.ok,
+        artifact.error_code,
+        artifact.router_profile_id,
     )
     env = BaseEnvelope(
         kind=MIND_ARTIFACT_KIND,

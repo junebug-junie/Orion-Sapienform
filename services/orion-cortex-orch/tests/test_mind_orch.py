@@ -474,3 +474,132 @@ def test_build_mind_run_request_ignores_empty_inline_projection_shell(monkeypatc
     facets = (req.snapshot_inputs or {}).get("facets") or {}
     assert facets.get("cognitive_projection", {}).get("projection_id") == "cog-proj-built"
     assert facets.get("cognitive_projection", {}).get("item_count") == 1
+
+
+def test_publish_mind_run_artifact_includes_request_session_id(monkeypatch) -> None:
+    _orch_prep()
+    from datetime import datetime, timezone
+
+    from app.mind_runtime import publish_mind_run_artifact
+    from orion.mind.v1 import MindRunRequestV1, MindRunResultV1
+    from orion.core.bus.bus_schemas import ServiceRef
+
+    published: list[dict] = []
+
+    class _Bus:
+        async def publish(self, channel: str, env) -> None:
+            published.append({"channel": channel, "payload": env.payload})
+
+    mind_res = MindRunResultV1(mind_run_id=uuid4(), ok=True)
+    corr = "550e8400-e29b-41d4-a716-446655440099"
+    mind_req = MindRunRequestV1.model_validate(
+        {
+            "schema_id": "mind.run.request.v1",
+            "correlation_id": corr,
+            "trigger": "user_turn",
+            "policy": {"router_profile_id": "default"},
+            "snapshot_inputs": {},
+        }
+    )
+    client = _client_request()
+    client.context.session_id = "sess-from-request"
+
+    import asyncio
+
+    asyncio.run(
+        publish_mind_run_artifact(
+            _Bus(),
+            source=ServiceRef(service="orion-cortex-orch", instance="test"),
+            correlation_id=corr,
+            causality_chain=[],
+            trace={},
+            client_request=client,
+            mind_req=mind_req,
+            mind_res=mind_res,
+        )
+    )
+    assert published
+    artifact = published[0]["payload"]
+    assert artifact["session_id"] == "sess-from-request"
+    assert artifact["correlation_id"] == corr
+    assert datetime.fromisoformat(artifact["created_at_utc"].replace("Z", "+00:00")).tzinfo is not None
+
+
+def test_mind_http_base_url_from_settings(monkeypatch) -> None:
+    _orch_prep()
+    from app.mind_runtime import mind_http_base_url
+    from app.settings import get_settings
+
+    monkeypatch.setenv("ORION_MIND_BASE_URL", "http://orion-mind:6611")
+    get_settings.cache_clear()
+    assert mind_http_base_url() == "http://orion-mind:6611"
+
+
+def test_log_mind_http_failure_includes_endpoint_and_session(caplog) -> None:
+    _orch_prep()
+    import logging
+
+    from app.mind_runtime import log_mind_http_failure
+
+    caplog.set_level(logging.WARNING, logger="orion.cortex.orch.mind")
+    log_mind_http_failure(
+        correlation_id="550e8400-e29b-41d4-a716-446655440001",
+        session_id="sess-abc",
+        trigger="user_turn",
+        exc=ConnectionError("Temporary failure in name resolution"),
+        base_url="http://orion-athena-mind:6611",
+    )
+    assert any("mind_http_failed" in r.message for r in caplog.records)
+    assert any("orion-athena-mind:6611" in r.message for r in caplog.records)
+    assert any("sess-abc" in r.message for r in caplog.records)
+    assert any("user_turn" in r.message for r in caplog.records)
+
+
+def test_call_orion_mind_http_uses_configured_base_url(monkeypatch) -> None:
+    _orch_prep()
+    import asyncio
+
+    import httpx
+
+    from app.mind_runtime import call_orion_mind_http
+    from app.settings import get_settings
+    from orion.mind.v1 import MindRunRequestV1, MindRunResultV1
+
+    monkeypatch.setenv("ORION_MIND_BASE_URL", "http://orion-mind:6611")
+    get_settings.cache_clear()
+
+    captured: dict[str, str] = {}
+
+    class _Resp:
+        def __init__(self) -> None:
+            self.content = MindRunResultV1(mind_run_id=uuid4(), ok=True).model_dump_json().encode()
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self):
+            return MindRunResultV1.model_validate_json(self.content)
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url: str, json: dict):
+            captured["url"] = url
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: _Client())
+    req = MindRunRequestV1.model_validate(
+        {
+            "schema_id": "mind.run.request.v1",
+            "correlation_id": "550e8400-e29b-41d4-a716-446655440002",
+            "trigger": "user_turn",
+            "policy": {"router_profile_id": "default"},
+            "snapshot_inputs": {},
+        }
+    )
+    asyncio.run(call_orion_mind_http(req))
+    assert captured["url"] == "http://orion-mind:6611/v1/mind/run"

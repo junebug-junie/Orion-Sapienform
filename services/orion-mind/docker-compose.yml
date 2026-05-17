@@ -21,7 +21,10 @@ services:
       MIND_N_LOOPS_DEFAULT: ${MIND_N_LOOPS_DEFAULT:-1}
       MIND_ROUTER_PROFILES_PATH: ${MIND_ROUTER_PROFILES_PATH:-}
     networks:
-      - app-net
+      app-net:
+        aliases:
+          - orion-athena-mind
+          - orion-mind
     ports:
       - "${HOST_PORT:-6611}:${PORT:-6611}"
     healthcheck:

@@ -431,6 +431,26 @@ def _autonomy_state_preview(ctx: Dict[str, Any]) -> Dict[str, Any] | None:
     return preview
 
 
+def _situation_grounding_metadata_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    metadata: Dict[str, Any] = {}
+    if isinstance(ctx.get("situation_brief"), dict):
+        metadata["situation_brief"] = ctx.get("situation_brief")
+    if isinstance(ctx.get("situation_prompt_fragment"), dict) and ctx.get("situation_prompt_fragment"):
+        metadata["situation_prompt_fragment"] = ctx.get("situation_prompt_fragment")
+    if isinstance(ctx.get("presence_context"), dict):
+        metadata["presence_context"] = ctx.get("presence_context")
+    presence_ctx = ctx.get("presence_context") if isinstance(ctx.get("presence_context"), dict) else {}
+    metadata["presence_context_present"] = bool(presence_ctx)
+    metadata["audience_mode"] = str(presence_ctx.get("audience_mode") or "solo")
+    fragment = ctx.get("situation_prompt_fragment")
+    metadata["situation_fragment_present"] = isinstance(fragment, dict) and bool(fragment)
+    if isinstance(ctx.get("situation_affordances"), list):
+        metadata["situation_affordances"] = ctx.get("situation_affordances")
+    if ctx.get("temporal_phase") is not None:
+        metadata["temporal_phase"] = ctx.get("temporal_phase")
+    return metadata
+
+
 def _autonomy_payload_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
     summary = ctx.get("chat_autonomy_summary") if isinstance(ctx.get("chat_autonomy_summary"), dict) else None
     debug = ctx.get("chat_autonomy_debug") if isinstance(ctx.get("chat_autonomy_debug"), dict) else None
@@ -1153,16 +1173,7 @@ class PlanRunner:
                 len(metacog_traces) == 0,
             )
         metadata = _autonomy_payload_from_ctx(ctx)
-        if isinstance(ctx.get("situation_brief"), dict):
-            metadata["situation_brief"] = ctx.get("situation_brief")
-        if isinstance(ctx.get("situation_prompt_fragment"), dict) and ctx.get("situation_prompt_fragment"):
-            metadata["situation_prompt_fragment"] = ctx.get("situation_prompt_fragment")
-        if isinstance(ctx.get("presence_context"), dict):
-            metadata["presence_context"] = ctx.get("presence_context")
-        if isinstance(ctx.get("situation_affordances"), list):
-            metadata["situation_affordances"] = ctx.get("situation_affordances")
-        if ctx.get("temporal_phase") is not None:
-            metadata["temporal_phase"] = ctx.get("temporal_phase")
+        metadata.update(_situation_grounding_metadata_from_ctx(ctx))
         mark_orion_turn(str(ctx.get("session_id") or "global"))
 
         return PlanExecutionResult(

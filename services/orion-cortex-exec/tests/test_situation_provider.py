@@ -46,6 +46,9 @@ def test_situation_marks_temporal_resume_for_long_gap():
 
 
 def test_situation_presence_child_affordance():
+    from app import situation as situation_mod
+
+    situation_mod._SITUATION_CACHE.clear()
     ctx = {
         "session_id": "sid-kid",
         "raw_user_text": "can you explain this for my kid",
@@ -55,9 +58,63 @@ def test_situation_presence_child_affordance():
             "requestor": {"display_name": "Juniper"},
         },
     }
-    brief, _ = build_situation_for_ctx(ctx, _settings())
+    brief, fragment = build_situation_for_ctx(ctx, _settings())
     kinds = {item["kind"] for item in brief["affordances"]}
+    assert brief["presence"]["audience_mode"] == "kid_present"
     assert "kid_friendly_explanation" in kinds
+    assert "kid_present" in fragment["compact_text"]
+
+
+def test_situation_cache_refreshes_when_presence_changes():
+    from app import situation as situation_mod
+
+    situation_mod._SITUATION_CACHE.clear()
+    session = "sid-cache-presence"
+    brief_solo, _ = build_situation_for_ctx(
+        {"session_id": session, "presence_context": {"audience_mode": "solo"}},
+        _settings(orion_situation_ttl_seconds=300),
+    )
+    brief_kid, fragment_kid = build_situation_for_ctx(
+        {
+            "session_id": session,
+            "presence_context": {
+                "audience_mode": "kid_present",
+                "companions": [{"display_name": "Kid", "relationship": "child", "role": "listener", "age_band": "child"}],
+            },
+        },
+        _settings(orion_situation_ttl_seconds=300),
+    )
+    assert brief_solo["presence"]["audience_mode"] == "solo"
+    assert brief_kid["presence"]["audience_mode"] == "kid_present"
+    assert "kid_present" in fragment_kid["compact_text"]
+
+
+def test_situation_cache_refreshes_when_requestor_changes():
+    from app import situation as situation_mod
+
+    situation_mod._SITUATION_CACHE.clear()
+    session = "sid-cache-requestor"
+    build_situation_for_ctx(
+        {
+            "session_id": session,
+            "presence_context": {
+                "audience_mode": "solo",
+                "requestor": {"display_name": "Juniper"},
+            },
+        },
+        _settings(orion_situation_ttl_seconds=300),
+    )
+    brief_guest, _ = build_situation_for_ctx(
+        {
+            "session_id": session,
+            "presence_context": {
+                "audience_mode": "solo",
+                "requestor": {"display_name": "Guest"},
+            },
+        },
+        _settings(orion_situation_ttl_seconds=300),
+    )
+    assert brief_guest["presence"]["requestor"]["display_name"] == "Guest"
 
 
 def test_situation_outdoor_departure_affordance():

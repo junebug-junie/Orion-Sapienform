@@ -714,6 +714,12 @@ def build_cortex_chat_request(
         "mind_enabled_metadata_value": mind_diagnostics.get("mind_enabled_metadata_value"),
         "mind_enabled_metadata_type": mind_diagnostics.get("mind_enabled_metadata_type"),
     }
+    presence_ctx = metadata.get("presence_context") if isinstance(metadata.get("presence_context"), dict) else {}
+    debug["presence_context_present"] = bool(presence_ctx)
+    debug["audience_mode"] = str(presence_ctx.get("audience_mode") or "solo")
+    debug["situation_fragment_present"] = bool(
+        isinstance(metadata.get("situation_prompt_fragment"), dict) and metadata.get("situation_prompt_fragment")
+    )
     if social_room:
         debug["social_skill_allowlist"] = metadata.get("social_skill_request", {}).get("allowlist") or []
         debug["social_skill_selection"] = metadata.get("social_skill_selection")

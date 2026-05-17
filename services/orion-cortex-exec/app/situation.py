@@ -92,11 +92,44 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
     )
 
 
+def _presence_cache_fingerprint(ctx: dict[str, Any]) -> str:
+    raw = ctx.get("presence_context") if isinstance(ctx.get("presence_context"), dict) else {}
+    companions = raw.get("companions") if isinstance(raw.get("companions"), list) else []
+    normalized_companions = [
+        {
+            "display_name": item.get("display_name"),
+            "relationship": item.get("relationship"),
+            "role": item.get("role"),
+            "age_band": item.get("age_band"),
+        }
+        for item in companions[:8]
+        if isinstance(item, dict) and item.get("display_name")
+    ]
+    requestor = raw.get("requestor") if isinstance(raw.get("requestor"), dict) else {}
+    fingerprint = {
+        "audience_mode": str(raw.get("audience_mode") or "solo"),
+        "companions": normalized_companions,
+        "requestor": {
+            "display_name": requestor.get("display_name"),
+            "relationship_to_orion": requestor.get("relationship_to_orion"),
+        },
+        "privacy_mode": raw.get("privacy_mode"),
+        "submitted_at": raw.get("submitted_at"),
+        "expires_at": raw.get("expires_at"),
+    }
+    return json.dumps(fingerprint, sort_keys=True, separators=(",", ":"))
+
+
+def _situation_cache_key(ctx: dict[str, Any]) -> str:
+    session_key = str(ctx.get("session_id") or "global")
+    return f"{session_key}:{_presence_cache_fingerprint(ctx)}"
+
+
 def build_situation_for_ctx(ctx: dict[str, Any], runtime_settings: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     cfg = settings_from_runtime(runtime_settings)
     if not cfg.enabled:
         return {}, {}
-    cache_key = str(ctx.get("session_id") or "global")
+    cache_key = _situation_cache_key(ctx)
     with _LOCK:
         cached = _SITUATION_CACHE.get(cache_key)
         if cached and (datetime.now(UTC) - cached[0]).total_seconds() < cfg.ttl_seconds:

@@ -71,6 +71,23 @@ def test_situation_status_and_brief_disabled(monkeypatch):
     assert brief["reason"] == "disabled_by_config"
 
 
+def test_situation_brief_reflects_manual_presence(monkeypatch):
+    store = _Store()
+    monkeypatch.setitem(sys.modules, "scripts.main", types.SimpleNamespace(presence_context_store=store, presence_state=None))
+    hub_api_routes.api_presence_set(
+        {
+            "audience_mode": "kid_present",
+            "requestor": {"display_name": "Juniper"},
+            "companions": [
+                {"display_name": "Kid", "relationship": "child", "role": "listener", "age_band": "child"},
+            ],
+        },
+        x_orion_session_id="sid-kid-brief",
+    )
+    brief = hub_api_routes.api_situation_brief(x_orion_session_id="sid-kid-brief")
+    assert brief["presence"]["audience_mode"] == "kid_present"
+
+
 def test_presence_invalid_payload_is_422(monkeypatch):
     store = _Store()
     monkeypatch.setitem(sys.modules, "scripts.main", types.SimpleNamespace(presence_context_store=store, presence_state=None))

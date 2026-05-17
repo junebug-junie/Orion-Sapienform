@@ -33,6 +33,7 @@ from scripts.trace_payloads import extract_agent_trace_payload
 from scripts.autonomy_payloads import extract_autonomy_payload
 from scripts.workflow_payloads import extract_workflow_payload
 from scripts.mutation_cognition_context import build_mutation_cognition_context
+from scripts.presence_session import inject_session_presence
 from scripts.warm_start import mini_personality_summary
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
 from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
@@ -615,10 +616,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 turns=turns,
             )
             data = dict(data)
-            if "presence_context" not in data and presence_context_store:
-                stored_presence = presence_context_store.get(str(session_id or "anonymous"))
-                if stored_presence:
-                    data["presence_context"] = stored_presence
+            data = inject_session_presence(data, str(session_id or "anonymous"), presence_context_store)
             data["mutation_cognition_context"] = build_mutation_cognition_context()
             try:
                 chat_req, route_debug, use_recall = build_chat_request(

@@ -49,14 +49,14 @@ async def memory_graph_suggest(
     body: Dict[str, Any],
     x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
 ) -> Dict[str, Any]:
-    """Cortex Appendix C draft (brain lane first, optional quick fallback). Read-only: no GraphDB/Postgres writes.
+    """Memory-graph suggest draft (grounded Quick primary, Brain escalation). Read-only: no GraphDB/Postgres writes.
 
     ``user_id`` in the JSON body is passed through to ``build_chat_request`` for telemetry only; it is not
     authenticated from the session header. ``diagnostic`` / ``options.diagnostic`` embed raw model text — use
     only on trusted control-plane paths.
     """
     from scripts.main import bus, cortex_client
-    from scripts.memory_graph_suggest import run_memory_graph_suggest_with_fallback
+    from scripts.memory_graph_suggest import suggest_with_escalation
     from scripts.settings import settings
 
     import scripts.api_routes as api_mod
@@ -66,7 +66,7 @@ async def memory_graph_suggest(
     session_id = await ensure_session(x_orion_session_id, bus)
     payload = body if isinstance(body, dict) else {}
     mc = build_mutation_cognition_context(store=api_mod.SUBSTRATE_MUTATION_STORE)
-    return await run_memory_graph_suggest_with_fallback(
+    return await suggest_with_escalation(
         cortex_client=cortex_client,
         payload=payload,
         session_id=str(session_id),

@@ -32,8 +32,10 @@ services:
       - READ_TIMEOUT_SEC=${READ_TIMEOUT_SEC}
 
       # TTS config (optional override; or just keep in .env)
-      - TTS_MODEL_NAME=${TTS_MODEL_NAME:-tts_models/en/ljspeech/tacotron2-DDC}
+      - TTS_MODEL_NAME=${TTS_MODEL_NAME:-tts_models/en/ljspeech/vits}
       - TTS_USE_GPU=${TTS_USE_GPU:-true}
+      - WHISPER_TTS_STT_TIMEOUT_SEC=${WHISPER_TTS_STT_TIMEOUT_SEC:-90}
+      - WHISPER_TTS_SYNTH_TIMEOUT_SEC=${WHISPER_TTS_SYNTH_TIMEOUT_SEC:-120}
 
       # GPU visibility
       #- CUDA_VISIBLE_DEVICES=${GPU_INDEX}

@@ -215,6 +215,16 @@ class Settings(BaseSettings):
         alias="TIMEOUT_SEC",
         description="Bus RPC wait (cortex gateway, TTS, …). Should exceed gateway orch timeout for long LLM runs.",
     )
+    HUB_STT_TIMEOUT_SEC: float = Field(
+        default=120.0,
+        alias="HUB_STT_TIMEOUT_SEC",
+        description="Hub bus RPC wait for speech-to-text (should exceed whisper STT worker timeout).",
+    )
+    HUB_TTS_TIMEOUT_SEC: float = Field(
+        default=180.0,
+        alias="HUB_TTS_TIMEOUT_SEC",
+        description="Hub bus RPC wait for text-to-speech (should exceed whisper TTS synth worker timeout).",
+    )
 
 
     # --- Hub Prompt Context (UI-side rolling history) ---

@@ -39,7 +39,7 @@ class TTSClient:
                 settings.TTS_REQUEST_CHANNEL,
                 envelope,
                 reply_channel=reply_to,
-                timeout_sec=settings.TIMEOUT_SEC,
+                timeout_sec=float(settings.HUB_TTS_TIMEOUT_SEC),
             )
         except TimeoutError:
              logger.error(f"[{correlation_id}] TTS Request timed out.")
@@ -86,7 +86,7 @@ class TTSClient:
                 settings.STT_REQUEST_CHANNEL,
                 envelope,
                 reply_channel=reply_to,
-                timeout_sec=settings.TIMEOUT_SEC,
+                timeout_sec=float(settings.HUB_STT_TIMEOUT_SEC),
             )
         except TimeoutError:
              logger.error(f"[{correlation_id}] STT Request timed out.")

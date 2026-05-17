@@ -26,10 +26,18 @@ class Settings(BaseSettings):
 
     # TTS config
     tts_model_name: str = Field(
-        "tts_models/en/ljspeech/tacotron2-DDC",
+        "tts_models/en/ljspeech/vits",
         env="TTS_MODEL_NAME",
     )
     tts_use_gpu: bool = Field(True, env="TTS_USE_GPU")
+    whisper_tts_stt_timeout_sec: float = Field(
+        90.0,
+        env="WHISPER_TTS_STT_TIMEOUT_SEC",
+    )
+    whisper_tts_synth_timeout_sec: float = Field(
+        120.0,
+        env="WHISPER_TTS_SYNTH_TIMEOUT_SEC",
+    )
 
     class Config:
         env_file = ".env"

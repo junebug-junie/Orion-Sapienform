@@ -115,6 +115,8 @@ services:
 
       # --- Runtimes ---
       - TIMEOUT_SEC=${TIMEOUT_SEC}
+      - HUB_STT_TIMEOUT_SEC=${HUB_STT_TIMEOUT_SEC:-120}
+      - HUB_TTS_TIMEOUT_SEC=${HUB_TTS_TIMEOUT_SEC:-180}
       - NVIDIA_VISIBLE_DEVICES=all
 
       # --- Hub Prompt Context (UI-side rolling history) ---

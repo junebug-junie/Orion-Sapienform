@@ -1024,7 +1024,7 @@ class PlanRunner:
                 final_text_diag["result_len"] = len(final_text)
                 final_text_diag["final_len"] = len(final_text)
         logger.info(
-            "final_text_assembly corr_id=%s verb=%s source_service=%s source_field=%s think_tags_detected=%s think_full_block_detected=%s think_close_tag_only_detected=%s think_stripping_applied=%s planning_stripping_applied=%s planning_lines_dropped=%s planning_candidate_rejected=%s planning_candidate_rejection_reason=%s provider_has_reasoning_content=%s provider_has_reasoning_trace=%s provider_reasoning_available=%s inline_think_extracted=%s provider_completion_tokens=%s provider_finish_reason=%s truncation_detected=%s structured_output_sanitized=%s structured_output_rejected=%s structured_json_extraction_attempted=%s candidates=%s rejected_candidates=%s candidate_fields_considered=%s raw_len=%s clean_len=%s final_len=%s result_len=%s",
+            "final_text_assembly corr_id=%s verb=%s source_service=%s source_field=%s think_tags_detected=%s think_full_block_detected=%s think_close_tag_only_detected=%s think_stripping_applied=%s planning_stripping_applied=%s planning_lines_dropped=%s planning_candidate_rejected=%s planning_candidate_rejection_reason=%s provider_has_reasoning_content=%s provider_has_reasoning_trace=%s provider_reasoning_available=%s inline_think_extracted=%s provider_completion_tokens=%s provider_finish_reason=%s truncation_detected=%s structured_output_sanitized=%s structured_output_rejected=%s structured_json_extraction_attempted=%s candidates=%s rejected_candidates=%s candidate_fields_considered=%s identity_boundary_applied=%s identity_boundary_violations=%s raw_len=%s clean_len=%s final_len=%s result_len=%s",
             correlation_id,
             plan.verb_name,
             final_text_diag.get("source_service"),
@@ -1050,6 +1050,8 @@ class PlanRunner:
             final_text_diag.get("candidate_count"),
             final_text_diag.get("rejected_candidate_count"),
             final_text_diag.get("candidate_fields_considered"),
+            final_text_diag.get("identity_boundary_applied"),
+            final_text_diag.get("identity_boundary_violations"),
             final_text_diag.get("raw_len"),
             final_text_diag.get("clean_len"),
             final_text_diag.get("final_len"),
@@ -1069,6 +1071,8 @@ class PlanRunner:
             "capsule_filtered_reason": ctx.get("capsule_filtered_reason"),
             "stance_world_context_items_used": ctx.get("stance_world_context_items_used"),
             "politics_context_suppressed": bool(ctx.get("politics_context_suppressed")),
+            "identity_boundary_applied": bool(final_text_diag.get("identity_boundary_applied")),
+            "identity_boundary_violations": final_text_diag.get("identity_boundary_violations"),
         }
         if overall_status == "success" and soft_failure:
             overall_status = "partial"

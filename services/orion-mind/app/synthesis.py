@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from typing import Any
@@ -20,7 +21,11 @@ Every claim MUST cite evidence_refs from the provided evidence pack only.
 Labels must be semantic meanings, never source tags like identity_yaml, projection, autonomy, or social_bridge.
 Identity background is not primary evidence unless the current turn explicitly involves identity, selfhood, role boundaries, or Orion/Juniper relationship framing.
 Prefer uncertainty over invention.
-Return strict JSON matching SemanticSynthesisV1 shape with schema_version mind.semantic_synthesis.v1."""
+Return strict JSON matching SemanticSynthesisV1 with schema_version mind.semantic_synthesis.v1.
+Each claim object MUST include: claim_id, label, summary, claim_kind, evidence_refs, source_kinds.
+Example claim:
+{"claim_id":"c1","label":"shared evening plan","summary":"User mentions watching a show with Amanda.","claim_kind":"relationship_claim","evidence_refs":["current_turn:0"],"source_kinds":["current_turn"],"anchor":"relationship","confidence":0.85,"salience_hint":0.8,"recommended_effect":"receive_warmly"}
+Do NOT emit legacy shapes like {"claim":"...","evidence":[...]} without the required fields."""
 
 
 def _pack_prompt(pack: MindEvidencePackV1) -> str:
@@ -38,6 +43,125 @@ def _pack_prompt(pack: MindEvidencePackV1) -> str:
         {"current_user_text": pack.current_user_text, "evidence_items": items},
         ensure_ascii=False,
     )
+
+
+def _short_label(text: str, *, max_len: int = 48) -> str:
+    cleaned = " ".join(str(text or "").split())
+    if len(cleaned) <= max_len:
+        return cleaned
+    return f"{cleaned[: max_len - 1].rstrip()}…"
+
+
+def _legacy_claim_id(index: int, claim_text: str) -> str:
+    digest = hashlib.sha256(claim_text.encode("utf-8")).hexdigest()[:12]
+    return f"legacy_{index}_{digest}"
+
+
+def _has_current_claim_shape(item: dict[str, Any]) -> bool:
+    return all(item.get(k) for k in ("claim_id", "label", "summary", "claim_kind"))
+
+
+def _is_legacy_claim_shape(item: dict[str, Any]) -> bool:
+    if _has_current_claim_shape(item):
+        return False
+    claim_text = item.get("claim")
+    return isinstance(claim_text, str) and bool(claim_text.strip())
+
+
+def _float_field(item: dict[str, Any], key: str, default: float) -> float:
+    if key not in item:
+        return default
+    value = item.get(key)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return default
+
+
+def _coerce_evidence_refs(item: dict[str, Any]) -> list[str]:
+    refs = item.get("evidence_refs")
+    if isinstance(refs, list):
+        return [str(r).strip() for r in refs if str(r).strip()]
+    evidence = item.get("evidence")
+    if isinstance(evidence, list):
+        out: list[str] = []
+        for entry in evidence:
+            if isinstance(entry, str) and entry.strip():
+                out.append(entry.strip())
+            elif isinstance(entry, dict):
+                ref = entry.get("evidence_ref") or entry.get("ref")
+                if ref:
+                    out.append(str(ref).strip())
+        return [r for r in out if r]
+    return []
+
+
+def try_normalize_legacy_semantic_raw(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, bool]:
+    """Convert obvious legacy claim objects into SemanticSynthesisV1 claim shape."""
+    claims_in = raw.get("claims")
+    if not isinstance(claims_in, list) or not claims_in:
+        return None, False
+
+    normalized_claims: list[dict[str, Any]] = []
+    saw_legacy = False
+    for index, item in enumerate(claims_in):
+        if not isinstance(item, dict):
+            return None, False
+        if _has_current_claim_shape(item):
+            normalized_claims.append(item)
+            continue
+        if not _is_legacy_claim_shape(item):
+            return None, False
+        saw_legacy = True
+        claim_text = str(item.get("claim") or "").strip()
+        evidence_refs = _coerce_evidence_refs(item)
+        source_kinds = item.get("source_kinds")
+        if not isinstance(source_kinds, list) or not source_kinds:
+            source_kinds = ["current_turn"] if evidence_refs else []
+        normalized_claims.append(
+            {
+                "claim_id": _legacy_claim_id(index, claim_text),
+                "label": _short_label(claim_text),
+                "summary": claim_text,
+                "claim_kind": "situation_claim",
+                "evidence_refs": evidence_refs,
+                "source_kinds": [str(k) for k in source_kinds if str(k).strip()],
+                "anchor": item.get("anchor") or "unknown",
+                "confidence": _float_field(item, "confidence", 0.5),
+                "salience_hint": _float_field(item, "salience_hint", 0.5),
+                "recommended_effect": item.get("recommended_effect") or "no_effect",
+                "metadata": {
+                    **(item.get("metadata") if isinstance(item.get("metadata"), dict) else {}),
+                    "normalized_from_legacy_claim_shape": True,
+                },
+            }
+        )
+
+    if not saw_legacy:
+        return None, False
+
+    out = dict(raw)
+    out["schema_version"] = "mind.semantic_synthesis.v1"
+    out["claims"] = normalized_claims
+    diagnostics = dict(out.get("diagnostics") or {})
+    notes = list(diagnostics.get("notes") or [])
+    notes.append("normalized_from_legacy_claim_shape")
+    diagnostics["notes"] = notes
+    diagnostics["normalized_from_legacy_claim_shape"] = True
+    out["diagnostics"] = diagnostics
+    return out, True
+
+
+def _validate_semantic_raw(raw: dict[str, Any]) -> tuple[SemanticSynthesisV1 | None, bool]:
+    try:
+        return SemanticSynthesisV1.model_validate(raw), False
+    except ValidationError:
+        normalized, did_normalize = try_normalize_legacy_semantic_raw(raw)
+        if not did_normalize or normalized is None:
+            return None, False
+        try:
+            return SemanticSynthesisV1.model_validate(normalized), True
+        except ValidationError:
+            return None, True
 
 
 def run_semantic_synthesis(
@@ -70,18 +194,31 @@ def run_semantic_synthesis(
         model=str(meta.get("model_used") or model_id),
         started_at=started,
         elapsed_ms=elapsed_ms,
-        ok=raw is not None and err is None,
+        ok=False,
         parse_ok=raw is not None,
         error=err,
         token_usage=dict(meta.get("usage") or {}),
     )
     if raw is None:
+        telemetry.status = "failed"
         return None, err or "semantic_synthesis_failed", telemetry
-    try:
-        synthesis = SemanticSynthesisV1.model_validate(raw)
-    except ValidationError as exc:
+    if not isinstance(raw, dict):
         telemetry.validation_ok = False
-        return None, f"semantic_schema_invalid:{exc}", telemetry
+        telemetry.status = "schema_invalid"
+        telemetry.error = "semantic_schema_invalid:not_object"
+        return None, "semantic_schema_invalid", telemetry
+
+    synthesis, normalized_from_legacy = _validate_semantic_raw(raw)
+    if synthesis is None:
+        telemetry.validation_ok = False
+        telemetry.ok = False
+        telemetry.status = "schema_invalid"
+        telemetry.error = "semantic_schema_invalid"
+        return None, "semantic_schema_invalid", telemetry
+
+    diag_notes = list(synthesis.diagnostics.notes)
+    if normalized_from_legacy:
+        diag_notes.append("normalized_from_legacy_claim_shape")
     synthesis = synthesis.model_copy(
         update={
             "model_id": model_id,
@@ -95,10 +232,19 @@ def run_semantic_synthesis(
                     "social_fields_seen": int(pack.diagnostics.get("social_fields_seen") or 0),
                     "llm_ok": True,
                     "llm_error": None,
+                    "notes": diag_notes,
                 }
             ),
         }
     )
     filtered = filter_semantic_claims(synthesis, pack)
     telemetry.validation_ok = bool(filtered.claims)
+    if filtered.claims:
+        telemetry.ok = True
+        telemetry.status = "ok"
+        if normalized_from_legacy:
+            telemetry.error = None
+    else:
+        telemetry.ok = True
+        telemetry.status = "filtered"
     return filtered, None, telemetry

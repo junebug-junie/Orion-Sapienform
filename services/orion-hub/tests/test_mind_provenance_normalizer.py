@@ -109,3 +109,70 @@ console.log(JSON.stringify({{
     assert out["appraisal_ok"] == "ok"
     assert out["stance_ok"] == "ok"
     assert out["no_derailment_card"] is True
+
+
+def test_success_fixture_renders_brief_item_cards() -> None:
+    out = _run_node(
+        f"""
+const fs = require('fs');
+const src = fs.readFileSync({json.dumps(str(MIND_PROVENANCE_JS))}, 'utf8');
+eval(src);
+const run = OrionMindProvenance.MIND_PROVENANCE_FIXTURES.success;
+const html = OrionMindProvenance.renderMindProvenanceSections(run);
+console.log(JSON.stringify({{
+  has_items_section: html.includes('Mind synthesis items'),
+  has_semantic_card: html.includes('shared evening moment'),
+  has_frontier_card: html.includes('relationship_opportunity'),
+  has_provenance: html.includes('Cognition path'),
+}}));
+"""
+    )
+    assert out["has_items_section"] is True
+    assert out["has_semantic_card"] is True
+    assert out["has_frontier_card"] is True
+    assert out["has_provenance"] is True
+
+
+def test_shadow_fixture_renders_shadow_fields() -> None:
+    out = _run_node(
+        f"""
+const fs = require('fs');
+const src = fs.readFileSync({json.dumps(str(MIND_PROVENANCE_JS))}, 'utf8');
+eval(src);
+const run = OrionMindProvenance.MIND_PROVENANCE_FIXTURES.shadowSynthesis;
+const prov = OrionMindProvenance.normalizeMindRunProvenance(run);
+const html = OrionMindProvenance.renderMindBriefItems(run);
+console.log(JSON.stringify({{
+  cognition_path: prov.cognition_path,
+  has_shadow_card: html.includes('Shadow synthesis'),
+  has_attention: html.includes('evening plans with Amanda'),
+  has_projection_refs: html.includes('projection:relationship:0'),
+}}));
+"""
+    )
+    assert out["cognition_path"] == "deterministic_shadow"
+    assert out["has_shadow_card"] is True
+    assert out["has_attention"] is True
+    assert out["has_projection_refs"] is True
+
+
+def test_fail_open_fixture_still_renders_provenance_sections() -> None:
+    out = _run_node(
+        f"""
+const fs = require('fs');
+const src = fs.readFileSync({json.dumps(str(MIND_PROVENANCE_JS))}, 'utf8');
+eval(src);
+const run = OrionMindProvenance.MIND_PROVENANCE_FIXTURES.failOpen;
+const html = OrionMindProvenance.renderMindProvenanceSections(run);
+console.log(JSON.stringify({{
+  has_off_rails: html.includes('Where it went off rails'),
+  has_phase_table: html.includes('Phase provenance'),
+  has_fallback_row: html.includes('deterministic_fallback'),
+  has_orch_http: html.includes('orch_mind_http'),
+}}));
+"""
+    )
+    assert out["has_off_rails"] is True
+    assert out["has_phase_table"] is True
+    assert out["has_fallback_row"] is True
+    assert out["has_orch_http"] is False

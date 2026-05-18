@@ -92,7 +92,7 @@ Hub: open Mind runs modal for `$CORR` — expect either normal Mind row, `llm_fa
 - Orch: **18 passed**
 - Hub: **16 passed**
 - compileall: **exit 0**
-- Live docker smoke: **not run** (no stack in agent environment)
+- **Merged** as #587; follow-up regression patch on same branch — see `2026-05-17-mind-llm-timeout-hardening-regression-pr.md` (semantic normalize + Hub brief cards, live smoke `4d6c5866-efdd-492f-98fd-ec092f0d178f`)
 
 ## Remaining risks
 

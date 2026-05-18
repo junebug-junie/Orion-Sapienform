@@ -18,6 +18,7 @@ class MindPhaseTelemetry:
     ok: bool = False
     parse_ok: bool | None = None
     validation_ok: bool | None = None
+    status: str | None = None
     error: str | None = None
     token_usage: dict[str, Any] = field(default_factory=dict)
     skipped: bool = False

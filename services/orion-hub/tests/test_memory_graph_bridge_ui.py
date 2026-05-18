@@ -68,6 +68,25 @@ def test_app_js_wires_memory_graph_bridge_handlers() -> None:
     assert "Suggest timed out" in app_js
 
 
+def test_canonical_turn_id_prefers_explicit_meta_over_derived_assistant_suffix() -> None:
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+    start = app_js.find("function canonicalTurnIdForMemoryGraph")
+    assert start >= 0
+    end = app_js.find("function buildMemoryGraphSuggestUserContent", start)
+    assert end > start
+    block = app_js[start:end]
+    assert "explicitTurn" in block
+    assert "explicitMsg" in block
+    assert block.index("explicitTurn") < block.index("linkage.targetMessageId")
+    assert block.index("explicitMsg") < block.index("linkage.targetMessageId")
+
+
+def test_template_includes_bridge_diagnostics_panel() -> None:
+    html = TEMPLATE_PATH.read_text(encoding="utf-8")
+    assert 'id="memoryGraphBridgeDiagnostics"' in html
+    assert 'id="memoryGraphBridgeCopyDiagnostics"' in html
+
+
 def _memory_suggest_block(memory_js: str) -> str:
     start = memory_js.find("if (sBtn && draftTa)")
     assert start >= 0

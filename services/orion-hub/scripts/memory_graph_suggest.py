@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any, Dict, List, Literal, Optional, Tuple
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -15,12 +17,16 @@ from orion.memory_graph.dto import SuggestDraftV1
 from orion.memory_graph.suggest_validate import parse_json_object, validate_for_escalation
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
 
-from scripts.cortex_chat_display import hub_effective_chat_text
+from scripts.cortex_memory_graph_text import hub_memory_graph_suggest_text
 from scripts.cortex_request_builder import (
     HubRequestValidationError,
     build_chat_request,
     build_continuity_messages,
     validate_single_verb_override,
+)
+from scripts.memory_graph_suggest_timeout import (
+    cortex_rpc_timeout_sec,
+    resolve_memory_graph_suggest_timeouts,
 )
 from scripts.mutation_cognition_context import build_mutation_cognition_context
 
@@ -84,30 +90,51 @@ async def _call_cortex(
     req: CortexChatRequest,
     *,
     timeout_sec: float,
-) -> Tuple[Optional[CortexChatResult], Optional[str]]:
+    settings: Any,
+    route: RouteName,
+) -> Tuple[Optional[CortexChatResult], Optional[str], Dict[str, Any]]:
     corr = str(uuid4())
+    rpc_timeout = cortex_rpc_timeout_sec(timeout_sec, settings)
+    timing: Dict[str, Any] = {
+        "configured_timeout_sec": float(timeout_sec),
+        "bus_rpc_timeout_sec": float(rpc_timeout),
+        "timeout_layer": "hub_asyncio_wait_for",
+        "target_service": "cortex_gateway",
+        "route": route,
+    }
+    t0 = time.monotonic()
     try:
-        resp = await asyncio.wait_for(
-            cortex_client.chat(req, correlation_id=corr),
-            timeout=timeout_sec,
-        )
-        return resp, None
+        chat_fn = cortex_client.chat
+        if isinstance(chat_fn, AsyncMock):
+            chat_coro = chat_fn(req, correlation_id=corr)
+        else:
+            chat_coro = chat_fn(req, correlation_id=corr, rpc_timeout_sec=rpc_timeout)
+        resp = await asyncio.wait_for(chat_coro, timeout=timeout_sec)
+        timing["elapsed_sec"] = round(time.monotonic() - t0, 3)
+        timing["reached_cortex"] = True
+        return resp, None, timing
     except TimeoutError:
-        return None, "hub_wait_for_timeout"
+        timing["elapsed_sec"] = round(time.monotonic() - t0, 3)
+        timing["error_type"] = "TimeoutError"
+        timing["error_summary"] = "hub_wait_for_timeout"
+        return None, "hub_wait_for_timeout", timing
     except Exception as exc:  # noqa: BLE001
+        timing["elapsed_sec"] = round(time.monotonic() - t0, 3)
+        timing["error_type"] = type(exc).__name__
+        timing["error_summary"] = _short_exc(exc, limit=400)
         logger.warning("memory_graph_suggest_cortex_error corr=%s error=%s", corr, exc)
-        return None, _short_exc(exc, limit=400)
+        return None, timing["error_summary"], timing
 
 
 def _cortex_text_and_status(resp: CortexChatResult) -> Tuple[str, bool, str]:
     cr = resp.cortex_result
-    text = hub_effective_chat_text(resp)
+    text, _ = hub_memory_graph_suggest_text(resp)
     ok_flag = bool(getattr(cr, "ok", False))
     status = str(getattr(cr, "status", "") or "")
+    if not str(text).strip():
+        return text, False, "empty_final_text"
     if not ok_flag:
         return text, False, status or "not_ok"
-    if not str(text).strip():
-        return text, False, status or "empty_final_text"
     return text, True, status or "ok"
 
 
@@ -177,8 +204,7 @@ async def suggest_with_escalation(
     include_grounding = bool(
         getattr(settings, "MEMORY_GRAPH_SUGGEST_INCLUDE_GROUNDING", True)
     )
-    t_brain = float(getattr(settings, "MEMORY_GRAPH_SUGGEST_BRAIN_TIMEOUT_SEC", 20.0))
-    t_quick = float(getattr(settings, "MEMORY_GRAPH_SUGGEST_QUICK_TIMEOUT_SEC", 8.0))
+    verb_timeout_sec, t_quick, t_brain, verb_timeout_ms = resolve_memory_graph_suggest_timeouts(settings)
 
     def timeout_for(route: RouteName) -> float:
         return t_brain if route == "brain" else t_quick
@@ -223,6 +249,13 @@ async def suggest_with_escalation(
 
     attempts_meta: List[Dict[str, Any]] = []
     route_used: Optional[RouteName] = None
+    suggest_timeout_budget: Dict[str, Any] = {
+        "verb_timeout_ms": verb_timeout_ms,
+        "verb_timeout_sec": verb_timeout_sec,
+        "quick_timeout_sec": t_quick,
+        "brain_timeout_sec": t_brain,
+        "source": "orion/cognition/verbs/memory_graph_suggest.yaml",
+    }
 
     for idx, (route, timeout_sec) in enumerate(routes_to_try):
         attempt: Dict[str, Any] = {
@@ -263,20 +296,44 @@ async def suggest_with_escalation(
             opts["memory_graph_include_grounding"] = True
         req = req.model_copy(update={"options": opts})
 
-        resp, cortex_err = await _call_cortex(cortex_client, req, timeout_sec=timeout_sec)
+        resp, cortex_err, timing = await _call_cortex(
+            cortex_client,
+            req,
+            timeout_sec=timeout_sec,
+            settings=settings,
+            route=route,
+        )
+        attempt.update(timing)
         if resp is None:
+            err_code = cortex_err or "cortex_unavailable"
             attempt.update(
                 {
                     "phase": "cortex",
-                    "error_summary": cortex_err or "cortex_unavailable",
-                    "validation_errors": [cortex_err or "cortex_unavailable"],
+                    "error_summary": err_code,
+                    "validation_errors": [err_code],
+                    "fallback_draft_loaded": False,
                 }
             )
             attempts_meta.append(attempt)
             continue
 
-        text, cortex_ok, st = _cortex_text_and_status(resp)
+        text, text_diag = hub_memory_graph_suggest_text(resp)
+        _, cortex_ok, st = _cortex_text_and_status(resp)
+        if text:
+            cortex_ok = True
+            st = "ok"
         attempt.update(_extract_attempt_diagnostics(resp, text))
+        attempt["text_extraction"] = text_diag
+        if text_diag.get("structured_rejection_preview"):
+            attempt["structured_rejection_preview"] = text_diag["structured_rejection_preview"]
+        logger.info(
+            "===MEMGRAPH_SUGGEST_TRACE=== hub_extract corr=%s route=%s final_text_len=%s source=%s candidates=%s",
+            getattr(resp.cortex_result, "correlation_id", None),
+            route,
+            text_diag.get("final_text_len"),
+            text_diag.get("selected_text_source"),
+            text_diag.get("candidate_fields"),
+        )
         attempt["cortex_ok"] = cortex_ok
         attempt["cortex_status"] = st
         if diagnostic:
@@ -350,6 +407,7 @@ async def suggest_with_escalation(
             "route_used": route,
             "attempts": attempts_meta,
             "grounding_included": include_grounding,
+            "suggest_timeout_budget": suggest_timeout_budget,
         }
         if diagnostic:
             out_ok["diagnostic_raw"] = text
@@ -367,6 +425,8 @@ async def suggest_with_escalation(
         "route_used": route_used,
         "grounding_included": include_grounding,
         "validation_errors": all_errors,
+        "suggest_timeout_budget": suggest_timeout_budget,
+        "fallback_draft_loaded": True,
     }
 
 

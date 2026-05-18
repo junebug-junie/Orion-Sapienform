@@ -312,6 +312,9 @@ def _resolve_llm_chat_max_tokens(step: ExecutionStep, ctx: Dict[str, Any]) -> Tu
     if step.verb_name == "journal.compose" and step.step_name == "draft_journal_entry":
         return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_journal_compose"
 
+    if step.verb_name == "memory_graph_suggest" and step.step_name == "llm_memory_graph_suggest":
+        return int(settings.llm_memory_graph_suggest_max_tokens), requested, "settings.llm_memory_graph_suggest_max_tokens"
+
     return int(settings.llm_chat_max_tokens_default), requested, "settings.llm_chat_max_tokens_default"
 
 
@@ -1001,6 +1004,8 @@ def _resolve_llm_max_tokens(*, ctx: Dict[str, Any], step: ExecutionStep) -> tupl
         return max(1, int(settings.llm_chat_quick_max_tokens)), "quick_default", requested
     if step.verb_name == "chat_general" and step.step_name == "llm_chat_general":
         return max(1, int(settings.llm_chat_general_max_tokens)), "general_default", requested
+    if step.verb_name == "memory_graph_suggest" and step.step_name == "llm_memory_graph_suggest":
+        return max(1, int(settings.llm_memory_graph_suggest_max_tokens)), "memory_graph_suggest_default", requested
     return max(1, int(settings.llm_chat_fallback_max_tokens)), "fallback_default", requested
 
 

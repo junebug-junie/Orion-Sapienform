@@ -723,7 +723,7 @@
         p.textContent = emptyShape
           ? "Parsed JSON is an empty object — nothing to draw. Check the status line for suggest outcome."
           : isValidEmptyDraft
-            ? "Valid SuggestDraftV1 with no entities, situations, edges, or dispositions — no graph to preview (may mean no durable memory candidate)."
+            ? "Valid SuggestDraftV1 with no entities, situations, edges, or dispositions — extraction returned an empty graph; see status and diagnostics."
             : "Parsed JSON has no entities, situations, edges, or dispositions to show.";
         cyHost.appendChild(p);
         return;

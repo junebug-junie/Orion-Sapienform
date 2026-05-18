@@ -319,8 +319,21 @@ class Settings(BaseSettings):
     MEMORY_GRAPH_SUGGEST_ESCALATION_ROUTE: str = Field(default="brain", alias="MEMORY_GRAPH_SUGGEST_ESCALATION_ROUTE")
     MEMORY_GRAPH_SUGGEST_ENABLE_ESCALATION: bool = Field(default=True, alias="MEMORY_GRAPH_SUGGEST_ENABLE_ESCALATION")
     MEMORY_GRAPH_SUGGEST_INCLUDE_GROUNDING: bool = Field(default=True, alias="MEMORY_GRAPH_SUGGEST_INCLUDE_GROUNDING")
-    MEMORY_GRAPH_SUGGEST_BRAIN_TIMEOUT_SEC: float = Field(default=20.0, alias="MEMORY_GRAPH_SUGGEST_BRAIN_TIMEOUT_SEC")
-    MEMORY_GRAPH_SUGGEST_QUICK_TIMEOUT_SEC: float = Field(default=8.0, alias="MEMORY_GRAPH_SUGGEST_QUICK_TIMEOUT_SEC")
+    MEMORY_GRAPH_SUGGEST_VERB_TIMEOUT_MS: int = Field(
+        default=180_000,
+        alias="MEMORY_GRAPH_SUGGEST_VERB_TIMEOUT_MS",
+        description="Verb budget; defaults match orion/cognition/verbs/memory_graph_suggest.yaml timeout_ms.",
+    )
+    MEMORY_GRAPH_SUGGEST_BRAIN_TIMEOUT_SEC: float = Field(
+        default=0.0,
+        alias="MEMORY_GRAPH_SUGGEST_BRAIN_TIMEOUT_SEC",
+        description="Per Brain-route hub wait; 0 = use full verb timeout (180s default).",
+    )
+    MEMORY_GRAPH_SUGGEST_QUICK_TIMEOUT_SEC: float = Field(
+        default=0.0,
+        alias="MEMORY_GRAPH_SUGGEST_QUICK_TIMEOUT_SEC",
+        description="Per Quick-route hub wait; 0 = ~40% of verb timeout (72s when verb is 180s).",
+    )
     # Deprecated aliases (read by legacy env only)
     MEMORY_GRAPH_SUGGEST_FALLBACK_ROUTE: str = Field(default="brain", alias="MEMORY_GRAPH_SUGGEST_FALLBACK_ROUTE")
     MEMORY_GRAPH_SUGGEST_ENABLE_FALLBACK: bool = Field(default=True, alias="MEMORY_GRAPH_SUGGEST_ENABLE_FALLBACK")

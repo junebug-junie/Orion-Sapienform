@@ -17,12 +17,19 @@ class CortexGatewayClient:
             version=settings.SERVICE_VERSION,
         )
 
-    async def chat(self, request: CortexChatRequest, correlation_id: Optional[str] = None) -> CortexChatResult:
+    async def chat(
+        self,
+        request: CortexChatRequest,
+        correlation_id: Optional[str] = None,
+        *,
+        rpc_timeout_sec: Optional[float] = None,
+    ) -> CortexChatResult:
         """
         Sends a CortexChatRequest to the Gateway and waits for a CortexChatResult.
         """
         correlation_id = correlation_id or str(uuid.uuid4())
         reply_to = f"{settings.CORTEX_GATEWAY_RESULT_PREFIX}:{correlation_id}"
+        bus_timeout = float(rpc_timeout_sec if rpc_timeout_sec is not None else settings.TIMEOUT_SEC)
 
         envelope = BaseEnvelope(
             kind="cortex.gateway.chat.request",  # Must match gateway subscription
@@ -39,7 +46,7 @@ class CortexGatewayClient:
                 settings.CORTEX_GATEWAY_REQUEST_CHANNEL,
                 envelope,
                 reply_channel=reply_to,
-                timeout_sec=settings.TIMEOUT_SEC,
+                timeout_sec=bus_timeout,
             )
         except TimeoutError:
              logger.error(f"[{correlation_id}] Request timed out.")

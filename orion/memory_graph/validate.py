@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import List
 
@@ -8,6 +9,9 @@ from rdflib import Graph
 
 
 def _repo_root() -> Path:
+    override = str(os.environ.get("ORION_REPO_ROOT") or "").strip()
+    if override:
+        return Path(override)
     return Path(__file__).resolve().parents[2]
 
 

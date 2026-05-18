@@ -7,12 +7,25 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from orion.mind.synthesis_v1 import (
+    ActiveCognitiveFrontierV1,
+    MindStanceHandoffV1,
+    SemanticSynthesisV1,
+)
+
 MindTriggerV1 = Literal["user_turn", "scheduled", "operator", "replay"]
 TrustLevelV1 = Literal["low", "med", "high"]
 HypothesisTagV1 = Literal["assumption", "hypothesis", "simulation_result"]
 MergePolicyV1 = Literal["deterministic_merge"]
 BindingV1 = Literal["advisory", "mandatory"]
-MindQualityV1 = Literal["meaningful_synthesis", "shadow_synthesis", "fallback_contract_only", "empty", "error"]
+MindQualityV1 = Literal[
+    "meaningful_synthesis",
+    "shadow_synthesis",
+    "fallback_contract_only",
+    "empty",
+    "error",
+    "invalid_handoff",
+]
 
 
 class MindRunPolicyV1(BaseModel):
@@ -113,6 +126,9 @@ class MindHandoffBriefV1(BaseModel):
     mind_quality: MindQualityV1 = "empty"
     shadow_synthesis: MindShadowSynthesisV1 | None = None
     mind_authorized_for_stance_skip: bool = False
+    semantic_synthesis: SemanticSynthesisV1 | None = None
+    active_frontier: ActiveCognitiveFrontierV1 | None = None
+    stance_handoff: MindStanceHandoffV1 | None = None
 
 
 class MindRunResultV1(BaseModel):

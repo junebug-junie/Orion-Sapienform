@@ -5,7 +5,6 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Repository layout: services/orion-mind/app/settings.py → service root is parents[1]
 _SERVICE_ROOT = Path(__file__).resolve().parent.parent
 _ENV_FILE = _SERVICE_ROOT / ".env"
 
@@ -31,6 +30,31 @@ class Settings(BaseSettings):
         alias="MIND_ROUTER_PROFILES_PATH",
         description="Directory containing router_profiles.yaml; empty = app/config beside settings",
     )
+
+    MIND_EVIDENCE_MAX_CHARS: int = Field(default=12_000, alias="MIND_EVIDENCE_MAX_CHARS")
+    MIND_EVIDENCE_MAX_MESSAGES: int = Field(default=8, alias="MIND_EVIDENCE_MAX_MESSAGES")
+    MIND_EVIDENCE_MAX_RECALL_FRAGMENTS: int = Field(default=8, alias="MIND_EVIDENCE_MAX_RECALL_FRAGMENTS")
+    MIND_EVIDENCE_MAX_PROJECTION_ITEMS: int = Field(default=16, alias="MIND_EVIDENCE_MAX_PROJECTION_ITEMS")
+
+    MIND_LLM_SYNTHESIS_ENABLED: bool = Field(default=False, alias="MIND_LLM_SYNTHESIS_ENABLED")
+    MIND_SEMANTIC_MODEL_ROUTE: str = Field(default="quick", alias="MIND_SEMANTIC_MODEL_ROUTE")
+    MIND_APPRAISAL_MODEL_ROUTE: str = Field(default="metacog", alias="MIND_APPRAISAL_MODEL_ROUTE")
+    MIND_STANCE_MODEL_ROUTE: str = Field(default="chat", alias="MIND_STANCE_MODEL_ROUTE")
+    MIND_LLM_TIMEOUT_SEC: float = Field(default=90.0, alias="MIND_LLM_TIMEOUT_SEC")
+    MIND_LLM_MAX_TOKENS_SEMANTIC: int = Field(default=2048, alias="MIND_LLM_MAX_TOKENS_SEMANTIC")
+    MIND_LLM_MAX_TOKENS_APPRAISAL: int = Field(default=3072, alias="MIND_LLM_MAX_TOKENS_APPRAISAL")
+    MIND_LLM_MAX_TOKENS_STANCE: int = Field(default=1536, alias="MIND_LLM_MAX_TOKENS_STANCE")
+    MIND_LLM_THINKING_APPRAISAL: bool = Field(default=True, alias="MIND_LLM_THINKING_APPRAISAL")
+    MIND_LLM_FAIL_OPEN_LEGACY: bool = Field(default=True, alias="MIND_LLM_FAIL_OPEN_LEGACY")
+
+    MIND_LLM_USE_BUS: bool = Field(default=True, alias="MIND_LLM_USE_BUS")
+    ORION_BUS_ENABLED: bool = Field(default=True, alias="ORION_BUS_ENABLED")
+    ORION_BUS_URL: str = Field(default="redis://redis:6379/0", alias="ORION_BUS_URL")
+    MIND_LLM_INTAKE_CHANNEL: str = Field(
+        default="orion:exec:request:LLMGatewayService",
+        alias="MIND_LLM_INTAKE_CHANNEL",
+    )
+    MIND_LLM_REPLY_PREFIX: str = Field(default="orion:mind:llm:reply", alias="MIND_LLM_REPLY_PREFIX")
 
     @property
     def router_profiles_dir(self) -> Path:

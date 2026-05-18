@@ -245,3 +245,69 @@ def test_llm_failure_falls_back_to_deterministic(monkeypatch: pytest.MonkeyPatch
     )
     assert result.mind_quality == "fallback_contract_only"
     assert result.brief.mind_authorized_for_stance_skip is False
+    machine = result.brief.machine_contract
+    assert machine.get("mind.llm_synthesis_enabled") is True
+    assert machine.get("mind.llm_synthesis_attempted") is True
+    assert machine.get("mind.llm_synthesis_failed_phase") == "semantic_synthesis"
+    assert machine.get("mind.llm_synthesis_error_code") == "semantic_synthesis_failed"
+    assert machine.get("mind.llm_synthesis_error") == "fake_exhausted"
+    assert machine.get("mind.authorized_for_stance_skip") is False
+    assert machine.get("mind.authorized_for_stance_use") is False
+    telemetry = machine.get("mind.phase_telemetry") or []
+    assert any(t.get("phase_name") == "semantic_synthesis" for t in telemetry)
+    assert any(d.startswith("llm_fail_open:") for d in result.diagnostics)
+
+
+def test_source_tag_semantic_fail_open_preserves_phase_telemetry(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.engine import run_mind
+    from app.llm_client import FakeMindLLMClient, set_llm_client_override
+    from app.settings import settings
+    from orion.mind.v1 import MindRunRequestV1, MindRunPolicyV1
+
+    monkeypatch.setattr(settings, "MIND_LLM_SYNTHESIS_ENABLED", True)
+    set_llm_client_override(
+        FakeMindLLMClient([_semantic_payload(claim_label="identity_yaml", evidence_ref="current_turn:0")])
+    )
+    req = MindRunRequestV1(
+        correlation_id=str(uuid4()),
+        snapshot_inputs={"user_text": "hello"},
+        policy=MindRunPolicyV1(n_loops_max=1, wall_time_ms_max=60_000),
+    )
+    result = run_mind(
+        req,
+        router_profiles_dir=Path(__file__).resolve().parents[1] / "app" / "config",
+        snapshot_max_bytes=512_000,
+        mind_settings=settings,
+    )
+    machine = result.brief.machine_contract
+    assert machine.get("mind.llm_synthesis_attempted") is True
+    assert machine.get("mind.llm_synthesis_failed_phase") == "semantic_synthesis"
+    assert machine.get("mind.llm_synthesis_error_code") == "semantic_synthesis_failed"
+    telemetry = machine.get("mind.phase_telemetry") or []
+    sem = next(t for t in telemetry if t.get("phase_name") == "semantic_synthesis")
+    assert sem.get("ok") is True
+    assert sem.get("validation_ok") is False
+    assert result.mind_quality == "fallback_contract_only"
+
+
+def test_disabled_llm_path_has_no_attempted_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.engine import run_mind
+    from app.settings import settings
+    from orion.mind.v1 import MindRunRequestV1, MindRunPolicyV1
+
+    monkeypatch.setattr(settings, "MIND_LLM_SYNTHESIS_ENABLED", False)
+    req = MindRunRequestV1(
+        correlation_id=str(uuid4()),
+        snapshot_inputs={"user_text": "hello"},
+        policy=MindRunPolicyV1(n_loops_max=1, wall_time_ms_max=60_000),
+    )
+    result = run_mind(
+        req,
+        router_profiles_dir=Path(__file__).resolve().parents[1] / "app" / "config",
+        snapshot_max_bytes=512_000,
+        mind_settings=settings,
+    )
+    machine = result.brief.machine_contract
+    assert "mind.llm_synthesis_attempted" not in machine
+    assert machine.get("mind.llm_synthesis_enabled") is not True
+    assert not any(d.startswith("llm_fail_open:") for d in result.diagnostics)

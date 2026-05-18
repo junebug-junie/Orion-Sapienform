@@ -215,6 +215,16 @@ class Settings(BaseSettings):
         alias="TIMEOUT_SEC",
         description="Bus RPC wait (cortex gateway, TTS, …). Should exceed gateway orch timeout for long LLM runs.",
     )
+    HUB_STT_TIMEOUT_SEC: float = Field(
+        default=120.0,
+        alias="HUB_STT_TIMEOUT_SEC",
+        description="Hub bus RPC wait for speech-to-text (should exceed whisper STT worker timeout).",
+    )
+    HUB_TTS_TIMEOUT_SEC: float = Field(
+        default=180.0,
+        alias="HUB_TTS_TIMEOUT_SEC",
+        description="Hub bus RPC wait for text-to-speech (should exceed whisper TTS synth worker timeout).",
+    )
 
 
     # --- Hub Prompt Context (UI-side rolling history) ---
@@ -304,11 +314,15 @@ class Settings(BaseSettings):
     GRAPHDB_PASS: str = Field(default="", alias="GRAPHDB_PASS")
     MEMORY_GRAPH_DEFAULT_NAMED_GRAPH: str = Field(default="", alias="MEMORY_GRAPH_DEFAULT_NAMED_GRAPH")
 
-    # POST /api/memory/graph/suggest — cortex route fallback (mode stays brain; quick uses options.llm_route)
-    MEMORY_GRAPH_SUGGEST_PRIMARY_ROUTE: str = Field(default="brain", alias="MEMORY_GRAPH_SUGGEST_PRIMARY_ROUTE")
-    MEMORY_GRAPH_SUGGEST_FALLBACK_ROUTE: str = Field(default="quick", alias="MEMORY_GRAPH_SUGGEST_FALLBACK_ROUTE")
-    MEMORY_GRAPH_SUGGEST_BRAIN_TIMEOUT_SEC: float = Field(default=180.0, alias="MEMORY_GRAPH_SUGGEST_BRAIN_TIMEOUT_SEC")
-    MEMORY_GRAPH_SUGGEST_QUICK_TIMEOUT_SEC: float = Field(default=120.0, alias="MEMORY_GRAPH_SUGGEST_QUICK_TIMEOUT_SEC")
+    # POST /api/memory/graph/suggest — grounded Quick primary, Brain escalation on hard failures
+    MEMORY_GRAPH_SUGGEST_PRIMARY_ROUTE: str = Field(default="quick", alias="MEMORY_GRAPH_SUGGEST_PRIMARY_ROUTE")
+    MEMORY_GRAPH_SUGGEST_ESCALATION_ROUTE: str = Field(default="brain", alias="MEMORY_GRAPH_SUGGEST_ESCALATION_ROUTE")
+    MEMORY_GRAPH_SUGGEST_ENABLE_ESCALATION: bool = Field(default=True, alias="MEMORY_GRAPH_SUGGEST_ENABLE_ESCALATION")
+    MEMORY_GRAPH_SUGGEST_INCLUDE_GROUNDING: bool = Field(default=True, alias="MEMORY_GRAPH_SUGGEST_INCLUDE_GROUNDING")
+    MEMORY_GRAPH_SUGGEST_BRAIN_TIMEOUT_SEC: float = Field(default=20.0, alias="MEMORY_GRAPH_SUGGEST_BRAIN_TIMEOUT_SEC")
+    MEMORY_GRAPH_SUGGEST_QUICK_TIMEOUT_SEC: float = Field(default=8.0, alias="MEMORY_GRAPH_SUGGEST_QUICK_TIMEOUT_SEC")
+    # Deprecated aliases (read by legacy env only)
+    MEMORY_GRAPH_SUGGEST_FALLBACK_ROUTE: str = Field(default="brain", alias="MEMORY_GRAPH_SUGGEST_FALLBACK_ROUTE")
     MEMORY_GRAPH_SUGGEST_ENABLE_FALLBACK: bool = Field(default=True, alias="MEMORY_GRAPH_SUGGEST_ENABLE_FALLBACK")
 
     @property

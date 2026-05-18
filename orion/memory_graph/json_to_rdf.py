@@ -97,6 +97,9 @@ def draft_to_graph(
         g.add((node, RDF.type, ORIONMEM.TypedEntity))
         g.add((node, RDFS.label, Literal(ent.label)))
         g.add((node, ORIONMEM.entityKind, Literal(ent.entityKind)))
+        for sf in ent.surfaceForms or []:
+            if sf:
+                g.add((node, ORIONMEM.surfaceForm, Literal(sf)))
         if ent.generalizes_to:
             g.add((node, ORIONMEM.generalizationOf, eb(ent.generalizes_to)))
         if revision_batch:
@@ -113,7 +116,7 @@ def draft_to_graph(
             g.add((snode, ORIONMEM.stimulusEntity, eb(sit.stimulus_entity_id)))
         for ae in sit.about_entity_ids:
             g.add((snode, ORIONMEM.aboutEntity, eb(ae)))
-        for ta in sit.target_of_negative_affect_ids:
+        for ta in sit.target_entity_ids:
             g.add((snode, ORIONMEM.targetOfNegativeAffect, eb(ta)))
         if sit.affectLabel:
             g.add((snode, ORIONMEM.affectLabel, Literal(sit.affectLabel)))
@@ -128,8 +131,9 @@ def draft_to_graph(
         if revision_batch:
             g.add((snode, ORIONMEM.revisionBatch, Literal(revision_batch)))
 
-    for disp in draft.dispositions:
-        dnode = eb(disp.id)
+    for idx, disp in enumerate(draft.dispositions):
+        disp_id = disp.id or f"urn:uuid:disposition-{idx:04d}"
+        dnode = eb(disp_id)
         g.add((dnode, RDF.type, ORIONMEM.AffectiveDisposition))
         g.add((dnode, ORIONMEM.trustPolarity, Literal(disp.trustPolarity)))
         g.add((dnode, ORIONMEM.dispositionTarget, eb(disp.target_id)))

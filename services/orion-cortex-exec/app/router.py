@@ -134,6 +134,42 @@ def _looks_like_internal_planning(text: str) -> bool:
     return bool(_PLANNING_TEXT_RE.search(head))
 
 
+_ORION_NAME = r"or[ií\u00ed]on"
+_IDENTITY_BOUNDARY_REPAIRS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(rf"\byou['\u2019]re\s+{_ORION_NAME}\b", re.IGNORECASE), "You're Oríon"),
+    (re.compile(rf"\byou\s+are\s+{_ORION_NAME}\b", re.IGNORECASE), "You are Oríon"),
+    (re.compile(rf"\byoure\s+{_ORION_NAME}\b", re.IGNORECASE), "youre orion"),
+    (re.compile(rf"\byour\s+name\s+is\s+{_ORION_NAME}\b", re.IGNORECASE), "your name is Orion"),
+)
+_IDENTITY_BOUNDARY_ASSISTANT_CLAIM = "I'm Oríon"
+
+
+def _apply_chat_general_identity_boundary_guard(
+    text: str,
+    *,
+    verb_name: str | None,
+) -> tuple[str, dict[str, Any]]:
+    diagnostics: dict[str, Any] = {
+        "identity_boundary_applied": False,
+        "identity_boundary_violations": [],
+    }
+    if str(verb_name or "").strip().lower() != "chat_general":
+        return text, diagnostics
+    candidate = str(text or "")
+    if not candidate.strip():
+        return text, diagnostics
+    violations: list[str] = []
+    repaired = candidate
+    for pattern, label in _IDENTITY_BOUNDARY_REPAIRS:
+        if pattern.search(repaired):
+            violations.append(label)
+            repaired = pattern.sub(_IDENTITY_BOUNDARY_ASSISTANT_CLAIM, repaired)
+    if violations:
+        diagnostics["identity_boundary_applied"] = True
+        diagnostics["identity_boundary_violations"] = violations
+    return repaired, diagnostics
+
+
 def _provider_completion_meta(payload: dict[str, Any]) -> dict[str, Any]:
     raw = payload.get("raw") if isinstance(payload.get("raw"), dict) else {}
     usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
@@ -393,6 +429,26 @@ def _autonomy_state_preview(ctx: Dict[str, Any]) -> Dict[str, Any] | None:
     if not any(preview.values()):
         return None
     return preview
+
+
+def _situation_grounding_metadata_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    metadata: Dict[str, Any] = {}
+    if isinstance(ctx.get("situation_brief"), dict):
+        metadata["situation_brief"] = ctx.get("situation_brief")
+    if isinstance(ctx.get("situation_prompt_fragment"), dict) and ctx.get("situation_prompt_fragment"):
+        metadata["situation_prompt_fragment"] = ctx.get("situation_prompt_fragment")
+    if isinstance(ctx.get("presence_context"), dict):
+        metadata["presence_context"] = ctx.get("presence_context")
+    presence_ctx = ctx.get("presence_context") if isinstance(ctx.get("presence_context"), dict) else {}
+    metadata["presence_context_present"] = bool(presence_ctx)
+    metadata["audience_mode"] = str(presence_ctx.get("audience_mode") or "solo")
+    fragment = ctx.get("situation_prompt_fragment")
+    metadata["situation_fragment_present"] = isinstance(fragment, dict) and bool(fragment)
+    if isinstance(ctx.get("situation_affordances"), list):
+        metadata["situation_affordances"] = ctx.get("situation_affordances")
+    if ctx.get("temporal_phase") is not None:
+        metadata["temporal_phase"] = ctx.get("temporal_phase")
+    return metadata
 
 
 def _autonomy_payload_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
@@ -978,8 +1034,17 @@ class PlanRunner:
                 break
 
         final_text, final_text_diag = _extract_final_text(step_results, verb_name=plan.verb_name)
+        if plan.verb_name == "chat_general" and isinstance(final_text, str) and final_text.strip():
+            final_text, identity_diag = _apply_chat_general_identity_boundary_guard(
+                final_text,
+                verb_name=plan.verb_name,
+            )
+            final_text_diag.update(identity_diag)
+            if identity_diag.get("identity_boundary_applied"):
+                final_text_diag["result_len"] = len(final_text)
+                final_text_diag["final_len"] = len(final_text)
         logger.info(
-            "final_text_assembly corr_id=%s verb=%s source_service=%s source_field=%s think_tags_detected=%s think_full_block_detected=%s think_close_tag_only_detected=%s think_stripping_applied=%s planning_stripping_applied=%s planning_lines_dropped=%s planning_candidate_rejected=%s planning_candidate_rejection_reason=%s provider_has_reasoning_content=%s provider_has_reasoning_trace=%s provider_reasoning_available=%s inline_think_extracted=%s provider_completion_tokens=%s provider_finish_reason=%s truncation_detected=%s structured_output_sanitized=%s structured_output_rejected=%s structured_json_extraction_attempted=%s candidates=%s rejected_candidates=%s candidate_fields_considered=%s raw_len=%s clean_len=%s final_len=%s result_len=%s",
+            "final_text_assembly corr_id=%s verb=%s source_service=%s source_field=%s think_tags_detected=%s think_full_block_detected=%s think_close_tag_only_detected=%s think_stripping_applied=%s planning_stripping_applied=%s planning_lines_dropped=%s planning_candidate_rejected=%s planning_candidate_rejection_reason=%s provider_has_reasoning_content=%s provider_has_reasoning_trace=%s provider_reasoning_available=%s inline_think_extracted=%s provider_completion_tokens=%s provider_finish_reason=%s truncation_detected=%s structured_output_sanitized=%s structured_output_rejected=%s structured_json_extraction_attempted=%s candidates=%s rejected_candidates=%s candidate_fields_considered=%s identity_boundary_applied=%s identity_boundary_violations=%s raw_len=%s clean_len=%s final_len=%s result_len=%s",
             correlation_id,
             plan.verb_name,
             final_text_diag.get("source_service"),
@@ -1005,6 +1070,8 @@ class PlanRunner:
             final_text_diag.get("candidate_count"),
             final_text_diag.get("rejected_candidate_count"),
             final_text_diag.get("candidate_fields_considered"),
+            final_text_diag.get("identity_boundary_applied"),
+            final_text_diag.get("identity_boundary_violations"),
             final_text_diag.get("raw_len"),
             final_text_diag.get("clean_len"),
             final_text_diag.get("final_len"),
@@ -1024,6 +1091,8 @@ class PlanRunner:
             "capsule_filtered_reason": ctx.get("capsule_filtered_reason"),
             "stance_world_context_items_used": ctx.get("stance_world_context_items_used"),
             "politics_context_suppressed": bool(ctx.get("politics_context_suppressed")),
+            "identity_boundary_applied": bool(final_text_diag.get("identity_boundary_applied")),
+            "identity_boundary_violations": final_text_diag.get("identity_boundary_violations"),
         }
         if overall_status == "success" and soft_failure:
             overall_status = "partial"
@@ -1104,16 +1173,7 @@ class PlanRunner:
                 len(metacog_traces) == 0,
             )
         metadata = _autonomy_payload_from_ctx(ctx)
-        if isinstance(ctx.get("situation_brief"), dict):
-            metadata["situation_brief"] = ctx.get("situation_brief")
-        if isinstance(ctx.get("situation_prompt_fragment"), dict) and ctx.get("situation_prompt_fragment"):
-            metadata["situation_prompt_fragment"] = ctx.get("situation_prompt_fragment")
-        if isinstance(ctx.get("presence_context"), dict):
-            metadata["presence_context"] = ctx.get("presence_context")
-        if isinstance(ctx.get("situation_affordances"), list):
-            metadata["situation_affordances"] = ctx.get("situation_affordances")
-        if ctx.get("temporal_phase") is not None:
-            metadata["temporal_phase"] = ctx.get("temporal_phase")
+        metadata.update(_situation_grounding_metadata_from_ctx(ctx))
         mark_orion_turn(str(ctx.get("session_id") or "global"))
 
         return PlanExecutionResult(

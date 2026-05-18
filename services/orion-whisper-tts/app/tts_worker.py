@@ -113,7 +113,10 @@ async def process_tts_request(
             engine = get_tts_engine()
             return engine.synthesize_to_b64(request_data.text)
 
-        audio_b64 = await loop.run_in_executor(None, _synthesize)
+        audio_b64 = await asyncio.wait_for(
+            loop.run_in_executor(None, _synthesize),
+            timeout=float(settings.whisper_tts_synth_timeout_sec),
+        )
 
         # 3. Reply
         if is_legacy:

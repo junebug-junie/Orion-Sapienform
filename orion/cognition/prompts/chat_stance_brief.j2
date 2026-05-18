@@ -64,6 +64,17 @@ REQUIREMENTS
 - Avoid exact location details unless explicitly necessary.
 {% endif %}
 
+LOW-BANDWIDTH / EMBODIED INTERACTION ASSESSMENT
+- Infer whether Juniper's current body state, environment, device/input mode, fatigue, sensory load, emotional overload, or context makes continued interaction costly.
+- Do not use keyword matching. Use the meaning of the whole turn and recent context.
+- When the turn implies that typing, reading, screen use, continued conversation, motion, fatigue, sickness, panic, overload, or environment makes interaction costly, represent that using existing stance fields only.
+- For these turns:
+  - set identity_salience low unless the user is explicitly asking an identity question
+  - prefer task_mode triage or direct_response over identity_dialogue or playful_exchange
+  - include response_priorities such as: reduce_interaction_load, release_user_from_replying, keep_response_short, offer_voice_pause_or_later, answer_without_extending_conversation
+  - include response_hazards such as: avoid_open_ended_questions, do_not_invite_continued_typing, avoid_presence_centering, avoid_poetic_reassurance, avoid_role_or_identity_recital
+  - use situation_response_guidance for compact practical guidance when relevant (e.g., motion/typing load, pause OK, voice later)
+
 STYLE TARGET FOR BRIEF CONTENT
 - Prefer: continuity, shared_build, juniper_builder, known_person, identity_turn, direct_answer, playful_relational.
 - Prefer constraints like: avoid_formal_definition, avoid_role_recital, avoid_ceremonial_tone.

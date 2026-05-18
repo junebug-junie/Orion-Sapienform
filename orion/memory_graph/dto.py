@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class EdgeDraft(BaseModel):
@@ -29,7 +29,11 @@ class SituationDraft(BaseModel):
     label: Optional[str] = None
     stimulus_entity_id: Optional[str] = None
     about_entity_ids: List[str] = Field(default_factory=list)
-    target_of_negative_affect_ids: List[str] = Field(default_factory=list)
+    target_entity_ids: List[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("target_entity_ids", "target_of_negative_affect_ids"),
+        serialization_alias="target_entity_ids",
+    )
     affectLabel: Optional[str] = Field(None, alias="affectLabel")
     timeQualitative: Optional[str] = Field(None, alias="timeQualitative")
     occurredAt: Optional[str] = None
@@ -42,13 +46,14 @@ class EntityDraft(BaseModel):
     id: str
     label: str
     entityKind: str = Field(alias="entityKind")
+    surfaceForms: List[str] = Field(default_factory=list, alias="surfaceForms")
     generalizes_to: Optional[str] = Field(None, alias="generalizes_to")
 
 
 class DispositionDraft(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    id: str
+    id: Optional[str] = None
     holder_id: str = Field(alias="holder_id")
     target_id: str = Field(alias="target_id")
     trustPolarity: str = Field(alias="trustPolarity")
@@ -56,7 +61,7 @@ class DispositionDraft(BaseModel):
 
 
 class SuggestDraftV1(BaseModel):
-    """Appendix C draft JSON (+ optional fields used by the Joey/cats exemplar)."""
+    """Memory-graph suggest JSON contract (orionmem-2026-05)."""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 

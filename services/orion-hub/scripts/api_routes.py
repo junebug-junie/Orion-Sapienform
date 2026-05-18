@@ -1822,15 +1822,13 @@ async def handle_chat_request(
     )
     routed_payload = dict(payload)
     routed_payload["no_write"] = bool(no_write)
-    if "presence_context" not in routed_payload:
-        try:
-            from .main import presence_context_store
+    try:
+        from .main import presence_context_store
+        from .presence_session import inject_session_presence
 
-            stored_presence = presence_context_store.get(session_id) if presence_context_store else None
-            if stored_presence:
-                routed_payload["presence_context"] = stored_presence
-        except Exception:
-            pass
+        routed_payload = inject_session_presence(routed_payload, session_id, presence_context_store)
+    except Exception:
+        pass
     routed_payload["mutation_cognition_context"] = build_mutation_cognition_context(store=SUBSTRATE_MUTATION_STORE)
     try:
         req, route_debug, _ = build_chat_request(

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from app.router import _extract_final_text, _extract_reasoning_payload, _should_fail_empty_runtime_skill_output
+from app.router import (
+    _extract_final_text,
+    _extract_reasoning_payload,
+    _should_fail_empty_runtime_skill_output,
+)
 from orion.schemas.cortex.schemas import StepExecutionResult
 
 
@@ -237,6 +241,15 @@ def test_runtime_skill_extracts_terminal_text_from_final_text_field() -> None:
     assert final_text == "{\"dry_run\":true,\"matched_container_count\":4}"
     assert diag["source_field"] == "final_text"
     assert diag["result_len"] > 0
+
+
+def test_extract_final_text_leaves_identity_inversion_for_post_extract_guard() -> None:
+    final_text, diag = _extract_final_text(
+        [_step({"content": "You're Oríon. I'm here."})],
+        verb_name="chat_general",
+    )
+    assert final_text.startswith("You're Oríon")
+    assert not diag.get("identity_boundary_applied")
 
 
 def test_runtime_skill_falls_back_to_status_and_error_when_terminal_text_missing() -> None:

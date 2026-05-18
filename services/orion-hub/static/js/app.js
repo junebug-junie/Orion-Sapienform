@@ -9332,6 +9332,7 @@ loadDismissedIds();
           }
           if (d.state) { orionState = d.state; updateStatusBasedOnState(); }
           if (d.audio_response) { audioQueue.push(d.audio_response); processAudioQueue(); }
+          if (d.tts_error) appendMessage('System', `TTS warning: ${d.tts_error}`, 'text-yellow-400');
           if (d.error) appendMessage('System', `Error: ${d.error}`, 'text-red-400');
           if (d.biometrics) updateBiometricsPanel(d.biometrics);
           if (d.kind === 'notification' && d.notification) {
@@ -9532,8 +9533,6 @@ loadDismissedIds();
       await loadPresenceContext();
     });
   }
-  loadPresenceContext();
-
   async function submitExplicitChatText(text, opts = {}) {
     const value = String(text || '').trim();
     if (!value) return;
@@ -9684,6 +9683,7 @@ loadDismissedIds();
                mode: currentMode,
                session_id: orionSessionId,
                browser_client_id: ensureBrowserClientId(),
+               disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
                no_write: noWriteToggle ? noWriteToggle.checked : false,
                use_recall: recallToggle ? recallToggle.checked : true,
                recall_mode: recallModeSelect && recallModeSelect.value !== "auto" ? recallModeSelect.value : null,
@@ -10009,6 +10009,7 @@ loadDismissedIds();
   (async () => {
       // 1. Session
       await initSession();
+      await loadPresenceContext();
       // 2. Library (Safe)
       await loadCognitionLibrary();
       // 3. WS

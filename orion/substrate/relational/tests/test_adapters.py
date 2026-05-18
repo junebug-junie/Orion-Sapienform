@@ -257,6 +257,10 @@ class TestRecallAnchorRouting:
         from orion.substrate.relational.adapters.recall import _anchor_for_fragment
         assert _anchor_for_fragment({"subject": "juniper recall"}) == "juniper"
 
+    def test_juniper_from_tags(self):
+        from orion.substrate.relational.adapters.recall import _anchor_for_fragment
+        assert _anchor_for_fragment({"tags": ["juniper", "chat_timeline"]}) == "juniper"
+
     def test_relationship_routes_to_relationship(self):
         from orion.substrate.relational.adapters.recall import _anchor_for_fragment
         assert _anchor_for_fragment({"subject": "relationship memory"}) == "relationship"
@@ -265,6 +269,88 @@ class TestRecallAnchorRouting:
         from orion.substrate.relational.adapters.recall import _anchor_for_fragment
         assert _anchor_for_fragment({"subject": "orion self"}) == "orion"
         assert _anchor_for_fragment({}) == "orion"
+
+
+class TestRecallSqlTimelineMapping:
+    def test_chat_timeline_maps_to_event(self):
+        ctx = {
+            "recall_bundle": {
+                "fragments": [
+                    {
+                        "source": "sql_timeline",
+                        "source_ref": "chat_history_log",
+                        "tags": ["chat_timeline"],
+                        "snippet": "User: hi\nOrion: hello",
+                    }
+                ]
+            }
+        }
+        record = map_recall_bundle_to_substrate(ctx)
+        assert record is not None
+        events = [n for n in record.nodes if n.node_kind == "event"]
+        assert len(events) == 1
+        assert events[0].event_type == "chat_timeline"
+        assert events[0].metadata.get("source_ref") == "chat_history_log"
+        assert events[0].metadata.get("tags") == ["chat_timeline"]
+        assert events[0].metadata.get("snippet") == "User: hi\nOrion: hello"
+
+    def test_collapse_mirror_maps(self):
+        ctx = {
+            "recall_bundle": {
+                "fragments": [
+                    {
+                        "source": "sql_timeline",
+                        "source_ref": "collapse_mirror",
+                        "snippet": "mirror row text",
+                    }
+                ]
+            }
+        }
+        record = map_recall_bundle_to_substrate(ctx)
+        assert record is not None
+        events = [n for n in record.nodes if n.node_kind == "event"]
+        assert events[0].event_type == "collapse_mirror"
+
+    def test_explicit_tension_tags_map_conservatively(self):
+        ctx = {
+            "recall_bundle": {
+                "fragments": [
+                    {
+                        "source": "sql_timeline",
+                        "tags": ["tension", "turn_effect"],
+                        "snippet": "pressure noted explicitly",
+                    }
+                ]
+            }
+        }
+        record = map_recall_bundle_to_substrate(ctx)
+        assert record is not None
+        tensions = [n for n in record.nodes if n.node_kind == "tension"]
+        assert len(tensions) == 1
+
+    def test_empty_snippet_dropped_with_reason(self):
+        ctx = {"recall_bundle": {"fragments": [{"source": "sql_timeline", "snippet": ""}]}}
+        assert map_recall_bundle_to_substrate(ctx) is None
+
+    def test_unsupported_source_dropped(self):
+        ctx = {"recall_bundle": {"fragments": [{"source": "vector", "snippet": "should not map"}]}}
+        assert map_recall_bundle_to_substrate(ctx) is None
+
+    def test_adapter_diagnostics_on_first_node(self):
+        ctx = {
+            "recall_bundle": {
+                "fragments": [
+                    {"source": "journal", "snippet": "a"},
+                    {"source": "sql_timeline", "tags": ["chat_timeline"], "snippet": "b"},
+                ]
+            }
+        }
+        record = map_recall_bundle_to_substrate(ctx)
+        assert record is not None
+        diag = record.nodes[0].metadata.get("recall_adapter") or {}
+        assert diag.get("recall_fragments_seen") == 2
+        assert diag.get("recall_fragments_mapped") == 2
+        assert "sql_timeline" in (diag.get("original_sources_seen") or [])
 
 
 # ---------------------------------------------------------------------------

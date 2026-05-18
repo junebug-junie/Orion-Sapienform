@@ -10,7 +10,16 @@ from orion.core.bus.bus_schemas import (
     RecallRequestPayload,
     RecallResultPayload,
 )
-from orion.core.contracts.recall import RecallDecisionV1, RecallReplyV1, RecallQueryV1
+from orion.core.contracts.recall import (
+    RecallAdapterDiagnosticsV1,
+    RecallDebugV1,
+    RecallDecisionV1,
+    RecallQueryV1,
+    RecallReplyV1,
+    RecallSourceGatingV1,
+    RecallVectorPolicyPathV1,
+    RecallVectorPolicyV1,
+)
 from orion.core.verbs.models import VerbEffectV1, VerbRequestV1, VerbResultV1
 from orion.schemas.actions.daily import DailyMetacogV1, DailyPulseV1
 from orion.schemas.actions.mesh_ops import (
@@ -506,6 +515,11 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "RecallDecisionV1": RecallDecisionV1,
     "RecallReplyV1": RecallReplyV1,
     "RecallQueryV1": RecallQueryV1,
+    "RecallDebugV1": RecallDebugV1,
+    "RecallVectorPolicyV1": RecallVectorPolicyV1,
+    "RecallVectorPolicyPathV1": RecallVectorPolicyPathV1,
+    "RecallSourceGatingV1": RecallSourceGatingV1,
+    "RecallAdapterDiagnosticsV1": RecallAdapterDiagnosticsV1,
     "MindRunArtifactV1": MindRunArtifactV1,
     "SubstrateTierOutcomesPayloadV1": SubstrateTierOutcomesPayloadV1,
     "CortexClientRequest": CortexClientRequest,

@@ -33,6 +33,7 @@ from scripts.trace_payloads import extract_agent_trace_payload
 from scripts.autonomy_payloads import extract_autonomy_payload
 from scripts.workflow_payloads import extract_workflow_payload
 from scripts.mutation_cognition_context import build_mutation_cognition_context
+from scripts.presence_session import inject_session_presence
 from scripts.warm_start import mini_personality_summary
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
 from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
@@ -380,13 +381,24 @@ async def drain_queue(websocket: WebSocket, queue: asyncio.Queue, cache: Optiona
 async def run_tts_remote(text: str, tts_client, queue: asyncio.Queue):
     if not text.strip() or not tts_client:
         return
+    logger.info("voice.tts.start text_len=%d", len(text))
     try:
         req = TTSRequestPayload(text=text)
-        result: TTSResultPayload = await tts_client.speak(req)
+        result: TTSResultPayload = await asyncio.wait_for(
+            tts_client.speak(req),
+            timeout=float(settings.HUB_TTS_TIMEOUT_SEC),
+        )
         msg = {"audio_response": result.audio_b64, "text": text}
         await queue.put(msg)
+        logger.info("voice.tts.done text_len=%d", len(text))
+    except asyncio.TimeoutError:
+        err = f"TTS timed out after {settings.HUB_TTS_TIMEOUT_SEC}s"
+        logger.error("voice.tts.error %s", err)
+        await queue.put({"tts_error": err, "text": text, "state": "idle"})
     except Exception as e:
-        logger.error(f"TTS Remote Failed: {e}")
+        err = str(e) or "TTS synthesis failed"
+        logger.error("voice.tts.error %s", err, exc_info=True)
+        await queue.put({"tts_error": err, "text": text, "state": "idle"})
 
 
 async def biometrics_heartbeat(
@@ -508,23 +520,52 @@ async def websocket_endpoint(websocket: WebSocket):
                 transcript = possible_text
                 is_text_input = True
             elif data.get("audio"):
+                logger.info("voice.ws.audio_received session_id=%s", session_id)
                 if tts_client:
                     try:
                         await websocket.send_json(
                             await _with_biometrics({"state": "processing"}, cache=biometrics_cache)
                         )
                         stt_req = STTRequestPayload(audio_b64=data.get("audio"))
-                        stt_result = await tts_client.transcribe(stt_req)
+                        logger.info("voice.stt.start session_id=%s", session_id)
+                        stt_result = await asyncio.wait_for(
+                            tts_client.transcribe(stt_req),
+                            timeout=float(settings.HUB_STT_TIMEOUT_SEC),
+                        )
                         transcript = stt_result.text
-                    except Exception as e:
-                        logger.error(f"STT Error: {e}")
+                        logger.info(
+                            "voice.stt.done session_id=%s transcript_len=%d",
+                            session_id,
+                            len(transcript or ""),
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error(
+                            "voice.stt.error session_id=%s err=STT timed out after %ss",
+                            session_id,
+                            settings.HUB_STT_TIMEOUT_SEC,
+                        )
                         await websocket.send_json(
-                            await _with_biometrics({"error": "Transcription failed"}, cache=biometrics_cache)
+                            await _with_biometrics(
+                                {"error": "Transcription timed out", "state": "idle"},
+                                cache=biometrics_cache,
+                            )
+                        )
+                        continue
+                    except Exception as e:
+                        logger.error("voice.stt.error session_id=%s err=%s", session_id, e)
+                        await websocket.send_json(
+                            await _with_biometrics(
+                                {"error": "Transcription failed", "state": "idle"},
+                                cache=biometrics_cache,
+                            )
                         )
                         continue
                 else:
                     await websocket.send_json(
-                        await _with_biometrics({"error": "STT service unavailable"}, cache=biometrics_cache)
+                        await _with_biometrics(
+                            {"error": "STT service unavailable", "state": "idle"},
+                            cache=biometrics_cache,
+                        )
                     )
                     continue
 
@@ -542,7 +583,10 @@ async def websocket_endpoint(websocket: WebSocket):
             # 2. Chat Execution
             if not cortex_client:
                 await websocket.send_json(
-                    await _with_biometrics({"error": "Cortex disconnected (Bus offline)"}, cache=biometrics_cache)
+                    await _with_biometrics(
+                        {"error": "Cortex disconnected (Bus offline)", "state": "idle"},
+                        cache=biometrics_cache,
+                    )
                 )
                 continue
 
@@ -572,10 +616,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 turns=turns,
             )
             data = dict(data)
-            if "presence_context" not in data and presence_context_store:
-                stored_presence = presence_context_store.get(str(session_id or "anonymous"))
-                if stored_presence:
-                    data["presence_context"] = stored_presence
+            data = inject_session_presence(data, str(session_id or "anonymous"), presence_context_store)
             data["mutation_cognition_context"] = build_mutation_cognition_context()
             try:
                 chat_req, route_debug, use_recall = build_chat_request(
@@ -719,6 +760,7 @@ async def websocket_endpoint(websocket: WebSocket):
             thinking_source: str = "none"
             explicit_reasoning_trace: Optional[Dict[str, Any]] = None
             try:
+                logger.info("voice.chat.start corr=%s session_id=%s", trace_id, session_id)
                 resp: CortexChatResult = await cortex_client.chat(chat_req, correlation_id=trace_id)
                 orion_response_text = hub_effective_chat_text(resp)
                 if resp.cortex_result and isinstance(resp.cortex_result.recall_debug, dict):
@@ -844,6 +886,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 s = (orion_response_text or "").lstrip()
                 if s.startswith("Orion:"):
                     orion_response_text = s[len("Orion:"):].lstrip()
+                logger.info(
+                    "voice.chat.done corr=%s session_id=%s response_len=%d",
+                    trace_id,
+                    session_id,
+                    len(orion_response_text or ""),
+                )
                 if hasattr(resp, "cortex_result") and resp.cortex_result:
                     trace_verb = str(
                         ((resp.cortex_result.metadata or {}).get("trace_verb") if isinstance(resp.cortex_result.metadata, dict) else None)
@@ -851,9 +899,10 @@ async def websocket_endpoint(websocket: WebSocket):
                         or trace_verb
                     )
             except Exception as e:
-                logger.error(f"Chat RPC Error: {e}")
+                logger.error("voice.chat.error corr=%s session_id=%s err=%s", trace_id, session_id, e)
                 err_payload = await _with_biometrics(
-                    {"error": f"Chat failed: {str(e)}"}, cache=biometrics_cache
+                    {"error": f"Chat failed: {str(e)}", "state": "idle"},
+                    cache=biometrics_cache,
                 )
                 if not await _safe_ws_send_json(websocket, err_payload):
                     logger.info("chat_rpc_error_not_delivered_ws_closed corr=%s", trace_id)

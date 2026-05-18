@@ -7,7 +7,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Union
 from uuid import uuid4
 
 import yaml
@@ -690,13 +690,17 @@ def _llm_machine_contract(
     return machine
 
 
+MindLLMSynthesisOutcome = Union[MindRunResultV1, "MindLLMFailOpenRecord", None]
+
+
 def run_mind_llm_synthesis(
     req: MindRunRequestV1,
     *,
     router_profiles_dir: Path,
     snapshot_max_bytes: int,
     mind_settings: Any,
-) -> MindRunResultV1 | None:
+) -> MindLLMSynthesisOutcome:
+    from .llm_fail_open import MindLLMFailOpenRecord
     from .appraisal import run_active_frontier_judge
     from .budget import MindRunBudget
     from .evidence import build_evidence_pack
@@ -743,14 +747,31 @@ def run_mind_llm_synthesis(
 
     fail_open = bool(getattr(s, "MIND_LLM_FAIL_OPEN_LEGACY", True))
     configured_timeout = float(getattr(s, "MIND_LLM_TIMEOUT_SEC", 90.0))
+    semantic_route = str(getattr(s, "MIND_SEMANTIC_MODEL_ROUTE", "quick"))
+    appraisal_route = str(getattr(s, "MIND_APPRAISAL_MODEL_ROUTE", "metacog"))
+    stance_route = str(getattr(s, "MIND_STANCE_MODEL_ROUTE", "chat"))
+    phase_records: list[MindPhaseTelemetry] = []
 
     def _fail_open_or_error(
         *,
         error_code: str,
         diagnostics: list[str],
-    ) -> MindRunResultV1 | None:
+        failed_phase: str | None = None,
+    ) -> MindRunResultV1 | MindLLMFailOpenRecord:
         if fail_open:
-            return None
+            return MindLLMFailOpenRecord(
+                mind_run_id=mind_run_id,
+                snapshot_hash=snap_hash,
+                error_code=error_code,
+                diagnostics=list(diagnostics),
+                failed_phase=failed_phase,
+                semantic_route=semantic_route,
+                appraisal_route=appraisal_route,
+                stance_route=stance_route,
+                phase_telemetry=list(phase_records),
+                timing_ms_by_phase=dict(phases),
+                fallback_reason=[error_code, *diagnostics[:4]],
+            )
         return _error_result(
             mind_run_id=mind_run_id,
             error_code=error_code,
@@ -760,11 +781,12 @@ def run_mind_llm_synthesis(
         )
 
     if budget.over_budget():
-        return _fail_open_or_error(error_code="loop_budget_exceeded", diagnostics=["wall_time_exceeded_before_llm"])
+        return _fail_open_or_error(
+            error_code="loop_budget_exceeded",
+            diagnostics=["wall_time_exceeded_before_llm"],
+            failed_phase="pre_llm",
+        )
 
-    semantic_route = str(getattr(s, "MIND_SEMANTIC_MODEL_ROUTE", "quick"))
-    appraisal_route = str(getattr(s, "MIND_APPRAISAL_MODEL_ROUTE", "metacog"))
-    stance_route = str(getattr(s, "MIND_STANCE_MODEL_ROUTE", "chat"))
     for phase_name, route in (
         ("semantic_synthesis", semantic_route),
         ("active_frontier_judge", appraisal_route),
@@ -772,11 +794,14 @@ def run_mind_llm_synthesis(
     ):
         route_err = _validate_phase_route(route, phase=phase_name)
         if route_err:
-            return _fail_open_or_error(error_code="invalid_llm_route", diagnostics=[route_err])
+            return _fail_open_or_error(
+                error_code="invalid_llm_route",
+                diagnostics=[route_err],
+                failed_phase=phase_name,
+            )
 
     client = get_llm_client()
     llm_errors: list[str] = []
-    phase_records: list[MindPhaseTelemetry] = []
 
     def _phase_context(phase_name: str) -> MindLLMRequestContext:
         return MindLLMRequestContext(
@@ -800,6 +825,7 @@ def run_mind_llm_synthesis(
         return _fail_open_or_error(
             error_code="loop_budget_exceeded",
             diagnostics=["wall_budget_insufficient_before_semantic"],
+            failed_phase="semantic_synthesis",
         )
 
     t_sem = time.perf_counter()
@@ -820,11 +846,13 @@ def run_mind_llm_synthesis(
         return _fail_open_or_error(
             error_code="loop_budget_exceeded",
             diagnostics=["wall_time_exceeded_after_semantic"],
+            failed_phase="semantic_synthesis",
         )
     if synthesis is None or not synthesis.claims:
         return _fail_open_or_error(
             error_code="semantic_synthesis_failed",
             diagnostics=llm_errors or ["semantic_synthesis_empty"],
+            failed_phase="semantic_synthesis",
         )
 
     frontier = None
@@ -849,6 +877,7 @@ def run_mind_llm_synthesis(
             return _fail_open_or_error(
                 error_code="loop_budget_exceeded",
                 diagnostics=["wall_time_exceeded_after_appraisal"],
+                failed_phase="active_frontier_judge",
             )
     elif synthesis.claims:
         phase_records.append(
@@ -902,7 +931,11 @@ def run_mind_llm_synthesis(
     valid, err = validate_merged_stance_brief_optional(stance_payload)
     if valid is None:
         if bool(getattr(s, "MIND_LLM_FAIL_OPEN_LEGACY", True)):
-            return None
+            return _fail_open_or_error(
+                error_code="stance_handoff_invalid",
+                diagnostics=[err or "invalid_stance_payload", *llm_errors],
+                failed_phase="stance_handoff",
+            )
         return _error_result(
             mind_run_id=mind_run_id,
             error_code="stance_handoff_invalid",
@@ -984,6 +1017,29 @@ def run_mind_llm_synthesis(
     )
 
 
+def _llm_fail_open_from_exception(
+    exc: BaseException,
+    *,
+    req: MindRunRequestV1,
+    mind_settings: Any,
+    snapshot_max_bytes: int,
+) -> "MindLLMFailOpenRecord":
+    from .llm_fail_open import MindLLMFailOpenRecord
+
+    bounded, _ = build_bounded_snapshot_inputs(dict(req.snapshot_inputs or {}), snapshot_max_bytes)
+    return MindLLMFailOpenRecord(
+        mind_run_id=uuid4(),
+        snapshot_hash=hash_snapshot_inputs(bounded),
+        error_code="llm_synthesis_exception",
+        diagnostics=[str(exc)],
+        failed_phase="unknown",
+        semantic_route=str(getattr(mind_settings, "MIND_SEMANTIC_MODEL_ROUTE", "quick")),
+        appraisal_route=str(getattr(mind_settings, "MIND_APPRAISAL_MODEL_ROUTE", "metacog")),
+        stance_route=str(getattr(mind_settings, "MIND_STANCE_MODEL_ROUTE", "chat")),
+        fallback_reason=["llm_synthesis_exception", str(exc)],
+    )
+
+
 def run_mind(
     req: MindRunRequestV1,
     *,
@@ -991,9 +1047,11 @@ def run_mind(
     snapshot_max_bytes: int,
     mind_settings: Any | None = None,
 ) -> MindRunResultV1:
+    from .llm_fail_open import MindLLMFailOpenRecord
     from .settings import settings as default_settings
 
     s = mind_settings if mind_settings is not None else default_settings
+    fail_open_record: MindLLMFailOpenRecord | None = None
     if bool(getattr(s, "MIND_LLM_SYNTHESIS_ENABLED", False)):
         try:
             llm_result = run_mind_llm_synthesis(
@@ -1002,8 +1060,10 @@ def run_mind(
                 snapshot_max_bytes=snapshot_max_bytes,
                 mind_settings=s,
             )
-            if llm_result is not None:
+            if isinstance(llm_result, MindRunResultV1):
                 return llm_result
+            if isinstance(llm_result, MindLLMFailOpenRecord):
+                fail_open_record = llm_result
         except Exception as exc:  # noqa: BLE001
             logger.warning("mind_llm_synthesis_failed correlation_id=%s err=%s", req.correlation_id, exc)
             if not bool(getattr(s, "MIND_LLM_FAIL_OPEN_LEGACY", True)):
@@ -1014,8 +1074,17 @@ def run_mind(
                     diagnostics=[str(exc)],
                     snapshot_hash=hash_snapshot_inputs(dict(req.snapshot_inputs or {})),
                 )
-    return run_mind_deterministic(
+            fail_open_record = _llm_fail_open_from_exception(
+                exc,
+                req=req,
+                mind_settings=s,
+                snapshot_max_bytes=snapshot_max_bytes,
+            )
+    det = run_mind_deterministic(
         req,
         router_profiles_dir=router_profiles_dir,
         snapshot_max_bytes=snapshot_max_bytes,
     )
+    if fail_open_record is not None:
+        return fail_open_record.merge_into_deterministic(det)
+    return det

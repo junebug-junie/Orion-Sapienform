@@ -380,19 +380,24 @@
           } finally {
             if (timerId != null) clearTimeout(timerId);
           }
+          const ui = window.OrionMemoryGraphDraftUI || {};
           const coalesceFn =
-            window.OrionMemoryGraphDraftUI &&
-            typeof window.OrionMemoryGraphDraftUI.coalesceMemoryGraphSuggestEnvelope === "function"
-              ? window.OrionMemoryGraphDraftUI.coalesceMemoryGraphSuggestEnvelope
+            typeof ui.coalesceMemoryGraphSuggestEnvelope === "function"
+              ? ui.coalesceMemoryGraphSuggestEnvelope
               : null;
           const coalesce = coalesceFn ? coalesceFn(data) : null;
+          const emptyFn =
+            typeof ui.emptySuggestDraft === "function"
+              ? ui.emptySuggestDraft
+              : typeof ui.emptyValidSuggestDraft === "function"
+                ? ui.emptyValidSuggestDraft
+                : null;
           const draftText =
             coalesce && typeof coalesce.draftText === "string" && coalesce.draftText.trim()
               ? coalesce.draftText
               : JSON.stringify(
-                  window.OrionMemoryGraphDraftUI &&
-                    typeof window.OrionMemoryGraphDraftUI.emptyValidSuggestDraft === "function"
-                    ? window.OrionMemoryGraphDraftUI.emptyValidSuggestDraft()
+                  emptyFn
+                    ? emptyFn()
                     : {
                         ontology_version: "orionmem-2026-05",
                         utterance_ids: [],
@@ -400,12 +405,22 @@
                         situations: [],
                         edges: [],
                         dispositions: [],
+                        utterance_text_by_id: {},
                       },
                   null,
                   2,
                 );
           draftTa.value = draftText;
           if (memoryDraftViz && memoryDraftViz.refresh) memoryDraftViz.refresh();
+          const statusFn =
+            typeof ui.formatSuggestCoalesceUserStatus === "function"
+              ? ui.formatSuggestCoalesceUserStatus
+              : null;
+          const statusLine = statusFn
+            ? statusFn(coalesce)
+            : coalesce && coalesce.error
+              ? "Extractor failed or returned invalid output. Empty valid draft loaded; see diagnostics."
+              : "Loaded validated SuggestDraftV1 JSON.";
           if (coalesce && coalesce.error) {
             graphSetOut(
               {
@@ -413,8 +428,8 @@
                 error: coalesce.error,
                 diagnostics: coalesce.diagnostics || null,
                 note: bounded.clipped
-                  ? `Suggest failed; draft reset to empty template. Prompt was clipped to ${MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS} chars.`
-                  : "Suggest failed; draft reset to empty template. See diagnostics.",
+                  ? `${statusLine} Prompt was clipped to ${MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS} chars.`
+                  : statusLine,
               },
               true,
             );
@@ -429,8 +444,8 @@
                 coalesce && coalesce.diagnostics ? coalesce.diagnostics.validation_errors : [],
               diagnostics: coalesce ? coalesce.diagnostics : null,
               note: bounded.clipped
-                ? `Draft updated from suggest route. Prompt input was clipped to ${MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS} chars to avoid model gateway timeouts.`
-                : "Draft updated from suggest route.",
+                ? `${statusLine} Prompt input was clipped to ${MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS} chars.`
+                : statusLine,
             },
             false,
           );
@@ -466,31 +481,50 @@
       const v = sessionStorage.getItem("orion_memory_graph_draft_import");
       sessionStorage.removeItem("orion_memory_graph_draft_import");
       if (!v || !draftTa) return;
-      const ui = window.OrionMemoryGraphDraftUI;
-      const parseFn = ui && typeof ui.parseMemoryGraphDraftJson === "function" ? ui.parseMemoryGraphDraftJson : null;
+      const ui = window.OrionMemoryGraphDraftUI || {};
+      const parseFn = typeof ui.parseMemoryGraphDraftJson === "function" ? ui.parseMemoryGraphDraftJson : null;
       const looksFn =
-        ui && typeof ui.looksLikeMemoryGraphDraftObject === "function" ? ui.looksLikeMemoryGraphDraftObject : null;
-      const emptyFn = ui && typeof ui.emptyValidSuggestDraft === "function" ? ui.emptyValidSuggestDraft : null;
+        typeof ui.looksLikeMemoryGraphDraftObject === "function" ? ui.looksLikeMemoryGraphDraftObject : null;
+      const evidenceFn =
+        typeof ui.looksLikeEvidenceEnvelopeOnly === "function" ? ui.looksLikeEvidenceEnvelopeOnly : null;
+      const emptyFn =
+        typeof ui.emptySuggestDraft === "function"
+          ? ui.emptySuggestDraft
+          : typeof ui.emptyValidSuggestDraft === "function"
+            ? ui.emptyValidSuggestDraft
+            : null;
       const parsed = parseFn ? parseFn(v) : { ok: false, object: null };
-      if (parsed.ok && parsed.object && (!looksFn || looksFn(parsed.object))) {
-        draftTa.value = JSON.stringify(parsed.object, null, 2);
+      const obj = parsed.ok && parsed.object ? parsed.object : null;
+      const isEvidence = obj && evidenceFn && evidenceFn(obj);
+      const isDraft = obj && looksFn && looksFn(obj);
+      if (isDraft && !isEvidence) {
+        draftTa.value = JSON.stringify(obj, null, 2);
         if (memoryDraftViz && memoryDraftViz.refresh) memoryDraftViz.refresh();
         graphSetOut(
-          { ok: true, note: "Draft loaded from chat bridge. Review JSON then Validate." },
+          { ok: true, note: "Loaded validated SuggestDraftV1 JSON." },
           false,
         );
         return;
       }
+      const preservedIds = obj && Array.isArray(obj.utterance_ids) ? obj.utterance_ids : [];
+      const preservedText =
+        obj &&
+        obj.utterance_text_by_id &&
+        typeof obj.utterance_text_by_id === "object" &&
+        !Array.isArray(obj.utterance_text_by_id)
+          ? obj.utterance_text_by_id
+          : {};
       draftTa.value = JSON.stringify(
         emptyFn
-          ? emptyFn()
+          ? emptyFn({ utteranceIds: preservedIds, utteranceTextById: preservedText })
           : {
               ontology_version: "orionmem-2026-05",
-              utterance_ids: [],
+              utterance_ids: preservedIds,
               entities: [],
               situations: [],
               edges: [],
               dispositions: [],
+              utterance_text_by_id: preservedText,
             },
         null,
         2,
@@ -499,8 +533,10 @@
       graphSetOut(
         {
           ok: false,
-          error: "invalid_stored_draft_import",
-          note: "Stored bridge draft was not valid memory-graph JSON; replaced with empty template.",
+          error: "invalid_import_not_suggest_draft_v1",
+          note: isEvidence
+            ? "Blocked selected-turn evidence envelope from Draft JSON; evidence is request input, not graph output."
+            : "Extractor failed or returned invalid output. Empty valid draft loaded; see diagnostics.",
         },
         true,
       );

@@ -13,6 +13,7 @@ from .phase_telemetry import MindPhaseTelemetry, phase_telemetry_machine_keys
 _LLM_FAIL_OPEN_ADVISORY_KEYS = (
     "mind.llm_synthesis_enabled",
     "mind.llm_synthesis_attempted",
+    "mind.llm_fail_open_to_deterministic",
     "mind.llm_synthesis_failed_phase",
     "mind.llm_synthesis_error_code",
     "mind.llm_synthesis_error",
@@ -43,6 +44,7 @@ class MindLLMFailOpenRecord:
         patch: dict[str, Any] = {
             "mind.llm_synthesis_enabled": True,
             "mind.llm_synthesis_attempted": True,
+            "mind.llm_fail_open_to_deterministic": True,
             "mind.llm_synthesis_error_code": self.error_code,
             "mind.semantic_route": self.semantic_route,
             "mind.appraisal_route": self.appraisal_route,

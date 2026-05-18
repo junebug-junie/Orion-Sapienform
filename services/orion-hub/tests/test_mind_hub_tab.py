@@ -18,6 +18,7 @@ for candidate in (str(REPO_ROOT), str(HUB_ROOT)):
 
 INDEX_HTML = HUB_ROOT / "templates" / "index.html"
 APP_JS = HUB_ROOT / "static" / "js" / "app.js"
+MIND_PROVENANCE_JS = HUB_ROOT / "static" / "js" / "mind_provenance.js"
 
 
 def test_mind_runs_modal_is_sibling_of_schedule_modal_not_nested() -> None:
@@ -62,3 +63,24 @@ def test_app_js_wires_mind_hash_and_recent_api() -> None:
     assert "context_session_id" in app_js
     assert "meta.sessionId = orionSessionId" in app_js
     assert "payload.context.metadata.mind_enabled = true" in app_js
+    assert "OrionMindProvenance.renderMindProvenanceSections" in app_js
+
+
+def test_mind_provenance_js_exports_normalizers_and_renderers() -> None:
+    mind_js = MIND_PROVENANCE_JS.read_text(encoding="utf-8")
+    index_html = INDEX_HTML.read_text(encoding="utf-8")
+    assert "mind_provenance.js" in index_html
+    for symbol in (
+        "normalizeMindRunProvenance",
+        "normalizeMindDerailments",
+        "normalizeMindPhaseRows",
+        "normalizeMindDecision",
+        "renderMindProvenance",
+        "renderMindDerailmentCallouts",
+        "renderMindPhaseTable",
+        "Where it went off rails",
+        "Cognition path",
+        "Phase provenance",
+        "MIND_PROVENANCE_FIXTURES",
+    ):
+        assert symbol in mind_js, symbol

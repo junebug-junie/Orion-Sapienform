@@ -1160,10 +1160,13 @@ loadDismissedIds();
     const safeStatus = escapeHtml(run.ok ? "ok" : "failed");
     const safeCreated = escapeHtml(formatMindTs(run.created_at_utc));
     parts.push(`<div class="text-[11px] text-gray-400">Run ${safeRunId} · ${safeStatus} · ${safeCreated}</div>`);
+    if (globalThis.OrionMindProvenance && typeof globalThis.OrionMindProvenance.renderMindProvenanceSections === "function") {
+      parts.push(globalThis.OrionMindProvenance.renderMindProvenanceSections(run));
+    }
     parts.push(mindRequestOverviewHtml(reqParsed));
     parts.push(mindResultOverviewHtml(resultParsed));
-    parts.push(`<details class="rounded border border-gray-800 bg-gray-950/40 p-2" open><summary class="cursor-pointer text-[11px] text-gray-300">Decision / brief (JSON)</summary><pre class="mt-2 whitespace-pre-wrap break-words font-mono text-[11px] text-gray-200">${escapeHtml(JSON.stringify(reqPretty, null, 2))}</pre></details>`);
-    parts.push(`<details class="rounded border border-gray-800 bg-gray-950/40 p-2" open><summary class="cursor-pointer text-[11px] text-gray-300">Trajectory / result (JSON)</summary><pre class="mt-2 whitespace-pre-wrap break-words font-mono text-[11px] text-gray-200">${escapeHtml(JSON.stringify(resultPretty, null, 2))}</pre></details>`);
+    parts.push(`<details class="rounded border border-gray-800 bg-gray-950/40 p-2"><summary class="cursor-pointer text-[11px] text-gray-300">Decision / brief (JSON)</summary><pre class="mt-2 whitespace-pre-wrap break-words font-mono text-[11px] text-gray-200">${escapeHtml(JSON.stringify(reqPretty, null, 2))}</pre></details>`);
+    parts.push(`<details class="rounded border border-gray-800 bg-gray-950/40 p-2"><summary class="cursor-pointer text-[11px] text-gray-300">Trajectory / result (JSON)</summary><pre class="mt-2 whitespace-pre-wrap break-words font-mono text-[11px] text-gray-200">${escapeHtml(JSON.stringify(resultPretty, null, 2))}</pre></details>`);
     parts.push(`<details class="rounded border border-gray-800 bg-gray-950/40 p-2"><summary class="cursor-pointer text-[11px] text-gray-300">Raw run payload</summary><pre class="mt-2 whitespace-pre-wrap break-words font-mono text-[11px] text-gray-200">${escapeHtml(JSON.stringify(runForRaw, null, 2))}</pre></details>`);
     mindRunsModalDetails.innerHTML = parts.join("");
   }

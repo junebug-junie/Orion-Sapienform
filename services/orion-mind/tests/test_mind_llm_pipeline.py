@@ -248,6 +248,7 @@ def test_llm_failure_falls_back_to_deterministic(monkeypatch: pytest.MonkeyPatch
     machine = result.brief.machine_contract
     assert machine.get("mind.llm_synthesis_enabled") is True
     assert machine.get("mind.llm_synthesis_attempted") is True
+    assert machine.get("mind.llm_fail_open_to_deterministic") is True
     assert machine.get("mind.llm_synthesis_failed_phase") == "semantic_synthesis"
     assert machine.get("mind.llm_synthesis_error_code") == "semantic_synthesis_failed"
     assert machine.get("mind.llm_synthesis_error") == "fake_exhausted"

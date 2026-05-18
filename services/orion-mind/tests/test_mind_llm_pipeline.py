@@ -291,6 +291,76 @@ def test_source_tag_semantic_fail_open_preserves_phase_telemetry(monkeypatch: py
     assert result.mind_quality == "fallback_contract_only"
 
 
+def test_legacy_semantic_claim_shape_is_normalized() -> None:
+    from app.evidence import build_evidence_pack
+    from app.synthesis import run_semantic_synthesis, try_normalize_legacy_semantic_raw
+    from orion.mind.synthesis_v1 import SemanticSynthesisV1
+
+    legacy_raw = {
+        "schema_version": "mind.semantic_synthesis.v1",
+        "claims": [
+            {
+                "claim": "User shares a casual relational moment.",
+                "evidence_refs": ["current_turn:0"],
+            }
+        ],
+        "suppressed": [],
+    }
+    normalized, did = try_normalize_legacy_semantic_raw(legacy_raw)
+    assert did is True
+    assert normalized is not None
+    synthesis = SemanticSynthesisV1.model_validate(normalized)
+    assert synthesis.claims[0].claim_id.startswith("legacy_")
+    assert synthesis.claims[0].claim_kind == "situation_claim"
+    assert synthesis.diagnostics.notes[-1] == "normalized_from_legacy_claim_shape"
+
+    pack = build_evidence_pack({"user_text": "watching a show with Amanda"})
+
+    class _Client:
+        def request_json(self, **kwargs):  # type: ignore[no-untyped-def]
+            return legacy_raw, None, {"model_used": "quick"}
+
+    result, err, telemetry = run_semantic_synthesis(
+        pack,
+        client=_Client(),  # type: ignore[arg-type]
+        route="quick",
+        model_id="quick",
+        max_tokens=512,
+    )
+    assert err is None
+    assert result is not None
+    assert result.claims
+    assert telemetry.validation_ok is True
+    assert telemetry.ok is True
+    assert "normalized_from_legacy_claim_shape" in result.diagnostics.notes
+
+
+def test_unrecoverable_semantic_shape_fail_opens_with_schema_telemetry() -> None:
+    from app.evidence import build_evidence_pack
+    from app.synthesis import run_semantic_synthesis
+
+    pack = build_evidence_pack({"user_text": "hello"})
+
+    class _Client:
+        def request_json(self, **kwargs):  # type: ignore[no-untyped-def]
+            return {"schema_version": "mind.semantic_synthesis.v1", "claims": [{"foo": "bar"}]}, None, {}
+
+    result, err, telemetry = run_semantic_synthesis(
+        pack,
+        client=_Client(),  # type: ignore[arg-type]
+        route="quick",
+        model_id="quick",
+        max_tokens=512,
+    )
+    assert result is None
+    assert err == "semantic_schema_invalid"
+    assert telemetry.parse_ok is True
+    assert telemetry.validation_ok is False
+    assert telemetry.ok is False
+    assert telemetry.status == "schema_invalid"
+    assert telemetry.error == "semantic_schema_invalid"
+
+
 def test_pre_llm_budget_fail_open_has_attempted_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.budget import MindRunBudget
     from app.engine import run_mind

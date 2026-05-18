@@ -49,7 +49,7 @@
 
   function machineContract(resultParsed) {
     const brief = asObject(resultParsed?.brief);
-    return asObject(brief?.machine_contract) || {};
+    return asObject(brief?.machine_contract) || asObject(resultParsed?.machine_contract) || {};
   }
 
   function phaseTelemetryRecords(mc) {
@@ -153,6 +153,7 @@
       return "not_attempted";
     }
     if (telemetry.skipped) return "skipped";
+    if (telemetry.status === "schema_invalid") return "schema_invalid";
     if (telemetry.ok === false) return "failed";
     if (phaseName === "semantic_synthesis" && telemetry.validation_ok === false) return "filtered";
     if (telemetry.ok === true) return "ok";
@@ -507,6 +508,104 @@
     return `<div class="mb-3 rounded border border-gray-800 bg-gray-950/40 p-3 text-[11px] text-gray-300"><div class="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Exec handoff expectation</div><div class="mt-2">Expected path: <span class="font-mono text-gray-100">${escapeHtml(d.exec_handoff || "unknown")}</span></div><div class="mt-1">mind_skip_stance_synthesis: <span class="font-mono">${d.mind_skip_stance_synthesis ? "true" : "false"}</span></div></div>`;
   }
 
+  function itemCard(title, subtitle, bodyLines, tone) {
+    const toneClass =
+      tone === "semantic"
+        ? "border-indigo-800/60 bg-indigo-950/25"
+        : tone === "frontier"
+          ? "border-violet-800/60 bg-violet-950/25"
+          : tone === "shadow"
+            ? "border-amber-800/60 bg-amber-950/25"
+            : "border-gray-800 bg-gray-950/50";
+    const body = (bodyLines || [])
+      .filter((line) => line && String(line).trim())
+      .map(
+        (line) =>
+          `<div class="text-[11px] leading-relaxed text-gray-200">${escapeHtml(String(line))}</div>`,
+      )
+      .join("");
+    const bodyHtml = body
+      ? '<div class="mt-2 space-y-1">' + body + '</div>'
+      : "";
+    return (
+      '<div class="rounded border p-3 ' +
+      toneClass +
+      '"><div class="text-[11px] font-semibold text-gray-100">' +
+      escapeHtml(title || "") +
+      '</div><div class="mt-0.5 text-[10px] uppercase tracking-wide text-gray-500">' +
+      escapeHtml(subtitle || "") +
+      '</div>' +
+      bodyHtml +
+      '</div>'
+    );
+  }
+
+  function renderMindBriefItems(run) {
+    const resultParsed = parseMindJsonbField(run?.result_jsonb);
+    const brief = asObject(resultParsed?.brief);
+    if (!brief) return "";
+    const cards = [];
+
+    const sem = asObject(brief.semantic_synthesis);
+    asList(sem?.claims).forEach((claimRaw) => {
+      const claim = asObject(claimRaw);
+      if (!claim) return;
+      cards.push(
+        itemCard(
+          claim.label || claim.claim_id || "Semantic claim",
+          claim.claim_kind || "claim",
+          [
+            claim.summary,
+            claim.evidence_refs && claim.evidence_refs.length
+              ? `evidence: ${claim.evidence_refs.join(", ")}`
+              : null,
+            claim.recommended_effect ? `effect: ${claim.recommended_effect}` : null,
+          ],
+          "semantic",
+        ),
+      );
+    });
+
+    const frontier = asObject(brief.active_frontier);
+    asList(frontier?.selected).forEach((matterRaw) => {
+      const matter = asObject(matterRaw);
+      if (!matter) return;
+      cards.push(
+        itemCard(
+          matter.label || matter.matter_id || "Frontier matter",
+          matter.matter_kind || "selected",
+          [matter.summary, matter.reason_selected, matter.recommended_effect ? `effect: ${matter.recommended_effect}` : null],
+          "frontier",
+        ),
+      );
+    });
+
+    const shadow = asObject(brief.shadow_synthesis);
+    if (shadow && (shadow.present || asList(shadow.attention_focus).length || asList(shadow.curiosity_candidate).length)) {
+      cards.push(
+        itemCard(
+          "Shadow synthesis",
+          shadow.relationship_frame || "deterministic shadow",
+          [
+            asList(shadow.attention_focus).length ? `attention: ${asList(shadow.attention_focus).join(" · ")}` : null,
+            asList(shadow.curiosity_candidate).length ? `curiosity: ${asList(shadow.curiosity_candidate).join(" · ")}` : null,
+            asList(shadow.projection_refs_used).length ? `projection refs: ${asList(shadow.projection_refs_used).join(" · ")}` : null,
+            shadow.rationale,
+            asList(shadow.hazards).length ? `hazards: ${asList(shadow.hazards).join(" · ")}` : null,
+          ],
+          "shadow",
+        ),
+      );
+    }
+
+    if (typeof brief.summary_one_paragraph === "string" && brief.summary_one_paragraph.trim()) {
+      cards.push(itemCard("Mind summary", "brief", [brief.summary_one_paragraph.trim()], "neutral"));
+    }
+
+    if (!cards.length) return "";
+    return `<div class="mb-3 rounded border border-gray-800 bg-gray-950/50 p-3"><div class="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Mind synthesis items</div><div class="mt-2 grid gap-2">${cards.join("")}</div></div>`;
+  }
+
   function renderMindProvenanceSections(run) {
     const provenance = normalizeMindRunProvenance(run);
     const callouts = normalizeMindDerailments(run);
@@ -514,6 +613,7 @@
     const decision = normalizeMindDecision(run);
     return [
       renderMindProvenance(provenance),
+      renderMindBriefItems(run),
       renderMindDerailmentCallouts(callouts),
       renderMindPhaseTable(phaseRows),
       renderMindEvidenceSummary(run),
@@ -596,6 +696,36 @@
         },
       },
     },
+    shadowSynthesis: {
+      ok: true,
+      mind_run_id: "00000000-0000-4000-8000-000000000003",
+      correlation_id: "corr-shadow-001",
+      session_visibility: "session_match",
+      result_jsonb: {
+        ok: true,
+        mind_quality: "shadow_synthesis",
+        brief: {
+          mind_quality: "shadow_synthesis",
+          mind_authorized_for_stance_skip: false,
+          shadow_synthesis: {
+            present: true,
+            attention_focus: ["evening plans with Amanda"],
+            curiosity_candidate: ["ask about the show tone"],
+            projection_refs_used: ["projection:relationship:0"],
+            relationship_frame: "shared life moment",
+            hazards: ["do not invent show details"],
+            rationale: "Projection-rich shadow only.",
+          },
+          machine_contract: {
+            "mind.llm_synthesis_enabled": false,
+            "mind.quality": "shadow_synthesis",
+            "mind.authorized_for_stance_skip": false,
+            "mind.cognitive_projection_item_count": 2,
+          },
+        },
+        trajectory: { patches: [{ provenance: { model_id: "deterministic" } }] },
+      },
+    },
     success: {
       ok: true,
       mind_run_id: "00000000-0000-4000-8000-000000000002",
@@ -609,8 +739,28 @@
         brief: {
           mind_quality: "meaningful_synthesis",
           mind_authorized_for_stance_skip: true,
-          semantic_synthesis: { claims: [{ label: "shared evening moment" }], suppressed: [] },
-          active_frontier: { selected: [{ label: "shared evening moment" }] },
+          semantic_synthesis: {
+            claims: [
+              {
+                claim_id: "c1",
+                label: "shared evening moment",
+                summary: "User mentions watching a show with Amanda.",
+                claim_kind: "relationship_claim",
+                evidence_refs: ["current_turn:0"],
+              },
+            ],
+            suppressed: [],
+          },
+          active_frontier: {
+            selected: [
+              {
+                matter_id: "m1",
+                label: "shared evening moment",
+                summary: "Grounded in the current turn.",
+                matter_kind: "relationship_opportunity",
+              },
+            ],
+          },
           stance_handoff: { authorized_for_stance_use: true, authorization_reasons: ["valid_chat_stance_brief"] },
           machine_contract: {
             "mind.llm_synthesis_enabled": true,
@@ -645,6 +795,7 @@
     renderMindPhaseTable,
     renderMindEvidenceSummary,
     renderMindDecisionPanel,
+    renderMindBriefItems,
     renderMindProvenanceSections,
     MIND_PROVENANCE_FIXTURES,
   };

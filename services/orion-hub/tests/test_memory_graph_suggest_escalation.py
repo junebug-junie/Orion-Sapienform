@@ -368,6 +368,99 @@ def test_rdf_violations_do_not_escalate_to_brain(hub_settings, fixture_draft_tex
     assert calls == ["quick"]
 
 
+SHOWER_PROMPT = """Structured transcript evidence for memory graph extraction (do not invent turns).
+
+--- turn 1 id=u1 role=user ---
+k, off to shower. Be back soon!
+
+--- turn 2 id=a1 role=assistant ---
+Shower well. I'll be here when you're back.
+
+Emit utterance_ids matching the ids above; fill utterance_text_by_id with excerpts."""
+
+
+def test_quick_empty_role_grounded_draft_escalates_to_brain(hub_settings) -> None:
+    _ensure_hub_scripts_import_path()
+    from scripts.memory_graph_suggest import suggest_with_escalation
+
+    empty_draft = {
+        "ontology_version": "orionmem-2026-05",
+        "utterance_ids": ["u1", "a1"],
+        "entities": [],
+        "situations": [],
+        "edges": [],
+        "dispositions": [],
+    }
+    shower_path = REPO_ROOT / "tests/fixtures/memory_graph/shower_role_grounded_draft.json"
+    if not shower_path.is_file():
+        pytest.skip("shower fixture missing")
+    shower_text = shower_path.read_text(encoding="utf-8").strip()
+
+    calls: List[Optional[str]] = []
+
+    async def chat(req, correlation_id=None):
+        calls.append((req.options or {}).get("llm_route"))
+        if calls[-1] == "quick":
+            return _client_result(json.dumps(empty_draft))
+        return _client_result(shower_text)
+
+    client = AsyncMock()
+    client.chat.side_effect = chat
+
+    out = asyncio.run(
+        suggest_with_escalation(
+            cortex_client=client,
+            payload=_msg_payload(SHOWER_PROMPT),
+            session_id="sid-shower",
+            user_id=None,
+            settings=hub_settings,
+            mutation_context={},
+        )
+    )
+    assert out["ok"] is True
+    assert out["route_used"] == "brain"
+    assert calls == ["quick", None]
+    quick_errors = out["attempts"][0].get("validation_errors") or []
+    assert any("no_entities_when_role_grounded_subjects_expected" in str(e) for e in quick_errors)
+    assert len(out["draft"].get("entities") or []) >= 1
+    assert len(out["draft"].get("situations") or []) >= 1
+
+
+def test_both_routes_empty_role_grounded_returns_failed(hub_settings) -> None:
+    _ensure_hub_scripts_import_path()
+    from scripts.memory_graph_suggest import suggest_with_escalation
+
+    empty_draft = {
+        "ontology_version": "orionmem-2026-05",
+        "utterance_ids": ["u1", "a1"],
+        "entities": [],
+        "situations": [],
+        "edges": [],
+        "dispositions": [],
+    }
+
+    async def chat(req, correlation_id=None):
+        return _client_result(json.dumps(empty_draft))
+
+    client = AsyncMock()
+    client.chat.side_effect = chat
+
+    out = asyncio.run(
+        suggest_with_escalation(
+            cortex_client=client,
+            payload=_msg_payload(SHOWER_PROMPT),
+            session_id="sid-shower-fail",
+            user_id=None,
+            settings=hub_settings,
+            mutation_context={},
+        )
+    )
+    assert out["ok"] is False
+    assert out.get("error") == "memory_graph_suggest_failed"
+    validation_errors = [str(e) for e in out.get("validation_errors") or []]
+    assert any("no_entities_when_role_grounded_subjects_expected" in e for e in validation_errors)
+
+
 def test_approve_route_module_has_no_llm_client_imports() -> None:
     import ast
 

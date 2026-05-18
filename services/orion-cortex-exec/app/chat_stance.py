@@ -78,6 +78,7 @@ FALLBACK_RESPONSE_POLICY_SUMMARY = [
 _IDENTITY_QUESTION_PATTERNS = (
     r"\bwho are you\b",
     r"\bwho am i\b",
+    r"\bwho are we\b",
     r"\bwhat are you\b",
     r"\bwho is juniper\b",
     r"\bwho is orion\b",
@@ -2229,7 +2230,7 @@ def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:
         juniper_relevance="Maintain relational continuity with Juniper while prioritizing usefulness.",
         active_identity_facets=_unique(active_identity, limit=6) if identity_salience != "low" else [],
         active_growth_axes=list(concept.get("growth") or [])[:5],
-        active_relationship_facets=_unique(active_relationship, limit=6),
+        active_relationship_facets=_unique(active_relationship, limit=6) if identity_salience != "low" else [],
         social_posture=list(social.get("social_posture") or [])[:5],
         reflective_themes=list(reflective.get("themes") or [])[:4],
         active_tensions=_unique(
@@ -2302,14 +2303,22 @@ def enforce_chat_stance_quality(brief: ChatStanceBrief, ctx: Dict[str, Any]) -> 
         _fallback_identity_boilerplate = frozenset(
             {"continuity", "juniper_builder", "known_person", "avoid_generic_assistant"}
         )
+        def _is_identity_boilerplate_facet(facet: str) -> bool:
+            normalized = _normalize_brief_phrase(facet)
+            if normalized in _fallback_identity_boilerplate:
+                return True
+            lowered = normalized.lower()
+            return any(token in lowered for token in ("orion", "oríon", "juniper"))
+
         merged.active_identity_facets = [
-            f for f in merged.active_identity_facets
-            if _normalize_brief_phrase(f) not in _fallback_identity_boilerplate
+            f for f in merged.active_identity_facets if not _is_identity_boilerplate_facet(f)
         ]
         merged.active_relationship_facets = [
-            f for f in merged.active_relationship_facets
-            if _normalize_brief_phrase(f) not in _fallback_identity_boilerplate
+            f for f in merged.active_relationship_facets if not _is_identity_boilerplate_facet(f)
         ]
+        if merged.identity_salience == "low":
+            merged.active_identity_facets = []
+            merged.active_relationship_facets = []
         merged.response_priorities = _unique(
             list(merged.response_priorities)
             + ["avoid_identity_recital", "preserve_continuity_without_labels"],

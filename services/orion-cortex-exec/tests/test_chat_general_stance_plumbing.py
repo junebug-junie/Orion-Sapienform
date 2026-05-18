@@ -4,7 +4,8 @@ from pathlib import Path
 
 import yaml
 
-from app.chat_stance import fallback_chat_stance_brief
+from app.chat_stance import enforce_chat_stance_quality, fallback_chat_stance_brief
+from orion.schemas.chat_stance import ChatStanceBrief
 
 
 def test_chat_general_plan_runs_stance_before_final() -> None:
@@ -131,6 +132,54 @@ def test_fallback_identity_turn_can_foreground_identity() -> None:
     assert brief.task_mode == "identity_dialogue"
     assert brief.identity_salience == "high"
     assert brief.active_identity_facets
+    assert any("orion" in x.lower() or x == "continuity" for x in brief.active_identity_facets)
+
+
+def test_fallback_direct_response_suppresses_social_relationship_facets() -> None:
+    brief = fallback_chat_stance_brief(
+        {
+            "user_message": "hey",
+            "chat_social_summary": {"relationship_facets": ["shared build", "co-architect"]},
+        }
+    )
+
+    assert brief.identity_salience == "low"
+    assert not brief.active_relationship_facets
+
+
+def test_enforce_strips_identity_boilerplate_on_ordinary_turn() -> None:
+    noisy = ChatStanceBrief(
+        conversation_frame="mixed",
+        user_intent="hey",
+        self_relevance="x",
+        juniper_relevance="y",
+        active_identity_facets=["continuity", "orion presence"],
+        active_growth_axes=[],
+        active_relationship_facets=["juniper_builder", "shared_build"],
+        social_posture=[],
+        reflective_themes=[],
+        active_tensions=[],
+        dream_motifs=[],
+        response_priorities=["answer_directly_first"],
+        response_hazards=[],
+        answer_strategy="DirectAnswer",
+        stance_summary="short",
+        identity_salience="medium",
+    )
+    enriched, _ = enforce_chat_stance_quality(noisy, {"user_message": "hey"})
+
+    assert enriched.identity_salience == "low"
+    assert not enriched.active_identity_facets
+    assert not enriched.active_relationship_facets
+    assert "avoid_identity_recital" in enriched.response_priorities
+    assert "identity_recital_on_ordinary_turn" in enriched.response_hazards
+
+
+def test_who_are_we_is_identity_sensitive_turn() -> None:
+    brief = fallback_chat_stance_brief({"user_message": "Who are we?"})
+
+    assert brief.task_mode == "identity_dialogue"
+    assert brief.identity_salience == "high"
 
 
 def test_chat_general_prompt_does_not_prime_identity_recital_examples() -> None:

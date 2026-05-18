@@ -120,21 +120,38 @@
     return merged.filter((v, i, a) => a.indexOf(v) === i).join(" · ");
   }
 
-  function looksLikeMemoryGraphDraftObject(obj) {
-    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;
-    return (
-      typeof obj.ontology_version === "string" ||
-      Array.isArray(obj.entities) ||
-      Array.isArray(obj.situations) ||
-      Array.isArray(obj.edges) ||
-      Array.isArray(obj.dispositions) ||
-      Array.isArray(obj.utterance_ids)
-    );
-  }
-
   const SUGGEST_DRAFT_ONTOLOGY_VERSION = "orionmem-2026-05";
 
-  function emptyValidSuggestDraft(utteranceIds) {
+  function looksLikeMemoryGraphDraftObject(obj) {
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;
+    if (obj.ontology_version !== SUGGEST_DRAFT_ONTOLOGY_VERSION) return false;
+    if (!Array.isArray(obj.utterance_ids)) return false;
+    if (!Array.isArray(obj.entities)) return false;
+    if (!Array.isArray(obj.situations)) return false;
+    if (!Array.isArray(obj.edges)) return false;
+    if (!Array.isArray(obj.dispositions)) return false;
+    return true;
+  }
+
+  /** Selected-turn evidence only (request input), not a SuggestDraftV1 draft. */
+  function looksLikeEvidenceEnvelopeOnly(obj) {
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;
+    if (obj.ontology_version === SUGGEST_DRAFT_ONTOLOGY_VERSION) return false;
+    const hasIds = Array.isArray(obj.utterance_ids);
+    const hasTextMap =
+      obj.utterance_text_by_id != null &&
+      typeof obj.utterance_text_by_id === "object" &&
+      !Array.isArray(obj.utterance_text_by_id);
+    if (!hasIds && !hasTextMap) return false;
+    if (Array.isArray(obj.entities) || Array.isArray(obj.situations)) return false;
+    if (Array.isArray(obj.edges) || Array.isArray(obj.dispositions)) return false;
+    return hasIds || hasTextMap;
+  }
+
+  function emptySuggestDraft(options) {
+    const opts = options && typeof options === "object" ? options : {};
+    const utteranceIds = opts.utteranceIds;
+    const utteranceTextById = opts.utteranceTextById;
     const ids = Array.isArray(utteranceIds)
       ? utteranceIds.map((x) => String(x || "").trim()).filter(Boolean)
       : [];
@@ -145,7 +162,16 @@
       situations: [],
       edges: [],
       dispositions: [],
+      utterance_text_by_id:
+        utteranceTextById && typeof utteranceTextById === "object" && !Array.isArray(utteranceTextById)
+          ? utteranceTextById
+          : {},
     };
+  }
+
+  /** @deprecated use emptySuggestDraft */
+  function emptyValidSuggestDraft(utteranceIds) {
+    return emptySuggestDraft({ utteranceIds });
   }
 
   function collectSuggestDiagnostics(data) {
@@ -191,15 +217,40 @@
   function coalesceMemoryGraphSuggestEnvelope(data, options) {
     const opts = options && typeof options === "object" ? options : {};
     const utteranceIds = opts.utteranceIds;
-    const emptyDraft = emptyValidSuggestDraft(utteranceIds);
+    const utteranceTextById = opts.utteranceTextById;
+    const emptyDraft = emptySuggestDraft({ utteranceIds, utteranceTextById });
     const emptyText = JSON.stringify(emptyDraft, null, 2);
 
-    if (!data || typeof data !== "object") {
+    function rejectResult(err, extraDiagnostics, preserveFrom) {
+      let ids = utteranceIds;
+      let textMap = utteranceTextById;
+      if (preserveFrom && typeof preserveFrom === "object" && !Array.isArray(preserveFrom)) {
+        if (Array.isArray(preserveFrom.utterance_ids) && preserveFrom.utterance_ids.length) {
+          ids = preserveFrom.utterance_ids;
+        }
+        if (
+          preserveFrom.utterance_text_by_id &&
+          typeof preserveFrom.utterance_text_by_id === "object" &&
+          !Array.isArray(preserveFrom.utterance_text_by_id)
+        ) {
+          textMap = preserveFrom.utterance_text_by_id;
+        }
+      }
+      const diagnostics = collectSuggestDiagnostics(data || {});
+      if (extraDiagnostics && typeof extraDiagnostics === "object") {
+        Object.keys(extraDiagnostics).forEach((k) => {
+          diagnostics[k] = extraDiagnostics[k];
+        });
+      }
       return {
-        draftText: emptyText,
-        error: "memory_graph_suggest_failed",
-        diagnostics: { reason: "empty_response", route_used: null, attempts: [], validation_errors: [] },
+        draftText: JSON.stringify(emptySuggestDraft({ utteranceIds: ids, utteranceTextById: textMap }), null, 2),
+        error: err,
+        diagnostics,
       };
+    }
+
+    if (!data || typeof data !== "object") {
+      return rejectResult("memory_graph_suggest_failed", { reason: "empty_response" });
     }
 
     function successFromObject(obj) {
@@ -212,25 +263,51 @@
           }
         });
       }
+      const ents = Array.isArray(obj.entities) ? obj.entities : [];
+      const sits = Array.isArray(obj.situations) ? obj.situations : [];
+      const edgs = Array.isArray(obj.edges) ? obj.edges : [];
+      const disps = Array.isArray(obj.dispositions) ? obj.dispositions : [];
+      const graphEmpty = !ents.length && !sits.length && !edgs.length && !disps.length;
       const apiErr = data.error != null ? String(data.error).trim() : "";
       const failed = data.ok === false;
       return {
         draftText: JSON.stringify(obj, null, 2),
-        error: failed ? apiErr || "memory_graph_suggest_failed" : null,
+        error: failed ? apiErr || "memory_graph_suggest_failed" : graphEmpty ? "no_durable_memory_candidate" : null,
         diagnostics,
+        graphEmpty,
       };
     }
 
+    function tryAcceptObject(obj) {
+      if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+      if (looksLikeEvidenceEnvelopeOnly(obj)) {
+        return { rejected: "evidence_envelope_not_draft", object: obj };
+      }
+      if (looksLikeMemoryGraphDraftObject(obj)) {
+        return { accepted: successFromObject(obj) };
+      }
+      if (Array.isArray(obj.utterance_ids) && !looksLikeMemoryGraphDraftObject(obj)) {
+        return { rejected: "missing_required_suggest_draft_fields" };
+      }
+      return null;
+    }
+
     if (data.draft && typeof data.draft === "object" && !Array.isArray(data.draft)) {
-      if (looksLikeMemoryGraphDraftObject(data.draft)) {
-        return successFromObject(data.draft);
+      const verdict = tryAcceptObject(data.draft);
+      if (verdict && verdict.accepted) return verdict.accepted;
+      if (verdict && verdict.rejected) {
+        return rejectResult(verdict.rejected, null, verdict.object);
       }
     }
 
     if (typeof data.appendix_c_json === "string" && data.appendix_c_json.trim()) {
       const parsed = parseMemoryGraphDraftJson(data.appendix_c_json.trim());
-      if (parsed.ok && parsed.object && looksLikeMemoryGraphDraftObject(parsed.object)) {
-        return successFromObject(parsed.object);
+      if (parsed.ok && parsed.object) {
+        const verdict = tryAcceptObject(parsed.object);
+        if (verdict && verdict.accepted) return verdict.accepted;
+        if (verdict && verdict.rejected) {
+          return rejectResult(verdict.rejected, null, verdict.object);
+        }
       }
     }
 
@@ -248,15 +325,30 @@
     for (let i = 0; i < textCandidates.length; i += 1) {
       const candidate = textCandidates[i];
       const parsed = parseMemoryGraphDraftJson(candidate);
-      if (parsed.ok && parsed.object && looksLikeMemoryGraphDraftObject(parsed.object)) {
-        return successFromObject(parsed.object);
+      if (parsed.ok && parsed.object) {
+        const verdict = tryAcceptObject(parsed.object);
+        if (verdict && verdict.accepted) return verdict.accepted;
+        if (verdict && verdict.rejected) {
+          return rejectResult(
+            verdict.rejected,
+            {
+              prose_rejected: verdict.rejected === "evidence_envelope_not_draft",
+              prose_preview: candidate.slice(0, 240),
+            },
+            verdict.object,
+          );
+        }
       }
     }
 
-    const diagnostics = collectSuggestDiagnostics(data);
+    const extraDiag = {};
     if (textCandidates.length > 0) {
-      diagnostics.prose_rejected = true;
-      diagnostics.prose_preview = textCandidates[0].slice(0, 240);
+      extraDiag.prose_rejected = true;
+      extraDiag.prose_preview = textCandidates[0].slice(0, 240);
+      const firstParsed = parseMemoryGraphDraftJson(textCandidates[0]);
+      if (firstParsed.ok && firstParsed.object && looksLikeEvidenceEnvelopeOnly(firstParsed.object)) {
+        return rejectResult("evidence_envelope_not_draft", extraDiag, firstParsed.object);
+      }
     }
 
     const apiErr = data.error != null ? String(data.error).trim() : "";
@@ -269,11 +361,7 @@
       err = apiErr || "memory_graph_suggest_failed";
     }
 
-    return {
-      draftText: emptyText,
-      error: err,
-      diagnostics,
-    };
+    return rejectResult(err, extraDiag);
   }
 
   /**
@@ -309,6 +397,24 @@
   }
 
   /**
+   * Operator-facing status line from coalesceMemoryGraphSuggestEnvelope result.
+   */
+  function formatSuggestCoalesceUserStatus(coalesce) {
+    if (!coalesce || typeof coalesce !== "object") {
+      return "Extractor failed or returned invalid output. Empty valid draft loaded; see diagnostics.";
+    }
+    const err = coalesce.error != null ? String(coalesce.error).trim() : "";
+    if (!err) return "Loaded validated SuggestDraftV1 JSON.";
+    if (err === "no_durable_memory_candidate") {
+      return "No durable memory candidate found. Empty valid draft loaded.";
+    }
+    if (err === "evidence_envelope_not_draft") {
+      return "Blocked selected-turn evidence envelope from Draft JSON; evidence is request input, not graph output.";
+    }
+    return "Extractor failed or returned invalid output. Empty valid draft loaded; see diagnostics.";
+  }
+
+  /**
    * Legacy chat-envelope coalescer; delegates to suggest-route envelope (never returns prose).
    */
   function coalesceChatSuggestDraft(data) {
@@ -318,7 +424,7 @@
       const stepErr = raw ? extractLlmGatewayErrorFromRaw(raw) : "";
       if (stepErr) {
         return {
-          draftText: out.draftText || JSON.stringify(emptyValidSuggestDraft(), null, 2),
+          draftText: out.draftText || JSON.stringify(emptySuggestDraft(), null, 2),
           error: stepErr,
           diagnostics: out.diagnostics,
         };
@@ -608,9 +714,15 @@
         p.className = "text-gray-500 text-[11px]";
         const keys = parsed.object && typeof parsed.object === "object" ? Object.keys(parsed.object) : [];
         const emptyShape = keys.length === 0;
+        const isValidEmptyDraft =
+          looksLikeMemoryGraphDraftObject(parsed.object) &&
+          !draftToCyElements(parsed.object).nodes.length &&
+          !draftToCyElements(parsed.object).edges.length;
         p.textContent = emptyShape
-          ? "Parsed JSON is an empty object — nothing to draw. If Suggest failed upstream, check the status line for [Error: …] / timeout, then retry."
-          : "Parsed JSON has no entities, situations, edges, or dispositions to show.";
+          ? "Parsed JSON is an empty object — nothing to draw. Check the status line for suggest outcome."
+          : isValidEmptyDraft
+            ? "Valid SuggestDraftV1 with no entities, situations, edges, or dispositions — no graph to preview (may mean no durable memory candidate)."
+            : "Parsed JSON has no entities, situations, edges, or dispositions to show.";
         cyHost.appendChild(p);
         return;
       }
@@ -685,11 +797,14 @@
   window.OrionMemoryGraphDraftUI = {
     parseMemoryGraphDraftJson,
     looksLikeMemoryGraphDraftObject,
+    looksLikeEvidenceEnvelopeOnly,
+    emptySuggestDraft,
     emptyValidSuggestDraft,
     draftToCyElements,
     attach,
     coalesceChatSuggestDraft,
     coalesceMemoryGraphSuggestEnvelope,
+    formatSuggestCoalesceUserStatus,
     extractLlmGatewayErrorFromRaw,
   };
 })();

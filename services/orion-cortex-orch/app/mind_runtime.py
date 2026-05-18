@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 import httpx
 
@@ -23,7 +25,7 @@ from orion.cognition.recall_query import recall_cfg_from_recall_directive
 from orion.substrate.relational import CognitiveUnificationLayer
 from orion.substrate.store import InMemorySubstrateGraphStore
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.mind.v1 import MindRunRequestV1, MindRunResultV1, MindRunPolicyV1
+from orion.mind.v1 import MindHandoffBriefV1, MindRunPolicyV1, MindRunRequestV1, MindRunResultV1
 from orion.schemas.chat_stance import ChatStanceBrief
 from orion.schemas.cortex.contracts import CortexClientRequest
 from orion.schemas.cortex.schemas import PlanExecutionRequest
@@ -707,6 +709,103 @@ def log_mind_http_failure(
         type(exc).__name__,
         status_code,
         exc,
+    )
+
+
+def build_synthetic_mind_http_failure_result(
+    *,
+    mind_req: MindRunRequestV1,
+    exc: BaseException,
+    elapsed_ms: float,
+    orch_timeout_sec: float,
+    mind_base_url: str,
+) -> MindRunResultV1:
+    exc_type = type(exc).__name__
+    error_code = (
+        "mind_http_timeout"
+        if exc_type in ("ReadTimeout", "TimeoutException", "ConnectTimeout")
+        else "mind_http_failed"
+    )
+    base = (mind_base_url or "").rstrip("/") or "(unset)"
+    diagnostics = [
+        "Orch failed calling /v1/mind/run",
+        f"exc_type={exc_type}",
+        f"ORION_MIND_TIMEOUT_SEC={orch_timeout_sec}",
+        f"mind_base_url={base}",
+    ]
+    machine_contract = {
+        "mind.orch_http_failed": True,
+        "mind.orch_http_error_type": exc_type,
+        "mind.orch_http_timeout_sec": orch_timeout_sec,
+        "mind.orch_http_base_url": base,
+        "mind.llm_synthesis_attempted": "unknown",
+        "mind.skip_stance_synthesis": False,
+        "mind.expected_path": "legacy_chat_stance_expected",
+    }
+    brief = MindHandoffBriefV1(
+        summary_one_paragraph=(
+            "Orch timed out waiting for Mind before a MindRunResultV1 was returned."
+        ),
+        machine_contract=machine_contract,
+        advisory_keys=[
+            "mind.orch_http_failed",
+            "mind.orch_http_error_type",
+            "mind.orch_http_timeout_sec",
+        ],
+        mind_quality="error",
+        mind_authorized_for_stance_skip=False,
+    )
+    return MindRunResultV1(
+        mind_run_id=uuid4(),
+        ok=False,
+        error_code=error_code,
+        diagnostics=diagnostics,
+        brief=brief,
+        mind_quality="error",
+        timing_ms_by_phase={"orch_mind_http_timeout_ms": elapsed_ms},
+    )
+
+
+async def publish_synthetic_mind_http_failure_artifact(
+    bus: Any,
+    *,
+    source: ServiceRef,
+    correlation_id: str,
+    causality_chain: list | None,
+    trace: dict | None,
+    client_request: CortexClientRequest,
+    mind_req: MindRunRequestV1,
+    exc: BaseException,
+    elapsed_ms: float,
+) -> None:
+    s = get_settings()
+    mind_res = build_synthetic_mind_http_failure_result(
+        mind_req=mind_req,
+        exc=exc,
+        elapsed_ms=elapsed_ms,
+        orch_timeout_sec=float(s.orion_mind_timeout_sec),
+        mind_base_url=mind_http_base_url(),
+    )
+    logger.warning(
+        "orch_mind_http_failed correlation_id=%s session_id=%s mind_run_id=%s error_code=%s "
+        "exc_type=%s elapsed_ms=%.1f ORION_MIND_TIMEOUT_SEC=%s",
+        correlation_id,
+        client_request.context.session_id,
+        mind_res.mind_run_id,
+        mind_res.error_code,
+        type(exc).__name__,
+        elapsed_ms,
+        s.orion_mind_timeout_sec,
+    )
+    await publish_mind_run_artifact(
+        bus,
+        source=source,
+        correlation_id=correlation_id,
+        causality_chain=causality_chain,
+        trace=trace,
+        client_request=client_request,
+        mind_req=mind_req,
+        mind_res=mind_res,
     )
 
 

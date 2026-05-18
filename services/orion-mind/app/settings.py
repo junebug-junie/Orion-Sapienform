@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     MIND_SEMANTIC_MODEL_ROUTE: str = Field(default="quick", alias="MIND_SEMANTIC_MODEL_ROUTE")
     MIND_APPRAISAL_MODEL_ROUTE: str = Field(default="metacog", alias="MIND_APPRAISAL_MODEL_ROUTE")
     MIND_STANCE_MODEL_ROUTE: str = Field(default="chat", alias="MIND_STANCE_MODEL_ROUTE")
-    MIND_LLM_TIMEOUT_SEC: float = Field(default=90.0, alias="MIND_LLM_TIMEOUT_SEC")
+    MIND_LLM_TIMEOUT_SEC: float = Field(default=25.0, alias="MIND_LLM_TIMEOUT_SEC")
     MIND_LLM_MAX_TOKENS_SEMANTIC: int = Field(default=2048, alias="MIND_LLM_MAX_TOKENS_SEMANTIC")
     MIND_LLM_MAX_TOKENS_APPRAISAL: int = Field(default=3072, alias="MIND_LLM_MAX_TOKENS_APPRAISAL")
     MIND_LLM_MAX_TOKENS_STANCE: int = Field(default=1536, alias="MIND_LLM_MAX_TOKENS_STANCE")
@@ -56,6 +56,8 @@ class Settings(BaseSettings):
         alias="MIND_LLM_INTAKE_CHANNEL",
     )
     MIND_LLM_REPLY_PREFIX: str = Field(default="orion:mind:llm:reply", alias="MIND_LLM_REPLY_PREFIX")
+    # Optional: cross-service timeout hierarchy check (Orch HTTP); logging only, no dependency.
+    ORION_MIND_TIMEOUT_SEC: float | None = Field(default=None, alias="ORION_MIND_TIMEOUT_SEC")
 
     @property
     def router_profiles_dir(self) -> Path:

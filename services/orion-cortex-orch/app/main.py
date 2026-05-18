@@ -34,6 +34,25 @@ from orion.cognition.answer_contract_normalize import bootstrap_answer_contract_
 logger = logging.getLogger("orion.cortex.orch")
 PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc)
 
+
+def _log_mind_http_timeout_config() -> None:
+    s = get_settings()
+    logger.info(
+        "orch_mind_startup_config ORION_MIND_TIMEOUT_SEC=%s ORION_MIND_BASE_URL=%s "
+        "recommended inner Mind MIND_LLM_TIMEOUT_SEC=25",
+        s.orion_mind_timeout_sec,
+        (s.orion_mind_base_url or "").rstrip("/") or "(unset)",
+    )
+    if float(s.orion_mind_timeout_sec) <= 25.0:
+        logger.warning(
+            "orch_mind_timeout_hierarchy_risky ORION_MIND_TIMEOUT_SEC=%s "
+            "should exceed Mind MIND_LLM_TIMEOUT_SEC (recommended 45 > 25)",
+            s.orion_mind_timeout_sec,
+        )
+
+
+_log_mind_http_timeout_config()
+
 # Channels
 # We only listen for the trigger now. The SQL Writer handles the ticks independently.
 

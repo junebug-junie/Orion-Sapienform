@@ -555,6 +555,59 @@ def test_log_mind_http_failure_includes_endpoint_and_session(caplog) -> None:
     assert any("user_turn" in r.message for r in caplog.records)
 
 
+def test_readtimeout_publishes_synthetic_mind_artifact(monkeypatch) -> None:
+    _orch_prep()
+    import asyncio
+
+    import httpx
+
+    from app.mind_runtime import publish_synthetic_mind_http_failure_artifact
+    from app.settings import get_settings
+    from orion.core.bus.bus_schemas import ServiceRef
+    from orion.mind.v1 import MindRunPolicyV1, MindRunRequestV1
+    published: list[dict] = []
+
+    class _Bus:
+        async def publish(self, channel: str, env) -> None:
+            published.append({"channel": channel, "payload": env.payload})
+
+    monkeypatch.setenv("ORION_MIND_TIMEOUT_SEC", "45")
+    get_settings.cache_clear()
+
+    req = MindRunRequestV1(
+        correlation_id="550e8400-e29b-41d4-a716-446655440099",
+        session_id="sess-synth",
+        trigger="user_turn",
+        policy=MindRunPolicyV1(router_profile_id="default"),
+        snapshot_inputs={},
+    )
+    client_request = _client_request(metadata={"mind_enabled": True})
+    client_request.context.session_id = "sess-synth"
+    asyncio.run(
+        publish_synthetic_mind_http_failure_artifact(
+            _Bus(),
+            source=ServiceRef(name="orion-cortex-orch", node="test", version="0"),
+            correlation_id=req.correlation_id,
+            causality_chain=[],
+            trace={},
+            client_request=client_request,
+            mind_req=req,
+            exc=httpx.ReadTimeout("timed out"),
+            elapsed_ms=45010.0,
+        )
+    )
+    assert len(published) == 1
+    assert published[0]["channel"] == "orion:mind:artifact"
+    artifact = published[0]["payload"]
+    assert artifact["correlation_id"] == req.correlation_id
+    assert artifact["session_id"] == "sess-synth"
+    assert artifact["ok"] is False
+    assert artifact["error_code"] == "mind_http_timeout"
+    result = artifact["result_jsonb"]
+    assert result["brief"]["machine_contract"]["mind.orch_http_failed"] is True
+    assert result["brief"]["machine_contract"]["mind.orch_http_error_type"] == "ReadTimeout"
+
+
 def test_call_orion_mind_http_uses_configured_base_url(monkeypatch) -> None:
     _orch_prep()
     import asyncio

@@ -75,6 +75,7 @@
     const llmEnabled = asBool(mc["mind.llm_synthesis_enabled"]);
     const llmAttempted = asBool(mc["mind.llm_synthesis_attempted"]);
     const failOpenToDeterministic = asBool(mc["mind.llm_fail_open_to_deterministic"]);
+    const orchHttpFailed = asBool(mc["mind.orch_http_failed"]);
     const failedPhase = mc["mind.llm_synthesis_failed_phase"] || null;
     const mindQuality = String(brief?.mind_quality || resultParsed?.mind_quality || mc["mind.quality"] || "unknown");
     const authorizedSkip = asBool(brief?.mind_authorized_for_stance_skip) || asBool(mc["mind.authorized_for_stance_skip"]);
@@ -83,7 +84,9 @@
     const deterministicTrajectory = models.length > 0 && models.every((m) => m === "deterministic");
 
     let cognitionPath = "unknown";
-    if (run && run.ok === false) {
+    if (orchHttpFailed) {
+      cognitionPath = "orch_mind_http_failed";
+    } else if (run && run.ok === false && !orchHttpFailed) {
       cognitionPath = "error";
     } else if (failOpenToDeterministic || (llmAttempted && (deterministicTrajectory || mindQuality !== "meaningful_synthesis"))) {
       cognitionPath = "llm_fail_open_to_deterministic";
@@ -121,6 +124,7 @@
       llm_enabled: llmEnabled,
       llm_attempted: llmAttempted,
       fail_open_to_deterministic: failOpenToDeterministic,
+      orch_http_failed: orchHttpFailed,
       failed_phase: failedPhase,
       error_code: run?.error_code || mc["mind.llm_synthesis_error_code"] || resultParsed?.error_code || null,
       error: mc["mind.llm_synthesis_error"] || null,
@@ -187,6 +191,23 @@
         output_count: outputCount,
       };
     });
+    if (prov.orch_http_failed || prov.cognition_path === "orch_mind_http_failed") {
+      const timing = asObject(resultParsed?.timing_ms_by_phase) || {};
+      rows.push({
+        phase: "orch_mind_http",
+        status: "failed",
+        route: null,
+        model: null,
+        elapsed_ms: Number.isFinite(Number(timing.orch_mind_http_timeout_ms))
+          ? Math.round(Number(timing.orch_mind_http_timeout_ms))
+          : prov.total_ms,
+        parse_ok: null,
+        validation_ok: null,
+        token_usage: {},
+        error: mc["mind.orch_http_error_type"] || resultParsed?.error_code || "orch_http_failed",
+        output_count: null,
+      });
+    }
     if (prov.cognition_path === "llm_fail_open_to_deterministic" || prov.fail_open_to_deterministic) {
       const timing = asObject(resultParsed?.timing_ms_by_phase) || {};
       rows.push({
@@ -231,6 +252,25 @@
     const blob = textBlob(run);
     const callouts = [];
     const push = (item) => callouts.push(item);
+
+    if (prov.orch_http_failed || asBool(mc["mind.orch_http_failed"])) {
+      push({
+        id: "orch_mind_http_failed",
+        severity: "error",
+        stage: "orch_mind_http",
+        title: "Orch timed out waiting for Mind.",
+        explanation:
+          "Orch attempted /v1/mind/run but did not receive a MindRunResultV1 before ORION_MIND_TIMEOUT_SEC elapsed. Chat continued through legacy path.",
+        next_action:
+          "Ensure MIND_LLM_TIMEOUT_SEC < ORION_MIND_TIMEOUT_SEC; inspect Mind and LLM gateway logs for the same correlation.",
+        evidence: {
+          error_code: resultParsed?.error_code || run?.error_code,
+          error_type: mc["mind.orch_http_error_type"],
+          timeout_sec: mc["mind.orch_http_timeout_sec"],
+          base_url: mc["mind.orch_http_base_url"],
+        },
+      });
+    }
 
     if (prov.llm_attempted && (prov.fail_open_to_deterministic || prov.failed_phase)) {
       push({
@@ -524,6 +564,36 @@
           },
         },
         trajectory: { patches: [{ provenance: { model_id: "deterministic" } }] },
+      },
+    },
+    orchHttpFailed: {
+      ok: false,
+      mind_run_id: "00000000-0000-4000-8000-000000000099",
+      correlation_id: "corr-orch-http-001",
+      error_code: "mind_http_timeout",
+      session_visibility: "session_match",
+      result_jsonb: {
+        ok: false,
+        error_code: "mind_http_timeout",
+        diagnostics: [
+          "Orch failed calling /v1/mind/run",
+          "exc_type=ReadTimeout",
+          "ORION_MIND_TIMEOUT_SEC=45",
+        ],
+        timing_ms_by_phase: { orch_mind_http_timeout_ms: 45010.0 },
+        brief: {
+          mind_quality: "error",
+          mind_authorized_for_stance_skip: false,
+          summary_one_paragraph:
+            "Orch timed out waiting for Mind before a MindRunResultV1 was returned.",
+          machine_contract: {
+            "mind.orch_http_failed": true,
+            "mind.orch_http_error_type": "ReadTimeout",
+            "mind.orch_http_timeout_sec": 45,
+            "mind.orch_http_base_url": "http://orion-mind:6611",
+            "mind.expected_path": "legacy_chat_stance_expected",
+          },
+        },
       },
     },
     success: {

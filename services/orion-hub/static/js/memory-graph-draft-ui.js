@@ -132,6 +132,139 @@
     );
   }
 
+  const SUGGEST_DRAFT_ONTOLOGY_VERSION = "orionmem-2026-05";
+
+  function emptyValidSuggestDraft(utteranceIds) {
+    const ids = Array.isArray(utteranceIds)
+      ? utteranceIds.map((x) => String(x || "").trim()).filter(Boolean)
+      : [];
+    return {
+      ontology_version: SUGGEST_DRAFT_ONTOLOGY_VERSION,
+      utterance_ids: ids,
+      entities: [],
+      situations: [],
+      edges: [],
+      dispositions: [],
+    };
+  }
+
+  function collectSuggestDiagnostics(data) {
+    const attempts = Array.isArray(data.suggest_attempts)
+      ? data.suggest_attempts
+      : Array.isArray(data.attempts)
+        ? data.attempts
+        : [];
+    const validationErrors = [];
+    if (Array.isArray(data.validation_errors)) {
+      data.validation_errors.forEach((e) => {
+        if (e != null && String(e).trim()) validationErrors.push(String(e).trim());
+      });
+    }
+    attempts.forEach((att) => {
+      if (!att || typeof att !== "object") return;
+      const phase = att.phase != null ? String(att.phase).trim() : "";
+      if (phase && validationErrors.indexOf(phase) < 0) validationErrors.push(phase);
+      const ve = att.validation_errors;
+      if (Array.isArray(ve)) {
+        ve.forEach((e) => {
+          const s = e != null ? String(e).trim() : "";
+          if (s && validationErrors.indexOf(s) < 0) validationErrors.push(s);
+        });
+      }
+    });
+    return {
+      route_used: data.suggest_route_used != null ? data.suggest_route_used : data.route_used ?? null,
+      attempts,
+      validation_errors: validationErrors,
+      api_error: data.error != null ? String(data.error) : null,
+      diagnostic_raw:
+        typeof data.diagnostic_raw === "string" && data.diagnostic_raw.trim()
+          ? data.diagnostic_raw
+          : null,
+    };
+  }
+
+  /**
+   * Coalesce /api/memory/graph/suggest (or compatible) envelopes into textarea-safe draft JSON.
+   * Never returns assistant prose as draftText.
+   */
+  function coalesceMemoryGraphSuggestEnvelope(data, options) {
+    const opts = options && typeof options === "object" ? options : {};
+    const utteranceIds = opts.utteranceIds;
+    const emptyDraft = emptyValidSuggestDraft(utteranceIds);
+    const emptyText = JSON.stringify(emptyDraft, null, 2);
+
+    if (!data || typeof data !== "object") {
+      return {
+        draftText: emptyText,
+        error: "memory_graph_suggest_failed",
+        diagnostics: { reason: "empty_response", route_used: null, attempts: [], validation_errors: [] },
+      };
+    }
+
+    function successFromObject(obj) {
+      return {
+        draftText: JSON.stringify(obj, null, 2),
+        error: null,
+        diagnostics: collectSuggestDiagnostics(data),
+      };
+    }
+
+    if (data.draft && typeof data.draft === "object" && !Array.isArray(data.draft)) {
+      if (looksLikeMemoryGraphDraftObject(data.draft)) {
+        return successFromObject(data.draft);
+      }
+    }
+
+    if (typeof data.appendix_c_json === "string" && data.appendix_c_json.trim()) {
+      const parsed = parseMemoryGraphDraftJson(data.appendix_c_json.trim());
+      if (parsed.ok && parsed.object && looksLikeMemoryGraphDraftObject(parsed.object)) {
+        return successFromObject(parsed.object);
+      }
+    }
+
+    const raw = data.raw && typeof data.raw === "object" ? data.raw : null;
+    const textCandidates = [];
+    if (typeof data.text === "string" && data.text.trim()) textCandidates.push(data.text.trim());
+    if (raw && typeof raw.final_text === "string" && raw.final_text.trim()) {
+      textCandidates.push(raw.final_text.trim());
+    }
+    if (raw) {
+      const fromSteps = extractLlmGatewayDraftFromSteps(raw);
+      if (fromSteps) textCandidates.push(fromSteps);
+    }
+
+    for (let i = 0; i < textCandidates.length; i += 1) {
+      const candidate = textCandidates[i];
+      const parsed = parseMemoryGraphDraftJson(candidate);
+      if (parsed.ok && parsed.object && looksLikeMemoryGraphDraftObject(parsed.object)) {
+        return successFromObject(parsed.object);
+      }
+    }
+
+    const diagnostics = collectSuggestDiagnostics(data);
+    if (textCandidates.length > 0) {
+      diagnostics.prose_rejected = true;
+      diagnostics.prose_preview = textCandidates[0].slice(0, 240);
+    }
+
+    const apiErr = data.error != null ? String(data.error).trim() : "";
+    let err = "invalid_model_output";
+    if (
+      apiErr === "memory_graph_suggest_failed" ||
+      apiErr === "memory_graph_suggest_exhausted" ||
+      data.ok === false
+    ) {
+      err = apiErr || "memory_graph_suggest_failed";
+    }
+
+    return {
+      draftText: emptyText,
+      error: err,
+      diagnostics,
+    };
+  }
+
   /**
    * When Hub `text` / raw.final_text are empty, recover JSON from step payloads (same source cortex-exec uses).
    */
@@ -557,9 +690,12 @@
 
   window.OrionMemoryGraphDraftUI = {
     parseMemoryGraphDraftJson,
+    looksLikeMemoryGraphDraftObject,
+    emptyValidSuggestDraft,
     draftToCyElements,
     attach,
     coalesceChatSuggestDraft,
+    coalesceMemoryGraphSuggestEnvelope,
     extractLlmGatewayErrorFromRaw,
   };
 })();

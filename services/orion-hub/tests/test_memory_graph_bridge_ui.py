@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
@@ -26,12 +27,27 @@ def test_template_includes_memory_graph_bridge_modal_and_a11y() -> None:
     assert "aria-labelledby=\"memoryGraphBridgeModalTitle\"" in html
 
 
+def _bridge_suggest_block(app_js: str) -> str:
+    start = app_js.find("if (suggestBtn) {")
+    assert start >= 0
+    end = app_js.find("if (toMemBtn)", start)
+    assert end > start
+    return app_js[start:end]
+
+
 def test_app_js_wires_memory_graph_bridge_handlers() -> None:
     app_js = APP_JS_PATH.read_text(encoding="utf-8")
+    bridge = _bridge_suggest_block(app_js)
     assert "function collectConversationTurnsUpTo" in app_js
     assert "skippedWithoutId" in app_js
     assert "memoryGraphBridgeTurnsCache" in app_js
-    assert "verbs: ['memory_graph_suggest']" in app_js
+    assert "verbs: ['memory_graph_suggest']" in bridge
+    assert "/api/memory/graph/suggest" in bridge
+    assert "/api/chat" not in bridge
+    assert "coalesceMemoryGraphSuggestEnvelope" in bridge
+    assert "coalesceChatSuggestDraft" not in bridge
+    assert "data.text" not in bridge
+    assert re.search(r"draftTa\.value\s*=\s*[^;]*data\.text", bridge) is None
     assert "setupMemoryGraphBridgeModal();" in app_js
     assert "closeMemoryGraphBridgeModal();" in app_js
     assert "CustomEvent('orion-hub-memory-graph-draft-import'" in app_js
@@ -49,11 +65,26 @@ def test_app_js_wires_memory_graph_bridge_handlers() -> None:
     assert "Suggest timed out" in app_js
 
 
+def _memory_suggest_block(memory_js: str) -> str:
+    start = memory_js.find("if (sBtn && draftTa)")
+    assert start >= 0
+    end = memory_js.find("function refreshVisibleMemorySubview", start)
+    assert end > start
+    return memory_js[start:end]
+
+
 def test_memory_js_listens_for_bridge_import_event() -> None:
     memory_js = MEMORY_JS_PATH.read_text(encoding="utf-8")
+    suggest = _memory_suggest_block(memory_js)
     assert 'orion-hub-memory-graph-draft-import' in memory_js
     assert "orion_memory_graph_draft_import" in memory_js
     assert "OrionMemoryGraphDraftUI" in memory_js
+    assert "/api/memory/graph/suggest" in suggest
+    assert "/api/chat" not in suggest
+    assert "coalesceMemoryGraphSuggestEnvelope" in suggest
+    assert re.search(r"draftTa\.value\s*=\s*[^;]*data\.text", suggest) is None
+    assert "parseMemoryGraphDraftJson" in memory_js
+    assert "invalid_stored_draft_import" in memory_js
     assert "MEMORY_GRAPH_SUGGEST_TIMEOUT_MS" in memory_js
     assert "MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS" in memory_js
     assert "boundedSuggestPrompt" in memory_js

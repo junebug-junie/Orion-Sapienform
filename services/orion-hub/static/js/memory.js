@@ -350,13 +350,14 @@
             draftTa.value.trim() ||
             "Draft a structured memory-graph JSON object for this session (ontology_version, entities, situations, edges). Output only JSON.";
           const bounded = boundedSuggestPrompt(raw);
-          const headers = { "Content-Type": "application/json", ...sessionHeader() };
           const payload = {
             mode: "brain",
             verbs: ["memory_graph_suggest"],
             messages: [{ role: "user", content: bounded.value }],
             use_recall: false,
             no_write: true,
+            diagnostic: true,
+            options: { diagnostic: true },
           };
           const controller = typeof AbortController === "function" ? new AbortController() : null;
           const timerId =
@@ -369,59 +370,69 @@
                   }
                 }, MEMORY_GRAPH_SUGGEST_TIMEOUT_MS)
               : null;
-          let res;
+          let data = null;
           try {
-            res = await fetch(`${API_BASE}/api/chat`, {
+            data = await apiFetch("/api/memory/graph/suggest", {
               method: "POST",
-              headers,
               body: JSON.stringify(payload),
               ...(controller ? { signal: controller.signal } : {}),
             });
           } finally {
             if (timerId != null) clearTimeout(timerId);
           }
-          const text = await res.text();
-          let data = null;
-          try {
-            data = text ? JSON.parse(text) : null;
-          } catch {
-            data = { raw: text };
-          }
-          if (!res.ok) {
-            graphSetOut(data || text, true);
-            return;
-          }
-          const coalesce =
-            window.OrionMemoryGraphDraftUI && typeof window.OrionMemoryGraphDraftUI.coalesceChatSuggestDraft === "function"
-              ? window.OrionMemoryGraphDraftUI.coalesceChatSuggestDraft(data)
+          const coalesceFn =
+            window.OrionMemoryGraphDraftUI &&
+            typeof window.OrionMemoryGraphDraftUI.coalesceMemoryGraphSuggestEnvelope === "function"
+              ? window.OrionMemoryGraphDraftUI.coalesceMemoryGraphSuggestEnvelope
               : null;
-          let draftText = "";
-          let suggestErr = "";
-          if (coalesce) {
-            draftText = coalesce.draftText || "";
-            suggestErr = coalesce.error || "";
-          } else {
-            const t = (data && (data.text || (data.raw && data.raw.final_text))) || "";
-            draftText = typeof t === "string" ? t.trim() : "";
-          }
-          if (suggestErr) {
-            draftTa.value = "";
-            if (memoryDraftViz && memoryDraftViz.refresh) memoryDraftViz.refresh();
-            graphSetOut({ ok: false, error: suggestErr }, true);
-            return;
-          }
+          const coalesce = coalesceFn ? coalesceFn(data) : null;
+          const draftText =
+            coalesce && typeof coalesce.draftText === "string" && coalesce.draftText.trim()
+              ? coalesce.draftText
+              : JSON.stringify(
+                  window.OrionMemoryGraphDraftUI &&
+                    typeof window.OrionMemoryGraphDraftUI.emptyValidSuggestDraft === "function"
+                    ? window.OrionMemoryGraphDraftUI.emptyValidSuggestDraft()
+                    : {
+                        ontology_version: "orionmem-2026-05",
+                        utterance_ids: [],
+                        entities: [],
+                        situations: [],
+                        edges: [],
+                        dispositions: [],
+                      },
+                  null,
+                  2,
+                );
           draftTa.value = draftText;
           if (memoryDraftViz && memoryDraftViz.refresh) memoryDraftViz.refresh();
+          if (coalesce && coalesce.error) {
+            graphSetOut(
+              {
+                ok: false,
+                error: coalesce.error,
+                diagnostics: coalesce.diagnostics || null,
+                note: bounded.clipped
+                  ? `Suggest failed; draft reset to empty template. Prompt was clipped to ${MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS} chars.`
+                  : "Suggest failed; draft reset to empty template. See diagnostics.",
+              },
+              true,
+            );
+            return;
+          }
           graphSetOut(
             {
               ok: true,
-              note: draftText
-                ? bounded.clipped
-                  ? `Replaced the box with the model reply. Prompt input was clipped to ${MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS} chars to avoid model gateway timeouts.`
-                  : "Replaced the box with the model reply. If prose wrapped the JSON, delete the wrapper lines and use Validate."
-                : "Empty response — check gateway / model logs.",
+              route_used: coalesce && coalesce.diagnostics ? coalesce.diagnostics.route_used : null,
+              attempts: coalesce && coalesce.diagnostics ? coalesce.diagnostics.attempts : [],
+              validation_errors:
+                coalesce && coalesce.diagnostics ? coalesce.diagnostics.validation_errors : [],
+              diagnostics: coalesce ? coalesce.diagnostics : null,
+              note: bounded.clipped
+                ? `Draft updated from suggest route. Prompt input was clipped to ${MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS} chars to avoid model gateway timeouts.`
+                : "Draft updated from suggest route.",
             },
-            false
+            false,
           );
         } catch (e) {
           if (e && e.name === "AbortError") {
@@ -453,12 +464,45 @@
     window.addEventListener("orion-hub-memory-tab-activated", refreshVisibleMemorySubview);
     window.addEventListener("orion-hub-memory-graph-draft-import", () => {
       const v = sessionStorage.getItem("orion_memory_graph_draft_import");
-      if (v && draftTa) draftTa.value = v;
       sessionStorage.removeItem("orion_memory_graph_draft_import");
+      if (!v || !draftTa) return;
+      const ui = window.OrionMemoryGraphDraftUI;
+      const parseFn = ui && typeof ui.parseMemoryGraphDraftJson === "function" ? ui.parseMemoryGraphDraftJson : null;
+      const looksFn =
+        ui && typeof ui.looksLikeMemoryGraphDraftObject === "function" ? ui.looksLikeMemoryGraphDraftObject : null;
+      const emptyFn = ui && typeof ui.emptyValidSuggestDraft === "function" ? ui.emptyValidSuggestDraft : null;
+      const parsed = parseFn ? parseFn(v) : { ok: false, object: null };
+      if (parsed.ok && parsed.object && (!looksFn || looksFn(parsed.object))) {
+        draftTa.value = JSON.stringify(parsed.object, null, 2);
+        if (memoryDraftViz && memoryDraftViz.refresh) memoryDraftViz.refresh();
+        graphSetOut(
+          { ok: true, note: "Draft loaded from chat bridge. Review JSON then Validate." },
+          false,
+        );
+        return;
+      }
+      draftTa.value = JSON.stringify(
+        emptyFn
+          ? emptyFn()
+          : {
+              ontology_version: "orionmem-2026-05",
+              utterance_ids: [],
+              entities: [],
+              situations: [],
+              edges: [],
+              dispositions: [],
+            },
+        null,
+        2,
+      );
       if (memoryDraftViz && memoryDraftViz.refresh) memoryDraftViz.refresh();
       graphSetOut(
-        { ok: true, note: "Draft loaded from chat bridge. Review JSON then Validate." },
-        false
+        {
+          ok: false,
+          error: "invalid_stored_draft_import",
+          note: "Stored bridge draft was not valid memory-graph JSON; replaced with empty template.",
+        },
+        true,
       );
     });
   });

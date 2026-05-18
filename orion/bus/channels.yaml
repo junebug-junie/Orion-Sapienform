@@ -168,9 +168,18 @@ channels:
       - "orion-planner-react"
       - "orion-vision-council"
       - "orion-hub"
+      - "orion-mind"
     consumer_services: ["orion-llm-gateway"]
     stability: "experimental"
     since: "2026-01-08"
+
+  - name: "orion:mind:llm:reply:*"
+    kind: "result"
+    schema_id: "ChatResultPayload"
+    producer_services: ["orion-llm-gateway"]
+    consumer_services: ["orion-mind"]
+    stability: "experimental"
+    since: "2026-05-17"
 
   - name: "orion:exec:result:LLMGatewayService"
     kind: "result"

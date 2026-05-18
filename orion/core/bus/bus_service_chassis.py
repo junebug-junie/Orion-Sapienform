@@ -246,7 +246,42 @@ class Rabbit(BaseChassis):
                 f"preview={repr(preview_text)}",
                 flush=True,
             )
-            await self.bus.publish(env.reply_to, out)
+            corr_id = getattr(out, "correlation_id", None) or env.correlation_id
+            is_gateway = self.cfg.service_name == "llm-gateway"
+            if is_gateway:
+                result_status = "error" if getattr(out, "kind", None) == "system.error" else "ok"
+                logger.info(
+                    "gateway_llm_reply_publish_start event=gateway_llm_reply_publish_start "
+                    "correlation_id=%s reply_to=%s result_status=%s payload_kind=%s",
+                    corr_id,
+                    env.reply_to,
+                    result_status,
+                    getattr(out, "kind", None),
+                )
+            try:
+                await self.bus.publish(env.reply_to, out)
+            except Exception as exc:
+                if is_gateway:
+                    catalog_hint = ""
+                    if "catalog" in str(exc).lower() or "Channel not found" in str(exc):
+                        catalog_hint = "catalog_enforcement_suspected"
+                    logger.error(
+                        "gateway_llm_reply_publish_failed event=gateway_llm_reply_publish_failed "
+                        "correlation_id=%s reply_to=%s error_type=%s err=%s catalog_hint=%s",
+                        corr_id,
+                        env.reply_to,
+                        type(exc).__name__,
+                        exc,
+                        catalog_hint or "none",
+                    )
+                raise
+            if is_gateway:
+                logger.info(
+                    "gateway_llm_reply_publish_ok event=gateway_llm_reply_publish_ok "
+                    "correlation_id=%s reply_to=%s",
+                    corr_id,
+                    env.reply_to,
+                )
 
     async def _run(self) -> None:
         logger.info(f"Rabbit listening channel={self.request_channel} bus={self.cfg.bus_url}")

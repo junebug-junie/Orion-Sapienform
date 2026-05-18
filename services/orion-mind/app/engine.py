@@ -746,7 +746,7 @@ def run_mind_llm_synthesis(
     phases["evidence_pack_ms"] = _elapsed_ms_wall_clock(t_run_start)
 
     fail_open = bool(getattr(s, "MIND_LLM_FAIL_OPEN_LEGACY", True))
-    configured_timeout = float(getattr(s, "MIND_LLM_TIMEOUT_SEC", 90.0))
+    configured_timeout = float(getattr(s, "MIND_LLM_TIMEOUT_SEC", 25.0))
     semantic_route = str(getattr(s, "MIND_SEMANTIC_MODEL_ROUTE", "quick"))
     appraisal_route = str(getattr(s, "MIND_APPRAISAL_MODEL_ROUTE", "metacog"))
     stance_route = str(getattr(s, "MIND_STANCE_MODEL_ROUTE", "chat"))

@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from threading import Thread
 from typing import Any, Callable, Dict, Optional, Protocol
 from uuid import uuid4
@@ -130,10 +131,13 @@ class MindLLMClient:
             meta["usage"] = usage
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "Mind LLM request failed route=%s phase=%s correlation_id=%s err=%s",
-                route,
-                context.phase_name if context else None,
+                "mind_llm_bus_request_failed correlation_id=%s mind_run_id=%s phase=%s route=%s "
+                "error_type=%s err=%s",
                 context.correlation_id if context else None,
+                context.mind_run_id if context else None,
+                context.phase_name if context else None,
+                route,
+                type(exc).__name__,
                 exc,
             )
             return None, str(exc), meta
@@ -160,6 +164,19 @@ class MindLLMClient:
             try:
                 corr = context.envelope_correlation_id() if context else uuid4()
                 reply_channel = f"{settings.MIND_LLM_REPLY_PREFIX}:{corr}"
+                intake_channel = settings.MIND_LLM_INTAKE_CHANNEL
+                logger.info(
+                    "mind_llm_bus_request_start event=mind_llm_bus_request_start correlation_id=%s "
+                    "mind_run_id=%s phase=%s route=%s reply_channel=%s timeout_sec=%s intake_channel=%s",
+                    str(corr),
+                    context.mind_run_id if context else None,
+                    context.phase_name if context else None,
+                    route,
+                    reply_channel,
+                    timeout_sec,
+                    intake_channel,
+                )
+                t0 = time.perf_counter()
                 payload = ChatRequestPayload(
                     messages=[
                         LLMMessage(role="system", content=system_prompt),
@@ -179,12 +196,31 @@ class MindLLMClient:
                     causality_chain=list(context.causality_chain or []) if context else [],
                     payload=payload.model_dump(mode="json"),
                 )
-                msg = await bus.rpc_request(
-                    settings.MIND_LLM_INTAKE_CHANNEL,
-                    env,
-                    reply_channel=reply_channel,
-                    timeout_sec=timeout_sec,
-                )
+                try:
+                    msg = await bus.rpc_request(
+                        intake_channel,
+                        env,
+                        reply_channel=reply_channel,
+                        timeout_sec=timeout_sec,
+                    )
+                except Exception as exc:
+                    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+                    logger.warning(
+                        "mind_llm_bus_request_failed event=mind_llm_bus_request_failed correlation_id=%s "
+                        "mind_run_id=%s phase=%s route=%s reply_channel=%s timeout_sec=%s intake_channel=%s "
+                        "elapsed_ms=%.1f error_type=%s err=%s",
+                        str(corr),
+                        context.mind_run_id if context else None,
+                        context.phase_name if context else None,
+                        route,
+                        reply_channel,
+                        timeout_sec,
+                        intake_channel,
+                        elapsed_ms,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    raise
                 decoded = bus.codec.decode(msg.get("data"))
                 if not decoded.ok:
                     raise RuntimeError(f"LLM bus decode failed: {decoded.error}")
@@ -258,3 +294,4 @@ def set_llm_client_factory(factory: Callable[[], MindLLMClientProtocol] | None) 
         _client = None
         return
     _override = factory()
+

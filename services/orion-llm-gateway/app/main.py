@@ -189,13 +189,17 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
     )
     snippet_source = marked_message or fallback_message or (messages[0] if messages else None)
     snippet = str(getattr(snippet_source, "content", "") or "")[:160]
+    req_options = typed_req.payload.options or {}
+    mind_phase = req_options.get("mind_phase")
     logger.info(
-        "llm_request_received corr_id=%s msgs_count=%s any_msg_contains_memory_marker=%s combined_chars=%s snippet=%r",
+        "gateway_llm_request_received event=gateway_llm_request_received correlation_id=%s route=%s "
+        "reply_to=%s mind_phase=%s request_source=%s msgs_count=%s",
         typed_req.correlation_id,
+        typed_req.payload.route,
+        env.reply_to,
+        mind_phase,
+        typed_req.source.name if typed_req.source else None,
         len(messages),
-        bool(marked_message),
-        combined_chars,
-        snippet,
     )
 
     result = run_llm_chat(body)
@@ -212,8 +216,17 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
     )
     backend = (result.get("backend") if isinstance(result, dict) else None)
     model_used = (result.get("model") if isinstance(result, dict) else None)
-    route_used = (result.get("route") if isinstance(result, dict) else None)
+    route_used = (result.get("route") if isinstance(result, dict) else None) or typed_req.payload.route
     served_by = (result.get("served_by") if isinstance(result, dict) else None)
+    model_used_early = (result.get("model") if isinstance(result, dict) else None)
+    if route_used or served_by:
+        logger.info(
+            "gateway_llm_route_selected correlation_id=%s route=%s served_by=%s model=%s",
+            typed_req.correlation_id,
+            route_used,
+            served_by,
+            model_used_early,
+        )
     gateway_label = f"{settings.node_name or 'gateway'}-{settings.service_name}"
     meta = {
         "served_by": served_by,

@@ -51,6 +51,35 @@ console.log(JSON.stringify({{
     assert out["has_off_rails"] is True
 
 
+def test_orch_http_failed_fixture_normalizer() -> None:
+    out = _run_node(
+        f"""
+const fs = require('fs');
+const src = fs.readFileSync({json.dumps(str(MIND_PROVENANCE_JS))}, 'utf8');
+eval(src);
+const run = OrionMindProvenance.MIND_PROVENANCE_FIXTURES.orchHttpFailed;
+const prov = OrionMindProvenance.normalizeMindRunProvenance(run);
+const rows = OrionMindProvenance.normalizeMindPhaseRows(run);
+const callouts = OrionMindProvenance.normalizeMindDerailments(run);
+const html = OrionMindProvenance.renderMindDerailmentCallouts(callouts);
+console.log(JSON.stringify({{
+  cognition_path: prov.cognition_path,
+  orch_http_failed: prov.orch_http_failed,
+  has_orch_row: rows.some(r => r.phase === 'orch_mind_http'),
+  callout_id: callouts[0] && callouts[0].id,
+  title: callouts[0] && callouts[0].title,
+  has_off_rails: html.includes('Where it went off rails'),
+}}));
+"""
+    )
+    assert out["cognition_path"] == "orch_mind_http_failed"
+    assert out["orch_http_failed"] is True
+    assert out["has_orch_row"] is True
+    assert out["callout_id"] == "orch_mind_http_failed"
+    assert "Orch timed out" in (out["title"] or "")
+    assert out["has_off_rails"] is True
+
+
 def test_success_fixture_normalizer() -> None:
     out = _run_node(
         f"""

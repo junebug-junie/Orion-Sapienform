@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import json
 import asyncio
+import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -31,6 +32,7 @@ from .mind_runtime import (
     fetch_substrate_telemetry_facet_for_mind,
     merge_mind_brief_into_plan_metadata,
     publish_mind_run_artifact,
+    publish_synthetic_mind_http_failure_artifact,
 )
 from .execution_lanes import ExecutionLaneDecision, resolve_execution_lane
 from .settings import get_settings
@@ -563,6 +565,7 @@ async def call_verb_runtime(
             correlation_id,
             substrate_telemetry_facet=substrate_facet,
         )
+        mind_t0 = time.perf_counter()
         try:
             mind_res = await call_orion_mind_http(mind_req)
             merge_mind_brief_into_plan_metadata(plan_request, mind_res)
@@ -585,6 +588,7 @@ async def call_verb_runtime(
                 )
                 plan_request.context.setdefault("metadata", {})["mind_artifact_persist_failed"] = True
         except Exception as mind_exc:
+            elapsed_ms = (time.perf_counter() - mind_t0) * 1000.0
             log_mind_http_failure(
                 correlation_id=correlation_id,
                 session_id=client_request.context.session_id,
@@ -592,6 +596,25 @@ async def call_verb_runtime(
                 exc=mind_exc,
             )
             plan_request.context.setdefault("metadata", {})["mind_invocation_failed"] = str(mind_exc)
+            try:
+                await publish_synthetic_mind_http_failure_artifact(
+                    bus,
+                    source=source,
+                    correlation_id=correlation_id,
+                    causality_chain=causality_chain,
+                    trace=trace,
+                    client_request=client_request,
+                    mind_req=mind_req,
+                    exc=mind_exc,
+                    elapsed_ms=elapsed_ms,
+                )
+            except Exception as pub_exc:
+                logger.warning(
+                    "mind_synthetic_artifact_publish_failed corr=%s err=%s",
+                    correlation_id,
+                    pub_exc,
+                )
+                plan_request.context.setdefault("metadata", {})["mind_artifact_persist_failed"] = True
     else:
         raw_mind = cr_meta.get("mind_enabled") if isinstance(cr_meta, dict) else None
         logger.info(

@@ -6807,12 +6807,17 @@ loadDismissedIds();
         suggestBtn.textContent = 'Working…';
         if (statusEl) statusEl.textContent = 'Requesting draft…';
         const content = buildMemoryGraphSuggestUserContent(selected);
+        const selectedTurnIds = selected
+          .map((row) => (row && row.turnId ? String(row.turnId).trim() : ''))
+          .filter(Boolean);
         const payload = {
           mode: 'brain',
           verbs: ['memory_graph_suggest'],
           messages: [{ role: 'user', content }],
           use_recall: false,
           no_write: true,
+          diagnostic: true,
+          options: { diagnostic: true },
         };
         try {
           const headers = {
@@ -6831,7 +6836,7 @@ loadDismissedIds();
             : null;
           let res;
           try {
-            res = await fetch(`${API_BASE_URL}/api/chat`, {
+            res = await fetch(`${API_BASE_URL}/api/memory/graph/suggest`, {
               method: 'POST',
               headers,
               body: JSON.stringify(payload),
@@ -6848,38 +6853,69 @@ loadDismissedIds();
             data = { raw: text };
           }
           if (!res.ok) {
+            const emptyDraft =
+              window.OrionMemoryGraphDraftUI &&
+              typeof window.OrionMemoryGraphDraftUI.emptyValidSuggestDraft === 'function'
+                ? window.OrionMemoryGraphDraftUI.emptyValidSuggestDraft(selectedTurnIds)
+                : {
+                    ontology_version: 'orionmem-2026-05',
+                    utterance_ids: selectedTurnIds,
+                    entities: [],
+                    situations: [],
+                    edges: [],
+                    dispositions: [],
+                  };
+            draftTa.value = JSON.stringify(emptyDraft, null, 2);
+            const vDraftErr = ensureMemoryGraphBridgeDraftViz();
+            if (vDraftErr && vDraftErr.refresh) vDraftErr.refresh();
             if (statusEl) statusEl.textContent = typeof data === 'object' && data ? JSON.stringify(data) : text;
             return;
           }
-          const raw = data && data.raw;
-          const coalesce = window.OrionMemoryGraphDraftUI && typeof window.OrionMemoryGraphDraftUI.coalesceChatSuggestDraft === 'function'
-            ? window.OrionMemoryGraphDraftUI.coalesceChatSuggestDraft(data)
+          const coalesceFn =
+            window.OrionMemoryGraphDraftUI &&
+            typeof window.OrionMemoryGraphDraftUI.coalesceMemoryGraphSuggestEnvelope === 'function'
+              ? window.OrionMemoryGraphDraftUI.coalesceMemoryGraphSuggestEnvelope
+              : null;
+          const coalesce = coalesceFn
+            ? coalesceFn(data, { utteranceIds: selectedTurnIds })
             : null;
-          let out = '';
-          let suggestError = '';
-          if (coalesce) {
-            out = coalesce.draftText || '';
-            suggestError = coalesce.error || '';
-          } else {
-            const t = (data && (data.text || (raw && raw.final_text))) || '';
-            out = typeof t === 'string' ? t.trim() : '';
-            const stepErr = !out && raw && typeof raw === 'object' ? extractCortexStepErrorHint(raw) : '';
-            if (!out && stepErr) suggestError = stepErr;
-          }
-          if (suggestError) {
-            draftTa.value = '';
-            const vDraft = ensureMemoryGraphBridgeDraftViz();
-            if (vDraft && vDraft.refresh) vDraft.refresh();
-            if (statusEl) statusEl.textContent = `Suggest failed: ${suggestError}`;
-            return;
-          }
+          const emptyDraft =
+            window.OrionMemoryGraphDraftUI &&
+            typeof window.OrionMemoryGraphDraftUI.emptyValidSuggestDraft === 'function'
+              ? window.OrionMemoryGraphDraftUI.emptyValidSuggestDraft(selectedTurnIds)
+              : {
+                  ontology_version: 'orionmem-2026-05',
+                  utterance_ids: selectedTurnIds,
+                  entities: [],
+                  situations: [],
+                  edges: [],
+                  dispositions: [],
+                };
+          const out =
+            coalesce && typeof coalesce.draftText === 'string' && coalesce.draftText.trim()
+              ? coalesce.draftText
+              : JSON.stringify(emptyDraft, null, 2);
           draftTa.value = out;
           const vDraft = ensureMemoryGraphBridgeDraftViz();
           if (vDraft && vDraft.refresh) vDraft.refresh();
+          if (coalesce && coalesce.error) {
+            const diag = coalesce.diagnostics || {};
+            const parts = [
+              `Suggest failed: ${coalesce.error}`,
+              diag.route_used != null ? `route=${diag.route_used}` : '',
+              Array.isArray(diag.validation_errors) && diag.validation_errors.length
+                ? `validation_errors=${diag.validation_errors.join(',')}`
+                : '',
+            ].filter(Boolean);
+            if (statusEl) statusEl.textContent = parts.join(' · ');
+            return;
+          }
           if (statusEl) {
-            statusEl.textContent = out
-              ? 'Replaced the box with the model reply. If prose wrapped the JSON, delete the wrapper lines and use Validate.'
-              : 'Empty response — check gateway / model logs.';
+            const diag = coalesce && coalesce.diagnostics ? coalesce.diagnostics : {};
+            const route = diag.route_used != null ? `route=${diag.route_used}` : '';
+            statusEl.textContent = route
+              ? `Draft updated from suggest route (${route}). Review JSON then Validate.`
+              : 'Draft updated from suggest route. Review JSON then Validate.';
           }
         } catch (err) {
           if (statusEl) {

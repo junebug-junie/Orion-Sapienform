@@ -277,6 +277,37 @@ def test_quick_timeout_escalates_to_brain(hub_settings, fixture_draft_text) -> N
     assert "hub_wait_for_timeout" in str(out["attempts"][0].get("validation_errors", []))
 
 
+def test_cortex_prose_returns_no_json_object_without_draft(hub_settings) -> None:
+    _ensure_hub_scripts_import_path()
+    from scripts.memory_graph_suggest import suggest_with_escalation
+
+    prose = "There's a kind of sacred tension in those moments when trust and fear meet."
+
+    async def chat(req, correlation_id=None):
+        return _client_result(prose)
+
+    client = AsyncMock()
+    client.chat.side_effect = chat
+
+    out = asyncio.run(
+        suggest_with_escalation(
+            cortex_client=client,
+            payload=_msg_payload("extract memory graph"),
+            session_id="sid-prose",
+            user_id=None,
+            settings=hub_settings,
+            mutation_context={},
+        )
+    )
+    assert out["ok"] is False
+    assert out.get("error") == "memory_graph_suggest_failed"
+    assert out.get("draft") is None
+    validation_errors = [str(e) for e in out.get("validation_errors") or []]
+    assert "no_json_object" in validation_errors
+    phases = [str(a.get("phase") or "") for a in out.get("attempts") or []]
+    assert "no_json_object" in phases
+
+
 def test_both_fail_returns_error_and_attempts(hub_settings) -> None:
     _ensure_hub_scripts_import_path()
     from scripts.memory_graph_suggest import suggest_with_escalation

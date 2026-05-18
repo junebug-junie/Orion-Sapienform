@@ -335,6 +335,29 @@ def test_legacy_semantic_claim_shape_is_normalized() -> None:
     assert "normalized_from_legacy_claim_shape" in result.diagnostics.notes
 
 
+def test_legacy_normalizer_preserves_zero_confidence_fields() -> None:
+    from app.synthesis import try_normalize_legacy_semantic_raw
+
+    normalized, did = try_normalize_legacy_semantic_raw(
+        {
+            "schema_version": "mind.semantic_synthesis.v1",
+            "claims": [
+                {
+                    "claim": "User is uncertain about plans.",
+                    "confidence": 0,
+                    "salience_hint": 0.0,
+                    "evidence_refs": ["current_turn:0"],
+                }
+            ],
+            "suppressed": [],
+        }
+    )
+    assert did is True
+    assert normalized is not None
+    assert normalized["claims"][0]["confidence"] == 0.0
+    assert normalized["claims"][0]["salience_hint"] == 0.0
+
+
 def test_unrecoverable_semantic_shape_fail_opens_with_schema_telemetry() -> None:
     from app.evidence import build_evidence_pack
     from app.synthesis import run_semantic_synthesis

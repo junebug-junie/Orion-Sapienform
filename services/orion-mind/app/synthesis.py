@@ -68,6 +68,15 @@ def _is_legacy_claim_shape(item: dict[str, Any]) -> bool:
     return isinstance(claim_text, str) and bool(claim_text.strip())
 
 
+def _float_field(item: dict[str, Any], key: str, default: float) -> float:
+    if key not in item:
+        return default
+    value = item.get(key)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return default
+
+
 def _coerce_evidence_refs(item: dict[str, Any]) -> list[str]:
     refs = item.get("evidence_refs")
     if isinstance(refs, list):
@@ -117,8 +126,8 @@ def try_normalize_legacy_semantic_raw(raw: dict[str, Any]) -> tuple[dict[str, An
                 "evidence_refs": evidence_refs,
                 "source_kinds": [str(k) for k in source_kinds if str(k).strip()],
                 "anchor": item.get("anchor") or "unknown",
-                "confidence": float(item.get("confidence") or 0.5),
-                "salience_hint": float(item.get("salience_hint") or 0.5),
+                "confidence": _float_field(item, "confidence", 0.5),
+                "salience_hint": _float_field(item, "salience_hint", 0.5),
                 "recommended_effect": item.get("recommended_effect") or "no_effect",
                 "metadata": {
                     **(item.get("metadata") if isinstance(item.get("metadata"), dict) else {}),

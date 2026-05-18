@@ -272,7 +272,7 @@
       const failed = data.ok === false;
       return {
         draftText: JSON.stringify(obj, null, 2),
-        error: failed ? apiErr || "memory_graph_suggest_failed" : graphEmpty ? "no_durable_memory_candidate" : null,
+        error: failed ? apiErr || "memory_graph_suggest_failed" : null,
         diagnostics,
         graphEmpty,
       };
@@ -401,17 +401,19 @@
    */
   function formatSuggestCoalesceUserStatus(coalesce) {
     if (!coalesce || typeof coalesce !== "object") {
-      return "Extractor failed or returned invalid output. Empty valid draft loaded; see diagnostics.";
+      return "Extractor did not return a valid role-grounded SuggestDraftV1. Empty valid fallback draft loaded; see diagnostics.";
     }
     const err = coalesce.error != null ? String(coalesce.error).trim() : "";
-    if (!err) return "Loaded validated SuggestDraftV1 JSON.";
-    if (err === "no_durable_memory_candidate") {
-      return "No durable memory candidate found. Empty valid draft loaded.";
+    if (!err) {
+      if (coalesce.graphEmpty) {
+        return "Loaded valid empty SuggestDraftV1 JSON.";
+      }
+      return "Loaded validated role-grounded SuggestDraftV1 JSON.";
     }
     if (err === "evidence_envelope_not_draft") {
       return "Blocked selected-turn evidence envelope from Draft JSON; evidence is request input, not graph output.";
     }
-    return "Extractor failed or returned invalid output. Empty valid draft loaded; see diagnostics.";
+    return "Extractor did not return a valid role-grounded SuggestDraftV1. Empty valid fallback draft loaded; see diagnostics.";
   }
 
   /**

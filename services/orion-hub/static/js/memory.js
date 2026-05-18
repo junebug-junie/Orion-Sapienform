@@ -436,8 +436,8 @@
           const statusLine = statusFn
             ? statusFn(coalesce)
             : coalesce && coalesce.error
-              ? "Extractor failed or returned invalid output. Empty valid draft loaded; see diagnostics."
-              : "Loaded validated SuggestDraftV1 JSON.";
+              ? "Extractor did not return a valid role-grounded SuggestDraftV1. Empty valid fallback draft loaded; see diagnostics."
+              : "Loaded validated role-grounded SuggestDraftV1 JSON.";
           if (coalesce && coalesce.error) {
             graphSetOut(
               {
@@ -518,7 +518,7 @@
         draftTa.value = JSON.stringify(obj, null, 2);
         if (memoryDraftViz && memoryDraftViz.refresh) memoryDraftViz.refresh();
         graphSetOut(
-          { ok: true, note: "Loaded validated SuggestDraftV1 JSON." },
+          { ok: true, note: "Loaded validated role-grounded SuggestDraftV1 JSON." },
           false,
         );
         return;
@@ -553,7 +553,7 @@
           error: "invalid_import_not_suggest_draft_v1",
           note: isEvidence
             ? "Blocked selected-turn evidence envelope from Draft JSON; evidence is request input, not graph output."
-            : "Extractor failed or returned invalid output. Empty valid draft loaded; see diagnostics.",
+            : "Extractor did not return a valid role-grounded SuggestDraftV1. Empty valid fallback draft loaded; see diagnostics.",
         },
         true,
       );

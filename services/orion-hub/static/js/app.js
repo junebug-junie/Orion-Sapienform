@@ -6881,7 +6881,7 @@ loadDismissedIds();
             if (vDraftErr && vDraftErr.refresh) vDraftErr.refresh();
             if (statusEl) {
               statusEl.textContent =
-                'Extractor failed or returned invalid output. Empty valid draft loaded; see diagnostics.';
+                'Extractor did not return a valid role-grounded SuggestDraftV1. Empty valid fallback draft loaded; see diagnostics.';
               const diagBits =
                 typeof data === 'object' && data
                   ? [data.error, data.validation_errors].filter(Boolean)
@@ -6912,8 +6912,8 @@ loadDismissedIds();
             let line = statusFn
               ? statusFn(coalesce)
               : coalesce && coalesce.error
-                ? 'Extractor failed or returned invalid output. Empty valid draft loaded; see diagnostics.'
-                : 'Loaded validated SuggestDraftV1 JSON.';
+                ? 'Extractor did not return a valid role-grounded SuggestDraftV1. Empty valid fallback draft loaded; see diagnostics.'
+                : 'Loaded validated role-grounded SuggestDraftV1 JSON.';
             const diag = coalesce && coalesce.diagnostics ? coalesce.diagnostics : {};
             if (coalesce && coalesce.error && diag.route_used != null) {
               line += ` · route=${diag.route_used}`;

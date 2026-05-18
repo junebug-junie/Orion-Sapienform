@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from pydantic import ValidationError
@@ -10,6 +11,8 @@ from pydantic import ValidationError
 from orion.mind.synthesis_v1 import MindEvidencePackV1, SemanticSynthesisV1
 from .guardrails import filter_semantic_claims
 from .llm_client import MindLLMClientProtocol
+from .llm_context import MindLLMRequestContext
+from .phase_telemetry import MindPhaseTelemetry
 
 _SEMANTIC_SYSTEM = """You extract grounded semantic claims from evidence for an internal cognition organ.
 You are NOT writing the user-facing reply.
@@ -44,20 +47,41 @@ def run_semantic_synthesis(
     route: str,
     model_id: str,
     max_tokens: int,
-) -> tuple[SemanticSynthesisV1 | None, str | None]:
-    raw, err = client.request_json(
+    context: MindLLMRequestContext | None = None,
+    timeout_sec: float | None = None,
+) -> tuple[SemanticSynthesisV1 | None, str | None, MindPhaseTelemetry]:
+    from .phase_telemetry import utc_now_iso
+
+    started = utc_now_iso()
+    t0 = time.perf_counter()
+    raw, err, meta = client.request_json(
         system_prompt=_SEMANTIC_SYSTEM,
         user_prompt=_pack_prompt(pack),
         route=route,
         max_tokens=max_tokens,
         temperature=0.15,
+        context=context,
+        timeout_sec=timeout_sec,
+    )
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    telemetry = MindPhaseTelemetry(
+        phase_name="semantic_synthesis",
+        route=route,
+        model=str(meta.get("model_used") or model_id),
+        started_at=started,
+        elapsed_ms=elapsed_ms,
+        ok=raw is not None and err is None,
+        parse_ok=raw is not None,
+        error=err,
+        token_usage=dict(meta.get("usage") or {}),
     )
     if raw is None:
-        return None, err or "semantic_synthesis_failed"
+        return None, err or "semantic_synthesis_failed", telemetry
     try:
         synthesis = SemanticSynthesisV1.model_validate(raw)
     except ValidationError as exc:
-        return None, f"semantic_schema_invalid:{exc}"
+        telemetry.validation_ok = False
+        return None, f"semantic_schema_invalid:{exc}", telemetry
     synthesis = synthesis.model_copy(
         update={
             "model_id": model_id,
@@ -75,4 +99,6 @@ def run_semantic_synthesis(
             ),
         }
     )
-    return filter_semantic_claims(synthesis, pack), None
+    filtered = filter_semantic_claims(synthesis, pack)
+    telemetry.validation_ok = bool(filtered.claims)
+    return filtered, None, telemetry

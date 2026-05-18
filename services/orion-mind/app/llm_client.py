@@ -13,6 +13,7 @@ from uuid import uuid4
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ChatResultPayload, LLMMessage, ServiceRef
 
+from .llm_context import MindLLMRequestContext
 from .settings import settings
 
 logger = logging.getLogger("orion-mind.llm")
@@ -70,7 +71,9 @@ class MindLLMClientProtocol(Protocol):
         max_tokens: int,
         temperature: float = 0.2,
         thinking: bool = False,
-    ) -> tuple[Optional[Dict[str, Any]], str | None]: ...
+        context: MindLLMRequestContext | None = None,
+        timeout_sec: float | None = None,
+    ) -> tuple[Optional[Dict[str, Any]], str | None, dict[str, Any]]: ...
 
 
 class MindLLMClient:
@@ -93,33 +96,53 @@ class MindLLMClient:
         max_tokens: int,
         temperature: float = 0.2,
         thinking: bool = False,
-    ) -> tuple[Optional[Dict[str, Any]], str | None]:
+        context: MindLLMRequestContext | None = None,
+        timeout_sec: float | None = None,
+    ) -> tuple[Optional[Dict[str, Any]], str | None, dict[str, Any]]:
+        meta: dict[str, Any] = {"route": route, "phase": context.phase_name if context else None}
         if not self._bus_enabled():
-            return None, "bus_disabled"
+            return None, "bus_disabled", meta
+        effective_timeout = float(timeout_sec if timeout_sec is not None else settings.MIND_LLM_TIMEOUT_SEC)
+        if effective_timeout <= 0:
+            return None, "phase_timeout_budget_exhausted", meta
         options: Dict[str, Any] = {
             "temperature": temperature,
             "max_tokens": max_tokens,
             "return_json": True,
-            "gateway_read_timeout_sec": float(settings.MIND_LLM_TIMEOUT_SEC),
+            "gateway_read_timeout_sec": effective_timeout,
         }
         if thinking:
             options["thinking"] = True
+        if context is not None:
+            options["mind_run_id"] = context.mind_run_id
+            options["mind_phase"] = context.phase_name
+            options["mind_router_profile_id"] = context.router_profile_id
         try:
-            content = self._bus_chat(
+            content, usage, model_used = self._bus_chat(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 route=route,
                 options=options,
+                context=context,
+                timeout_sec=effective_timeout,
             )
+            meta["model_used"] = model_used
+            meta["usage"] = usage
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Mind LLM request failed route=%s err=%s", route, exc)
-            return None, str(exc)
+            logger.warning(
+                "Mind LLM request failed route=%s phase=%s correlation_id=%s err=%s",
+                route,
+                context.phase_name if context else None,
+                context.correlation_id if context else None,
+                exc,
+            )
+            return None, str(exc), meta
         if not content:
-            return None, "empty_llm_response"
+            return None, "empty_llm_response", meta
         parsed = extract_json(content)
         if parsed is None:
-            return None, "json_parse_failed"
-        return parsed, None
+            return None, "json_parse_failed", meta
+        return parsed, None, meta
 
     def _bus_chat(
         self,
@@ -128,13 +151,15 @@ class MindLLMClient:
         user_prompt: str,
         route: str,
         options: Dict[str, Any],
-    ) -> str:
-        async def _call() -> str:
+        context: MindLLMRequestContext | None,
+        timeout_sec: float,
+    ) -> tuple[str, dict[str, Any], str | None]:
+        async def _call() -> tuple[str, dict[str, Any], str | None]:
             bus = OrionBusAsync(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED)
             await bus.connect()
             try:
-                correlation_id = str(uuid4())
-                reply_channel = f"{settings.MIND_LLM_REPLY_PREFIX}:{correlation_id}"
+                corr = context.envelope_correlation_id() if context else uuid4()
+                reply_channel = f"{settings.MIND_LLM_REPLY_PREFIX}:{corr}"
                 payload = ChatRequestPayload(
                     messages=[
                         LLMMessage(role="system", content=system_prompt),
@@ -142,29 +167,34 @@ class MindLLMClient:
                     ],
                     route=route,
                     options=options,
+                    session_id=context.session_id if context else None,
                 )
+                trace = context.trace_baggage() if context else {}
                 env = BaseEnvelope(
                     kind="llm.chat.request",
                     source=self._service_ref,
-                    correlation_id=correlation_id,
+                    correlation_id=corr,
                     reply_to=reply_channel,
+                    trace=trace,
+                    causality_chain=list(context.causality_chain or []) if context else [],
                     payload=payload.model_dump(mode="json"),
                 )
                 msg = await bus.rpc_request(
                     settings.MIND_LLM_INTAKE_CHANNEL,
                     env,
                     reply_channel=reply_channel,
-                    timeout_sec=float(settings.MIND_LLM_TIMEOUT_SEC),
+                    timeout_sec=timeout_sec,
                 )
                 decoded = bus.codec.decode(msg.get("data"))
                 if not decoded.ok:
                     raise RuntimeError(f"LLM bus decode failed: {decoded.error}")
                 result = ChatResultPayload.model_validate(decoded.envelope.payload)
-                return result.content or result.text
+                usage = dict(result.usage or {})
+                return str(result.content or result.text or ""), usage, result.model_used
             finally:
                 await bus.close()
 
-        return str(_run_blocking(_call()) or "")
+        return _run_blocking(_call())
 
 
 class FakeMindLLMClient:
@@ -173,6 +203,7 @@ class FakeMindLLMClient:
     def __init__(self, responses: list[Dict[str, Any]] | None = None) -> None:
         self._responses = list(responses or [])
         self._idx = 0
+        self.calls: list[dict[str, Any]] = []
 
     def request_json(
         self,
@@ -183,12 +214,23 @@ class FakeMindLLMClient:
         max_tokens: int,
         temperature: float = 0.2,
         thinking: bool = False,
-    ) -> tuple[Optional[Dict[str, Any]], str | None]:
+        context: MindLLMRequestContext | None = None,
+        timeout_sec: float | None = None,
+    ) -> tuple[Optional[Dict[str, Any]], str | None, dict[str, Any]]:
+        self.calls.append(
+            {
+                "route": route,
+                "max_tokens": max_tokens,
+                "thinking": thinking,
+                "context": context,
+                "timeout_sec": timeout_sec,
+            }
+        )
         if self._idx >= len(self._responses):
-            return None, "fake_exhausted"
+            return None, "fake_exhausted", {"route": route}
         payload = self._responses[self._idx]
         self._idx += 1
-        return dict(payload), None
+        return dict(payload), None, {"route": route, "model_used": route}
 
 
 _client: MindLLMClient | None = None

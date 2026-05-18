@@ -43,6 +43,37 @@ _EVENT_HINT_RE = re.compile(
     r"angered|annoyed|pissed|scared|trusted|feared|happened|did|was|were)\b",
     re.I,
 )
+_ROLE_TURN_RE = re.compile(r"\brole=(user|assistant)\b", re.I)
+_TURN_BODY_RE = re.compile(
+    r"---\s*turn\s+\d+\s+id=\S+\s+role=(?:user|assistant)\s*---\s*\n\s*(\S.+)",
+    re.I | re.M,
+)
+_RELATION_CUE_RE = re.compile(
+    r"\b(?:"
+    r"off\s+to|shower|be\s+back|back\s+soon|i['\u2019]?ll\s+be\s+here|i\s+will\s+be\s+here|"
+    r"going\s+to|leaving|returning|waiting|available|thanks|sorry|love|want|need|"
+    r"like|dislike|feel|family|work|bike|bikes|kids|ride|riding"
+    r")\b",
+    re.I,
+)
+_USER_ENTITY_HINTS = frozenset({"user", "juniper", "entity:user"})
+_ASSISTANT_ENTITY_HINTS = frozenset({"orion", "assistant", "entity:orion"})
+
+
+def extract_selected_role_evidence(utterance_text: str) -> Dict[str, bool]:
+    """Parse bridge-style transcript evidence for selected user/assistant turns."""
+    text = (utterance_text or "").strip()
+    roles = [m.group(1).lower() for m in _ROLE_TURN_RE.finditer(text)]
+    has_user_turn = "user" in roles
+    has_assistant_turn = "assistant" in roles
+    has_nonempty_text = bool(_TURN_BODY_RE.search(text))
+    has_extractable_relation = utterance_likely_contains_extractable_relation(text)
+    return {
+        "has_user_turn": has_user_turn,
+        "has_assistant_turn": has_assistant_turn,
+        "has_nonempty_text": has_nonempty_text,
+        "has_extractable_relation": has_extractable_relation,
+    }
 
 
 def utterance_likely_has_named_subjects(text: str) -> bool:
@@ -57,6 +88,69 @@ def utterance_likely_describes_event(text: str) -> bool:
     if len(body) < 12:
         return False
     return bool(_EVENT_HINT_RE.search(body))
+
+
+def utterance_likely_has_role_grounded_subjects(text: str) -> bool:
+    ev = extract_selected_role_evidence(text)
+    return bool(ev.get("has_user_turn") or ev.get("has_assistant_turn"))
+
+
+def utterance_likely_contains_extractable_relation(text: str) -> bool:
+    body = (text or "").strip()
+    if len(body) < 6:
+        return False
+    return bool(_RELATION_CUE_RE.search(body))
+
+
+def role_grounded_extraction_expected(utterance_text: str) -> bool:
+    """True when selected turns imply minimal semantic projection (not salience)."""
+    ev = extract_selected_role_evidence(utterance_text)
+    if not utterance_likely_has_role_grounded_subjects(utterance_text):
+        return False
+    if not ev.get("has_nonempty_text"):
+        return False
+    return bool(ev.get("has_extractable_relation"))
+
+
+def _entity_tokens(entities: List[Any]) -> Tuple[set[str], set[str]]:
+    ids: set[str] = set()
+    labels: set[str] = set()
+    for ent in entities:
+        if not isinstance(ent, dict):
+            continue
+        eid = str(ent.get("id") or "").strip().lower()
+        if eid:
+            ids.add(eid)
+        label = str(ent.get("label") or "").strip().lower()
+        if label:
+            labels.add(label)
+        sf = ent.get("surfaceForms")
+        if isinstance(sf, list):
+            for item in sf:
+                s = str(item or "").strip().lower()
+                if s:
+                    labels.add(s)
+    return ids, labels
+
+
+def _has_role_entity(entities: List[Any], hints: frozenset[str]) -> bool:
+    ids, labels = _entity_tokens(entities)
+    combined = ids | labels
+    if combined & hints:
+        return True
+    for token in combined:
+        for hint in hints:
+            if hint in token:
+                return True
+    return False
+
+
+def _has_user_role_entity(entities: List[Any]) -> bool:
+    return _has_role_entity(entities, _USER_ENTITY_HINTS)
+
+
+def _has_assistant_role_entity(entities: List[Any]) -> bool:
+    return _has_role_entity(entities, _ASSISTANT_ENTITY_HINTS)
 
 
 def validate_for_escalation(
@@ -142,7 +236,20 @@ def validate_for_escalation(
             except (TypeError, ValueError):
                 errors.append("invalid_confidence")
 
-    if utterance_likely_has_named_subjects(utterance_text) and len(entities) == 0:
+    role_expected = role_grounded_extraction_expected(utterance_text)
+    role_ev = extract_selected_role_evidence(utterance_text)
+
+    if role_expected:
+        if len(entities) == 0:
+            errors.append("no_entities_when_role_grounded_subjects_expected")
+        if len(situations) == 0:
+            errors.append("no_situations_when_role_grounded_context_expected")
+        if role_ev.get("has_user_turn") and role_ev.get("has_assistant_turn"):
+            if not _has_user_role_entity(entities):
+                errors.append("missing_user_role_entity")
+            if not _has_assistant_role_entity(entities):
+                errors.append("missing_assistant_role_entity")
+    elif utterance_likely_has_named_subjects(utterance_text) and len(entities) == 0:
         errors.append("no_entities_when_subjects_expected")
 
     if utterance_likely_describes_event(utterance_text) and len(situations) == 0:

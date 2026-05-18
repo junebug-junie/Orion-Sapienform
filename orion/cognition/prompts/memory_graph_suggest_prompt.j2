@@ -46,18 +46,115 @@ Return exactly one JSON object with this shape (no other keys required beyond th
   ]
 }
 
+Role-grounded extraction rules:
+- Treat each selected turn role as evidence.
+- A user turn's speaker is the user / Juniper.
+- An assistant turn's speaker is Orion / assistant.
+- First-person references in user turns usually refer to the user.
+- First-person references in assistant turns usually refer to Orion.
+- "you" in assistant text usually refers to the user.
+- "you" in user text usually refers to Orion.
+- Do not require explicit names to create user/orion entities.
+- Ordinary/routine turns should still produce a minimal semantic graph when they contain actions, states, promises, availability, movement, return expectations, emotions, preferences, or relational posture.
+- Salience/durability is not your job in this draft. Extract the faithful structure first.
+
+Few-shot example (selected turns → minimal faithful graph):
+
+Input transcript evidence:
+--- turn 1 id=u1 role=user ---
+k, off to shower. Be back soon!
+--- turn 2 id=a1 role=assistant ---
+Shower well. I'll be here when you're back.
+
+Expected JSON (illustrative; match ids from the actual selected turns):
+{
+  "ontology_version": "orionmem-2026-05",
+  "utterance_ids": ["u1", "a1"],
+  "entities": [
+    {
+      "id": "urn:uuid:d0000001-0000-4000-8000-000000000001",
+      "label": "User",
+      "entityKind": "person",
+      "surfaceForms": ["I"],
+      "generalizes_to": null
+    },
+    {
+      "id": "urn:uuid:d0000002-0000-4000-8000-000000000002",
+      "label": "Orion",
+      "entityKind": "abstract",
+      "surfaceForms": ["I", "here"],
+      "generalizes_to": null
+    },
+    {
+      "id": "urn:uuid:d0000003-0000-4000-8000-000000000003",
+      "label": "shower",
+      "entityKind": "abstract",
+      "surfaceForms": ["shower"],
+      "generalizes_to": null
+    }
+  ],
+  "situations": [
+    {
+      "id": "urn:uuid:e0000001-0000-4000-8000-000000000001",
+      "utterance_ids": ["u1"],
+      "label": "User leaves to shower; expects to return soon",
+      "stimulus_entity_id": "urn:uuid:d0000001-0000-4000-8000-000000000001",
+      "about_entity_ids": ["urn:uuid:d0000003-0000-4000-8000-000000000003"],
+      "target_entity_ids": [],
+      "affectLabel": "neutral",
+      "timeQualitative": "today",
+      "occurredAt": null
+    },
+    {
+      "id": "urn:uuid:e0000002-0000-4000-8000-000000000002",
+      "utterance_ids": ["a1"],
+      "label": "Orion remains available while user is away",
+      "stimulus_entity_id": "urn:uuid:d0000002-0000-4000-8000-000000000002",
+      "about_entity_ids": ["urn:uuid:d0000001-0000-4000-8000-000000000001"],
+      "target_entity_ids": [],
+      "affectLabel": "neutral",
+      "timeQualitative": "today",
+      "occurredAt": null
+    }
+  ],
+  "edges": [
+    {
+      "s": "urn:uuid:d0000001-0000-4000-8000-000000000001",
+      "p": "orionmem:inSituation",
+      "o": "urn:uuid:e0000001-0000-4000-8000-000000000001",
+      "confidence": 0.85
+    },
+    {
+      "s": "urn:uuid:d0000002-0000-4000-8000-000000000002",
+      "p": "orionmem:inSituation",
+      "o": "urn:uuid:e0000002-0000-4000-8000-000000000002",
+      "confidence": 0.85
+    },
+    {
+      "s": "urn:uuid:d0000003-0000-4000-8000-000000000003",
+      "p": "orionmem:aboutEntity",
+      "o": "urn:uuid:e0000001-0000-4000-8000-000000000001",
+      "confidence": 0.75
+    }
+  ],
+  "dispositions": [],
+  "utterance_text_by_id": {
+    "u1": "k, off to shower. Be back soon!",
+    "a1": "Shower well. I'll be here when you're back."
+  }
+}
+
 Rules:
 - Return JSON only. No markdown. No prose before or after the JSON.
 - Use only the selected utterance text and provided grounding.
-- Do not invent new facts.
-- Do not create entities that are not implied by the selected utterance or grounding.
-- Every entity must have id, label, entityKind, and surfaceForms.
+- Do not invent new facts beyond what roles and language reasonably imply.
+- Every entity must have id, label, entityKind, and surfaceForms. Prefer urn:uuid:… ids for entities and situations (RDF-compatible).
 - Every situation must reference at least one utterance_id.
 - Every edge predicate must be one of the listed predicates.
 - Use null instead of omitting optional scalar fields.
 - Use empty arrays instead of omitting optional array fields.
 - Confidence must be between 0 and 1.
-- If the utterance has too little information, still return valid JSON with empty arrays where appropriate.
+- When role-grounded content is present, do not return empty entities and situations arrays.
 
 User turn / context:
 {{ user_message }}

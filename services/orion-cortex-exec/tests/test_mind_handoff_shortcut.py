@@ -150,6 +150,7 @@ def test_shortcut_returns_none_when_payload_invalid() -> None:
         "metadata": {
             "mind_skip_stance_synthesis": True,
             "mind_quality": "meaningful_synthesis",
+            "mind_authorized_for_stance_skip": True,
             "mind_handoff": {"mind_quality": "meaningful_synthesis", "stance_payload": {"conversation_frame": "not-a-valid-frame"}},
         }
     }

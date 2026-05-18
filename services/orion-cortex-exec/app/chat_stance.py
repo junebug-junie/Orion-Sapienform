@@ -2139,9 +2139,13 @@ def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:
     )
     strained_turn = "operational_frustration" in bridge_posture or "strained" in bridge_posture
     task_mode = "identity_dialogue" if identity_turn else ("triage" if technical_turn and strained_turn else ("technical_collaboration" if technical_turn else "direct_response"))
-    identity_salience = "high" if identity_turn else ("low" if technical_turn else "medium")
-    active_identity = list(concept.get("self") or [])[:3] + identity["orion_identity_summary"][:4]
-    active_relationship = list(social.get("relationship_facets") or [])[:3] + identity["juniper_relationship_summary"][:4]
+    identity_salience = "high" if identity_turn else "low"
+    if identity_turn:
+        active_identity = list(concept.get("self") or [])[:3] + identity["orion_identity_summary"][:4]
+        active_relationship = list(social.get("relationship_facets") or [])[:3] + identity["juniper_relationship_summary"][:4]
+    else:
+        active_identity = list(concept.get("self") or [])[:3]
+        active_relationship = list(social.get("relationship_facets") or [])[:3]
     if reasoning_summary and not reasoning_summary.get("fallback_recommended"):
         reasoning_claims = [item for item in (reasoning_summary.get("active_claims") or []) if isinstance(item, dict)]
         reasoning_concepts = [item for item in (reasoning_summary.get("active_concepts") or []) if isinstance(item, dict)]
@@ -2165,7 +2169,8 @@ def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:
     else:
         response_priorities = [
             "answer_directly_first",
-            "preserve_orion_juniper_continuity",
+            "avoid_identity_recital",
+            "preserve_continuity_without_labels",
             "avoid_generic_assistant_tone",
             "maintain_grounded_specificity",
         ]
@@ -2192,6 +2197,8 @@ def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:
         "customer-support tone",
         "over-clarification",
     ]
+    if not identity_turn:
+        response_hazards.append("identity_recital_on_ordinary_turn")
     if task_mode == "triage":
         response_hazards.extend(["self_intro_on_operational_turn", "relationship_label_recital_during_triage"])
     if situation_relevance in {"active", "background"}:
@@ -2288,5 +2295,29 @@ def enforce_chat_stance_quality(brief: ChatStanceBrief, ctx: Dict[str, Any]) -> 
                 ["triage_operational_blockers_first"] + list(merged.response_priorities),
                 limit=8,
             )
+
+    if not identity_turn:
+        if merged.task_mode != "identity_dialogue":
+            merged.identity_salience = "low"
+        _fallback_identity_boilerplate = frozenset(
+            {"continuity", "juniper_builder", "known_person", "avoid_generic_assistant"}
+        )
+        merged.active_identity_facets = [
+            f for f in merged.active_identity_facets
+            if _normalize_brief_phrase(f) not in _fallback_identity_boilerplate
+        ]
+        merged.active_relationship_facets = [
+            f for f in merged.active_relationship_facets
+            if _normalize_brief_phrase(f) not in _fallback_identity_boilerplate
+        ]
+        merged.response_priorities = _unique(
+            list(merged.response_priorities)
+            + ["avoid_identity_recital", "preserve_continuity_without_labels"],
+            limit=8,
+        )
+        merged.response_hazards = _unique(
+            list(merged.response_hazards) + ["identity_recital_on_ordinary_turn"],
+            limit=8,
+        )
 
     return normalize_chat_stance_brief(merged), semantic_fallback

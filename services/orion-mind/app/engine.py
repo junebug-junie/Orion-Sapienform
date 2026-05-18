@@ -628,6 +628,13 @@ def run_mind_deterministic(
     )
 
 
+def _validate_phase_route(route: str, *, phase: str) -> str | None:
+    cleaned = (route or "").strip()
+    if not cleaned:
+        return f"invalid_route:{phase}:empty"
+    return None
+
+
 def _llm_machine_contract(
     *,
     decision: MindControlDecisionV1,
@@ -638,6 +645,11 @@ def _llm_machine_contract(
     shadow_synthesis: MindShadowSynthesisV1 | None,
     llm_enabled: bool,
     llm_error: str | None,
+    phase_telemetry: list | None = None,
+    fallback_reason: list[str] | None = None,
+    semantic_route: str | None = None,
+    appraisal_route: str | None = None,
+    stance_route: str | None = None,
 ) -> dict[str, Any]:
     claim_labels = [c.label for c in (synthesis.claims if synthesis else [])[:8]]
     top_labels = [m.label for m in (frontier.selected if frontier else [])[:6]]
@@ -663,6 +675,18 @@ def _llm_machine_contract(
     }
     if llm_error:
         machine["mind.llm_synthesis_error"] = llm_error
+    if semantic_route:
+        machine["mind.semantic_route"] = semantic_route
+    if appraisal_route:
+        machine["mind.appraisal_route"] = appraisal_route
+    if stance_route:
+        machine["mind.stance_route"] = stance_route
+    if phase_telemetry:
+        from .phase_telemetry import phase_telemetry_machine_keys
+
+        machine.update(phase_telemetry_machine_keys(phase_telemetry))
+    if fallback_reason:
+        machine["mind.fallback_reason"] = list(fallback_reason)[:8]
     return machine
 
 
@@ -674,9 +698,12 @@ def run_mind_llm_synthesis(
     mind_settings: Any,
 ) -> MindRunResultV1 | None:
     from .appraisal import run_active_frontier_judge
+    from .budget import MindRunBudget
     from .evidence import build_evidence_pack
     from .guardrails import build_handoff
     from .llm_client import get_llm_client
+    from .llm_context import MindLLMRequestContext
+    from .phase_telemetry import MindPhaseTelemetry
     from .settings import settings as mind_settings_module
     from .stance_handoff import run_stance_handoff
     from .synthesis import run_semantic_synthesis
@@ -688,10 +715,23 @@ def run_mind_llm_synthesis(
     t_run_start = time.perf_counter()
     mind_run_id = uuid4()
     phases: dict[str, float] = {}
-    wall_budget_ms = float(req.policy.wall_time_ms_max)
+    budget = MindRunBudget(
+        float(req.policy.wall_time_ms_max),
+        safety_ms=float(getattr(s, "MIND_LLM_PHASE_SAFETY_MS", 50.0)),
+    )
     bounded, _truncated = build_bounded_snapshot_inputs(dict(req.snapshot_inputs or {}), snapshot_max_bytes)
     cognitive_projection_debug = _cognitive_projection_debug(bounded)
     snap_hash = hash_snapshot_inputs(bounded)
+
+    logger.info(
+        "mind_llm_run_start mind_run_id=%s correlation_id=%s session_id=%s trace_id=%s trigger=%s",
+        mind_run_id,
+        req.correlation_id,
+        req.session_id,
+        req.trace_id,
+        req.trigger,
+    )
+
     pack = build_evidence_pack(
         bounded,
         max_messages=int(getattr(s, "MIND_EVIDENCE_MAX_MESSAGES", 8)),
@@ -701,58 +741,96 @@ def run_mind_llm_synthesis(
     )
     phases["evidence_pack_ms"] = _elapsed_ms_wall_clock(t_run_start)
 
-    def _over_budget() -> bool:
-        return _elapsed_ms_wall_clock(t_run_start) > wall_budget_ms
+    fail_open = bool(getattr(s, "MIND_LLM_FAIL_OPEN_LEGACY", True))
+    configured_timeout = float(getattr(s, "MIND_LLM_TIMEOUT_SEC", 90.0))
 
-    if _over_budget():
-        return None if bool(getattr(s, "MIND_LLM_FAIL_OPEN_LEGACY", True)) else _error_result(
+    def _fail_open_or_error(
+        *,
+        error_code: str,
+        diagnostics: list[str],
+    ) -> MindRunResultV1 | None:
+        if fail_open:
+            return None
+        return _error_result(
             mind_run_id=mind_run_id,
-            error_code="loop_budget_exceeded",
-            diagnostics=["wall_time_exceeded_before_llm"],
+            error_code=error_code,
+            diagnostics=diagnostics,
             snapshot_hash=snap_hash,
             timing_ms_by_phase=phases,
         )
 
-    client = get_llm_client()
-    llm_errors: list[str] = []
+    if budget.over_budget():
+        return _fail_open_or_error(error_code="loop_budget_exceeded", diagnostics=["wall_time_exceeded_before_llm"])
+
     semantic_route = str(getattr(s, "MIND_SEMANTIC_MODEL_ROUTE", "quick"))
     appraisal_route = str(getattr(s, "MIND_APPRAISAL_MODEL_ROUTE", "metacog"))
     stance_route = str(getattr(s, "MIND_STANCE_MODEL_ROUTE", "chat"))
+    for phase_name, route in (
+        ("semantic_synthesis", semantic_route),
+        ("active_frontier_judge", appraisal_route),
+        ("stance_handoff", stance_route),
+    ):
+        route_err = _validate_phase_route(route, phase=phase_name)
+        if route_err:
+            return _fail_open_or_error(error_code="invalid_llm_route", diagnostics=[route_err])
+
+    client = get_llm_client()
+    llm_errors: list[str] = []
+    phase_records: list[MindPhaseTelemetry] = []
+
+    def _phase_context(phase_name: str) -> MindLLMRequestContext:
+        return MindLLMRequestContext(
+            correlation_id=req.correlation_id,
+            mind_run_id=str(mind_run_id),
+            phase_name=phase_name,
+            session_id=req.session_id,
+            trace_id=req.trace_id,
+            router_profile_id=req.policy.router_profile_id,
+            trigger=str(req.trigger),
+        )
+
+    if not budget.can_run_phase():
+        rec = MindPhaseTelemetry(
+            phase_name="semantic_synthesis",
+            route=semantic_route,
+            skipped=True,
+            skip_reason="wall_budget_insufficient",
+        )
+        phase_records.append(rec)
+        return _fail_open_or_error(
+            error_code="loop_budget_exceeded",
+            diagnostics=["wall_budget_insufficient_before_semantic"],
+        )
 
     t_sem = time.perf_counter()
-    synthesis, sem_err = run_semantic_synthesis(
+    synthesis, sem_err, sem_telemetry = run_semantic_synthesis(
         pack,
         client=client,
         route=semantic_route,
         model_id=semantic_route,
         max_tokens=int(getattr(s, "MIND_LLM_MAX_TOKENS_SEMANTIC", 2048)),
+        context=_phase_context("semantic_synthesis"),
+        timeout_sec=budget.phase_timeout_sec(configured_timeout),
     )
+    phase_records.append(sem_telemetry)
     phases["semantic_synthesis_ms"] = (time.perf_counter() - t_sem) * 1000
     if sem_err:
         llm_errors.append(sem_err)
-    if _over_budget():
-        return None if bool(getattr(s, "MIND_LLM_FAIL_OPEN_LEGACY", True)) else _error_result(
-            mind_run_id=mind_run_id,
+    if budget.over_budget():
+        return _fail_open_or_error(
             error_code="loop_budget_exceeded",
             diagnostics=["wall_time_exceeded_after_semantic"],
-            snapshot_hash=snap_hash,
-            timing_ms_by_phase=phases,
         )
     if synthesis is None or not synthesis.claims:
-        if bool(getattr(s, "MIND_LLM_FAIL_OPEN_LEGACY", True)):
-            return None
-        return _error_result(
-            mind_run_id=mind_run_id,
+        return _fail_open_or_error(
             error_code="semantic_synthesis_failed",
             diagnostics=llm_errors or ["semantic_synthesis_empty"],
-            snapshot_hash=snap_hash,
-            timing_ms_by_phase=phases,
         )
 
     frontier = None
-    if synthesis and synthesis.claims:
+    if synthesis.claims and budget.can_run_phase():
         t_ap = time.perf_counter()
-        frontier, ap_err = run_active_frontier_judge(
+        frontier, ap_err, ap_telemetry = run_active_frontier_judge(
             synthesis,
             pack,
             client=client,
@@ -760,25 +838,35 @@ def run_mind_llm_synthesis(
             model_id=appraisal_route,
             max_tokens=int(getattr(s, "MIND_LLM_MAX_TOKENS_APPRAISAL", 3072)),
             thinking=bool(getattr(s, "MIND_LLM_THINKING_APPRAISAL", True)),
+            context=_phase_context("active_frontier_judge"),
+            timeout_sec=budget.phase_timeout_sec(configured_timeout),
         )
+        phase_records.append(ap_telemetry)
         phases["appraisal_ms"] = (time.perf_counter() - t_ap) * 1000
         if ap_err:
             llm_errors.append(ap_err)
-        if _over_budget():
-            return None if bool(getattr(s, "MIND_LLM_FAIL_OPEN_LEGACY", True)) else _error_result(
-                mind_run_id=mind_run_id,
+        if budget.over_budget():
+            return _fail_open_or_error(
                 error_code="loop_budget_exceeded",
                 diagnostics=["wall_time_exceeded_after_appraisal"],
-                snapshot_hash=snap_hash,
-                timing_ms_by_phase=phases,
             )
+    elif synthesis.claims:
+        phase_records.append(
+            MindPhaseTelemetry(
+                phase_name="active_frontier_judge",
+                route=appraisal_route,
+                skipped=True,
+                skip_reason="wall_budget_insufficient",
+            )
+        )
+        llm_errors.append("appraisal_skipped_wall_budget")
 
     user_text = pack.current_user_text
     base = _default_stance_from_user_text(user_text)
     stance_payload = dict(base)
-    if frontier and frontier.selected and synthesis:
+    if frontier and frontier.selected and synthesis and budget.can_run_phase():
         t_st = time.perf_counter()
-        stance_payload, st_err = run_stance_handoff(
+        stance_payload, st_err, st_telemetry = run_stance_handoff(
             frontier,
             synthesis,
             pack,
@@ -786,10 +874,23 @@ def run_mind_llm_synthesis(
             route=stance_route,
             model_id=stance_route,
             max_tokens=int(getattr(s, "MIND_LLM_MAX_TOKENS_STANCE", 1536)),
+            context=_phase_context("stance_handoff"),
+            timeout_sec=budget.phase_timeout_sec(configured_timeout),
         )
+        phase_records.append(st_telemetry)
         phases["stance_handoff_ms"] = (time.perf_counter() - t_st) * 1000
         if st_err:
             llm_errors.append(st_err)
+    elif frontier and frontier.selected:
+        phase_records.append(
+            MindPhaseTelemetry(
+                phase_name="stance_handoff",
+                route=stance_route,
+                skipped=True,
+                skip_reason="wall_budget_insufficient",
+            )
+        )
+        llm_errors.append("stance_handoff_skipped_wall_budget")
 
     handoff = build_handoff(
         synthesis=synthesis,
@@ -822,6 +923,9 @@ def run_mind_llm_synthesis(
     )
     quality = handoff.mind_quality
     authorized = bool(handoff.authorized_for_stance_use)
+    fallback_reason = list(handoff.authorization_reasons) if not authorized else []
+    if llm_errors and not authorized:
+        fallback_reason = [*(fallback_reason or []), *llm_errors[:4]]
     machine = _llm_machine_contract(
         decision=decision,
         synthesis=synthesis,
@@ -831,7 +935,14 @@ def run_mind_llm_synthesis(
         shadow_synthesis=shadow_synthesis,
         llm_enabled=True,
         llm_error=llm_errors[0] if llm_errors else None,
+        phase_telemetry=phase_records,
+        fallback_reason=fallback_reason or None,
+        semantic_route=semantic_route,
+        appraisal_route=appraisal_route,
+        stance_route=stance_route,
     )
+    machine["mind.wall_time_ms_max"] = float(req.policy.wall_time_ms_max)
+    machine["mind.wall_time_elapsed_ms"] = budget.elapsed_ms()
     summary = (
         "Meaningful Mind synthesis authorized for stance handoff."
         if authorized

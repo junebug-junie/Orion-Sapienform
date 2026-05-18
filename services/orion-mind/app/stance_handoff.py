@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from pydantic import ValidationError
@@ -12,6 +13,8 @@ from orion.mind.validation import validate_merged_stance_brief_optional
 
 from .evidence import MindEvidencePackV1
 from .llm_client import MindLLMClientProtocol
+from .llm_context import MindLLMRequestContext
+from .phase_telemetry import MindPhaseTelemetry, utc_now_iso
 
 _STANCE_SYSTEM = """You convert the active cognitive frontier into a compact ChatStanceBrief-compatible stance_payload.
 You are NOT writing the final user reply.
@@ -47,7 +50,9 @@ def run_stance_handoff(
     route: str,
     model_id: str,
     max_tokens: int,
-) -> tuple[dict[str, Any], str | None]:
+    context: MindLLMRequestContext | None = None,
+    timeout_sec: float | None = None,
+) -> tuple[dict[str, Any], str | None, MindPhaseTelemetry]:
     user_prompt = json.dumps(
         {
             "current_user_text": pack.current_user_text,
@@ -58,22 +63,42 @@ def run_stance_handoff(
         },
         ensure_ascii=False,
     )
-    raw, err = client.request_json(
+    started = utc_now_iso()
+    t0 = time.perf_counter()
+    raw, err, meta = client.request_json(
         system_prompt=_STANCE_SYSTEM,
         user_prompt=user_prompt,
         route=route,
         max_tokens=max_tokens,
         temperature=0.2,
+        context=context,
+        timeout_sec=timeout_sec,
+    )
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    telemetry = MindPhaseTelemetry(
+        phase_name="stance_handoff",
+        route=route,
+        model=str(meta.get("model_used") or model_id),
+        started_at=started,
+        elapsed_ms=elapsed_ms,
+        ok=raw is not None and err is None,
+        parse_ok=raw is not None,
+        error=err,
+        token_usage=dict(meta.get("usage") or {}),
     )
     if raw is None:
         base = _minimal_stance_from_pack(pack)
-        return base, err or "stance_handoff_failed"
+        telemetry.validation_ok = False
+        return base, err or "stance_handoff_failed", telemetry
     payload = raw.get("stance_payload") if isinstance(raw.get("stance_payload"), dict) else raw
     if not isinstance(payload, dict):
-        return _minimal_stance_from_pack(pack), "stance_payload_not_object"
+        telemetry.validation_ok = False
+        return _minimal_stance_from_pack(pack), "stance_payload_not_object", telemetry
     merged = _minimal_stance_from_pack(pack)
     merged.update(payload)
     valid, validation_err = validate_merged_stance_brief_optional(merged)
     if valid is None:
-        return merged, f"stance_brief_invalid:{validation_err}"
-    return valid.model_dump(mode="json"), None
+        telemetry.validation_ok = False
+        return merged, f"stance_brief_invalid:{validation_err}", telemetry
+    telemetry.validation_ok = True
+    return valid.model_dump(mode="json"), None, telemetry

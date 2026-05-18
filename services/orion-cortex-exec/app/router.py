@@ -29,6 +29,7 @@ from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
 from .supervisor import Supervisor
 from .settings import settings
 from .metacog_enrichment import extract_reasoning_features
+from .chat_stance import strip_identity_recital_leadin
 from orion.cognition.verb_activation import is_active
 
 logger = logging.getLogger("orion.cortex.router")
@@ -292,7 +293,24 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
                     diagnostics["candidate_fields_considered"].append(candidate_diag)
                 if structured_expected:
                     diagnostics["structured_json_extraction_attempted"] = True
+                    extra_fields = (
+                        ("reasoning_content", payload.get("reasoning_content")),
+                        ("text", payload.get("text")),
+                        ("final_text", payload.get("final_text")),
+                    )
                     json_text = _extract_first_json_object_text(cleaned)
+                    if not json_text:
+                        for extra_field, extra_val in extra_fields:
+                            if extra_field == field:
+                                continue
+                            if not isinstance(extra_val, str) or not extra_val.strip():
+                                continue
+                            json_text = _extract_first_json_object_text(extra_val)
+                            if json_text:
+                                candidate_diag = dict(candidate_diag)
+                                candidate_diag["field"] = extra_field
+                                candidate_diag["raw_len"] = len(extra_val.strip())
+                                break
                     if json_text:
                         diagnostics["source_field"] = field
                         diagnostics["source_service"] = service_name
@@ -307,6 +325,8 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
                         diagnostics["final_len"] = len(json_text)
                         return json_text, diagnostics
                     diagnostics["rejected_candidate_count"] += 1
+                    if not diagnostics.get("structured_rejection_preview"):
+                        diagnostics["structured_rejection_preview"] = cleaned[:500]
                     continue
                 diagnostics["source_field"] = field
                 diagnostics["source_service"] = service_name
@@ -333,6 +353,13 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
                 return final_text, diagnostics
     if structured_expected and diagnostics["candidate_count"] > 0:
         diagnostics["structured_output_rejected"] = True
+        previews = [
+            str(c.get("raw_len") or "")
+            for c in (diagnostics.get("candidate_fields_considered") or [])
+            if isinstance(c, dict) and int(c.get("raw_len") or 0) > 0
+        ]
+        if previews:
+            diagnostics["structured_rejection_raw_lens"] = previews
     if _is_runtime_skill_verb(verb_name):
         fallback_message = None
         fallback_status = None
@@ -378,6 +405,22 @@ def _is_runtime_skill_verb(verb_name: str | None) -> bool:
 
 def _should_fail_empty_runtime_skill_output(*, overall_status: str, verb_name: str | None, final_text: str | None) -> bool:
     return overall_status == "success" and _is_runtime_skill_verb(verb_name) and not str(final_text or "").strip()
+
+
+def _should_fail_empty_structured_verb_output(
+    *,
+    overall_status: str,
+    verb_name: str | None,
+    final_text: str | None,
+    final_text_diag: Dict[str, Any],
+) -> bool:
+    if overall_status != "success" or not _structured_output_expected(verb_name):
+        return False
+    if str(final_text or "").strip():
+        return False
+    if bool(final_text_diag.get("structured_output_rejected")):
+        return True
+    return int(final_text_diag.get("candidate_count") or 0) > 0 and int(final_text_diag.get("result_len") or 0) == 0
 
 
 def _autonomy_goal_lineage_from_state(state: Dict[str, Any] | None) -> Dict[str, Any] | None:
@@ -1039,8 +1082,14 @@ class PlanRunner:
                 final_text,
                 verb_name=plan.verb_name,
             )
+            final_text, recital_stripped = strip_identity_recital_leadin(
+                final_text,
+                str(ctx.get("user_message") or ""),
+            )
+            if recital_stripped:
+                identity_diag["identity_recital_leadin_stripped"] = True
             final_text_diag.update(identity_diag)
-            if identity_diag.get("identity_boundary_applied"):
+            if identity_diag.get("identity_boundary_applied") or recital_stripped:
                 final_text_diag["result_len"] = len(final_text)
                 final_text_diag["final_len"] = len(final_text)
         logger.info(
@@ -1106,6 +1155,24 @@ class PlanRunner:
                 "runtime_skill_empty_terminal_output corr_id=%s verb=%s status=fail",
                 correlation_id,
                 plan.verb_name,
+            )
+        if _should_fail_empty_structured_verb_output(
+            overall_status=overall_status,
+            verb_name=plan.verb_name,
+            final_text=final_text,
+            final_text_diag=final_text_diag,
+        ):
+            overall_status = "fail"
+            preview = str(final_text_diag.get("structured_rejection_preview") or "")[:240]
+            logger.error(
+                "===MEMGRAPH_SUGGEST_TRACE=== structured_empty_terminal_output corr_id=%s verb=%s "
+                "structured_output_rejected=%s preview=%r candidates=%s rejected=%s",
+                correlation_id,
+                plan.verb_name,
+                bool(final_text_diag.get("structured_output_rejected")),
+                preview,
+                final_text_diag.get("candidate_count"),
+                final_text_diag.get("rejected_candidate_count"),
             )
 
         if depth == 1:
@@ -1174,6 +1241,10 @@ class PlanRunner:
             )
         metadata = _autonomy_payload_from_ctx(ctx)
         metadata.update(_situation_grounding_metadata_from_ctx(ctx))
+        if final_text_diag.get("structured_output_rejected"):
+            metadata["structured_output_rejected"] = True
+            if final_text_diag.get("structured_rejection_preview"):
+                metadata["structured_rejection_preview"] = str(final_text_diag["structured_rejection_preview"])[:500]
         mark_orion_turn(str(ctx.get("session_id") or "global"))
 
         return PlanExecutionResult(

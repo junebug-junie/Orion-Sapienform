@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
@@ -15,6 +16,9 @@ from .json_to_rdf import ORIONMEM, SCHEMA
 
 
 def _repo_root() -> Path:
+    override = str(os.environ.get("ORION_REPO_ROOT") or "").strip()
+    if override:
+        return Path(override)
     return Path(__file__).resolve().parents[2]
 
 

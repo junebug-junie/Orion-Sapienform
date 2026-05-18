@@ -6118,16 +6118,17 @@ loadDismissedIds();
     return { targetTurnId, targetMessageId, targetCorrelationId, linkageStrategy };
   }
 
-  // Single id string for data-turn-id and suggest evidence: prefers assistant message id from linkage, then meta fields, then turn id.
+  // Single id for data-turn-id and suggest evidence. Explicit meta ids win over linkage-derived :assistant suffixes (user turns must not inherit assistant message ids).
   function canonicalTurnIdForMemoryGraph(meta = {}) {
+    const explicitTurn = String(meta.turnId || meta.turn_id || '').trim();
+    if (explicitTurn) return explicitTurn;
+    const explicitMsg = String(meta.messageId || meta.message_id || '').trim();
+    if (explicitMsg) return explicitMsg;
     const linkage = resolveFeedbackLinkage(meta);
     const id =
       (linkage && linkage.targetMessageId)
-      || meta.messageId
-      || meta.message_id
-      || meta.turnId
-      || meta.turn_id
       || linkage?.targetTurnId
+      || linkage?.targetCorrelationId
       || '';
     const s = String(id || '').trim();
     return s || null;
@@ -6725,10 +6726,78 @@ loadDismissedIds();
     if (maxTurnsInputEl) maxTurnsInputEl.value = String(readBridgeMaxTurnsStored());
     rebuildMemoryGraphBridgeTurnList();
     if (memoryGraphBridgeTurnsCache.length > 0 && draftTa) draftTa.value = '';
+    renderMemoryGraphBridgeDiagnostics(null, null);
     memoryGraphBridgeModal.classList.remove('hidden');
     memoryGraphBridgeModal.setAttribute('aria-hidden', 'false');
     if (closeForFocus && typeof closeForFocus.focus === 'function') {
       closeForFocus.focus({ preventScroll: true });
+    }
+  }
+
+  function formatMemoryGraphBridgeDiagnosticsBlock(coalesce, apiData) {
+    const diag = coalesce && coalesce.diagnostics ? { ...coalesce.diagnostics } : {};
+    if (apiData && typeof apiData === 'object') {
+      const apiAttempts = Array.isArray(apiData.attempts)
+        ? apiData.attempts
+        : Array.isArray(apiData.suggest_attempts)
+          ? apiData.suggest_attempts
+          : [];
+      if (apiAttempts.length && (!Array.isArray(diag.attempts) || !diag.attempts.length)) {
+        diag.attempts = apiAttempts;
+      }
+      if (apiData.route_used != null && diag.route_used == null) diag.route_used = apiData.route_used;
+      if (apiData.error != null && !diag.api_error) diag.api_error = apiData.error;
+    }
+    const lines = [];
+    if (diag.route_used != null) lines.push(`route_used: ${diag.route_used}`);
+    if (Array.isArray(diag.attempts) && diag.attempts.length) {
+      lines.push('attempts:');
+      diag.attempts.forEach((a, i) => {
+        if (!a || typeof a !== 'object') return;
+        const route = a.route != null ? a.route : a.route_used;
+        const phase = a.phase != null ? a.phase : '';
+        const err =
+          a.error_summary != null
+            ? a.error_summary
+            : a.error != null
+              ? a.error
+              : '';
+        lines.push(`  [${i}] route=${route || '?'} phase=${phase || '?'} error=${err || '—'}`);
+        if (Array.isArray(a.validation_errors) && a.validation_errors.length) {
+          lines.push(`      validation_errors: ${a.validation_errors.join(', ')}`);
+        }
+        if (a.raw_output_preview) lines.push(`      raw_output_preview: ${String(a.raw_output_preview).slice(0, 400)}`);
+      });
+    }
+    if (Array.isArray(diag.validation_errors) && diag.validation_errors.length) {
+      lines.push(`validation_errors: ${diag.validation_errors.join(', ')}`);
+    }
+    if (diag.api_error) lines.push(`api_error: ${diag.api_error}`);
+    if (diag.prose_preview) lines.push(`prose_preview: ${String(diag.prose_preview).slice(0, 400)}`);
+    if (diag.diagnostic_raw) lines.push(`diagnostic_raw: ${String(diag.diagnostic_raw).slice(0, 600)}`);
+    if (coalesce && coalesce.error) lines.push(`coalesce_error: ${coalesce.error}`);
+    if (apiData && apiData.ok === false && apiData.error) lines.push(`api_response_error: ${apiData.error}`);
+    if (apiData && apiData.fallback_draft) lines.push('fallback_draft: true');
+    return lines.join('\n');
+  }
+
+  function renderMemoryGraphBridgeDiagnostics(coalesce, apiData) {
+    const diagEl = document.getElementById('memoryGraphBridgeDiagnostics');
+    const copyBtn = document.getElementById('memoryGraphBridgeCopyDiagnostics');
+    const text = formatMemoryGraphBridgeDiagnosticsBlock(coalesce, apiData);
+    const show = Boolean(text && text.trim());
+    if (diagEl) {
+      if (show) {
+        diagEl.textContent = text;
+        diagEl.classList.remove('hidden');
+      } else {
+        diagEl.textContent = '';
+        diagEl.classList.add('hidden');
+      }
+    }
+    if (copyBtn) {
+      copyBtn.classList.toggle('hidden', !show);
+      copyBtn.dataset.diagnosticsText = show ? text : '';
     }
   }
 
@@ -6739,6 +6808,7 @@ loadDismissedIds();
     const draftTa = document.getElementById('memoryGraphBridgeDraft');
     const statusEl = document.getElementById('memoryGraphBridgeStatus');
     const list = document.getElementById('memoryGraphBridgeTurnList');
+    const copyDiagBtn = document.getElementById('memoryGraphBridgeCopyDiagnostics');
     if (!memoryGraphBridgeModal || !closeBtn) return;
     const maxTurnsInput = document.getElementById('memoryGraphBridgeMaxTurns');
     if (maxTurnsInput) {
@@ -6785,6 +6855,18 @@ loadDismissedIds();
     memoryGraphBridgeModal.addEventListener('click', (e) => {
       if (e.target === memoryGraphBridgeModal) close();
     });
+    if (copyDiagBtn) {
+      copyDiagBtn.addEventListener('click', async () => {
+        const text = copyDiagBtn.dataset.diagnosticsText || '';
+        if (!text.trim()) return;
+        try {
+          await navigator.clipboard.writeText(text);
+          showToast('Diagnostics copied.');
+        } catch (err) {
+          showToast(String(err.message || err));
+        }
+      });
+    }
     if (suggestBtn) {
       suggestBtn.addEventListener('click', async () => {
         if (!list || !draftTa) return;
@@ -6879,6 +6961,8 @@ loadDismissedIds();
             draftTa.value = JSON.stringify(emptyDraft, null, 2);
             const vDraftErr = ensureMemoryGraphBridgeDraftViz();
             if (vDraftErr && vDraftErr.refresh) vDraftErr.refresh();
+            const failCoalesce = { error: 'memory_graph_suggest_failed', diagnostics: { api_error: data && data.error } };
+            renderMemoryGraphBridgeDiagnostics(failCoalesce, data);
             if (statusEl) {
               statusEl.textContent =
                 'Extractor did not return a valid role-grounded SuggestDraftV1. Empty valid fallback draft loaded; see diagnostics.';
@@ -6904,6 +6988,7 @@ loadDismissedIds();
           draftTa.value = out;
           const vDraft = ensureMemoryGraphBridgeDraftViz();
           if (vDraft && vDraft.refresh) vDraft.refresh();
+          renderMemoryGraphBridgeDiagnostics(coalesce, data);
           if (statusEl) {
             const statusFn =
               typeof ui.formatSuggestCoalesceUserStatus === 'function'
@@ -11695,6 +11780,31 @@ loadDismissedIds();
     }
   }
   setInterval(_pollSocialRoomInspection, 8000);
+
+  if (/[?&]hub_e2e=1(?:&|$)/.test(location.search)) {
+    window.__ORION_HUB_E2E__ = {
+      seedMemoryGraphTurns(turns) {
+        if (!conversationDiv) return;
+        conversationDiv.innerHTML = '';
+        (turns || []).forEach((t) => {
+          if (!t || typeof t !== 'object') return;
+          appendMessage(
+            t.sender || 'You',
+            t.text || '',
+            t.colorClass || 'text-white',
+            t.meta && typeof t.meta === 'object' ? t.meta : {},
+          );
+        });
+      },
+      openMemoryGraphBridgeForAssistantTurn(turnId) {
+        const id = String(turnId || '').trim();
+        if (!id || !conversationDiv) throw new Error('turnId required');
+        const div = conversationDiv.querySelector(`[data-turn-id="${CSS.escape(id)}"]`);
+        if (!div) throw new Error(`assistant turn not found: ${id}`);
+        openMemoryGraphBridgeModal(div);
+      },
+    };
+  }
 
 });
 

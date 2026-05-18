@@ -144,6 +144,31 @@ Expected JSON (illustrative; match ids from the actual selected turns):
   }
 }
 
+Few-shot example (quiet / no next step — minimal faithful graph):
+
+Input transcript evidence:
+--- turn 1 id=u2 role=user ---
+not much of a next step, just chillin
+--- turn 2 id=a2 role=assistant ---
+You're Juniper — the one building this with me. Want to talk about the next step or just sit with the quiet bit?
+
+Expected JSON (illustrative; match ids from the actual selected turns):
+{
+  "ontology_version": "orionmem-2026-05",
+  "utterance_ids": ["u2", "a2"],
+  "entities": [
+    {"id": "urn:uuid:f0000001-0000-4000-8000-000000000001", "label": "User", "entityKind": "person", "surfaceForms": ["I"], "generalizes_to": null},
+    {"id": "urn:uuid:f0000002-0000-4000-8000-000000000002", "label": "Orion", "entityKind": "abstract", "surfaceForms": ["me"], "generalizes_to": null}
+  ],
+  "situations": [
+    {"id": "urn:uuid:f1000001-0000-4000-8000-000000000001", "utterance_ids": ["u2"], "label": "User chilling with no clear next step", "stimulus_entity_id": "urn:uuid:f0000001-0000-4000-8000-000000000001", "about_entity_ids": [], "target_entity_ids": [], "affectLabel": "neutral", "timeQualitative": "today", "occurredAt": null},
+    {"id": "urn:uuid:f1000002-0000-4000-8000-000000000002", "utterance_ids": ["a2"], "label": "Orion offers next-step talk or quiet presence", "stimulus_entity_id": "urn:uuid:f0000002-0000-4000-8000-000000000002", "about_entity_ids": ["urn:uuid:f0000001-0000-4000-8000-000000000001"], "target_entity_ids": [], "affectLabel": "neutral", "timeQualitative": "today", "occurredAt": null}
+  ],
+  "edges": [],
+  "dispositions": [],
+  "utterance_text_by_id": {"u2": "not much of a next step, just chillin", "a2": "You're Juniper — want to talk about the next step or just sit with the quiet bit?"}
+}
+
 Rules:
 - Return JSON only. No markdown. No prose before or after the JSON.
 - Use only the selected utterance text and provided grounding.

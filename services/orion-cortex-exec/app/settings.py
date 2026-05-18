@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     llm_chat_quick_max_tokens: int = Field(384, alias="LLM_CHAT_QUICK_MAX_TOKENS")
     llm_chat_general_max_tokens: int = Field(768, alias="LLM_CHAT_GENERAL_MAX_TOKENS")
     llm_chat_fallback_max_tokens: int = Field(512, alias="LLM_CHAT_FALLBACK_MAX_TOKENS")
+    llm_memory_graph_suggest_max_tokens: int = Field(
+        1536,
+        alias="LLM_MEMORY_GRAPH_SUGGEST_MAX_TOKENS",
+        description="Completion budget for memory_graph_suggest JSON drafts (must exceed minimal JSON).",
+    )
     # dream_cycle / dream_synthesis only (does not affect chat_quick / chat_general budgets)
     llm_dream_max_tokens: int = Field(32768, alias="LLM_DREAM_MAX_TOKENS")
     atlas_metacog_profile_name: str | None = Field(None, alias="ATLAS_METACOG_PROFILE_NAME")

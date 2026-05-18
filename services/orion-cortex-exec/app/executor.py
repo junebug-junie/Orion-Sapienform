@@ -65,6 +65,7 @@ from .chat_stance import (
     fallback_chat_stance_brief,
     identity_kernel_with_fallbacks,
     parse_chat_stance_brief_with_debug,
+    suppress_chat_general_speech_identity_priming,
 )
 from .situation import build_situation_for_ctx
 from .llm_lane import resolve_llm_lane_for_step
@@ -2206,6 +2207,9 @@ async def call_step_services(
                 consumed_by,
             )
             ctx["message_history"] = _format_message_history_for_chat_prompt(ctx.get("messages"))
+            if step.verb_name == "chat_general" and step.step_name == "llm_chat_general":
+                if suppress_chat_general_speech_identity_priming(ctx):
+                    logs.append("info <- suppressed identity kernel priming for ordinary chat_general speech turn")
         prompt = _render_prompt(step.prompt_template or "", ctx) if step.prompt_template else ""
 
         shortcut = _attempt_mind_handoff_chat_stance_shortcut(

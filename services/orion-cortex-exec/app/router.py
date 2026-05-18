@@ -29,6 +29,7 @@ from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
 from .supervisor import Supervisor
 from .settings import settings
 from .metacog_enrichment import extract_reasoning_features
+from .chat_stance import strip_identity_recital_leadin
 from orion.cognition.verb_activation import is_active
 
 logger = logging.getLogger("orion.cortex.router")
@@ -1039,8 +1040,14 @@ class PlanRunner:
                 final_text,
                 verb_name=plan.verb_name,
             )
+            final_text, recital_stripped = strip_identity_recital_leadin(
+                final_text,
+                str(ctx.get("user_message") or ""),
+            )
+            if recital_stripped:
+                identity_diag["identity_recital_leadin_stripped"] = True
             final_text_diag.update(identity_diag)
-            if identity_diag.get("identity_boundary_applied"):
+            if identity_diag.get("identity_boundary_applied") or recital_stripped:
                 final_text_diag["result_len"] = len(final_text)
                 final_text_diag["final_len"] = len(final_text)
         logger.info(

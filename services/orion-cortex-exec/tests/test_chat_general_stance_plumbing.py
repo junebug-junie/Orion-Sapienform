@@ -190,3 +190,5 @@ def test_chat_general_prompt_does_not_prime_identity_recital_examples() -> None:
     assert "This is a boundary rule, not content to mention" in text
     assert "Preserve continuity through tone and usefulness" in text
     assert "not through identity recital" in text
+    assert "{% if orion_identity_summary %}" in text
+    assert "Chat profile, recall profile, or config edits" in text

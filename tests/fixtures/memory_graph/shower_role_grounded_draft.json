@@ -1,0 +1,76 @@
+{
+  "ontology_version": "orionmem-2026-05",
+  "utterance_ids": ["u1", "a1"],
+  "entities": [
+    {
+      "id": "urn:uuid:d0000001-0000-4000-8000-000000000001",
+      "label": "User",
+      "entityKind": "person",
+      "surfaceForms": ["I"],
+      "generalizes_to": null
+    },
+    {
+      "id": "urn:uuid:d0000002-0000-4000-8000-000000000002",
+      "label": "Orion",
+      "entityKind": "abstract",
+      "surfaceForms": ["I", "here"],
+      "generalizes_to": null
+    },
+    {
+      "id": "urn:uuid:d0000003-0000-4000-8000-000000000003",
+      "label": "shower",
+      "entityKind": "abstract",
+      "surfaceForms": ["shower"],
+      "generalizes_to": null
+    }
+  ],
+  "situations": [
+    {
+      "id": "urn:uuid:e0000001-0000-4000-8000-000000000001",
+      "utterance_ids": ["u1"],
+      "label": "User leaves to shower; expects to return soon",
+      "stimulus_entity_id": "urn:uuid:d0000001-0000-4000-8000-000000000001",
+      "about_entity_ids": ["urn:uuid:d0000003-0000-4000-8000-000000000003"],
+      "target_entity_ids": [],
+      "affectLabel": "neutral",
+      "timeQualitative": "today",
+      "occurredAt": null,
+      "participants": [
+        {"entity_id": "urn:uuid:d0000001-0000-4000-8000-000000000001", "role": "agent"}
+      ]
+    },
+    {
+      "id": "urn:uuid:e0000002-0000-4000-8000-000000000002",
+      "utterance_ids": ["a1"],
+      "label": "Orion remains available while user is away",
+      "stimulus_entity_id": "urn:uuid:d0000002-0000-4000-8000-000000000002",
+      "about_entity_ids": ["urn:uuid:d0000001-0000-4000-8000-000000000001"],
+      "target_entity_ids": [],
+      "affectLabel": "neutral",
+      "timeQualitative": "today",
+      "occurredAt": null,
+      "participants": [
+        {"entity_id": "urn:uuid:d0000002-0000-4000-8000-000000000002", "role": "agent"}
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "s": "urn:uuid:d0000001-0000-4000-8000-000000000001",
+      "p": "orionmem:inSituation",
+      "o": "urn:uuid:e0000001-0000-4000-8000-000000000001",
+      "confidence": 0.85
+    },
+    {
+      "s": "urn:uuid:d0000002-0000-4000-8000-000000000002",
+      "p": "orionmem:inSituation",
+      "o": "urn:uuid:e0000002-0000-4000-8000-000000000002",
+      "confidence": 0.85
+    }
+  ],
+  "dispositions": [],
+  "utterance_text_by_id": {
+    "u1": "k, off to shower. Be back soon!",
+    "a1": "Shower well. I'll be here when you're back."
+  }
+}

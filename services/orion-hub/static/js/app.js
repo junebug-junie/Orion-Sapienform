@@ -6855,45 +6855,51 @@ loadDismissedIds();
           } catch {
             data = { raw: text };
           }
+          const ui = window.OrionMemoryGraphDraftUI || {};
+          const utteranceTextById = {};
+          selected.forEach((row) => {
+            const id = row && row.turnId ? String(row.turnId).trim() : '';
+            if (id) utteranceTextById[id] = String(row.text || '').trim();
+          });
+          const emptyDraftFn =
+            typeof ui.emptySuggestDraft === 'function'
+              ? ui.emptySuggestDraft
+              : typeof ui.emptyValidSuggestDraft === 'function'
+                ? ui.emptyValidSuggestDraft
+                : null;
+          const emptyDraft = emptyDraftFn
+            ? emptyDraftFn({ utteranceIds: selectedTurnIds, utteranceTextById })
+            : {
+                ontology_version: 'orionmem-2026-05',
+                utterance_ids: selectedTurnIds,
+                entities: [],
+                situations: [],
+                edges: [],
+                dispositions: [],
+                utterance_text_by_id: utteranceTextById,
+              };
           if (!res.ok) {
-            const emptyDraft =
-              window.OrionMemoryGraphDraftUI &&
-              typeof window.OrionMemoryGraphDraftUI.emptyValidSuggestDraft === 'function'
-                ? window.OrionMemoryGraphDraftUI.emptyValidSuggestDraft(selectedTurnIds)
-                : {
-                    ontology_version: 'orionmem-2026-05',
-                    utterance_ids: selectedTurnIds,
-                    entities: [],
-                    situations: [],
-                    edges: [],
-                    dispositions: [],
-                  };
             draftTa.value = JSON.stringify(emptyDraft, null, 2);
             const vDraftErr = ensureMemoryGraphBridgeDraftViz();
             if (vDraftErr && vDraftErr.refresh) vDraftErr.refresh();
-            if (statusEl) statusEl.textContent = typeof data === 'object' && data ? JSON.stringify(data) : text;
+            if (statusEl) {
+              statusEl.textContent =
+                'Extractor did not return a valid role-grounded SuggestDraftV1. Empty valid fallback draft loaded; see diagnostics.';
+              const diagBits =
+                typeof data === 'object' && data
+                  ? [data.error, data.validation_errors].filter(Boolean)
+                  : [text];
+              if (diagBits.length) statusEl.textContent += ` ${String(diagBits)}`;
+            }
             return;
           }
           const coalesceFn =
-            window.OrionMemoryGraphDraftUI &&
-            typeof window.OrionMemoryGraphDraftUI.coalesceMemoryGraphSuggestEnvelope === 'function'
-              ? window.OrionMemoryGraphDraftUI.coalesceMemoryGraphSuggestEnvelope
+            typeof ui.coalesceMemoryGraphSuggestEnvelope === 'function'
+              ? ui.coalesceMemoryGraphSuggestEnvelope
               : null;
           const coalesce = coalesceFn
-            ? coalesceFn(data, { utteranceIds: selectedTurnIds })
+            ? coalesceFn(data, { utteranceIds: selectedTurnIds, utteranceTextById })
             : null;
-          const emptyDraft =
-            window.OrionMemoryGraphDraftUI &&
-            typeof window.OrionMemoryGraphDraftUI.emptyValidSuggestDraft === 'function'
-              ? window.OrionMemoryGraphDraftUI.emptyValidSuggestDraft(selectedTurnIds)
-              : {
-                  ontology_version: 'orionmem-2026-05',
-                  utterance_ids: selectedTurnIds,
-                  entities: [],
-                  situations: [],
-                  edges: [],
-                  dispositions: [],
-                };
           const out =
             coalesce && typeof coalesce.draftText === 'string' && coalesce.draftText.trim()
               ? coalesce.draftText
@@ -6901,24 +6907,29 @@ loadDismissedIds();
           draftTa.value = out;
           const vDraft = ensureMemoryGraphBridgeDraftViz();
           if (vDraft && vDraft.refresh) vDraft.refresh();
-          if (coalesce && coalesce.error) {
-            const diag = coalesce.diagnostics || {};
-            const parts = [
-              `Suggest failed: ${coalesce.error}`,
-              diag.route_used != null ? `route=${diag.route_used}` : '',
-              Array.isArray(diag.validation_errors) && diag.validation_errors.length
-                ? `validation_errors=${diag.validation_errors.join(',')}`
-                : '',
-            ].filter(Boolean);
-            if (statusEl) statusEl.textContent = parts.join(' · ');
-            return;
-          }
           if (statusEl) {
+            const statusFn =
+              typeof ui.formatSuggestCoalesceUserStatus === 'function'
+                ? ui.formatSuggestCoalesceUserStatus
+                : null;
+            let line = statusFn
+              ? statusFn(coalesce)
+              : coalesce && coalesce.error
+                ? 'Extractor did not return a valid role-grounded SuggestDraftV1. Empty valid fallback draft loaded; see diagnostics.'
+                : 'Loaded validated role-grounded SuggestDraftV1 JSON.';
             const diag = coalesce && coalesce.diagnostics ? coalesce.diagnostics : {};
-            const route = diag.route_used != null ? `route=${diag.route_used}` : '';
-            statusEl.textContent = route
-              ? `Draft updated from suggest route (${route}). Review JSON then Validate.`
-              : 'Draft updated from suggest route. Review JSON then Validate.';
+            if (coalesce && coalesce.error && diag.route_used != null) {
+              line += ` · route=${diag.route_used}`;
+            }
+            if (
+              coalesce &&
+              coalesce.error &&
+              Array.isArray(diag.validation_errors) &&
+              diag.validation_errors.length
+            ) {
+              line += ` · validation_errors=${diag.validation_errors.join(',')}`;
+            }
+            statusEl.textContent = line;
           }
         } catch (err) {
           if (statusEl) {

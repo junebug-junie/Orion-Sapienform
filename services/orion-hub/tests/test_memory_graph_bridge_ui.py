@@ -45,7 +45,10 @@ def test_app_js_wires_memory_graph_bridge_handlers() -> None:
     assert "/api/memory/graph/suggest" in bridge
     assert "/api/chat" not in bridge
     assert "coalesceMemoryGraphSuggestEnvelope" in bridge
+    assert "formatSuggestCoalesceUserStatus" in bridge
     assert "coalesceChatSuggestDraft" not in bridge
+    assert "Loaded validated role-grounded SuggestDraftV1 JSON." in app_js or "formatSuggestCoalesceUserStatus" in bridge
+    assert "No durable memory candidate found" not in app_js
     assert "data.text" not in bridge
     assert re.search(r"draftTa\.value\s*=\s*[^;]*data\.text", bridge) is None
     assert "setupMemoryGraphBridgeModal();" in app_js
@@ -84,7 +87,11 @@ def test_memory_js_listens_for_bridge_import_event() -> None:
     assert "coalesceMemoryGraphSuggestEnvelope" in suggest
     assert re.search(r"draftTa\.value\s*=\s*[^;]*data\.text", suggest) is None
     assert "parseMemoryGraphDraftJson" in memory_js
-    assert "invalid_stored_draft_import" in memory_js
+    assert "invalid_import_not_suggest_draft_v1" in memory_js
+    assert "looksLikeEvidenceEnvelopeOnly" in memory_js
+    assert "formatSuggestCoalesceUserStatus" in memory_js
+    assert "Loaded validated role-grounded SuggestDraftV1 JSON." in memory_js
+    assert "No durable memory candidate found" not in memory_js
     assert "MEMORY_GRAPH_SUGGEST_TIMEOUT_MS" in memory_js
     assert "MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS" in memory_js
     assert "boundedSuggestPrompt" in memory_js

@@ -381,11 +381,28 @@
             if (timerId != null) clearTimeout(timerId);
           }
           const ui = window.OrionMemoryGraphDraftUI || {};
+          const parseDraftFn =
+            typeof ui.parseMemoryGraphDraftJson === "function" ? ui.parseMemoryGraphDraftJson : null;
+          const priorParsed = parseDraftFn ? parseDraftFn(draftTa.value) : { ok: false, object: null };
+          const priorObj =
+            priorParsed.ok && priorParsed.object && typeof priorParsed.object === "object"
+              ? priorParsed.object
+              : null;
+          const priorIds = priorObj && Array.isArray(priorObj.utterance_ids) ? priorObj.utterance_ids : [];
+          const priorText =
+            priorObj &&
+            priorObj.utterance_text_by_id &&
+            typeof priorObj.utterance_text_by_id === "object" &&
+            !Array.isArray(priorObj.utterance_text_by_id)
+              ? priorObj.utterance_text_by_id
+              : {};
           const coalesceFn =
             typeof ui.coalesceMemoryGraphSuggestEnvelope === "function"
               ? ui.coalesceMemoryGraphSuggestEnvelope
               : null;
-          const coalesce = coalesceFn ? coalesceFn(data) : null;
+          const coalesce = coalesceFn
+            ? coalesceFn(data, { utteranceIds: priorIds, utteranceTextById: priorText })
+            : null;
           const emptyFn =
             typeof ui.emptySuggestDraft === "function"
               ? ui.emptySuggestDraft
@@ -397,7 +414,7 @@
               ? coalesce.draftText
               : JSON.stringify(
                   emptyFn
-                    ? emptyFn()
+                    ? emptyFn({ utteranceIds: priorIds, utteranceTextById: priorText })
                     : {
                         ontology_version: "orionmem-2026-05",
                         utterance_ids: [],

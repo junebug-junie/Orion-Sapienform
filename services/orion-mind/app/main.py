@@ -7,7 +7,7 @@ from fastapi import FastAPI
 
 from orion.mind.v1 import MindRunRequestV1, MindRunResultV1
 
-from .engine import run_mind_deterministic
+from .engine import run_mind
 from .settings import settings
 
 logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO))
@@ -29,8 +29,9 @@ async def health() -> dict:
 @app.post("/v1/mind/run", response_model=MindRunResultV1)
 async def mind_run(body: MindRunRequestV1) -> MindRunResultV1:
     router_dir: Path = settings.router_profiles_dir
-    return run_mind_deterministic(
+    return run_mind(
         body,
         router_profiles_dir=router_dir,
         snapshot_max_bytes=settings.MIND_SNAPSHOT_MAX_BYTES,
+        mind_settings=settings,
     )

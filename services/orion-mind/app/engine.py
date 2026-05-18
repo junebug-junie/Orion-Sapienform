@@ -626,3 +626,285 @@ def run_mind_deterministic(
         mind_quality=quality,  # type: ignore[arg-type]
         timing_ms_by_phase=phases,
     )
+
+
+def _llm_machine_contract(
+    *,
+    decision: MindControlDecisionV1,
+    synthesis,
+    frontier,
+    handoff,
+    cognitive_projection_debug: dict[str, Any],
+    shadow_synthesis: MindShadowSynthesisV1 | None,
+    llm_enabled: bool,
+    llm_error: str | None,
+) -> dict[str, Any]:
+    claim_labels = [c.label for c in (synthesis.claims if synthesis else [])[:8]]
+    top_labels = [m.label for m in (frontier.selected if frontier else [])[:6]]
+    machine: dict[str, Any] = {
+        "mind.route_kind": decision.route_kind,
+        "mind.allowed_verbs": decision.allowed_verbs,
+        "mind.mode_suggestion": decision.mode_suggestion,
+        "mind.mode_binding": decision.mode_binding,
+        "mind.quality": handoff.mind_quality if handoff else "empty",
+        "mind.cognitive_projection_seen": bool(cognitive_projection_debug.get("present")),
+        "mind.shadow_synthesis_present": shadow_synthesis is not None,
+        "mind.authorized_for_stance_skip": bool(handoff.authorized_for_stance_use) if handoff else False,
+        "mind.llm_synthesis_enabled": llm_enabled,
+        "mind.semantic_synthesis_seen": synthesis is not None,
+        "mind.semantic_claim_count": len(synthesis.claims) if synthesis else 0,
+        "mind.semantic_claim_labels": claim_labels,
+        "mind.active_frontier_seen": frontier is not None,
+        "mind.active_frontier_selected_count": len(frontier.selected) if frontier else 0,
+        "mind.active_frontier_top_labels": top_labels,
+        "mind.stance_handoff_seen": handoff is not None,
+        "mind.authorized_for_stance_use": bool(handoff.authorized_for_stance_use) if handoff else False,
+        "mind.authorization_reasons": list(handoff.authorization_reasons) if handoff else [],
+    }
+    if llm_error:
+        machine["mind.llm_synthesis_error"] = llm_error
+    return machine
+
+
+def run_mind_llm_synthesis(
+    req: MindRunRequestV1,
+    *,
+    router_profiles_dir: Path,
+    snapshot_max_bytes: int,
+    mind_settings: Any,
+) -> MindRunResultV1 | None:
+    from .appraisal import run_active_frontier_judge
+    from .evidence import build_evidence_pack
+    from .guardrails import build_handoff
+    from .llm_client import get_llm_client
+    from .settings import settings as mind_settings_module
+    from .stance_handoff import run_stance_handoff
+    from .synthesis import run_semantic_synthesis
+
+    s = mind_settings if mind_settings is not None else mind_settings_module
+    if not bool(getattr(s, "MIND_LLM_SYNTHESIS_ENABLED", False)):
+        return None
+
+    t_run_start = time.perf_counter()
+    mind_run_id = uuid4()
+    phases: dict[str, float] = {}
+    wall_budget_ms = float(req.policy.wall_time_ms_max)
+    bounded, _truncated = build_bounded_snapshot_inputs(dict(req.snapshot_inputs or {}), snapshot_max_bytes)
+    cognitive_projection_debug = _cognitive_projection_debug(bounded)
+    snap_hash = hash_snapshot_inputs(bounded)
+    pack = build_evidence_pack(
+        bounded,
+        max_messages=int(getattr(s, "MIND_EVIDENCE_MAX_MESSAGES", 8)),
+        max_recall_fragments=int(getattr(s, "MIND_EVIDENCE_MAX_RECALL_FRAGMENTS", 8)),
+        max_projection_items=int(getattr(s, "MIND_EVIDENCE_MAX_PROJECTION_ITEMS", 16)),
+        max_total_chars=int(getattr(s, "MIND_EVIDENCE_MAX_CHARS", 12_000)),
+    )
+    phases["evidence_pack_ms"] = _elapsed_ms_wall_clock(t_run_start)
+
+    def _over_budget() -> bool:
+        return _elapsed_ms_wall_clock(t_run_start) > wall_budget_ms
+
+    if _over_budget():
+        return None if bool(getattr(s, "MIND_LLM_FAIL_OPEN_LEGACY", True)) else _error_result(
+            mind_run_id=mind_run_id,
+            error_code="loop_budget_exceeded",
+            diagnostics=["wall_time_exceeded_before_llm"],
+            snapshot_hash=snap_hash,
+            timing_ms_by_phase=phases,
+        )
+
+    client = get_llm_client()
+    llm_errors: list[str] = []
+    semantic_route = str(getattr(s, "MIND_SEMANTIC_MODEL_ROUTE", "quick"))
+    appraisal_route = str(getattr(s, "MIND_APPRAISAL_MODEL_ROUTE", "metacog"))
+    stance_route = str(getattr(s, "MIND_STANCE_MODEL_ROUTE", "chat"))
+
+    t_sem = time.perf_counter()
+    synthesis, sem_err = run_semantic_synthesis(
+        pack,
+        client=client,
+        route=semantic_route,
+        model_id=semantic_route,
+        max_tokens=int(getattr(s, "MIND_LLM_MAX_TOKENS_SEMANTIC", 2048)),
+    )
+    phases["semantic_synthesis_ms"] = (time.perf_counter() - t_sem) * 1000
+    if sem_err:
+        llm_errors.append(sem_err)
+    if _over_budget():
+        return None if bool(getattr(s, "MIND_LLM_FAIL_OPEN_LEGACY", True)) else _error_result(
+            mind_run_id=mind_run_id,
+            error_code="loop_budget_exceeded",
+            diagnostics=["wall_time_exceeded_after_semantic"],
+            snapshot_hash=snap_hash,
+            timing_ms_by_phase=phases,
+        )
+    if synthesis is None or not synthesis.claims:
+        if bool(getattr(s, "MIND_LLM_FAIL_OPEN_LEGACY", True)):
+            return None
+        return _error_result(
+            mind_run_id=mind_run_id,
+            error_code="semantic_synthesis_failed",
+            diagnostics=llm_errors or ["semantic_synthesis_empty"],
+            snapshot_hash=snap_hash,
+            timing_ms_by_phase=phases,
+        )
+
+    frontier = None
+    if synthesis and synthesis.claims:
+        t_ap = time.perf_counter()
+        frontier, ap_err = run_active_frontier_judge(
+            synthesis,
+            pack,
+            client=client,
+            route=appraisal_route,
+            model_id=appraisal_route,
+            max_tokens=int(getattr(s, "MIND_LLM_MAX_TOKENS_APPRAISAL", 3072)),
+            thinking=bool(getattr(s, "MIND_LLM_THINKING_APPRAISAL", True)),
+        )
+        phases["appraisal_ms"] = (time.perf_counter() - t_ap) * 1000
+        if ap_err:
+            llm_errors.append(ap_err)
+        if _over_budget():
+            return None if bool(getattr(s, "MIND_LLM_FAIL_OPEN_LEGACY", True)) else _error_result(
+                mind_run_id=mind_run_id,
+                error_code="loop_budget_exceeded",
+                diagnostics=["wall_time_exceeded_after_appraisal"],
+                snapshot_hash=snap_hash,
+                timing_ms_by_phase=phases,
+            )
+
+    user_text = pack.current_user_text
+    base = _default_stance_from_user_text(user_text)
+    stance_payload = dict(base)
+    if frontier and frontier.selected and synthesis:
+        t_st = time.perf_counter()
+        stance_payload, st_err = run_stance_handoff(
+            frontier,
+            synthesis,
+            pack,
+            client=client,
+            route=stance_route,
+            model_id=stance_route,
+            max_tokens=int(getattr(s, "MIND_LLM_MAX_TOKENS_STANCE", 1536)),
+        )
+        phases["stance_handoff_ms"] = (time.perf_counter() - t_st) * 1000
+        if st_err:
+            llm_errors.append(st_err)
+
+    handoff = build_handoff(
+        synthesis=synthesis,
+        frontier=frontier,
+        stance_payload=stance_payload,
+        model_id=stance_route,
+        llm_errors=llm_errors,
+    )
+    valid, err = validate_merged_stance_brief_optional(stance_payload)
+    if valid is None:
+        if bool(getattr(s, "MIND_LLM_FAIL_OPEN_LEGACY", True)):
+            return None
+        return _error_result(
+            mind_run_id=mind_run_id,
+            error_code="stance_handoff_invalid",
+            diagnostics=[err or "invalid_stance_payload", *llm_errors],
+            snapshot_hash=snap_hash,
+            timing_ms_by_phase=phases,
+        )
+
+    shadow_synthesis = _build_shadow_synthesis(bounded, stance_payload)
+    prof = _router_profile(router_profiles_dir, req.policy.router_profile_id)
+    decision = MindControlDecisionV1(
+        route_kind=str(prof.get("route_kind") or "brain"),
+        allowed_verbs=list(prof.get("allowed_verbs") or ["chat_general"]),
+        recall_profile_override=prof.get("recall_profile_override"),
+        mode_suggestion=str(prof.get("mode_suggestion") or "brain"),  # type: ignore[arg-type]
+        mode_binding=str(prof.get("mode_binding") or "advisory"),  # type: ignore[arg-type]
+        budgets={"wall_ms_remaining": float(req.policy.wall_time_ms_max), "truncated": _truncated},
+    )
+    quality = handoff.mind_quality
+    authorized = bool(handoff.authorized_for_stance_use)
+    machine = _llm_machine_contract(
+        decision=decision,
+        synthesis=synthesis,
+        frontier=frontier,
+        handoff=handoff,
+        cognitive_projection_debug=cognitive_projection_debug,
+        shadow_synthesis=shadow_synthesis,
+        llm_enabled=True,
+        llm_error=llm_errors[0] if llm_errors else None,
+    )
+    summary = (
+        "Meaningful Mind synthesis authorized for stance handoff."
+        if authorized
+        else f"Mind LLM synthesis degraded ({', '.join(handoff.authorization_reasons[:4])})."
+    )
+    brief = MindHandoffBriefV1(
+        summary_one_paragraph=summary,
+        machine_contract=machine,
+        mandatory_keys=["mind.route_kind", "mind.allowed_verbs"],
+        advisory_keys=["mind.quality", "mind.authorized_for_stance_use", "mind.semantic_synthesis_seen"],
+        stance_payload=valid.model_dump(mode="json"),
+        mind_quality=quality,  # type: ignore[arg-type]
+        shadow_synthesis=shadow_synthesis,
+        mind_authorized_for_stance_skip=authorized,
+        semantic_synthesis=synthesis,
+        active_frontier=frontier,
+        stance_handoff=handoff,
+    )
+    phases["total_ms"] = _elapsed_ms_wall_clock(t_run_start)
+    patch = MindStancePatchV1(
+        loop_index=0,
+        structured=valid.model_dump(mode="json"),
+        provenance=MindProvenanceV1(model_id=stance_route, input_hash=snap_hash),
+        narrative_notes="llm_synthesis_pipeline",
+    )
+    return MindRunResultV1(
+        mind_run_id=mind_run_id,
+        ok=True,
+        snapshot_hash=snap_hash,
+        trajectory=MindStanceTrajectoryV1(
+            patches=[patch],
+            merged_stance_brief=valid.model_dump(mode="json"),
+            merge_policy="deterministic_merge",
+        ),
+        decision=decision,
+        brief=brief,
+        mind_quality=quality,  # type: ignore[arg-type]
+        timing_ms_by_phase=phases,
+    )
+
+
+def run_mind(
+    req: MindRunRequestV1,
+    *,
+    router_profiles_dir: Path,
+    snapshot_max_bytes: int,
+    mind_settings: Any | None = None,
+) -> MindRunResultV1:
+    from .settings import settings as default_settings
+
+    s = mind_settings if mind_settings is not None else default_settings
+    if bool(getattr(s, "MIND_LLM_SYNTHESIS_ENABLED", False)):
+        try:
+            llm_result = run_mind_llm_synthesis(
+                req,
+                router_profiles_dir=router_profiles_dir,
+                snapshot_max_bytes=snapshot_max_bytes,
+                mind_settings=s,
+            )
+            if llm_result is not None:
+                return llm_result
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mind_llm_synthesis_failed correlation_id=%s err=%s", req.correlation_id, exc)
+            if not bool(getattr(s, "MIND_LLM_FAIL_OPEN_LEGACY", True)):
+                mind_run_id = uuid4()
+                return _error_result(
+                    mind_run_id=mind_run_id,
+                    error_code="llm_synthesis_failed",
+                    diagnostics=[str(exc)],
+                    snapshot_hash=hash_snapshot_inputs(dict(req.snapshot_inputs or {})),
+                )
+    return run_mind_deterministic(
+        req,
+        router_profiles_dir=router_profiles_dir,
+        snapshot_max_bytes=snapshot_max_bytes,
+    )

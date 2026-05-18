@@ -458,6 +458,74 @@ def _record_mind_projection_resolution(plan_request: PlanExecutionRequest, resol
     metadata["mind_orch_before_exec"] = True
 
 
+def _attach_mind_evidence_facets(
+    facets: dict[str, Any],
+    *,
+    client_request: CortexClientRequest,
+    plan_request: PlanExecutionRequest,
+) -> None:
+    """Attach compact evidence inputs for Mind LLM synthesis (Orch prepares; Mind thinks)."""
+    plan_ctx = plan_request.context if isinstance(plan_request.context, dict) else {}
+    metadata = plan_ctx.get("metadata") if isinstance(plan_ctx.get("metadata"), dict) else {}
+
+    recall_bundle = plan_ctx.get("recall_bundle") if isinstance(plan_ctx.get("recall_bundle"), dict) else None
+    if recall_bundle is not None:
+        fragments = recall_bundle.get("fragments") if isinstance(recall_bundle.get("fragments"), list) else []
+        facets["recall_bundle"] = {
+            "fragments": fragments[:8],
+            "citations": recall_bundle.get("citations") if isinstance(recall_bundle.get("citations"), list) else [],
+        }
+
+    autonomy = plan_ctx.get("chat_autonomy_state_v2")
+    if not isinstance(autonomy, dict):
+        autonomy = metadata.get("autonomy_state") if isinstance(metadata.get("autonomy_state"), dict) else None
+    if isinstance(autonomy, dict) and autonomy:
+        facets["autonomy_compact"] = {
+            key: autonomy.get(key)
+            for key in (
+                "attention_items",
+                "candidate_impulses",
+                "inhibited_impulses",
+                "last_action_outcomes",
+                "unknowns",
+                "evidence_refs",
+                "goal_headlines",
+            )
+            if autonomy.get(key) is not None
+        }
+
+    social_keys = (
+        "social_inspection_snapshot",
+        "social_stance_snapshot",
+        "social_turn_policy",
+        "social_peer_style_hint",
+        "social_context_window",
+    )
+    social_compact = {
+        key: plan_ctx.get(key)
+        for key in social_keys
+        if plan_ctx.get(key) is not None
+    }
+    if social_compact:
+        facets["social_compact"] = social_compact
+
+    situation_compact: dict[str, Any] = {}
+    if isinstance(plan_ctx.get("chat_situation_summary"), dict):
+        situation_compact["chat_situation_summary"] = plan_ctx["chat_situation_summary"]
+    if isinstance(plan_ctx.get("chat_reasoning_summary"), dict):
+        situation_compact["chat_reasoning_summary"] = plan_ctx["chat_reasoning_summary"]
+    if situation_compact:
+        facets["situation_compact"] = situation_compact
+
+    identity_background: dict[str, Any] = {"background_identity": True}
+    for key in ("orion_identity_summary", "juniper_relationship_summary", "response_policy_summary"):
+        value = plan_ctx.get(key)
+        if isinstance(value, list) and value:
+            identity_background[key] = value[:6]
+    if len(identity_background) > 1:
+        facets["identity_background"] = identity_background
+
+
 def build_mind_run_request(
     client_request: CortexClientRequest,
     plan_request: PlanExecutionRequest,
@@ -540,6 +608,12 @@ def build_mind_run_request(
         if isinstance(empty_shell, dict):
             facets["cognitive_projection_degraded"] = empty_shell
 
+    _attach_mind_evidence_facets(
+        facets,
+        client_request=client_request,
+        plan_request=plan_request,
+    )
+
     if facets:
         snapshot["facets"] = facets
     return MindRunRequestV1(
@@ -564,10 +638,17 @@ def merge_mind_brief_into_plan_metadata(plan_request: PlanExecutionRequest, resu
     if shadow is not None:
         meta["mind_shadow_synthesis"] = shadow.model_dump(mode="json")
         meta["mind_shadow_synthesis_present"] = bool(shadow.present)
-        meta["mind_authorized_for_stance_skip"] = bool(shadow.authorized_for_stance_skip)
     else:
         meta["mind_shadow_synthesis_present"] = False
-        meta["mind_authorized_for_stance_skip"] = False
+    meta["mind_authorized_for_stance_skip"] = bool(getattr(result.brief, "mind_authorized_for_stance_skip", False))
+    if result.brief.semantic_synthesis is not None:
+        meta["mind_semantic_synthesis"] = result.brief.semantic_synthesis.model_dump(mode="json")
+    if result.brief.active_frontier is not None:
+        meta["mind_active_frontier"] = result.brief.active_frontier.model_dump(mode="json")
+    if result.brief.stance_handoff is not None:
+        meta["mind_stance_handoff"] = result.brief.stance_handoff.model_dump(mode="json")
+        if not result.brief.stance_handoff.authorized_for_stance_use:
+            meta["mind_fallback_reason"] = list(result.brief.stance_handoff.authorization_reasons or [])[:8]
     skip_llm_stance = False
     if result.ok:
         meta["mind_run_ok"] = True
@@ -584,7 +665,16 @@ def merge_mind_brief_into_plan_metadata(plan_request: PlanExecutionRequest, resu
                 meta["mind_stance_payload_invalid"] = True
                 skip_llm_stance = False
         else:
-            meta["mind_contract_only"] = _mind_result_quality(result) in {"fallback_contract_only", "shadow_synthesis"}
+            meta["mind_contract_only"] = _mind_result_quality(result) in {
+                "fallback_contract_only",
+                "shadow_synthesis",
+                "invalid_handoff",
+            }
+            if _mind_result_quality(result) != "meaningful_synthesis":
+                meta.setdefault(
+                    "mind_fallback_reason",
+                    list((result.brief.stance_handoff.authorization_reasons if result.brief.stance_handoff else []) or ["not_meaningful_synthesis"])[:8],
+                )
         meta["mind_skip_stance_synthesis"] = skip_llm_stance
     else:
         meta["mind_skip_stance_synthesis"] = False

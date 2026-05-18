@@ -1931,7 +1931,11 @@ def _attempt_mind_handoff_chat_stance_shortcut(
         and str(step.step_name or "") == "synthesize_chat_stance_brief"
     ):
         md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
-        if md.get("mind_skip_stance_synthesis") is True and isinstance(md.get("mind_handoff"), dict):
+        if (
+            md.get("mind_skip_stance_synthesis") is True
+            and md.get("mind_quality") == "meaningful_synthesis"
+            and isinstance(md.get("mind_handoff"), dict)
+        ):
             sp = md["mind_handoff"].get("stance_payload")
             if isinstance(sp, dict):
                 try:

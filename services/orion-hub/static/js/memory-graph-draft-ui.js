@@ -203,10 +203,21 @@
     }
 
     function successFromObject(obj) {
+      const diagnostics = collectSuggestDiagnostics(data);
+      if (Array.isArray(data.violations) && data.violations.length) {
+        data.violations.forEach((v) => {
+          const s = v != null ? String(v).trim() : "";
+          if (s && diagnostics.validation_errors.indexOf(s) < 0) {
+            diagnostics.validation_errors.push(s);
+          }
+        });
+      }
+      const apiErr = data.error != null ? String(data.error).trim() : "";
+      const failed = data.ok === false;
       return {
         draftText: JSON.stringify(obj, null, 2),
-        error: null,
-        diagnostics: collectSuggestDiagnostics(data),
+        error: failed ? apiErr || "memory_graph_suggest_failed" : null,
+        diagnostics,
       };
     }
 
@@ -298,39 +309,22 @@
   }
 
   /**
-   * Prefer top-level `text` / raw.final_text; then step payloads. Never use the full HTTP envelope as draft text.
+   * Legacy chat-envelope coalescer; delegates to suggest-route envelope (never returns prose).
    */
   function coalesceChatSuggestDraft(data) {
-    if (!data || typeof data !== "object") {
-      return { draftText: "", error: "Empty response." };
-    }
-    if (typeof data.error === "string" && data.error.trim()) {
-      const hasText = typeof data.text === "string" && data.text.trim();
-      const rawEarly = data.raw && typeof data.raw === "object" ? data.raw : null;
-      const hasRawFinal =
-        rawEarly && typeof rawEarly.final_text === "string" && String(rawEarly.final_text).trim();
-      const hasSteps = rawEarly && Array.isArray(rawEarly.steps) && rawEarly.steps.length > 0;
-      if (!hasText && !hasRawFinal && !hasSteps) {
-        const msg = [typeof data.message === "string" ? data.message.trim() : "", data.error.trim()]
-          .filter(Boolean)
-          .join(" — ");
-        return { draftText: "", error: msg || data.error.trim() };
+    const out = coalesceMemoryGraphSuggestEnvelope(data);
+    if (!out.draftText) {
+      const raw = data && data.raw && typeof data.raw === "object" ? data.raw : null;
+      const stepErr = raw ? extractLlmGatewayErrorFromRaw(raw) : "";
+      if (stepErr) {
+        return {
+          draftText: out.draftText || JSON.stringify(emptyValidSuggestDraft(), null, 2),
+          error: stepErr,
+          diagnostics: out.diagnostics,
+        };
       }
     }
-
-    const raw = data.raw && typeof data.raw === "object" ? data.raw : null;
-    let draft = "";
-    if (typeof data.text === "string" && data.text.trim()) draft = data.text.trim();
-    else if (raw && typeof raw.final_text === "string" && raw.final_text.trim()) draft = raw.final_text.trim();
-    if (!draft && raw) {
-      const fromSteps = extractLlmGatewayDraftFromSteps(raw);
-      if (fromSteps) draft = fromSteps;
-    }
-    const stepErr = raw ? extractLlmGatewayErrorFromRaw(raw) : "";
-    if (!draft && stepErr) return { draftText: "", error: stepErr };
-    if (draft && draft.startsWith("[Error:")) return { draftText: "", error: draft };
-    if (stepErr && (!draft || draft === "{}")) return { draftText: "", error: stepErr };
-    return { draftText: draft, error: null };
+    return out;
   }
 
   function draftToCyElements(obj) {

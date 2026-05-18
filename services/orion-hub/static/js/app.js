@@ -6853,6 +6853,21 @@ loadDismissedIds();
             data = { raw: text };
           }
           if (!res.ok) {
+            const emptyDraft =
+              window.OrionMemoryGraphDraftUI &&
+              typeof window.OrionMemoryGraphDraftUI.emptyValidSuggestDraft === 'function'
+                ? window.OrionMemoryGraphDraftUI.emptyValidSuggestDraft(selectedTurnIds)
+                : {
+                    ontology_version: 'orionmem-2026-05',
+                    utterance_ids: selectedTurnIds,
+                    entities: [],
+                    situations: [],
+                    edges: [],
+                    dispositions: [],
+                  };
+            draftTa.value = JSON.stringify(emptyDraft, null, 2);
+            const vDraftErr = ensureMemoryGraphBridgeDraftViz();
+            if (vDraftErr && vDraftErr.refresh) vDraftErr.refresh();
             if (statusEl) statusEl.textContent = typeof data === 'object' && data ? JSON.stringify(data) : text;
             return;
           }

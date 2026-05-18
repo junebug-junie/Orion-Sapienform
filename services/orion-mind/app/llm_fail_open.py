@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
-from orion.mind.v1 import MindHandoffBriefV1, MindRunResultV1
+from orion.mind.v1 import MindRunResultV1
 
 from .phase_telemetry import MindPhaseTelemetry, phase_telemetry_machine_keys
 
@@ -15,6 +15,11 @@ _LLM_FAIL_OPEN_ADVISORY_KEYS = (
     "mind.llm_synthesis_attempted",
     "mind.llm_synthesis_failed_phase",
     "mind.llm_synthesis_error_code",
+    "mind.llm_synthesis_error",
+    "mind.semantic_route",
+    "mind.appraisal_route",
+    "mind.stance_route",
+    "mind.semantic_synthesis_seen",
     "mind.phase_telemetry",
     "mind.fallback_reason",
 )

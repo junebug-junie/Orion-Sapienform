@@ -290,6 +290,40 @@ def test_source_tag_semantic_fail_open_preserves_phase_telemetry(monkeypatch: py
     assert result.mind_quality == "fallback_contract_only"
 
 
+def test_pre_llm_budget_fail_open_has_attempted_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.budget import MindRunBudget
+    from app.engine import run_mind
+    from app.settings import settings
+    from orion.mind.v1 import MindRunRequestV1, MindRunPolicyV1
+
+    real_over_budget = MindRunBudget.over_budget
+    calls = {"n": 0}
+
+    def _over_budget_first_check_only(self: MindRunBudget) -> bool:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return True
+        return real_over_budget(self)
+
+    monkeypatch.setattr(MindRunBudget, "over_budget", _over_budget_first_check_only)
+    monkeypatch.setattr(settings, "MIND_LLM_SYNTHESIS_ENABLED", True)
+    req = MindRunRequestV1(
+        correlation_id=str(uuid4()),
+        snapshot_inputs={"user_text": "hello"},
+        policy=MindRunPolicyV1(n_loops_max=1, wall_time_ms_max=60_000),
+    )
+    result = run_mind(
+        req,
+        router_profiles_dir=Path(__file__).resolve().parents[1] / "app" / "config",
+        snapshot_max_bytes=512_000,
+        mind_settings=settings,
+    )
+    machine = result.brief.machine_contract
+    assert machine.get("mind.llm_synthesis_attempted") is True
+    assert machine.get("mind.llm_synthesis_failed_phase") == "pre_llm"
+    assert machine.get("mind.llm_synthesis_error_code") == "loop_budget_exceeded"
+
+
 def test_disabled_llm_path_has_no_attempted_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.engine import run_mind
     from app.settings import settings

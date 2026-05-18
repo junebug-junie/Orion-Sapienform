@@ -750,6 +750,7 @@ def run_mind_llm_synthesis(
     semantic_route = str(getattr(s, "MIND_SEMANTIC_MODEL_ROUTE", "quick"))
     appraisal_route = str(getattr(s, "MIND_APPRAISAL_MODEL_ROUTE", "metacog"))
     stance_route = str(getattr(s, "MIND_STANCE_MODEL_ROUTE", "chat"))
+    phase_records: list[MindPhaseTelemetry] = []
 
     def _fail_open_or_error(
         *,
@@ -801,7 +802,6 @@ def run_mind_llm_synthesis(
 
     client = get_llm_client()
     llm_errors: list[str] = []
-    phase_records: list[MindPhaseTelemetry] = []
 
     def _phase_context(phase_name: str) -> MindLLMRequestContext:
         return MindLLMRequestContext(
@@ -1032,7 +1032,7 @@ def _llm_fail_open_from_exception(
         snapshot_hash=hash_snapshot_inputs(bounded),
         error_code="llm_synthesis_exception",
         diagnostics=[str(exc)],
-        failed_phase=None,
+        failed_phase="unknown",
         semantic_route=str(getattr(mind_settings, "MIND_SEMANTIC_MODEL_ROUTE", "quick")),
         appraisal_route=str(getattr(mind_settings, "MIND_APPRAISAL_MODEL_ROUTE", "metacog")),
         stance_route=str(getattr(mind_settings, "MIND_STANCE_MODEL_ROUTE", "chat")),

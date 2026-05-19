@@ -28,6 +28,11 @@ from scripts.memory_graph_suggest_timeout import (
     cortex_rpc_timeout_sec,
     resolve_memory_graph_suggest_timeouts,
 )
+from scripts.memory_graph_structured_output import (
+    extract_gateway_structured_diagnostics,
+    memory_graph_suggest_llm_options,
+    resolve_memory_graph_structured_output_method,
+)
 from scripts.mutation_cognition_context import build_mutation_cognition_context
 
 logger = logging.getLogger("orion-hub.memory_graph_suggest")
@@ -294,6 +299,11 @@ async def suggest_with_escalation(
         opts = _apply_llm_route(dict(req.options or {}), route)
         if include_grounding:
             opts["memory_graph_include_grounding"] = True
+        structured_opts = memory_graph_suggest_llm_options(settings, diagnostic=diagnostic)
+        opts.update(structured_opts)
+        opts["structured_output_method_requested"] = resolve_memory_graph_structured_output_method(
+            settings
+        )
         req = req.model_copy(update={"options": opts})
 
         resp, cortex_err, timing = await _call_cortex(
@@ -357,6 +367,13 @@ async def suggest_with_escalation(
             utterance_text=user_prompt,
         )
         attempt["validation_errors"] = validation_errors
+        structured_diag = extract_gateway_structured_diagnostics(resp)
+        structured_diag["parse_ok"] = parse_err is None and bool(str(text or "").strip())
+        structured_diag["pydantic_validation_ok"] = draft is not None
+        structured_diag["structured_output_method_requested"] = opts.get(
+            "structured_output_method_requested"
+        ) or opts.get("structured_output_method")
+        attempt["structured_output"] = structured_diag
 
         if draft is None:
             attempt["phase"] = parse_err or "parse"
@@ -408,6 +425,7 @@ async def suggest_with_escalation(
             "attempts": attempts_meta,
             "grounding_included": include_grounding,
             "suggest_timeout_budget": suggest_timeout_budget,
+            "structured_output_diagnostics": structured_diag,
         }
         if diagnostic:
             out_ok["diagnostic_raw"] = text

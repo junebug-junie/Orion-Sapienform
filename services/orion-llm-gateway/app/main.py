@@ -228,6 +228,9 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
             model_used_early,
         )
     gateway_label = f"{settings.node_name or 'gateway'}-{settings.service_name}"
+    structured_diag = (
+        result.get("structured_output_diagnostics") if isinstance(result, dict) else None
+    )
     meta = {
         "served_by": served_by,
         "gateway": gateway_label,
@@ -236,6 +239,8 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
         "inline_think_extracted": bool(str(inline_think_content or "").strip()),
         "thinking_source": thinking_source,
     }
+    if isinstance(structured_diag, dict) and structured_diag:
+        meta["structured_output_diagnostics"] = structured_diag
     meta = {k: v for k, v in meta.items() if v is not None}
     if _thought_debug_enabled():
         logger.info(

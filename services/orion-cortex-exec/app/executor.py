@@ -3182,6 +3182,32 @@ async def call_step_services(
                 )
 
                 gateway_read_timeout_sec = max(45.0, min(float(effective_timeout) - 5.0, 900.0))
+                ctx_options = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
+                gateway_options: Dict[str, Any] = {
+                    "temperature": float(ctx.get("temperature", 0.7)),
+                    "max_tokens": effective_max_tokens,
+                    "stream": False,
+                    "response_format": ctx.get("response_format")
+                    if isinstance(ctx.get("response_format"), dict)
+                    else None,
+                    "return_json": bool(ctx.get("return_json"))
+                    if ctx.get("return_json") is not None
+                    else None,
+                    "gateway_read_timeout_sec": gateway_read_timeout_sec,
+                    **lane_opts,
+                }
+                for _fwd_key in (
+                    "structured_output_schema",
+                    "structured_output_schema_name",
+                    "structured_output_method",
+                    "structured_output_thinking_policy",
+                    "chat_template_kwargs",
+                ):
+                    if _fwd_key in ctx_options and ctx_options[_fwd_key] is not None:
+                        gateway_options[_fwd_key] = ctx_options[_fwd_key]
+                    elif _fwd_key in ctx and ctx.get(_fwd_key) is not None:
+                        gateway_options[_fwd_key] = ctx[_fwd_key]
+
                 request_object = ChatRequestPayload(
                     model=req_model,
                     profile=(
@@ -3191,15 +3217,7 @@ async def call_step_services(
                     messages=messages_payload,
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
                     route=llm_route,
-                    options={
-                        "temperature": float(ctx.get("temperature", 0.7)),
-                        "max_tokens": effective_max_tokens,
-                        "stream": False,
-                        "response_format": ctx.get("response_format") if isinstance(ctx.get("response_format"), dict) else None,
-                        "return_json": bool(ctx.get("return_json")) if ctx.get("return_json") is not None else None,
-                        "gateway_read_timeout_sec": gateway_read_timeout_sec,
-                        **lane_opts,
-                    },
+                    options=gateway_options,
                 )
 
                 logs.append(f"rpc -> LLMGateway via client (timeout={effective_timeout}s)")

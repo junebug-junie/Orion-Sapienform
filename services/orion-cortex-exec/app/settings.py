@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     llm_chat_general_max_tokens: int = Field(768, alias="LLM_CHAT_GENERAL_MAX_TOKENS")
     llm_chat_fallback_max_tokens: int = Field(512, alias="LLM_CHAT_FALLBACK_MAX_TOKENS")
     llm_memory_graph_suggest_max_tokens: int = Field(
-        1536,
+        1600,
         alias="LLM_MEMORY_GRAPH_SUGGEST_MAX_TOKENS",
         description="Completion budget for memory_graph_suggest JSON drafts (must exceed minimal JSON).",
     )

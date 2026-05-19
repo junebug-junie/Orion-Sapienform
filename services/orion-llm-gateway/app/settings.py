@@ -97,6 +97,16 @@ class Settings(BaseSettings):
     atlas_metacog_cuda_visible_devices: Optional[str] = Field(None, alias="ATLAS_METACOG_CUDA_VISIBLE_DEVICES")
     atlas_metacog_host_port: int = Field(8012, alias="ATLAS_METACOG_HOST_PORT")
 
+    # Default structured-output method when options.structured_output_method is auto/unset
+    llm_structured_output_method: str = Field(
+        default="none",
+        alias="LLM_STRUCTURED_OUTPUT_METHOD",
+        description=(
+            "Gateway default for llama.cpp response_format builder: json_object_schema, "
+            "json_schema_schema, json_object_only, none, or auto."
+        ),
+    )
+
     class Config:
         env_file = ".env"
         extra = "ignore"

@@ -16,6 +16,7 @@ from .models import ChatBody, ChatMessage, GenerateBody, ExecStepPayload
 from .settings import settings
 from .profiles import LLMProfileRegistry, LLMProfile
 from .lane_routes import resolve_llm_lane_route
+from .structured_output import apply_structured_output_to_payload
 
 from orion.spark.integration import (
     ingest_chat_and_get_state,
@@ -828,6 +829,16 @@ def _execute_openai_chat(
     url = f"{base_url.rstrip('/')}/v1/chat/completions"
     opts = body.options or {}
 
+    structured_diag: Dict[str, Any] = {}
+    if backend_name in ("vllm", "llamacpp", "llama-cola"):
+        opts, structured_diag = apply_structured_output_to_payload(
+            opts,
+            backend_name=backend_name,
+            env_default=str(getattr(settings, "llm_structured_output_method", None) or "none"),
+        )
+        structured_diag["route"] = route
+        structured_diag["served_by"] = served_by
+
     payload = {
         "model": model,
         "messages": _serialize_messages(body.messages or []),
@@ -849,6 +860,17 @@ def _execute_openai_chat(
         ctk = opts.get("chat_template_kwargs")
         if isinstance(ctk, dict) and ctk:
             payload["chat_template_kwargs"] = ctk
+
+    if structured_diag.get("structured_output_requested"):
+        logger.info(
+            "[LLM-GW] structured_output corr=%s method=%s shape=%s schema_name=%s required_keys=%s thinking_policy=%s",
+            body.trace_id,
+            structured_diag.get("structured_output_method"),
+            structured_diag.get("response_format_shape"),
+            structured_diag.get("structured_output_schema_name"),
+            structured_diag.get("structured_output_schema_required_keys"),
+            structured_diag.get("thinking_policy"),
+        )
     # Clean None values
     payload = {k: v for k, v in payload.items() if v is not None}
 
@@ -1008,14 +1030,18 @@ def _execute_openai_chat(
                 f"preview={_preview_text(structured_reasoning or think_reasoning)}",
                 flush=True,
             )
+            raw_out = raw_data if isinstance(raw_data, dict) else {}
+            if structured_diag:
+                raw_out = {**raw_out, "structured_output_diagnostics": structured_diag}
             return {
                 "text": text,
                 "spark_meta": spark_meta,
                 "spark_vector": spark_vector,
-                "raw": raw_data,
+                "raw": raw_out,
                 "reasoning_content": structured_reasoning,
                 "reasoning_trace": reasoning_trace,
                 "inline_think_content": think_reasoning or None,
+                "structured_output_diagnostics": structured_diag or None,
             }
 
     except httpx.TimeoutException:

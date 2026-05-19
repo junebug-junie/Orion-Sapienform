@@ -334,6 +334,19 @@ class Settings(BaseSettings):
         alias="MEMORY_GRAPH_SUGGEST_QUICK_TIMEOUT_SEC",
         description="Per Quick-route hub wait; 0 = ~40% of verb timeout (72s when verb is 180s).",
     )
+    MEMORY_GRAPH_SUGGEST_STRUCTURED_OUTPUT_METHOD: str = Field(
+        default="none",
+        alias="MEMORY_GRAPH_SUGGEST_STRUCTURED_OUTPUT_METHOD",
+        description=(
+            "llama.cpp response_format method (probe-selected): json_object_schema, "
+            "json_schema_schema, json_object_only, none, or auto."
+        ),
+    )
+    MEMORY_GRAPH_SUGGEST_MAX_TOKENS: int = Field(
+        default=1600,
+        alias="MEMORY_GRAPH_SUGGEST_MAX_TOKENS",
+        description="Min completion budget for suggest draft JSON (gateway max_tokens).",
+    )
     # Deprecated aliases (read by legacy env only)
     MEMORY_GRAPH_SUGGEST_FALLBACK_ROUTE: str = Field(default="brain", alias="MEMORY_GRAPH_SUGGEST_FALLBACK_ROUTE")
     MEMORY_GRAPH_SUGGEST_ENABLE_FALLBACK: bool = Field(default=True, alias="MEMORY_GRAPH_SUGGEST_ENABLE_FALLBACK")

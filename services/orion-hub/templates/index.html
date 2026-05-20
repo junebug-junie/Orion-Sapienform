@@ -1028,7 +1028,7 @@
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 class="text-xl font-bold text-white">Knowledge Forge</h2>
-            <p class="text-xs text-gray-400">Claims, specs, reviews, and context-pack compiler via Hub <code class="text-gray-500">/api/knowledge</code>.</p>
+            <p class="text-xs text-gray-400">Source ingest, claims, specs, reviews, and context-pack compiler via Hub <code class="text-gray-500">/api/knowledge</code>.</p>
           </div>
           <button type="button" id="forgeRefreshButton" class="px-2 py-1 text-xs rounded border border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700">Refresh</button>
         </div>
@@ -1053,6 +1053,52 @@
           </div>
           <ul id="forgeWarningsList" class="text-xs text-amber-200/90 list-disc list-inside space-y-0.5 hidden"></ul>
           <p id="forgeSuggestedAction" class="text-xs text-gray-300">—</p>
+        </div>
+
+        <div class="rounded-xl border border-teal-900/60 bg-teal-950/20 p-4 flex flex-col gap-3">
+          <span class="text-sm font-semibold text-teal-100">Source Delta Review</span>
+          <p class="text-xs text-gray-400">Ingest a design doc or note; Forge proposes claim deltas as a pending review (no canonical mutation).</p>
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 text-xs">
+            <label class="flex flex-col gap-1 text-gray-400">
+              Source path
+              <input id="forgeSourcePath" type="text" class="bg-gray-800 text-gray-200 border border-gray-700 rounded px-2 py-1 font-mono text-[11px]" placeholder="docs/PR-orion-knowledge-forge-source-delta-v1.2.md" />
+            </label>
+            <label class="flex flex-col gap-1 text-gray-400">
+              Source ID
+              <input id="forgeSourceId" type="text" class="bg-gray-800 text-gray-200 border border-gray-700 rounded px-2 py-1 font-mono text-[11px]" placeholder="source:my-design-doc" />
+            </label>
+            <label class="flex flex-col gap-1 text-gray-400">
+              Kind
+              <select id="forgeSourceKind" class="bg-gray-800 text-gray-200 border border-gray-700 rounded px-2 py-1">
+                <option value="design_doc" selected>design_doc</option>
+                <option value="conversation">conversation</option>
+                <option value="pr_note">pr_note</option>
+                <option value="research_note">research_note</option>
+                <option value="other">other</option>
+              </select>
+            </label>
+            <div class="flex flex-wrap items-end gap-4 text-gray-300">
+              <label class="inline-flex items-center gap-2"><input id="forgeSourceDryRun" type="checkbox" checked class="rounded border border-gray-600 bg-gray-800" /> Dry run</label>
+              <label class="inline-flex items-center gap-2"><input id="forgeSourceWriteReview" type="checkbox" class="rounded border border-gray-600 bg-gray-800" /> Write pending review</label>
+            </div>
+          </div>
+          <p class="text-[11px] text-amber-200/80">Source ingest creates pending review artifacts. It does not mutate accepted claims, execution-ready specs, or decisions.</p>
+          <button type="button" id="forgeSourceIngestButton" class="self-start px-3 py-1.5 text-xs font-semibold rounded border border-teal-600 bg-teal-700 text-white hover:bg-teal-600">Ingest Source</button>
+          <div id="forgeSourceIngestResult" class="text-xs text-gray-300 space-y-2 hidden">
+            <div><span class="text-gray-500">Status:</span> <span id="forgeSourceIngestStatus" class="text-gray-200">—</span></div>
+            <div><span class="text-gray-500">Source ID:</span> <span id="forgeSourceIngestSourceId" class="font-mono text-gray-200">—</span></div>
+            <div><span class="text-gray-500">Source path:</span> <span id="forgeSourceIngestSourcePath" class="font-mono text-gray-200 break-all">—</span></div>
+            <div><span class="text-gray-500">Review path:</span> <span id="forgeSourceIngestReviewPath" class="font-mono text-gray-200 break-all">—</span></div>
+            <div><span class="text-gray-500">Proposed claims:</span> <span id="forgeSourceIngestClaimsCount" class="text-gray-200">—</span></div>
+            <ul id="forgeSourceIngestClaimsList" class="text-[11px] text-gray-400 list-disc list-inside max-h-32 overflow-auto hidden"></ul>
+            <div><span class="text-gray-500">Possibly affected specs:</span> <span id="forgeSourceIngestAffectedSpecs" class="text-gray-200">—</span></div>
+            <ul id="forgeSourceIngestWarnings" class="text-amber-200/90 list-disc list-inside hidden"></ul>
+            <details class="rounded border border-gray-700 bg-gray-950/50 p-2">
+              <summary class="cursor-pointer text-gray-400 hover:text-gray-200">Review content preview</summary>
+              <pre id="forgeSourceIngestContentPreview" class="mt-2 text-[10px] leading-relaxed text-gray-300 whitespace-pre-wrap font-mono max-h-64 overflow-auto"></pre>
+            </details>
+          </div>
+          <p id="forgeSourceIngestError" class="text-xs text-rose-300 hidden"></p>
         </div>
 
         <div class="rounded-xl border border-gray-800 bg-gray-950/40 p-3 flex flex-col gap-2">
@@ -1141,6 +1187,7 @@
             <details><summary class="text-gray-500">Status</summary><pre id="forgeDebugStatus" class="mt-1 text-[10px] font-mono text-gray-400 overflow-auto max-h-40"></pre></details>
             <details><summary class="text-gray-500">Search</summary><pre id="forgeDebugSearch" class="mt-1 text-[10px] font-mono text-gray-400 overflow-auto max-h-40"></pre></details>
             <details><summary class="text-gray-500">Compile</summary><pre id="forgeDebugCompile" class="mt-1 text-[10px] font-mono text-gray-400 overflow-auto max-h-40"></pre></details>
+            <details><summary class="text-gray-500">Source ingest</summary><pre id="forgeDebugSourceIngest" class="mt-1 text-[10px] font-mono text-gray-400 overflow-auto max-h-40"></pre></details>
           </div>
         </details>
       </section>

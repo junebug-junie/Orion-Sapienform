@@ -62,7 +62,7 @@ def test_knowledge_forge_alias_routes_forward_expected_paths(monkeypatch: pytest
     )
     asyncio.run(
         hub_api_routes.proxy_knowledge_forge_ideation_run(
-            _request("POST", b'{"topic":"test"}')
+            _request("POST", b'{"task":"test"}')
         )
     )
     asyncio.run(hub_api_routes.proxy_knowledge_forge("v1/custom-endpoint", _request("GET")))

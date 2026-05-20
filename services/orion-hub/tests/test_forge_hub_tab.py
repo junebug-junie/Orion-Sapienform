@@ -31,6 +31,15 @@ def test_index_has_forge_tab_and_panel() -> None:
     assert 'id="forgeCompileTask"' in index_html
     assert 'id="forgeCompileButton"' in index_html
     assert 'id="forgeDebugDetails"' in index_html
+    assert "Source Delta Review" in index_html
+    assert 'id="forgeSourcePath"' in index_html
+    assert 'id="forgeSourceId"' in index_html
+    assert 'id="forgeSourceKind"' in index_html
+    assert 'id="forgeSourceDryRun"' in index_html
+    assert 'id="forgeSourceWriteReview"' in index_html
+    assert 'id="forgeSourceIngestButton"' in index_html
+    assert 'id="forgeSourceIngestResult"' in index_html
+    assert "does not mutate accepted claims" in index_html
 
 
 def test_app_js_wires_forge_hash_and_knowledge_api() -> None:
@@ -47,3 +56,7 @@ def test_app_js_wires_forge_hash_and_knowledge_api() -> None:
     assert "context-packs/compile" in app_js
     assert "runForgeSearch" in app_js
     assert "runForgeCompile" in app_js
+    assert "runForgeSourceIngest" in app_js
+    assert "/sources/ingest" in app_js
+    assert "forgeRenderSourceIngestResult" in app_js
+    assert "forgeSourceIngestContentPreview" in app_js

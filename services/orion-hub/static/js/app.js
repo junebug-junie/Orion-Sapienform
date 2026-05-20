@@ -2233,7 +2233,7 @@ loadDismissedIds();
       claim_ids: [],
       include_disputed: Boolean(forgeIncludeDisputed?.checked),
       include_stale: Boolean(forgeIncludeStale?.checked),
-      write_file: forgeWriteFile ? forgeWriteFile.checked !== false : true,
+      write_file: Boolean(forgeWriteFile?.checked),
     };
     if (forgeCompileButton) forgeCompileButton.disabled = true;
     if (forgeStatus) forgeStatus.textContent = "Compiling context pack…";

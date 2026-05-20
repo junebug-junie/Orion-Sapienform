@@ -5,7 +5,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from orion.knowledge_forge.api_compile import build_context_pack_output_path, compile_context_pack_api_v1
+from orion.knowledge_forge.api_compile import (
+    _claim_included,
+    build_context_pack_output_path,
+    compile_context_pack_api_v1,
+)
 from orion.knowledge_forge.models import (
     ClaimV1,
     ContextPackTargetV1,
@@ -214,8 +218,6 @@ class KnowledgeForgeService:
             doc = self.store.get(claim_id)
             if not isinstance(doc, ClaimV1):
                 continue
-            from orion.knowledge_forge.api_compile import _claim_included
-
             if _claim_included(
                 doc,
                 include_disputed=request.include_disputed,

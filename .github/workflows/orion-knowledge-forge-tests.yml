@@ -47,12 +47,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install pytest
           pip install -r services/orion-knowledge-forge/requirements.txt
+          # Hub forge proxy tests import scripts.api_routes (not full hub requirements.txt).
+          pip install aiohttp==3.12.15 requests==2.31.0 httpx "redis[hiredis]==5.0.7"
       - name: Run Knowledge Forge repo-root tests
         run: |
           PYTHONPATH=. python -m pytest tests/test_knowledge_forge_*.py -q
       - name: Run Knowledge Forge service tests
         run: |
           PYTHONPATH=.:services/orion-knowledge-forge python -m pytest services/orion-knowledge-forge/tests/ -q
-      - name: Run Hub Knowledge Forge proxy tests
+      - name: Run Hub Knowledge Forge proxy + tab tests
         run: |
-          PYTHONPATH=services/orion-hub python -m pytest services/orion-hub/tests/test_knowledge_forge_proxy_routes.py -q
+          PYTHONPATH=.:services/orion-hub python -m pytest \
+            services/orion-hub/tests/test_knowledge_forge_proxy_routes.py \
+            services/orion-hub/tests/test_forge_hub_tab.py \
+            -q

@@ -67,13 +67,30 @@
       .filter((m) => typeof m === "string" && m.trim());
   }
 
+  const LLM_PHASE_NAMES = new Set(["semantic_synthesis", "active_frontier_judge", "stance_handoff"]);
+
+  function phaseTelemetryShowsLlmExecution(mc) {
+    return phaseTelemetryRecords(mc).some((row) => {
+      if (!row || !LLM_PHASE_NAMES.has(row.phase_name)) return false;
+      if (row.skipped) return false;
+      if (row.ok === true || row.parse_ok === true) return true;
+      const model = String(row.model || row.model_id || "").trim();
+      return Boolean(model && model !== "deterministic");
+    });
+  }
+
+  function resolveLlmAttempted(mc, llmEnabled) {
+    if (asBool(mc["mind.llm_synthesis_attempted"])) return true;
+    return llmEnabled && phaseTelemetryShowsLlmExecution(mc);
+  }
+
   function normalizeMindRunProvenance(run) {
     const resultParsed = parseMindJsonbField(run?.result_jsonb);
     const reqParsed = parseMindJsonbField(run?.request_summary_jsonb);
     const mc = machineContract(resultParsed);
     const brief = asObject(resultParsed?.brief);
     const llmEnabled = asBool(mc["mind.llm_synthesis_enabled"]);
-    const llmAttempted = asBool(mc["mind.llm_synthesis_attempted"]);
+    const llmAttempted = resolveLlmAttempted(mc, llmEnabled);
     const failOpenToDeterministic = asBool(mc["mind.llm_fail_open_to_deterministic"]);
     const orchHttpFailed = asBool(mc["mind.orch_http_failed"]);
     const failedPhase = mc["mind.llm_synthesis_failed_phase"] || null;

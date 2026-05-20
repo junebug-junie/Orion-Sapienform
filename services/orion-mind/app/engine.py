@@ -663,6 +663,7 @@ def _llm_machine_contract(
         "mind.shadow_synthesis_present": shadow_synthesis is not None,
         "mind.authorized_for_stance_skip": bool(handoff.authorized_for_stance_use) if handoff else False,
         "mind.llm_synthesis_enabled": llm_enabled,
+        "mind.llm_synthesis_attempted": bool(llm_enabled),
         "mind.semantic_synthesis_seen": synthesis is not None,
         "mind.semantic_claim_count": len(synthesis.claims) if synthesis else 0,
         "mind.semantic_claim_labels": claim_labels,

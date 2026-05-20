@@ -1,0 +1,8 @@
+type: context_pack
+id: ctx:substrate-tier-telemetry-v1
+target: cursor
+task: Verify substrate tier telemetry persistence matches spec
+included_specs:
+- spec:substrate-tier-telemetry-v1
+allowed_sources: []
+excluded_context: []

@@ -2356,10 +2356,10 @@ loadDismissedIds();
       const msg = error?.message || String(error);
       const status = error?.status;
       let display = msg;
-      if (status === 502 || status === 503 || /unreachable|not configured|disabled/i.test(msg)) {
-        display = `Knowledge Forge unavailable: ${msg}`;
-      } else if (status === 403 || /write.*disabled/i.test(msg)) {
+      if (status === 403 || /write.*disabled/i.test(msg)) {
         display = `Write disabled: ${msg}. Enable KNOWLEDGE_FORGE_WRITE_ENABLED on the Forge service.`;
+      } else if (status === 502 || status === 503 || /unreachable|not configured/i.test(msg)) {
+        display = `Knowledge Forge unavailable: ${msg}`;
       } else if (status === 422 || status === 400) {
         display = `Validation error: ${msg}`;
       }

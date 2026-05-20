@@ -39,7 +39,9 @@ def test_index_has_forge_tab_and_panel() -> None:
     assert 'id="forgeSourceWriteReview"' in index_html
     assert 'id="forgeSourceIngestButton"' in index_html
     assert 'id="forgeSourceIngestResult"' in index_html
+    assert 'id="forgeSourceIngestError"' in index_html
     assert "does not mutate accepted claims" in index_html
+    assert 'value="docs/PR-orion-knowledge-forge-source-delta-v1.2.md"' not in index_html
 
 
 def test_app_js_wires_forge_hash_and_knowledge_api() -> None:
@@ -60,3 +62,4 @@ def test_app_js_wires_forge_hash_and_knowledge_api() -> None:
     assert "/sources/ingest" in app_js
     assert "forgeRenderSourceIngestResult" in app_js
     assert "forgeSourceIngestContentPreview" in app_js
+    assert "forgeDebugSourceIngest" in app_js

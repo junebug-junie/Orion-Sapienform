@@ -9,7 +9,44 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from orion.mind.synthesis_v1 import MindEvidencePackV1, SemanticSynthesisV1
+from orion.mind.synthesis_v1 import MindEvidencePackV1, RecommendedEffectV1, SemanticSynthesisV1
+
+_VALID_CLAIM_KINDS: frozenset[str] = frozenset(
+    {
+        "current_turn_claim",
+        "continuity_claim",
+        "relationship_claim",
+        "task_claim",
+        "identity_boundary_claim",
+        "autonomy_claim",
+        "social_claim",
+        "situation_claim",
+        "hazard_claim",
+        "curiosity_affordance_claim",
+        "uncertainty_claim",
+    }
+)
+_VALID_RECOMMENDED_EFFECTS: frozenset[str] = frozenset(
+    {
+        "answer_directly",
+        "receive_warmly",
+        "ask_one_situated_question",
+        "suppress_question",
+        "preserve_identity_boundary",
+        "avoid_identity_sermon",
+        "technical_triage",
+        "surface_uncertainty",
+        "no_effect",
+    }
+)
+_VALID_CLAIM_ANCHORS: frozenset[str] = frozenset(
+    {"orion", "juniper", "relationship", "none", "mixed", "unknown"}
+)
+_RECOMMENDED_EFFECT_ALIASES: dict[str, RecommendedEffectV1] = {
+    "acknowledge": "answer_directly",
+    "ack": "answer_directly",
+    "warm_ack": "receive_warmly",
+}
 from .guardrails import (
     SemanticClaimFilterStats,
     evaluate_semantic_handoff_authorization,
@@ -103,6 +140,65 @@ def _coerce_evidence_refs(item: dict[str, Any]) -> list[str]:
     return []
 
 
+def _claims_list_empty(raw: dict[str, Any]) -> bool:
+    claims_in = raw.get("claims")
+    return not isinstance(claims_in, list) or len(claims_in) == 0
+
+
+def _is_bare_semantic_claim_root(raw: dict[str, Any]) -> bool:
+    if not _claims_list_empty(raw):
+        return False
+    if _has_current_claim_shape(raw):
+        return True
+    label = str(raw.get("label") or "").strip()
+    summary = str(raw.get("summary") or "").strip()
+    if not label or not summary:
+        return False
+    return bool(_coerce_evidence_refs(raw) or raw.get("claim_id") or raw.get("claim_kind"))
+
+
+def _coerce_semantic_claim_item(item: dict[str, Any], *, index: int = 0) -> dict[str, Any]:
+    out = dict(item)
+    claim_id = str(out.get("claim_id") or "").strip()
+    if not claim_id:
+        seed = str(out.get("label") or out.get("summary") or f"claim_{index}")
+        out["claim_id"] = _legacy_claim_id(index, seed)
+    claim_kind = str(out.get("claim_kind") or "").strip()
+    if claim_kind not in _VALID_CLAIM_KINDS:
+        refs = _coerce_evidence_refs(out)
+        out["claim_kind"] = "current_turn_claim" if refs else "situation_claim"
+    effect = str(out.get("recommended_effect") or "").strip()
+    if effect in _RECOMMENDED_EFFECT_ALIASES:
+        out["recommended_effect"] = _RECOMMENDED_EFFECT_ALIASES[effect]
+    elif effect not in _VALID_RECOMMENDED_EFFECTS:
+        out["recommended_effect"] = "no_effect"
+    anchor = str(out.get("anchor") or "").strip()
+    if anchor not in _VALID_CLAIM_ANCHORS:
+        out["anchor"] = "unknown"
+    source_kinds = out.get("source_kinds")
+    if not isinstance(source_kinds, list) or not source_kinds:
+        out["source_kinds"] = ["current_turn"] if _coerce_evidence_refs(out) else []
+    return out
+
+
+def try_wrap_singleton_semantic_claim(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, bool]:
+    if not _is_bare_semantic_claim_root(raw):
+        return None, False
+    claim = _coerce_semantic_claim_item(raw, index=0)
+    out: dict[str, Any] = {
+        "schema_version": "mind.semantic_synthesis.v1",
+        "claims": [claim],
+        "suppressed": list(raw.get("suppressed") or []) if isinstance(raw.get("suppressed"), list) else [],
+        "diagnostics": dict(raw.get("diagnostics") or {}) if isinstance(raw.get("diagnostics"), dict) else {},
+    }
+    diagnostics = dict(out["diagnostics"])
+    notes = list(diagnostics.get("notes") or [])
+    notes.append("normalized_from_singleton_claim_root")
+    diagnostics["notes"] = notes
+    out["diagnostics"] = diagnostics
+    return out, True
+
+
 def try_normalize_legacy_semantic_raw(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, bool]:
     """Convert obvious legacy claim objects into SemanticSynthesisV1 claim shape."""
     claims_in = raw.get("claims")
@@ -161,10 +257,32 @@ def try_normalize_legacy_semantic_raw(raw: dict[str, Any]) -> tuple[dict[str, An
 
 
 def _validate_semantic_raw(raw: dict[str, Any]) -> tuple[SemanticSynthesisV1 | None, bool]:
+    candidate = raw
+    normalized_from_shape = False
+
+    wrapped, did_wrap = try_wrap_singleton_semantic_claim(raw)
+    if did_wrap and wrapped is not None:
+        candidate = wrapped
+        normalized_from_shape = True
+
     try:
-        return SemanticSynthesisV1.model_validate(raw), False
+        synthesis = SemanticSynthesisV1.model_validate(candidate)
+        if not synthesis.claims and not normalized_from_shape:
+            wrapped2, did_wrap2 = try_wrap_singleton_semantic_claim(raw)
+            if did_wrap2 and wrapped2 is not None:
+                return SemanticSynthesisV1.model_validate(wrapped2), True
+        return synthesis, normalized_from_shape
     except ValidationError:
-        normalized, did_normalize = try_normalize_legacy_semantic_raw(raw)
+        if not normalized_from_shape:
+            wrapped, did_wrap = try_wrap_singleton_semantic_claim(raw)
+            if did_wrap and wrapped is not None:
+                try:
+                    return SemanticSynthesisV1.model_validate(wrapped), True
+                except ValidationError:
+                    pass
+        normalized, did_normalize = try_normalize_legacy_semantic_raw(candidate)
+        if not did_normalize or normalized is None:
+            normalized, did_normalize = try_normalize_legacy_semantic_raw(raw)
         if not did_normalize or normalized is None:
             return None, False
         try:
@@ -217,7 +335,7 @@ def run_semantic_synthesis(
         telemetry.error = "semantic_schema_invalid:not_object"
         return None, "semantic_schema_invalid", telemetry
 
-    synthesis, normalized_from_legacy = _validate_semantic_raw(raw)
+    synthesis, normalized_from_shape = _validate_semantic_raw(raw)
     if synthesis is None:
         telemetry.validation_ok = False
         telemetry.ok = False
@@ -226,8 +344,6 @@ def run_semantic_synthesis(
         return None, "semantic_schema_invalid", telemetry
 
     diag_notes = list(synthesis.diagnostics.notes)
-    if normalized_from_legacy:
-        diag_notes.append("normalized_from_legacy_claim_shape")
     synthesis = synthesis.model_copy(
         update={
             "model_id": model_id,
@@ -267,7 +383,7 @@ def run_semantic_synthesis(
     if filtered.claims:
         telemetry.ok = True
         telemetry.status = "ok"
-        if normalized_from_legacy:
+        if normalized_from_shape:
             telemetry.error = None
     else:
         telemetry.ok = True

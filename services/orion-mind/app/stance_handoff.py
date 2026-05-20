@@ -16,13 +16,80 @@ from .llm_client import MindLLMClientProtocol
 from .llm_context import MindLLMRequestContext
 from .phase_telemetry import MindPhaseTelemetry, utc_now_iso
 
+_VALID_CONVERSATION_FRAMES: frozenset[str] = frozenset(
+    {
+        "technical",
+        "planning",
+        "reflective",
+        "playful_relational",
+        "identity_emergence",
+        "mixed",
+    }
+)
+_VALID_TASK_MODES: frozenset[str] = frozenset(
+    {
+        "direct_response",
+        "triage",
+        "technical_collaboration",
+        "identity_dialogue",
+        "reflective_dialogue",
+        "playful_exchange",
+        "mixed",
+    }
+)
+_VALID_IDENTITY_SALIENCE: frozenset[str] = frozenset({"low", "medium", "high"})
+_CONVERSATION_FRAME_ALIASES: dict[str, str] = {
+    "smoketest": "mixed",
+    "casual": "playful_relational",
+    "relational": "playful_relational",
+    "general": "mixed",
+}
+_TASK_MODE_ALIASES: dict[str, str] = {
+    "direct_answer": "direct_response",
+    "answer_directly": "direct_response",
+}
+_IDENTITY_SALIENCE_ALIASES: dict[str, str] = {
+    "neutral": "low",
+    "minimal": "low",
+    "none": "low",
+}
+
 _STANCE_SYSTEM = """You convert the active cognitive frontier into a compact ChatStanceBrief-compatible stance_payload.
 You are NOT writing the final user reply.
 Respect the current user message first.
-Produce JSON with fields: conversation_frame, task_mode, identity_salience, user_intent, self_relevance,
-juniper_relevance, active_identity_facets, active_relationship_facets, reflective_themes, active_tensions,
-response_priorities, response_hazards, answer_strategy, stance_summary.
-Use only supported conversation_frame and task_mode enum values from ChatStanceBrief."""
+Return strict JSON only (no prose) with these exact enum values:
+- conversation_frame: technical | planning | reflective | playful_relational | identity_emergence | mixed
+- task_mode: direct_response | triage | technical_collaboration | identity_dialogue | reflective_dialogue | playful_exchange | mixed
+- identity_salience: low | medium | high
+Also include: user_intent, self_relevance, juniper_relevance, response_priorities, response_hazards, answer_strategy, stance_summary.
+Example for a simple operational turn:
+{"conversation_frame":"mixed","task_mode":"direct_response","identity_salience":"low","user_intent":"User is running a smoketest.","self_relevance":"Confirm receipt without over-interpreting.","juniper_relevance":"Stay concise and operational.","response_priorities":["confirm receipt"],"response_hazards":["do not invent context"],"answer_strategy":"DirectAnswer","stance_summary":"Operational smoketest turn."}"""
+
+
+def try_coerce_stance_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Coerce common invalid LLM enum strings before ChatStanceBrief validation."""
+    out = dict(payload)
+    changed = False
+
+    frame = str(out.get("conversation_frame") or "").strip().lower()
+    if frame not in _VALID_CONVERSATION_FRAMES:
+        coerced = _CONVERSATION_FRAME_ALIASES.get(frame, "mixed")
+        out["conversation_frame"] = coerced
+        changed = True
+
+    task_mode = str(out.get("task_mode") or "").strip().lower()
+    if task_mode not in _VALID_TASK_MODES:
+        coerced = _TASK_MODE_ALIASES.get(task_mode, "direct_response")
+        out["task_mode"] = coerced
+        changed = True
+
+    salience = str(out.get("identity_salience") or "").strip().lower()
+    if salience not in _VALID_IDENTITY_SALIENCE:
+        coerced = _IDENTITY_SALIENCE_ALIASES.get(salience, "low")
+        out["identity_salience"] = coerced
+        changed = True
+
+    return out, changed
 
 
 def _minimal_stance_from_pack(pack: MindEvidencePackV1) -> dict[str, Any]:
@@ -96,6 +163,7 @@ def run_stance_handoff(
         return _minimal_stance_from_pack(pack), "stance_payload_not_object", telemetry
     merged = _minimal_stance_from_pack(pack)
     merged.update(payload)
+    merged, _ = try_coerce_stance_payload(merged)
     valid, validation_err = validate_merged_stance_brief_optional(merged)
     if valid is None:
         telemetry.validation_ok = False

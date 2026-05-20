@@ -292,6 +292,109 @@ def test_source_tag_semantic_fail_open_preserves_phase_telemetry(monkeypatch: py
     assert result.mind_quality == "fallback_contract_only"
 
 
+def test_singleton_root_semantic_claim_is_wrapped_and_retained() -> None:
+    from app.evidence import build_evidence_pack
+    from app.synthesis import run_semantic_synthesis, try_wrap_singleton_semantic_claim
+    from orion.mind.synthesis_v1 import SemanticSynthesisV1
+
+    bare_claim = {
+        "claim_id": "c1",
+        "label": "smoketest",
+        "summary": "User performed a smoketest action.",
+        "claim_kind": "action_claim",
+        "evidence_refs": ["current_turn:0"],
+        "source_kinds": ["current_turn"],
+        "recommended_effect": "acknowledge",
+    }
+    wrapped, did = try_wrap_singleton_semantic_claim(bare_claim)
+    assert did is True
+    synthesis = SemanticSynthesisV1.model_validate(wrapped)
+    assert len(synthesis.claims) == 1
+
+    pack = build_evidence_pack({"user_text": "smoketest!"})
+    result, err, telemetry = run_semantic_synthesis(
+        pack,
+        client=type("_C", (), {"request_json": lambda self, **kw: (bare_claim, None, {"model_used": "quick"})})(),  # type: ignore[arg-type]
+        route="quick",
+        model_id="quick",
+        max_tokens=512,
+    )
+    assert err is None and result and result.claims
+    assert telemetry.retained_claim_count == 1
+
+
+def test_metacog_frontier_alias_shape_is_normalized() -> None:
+    from app.appraisal import run_active_frontier_judge, try_normalize_frontier_raw
+    from app.evidence import build_evidence_pack
+    from orion.mind.synthesis_v1 import ActiveCognitiveFrontierV1, SemanticSynthesisV1
+
+    raw = {
+        "schema_version": "active_cognitive_frontier.v1",
+        "active_cognitive_frontier": [
+            {
+                "matter_id": "m1",
+                "claim_id": "c1",
+                "label": "smoketest",
+                "summary": "User performed a smoketest.",
+                "claim_kind": "current_turn_claim",
+                "evidence_refs": ["current_turn:0"],
+                "recommended_effect": "answer_directly",
+                "confidence": 0.9,
+            }
+        ],
+    }
+    normalized, did = try_normalize_frontier_raw(raw, claim_ids={"c1"})
+    assert did is True
+    frontier = ActiveCognitiveFrontierV1.model_validate(normalized)
+    assert len(frontier.selected) == 1
+    assert frontier.selected[0].source_claim_id == "c1"
+    assert frontier.selected[0].matter_kind == "turn_anchor"
+
+    pack = build_evidence_pack({"user_text": "smoketest!"})
+    synthesis = SemanticSynthesisV1.model_validate(_semantic_payload(claim_label="smoketest"))
+
+    class _Client:
+        def request_json(self, **kwargs):  # type: ignore[no-untyped-def]
+            return raw, None, {"model_used": "metacog"}
+
+    result, err, telemetry = run_active_frontier_judge(
+        synthesis,
+        pack,
+        client=_Client(),  # type: ignore[arg-type]
+        route="metacog",
+        model_id="metacog",
+        max_tokens=512,
+    )
+    assert err is None
+    assert result is not None
+    assert result.selected
+    assert telemetry.validation_ok is True
+
+
+def test_stance_payload_enum_aliases_are_coerced() -> None:
+    from app.stance_handoff import try_coerce_stance_payload
+    from orion.mind.validation import validate_merged_stance_brief_optional
+
+    payload = {
+        "conversation_frame": "smoketest",
+        "task_mode": "direct_answer",
+        "identity_salience": "neutral",
+        "user_intent": "test",
+        "self_relevance": "minimal",
+        "juniper_relevance": "none",
+        "answer_strategy": "DirectAnswer",
+        "stance_summary": "Operational smoketest.",
+    }
+    coerced, did = try_coerce_stance_payload(payload)
+    assert did is True
+    valid, err = validate_merged_stance_brief_optional(coerced)
+    assert err is None
+    assert valid is not None
+    assert valid.conversation_frame == "mixed"
+    assert valid.task_mode == "direct_response"
+    assert valid.identity_salience == "low"
+
+
 def test_legacy_semantic_claim_shape_is_normalized() -> None:
     from app.evidence import build_evidence_pack
     from app.synthesis import run_semantic_synthesis, try_normalize_legacy_semantic_raw

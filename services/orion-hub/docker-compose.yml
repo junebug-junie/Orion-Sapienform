@@ -66,6 +66,8 @@ services:
       - WORLD_PULSE_BASE_URL=${WORLD_PULSE_BASE_URL}
       - WORLD_PULSE_PROXY_TIMEOUT_SEC=${WORLD_PULSE_PROXY_TIMEOUT_SEC:-10}
       - WORLD_PULSE_UI_FIXTURE_RUN_ENABLED=${WORLD_PULSE_UI_FIXTURE_RUN_ENABLED:-false}
+      - KNOWLEDGE_FORGE_BASE_URL=${KNOWLEDGE_FORGE_BASE_URL:-http://127.0.0.1:8630}
+      - KNOWLEDGE_FORGE_PROXY_TIMEOUT_SEC=${KNOWLEDGE_FORGE_PROXY_TIMEOUT_SEC:-15}
       - SUBSTRATE_TELEMETRY_BASE_URL=${SUBSTRATE_TELEMETRY_BASE_URL:-}
       - SUBSTRATE_TELEMETRY_READ_TOKEN=${SUBSTRATE_TELEMETRY_READ_TOKEN:-}
       - SOCIAL_MEMORY_BASE_URL=${SOCIAL_MEMORY_BASE_URL}
@@ -201,6 +203,28 @@ services:
     # if running on athena:
     #networks:
     #  - ${NET}
+
+  # Optional: start Knowledge Forge alongside Hub (host-network Hub reaches it via 127.0.0.1:8630).
+  orion-knowledge-forge:
+    profiles:
+      - knowledge-forge
+    build:
+      context: ../..
+      dockerfile: services/orion-knowledge-forge/Dockerfile
+    container_name: orion-knowledge-forge
+    env_file:
+      - path: ../orion-knowledge-forge/.env
+        required: false
+    environment:
+      ORION_KNOWLEDGE_ROOT: ${ORION_KNOWLEDGE_ROOT:-/repo/orion-knowledge}
+      KNOWLEDGE_FORGE_REPO_ROOT: ${ORION_KNOWLEDGE_ROOT:-/repo/orion-knowledge}
+    volumes:
+      - ../..:/repo:ro
+    ports:
+      - "8630:8630"
+    restart: unless-stopped
+    networks:
+      - app-net
 
 networks:
   app-net:

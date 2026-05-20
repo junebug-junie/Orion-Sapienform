@@ -11,6 +11,8 @@ from app.api_schemas import (
     KnowledgeForgeStatusV1,
     ReviewSummaryV1,
     SearchHitV1,
+    SourceIngestRequestV1,
+    SourceIngestResultV1,
     SourceSummaryV1,
     SpecSummaryV1,
 )
@@ -158,3 +160,19 @@ def reject_review(
 @router.get("/sources", response_model=list[SourceSummaryV1])
 def list_sources(service: KnowledgeForgeService = Depends(require_enabled)) -> list[SourceSummaryV1]:
     return service.list_sources()
+
+
+@router.post("/sources/ingest", response_model=SourceIngestResultV1)
+def ingest_source_route(
+    request: SourceIngestRequestV1,
+    x_knowledge_forge_token: str | None = Header(default=None, alias="X-Knowledge-Forge-Token"),
+    service: KnowledgeForgeService = Depends(require_enabled),
+) -> SourceIngestResultV1:
+    if request.write_review:
+        expected = settings.knowledge_forge_operator_token
+        if expected and x_knowledge_forge_token != expected:
+            raise HTTPException(status_code=401, detail="invalid operator token")
+    try:
+        return service.ingest_source(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -9,6 +9,7 @@ from orion.knowledge_forge.lint import lint_corpus
 from orion.knowledge_forge.paths import resolve_corpus_root
 from orion.knowledge_forge.probes import probe_source_coverage
 from orion.knowledge_forge.review import apply_pending_patch, list_pending_patches
+from orion.knowledge_forge.sources import ingest_source
 from orion.knowledge_forge.store import KnowledgeStore
 from orion.knowledge_forge.yaml_doc import save_yaml_doc
 
@@ -39,6 +40,13 @@ def main(argv: list[str] | None = None) -> int:
     src.add_argument("--source-id", required=True)
     src.add_argument("--path", required=True)
     src.add_argument("--keyword", required=True)
+
+    ingest_p = sub.add_parser("ingest-source")
+    ingest_p.add_argument("--path", required=True)
+    ingest_p.add_argument("--source-id", required=True)
+    ingest_p.add_argument("--kind", default="design_doc")
+    ingest_p.add_argument("--write-review", action="store_true")
+    ingest_p.add_argument("--dry-run", action="store_true")
 
     args = parser.parse_args(argv)
     root = resolve_corpus_root()
@@ -102,6 +110,32 @@ def main(argv: list[str] | None = None) -> int:
         for issue in report.issues:
             print(f"{issue.code}\t{issue.message}")
         return 0 if report.ok else 1
+
+    if args.cmd == "ingest-source":
+        try:
+            result = ingest_source(
+                root,
+                source_path=Path(args.path),
+                source_id=args.source_id,
+                kind=args.kind,
+                write_review=args.write_review,
+                dry_run=args.dry_run,
+                write_enabled=True,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"error\t{exc}", file=sys.stderr)
+            return 1
+        print(f"source_id\t{result.source_id}")
+        print(f"status\t{result.status}")
+        if result.source_path:
+            print(f"source_path\t{result.source_path}")
+        if result.review_path:
+            print(f"review_path\t{result.review_path}")
+        for warning in result.warnings:
+            print(f"warning\t{warning}")
+        for claim in result.proposed_claims:
+            print(f"proposed_claim\t{claim}")
+        return 0
 
     parser.error("unknown command")
     return 2

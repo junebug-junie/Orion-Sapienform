@@ -3591,7 +3591,11 @@ loadDismissedIds();
     const expectedPosture = expectedPostureFromDrive(model && model.dominantDrive);
     const visibleCues = deriveVisibleAutonomyCues(replyText);
     let alignmentNote = 'no fixed keyword gate for this dominant drive';
-    if (expectedPosture === 'neutral') {
+    if (model && model.stateQuality && String(model.stateQuality).startsWith('degraded')) {
+      alignmentNote = model.stanceMode === 'proposal_only'
+        ? 'proposal-only because selected subject drives were unavailable'
+        : (model.degradedReason || 'autonomy state degraded');
+    } else if (expectedPosture === 'neutral') {
       alignmentNote = visibleCues.length
         ? 'informal stylistic cues present (neutral drive)'
         : 'no strong posture expected';
@@ -3605,6 +3609,33 @@ loadDismissedIds();
       visible_cues: visibleCues,
       alignment_note: alignmentNote,
     };
+  }
+
+  function formatAutonomyFieldLabel(model, field) {
+    const degraded = model && model.stateQuality && String(model.stateQuality).startsWith('degraded');
+    const reason = String((model && model.degradedReason) || '').trim();
+    if (field === 'dominantDrive') {
+      if (model && model.dominantDrive) return model.dominantDrive;
+      if (degraded) return `unavailable — ${reason || 'selected subject drives unavailable'}`;
+      return '--';
+    }
+    if (field === 'topDrives') {
+      if (model && model.topDrives && model.topDrives.length) return model.topDrives.join(', ');
+      if (degraded) return 'unavailable — drives facet failed';
+      return '--';
+    }
+    if (field === 'tensions') {
+      if (model && model.tensions && model.tensions.length) return model.tensions.join(', ');
+      if (degraded) return 'unavailable — drive competition requires drives';
+      return '--';
+    }
+    if (field === 'expectedPosture') {
+      if (model && model.alignment && model.alignment.expected_posture) return model.alignment.expected_posture;
+      if (degraded && model && model.stanceMode === 'proposal_only') return 'proposal-only (drives unavailable)';
+      if (degraded) return `unavailable — ${reason || 'selected subject drives unavailable'}`;
+      return '--';
+    }
+    return '--';
   }
 
   function normalizeAutonomyModel(summary, debug, meta = {}) {
@@ -3627,6 +3658,7 @@ loadDismissedIds();
       ? Object.entries(safeDebug).filter(([subject, value]) => !String(subject).startsWith('_') && value && typeof value === 'object')
       : [];
     const availableCount = availabilityRows.filter(([, value]) => value.availability === 'available').length;
+    const degradedCount = availabilityRows.filter(([, value]) => value.availability === 'degraded').length;
     const unavailableCount = availabilityRows.filter(([, value]) => value.availability === 'unavailable').length;
     const subjectCount = availabilityRows.length;
     // Keep this exact fallback expression stable for UI contract tests:
@@ -3654,8 +3686,17 @@ loadDismissedIds();
       : ((safePreview && safePreview.drive_competition && typeof safePreview.drive_competition === 'object')
         ? safePreview.drive_competition
         : null);
+    const runtimeMeta = (safeDebug && safeDebug._runtime && typeof safeDebug._runtime === 'object') ? safeDebug._runtime : {};
+    const stateQuality = String((safeSummary && safeSummary.state_quality) || runtimeMeta.state_quality || '').trim();
+    const stanceMode = String((safeSummary && safeSummary.stance_mode) || runtimeMeta.stance_mode || '').trim();
+    const degradedReason = String((safeSummary && safeSummary.degraded_reason) || runtimeMeta.degraded_reason || '').trim();
+    const contextNote = String((safeSummary && safeSummary.context_note) || runtimeMeta.context_note || '').trim();
+    const facetHealth = (safeSummary && safeSummary.facet_health && typeof safeSummary.facet_health === 'object')
+      ? safeSummary.facet_health
+      : ((runtimeMeta.facet_health && typeof runtimeMeta.facet_health === 'object') ? runtimeMeta.facet_health : {});
     const hasSemanticSignal = !!(dominantDrive || topDrives.length || tensions.length || proposalHeadlines.length
-      || (driveCompetition && (driveCompetition.top_drive || driveCompetition.runner_drive)));
+      || (driveCompetition && (driveCompetition.top_drive || driveCompetition.runner_drive))
+      || (stateQuality && stateQuality.startsWith('degraded')));
     const hasDebugSignal = !!(safeDebug && typeof safeDebug === 'object' && Object.keys(safeDebug).length);
     const hasLineageMeta = !!(executionMode || (goalLineageRaw && Object.keys(goalLineageRaw).length));
     const hasAnySignal = !!(hasSemanticSignal || hasDebugSignal || String((safeSummary && safeSummary.stance_hint) || '').trim() || hasLineageMeta);
@@ -3675,8 +3716,14 @@ loadDismissedIds();
       goalLineage: goalLineageRaw,
       backend: String((meta.autonomyBackend || (safeDebug && safeDebug._runtime && safeDebug._runtime.backend) || meta.backend || '')).trim() || '--',
       selectedSubject: String((meta.autonomySelectedSubject || (safeDebug && safeDebug._runtime && safeDebug._runtime.selected_subject) || meta.selectedSubject || '')).trim() || '--',
+      stateQuality: stateQuality || 'empty',
+      stanceMode,
+      degradedReason,
+      contextNote,
+      facetHealth,
       availability: {
         available: availableCount,
+        degraded: degradedCount,
         unavailable: unavailableCount,
         subjects: subjectCount,
       },
@@ -3685,7 +3732,10 @@ loadDismissedIds();
         source_available: !!repositoryStatus.source_available,
         source_path: String(repositoryStatus.source_path || '').trim() || '--',
       },
-      alignment: computeAutonomyAlignment({ dominantDrive }, meta.replyText || meta.reply_text || ''),
+      alignment: computeAutonomyAlignment(
+        { dominantDrive, stateQuality, stanceMode, degradedReason },
+        meta.replyText || meta.reply_text || '',
+      ),
       raw: {
         summary: safeSummary || {},
         debug: safeDebug || {},
@@ -3693,6 +3743,11 @@ loadDismissedIds();
         runtime: {
           backend: String((meta.autonomyBackend || (safeDebug && safeDebug._runtime && safeDebug._runtime.backend) || meta.backend || '')).trim() || '--',
           selected_subject: String((meta.autonomySelectedSubject || (safeDebug && safeDebug._runtime && safeDebug._runtime.selected_subject) || meta.selectedSubject || '')).trim() || '--',
+          state_quality: stateQuality || 'empty',
+          stance_mode: stanceMode,
+          degraded_reason: degradedReason,
+          context_note: contextNote,
+          facet_health: facetHealth,
           repository_status: {
             source_available: !!repositoryStatus.source_available,
             source_path: String(repositoryStatus.source_path || '').trim() || '--',
@@ -3706,7 +3761,8 @@ loadDismissedIds();
     if (!model || typeof model !== 'object') return false;
     const dc = model.driveCompetition;
     const hasDc = dc && typeof dc === 'object' && (dc.top_drive || dc.runner_drive);
-    return !!(model.dominantDrive || (model.topDrives || []).length || (model.tensions || []).length || (model.proposals || []).length || hasDc);
+    const degraded = model.stateQuality && String(model.stateQuality).startsWith('degraded');
+    return !!(model.dominantDrive || (model.topDrives || []).length || (model.tensions || []).length || (model.proposals || []).length || hasDc || degraded);
   }
 
   function updateAutonomyDebugPanel(summary, debug, meta = {}) {
@@ -3734,9 +3790,13 @@ loadDismissedIds();
 
     autonomyDebugOverview.innerHTML = '';
     [
+      `autonomy state: ${model.stateQuality || 'unknown'}`,
       `backend: ${model.backend}`,
       `selected subject: ${model.selectedSubject}`,
-      `availability: ${model.availability.available}/${model.availability.subjects} available`,
+      ...(model.degradedReason ? [`reason: ${model.degradedReason}`] : []),
+      ...(model.contextNote ? [`context note: ${model.contextNote}`] : []),
+      ...(model.stanceMode ? [`stance mode: ${model.stanceMode}`] : []),
+      `availability: ${model.availability.available}/${model.availability.subjects} available · ${model.availability.degraded} degraded`,
       `repository source: ${model.repositoryStatus.source_available ? 'available' : 'unavailable'}`,
       `repository path: ${model.repositoryStatus.source_path}`,
       `fallback: ${model.fallback}`,
@@ -3752,9 +3812,12 @@ loadDismissedIds();
 
     autonomyDebugState.innerHTML = '';
     [
-      `dominant drive: ${model.dominantDrive || '--'}`,
-      `top drives: ${model.topDrives.length ? model.topDrives.join(', ') : '--'}`,
-      `top tensions: ${model.tensions.length ? model.tensions.join(', ') : '--'}`,
+      `dominant drive: ${formatAutonomyFieldLabel(model, 'dominantDrive')}`,
+      `top drives: ${formatAutonomyFieldLabel(model, 'topDrives')}`,
+      `top tensions: ${formatAutonomyFieldLabel(model, 'tensions')}`,
+      ...(Object.keys(model.facetHealth || {}).length
+        ? [`facet health: ${Object.entries(model.facetHealth).map(([k, v]) => `${k}=${v}`).join(', ')}`]
+        : []),
       ...(model.driveCompetition && model.driveCompetition.top_drive && model.driveCompetition.runner_drive
         ? [`competing pressures: ${model.driveCompetition.top_drive} ${Number(model.driveCompetition.pressure_top).toFixed(2)} vs ${model.driveCompetition.runner_drive} ${Number(model.driveCompetition.pressure_runner).toFixed(2)} (spread ${Number(model.driveCompetition.spread).toFixed(2)})`]
         : []),
@@ -3778,9 +3841,12 @@ loadDismissedIds();
 
     autonomyDebugAlignment.innerHTML = '';
     [
-      `expected posture: ${model.alignment.expected_posture || '--'}`,
+      `expected posture: ${formatAutonomyFieldLabel(model, 'expectedPosture')}`,
       `visible cues: ${model.alignment.visible_cues.length ? model.alignment.visible_cues.join(', ') : '--'}`,
       `alignment note: ${model.alignment.alignment_note}`,
+      ...(model.stanceMode === 'proposal_only' && model.degradedReason
+        ? [`stance: proposal-only because ${model.degradedReason.toLowerCase()}`]
+        : []),
     ].forEach((line) => {
       const row = document.createElement('div');
       row.textContent = line;
@@ -7952,6 +8018,8 @@ loadDismissedIds();
     badges.className = 'flex flex-wrap gap-1';
     [
       `backend:${model.backend}`,
+      `selected:${model.selectedSubject}`,
+      `state:${model.stateQuality || 'unknown'}`,
       `availability:${model.availability.available}/${model.availability.subjects}`,
       `repo:${model.repositoryStatus.source_available ? 'up' : 'down'}`,
     ].forEach((value) => {
@@ -7964,9 +8032,11 @@ loadDismissedIds();
     panel.appendChild(headerRow);
 
     [
-      ['dominant drive', model.dominantDrive || '--'],
-      ['top drives', model.topDrives.length ? model.topDrives.join(', ') : '--'],
-      ['top tensions', model.tensions.length ? model.tensions.join(', ') : '--'],
+      ['dominant drive', formatAutonomyFieldLabel(model, 'dominantDrive')],
+      ['top drives', formatAutonomyFieldLabel(model, 'topDrives')],
+      ['top tensions', formatAutonomyFieldLabel(model, 'tensions')],
+      ...(model.degradedReason ? [['degraded reason', model.degradedReason]] : []),
+      ...(model.contextNote ? [['context note', model.contextNote]] : []),
       ...(model.driveCompetition && model.driveCompetition.top_drive && model.driveCompetition.runner_drive
         ? [['competing pressures', `${model.driveCompetition.top_drive} ${Number(model.driveCompetition.pressure_top).toFixed(2)} vs ${model.driveCompetition.runner_drive} ${Number(model.driveCompetition.pressure_runner).toFixed(2)} (spread ${Number(model.driveCompetition.spread).toFixed(2)})`]]
         : []),

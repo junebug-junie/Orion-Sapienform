@@ -162,7 +162,7 @@ def test_graph_lookup_retains_partial_data_on_timeout(caplog) -> None:
 
     result = repo.get_latest("orion", observer={"correlation_id": "corr-1"})
 
-    assert result.availability == "available"
+    assert result.availability == "degraded"
     assert result.unavailable_reason == "timeout"
     assert result.state is not None
     assert result.state.identity_summary == "holds course"

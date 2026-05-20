@@ -17,12 +17,13 @@ from orion.autonomy.graph_gate import (
 )
 from orion.autonomy.models import AutonomyEvidenceRefV1
 from orion.autonomy.reducer import AutonomyReducerInputV1, reduce_autonomy_state
-from orion.autonomy.summary import summarize_autonomy_state
+from orion.autonomy.summary import summarize_autonomy_lookup, summarize_autonomy_state
 from orion.autonomy.repository import (
     AutonomyLookupV1,
     LocalAutonomyRepository,
     SUBJECT_BINDINGS,
     build_autonomy_repository,
+    select_preferred_autonomy_lookup,
 )
 from orion.core.schemas.reasoning_io import ReasoningWriteContextV1, ReasoningWriteRequestV1
 from orion.core.schemas.reasoning_summary import ReasoningSummaryRequestV1, ReasoningSummaryV1
@@ -284,6 +285,24 @@ def resolve_autonomy_subject_max_workers() -> int:
 def resolve_autonomy_subquery_max_workers() -> int:
     """Parallel SPARQL subqueries per subject (identity / drives / goals). Cap 3; use 1 to serialize under GraphDB load."""
     return max(1, min(3, _env_int("AUTONOMY_SUBQUERY_MAX_WORKERS", 1)))
+
+
+def resolve_autonomy_drives_query_limit(*, compact: bool = False) -> int:
+    """Row cap for drive audit SPARQL; chat stance uses AUTONOMY_CHAT_STANCE_DRIVES_QUERY_LIMIT."""
+    if compact:
+        return max(12, min(_env_int("AUTONOMY_CHAT_STANCE_DRIVES_QUERY_LIMIT", 20), 80))
+    raw = os.getenv("AUTONOMY_DRIVES_QUERY_LIMIT")
+    if raw is None or not str(raw).strip():
+        return 80
+    return max(12, min(_env_int("AUTONOMY_DRIVES_QUERY_LIMIT", 80), 80))
+
+
+def resolve_autonomy_chat_stance_subquery_max_workers() -> int:
+    """Parallel SPARQL facets for chat stance; defaults to 3 unless overridden."""
+    explicit = os.getenv("AUTONOMY_CHAT_STANCE_SUBQUERY_MAX_WORKERS")
+    if explicit is not None and str(explicit).strip():
+        return max(1, min(3, _env_int("AUTONOMY_CHAT_STANCE_SUBQUERY_MAX_WORKERS", 3)))
+    return max(1, min(3, _env_int("AUTONOMY_SUBQUERY_MAX_WORKERS", 3)))
 
 
 def fetch_chat_stance_memory_graph_hints() -> List[str]:
@@ -1209,6 +1228,26 @@ def _reflective_summary(ctx: Dict[str, Any]) -> dict[str, list[str]]:
     }
 
 
+def _merge_orion_goals_into_state(
+    preferred_state: Any,
+    orion_state: Any,
+) -> Any:
+    """Keep Orion goal proposals visible when relationship drives supply stance context."""
+    from orion.autonomy.models import AutonomyStateV1
+
+    if not isinstance(preferred_state, AutonomyStateV1) or not isinstance(orion_state, AutonomyStateV1):
+        return preferred_state
+    seen = {goal.artifact_id for goal in preferred_state.goal_headlines}
+    merged_goals = list(preferred_state.goal_headlines)
+    for goal in orion_state.goal_headlines:
+        if goal.artifact_id not in seen:
+            merged_goals.append(goal)
+            seen.add(goal.artifact_id)
+    if len(merged_goals) == len(preferred_state.goal_headlines):
+        return preferred_state
+    return preferred_state.model_copy(update={"goal_headlines": merged_goals})
+
+
 def _load_autonomy_state_fallback_local(
     ctx: Dict[str, Any],
     plan: AutonomyGraphReadPlan,
@@ -1397,7 +1436,7 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
         subquery_workers = 1
     else:
         subject_workers = resolve_autonomy_subject_max_workers()
-        subquery_workers = resolve_autonomy_subquery_max_workers()
+        subquery_workers = resolve_autonomy_chat_stance_subquery_max_workers()
     timeout_used = plan.timeout_sec
 
     repository = build_autonomy_repository(
@@ -1410,6 +1449,7 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
         subject_max_workers=subject_workers,
         subquery_max_workers=subquery_workers,
         active_subqueries=plan.active_subqueries,
+        drives_query_limit=resolve_autonomy_drives_query_limit(compact=True),
     )
     observer = {
         "consumer": "chat_stance",
@@ -1422,20 +1462,34 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
     for subject in SUBJECT_BINDINGS:
         if subject not in by_subject:
             by_subject[subject] = AutonomyLookupV1(subject=subject, state=None, availability="empty")
-    preferred = by_subject.get("orion")
-    if preferred is None or preferred.availability != "available":
-        preferred = by_subject.get("relationship")
-    selected_subject = preferred.subject if preferred is not None else None
+    selection = select_preferred_autonomy_lookup(by_subject)
+    preferred = selection.lookup
+    selected_subject = selection.selected_subject
+    contextual_fallback = selection.contextual_fallback
+    orion_lookup = selection.orion_lookup
+    state_for_summary = preferred.state if preferred and preferred.state is not None else None
+    if state_for_summary and contextual_fallback and orion_lookup and orion_lookup.state is not None:
+        state_for_summary = _merge_orion_goals_into_state(state_for_summary, orion_lookup.state)
     partial_used = bool(
         preferred
-        and preferred.availability == "available"
-        and any(
-            str((preferred.subquery_diagnostics or {}).get(name, {}).get("status", "ok")) not in {"ok", "empty"}
-            for name in ("identity", "drives", "goals")
+        and (
+            preferred.availability == "degraded"
+            or contextual_fallback
+            or any(
+                str((preferred.subquery_diagnostics or {}).get(name, {}).get("status", "ok")) not in {"ok", "empty"}
+                for name in ("identity", "drives", "goals")
+            )
         )
     )
 
-    summary = summarize_autonomy_state(preferred.state if preferred and preferred.availability == "available" else None)
+    summary = summarize_autonomy_lookup(
+        state_for_summary,
+        selected_subject=selected_subject,
+        availability=preferred.availability if preferred is not None else "empty",
+        subquery_diagnostics=preferred.subquery_diagnostics if preferred is not None else None,
+        by_subject=by_subject,
+        contextual_fallback=contextual_fallback,
+    )
     if preferred and preferred.availability == "unavailable":
         ur = (preferred.unavailable_reason or "").lower()
         if ur in {"timeout", "connection_error"}:
@@ -1477,9 +1531,16 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
         "autonomy_graph_cutover_mode": "v1_safe",
         "autonomy_graph_skipped_reason": None,
         "fallback": None,
+        "selected_subject_partial": partial_used,
+        "contextual_fallback": contextual_fallback,
+        "state_quality": summary.state_quality,
+        "stance_mode": summary.stance_mode,
+        "degraded_reason": summary.degraded_reason,
+        "facet_health": summary.facet_health,
+        "context_note": summary.context_note,
     }
     exported_keys = sorted(["autonomy_backend", "autonomy_debug", "autonomy_selected_subject", "autonomy_summary"])
-    if preferred and preferred.availability == "available":
+    if preferred and preferred.availability in {"available", "degraded"} and preferred.state is not None:
         exported_keys.append("autonomy_state")
     logger.info(
         "autonomy_lookup_turn %s",
@@ -1499,15 +1560,19 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
                 "states_returned": sum(1 for item in lookups if item.availability == "available"),
                 "availability_counts": {
                     "available": sum(1 for item in lookups if item.availability == "available"),
+                    "degraded": sum(1 for item in lookups if item.availability == "degraded"),
                     "empty": sum(1 for item in lookups if item.availability == "empty"),
                     "unavailable": sum(1 for item in lookups if item.availability == "unavailable"),
                     "partial": sum(
                         1
                         for item in lookups
-                        if item.availability == "available"
-                        and any(
-                            str((item.subquery_diagnostics or {}).get(name, {}).get("status", "ok")) not in {"ok", "empty"}
-                            for name in ("identity", "drives", "goals")
+                        if item.availability == "degraded"
+                        or (
+                            item.availability == "available"
+                            and any(
+                                str((item.subquery_diagnostics or {}).get(name, {}).get("status", "ok")) not in {"ok", "empty"}
+                                for name in ("identity", "drives", "goals")
+                            )
                         )
                     ),
                 },
@@ -1543,9 +1608,10 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
     )
     return {
         "lookups": lookups,
-        "state": preferred.state if preferred and preferred.availability == "available" else None,
+        "state": state_for_summary,
         "backend": repo_status.backend,
         "selected_subject": selected_subject,
+        "contextual_fallback": contextual_fallback,
         "repository_status": {
             "backend": repo_status.backend,
             "source_path": repo_status.source_path,

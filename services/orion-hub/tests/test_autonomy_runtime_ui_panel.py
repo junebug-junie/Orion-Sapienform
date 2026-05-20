@@ -145,6 +145,16 @@ def test_autonomy_populated_render_path_replaces_prior_turn_content() -> None:
     assert "autonomyDebugRaw.textContent = JSON.stringify(model.raw, null, 2);" in app_js
 
 
+def test_degraded_autonomy_renders_explicit_unavailable_labels() -> None:
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "function formatAutonomyFieldLabel(model, field)" in app_js
+    assert "unavailable — drives facet failed" in app_js
+    assert "autonomy state: ${model.stateQuality || 'unknown'}" in app_js
+    assert "proposal-only because selected subject drives were unavailable" in app_js
+    assert "facet health:" in app_js
+
+
 def test_alignment_rules_are_deterministic_and_bounded() -> None:
     app_js = APP_JS_PATH.read_text(encoding="utf-8")
 

@@ -41,6 +41,37 @@ def test_list_latest_short_circuits_for_autonomy_ctx_adapter(
     assert called == ["orion"]
 
 
+def test_list_latest_does_not_short_circuit_on_partial_orion(
+    monkeypatch: pytest.MonkeyPatch, repo: GraphAutonomyRepository
+) -> None:
+    called: list[str] = []
+
+    def fake_query(self: GraphAutonomyRepository, subject: str, *, observer: dict | None = None) -> AutonomyLookupV1:
+        del self, observer
+        called.append(subject)
+        if subject == "orion":
+            return AutonomyLookupV1(
+                subject=subject,
+                state=None,
+                availability="degraded",
+                unavailable_reason="timeout",
+                subquery_diagnostics={"drives": {"status": "timeout", "row_count": 0}},
+            )
+        return AutonomyLookupV1(subject=subject, state=None, availability="available")
+
+    monkeypatch.setattr(GraphAutonomyRepository, "_query_subject", fake_query)
+
+    repo.list_latest(
+        ["orion", "relationship", "juniper"],
+        observer={
+            "consumer": "autonomy_ctx_adapter",
+            "correlation_id": "t-partial",
+            "autonomy_subject_fanout": "bounded",
+        },
+    )
+    assert called == ["orion", "relationship", "juniper"]
+
+
 def test_list_latest_full_fanout_when_consumer_not_in_short_circuit_set(
     monkeypatch: pytest.MonkeyPatch, repo: GraphAutonomyRepository
 ) -> None:

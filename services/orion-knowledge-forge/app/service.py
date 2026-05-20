@@ -19,6 +19,7 @@ from orion.knowledge_forge.models import (
     SpecV1,
 )
 from orion.knowledge_forge.review import apply_pending_patch, list_pending_patches
+from orion.knowledge_forge.sources import ingest_source
 from orion.knowledge_forge.store import KnowledgeStore, DocModel
 from orion.knowledge_forge.yaml_doc import load_yaml_doc
 
@@ -31,6 +32,8 @@ from app.api_schemas import (
     KnowledgeForgeStatusV1,
     ReviewSummaryV1,
     SearchHitV1,
+    SourceIngestRequestV1,
+    SourceIngestResultV1,
     SourceSummaryV1,
     SpecSummaryV1,
 )
@@ -187,6 +190,33 @@ class KnowledgeForgeService:
 
     def list_sources(self) -> list[SourceSummaryV1]:
         return [self._source_summary(source) for source in sorted(self._sources(), key=lambda s: s.id)]
+
+    def ingest_source(self, request: SourceIngestRequestV1) -> SourceIngestResultV1:
+        try:
+            result = ingest_source(
+                self.root,
+                source_path=Path(request.path),
+                source_id=request.source_id,
+                kind=request.kind,
+                write_review=request.write_review,
+                dry_run=request.dry_run,
+                write_enabled=self.settings.knowledge_forge_write_enabled,
+                store=self.store,
+            )
+        except FileNotFoundError as exc:
+            raise ValueError(str(exc)) from exc
+        if result.review_path or result.source_path:
+            self.reload()
+        return SourceIngestResultV1(
+            source_id=result.source_id,
+            status=result.status,
+            source_path=result.source_path,
+            review_path=result.review_path,
+            proposed_claims=result.proposed_claims,
+            possibly_affected_specs=result.possibly_affected_specs,
+            warnings=result.warnings,
+            content=result.content,
+        )
 
     def list_pending_reviews(self) -> list[ReviewSummaryV1]:
         return [

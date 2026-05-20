@@ -139,6 +139,29 @@ class ContextPackCompileResultV1(BaseModel):
     content: str
 
 
+class SourceIngestRequestV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    source_id: str
+    kind: str = "design_doc"
+    write_review: bool = False
+    dry_run: bool = False
+
+
+class SourceIngestResultV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str
+    status: str
+    source_path: str | None = None
+    review_path: str | None = None
+    proposed_claims: list[str] = Field(default_factory=list)
+    possibly_affected_specs: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    content: str
+
+
 class IdeationMode(str, Enum):
     arsonist_review = "arsonist_review"
     spec_critique = "spec_critique"

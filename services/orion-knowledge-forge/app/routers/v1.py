@@ -17,7 +17,7 @@ from app.api_schemas import (
     SpecSummaryV1,
 )
 from app.service import KnowledgeForgeService
-from app.settings import settings
+from app.settings import Settings, settings
 
 router = APIRouter(prefix="/v1", tags=["knowledge-forge-v1"])
 
@@ -169,7 +169,7 @@ def ingest_source_route(
     service: KnowledgeForgeService = Depends(require_enabled),
 ) -> SourceIngestResultV1:
     if request.write_review:
-        expected = settings.knowledge_forge_operator_token
+        expected = Settings().knowledge_forge_operator_token
         if expected and x_knowledge_forge_token != expected:
             raise HTTPException(status_code=401, detail="invalid operator token")
     try:

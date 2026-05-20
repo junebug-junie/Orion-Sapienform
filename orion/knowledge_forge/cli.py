@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -112,6 +113,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if report.ok else 1
 
     if args.cmd == "ingest-source":
+        write_enabled = os.environ.get("KNOWLEDGE_FORGE_WRITE_ENABLED", "true").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
         try:
             result = ingest_source(
                 root,
@@ -120,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
                 kind=args.kind,
                 write_review=args.write_review,
                 dry_run=args.dry_run,
-                write_enabled=True,
+                write_enabled=write_enabled,
             )
         except (FileNotFoundError, ValueError) as exc:
             print(f"error\t{exc}", file=sys.stderr)

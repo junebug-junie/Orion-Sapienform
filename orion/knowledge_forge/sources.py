@@ -27,6 +27,10 @@ _FORBIDDEN_WRITE_PREFIXES = (
     "specs/execution_ready/",
     "decisions/",
 )
+_ALLOWED_WRITE_PREFIXES = (
+    "raw/sources/",
+    "reviews/pending/",
+)
 
 
 @dataclass
@@ -236,7 +240,7 @@ def ingest_source(
         warnings.append("write disabled: KNOWLEDGE_FORGE_WRITE_ENABLED is false")
         should_write = False
     elif not write_review:
-        warnings.append("write disabled: write_review is false")
+        warnings.append("preview only: write_review is false")
 
     if should_write:
         _assert_write_targets_allowed(corpus_root, source_rel_path)
@@ -308,6 +312,8 @@ def _assert_write_targets_allowed(corpus_root: Path, rel_path: str) -> None:
     for forbidden in _FORBIDDEN_WRITE_PREFIXES:
         if normalized.startswith(forbidden):
             raise ValueError(f"refusing to write to protected path: {rel_path}")
+    if not any(normalized.startswith(allowed) for allowed in _ALLOWED_WRITE_PREFIXES):
+        raise ValueError(f"refusing to write outside allowed ingest paths: {rel_path}")
     target = (corpus_root / rel_path).resolve()
     root = corpus_root.resolve()
     if not target.is_relative_to(root):

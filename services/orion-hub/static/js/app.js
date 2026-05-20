@@ -596,6 +596,24 @@ loadDismissedIds();
   const forgeDebugStatus = document.getElementById("forgeDebugStatus");
   const forgeDebugSearch = document.getElementById("forgeDebugSearch");
   const forgeDebugCompile = document.getElementById("forgeDebugCompile");
+  const forgeSourcePath = document.getElementById("forgeSourcePath");
+  const forgeSourceId = document.getElementById("forgeSourceId");
+  const forgeSourceKind = document.getElementById("forgeSourceKind");
+  const forgeSourceDryRun = document.getElementById("forgeSourceDryRun");
+  const forgeSourceWriteReview = document.getElementById("forgeSourceWriteReview");
+  const forgeSourceIngestButton = document.getElementById("forgeSourceIngestButton");
+  const forgeSourceIngestResult = document.getElementById("forgeSourceIngestResult");
+  const forgeSourceIngestStatus = document.getElementById("forgeSourceIngestStatus");
+  const forgeSourceIngestSourceId = document.getElementById("forgeSourceIngestSourceId");
+  const forgeSourceIngestSourcePath = document.getElementById("forgeSourceIngestSourcePath");
+  const forgeSourceIngestReviewPath = document.getElementById("forgeSourceIngestReviewPath");
+  const forgeSourceIngestClaimsCount = document.getElementById("forgeSourceIngestClaimsCount");
+  const forgeSourceIngestClaimsList = document.getElementById("forgeSourceIngestClaimsList");
+  const forgeSourceIngestAffectedSpecs = document.getElementById("forgeSourceIngestAffectedSpecs");
+  const forgeSourceIngestWarnings = document.getElementById("forgeSourceIngestWarnings");
+  const forgeSourceIngestContentPreview = document.getElementById("forgeSourceIngestContentPreview");
+  const forgeSourceIngestError = document.getElementById("forgeSourceIngestError");
+  const forgeDebugSourceIngest = document.getElementById("forgeDebugSourceIngest");
   const signalsTabButton = document.getElementById("signalsTabButton");
   const signalsPanel = document.getElementById("signals");
   const mindHoursInput = document.getElementById("mindHoursInput");
@@ -1876,6 +1894,7 @@ loadDismissedIds();
   let forgeStatusCache = null;
   let forgeSearchCache = null;
   let forgeCompileCache = null;
+  let forgeSourceIngestCache = null;
 
   async function knowledgeForgeFetch(path, options = {}) {
     const response = await fetch(`${KNOWLEDGE_PROXY_BASE}${path}`, {
@@ -2214,6 +2233,141 @@ loadDismissedIds();
         forgeSearchResults.innerHTML = `<p class="text-rose-300">Search failed: ${error?.message || error}</p>`;
       }
       if (forgeStatus) forgeStatus.textContent = `Search failed: ${error?.message || error}`;
+    }
+  }
+
+  function forgeHideSourceIngestError() {
+    if (forgeSourceIngestError) {
+      forgeSourceIngestError.classList.add("hidden");
+      forgeSourceIngestError.textContent = "";
+    }
+  }
+
+  function forgeShowSourceIngestError(message) {
+    if (forgeSourceIngestError) {
+      forgeSourceIngestError.textContent = message;
+      forgeSourceIngestError.classList.remove("hidden");
+    }
+    if (forgeSourceIngestResult) forgeSourceIngestResult.classList.add("hidden");
+  }
+
+  function forgeRenderSourceIngestResult(body) {
+    if (!forgeSourceIngestResult) return;
+    if (!body) {
+      forgeSourceIngestResult.classList.add("hidden");
+      return;
+    }
+    forgeSourceIngestResult.classList.remove("hidden");
+    if (forgeSourceIngestStatus) forgeSourceIngestStatus.textContent = body.status || "—";
+    if (forgeSourceIngestSourceId) forgeSourceIngestSourceId.textContent = body.source_id || "—";
+    if (forgeSourceIngestSourcePath) {
+      forgeSourceIngestSourcePath.textContent = body.source_path || "(not written)";
+    }
+    if (forgeSourceIngestReviewPath) {
+      forgeSourceIngestReviewPath.textContent = body.review_path || "(not written)";
+    }
+    const claims = Array.isArray(body.proposed_claims) ? body.proposed_claims : [];
+    if (forgeSourceIngestClaimsCount) {
+      forgeSourceIngestClaimsCount.textContent = String(claims.length);
+    }
+    if (forgeSourceIngestClaimsList) {
+      if (claims.length) {
+        forgeSourceIngestClaimsList.classList.remove("hidden");
+        forgeSourceIngestClaimsList.innerHTML = claims.map((c) => `<li>${c}</li>`).join("");
+      } else {
+        forgeSourceIngestClaimsList.classList.add("hidden");
+        forgeSourceIngestClaimsList.innerHTML = "";
+      }
+    }
+    const specs = Array.isArray(body.possibly_affected_specs) ? body.possibly_affected_specs : [];
+    if (forgeSourceIngestAffectedSpecs) {
+      forgeSourceIngestAffectedSpecs.textContent = specs.length ? specs.join(", ") : "—";
+    }
+    const warnings = Array.isArray(body.warnings) ? body.warnings : [];
+    if (forgeSourceIngestWarnings) {
+      if (warnings.length) {
+        forgeSourceIngestWarnings.classList.remove("hidden");
+        forgeSourceIngestWarnings.innerHTML = warnings.map((w) => `<li>${w}</li>`).join("");
+      } else {
+        forgeSourceIngestWarnings.classList.add("hidden");
+        forgeSourceIngestWarnings.innerHTML = "";
+      }
+    }
+    if (forgeSourceIngestContentPreview) {
+      forgeSourceIngestContentPreview.textContent = body.content || "";
+    }
+    forgeSetDebugPre(forgeDebugSourceIngest, body);
+  }
+
+  function forgeValidateSourceIngestInputs() {
+    const path = (forgeSourcePath?.value || "").trim();
+    const sourceId = (forgeSourceId?.value || "").trim();
+    if (!path) {
+      return { ok: false, message: "Enter a source path." };
+    }
+    if (!sourceId) {
+      return { ok: false, message: "Enter a source ID (e.g. source:my-design-doc)." };
+    }
+    if (!/^source:[a-z0-9][a-z0-9._-]*$/i.test(sourceId)) {
+      return {
+        ok: false,
+        message: "Invalid source ID. Use format source:slug (letters, numbers, dots, hyphens, underscores).",
+      };
+    }
+    return { ok: true, path, sourceId };
+  }
+
+  async function runForgeSourceIngest() {
+    forgeHideSourceIngestError();
+    const validation = forgeValidateSourceIngestInputs();
+    if (!validation.ok) {
+      forgeShowSourceIngestError(validation.message);
+      showToastText(validation.message);
+      return;
+    }
+    const payload = {
+      path: validation.path,
+      source_id: validation.sourceId,
+      kind: forgeSourceKind?.value || "design_doc",
+      dry_run: Boolean(forgeSourceDryRun?.checked),
+      write_review: Boolean(forgeSourceWriteReview?.checked),
+    };
+    if (forgeSourceIngestButton) forgeSourceIngestButton.disabled = true;
+    if (forgeStatus) forgeStatus.textContent = "Ingesting source…";
+    try {
+      const body = await knowledgeForgeFetch("/sources/ingest", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      forgeSourceIngestCache = body;
+      forgeRenderSourceIngestResult(body);
+      const claimCount = Array.isArray(body?.proposed_claims) ? body.proposed_claims.length : 0;
+      if (forgeStatus) {
+        forgeStatus.textContent = `Source ingest ${body?.status || "done"} · ${claimCount} proposed claim(s).`;
+      }
+      showToastText(`Source ingest ${body?.status || "complete"}.`);
+      if (payload.write_review && !payload.dry_run) {
+        await refreshForgeTab();
+      }
+    } catch (error) {
+      forgeSourceIngestCache = { error: error?.message || String(error), body: error?.body };
+      forgeSetDebugPre(forgeDebugSourceIngest, forgeSourceIngestCache);
+      forgeRenderSourceIngestResult(null);
+      const msg = error?.message || String(error);
+      const status = error?.status;
+      let display = msg;
+      if (status === 403 || /write.*disabled/i.test(msg)) {
+        display = `Write disabled: ${msg}. Enable KNOWLEDGE_FORGE_WRITE_ENABLED on the Forge service.`;
+      } else if (status === 502 || status === 503 || /unreachable|not configured/i.test(msg)) {
+        display = `Knowledge Forge unavailable: ${msg}`;
+      } else if (status === 422 || status === 400) {
+        display = `Validation error: ${msg}`;
+      }
+      forgeShowSourceIngestError(display);
+      if (forgeStatus) forgeStatus.textContent = `Source ingest failed: ${msg}`;
+      showToastText(`Source ingest failed: ${msg}`);
+    } finally {
+      if (forgeSourceIngestButton) forgeSourceIngestButton.disabled = false;
     }
   }
 
@@ -10938,6 +11092,9 @@ loadDismissedIds();
   }
   if (forgeCompileButton) {
     forgeCompileButton.addEventListener("click", () => runForgeCompile());
+  }
+  if (forgeSourceIngestButton) {
+    forgeSourceIngestButton.addEventListener("click", () => runForgeSourceIngest());
   }
 
   if (tsDatasetSelect) {

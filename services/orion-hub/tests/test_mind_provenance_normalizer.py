@@ -156,6 +156,50 @@ console.log(JSON.stringify({{
     assert out["has_projection_refs"] is True
 
 
+def test_fail_open_fixture_phase_rows_expose_semantic_filter_counts() -> None:
+    out = _run_node(
+        f"""
+const fs = require('fs');
+const src = fs.readFileSync({json.dumps(str(MIND_PROVENANCE_JS))}, 'utf8');
+eval(src);
+const run = {{
+  result_jsonb: {{
+    brief: {{
+      machine_contract: {{
+        "mind.llm_fail_open_to_deterministic": true,
+        "mind.semantic_claim_count": 0,
+        "mind.phase_telemetry": [{{
+          phase_name: "semantic_synthesis",
+          route: "quick",
+          ok: true,
+          parse_ok: true,
+          validation_ok: false,
+          status: "filtered",
+          error: "semantic_synthesis_empty",
+          raw_claim_count: 2,
+          retained_claim_count: 0,
+          filtered_claim_count: 2,
+          filter_reasons_by_count: {{ unsupported_or_weak: 2 }},
+          authorization_reason: "semantic_synthesis_empty",
+        }}],
+      }},
+    }},
+  }},
+}};
+const rows = OrionMindProvenance.normalizeMindPhaseRows(run);
+const sem = rows.find(r => r.phase === 'semantic_synthesis');
+console.log(JSON.stringify({{
+  retained: sem && sem.retained_claim_count,
+  raw: sem && sem.raw_claim_count,
+  error_has_counts: sem && String(sem.error || '').includes('raw=2'),
+}}));
+"""
+    )
+    assert out["retained"] == 0
+    assert out["raw"] == 2
+    assert out["error_has_counts"] is True
+
+
 def test_fail_open_fixture_still_renders_provenance_sections() -> None:
     out = _run_node(
         f"""

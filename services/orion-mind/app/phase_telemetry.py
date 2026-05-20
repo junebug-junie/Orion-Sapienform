@@ -23,9 +23,20 @@ class MindPhaseTelemetry:
     token_usage: dict[str, Any] = field(default_factory=dict)
     skipped: bool = False
     skip_reason: str | None = None
+    raw_claim_count: int | None = None
+    normalized_claim_count: int | None = None
+    schema_valid_claim_count: int | None = None
+    retained_claim_count: int | None = None
+    filtered_claim_count: int | None = None
+    filter_reasons_by_count: dict[str, int] | None = None
+    sample_filter_reasons: list[dict[str, str]] | None = None
+    authorization_reason: str | None = None
+    authorized_for_stance_use: bool | None = None
+    authorized_for_stance_skip: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        out = asdict(self)
+        return {k: v for k, v in out.items() if v is not None}
 
 
 def utc_now_iso() -> str:

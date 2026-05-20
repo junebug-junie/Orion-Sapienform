@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
 
 from orion.mind.synthesis_v1 import (
@@ -14,50 +15,131 @@ from orion.mind.synthesis_v1 import (
 )
 from orion.mind.validation import validate_merged_stance_brief_optional
 
-from .evidence import evidence_refs_in_pack, is_source_tag_label
+from .evidence import (
+    evidence_refs_in_pack,
+    is_source_tag_label,
+    normalize_evidence_refs_for_pack,
+)
 
 _MAX_CLAIMS = 24
 _MAX_SELECTED = 8
+_MAX_SAMPLE_FILTER_REASONS = 6
+_MAX_SAMPLE_LABEL_LEN = 48
+
+
+@dataclass
+class SemanticClaimFilterStats:
+    raw_claim_count: int = 0
+    normalized_claim_count: int = 0
+    schema_valid_claim_count: int = 0
+    retained_claim_count: int = 0
+    filtered_claim_count: int = 0
+    filter_reasons_by_count: dict[str, int] = field(default_factory=dict)
+    sample_filter_reasons: list[dict[str, str]] = field(default_factory=list)
+
+    def dominant_filter_reason(self) -> str | None:
+        if not self.filter_reasons_by_count:
+            return None
+        return max(self.filter_reasons_by_count.items(), key=lambda kv: kv[1])[0]
+
+    def record_suppressed(self, *, label: str, reason: str, source_kind: str) -> None:
+        self.filtered_claim_count += 1
+        self.filter_reasons_by_count[reason] = self.filter_reasons_by_count.get(reason, 0) + 1
+        if len(self.sample_filter_reasons) >= _MAX_SAMPLE_FILTER_REASONS:
+            return
+        short_label = (label or "(empty)").strip()
+        if len(short_label) > _MAX_SAMPLE_LABEL_LEN:
+            short_label = f"{short_label[: _MAX_SAMPLE_LABEL_LEN - 1].rstrip()}…"
+        self.sample_filter_reasons.append(
+            {"reason": reason, "label": short_label, "source_kind": source_kind}
+        )
 
 
 def filter_semantic_claims(
     synthesis: SemanticSynthesisV1,
     pack: MindEvidencePackV1,
+    *,
+    stats: SemanticClaimFilterStats | None = None,
 ) -> SemanticSynthesisV1:
+    filtered, _ = filter_semantic_claims_with_stats(synthesis, pack, stats=stats)
+    return filtered
+
+
+def filter_semantic_claims_with_stats(
+    synthesis: SemanticSynthesisV1,
+    pack: MindEvidencePackV1,
+    *,
+    stats: SemanticClaimFilterStats | None = None,
+) -> tuple[SemanticSynthesisV1, SemanticClaimFilterStats]:
+    metrics = stats or SemanticClaimFilterStats()
+    metrics.schema_valid_claim_count = len(synthesis.claims[:_MAX_CLAIMS])
     valid_refs = evidence_refs_in_pack(pack)
     kept: list[SemanticClaimV1] = []
     suppressed = list(synthesis.suppressed)
     for claim in synthesis.claims[:_MAX_CLAIMS]:
         label = (claim.label or "").strip()
+        source_kind = claim.source_kinds[0] if claim.source_kinds else "unknown"
         if is_source_tag_label(label):
             suppressed.append(
                 SuppressedMindCandidateV1(
                     label=label,
-                    source_kind=claim.source_kinds[0] if claim.source_kinds else "unknown",
+                    source_kind=source_kind,
                     reason="source_tag_not_semantic",
                 )
             )
+            metrics.record_suppressed(label=label, reason="source_tag_not_semantic", source_kind=source_kind)
             continue
-        if not claim.evidence_refs or not all(ref in valid_refs for ref in claim.evidence_refs):
+        normalized_refs = normalize_evidence_refs_for_pack(list(claim.evidence_refs), pack)
+        if normalized_refs != list(claim.evidence_refs):
+            metrics.normalized_claim_count += 1
+            claim = claim.model_copy(update={"evidence_refs": normalized_refs})
+        if not normalized_refs or not all(ref in valid_refs for ref in normalized_refs):
             suppressed.append(
                 SuppressedMindCandidateV1(
                     label=label or "(empty)",
-                    source_kind=claim.source_kinds[0] if claim.source_kinds else "unknown",
+                    source_kind=source_kind,
                     reason="unsupported_or_weak",
                 )
             )
+            metrics.record_suppressed(label=label, reason="unsupported_or_weak", source_kind=source_kind)
             continue
         if not label or not (claim.summary or "").strip():
             suppressed.append(
                 SuppressedMindCandidateV1(
                     label=label or "(empty)",
-                    source_kind=claim.source_kinds[0] if claim.source_kinds else "unknown",
+                    source_kind=source_kind,
                     reason="empty",
                 )
             )
+            metrics.record_suppressed(label=label, reason="empty", source_kind=source_kind)
             continue
         kept.append(claim)
-    return synthesis.model_copy(update={"claims": kept, "suppressed": suppressed})
+    metrics.retained_claim_count = len(kept)
+    return synthesis.model_copy(update={"claims": kept, "suppressed": suppressed}), metrics
+
+
+def evaluate_semantic_handoff_authorization(
+    *,
+    synthesis: SemanticSynthesisV1 | None,
+    llm_errors: list[str],
+) -> tuple[bool, bool, str, list[str]]:
+    """Return (advisory_usable, stance_skip_authorized, authorization_reason, reasons)."""
+    reasons: list[str] = []
+    if llm_errors:
+        reasons.append(f"llm_error:{llm_errors[0]}")
+    if synthesis is None:
+        reasons.append("semantic_synthesis_missing")
+        return False, False, "semantic_synthesis_missing", reasons
+    if not synthesis.claims:
+        reasons.append("no_retained_semantic_claims")
+        dominant = synthesis.diagnostics.notes[-1] if synthesis.diagnostics.notes else None
+        if dominant:
+            reasons.append(str(dominant))
+        return False, False, "semantic_synthesis_empty", reasons
+    if any(is_source_tag_label(c.label) for c in synthesis.claims):
+        reasons.append("source_tag_claim_present")
+        return False, False, "source_tag_claim_present", reasons
+    return True, False, "semantic_claims_retained", ["evidence_backed_semantic_claims"]
 
 
 def filter_active_frontier(

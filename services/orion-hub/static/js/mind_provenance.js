@@ -174,11 +174,23 @@
             ? "appraisal"
             : "stance";
       let outputCount = null;
+      let claimFilterSummary = null;
       if (phaseName === "semantic_synthesis") {
-        outputCount = mc["mind.semantic_claim_count"];
+        outputCount =
+          telemetry && telemetry.retained_claim_count != null
+            ? telemetry.retained_claim_count
+            : mc["mind.semantic_claim_count"];
+        if (telemetry && telemetry.raw_claim_count != null) {
+          claimFilterSummary = `raw=${telemetry.raw_claim_count} retained=${telemetry.retained_claim_count ?? 0} filtered=${telemetry.filtered_claim_count ?? 0}`;
+        }
       } else if (phaseName === "active_frontier_judge") {
         outputCount = mc["mind.active_frontier_selected_count"];
       }
+      const errorBits = [];
+      if (telemetry && telemetry.error) errorBits.push(String(telemetry.error));
+      if (telemetry && telemetry.skip_reason) errorBits.push(String(telemetry.skip_reason));
+      if (claimFilterSummary) errorBits.push(claimFilterSummary);
+      if (telemetry && telemetry.authorization_reason) errorBits.push(`auth=${telemetry.authorization_reason}`);
       return {
         phase: phaseName,
         status: phaseStatusFromTelemetry(telemetry, mc, phaseName),
@@ -188,8 +200,11 @@
         parse_ok: telemetry ? telemetry.parse_ok : null,
         validation_ok: telemetry ? telemetry.validation_ok : null,
         token_usage: telemetry ? telemetry.token_usage || {} : {},
-        error: (telemetry && (telemetry.error || telemetry.skip_reason)) || null,
+        error: errorBits.length ? errorBits.join(" · ") : null,
         output_count: outputCount,
+        raw_claim_count: telemetry ? telemetry.raw_claim_count : null,
+        retained_claim_count: telemetry ? telemetry.retained_claim_count : null,
+        filtered_claim_count: telemetry ? telemetry.filtered_claim_count : null,
       };
     });
     if (prov.orch_http_failed || prov.cognition_path === "orch_mind_http_failed") {
@@ -323,6 +338,12 @@
           semantic_claim_count: mc["mind.semantic_claim_count"],
           semantic_claim_labels: asList(mc["mind.semantic_claim_labels"]),
           suppressed: asList(brief?.semantic_synthesis?.suppressed),
+          raw_claim_count: semTelemetry?.raw_claim_count,
+          retained_claim_count: semTelemetry?.retained_claim_count,
+          filtered_claim_count: semTelemetry?.filtered_claim_count,
+          filter_reasons_by_count: semTelemetry?.filter_reasons_by_count,
+          sample_filter_reasons: asList(semTelemetry?.sample_filter_reasons),
+          authorization_reason: semTelemetry?.authorization_reason,
         },
       });
     }
@@ -489,6 +510,10 @@
       ["cognitive_projection_id", mc["mind.cognitive_projection_id"]],
       ["cognitive_projection_item_count", mc["mind.cognitive_projection_item_count"]],
       ["semantic_claim_count", mc["mind.semantic_claim_count"]],
+      ["semantic_raw_claim_count", findPhaseTelemetry(mc, "semantic_synthesis")?.raw_claim_count],
+      ["semantic_retained_claim_count", findPhaseTelemetry(mc, "semantic_synthesis")?.retained_claim_count],
+      ["semantic_filtered_claim_count", findPhaseTelemetry(mc, "semantic_synthesis")?.filtered_claim_count],
+      ["semantic_authorization_reason", findPhaseTelemetry(mc, "semantic_synthesis")?.authorization_reason],
       ["active_frontier_selected_count", mc["mind.active_frontier_selected_count"]],
       ["active_frontier_top_labels", asList(mc["mind.active_frontier_top_labels"]).join(", ")],
       ["semantic_claim_labels", asList(mc["mind.semantic_claim_labels"]).join(", ")],

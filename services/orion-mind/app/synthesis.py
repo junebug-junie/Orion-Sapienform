@@ -10,14 +10,18 @@ from typing import Any
 from pydantic import ValidationError
 
 from orion.mind.synthesis_v1 import MindEvidencePackV1, SemanticSynthesisV1
-from .guardrails import filter_semantic_claims
+from .guardrails import (
+    SemanticClaimFilterStats,
+    evaluate_semantic_handoff_authorization,
+    filter_semantic_claims_with_stats,
+)
 from .llm_client import MindLLMClientProtocol
 from .llm_context import MindLLMRequestContext
 from .phase_telemetry import MindPhaseTelemetry
 
 _SEMANTIC_SYSTEM = """You extract grounded semantic claims from evidence for an internal cognition organ.
 You are NOT writing the user-facing reply.
-Every claim MUST cite evidence_refs from the provided evidence pack only.
+Every claim MUST cite evidence_refs from evidence_refs_available in the user payload (exact strings only).
 Labels must be semantic meanings, never source tags like identity_yaml, projection, autonomy, or social_bridge.
 Identity background is not primary evidence unless the current turn explicitly involves identity, selfhood, role boundaries, or Orion/Juniper relationship framing.
 Prefer uncertainty over invention.
@@ -40,7 +44,11 @@ def _pack_prompt(pack: MindEvidencePackV1) -> str:
         for it in pack.items
     ]
     return json.dumps(
-        {"current_user_text": pack.current_user_text, "evidence_items": items},
+        {
+            "current_user_text": pack.current_user_text,
+            "evidence_refs_available": [it.evidence_ref for it in pack.items],
+            "evidence_items": items,
+        },
         ensure_ascii=False,
     )
 
@@ -117,12 +125,13 @@ def try_normalize_legacy_semantic_raw(raw: dict[str, Any]) -> tuple[dict[str, An
         source_kinds = item.get("source_kinds")
         if not isinstance(source_kinds, list) or not source_kinds:
             source_kinds = ["current_turn"] if evidence_refs else []
+        default_kind = "current_turn_claim" if evidence_refs else "situation_claim"
         normalized_claims.append(
             {
                 "claim_id": _legacy_claim_id(index, claim_text),
                 "label": _short_label(claim_text),
                 "summary": claim_text,
-                "claim_kind": "situation_claim",
+                "claim_kind": default_kind,
                 "evidence_refs": evidence_refs,
                 "source_kinds": [str(k) for k in source_kinds if str(k).strip()],
                 "anchor": item.get("anchor") or "unknown",
@@ -237,7 +246,23 @@ def run_semantic_synthesis(
             ),
         }
     )
-    filtered = filter_semantic_claims(synthesis, pack)
+    raw_claim_count = len(synthesis.claims)
+    filter_stats = SemanticClaimFilterStats(raw_claim_count=raw_claim_count)
+    filtered, filter_stats = filter_semantic_claims_with_stats(synthesis, pack, stats=filter_stats)
+    advisory_ok, stance_skip_ok, auth_reason, auth_reasons = evaluate_semantic_handoff_authorization(
+        synthesis=filtered,
+        llm_errors=[],
+    )
+    telemetry.raw_claim_count = filter_stats.raw_claim_count
+    telemetry.normalized_claim_count = filter_stats.normalized_claim_count
+    telemetry.schema_valid_claim_count = filter_stats.schema_valid_claim_count
+    telemetry.retained_claim_count = filter_stats.retained_claim_count
+    telemetry.filtered_claim_count = filter_stats.filtered_claim_count
+    telemetry.filter_reasons_by_count = dict(filter_stats.filter_reasons_by_count)
+    telemetry.sample_filter_reasons = list(filter_stats.sample_filter_reasons)
+    telemetry.authorization_reason = auth_reason
+    telemetry.authorized_for_stance_use = advisory_ok
+    telemetry.authorized_for_stance_skip = stance_skip_ok
     telemetry.validation_ok = bool(filtered.claims)
     if filtered.claims:
         telemetry.ok = True
@@ -247,4 +272,19 @@ def run_semantic_synthesis(
     else:
         telemetry.ok = True
         telemetry.status = "filtered"
+        dominant = filter_stats.dominant_filter_reason()
+        telemetry.error = "semantic_synthesis_empty"
+        diag_notes = list(filtered.diagnostics.notes)
+        diag_notes.append(
+            f"claims_generated={filter_stats.raw_claim_count};"
+            f"claims_filtered={filter_stats.filtered_claim_count};"
+            f"dominant_filter_reason={dominant or 'unknown'}"
+        )
+        if auth_reasons:
+            diag_notes.append(f"authorization_failed:{';'.join(auth_reasons[:4])}")
+        filtered = filtered.model_copy(
+            update={
+                "diagnostics": filtered.diagnostics.model_copy(update={"notes": diag_notes}),
+            }
+        )
     return filtered, None, telemetry

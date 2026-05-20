@@ -374,6 +374,37 @@ def test_valid_semantic_synthesis_survives_with_grounded_evidence_refs() -> None
     assert stats.filtered_claim_count == 0
 
 
+def test_mixed_valid_and_invalid_evidence_refs_are_suppressed() -> None:
+    from app.evidence import build_evidence_pack
+    from app.guardrails import filter_semantic_claims_with_stats
+    from orion.mind.synthesis_v1 import SemanticSynthesisV1
+
+    pack = build_evidence_pack({"user_text": "hello"})
+    synthesis = SemanticSynthesisV1.model_validate(
+        {
+            **_semantic_payload(claim_label="user greeting", evidence_ref="current_turn:0"),
+            "claims": [
+                {
+                    "claim_id": "c1",
+                    "label": "user greeting",
+                    "summary": "User says hello.",
+                    "claim_kind": "current_turn_claim",
+                    "evidence_refs": ["current_turn:0", "fabricated:99"],
+                    "source_kinds": ["current_turn"],
+                    "anchor": "relationship",
+                    "confidence": 0.9,
+                    "salience_hint": 0.8,
+                    "recommended_effect": "receive_warmly",
+                }
+            ],
+        }
+    )
+    filtered, stats = filter_semantic_claims_with_stats(synthesis, pack)
+    assert filtered.claims == []
+    assert stats.filtered_claim_count == 1
+    assert stats.filter_reasons_by_count.get("unsupported_or_weak") == 1
+
+
 def test_projection_alias_ref_maps_to_pack_ref() -> None:
     from app.evidence import build_evidence_pack
     from app.guardrails import filter_semantic_claims_with_stats

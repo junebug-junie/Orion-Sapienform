@@ -300,47 +300,69 @@ def _pack_ref_indexes(pack: MindEvidencePackV1) -> tuple[
     return by_kind, by_source_ref, by_item_id
 
 
+def resolve_evidence_ref_for_pack(
+    ref: str,
+    pack: MindEvidencePackV1,
+    *,
+    by_kind: dict[str, list[str]] | None = None,
+    by_source_ref: dict[str, str] | None = None,
+    by_item_id: dict[str, str] | None = None,
+    valid: set[str] | None = None,
+) -> str | None:
+    """Resolve one ref to a pack evidence_ref, or None if unresolvable."""
+    cleaned = str(ref or "").strip()
+    if not cleaned:
+        return None
+    valid_refs = valid if valid is not None else evidence_refs_in_pack(pack)
+    if cleaned in valid_refs:
+        return cleaned
+    if by_kind is None or by_source_ref is None or by_item_id is None:
+        by_kind, by_source_ref, by_item_id = _pack_ref_indexes(pack)
+    if cleaned in by_source_ref:
+        return by_source_ref[cleaned]
+    if cleaned in by_item_id:
+        return by_item_id[cleaned]
+    if ":" in cleaned:
+        prefix, suffix = cleaned.split(":", 1)
+        mapped = _EVIDENCE_REF_KIND_ALIASES.get(prefix, prefix)
+        candidate = f"{mapped}:{suffix}"
+        if candidate in valid_refs:
+            return candidate
+        kind_refs = by_kind.get(mapped) or by_kind.get(prefix)
+        if kind_refs:
+            try:
+                idx = int(suffix)
+            except ValueError:
+                idx = -1
+            if 0 <= idx < len(kind_refs):
+                return kind_refs[idx]
+            if idx == 0:
+                return kind_refs[0]
+    if cleaned in by_kind and len(by_kind[cleaned]) == 1:
+        return by_kind[cleaned][0]
+    return None
+
+
 def normalize_evidence_refs_for_pack(
     refs: list[str],
     pack: MindEvidencePackV1,
 ) -> list[str]:
     """Map common LLM ref mistakes to evidence_pack refs without weakening guardrails."""
-    valid = evidence_refs_in_pack(pack)
     if not refs:
         return []
+    valid = evidence_refs_in_pack(pack)
     by_kind, by_source_ref, by_item_id = _pack_ref_indexes(pack)
     out: list[str] = []
     seen: set[str] = set()
     for raw in refs:
-        ref = str(raw or "").strip()
-        if not ref:
-            continue
-        resolved: str | None = None
-        if ref in valid:
-            resolved = ref
-        elif ref in by_source_ref:
-            resolved = by_source_ref[ref]
-        elif ref in by_item_id:
-            resolved = by_item_id[ref]
-        elif ":" in ref:
-            prefix, suffix = ref.split(":", 1)
-            mapped = _EVIDENCE_REF_KIND_ALIASES.get(prefix, prefix)
-            candidate = f"{mapped}:{suffix}"
-            if candidate in valid:
-                resolved = candidate
-            else:
-                kind_refs = by_kind.get(mapped) or by_kind.get(prefix)
-                if kind_refs:
-                    try:
-                        idx = int(suffix)
-                    except ValueError:
-                        idx = -1
-                    if 0 <= idx < len(kind_refs):
-                        resolved = kind_refs[idx]
-                    elif idx == 0:
-                        resolved = kind_refs[0]
-        elif ref in by_kind and len(by_kind[ref]) == 1:
-            resolved = by_kind[ref][0]
+        resolved = resolve_evidence_ref_for_pack(
+            str(raw or ""),
+            pack,
+            by_kind=by_kind,
+            by_source_ref=by_source_ref,
+            by_item_id=by_item_id,
+            valid=valid,
+        )
         if resolved and resolved not in seen:
             seen.add(resolved)
             out.append(resolved)

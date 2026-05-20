@@ -308,7 +308,14 @@
     }
 
     const semTelemetry = findPhaseTelemetry(mc, "semantic_synthesis");
-    if (prov.failed_phase === "semantic_synthesis" || (semTelemetry && semTelemetry.ok === false)) {
+    const semanticFilteredEmpty =
+      prov.error_code === "semantic_synthesis_empty" ||
+      semTelemetry?.status === "filtered" ||
+      semTelemetry?.error === "semantic_synthesis_empty";
+    if (
+      (prov.failed_phase === "semantic_synthesis" || (semTelemetry && semTelemetry.ok === false)) &&
+      !semanticFilteredEmpty
+    ) {
       push({
         id: "semantic_failed",
         severity: "error",

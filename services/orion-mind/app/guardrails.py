@@ -19,6 +19,7 @@ from .evidence import (
     evidence_refs_in_pack,
     is_source_tag_label,
     normalize_evidence_refs_for_pack,
+    resolve_evidence_ref_for_pack,
 )
 
 _MAX_CLAIMS = 24
@@ -89,11 +90,20 @@ def filter_semantic_claims_with_stats(
             )
             metrics.record_suppressed(label=label, reason="source_tag_not_semantic", source_kind=source_kind)
             continue
-        normalized_refs = normalize_evidence_refs_for_pack(list(claim.evidence_refs), pack)
-        if normalized_refs != list(claim.evidence_refs):
+        original_refs = [str(r).strip() for r in claim.evidence_refs if str(r).strip()]
+        normalized_refs = normalize_evidence_refs_for_pack(original_refs, pack)
+        if normalized_refs != original_refs:
             metrics.normalized_claim_count += 1
             claim = claim.model_copy(update={"evidence_refs": normalized_refs})
-        if not normalized_refs or not all(ref in valid_refs for ref in normalized_refs):
+        unresolved = any(
+            resolve_evidence_ref_for_pack(ref, pack) is None for ref in original_refs
+        )
+        if (
+            not original_refs
+            or unresolved
+            or not normalized_refs
+            or not all(ref in valid_refs for ref in normalized_refs)
+        ):
             suppressed.append(
                 SuppressedMindCandidateV1(
                     label=label or "(empty)",

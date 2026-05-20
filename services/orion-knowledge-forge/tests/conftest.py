@@ -27,6 +27,9 @@ def client(corpus_root: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("KNOWLEDGE_FORGE_REPO_ROOT", str(corpus_root))
     monkeypatch.setenv("KNOWLEDGE_FORGE_WRITE_ENABLED", "false")
     monkeypatch.setenv("KNOWLEDGE_FORGE_ENABLED", "true")
+    monkeypatch.setenv("KNOWLEDGE_FORGE_IDEATION_ENABLED", "true")
+    monkeypatch.setenv("KNOWLEDGE_FORGE_IDEATION_PROVIDER", "local")
+    monkeypatch.setenv("KNOWLEDGE_FORGE_IDEATION_WRITE_ENABLED", "false")
 
     from app.settings import Settings
     from app.service import KnowledgeForgeService

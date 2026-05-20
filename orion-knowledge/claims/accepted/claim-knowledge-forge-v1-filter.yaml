@@ -1,0 +1,17 @@
+type: claim
+id: claim:orion:knowledge-forge:0004
+statement: Knowledge Forge v1 context-pack compile excludes disputed, stale, and superseded claims by default unless the operator explicitly requests inclusion.
+status: accepted
+source_refs:
+  - source:2026-05-20-knowledge-forge-v1-merge
+confidence: high
+supports: []
+contradicts: []
+supersedes: []
+depends_on: []
+implements: []
+tested_by: []
+blocked_by: []
+motivated_by: []
+used_by:
+  - spec:knowledge-forge-ideation-review-v1

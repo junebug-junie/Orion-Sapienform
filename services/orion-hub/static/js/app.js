@@ -2273,7 +2273,7 @@ loadDismissedIds();
     if (forgeSourceIngestClaimsList) {
       if (claims.length) {
         forgeSourceIngestClaimsList.classList.remove("hidden");
-        forgeSourceIngestClaimsList.innerHTML = claims.map((c) => `<li>${c}</li>`).join("");
+        forgeSourceIngestClaimsList.innerHTML = claims.map((c) => `<li>${escapeHtml(c)}</li>`).join("");
       } else {
         forgeSourceIngestClaimsList.classList.add("hidden");
         forgeSourceIngestClaimsList.innerHTML = "";

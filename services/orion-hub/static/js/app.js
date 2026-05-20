@@ -2287,7 +2287,7 @@ loadDismissedIds();
     if (forgeSourceIngestWarnings) {
       if (warnings.length) {
         forgeSourceIngestWarnings.classList.remove("hidden");
-        forgeSourceIngestWarnings.innerHTML = warnings.map((w) => `<li>${w}</li>`).join("");
+        forgeSourceIngestWarnings.innerHTML = warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join("");
       } else {
         forgeSourceIngestWarnings.classList.add("hidden");
         forgeSourceIngestWarnings.innerHTML = "";

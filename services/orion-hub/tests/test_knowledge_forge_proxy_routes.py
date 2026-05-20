@@ -60,12 +60,18 @@ def test_knowledge_forge_alias_routes_forward_expected_paths(monkeypatch: pytest
             _request("POST", b'{"task":"review","scope":"claims"}')
         )
     )
+    asyncio.run(
+        hub_api_routes.proxy_knowledge_forge_ideation_run(
+            _request("POST", b'{"topic":"test"}')
+        )
+    )
     asyncio.run(hub_api_routes.proxy_knowledge_forge("v1/custom-endpoint", _request("GET")))
 
     assert calls == [
         "health",
         "v1/status",
         "v1/context-packs/compile",
+        "v1/ideation/run",
         "v1/custom-endpoint",
     ]
 

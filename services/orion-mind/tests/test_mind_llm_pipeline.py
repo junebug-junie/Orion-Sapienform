@@ -250,7 +250,7 @@ def test_llm_failure_falls_back_to_deterministic(monkeypatch: pytest.MonkeyPatch
     assert machine.get("mind.llm_synthesis_attempted") is True
     assert machine.get("mind.llm_fail_open_to_deterministic") is True
     assert machine.get("mind.llm_synthesis_failed_phase") == "semantic_synthesis"
-    assert machine.get("mind.llm_synthesis_error_code") == "semantic_synthesis_failed"
+    assert machine.get("mind.llm_synthesis_error_code") == "fake_exhausted"
     assert machine.get("mind.llm_synthesis_error") == "fake_exhausted"
     assert machine.get("mind.authorized_for_stance_skip") is False
     assert machine.get("mind.authorized_for_stance_use") is False
@@ -283,11 +283,12 @@ def test_source_tag_semantic_fail_open_preserves_phase_telemetry(monkeypatch: py
     machine = result.brief.machine_contract
     assert machine.get("mind.llm_synthesis_attempted") is True
     assert machine.get("mind.llm_synthesis_failed_phase") == "semantic_synthesis"
-    assert machine.get("mind.llm_synthesis_error_code") == "semantic_synthesis_failed"
+    assert machine.get("mind.llm_synthesis_error_code") == "semantic_synthesis_empty"
     telemetry = machine.get("mind.phase_telemetry") or []
     sem = next(t for t in telemetry if t.get("phase_name") == "semantic_synthesis")
     assert sem.get("ok") is True
     assert sem.get("validation_ok") is False
+    assert sem.get("retained_claim_count") == 0
     assert result.mind_quality == "fallback_contract_only"
 
 
@@ -311,7 +312,7 @@ def test_legacy_semantic_claim_shape_is_normalized() -> None:
     assert normalized is not None
     synthesis = SemanticSynthesisV1.model_validate(normalized)
     assert synthesis.claims[0].claim_id.startswith("legacy_")
-    assert synthesis.claims[0].claim_kind == "situation_claim"
+    assert synthesis.claims[0].claim_kind == "current_turn_claim"
     assert synthesis.diagnostics.notes[-1] == "normalized_from_legacy_claim_shape"
 
     pack = build_evidence_pack({"user_text": "watching a show with Amanda"})
@@ -356,6 +357,144 @@ def test_legacy_normalizer_preserves_zero_confidence_fields() -> None:
     assert normalized is not None
     assert normalized["claims"][0]["confidence"] == 0.0
     assert normalized["claims"][0]["salience_hint"] == 0.0
+
+
+def test_valid_semantic_synthesis_survives_with_grounded_evidence_refs() -> None:
+    from app.evidence import build_evidence_pack
+    from app.guardrails import filter_semantic_claims_with_stats
+    from orion.mind.synthesis_v1 import SemanticSynthesisV1
+
+    pack = build_evidence_pack({"user_text": "watching a show with Amanda"})
+    synthesis = SemanticSynthesisV1.model_validate(
+        _semantic_payload(claim_label="shared evening moment", evidence_ref="current_turn:0")
+    )
+    filtered, stats = filter_semantic_claims_with_stats(synthesis, pack)
+    assert len(filtered.claims) == 1
+    assert stats.retained_claim_count == 1
+    assert stats.filtered_claim_count == 0
+
+
+def test_mixed_valid_and_invalid_evidence_refs_are_suppressed() -> None:
+    from app.evidence import build_evidence_pack
+    from app.guardrails import filter_semantic_claims_with_stats
+    from orion.mind.synthesis_v1 import SemanticSynthesisV1
+
+    pack = build_evidence_pack({"user_text": "hello"})
+    synthesis = SemanticSynthesisV1.model_validate(
+        {
+            **_semantic_payload(claim_label="user greeting", evidence_ref="current_turn:0"),
+            "claims": [
+                {
+                    "claim_id": "c1",
+                    "label": "user greeting",
+                    "summary": "User says hello.",
+                    "claim_kind": "current_turn_claim",
+                    "evidence_refs": ["current_turn:0", "fabricated:99"],
+                    "source_kinds": ["current_turn"],
+                    "anchor": "relationship",
+                    "confidence": 0.9,
+                    "salience_hint": 0.8,
+                    "recommended_effect": "receive_warmly",
+                }
+            ],
+        }
+    )
+    filtered, stats = filter_semantic_claims_with_stats(synthesis, pack)
+    assert filtered.claims == []
+    assert stats.filtered_claim_count == 1
+    assert stats.filter_reasons_by_count.get("unsupported_or_weak") == 1
+
+
+def test_projection_alias_ref_maps_to_pack_ref() -> None:
+    from app.evidence import build_evidence_pack
+    from app.guardrails import filter_semantic_claims_with_stats
+    from orion.mind.synthesis_v1 import SemanticSynthesisV1
+
+    pack = build_evidence_pack(
+        {
+            "user_text": "hello",
+            "facets": {
+                "cognitive_projection": {
+                    "anchors": {
+                        "relationship": {
+                            "items": [{"label": "bike outing", "summary": "Earlier bike ride.", "salience": 0.7}]
+                        }
+                    }
+                }
+            },
+        }
+    )
+    proj_refs = [it.evidence_ref for it in pack.items if it.source_kind == "cognitive_projection"]
+    assert proj_refs
+    synthesis = SemanticSynthesisV1.model_validate(
+        _semantic_payload(claim_label="bike memory", evidence_ref="projection:0")
+    )
+    filtered, stats = filter_semantic_claims_with_stats(synthesis, pack)
+    assert filtered.claims
+    assert filtered.claims[0].evidence_refs[0] == proj_refs[0]
+    assert stats.normalized_claim_count >= 1
+
+
+def test_empty_after_filter_sets_semantic_synthesis_empty_telemetry() -> None:
+    from app.evidence import build_evidence_pack
+    from app.synthesis import run_semantic_synthesis
+
+    pack = build_evidence_pack({"user_text": "hello"})
+
+    class _Client:
+        def request_json(self, **kwargs):  # type: ignore[no-untyped-def]
+            return (
+                _semantic_payload(claim_label="identity_yaml", evidence_ref="current_turn:0"),
+                None,
+                {"model_used": "quick"},
+            )
+
+    result, err, telemetry = run_semantic_synthesis(
+        pack,
+        client=_Client(),  # type: ignore[arg-type]
+        route="quick",
+        model_id="quick",
+        max_tokens=512,
+    )
+    assert err is None
+    assert result is not None
+    assert result.claims == []
+    assert telemetry.raw_claim_count == 1
+    assert telemetry.retained_claim_count == 0
+    assert telemetry.filtered_claim_count == 1
+    assert telemetry.validation_ok is False
+    assert telemetry.error == "semantic_synthesis_empty"
+    assert telemetry.authorization_reason == "semantic_synthesis_empty"
+    assert telemetry.filter_reasons_by_count.get("source_tag_not_semantic") == 1
+
+
+def test_semantic_empty_fail_open_uses_semantic_synthesis_empty_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.engine import run_mind
+    from app.llm_client import FakeMindLLMClient, set_llm_client_override
+    from app.settings import settings
+    from orion.mind.v1 import MindRunRequestV1, MindRunPolicyV1
+
+    monkeypatch.setattr(settings, "MIND_LLM_SYNTHESIS_ENABLED", True)
+    set_llm_client_override(
+        FakeMindLLMClient([_semantic_payload(claim_label="identity_yaml", evidence_ref="current_turn:0")])
+    )
+    req = MindRunRequestV1(
+        correlation_id=str(uuid4()),
+        snapshot_inputs={"user_text": "hello"},
+        policy=MindRunPolicyV1(n_loops_max=1, wall_time_ms_max=60_000),
+    )
+    result = run_mind(
+        req,
+        router_profiles_dir=Path(__file__).resolve().parents[1] / "app" / "config",
+        snapshot_max_bytes=512_000,
+        mind_settings=settings,
+    )
+    machine = result.brief.machine_contract
+    assert machine.get("mind.llm_synthesis_error_code") == "semantic_synthesis_empty"
+    sem = next(t for t in (machine.get("mind.phase_telemetry") or []) if t.get("phase_name") == "semantic_synthesis")
+    assert sem.get("retained_claim_count") == 0
+    assert sem.get("raw_claim_count") == 1
+    assert sem.get("authorization_reason") == "semantic_synthesis_empty"
 
 
 def test_unrecoverable_semantic_shape_fail_opens_with_schema_telemetry() -> None:

@@ -848,10 +848,30 @@ def run_mind_llm_synthesis(
             diagnostics=["wall_time_exceeded_after_semantic"],
             failed_phase="semantic_synthesis",
         )
-    if synthesis is None or not synthesis.claims:
+    if synthesis is None:
         return _fail_open_or_error(
-            error_code="semantic_synthesis_failed",
-            diagnostics=llm_errors or ["semantic_synthesis_empty"],
+            error_code=sem_err or "semantic_synthesis_failed",
+            diagnostics=llm_errors or [sem_err or "semantic_synthesis_failed"],
+            failed_phase="semantic_synthesis",
+        )
+    if not synthesis.claims:
+        empty_diag = list(llm_errors)
+        if sem_telemetry.raw_claim_count is not None:
+            empty_diag.append(f"claims_generated={sem_telemetry.raw_claim_count}")
+        if sem_telemetry.filtered_claim_count is not None:
+            empty_diag.append(f"claims_filtered={sem_telemetry.filtered_claim_count}")
+        dominant = None
+        if sem_telemetry.filter_reasons_by_count:
+            dominant = max(sem_telemetry.filter_reasons_by_count.items(), key=lambda kv: kv[1])[0]
+        if dominant:
+            empty_diag.append(f"dominant_filter_reason={dominant}")
+        if sem_telemetry.authorization_reason:
+            empty_diag.append(f"authorization_reason={sem_telemetry.authorization_reason}")
+        if not empty_diag:
+            empty_diag.append("semantic_synthesis_empty")
+        return _fail_open_or_error(
+            error_code="semantic_synthesis_empty",
+            diagnostics=empty_diag,
             failed_phase="semantic_synthesis",
         )
 

@@ -10,7 +10,6 @@ from app.ideation.prompts import (
     detect_monorepo_root,
 )
 from app.ideation.writer import assert_safe_artifact_path, build_artifact_path, write_review_artifact
-from app.providers.anthropic_provider import AnthropicIdeationProvider
 from app.providers.base import IdeationProvider
 from app.providers.local_provider import LocalIdeationProvider
 from app.service import KnowledgeForgeService
@@ -20,7 +19,12 @@ from app.settings import Settings
 def build_provider(settings: Settings) -> IdeationProvider:
     provider = settings.knowledge_forge_ideation_provider.lower()
     if provider == "anthropic":
-        return AnthropicIdeationProvider.from_env(model=settings.knowledge_forge_anthropic_model)
+        from app.providers.anthropic_provider import AnthropicIdeationProvider
+
+        return AnthropicIdeationProvider.from_settings(
+            api_key=settings.anthropic_api_key,
+            model=settings.knowledge_forge_anthropic_model,
+        )
     if provider == "local":
         return LocalIdeationProvider()
     raise ValueError(f"unknown ideation provider: {provider}")

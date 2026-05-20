@@ -62,16 +62,29 @@ def resolve_input_path(
     corpus_root: Path,
     monorepo_root: Path | None,
 ) -> Path | None:
+    if ".." in Path(path_str).parts:
+        return None
+    allowed_roots = [corpus_root.resolve()]
+    if monorepo_root is not None:
+        allowed_roots.append(monorepo_root.resolve())
+
     raw = Path(path_str)
-    if raw.is_absolute() and raw.exists():
-        return raw.resolve()
-    for base in (corpus_root, monorepo_root):
-        if base is None:
-            continue
+    if raw.is_absolute():
+        candidate = raw.resolve()
+        if candidate.exists() and _is_under_allowed_roots(candidate, allowed_roots):
+            return candidate
+        return None
+
+    for base in allowed_roots:
         candidate = (base / path_str).resolve()
-        if candidate.exists():
+        if candidate.exists() and _is_under_allowed_roots(candidate, allowed_roots):
             return candidate
     return None
+
+
+def _is_under_allowed_roots(path: Path, allowed_roots: list[Path]) -> bool:
+    resolved = path.resolve()
+    return any(resolved == root or resolved.is_relative_to(root) for root in allowed_roots)
 
 
 def detect_monorepo_root(corpus_root: Path) -> Path | None:

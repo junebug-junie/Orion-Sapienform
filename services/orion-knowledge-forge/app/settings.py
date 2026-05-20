@@ -50,10 +50,8 @@ class Settings(BaseSettings):
         provider = self.knowledge_forge_ideation_provider.lower()
         if provider not in {"local", "anthropic"}:
             raise ValueError("KNOWLEDGE_FORGE_IDEATION_PROVIDER must be local or anthropic")
-        if provider == "anthropic" and not self.anthropic_api_key:
-            env_key = os.environ.get("ANTHROPIC_API_KEY")
-            if not env_key:
-                raise ValueError("ANTHROPIC_API_KEY is required when ideation provider is anthropic")
+        if provider == "anthropic" and not (self.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")):
+            raise ValueError("ANTHROPIC_API_KEY is required when ideation provider is anthropic")
         return self
 
 

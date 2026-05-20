@@ -13,11 +13,17 @@ class AnthropicIdeationProvider(IdeationProvider):
         self.model = model
 
     @classmethod
-    def from_env(cls, *, model: str, timeout_seconds: float = 120.0) -> AnthropicIdeationProvider:
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-        if not api_key:
+    def from_settings(
+        cls,
+        *,
+        api_key: str | None,
+        model: str,
+        timeout_seconds: float = 120.0,
+    ) -> AnthropicIdeationProvider:
+        resolved = api_key or os.environ.get("ANTHROPIC_API_KEY")
+        if not resolved:
             raise ValueError("ANTHROPIC_API_KEY is required when KNOWLEDGE_FORGE_IDEATION_PROVIDER=anthropic")
-        return cls(api_key=api_key, model=model, timeout_seconds=timeout_seconds)
+        return cls(api_key=resolved, model=model, timeout_seconds=timeout_seconds)
 
     async def run(self, *, system_prompt: str, user_prompt: str, max_tokens: int = 4096) -> str:
         try:

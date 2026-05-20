@@ -84,6 +84,44 @@ def test_ideation_anthropic_missing_api_key_fails(monkeypatch: pytest.MonkeyPatc
         Settings()
 
 
+def test_ideation_anthropic_uses_settings_api_key() -> None:
+    from app.ideation.runner import build_provider
+    from app.settings import Settings
+
+    cfg = Settings(
+        KNOWLEDGE_FORGE_IDEATION_PROVIDER="anthropic",
+        ANTHROPIC_API_KEY="sk-test-from-settings",
+    )
+    provider = build_provider(cfg)
+    assert provider.model == cfg.knowledge_forge_anthropic_model
+
+
+def test_ideation_input_path_sandbox_rejects_traversal(corpus_root) -> None:
+    from app.ideation.prompts import resolve_input_path
+
+    secret = corpus_root.parent / "secret.txt"
+    secret.write_text("secret", encoding="utf-8")
+    try:
+        assert (
+            resolve_input_path(
+                "../secret.txt",
+                corpus_root=corpus_root,
+                monorepo_root=None,
+            )
+            is None
+        )
+        assert (
+            resolve_input_path(
+                str(secret),
+                corpus_root=corpus_root,
+                monorepo_root=None,
+            )
+            is None
+        )
+    finally:
+        secret.unlink(missing_ok=True)
+
+
 def test_ideation_never_writes_canonical_accepted_paths(
     client: TestClient, corpus_root, monkeypatch: pytest.MonkeyPatch
 ) -> None:

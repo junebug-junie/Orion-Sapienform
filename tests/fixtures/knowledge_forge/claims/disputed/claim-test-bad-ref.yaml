@@ -1,0 +1,17 @@
+type: claim
+id: claim:test:bad-ref
+statement: References missing claim.
+status: disputed
+source_refs:
+  - source:missing:0001
+confidence: low
+depends_on:
+  - claim:does:not:exist
+supports: []
+contradicts: []
+supersedes: []
+implements: []
+tested_by: []
+blocked_by: []
+motivated_by: []
+used_by: []

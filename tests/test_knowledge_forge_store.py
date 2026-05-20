@@ -25,3 +25,15 @@ def test_yaml_roundtrip_preserves_keys(tmp_path: Path) -> None:
     save_yaml_doc(path, doc)
     loaded = load_yaml_doc(path)
     assert loaded == doc
+
+
+from orion.knowledge_forge.store import KnowledgeStore
+
+
+def test_store_loads_claims_from_fixture_corpus() -> None:
+    fixture_root = Path(__file__).resolve().parent / "fixtures" / "knowledge_forge"
+    store = KnowledgeStore(fixture_root)
+    store.load()
+    claim = store.get("claim:test:0001")
+    assert claim is not None
+    assert claim.statement.startswith("Fixture claim")

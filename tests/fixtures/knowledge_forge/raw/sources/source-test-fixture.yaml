@@ -1,0 +1,5 @@
+type: source
+id: source:test:fixture
+kind: design_doc
+path: raw/sources/test-fixture.md
+trust_level: primary

@@ -57,7 +57,7 @@ def apply_pending_patch(corpus_root: Path, patch_id: str) -> Path:
         doc = yaml.safe_load(body)
         if not isinstance(doc, dict):
             raise ValueError(f"patch body must be YAML mapping: {path}")
-        target_path = corpus_root / target_rel
+        target_path = _resolve_target_under_corpus(corpus_root, target_rel)
         if meta.get("action") == "create" and target_path.exists():
             raise ValueError(f"refusing to overwrite existing target: {target_path}")
         save_yaml_doc(target_path, doc)
@@ -66,6 +66,14 @@ def apply_pending_patch(corpus_root: Path, patch_id: str) -> Path:
         path.replace(accepted_dir / path.name)
         return target_path
     raise FileNotFoundError(f"pending patch not found: {patch_id}")
+
+
+def _resolve_target_under_corpus(corpus_root: Path, target_rel: str) -> Path:
+    root = corpus_root.resolve()
+    target_path = (root / target_rel).resolve()
+    if not target_path.is_relative_to(root):
+        raise ValueError(f"patch target escapes corpus root: {target_rel}")
+    return target_path
 
 
 def _parse_patch_file(path: Path) -> tuple[dict[str, str], str]:

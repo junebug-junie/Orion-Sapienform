@@ -1,0 +1,37 @@
+# Workflow: Orion Knowledge Forge v0 (repo-root package + corpus tests).
+
+name: orion-knowledge-forge-tests
+
+on:
+  pull_request:
+    paths:
+      - "orion/knowledge_forge/**"
+      - "orion-knowledge/**"
+      - "tests/test_knowledge_forge_*.py"
+      - "tests/fixtures/knowledge_forge/**"
+      - ".github/workflows/orion-knowledge-forge-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/knowledge_forge/**"
+      - "orion-knowledge/**"
+      - "tests/test_knowledge_forge_*.py"
+      - "tests/fixtures/knowledge_forge/**"
+      - ".github/workflows/orion-knowledge-forge-tests.yml"
+
+jobs:
+  knowledge-forge:
+    name: Knowledge Forge unit + golden path
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps (PyYAML + pydantic from hub requirements subset)
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pydantic PyYAML
+      - name: Run Knowledge Forge tests
+        run: |
+          PYTHONPATH=. python -m pytest tests/test_knowledge_forge_*.py -q

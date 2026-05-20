@@ -28,10 +28,16 @@ def lint_corpus(store: KnowledgeStore) -> LintReport:
     report = LintReport()
     for doc_id, doc in store.by_id.items():
         _lint_relations(store, doc_id, doc, report)
-        if isinstance(doc, ClaimV1) and not doc.source_refs:
-            report.issues.append(
-                LintIssue("missing_source_ref", doc_id, "claims must cite at least one source_ref")
-            )
+        if isinstance(doc, ClaimV1):
+            if not doc.source_refs:
+                report.issues.append(
+                    LintIssue("missing_source_ref", doc_id, "claims must cite at least one source_ref")
+                )
+            for source_id in doc.source_refs:
+                if source_id not in store.by_id:
+                    report.issues.append(
+                        LintIssue("dangling_ref", doc_id, f"source_refs missing {source_id}")
+                    )
         if isinstance(doc, SpecV1):
             for claim_id in doc.source_claims:
                 if claim_id not in store.by_id:

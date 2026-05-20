@@ -10,6 +10,9 @@ services:
     environment:
       ORION_KNOWLEDGE_ROOT: /repo/orion-knowledge
       KNOWLEDGE_FORGE_REPO_ROOT: /repo/orion-knowledge
+      KNOWLEDGE_FORGE_IDEATION_ENABLED: "true"
+      KNOWLEDGE_FORGE_IDEATION_PROVIDER: local
+      KNOWLEDGE_FORGE_IDEATION_WRITE_ENABLED: "false"
     volumes:
       - ../..:/repo:ro
     ports:

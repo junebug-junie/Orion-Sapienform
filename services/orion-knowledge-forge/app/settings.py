@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     knowledge_forge_operator_token: str | None = Field(None, alias="KNOWLEDGE_FORGE_OPERATOR_TOKEN")
     knowledge_forge_max_search_results: int = Field(50, alias="KNOWLEDGE_FORGE_MAX_SEARCH_RESULTS")
 
+    knowledge_forge_ideation_enabled: bool = Field(True, alias="KNOWLEDGE_FORGE_IDEATION_ENABLED")
+    knowledge_forge_ideation_provider: str = Field("local", alias="KNOWLEDGE_FORGE_IDEATION_PROVIDER")
+    knowledge_forge_ideation_write_enabled: bool = Field(
+        False, alias="KNOWLEDGE_FORGE_IDEATION_WRITE_ENABLED"
+    )
+    knowledge_forge_anthropic_model: str = Field(
+        "claude-sonnet-4-5", alias="KNOWLEDGE_FORGE_ANTHROPIC_MODEL"
+    )
+    anthropic_api_key: str | None = Field(None, alias="ANTHROPIC_API_KEY")
+
     @model_validator(mode="after")
     def resolve_repo_root(self) -> Settings:
         if self.knowledge_forge_repo_root is None:
@@ -33,6 +43,15 @@ class Settings(BaseSettings):
                 self.knowledge_forge_repo_root = resolve_corpus_root()
         else:
             self.knowledge_forge_repo_root = Path(self.knowledge_forge_repo_root).expanduser().resolve()
+        return self
+
+    @model_validator(mode="after")
+    def validate_ideation_provider(self) -> Settings:
+        provider = self.knowledge_forge_ideation_provider.lower()
+        if provider not in {"local", "anthropic"}:
+            raise ValueError("KNOWLEDGE_FORGE_IDEATION_PROVIDER must be local or anthropic")
+        if provider == "anthropic" and not (self.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")):
+            raise ValueError("ANTHROPIC_API_KEY is required when ideation provider is anthropic")
         return self
 
 

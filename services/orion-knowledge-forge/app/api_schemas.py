@@ -137,3 +137,36 @@ class ContextPackCompileResultV1(BaseModel):
     excluded_claims: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     content: str
+
+
+class IdeationMode(str, Enum):
+    arsonist_review = "arsonist_review"
+    spec_critique = "spec_critique"
+    missing_questions = "missing_questions"
+    context_pack_review = "context_pack_review"
+    implementation_plan_review = "implementation_plan_review"
+
+
+class IdeationRunRequestV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task: str = Field(..., min_length=1)
+    mode: IdeationMode = IdeationMode.arsonist_review
+    target: str = "review_artifact"
+    input_paths: list[str] = Field(default_factory=list)
+    write_review: bool = False
+    max_tokens: int = Field(4096, ge=256, le=16384)
+
+
+class IdeationRunResultV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    provider: str
+    model: str
+    status: str
+    summary: str
+    content: str
+    artifact_path: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    usage: dict[str, int | str] = Field(default_factory=dict)

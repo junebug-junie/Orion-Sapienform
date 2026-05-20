@@ -98,6 +98,9 @@ _OK_FACET_STATUSES = frozenset({"ok", "empty"})
 def _facet_health_from_diagnostics(diagnostics: dict[str, dict[str, object]] | None) -> dict[str, str]:
     out: dict[str, str] = {}
     for name in _FACET_NAMES:
+        if name not in (diagnostics or {}):
+            out[name] = "empty"
+            continue
         diag = (diagnostics or {}).get(name) or {}
         out[name] = str(diag.get("status") or "unknown")
     return out
@@ -108,6 +111,13 @@ def _derive_state_quality(*, availability: str, facet_health: dict[str, str]) ->
         return "unavailable"
     if availability == "empty":
         return "empty"
+    if availability == "degraded":
+        drives_status = facet_health.get("drives", "unknown")
+        if drives_status == "timeout":
+            return "degraded_drives_timeout"
+        if drives_status not in _OK_FACET_STATUSES:
+            return "degraded_drives_error"
+        return "degraded_partial"
     if all(facet_health.get(name, "unknown") in _OK_FACET_STATUSES for name in _FACET_NAMES):
         return "healthy"
     drives_status = facet_health.get("drives", "unknown")
@@ -152,12 +162,16 @@ def _derive_context_note(
     selected_subject: str | None,
     state_quality: AutonomyStateQuality,
     by_subject: Mapping[str, "AutonomyLookupV1"] | None,
+    contextual_fallback: bool = False,
 ) -> str | None:
+    if contextual_fallback and selected_subject == "relationship":
+        return "Orion drives unavailable; stance context from relationship drives (not substituted as Orion drives)"
     if not selected_subject or not by_subject:
         return None
     if state_quality not in {"degraded_drives_timeout", "degraded_drives_error", "degraded_partial"}:
         return None
-    selected_drives = str(((by_subject.get(selected_subject).subquery_diagnostics or {}).get("drives") or {}).get("status", ""))
+    selected = by_subject.get(selected_subject)
+    selected_drives = str(((selected.subquery_diagnostics or {}).get("drives") or {}).get("status", "")) if selected else ""
     if selected_drives in _OK_FACET_STATUSES:
         return None
     if selected_subject == "orion":
@@ -168,7 +182,14 @@ def _derive_context_note(
     return None
 
 
-def _derive_stance_mode(*, state_quality: AutonomyStateQuality, has_proposals: bool) -> AutonomyStanceMode:
+def _derive_stance_mode(
+    *,
+    state_quality: AutonomyStateQuality,
+    has_proposals: bool,
+    contextual_fallback: bool = False,
+) -> AutonomyStanceMode:
+    if contextual_fallback and state_quality == "healthy":
+        return "fallback_contextual"
     if state_quality == "unavailable":
         return "unavailable"
     if state_quality in {"degraded_drives_timeout", "degraded_drives_error", "degraded_partial"}:
@@ -185,6 +206,7 @@ def summarize_autonomy_lookup(
     availability: str = "empty",
     subquery_diagnostics: dict[str, dict[str, object]] | None = None,
     by_subject: Mapping[str, "AutonomyLookupV1"] | None = None,
+    contextual_fallback: bool = False,
 ) -> AutonomySummaryV1:
     base = summarize_autonomy_state(state)
     facet_health = _facet_health_from_diagnostics(subquery_diagnostics)
@@ -199,8 +221,13 @@ def summarize_autonomy_lookup(
         selected_subject=selected_subject,
         state_quality=state_quality,
         by_subject=by_subject,
+        contextual_fallback=contextual_fallback,
     )
-    stance_mode = _derive_stance_mode(state_quality=state_quality, has_proposals=has_proposals)
+    stance_mode = _derive_stance_mode(
+        state_quality=state_quality,
+        has_proposals=has_proposals,
+        contextual_fallback=contextual_fallback,
+    )
     return base.model_copy(
         update={
             "state_quality": state_quality,

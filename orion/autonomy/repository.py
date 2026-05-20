@@ -7,14 +7,14 @@ import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol, Sequence
+from typing import Literal, Mapping, Protocol, Sequence
 
 from orion.autonomy.models import AutonomyGoalHeadlineV1, AutonomyStateV1
 from orion.spark.concept_induction.graph_query import GraphQueryClient, GraphQueryConfig, GraphQueryError
 
 logger = logging.getLogger("orion.autonomy.repository")
 
-AvailabilityKind = Literal["available", "empty", "unavailable"]
+AvailabilityKind = Literal["available", "degraded", "empty", "unavailable"]
 RepositoryBackendKind = Literal["local", "graph", "shadow"]
 
 AUTONOMY_IDENTITY_GRAPH = "http://conjourney.net/graph/autonomy/identity"
@@ -95,13 +95,56 @@ def _classify_query_error(exc: Exception) -> str:
 def _lookup_healthy_for_short_circuit(lookup: AutonomyLookupV1) -> bool:
     if lookup.availability != "available":
         return False
-    if lookup.unavailable_reason:
-        return False
     for name in ("identity", "drives", "goals"):
         status = str(((lookup.subquery_diagnostics or {}).get(name) or {}).get("status", "ok"))
         if status not in {"ok", "empty"}:
             return False
     return True
+
+
+def _drives_facet_ok(lookup: AutonomyLookupV1 | None) -> bool:
+    if lookup is None or lookup.availability not in {"available", "degraded"}:
+        return False
+    diags = (lookup.subquery_diagnostics or {}).get("drives")
+    if not isinstance(diags, dict):
+        return False
+    status = str(diags.get("status") or "")
+    if status != "ok":
+        return False
+    if lookup.state and (
+        lookup.state.dominant_drive
+        or lookup.state.drive_pressures
+        or lookup.state.active_drives
+    ):
+        return True
+    return int(diags.get("row_count") or 0) > 0
+
+
+@dataclass(frozen=True)
+class SelectedAutonomyLookup:
+    lookup: AutonomyLookupV1 | None
+    selected_subject: str | None
+    contextual_fallback: bool
+    orion_lookup: AutonomyLookupV1 | None = None
+
+
+def select_preferred_autonomy_lookup(by_subject: Mapping[str, AutonomyLookupV1]) -> SelectedAutonomyLookup:
+    """Prefer Orion when drives are usable; fall back to relationship drives with explicit provenance."""
+    orion = by_subject.get("orion")
+    relationship = by_subject.get("relationship")
+    if _drives_facet_ok(orion):
+        return SelectedAutonomyLookup(orion, "orion", False, orion)
+    if _drives_facet_ok(relationship):
+        return SelectedAutonomyLookup(relationship, "relationship", True, orion)
+    for subject in ("orion", "relationship", "juniper"):
+        lookup = by_subject.get(subject)
+        if lookup and lookup.availability in {"available", "degraded"} and lookup.state is not None:
+            return SelectedAutonomyLookup(lookup, subject, False, orion)
+    for subject in ("orion", "relationship", "juniper"):
+        lookup = by_subject.get(subject)
+        if lookup and lookup.availability not in {"empty"}:
+            return SelectedAutonomyLookup(lookup if lookup.state is not None else None, subject if lookup.state is not None else None, False, orion)
+    return SelectedAutonomyLookup(None, None, False, orion)
 
 
 def _dominant_drive_from_evidence(
@@ -276,12 +319,19 @@ PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 SELECT ?artifact_id ?dominant_drive ?created_at ?active_drive ?drive_name ?drive_pressure ?tension_kind
 WHERE {{
   GRAPH <{AUTONOMY_DRIVES_GRAPH}> {{
-    ?artifact a orion:DriveAudit ;
-      orion:subjectKey \"{_escape_sparql(subject)}\" ;
-      orion:modelLayerKey \"{_escape_sparql(model_layer)}\" ;
-      orion:entityId \"{_escape_sparql(entity_id)}\" ;
-      orion:artifactId ?artifact_id ;
-      orion:timestamp ?created_at .
+    {{
+      SELECT ?artifact ?artifact_id ?created_at
+      WHERE {{
+        ?artifact a orion:DriveAudit ;
+          orion:subjectKey \"{_escape_sparql(subject)}\" ;
+          orion:modelLayerKey \"{_escape_sparql(model_layer)}\" ;
+          orion:entityId \"{_escape_sparql(entity_id)}\" ;
+          orion:artifactId ?artifact_id ;
+          orion:timestamp ?created_at .
+      }}
+      ORDER BY DESC(?created_at) DESC(STR(?artifact_id))
+      LIMIT 1
+    }}
     OPTIONAL {{ ?artifact orion:dominantDriveName ?dominant_drive . }}
     OPTIONAL {{
       ?artifact orion:highlightsActiveDrive ?active_drive_ref .
@@ -304,7 +354,6 @@ WHERE {{
     OPTIONAL {{ ?artifact orion:derivedFromTension ?tension_ref . ?tension_ref orion:tensionKind ?tension_kind . }}
   }}
 }}
-ORDER BY DESC(?created_at) DESC(STR(?artifact_id))
 LIMIT {self._drives_query_limit}
 """.strip()
         rows = self._select_rows(sparql)
@@ -314,7 +363,7 @@ LIMIT {self._drives_query_limit}
         latest_id = _literal(rows[0], "artifact_id")
         if not latest_id:
             return None, len(rows)
-        filtered = [r for r in rows if _literal(r, "artifact_id") == latest_id]
+        filtered = rows
         dominant_drive = _literal(filtered[0], "dominant_drive")
         created_at = _literal(filtered[0], "created_at")
         active_drives: list[str] = []
@@ -557,8 +606,9 @@ LIMIT {self._goals_limit}
             generated_at=generated_at,
         )
         partial = failed_subquery is not None
+        availability: AvailabilityKind = "degraded" if partial else "available"
         logger.info(
-            "autonomy_graph_lookup subject=%s model_layer=%s entity_id=%s query_ok=%s identity_rows=%s drives_rows=%s goals_rows=%s availability=available mapped_state=true summary_present=%s partial=%s",
+            "autonomy_graph_lookup subject=%s model_layer=%s entity_id=%s query_ok=%s identity_rows=%s drives_rows=%s goals_rows=%s availability=%s mapped_state=true summary_present=%s partial=%s",
             subject,
             binding.model_layer,
             binding.entity_id,
@@ -566,13 +616,14 @@ LIMIT {self._goals_limit}
             identity_rows,
             drives_rows,
             goals_rows,
+            availability,
             "yes" if bool(state.identity_summary) else "no",
             "yes" if partial else "no",
         )
         return AutonomyLookupV1(
             subject=subject,
             state=state,
-            availability="available",
+            availability=availability,
             unavailable_reason=(failure_type if partial else None),
             subquery_diagnostics=subquery_diagnostics,
         )

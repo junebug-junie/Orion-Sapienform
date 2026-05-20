@@ -137,6 +137,70 @@ def test_chat_stance_autonomy_debug_contains_unavailable_reason(monkeypatch, ena
     assert "chat_autonomy_repository_status" in ctx
 
 
+def test_chat_stance_partial_drives_timeout_falls_back_to_relationship(monkeypatch, enable_autonomy_graphdb) -> None:
+    from orion.autonomy.models import AutonomyGoalHeadlineV1, AutonomyStateV1
+
+    orion_state = AutonomyStateV1(
+        subject="orion",
+        model_layer="self-model",
+        entity_id="orion",
+        identity_summary="holds course",
+        goal_headlines=[
+            AutonomyGoalHeadlineV1(
+                artifact_id="goal-1",
+                goal_statement="Clarify autonomy boundaries without executing any new action.",
+                drive_origin="autonomy",
+                priority=0.8,
+                cooldown_until=None,
+                proposal_signature="sig-1",
+            )
+        ],
+        source="graph",
+    )
+    relationship_state = AutonomyStateV1(
+        subject="relationship",
+        model_layer="relationship-model",
+        entity_id="relationship:orion|juniper",
+        dominant_drive="relational",
+        drive_pressures={"relational": 0.8},
+        active_drives=["relational"],
+        source="graph",
+    )
+    repo = _Repo(
+        {
+            "orion": _Lookup(
+                "orion",
+                "degraded",
+                orion_state,
+                unavailable_reason="timeout",
+                subquery_diagnostics={
+                    "identity": {"status": "ok", "row_count": 1},
+                    "drives": {"status": "timeout", "row_count": 0, "error_type": "timeout"},
+                    "goals": {"status": "ok", "row_count": 3},
+                },
+            ),
+            "relationship": _Lookup(
+                "relationship",
+                "available",
+                relationship_state,
+                subquery_diagnostics={"drives": {"status": "ok", "row_count": 80}},
+            ),
+        }
+    )
+    monkeypatch.setattr(chat_stance, "build_autonomy_repository", lambda **_: repo)
+
+    ctx = {"user_message": "hello", "verb": "chat_general", "mode": "brain"}
+    chat_stance.build_chat_stance_inputs(ctx)
+
+    summary = ctx["chat_autonomy_summary"]
+    assert ctx["chat_autonomy_selected_subject"] == "relationship"
+    assert summary["stance_mode"] == "fallback_contextual"
+    assert summary["dominant_drive"] == "relational"
+    assert summary["context_note"] == "Orion drives unavailable; stance context from relationship drives (not substituted as Orion drives)"
+    assert summary["proposal_headlines"] == ["Clarify autonomy boundaries without executing any new action."]
+    assert ctx["chat_autonomy_debug"]["_runtime"]["contextual_fallback"] is True
+
+
 def test_chat_stance_partial_drives_timeout_exports_degraded_summary(monkeypatch, enable_autonomy_graphdb) -> None:
     from orion.autonomy.models import AutonomyGoalHeadlineV1, AutonomyStateV1
 
@@ -161,7 +225,7 @@ def test_chat_stance_partial_drives_timeout_exports_degraded_summary(monkeypatch
         {
             "orion": _Lookup(
                 "orion",
-                "available",
+                "degraded",
                 state,
                 unavailable_reason="timeout",
                 subquery_diagnostics={
@@ -169,12 +233,6 @@ def test_chat_stance_partial_drives_timeout_exports_degraded_summary(monkeypatch
                     "drives": {"status": "timeout", "row_count": 0, "error_type": "timeout"},
                     "goals": {"status": "ok", "row_count": 3},
                 },
-            ),
-            "relationship": _Lookup(
-                "relationship",
-                "available",
-                None,
-                subquery_diagnostics={"drives": {"status": "ok", "row_count": 80}},
             ),
         }
     )
@@ -187,7 +245,6 @@ def test_chat_stance_partial_drives_timeout_exports_degraded_summary(monkeypatch
     assert summary["state_quality"] == "degraded_drives_timeout"
     assert summary["stance_mode"] == "proposal_only"
     assert "Orion drives facet timed out" in summary["degraded_reason"]
-    assert summary["context_note"] == "relationship drives are available, but were not substituted for Orion drives"
     assert ctx["chat_autonomy_debug"]["_runtime"]["state_quality"] == "degraded_drives_timeout"
 
 
@@ -213,8 +270,9 @@ def test_autonomy_lookup_turn_log_distinguishes(monkeypatch, enable_autonomy_gra
     chat_stance.build_chat_stance_inputs({"user_message": "hello"})
 
     assert "autonomy_lookup_turn" in caplog.text
-    assert '"availability_counts": {"available": 1, "empty": 1, "partial": 0, "unavailable": 1}' in caplog.text
-    assert '"selected_subject_availability": "unavailable"' in caplog.text
+    assert '"availability_counts": {"available": 1, "degraded": 0, "empty": 1, "partial": 0, "unavailable": 1}' in caplog.text
+    assert '"selected_subject": "juniper"' in caplog.text
+    assert '"selected_subject_availability": "available"' in caplog.text
 
 
 def test_triage_mode_not_overridden_by_autonomy_hint(monkeypatch) -> None:

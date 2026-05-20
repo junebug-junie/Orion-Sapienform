@@ -26,7 +26,7 @@ def test_drives_timeout_partial_state_marks_degraded() -> None:
     summary = summarize_autonomy_lookup(
         state,
         selected_subject="orion",
-        availability="available",
+        availability="degraded",
         subquery_diagnostics={
             "identity": {"status": "ok", "row_count": 1, "elapsed_ms": 3720.0},
             "drives": {"status": "timeout", "row_count": 0, "elapsed_ms": 20000.0, "error_type": "timeout"},
@@ -78,7 +78,7 @@ def test_relationship_context_note_without_substitution() -> None:
         "orion": AutonomyLookupV1(
             subject="orion",
             state=state,
-            availability="available",
+            availability="degraded",
             unavailable_reason="timeout",
             subquery_diagnostics={"drives": {"status": "timeout", "row_count": 0}},
         ),
@@ -92,7 +92,7 @@ def test_relationship_context_note_without_substitution() -> None:
     summary = summarize_autonomy_lookup(
         state,
         selected_subject="orion",
-        availability="available",
+        availability="degraded",
         subquery_diagnostics=by_subject["orion"].subquery_diagnostics,
         by_subject=by_subject,
     )
@@ -111,7 +111,7 @@ def test_drives_timeout_without_proposals_is_unavailable_stance() -> None:
     summary = summarize_autonomy_lookup(
         state,
         selected_subject="orion",
-        availability="available",
+        availability="degraded",
         subquery_diagnostics={
             "identity": {"status": "ok", "row_count": 1},
             "drives": {"status": "timeout", "row_count": 0},

@@ -3504,6 +3504,7 @@ loadDismissedIds();
       ? Object.entries(safeDebug).filter(([subject, value]) => !String(subject).startsWith('_') && value && typeof value === 'object')
       : [];
     const availableCount = availabilityRows.filter(([, value]) => value.availability === 'available').length;
+    const degradedCount = availabilityRows.filter(([, value]) => value.availability === 'degraded').length;
     const unavailableCount = availabilityRows.filter(([, value]) => value.availability === 'unavailable').length;
     const subjectCount = availabilityRows.length;
     // Keep this exact fallback expression stable for UI contract tests:
@@ -3568,6 +3569,7 @@ loadDismissedIds();
       facetHealth,
       availability: {
         available: availableCount,
+        degraded: degradedCount,
         unavailable: unavailableCount,
         subjects: subjectCount,
       },
@@ -3640,7 +3642,7 @@ loadDismissedIds();
       ...(model.degradedReason ? [`reason: ${model.degradedReason}`] : []),
       ...(model.contextNote ? [`context note: ${model.contextNote}`] : []),
       ...(model.stanceMode ? [`stance mode: ${model.stanceMode}`] : []),
-      `availability: ${model.availability.available}/${model.availability.subjects} available`,
+      `availability: ${model.availability.available}/${model.availability.subjects} available · ${model.availability.degraded} degraded`,
       `repository source: ${model.repositoryStatus.source_available ? 'available' : 'unavailable'}`,
       `repository path: ${model.repositoryStatus.source_path}`,
       `fallback: ${model.fallback}`,

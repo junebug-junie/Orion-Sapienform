@@ -53,7 +53,7 @@ def test_list_latest_does_not_short_circuit_on_partial_orion(
             return AutonomyLookupV1(
                 subject=subject,
                 state=None,
-                availability="available",
+                availability="degraded",
                 unavailable_reason="timeout",
                 subquery_diagnostics={"drives": {"status": "timeout", "row_count": 0}},
             )

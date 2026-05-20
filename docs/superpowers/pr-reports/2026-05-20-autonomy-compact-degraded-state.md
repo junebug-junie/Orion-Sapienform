@@ -1,118 +1,86 @@
-# PR: Autonomy compact card degraded-state visibility
+# PR: Autonomy drives query fix + degraded semantics + contextual fallback
 
 **Branch:** `feat/autonomy-compact-degraded-state`  
-**Worktree:** `.worktrees/feat-autonomy-compact-degraded-state`  
-**Commit:** `b1df7ae6`
+**Worktree:** `.worktrees/feat-autonomy-compact-degraded-state`
 
 ## Summary
 
-The Hub autonomy compact debug card was showing silent `--` for dominant drive, top drives, tensions, and expected posture when `selected_subject=orion` had a partial graph lookup: identity + goals succeeded but the drives SPARQL facet timed out. This PR adds structured degraded-state fields to the backend summary contract and renders explicit unavailable/degraded labels in the Hub UI instead of blank placeholders.
+Fixes the **root causes** behind silent autonomy compact card blanks, not just the labels:
 
-Proposal-only safety is preserved: relationship drives are never substituted for Orion drives; a context note explains when relationship context exists but was not used.
+1. **Drives SPARQL rewritten** — latest-artifact subquery before OPTIONAL joins (avoids scanning/joining across many artifacts)
+2. **`availability=degraded`** — partial facet failure is no longer masqueraded as `available`
+3. **Contextual fallback** — when Orion drives fail but relationship drives succeed, chat stance selects relationship drives with explicit provenance (Orion goals preserved, not substituted)
+4. **Parallel chat-stance subqueries** — `AUTONOMY_CHAT_STANCE_SUBQUERY_MAX_WORKERS=3` (default)
+5. **Separate compact drives limit** — `AUTONOMY_CHAT_STANCE_DRIVES_QUERY_LIMIT=20` (not overridden by probe `AUTONOMY_DRIVES_QUERY_LIMIT=80`)
 
-## Root cause
+Prior commit on this branch added structured degraded UI fields; this commit adds the substantive runtime/query fixes.
 
-| Layer | Behavior |
-|-------|----------|
-| `GraphAutonomyRepository._query_subject` | Partial success → `availability=available`, `unavailable_reason=timeout`, state built without drive audit |
-| `summarize_autonomy_state` | Treated missing drives like empty healthy state; `raw_state_present=true` |
-| Hub `normalizeAutonomyModel` / `updateAutonomyDebugPanel` | Rendered empty strings as `--` with no facet health |
+## Key changes
 
-## Changes
+| Area | Change |
+|------|--------|
+| `orion/autonomy/repository.py` | Latest-artifact-first drives query; `availability=degraded`; `select_preferred_autonomy_lookup()`; stricter `_drives_facet_ok()` |
+| `orion/autonomy/summary.py` | `contextual_fallback` → `stance_mode=fallback_contextual`; missing facet diagnostics treated as `empty` |
+| `services/orion-cortex-exec/app/chat_stance.py` | Uses selection helper; merges Orion goals on fallback; chat-stance env split |
+| Config | `AUTONOMY_CHAT_STANCE_DRIVES_QUERY_LIMIT`, `AUTONOMY_CHAT_STANCE_SUBQUERY_MAX_WORKERS`, default subquery workers 3 |
 
-### Backend contract (`orion/autonomy/`)
+## Behavior: Orion drives timeout + relationship drives ok
 
-- **`models.py`** — `AutonomySummaryV1` gains `state_quality`, `stance_mode`, `degraded_reason`, `facet_health`, `context_note`, `selected_subject`
-- **`summary.py`** — `summarize_autonomy_lookup()` derives degraded semantics from subquery diagnostics; explicit context note when relationship drives ok but Orion drives failed
-- **`repository.py`**
-  - Configurable `AUTONOMY_DRIVES_QUERY_LIMIT` (chat stance passes compact limit)
-  - Subquery `elapsed_ms` measured inside worker (not queue wait)
-  - Short-circuit only when preferred subject is fully healthy (not partial)
+**Before:** Orion selected (partial `available`), drive fields blank, relationship ignored.
 
-### Cortex exec wiring
-
-- **`chat_stance.py`** — uses `summarize_autonomy_lookup`; exports degraded fields in summary + `autonomy_debug._runtime`
-
-### Hub UI
-
-- **`app.js`** — `formatAutonomyFieldLabel()` renders explicit unavailable reasons; overview shows `autonomy state`, facet health, context note, stance mode; inline card includes selected subject + degraded reason
-
-### Config
-
-- **`services/orion-cortex-exec/.env_example`** — `AUTONOMY_DRIVES_QUERY_LIMIT=80`
-- **`docker-compose.yml`** — env passthrough
-- Local **`services/orion-cortex-exec/.env`** — parity key added (gitignored)
-
-## Acceptance scenario
-
-Given:
-
-- `selected_subject = orion`
-- `orion.identity` ok · `orion.drives` timeout · `orion.goals` ok
-- `relationship.drives` ok
-
-Compact card now shows equivalent to:
-
-```text
-Autonomy state: degraded_drives_timeout
-Selected subject: orion
-Reason: Orion drives facet timed out
-
-dominant drive: unavailable — Orion drives facet timed out
-top drives: unavailable — drives facet failed
-top tensions: unavailable — drive competition requires drives
-
-Proposals:
-- Clarify autonomy boundaries without executing any new action.
-
-Stance:
-proposal-only because selected subject drives were unavailable
-
-Context note:
-relationship drives are available, but were not substituted for Orion drives
-```
+**After:**
+- `orion.availability = degraded`
+- `selected_subject = relationship`
+- `stance_mode = fallback_contextual`
+- `dominant_drive` from relationship state
+- Orion `proposal_headlines` merged in
+- `context_note`: "Orion drives unavailable; stance context from relationship drives (not substituted as Orion drives)"
 
 ## Tests
 
 ```bash
 cd .worktrees/feat-autonomy-compact-degraded-state
-PYTHONPATH=. /mnt/scripts/Orion-Sapienform/orion_dev/bin/python -m pytest \
+PYTHONPATH=. orion_dev/bin/python -m pytest \
   tests/test_autonomy_summary_degraded.py \
-  tests/test_autonomy_summary.py \
+  orion/autonomy/tests/test_repository_selection_and_query.py \
   services/orion-cortex-exec/tests/test_chat_stance_autonomy_plumbing.py \
-  services/orion-cortex-exec/tests/test_autonomy_repository_list_latest_short_circuit.py \
   services/orion-cortex-exec/tests/test_autonomy_repository_graph_diagnostics.py \
-  services/orion-hub/tests/test_autonomy_runtime_ui_panel.py \
-  -q --tb=short
-# 58 passed
+  services/orion-cortex-exec/tests/test_autonomy_repository_list_latest_short_circuit.py \
+  tests/test_autonomy_summary.py \
+  services/orion-hub/tests/test_autonomy_runtime_ui_panel.py -q
+# 60 passed
 ```
-
-New coverage highlights:
-
-- `test_drives_timeout_partial_state_marks_degraded`
-- `test_relationship_context_note_without_substitution`
-- `test_chat_stance_partial_drives_timeout_exports_degraded_summary`
-- `test_list_latest_does_not_short_circuit_on_partial_orion`
-- Hub static contract for `formatAutonomyFieldLabel` + degraded labels
 
 ## Verification
 
 | Command | Exit | Result |
 |---------|------|--------|
-| Targeted pytest suite (above) | 0 | 58 passed |
+| Targeted pytest suite | 0 | 60 passed |
 
-Live Hub stack verification not run in this session — deploy cortex-exec + hub and reproduce the original timeout scenario to confirm UI labels in browser.
+Live Fuseki verification: **UNVERIFIED** — deploy cortex-exec and confirm `orion.drives` returns `status=ok` under load.
+
+## Operator config (after merge)
+
+In `services/orion-cortex-exec/.env`:
+
+```env
+AUTONOMY_SUBQUERY_MAX_WORKERS=3
+AUTONOMY_CHAT_STANCE_SUBQUERY_MAX_WORKERS=3
+AUTONOMY_DRIVES_QUERY_LIMIT=80
+AUTONOMY_CHAT_STANCE_DRIVES_QUERY_LIMIT=20
+```
+
+Rebuild `orion-cortex-exec` after merge.
 
 ## Remaining risks
 
-1. **Drives query still heavy at default `AUTONOMY_DRIVES_QUERY_LIMIT=80`** — docker-compose passes 80; chat stance code defaults compact to 20 only when env unset. Lower env to 20 if timeout persists.
-2. **Fully unavailable lookup** (`state_quality=unavailable`) still shows `--` for drive fields — follow-up if that path becomes common.
-3. **Live timeout reproduction** — UNVERIFIED against running Fuseki stack in this session.
+- If Orion drives query still times out at 20s after SPARQL rewrite, investigate Fuseki data volume/indexing for `self:orion` drive audits
+- Quick lane (`chat_quick`) still defaults to identity-only subqueries — drive blanks expected there unless config changed
 
 ## Test plan
 
-- [ ] Merge branch; rebuild `orion-cortex-exec` + `orion-hub`
-- [ ] Trigger chat turn where `orion.drives` times out (or mock via test harness)
-- [ ] Confirm compact card shows degraded labels, not `--`
-- [ ] Confirm raw debug JSON includes `state_quality`, `facet_health`, `context_note`
-- [ ] Confirm proposal-only headline still present; no relationship drive substitution in summary
+- [ ] Rebuild cortex-exec + hub
+- [ ] Reproduce original scenario (Orion drives timeout under load)
+- [ ] Confirm relationship fallback yields real `dominant_drive` in compact card
+- [ ] Confirm Orion proposals still visible with contextual fallback
+- [ ] Confirm `orion` debug shows `availability: degraded` not `available`

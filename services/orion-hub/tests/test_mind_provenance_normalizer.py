@@ -111,6 +111,48 @@ console.log(JSON.stringify({{
     assert out["no_derailment_card"] is True
 
 
+def test_success_without_attempted_flag_infers_llm_synthesis() -> None:
+    """Historical runs may omit mind.llm_synthesis_attempted on the success path."""
+    out = _run_node(
+        f"""
+const fs = require('fs');
+const src = fs.readFileSync({json.dumps(str(MIND_PROVENANCE_JS))}, 'utf8');
+eval(src);
+const run = {{
+  ok: true,
+  result_jsonb: {{
+    ok: true,
+    mind_quality: "meaningful_synthesis",
+    brief: {{
+      mind_quality: "meaningful_synthesis",
+      mind_authorized_for_stance_skip: true,
+      machine_contract: {{
+        "mind.llm_synthesis_enabled": true,
+        "mind.quality": "meaningful_synthesis",
+        "mind.authorized_for_stance_skip": true,
+        "mind.authorized_for_stance_use": true,
+        "mind.phase_telemetry": [
+          {{ phase_name: "semantic_synthesis", route: "quick", ok: true, parse_ok: true, validation_ok: true, elapsed_ms: 1504 }},
+          {{ phase_name: "active_frontier_judge", route: "metacog", ok: true, parse_ok: true, validation_ok: true, elapsed_ms: 3470 }},
+          {{ phase_name: "stance_handoff", route: "chat", ok: true, parse_ok: true, validation_ok: true, elapsed_ms: 4282 }},
+        ],
+      }},
+    }},
+  }},
+}};
+const prov = OrionMindProvenance.normalizeMindRunProvenance(run);
+console.log(JSON.stringify({{
+  cognition_path: prov.cognition_path,
+  llm_attempted: prov.llm_attempted,
+  final_source: prov.final_source,
+}}));
+"""
+    )
+    assert out["cognition_path"] == "llm_synthesis"
+    assert out["llm_attempted"] is True
+    assert out["final_source"] == "mind_llm_handoff"
+
+
 def test_success_fixture_renders_brief_item_cards() -> None:
     out = _run_node(
         f"""

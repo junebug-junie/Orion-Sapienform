@@ -222,6 +222,7 @@ def test_mocked_mind_run_returns_meaningful_synthesis(monkeypatch: pytest.Monkey
     assert result.mind_quality == "meaningful_synthesis"
     assert result.brief.mind_authorized_for_stance_skip is True
     assert result.brief.machine_contract.get("mind.authorized_for_stance_use") is True
+    assert result.brief.machine_contract.get("mind.llm_synthesis_attempted") is True
 
 
 def test_llm_failure_falls_back_to_deterministic(monkeypatch: pytest.MonkeyPatch) -> None:

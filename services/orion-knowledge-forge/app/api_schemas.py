@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -15,30 +16,44 @@ class ContextPackTargetApiV1(str, Enum):
 class KnowledgeForgeStatusV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    ok: bool = True
-    enabled: bool
-    write_enabled: bool
+    schema_version: str = "knowledge_forge_status.v1"
+    generated_at: datetime
     repo_root: str
-    counts: dict[str, int]
+    source_count: int
+    claim_count: int
+    accepted_claim_count: int
+    disputed_claim_count: int
+    stale_claim_count: int
+    spec_count: int
+    execution_ready_spec_count: int
+    decision_count: int
+    pending_review_count: int
+    context_pack_count: int
     warnings: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    write_enabled: bool = False
 
 
 class ClaimSummaryV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    id: str
+    claim_id: str
     statement: str
     status: str
-    confidence: str
+    source_refs: list[str] = Field(default_factory=list)
+    supports: list[str] = Field(default_factory=list)
+    contradicts: list[str] = Field(default_factory=list)
+    used_by: list[str] = Field(default_factory=list)
     path: str | None = None
 
 
 class SpecSummaryV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    id: str
+    spec_id: str
+    title: str
     status: str
-    component: str
+    component: str | None = None
     requirements: list[str]
     non_goals: list[str] = Field(default_factory=list)
     acceptance_tests: list[str] = Field(default_factory=list)
@@ -99,9 +114,26 @@ class ContextPackCompileRequestV1(BaseModel):
     write_file: bool = False
 
 
+class SearchHitV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str
+    id: str
+    label: str
+    status: str | None = None
+    path: str | None = None
+    score: int = 0
+
+
 class ContextPackCompileResultV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    content: str
+    pack_id: str
     path: str | None = None
+    target: str
+    task: str
+    included_specs: list[str] = Field(default_factory=list)
+    included_claims: list[str] = Field(default_factory=list)
+    excluded_claims: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    content: str

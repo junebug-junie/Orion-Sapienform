@@ -8,12 +8,12 @@ def test_status_counts(client: TestClient) -> None:
     response = client.get("/v1/status")
     assert response.status_code == 200
     body = response.json()
-    assert body["ok"] is True
+    assert body["schema_version"] == "knowledge_forge_status.v1"
     assert body["enabled"] is True
     assert body["write_enabled"] is False
-    assert body["counts"]["claims"] >= 2
-    assert body["counts"]["specs"] >= 1
-    assert body["counts"]["sources"] >= 1
+    assert body["claim_count"] >= 2
+    assert body["spec_count"] >= 1
+    assert body["source_count"] >= 1
 
 
 def test_malformed_warning_not_crash(client: TestClient, corpus_root) -> None:
@@ -38,7 +38,7 @@ def test_claim_search(client: TestClient) -> None:
     assert response.status_code == 200
     hits = response.json()
     assert len(hits) >= 1
-    assert hits[0]["id"] == "claim:test:0001"
+    assert hits[0]["claim_id"] == "claim:test:0001"
 
 
 def test_compile_excludes_disputed_stale_by_default(client: TestClient) -> None:

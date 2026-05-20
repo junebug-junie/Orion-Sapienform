@@ -10,6 +10,7 @@ from app.api_schemas import (
     DecisionSummaryV1,
     KnowledgeForgeStatusV1,
     ReviewSummaryV1,
+    SearchHitV1,
     SourceSummaryV1,
     SpecSummaryV1,
 )
@@ -65,6 +66,14 @@ def search_claims(
     service: KnowledgeForgeService = Depends(require_enabled),
 ) -> list[ClaimSummaryV1]:
     return service.search_claims(q)
+
+
+@router.get("/search", response_model=list[SearchHitV1])
+def search_all(
+    q: str = Query(..., min_length=1),
+    service: KnowledgeForgeService = Depends(require_enabled),
+) -> list[SearchHitV1]:
+    return service.search(q)
 
 
 @router.get("/specs", response_model=list[SpecSummaryV1])

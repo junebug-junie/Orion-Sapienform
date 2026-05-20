@@ -26,6 +26,7 @@ from app.api_schemas import (
     DecisionSummaryV1,
     KnowledgeForgeStatusV1,
     ReviewSummaryV1,
+    SearchHitV1,
     SourceSummaryV1,
     SpecSummaryV1,
 )
@@ -70,32 +71,91 @@ class KnowledgeForgeService:
                 self.warnings.append(f"{path}: {exc}")
 
     def status(self) -> KnowledgeForgeStatusV1:
+        claims = self.store.claims()
+        specs = self.store.specs()
         return KnowledgeForgeStatusV1(
+            generated_at=datetime.now(timezone.utc),
+            repo_root=str(self.root),
+            source_count=len(self._sources()),
+            claim_count=len(claims),
+            accepted_claim_count=sum(1 for c in claims if c.status.value == "accepted"),
+            disputed_claim_count=sum(1 for c in claims if c.status.value == "disputed"),
+            stale_claim_count=sum(1 for c in claims if c.status.value == "stale"),
+            spec_count=len(specs),
+            execution_ready_spec_count=sum(1 for s in specs if s.status.value == "execution_ready"),
+            decision_count=len(self._decisions()),
+            pending_review_count=len(list_pending_patches(self.root)),
+            context_pack_count=len(self._context_packs()),
+            warnings=list(self.warnings),
             enabled=self.settings.knowledge_forge_enabled,
             write_enabled=self.settings.knowledge_forge_write_enabled,
-            repo_root=str(self.root),
-            counts={
-                "claims": len(self.store.claims()),
-                "specs": len(self.store.specs()),
-                "decisions": len(self._decisions()),
-                "context_packs": len(self._context_packs()),
-                "sources": len(self._sources()),
-                "pending_reviews": len(list_pending_patches(self.root)),
-            },
-            warnings=list(self.warnings),
         )
 
     def list_claims(self) -> list[ClaimSummaryV1]:
         return [self._claim_summary(claim) for claim in sorted(self.store.claims(), key=lambda c: c.id)]
 
     def search_claims(self, query: str) -> list[ClaimSummaryV1]:
-        needle = query.casefold()
-        matches = [
-            claim
-            for claim in self.store.claims()
-            if needle in claim.id.casefold() or needle in claim.statement.casefold()
+        return [
+            self._claim_summary(hit)
+            for hit in self._search_claim_docs(query)
         ]
-        return [self._claim_summary(claim) for claim in matches[: self.settings.knowledge_forge_max_search_results]]
+
+    def search(self, query: str) -> list[SearchHitV1]:
+        needle = query.casefold()
+        hits: list[SearchHitV1] = []
+        for claim in self._search_claim_docs(query):
+            hits.append(
+                SearchHitV1(
+                    kind="claim",
+                    id=claim.id,
+                    label=claim.statement,
+                    status=claim.status.value,
+                    path=self._rel_path(claim.id),
+                    score=self._score_text(needle, claim.id, claim.statement, self._rel_path(claim.id)),
+                )
+            )
+        for spec in self.store.specs():
+            title = _spec_title(spec)
+            body = " ".join(spec.requirements)
+            path = self._rel_path(spec.id)
+            score = self._score_text(needle, spec.id, title, spec.component, body, path)
+            if score > 0:
+                hits.append(
+                    SearchHitV1(
+                        kind="spec",
+                        id=spec.id,
+                        label=title,
+                        status=spec.status.value,
+                        path=path,
+                        score=score,
+                    )
+                )
+        for source in self._sources():
+            score = self._score_text(needle, source.id, source.path)
+            if score > 0:
+                hits.append(
+                    SearchHitV1(
+                        kind="source",
+                        id=source.id,
+                        label=source.path,
+                        path=source.path,
+                        score=score,
+                    )
+                )
+        hits.sort(key=lambda h: (-h.score, h.kind, h.id))
+        return hits[: self.settings.knowledge_forge_max_search_results]
+
+    def _search_claim_docs(self, query: str) -> list[ClaimV1]:
+        needle = query.casefold()
+        scored: list[tuple[int, ClaimV1]] = []
+        for claim in self.store.claims():
+            path = self._rel_path(claim.id)
+            body = self._read_doc_body(claim.id)
+            score = self._score_text(needle, claim.id, claim.statement, path, body)
+            if score > 0:
+                scored.append((score, claim))
+        scored.sort(key=lambda item: (-item[0], item[1].id))
+        return [claim for _, claim in scored[: self.settings.knowledge_forge_max_search_results]]
 
     def list_specs(self) -> list[SpecSummaryV1]:
         return [self._spec_summary(spec) for spec in sorted(self.store.specs(), key=lambda s: s.id)]
@@ -136,6 +196,35 @@ class KnowledgeForgeService:
         ]
 
     def compile_context_pack(self, request: ContextPackCompileRequestV1) -> ContextPackCompileResultV1:
+        included_specs: list[str] = []
+        for spec_id in request.spec_ids:
+            doc = self.store.get(spec_id)
+            if isinstance(doc, SpecV1):
+                included_specs.append(spec_id)
+
+        claim_id_set: set[str] = set(request.claim_ids)
+        for spec_id in included_specs:
+            spec = self.store.get(spec_id)
+            if isinstance(spec, SpecV1):
+                claim_id_set.update(spec.source_claims)
+
+        included_claims: list[str] = []
+        excluded_claims: list[str] = []
+        for claim_id in sorted(claim_id_set):
+            doc = self.store.get(claim_id)
+            if not isinstance(doc, ClaimV1):
+                continue
+            from orion.knowledge_forge.api_compile import _claim_included
+
+            if _claim_included(
+                doc,
+                include_disputed=request.include_disputed,
+                include_stale=request.include_stale,
+            ):
+                included_claims.append(claim_id)
+            else:
+                excluded_claims.append(claim_id)
+
         content, compile_warnings = compile_context_pack_api_v1(
             self.store,
             task=request.task,
@@ -147,6 +236,7 @@ class KnowledgeForgeService:
         )
         warnings = list(compile_warnings)
         output_path: Path | None = None
+        pack_id = f"ctx:generated:{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
         if request.write_file:
             if not self.settings.knowledge_forge_write_enabled:
                 warnings.append("write disabled: KNOWLEDGE_FORGE_WRITE_ENABLED is false")
@@ -159,10 +249,17 @@ class KnowledgeForgeService:
                 )
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 output_path.write_text(content, encoding="utf-8")
+                pack_id = f"ctx:file:{output_path.stem}"
         return ContextPackCompileResultV1(
-            content=content,
+            pack_id=pack_id,
             path=str(output_path.relative_to(self.root)) if output_path else None,
+            target=request.target.value,
+            task=request.task,
+            included_specs=included_specs,
+            included_claims=included_claims,
+            excluded_claims=excluded_claims,
             warnings=warnings,
+            content=content,
         )
 
     def accept_review(self, review_id: str) -> str:
@@ -206,18 +303,43 @@ class KnowledgeForgeService:
         except ValueError:
             return str(path)
 
+    def _read_doc_body(self, doc_id: str) -> str:
+        path = self.store.paths_by_id.get(doc_id)
+        if path is None or not path.is_file():
+            return ""
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError:
+            return ""
+
+    def _score_text(self, needle: str, *parts: str | None) -> int:
+        score = 0
+        for part in parts:
+            if not part:
+                continue
+            folded = part.casefold()
+            if needle == folded:
+                score = max(score, 100)
+            elif needle in folded:
+                score = max(score, 50 if len(parts) <= 2 else 10)
+        return score
+
     def _claim_summary(self, claim: ClaimV1) -> ClaimSummaryV1:
         return ClaimSummaryV1(
-            id=claim.id,
+            claim_id=claim.id,
             statement=claim.statement,
             status=claim.status.value,
-            confidence=claim.confidence,
+            source_refs=list(claim.source_refs),
+            supports=list(claim.supports),
+            contradicts=list(claim.contradicts),
+            used_by=list(claim.used_by),
             path=self._rel_path(claim.id),
         )
 
     def _spec_summary(self, spec: SpecV1) -> SpecSummaryV1:
         return SpecSummaryV1(
-            id=spec.id,
+            spec_id=spec.id,
+            title=_spec_title(spec),
             status=spec.status.value,
             component=spec.component,
             requirements=list(spec.requirements),
@@ -261,3 +383,9 @@ def _api_target_from_model(target: ContextPackTargetV1) -> str:
     if target == ContextPackTargetV1.orion_agent:
         return "orion"
     return target.value
+
+
+def _spec_title(spec: SpecV1) -> str:
+    if spec.requirements:
+        return spec.requirements[0]
+    return spec.component

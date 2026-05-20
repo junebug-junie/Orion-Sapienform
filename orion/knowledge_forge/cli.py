@@ -17,7 +17,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="orion.knowledge_forge")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("lint")
+    lint_p = sub.add_parser("lint")
+    lint_p.add_argument("--report-out", default="")
 
     review = sub.add_parser("review")
     review_sub = review.add_subparsers(dest="review_cmd", required=True)
@@ -46,6 +47,11 @@ def main(argv: list[str] | None = None) -> int:
         store = KnowledgeStore(root)
         store.load()
         report = lint_corpus(store)
+        if args.report_out:
+            out = Path(args.report_out)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            lines = [f"{i.code}\t{i.doc_id}\t{i.message}" for i in report.issues]
+            out.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
         for issue in report.issues:
             print(f"{issue.code}\t{issue.doc_id}\t{issue.message}")
         return 0 if report.ok else 1

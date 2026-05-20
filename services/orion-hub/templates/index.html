@@ -62,6 +62,13 @@
             role="button"
           >Mind</a>
           <a
+            id="forgeTabButton"
+            href="#forge"
+            data-hash-target="#forge"
+            class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
+            role="button"
+          >Forge</a>
+          <a
             id="signalsTabButton"
             href="#signals"
             data-hash-target="#signals"
@@ -1015,6 +1022,127 @@
             </tbody>
           </table>
         </div>
+      </section>
+
+      <section id="forge" data-panel="forge" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-bold text-white">Knowledge Forge</h2>
+            <p class="text-xs text-gray-400">Claims, specs, reviews, and context-pack compiler via Hub <code class="text-gray-500">/api/knowledge</code>.</p>
+          </div>
+          <button type="button" id="forgeRefreshButton" class="px-2 py-1 text-xs rounded border border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700">Refresh</button>
+        </div>
+        <div id="forgeStatus" class="text-xs text-gray-400 min-h-[1.25rem]">Open Forge tab to load knowledge status.</div>
+
+        <div id="forgeStatusStrip" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 text-xs">
+          <div class="rounded border border-gray-700 bg-gray-950/40 p-2"><span class="text-gray-400">Sources</span> <span id="forgeStatusSources" class="ml-1 font-semibold text-gray-100">—</span></div>
+          <div class="rounded border border-gray-700 bg-gray-950/40 p-2"><span class="text-gray-400">Claims</span> <span id="forgeStatusClaims" class="ml-1 font-semibold text-gray-100">—</span></div>
+          <div class="rounded border border-gray-700 bg-gray-950/40 p-2"><span class="text-gray-400">Accepted</span> <span id="forgeStatusAccepted" class="ml-1 font-semibold text-emerald-200">—</span></div>
+          <div class="rounded border border-gray-700 bg-gray-950/40 p-2"><span class="text-gray-400">Disputed</span> <span id="forgeStatusDisputed" class="ml-1 font-semibold text-amber-200">—</span></div>
+          <div class="rounded border border-gray-700 bg-gray-950/40 p-2"><span class="text-gray-400">Stale</span> <span id="forgeStatusStale" class="ml-1 font-semibold text-rose-200">—</span></div>
+          <div class="rounded border border-gray-700 bg-gray-950/40 p-2"><span class="text-gray-400">Specs</span> <span id="forgeStatusSpecs" class="ml-1 font-semibold text-gray-100">—</span></div>
+          <div class="rounded border border-gray-700 bg-gray-950/40 p-2"><span class="text-gray-400">Execution-ready</span> <span id="forgeStatusExecutionReady" class="ml-1 font-semibold text-indigo-200">—</span></div>
+          <div class="rounded border border-gray-700 bg-gray-950/40 p-2"><span class="text-gray-400">Pending reviews</span> <span id="forgeStatusPendingReviews" class="ml-1 font-semibold text-amber-200">—</span></div>
+          <div class="rounded border border-gray-700 bg-gray-950/40 p-2"><span class="text-gray-400">Context packs</span> <span id="forgeStatusContextPacks" class="ml-1 font-semibold text-gray-100">—</span></div>
+        </div>
+
+        <div class="rounded-xl border border-gray-800 bg-gray-950/40 p-3 flex flex-col gap-2">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-[10px] uppercase tracking-wide text-gray-500">Operator takeaway</span>
+            <span id="forgeHealthBadge" class="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full border border-gray-600 text-gray-400">Unknown</span>
+          </div>
+          <ul id="forgeWarningsList" class="text-xs text-amber-200/90 list-disc list-inside space-y-0.5 hidden"></ul>
+          <p id="forgeSuggestedAction" class="text-xs text-gray-300">—</p>
+        </div>
+
+        <div class="rounded-xl border border-gray-800 bg-gray-950/40 p-3 flex flex-col gap-2">
+          <div class="text-[10px] uppercase tracking-wide text-gray-500">Search</div>
+          <div class="flex flex-wrap items-center gap-2">
+            <input id="forgeSearchInput" type="search" placeholder="Query claims, specs, sources…" class="flex-1 min-w-[12rem] bg-gray-800 text-gray-200 border border-gray-700 rounded px-2 py-1 text-xs" />
+            <button type="button" id="forgeSearchButton" class="px-2 py-1 text-xs rounded border border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700">Search</button>
+          </div>
+          <div id="forgeSearchResults" class="text-xs text-gray-400 space-y-1 max-h-40 overflow-auto"></div>
+        </div>
+
+        <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          <div class="rounded-xl border border-gray-800 bg-gray-950/40 p-3 flex flex-col gap-2 min-h-[12rem]">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <span class="text-[10px] uppercase tracking-wide text-gray-500">Claims</span>
+              <div class="flex flex-wrap gap-1 text-[10px]">
+                <button type="button" id="forgeClaimsFilterAll" data-forge-claims-filter="all" class="forge-claims-filter px-2 py-0.5 rounded border border-indigo-500 bg-indigo-600/30 text-indigo-100">All</button>
+                <button type="button" id="forgeClaimsFilterAccepted" data-forge-claims-filter="accepted" class="forge-claims-filter px-2 py-0.5 rounded border border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700">Accepted</button>
+                <button type="button" id="forgeClaimsFilterDisputed" data-forge-claims-filter="disputed" class="forge-claims-filter px-2 py-0.5 rounded border border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700">Disputed</button>
+                <button type="button" id="forgeClaimsFilterStale" data-forge-claims-filter="stale" class="forge-claims-filter px-2 py-0.5 rounded border border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700">Stale</button>
+              </div>
+            </div>
+            <div id="forgeClaimsList" class="text-xs text-gray-300 space-y-2 max-h-56 overflow-auto"></div>
+          </div>
+
+          <div class="rounded-xl border border-gray-800 bg-gray-950/40 p-3 flex flex-col gap-2 min-h-[12rem]">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <span class="text-[10px] uppercase tracking-wide text-gray-500">Specs</span>
+              <select id="forgeSpecsStatusFilter" class="bg-gray-800 text-gray-200 border border-gray-700 rounded px-2 py-0.5 text-[10px]">
+                <option value="">All statuses</option>
+                <option value="draft">draft</option>
+                <option value="reviewed">reviewed</option>
+                <option value="execution_ready">execution_ready</option>
+              </select>
+            </div>
+            <div id="forgeSpecsList" class="text-xs text-gray-300 space-y-2 max-h-56 overflow-auto"></div>
+          </div>
+        </div>
+
+        <div class="rounded-xl border border-gray-800 bg-gray-950/40 p-3 flex flex-col gap-2">
+          <span class="text-[10px] uppercase tracking-wide text-gray-500">Pending reviews</span>
+          <div id="forgeReviewsList" class="text-xs text-gray-300 space-y-2 max-h-40 overflow-auto"></div>
+        </div>
+
+        <div class="rounded-xl border border-indigo-900/60 bg-indigo-950/20 p-4 flex flex-col gap-3">
+          <span class="text-[10px] uppercase tracking-wide text-indigo-300/90">Context pack compiler</span>
+          <label class="flex flex-col gap-1 text-xs text-gray-400">
+            Task
+            <textarea id="forgeCompileTask" rows="3" class="bg-gray-800 text-gray-200 border border-gray-700 rounded px-2 py-1 text-xs" placeholder="What should the agent accomplish?"></textarea>
+          </label>
+          <div class="flex flex-wrap items-center gap-3 text-xs">
+            <label class="text-gray-400" for="forgeCompileTarget">Target</label>
+            <select id="forgeCompileTarget" class="bg-gray-800 text-gray-200 border border-gray-700 rounded px-2 py-1">
+              <option value="cursor">cursor</option>
+              <option value="codex">codex</option>
+              <option value="claude_code">claude_code</option>
+              <option value="orion">orion</option>
+            </select>
+          </div>
+          <div class="flex flex-col gap-1">
+            <span class="text-xs text-gray-400">Specs (reviewed / execution_ready)</span>
+            <div id="forgeCompileSpecsList" class="flex flex-col gap-1 max-h-32 overflow-auto text-xs"></div>
+          </div>
+          <div class="flex flex-wrap gap-4 text-xs text-gray-300">
+            <label class="inline-flex items-center gap-2"><input id="forgeIncludeDisputed" type="checkbox" class="rounded border border-gray-600 bg-gray-800" /> Include disputed</label>
+            <label class="inline-flex items-center gap-2"><input id="forgeIncludeStale" type="checkbox" class="rounded border border-gray-600 bg-gray-800" /> Include stale</label>
+            <label class="inline-flex items-center gap-2"><input id="forgeWriteFile" type="checkbox" class="rounded border border-gray-600 bg-gray-800" /> Write file</label>
+          </div>
+          <button type="button" id="forgeCompileButton" class="self-start px-3 py-1.5 text-xs font-semibold rounded border border-indigo-500 bg-indigo-600 text-white hover:bg-indigo-500">Compile context pack</button>
+          <div id="forgeCompileResult" class="text-xs text-gray-300 space-y-2 hidden">
+            <div><span class="text-gray-500">Path:</span> <span id="forgeCompilePath" class="font-mono text-gray-200">—</span></div>
+            <div><span class="text-gray-500">Included specs:</span> <span id="forgeCompileIncludedSpecs" class="text-gray-200">—</span></div>
+            <div><span class="text-gray-500">Included claims:</span> <span id="forgeCompileIncludedClaims" class="text-gray-200">—</span></div>
+            <div><span class="text-gray-500">Excluded claims:</span> <span id="forgeCompileExcludedClaims" class="text-gray-200">—</span></div>
+            <ul id="forgeCompileWarnings" class="text-amber-200/90 list-disc list-inside hidden"></ul>
+            <details class="rounded border border-gray-700 bg-gray-950/50 p-2">
+              <summary class="cursor-pointer text-gray-400 hover:text-gray-200">Content preview</summary>
+              <pre id="forgeCompileContentPreview" class="mt-2 text-[10px] leading-relaxed text-gray-300 whitespace-pre-wrap font-mono max-h-64 overflow-auto"></pre>
+            </details>
+          </div>
+        </div>
+
+        <details id="forgeDebugDetails" class="rounded-xl border border-gray-800 bg-gray-950/40 p-3 text-xs">
+          <summary class="cursor-pointer text-gray-400 hover:text-gray-200">Debug JSON</summary>
+          <div class="mt-2 space-y-2">
+            <details><summary class="text-gray-500">Status</summary><pre id="forgeDebugStatus" class="mt-1 text-[10px] font-mono text-gray-400 overflow-auto max-h-40"></pre></details>
+            <details><summary class="text-gray-500">Search</summary><pre id="forgeDebugSearch" class="mt-1 text-[10px] font-mono text-gray-400 overflow-auto max-h-40"></pre></details>
+            <details><summary class="text-gray-500">Compile</summary><pre id="forgeDebugCompile" class="mt-1 text-[10px] font-mono text-gray-400 overflow-auto max-h-40"></pre></details>
+          </div>
+        </details>
       </section>
 
       <section id="signals" data-panel="signals" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">

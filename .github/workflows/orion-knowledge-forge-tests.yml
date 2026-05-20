@@ -1,4 +1,4 @@
-# Workflow: Orion Knowledge Forge v0 (repo-root package + corpus tests).
+# Workflow: Orion Knowledge Forge (repo-root package + service + Hub proxy tests).
 
 name: orion-knowledge-forge-tests
 
@@ -7,6 +7,13 @@ on:
     paths:
       - "orion/knowledge_forge/**"
       - "orion-knowledge/**"
+      - "services/orion-knowledge-forge/**"
+      - "services/orion-hub/app/settings.py"
+      - "services/orion-hub/scripts/api_routes.py"
+      - "services/orion-hub/static/js/app.js"
+      - "services/orion-hub/templates/index.html"
+      - "services/orion-hub/tests/test_knowledge_forge_proxy_routes.py"
+      - "services/orion-hub/tests/test_forge_hub_tab.py"
       - "tests/test_knowledge_forge_*.py"
       - "tests/fixtures/knowledge_forge/**"
       - ".github/workflows/orion-knowledge-forge-tests.yml"
@@ -15,6 +22,13 @@ on:
     paths:
       - "orion/knowledge_forge/**"
       - "orion-knowledge/**"
+      - "services/orion-knowledge-forge/**"
+      - "services/orion-hub/app/settings.py"
+      - "services/orion-hub/scripts/api_routes.py"
+      - "services/orion-hub/static/js/app.js"
+      - "services/orion-hub/templates/index.html"
+      - "services/orion-hub/tests/test_knowledge_forge_proxy_routes.py"
+      - "services/orion-hub/tests/test_forge_hub_tab.py"
       - "tests/test_knowledge_forge_*.py"
       - "tests/fixtures/knowledge_forge/**"
       - ".github/workflows/orion-knowledge-forge-tests.yml"
@@ -31,7 +45,13 @@ jobs:
       - name: Install deps (PyYAML + pydantic from hub requirements subset)
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pydantic PyYAML
-      - name: Run Knowledge Forge tests
+          pip install pytest pydantic PyYAML fastapi httpx aiohttp
+      - name: Run Knowledge Forge repo-root tests
         run: |
           PYTHONPATH=. python -m pytest tests/test_knowledge_forge_*.py -q
+      - name: Run Knowledge Forge service tests
+        run: |
+          PYTHONPATH=services/orion-knowledge-forge python -m pytest services/orion-knowledge-forge/tests/ -q
+      - name: Run Hub Knowledge Forge proxy tests
+        run: |
+          PYTHONPATH=services/orion-hub python -m pytest services/orion-hub/tests/test_knowledge_forge_proxy_routes.py -q

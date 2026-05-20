@@ -43,6 +43,7 @@ htmlcov/
 .env
 .env.*
 *.env
+!services/orion-knowledge-forge/.env
 *.secret
 secrets.json
 credentials.json

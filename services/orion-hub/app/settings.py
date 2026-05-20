@@ -59,6 +59,14 @@ class Settings(BaseSettings):
         default=10.0,
         alias="WORLD_PULSE_PROXY_TIMEOUT_SEC",
     )
+    KNOWLEDGE_FORGE_BASE_URL: str = Field(
+        default="http://orion-knowledge-forge:8630",
+        alias="KNOWLEDGE_FORGE_BASE_URL",
+    )
+    KNOWLEDGE_FORGE_PROXY_TIMEOUT_SEC: float = Field(
+        default=15.0,
+        alias="KNOWLEDGE_FORGE_PROXY_TIMEOUT_SEC",
+    )
     WORLD_PULSE_UI_FIXTURE_RUN_ENABLED: bool = Field(
         default=False,
         alias="WORLD_PULSE_UI_FIXTURE_RUN_ENABLED",

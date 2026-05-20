@@ -556,6 +556,46 @@ loadDismissedIds();
   const memoryPanel = document.getElementById("memory");
   const mindTabButton = document.getElementById("mindTabButton");
   const mindPanel = document.getElementById("mind");
+  const forgeTabButton = document.getElementById("forgeTabButton");
+  const forgePanel = document.getElementById("forge");
+  const forgeRefreshButton = document.getElementById("forgeRefreshButton");
+  const forgeStatus = document.getElementById("forgeStatus");
+  const forgeStatusSources = document.getElementById("forgeStatusSources");
+  const forgeStatusClaims = document.getElementById("forgeStatusClaims");
+  const forgeStatusAccepted = document.getElementById("forgeStatusAccepted");
+  const forgeStatusDisputed = document.getElementById("forgeStatusDisputed");
+  const forgeStatusStale = document.getElementById("forgeStatusStale");
+  const forgeStatusSpecs = document.getElementById("forgeStatusSpecs");
+  const forgeStatusExecutionReady = document.getElementById("forgeStatusExecutionReady");
+  const forgeStatusPendingReviews = document.getElementById("forgeStatusPendingReviews");
+  const forgeStatusContextPacks = document.getElementById("forgeStatusContextPacks");
+  const forgeHealthBadge = document.getElementById("forgeHealthBadge");
+  const forgeWarningsList = document.getElementById("forgeWarningsList");
+  const forgeSuggestedAction = document.getElementById("forgeSuggestedAction");
+  const forgeSearchInput = document.getElementById("forgeSearchInput");
+  const forgeSearchButton = document.getElementById("forgeSearchButton");
+  const forgeSearchResults = document.getElementById("forgeSearchResults");
+  const forgeClaimsList = document.getElementById("forgeClaimsList");
+  const forgeSpecsStatusFilter = document.getElementById("forgeSpecsStatusFilter");
+  const forgeSpecsList = document.getElementById("forgeSpecsList");
+  const forgeReviewsList = document.getElementById("forgeReviewsList");
+  const forgeCompileTask = document.getElementById("forgeCompileTask");
+  const forgeCompileTarget = document.getElementById("forgeCompileTarget");
+  const forgeCompileSpecsList = document.getElementById("forgeCompileSpecsList");
+  const forgeIncludeDisputed = document.getElementById("forgeIncludeDisputed");
+  const forgeIncludeStale = document.getElementById("forgeIncludeStale");
+  const forgeWriteFile = document.getElementById("forgeWriteFile");
+  const forgeCompileButton = document.getElementById("forgeCompileButton");
+  const forgeCompileResult = document.getElementById("forgeCompileResult");
+  const forgeCompilePath = document.getElementById("forgeCompilePath");
+  const forgeCompileIncludedSpecs = document.getElementById("forgeCompileIncludedSpecs");
+  const forgeCompileIncludedClaims = document.getElementById("forgeCompileIncludedClaims");
+  const forgeCompileExcludedClaims = document.getElementById("forgeCompileExcludedClaims");
+  const forgeCompileWarnings = document.getElementById("forgeCompileWarnings");
+  const forgeCompileContentPreview = document.getElementById("forgeCompileContentPreview");
+  const forgeDebugStatus = document.getElementById("forgeDebugStatus");
+  const forgeDebugSearch = document.getElementById("forgeDebugSearch");
+  const forgeDebugCompile = document.getElementById("forgeDebugCompile");
   const signalsTabButton = document.getElementById("signalsTabButton");
   const signalsPanel = document.getElementById("signals");
   const mindHoursInput = document.getElementById("mindHoursInput");
@@ -808,6 +848,7 @@ loadDismissedIds();
   }
 
   const TOPIC_FOUNDRY_PROXY_BASE = `${API_BASE_URL}/api/topic-foundry`;
+  const KNOWLEDGE_PROXY_BASE = `${API_BASE_URL}/api/knowledge`;
   const TOPIC_STUDIO_STATE_KEY = "topic_studio_state_v1";
   const MIN_PREVIEW_DOCS = 20;
 
@@ -847,6 +888,9 @@ loadDismissedIds();
     if (tabKey === "signals" && !signalsPanel) {
       effectiveTab = "hub";
     }
+    if (tabKey === "forge" && !forgePanel) {
+      effectiveTab = "hub";
+    }
     const isHub = effectiveTab === "hub";
     const isTopicStudio = effectiveTab === "topic-studio";
     const isServiceLogs = effectiveTab === "service-logs";
@@ -855,6 +899,7 @@ loadDismissedIds();
     const isPressure = effectiveTab === "pressure";
     const isMind = effectiveTab === "mind";
     const isSignals = effectiveTab === "signals";
+    const isForge = effectiveTab === "forge";
     hubTabPanel.classList.toggle("hidden", !isHub);
     topicStudioPanel.classList.toggle("hidden", !isTopicStudio);
     serviceLogsPanel.classList.toggle("hidden", !isServiceLogs);
@@ -883,6 +928,12 @@ loadDismissedIds();
     if (pressurePanel) {
       pressurePanel.classList.toggle("hidden", !isPressure);
     }
+    if (forgePanel) {
+      forgePanel.classList.toggle("hidden", !isForge);
+      if (isForge) {
+        refreshForgeTab();
+      }
+    }
     styleTabButton(hubTabButton, isHub);
     styleTabButton(topicStudioTabButton, isTopicStudio);
     styleTabButton(serviceLogsTabButton, isServiceLogs);
@@ -898,6 +949,9 @@ loadDismissedIds();
     }
     if (pressureAnalyticsTabButton) {
       styleTabButton(pressureAnalyticsTabButton, isPressure);
+    }
+    if (forgeTabButton) {
+      styleTabButton(forgeTabButton, isForge);
     }
   }
 
@@ -1449,8 +1503,10 @@ loadDismissedIds();
       setActiveTab("mind");
     } else if (h === "#signals" && signalsPanel && signalsTabButton) {
       setActiveTab("signals");
+    } else if (h === "#forge" && forgePanel && forgeTabButton) {
+      setActiveTab("forge");
     } else {
-      if (h === "#pressure" || h === "#memory" || h === "#mind" || h === "#signals") {
+      if (h === "#pressure" || h === "#memory" || h === "#mind" || h === "#signals" || h === "#forge") {
         history.replaceState(null, "", "#hub");
       }
       setActiveTab("hub");
@@ -1812,6 +1868,393 @@ loadDismissedIds();
       throw error;
     }
     return { payload, headers: response.headers };
+  }
+
+  let forgeClaimsFilter = "all";
+  let forgeClaimsCache = [];
+  let forgeSpecsCache = [];
+  let forgeStatusCache = null;
+  let forgeSearchCache = null;
+  let forgeCompileCache = null;
+
+  async function knowledgeForgeFetch(path, options = {}) {
+    const response = await fetch(`${KNOWLEDGE_PROXY_BASE}${path}`, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      },
+    });
+    const payloadText = await response.text();
+    const contentType = response.headers.get("content-type", "");
+    let payload = payloadText;
+    if (payloadText && contentType.includes("application/json")) {
+      try {
+        payload = JSON.parse(payloadText);
+      } catch {
+        payload = payloadText;
+      }
+    }
+    if (!response.ok) {
+      const detail =
+        typeof payload === "object" && payload && payload.detail
+          ? String(payload.detail)
+          : payloadText || response.statusText || `Request failed (${response.status})`;
+      const error = new Error(detail);
+      error.status = response.status;
+      error.body = payload;
+      throw error;
+    }
+    if (response.status === 204) return null;
+    return payload;
+  }
+
+  function forgeBadgeClass(status) {
+    const normalized = String(status || "").toLowerCase();
+    if (normalized === "accepted" || normalized === "execution_ready" || normalized === "reviewed") {
+      return "border-emerald-700/60 bg-emerald-950/40 text-emerald-200";
+    }
+    if (normalized === "disputed" || normalized === "draft") {
+      return "border-amber-700/60 bg-amber-950/40 text-amber-200";
+    }
+    if (normalized === "stale") {
+      return "border-rose-700/60 bg-rose-950/40 text-rose-200";
+    }
+    return "border-gray-600 bg-gray-800 text-gray-300";
+  }
+
+  function forgeRenderBadge(label, status) {
+    const cls = forgeBadgeClass(status);
+    return `<span class="inline-flex px-1.5 py-0.5 rounded border text-[10px] uppercase tracking-wide ${cls}">${label}</span>`;
+  }
+
+  function forgeSetDebugPre(target, value) {
+    if (!target) return;
+    target.textContent = value == null ? "" : JSON.stringify(value, null, 2);
+  }
+
+  function forgeRenderStatusStrip(status) {
+    if (!status) return;
+    const set = (el, val) => {
+      if (el) el.textContent = String(val ?? "—");
+    };
+    set(forgeStatusSources, status.source_count);
+    set(forgeStatusClaims, status.claim_count);
+    set(forgeStatusAccepted, status.accepted_claim_count);
+    set(forgeStatusDisputed, status.disputed_claim_count);
+    set(forgeStatusStale, status.stale_claim_count);
+    set(forgeStatusSpecs, status.spec_count);
+    set(forgeStatusExecutionReady, status.execution_ready_spec_count);
+    set(forgeStatusPendingReviews, status.pending_review_count);
+    set(forgeStatusContextPacks, status.context_pack_count);
+    forgeSetDebugPre(forgeDebugStatus, status);
+  }
+
+  function forgeRenderTakeaway(status) {
+    if (!forgeHealthBadge || !forgeSuggestedAction) return;
+    const warnings = Array.isArray(status?.warnings) ? status.warnings : [];
+    const enabled = status?.enabled !== false;
+    const healthy = enabled && warnings.length === 0;
+    forgeHealthBadge.textContent = healthy ? "Healthy" : "Degraded";
+    forgeHealthBadge.className = healthy
+      ? "text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full border border-emerald-600/60 bg-emerald-950/40 text-emerald-200"
+      : "text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full border border-amber-600/60 bg-amber-950/40 text-amber-200";
+    if (forgeWarningsList) {
+      if (warnings.length) {
+        forgeWarningsList.classList.remove("hidden");
+        forgeWarningsList.innerHTML = warnings.map((w) => `<li>${w}</li>`).join("");
+      } else {
+        forgeWarningsList.classList.add("hidden");
+        forgeWarningsList.innerHTML = "";
+      }
+    }
+    if (!enabled) {
+      forgeSuggestedAction.textContent =
+        "Knowledge Forge is disabled on the hub proxy. Set KNOWLEDGE_FORGE_BASE_URL and ensure orion-knowledge-forge is reachable.";
+    } else if ((status?.pending_review_count || 0) > 0) {
+      forgeSuggestedAction.textContent = "Review pending patches in the corpus before compiling execution packs.";
+    } else if ((status?.disputed_claim_count || 0) > 0) {
+      forgeSuggestedAction.textContent = "Resolve disputed claims or compile with include disputed only when intentional.";
+    } else if ((status?.execution_ready_spec_count || 0) === 0) {
+      forgeSuggestedAction.textContent = "Promote specs to reviewed or execution_ready, then compile a context pack.";
+    } else if (warnings.length) {
+      forgeSuggestedAction.textContent = "Fix corpus warnings (malformed YAML, dangling refs) then refresh.";
+    } else {
+      forgeSuggestedAction.textContent = "Select execution-ready specs and compile a context pack for your target agent.";
+    }
+  }
+
+  function forgeRenderClaimsList() {
+    if (!forgeClaimsList) return;
+    const filter = forgeClaimsFilter;
+    const rows = forgeClaimsCache.filter((row) => {
+      if (filter === "all") return true;
+      return String(row.status || "").toLowerCase() === filter;
+    });
+    if (!rows.length) {
+      forgeClaimsList.innerHTML = '<p class="text-gray-500">No claims match this filter.</p>';
+      return;
+    }
+    forgeClaimsList.innerHTML = rows
+      .map((row) => {
+        const preview = String(row.statement || "").slice(0, 160);
+        const refs = Array.isArray(row.source_refs) ? row.source_refs.length : 0;
+        const used = Array.isArray(row.used_by) ? row.used_by.length : 0;
+        return `<article class="rounded border border-gray-800 bg-gray-900/40 p-2">
+          <div class="flex flex-wrap items-center gap-2 mb-1">
+            <span class="font-mono text-[10px] text-gray-500">${row.claim_id || "—"}</span>
+            ${forgeRenderBadge(row.status || "unknown", row.status)}
+          </div>
+          <p class="text-gray-200">${preview}${String(row.statement || "").length > 160 ? "…" : ""}</p>
+          <p class="text-[10px] text-gray-500 mt-1">source_refs: ${refs} · used_by: ${used}</p>
+        </article>`;
+      })
+      .join("");
+  }
+
+  function forgeStyleClaimsFilterButtons() {
+    document.querySelectorAll(".forge-claims-filter").forEach((btn) => {
+      const active = btn.dataset.forgeClaimsFilter === forgeClaimsFilter;
+      btn.classList.toggle("border-indigo-500", active);
+      btn.classList.toggle("bg-indigo-600/30", active);
+      btn.classList.toggle("text-indigo-100", active);
+      btn.classList.toggle("border-gray-600", !active);
+      btn.classList.toggle("bg-gray-800", !active);
+      btn.classList.toggle("text-gray-300", !active);
+    });
+  }
+
+  function forgeRenderSpecsList() {
+    if (!forgeSpecsList) return;
+    const statusFilter = (forgeSpecsStatusFilter?.value || "").trim().toLowerCase();
+    const rows = forgeSpecsCache.filter((row) => {
+      if (!statusFilter) return true;
+      return String(row.status || "").toLowerCase() === statusFilter;
+    });
+    if (!rows.length) {
+      forgeSpecsList.innerHTML = '<p class="text-gray-500">No specs match this filter.</p>';
+      return;
+    }
+    forgeSpecsList.innerHTML = rows
+      .map((row) => {
+        const claims = Array.isArray(row.source_claims) ? row.source_claims.length : 0;
+        return `<article class="rounded border border-gray-800 bg-gray-900/40 p-2">
+          <div class="flex flex-wrap items-center gap-2 mb-1">
+            <span class="font-semibold text-gray-100">${row.title || row.spec_id || "—"}</span>
+            ${forgeRenderBadge(row.status || "unknown", row.status)}
+          </div>
+          <p class="text-[10px] text-gray-500 font-mono">${row.spec_id || ""} · ${row.component || "—"}</p>
+          <p class="text-[10px] text-gray-500 mt-1">source_claims: ${claims}</p>
+        </article>`;
+      })
+      .join("");
+  }
+
+  function forgeRenderCompileSpecCheckboxes() {
+    if (!forgeCompileSpecsList) return;
+    const eligible = forgeSpecsCache.filter((row) => {
+      const st = String(row.status || "").toLowerCase();
+      return st === "reviewed" || st === "execution_ready";
+    });
+    if (!eligible.length) {
+      forgeCompileSpecsList.innerHTML =
+        '<p class="text-gray-500">No reviewed or execution_ready specs loaded.</p>';
+      return;
+    }
+    forgeCompileSpecsList.innerHTML = eligible
+      .map(
+        (row) => `<label class="inline-flex items-start gap-2 text-gray-300">
+          <input type="checkbox" class="forge-compile-spec mt-0.5 rounded border border-gray-600 bg-gray-800" value="${row.spec_id}" />
+          <span><span class="font-medium text-gray-100">${row.title || row.spec_id}</span>
+          <span class="text-[10px] text-gray-500 block">${row.spec_id} · ${row.status}</span></span>
+        </label>`
+      )
+      .join("");
+  }
+
+  function forgeRenderReviewsList(reviews) {
+    if (!forgeReviewsList) return;
+    const rows = Array.isArray(reviews) ? reviews : [];
+    if (!rows.length) {
+      forgeReviewsList.innerHTML = '<p class="text-gray-500">No pending reviews.</p>';
+      return;
+    }
+    forgeReviewsList.innerHTML = rows
+      .map(
+        (row) => `<article class="rounded border border-gray-800 bg-gray-900/40 p-2 flex flex-wrap gap-2 justify-between">
+          <span class="font-mono text-[10px] text-gray-400 break-all">${row.path || "—"}</span>
+          <span class="text-[10px] uppercase tracking-wide text-amber-200">${row.action || "—"}</span>
+        </article>`
+      )
+      .join("");
+  }
+
+  function forgeRenderSearchResults(hits) {
+    if (!forgeSearchResults) return;
+    const rows = Array.isArray(hits) ? hits : [];
+    if (!rows.length) {
+      forgeSearchResults.innerHTML = '<p class="text-gray-500">No hits.</p>';
+      return;
+    }
+    forgeSearchResults.innerHTML = rows
+      .map(
+        (row) => `<article class="rounded border border-gray-800 bg-gray-900/40 p-2 flex flex-wrap items-center gap-2 justify-between">
+          <div>
+            <span class="font-medium text-gray-100">${row.label || row.id || "—"}</span>
+            <span class="font-mono text-[10px] text-gray-500 ml-2">${row.id || ""}</span>
+          </div>
+          <div class="flex gap-1">${forgeRenderBadge(row.kind || "hit", row.kind)}${
+          row.status ? forgeRenderBadge(row.status, row.status) : ""
+        }</div>
+        </article>`
+      )
+      .join("");
+  }
+
+  function forgeRenderCompileResult(body) {
+    if (!forgeCompileResult) return;
+    if (!body) {
+      forgeCompileResult.classList.add("hidden");
+      return;
+    }
+    forgeCompileResult.classList.remove("hidden");
+    if (forgeCompilePath) forgeCompilePath.textContent = body.path || "(not written)";
+    if (forgeCompileIncludedSpecs) {
+      forgeCompileIncludedSpecs.textContent = (body.included_specs || []).join(", ") || "—";
+    }
+    if (forgeCompileIncludedClaims) {
+      forgeCompileIncludedClaims.textContent = (body.included_claims || []).join(", ") || "—";
+    }
+    if (forgeCompileExcludedClaims) {
+      forgeCompileExcludedClaims.textContent = (body.excluded_claims || []).join(", ") || "—";
+    }
+    const warnings = Array.isArray(body.warnings) ? body.warnings : [];
+    if (forgeCompileWarnings) {
+      if (warnings.length) {
+        forgeCompileWarnings.classList.remove("hidden");
+        forgeCompileWarnings.innerHTML = warnings.map((w) => `<li>${w}</li>`).join("");
+      } else {
+        forgeCompileWarnings.classList.add("hidden");
+        forgeCompileWarnings.innerHTML = "";
+      }
+    }
+    if (forgeCompileContentPreview) {
+      forgeCompileContentPreview.textContent = body.content || "";
+    }
+    forgeSetDebugPre(forgeDebugCompile, body);
+  }
+
+  async function refreshForgeTab() {
+    if (!forgePanel) return;
+    if (forgeStatus) forgeStatus.textContent = "Loading Knowledge Forge…";
+    try {
+      const [status, claims, specs, reviews] = await Promise.all([
+        knowledgeForgeFetch("/status"),
+        knowledgeForgeFetch("/claims"),
+        knowledgeForgeFetch("/specs"),
+        knowledgeForgeFetch("/reviews/pending"),
+      ]);
+      forgeStatusCache = status;
+      forgeClaimsCache = Array.isArray(claims) ? claims : [];
+      forgeSpecsCache = Array.isArray(specs) ? specs : [];
+      forgeRenderStatusStrip(status);
+      forgeRenderTakeaway(status);
+      forgeRenderClaimsList();
+      forgeStyleClaimsFilterButtons();
+      forgeRenderSpecsList();
+      forgeRenderCompileSpecCheckboxes();
+      forgeRenderReviewsList(reviews);
+      if (forgeStatus) {
+        forgeStatus.textContent = `Loaded corpus · write ${status?.write_enabled ? "on" : "off"}`;
+      }
+    } catch (error) {
+      forgeStatusCache = null;
+      forgeClaimsCache = [];
+      forgeSpecsCache = [];
+      if (forgeStatus) {
+        const msg = error?.message || String(error);
+        forgeStatus.textContent =
+          error?.status === 503 || /disabled|unreachable|not configured/i.test(msg)
+            ? `Knowledge Forge unavailable: ${msg}`
+            : `Failed to load Knowledge Forge: ${msg}`;
+      }
+      if (forgeHealthBadge) {
+        forgeHealthBadge.textContent = "Unavailable";
+        forgeHealthBadge.className =
+          "text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full border border-rose-600/60 bg-rose-950/40 text-rose-200";
+      }
+      if (forgeSuggestedAction) {
+        forgeSuggestedAction.textContent =
+          "Check KNOWLEDGE_FORGE_BASE_URL, start orion-knowledge-forge, and refresh.";
+      }
+      if (forgeClaimsList) forgeClaimsList.innerHTML = "";
+      if (forgeSpecsList) forgeSpecsList.innerHTML = "";
+      if (forgeReviewsList) forgeReviewsList.innerHTML = "";
+      if (forgeCompileSpecsList) forgeCompileSpecsList.innerHTML = "";
+    }
+  }
+
+  async function runForgeSearch() {
+    const q = (forgeSearchInput?.value || "").trim();
+    if (!q) {
+      if (forgeSearchResults) forgeSearchResults.innerHTML = '<p class="text-gray-500">Enter a query.</p>';
+      return;
+    }
+    if (forgeStatus) forgeStatus.textContent = "Searching…";
+    try {
+      const hits = await knowledgeForgeFetch(`/search?${new URLSearchParams({ q })}`);
+      forgeSearchCache = hits;
+      forgeRenderSearchResults(hits);
+      forgeSetDebugPre(forgeDebugSearch, hits);
+      if (forgeStatus) forgeStatus.textContent = `Search returned ${Array.isArray(hits) ? hits.length : 0} hit(s).`;
+    } catch (error) {
+      forgeSearchCache = null;
+      forgeSetDebugPre(forgeDebugSearch, { error: error?.message || String(error) });
+      if (forgeSearchResults) {
+        forgeSearchResults.innerHTML = `<p class="text-rose-300">Search failed: ${error?.message || error}</p>`;
+      }
+      if (forgeStatus) forgeStatus.textContent = `Search failed: ${error?.message || error}`;
+    }
+  }
+
+  async function runForgeCompile() {
+    const task = (forgeCompileTask?.value || "").trim();
+    if (!task) {
+      showToastText("Enter a task for the context pack.");
+      return;
+    }
+    const specIds = Array.from(
+      document.querySelectorAll(".forge-compile-spec:checked")
+    ).map((el) => el.value);
+    const payload = {
+      task,
+      target: forgeCompileTarget?.value || "cursor",
+      spec_ids: specIds,
+      claim_ids: [],
+      include_disputed: Boolean(forgeIncludeDisputed?.checked),
+      include_stale: Boolean(forgeIncludeStale?.checked),
+      write_file: forgeWriteFile ? forgeWriteFile.checked !== false : true,
+    };
+    if (forgeCompileButton) forgeCompileButton.disabled = true;
+    if (forgeStatus) forgeStatus.textContent = "Compiling context pack…";
+    try {
+      const body = await knowledgeForgeFetch("/context-packs/compile", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      forgeCompileCache = body;
+      forgeRenderCompileResult(body);
+      if (forgeStatus) forgeStatus.textContent = "Context pack compiled.";
+      showToastText("Context pack compiled.");
+    } catch (error) {
+      forgeCompileCache = { error: error?.message || String(error) };
+      forgeSetDebugPre(forgeDebugCompile, forgeCompileCache);
+      forgeRenderCompileResult(null);
+      if (forgeStatus) forgeStatus.textContent = `Compile failed: ${error?.message || error}`;
+      showToastText(`Compile failed: ${error?.message || error}`);
+    } finally {
+      if (forgeCompileButton) forgeCompileButton.disabled = false;
+    }
   }
 
   function formatStatusBadge(target, ok, label) {
@@ -10440,6 +10883,13 @@ loadDismissedIds();
         history.replaceState(null, "", "#pressure");
       });
     }
+    if (forgeTabButton && forgePanel) {
+      forgeTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("forge");
+        history.replaceState(null, "", "#forge");
+      });
+    }
     applyHashToTab();
     window.addEventListener("hashchange", () => {
       applyHashToTab();
@@ -10460,6 +10910,34 @@ loadDismissedIds();
         /* ignore */
       }
     });
+  }
+
+  if (forgeRefreshButton) {
+    forgeRefreshButton.addEventListener("click", () => refreshForgeTab());
+  }
+  if (forgeSearchButton) {
+    forgeSearchButton.addEventListener("click", () => runForgeSearch());
+  }
+  if (forgeSearchInput) {
+    forgeSearchInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        runForgeSearch();
+      }
+    });
+  }
+  document.querySelectorAll(".forge-claims-filter").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      forgeClaimsFilter = btn.dataset.forgeClaimsFilter || "all";
+      forgeStyleClaimsFilterButtons();
+      forgeRenderClaimsList();
+    });
+  });
+  if (forgeSpecsStatusFilter) {
+    forgeSpecsStatusFilter.addEventListener("change", () => forgeRenderSpecsList());
+  }
+  if (forgeCompileButton) {
+    forgeCompileButton.addEventListener("click", () => runForgeCompile());
   }
 
   if (tsDatasetSelect) {

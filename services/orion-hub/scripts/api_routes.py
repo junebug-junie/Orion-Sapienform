@@ -1180,6 +1180,11 @@ async def proxy_knowledge_forge_context_packs_compile(request: Request) -> Respo
     return await _proxy_knowledge_forge_request("v1/context-packs/compile", request)
 
 
+@router.api_route("/api/knowledge/ideation/run", methods=["POST"])
+async def proxy_knowledge_forge_ideation_run(request: Request) -> Response:
+    return await _proxy_knowledge_forge_request("v1/ideation/run", request)
+
+
 @router.api_route("/api/knowledge/context-packs/{pack_id}", methods=["GET"])
 async def proxy_knowledge_forge_context_pack(pack_id: str, request: Request) -> Response:
     return await _proxy_knowledge_forge_request(f"v1/context-packs/{pack_id}", request)

@@ -2,8 +2,21 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+AutonomyStateQuality = Literal[
+    "healthy",
+    "degraded_drives_timeout",
+    "degraded_drives_error",
+    "degraded_identity_timeout",
+    "degraded_goals_timeout",
+    "degraded_partial",
+    "empty",
+    "unavailable",
+]
+AutonomyStanceMode = Literal["normal", "proposal_only", "fallback_contextual", "unavailable"]
 
 
 class AutonomyGoalHeadlineV1(BaseModel):
@@ -60,6 +73,12 @@ class AutonomySummaryV1(BaseModel):
     response_hazards: list[str] = Field(default_factory=list)
     raw_state_present: bool = False
     drive_competition: DriveCompetitionSummaryV1 | None = None
+    state_quality: AutonomyStateQuality = "empty"
+    stance_mode: AutonomyStanceMode = "unavailable"
+    degraded_reason: str | None = None
+    facet_health: dict[str, str] = Field(default_factory=dict)
+    context_note: str | None = None
+    selected_subject: str | None = None
 
 
 class AutonomyEvidenceRefV1(BaseModel):

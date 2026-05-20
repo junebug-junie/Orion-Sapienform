@@ -17,7 +17,7 @@ from orion.autonomy.graph_gate import (
 )
 from orion.autonomy.models import AutonomyEvidenceRefV1
 from orion.autonomy.reducer import AutonomyReducerInputV1, reduce_autonomy_state
-from orion.autonomy.summary import summarize_autonomy_state
+from orion.autonomy.summary import summarize_autonomy_lookup, summarize_autonomy_state
 from orion.autonomy.repository import (
     AutonomyLookupV1,
     LocalAutonomyRepository,
@@ -284,6 +284,15 @@ def resolve_autonomy_subject_max_workers() -> int:
 def resolve_autonomy_subquery_max_workers() -> int:
     """Parallel SPARQL subqueries per subject (identity / drives / goals). Cap 3; use 1 to serialize under GraphDB load."""
     return max(1, min(3, _env_int("AUTONOMY_SUBQUERY_MAX_WORKERS", 1)))
+
+
+def resolve_autonomy_drives_query_limit(*, compact: bool = False) -> int:
+    """Row cap for drive audit SPARQL; chat stance uses a tighter bound than debug/probe paths."""
+    default = 20 if compact else 80
+    raw = os.getenv("AUTONOMY_DRIVES_QUERY_LIMIT")
+    if raw is None or not str(raw).strip():
+        return default
+    return max(12, min(_env_int("AUTONOMY_DRIVES_QUERY_LIMIT", default), 80))
 
 
 def fetch_chat_stance_memory_graph_hints() -> List[str]:
@@ -1410,6 +1419,7 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
         subject_max_workers=subject_workers,
         subquery_max_workers=subquery_workers,
         active_subqueries=plan.active_subqueries,
+        drives_query_limit=resolve_autonomy_drives_query_limit(compact=True),
     )
     observer = {
         "consumer": "chat_stance",
@@ -1435,7 +1445,13 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
         )
     )
 
-    summary = summarize_autonomy_state(preferred.state if preferred and preferred.availability == "available" else None)
+    summary = summarize_autonomy_lookup(
+        preferred.state if preferred and preferred.availability == "available" else None,
+        selected_subject=selected_subject,
+        availability=preferred.availability if preferred is not None else "empty",
+        subquery_diagnostics=preferred.subquery_diagnostics if preferred is not None else None,
+        by_subject=by_subject,
+    )
     if preferred and preferred.availability == "unavailable":
         ur = (preferred.unavailable_reason or "").lower()
         if ur in {"timeout", "connection_error"}:
@@ -1477,6 +1493,12 @@ def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
         "autonomy_graph_cutover_mode": "v1_safe",
         "autonomy_graph_skipped_reason": None,
         "fallback": None,
+        "selected_subject_partial": partial_used,
+        "state_quality": summary.state_quality,
+        "stance_mode": summary.stance_mode,
+        "degraded_reason": summary.degraded_reason,
+        "facet_health": summary.facet_health,
+        "context_note": summary.context_note,
     }
     exported_keys = sorted(["autonomy_backend", "autonomy_debug", "autonomy_selected_subject", "autonomy_summary"])
     if preferred and preferred.availability == "available":

@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Mapping
+
 from orion.autonomy.models import (
+    AutonomyStateQuality,
     AutonomyStateV1,
     AutonomyStateV2,
+    AutonomyStanceMode,
     AutonomySummaryV1,
     DriveCompetitionSummaryV1,
 )
+
+if TYPE_CHECKING:
+    from orion.autonomy.repository import AutonomyLookupV1
 
 # Mirrors orion.spark.concept_induction.tensions.derive_pressure_competition_tensions spread logic
 # so the summary reflects drive disagreement even when GraphDB has not yet materialized tension rows.
@@ -84,6 +91,128 @@ def _bounded_unique(values: list[str], *, limit: int) -> list[str]:
     return out
 
 
+_FACET_NAMES = ("identity", "drives", "goals")
+_OK_FACET_STATUSES = frozenset({"ok", "empty"})
+
+
+def _facet_health_from_diagnostics(diagnostics: dict[str, dict[str, object]] | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for name in _FACET_NAMES:
+        diag = (diagnostics or {}).get(name) or {}
+        out[name] = str(diag.get("status") or "unknown")
+    return out
+
+
+def _derive_state_quality(*, availability: str, facet_health: dict[str, str]) -> AutonomyStateQuality:
+    if availability == "unavailable":
+        return "unavailable"
+    if availability == "empty":
+        return "empty"
+    if all(facet_health.get(name, "unknown") in _OK_FACET_STATUSES for name in _FACET_NAMES):
+        return "healthy"
+    drives_status = facet_health.get("drives", "unknown")
+    identity_status = facet_health.get("identity", "unknown")
+    goals_status = facet_health.get("goals", "unknown")
+    if drives_status == "timeout":
+        return "degraded_drives_timeout"
+    if drives_status not in _OK_FACET_STATUSES:
+        return "degraded_drives_error"
+    if identity_status == "timeout":
+        return "degraded_identity_timeout"
+    if identity_status not in _OK_FACET_STATUSES:
+        return "degraded_partial"
+    if goals_status == "timeout":
+        return "degraded_goals_timeout"
+    if goals_status not in _OK_FACET_STATUSES:
+        return "degraded_partial"
+    return "degraded_partial"
+
+
+def _derive_degraded_reason(*, state_quality: AutonomyStateQuality, selected_subject: str | None, facet_health: dict[str, str]) -> str | None:
+    subject_label = (selected_subject or "selected subject").replace("_", " ").title()
+    if state_quality == "degraded_drives_timeout":
+        return f"{subject_label} drives facet timed out"
+    if state_quality == "degraded_drives_error":
+        return f"{subject_label} drives facet failed ({facet_health.get('drives', 'error')})"
+    if state_quality == "degraded_identity_timeout":
+        return f"{subject_label} identity facet timed out"
+    if state_quality == "degraded_goals_timeout":
+        return f"{subject_label} goals facet timed out"
+    if state_quality == "degraded_partial":
+        failed = [name for name in _FACET_NAMES if facet_health.get(name) not in _OK_FACET_STATUSES]
+        if failed:
+            return f"{subject_label} partial facet failure ({', '.join(failed)})"
+    if state_quality == "unavailable":
+        return f"{subject_label} autonomy lookup unavailable"
+    return None
+
+
+def _derive_context_note(
+    *,
+    selected_subject: str | None,
+    state_quality: AutonomyStateQuality,
+    by_subject: Mapping[str, "AutonomyLookupV1"] | None,
+) -> str | None:
+    if not selected_subject or not by_subject:
+        return None
+    if state_quality not in {"degraded_drives_timeout", "degraded_drives_error", "degraded_partial"}:
+        return None
+    selected_drives = str(((by_subject.get(selected_subject).subquery_diagnostics or {}).get("drives") or {}).get("status", ""))
+    if selected_drives in _OK_FACET_STATUSES:
+        return None
+    if selected_subject == "orion":
+        rel = by_subject.get("relationship")
+        rel_diag = (rel.subquery_diagnostics or {}).get("drives") if rel else None
+        if rel_diag and str(rel_diag.get("status")) == "ok" and int(rel_diag.get("row_count") or 0) > 0:
+            return "relationship drives are available, but were not substituted for Orion drives"
+    return None
+
+
+def _derive_stance_mode(*, state_quality: AutonomyStateQuality, has_proposals: bool) -> AutonomyStanceMode:
+    if state_quality == "unavailable":
+        return "unavailable"
+    if state_quality in {"degraded_drives_timeout", "degraded_drives_error", "degraded_partial"}:
+        return "proposal_only" if has_proposals else "unavailable"
+    if state_quality == "empty":
+        return "unavailable"
+    return "proposal_only" if has_proposals else "normal"
+
+
+def summarize_autonomy_lookup(
+    state: AutonomyStateV1 | AutonomyStateV2 | None,
+    *,
+    selected_subject: str | None = None,
+    availability: str = "empty",
+    subquery_diagnostics: dict[str, dict[str, object]] | None = None,
+    by_subject: Mapping[str, "AutonomyLookupV1"] | None = None,
+) -> AutonomySummaryV1:
+    base = summarize_autonomy_state(state)
+    facet_health = _facet_health_from_diagnostics(subquery_diagnostics)
+    state_quality = _derive_state_quality(availability=availability, facet_health=facet_health)
+    has_proposals = bool(base.proposal_headlines)
+    degraded_reason = _derive_degraded_reason(
+        state_quality=state_quality,
+        selected_subject=selected_subject,
+        facet_health=facet_health,
+    )
+    context_note = _derive_context_note(
+        selected_subject=selected_subject,
+        state_quality=state_quality,
+        by_subject=by_subject,
+    )
+    stance_mode = _derive_stance_mode(state_quality=state_quality, has_proposals=has_proposals)
+    return base.model_copy(
+        update={
+            "state_quality": state_quality,
+            "stance_mode": stance_mode,
+            "degraded_reason": degraded_reason,
+            "facet_health": facet_health,
+            "context_note": context_note,
+            "selected_subject": selected_subject,
+        }
+    )
+
+
 def summarize_autonomy_state(state: AutonomyStateV1 | AutonomyStateV2 | None) -> AutonomySummaryV1:
     if state is None:
         return AutonomySummaryV1(
@@ -95,6 +224,8 @@ def summarize_autonomy_state(state: AutonomyStateV1 | AutonomyStateV2 | None) ->
             response_hazards=[],
             raw_state_present=False,
             drive_competition=None,
+            state_quality="empty",
+            stance_mode="unavailable",
         )
 
     dominant = (state.dominant_drive or "").strip().lower()
@@ -159,4 +290,6 @@ def summarize_autonomy_state(state: AutonomyStateV1 | AutonomyStateV2 | None) ->
         response_hazards=_bounded_unique(hazards, limit=hazard_limit),
         raw_state_present=True,
         drive_competition=drive_competition,
+        state_quality="healthy",
+        stance_mode="proposal_only" if proposal_headlines else "normal",
     )

@@ -92,6 +92,18 @@ def _classify_query_error(exc: Exception) -> str:
     return "query_error"
 
 
+def _lookup_healthy_for_short_circuit(lookup: AutonomyLookupV1) -> bool:
+    if lookup.availability != "available":
+        return False
+    if lookup.unavailable_reason:
+        return False
+    for name in ("identity", "drives", "goals"):
+        status = str(((lookup.subquery_diagnostics or {}).get(name) or {}).get("status", "ok"))
+        if status not in {"ok", "empty"}:
+            return False
+    return True
+
+
 def _dominant_drive_from_evidence(
     *,
     explicit: str | None,
@@ -163,6 +175,7 @@ class GraphAutonomyRepository:
         subject_max_workers: int | None = None,
         subquery_max_workers: int | None = None,
         active_subqueries: tuple[str, ...] | None = None,
+        drives_query_limit: int | None = None,
     ) -> None:
         self._endpoint = (endpoint or "").strip()
         self._timeout_sec = timeout_sec
@@ -198,6 +211,8 @@ class GraphAutonomyRepository:
         self._short_circuit_consumers = frozenset(
             part.strip().lower() for part in raw_short_consumers.split(",") if part.strip()
         )
+        default_drives_limit = int(os.getenv("AUTONOMY_DRIVES_QUERY_LIMIT", "80"))
+        self._drives_query_limit = max(12, min(int(drives_query_limit) if drives_query_limit is not None else default_drives_limit, 80))
         self._query_client = query_client or (
             GraphQueryClient(
                 GraphQueryConfig(
@@ -290,7 +305,7 @@ WHERE {{
   }}
 }}
 ORDER BY DESC(?created_at) DESC(STR(?artifact_id))
-LIMIT 80
+LIMIT {self._drives_query_limit}
 """.strip()
         rows = self._select_rows(sparql)
         if not rows:
@@ -414,16 +429,25 @@ LIMIT {self._goals_limit}
             self._subquery_max_workers,
             correlation_id or "-",
         )
+
+        def _run_subquery(name: str, fn) -> tuple[str, object | None, int, float, Exception | None]:
+            started_at = time.perf_counter()
+            try:
+                value, row_count = fn(subject=subject, model_layer=binding.model_layer, entity_id=binding.entity_id)
+                elapsed_ms = round((time.perf_counter() - started_at) * 1000.0, 2)
+                return name, value, row_count, elapsed_ms, None
+            except (GraphQueryError, Exception) as exc:
+                elapsed_ms = round((time.perf_counter() - started_at) * 1000.0, 2)
+                return name, None, 0, elapsed_ms, exc
+
         with ThreadPoolExecutor(max_workers=self._subquery_max_workers) as executor:
             future_map = {
-                executor.submit(fn, subject=subject, model_layer=binding.model_layer, entity_id=binding.entity_id): (name, time.perf_counter())
+                executor.submit(_run_subquery, name, fn): name
                 for name, fn in subqueries
             }
             for future in as_completed(future_map):
-                name, started_at = future_map[future]
-                try:
-                    value, row_count = future.result()
-                    elapsed_ms = round((time.perf_counter() - started_at) * 1000.0, 2)
+                name, value, row_count, elapsed_ms, exc = future.result()
+                if exc is None:
                     if name == "identity":
                         identity = value  # type: ignore[assignment]
                         identity_rows = row_count
@@ -450,8 +474,7 @@ LIMIT {self._goals_limit}
                         self._timeout_sec,
                         correlation_id or "-",
                     )
-                except (GraphQueryError, Exception) as exc:
-                    elapsed_ms = round((time.perf_counter() - started_at) * 1000.0, 2)
+                else:
                     failure_type = _classify_query_error(exc)
                     if failed_subquery is None:
                         failed_subquery = name
@@ -598,7 +621,8 @@ LIMIT {self._goals_limit}
                         (
                             results_by_subject.get(name)
                             for name in preferred_order
-                            if results_by_subject.get(name) is not None and results_by_subject.get(name).availability == "available"
+                            if results_by_subject.get(name) is not None
+                            and _lookup_healthy_for_short_circuit(results_by_subject.get(name))  # type: ignore[arg-type]
                         ),
                         None,
                     )
@@ -678,6 +702,7 @@ def build_autonomy_repository(
     subject_max_workers: int | None = None,
     subquery_max_workers: int | None = None,
     active_subqueries: tuple[str, ...] | None = None,
+    drives_query_limit: int | None = None,
 ) -> AutonomyRepository:
     local_repo = LocalAutonomyRepository()
     if backend == "local":
@@ -692,6 +717,7 @@ def build_autonomy_repository(
         subject_max_workers=subject_max_workers,
         subquery_max_workers=subquery_max_workers,
         active_subqueries=active_subqueries,
+        drives_query_limit=drives_query_limit,
     )
     if backend == "graph":
         return graph_repo

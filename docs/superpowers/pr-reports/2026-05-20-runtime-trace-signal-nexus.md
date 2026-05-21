@@ -2,8 +2,8 @@
 
 **Branch:** `feat/runtime-trace-signal-nexus`  
 **Worktree:** `.worktrees/feat-runtime-trace-signal-nexus`  
-**Base:** `71232c75` (main)  
-**Head:** `c09b5b16` (+ review fixes)  
+**Base:** `485d735d` (origin/main, rebased)  
+**Head:** `41a3f440`  
 **Design:** [2026-05-20-runtime-trace-signal-nexus-design.md](../specs/2026-05-20-runtime-trace-signal-nexus-design.md)  
 **Plan:** [2026-05-20-runtime-trace-signal-nexus-implementation.md](../plans/2026-05-20-runtime-trace-signal-nexus-implementation.md)
 
@@ -50,8 +50,8 @@ Joins existing cognition execution truth (`CognitionTracePayload`) into the sign
 | B6 | `73b77911` | feat(signals): real collapse_mirror journaler social_memory world_pulse |
 | B7 | `bd7d0b5a` | feat(hub): organ signals layer filter UI |
 | — | `4fc42a65` | chore(hub): wire cognition trace cache env in docker-compose |
-| — | `985afc9d` | fix(signals): align cognition.trace correlation propagation for §5.8 gate |
-| — | `c09b5b16` | chore: restore unrelated files accidentally dropped from main |
+| — | `72fd6603` | fix(signals): align cognition.trace correlation propagation for §5.8 gate |
+| — | `41a3f440` | fix(hub): use trace_linkage canonical correlation_id for §5.8 gate |
 
 ## Key changes
 
@@ -93,7 +93,7 @@ COGNITION_TRACE_API_DEBUG=false
 
 ## §5.8 correlation gate
 
-Chat responses include `trace_linkage` with canonical `correlation_id`. Gateway injects envelope correlation into cognition trace adapter via `_envelope_correlation_id`. Post-review fix (`985afc9d`) aligns `cognition.trace` bus kind (dot) with colon-pattern preflight.
+Chat responses include `trace_linkage` with canonical `correlation_id`. Gateway injects envelope correlation into cognition trace adapter via `_envelope_correlation_id`. Post-review fix (`72fd6603`, `41a3f440`) aligns `cognition.trace` bus kind and canonical hub `correlation_id` for §5.8.
 
 **Staging checklist** (manual — not automated):
 

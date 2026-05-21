@@ -115,6 +115,7 @@ test('buildExecutionStepsPanel returns collapsible section', () => {
   });
   assert.ok(panel.includes('Execution Steps'));
   assert.ok(panel.includes('collect_metacog_context'));
-  assert.ok(panel.includes('/organ-signals'));
-  assert.ok(panel.includes('correlation_id=corr-1'));
+  assert.ok(panel.includes('correlation_id: corr-1'));
+  assert.ok(panel.includes('data-orion-action="open-organ-signals"'));
+  assert.ok(panel.includes('data-correlation-id="corr-1"'));
 });

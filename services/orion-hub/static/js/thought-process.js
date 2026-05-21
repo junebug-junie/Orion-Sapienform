@@ -178,10 +178,30 @@
     return 'border-gray-600 bg-gray-800/80 text-gray-200';
   }
 
+  function wireExecutionStepsPanelActions(host) {
+    if (!host || typeof host.querySelector !== 'function') return;
+    host.querySelectorAll('[data-orion-action="open-organ-signals"]').forEach((btn) => {
+      if (btn.dataset.orionWired === '1') return;
+      btn.dataset.orionWired = '1';
+      btn.addEventListener('click', (event) => {
+        event.preventDefault();
+        const corr = cleanText(btn.getAttribute('data-correlation-id'));
+        if (!corr) return;
+        const opener = global.OrionHubOpenOrganSignals;
+        if (typeof opener === 'function') {
+          opener(corr);
+          return;
+        }
+        const url = new URL(global.location.href);
+        url.searchParams.set('correlation_id', corr);
+        url.hash = '#signals';
+        global.location.assign(`${url.pathname}${url.search}${url.hash}`);
+      });
+    });
+  }
+
   function buildExecutionStepsPanel({ correlationId, apiBaseUrl, trace, debug, error, loading }) {
     const corr = cleanText(correlationId) || '--';
-    const base = String(apiBaseUrl || '').replace(/\/$/, '');
-    const organSignalsUrl = `${base}/organ-signals?correlation_id=${encodeURIComponent(corr)}`;
     const traceObj = asObject(trace) || {};
     const steps = asList(traceObj.steps).slice().sort((a, b) => {
       const left = Number((asObject(a) || {}).order);
@@ -245,8 +265,9 @@
     }
 
     const footer = [
-      '<div class="mt-3 border-t border-gray-800 pt-2">',
-      `<a class="text-[11px] text-indigo-300 hover:text-indigo-100" href="${escapeHtml(organSignalsUrl)}">View in Organ Signals</a>`,
+      '<div class="mt-3 border-t border-gray-800 pt-2 space-y-1.5">',
+      `<div class="text-[10px] text-gray-500 font-mono break-all">correlation_id: ${escapeHtml(corr)}</div>`,
+      `<button type="button" class="text-[11px] text-indigo-300 hover:text-indigo-100 underline-offset-2 hover:underline" data-orion-action="open-organ-signals" data-correlation-id="${escapeHtml(corr)}">View in Organ Signals</button>`,
       '</div>',
     ].join('');
 
@@ -272,6 +293,7 @@
       debug,
       loading: true,
     });
+    wireExecutionStepsPanelActions(host);
     parent.appendChild(host);
 
     try {
@@ -283,6 +305,7 @@
         debug,
         error: result.error || null,
       });
+      wireExecutionStepsPanelActions(host);
     } catch (_err) {
       host.innerHTML = buildExecutionStepsPanel({
         correlationId,
@@ -291,6 +314,7 @@
         debug,
         error: 'fetch_failed',
       });
+      wireExecutionStepsPanelActions(host);
     }
     return host;
   }

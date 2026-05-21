@@ -4239,10 +4239,21 @@ async def api_signals_correlation(correlation_id: str) -> Dict[str, Any]:
     """Signal chain keyed by ``source_event_id`` / correlation id (Runtime Trace Nexus A5)."""
     import scripts.main as hub_main
 
+    from scripts.correlation_chain_fallback import correlation_chain_from_cognition_trace
+
     cache = getattr(hub_main, "signals_inspect_cache", None)
     if cache is None or not cache.enabled:
         raise HTTPException(status_code=503, detail="signals_inspect_cache_disabled")
     body = await cache.get_correlation(correlation_id)
+    if body is None:
+        ctc = getattr(hub_main, "cognition_trace_cache", None)
+        if ctc is not None and ctc.enabled:
+            trace = await ctc.get_redacted(correlation_id)
+            if trace is not None:
+                try:
+                    body = correlation_chain_from_cognition_trace(trace)
+                except ValueError:
+                    body = None
     if body is None:
         raise HTTPException(status_code=404, detail="correlation_not_cached")
     return body

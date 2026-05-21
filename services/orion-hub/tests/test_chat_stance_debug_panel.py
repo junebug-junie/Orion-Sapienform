@@ -57,9 +57,17 @@ def test_thought_process_js_registers_execution_steps_panel() -> None:
     assert "function resolveCorrelationId" in thought_js
     assert "function mountExecutionStepsPanel" in thought_js
     assert "Execution Steps" in thought_js
-    assert "/organ-signals" in thought_js
-    assert "correlation_id=" in thought_js
+    assert "#signals" in thought_js
+    assert "open-organ-signals" in thought_js
+    assert "correlation_id:" in thought_js
     assert "root_correlation_id" in thought_js
+
+
+def test_app_js_wires_organ_signals_correlation_navigation() -> None:
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+    assert "function openOrganSignalsForCorrelation" in app_js
+    assert "window.OrionHubOpenOrganSignals = openOrganSignalsForCorrelation" in app_js
+    assert 'url.hash = \'#signals\'' in app_js
 
 
 def test_app_js_wires_execution_steps_panel_hook() -> None:

@@ -104,6 +104,130 @@ def build_cognition_trace_metadata(
     }
 
 
+async def _publish_cognition_trace_for_plan_result(
+    *,
+    corr_id: str,
+    env: BaseEnvelope,
+    res: PlanExecutionResult,
+    req_extra: dict | None = None,
+    ctx: dict | None = None,
+) -> None:
+    assert svc is not None, "Rabbit service not initialized"
+    extra = req_extra or {}
+    ctx = ctx or {}
+
+    packs_used = extra.get("packs") or []
+    if isinstance(packs_used, str):
+        packs_used = [packs_used]
+
+    trace_payload = CognitionTracePayload(
+        correlation_id=corr_id,
+        mode=res.mode or "brain",
+        verb=res.verb_name,
+        packs=packs_used if isinstance(packs_used, list) else [],
+        options=extra.get("options", {}) if isinstance(extra, dict) else {},
+        final_text=res.final_text,
+        steps=res.steps,
+        timestamp=time.time(),
+        source_service=settings.service_name,
+        source_node=settings.node_name,
+        recall_used=res.memory_used,
+        recall_debug=res.recall_debug,
+        metadata=build_cognition_trace_metadata(res, req_extra=extra),
+    )
+
+    trace_envelope = CognitionTraceEnvelope(
+        source=_source(),
+        correlation_id=corr_id,
+        causality_chain=env.causality_chain,
+        payload=trace_payload,
+    )
+
+    await svc.bus.publish(settings.channel_cognition_trace_pub, trace_envelope)
+    logger.info("Published CognitionTrace to %s", settings.channel_cognition_trace_pub)
+
+    reasoning_trace = next(
+        (
+            trace
+            for trace in (res.metacog_traces or [])
+            if isinstance(trace, MetacognitiveTraceV1) and str(trace.content or "").strip()
+        ),
+        None,
+    )
+    session_id = extra.get("session_id")
+    message_id = extra.get("message_id")
+    if not session_id:
+        session_id = ctx.get("session_id")
+    if not message_id:
+        message_id = ctx.get("message_id")
+
+    metacog_payload = MetacognitiveTraceV1(
+        correlation_id=corr_id,
+        session_id=str(session_id) if session_id is not None else None,
+        message_id=str(message_id) if message_id is not None else None,
+        trace_role="reasoning",
+        trace_stage="pre_answer",
+        content=(reasoning_trace.content if reasoning_trace is not None else (res.final_text or "")).strip(),
+        model=(reasoning_trace.model if reasoning_trace is not None else "unknown"),
+        token_count=reasoning_trace.token_count if reasoning_trace is not None else None,
+        confidence=reasoning_trace.confidence if reasoning_trace is not None else None,
+        metadata={
+            **((reasoning_trace.metadata or {}) if reasoning_trace is not None else {}),
+            "request_id": res.request_id,
+            "status": res.status,
+            "fallback_from_final_text": reasoning_trace is None,
+        },
+    )
+    if _thought_debug_enabled():
+        logger.info(
+            "THOUGHT_DEBUG_METACOG_PUB stage=prepare corr=%s trace_role=%s trace_stage=%s model=%s content_len=%s content_snippet=%r fallback_from_final_text=%s",
+            corr_id,
+            metacog_payload.trace_role,
+            metacog_payload.trace_stage,
+            metacog_payload.model,
+            _debug_len(metacog_payload.content),
+            _debug_snippet(metacog_payload.content),
+            reasoning_trace is None,
+        )
+    if metacog_payload.content:
+        metacog_envelope = MetacognitiveTraceEnvelope(
+            source=_source(),
+            correlation_id=_uuid_from_correlation_id(corr_id),
+            causality_chain=env.causality_chain,
+            payload=metacog_payload,
+        )
+        await svc.bus.publish(settings.channel_metacog_trace_pub, metacog_envelope)
+        logger.info(
+            "Published MetacognitiveTrace to %s correlation_id=%s fallback=%s",
+            settings.channel_metacog_trace_pub,
+            corr_id,
+            reasoning_trace is None,
+        )
+        if _thought_debug_enabled():
+            logger.info(
+                "THOUGHT_DEBUG_METACOG_PUB stage=published corr=%s channel=%s trace_role=%s trace_stage=%s model=%s content_len=%s content_snippet=%r",
+                corr_id,
+                settings.channel_metacog_trace_pub,
+                metacog_payload.trace_role,
+                metacog_payload.trace_stage,
+                metacog_payload.model,
+                _debug_len(metacog_payload.content),
+                _debug_snippet(metacog_payload.content),
+            )
+    else:
+        logger.info(
+            "Skipped MetacognitiveTrace publish due to empty content correlation_id=%s",
+            corr_id,
+        )
+        if _thought_debug_enabled():
+            logger.info(
+                "THOUGHT_DEBUG_METACOG_PUB stage=skipped corr=%s reason=empty_content fallback_from_final_text=%s final_text_len=%s",
+                corr_id,
+                reasoning_trace is None,
+                _debug_len(res.final_text),
+            )
+
+
 class CortexExecRequest(BaseEnvelope):
     kind: str = Field("cortex.exec.request", frozen=True)
     payload: PlanExecutionRequest
@@ -353,126 +477,13 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
 
     # 4. Publish Cognition Trace
     try:
-        # Attempt to extract 'packs' from args if present (typically passed in extra for agents)
-        packs_used = req_env.payload.args.extra.get("packs") or []
-        if isinstance(packs_used, str):
-            packs_used = [packs_used]
-
-        trace_payload = CognitionTracePayload(
-            correlation_id=corr_id,
-            mode=res.mode or "brain",
-            verb=res.verb_name,
-            packs=packs_used if isinstance(packs_used, list) else [],
-            options=req_env.payload.args.extra.get("options", {}) if req_env.payload.args.extra else {},
-            final_text=res.final_text,
-            steps=res.steps,
-            timestamp=time.time(),
-            source_service=settings.service_name,
-            source_node=settings.node_name,
-            recall_used=res.memory_used,
-            recall_debug=res.recall_debug,
-            metadata=build_cognition_trace_metadata(
-                res,
-                req_extra=(req_env.payload.args.extra if req_env.payload.args else {}) or {},
-            ),
+        await _publish_cognition_trace_for_plan_result(
+            corr_id=corr_id,
+            env=env,
+            res=res,
+            req_extra=(req_env.payload.args.extra if req_env.payload.args else {}) or {},
+            ctx=ctx,
         )
-
-        # Use the typed envelope
-        trace_envelope = CognitionTraceEnvelope(
-            source=_source(),
-            correlation_id=corr_id,
-            causality_chain=env.causality_chain,
-            payload=trace_payload
-        )
-
-        await svc.bus.publish(settings.channel_cognition_trace_pub, trace_envelope)
-        logger.info(f"Published CognitionTrace to {settings.channel_cognition_trace_pub}")
-
-        reasoning_trace = next(
-            (
-                trace
-                for trace in (res.metacog_traces or [])
-                if isinstance(trace, MetacognitiveTraceV1) and str(trace.content or "").strip()
-            ),
-            None,
-        )
-        extra = req_env.payload.args.extra if req_env.payload.args else {}
-        session_id = None
-        message_id = None
-        if isinstance(extra, dict):
-            session_id = extra.get("session_id")
-            message_id = extra.get("message_id")
-        if not session_id:
-            session_id = ctx.get("session_id")
-        if not message_id:
-            message_id = ctx.get("message_id")
-
-        metacog_payload = MetacognitiveTraceV1(
-            correlation_id=corr_id,
-            session_id=str(session_id) if session_id is not None else None,
-            message_id=str(message_id) if message_id is not None else None,
-            trace_role="reasoning",
-            trace_stage="pre_answer",
-            content=(reasoning_trace.content if reasoning_trace is not None else (res.final_text or "")).strip(),
-            model=(reasoning_trace.model if reasoning_trace is not None else "unknown"),
-            token_count=reasoning_trace.token_count if reasoning_trace is not None else None,
-            confidence=reasoning_trace.confidence if reasoning_trace is not None else None,
-            metadata={
-                **((reasoning_trace.metadata or {}) if reasoning_trace is not None else {}),
-                "request_id": res.request_id,
-                "status": res.status,
-                "fallback_from_final_text": reasoning_trace is None,
-            },
-        )
-        if _thought_debug_enabled():
-            logger.info(
-                "THOUGHT_DEBUG_METACOG_PUB stage=prepare corr=%s trace_role=%s trace_stage=%s model=%s content_len=%s content_snippet=%r fallback_from_final_text=%s",
-                corr_id,
-                metacog_payload.trace_role,
-                metacog_payload.trace_stage,
-                metacog_payload.model,
-                _debug_len(metacog_payload.content),
-                _debug_snippet(metacog_payload.content),
-                reasoning_trace is None,
-            )
-        if metacog_payload.content:
-            metacog_envelope = MetacognitiveTraceEnvelope(
-                source=_source(),
-                correlation_id=_uuid_from_correlation_id(corr_id),
-                causality_chain=env.causality_chain,
-                payload=metacog_payload,
-            )
-            await svc.bus.publish(settings.channel_metacog_trace_pub, metacog_envelope)
-            logger.info(
-                "Published MetacognitiveTrace to %s correlation_id=%s fallback=%s",
-                settings.channel_metacog_trace_pub,
-                corr_id,
-                reasoning_trace is None,
-            )
-            if _thought_debug_enabled():
-                logger.info(
-                    "THOUGHT_DEBUG_METACOG_PUB stage=published corr=%s channel=%s trace_role=%s trace_stage=%s model=%s content_len=%s content_snippet=%r",
-                    corr_id,
-                    settings.channel_metacog_trace_pub,
-                    metacog_payload.trace_role,
-                    metacog_payload.trace_stage,
-                    metacog_payload.model,
-                    _debug_len(metacog_payload.content),
-                    _debug_snippet(metacog_payload.content),
-                )
-        else:
-            logger.info(
-                "Skipped MetacognitiveTrace publish due to empty content correlation_id=%s",
-                corr_id,
-            )
-            if _thought_debug_enabled():
-                logger.info(
-                    "THOUGHT_DEBUG_METACOG_PUB stage=skipped corr=%s reason=empty_content fallback_from_final_text=%s final_text_len=%s",
-                    corr_id,
-                    reasoning_trace is None,
-                    _debug_len(res.final_text),
-                )
-
     except Exception as e:
         logger.error(f"Failed to publish CognitionTrace: {e}", exc_info=True)
         return CortexExecResult(
@@ -686,19 +697,29 @@ async def handle_verb_request(env: BaseEnvelope) -> None:
             result_payload = result.output if isinstance(result.output, dict) else {}
             plan_result_payload = result_payload.get("result") if isinstance(result_payload.get("result"), dict) else result_payload
             plan_result = PlanExecutionResult.model_validate(plan_result_payload)
+            plan_ctx = plan_req.context if isinstance(plan_req.context, dict) else {}
+            plan_extra = plan_req.args.extra if plan_req.args else {}
             dream_env = build_dream_publish_envelope(
                 source=_source(),
                 causality_chain=list(env.causality_chain or []),
                 correlation_id=corr_id,
                 res=plan_result,
-                context=plan_req.context if isinstance(plan_req.context, dict) else {},
-                extra=plan_req.args.extra if plan_req.args else None,
+                context=plan_ctx,
+                extra=plan_extra,
             )
             if dream_env is not None:
                 await svc.bus.publish(settings.channel_dream_log, dream_env)
                 logger.info("Published dream.result.v1 to %s via verb runtime", settings.channel_dream_log)
+            if result.ok:
+                await _publish_cognition_trace_for_plan_result(
+                    corr_id=corr_id,
+                    env=env,
+                    res=plan_result,
+                    req_extra=plan_extra or {},
+                    ctx=plan_ctx,
+                )
     except Exception as exc:
-        logger.warning("dream.result.v1 legacy-plan publish skipped/failed corr=%s err=%s", corr_id, exc)
+        logger.warning("legacy.plan side-effect publish skipped/failed corr=%s err=%s", corr_id, exc)
 
     for effect in result.effects:
         effect_model = effect if isinstance(effect, VerbEffectV1) else VerbEffectV1.model_validate(effect)

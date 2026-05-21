@@ -541,8 +541,10 @@
           const chain = Array.isArray(data.chain) ? data.chain : [];
           const hidden =
             typeof data.hidden_stubs === "number" ? data.hidden_stubs : countHiddenStubs(chain);
+          const sourceHint =
+            data.source === "cognition_trace_fallback" ? "\tsource=cognition_trace" : "";
           setStatus(
-            `correlation_id=${data.correlation_id || correlationId}\tsignals=${chain.length}\thidden_stubs=${hidden}`,
+            `correlation_id=${data.correlation_id || correlationId}\tsignals=${chain.length}\thidden_stubs=${hidden}${sourceHint}`,
           );
           renderCorrelationGraph(chain);
         } catch (err) {

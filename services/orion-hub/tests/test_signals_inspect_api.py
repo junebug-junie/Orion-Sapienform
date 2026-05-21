@@ -114,3 +114,53 @@ def test_signals_inspect_correlation_index() -> None:
     assert out is not None
     assert out["correlation_id"] == corr
     assert len(out["chain"]) == 2
+
+
+def test_signals_inspect_correlation_index_ignores_infra_ticks() -> None:
+    import asyncio
+    from datetime import datetime, timezone
+
+    from orion.signals.models import OrganClass, OrionSignalV1
+
+    SignalsInspectCache = _get_signals_inspect_cache_class()
+    now = datetime.now(timezone.utc)
+    corr = "corr-chat-turn"
+    cache = SignalsInspectCache(
+        enabled=True,
+        subscribe_pattern="orion:signals:*",
+        window_sec=60.0,
+        trace_enabled=False,
+        trace_max_traces=10,
+        trace_ttl_sec=600.0,
+        trace_max_signals_per_trace=8,
+    )
+    infra = OrionSignalV1(
+        signal_id="bio-1",
+        organ_id="biometrics",
+        organ_class=OrganClass.exogenous,
+        signal_kind="biometrics_state",
+        dimensions={"level": 0.5},
+        source_event_id="athena:2026-05-21T04:00:00Z",
+        observed_at=now,
+        emitted_at=now,
+    )
+    turn = OrionSignalV1(
+        signal_id="run-1",
+        organ_id="cortex_exec",
+        organ_class=OrganClass.endogenous,
+        signal_kind="cognition_run",
+        dimensions={"success": 1.0},
+        source_event_id=corr,
+        observed_at=now,
+        emitted_at=now,
+    )
+
+    async def _run():
+        await cache._ingest_signal(infra)
+        await cache._ingest_signal(turn)
+        return await cache.get_correlation(corr)
+
+    out = asyncio.run(_run())
+    assert out is not None
+    assert out["correlation_id"] == corr
+    assert len(out["chain"]) == 1

@@ -7391,6 +7391,21 @@ loadDismissedIds();
     return organSignalsGraphCtl;
   }
 
+  function openOrganSignalsForCorrelation(correlationId) {
+    const corr = String(correlationId || '').trim();
+    if (!corr) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set('correlation_id', corr);
+    url.hash = '#signals';
+    history.pushState(null, '', `${url.pathname}${url.search}${url.hash}`);
+    setActiveTab('signals');
+    const ctl = ensureOrganSignalsGraph();
+    if (ctl && typeof ctl.refresh === 'function') {
+      ctl.refresh();
+    }
+  }
+  window.OrionHubOpenOrganSignals = openOrganSignalsForCorrelation;
+
   function closeMemoryGraphBridgeModal() {
     if (!memoryGraphBridgeModal) return;
     memoryGraphBridgeAnchorDiv = null;

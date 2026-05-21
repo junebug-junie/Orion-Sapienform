@@ -16,6 +16,13 @@ from .otel_trace_id import is_valid_otel_trace_id, normalize_otel_trace_id
 
 logger = logging.getLogger("orion-hub.signals_inspect")
 
+_TURN_CORRELATION_SIGNAL_KINDS = frozenset(
+    {
+        "cognition_run",
+        "cognition_step",
+    }
+)
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -156,7 +163,7 @@ class SignalsInspectCache:
                         self._trace_truncated.pop(old_tid, None)
                     self._evict_trace_ttl_locked()
             corr = str(sig.source_event_id or "").strip()
-            if corr:
+            if corr and sig.signal_kind in _TURN_CORRELATION_SIGNAL_KINDS:
                 clst = self._correlation_chains.setdefault(corr, [])
                 clst.append(sig)
                 clst.sort(key=lambda s: s.observed_at)

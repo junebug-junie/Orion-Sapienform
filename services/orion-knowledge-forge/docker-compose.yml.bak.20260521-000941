@@ -1,0 +1,26 @@
+version: "3.9"
+services:
+  orion-knowledge-forge:
+    build:
+      context: ../..
+      dockerfile: services/orion-knowledge-forge/Dockerfile
+    container_name: orion-knowledge-forge
+    env_file:
+      - .env
+    environment:
+      ORION_KNOWLEDGE_ROOT: /repo/orion-knowledge
+      KNOWLEDGE_FORGE_REPO_ROOT: /repo/orion-knowledge
+      KNOWLEDGE_FORGE_IDEATION_ENABLED: "true"
+      KNOWLEDGE_FORGE_IDEATION_PROVIDER: local
+      KNOWLEDGE_FORGE_IDEATION_WRITE_ENABLED: "false"
+    volumes:
+      - ../..:/repo:ro
+    ports:
+      - "8630:8630"
+    restart: unless-stopped
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

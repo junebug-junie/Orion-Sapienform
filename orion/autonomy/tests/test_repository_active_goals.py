@@ -36,6 +36,19 @@ def test_fetch_active_goals_filters_superseded_and_dedupes_drive_origin():
     assert "proposalStatus" in repo._query_client.last_sparql or "proposal_status" in repo._query_client.last_sparql.lower()
 
 
+def test_fetch_active_goals_sparql_aggregates_per_drive_origin() -> None:
+    repo = GraphAutonomyRepository(
+        endpoint="http://fake",
+        timeout_sec=1.0,
+        query_client=_StubClient([]),
+        goals_limit=3,
+    )
+    repo._fetch_active_goals(subject="orion", model_layer="self-model", entity_id="self:orion")
+    sparql = repo._query_client.last_sparql
+    assert "GROUP BY ?drive_origin" in sparql
+    assert "MAX(?priority)" in sparql
+
+
 def test_fetch_active_goals_reads_planned_and_executing_lifecycle_fields():
     rows = [
         {

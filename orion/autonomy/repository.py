@@ -399,11 +399,34 @@ LIMIT {self._drives_query_limit}
         }, len(rows))
 
     def _fetch_active_goals(self, *, subject: str, model_layer: str, entity_id: str) -> tuple[list[AutonomyGoalHeadlineV1], int]:
+        # Aggregate in SPARQL (one row per drive_origin at max priority) so Fuseki does not
+        # scan/sort every ProposedGoal for the subject — mirrors latest-artifact pattern on drives.
         sparql = f"""
 PREFIX orion: <http://conjourney.net/orion#>
 SELECT ?artifact_id ?goal_statement ?drive_origin ?priority ?cooldown_until ?proposal_signature ?created_at ?proposal_status ?planned_task_id ?completed_at
 WHERE {{
   GRAPH <{AUTONOMY_GOALS_GRAPH}> {{
+    {{
+      SELECT ?drive_origin (MAX(?priority) AS ?max_priority)
+      WHERE {{
+        ?inner a orion:ProposedGoal ;
+          orion:subjectKey \"{_escape_sparql(subject)}\" ;
+          orion:modelLayerKey \"{_escape_sparql(model_layer)}\" ;
+          orion:entityId \"{_escape_sparql(entity_id)}\" ;
+          orion:driveOrigin ?drive_origin ;
+          orion:proposalPriority ?priority .
+        OPTIONAL {{ ?inner orion:proposalStatus ?inner_status . }}
+        FILTER(
+          !BOUND(?inner_status)
+          || (
+            ?inner_status != "superseded"
+            && ?inner_status != "archived"
+            && ?inner_status != "completed"
+          )
+        )
+      }}
+      GROUP BY ?drive_origin
+    }}
     ?artifact a orion:ProposedGoal ;
       orion:subjectKey \"{_escape_sparql(subject)}\" ;
       orion:modelLayerKey \"{_escape_sparql(model_layer)}\" ;
@@ -414,6 +437,7 @@ WHERE {{
       orion:driveOrigin ?drive_origin ;
       orion:proposalPriority ?priority ;
       orion:proposalSignature ?proposal_signature .
+    FILTER(?priority = ?max_priority)
     OPTIONAL {{ ?artifact orion:cooldownUntil ?cooldown_until . }}
     OPTIONAL {{ ?artifact orion:proposalStatus ?proposal_status . }}
     OPTIONAL {{ ?artifact orion:plannedTaskId ?planned_task_id . }}
@@ -429,7 +453,7 @@ WHERE {{
   }}
 }}
 ORDER BY DESC(?priority) DESC(?created_at) DESC(STR(?artifact_id))
-LIMIT {self._goals_limit * 4}
+LIMIT {self._goals_limit * 2}
 """.strip()
         rows = self._select_rows(sparql)
         candidates: list[AutonomyGoalHeadlineV1] = []

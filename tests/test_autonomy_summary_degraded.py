@@ -126,3 +126,38 @@ def test_drives_timeout_without_proposals_is_unavailable_stance() -> None:
     assert summary.state_quality == "empty"
     assert summary.stance_mode == "unavailable"
     assert summary.raw_state_present is False
+
+
+def test_healthy_state_with_proposals_uses_normal_stance_mode() -> None:
+    state = AutonomyStateV1(
+        subject="orion",
+        model_layer="self-model",
+        entity_id="self:orion",
+        dominant_drive="autonomy",
+        goal_headlines=[
+            AutonomyGoalHeadlineV1(
+                artifact_id="goal-1",
+                goal_statement="Clarify autonomy boundaries without executing any new action.",
+                drive_origin="autonomy",
+                priority=0.8,
+                cooldown_until=None,
+                proposal_signature="sig-1",
+            )
+        ],
+        source="graph",
+    )
+    summary = summarize_autonomy_lookup(
+        state,
+        selected_subject="orion",
+        availability="available",
+        subquery_diagnostics={
+            "identity": {"status": "ok", "row_count": 1},
+            "drives": {"status": "ok", "row_count": 12},
+            "goals": {"status": "ok", "row_count": 1},
+        },
+    )
+    assert summary.state_quality == "healthy"
+    assert summary.stance_mode == "normal"
+    assert summary.goals_present is True
+    assert len(summary.active_goals) == 1
+    assert summary.active_goals[0].headline.startswith("Clarify autonomy")

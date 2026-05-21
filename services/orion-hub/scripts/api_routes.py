@@ -641,6 +641,16 @@ def _rec_tape_rsp(
         backend_counts or {},
     )
 
+def resolve_hub_autonomy_subject_display() -> str:
+    """Normalize HUB_AUTONOMY_SUBJECT_DISPLAY for Hub template injection (two|three)."""
+    raw = str(
+        getattr(settings, "HUB_AUTONOMY_SUBJECT_DISPLAY", None)
+        or os.environ.get("HUB_AUTONOMY_SUBJECT_DISPLAY", "two")
+        or "two",
+    ).strip().lower()
+    return raw if raw in ("two", "three") else "two"
+
+
 # ======================================================================
 # 🏠 ROOT + STATIC HTML
 # ======================================================================

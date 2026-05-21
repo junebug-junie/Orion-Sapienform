@@ -338,3 +338,18 @@ def test_app_js_shows_goals_badge_and_active_goals_section_title() -> None:
     assert "Active goals (non-executing)" in app_js
     assert "n/a (dyadic chat" in app_js or "dyadic scope uses relationship" in app_js
     assert "autonomy_goals_present" in app_js
+
+
+def test_app_js_supports_two_subject_autonomy_display_mode() -> None:
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    assert "HUB_AUTONOMY_SUBJECT_DISPLAY" in app_js or "__HUB_AUTONOMY_SUBJECT_DISPLAY__" in app_js
+    assert "orion + relationship" in app_js
+    assert "window.__HUB_AUTONOMY_SUBJECT_DISPLAY__" in template
+    assert "{{HUB_AUTONOMY_SUBJECT_DISPLAY}}" in template
+
+
+def test_template_injects_hub_autonomy_subject_display_window_var() -> None:
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+    assert 'window.__HUB_AUTONOMY_SUBJECT_DISPLAY__ = "{{HUB_AUTONOMY_SUBJECT_DISPLAY}}";' in template

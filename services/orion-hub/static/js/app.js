@@ -3638,6 +3638,29 @@ loadDismissedIds();
     return '--';
   }
 
+  function hubAutonomySubjectDisplayMode() {
+    const raw = String(window.__HUB_AUTONOMY_SUBJECT_DISPLAY__ || 'two').trim().toLowerCase();
+    return raw === 'three' ? 'three' : 'two';
+  }
+
+  function autonomyAvailabilityRowsForDisplay(safeDebug, mode) {
+    const rows = safeDebug
+      ? Object.entries(safeDebug).filter(([subject, value]) => !String(subject).startsWith('_') && value && typeof value === 'object')
+      : [];
+    if (mode !== 'two') return rows;
+    return rows.filter(([subject]) => {
+      const key = String(subject || '').trim().toLowerCase();
+      return key === 'orion' || key === 'relationship';
+    });
+  }
+
+  function formatAutonomyAvailabilityLine(model, mode) {
+    if (mode === 'two') {
+      return `availability: orion + relationship (orion↔juniper) · ${model.availability.available}/${model.availability.subjects} available · ${model.availability.degraded} degraded`;
+    }
+    return `availability: ${model.availability.available}/${model.availability.subjects} available · ${model.availability.degraded} degraded`;
+  }
+
   function normalizeAutonomyModel(summary, debug, meta = {}) {
     const safeSummary = summary && typeof summary === 'object' ? summary : null;
     const safeDebug = debug && typeof debug === 'object' ? debug : null;
@@ -3660,13 +3683,12 @@ loadDismissedIds();
       || (safeSummary && safeSummary.goals_present)
       || proposalHeadlines.length
     );
-    const availabilityRows = safeDebug
-      ? Object.entries(safeDebug).filter(([subject, value]) => !String(subject).startsWith('_') && value && typeof value === 'object')
-      : [];
+    const displayMode = hubAutonomySubjectDisplayMode();
+    const availabilityRows = autonomyAvailabilityRowsForDisplay(safeDebug, displayMode);
     const availableCount = availabilityRows.filter(([, value]) => value.availability === 'available').length;
     const degradedCount = availabilityRows.filter(([, value]) => value.availability === 'degraded').length;
     const unavailableCount = availabilityRows.filter(([, value]) => value.availability === 'unavailable').length;
-    const subjectCount = availabilityRows.length;
+    const subjectCount = displayMode === 'two' ? 2 : availabilityRows.length;
     // Keep this exact fallback expression stable for UI contract tests:
     // (safeSummary && safeSummary.dominant_drive) || (safePreview && safePreview.dominant_drive)
     const dominantDrive = String(
@@ -3798,7 +3820,8 @@ loadDismissedIds();
     const executionModeDisplay = model.executionMode === 'proposal_only'
       ? 'none (legacy proposal_only)'
       : model.executionMode;
-    const juniperNote = 'n/a (dyadic chat → relationship)';
+    const displayMode = hubAutonomySubjectDisplayMode();
+    const juniperNote = 'n/a — dyadic scope uses relationship';
     const juniperDebugEntry = debug && typeof debug === 'object' ? debug.juniper : null;
     const juniperAvailabilityEmpty = juniperDebugEntry && typeof juniperDebugEntry === 'object'
       && (!String(juniperDebugEntry.availability || '').trim()
@@ -3813,8 +3836,8 @@ loadDismissedIds();
       ...(model.contextNote ? [`context note: ${model.contextNote}`] : []),
       ...(model.stanceMode ? [`stance mode: ${model.stanceMode}`] : []),
       ...(model.goalsPresent ? [`goals: ${model.proposalHeadlines.length} active`] : []),
-      `availability: ${model.availability.available}/${model.availability.subjects} available · ${model.availability.degraded} degraded`,
-      ...(juniperAvailabilityEmpty ? [`juniper: ${juniperNote}`] : []),
+      formatAutonomyAvailabilityLine(model, displayMode),
+      ...(displayMode === 'three' && juniperAvailabilityEmpty ? [`juniper: ${juniperNote}`] : []),
       `repository source: ${model.repositoryStatus.source_available ? 'available' : 'unavailable'}`,
       `repository path: ${model.repositoryStatus.source_path}`,
       `fallback: ${model.fallback}`,

@@ -4173,6 +4173,20 @@ async def api_signals_trace(trace_id: str) -> Dict[str, Any]:
     return body
 
 
+@router.get("/api/signals/correlation/{correlation_id}")
+async def api_signals_correlation(correlation_id: str) -> Dict[str, Any]:
+    """Signal chain keyed by ``source_event_id`` / correlation id (Runtime Trace Nexus A5)."""
+    import scripts.main as hub_main
+
+    cache = getattr(hub_main, "signals_inspect_cache", None)
+    if cache is None or not cache.enabled:
+        raise HTTPException(status_code=503, detail="signals_inspect_cache_disabled")
+    body = await cache.get_correlation(correlation_id)
+    if body is None:
+        raise HTTPException(status_code=404, detail="correlation_not_cached")
+    return body
+
+
 @router.get("/api/cognition/trace/{correlation_id}")
 async def api_cognition_trace(correlation_id: str) -> Dict[str, Any]:
     """Redacted cognition execution trace keyed by ``correlation_id`` (Runtime Trace Nexus A4)."""

@@ -32,7 +32,14 @@ class GoalProposalEngine:
         self.cooldown = timedelta(minutes=max(0, cooldown_minutes))
 
     @staticmethod
-    def _drive_origin(drive_state: DriveStateV1) -> str:
+    def _drive_origin(
+        drive_state: DriveStateV1,
+        *,
+        dominant_drive: str | None = None,
+        source: str = "pressures",
+    ) -> str:
+        if source == "audit_dominant" and dominant_drive:
+            return dominant_drive.strip().lower()
         if not drive_state.pressures:
             return "continuity"
         return max(sorted(drive_state.pressures), key=lambda key: drive_state.pressures.get(key, 0.0))
@@ -96,9 +103,14 @@ class GoalProposalEngine:
         drive_state: DriveStateV1,
         tensions: Iterable[TensionEventV1],
         store,
+        dominant_drive: str | None = None,
     ) -> GoalDecision:
         tension_list = sorted(list(tensions), key=lambda tension: (-tension.magnitude, tension.kind))
-        drive_origin = self._drive_origin(drive_state)
+        drive_origin = self._drive_origin(
+            drive_state,
+            dominant_drive=dominant_drive,
+            source=settings.goal_drive_origin_source,
+        )
         generation_mode = settings.goal_generation_mode
         if generation_mode not in ("template", "evidence_rules", "llm"):
             generation_mode = "evidence_rules"

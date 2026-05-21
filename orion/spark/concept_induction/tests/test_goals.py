@@ -79,6 +79,27 @@ def _drive_state(trace_id: str) -> DriveStateV1:
     })
 
 
+def test_drive_origin_from_audit_dominant():
+    engine = GoalProposalEngine(cooldown_minutes=0)
+    drive_state = DriveStateV1.model_validate({
+        "subject": "orion",
+        "model_layer": "self-model",
+        "entity_id": "self:orion",
+        "kind": "memory.drives.state.v1",
+        "pressures": {"autonomy": 0.95, "relational": 0.4},
+        "activations": {},
+        "updated_at": datetime.now(timezone.utc),
+        "provenance": {
+            "intake_channel": "x",
+            "source_event_refs": [],
+            "evidence_items": [],
+            "tension_refs": [],
+        },
+    })
+    origin = engine._drive_origin(drive_state, dominant_drive="relational", source="audit_dominant")
+    assert origin == "relational"
+
+
 def test_signature_stable_when_trace_changes():
     engine = GoalProposalEngine(cooldown_minutes=0)
     store = _FakeStore()

@@ -511,6 +511,7 @@ class ConceptWorker:
             drive_state=drive_state,
             tensions=all_tensions,
             store=self.store,
+            dominant_drive=drive_audit.dominant_drive,
         )
         suppressed_signatures: List[str] = []
         if goal_decision.proposal is not None:

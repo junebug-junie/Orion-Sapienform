@@ -4164,15 +4164,27 @@ async def substrate_page() -> HTMLResponse:
     )
 
 
+@router.get("/api/signals/layers")
+async def api_signals_layers() -> Dict[str, Any]:
+    """Organ layer taxonomy for Organ Signals mesh filters (Runtime Trace Nexus B0)."""
+    from orion.signals.layers import layers_export
+
+    return layers_export()
+
+
 @router.get("/api/signals/active")
 async def api_signals_active() -> Dict[str, Any]:
     """Latest ``OrionSignalV1`` per ``organ_id`` from Hub in-memory cache (Phase 2b)."""
     import scripts.main as hub_main
+    from orion.signals.layers import organ_layer
 
     cache = getattr(hub_main, "signals_inspect_cache", None)
     if cache is None or not cache.enabled:
-        return {"as_of": datetime.now(timezone.utc).isoformat(), "signals": {}}
-    return await cache.get_active()
+        return {"as_of": datetime.now(timezone.utc).isoformat(), "signals": {}, "layers": {}}
+    body = await cache.get_active()
+    signals = body.get("signals") if isinstance(body.get("signals"), dict) else {}
+    body["layers"] = {oid: organ_layer(oid) for oid in signals}
+    return body
 
 
 @router.get("/api/signals/trace/{trace_id}")

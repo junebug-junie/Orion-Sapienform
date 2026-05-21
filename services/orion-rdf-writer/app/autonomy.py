@@ -282,6 +282,7 @@ def _handle_goal_proposal(g: Graph, goal: GoalProposalV1) -> Tuple[str, str]:
     if goal.supersedes_artifact_id:
         prior_uri = _artifact_uri(goal.kind, goal.supersedes_artifact_id)
         g.add((artifact_uri, ORION.supersedesArtifact, prior_uri))
+        _add_literal(g, prior_uri, ORION.proposalStatus, "superseded", XSD.string)
     drive_uri = _add_drive_dimension(g, goal.drive_origin)
     g.add((artifact_uri, ORION.influencedByDrive, drive_uri))
     _add_tensions(g, artifact_uri, goal.provenance.tension_refs, goal.tension_kinds)

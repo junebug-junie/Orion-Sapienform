@@ -104,6 +104,7 @@ class GoalProposalEngine:
         tensions: Iterable[TensionEventV1],
         store,
         dominant_drive: str | None = None,
+        window_summary: str | None = None,
     ) -> GoalDecision:
         tension_list = sorted(list(tensions), key=lambda tension: (-tension.magnitude, tension.kind))
         drive_origin = self._drive_origin(
@@ -115,7 +116,10 @@ class GoalProposalEngine:
         if generation_mode not in ("template", "evidence_rules", "llm"):
             generation_mode = "evidence_rules"
         goal_statement_base = self._goal_statement_base(
-            drive_origin, tension_list, drive_state.pressures
+            drive_origin,
+            tension_list,
+            drive_state.pressures,
+            window_summary=window_summary,
         )
         signature = self._signature(
             drive_state.subject, drive_state.model_layer, drive_origin, goal_statement_base, tension_list
@@ -141,6 +145,7 @@ class GoalProposalEngine:
         prior_signature = prior_slot.get("signature")
         prior_artifact_id = prior_slot.get("artifact_id")
         supersedes_artifact_id = None
+        proposal_status = "proposed"
         if (
             isinstance(prior_signature, str)
             and prior_signature != signature
@@ -148,6 +153,7 @@ class GoalProposalEngine:
             and prior_artifact_id
         ):
             supersedes_artifact_id = prior_artifact_id
+            proposal_status = "active"
         proposal = GoalProposalV1(
             artifact_id=f"goal-{signature}",
             subject=drive_state.subject,
@@ -168,7 +174,7 @@ class GoalProposalEngine:
             related_nodes=drive_state.related_nodes + [tension.artifact_id for tension in tension_list],
             goal_statement=goal_statement,
             goal_statement_base=goal_statement_base,
-            proposal_status="proposed",
+            proposal_status=proposal_status,
             semantic_source=self._semantic_source(generation_mode),
             proposal_signature=signature,
             drive_origin=drive_origin,

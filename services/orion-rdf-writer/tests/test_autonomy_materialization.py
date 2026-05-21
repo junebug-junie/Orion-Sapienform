@@ -192,6 +192,7 @@ def test_goal_materialization_writes_proposal_status_and_base():
     assert (goal_uri, ORION.goalStatementBase, Literal(payload["goal_statement_base"], datatype=XSD.string)) in graph
     assert (goal_uri, ORION.proposalStatus, Literal("active", datatype=XSD.string)) in graph
     assert (goal_uri, ORION.supersedesArtifact, prior_uri) in graph
+    assert (prior_uri, ORION.proposalStatus, Literal("superseded", datatype=XSD.string)) in graph
 
 
 def test_goal_materialization_writes_planned_task_and_completed_at():

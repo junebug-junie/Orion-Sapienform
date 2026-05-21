@@ -29,6 +29,7 @@ class AutonomyGoalHeadlineV1(BaseModel):
     cooldown_until: datetime | None = None
     proposal_signature: str
     proposal_status: str = "proposed"
+    semantic_source: str | None = None
     planned_task_id: str | None = None
     completed_at: datetime | None = None
 

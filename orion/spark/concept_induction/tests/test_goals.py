@@ -169,4 +169,5 @@ def test_signature_change_sets_supersedes_artifact_for_same_drive_origin():
     assert d2.proposal is not None
     assert d1.proposal.drive_origin == d2.proposal.drive_origin == "autonomy"
     assert d2.proposal.supersedes_artifact_id == d1.proposal.artifact_id
+    assert d2.proposal.proposal_status == "active"
     assert d2.proposal.proposal_signature != d1.proposal.proposal_signature

@@ -505,6 +505,7 @@ class ConceptWorker:
         await self._publish_artifact(identity_snapshot, self.cfg.identity_snapshot_channel, env.correlation_id)
         published_artifacts.append(identity_snapshot)
 
+        window_summary = evidence_items[0].summary if evidence_items else drive_state.provenance.evidence_summary
         goal_decision = self.goal_engine.propose(
             env=env,
             intake_channel=intake_channel,
@@ -512,6 +513,7 @@ class ConceptWorker:
             tensions=all_tensions,
             store=self.store,
             dominant_drive=drive_audit.dominant_drive,
+            window_summary=window_summary,
         )
         suppressed_signatures: List[str] = []
         if goal_decision.proposal is not None:

@@ -21,13 +21,17 @@ def build_archive_candidates(
     max_active_per_subject: int,
     retention_days: int,
 ) -> list[str]:
-    _ = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
     by_origin: dict[str, list[dict]] = defaultdict(list)
+    to_archive: list[str] = []
     for row in rows:
         if row.get("proposal_status") in {"archived", "superseded"}:
             continue
+        created_at = row.get("created_at")
+        if isinstance(created_at, datetime) and created_at < cutoff:
+            to_archive.append(str(row["artifact_id"]))
+            continue
         by_origin[str(row["drive_origin"])].append(row)
-    to_archive: list[str] = []
     for _origin, group in by_origin.items():
         by_base: dict[str, list[dict]] = defaultdict(list)
         for row in group:
@@ -89,26 +93,36 @@ def main() -> int:
     )
     select = f"""
 PREFIX orion: <http://conjourney.net/orion#>
-SELECT ?artifact_id ?drive_origin ?goal_statement ?priority ?proposal_status
+SELECT ?artifact_id ?drive_origin ?goal_statement ?priority ?proposal_status ?created_at
 WHERE {{
   GRAPH <{AUTONOMY_GOALS_GRAPH_URI}> {{
     ?a a orion:ProposedGoal ; orion:subjectKey "{args.subject}" ;
       orion:artifactId ?artifact_id ; orion:driveOrigin ?drive_origin ;
       orion:goalStatement ?goal_statement ; orion:proposalPriority ?priority .
     OPTIONAL {{ ?a orion:proposalStatus ?proposal_status . }}
+    OPTIONAL {{ ?a orion:timestamp ?created_at . }}
   }}
 }}"""
     raw_rows = client.select(select)
-    rows = [
-        {
-            "artifact_id": r["artifact_id"]["value"],
-            "drive_origin": r["drive_origin"]["value"],
-            "goal_statement_base": r["goal_statement"]["value"].split(" · ", 1)[0],
-            "priority": r["priority"]["value"],
-            "proposal_status": (r.get("proposal_status") or {}).get("value", "proposed"),
-        }
-        for r in raw_rows
-    ]
+    rows = []
+    for r in raw_rows:
+        created_raw = (r.get("created_at") or {}).get("value")
+        created_at = None
+        if isinstance(created_raw, str) and created_raw.strip():
+            try:
+                created_at = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+            except ValueError:
+                created_at = None
+        rows.append(
+            {
+                "artifact_id": r["artifact_id"]["value"],
+                "drive_origin": r["drive_origin"]["value"],
+                "goal_statement_base": r["goal_statement"]["value"].split(" · ", 1)[0],
+                "priority": r["priority"]["value"],
+                "proposal_status": (r.get("proposal_status") or {}).get("value", "proposed"),
+                "created_at": created_at,
+            }
+        )
     to_archive = build_archive_candidates(rows, max_active_per_subject=max_active, retention_days=retention)
     print(f"candidates={len(to_archive)} dry_run={dry_run}")
     if dry_run:

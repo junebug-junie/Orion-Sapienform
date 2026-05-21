@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Mapping
 
 from orion.autonomy.models import (
     AutonomyActiveGoalV1,
+    AutonomyGoalHeadlineV1,
     AutonomyStateQuality,
     AutonomyStateV1,
     AutonomyStateV2,
@@ -183,9 +184,29 @@ def _derive_context_note(
     return None
 
 
+def dedupe_goal_headlines_by_drive_origin(
+    goals: list[AutonomyGoalHeadlineV1],
+    *,
+    limit: int = 3,
+) -> list[AutonomyGoalHeadlineV1]:
+    """Keep highest-priority goal per drive_origin (matches repository active-goal read path)."""
+    ranked = sorted(goals, key=lambda goal: (-float(goal.priority), goal.artifact_id))
+    seen_origins: set[str] = set()
+    out: list[AutonomyGoalHeadlineV1] = []
+    for goal in ranked:
+        origin = str(goal.drive_origin or "").strip().lower()
+        if not origin or origin in seen_origins:
+            continue
+        seen_origins.add(origin)
+        out.append(goal)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _active_goals_from_state(state: AutonomyStateV1 | AutonomyStateV2) -> list[AutonomyActiveGoalV1]:
     out: list[AutonomyActiveGoalV1] = []
-    for goal in state.goal_headlines[:3]:
+    for goal in dedupe_goal_headlines_by_drive_origin(state.goal_headlines, limit=3):
         headline = _proposal_headline_for_display(goal.goal_statement)
         if not headline:
             continue
@@ -300,7 +321,10 @@ def summarize_autonomy_state(state: AutonomyStateV1 | AutonomyStateV2 | None) ->
         tension_sources.append(_PRESSURE_COMPETITION_KIND)
     active_tensions = _bounded_unique(tension_sources, limit=3)
     proposal_headlines = _bounded_unique(
-        [_proposal_headline_for_display(goal.goal_statement) for goal in state.goal_headlines],
+        [
+            _proposal_headline_for_display(goal.goal_statement)
+            for goal in dedupe_goal_headlines_by_drive_origin(state.goal_headlines, limit=3)
+        ],
         limit=3,
     )
     if isinstance(state, AutonomyStateV2) and not state.goal_headlines and state.attention_items:

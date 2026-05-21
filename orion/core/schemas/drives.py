@@ -154,6 +154,20 @@ class GoalProposalV1(GraphReadyArtifact):
         return v.replace(tzinfo=timezone.utc)
 
 
+class AutonomyGoalPlannedV1(BaseModel):
+    """Supervisor notification when a promoted goal is allocated a planner task."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, protected_namespaces=())
+
+    kind: str = "autonomy.goal.planned.v1"
+    goal_artifact_id: str
+    goal_statement: str
+    drive_origin: str
+    task_id: str
+    proposal_status: ProposalStatus = "executing"
+    source_verb: str = "autonomy.goal.execute.v1"
+
+
 class TurnDossierV1(BaseModel):
     """Lightweight join stub for turn-level debugability (not a service)."""
 

@@ -1581,7 +1581,10 @@ async def plan_react(payload: PlannerRequest) -> PlannerResponse:
 # ─────────────────────────────────────────────
 
 AUTONOMY_GOAL_EXECUTE_VERB = "autonomy.goal.execute.v1"
-CHANNEL_CORE_EVENTS = os.getenv("CHANNEL_CORE_EVENTS", "orion:core:events")
+BUS_AUTONOMY_GOAL_PLANNED_OUT = os.getenv(
+    "BUS_AUTONOMY_GOAL_PLANNED_OUT",
+    "orion:autonomy:goal:planned",
+)
 
 
 class AutonomyGoalExecuteInputV1(BaseModel):
@@ -1693,24 +1696,27 @@ async def _publish_goal_planned_supervisor_event(
     task_id: str,
     correlation_id: str,
 ) -> None:
+    from orion.core.schemas.drives import AutonomyGoalPlannedV1
+
+    planned = AutonomyGoalPlannedV1(
+        goal_artifact_id=payload.goal_artifact_id,
+        goal_statement=payload.goal_statement,
+        drive_origin=payload.drive_origin,
+        task_id=task_id,
+        proposal_status="executing",
+        source_verb=AUTONOMY_GOAL_EXECUTE_VERB,
+    )
     env = BaseEnvelope(
-        kind="autonomy.goal.planned.v1",
+        kind=planned.kind,
         source=ServiceRef(
             name=settings.service_name,
             version=settings.service_version,
             node=settings.node_name,
         ),
         correlation_id=correlation_id,
-        payload={
-            "goal_artifact_id": payload.goal_artifact_id,
-            "goal_statement": payload.goal_statement,
-            "drive_origin": payload.drive_origin,
-            "task_id": task_id,
-            "proposal_status": "executing",
-            "source_verb": AUTONOMY_GOAL_EXECUTE_VERB,
-        },
+        payload=planned.model_dump(mode="json"),
     )
-    await bus.publish(CHANNEL_CORE_EVENTS, env)
+    await bus.publish(BUS_AUTONOMY_GOAL_PLANNED_OUT, env)
 
 
 async def execute_autonomy_goal_v1(

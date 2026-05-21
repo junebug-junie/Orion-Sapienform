@@ -32,6 +32,8 @@ Four-phase implementation makes the autonomy goals pipeline honest and useful:
 | `services/orion-planner-react` | `autonomy.goal.execute.v1` verb (gated + operator auth) |
 | `scripts/autonomy/archive_stale_goal_proposals.py` | **New** — retention + max-active archive (dry-run default) |
 | `docs/architecture/autonomy_subjects.md` | **New** — subject routing contract |
+| `orion/schemas/registry.py` | `GoalProposalV1`, `AutonomyGoalPlannedV1` registered |
+| `orion/bus/channels.yaml` | `orion:memory:goals:proposed`, `orion:autonomy:goal:planned` catalog entries |
 
 ## Configuration (env parity)
 
@@ -44,9 +46,10 @@ Four-phase implementation makes the autonomy goals pipeline honest and useful:
 | `AUTONOMY_GOAL_MAX_ACTIVE_PER_SUBJECT` | 3 | cortex-exec |
 | `GOAL_HINT_PRIORITY_THRESHOLD` | 0.4 | cortex-exec |
 | `HUB_AUTONOMY_SUBJECT_DISPLAY` | `two` | orion-hub |
-| `AUTONOMY_GOAL_EXECUTION_ENABLED` | **false** | hub + cortex-exec |
+| `AUTONOMY_GOAL_EXECUTION_ENABLED` | **false** | hub + cortex-exec + planner |
+| `BUS_AUTONOMY_GOAL_PLANNED_OUT` | `orion:autonomy:goal:planned` | planner + root `.env_example` |
 
-Local `.env` files updated in worktree (gitignored) to mirror `.env_example` for operator runs.
+Local `.env` files mirror `.env_example` for cortex-exec, hub, spark-concept-induction, and planner (operator machine copies).
 
 ## Verification
 

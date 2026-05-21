@@ -89,7 +89,7 @@ async def test_autonomy_goal_execute_returns_task_id_and_publishes_supervisor_ev
 
     assert len(fake_bus.published) == 1
     channel, env = fake_bus.published[0]
-    assert channel == "orion:core:events"
+    assert channel == "orion:autonomy:goal:planned"
     assert env.kind == "autonomy.goal.planned.v1"
     assert env.payload["task_id"] == result.task_id
     assert env.payload["goal_artifact_id"] == "goal-abc-123"

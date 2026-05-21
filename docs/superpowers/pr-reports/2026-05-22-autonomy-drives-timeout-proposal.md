@@ -1,6 +1,6 @@
 # Proposal: Autonomy drives timeout (Orion Fuseki)
 
-**Status:** Proposal — not implemented  
+**Status:** Partially implemented — see `2026-05-22-autonomy-drives-automation.md` (branch `feat/autonomy-drives-automation`)  
 **Companion PR:** goals SPARQL per-`drive_origin` aggregate (`feat/autonomy-goals-sparql-per-origin`)
 
 ---

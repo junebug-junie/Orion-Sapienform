@@ -1,4 +1,4 @@
-from scripts.autonomy.archive_stale_goal_proposals import build_archive_candidates
+from orion.autonomy.goal_archive import build_archive_candidates
 
 
 def test_build_archive_candidates_keeps_highest_priority_per_drive_origin():

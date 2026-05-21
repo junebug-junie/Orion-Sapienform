@@ -16,6 +16,8 @@ from orion.schemas.vector.schemas import VectorWriteRequest
 from .audit import build_drive_audit
 from .drives import DriveEngine, DriveMathConfig, drive_state_from_values
 from .dossier import build_evidence_items, build_source_event_ref, build_turn_dossier, extract_trace_id, extract_turn_id
+from orion.autonomy.goal_archive import maybe_archive_after_goal_publish
+
 from .goals import GoalProposalEngine
 from .identity import (
     build_identity_snapshot,
@@ -519,6 +521,7 @@ class ConceptWorker:
         if goal_decision.proposal is not None:
             await self._publish_artifact(goal_decision.proposal, self.cfg.goal_proposal_channel, env.correlation_id)
             published_artifacts.append(goal_decision.proposal)
+            maybe_archive_after_goal_publish(subject=subject)
         elif goal_decision.suppressed_signature:
             suppressed_signatures.append(goal_decision.suppressed_signature)
 

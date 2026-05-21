@@ -3,13 +3,6 @@
   const GENERIC_PLACEHOLDER_DIMS = { level: 0.5, confidence: 0.5 };
 
   const STUB_ORGAN_IDS = new Set([
-    "collapse_mirror",
-    "equilibrium",
-    "recall",
-    "spark",
-    "autonomy",
-    "world_pulse",
-    "social_memory",
     "social_room_bridge",
     "vision",
     "agent_chain",
@@ -19,11 +12,44 @@
     "topic_foundry",
     "concept_induction",
     "graph_cognition",
-    "chat_stance",
-    "journaler",
     "power_guard",
     "security_watcher",
   ]);
+
+  const DEFAULT_ORGAN_LAYERS = {
+    cortex_exec: "runtime",
+    llm_gateway: "runtime",
+    cortex_gateway: "runtime",
+    cortex_orch: "runtime",
+    hub: "runtime",
+    graph_cognition: "cognition",
+    chat_stance: "cognition",
+    recall: "cognition",
+    mind: "cognition",
+    spark_introspector: "cognition",
+    autonomy: "cognition",
+    biometrics: "infra",
+    equilibrium: "infra",
+    journaler: "memory",
+    collapse_mirror: "memory",
+    social_memory: "social",
+    world_pulse: "vision",
+    sql_writer: "persistence",
+    rdf_writer: "persistence",
+    vector_writer: "persistence",
+  };
+
+  function filterSignalsByLayer(signalsMap, layersMap, layerKey) {
+    const key = String(layerKey || "all").toLowerCase();
+    if (key === "all") return signalsMap;
+    const layers = layersMap && typeof layersMap === "object" ? layersMap : DEFAULT_ORGAN_LAYERS;
+    return Object.fromEntries(
+      Object.entries(signalsMap || {}).filter(([oid]) => {
+        const layer = String(layers[oid] || DEFAULT_ORGAN_LAYERS[oid] || "cognition").toLowerCase();
+        return layer === key;
+      }),
+    );
+  }
 
   function destroyCy(cy) {
     if (cy && typeof cy.destroy === "function") {
@@ -210,6 +236,7 @@
    * @param {HTMLElement} [options.detailEl]
    * @param {HTMLButtonElement} [options.refreshBtn]
    * @param {HTMLInputElement} [options.autoRefreshCheckbox]
+   * @param {HTMLSelectElement} [options.layerFilterEl]
    */
   function attach(options) {
     const apiBaseUrl = String(options.apiBaseUrl || "").replace(/\/$/, "");
@@ -229,6 +256,13 @@
     let showStubs = false;
     let lastCorrelationChain = [];
     let stubToggleEl = null;
+    let lastLayersMap = DEFAULT_ORGAN_LAYERS;
+
+    function selectedLayer() {
+      const el = options.layerFilterEl;
+      if (!el || correlationMode) return "all";
+      return String(el.value || "all").toLowerCase();
+    }
 
     function setStatus(text) {
       if (options.statusEl) options.statusEl.textContent = text;
@@ -531,10 +565,16 @@
         const data = await res.json();
         lastPayload = data;
         const sigs = data.signals && typeof data.signals === "object" ? data.signals : {};
-        const n = Object.keys(sigs).length;
+        lastLayersMap =
+          data.layers && typeof data.layers === "object" ? data.layers : DEFAULT_ORGAN_LAYERS;
+        const layerKey = selectedLayer();
+        const filtered = filterSignalsByLayer(sigs, lastLayersMap, layerKey);
+        const n = Object.keys(filtered).length;
         const hidden = countHiddenStubs(Object.values(sigs));
-        setStatus(`as_of=${data.as_of || "?"}\torgans=${n}\thidden_stubs=${hidden}`);
-        renderGraph(sigs, { showStubs });
+        setStatus(
+          `as_of=${data.as_of || "?"}\torgans=${n}\tlayer=${layerKey}\thidden_stubs=${hidden}`,
+        );
+        renderGraph(filtered, { showStubs });
       } catch (err) {
         setStatus(`Failed: ${err && err.message ? err.message : err}`);
         destroyCy(cy);
@@ -569,6 +609,25 @@
     if (options.autoRefreshCheckbox) {
       options.autoRefreshCheckbox.addEventListener("change", syncPolling);
     }
+    if (options.layerFilterEl) {
+      options.layerFilterEl.addEventListener("change", () => {
+        if (!correlationMode && lastPayload && lastPayload.signals) {
+          const sigs =
+            lastPayload.signals && typeof lastPayload.signals === "object"
+              ? lastPayload.signals
+              : {};
+          const layerKey = selectedLayer();
+          const filtered = filterSignalsByLayer(sigs, lastLayersMap, layerKey);
+          const hidden = countHiddenStubs(Object.values(sigs));
+          setStatus(
+            `as_of=${lastPayload.as_of || "?"}\torgans=${Object.keys(filtered).length}\tlayer=${layerKey}\thidden_stubs=${hidden}`,
+          );
+          renderGraph(filtered, { showStubs });
+        } else {
+          refresh();
+        }
+      });
+    }
 
     return {
       refresh,
@@ -590,7 +649,9 @@
   window.OrionOrganSignalsGraphUI = {
     attach,
     buildCorrelationGraphElements,
+    filterSignalsByLayer,
     isStubSignal,
     parseCorrelationIdFromSearch,
+    DEFAULT_ORGAN_LAYERS,
   };
 })();

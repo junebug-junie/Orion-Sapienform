@@ -29,6 +29,7 @@ def test_index_has_organ_signals_tab_and_graph_hosts() -> None:
     assert ">Organ signals<" in index_html
     assert '<section id="signals" data-panel="signals"' in index_html
     assert 'id="organSignalsCyHost"' in index_html
+    assert 'id="organ-signals-layer-filter"' in index_html
     assert 'organ-signals-graph-ui.js?v={{HUB_UI_ASSET_VERSION}}' in index_html
 
 
@@ -50,3 +51,5 @@ def test_organ_signals_graph_ui_exports_attach() -> None:
     src = ORG_SIGNALS_JS.read_text(encoding="utf-8")
     assert "window.OrionOrganSignalsGraphUI" in src
     assert "/api/signals/active" in src
+    assert "filterSignalsByLayer" in src
+    assert "organ-signals-layer-filter" in src or "layerFilterEl" in src

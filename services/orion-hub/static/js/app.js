@@ -7354,6 +7354,7 @@ loadDismissedIds();
       detailEl: document.getElementById("organSignalsDetail"),
       refreshBtn: document.getElementById("organSignalsRefreshBtn"),
       autoRefreshCheckbox: document.getElementById("organSignalsAutoRefresh"),
+      layerFilterEl: document.getElementById("organ-signals-layer-filter"),
     });
     return organSignalsGraphCtl;
   }

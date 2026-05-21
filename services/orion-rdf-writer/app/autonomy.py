@@ -270,6 +270,14 @@ def _handle_goal_proposal(g: Graph, goal: GoalProposalV1) -> Tuple[str, str]:
     _add_literal(g, artifact_uri, ORION.proposalPriority, goal.priority, XSD.float)
     _add_literal(g, artifact_uri, ORION.cooldownUntil, goal.cooldown_until.isoformat() if goal.cooldown_until else None, XSD.dateTime)
     _add_literal(g, artifact_uri, ORION.proposalStatus, goal.proposal_status, XSD.string)
+    _add_literal(g, artifact_uri, ORION.plannedTaskId, goal.planned_task_id, XSD.string)
+    _add_literal(
+        g,
+        artifact_uri,
+        ORION.completedAt,
+        goal.completed_at.isoformat() if goal.completed_at else None,
+        XSD.dateTime,
+    )
     _add_literal(g, artifact_uri, ORION.executionMode, "proposal-only", XSD.string)
     if goal.supersedes_artifact_id:
         prior_uri = _artifact_uri(goal.kind, goal.supersedes_artifact_id)

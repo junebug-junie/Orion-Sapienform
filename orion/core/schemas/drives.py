@@ -117,7 +117,16 @@ class IdentitySnapshotV1(GraphReadyArtifact):
     drive_pressures: Dict[str, float] = Field(default_factory=dict)
 
 
-ProposalStatus = Literal["proposed", "active", "superseded", "archived", "planned", "completed"]
+ProposalStatus = Literal[
+    "proposed",
+    "active",
+    "superseded",
+    "archived",
+    "planned",
+    "executing",
+    "completed",
+    "failed",
+]
 SemanticSource = Literal["template", "evidence_rules", "llm"]
 
 
@@ -129,15 +138,17 @@ class GoalProposalV1(GraphReadyArtifact):
     priority: float = Field(default=0.0, ge=0.0, le=1.0)
     cooldown_until: Optional[datetime] = None
     proposal_status: ProposalStatus = "proposed"
+    planned_task_id: str | None = None
+    completed_at: Optional[datetime] = None
     supersedes_artifact_id: str | None = None
     semantic_source: SemanticSource = "template"
     source_event_refs: List[ArtifactEventRef] = Field(default_factory=list)
     evidence_items: List[ArtifactEvidence] = Field(default_factory=list)
     tension_kinds: List[str] = Field(default_factory=list)
 
-    @field_validator("cooldown_until")
+    @field_validator("cooldown_until", "completed_at")
     @classmethod
-    def _ensure_cooldown_tz(cls, v: Optional[datetime]) -> Optional[datetime]:
+    def _ensure_goal_datetime_tz(cls, v: Optional[datetime]) -> Optional[datetime]:
         if v is None or v.tzinfo is not None:
             return v
         return v.replace(tzinfo=timezone.utc)

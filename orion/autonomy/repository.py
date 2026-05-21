@@ -401,7 +401,7 @@ LIMIT {self._drives_query_limit}
     def _fetch_active_goals(self, *, subject: str, model_layer: str, entity_id: str) -> tuple[list[AutonomyGoalHeadlineV1], int]:
         sparql = f"""
 PREFIX orion: <http://conjourney.net/orion#>
-SELECT ?artifact_id ?goal_statement ?drive_origin ?priority ?cooldown_until ?proposal_signature ?created_at ?proposal_status
+SELECT ?artifact_id ?goal_statement ?drive_origin ?priority ?cooldown_until ?proposal_signature ?created_at ?proposal_status ?planned_task_id ?completed_at
 WHERE {{
   GRAPH <{AUTONOMY_GOALS_GRAPH}> {{
     ?artifact a orion:ProposedGoal ;
@@ -416,7 +416,16 @@ WHERE {{
       orion:proposalSignature ?proposal_signature .
     OPTIONAL {{ ?artifact orion:cooldownUntil ?cooldown_until . }}
     OPTIONAL {{ ?artifact orion:proposalStatus ?proposal_status . }}
-    FILTER(!BOUND(?proposal_status) || (?proposal_status != "superseded" && ?proposal_status != "archived"))
+    OPTIONAL {{ ?artifact orion:plannedTaskId ?planned_task_id . }}
+    OPTIONAL {{ ?artifact orion:completedAt ?completed_at . }}
+    FILTER(
+      !BOUND(?proposal_status)
+      || (
+        ?proposal_status != "superseded"
+        && ?proposal_status != "archived"
+        && ?proposal_status != "completed"
+      )
+    )
   }}
 }}
 ORDER BY DESC(?priority) DESC(?created_at) DESC(STR(?artifact_id))
@@ -427,7 +436,7 @@ LIMIT {self._goals_limit * 4}
         for row in rows:
             try:
                 proposal_status = _literal(row, "proposal_status") or "proposed"
-                if proposal_status in ("superseded", "archived"):
+                if proposal_status in ("superseded", "archived", "completed"):
                     continue
                 candidates.append(
                     AutonomyGoalHeadlineV1(
@@ -438,6 +447,8 @@ LIMIT {self._goals_limit * 4}
                         cooldown_until=_literal(row, "cooldown_until"),
                         proposal_signature=_literal(row, "proposal_signature") or "",
                         proposal_status=proposal_status,
+                        planned_task_id=_literal(row, "planned_task_id"),
+                        completed_at=_literal(row, "completed_at"),
                     )
                 )
             except Exception:

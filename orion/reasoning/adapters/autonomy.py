@@ -61,6 +61,9 @@ def map_autonomy_state_to_reasoning(state: AutonomyStateV1, *, producer: str = "
                 qualifiers={
                     "drive_origin": goal.drive_origin,
                     "priority": goal.priority,
+                    "proposal_status": goal.proposal_status,
+                    "planned_task_id": goal.planned_task_id,
+                    "completed_at": goal.completed_at.isoformat() if goal.completed_at else None,
                     "cooldown_until": goal.cooldown_until.isoformat() if goal.cooldown_until else None,
                 },
             )

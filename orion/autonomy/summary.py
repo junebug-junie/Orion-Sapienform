@@ -195,6 +195,9 @@ def _active_goals_from_state(state: AutonomyStateV1 | AutonomyStateV2) -> list[A
                 headline=headline,
                 priority=goal.priority,
                 artifact_id=goal.artifact_id,
+                proposal_status=goal.proposal_status,
+                planned_task_id=goal.planned_task_id,
+                completed_at=goal.completed_at,
             )
         )
     return out

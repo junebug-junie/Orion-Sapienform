@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock
 
-from app.router import PlanRunner, _autonomy_payload_from_ctx, _situation_grounding_metadata_from_ctx
+from app.router import PlanRunner, _autonomy_payload_from_ctx, _resolve_autonomy_execution_mode, _situation_grounding_metadata_from_ctx
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.schemas.cortex.schemas import ExecutionPlan, ExecutionStep, PlanExecutionArgs, PlanExecutionRequest, StepExecutionResult
 
@@ -36,6 +36,39 @@ def _request(*, verb_name: str = "chat_general", step_name: str = "llm_chat_gene
         args=PlanExecutionArgs(request_id="r1", extra={"mode": "brain"}),
         context={"mode": "brain", "raw_user_text": "hello"},
     )
+
+
+def test_router_execution_mode_executing_when_planned_task_active() -> None:
+    ctx = {
+        "chat_autonomy_summary": {
+            "active_goals": [{"artifact_id": "g1", "proposal_status": "executing", "planned_task_id": "task-1"}]
+        }
+    }
+    payload = _autonomy_payload_from_ctx(ctx)
+    assert payload["autonomy_execution_mode"] == "executing"
+
+
+def test_router_execution_mode_planned_when_operator_promoted() -> None:
+    ctx = {
+        "chat_autonomy_summary": {
+            "active_goals": [{"artifact_id": "g1", "proposal_status": "planned", "planned_task_id": "task-1"}]
+        }
+    }
+    payload = _autonomy_payload_from_ctx(ctx)
+    assert payload["autonomy_execution_mode"] == "planned"
+
+
+def test_router_execution_mode_hint_only_from_chat_stance() -> None:
+    ctx = {
+        "chat_autonomy_execution_mode": "hint_only",
+        "chat_autonomy_summary": {
+            "active_goals": [{"artifact_id": "g1", "proposal_status": "proposed", "priority": 0.8}],
+            "goals_present": True,
+        },
+    }
+    assert _resolve_autonomy_execution_mode(ctx) == "hint_only"
+    payload = _autonomy_payload_from_ctx(ctx)
+    assert payload["autonomy_execution_mode"] == "hint_only"
 
 
 def test_router_exports_autonomy_metadata_from_chat_stance_context(monkeypatch) -> None:
@@ -211,7 +244,44 @@ def test_router_exports_backend_and_repository_status_when_autonomy_unavailable(
     assert result.metadata["autonomy_debug"]["orion"]["unavailable_reason"] == "query_error"
 
 
-def test_router_exports_goal_lineage_and_proposal_only_execution_mode(monkeypatch) -> None:
+def test_router_exports_none_execution_mode_when_healthy_goals_present(monkeypatch) -> None:
+    runner = PlanRunner()
+    fake_step = StepExecutionResult(
+        status="success",
+        verb_name="chat_general",
+        step_name="llm_chat_general",
+        order=0,
+        result={"LLMGatewayService": {"content": "ok"}},
+        latency_ms=1,
+        node="n",
+        logs=[],
+        error=None,
+    )
+    monkeypatch.setattr("app.router.call_step_services", AsyncMock(return_value=fake_step))
+    monkeypatch.setattr("app.router.prepare_brain_reply_context", lambda _ctx: None)
+    ctx = {
+        "mode": "brain",
+        "raw_user_text": "hello",
+        "chat_autonomy_summary": {
+            "stance_mode": "normal",
+            "goals_present": True,
+            "proposal_headlines": ["Clarify autonomy boundaries"],
+        },
+    }
+    result = asyncio.run(
+        runner.run_plan(
+            bus=object(),
+            source=ServiceRef(name="x", version="0", node="n"),
+            req=_request(),
+            correlation_id="corr-healthy-goals",
+            ctx=ctx,
+        )
+    )
+    assert result.metadata["autonomy_execution_mode"] == "none"
+    assert result.metadata["autonomy_goals_present"] is True
+
+
+def test_router_exports_goal_lineage_and_none_execution_mode(monkeypatch) -> None:
     runner = PlanRunner()
     fake_step = StepExecutionResult(
         status="success",
@@ -248,7 +318,10 @@ def test_router_exports_goal_lineage_and_proposal_only_execution_mode(monkeypatc
             ctx=ctx,
         )
     )
-    assert result.metadata["autonomy_execution_mode"] == "proposal_only"
+    # Migration: autonomy_execution_mode was "proposal_only"; consumers should use
+    # autonomy_goals_present + summary.stance_mode instead.
+    assert result.metadata["autonomy_execution_mode"] == "none"
+    assert result.metadata["autonomy_goals_present"] is True
     assert result.metadata["autonomy_goal_lineage"]["goal_artifact_id"] == "goal-abc"
     assert result.metadata["autonomy_goal_lineage"]["proposal_signature"] == "deadbeef01"
     assert result.metadata["autonomy_state_preview"]["goal_lineage"]["proposal_signature"] == "deadbeef01"

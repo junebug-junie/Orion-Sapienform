@@ -1,3 +1,9 @@
+## Subject routing
+
+Autonomy goals and drives are keyed by subject (`orion`, `relationship`, `juniper`). Dyadic chat materializes to **relationship**, not juniper — see the routing contract:
+
+- [Autonomy subject routing contract](../../docs/architecture/autonomy_subjects.md)
+
 Run tests:
 
 Prove local semantics:

@@ -1531,6 +1531,15 @@ channels:
     stability: "experimental"
     since: "2026-03-19"
 
+  - name: "orion:autonomy:goal:planned"
+    kind: "event"
+    schema_id: "AutonomyGoalPlannedV1"
+    message_kind: "autonomy.goal.planned.v1"
+    producer_services: ["orion-planner-react"]
+    consumer_services: ["orion-cortex-exec", "*"]
+    stability: "experimental"
+    since: "2026-05-21"
+
   - name: "orion:debug:turn:dossier"
     kind: "event"
     schema_id: "TurnDossierV1"

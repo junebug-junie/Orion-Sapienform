@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Mapping
 
 from orion.autonomy.models import (
+    AutonomyActiveGoalV1,
     AutonomyStateQuality,
     AutonomyStateV1,
     AutonomyStateV2,
@@ -182,6 +183,26 @@ def _derive_context_note(
     return None
 
 
+def _active_goals_from_state(state: AutonomyStateV1 | AutonomyStateV2) -> list[AutonomyActiveGoalV1]:
+    out: list[AutonomyActiveGoalV1] = []
+    for goal in state.goal_headlines[:3]:
+        headline = _proposal_headline_for_display(goal.goal_statement)
+        if not headline:
+            continue
+        out.append(
+            AutonomyActiveGoalV1(
+                drive_origin=goal.drive_origin,
+                headline=headline,
+                priority=goal.priority,
+                artifact_id=goal.artifact_id,
+                proposal_status=goal.proposal_status,
+                planned_task_id=goal.planned_task_id,
+                completed_at=goal.completed_at,
+            )
+        )
+    return out
+
+
 def _derive_stance_mode(
     *,
     state_quality: AutonomyStateQuality,
@@ -196,7 +217,7 @@ def _derive_stance_mode(
         return "proposal_only" if has_proposals else "unavailable"
     if state_quality == "empty":
         return "unavailable"
-    return "proposal_only" if has_proposals else "normal"
+    return "normal"
 
 
 def summarize_autonomy_lookup(
@@ -228,6 +249,7 @@ def summarize_autonomy_lookup(
         has_proposals=has_proposals,
         contextual_fallback=contextual_fallback,
     )
+    active_goals = _active_goals_from_state(state) if state else []
     return base.model_copy(
         update={
             "state_quality": state_quality,
@@ -236,6 +258,8 @@ def summarize_autonomy_lookup(
             "facet_health": facet_health,
             "context_note": context_note,
             "selected_subject": selected_subject,
+            "active_goals": active_goals,
+            "goals_present": bool(active_goals),
         }
     )
 
@@ -308,6 +332,7 @@ def summarize_autonomy_state(state: AutonomyStateV1 | AutonomyStateV2 | None) ->
         ):
             hazards.append("do not treat proxy telemetry as canonical state")
 
+    active_goals = _active_goals_from_state(state)
     return AutonomySummaryV1(
         stance_hint=stance_hint,
         dominant_drive=(state.dominant_drive or "").strip() or None,
@@ -318,5 +343,7 @@ def summarize_autonomy_state(state: AutonomyStateV1 | AutonomyStateV2 | None) ->
         raw_state_present=True,
         drive_competition=drive_competition,
         state_quality="healthy",
-        stance_mode="proposal_only" if proposal_headlines else "normal",
+        stance_mode="normal",
+        active_goals=active_goals,
+        goals_present=bool(active_goals),
     )

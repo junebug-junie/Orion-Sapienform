@@ -326,6 +326,12 @@ async def startup_event():
             "{{HUB_CFG}}",
             json.dumps(hub_cfg),
         )
+        from scripts.api_routes import resolve_hub_autonomy_subject_display
+
+        html_content = html_content.replace(
+            "{{HUB_AUTONOMY_SUBJECT_DISPLAY}}",
+            resolve_hub_autonomy_subject_display(),
+        )
         logger.info("UI template loaded successfully (ui_asset_version=%s).", ui_asset_version)
     except FileNotFoundError:
         logger.error("CRITICAL: 'templates/index.html' not found.")

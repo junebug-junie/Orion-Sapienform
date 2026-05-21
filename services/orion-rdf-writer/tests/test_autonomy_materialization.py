@@ -5,7 +5,7 @@ import importlib.util
 import os
 from pathlib import Path
 
-from rdflib import Graph, Literal, Namespace
+from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import RDF, XSD
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -150,6 +150,86 @@ def test_drive_audit_materialization_preserves_lineage_and_tensions():
     assert (audit_uri, ORION.highlightsActiveDrive, None) in graph
     assert (audit_uri, ORION.hasDriveAssessment, None) in graph
     assert (audit_uri, ORION.derivedFromTension, None) in graph
+
+
+def test_goal_materialization_writes_proposal_status_and_base():
+    payload = {
+        "artifact_id": "goal-new",
+        "subject": "orion",
+        "model_layer": "self-model",
+        "entity_id": "self:orion",
+        "kind": "memory.goals.proposed.v1",
+        "ts": "2026-03-19T12:00:00+00:00",
+        "confidence": 0.75,
+        "correlation_id": "corr-123",
+        "trace_id": "trace-abc",
+        "turn_id": "turn-789",
+        "join_keys": ["correlation_id", "trace_id", "turn_id", "artifact_id"],
+        "provenance": _provenance(),
+        "related_nodes": ["tension-1"],
+        "goal_statement": "Stabilize internal coherence around the active evidence trail.",
+        "goal_statement_base": "Stabilize internal coherence around the active evidence trail.",
+        "proposal_signature": "proposal-sig-2",
+        "drive_origin": "coherence",
+        "priority": 0.88,
+        "cooldown_until": "2026-03-19T15:00:00+00:00",
+        "proposal_status": "active",
+        "supersedes_artifact_id": "goal-old",
+        "source_event_refs": _provenance()["source_event_refs"],
+        "evidence_items": _provenance()["evidence_items"],
+        "tension_kinds": ["tension.contradiction.v1"],
+    }
+
+    nt, graph_name = build_autonomy_triples("memory.goals.proposed.v1", payload)
+    graph = _parse(nt)
+    goal_uri = next(graph.subjects(ORION.artifactId, Literal("goal-new", datatype=XSD.string)))
+    prior_uri = URIRef("http://conjourney.net/orion/autonomy/proposedGoal/goal_old")
+
+    assert graph_name == "http://conjourney.net/graph/autonomy/goals"
+    assert "goalStatementBase" in nt
+    assert "proposalStatus" in nt
+    assert "supersedesArtifact" in nt
+    assert (goal_uri, ORION.goalStatementBase, Literal(payload["goal_statement_base"], datatype=XSD.string)) in graph
+    assert (goal_uri, ORION.proposalStatus, Literal("active", datatype=XSD.string)) in graph
+    assert (goal_uri, ORION.supersedesArtifact, prior_uri) in graph
+    assert (prior_uri, ORION.proposalStatus, Literal("superseded", datatype=XSD.string)) in graph
+
+
+def test_goal_materialization_writes_planned_task_and_completed_at():
+    payload = {
+        "artifact_id": "goal-planned",
+        "subject": "orion",
+        "model_layer": "self-model",
+        "entity_id": "self:orion",
+        "kind": "memory.goals.proposed.v1",
+        "ts": "2026-03-19T12:00:00+00:00",
+        "confidence": 0.75,
+        "correlation_id": "corr-123",
+        "trace_id": "trace-abc",
+        "turn_id": "turn-789",
+        "join_keys": ["correlation_id", "trace_id", "turn_id", "artifact_id"],
+        "provenance": _provenance(),
+        "related_nodes": ["tension-1"],
+        "goal_statement": "Execute the coherence review with operator approval.",
+        "proposal_signature": "proposal-sig-planned",
+        "drive_origin": "coherence",
+        "priority": 0.88,
+        "proposal_status": "executing",
+        "planned_task_id": "task-def-456",
+        "completed_at": "2026-03-19T16:00:00+00:00",
+        "source_event_refs": _provenance()["source_event_refs"],
+        "evidence_items": _provenance()["evidence_items"],
+        "tension_kinds": ["tension.contradiction.v1"],
+    }
+
+    nt, graph_name = build_autonomy_triples("memory.goals.proposed.v1", payload)
+    graph = _parse(nt)
+    goal_uri = next(graph.subjects(ORION.artifactId, Literal("goal-planned", datatype=XSD.string)))
+
+    assert graph_name == "http://conjourney.net/graph/autonomy/goals"
+    assert (goal_uri, ORION.proposalStatus, Literal("executing", datatype=XSD.string)) in graph
+    assert (goal_uri, ORION.plannedTaskId, Literal("task-def-456", datatype=XSD.string)) in graph
+    assert (goal_uri, ORION.completedAt, Literal("2026-03-19T16:00:00+00:00", datatype=XSD.dateTime)) in graph
 
 
 def test_goal_materialization_preserves_proposal_only_semantics():

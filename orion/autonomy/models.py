@@ -28,6 +28,22 @@ class AutonomyGoalHeadlineV1(BaseModel):
     priority: float = Field(default=0.0, ge=0.0, le=1.0)
     cooldown_until: datetime | None = None
     proposal_signature: str
+    proposal_status: str = "proposed"
+    semantic_source: str | None = None
+    planned_task_id: str | None = None
+    completed_at: datetime | None = None
+
+
+class AutonomyActiveGoalV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    drive_origin: str
+    headline: str
+    priority: float = Field(default=0.0, ge=0.0, le=1.0)
+    artifact_id: str
+    proposal_status: str | None = None
+    planned_task_id: str | None = None
+    completed_at: datetime | None = None
 
 
 class AutonomyStateV1(BaseModel):
@@ -79,6 +95,8 @@ class AutonomySummaryV1(BaseModel):
     facet_health: dict[str, str] = Field(default_factory=dict)
     context_note: str | None = None
     selected_subject: str | None = None
+    active_goals: list[AutonomyActiveGoalV1] = Field(default_factory=list)
+    goals_present: bool = False
 
 
 class AutonomyEvidenceRefV1(BaseModel):

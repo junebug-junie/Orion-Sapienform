@@ -52,6 +52,13 @@ from .autonomy_constitution import (
     load_autonomy_constitution,
     validate_autonomy_constitution,
 )
+from orion.autonomy.goal_actions import (
+    GoalActionError,
+    GoalActionResult,
+    complete_goal,
+    dismiss_goal,
+    promote_goal,
+)
 from .social_room import is_social_room_payload, social_room_client_meta
 from . import social_room_inspection_cache
 from .service_logs import collect_service_inventory
@@ -292,6 +299,12 @@ class RecallEvalSuiteRecordRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     rows: list[dict[str, Any]] = Field(default_factory=list, max_length=64)
     suite_run_id: str | None = None
+
+
+class AutonomyGoalActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operator: str = "operator"
 
 
 class RecallProposalStageRequest(BaseModel):
@@ -640,6 +653,16 @@ def _rec_tape_rsp(
         recall_count,
         backend_counts or {},
     )
+
+def resolve_hub_autonomy_subject_display() -> str:
+    """Normalize HUB_AUTONOMY_SUBJECT_DISPLAY for Hub template injection (two|three)."""
+    raw = str(
+        getattr(settings, "HUB_AUTONOMY_SUBJECT_DISPLAY", None)
+        or os.environ.get("HUB_AUTONOMY_SUBJECT_DISPLAY", "two")
+        or "two",
+    ).strip().lower()
+    return raw if raw in ("two", "three") else "two"
+
 
 # ======================================================================
 # 🏠 ROOT + STATIC HTML
@@ -6029,3 +6052,86 @@ def api_substrate_autonomy_constitution() -> Dict[str, Any]:
 def api_substrate_autonomy_readiness() -> Dict[str, Any]:
     """Unified read-only autonomy readiness posture snapshot."""
     return _autonomy_readiness_payload()
+
+
+def _require_autonomy_goal_execution_enabled() -> None:
+    if not _env_flag("AUTONOMY_GOAL_EXECUTION_ENABLED", default=False):
+        raise HTTPException(status_code=503, detail="autonomy_goal_execution_disabled")
+
+
+def _goal_action_payload(result: GoalActionResult) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "ok": True,
+        "artifact_id": result.artifact_id,
+        "action": result.action,
+        "proposal_status": result.proposal_status,
+    }
+    if result.completed_at:
+        payload["completed_at"] = result.completed_at
+    if result.action == "promote":
+        payload["reasoning"] = {
+            "outcome": result.reasoning_outcome,
+            "claim_id": result.reasoning_claim_id,
+            "hitl_satisfied": result.hitl_satisfied,
+        }
+    return payload
+
+
+def _execute_autonomy_goal_action(
+    *,
+    action: str,
+    artifact_id: str,
+    operator: str,
+) -> Dict[str, Any]:
+    safe_id = str(artifact_id or "").strip()
+    if not safe_id:
+        raise HTTPException(status_code=422, detail="artifact_id_required")
+    safe_operator = str(operator or "operator").strip() or "operator"
+    try:
+        if action == "promote":
+            result = promote_goal(artifact_id=safe_id, operator=safe_operator)
+        elif action == "dismiss":
+            result = dismiss_goal(artifact_id=safe_id, operator=safe_operator)
+        elif action == "complete":
+            result = complete_goal(artifact_id=safe_id, operator=safe_operator)
+        else:
+            raise HTTPException(status_code=404, detail="unsupported_goal_action")
+    except GoalActionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+    return _goal_action_payload(result)
+
+
+@router.post("/api/autonomy/goals/{artifact_id}/promote")
+def api_autonomy_goal_promote(
+    artifact_id: str,
+    request: AutonomyGoalActionRequest | None = None,
+    x_orion_operator_token: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    _require_autonomy_goal_execution_enabled()
+    _require_mutation_operator_guard(x_orion_operator_token)
+    body = request or AutonomyGoalActionRequest()
+    return _execute_autonomy_goal_action(action="promote", artifact_id=artifact_id, operator=body.operator)
+
+
+@router.post("/api/autonomy/goals/{artifact_id}/dismiss")
+def api_autonomy_goal_dismiss(
+    artifact_id: str,
+    request: AutonomyGoalActionRequest | None = None,
+    x_orion_operator_token: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    _require_autonomy_goal_execution_enabled()
+    _require_mutation_operator_guard(x_orion_operator_token)
+    body = request or AutonomyGoalActionRequest()
+    return _execute_autonomy_goal_action(action="dismiss", artifact_id=artifact_id, operator=body.operator)
+
+
+@router.post("/api/autonomy/goals/{artifact_id}/complete")
+def api_autonomy_goal_complete(
+    artifact_id: str,
+    request: AutonomyGoalActionRequest | None = None,
+    x_orion_operator_token: str | None = Header(default=None),
+) -> Dict[str, Any]:
+    _require_autonomy_goal_execution_enabled()
+    _require_mutation_operator_guard(x_orion_operator_token)
+    body = request or AutonomyGoalActionRequest()
+    return _execute_autonomy_goal_action(action="complete", artifact_id=artifact_id, operator=body.operator)

@@ -107,8 +107,9 @@ def test_chat_stance_inputs_include_mutation_adaptation_context_from_metadata(mo
 
 def test_chat_stance_autonomy_debug_contains_unavailable_reason(monkeypatch, enable_autonomy_graphdb) -> None:
     monkeypatch.setenv("AUTONOMY_GRAPH_TIMEOUT_SEC", "4.5")
-    monkeypatch.delenv("AUTONOMY_SUBJECT_MAX_WORKERS", raising=False)
-    monkeypatch.setenv("AUTONOMY_SUBQUERY_MAX_WORKERS", "1")
+    monkeypatch.setenv("AUTONOMY_SUBJECT_MAX_WORKERS", "2")
+    monkeypatch.setenv("AUTONOMY_SUBQUERY_MAX_WORKERS", "3")
+    monkeypatch.setenv("AUTONOMY_CHAT_STANCE_SUBQUERY_MAX_WORKERS", "3")
     repo = _Repo(
         {
             "orion": _Lookup(
@@ -130,8 +131,8 @@ def test_chat_stance_autonomy_debug_contains_unavailable_reason(monkeypatch, ena
     assert ctx["chat_autonomy_debug"]["orion"]["subqueries"]["identity"]["status"] == "timeout"
     assert ctx["chat_autonomy_debug"]["_runtime"]["backend"] == "graph"
     assert ctx["chat_autonomy_debug"]["_runtime"]["timeout_sec"] == 4.5
-    assert ctx["chat_autonomy_debug"]["_runtime"]["subject_max_workers"] == 3
-    assert ctx["chat_autonomy_debug"]["_runtime"]["subquery_max_workers"] == 1
+    assert ctx["chat_autonomy_debug"]["_runtime"]["subject_max_workers"] == 2
+    assert ctx["chat_autonomy_debug"]["_runtime"]["subquery_max_workers"] == 3
     assert "repository_status" in ctx["chat_autonomy_debug"]["_runtime"]
     assert ctx["chat_autonomy_backend"] == "graph"
     assert "chat_autonomy_repository_status" in ctx
@@ -273,6 +274,22 @@ def test_autonomy_lookup_turn_log_distinguishes(monkeypatch, enable_autonomy_gra
     assert '"availability_counts": {"available": 1, "degraded": 0, "empty": 1, "partial": 0, "unavailable": 1}' in caplog.text
     assert '"selected_subject": "juniper"' in caplog.text
     assert '"selected_subject_availability": "available"' in caplog.text
+
+
+def test_chat_stance_adds_goal_hint_when_priority_above_threshold() -> None:
+    ctx = {
+        "user_message": "what is the plan?",
+        "chat_autonomy_summary": {
+            "stance_hint": "maintain stable direct response",
+            "active_goals": [
+                {"drive_origin": "autonomy", "headline": "Clarify boundaries", "priority": 0.72, "artifact_id": "goal-x"},
+            ],
+            "response_hazards": ["do not present proposals as commitments"],
+        },
+    }
+    brief = chat_stance.fallback_chat_stance_brief(ctx)
+    assert any(p.startswith("goal_hint:") for p in brief.response_priorities)
+    assert ctx["chat_autonomy_execution_mode"] == "hint_only"
 
 
 def test_triage_mode_not_overridden_by_autonomy_hint(monkeypatch) -> None:

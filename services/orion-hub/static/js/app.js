@@ -3638,6 +3638,29 @@ loadDismissedIds();
     return '--';
   }
 
+  function hubAutonomySubjectDisplayMode() {
+    const raw = String(window.__HUB_AUTONOMY_SUBJECT_DISPLAY__ || 'two').trim().toLowerCase();
+    return raw === 'three' ? 'three' : 'two';
+  }
+
+  function autonomyAvailabilityRowsForDisplay(safeDebug, mode) {
+    const rows = safeDebug
+      ? Object.entries(safeDebug).filter(([subject, value]) => !String(subject).startsWith('_') && value && typeof value === 'object')
+      : [];
+    if (mode !== 'two') return rows;
+    return rows.filter(([subject]) => {
+      const key = String(subject || '').trim().toLowerCase();
+      return key === 'orion' || key === 'relationship';
+    });
+  }
+
+  function formatAutonomyAvailabilityLine(model, mode) {
+    if (mode === 'two') {
+      return `availability: orion + relationship (orion↔juniper) · ${model.availability.available}/${model.availability.subjects} available · ${model.availability.degraded} degraded`;
+    }
+    return `availability: ${model.availability.available}/${model.availability.subjects} available · ${model.availability.degraded} degraded`;
+  }
+
   function normalizeAutonomyModel(summary, debug, meta = {}) {
     const safeSummary = summary && typeof summary === 'object' ? summary : null;
     const safeDebug = debug && typeof debug === 'object' ? debug : null;
@@ -3654,13 +3677,18 @@ loadDismissedIds();
     const proposalHeadlines = Array.isArray((safeSummary && safeSummary.proposal_headlines) || (safePreview && safePreview.proposal_headlines))
       ? ((safeSummary && safeSummary.proposal_headlines) || (safePreview && safePreview.proposal_headlines)).map((v) => String(v || '').trim()).filter(Boolean).slice(0, 3)
       : [];
-    const availabilityRows = safeDebug
-      ? Object.entries(safeDebug).filter(([subject, value]) => !String(subject).startsWith('_') && value && typeof value === 'object')
-      : [];
+    const goalsPresent = Boolean(
+      meta.autonomyGoalsPresent
+      || meta.autonomy_goals_present
+      || (safeSummary && safeSummary.goals_present)
+      || proposalHeadlines.length
+    );
+    const displayMode = hubAutonomySubjectDisplayMode();
+    const availabilityRows = autonomyAvailabilityRowsForDisplay(safeDebug, displayMode);
     const availableCount = availabilityRows.filter(([, value]) => value.availability === 'available').length;
     const degradedCount = availabilityRows.filter(([, value]) => value.availability === 'degraded').length;
     const unavailableCount = availabilityRows.filter(([, value]) => value.availability === 'unavailable').length;
-    const subjectCount = availabilityRows.length;
+    const subjectCount = displayMode === 'two' ? 2 : availabilityRows.length;
     // Keep this exact fallback expression stable for UI contract tests:
     // (safeSummary && safeSummary.dominant_drive) || (safePreview && safePreview.dominant_drive)
     const dominantDrive = String(
@@ -3709,6 +3737,7 @@ loadDismissedIds();
       driveCompetition,
       proposals: proposalHeadlines,
       proposalHeadlines,
+      goalsPresent,
       stanceHint: String((safeSummary && safeSummary.stance_hint) || '').trim(),
       hasSemanticSignal,
       hasDebugSignal,
@@ -3788,6 +3817,16 @@ loadDismissedIds();
       autonomyDebugMeta.textContent = `backend ${model.backend} · selected ${model.selectedSubject} · runtime+semantic`;
     }
 
+    const executionModeDisplay = model.executionMode === 'proposal_only'
+      ? 'none (legacy proposal_only)'
+      : model.executionMode;
+    const displayMode = hubAutonomySubjectDisplayMode();
+    const juniperNote = 'n/a — dyadic scope uses relationship';
+    const juniperDebugEntry = debug && typeof debug === 'object' ? debug.juniper : null;
+    const juniperAvailabilityEmpty = juniperDebugEntry && typeof juniperDebugEntry === 'object'
+      && (!String(juniperDebugEntry.availability || '').trim()
+        || ['unavailable', 'empty'].includes(String(juniperDebugEntry.availability || '').trim()));
+
     autonomyDebugOverview.innerHTML = '';
     [
       `autonomy state: ${model.stateQuality || 'unknown'}`,
@@ -3796,11 +3835,13 @@ loadDismissedIds();
       ...(model.degradedReason ? [`reason: ${model.degradedReason}`] : []),
       ...(model.contextNote ? [`context note: ${model.contextNote}`] : []),
       ...(model.stanceMode ? [`stance mode: ${model.stanceMode}`] : []),
-      `availability: ${model.availability.available}/${model.availability.subjects} available · ${model.availability.degraded} degraded`,
+      ...(model.goalsPresent ? [`goals: ${model.proposalHeadlines.length} active`] : []),
+      formatAutonomyAvailabilityLine(model, displayMode),
+      ...(displayMode === 'three' && juniperAvailabilityEmpty ? [`juniper: ${juniperNote}`] : []),
       `repository source: ${model.repositoryStatus.source_available ? 'available' : 'unavailable'}`,
       `repository path: ${model.repositoryStatus.source_path}`,
       `fallback: ${model.fallback}`,
-      ...(model.executionMode ? [`execution: ${model.executionMode}`] : []),
+      ...(executionModeDisplay ? [`execution: ${executionModeDisplay}`] : []),
       ...(model.goalLineage && Object.keys(model.goalLineage).length
         ? [`goal lineage: ${JSON.stringify(model.goalLineage)}`]
         : []),
@@ -3826,6 +3867,19 @@ loadDismissedIds();
       row.textContent = line;
       autonomyDebugState.appendChild(row);
     });
+
+    let proposalsTitle = document.getElementById('autonomyDebugProposalsTitle');
+    if (!proposalsTitle && autonomyDebugProposals && autonomyDebugProposals.parentElement) {
+      proposalsTitle = document.createElement('div');
+      proposalsTitle.id = 'autonomyDebugProposalsTitle';
+      proposalsTitle.className = 'text-xs uppercase tracking-wide text-amber-400/80 mb-1';
+      autonomyDebugProposals.parentElement.insertBefore(proposalsTitle, autonomyDebugProposals);
+    }
+    if (proposalsTitle) {
+      proposalsTitle.textContent = model.stateQuality === 'healthy'
+        ? 'Active goals (non-executing)'
+        : 'Proposals (proposal-only)';
+    }
 
     autonomyDebugProposals.innerHTML = '';
     if (model.proposalHeadlines.length) {
@@ -10082,6 +10136,7 @@ loadDismissedIds();
               autonomyDebug: d.autonomy_debug,
               autonomyStatePreview: d.autonomy_state_preview,
               autonomyExecutionMode: d.autonomy_execution_mode,
+              autonomyGoalsPresent: d.autonomy_goals_present,
               autonomyGoalLineage: d.autonomy_goal_lineage,
               autonomyBackend: d.autonomy_backend,
               autonomySelectedSubject: d.autonomy_selected_subject,
@@ -10406,6 +10461,7 @@ loadDismissedIds();
                 autonomyDebug: d.autonomy_debug,
                 autonomyStatePreview: d.autonomy_state_preview,
                 autonomyExecutionMode: d.autonomy_execution_mode,
+                autonomyGoalsPresent: d.autonomy_goals_present,
                 autonomyGoalLineage: d.autonomy_goal_lineage,
                 autonomyBackend: d.autonomy_backend,
                 autonomySelectedSubject: d.autonomy_selected_subject,

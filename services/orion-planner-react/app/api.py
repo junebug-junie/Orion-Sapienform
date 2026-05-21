@@ -9,12 +9,19 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
+from pydantic import BaseModel, ConfigDict
 
+from orion.autonomy.goal_actions import (
+    build_goal_graph_query_client,
+    fetch_goal_by_artifact_id,
+    new_goal_task_id,
+    update_goal_planned_task_id,
+)
 from orion.core.llm_json import parse_json_object, repair_json
 from .settings import settings
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import BaseEnvelope, ChatResultPayload, LLMMessage
+from orion.core.bus.bus_schemas import BaseEnvelope, ChatResultPayload, LLMMessage, ServiceRef
 from orion.schemas.agents.schemas import (
     ContextBlock,
     FinalAnswer,
@@ -1567,3 +1574,234 @@ async def plan_react(payload: PlannerRequest) -> PlannerResponse:
     if not settings.orion_bus_enabled:
         raise HTTPException(status_code=500, detail="Bus disabled")
     return await run_react_loop(payload)
+
+
+# ─────────────────────────────────────────────
+# Autonomy goal execute verb (Phase 3)
+# ─────────────────────────────────────────────
+
+AUTONOMY_GOAL_EXECUTE_VERB = "autonomy.goal.execute.v1"
+BUS_AUTONOMY_GOAL_PLANNED_OUT = os.getenv(
+    "BUS_AUTONOMY_GOAL_PLANNED_OUT",
+    "orion:autonomy:goal:planned",
+)
+
+
+class AutonomyGoalExecuteInputV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    goal_artifact_id: str
+    goal_statement: str
+    drive_origin: str
+
+
+class AutonomyGoalExecuteOutputV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool = True
+    verb: str = AUTONOMY_GOAL_EXECUTE_VERB
+    task_id: str
+    goal_artifact_id: str
+    proposal_status: str = "executing"
+
+
+class AutonomyGoalExecuteVerb:
+    input_model = AutonomyGoalExecuteInputV1
+    output_model = AutonomyGoalExecuteOutputV1
+
+    @classmethod
+    async def execute(
+        cls,
+        payload: AutonomyGoalExecuteInputV1,
+        *,
+        bus: Optional[OrionBusAsync] = None,
+    ) -> AutonomyGoalExecuteOutputV1:
+        return await execute_autonomy_goal_v1(payload, bus=bus)
+
+
+_PLANNER_VERB_HANDLERS: Dict[str, type] = {
+    AUTONOMY_GOAL_EXECUTE_VERB: AutonomyGoalExecuteVerb,
+}
+
+
+def list_planner_verbs() -> List[str]:
+    return sorted(_PLANNER_VERB_HANDLERS.keys())
+
+
+def _autonomy_goal_execution_enabled() -> bool:
+    return str(os.getenv("AUTONOMY_GOAL_EXECUTION_ENABLED", "false")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _require_autonomy_goal_execution_enabled() -> None:
+    if not _autonomy_goal_execution_enabled():
+        raise HTTPException(status_code=503, detail="autonomy_goal_execution_disabled")
+
+
+def _authorized_operator_or_internal(
+    *,
+    operator_token: str | None,
+    internal_token: str | None,
+) -> None:
+    expected_operator = str(os.getenv("SUBSTRATE_MUTATION_OPERATOR_TOKEN", "")).strip()
+    expected_internal = str(os.getenv("ORION_INTERNAL_SERVICE_TOKEN", "")).strip() or expected_operator
+    op = str(operator_token or "").strip()
+    internal = str(internal_token or "").strip()
+    if expected_internal and internal and internal == expected_internal:
+        return
+    if expected_operator and op and op == expected_operator:
+        return
+    if not expected_operator and not expected_internal:
+        raise HTTPException(status_code=503, detail="autonomy_goal_execute_auth_not_configured")
+    raise HTTPException(status_code=403, detail="autonomy_goal_execute_auth_rejected")
+
+
+def _require_goal_planned_for_execute(*, artifact_id: str) -> tuple[str, str]:
+    client = build_goal_graph_query_client()
+    if client is None:
+        raise HTTPException(status_code=503, detail="graph_not_configured")
+    fetched = fetch_goal_by_artifact_id(client, artifact_id)
+    if fetched is None:
+        raise HTTPException(status_code=404, detail="goal_not_found")
+    goal, _subject = fetched
+    if goal.proposal_status != "planned":
+        raise HTTPException(
+            status_code=409,
+            detail=f"goal_not_planned:{goal.proposal_status}",
+        )
+    return goal.planned_task_id or new_goal_task_id(), goal.goal_statement
+
+
+def _persist_goal_executing(*, artifact_id: str, task_id: str) -> bool:
+    client = build_goal_graph_query_client()
+    if client is None:
+        logger.warning(
+            "autonomy_goal_execute graph_not_configured artifact_id=%s task_id=%s",
+            artifact_id,
+            task_id,
+        )
+        return False
+    update_goal_planned_task_id(client, artifact_id, task_id, proposal_status="executing")
+    return True
+
+
+async def _publish_goal_planned_supervisor_event(
+    bus: OrionBusAsync,
+    *,
+    payload: AutonomyGoalExecuteInputV1,
+    task_id: str,
+    correlation_id: str,
+) -> None:
+    from orion.core.schemas.drives import AutonomyGoalPlannedV1
+
+    planned = AutonomyGoalPlannedV1(
+        goal_artifact_id=payload.goal_artifact_id,
+        goal_statement=payload.goal_statement,
+        drive_origin=payload.drive_origin,
+        task_id=task_id,
+        proposal_status="executing",
+        source_verb=AUTONOMY_GOAL_EXECUTE_VERB,
+    )
+    env = BaseEnvelope(
+        kind=planned.kind,
+        source=ServiceRef(
+            name=settings.service_name,
+            version=settings.service_version,
+            node=settings.node_name,
+        ),
+        correlation_id=correlation_id,
+        payload=planned.model_dump(mode="json"),
+    )
+    await bus.publish(BUS_AUTONOMY_GOAL_PLANNED_OUT, env)
+
+
+async def execute_autonomy_goal_v1(
+    payload: AutonomyGoalExecuteInputV1,
+    *,
+    bus: Optional[OrionBusAsync] = None,
+    task_id: str | None = None,
+    skip_planned_status_check: bool = False,
+) -> AutonomyGoalExecuteOutputV1:
+    goal_artifact_id = payload.goal_artifact_id.strip()
+    if not goal_artifact_id:
+        raise ValueError("goal_artifact_id_required")
+
+    if not skip_planned_status_check:
+        client = build_goal_graph_query_client()
+        if client is None:
+            raise ValueError("graph_not_configured")
+        fetched = fetch_goal_by_artifact_id(client, goal_artifact_id)
+        if fetched is None:
+            raise ValueError("goal_not_found")
+        goal, _subject = fetched
+        if goal.proposal_status != "planned":
+            raise ValueError(f"goal_not_planned:{goal.proposal_status}")
+        resolved_task_id = goal.planned_task_id or task_id or new_goal_task_id()
+    else:
+        resolved_task_id = task_id or new_goal_task_id()
+
+    correlation_id = str(uuid.uuid4())
+    graph_persisted = _persist_goal_executing(artifact_id=goal_artifact_id, task_id=resolved_task_id)
+
+    bus_client = bus
+    owns_bus = False
+    if bus_client is None and settings.orion_bus_enabled:
+        bus_client = OrionBusAsync(url=settings.orion_bus_url)
+        await bus_client.connect()
+        owns_bus = True
+
+    try:
+        if bus_client is not None:
+            await _publish_goal_planned_supervisor_event(
+                bus_client,
+                payload=payload,
+                task_id=resolved_task_id,
+                correlation_id=correlation_id,
+            )
+    finally:
+        if owns_bus and bus_client is not None:
+            await bus_client.close()
+
+    logger.info(
+        "autonomy_goal_execute artifact_id=%s task_id=%s drive_origin=%s graph_persisted=%s",
+        goal_artifact_id,
+        resolved_task_id,
+        payload.drive_origin,
+        str(graph_persisted).lower(),
+    )
+
+    return AutonomyGoalExecuteOutputV1(
+        task_id=resolved_task_id,
+        goal_artifact_id=goal_artifact_id,
+    )
+
+
+@router.post(f"/verbs/{AUTONOMY_GOAL_EXECUTE_VERB}", response_model=AutonomyGoalExecuteOutputV1)
+async def invoke_autonomy_goal_execute(
+    payload: AutonomyGoalExecuteInputV1,
+    x_orion_operator_token: str | None = Header(default=None),
+    x_orion_internal_service_token: str | None = Header(default=None),
+) -> AutonomyGoalExecuteOutputV1:
+    _require_autonomy_goal_execution_enabled()
+    _authorized_operator_or_internal(
+        operator_token=x_orion_operator_token,
+        internal_token=x_orion_internal_service_token,
+    )
+    if not settings.orion_bus_enabled:
+        raise HTTPException(status_code=500, detail="Bus disabled")
+    _require_goal_planned_for_execute(artifact_id=payload.goal_artifact_id.strip())
+    try:
+        return await execute_autonomy_goal_v1(payload)
+    except ValueError as exc:
+        code = str(exc)
+        if code == "goal_not_found":
+            raise HTTPException(status_code=404, detail=code) from exc
+        if code.startswith("goal_not_planned"):
+            raise HTTPException(status_code=409, detail=code) from exc
+        if code == "graph_not_configured":
+            raise HTTPException(status_code=503, detail=code) from exc
+        raise HTTPException(status_code=400, detail=code) from exc

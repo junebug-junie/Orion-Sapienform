@@ -4173,6 +4173,21 @@ async def api_signals_trace(trace_id: str) -> Dict[str, Any]:
     return body
 
 
+@router.get("/api/cognition/trace/{correlation_id}")
+async def api_cognition_trace(correlation_id: str) -> Dict[str, Any]:
+    """Redacted cognition execution trace keyed by ``correlation_id`` (Runtime Trace Nexus A4)."""
+    import scripts.main as hub_main
+
+    cache = getattr(hub_main, "cognition_trace_cache", None)
+    if cache is None or not cache.enabled:
+        raise HTTPException(status_code=503, detail="cognition_trace_cache_disabled")
+    debug = bool(getattr(settings, "COGNITION_TRACE_API_DEBUG", False))
+    body = await cache.get_debug(correlation_id) if debug else await cache.get_redacted(correlation_id)
+    if body is None:
+        raise HTTPException(status_code=404, detail="cognition_trace_not_cached")
+    return body
+
+
 @router.get("/api/observability/grafana-tempo-trace/{trace_id}")
 def api_observability_grafana_tempo_trace(trace_id: str) -> Dict[str, Any]:
     """

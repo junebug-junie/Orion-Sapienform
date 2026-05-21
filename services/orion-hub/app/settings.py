@@ -103,6 +103,16 @@ class Settings(BaseSettings):
     TRACE_CACHE_TTL_SEC: float = Field(default=300.0, alias="TRACE_CACHE_TTL_SEC")
     TRACE_CACHE_MAX_SIGNALS_PER_TRACE: int = Field(default=64, alias="TRACE_CACHE_MAX_SIGNALS_PER_TRACE")
 
+    # --- Cognition trace cache (Runtime Trace Nexus A4) ---
+    COGNITION_TRACE_CACHE_ENABLED: bool = Field(default=True, alias="COGNITION_TRACE_CACHE_ENABLED")
+    COGNITION_TRACE_CACHE_MAX: int = Field(default=200, alias="COGNITION_TRACE_CACHE_MAX")
+    COGNITION_TRACE_CACHE_TTL_SEC: float = Field(default=300.0, alias="COGNITION_TRACE_CACHE_TTL_SEC")
+    COGNITION_TRACE_SUBSCRIBE_CHANNEL: str = Field(
+        default="orion:cognition:trace",
+        alias="COGNITION_TRACE_SUBSCRIBE_CHANNEL",
+    )
+    COGNITION_TRACE_API_DEBUG: bool = Field(default=False, alias="COGNITION_TRACE_API_DEBUG")
+
     # --- OpenTelemetry / Grafana (operator deep links; spec Phase 1) ---
     HUB_OTEL_GRAFANA_BASE_URL: str = Field(
         default="",

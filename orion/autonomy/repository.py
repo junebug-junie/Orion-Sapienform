@@ -398,10 +398,10 @@ LIMIT {self._drives_query_limit}
             "tension_kinds": tensions,
         }, len(rows))
 
-    def _fetch_goals(self, *, subject: str, model_layer: str, entity_id: str) -> tuple[list[AutonomyGoalHeadlineV1], int]:
+    def _fetch_active_goals(self, *, subject: str, model_layer: str, entity_id: str) -> tuple[list[AutonomyGoalHeadlineV1], int]:
         sparql = f"""
 PREFIX orion: <http://conjourney.net/orion#>
-SELECT ?artifact_id ?goal_statement ?drive_origin ?priority ?cooldown_until ?proposal_signature ?created_at
+SELECT ?artifact_id ?goal_statement ?drive_origin ?priority ?cooldown_until ?proposal_signature ?created_at ?proposal_status
 WHERE {{
   GRAPH <{AUTONOMY_GOALS_GRAPH}> {{
     ?artifact a orion:ProposedGoal ;
@@ -415,16 +415,21 @@ WHERE {{
       orion:proposalPriority ?priority ;
       orion:proposalSignature ?proposal_signature .
     OPTIONAL {{ ?artifact orion:cooldownUntil ?cooldown_until . }}
+    OPTIONAL {{ ?artifact orion:proposalStatus ?proposal_status . }}
+    FILTER(!BOUND(?proposal_status) || (?proposal_status != "superseded" && ?proposal_status != "archived"))
   }}
 }}
-ORDER BY DESC(?created_at) DESC(STR(?artifact_id))
-LIMIT {self._goals_limit}
+ORDER BY DESC(?priority) DESC(?created_at) DESC(STR(?artifact_id))
+LIMIT {self._goals_limit * 4}
 """.strip()
         rows = self._select_rows(sparql)
-        out: list[AutonomyGoalHeadlineV1] = []
+        candidates: list[AutonomyGoalHeadlineV1] = []
         for row in rows:
             try:
-                out.append(
+                proposal_status = _literal(row, "proposal_status") or "proposed"
+                if proposal_status in ("superseded", "archived"):
+                    continue
+                candidates.append(
                     AutonomyGoalHeadlineV1(
                         artifact_id=_literal(row, "artifact_id") or "",
                         goal_statement=_literal(row, "goal_statement") or "",
@@ -432,11 +437,24 @@ LIMIT {self._goals_limit}
                         priority=float(_literal(row, "priority") or 0.0),
                         cooldown_until=_literal(row, "cooldown_until"),
                         proposal_signature=_literal(row, "proposal_signature") or "",
+                        proposal_status=proposal_status,
                     )
                 )
             except Exception:
                 continue
+        seen_origins: set[str] = set()
+        out: list[AutonomyGoalHeadlineV1] = []
+        for goal in sorted(candidates, key=lambda g: (-g.priority, g.artifact_id)):
+            if goal.drive_origin in seen_origins:
+                continue
+            seen_origins.add(goal.drive_origin)
+            out.append(goal)
+            if len(out) >= self._goals_limit:
+                break
         return out, len(rows)
+
+    def _fetch_goals(self, *, subject: str, model_layer: str, entity_id: str) -> tuple[list[AutonomyGoalHeadlineV1], int]:
+        return self._fetch_active_goals(subject=subject, model_layer=model_layer, entity_id=entity_id)
 
     def _query_subject(self, subject: str, *, observer: dict[str, str] | None = None) -> AutonomyLookupV1:
         binding = SUBJECT_BINDINGS.get(subject)
@@ -467,7 +485,7 @@ LIMIT {self._goals_limit}
         subqueries_all = (
             ("identity", self._fetch_identity),
             ("drives", self._fetch_drive_audit),
-            ("goals", self._fetch_goals),
+            ("goals", self._fetch_active_goals),
         )
         subqueries = [pair for pair in subqueries_all if pair[0] in self._active_subqueries_set]
         subq_mode = "sequential" if self._subquery_max_workers <= 1 else "concurrent"

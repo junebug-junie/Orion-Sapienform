@@ -275,6 +275,22 @@ def test_autonomy_lookup_turn_log_distinguishes(monkeypatch, enable_autonomy_gra
     assert '"selected_subject_availability": "available"' in caplog.text
 
 
+def test_chat_stance_adds_goal_hint_when_priority_above_threshold() -> None:
+    ctx = {
+        "user_message": "what is the plan?",
+        "chat_autonomy_summary": {
+            "stance_hint": "maintain stable direct response",
+            "active_goals": [
+                {"drive_origin": "autonomy", "headline": "Clarify boundaries", "priority": 0.72, "artifact_id": "goal-x"},
+            ],
+            "response_hazards": ["do not present proposals as commitments"],
+        },
+    }
+    brief = chat_stance.fallback_chat_stance_brief(ctx)
+    assert any(p.startswith("goal_hint:") for p in brief.response_priorities)
+    assert ctx["chat_autonomy_execution_mode"] == "hint_only"
+
+
 def test_triage_mode_not_overridden_by_autonomy_hint(monkeypatch) -> None:
     repo = _Repo({})
     monkeypatch.setattr(chat_stance, "build_autonomy_repository", lambda **_: repo)

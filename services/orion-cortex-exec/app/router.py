@@ -518,12 +518,15 @@ def _autonomy_payload_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
     stance_mode = str(summary_dict.get("stance_mode") or "")
     if goals_present:
         payload["autonomy_goals_present"] = True
-    if stance_mode == "proposal_only" or (
+    exec_mode = ctx.get("chat_autonomy_execution_mode")
+    if exec_mode:
+        payload["autonomy_execution_mode"] = exec_mode
+    elif stance_mode == "proposal_only" or (
         stance_mode not in {"normal", "fallback_contextual"} and goals_present
     ):
         payload["autonomy_execution_mode"] = "none"
     elif goals_present:
-        payload["autonomy_execution_mode"] = "none"  # Phase 0: hints not wired yet
+        payload["autonomy_execution_mode"] = "none"
     elif lineage:
         payload["autonomy_execution_mode"] = "none"
     if has_autonomy_context:

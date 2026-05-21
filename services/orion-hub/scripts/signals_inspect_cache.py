@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.signals.models import OrionSignalV1
+from orion.signals.stub_detection import is_stub_signal
 
 from .otel_trace_id import is_valid_otel_trace_id, normalize_otel_trace_id
 
@@ -187,15 +188,6 @@ class SignalsInspectCache:
                 self._correlation_touch_mono.pop(corr, None)
                 self._correlation_truncated.pop(corr, None)
 
-    @staticmethod
-    def _is_stub_signal(sig: OrionSignalV1) -> bool:
-        for note in sig.notes or []:
-            if "stub adapter" in str(note).lower():
-                return True
-        if sig.summary and "stub adapter" in str(sig.summary).lower():
-            return True
-        return False
-
     async def get_active(self) -> Dict[str, Any]:
         now = _utcnow()
         async with self._lock:
@@ -244,7 +236,7 @@ class SignalsInspectCache:
             ordered = sorted(lst, key=lambda s: s.observed_at)
             truncated = self._correlation_truncated.get(corr, False)
         chain = [_chain_item(s) for s in ordered]
-        hidden_stubs = sum(1 for s in ordered if self._is_stub_signal(s))
+        hidden_stubs = sum(1 for s in ordered if is_stub_signal(s))
         gaps: List[str] = []
         if truncated:
             gaps.append("correlation_truncated_max_signals_per_trace")

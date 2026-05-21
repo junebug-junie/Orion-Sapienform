@@ -26,6 +26,7 @@ class GraphQueryError(RuntimeError):
 @dataclass(frozen=True)
 class GraphQueryConfig:
     endpoint: str
+    update_endpoint: str | None = None
     graph_uri: str = SPARK_PROFILE_GRAPH
     timeout_sec: float = 5.0
     user: str | None = None
@@ -55,6 +56,33 @@ class GraphQueryClient:
             response.raise_for_status()
             payload = response.json()
             return list(payload.get("results", {}).get("bindings", []))
+        except requests.exceptions.Timeout as exc:
+            raise GraphQueryError(str(exc), error_type="timeout") from exc
+        except requests.exceptions.ConnectionError as exc:
+            raise GraphQueryError(str(exc), error_type="connection_error") from exc
+        except requests.exceptions.HTTPError as exc:
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            malformed_statuses = {400, 422}
+            error_type = "malformed_query" if status_code in malformed_statuses else "http_error"
+            raise GraphQueryError(str(exc), error_type=error_type, status_code=status_code) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise GraphQueryError(str(exc), error_type="query_error") from exc
+
+    def update(self, sparql: str) -> None:
+        url = (self._cfg.update_endpoint or self._cfg.endpoint).rstrip("/")
+        auth = None
+        if self._cfg.user and self._cfg.password:
+            auth = (self._cfg.user, self._cfg.password)
+
+        try:
+            response = requests.post(
+                url,
+                data=sparql.encode("utf-8"),
+                headers={"Content-Type": "application/sparql-update"},
+                auth=auth,
+                timeout=self._cfg.timeout_sec,
+            )
+            response.raise_for_status()
         except requests.exceptions.Timeout as exc:
             raise GraphQueryError(str(exc), error_type="timeout") from exc
         except requests.exceptions.ConnectionError as exc:

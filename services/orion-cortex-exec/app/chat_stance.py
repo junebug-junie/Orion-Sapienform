@@ -2317,6 +2317,17 @@ def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:
     autonomy_hint = _compact(autonomy_summary.get("stance_hint") or "", limit=90)
     if autonomy_hint and task_mode != "triage":
         response_priorities = _unique(response_priorities + [f"autonomy:{autonomy_hint}"], limit=8)
+    threshold = float(os.getenv("GOAL_HINT_PRIORITY_THRESHOLD", "0.4"))
+    active_goals = [g for g in (autonomy_summary.get("active_goals") or []) if isinstance(g, dict)]
+    if active_goals and task_mode != "triage":
+        top = sorted(active_goals, key=lambda g: -float(g.get("priority") or 0))[0]
+        if float(top.get("priority") or 0) >= threshold:
+            headline = _compact(str(top.get("headline") or ""), limit=80)
+            if headline:
+                response_priorities = _unique(
+                    response_priorities + [f"goal_hint:{headline}"], limit=8
+                )
+                ctx["chat_autonomy_execution_mode"] = "hint_only"
     response_hazards = [
         "generic assistant self-description",
         "describing Juniper as just the user",

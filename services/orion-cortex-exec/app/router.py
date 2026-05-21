@@ -494,6 +494,41 @@ def _situation_grounding_metadata_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any
     return metadata
 
 
+def _active_goals_from_ctx(ctx: Dict[str, Any]) -> list[Dict[str, Any]]:
+    summary = ctx.get("chat_autonomy_summary") if isinstance(ctx.get("chat_autonomy_summary"), dict) else {}
+    return [g for g in (summary.get("active_goals") or []) if isinstance(g, dict)]
+
+
+def _resolve_autonomy_execution_mode(ctx: Dict[str, Any]) -> str:
+    active_goals = _active_goals_from_ctx(ctx)
+    lifecycle_goals = [
+        g
+        for g in active_goals
+        if str(g.get("proposal_status") or "proposed").strip().lower()
+        not in {"completed", "archived", "superseded"}
+    ]
+    statuses = {str(g.get("proposal_status") or "proposed").strip().lower() for g in lifecycle_goals}
+    ctx_mode = str(ctx.get("chat_autonomy_execution_mode") or "").strip().lower()
+    if "executing" in statuses or (ctx_mode == "executing" and lifecycle_goals):
+        return "executing"
+    if "planned" in statuses or (ctx_mode == "planned" and lifecycle_goals):
+        return "planned"
+    if ctx_mode == "hint_only":
+        return "hint_only"
+    summary = ctx.get("chat_autonomy_summary") if isinstance(ctx.get("chat_autonomy_summary"), dict) else {}
+    goals_present = bool(
+        summary.get("goals_present")
+        or summary.get("proposal_headlines")
+        or active_goals
+    )
+    stance_mode = str(summary.get("stance_mode") or "")
+    if stance_mode == "proposal_only" or (
+        stance_mode not in {"normal", "fallback_contextual"} and goals_present
+    ):
+        return "none"
+    return "none"
+
+
 def _autonomy_payload_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
     summary = ctx.get("chat_autonomy_summary") if isinstance(ctx.get("chat_autonomy_summary"), dict) else None
     debug = ctx.get("chat_autonomy_debug") if isinstance(ctx.get("chat_autonomy_debug"), dict) else None
@@ -513,12 +548,18 @@ def _autonomy_payload_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
     lineage = _autonomy_goal_lineage_from_state(state if isinstance(state, dict) else None)
     if lineage:
         payload["autonomy_goal_lineage"] = lineage
-    has_proposals = bool(
-        (isinstance(summary, dict) and summary.get("proposal_headlines"))
-        or (isinstance(state, dict) and state.get("goal_headlines"))
+    summary_dict = summary if isinstance(summary, dict) else {}
+    active_goals = _active_goals_from_ctx(ctx)
+    goals_present = bool(
+        summary_dict.get("goals_present")
+        or summary_dict.get("proposal_headlines")
+        or active_goals
     )
-    if has_proposals or lineage:
-        payload["autonomy_execution_mode"] = "proposal_only"
+    if goals_present:
+        payload["autonomy_goals_present"] = True
+    exec_mode = _resolve_autonomy_execution_mode(ctx)
+    if exec_mode != "none" or has_autonomy_context or goals_present or lineage:
+        payload["autonomy_execution_mode"] = exec_mode
     if has_autonomy_context:
         if backend:
             payload["autonomy_backend"] = backend

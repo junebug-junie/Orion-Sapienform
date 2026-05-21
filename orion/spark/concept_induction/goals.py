@@ -6,8 +6,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Iterable, List, Optional
 
 from orion.core.bus.bus_schemas import BaseEnvelope
-from orion.core.schemas.drives import DriveStateV1, GoalProposalV1, TensionEventV1
+from orion.core.schemas.drives import DriveStateV1, GoalProposalV1, SemanticSource, TensionEventV1
 from .dossier import build_evidence_items, build_source_event_ref, extract_trace_id, extract_turn_id
+from .settings import settings
 
 
 GOAL_TEMPLATES = {
@@ -31,7 +32,14 @@ class GoalProposalEngine:
         self.cooldown = timedelta(minutes=max(0, cooldown_minutes))
 
     @staticmethod
-    def _drive_origin(drive_state: DriveStateV1) -> str:
+    def _drive_origin(
+        drive_state: DriveStateV1,
+        *,
+        dominant_drive: str | None = None,
+        source: str = "pressures",
+    ) -> str:
+        if source == "audit_dominant" and dominant_drive:
+            return dominant_drive.strip().lower()
         if not drive_state.pressures:
             return "continuity"
         return max(sorted(drive_state.pressures), key=lambda key: drive_state.pressures.get(key, 0.0))
@@ -41,31 +49,49 @@ class GoalProposalEngine:
         tension_weight = max((tension.magnitude for tension in tensions), default=0.0)
         return max(0.0, min(1.0, round((drive_state.pressures.get(drive_origin, 0.0) * 0.7) + (tension_weight * 0.3), 4)))
 
-    def _goal_statement(self, drive_state: DriveStateV1, drive_origin: str, tensions: List[TensionEventV1]) -> str:
-        base = GOAL_TEMPLATES.get(drive_origin, GOAL_TEMPLATES["continuity"])
-        if tensions:
-            lead = sorted(tensions, key=lambda tension: (-tension.magnitude, tension.kind))[0]
-            text = f"{base} Primary tension: {lead.kind}."
-        else:
-            text = base
-        # Lineage only: do not append evidence_summary (often user chat text from the intake envelope).
-        extras: List[str] = []
-        tr = str(drive_state.trace_id or "").strip()
-        if tr:
-            extras.append(f"trace={tr[:8]}" + ("…" if len(tr) > 8 else ""))
-        if extras:
-            text = f"{text} · {' · '.join(extras)}"
-        return text
+    def _goal_statement_base(
+        self,
+        drive_origin: str,
+        tensions: List[TensionEventV1],
+        pressures: dict[str, float],
+        window_summary: str | None = None,
+    ) -> str:
+        from .goal_generator import generate_goal_statement
+
+        mode = settings.goal_generation_mode
+        if mode not in ("template", "evidence_rules", "llm"):
+            mode = "evidence_rules"
+        return generate_goal_statement(
+            drive_origin=drive_origin,
+            pressures=pressures,
+            tensions=tensions,
+            window_summary=window_summary,
+            mode=mode,  # type: ignore[arg-type]
+        )
 
     @staticmethod
-    def _signature(subject: str, model_layer: str, drive_origin: str, goal_statement: str, tensions: List[TensionEventV1]) -> str:
+    def _semantic_source(mode: str) -> SemanticSource:
+        if mode == "llm":
+            return "llm"
+        if mode == "evidence_rules":
+            return "evidence_rules"
+        return "template"
+
+    @staticmethod
+    def _signature(
+        subject: str,
+        model_layer: str,
+        drive_origin: str,
+        goal_statement_base: str,
+        tensions: List[TensionEventV1],
+    ) -> str:
         tension_signature = ",".join(sorted(tension.kind for tension in tensions[:3]))
         material = "|".join([
             subject,
             model_layer,
             drive_origin,
             tension_signature,
-            " ".join(goal_statement.lower().split()),
+            " ".join(goal_statement_base.lower().split()),
         ])
         return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
 
@@ -77,11 +103,27 @@ class GoalProposalEngine:
         drive_state: DriveStateV1,
         tensions: Iterable[TensionEventV1],
         store,
+        dominant_drive: str | None = None,
+        window_summary: str | None = None,
     ) -> GoalDecision:
         tension_list = sorted(list(tensions), key=lambda tension: (-tension.magnitude, tension.kind))
-        drive_origin = self._drive_origin(drive_state)
-        goal_statement = self._goal_statement(drive_state, drive_origin, tension_list)
-        signature = self._signature(drive_state.subject, drive_state.model_layer, drive_origin, goal_statement, tension_list)
+        drive_origin = self._drive_origin(
+            drive_state,
+            dominant_drive=dominant_drive,
+            source=settings.goal_drive_origin_source,
+        )
+        generation_mode = settings.goal_generation_mode
+        if generation_mode not in ("template", "evidence_rules", "llm"):
+            generation_mode = "evidence_rules"
+        goal_statement_base = self._goal_statement_base(
+            drive_origin,
+            tension_list,
+            drive_state.pressures,
+            window_summary=window_summary,
+        )
+        signature = self._signature(
+            drive_state.subject, drive_state.model_layer, drive_origin, goal_statement_base, tension_list
+        )
         now = drive_state.updated_at if drive_state.updated_at.tzinfo else drive_state.updated_at.replace(tzinfo=timezone.utc)
 
         cooldown_record = store.load_goal_cooldown(signature)
@@ -92,12 +134,26 @@ class GoalProposalEngine:
                     cooldown_until = datetime.fromisoformat(cooldown_until_raw)
                 except ValueError:
                     cooldown_until = None
-                if cooldown_until and cooldown_until > now:
+                if cooldown_until and cooldown_until >= now:
                     store.record_goal_suppression(signature, now)
                     return GoalDecision(proposal=None, suppressed_signature=signature)
 
         source_event_ref = build_source_event_ref(env, intake_channel)
         evidence_items = build_evidence_items(env, intake_channel, drive_state.provenance.evidence_text)
+        goal_statement = goal_statement_base
+        prior_slot = store.load_goal_slot(drive_state.subject, drive_origin)
+        prior_signature = prior_slot.get("signature")
+        prior_artifact_id = prior_slot.get("artifact_id")
+        supersedes_artifact_id = None
+        proposal_status = "proposed"
+        if (
+            isinstance(prior_signature, str)
+            and prior_signature != signature
+            and isinstance(prior_artifact_id, str)
+            and prior_artifact_id
+        ):
+            supersedes_artifact_id = prior_artifact_id
+            proposal_status = "active"
         proposal = GoalProposalV1(
             artifact_id=f"goal-{signature}",
             subject=drive_state.subject,
@@ -117,13 +173,23 @@ class GoalProposalEngine:
             }),
             related_nodes=drive_state.related_nodes + [tension.artifact_id for tension in tension_list],
             goal_statement=goal_statement,
+            goal_statement_base=goal_statement_base,
+            proposal_status=proposal_status,
+            semantic_source=self._semantic_source(generation_mode),
             proposal_signature=signature,
             drive_origin=drive_origin,
             priority=self._priority(drive_state, drive_origin, tension_list),
-            cooldown_until=now + self.cooldown if self.cooldown else now,
+            cooldown_until=now + self.cooldown,
+            supersedes_artifact_id=supersedes_artifact_id,
             source_event_refs=[source_event_ref],
             evidence_items=evidence_items,
             tension_kinds=[tension.kind for tension in tension_list],
         )
         store.save_goal_cooldown(signature, proposal.cooldown_until or now)
+        store.save_goal_slot(
+            drive_state.subject,
+            drive_origin,
+            signature=signature,
+            artifact_id=proposal.artifact_id,
+        )
         return GoalDecision(proposal=proposal)

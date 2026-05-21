@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -43,6 +44,92 @@ from .recall_utils import delivery_safe_recall_decision, has_inline_recall
 from .settings import settings
 
 logger = logging.getLogger("orion.cortex.exec.supervisor")
+
+_PROMOTED_GOAL_STATUSES = frozenset({"planned", "executing"})
+_AUTONOMY_GOAL_EXECUTE_TOOLS = frozenset({"autonomy.goal.execute.v1", "autonomy_goal_execute"})
+
+
+def _active_autonomy_goals_from_ctx(ctx: Dict[str, Any]) -> list[Dict[str, Any]]:
+    summary = ctx.get("chat_autonomy_summary") if isinstance(ctx.get("chat_autonomy_summary"), dict) else {}
+    return [g for g in (summary.get("active_goals") or []) if isinstance(g, dict)]
+
+
+def _autonomy_goal_execution_enabled() -> bool:
+    return str(os.getenv("AUTONOMY_GOAL_EXECUTION_ENABLED", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _planned_autonomy_task_active(ctx: Dict[str, Any]) -> bool:
+    for goal in _active_autonomy_goals_from_ctx(ctx):
+        status = str(goal.get("proposal_status") or "").strip().lower()
+        if status == "executing" and goal.get("planned_task_id"):
+            return True
+    return str(ctx.get("chat_autonomy_execution_mode") or "").strip().lower() == "executing"
+
+
+def _is_autonomy_goal_execute_action(action: Dict[str, Any] | None) -> bool:
+    if not isinstance(action, dict):
+        return False
+    tool_id = str(action.get("tool_id") or "").strip().lower()
+    if tool_id in _AUTONOMY_GOAL_EXECUTE_TOOLS:
+        return True
+    tool_input = action.get("input") if isinstance(action.get("input"), dict) else {}
+    return bool(tool_input.get("goal_artifact_id") and tool_input.get("autonomy_goal_execute"))
+
+
+def _autonomy_goal_execution_allowed(ctx: Dict[str, Any], action: Dict[str, Any] | None) -> bool:
+    if not _autonomy_goal_execution_enabled():
+        return False
+    tool_input = (action or {}).get("input") if isinstance((action or {}).get("input"), dict) else {}
+    artifact_id = str(tool_input.get("goal_artifact_id") or "").strip()
+    for goal in _active_autonomy_goals_from_ctx(ctx):
+        if artifact_id and str(goal.get("artifact_id") or "").strip() != artifact_id:
+            continue
+        status = str(goal.get("proposal_status") or "proposed").strip().lower()
+        if status in _PROMOTED_GOAL_STATUSES:
+            return True
+    return False
+
+
+def _sync_autonomy_execution_mode_from_ctx(ctx: Dict[str, Any]) -> None:
+    from .router import _resolve_autonomy_execution_mode
+
+    ctx["chat_autonomy_execution_mode"] = _resolve_autonomy_execution_mode(ctx)
+
+
+def _blocked_unpromoted_goal_step_result(
+    *,
+    action: Dict[str, Any] | None,
+    correlation_id: str,
+) -> StepExecutionResult:
+    tool_id = str((action or {}).get("tool_id") or "autonomy_goal_execute")
+    text = (
+        "Autonomy goal execution is blocked until an operator promotes the goal. "
+        "Unpromoted goals remain hint-only and never execute autonomously."
+    )
+    logger.warning(
+        "autonomy_goal_execution_blocked corr_id=%s tool_id=%s reason=unpromoted_goal",
+        correlation_id,
+        tool_id,
+    )
+    return StepExecutionResult(
+        status="success",
+        verb_name=tool_id,
+        step_name="autonomy_goal_execution_blocked",
+        order=0,
+        result={
+            "AgentChainService": {
+                "text": text,
+                "runtime_debug": {
+                    "autonomy_goal_execution_blocked": True,
+                    "reason": "unpromoted_goal_execution_blocked",
+                },
+            }
+        },
+        latency_ms=0,
+        node=settings.node_name,
+        logs=["blocked <- unpromoted autonomy goal execution"],
+        error=None,
+    )
 
 
 def _merge_agent_findings_into_ctx(ctx: Dict[str, Any], agent_payload: Any) -> None:
@@ -1311,6 +1398,8 @@ class Supervisor:
         recall_debug: Dict[str, Any] = {}
         ctx.setdefault("debug", {})
 
+        _sync_autonomy_execution_mode_from_ctx(ctx)
+
         verb_recall_profile = None
         if isinstance(req.metadata, dict):
             verb_recall_profile = req.metadata.get("recall_profile") or None
@@ -1689,6 +1778,22 @@ class Supervisor:
                 logger.info("planner_action_ambiguous corr_id=%s default=agent_chain", correlation_id)
                 action = {"tool_id": "agent_chain", "input": {}}
 
+            if _is_autonomy_goal_execute_action(action) and not _autonomy_goal_execution_allowed(ctx, action):
+                blocked_step = _blocked_unpromoted_goal_step_result(action=action, correlation_id=correlation_id)
+                step_results.append(blocked_step)
+                executed_steps.append(blocked_step.step_name)
+                final_text = (
+                    (blocked_step.result or {}).get("AgentChainService", {}).get("text")
+                    if isinstance(blocked_step.result, dict)
+                    else None
+                )
+                break
+
+            if _is_autonomy_goal_execute_action(action) and _autonomy_goal_execution_allowed(ctx, action):
+                ctx["chat_autonomy_execution_mode"] = "executing"
+            elif _planned_autonomy_task_active(ctx):
+                ctx["chat_autonomy_execution_mode"] = "executing"
+
             action_step = await self._execute_action(
                 source=source,
                 action=action,
@@ -2016,6 +2121,11 @@ class Supervisor:
             "selected_tool_would_have_been": selected_tool_would_have_been,
             "bound_failure_signal": bound_failure_signal,
         }
+        _sync_autonomy_execution_mode_from_ctx(ctx)
+        from .router import _autonomy_payload_from_ctx
+
+        metadata = _autonomy_payload_from_ctx(ctx)
+        metadata["runtime_policy"] = runtime_policy_meta
         logger.info(
             "blocked_execution_explanation_emitted corr_id=%s emitted=%s selected_tool=%s",
             correlation_id,
@@ -2045,6 +2155,6 @@ class Supervisor:
             final_text=final_text,
             memory_used=memory_used,
             recall_debug=recall_debug,
-            metadata={"runtime_policy": runtime_policy_meta},
+            metadata=metadata,
             error=overall_error,
         )

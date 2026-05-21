@@ -5,6 +5,34 @@ from dataclasses import dataclass, field
 from orion.core.schemas.substrate_mutation import MutationDecisionV1, MutationProposalV1, MutationTrialV1
 from orion.substrate.mutation_contracts import CONTRACTS, validate_patch
 
+_PROMOTED_GOAL_STATUSES = frozenset({"planned", "executing"})
+
+
+def unpromoted_goal_blocks_execution(*, goal_proposal_status: str | None) -> bool:
+    status = str(goal_proposal_status or "proposed").strip().lower()
+    return status not in _PROMOTED_GOAL_STATUSES
+
+
+def _goal_proposal_status_from_proposal(proposal: MutationProposalV1) -> str | None:
+    for note in proposal.notes:
+        prefix = "autonomy_goal_proposal_status="
+        if str(note).startswith(prefix):
+            return str(note)[len(prefix) :].strip()
+    patch_payload = proposal.patch.patch if isinstance(proposal.patch.patch, dict) else {}
+    if isinstance(patch_payload, dict):
+        for key in ("goal_proposal_status", "proposal_status", "autonomy_goal_proposal_status"):
+            value = patch_payload.get(key)
+            if value:
+                return str(value)
+    return None
+
+
+def _proposal_targets_autonomy_goal_execution(proposal: MutationProposalV1) -> bool:
+    if any(str(note).startswith("autonomy_goal_execute:") for note in proposal.notes):
+        return True
+    patch_payload = proposal.patch.patch if isinstance(proposal.patch.patch, dict) else {}
+    return bool(isinstance(patch_payload, dict) and patch_payload.get("autonomy_goal_execute"))
+
 
 @dataclass
 class DecisionPolicy:
@@ -41,6 +69,15 @@ class DecisionEngine:
         has_replay_and_baseline: bool,
         active_surface_exists: bool,
     ) -> MutationDecisionV1:
+        if _proposal_targets_autonomy_goal_execution(proposal):
+            goal_status = _goal_proposal_status_from_proposal(proposal)
+            if unpromoted_goal_blocks_execution(goal_proposal_status=goal_status):
+                return MutationDecisionV1(
+                    proposal_id=proposal.proposal_id,
+                    action="reject",
+                    reason="unpromoted_goal_execution_blocked",
+                    notes=["autonomy_goals_require_operator_promote"],
+                )
         warnings = validate_patch(proposal.patch)
         if warnings:
             return MutationDecisionV1(proposal_id=proposal.proposal_id, action="reject", reason="invalid_patch_contract", notes=warnings)

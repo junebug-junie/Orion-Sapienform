@@ -109,3 +109,31 @@ class LocalProfileStore:
         record["last_suppressed_at"] = ts.isoformat()
         data["goal_cooldowns"][signature] = record
         self._save_raw(data)
+
+    @staticmethod
+    def _goal_slot_key(subject: str, drive_origin: str) -> str:
+        return f"{subject}:{drive_origin}"
+
+    def load_goal_slot(self, subject: str, drive_origin: str) -> Dict[str, Any]:
+        data = self._load_raw()
+        slots = data.get("goal_slots", {})
+        if not isinstance(slots, dict):
+            return {}
+        record = slots.get(self._goal_slot_key(subject, drive_origin))
+        return record if isinstance(record, dict) else {}
+
+    def save_goal_slot(
+        self,
+        subject: str,
+        drive_origin: str,
+        *,
+        signature: str,
+        artifact_id: str,
+    ) -> None:
+        data = self._load_raw()
+        data.setdefault("goal_slots", {})
+        data["goal_slots"][self._goal_slot_key(subject, drive_origin)] = {
+            "signature": signature,
+            "artifact_id": artifact_id,
+        }
+        self._save_raw(data)

@@ -62,6 +62,7 @@ def test_app_js_passes_autonomy_payload_through_orion_message_meta_ws_and_http()
     assert "autonomyDebug: d.autonomy_debug," in app_js
     assert "autonomyStatePreview: d.autonomy_state_preview," in app_js
     assert "autonomyExecutionMode: d.autonomy_execution_mode," in app_js
+    assert "autonomyGoalsPresent: d.autonomy_goals_present," in app_js
     assert "autonomyGoalLineage: d.autonomy_goal_lineage," in app_js
     assert "autonomyRepositoryStatus: d.autonomy_repository_status," in app_js
 
@@ -329,3 +330,26 @@ def test_template_and_js_include_autonomy_constitution_modal_readonly() -> None:
     assert "function closeAutonomyConstitutionModal()" in app_js
     assert "function refreshAutonomyConstitutionModal()" in app_js
     assert "substrateReviewFetch('/api/substrate/autonomy-constitution')" in app_js
+
+
+def test_app_js_shows_goals_badge_and_active_goals_section_title() -> None:
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+    assert "goalsPresent" in app_js or "goals_present" in app_js
+    assert "Active goals (non-executing)" in app_js
+    assert "n/a (dyadic chat" in app_js or "dyadic scope uses relationship" in app_js
+    assert "autonomy_goals_present" in app_js
+
+
+def test_app_js_supports_two_subject_autonomy_display_mode() -> None:
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    assert "HUB_AUTONOMY_SUBJECT_DISPLAY" in app_js or "__HUB_AUTONOMY_SUBJECT_DISPLAY__" in app_js
+    assert "orion + relationship" in app_js
+    assert "window.__HUB_AUTONOMY_SUBJECT_DISPLAY__" in template
+    assert "{{HUB_AUTONOMY_SUBJECT_DISPLAY}}" in template
+
+
+def test_template_injects_hub_autonomy_subject_display_window_var() -> None:
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+    assert 'window.__HUB_AUTONOMY_SUBJECT_DISPLAY__ = "{{HUB_AUTONOMY_SUBJECT_DISPLAY}}";' in template

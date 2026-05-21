@@ -33,6 +33,7 @@ KIND_TO_CHANNEL = {
     "memory.identity.snapshot.v1": "orion:memory:identity:snapshot",
     "memory.drives.audit.v1": "orion:memory:drives:audit",
     "memory.goals.proposed.v1": "orion:memory:goals:proposed",
+    "autonomy.goal.planned.v1": "orion:autonomy:goal:planned",
 }
 
 KIND_TO_GRAPH = {

@@ -125,6 +125,7 @@ class ConceptSettings(BaseSettings):
     drive_activation_on: float = Field(0.62, alias="DRIVE_ACTIVATION_ON")
     drive_activation_off: float = Field(0.42, alias="DRIVE_ACTIVATION_OFF")
     goal_proposal_cooldown_minutes: int = Field(180, alias="GOAL_PROPOSAL_COOLDOWN_MINUTES")
+    goal_generation_mode: str = Field("evidence_rules", alias="GOAL_GENERATION_MODE")
 
     # Repository backend / Graph read model (Phase 2)
     concept_profile_repository_backend: str = Field(

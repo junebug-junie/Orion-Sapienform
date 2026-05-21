@@ -6,8 +6,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Iterable, List, Optional
 
 from orion.core.bus.bus_schemas import BaseEnvelope
-from orion.core.schemas.drives import DriveStateV1, GoalProposalV1, TensionEventV1
+from orion.core.schemas.drives import DriveStateV1, GoalProposalV1, SemanticSource, TensionEventV1
 from .dossier import build_evidence_items, build_source_event_ref, extract_trace_id, extract_turn_id
+from .settings import settings
 
 
 GOAL_TEMPLATES = {
@@ -41,12 +42,33 @@ class GoalProposalEngine:
         tension_weight = max((tension.magnitude for tension in tensions), default=0.0)
         return max(0.0, min(1.0, round((drive_state.pressures.get(drive_origin, 0.0) * 0.7) + (tension_weight * 0.3), 4)))
 
-    def _goal_statement_base(self, drive_origin: str, tensions: List[TensionEventV1]) -> str:
-        base = GOAL_TEMPLATES.get(drive_origin, GOAL_TEMPLATES["continuity"])
-        if tensions:
-            lead = sorted(tensions, key=lambda tension: (-tension.magnitude, tension.kind))[0]
-            return f"{base} Primary tension: {lead.kind}."
-        return base
+    def _goal_statement_base(
+        self,
+        drive_origin: str,
+        tensions: List[TensionEventV1],
+        pressures: dict[str, float],
+        window_summary: str | None = None,
+    ) -> str:
+        from .goal_generator import generate_goal_statement
+
+        mode = settings.goal_generation_mode
+        if mode not in ("template", "evidence_rules", "llm"):
+            mode = "evidence_rules"
+        return generate_goal_statement(
+            drive_origin=drive_origin,
+            pressures=pressures,
+            tensions=tensions,
+            window_summary=window_summary,
+            mode=mode,  # type: ignore[arg-type]
+        )
+
+    @staticmethod
+    def _semantic_source(mode: str) -> SemanticSource:
+        if mode == "llm":
+            return "llm"
+        if mode == "evidence_rules":
+            return "evidence_rules"
+        return "template"
 
     @staticmethod
     def _signature(
@@ -77,7 +99,12 @@ class GoalProposalEngine:
     ) -> GoalDecision:
         tension_list = sorted(list(tensions), key=lambda tension: (-tension.magnitude, tension.kind))
         drive_origin = self._drive_origin(drive_state)
-        goal_statement_base = self._goal_statement_base(drive_origin, tension_list)
+        generation_mode = settings.goal_generation_mode
+        if generation_mode not in ("template", "evidence_rules", "llm"):
+            generation_mode = "evidence_rules"
+        goal_statement_base = self._goal_statement_base(
+            drive_origin, tension_list, drive_state.pressures
+        )
         signature = self._signature(
             drive_state.subject, drive_state.model_layer, drive_origin, goal_statement_base, tension_list
         )
@@ -119,7 +146,7 @@ class GoalProposalEngine:
             goal_statement=goal_statement,
             goal_statement_base=goal_statement_base,
             proposal_status="proposed",
-            semantic_source="template",
+            semantic_source=self._semantic_source(generation_mode),
             proposal_signature=signature,
             drive_origin=drive_origin,
             priority=self._priority(drive_state, drive_origin, tension_list),

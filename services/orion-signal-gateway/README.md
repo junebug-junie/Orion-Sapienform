@@ -116,6 +116,10 @@ Supported models:
 
 Compose / Helm comments should state which model applies. Do not advertise multi-replica HA without meeting **(B)**.
 
+### Cognition trace preflight (Runtime Trace Nexus A0)
+- `ORGAN_CHANNELS` must include `orion:cognition:*` (or `orion:cognition:trace`).
+- Staging: one `chat_general` turn → gateway logs show envelope on `orion:cognition:trace` reaching `SignalProcessor.handle_envelope`.
+
 ## Bus semantics (Redis)
 
 Default wiring uses Redis **pub/sub** (see mesh compose). Expect **at-most-once** delivery per subscriber and **no cross-channel ordering** guarantee. Under load, the gateway processes envelopes inline; slow adapters increase lag and can affect **parent resolution** inside `SIGNAL_WINDOW_SEC` (stale or missing parents if the window is exceeded). Reordering across channels can break lineage expectations—size the window and organ publish rates accordingly.

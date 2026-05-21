@@ -6637,7 +6637,16 @@ loadDismissedIds();
     return chip;
   }
 
-  function renderThoughtProcessSection(thoughtState = {}) {
+  function appendExecutionStepsPanel(parent, meta = {}) {
+    if (!parent || !thoughtProcessApi.mountExecutionStepsPanel) return;
+    thoughtProcessApi.mountExecutionStepsPanel(parent, {
+      meta,
+      apiBaseUrl: API_BASE_URL,
+      debug: false,
+    });
+  }
+
+  function renderThoughtProcessSection(thoughtState = {}, meta = {}) {
     const state = thoughtState && typeof thoughtState === 'object' ? thoughtState : {};
     const metadata = state.metadata && typeof state.metadata === 'object' ? state.metadata : {};
     const root = document.createElement('div');
@@ -6688,6 +6697,7 @@ loadDismissedIds();
     }
     card.appendChild(body);
     root.appendChild(card);
+    appendExecutionStepsPanel(root, meta);
     return root;
   }
 
@@ -8051,6 +8061,7 @@ loadDismissedIds();
 
     panel.appendChild(header);
     panel.appendChild(body);
+    appendExecutionStepsPanel(panel, meta);
     return panel;
   }
 

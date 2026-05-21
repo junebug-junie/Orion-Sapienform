@@ -340,6 +340,14 @@ def test_app_js_shows_goals_badge_and_active_goals_section_title() -> None:
     assert "autonomy_goals_present" in app_js
 
 
+def test_template_uses_single_active_goals_section_title_not_static_proposal_only() -> None:
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+    assert 'id="autonomyDebugProposalsTitle"' in template
+    assert "Active goals (non-executing)" in template
+    proposals_section = template.split('id="autonomyDebugProposals"', 1)[0]
+    assert "Proposals <span" not in proposals_section.split("autonomyDebugProposalsTitle", 1)[-1]
+
+
 def test_app_js_supports_two_subject_autonomy_display_mode() -> None:
     app_js = APP_JS_PATH.read_text(encoding="utf-8")
     template = TEMPLATE_PATH.read_text(encoding="utf-8")

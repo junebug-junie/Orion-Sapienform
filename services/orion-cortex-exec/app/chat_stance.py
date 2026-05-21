@@ -1245,7 +1245,11 @@ def _merge_orion_goals_into_state(
             seen.add(goal.artifact_id)
     if len(merged_goals) == len(preferred_state.goal_headlines):
         return preferred_state
-    return preferred_state.model_copy(update={"goal_headlines": merged_goals})
+    from orion.autonomy.summary import dedupe_goal_headlines_by_drive_origin
+
+    return preferred_state.model_copy(
+        update={"goal_headlines": dedupe_goal_headlines_by_drive_origin(merged_goals, limit=3)}
+    )
 
 
 def _load_autonomy_state_fallback_local(

@@ -202,6 +202,83 @@ def test_chat_stance_partial_drives_timeout_falls_back_to_relationship(monkeypat
     assert ctx["chat_autonomy_debug"]["_runtime"]["contextual_fallback"] is True
 
 
+def test_merge_orion_goals_dedupes_drive_origin_after_contextual_fallback(monkeypatch, enable_autonomy_graphdb) -> None:
+    from orion.autonomy.models import AutonomyGoalHeadlineV1, AutonomyStateV1
+
+    orion_state = AutonomyStateV1(
+        subject="orion",
+        model_layer="self-model",
+        entity_id="orion",
+        goal_headlines=[
+            AutonomyGoalHeadlineV1(
+                artifact_id="goal-orion-stale",
+                goal_statement="Clarify autonomy boundaries without executing any new action.",
+                drive_origin="autonomy",
+                priority=0.0,
+                cooldown_until=None,
+                proposal_signature="sig-stale",
+            )
+        ],
+        source="graph",
+    )
+    relationship_state = AutonomyStateV1(
+        subject="relationship",
+        model_layer="relationship-model",
+        entity_id="relationship:orion|juniper",
+        dominant_drive="predictive",
+        drive_pressures={"predictive": 0.41},
+        active_drives=["predictive"],
+        goal_headlines=[
+            AutonomyGoalHeadlineV1(
+                artifact_id="goal-rel-autonomy",
+                goal_statement="Clarify autonomy boundaries. Primary tension: tension.identity_drift.v1.",
+                drive_origin="autonomy",
+                priority=0.88,
+                cooldown_until=None,
+                proposal_signature="sig-rel",
+            ),
+            AutonomyGoalHeadlineV1(
+                artifact_id="goal-rel-continuity",
+                goal_statement="Preserve continuity across recent identity and relation shifts.",
+                drive_origin="continuity",
+                priority=0.83,
+                cooldown_until=None,
+                proposal_signature="sig-cont",
+            ),
+        ],
+        source="graph",
+    )
+    repo = _Repo(
+        {
+            "orion": _Lookup(
+                "orion",
+                "degraded",
+                orion_state,
+                unavailable_reason="timeout",
+                subquery_diagnostics={
+                    "drives": {"status": "timeout", "row_count": 0, "error_type": "timeout"},
+                },
+            ),
+            "relationship": _Lookup(
+                "relationship",
+                "available",
+                relationship_state,
+                subquery_diagnostics={"drives": {"status": "ok", "row_count": 6}},
+            ),
+        }
+    )
+    monkeypatch.setattr(chat_stance, "build_autonomy_repository", lambda **_: repo)
+
+    ctx = {"user_message": "hello", "verb": "chat_general", "mode": "brain"}
+    chat_stance.build_chat_stance_inputs(ctx)
+
+    active = ctx["chat_autonomy_summary"]["active_goals"]
+    origins = [g["drive_origin"] for g in active]
+    assert origins.count("autonomy") == 1
+    assert "continuity" in origins
+    assert active[0]["artifact_id"] == "goal-rel-autonomy"
+
+
 def test_chat_stance_partial_drives_timeout_exports_degraded_summary(monkeypatch, enable_autonomy_graphdb) -> None:
     from orion.autonomy.models import AutonomyGoalHeadlineV1, AutonomyStateV1
 

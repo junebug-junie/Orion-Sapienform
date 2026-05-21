@@ -23,6 +23,13 @@ _DEFAULT_OTEL_DIMENSION_ALLOWLIST: tuple[str, ...] = (
     "pressure_autonomy",
     "pressure_capability",
     "pressure_predictive",
+    "success",
+    "error_present",
+    "recall_used",
+    "reasoning_present",
+    "final_text_present",
+    "step_count",
+    "service_count",
 )
 
 

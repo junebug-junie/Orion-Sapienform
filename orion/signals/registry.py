@@ -95,15 +95,21 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         causal_parent_organs=[],
         bus_channels=[
             "orion:world_pulse:run:request",
+            "orion:world_pulse:run:result",
+            "orion:world_pulse:digest:created",
             "orion:world_pulse:digest:published",
             "orion:world_pulse:situation:brief:upsert",
+            "orion:world_context:daily_capsule",
             "orion:hub:messages:create",
             "orion:world_pulse:graph:upsert",
         ],
         notes=[
             "Definitive DAG: no organ-bus causal parents. Situation/context ingests external feeds, "
             "hub messages, and graph channels per orion-world-pulse contracts — not upstream "
-            "OrionSignalV1 parents in this registry."
+            "OrionSignalV1 parents in this registry.",
+            "Reflective journal: orion-actions consumes orion:world_pulse:run:result "
+            "(world.pulse.run.result.v1 / WorldPulseRunResultV1) and routes journal.compose → "
+            "orion:journal:write when ACTIONS_WORLD_PULSE_JOURNAL_ENABLED.",
         ],
     ),
     "social_memory": OrionOrganRegistryEntry(

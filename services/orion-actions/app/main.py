@@ -42,7 +42,7 @@ from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorS
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.notify import NotificationRecord, NotificationRequest
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
-
+from .world_pulse_journal import handle_world_pulse_run_result_journal
 from .logic import (
     ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1,
     SKILL_BIOMETRICS_SNAPSHOT_V1,
@@ -637,7 +637,7 @@ def _trigger_world_pulse_run(*, date: str, requested_by: str) -> bool:
     try:
         resp = requests.post(
             f"{settings.world_pulse_base_url.rstrip('/')}/api/world-pulse/run",
-            json={"date": date, "dry_run": True, "requested_by": requested_by},
+            json={"date": date, "dry_run": settings.actions_world_pulse_run_dry_run, "requested_by": requested_by},
             timeout=20,
         )
         return resp.ok
@@ -1018,10 +1018,12 @@ async def lifespan(app: FastAPI):
             recall_profile = settings.actions_journal_metacog_recall_profile
         elif tk == "notify_summary":
             recall_profile = settings.actions_journal_notify_recall_profile
+        elif tk == "world_pulse_digest":
+            recall_profile = settings.actions_journal_world_pulse_recall_profile
         else:
             recall_profile = settings.actions_recall_profile
 
-        if sched_daily or tk == "metacog_digest" or tk == "notify_summary":
+        if sched_daily or tk in {"metacog_digest", "notify_summary", "world_pulse_digest"}:
             logger.info(
                 "journal_compose profile=%s trigger_kind=%s recall_enabled=true",
                 recall_profile,
@@ -1541,6 +1543,14 @@ async def lifespan(app: FastAPI):
             dedupe_key=cooldown_key_for_trigger(trigger),
         )
 
+    async def _handle_world_pulse_run_result_journal(env: BaseEnvelope) -> bool:
+        return await handle_world_pulse_run_result_journal(
+            env,
+            settings=settings,
+            dispatch_journal=_dispatch_journal,
+            audit=_audit,
+        )
+
     async def _handle_journal_collapse_stored(env: BaseEnvelope) -> bool:
         try:
             stored = CollapseMirrorStoredV1.model_validate(env.payload)
@@ -1769,6 +1779,9 @@ async def lifespan(app: FastAPI):
         if kind == "orion.metacog.trigger.v1":
             await _handle_journal_metacog(env)
             return
+        if kind == "world.pulse.run.result.v1":
+            if await _handle_world_pulse_run_result_journal(env):
+                return
         if kind == "collapse.mirror.stored.v1":
             if await _handle_journal_collapse_stored(env):
                 return
@@ -2046,7 +2059,10 @@ async def lifespan(app: FastAPI):
         patterns.append(WORKFLOW_MANAGE_CHANNEL)
     if settings.actions_journal_created_channel not in patterns:
         patterns.append(settings.actions_journal_created_channel)
+    if settings.actions_world_pulse_journal_enabled and "orion:world_pulse:run:result" not in patterns:
+        patterns.append("orion:world_pulse:run:result")
     hunter = Hunter(_cfg(), patterns=patterns, handler=handle_envelope)
+    app.state.bus_handler = handle_envelope
 
     logger.info(
         "Starting orion-actions Hunter channels=%s bus=%s cortex_request=%s",

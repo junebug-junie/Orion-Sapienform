@@ -13,6 +13,7 @@ from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorS
 from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, RecallDirective
 from orion.schemas.notify import NotificationRecord
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
+from orion.schemas.world_pulse import WorldPulseRunResultV1
 
 from .schemas import JournalEntryDraftV1, JournalEntryWriteV1, JournalMode, JournalTriggerV1
 
@@ -59,6 +60,7 @@ _TRIGGER_TO_MODE: dict[str, JournalMode] = {
     "metacog_digest": "digest",
     "manual": "manual",
     "notify_summary": "daily",
+    "world_pulse_digest": "digest",
 }
 
 
@@ -67,7 +69,7 @@ def journal_mode_for_trigger(trigger: JournalTriggerV1) -> JournalMode:
 
 
 def cooldown_key_for_trigger(trigger: JournalTriggerV1) -> str:
-    if trigger.trigger_kind == "collapse_response":
+    if trigger.trigger_kind in {"collapse_response", "world_pulse_digest"}:
         ref = (trigger.source_ref or "").strip()
         if not ref:
             ref = hashlib.sha256((trigger.summary or "").strip().encode("utf-8")).hexdigest()[:20]
@@ -165,6 +167,56 @@ def build_collapse_stored_trigger(event: CollapseMirrorStoredV1) -> JournalTrigg
         source_ref=event.mirror_id,
         summary=event.summary,
         prompt_seed="\n".join(prompt_parts),
+    )
+
+
+def build_world_pulse_prompt_seed(result: WorldPulseRunResultV1) -> str:
+    """Deterministic compact seed for journal.compose (no LLM inside world-pulse pipeline)."""
+    parts: list[str] = []
+    run = result.run
+    parts.append(f"run_id={run.run_id}")
+    parts.append(f"date={run.date}")
+    parts.append(f"status={run.status}")
+    parts.append(f"dry_run={run.dry_run}")
+    if run.errors:
+        parts.append(f"errors={'; '.join(str(e) for e in run.errors[:3])}")
+    digest = result.digest
+    if digest is not None:
+        parts.append(f"title={digest.title}")
+        parts.append(f"executive_summary={digest.executive_summary}")
+        parts.append(f"coverage_status={digest.coverage_status}")
+        for rollup in digest.section_rollups[:8]:
+            parts.append(
+                f"section_rollup: {rollup.section} status={rollup.status} "
+                f"articles={rollup.article_count} digest_items={rollup.digest_item_count}"
+            )
+        for item in digest.items[:10]:
+            parts.append(f"digest_item: [{item.category}] {item.title} — {item.summary[:240]}")
+        if digest.things_worth_reading:
+            parts.append("worth_reading:")
+            for reading in digest.things_worth_reading[:5]:
+                parts.append(f"  - {reading.title}")
+    capsule = result.capsule
+    if capsule is not None:
+        for topic in capsule.salient_topics[:8]:
+            parts.append(f"salient_topic: {topic.topic} — {topic.summary[:200]}")
+    return "\n".join(parts)
+
+
+def build_world_pulse_reflective_trigger(result: WorldPulseRunResultV1) -> JournalTriggerV1:
+    digest = result.digest
+    if digest is not None:
+        summary = (digest.executive_summary or digest.title or "").strip()
+    else:
+        summary = f"Reflect on Daily World Pulse for {result.run.date}."
+    if not summary:
+        summary = f"Daily World Pulse run {result.run.run_id}"
+    return JournalTriggerV1(
+        trigger_kind="world_pulse_digest",
+        source_kind="world_pulse",
+        source_ref=result.run.run_id,
+        summary=summary[:500],
+        prompt_seed=build_world_pulse_prompt_seed(result),
     )
 
 

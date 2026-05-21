@@ -19,6 +19,9 @@ _BLANK_ENV_BOOL_FIELDS = (
     "actions_pending_attention_enabled",
     "actions_preserve_generic_notify_enabled",
     "actions_world_pulse_enabled",
+    "actions_world_pulse_run_dry_run",
+    "actions_world_pulse_journal_enabled",
+    "actions_world_pulse_journal_allow_dry_run",
     "actions_skills_scheduler_enabled",
     "actions_skills_run_on_startup",
     "actions_skills_notify_enabled",
@@ -45,7 +48,7 @@ class Settings(BaseSettings):
 
     actions_subscribe_channel: str = Field("orion:collapse:triage", alias="ACTIONS_SUBSCRIBE_CHANNEL")
     actions_subscribe_channels: str = Field(
-        "orion:collapse:triage,orion:collapse:stored,orion:actions:trigger:daily_pulse.v1,orion:actions:trigger:daily_metacog.v1,orion:actions:trigger:journal.v1,orion:notify:persistence:request,orion:equilibrium:metacog:trigger",
+        "orion:collapse:triage,orion:collapse:stored,orion:actions:trigger:daily_pulse.v1,orion:actions:trigger:daily_metacog.v1,orion:actions:trigger:journal.v1,orion:notify:persistence:request,orion:equilibrium:metacog:trigger,orion:world_pulse:run:result",
         alias="ACTIONS_SUBSCRIBE_CHANNELS",
     )
     actions_audit_channel: str = Field("orion:actions:audit", alias="ACTIONS_AUDIT_CHANNEL")
@@ -64,7 +67,7 @@ class Settings(BaseSettings):
 
     actions_recall_profile: str = Field("collapse_mirror.v1", alias="ACTIONS_RECALL_PROFILE")
     # Journal-specific recall: same env keys in .env_example and docker-compose `environment` → _run_journal in main.py
-    # (trigger_kind daily_summary+scheduler / metacog_digest / notify_summary).
+    # (trigger_kind daily_summary+scheduler / metacog_digest / notify_summary / world_pulse_digest).
     actions_journal_scheduler_recall_profile: str = Field(
         "journal.daily.grounded.v1",
         alias="ACTIONS_JOURNAL_SCHEDULER_RECALL_PROFILE",
@@ -101,6 +104,13 @@ class Settings(BaseSettings):
     actions_world_pulse_hour_local: int = Field(6, alias="ACTIONS_WORLD_PULSE_HOUR_LOCAL")
     actions_world_pulse_minute_local: int = Field(0, alias="ACTIONS_WORLD_PULSE_MINUTE_LOCAL")
     world_pulse_base_url: str = Field("http://orion-world-pulse:8628", alias="WORLD_PULSE_BASE_URL")
+    actions_world_pulse_run_dry_run: bool = Field(True, alias="ACTIONS_WORLD_PULSE_RUN_DRY_RUN")
+    actions_world_pulse_journal_enabled: bool = Field(False, alias="ACTIONS_WORLD_PULSE_JOURNAL_ENABLED")
+    actions_world_pulse_journal_allow_dry_run: bool = Field(False, alias="ACTIONS_WORLD_PULSE_JOURNAL_ALLOW_DRY_RUN")
+    actions_journal_world_pulse_recall_profile: str = Field(
+        "journal.world_pulse.grounded.v1",
+        alias="ACTIONS_JOURNAL_WORLD_PULSE_RECALL_PROFILE",
+    )
 
     actions_skills_scheduler_enabled: bool = Field(True, alias="ACTIONS_SKILLS_SCHEDULER_ENABLED")
     actions_skills_run_on_startup: bool = Field(False, alias="ACTIONS_SKILLS_RUN_ON_STARTUP")
@@ -149,6 +159,7 @@ class Settings(BaseSettings):
         "actions_journal_scheduler_recall_profile",
         "actions_journal_metacog_recall_profile",
         "actions_journal_notify_recall_profile",
+        "actions_journal_world_pulse_recall_profile",
         mode="before",
     )
     @classmethod

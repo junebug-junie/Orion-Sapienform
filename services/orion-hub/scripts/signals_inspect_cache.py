@@ -29,6 +29,7 @@ def _chain_item(sig: OrionSignalV1) -> Dict[str, Any]:
         "observed_at": sig.observed_at.isoformat(),
         "dimensions": dict(sig.dimensions),
         "causal_parents": list(sig.causal_parents),
+        "is_stub": is_stub_signal(sig),
     }
 
 

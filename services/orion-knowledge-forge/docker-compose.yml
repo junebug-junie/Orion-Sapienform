@@ -15,6 +15,7 @@ services:
       KNOWLEDGE_FORGE_IDEATION_WRITE_ENABLED: "false"
     volumes:
       - ../..:/repo:ro
+      - ../../orion-knowledge:/repo/orion-knowledge:rw
     ports:
       - "8630:8630"
     restart: unless-stopped

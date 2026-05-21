@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
@@ -37,6 +38,63 @@ class GoalActionResult:
     reasoning_claim_id: str | None = None
     hitl_satisfied: bool = False
     completed_at: str | None = None
+    planned_task_id: str | None = None
+
+
+def _autonomy_goal_execution_enabled() -> bool:
+    return str(os.getenv("AUTONOMY_GOAL_EXECUTION_ENABLED", "false")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def new_goal_task_id() -> str:
+    return f"goal-task-{uuid.uuid4()}"
+
+
+def update_goal_planned_task_id(
+    client: GraphQueryClient,
+    artifact_id: str,
+    task_id: str,
+    *,
+    proposal_status: str = "planned",
+) -> None:
+    safe_id = _escape_sparql(artifact_id.strip())
+    safe_task = _escape_sparql(task_id.strip())
+    safe_status = _escape_sparql(proposal_status.strip())
+    update = f"""
+PREFIX orion: <http://conjourney.net/orion#>
+DELETE {{ ?a orion:plannedTaskId ?old_task . ?a orion:proposalStatus ?old_status . }}
+INSERT {{ ?a orion:plannedTaskId "{safe_task}" . ?a orion:proposalStatus "{safe_status}" . }}
+WHERE {{
+  GRAPH <{AUTONOMY_GOALS_GRAPH}> {{
+    ?a orion:artifactId "{safe_id}" .
+    OPTIONAL {{ ?a orion:plannedTaskId ?old_task . }}
+    OPTIONAL {{ ?a orion:proposalStatus ?old_status . }}
+  }}
+}}
+""".strip()
+    client.update(update)
+
+
+def plan_promoted_goal(
+    *,
+    goal: AutonomyGoalHeadlineV1,
+    graph_client: GraphQueryClient,
+) -> str:
+    if not _autonomy_goal_execution_enabled():
+        raise GoalActionError("autonomy_goal_execution_disabled", "autonomy goal execution is disabled", status_code=503)
+    if goal.proposal_status != "planned":
+        raise GoalActionError(
+            "goal_not_planned",
+            f"goal must be planned before task allocation: {goal.proposal_status}",
+            status_code=409,
+        )
+    task_id = new_goal_task_id()
+    update_goal_planned_task_id(graph_client, goal.artifact_id, task_id, proposal_status="planned")
+    return task_id
 
 
 def build_goal_graph_query_client() -> GraphQueryClient | None:
@@ -267,7 +325,24 @@ def promote_goal(
     hitl_satisfied = item.outcome == "escalated_hitl" or item.human_review_required
 
     update_goal_proposal_status(client, artifact_id, "planned")
-    logger.info("autonomy_goal_promote artifact_id=%s operator=%s proposal_status=planned", artifact_id, operator)
+    planned_goal = AutonomyGoalHeadlineV1(
+        artifact_id=goal.artifact_id,
+        goal_statement=goal.goal_statement,
+        drive_origin=goal.drive_origin,
+        priority=goal.priority,
+        cooldown_until=goal.cooldown_until,
+        proposal_signature=goal.proposal_signature,
+        proposal_status="planned",
+        planned_task_id=goal.planned_task_id,
+        completed_at=goal.completed_at,
+    )
+    task_id = plan_promoted_goal(goal=planned_goal, graph_client=client)
+    logger.info(
+        "autonomy_goal_promote artifact_id=%s operator=%s proposal_status=planned task_id=%s",
+        artifact_id,
+        operator,
+        task_id,
+    )
     return GoalActionResult(
         artifact_id=artifact_id,
         action="promote",
@@ -275,6 +350,7 @@ def promote_goal(
         reasoning_outcome=item.outcome,
         reasoning_claim_id=f"goal-reasoning-{artifact_id}",
         hitl_satisfied=hitl_satisfied,
+        planned_task_id=task_id,
     )
 
 

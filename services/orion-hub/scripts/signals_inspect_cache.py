@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.signals.models import OrionSignalV1
+from orion.signals.stub_detection import is_stub_signal
 
 from .otel_trace_id import is_valid_otel_trace_id, normalize_otel_trace_id
 
@@ -28,6 +29,7 @@ def _chain_item(sig: OrionSignalV1) -> Dict[str, Any]:
         "observed_at": sig.observed_at.isoformat(),
         "dimensions": dict(sig.dimensions),
         "causal_parents": list(sig.causal_parents),
+        "is_stub": is_stub_signal(sig),
     }
 
 
@@ -68,6 +70,9 @@ class SignalsInspectCache:
         self._chains: "OrderedDict[str, List[OrionSignalV1]]" = OrderedDict()
         self._trace_touch_mono: Dict[str, float] = {}
         self._trace_truncated: Dict[str, bool] = {}
+        self._correlation_chains: "OrderedDict[str, List[OrionSignalV1]]" = OrderedDict()
+        self._correlation_touch_mono: Dict[str, float] = {}
+        self._correlation_truncated: Dict[str, bool] = {}
 
         self._task: Optional[asyncio.Task] = None
         self._bus: Optional[OrionBusAsync] = None
@@ -129,6 +134,9 @@ class SignalsInspectCache:
             logger.debug("signals_inspect_cache skip invalid OrionSignalV1 kind=%s", kind)
             return
 
+        await self._ingest_signal(sig)
+
+    async def _ingest_signal(self, sig: OrionSignalV1) -> None:
         async with self._lock:
             self._latest_by_organ[sig.organ_id] = sig
             if self.trace_enabled and sig.otel_trace_id:
@@ -147,6 +155,21 @@ class SignalsInspectCache:
                         self._trace_touch_mono.pop(old_tid, None)
                         self._trace_truncated.pop(old_tid, None)
                     self._evict_trace_ttl_locked()
+            corr = str(sig.source_event_id or "").strip()
+            if corr:
+                clst = self._correlation_chains.setdefault(corr, [])
+                clst.append(sig)
+                clst.sort(key=lambda s: s.observed_at)
+                if len(clst) > self.trace_max_signals_per_trace:
+                    self._correlation_truncated[corr] = True
+                    clst[:] = clst[-self.trace_max_signals_per_trace :]
+                self._correlation_chains.move_to_end(corr)
+                self._correlation_touch_mono[corr] = time.monotonic()
+                while len(self._correlation_chains) > self.trace_max_traces:
+                    old_corr, _ = self._correlation_chains.popitem(last=False)
+                    self._correlation_touch_mono.pop(old_corr, None)
+                    self._correlation_truncated.pop(old_corr, None)
+                self._evict_correlation_ttl_locked()
 
     def _evict_trace_ttl_locked(self) -> None:
         cutoff = time.monotonic() - self.trace_ttl_sec
@@ -156,6 +179,15 @@ class SignalsInspectCache:
                 self._chains.pop(tid, None)
                 self._trace_touch_mono.pop(tid, None)
                 self._trace_truncated.pop(tid, None)
+
+    def _evict_correlation_ttl_locked(self) -> None:
+        cutoff = time.monotonic() - self.trace_ttl_sec
+        for corr in list(self._correlation_chains.keys()):
+            touched = self._correlation_touch_mono.get(corr, 0.0)
+            if touched < cutoff:
+                self._correlation_chains.pop(corr, None)
+                self._correlation_touch_mono.pop(corr, None)
+                self._correlation_truncated.pop(corr, None)
 
     async def get_active(self) -> Dict[str, Any]:
         now = _utcnow()
@@ -191,4 +223,28 @@ class SignalsInspectCache:
             "chain": chain,
             "complete": not truncated,
             "gaps": gaps,
+        }
+
+    async def get_correlation(self, correlation_id: str) -> Optional[Dict[str, Any]]:
+        corr = str(correlation_id or "").strip()
+        if not corr:
+            return None
+        async with self._lock:
+            self._evict_correlation_ttl_locked()
+            lst = self._correlation_chains.get(corr)
+            if not lst:
+                return None
+            ordered = sorted(lst, key=lambda s: s.observed_at)
+            truncated = self._correlation_truncated.get(corr, False)
+        chain = [_chain_item(s) for s in ordered]
+        hidden_stubs = sum(1 for s in ordered if is_stub_signal(s))
+        gaps: List[str] = []
+        if truncated:
+            gaps.append("correlation_truncated_max_signals_per_trace")
+        return {
+            "correlation_id": corr,
+            "chain": chain,
+            "complete": not truncated,
+            "gaps": gaps,
+            "hidden_stubs": hidden_stubs,
         }

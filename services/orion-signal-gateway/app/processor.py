@@ -16,6 +16,7 @@ from opentelemetry.trace import (
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.signals.adapters import ADAPTERS
+from orion.signals.adapters.result import normalize_adapter_result
 from orion.signals.causal_helpers import with_missed_parent_notes
 from orion.signals.models import OrganClass, OrionSignalV1
 from orion.signals.registry import ORGAN_REGISTRY
@@ -172,30 +173,45 @@ class SignalProcessor:
                 await self._emit_passthrough(signal)
             return
 
+        kind = str(env.kind or "")
+        kind_lower = kind.lower()
+        if (
+            env.correlation_id
+            and (
+                kind_lower.startswith("orion:cognition:trace")
+                or kind_lower in {"cognition.trace", "cognition.trace.v1"}
+                or "cognition:trace" in kind_lower
+            )
+        ):
+            payload = {**payload, "_envelope_correlation_id": env.correlation_id}
+
         prior = self._window.get_all()
         for adapter in ADAPTERS:
             try:
                 if not adapter.can_handle(env.kind or "", payload):
                     continue
                 norm_ctx = self._norm_state.get(adapter.organ_id)
-                signal = adapter.adapt(
+                raw = adapter.adapt(
                     channel=env.kind or "",
                     payload=payload,
                     registry=ORGAN_REGISTRY,
                     prior_signals=prior,
                     norm_ctx=norm_ctx,
                 )
-                if signal is not None:
+                signals = normalize_adapter_result(raw)
+                if not signals:
+                    continue
+                for signal in signals:
                     if self._should_suppress_adapted(signal):
                         logger.debug(
-                            "Suppressing adapted signal organ=%s kind=%s (recent passthrough same source_event_id)",
+                            "Suppressing adapted signal organ=%s kind=%s",
                             signal.organ_id,
                             signal.signal_kind,
                         )
-                        break
+                        continue
                     signal = with_missed_parent_notes(signal, prior, ORGAN_REGISTRY)
                     await self._emit_traced(signal, prior=prior)
-                    break
+                break
             except Exception as exc:
                 logger.error(f"Adapter {adapter.organ_id} raised: {exc}", exc_info=True)
 

@@ -50,6 +50,26 @@ def test_app_js_wires_chat_stance_modal_and_payload_plumbing() -> None:
     assert "openChatStanceDebugModal();" in app_js
 
 
+def test_thought_process_js_registers_execution_steps_panel() -> None:
+    thought_js = THOUGHT_PROCESS_JS_PATH.read_text(encoding="utf-8")
+    assert "function fetchCognitionTrace" in thought_js
+    assert "function buildExecutionStepsPanel" in thought_js
+    assert "function resolveCorrelationId" in thought_js
+    assert "function mountExecutionStepsPanel" in thought_js
+    assert "Execution Steps" in thought_js
+    assert "/organ-signals" in thought_js
+    assert "correlation_id=" in thought_js
+    assert "root_correlation_id" in thought_js
+
+
+def test_app_js_wires_execution_steps_panel_hook() -> None:
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+    assert "function appendExecutionStepsPanel" in app_js
+    assert "mountExecutionStepsPanel" in app_js
+    assert "appendExecutionStepsPanel(panel, meta)" in app_js
+    assert "appendExecutionStepsPanel(root, meta)" in app_js
+
+
 def test_thought_process_js_registers_cognitive_projection_inspect_renderer() -> None:
     thought_js = THOUGHT_PROCESS_JS_PATH.read_text(encoding="utf-8")
     assert "global.OrionChatStanceProjectionInspect = api;" in thought_js

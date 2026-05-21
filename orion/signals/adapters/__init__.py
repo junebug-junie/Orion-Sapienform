@@ -2,6 +2,11 @@
 All signal adapters, exported from one place.
 ``ADAPTERS`` is the live registry used by the gateway.
 """
+from .cognition_trace import CognitionTraceAdapter
+from .cortex_gateway import CortexGatewayAdapter
+from .cortex_orch import CortexOrchAdapter
+from .hub import HubAdapter
+from .persistence_writers import RdfWriterAdapter, SqlWriterAdapter, VectorWriterAdapter
 from .biometrics import BiometricsAdapter
 from .collapse_mirror import CollapseMirrorAdapter
 from .equilibrium import EquilibriumAdapter
@@ -28,6 +33,10 @@ from orion.signals.adapters.base import OrionSignalAdapter
 from typing import List
 
 ADAPTERS: List[OrionSignalAdapter] = [
+    CognitionTraceAdapter(),
+    CortexGatewayAdapter(),
+    CortexOrchAdapter(),
+    HubAdapter(),
     BiometricsAdapter(),
     CollapseMirrorAdapter(),
     EquilibriumAdapter(),
@@ -49,9 +58,19 @@ ADAPTERS: List[OrionSignalAdapter] = [
     JournalerAdapter(),
     PowerGuardAdapter(),
     SecurityWatcherAdapter(),
+    SqlWriterAdapter(),
+    RdfWriterAdapter(),
+    VectorWriterAdapter(),
 ]
 
 __all__ = [
+    "CognitionTraceAdapter",
+    "CortexGatewayAdapter",
+    "CortexOrchAdapter",
+    "HubAdapter",
+    "SqlWriterAdapter",
+    "RdfWriterAdapter",
+    "VectorWriterAdapter",
     "BiometricsAdapter",
     "CollapseMirrorAdapter",
     "EquilibriumAdapter",

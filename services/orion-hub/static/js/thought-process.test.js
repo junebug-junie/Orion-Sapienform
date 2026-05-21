@@ -76,3 +76,45 @@ test('selectThoughtProcess supports older message shape', () => {
   assert.equal(out.source, 'reasoning_trace');
   assert.equal(out.metadata.mode, 'brain');
 });
+
+test('resolveCorrelationId prefers trace_linkage canonical id', () => {
+  const corr = thoughtProcess.resolveCorrelationId({
+    correlation_id: 'cortex-different',
+    trace_linkage: {
+      correlation_id: 'hub-corr-abc',
+      root_correlation_id: 'hub-corr-abc',
+      cortex_correlation_id: 'cortex-different',
+    },
+  });
+  assert.equal(corr, 'hub-corr-abc');
+});
+
+test('resolveCorrelationId prefers root_correlation_id', () => {
+  const corr = thoughtProcess.resolveCorrelationId({
+    correlation_id: 'child-corr',
+    root_correlation_id: 'root-corr',
+  });
+  assert.equal(corr, 'root-corr');
+});
+
+test('buildExecutionStepsPanel returns collapsible section', () => {
+  const panel = thoughtProcess.buildExecutionStepsPanel({
+    correlationId: 'corr-1',
+    apiBaseUrl: 'http://localhost:8080',
+    trace: {
+      verb: 'chat_general',
+      steps: [{
+        step_name: 'collect_metacog_context',
+        order: 0,
+        status: 'success',
+        latency_ms: 10,
+        services: ['MetacogContextService'],
+      }],
+      complete: true,
+    },
+  });
+  assert.ok(panel.includes('Execution Steps'));
+  assert.ok(panel.includes('collect_metacog_context'));
+  assert.ok(panel.includes('/organ-signals'));
+  assert.ok(panel.includes('correlation_id=corr-1'));
+});

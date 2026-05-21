@@ -4,6 +4,7 @@ Abstract base class for all Orion signal adapters.
 from abc import ABC, abstractmethod
 from typing import ClassVar, Dict, Optional
 
+from orion.signals.adapters.result import AdapterResult
 from orion.signals.models import OrionSignalV1, OrionOrganRegistryEntry
 from orion.signals.normalization import NormalizationContext
 
@@ -25,5 +26,5 @@ class OrionSignalAdapter(ABC):
         registry: Dict[str, OrionOrganRegistryEntry],
         prior_signals: Dict[str, OrionSignalV1],
         norm_ctx: NormalizationContext,
-    ) -> Optional[OrionSignalV1]:
-        """Transform a raw bus event into a hardened signal. Return None to drop."""
+    ) -> AdapterResult:
+        """Return one signal, a list of signals, or None to drop."""

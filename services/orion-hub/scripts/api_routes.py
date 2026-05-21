@@ -1907,6 +1907,27 @@ def _should_retry_memory_graph_quick(
     return False, ""
 
 
+def _chat_turn_trace_linkage(
+    *,
+    hub_corr_id: str,
+    cortex_corr_id: str | None,
+    root_correlation_id: str | None = None,
+) -> dict[str, str | None]:
+    """Canonical correlation linkage for chat turn metadata (Runtime Trace Nexus §5.8)."""
+    canonical = hub_corr_id
+    if cortex_corr_id and cortex_corr_id != hub_corr_id:
+        return {
+            "correlation_id": canonical,
+            "root_correlation_id": root_correlation_id or hub_corr_id,
+            "cortex_correlation_id": cortex_corr_id,
+        }
+    return {
+        "correlation_id": canonical,
+        "root_correlation_id": None,
+        "cortex_correlation_id": cortex_corr_id,
+    }
+
+
 async def handle_chat_request(
     cortex_client,
     payload: dict,
@@ -2078,10 +2099,14 @@ async def handle_chat_request(
                 route_debug_options["memory_graph_retry_from"] = "chat_timeout"
                 route_debug["options"] = route_debug_options
 
-        # Use the correlation_id from the response (gateway) if available
-        # or it might be passed back from the client logic if modified to do so.
-        # Here we rely on CortexChatResult having it.
-        correlation_id = resp.cortex_result.correlation_id or corr_id
+        raw_meta = raw_result.get("metadata") if isinstance(raw_result, dict) else {}
+        root_corr = raw_meta.get("root_correlation_id") if isinstance(raw_meta, dict) else None
+        trace_linkage = _chat_turn_trace_linkage(
+            hub_corr_id=str(corr_id),
+            cortex_corr_id=getattr(resp.cortex_result, "correlation_id", None),
+            root_correlation_id=str(root_corr).strip() if root_corr else None,
+        )
+        correlation_id = str(trace_linkage.get("correlation_id") or corr_id)
 
         memory_digest = None
         recall_debug = None
@@ -2160,7 +2185,6 @@ async def handle_chat_request(
             recall_debug=recall_debug,
             source_event_id=f"chat_result:{correlation_id}",
         )
-
         return {
             "session_id": session_id,
             "mode": mode,
@@ -2177,6 +2201,7 @@ async def handle_chat_request(
             "no_write": no_write,
             "spark_meta": dict(autonomy_payload) if isinstance(autonomy_payload, dict) else {},
             "correlation_id": correlation_id,
+            "trace_linkage": trace_linkage,
             "routing_debug": route_debug,
             "metacog_traces": metacog_traces,
             "reasoning_content": turn_ctx.get("reasoning_content"),
@@ -4135,15 +4160,27 @@ async def substrate_page() -> HTMLResponse:
     )
 
 
+@router.get("/api/signals/layers")
+async def api_signals_layers() -> Dict[str, Any]:
+    """Organ layer taxonomy for Organ Signals mesh filters (Runtime Trace Nexus B0)."""
+    from orion.signals.layers import layers_export
+
+    return layers_export()
+
+
 @router.get("/api/signals/active")
 async def api_signals_active() -> Dict[str, Any]:
     """Latest ``OrionSignalV1`` per ``organ_id`` from Hub in-memory cache (Phase 2b)."""
     import scripts.main as hub_main
+    from orion.signals.layers import organ_layer
 
     cache = getattr(hub_main, "signals_inspect_cache", None)
     if cache is None or not cache.enabled:
-        return {"as_of": datetime.now(timezone.utc).isoformat(), "signals": {}}
-    return await cache.get_active()
+        return {"as_of": datetime.now(timezone.utc).isoformat(), "signals": {}, "layers": {}}
+    body = await cache.get_active()
+    signals = body.get("signals") if isinstance(body.get("signals"), dict) else {}
+    body["layers"] = {oid: organ_layer(oid) for oid in signals}
+    return body
 
 
 @router.get("/api/signals/trace/{trace_id}")
@@ -4170,6 +4207,35 @@ async def api_signals_trace(trace_id: str) -> Dict[str, Any]:
         )
         if url:
             body = {**body, "grafana_explore_trace_url": url}
+    return body
+
+
+@router.get("/api/signals/correlation/{correlation_id}")
+async def api_signals_correlation(correlation_id: str) -> Dict[str, Any]:
+    """Signal chain keyed by ``source_event_id`` / correlation id (Runtime Trace Nexus A5)."""
+    import scripts.main as hub_main
+
+    cache = getattr(hub_main, "signals_inspect_cache", None)
+    if cache is None or not cache.enabled:
+        raise HTTPException(status_code=503, detail="signals_inspect_cache_disabled")
+    body = await cache.get_correlation(correlation_id)
+    if body is None:
+        raise HTTPException(status_code=404, detail="correlation_not_cached")
+    return body
+
+
+@router.get("/api/cognition/trace/{correlation_id}")
+async def api_cognition_trace(correlation_id: str) -> Dict[str, Any]:
+    """Redacted cognition execution trace keyed by ``correlation_id`` (Runtime Trace Nexus A4)."""
+    import scripts.main as hub_main
+
+    cache = getattr(hub_main, "cognition_trace_cache", None)
+    if cache is None or not cache.enabled:
+        raise HTTPException(status_code=503, detail="cognition_trace_cache_disabled")
+    debug = bool(getattr(settings, "COGNITION_TRACE_API_DEBUG", False))
+    body = await cache.get_debug(correlation_id) if debug else await cache.get_redacted(correlation_id)
+    if body is None:
+        raise HTTPException(status_code=404, detail="cognition_trace_not_cached")
     return body
 
 

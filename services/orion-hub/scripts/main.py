@@ -24,6 +24,7 @@ from scripts.service_logs_ws import service_logs_websocket_endpoint
 from scripts.biometrics_cache import BiometricsCache
 from scripts.notification_cache import NotificationCache
 from scripts.signals_inspect_cache import SignalsInspectCache
+from scripts.cognition_trace_cache import CognitionTraceCache
 
 from orion.core.bus.async_service import OrionBusAsync
 from scripts.bus_clients.cortex_client import CortexGatewayClient
@@ -126,6 +127,7 @@ html_content: str = "<html><body><h1>Error loading UI</h1></body></html>"
 biometrics_cache: Optional[BiometricsCache] = None
 notification_cache: Optional[NotificationCache] = None
 signals_inspect_cache: Optional[SignalsInspectCache] = None
+cognition_trace_cache: Optional[CognitionTraceCache] = None
 presence_state: Optional["PresenceState"] = None
 presence_context_store: Optional["PresenceContextStore"] = None
 substrate_autonomy_task: Optional[asyncio.Task] = None
@@ -201,7 +203,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, signals_inspect_cache, presence_state, presence_context_store, substrate_autonomy_task
+    global bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, signals_inspect_cache, cognition_trace_cache, presence_state, presence_context_store, substrate_autonomy_task
 
     # ------------------------------------------------------------
     # Orion Bus Initialization
@@ -260,12 +262,33 @@ async def startup_event():
                         pass
                 signals_inspect_cache = None
 
+            ctc: Optional[CognitionTraceCache] = None
+            try:
+                ctc = CognitionTraceCache(
+                    enabled=settings.COGNITION_TRACE_CACHE_ENABLED,
+                    subscribe_channel=settings.COGNITION_TRACE_SUBSCRIBE_CHANNEL,
+                    max_entries=settings.COGNITION_TRACE_CACHE_MAX,
+                    ttl_sec=settings.COGNITION_TRACE_CACHE_TTL_SEC,
+                    api_debug=settings.COGNITION_TRACE_API_DEBUG,
+                )
+                await ctc.start(bus)
+                cognition_trace_cache = ctc
+            except Exception as exc:
+                logger.warning("cognition_trace_cache_start_failed error=%s", exc)
+                if ctc is not None:
+                    try:
+                        await ctc.stop()
+                    except Exception:
+                        pass
+                cognition_trace_cache = None
+
         except Exception as e:
             logger.error(f"Failed to initialize OrionBus: {e}")
             bus = None
             cortex_client = None
             tts_client = None
             signals_inspect_cache = None
+            cognition_trace_cache = None
     else:
         logger.warning("OrionBus is DISABLED — Hub will not publish/subscribe.")
 
@@ -389,7 +412,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus, biometrics_cache, notification_cache, signals_inspect_cache, substrate_autonomy_task
+    global bus, biometrics_cache, notification_cache, signals_inspect_cache, cognition_trace_cache, substrate_autonomy_task
     pool = getattr(app.state, "memory_pg_pool", None)
     if pool is not None:
         try:
@@ -411,6 +434,8 @@ async def shutdown_event() -> None:
         await notification_cache.stop()
     if signals_inspect_cache is not None:
         await signals_inspect_cache.stop()
+    if cognition_trace_cache is not None:
+        await cognition_trace_cache.stop()
     if bus is not None:
         try:
             await bus.close()

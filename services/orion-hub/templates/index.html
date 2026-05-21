@@ -1201,6 +1201,19 @@
             </p>
           </div>
           <div class="flex items-center gap-2 text-xs">
+            <label class="inline-flex items-center gap-1 text-gray-400">
+              Layer
+              <select id="organ-signals-layer-filter" class="rounded border border-gray-600 bg-gray-800 text-gray-200 px-2 py-1">
+                <option value="all">All</option>
+                <option value="runtime">Runtime</option>
+                <option value="cognition">Cognition</option>
+                <option value="memory">Memory</option>
+                <option value="infra">Infra</option>
+                <option value="social">Social</option>
+                <option value="vision">Vision</option>
+                <option value="persistence">Persistence</option>
+              </select>
+            </label>
             <button type="button" id="organSignalsRefreshBtn" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700">Refresh</button>
             <label class="inline-flex items-center gap-2 text-gray-400">
               <input id="organSignalsAutoRefresh" type="checkbox" class="rounded border border-gray-600 bg-gray-800" />

@@ -70,3 +70,47 @@ def test_signals_inspect_cache_trace_roundtrip() -> None:
     assert out["trace_id"] == tid
     assert len(out["chain"]) == 1
     assert out["chain"][0]["organ_id"] == "biometrics"
+
+
+def test_signals_inspect_correlation_index() -> None:
+    import asyncio
+    from datetime import datetime, timezone
+
+    from orion.signals.models import OrganClass, OrionSignalV1
+
+    SignalsInspectCache = _get_signals_inspect_cache_class()
+    now = datetime.now(timezone.utc)
+    corr = "corr-index-test"
+    sigs = [
+        OrionSignalV1(
+            signal_id=f"s{i}",
+            organ_id="cortex_exec",
+            organ_class=OrganClass.endogenous,
+            signal_kind="cognition_step",
+            dimensions={"success": 1.0},
+            source_event_id=corr,
+            observed_at=now,
+            emitted_at=now,
+        )
+        for i in range(2)
+    ]
+
+    cache = SignalsInspectCache(
+        enabled=True,
+        subscribe_pattern="orion:signals:*",
+        window_sec=60.0,
+        trace_enabled=False,
+        trace_max_traces=10,
+        trace_ttl_sec=600.0,
+        trace_max_signals_per_trace=8,
+    )
+
+    async def _run():
+        for s in sigs:
+            await cache._ingest_signal(s)
+        return await cache.get_correlation(corr)
+
+    out = asyncio.run(_run())
+    assert out is not None
+    assert out["correlation_id"] == corr
+    assert len(out["chain"]) == 2

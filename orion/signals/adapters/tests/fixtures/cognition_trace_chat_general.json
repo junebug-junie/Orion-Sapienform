@@ -1,0 +1,12 @@
+{
+  "mode": "brain",
+  "verb": "chat_general",
+  "recall_used": true,
+  "final_text": "USER_SECRET_SHOULD_NOT_APPEAR_IN_SIGNAL",
+  "steps": [
+    {"status": "success", "verb_name": "chat_general", "step_name": "collect_metacog_context", "order": 0, "result": {"MetacogContextService": {}}, "latency_ms": 120},
+    {"status": "success", "verb_name": "chat_general", "step_name": "synthesize_chat_stance_brief", "order": 1, "result": {"LLMGatewayService": {}}, "latency_ms": 200},
+    {"status": "success", "verb_name": "chat_general", "step_name": "llm_chat_general", "order": 2, "result": {"LLMGatewayService": {}}, "latency_ms": 522}
+  ],
+  "metadata": {"recall_profile": "chat.general.v1", "reasoning_present": false}
+}

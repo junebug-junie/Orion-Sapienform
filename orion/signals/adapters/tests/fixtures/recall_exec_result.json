@@ -1,0 +1,29 @@
+{
+  "bundle": {
+    "rendered": "- [vector:episodes] Prior discussion about mesh health and recall integration.",
+    "items": [
+      {
+        "id": "mem-redacted-001",
+        "source": "vector",
+        "source_ref": "episodes",
+        "score": 0.88,
+        "snippet": "[redacted memory fragment]",
+        "tags": ["chat", "mesh"]
+      },
+      {
+        "id": "mem-redacted-002",
+        "source": "sql",
+        "source_ref": "chat_timeline",
+        "score": 0.72,
+        "snippet": "[redacted timeline row]",
+        "tags": []
+      }
+    ],
+    "stats": {
+      "backend_counts": {"vector": 1, "sql": 1},
+      "latency_ms": 142,
+      "profile": "reflect.v1"
+    }
+  },
+  "correlation_id": "corr-recall-fixture-001"
+}

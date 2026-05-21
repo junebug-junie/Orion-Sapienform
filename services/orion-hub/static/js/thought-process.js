@@ -123,7 +123,185 @@
     };
   }
 
-  const api = { selectThoughtProcess };
+  function escapeHtml(value) {
+    return String(value === null || value === undefined ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function resolveCorrelationId(meta) {
+    const root = asObject(meta) || {};
+    const raw = asObject(root.raw) || {};
+    const routing = asObject(root.routingDebug) || asObject(root.routing_debug) || {};
+    const linkage = asObject(root.trace_linkage) || asObject(root.traceLinkage) || {};
+    return firstText([
+      root.root_correlation_id,
+      root.rootCorrelationId,
+      linkage.root_correlation_id,
+      linkage.correlation_id,
+      raw.root_correlation_id,
+      routing.root_correlation_id,
+      root.correlationId,
+      root.correlation_id,
+      root.turnId,
+      root.turn_id,
+      raw.correlation_id,
+    ]);
+  }
+
+  async function fetchCognitionTrace(apiBaseUrl, correlationId) {
+    const corr = cleanText(correlationId);
+    if (!corr) return { error: 'missing_correlation_id' };
+    const base = String(apiBaseUrl || '').replace(/\/$/, '');
+    const res = await fetch(`${base}/api/cognition/trace/${encodeURIComponent(corr)}`);
+    if (res.status === 404) return { error: 'trace_not_cached' };
+    if (!res.ok) return { error: `http_${res.status}` };
+    return { body: await res.json() };
+  }
+
+  function stepServices(step) {
+    const row = asObject(step) || {};
+    const listed = asList(row.services).map((name) => cleanText(name)).filter(Boolean);
+    if (listed.length) return listed;
+    const result = asObject(row.result) || {};
+    return Object.keys(result);
+  }
+
+  function statusBadgeClass(status) {
+    const normalized = String(status || '').toLowerCase();
+    if (normalized === 'success') return 'border-emerald-500/40 bg-emerald-500/15 text-emerald-100';
+    if (normalized === 'error' || normalized === 'failed' || normalized === 'failure') {
+      return 'border-rose-500/40 bg-rose-500/15 text-rose-100';
+    }
+    return 'border-gray-600 bg-gray-800/80 text-gray-200';
+  }
+
+  function buildExecutionStepsPanel({ correlationId, apiBaseUrl, trace, debug, error, loading }) {
+    const corr = cleanText(correlationId) || '--';
+    const base = String(apiBaseUrl || '').replace(/\/$/, '');
+    const organSignalsUrl = `${base}/organ-signals?correlation_id=${encodeURIComponent(corr)}`;
+    const traceObj = asObject(trace) || {};
+    const steps = asList(traceObj.steps).slice().sort((a, b) => {
+      const left = Number((asObject(a) || {}).order);
+      const right = Number((asObject(b) || {}).order);
+      if (Number.isFinite(left) && Number.isFinite(right)) return left - right;
+      return 0;
+    });
+    const verb = cleanText(traceObj.verb) || '--';
+    const complete = traceObj.complete !== false;
+    const gaps = asList(traceObj.gaps);
+
+    let body = '';
+    if (loading) {
+      body = '<div class="text-[11px] text-gray-400">Loading execution trace…</div>';
+    } else if (error) {
+      body = `<div class="text-[11px] text-amber-200">Trace unavailable (${escapeHtml(error)}).</div>`;
+    } else if (!steps.length) {
+      body = '<div class="text-[11px] text-gray-400">No execution steps cached for this turn.</div>';
+    } else {
+      const rows = steps.map((step) => {
+        const row = asObject(step) || {};
+        const stepName = cleanText(row.step_name) || 'step';
+        const status = cleanText(row.status) || '--';
+        const latency = Number(row.latency_ms);
+        const latencyLabel = Number.isFinite(latency) ? `${latency} ms` : '--';
+        const services = stepServices(row);
+        const servicesLabel = services.length ? services.join(', ') : '--';
+        const showExpand = Boolean(debug) && (row.error || asList(row.log_tail).length);
+        let expandHtml = '';
+        if (showExpand) {
+          const errorText = cleanText(row.error) || '';
+          const logTail = asList(row.log_tail).slice(0, 5).map((line) => escapeHtml(line)).join('\n');
+          expandHtml = [
+            '<details class="mt-1 rounded border border-gray-800 bg-gray-950/50 p-2">',
+            '<summary class="cursor-pointer text-[10px] text-gray-400">Debug details</summary>',
+            errorText ? `<pre class="mt-1 whitespace-pre-wrap break-words text-[10px] text-rose-200">${escapeHtml(errorText)}</pre>` : '',
+            logTail ? `<pre class="mt-1 whitespace-pre-wrap break-words text-[10px] text-gray-300">${logTail}</pre>` : '',
+            '</details>',
+          ].join('');
+        }
+        return [
+          '<li class="rounded-lg border border-gray-800 bg-gray-950/50 px-2 py-2">',
+          '<div class="flex flex-wrap items-center justify-between gap-2">',
+          `<div class="font-mono text-[11px] text-gray-100">${escapeHtml(stepName)}</div>`,
+          `<span class="rounded-full border px-2 py-0.5 text-[10px] ${statusBadgeClass(status)}">${escapeHtml(status)}</span>`,
+          '</div>',
+          `<div class="mt-1 text-[10px] text-gray-400">${escapeHtml(latencyLabel)} · ${escapeHtml(servicesLabel)}</div>`,
+          expandHtml,
+          '</li>',
+        ].join('');
+      }).join('');
+      const metaBits = [
+        `verb ${escapeHtml(verb)}`,
+        complete ? 'complete' : 'partial',
+        gaps.length ? `${gaps.length} gap(s)` : null,
+      ].filter(Boolean).join(' · ');
+      body = [
+        `<div class="text-[10px] text-gray-500">${metaBits}</div>`,
+        `<ol class="mt-2 space-y-2">${rows}</ol>`,
+      ].join('');
+    }
+
+    const footer = [
+      '<div class="mt-3 border-t border-gray-800 pt-2">',
+      `<a class="text-[11px] text-indigo-300 hover:text-indigo-100" href="${escapeHtml(organSignalsUrl)}">View in Organ Signals</a>`,
+      '</div>',
+    ].join('');
+
+    return [
+      '<details class="execution-steps-panel mt-2 rounded-xl border border-sky-500/30 bg-sky-500/5 p-3">',
+      '<summary class="cursor-pointer text-[10px] uppercase tracking-wide text-sky-200">Execution Steps</summary>',
+      `<div class="mt-2 space-y-2">${body}${footer}</div>`,
+      '</details>',
+    ].join('');
+  }
+
+  async function mountExecutionStepsPanel(parent, { meta, apiBaseUrl, debug } = {}) {
+    if (!parent || typeof parent.appendChild !== 'function') return null;
+    const correlationId = resolveCorrelationId(meta);
+    if (!correlationId) return null;
+
+    const host = document.createElement('div');
+    host.className = 'execution-steps-host';
+    host.innerHTML = buildExecutionStepsPanel({
+      correlationId,
+      apiBaseUrl,
+      trace: null,
+      debug,
+      loading: true,
+    });
+    parent.appendChild(host);
+
+    try {
+      const result = await fetchCognitionTrace(apiBaseUrl, correlationId);
+      host.innerHTML = buildExecutionStepsPanel({
+        correlationId,
+        apiBaseUrl,
+        trace: result.body || null,
+        debug,
+        error: result.error || null,
+      });
+    } catch (_err) {
+      host.innerHTML = buildExecutionStepsPanel({
+        correlationId,
+        apiBaseUrl,
+        trace: null,
+        debug,
+        error: 'fetch_failed',
+      });
+    }
+    return host;
+  }
+
+  const api = {
+    selectThoughtProcess,
+    resolveCorrelationId,
+    fetchCognitionTrace,
+    buildExecutionStepsPanel,
+    mountExecutionStepsPanel,
+  };
   global.OrionThoughtProcess = api;
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api;

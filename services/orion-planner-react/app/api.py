@@ -10,11 +10,14 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, ConfigDict
 
+from orion.autonomy.goal_actions import build_goal_graph_query_client
+from orion.autonomy.repository import AUTONOMY_GOALS_GRAPH, _escape_sparql
 from orion.core.llm_json import parse_json_object, repair_json
 from .settings import settings
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import BaseEnvelope, ChatResultPayload, LLMMessage
+from orion.core.bus.bus_schemas import BaseEnvelope, ChatResultPayload, LLMMessage, ServiceRef
 from orion.schemas.agents.schemas import (
     ContextBlock,
     FinalAnswer,
@@ -1567,3 +1570,164 @@ async def plan_react(payload: PlannerRequest) -> PlannerResponse:
     if not settings.orion_bus_enabled:
         raise HTTPException(status_code=500, detail="Bus disabled")
     return await run_react_loop(payload)
+
+
+# ─────────────────────────────────────────────
+# Autonomy goal execute verb (Phase 3)
+# ─────────────────────────────────────────────
+
+AUTONOMY_GOAL_EXECUTE_VERB = "autonomy.goal.execute.v1"
+CHANNEL_CORE_EVENTS = os.getenv("CHANNEL_CORE_EVENTS", "orion:core:events")
+
+
+class AutonomyGoalExecuteInputV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    goal_artifact_id: str
+    goal_statement: str
+    drive_origin: str
+
+
+class AutonomyGoalExecuteOutputV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool = True
+    verb: str = AUTONOMY_GOAL_EXECUTE_VERB
+    task_id: str
+    goal_artifact_id: str
+    proposal_status: str = "executing"
+
+
+class AutonomyGoalExecuteVerb:
+    input_model = AutonomyGoalExecuteInputV1
+    output_model = AutonomyGoalExecuteOutputV1
+
+    @classmethod
+    async def execute(
+        cls,
+        payload: AutonomyGoalExecuteInputV1,
+        *,
+        bus: Optional[OrionBusAsync] = None,
+    ) -> AutonomyGoalExecuteOutputV1:
+        return await execute_autonomy_goal_v1(payload, bus=bus)
+
+
+_PLANNER_VERB_HANDLERS: Dict[str, type] = {
+    AUTONOMY_GOAL_EXECUTE_VERB: AutonomyGoalExecuteVerb,
+}
+
+
+def list_planner_verbs() -> List[str]:
+    return sorted(_PLANNER_VERB_HANDLERS.keys())
+
+
+def _new_goal_task_id() -> str:
+    return f"goal-task-{uuid.uuid4()}"
+
+
+def _persist_goal_planned_task_id(*, artifact_id: str, task_id: str) -> bool:
+    client = build_goal_graph_query_client()
+    if client is None:
+        logger.warning(
+            "autonomy_goal_execute graph_not_configured artifact_id=%s task_id=%s",
+            artifact_id,
+            task_id,
+        )
+        return False
+
+    safe_id = _escape_sparql(artifact_id.strip())
+    safe_task = _escape_sparql(task_id.strip())
+    update = f"""
+PREFIX orion: <http://conjourney.net/orion#>
+DELETE {{ ?a orion:plannedTaskId ?old_task . ?a orion:proposalStatus ?old_status . }}
+INSERT {{ ?a orion:plannedTaskId "{safe_task}" . ?a orion:proposalStatus "executing" . }}
+WHERE {{
+  GRAPH <{AUTONOMY_GOALS_GRAPH}> {{
+    ?a orion:artifactId "{safe_id}" .
+    OPTIONAL {{ ?a orion:plannedTaskId ?old_task . }}
+    OPTIONAL {{ ?a orion:proposalStatus ?old_status . }}
+  }}
+}}
+""".strip()
+    client.update(update)
+    return True
+
+
+async def _publish_goal_planned_supervisor_event(
+    bus: OrionBusAsync,
+    *,
+    payload: AutonomyGoalExecuteInputV1,
+    task_id: str,
+    correlation_id: str,
+) -> None:
+    env = BaseEnvelope(
+        kind="autonomy.goal.planned.v1",
+        source=ServiceRef(
+            name=settings.service_name,
+            version=settings.service_version,
+            node=settings.node_name,
+        ),
+        correlation_id=correlation_id,
+        payload={
+            "goal_artifact_id": payload.goal_artifact_id,
+            "goal_statement": payload.goal_statement,
+            "drive_origin": payload.drive_origin,
+            "task_id": task_id,
+            "proposal_status": "executing",
+            "source_verb": AUTONOMY_GOAL_EXECUTE_VERB,
+        },
+    )
+    await bus.publish(CHANNEL_CORE_EVENTS, env)
+
+
+async def execute_autonomy_goal_v1(
+    payload: AutonomyGoalExecuteInputV1,
+    *,
+    bus: Optional[OrionBusAsync] = None,
+) -> AutonomyGoalExecuteOutputV1:
+    goal_artifact_id = payload.goal_artifact_id.strip()
+    if not goal_artifact_id:
+        raise ValueError("goal_artifact_id_required")
+
+    task_id = _new_goal_task_id()
+    correlation_id = str(uuid.uuid4())
+    graph_persisted = _persist_goal_planned_task_id(artifact_id=goal_artifact_id, task_id=task_id)
+
+    bus_client = bus
+    owns_bus = False
+    if bus_client is None and settings.orion_bus_enabled:
+        bus_client = OrionBusAsync(url=settings.orion_bus_url)
+        await bus_client.connect()
+        owns_bus = True
+
+    try:
+        if bus_client is not None:
+            await _publish_goal_planned_supervisor_event(
+                bus_client,
+                payload=payload,
+                task_id=task_id,
+                correlation_id=correlation_id,
+            )
+    finally:
+        if owns_bus and bus_client is not None:
+            await bus_client.close()
+
+    logger.info(
+        "autonomy_goal_execute artifact_id=%s task_id=%s drive_origin=%s graph_persisted=%s",
+        goal_artifact_id,
+        task_id,
+        payload.drive_origin,
+        str(graph_persisted).lower(),
+    )
+
+    return AutonomyGoalExecuteOutputV1(
+        task_id=task_id,
+        goal_artifact_id=goal_artifact_id,
+    )
+
+
+@router.post(f"/verbs/{AUTONOMY_GOAL_EXECUTE_VERB}", response_model=AutonomyGoalExecuteOutputV1)
+async def invoke_autonomy_goal_execute(payload: AutonomyGoalExecuteInputV1) -> AutonomyGoalExecuteOutputV1:
+    if not settings.orion_bus_enabled:
+        raise HTTPException(status_code=500, detail="Bus disabled")
+    return await execute_autonomy_goal_v1(payload)

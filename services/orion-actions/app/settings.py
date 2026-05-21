@@ -19,7 +19,9 @@ _BLANK_ENV_BOOL_FIELDS = (
     "actions_pending_attention_enabled",
     "actions_preserve_generic_notify_enabled",
     "actions_world_pulse_enabled",
+    "actions_world_pulse_run_dry_run",
     "actions_world_pulse_journal_enabled",
+    "actions_world_pulse_journal_allow_dry_run",
     "actions_skills_scheduler_enabled",
     "actions_skills_run_on_startup",
     "actions_skills_notify_enabled",
@@ -102,7 +104,9 @@ class Settings(BaseSettings):
     actions_world_pulse_hour_local: int = Field(6, alias="ACTIONS_WORLD_PULSE_HOUR_LOCAL")
     actions_world_pulse_minute_local: int = Field(0, alias="ACTIONS_WORLD_PULSE_MINUTE_LOCAL")
     world_pulse_base_url: str = Field("http://orion-world-pulse:8628", alias="WORLD_PULSE_BASE_URL")
+    actions_world_pulse_run_dry_run: bool = Field(True, alias="ACTIONS_WORLD_PULSE_RUN_DRY_RUN")
     actions_world_pulse_journal_enabled: bool = Field(False, alias="ACTIONS_WORLD_PULSE_JOURNAL_ENABLED")
+    actions_world_pulse_journal_allow_dry_run: bool = Field(False, alias="ACTIONS_WORLD_PULSE_JOURNAL_ALLOW_DRY_RUN")
     actions_journal_world_pulse_recall_profile: str = Field(
         "journal.world_pulse.grounded.v1",
         alias="ACTIONS_JOURNAL_WORLD_PULSE_RECALL_PROFILE",

@@ -69,13 +69,22 @@ flowchart LR
 ## Enable locally
 
 ```bash
-# After world-pulse emits non-dry-run run results on the bus:
+# Production reflective journaling (scheduler + bus path):
+ACTIONS_WORLD_PULSE_RUN_DRY_RUN=false
 ACTIONS_WORLD_PULSE_JOURNAL_ENABLED=true
 ACTIONS_JOURNALING_ENABLED=true
-# ACTIONS_SUBSCRIBE_CHANNELS already includes orion:world_pulse:run:result in .env_example
+# ACTIONS_SUBSCRIBE_CHANNELS includes orion:world_pulse:run:result in .env_example and settings default
 ```
 
-**Important:** The actions **scheduler** still triggers world-pulse with `dry_run=True`, so scheduled runs will **not** produce reflective journals until production runs emit `dry_run=false` on `orion:world_pulse:run:result` (e.g. Hub manual run with `WORLD_PULSE_DRY_RUN=false` per `docs/world_pulse_dev.md`).
+`ACTIONS_WORLD_PULSE_RUN_DRY_RUN` (default **true**) controls the scheduler POST body to `/api/world-pulse/run`. Journaling skips `dry_run` run results unless `ACTIONS_WORLD_PULSE_JOURNAL_ALLOW_DRY_RUN=true`.
+
+**Note:** `services/orion-actions/.env` is **gitignored** (`*.env`); only `.env_example` and docker-compose passthrough are tracked. Copy example keys into your local `.env` manually.
+
+### Smoke (no live services)
+
+```bash
+python scripts/world_pulse_reflective_journal_smoke.py
+```
 
 ## Tests
 
@@ -87,7 +96,16 @@ PYTHONPATH=. /path/to/venv/bin/pytest \
   services/orion-actions/tests/test_world_pulse_reflective_journal_handler.py -q
 ```
 
-**Result:** 10 passed
+**Result:** 20+ passed (actions integration, adapter channels, smoke script)
+
+### Hardening (pre-merge)
+
+- `app.state.bus_handler` exposes `handle_envelope` for integration tests
+- `handle_world_pulse_run_result_journal` extracted to `app/world_pulse_journal.py` (injectable `dispatch_journal`)
+- `ACTIONS_WORLD_PULSE_RUN_DRY_RUN` + `ACTIONS_WORLD_PULSE_JOURNAL_ALLOW_DRY_RUN`
+- `test_handle_envelope_world_pulse_journal.py` — lifespan + `bus_handler` → `_dispatch_journal` with correct trigger
+- `scripts/world_pulse_reflective_journal_smoke.py` — fixture path without Redis/Cortex
+- Expanded `WorldPulseAdapter` channel matrix + malformed payload degradation
 
 ## Code review
 

@@ -55,14 +55,17 @@ def _result(*, status: str = "completed", dry_run: bool = False, with_digest: bo
 def test_world_pulse_journal_disabled_by_default() -> None:
     cfg = Settings()
     assert cfg.actions_world_pulse_journal_enabled is False
+    assert cfg.actions_world_pulse_run_dry_run is True
+    assert cfg.actions_world_pulse_journal_allow_dry_run is False
 
 
 def test_skip_reason_when_disabled() -> None:
     assert world_pulse_journal_skip_reason(_result(), enabled=False) == "world_pulse_journal_disabled"
 
 
-def test_skip_reason_dry_run() -> None:
-    assert world_pulse_journal_skip_reason(_result(dry_run=True), enabled=True) == "world_pulse_dry_run"
+def test_skip_reason_dry_run_unless_allowed() -> None:
+    assert world_pulse_journal_skip_reason(_result(dry_run=True), enabled=True, allow_dry_run=False) == "world_pulse_dry_run"
+    assert world_pulse_journal_skip_reason(_result(dry_run=True), enabled=True, allow_dry_run=True) is None
 
 
 def test_skip_reason_missing_digest() -> None:

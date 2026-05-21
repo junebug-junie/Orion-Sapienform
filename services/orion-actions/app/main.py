@@ -42,9 +42,7 @@ from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorS
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.notify import NotificationRecord, NotificationRequest
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
-from orion.schemas.world_pulse import WorldPulseRunResultV1
-
-from .world_pulse_journal import build_world_pulse_journal_trigger, world_pulse_journal_skip_reason
+from .world_pulse_journal import handle_world_pulse_run_result_journal
 from .logic import (
     ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1,
     SKILL_BIOMETRICS_SNAPSHOT_V1,
@@ -639,7 +637,7 @@ def _trigger_world_pulse_run(*, date: str, requested_by: str) -> bool:
     try:
         resp = requests.post(
             f"{settings.world_pulse_base_url.rstrip('/')}/api/world-pulse/run",
-            json={"date": date, "dry_run": True, "requested_by": requested_by},
+            json={"date": date, "dry_run": settings.actions_world_pulse_run_dry_run, "requested_by": requested_by},
             timeout=20,
         )
         return resp.ok
@@ -1546,44 +1544,12 @@ async def lifespan(app: FastAPI):
         )
 
     async def _handle_world_pulse_run_result_journal(env: BaseEnvelope) -> bool:
-        try:
-            result = WorldPulseRunResultV1.model_validate(env.payload)
-        except Exception:
-            logger.info(
-                "world_pulse_journal_skipped correlation_id=%s reason=invalid_run_result_payload",
-                env.correlation_id,
-            )
-            await _audit(
-                env,
-                status="skipped",
-                event_id=str(env.correlation_id),
-                action_name="journal.world_pulse_digest",
-                reason="invalid_run_result_payload",
-            )
-            return True
-        skip = world_pulse_journal_skip_reason(
-            result,
-            enabled=settings.actions_world_pulse_journal_enabled,
-        )
-        if skip == "world_pulse_journal_disabled":
-            return True
-        if skip is not None:
-            await _audit(
-                env,
-                status="skipped",
-                event_id=result.run.run_id,
-                action_name="journal.world_pulse_digest",
-                reason=skip,
-            )
-            return True
-        trigger = build_world_pulse_journal_trigger(result)
-        await _dispatch_journal(
+        return await handle_world_pulse_run_result_journal(
             env,
-            trigger=trigger,
-            audit_action="journal.world_pulse_digest",
-            dedupe_key=cooldown_key_for_trigger(trigger),
+            settings=settings,
+            dispatch_journal=_dispatch_journal,
+            audit=_audit,
         )
-        return True
 
     async def _handle_journal_collapse_stored(env: BaseEnvelope) -> bool:
         try:
@@ -2096,6 +2062,7 @@ async def lifespan(app: FastAPI):
     if settings.actions_world_pulse_journal_enabled and "orion:world_pulse:run:result" not in patterns:
         patterns.append("orion:world_pulse:run:result")
     hunter = Hunter(_cfg(), patterns=patterns, handler=handle_envelope)
+    app.state.bus_handler = handle_envelope
 
     logger.info(
         "Starting orion-actions Hunter channels=%s bus=%s cortex_request=%s",

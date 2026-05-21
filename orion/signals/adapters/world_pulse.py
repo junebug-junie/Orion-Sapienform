@@ -1,4 +1,4 @@
-"""World Pulse bus events → OrionSignalV1 (run result, digest published, situation brief)."""
+"""World Pulse bus events → OrionSignalV1 (run result, digest, situation, capsule, graph)."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -25,6 +25,9 @@ def _coverage_level(payload: dict) -> float:
         return _COVERAGE_LEVEL.get(status, 0.5)
     if payload.get("coverage_status") is not None:
         return _COVERAGE_LEVEL.get(str(payload.get("coverage_status")), 0.5)
+    salient = payload.get("salient_topics")
+    if isinstance(salient, list) and salient:
+        return 0.55
     return 0.5
 
 
@@ -34,15 +37,21 @@ def _run_source_id(payload: dict) -> Optional[str]:
         raw = run.get("run_id")
         if raw is not None:
             return str(raw)
-    for key in ("run_id", "correlation_id", "id"):
+    for key in ("run_id", "capsule_id", "graph_delta_id", "brief_id", "correlation_id", "id"):
         if payload.get(key) is not None:
             return str(payload[key])
     return None
 
 
 def _signal_kind_for_channel(channel: str, entry: OrionOrganRegistryEntry) -> str:
+    if "run:result" in channel:
+        return "time_context"
     if "situation:brief" in channel:
         return "situation_state"
+    if "graph:upsert" in channel:
+        return "time_context"
+    if "world_context" in channel or "daily_capsule" in channel:
+        return "environmental_context"
     if "digest" in channel:
         return "environmental_context"
     kinds = entry.signal_kinds or []
@@ -66,6 +75,22 @@ class WorldPulseAdapter(OrionSignalAdapter):
         entry = registry.get(self.organ_id) or ORGAN_REGISTRY.get(self.organ_id)
         if entry is None:
             return None
+
+        if not isinstance(payload, dict) or not payload:
+            now = datetime.now(timezone.utc)
+            sig_id = make_signal_id(self.organ_id, None)
+            return OrionSignalV1(
+                signal_id=sig_id,
+                organ_id=self.organ_id,
+                organ_class=OrganClass.hybrid,
+                signal_kind=_signal_kind_for_channel(channel, entry),
+                dimensions={"level": 0.5, "confidence": 0.1, "valence": 0.5},
+                causal_parents=[],
+                source_event_id=None,
+                observed_at=now,
+                emitted_at=now,
+                notes=["malformed or empty payload; confidence degraded"],
+            )
 
         src_id = _run_source_id(payload)
         now = datetime.now(timezone.utc)
@@ -96,8 +121,10 @@ class WorldPulseAdapter(OrionSignalAdapter):
         notes: list[str] = []
         if run.get("dry_run") is True or payload.get("dry_run") is True:
             notes.append("dry_run=true")
-        if run_status not in {"completed", "partial"}:
+        if run_status not in {"completed", "partial", "unknown"}:
             notes.append(f"run_status={run_status}")
+        if src_id is None:
+            notes.append("missing source_event_id")
 
         return OrionSignalV1(
             signal_id=sig_id,

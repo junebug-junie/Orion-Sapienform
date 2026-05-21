@@ -33,6 +33,11 @@ Rules:
 - Novelty vs repetition: do not retell the same ongoing incident (hardware repair, DIMM/GPU/node diagnostics, ticket threads, etc.) day after day unless the Summary, Prompt seed, or memory digest explicitly adds **new** facts, timestamps, decisions, or state changes that clearly distinguish today from prior days. If memory keeps circling one incident, acknowledge continuity in **at most one short sentence**, then shift to emotional tone, genuine uncertainty, tradeoffs, or what would actually change the situation—avoid another full recap of the same narrative spine.
 - Avoid formulaic openings you have already used for recent dailies (e.g. “The day unfolded with the usual rhythm…”, generic “quiet morning” scene-setting) unless the Summary forces it. Prefer a concrete hook tied to today’s distinct signal or honest sameness in one line.
 {% endif %}
+{% if _jt.get("trigger_kind") == "world_pulse_digest" %}
+- World Pulse reflective journal: metabolize the Daily World Pulse digest already produced upstream — do not invent new wire stories or geography. Use only facts present in Summary or Prompt seed (run metadata, executive summary, section rollups, digest items, salient topics).
+- Focus on what shifted, what matters for Orion's lab and continuity, and honest uncertainty where coverage is partial or sparse.
+- Do not restate the full digest card schema; write reflective prose, not a news brief.
+{% endif %}
 {% if metadata.get("journal_mode") == "digest" or _jt.get("trigger_kind") == "notify_summary" %}
 - Automated digest-shaped journal: do not use city names, region names, or other geography in the title or body unless those words appear verbatim in the Summary or Prompt seed below. Do not infer location from default timezones, deployment defaults, or unrelated memory.
 - Novelty vs repetition: do not retell the same ongoing incident (hardware repair, DIMM/GPU/node diagnostics, ticket threads, etc.) run after run unless the Summary, Prompt seed, or memory digest explicitly adds **new** facts, timestamps, decisions, or state changes. If memory keeps circling one incident, acknowledge continuity in **at most one short sentence**, then shift to tone, uncertainty, tradeoffs, or what would change the situation—avoid verbatim echo of prior journal tropes when the evidence is stale.

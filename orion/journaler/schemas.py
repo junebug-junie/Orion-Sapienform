@@ -13,6 +13,7 @@ JournalTriggerKind = Literal[
     "metacog_digest",
     "manual",
     "notify_summary",
+    "world_pulse_digest",
 ]
 JournalSourceKind = Literal[
     "notify",
@@ -22,6 +23,7 @@ JournalSourceKind = Literal[
     "scheduler",
     "self_study",
     "self_reflection",
+    "world_pulse",
 ]
 JournalMode = Literal["daily", "response", "digest", "manual"]
 

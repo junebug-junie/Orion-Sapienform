@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from orion.journaler import (
     build_compose_request,
     build_world_pulse_reflective_trigger,
+    cooldown_key_for_trigger,
     journal_mode_for_trigger,
 )
 from orion.schemas.world_pulse import (
@@ -67,6 +68,12 @@ def test_world_pulse_reflective_trigger_maps_to_digest_mode() -> None:
     assert journal_mode_for_trigger(trigger) == "digest"
     assert "Grid stress watch" in (trigger.prompt_seed or "")
     assert "executive_summary" in (trigger.prompt_seed or "").lower() or "Several policy" in (trigger.summary or "")
+
+
+def test_world_pulse_cooldown_key_uses_run_id() -> None:
+    trigger = build_world_pulse_reflective_trigger(_sample_run_result())
+    key = cooldown_key_for_trigger(trigger)
+    assert key == "actions:journal:world_pulse_digest:world_pulse:wp-run-1"
 
 
 def test_world_pulse_compose_request_carries_trigger_metadata() -> None:

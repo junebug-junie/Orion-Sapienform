@@ -69,7 +69,7 @@ def journal_mode_for_trigger(trigger: JournalTriggerV1) -> JournalMode:
 
 
 def cooldown_key_for_trigger(trigger: JournalTriggerV1) -> str:
-    if trigger.trigger_kind == "collapse_response":
+    if trigger.trigger_kind in {"collapse_response", "world_pulse_digest"}:
         ref = (trigger.source_ref or "").strip()
         if not ref:
             ref = hashlib.sha256((trigger.summary or "").strip().encode("utf-8")).hexdigest()[:20]

@@ -9,6 +9,11 @@ def world_pulse_journal_skip_reason(
     *,
     enabled: bool,
 ) -> str | None:
+    """Return skip reason, or None when journal dispatch should proceed.
+
+    Note: actions scheduler currently triggers world-pulse with dry_run=True; reflective
+    journals require a non-dry-run run result on the bus (e.g. Hub/manual persistence mode).
+    """
     if not enabled:
         return "world_pulse_journal_disabled"
     run = result.run

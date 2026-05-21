@@ -1553,13 +1553,20 @@ async def lifespan(app: FastAPI):
                 "world_pulse_journal_skipped correlation_id=%s reason=invalid_run_result_payload",
                 env.correlation_id,
             )
-            return False
+            await _audit(
+                env,
+                status="skipped",
+                event_id=str(env.correlation_id),
+                action_name="journal.world_pulse_digest",
+                reason="invalid_run_result_payload",
+            )
+            return True
         skip = world_pulse_journal_skip_reason(
             result,
             enabled=settings.actions_world_pulse_journal_enabled,
         )
         if skip == "world_pulse_journal_disabled":
-            return False
+            return True
         if skip is not None:
             await _audit(
                 env,
@@ -2086,6 +2093,8 @@ async def lifespan(app: FastAPI):
         patterns.append(WORKFLOW_MANAGE_CHANNEL)
     if settings.actions_journal_created_channel not in patterns:
         patterns.append(settings.actions_journal_created_channel)
+    if settings.actions_world_pulse_journal_enabled and "orion:world_pulse:run:result" not in patterns:
+        patterns.append("orion:world_pulse:run:result")
     hunter = Hunter(_cfg(), patterns=patterns, handler=handle_envelope)
 
     logger.info(

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock
 
-from app.router import PlanRunner, _autonomy_payload_from_ctx, _situation_grounding_metadata_from_ctx
+from app.router import PlanRunner, _autonomy_payload_from_ctx, _resolve_autonomy_execution_mode, _situation_grounding_metadata_from_ctx
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.schemas.cortex.schemas import ExecutionPlan, ExecutionStep, PlanExecutionArgs, PlanExecutionRequest, StepExecutionResult
 
@@ -36,6 +36,39 @@ def _request(*, verb_name: str = "chat_general", step_name: str = "llm_chat_gene
         args=PlanExecutionArgs(request_id="r1", extra={"mode": "brain"}),
         context={"mode": "brain", "raw_user_text": "hello"},
     )
+
+
+def test_router_execution_mode_executing_when_planned_task_active() -> None:
+    ctx = {
+        "chat_autonomy_summary": {
+            "active_goals": [{"artifact_id": "g1", "proposal_status": "executing", "planned_task_id": "task-1"}]
+        }
+    }
+    payload = _autonomy_payload_from_ctx(ctx)
+    assert payload["autonomy_execution_mode"] == "executing"
+
+
+def test_router_execution_mode_planned_when_operator_promoted() -> None:
+    ctx = {
+        "chat_autonomy_summary": {
+            "active_goals": [{"artifact_id": "g1", "proposal_status": "planned", "planned_task_id": "task-1"}]
+        }
+    }
+    payload = _autonomy_payload_from_ctx(ctx)
+    assert payload["autonomy_execution_mode"] == "planned"
+
+
+def test_router_execution_mode_hint_only_from_chat_stance() -> None:
+    ctx = {
+        "chat_autonomy_execution_mode": "hint_only",
+        "chat_autonomy_summary": {
+            "active_goals": [{"artifact_id": "g1", "proposal_status": "proposed", "priority": 0.8}],
+            "goals_present": True,
+        },
+    }
+    assert _resolve_autonomy_execution_mode(ctx) == "hint_only"
+    payload = _autonomy_payload_from_ctx(ctx)
+    assert payload["autonomy_execution_mode"] == "hint_only"
 
 
 def test_router_exports_autonomy_metadata_from_chat_stance_context(monkeypatch) -> None:

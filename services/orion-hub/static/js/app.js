@@ -3654,6 +3654,12 @@ loadDismissedIds();
     const proposalHeadlines = Array.isArray((safeSummary && safeSummary.proposal_headlines) || (safePreview && safePreview.proposal_headlines))
       ? ((safeSummary && safeSummary.proposal_headlines) || (safePreview && safePreview.proposal_headlines)).map((v) => String(v || '').trim()).filter(Boolean).slice(0, 3)
       : [];
+    const goalsPresent = Boolean(
+      meta.autonomyGoalsPresent
+      || meta.autonomy_goals_present
+      || (safeSummary && safeSummary.goals_present)
+      || proposalHeadlines.length
+    );
     const availabilityRows = safeDebug
       ? Object.entries(safeDebug).filter(([subject, value]) => !String(subject).startsWith('_') && value && typeof value === 'object')
       : [];
@@ -3709,6 +3715,7 @@ loadDismissedIds();
       driveCompetition,
       proposals: proposalHeadlines,
       proposalHeadlines,
+      goalsPresent,
       stanceHint: String((safeSummary && safeSummary.stance_hint) || '').trim(),
       hasSemanticSignal,
       hasDebugSignal,
@@ -3788,6 +3795,15 @@ loadDismissedIds();
       autonomyDebugMeta.textContent = `backend ${model.backend} · selected ${model.selectedSubject} · runtime+semantic`;
     }
 
+    const executionModeDisplay = model.executionMode === 'proposal_only'
+      ? 'none (legacy proposal_only)'
+      : model.executionMode;
+    const juniperNote = 'n/a (dyadic chat → relationship)';
+    const juniperDebugEntry = debug && typeof debug === 'object' ? debug.juniper : null;
+    const juniperAvailabilityEmpty = juniperDebugEntry && typeof juniperDebugEntry === 'object'
+      && (!String(juniperDebugEntry.availability || '').trim()
+        || ['unavailable', 'empty'].includes(String(juniperDebugEntry.availability || '').trim()));
+
     autonomyDebugOverview.innerHTML = '';
     [
       `autonomy state: ${model.stateQuality || 'unknown'}`,
@@ -3796,11 +3812,13 @@ loadDismissedIds();
       ...(model.degradedReason ? [`reason: ${model.degradedReason}`] : []),
       ...(model.contextNote ? [`context note: ${model.contextNote}`] : []),
       ...(model.stanceMode ? [`stance mode: ${model.stanceMode}`] : []),
+      ...(model.goalsPresent ? [`goals: ${model.proposalHeadlines.length} active`] : []),
       `availability: ${model.availability.available}/${model.availability.subjects} available · ${model.availability.degraded} degraded`,
+      ...(juniperAvailabilityEmpty ? [`juniper: ${juniperNote}`] : []),
       `repository source: ${model.repositoryStatus.source_available ? 'available' : 'unavailable'}`,
       `repository path: ${model.repositoryStatus.source_path}`,
       `fallback: ${model.fallback}`,
-      ...(model.executionMode ? [`execution: ${model.executionMode}`] : []),
+      ...(executionModeDisplay ? [`execution: ${executionModeDisplay}`] : []),
       ...(model.goalLineage && Object.keys(model.goalLineage).length
         ? [`goal lineage: ${JSON.stringify(model.goalLineage)}`]
         : []),
@@ -3826,6 +3844,19 @@ loadDismissedIds();
       row.textContent = line;
       autonomyDebugState.appendChild(row);
     });
+
+    let proposalsTitle = document.getElementById('autonomyDebugProposalsTitle');
+    if (!proposalsTitle && autonomyDebugProposals && autonomyDebugProposals.parentElement) {
+      proposalsTitle = document.createElement('div');
+      proposalsTitle.id = 'autonomyDebugProposalsTitle';
+      proposalsTitle.className = 'text-xs uppercase tracking-wide text-amber-400/80 mb-1';
+      autonomyDebugProposals.parentElement.insertBefore(proposalsTitle, autonomyDebugProposals);
+    }
+    if (proposalsTitle) {
+      proposalsTitle.textContent = model.stateQuality === 'healthy'
+        ? 'Active goals (non-executing)'
+        : 'Proposals (proposal-only)';
+    }
 
     autonomyDebugProposals.innerHTML = '';
     if (model.proposalHeadlines.length) {
@@ -10082,6 +10113,7 @@ loadDismissedIds();
               autonomyDebug: d.autonomy_debug,
               autonomyStatePreview: d.autonomy_state_preview,
               autonomyExecutionMode: d.autonomy_execution_mode,
+              autonomyGoalsPresent: d.autonomy_goals_present,
               autonomyGoalLineage: d.autonomy_goal_lineage,
               autonomyBackend: d.autonomy_backend,
               autonomySelectedSubject: d.autonomy_selected_subject,
@@ -10406,6 +10438,7 @@ loadDismissedIds();
                 autonomyDebug: d.autonomy_debug,
                 autonomyStatePreview: d.autonomy_state_preview,
                 autonomyExecutionMode: d.autonomy_execution_mode,
+                autonomyGoalsPresent: d.autonomy_goals_present,
                 autonomyGoalLineage: d.autonomy_goal_lineage,
                 autonomyBackend: d.autonomy_backend,
                 autonomySelectedSubject: d.autonomy_selected_subject,

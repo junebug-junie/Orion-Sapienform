@@ -211,7 +211,44 @@ def test_router_exports_backend_and_repository_status_when_autonomy_unavailable(
     assert result.metadata["autonomy_debug"]["orion"]["unavailable_reason"] == "query_error"
 
 
-def test_router_exports_goal_lineage_and_proposal_only_execution_mode(monkeypatch) -> None:
+def test_router_exports_none_execution_mode_when_healthy_goals_present(monkeypatch) -> None:
+    runner = PlanRunner()
+    fake_step = StepExecutionResult(
+        status="success",
+        verb_name="chat_general",
+        step_name="llm_chat_general",
+        order=0,
+        result={"LLMGatewayService": {"content": "ok"}},
+        latency_ms=1,
+        node="n",
+        logs=[],
+        error=None,
+    )
+    monkeypatch.setattr("app.router.call_step_services", AsyncMock(return_value=fake_step))
+    monkeypatch.setattr("app.router.prepare_brain_reply_context", lambda _ctx: None)
+    ctx = {
+        "mode": "brain",
+        "raw_user_text": "hello",
+        "chat_autonomy_summary": {
+            "stance_mode": "normal",
+            "goals_present": True,
+            "proposal_headlines": ["Clarify autonomy boundaries"],
+        },
+    }
+    result = asyncio.run(
+        runner.run_plan(
+            bus=object(),
+            source=ServiceRef(name="x", version="0", node="n"),
+            req=_request(),
+            correlation_id="corr-healthy-goals",
+            ctx=ctx,
+        )
+    )
+    assert result.metadata["autonomy_execution_mode"] == "none"
+    assert result.metadata["autonomy_goals_present"] is True
+
+
+def test_router_exports_goal_lineage_and_none_execution_mode(monkeypatch) -> None:
     runner = PlanRunner()
     fake_step = StepExecutionResult(
         status="success",
@@ -248,7 +285,10 @@ def test_router_exports_goal_lineage_and_proposal_only_execution_mode(monkeypatc
             ctx=ctx,
         )
     )
-    assert result.metadata["autonomy_execution_mode"] == "proposal_only"
+    # Migration: autonomy_execution_mode was "proposal_only"; consumers should use
+    # autonomy_goals_present + summary.stance_mode instead.
+    assert result.metadata["autonomy_execution_mode"] == "none"
+    assert result.metadata["autonomy_goals_present"] is True
     assert result.metadata["autonomy_goal_lineage"]["goal_artifact_id"] == "goal-abc"
     assert result.metadata["autonomy_goal_lineage"]["proposal_signature"] == "deadbeef01"
     assert result.metadata["autonomy_state_preview"]["goal_lineage"]["proposal_signature"] == "deadbeef01"

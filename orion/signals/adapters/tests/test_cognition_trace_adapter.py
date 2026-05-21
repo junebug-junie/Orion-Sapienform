@@ -48,3 +48,20 @@ def test_cognition_trace_adapter_no_pii_in_signal(adapter: CognitionTraceAdapter
     assert "USER_SECRET" not in blob
     assert "USER_SECRET_SHOULD_NOT_APPEAR_IN_SIGNAL" not in blob
     assert '"final_text":' not in blob
+
+
+def test_cognition_trace_adapter_cognition_trace_kind(adapter: CognitionTraceAdapter) -> None:
+    payload = json.loads(FIXTURE.read_text())
+    payload["_envelope_correlation_id"] = CORR
+    out = adapter.adapt("cognition.trace", payload, ORGAN_REGISTRY, {}, NormalizationContext())
+    assert isinstance(out, list)
+    assert out[0].source_event_id == CORR
+
+
+def test_cognition_trace_adapter_envelope_correlation_only(adapter: CognitionTraceAdapter) -> None:
+    payload = json.loads(FIXTURE.read_text())
+    payload.pop("correlation_id", None)
+    payload["_envelope_correlation_id"] = CORR
+    out = adapter.adapt("cognition.trace", payload, ORGAN_REGISTRY, {}, NormalizationContext())
+    assert out[0].source_event_id == CORR
+    assert "synthetic_correlation_id" not in (out[0].notes or [])

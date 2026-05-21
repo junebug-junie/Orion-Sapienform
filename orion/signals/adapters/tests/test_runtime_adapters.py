@@ -70,6 +70,20 @@ def test_hub_chat_turn_no_message_text(norm_ctx: NormalizationContext) -> None:
     assert "secret" not in (signal.summary or "")
 
 
+def test_hub_chat_turn_top_level_correlation_without_metadata(norm_ctx: NormalizationContext) -> None:
+    adapter = HubAdapter()
+    payload = {
+        "turn_id": "t-1",
+        "session_id": "s-1",
+        "correlation_id": "corr-hub-top",
+        "prompt": "hello",
+        "response": "hi",
+    }
+    signal = adapter.adapt("chat.history.turn", payload, ORGAN_REGISTRY, {}, norm_ctx)
+    assert signal is not None
+    assert signal.source_event_id == "corr-hub-top"
+
+
 def test_sql_writer_persist(norm_ctx: NormalizationContext) -> None:
     adapter = SqlWriterAdapter()
     signal = adapter.adapt(

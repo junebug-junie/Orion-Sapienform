@@ -77,3 +77,47 @@ async def test_gateway_processor_multi_emission(monkeypatch, memory_exporter):
     channels = [c.args[0] for c in bus.publish.await_args_list]
     assert "orion:signals:cortex_exec" in channels
     assert "orion:signals:graph_cognition" in channels
+
+
+@pytest.mark.asyncio
+async def test_gateway_injects_envelope_correlation_for_cognition_trace_kind(
+    monkeypatch, memory_exporter
+):
+    """Production cortex-exec publishes kind=cognition.trace (not orion:cognition:trace)."""
+    from app.normalization_state import NormalizationStateRegistry
+    from app.processor import SignalProcessor
+    from app.signal_window import SignalWindow
+    import app.processor as proc_mod
+
+    captured: list[dict] = []
+
+    class _CaptureAdapter(OrionSignalAdapter):
+        organ_id = "cortex_exec"
+
+        def can_handle(self, channel: str, payload: dict) -> bool:
+            return channel == "cognition.trace"
+
+        def adapt(self, channel, payload, registry, prior_signals, norm_ctx) -> AdapterResult:
+            captured.append(dict(payload))
+            return None
+
+    monkeypatch.setattr(proc_mod, "ADAPTERS", [_CaptureAdapter()])
+    bus = AsyncMock()
+    proc = SignalProcessor(
+        bus=bus,
+        signal_window=SignalWindow(30.0),
+        norm_state=NormalizationStateRegistry(),
+        output_channel_prefix="orion:signals",
+        passthrough_pattern="orion:signals:*",
+        service_ref=ServiceRef(name="orion-signal-gateway", version="0.1.0", node="n"),
+    )
+    CORR = UUID("00000000-0000-4000-8000-000000000002")
+    env = BaseEnvelope(
+        kind="cognition.trace",
+        source=ServiceRef(name="orion-cortex-exec", version="0.1.0", node="n"),
+        correlation_id=CORR,
+        payload={"verb": "chat_general", "mode": "brain", "steps": []},
+    )
+    await proc.handle_envelope(env)
+    assert captured
+    assert str(captured[0].get("_envelope_correlation_id")) == str(CORR)

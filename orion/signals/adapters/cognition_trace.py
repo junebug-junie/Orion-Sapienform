@@ -48,7 +48,8 @@ class CognitionTraceAdapter(OrionSignalAdapter):
     organ_id = "cortex_exec"
 
     def can_handle(self, channel: str, payload: dict) -> bool:
-        if "cognition:trace" in channel:
+        kind = str(channel or "").lower()
+        if "cognition:trace" in kind or kind in {"cognition.trace", "cognition.trace.v1"}:
             return True
         return payload.get("verb") is not None and "steps" in payload
 

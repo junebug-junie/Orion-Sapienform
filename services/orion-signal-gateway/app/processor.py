@@ -173,7 +173,16 @@ class SignalProcessor:
                 await self._emit_passthrough(signal)
             return
 
-        if (env.kind or "").startswith("orion:cognition:trace") and env.correlation_id:
+        kind = str(env.kind or "")
+        kind_lower = kind.lower()
+        if (
+            env.correlation_id
+            and (
+                kind_lower.startswith("orion:cognition:trace")
+                or kind_lower in {"cognition.trace", "cognition.trace.v1"}
+                or "cognition:trace" in kind_lower
+            )
+        ):
             payload = {**payload, "_envelope_correlation_id": env.correlation_id}
 
         prior = self._window.get_all()

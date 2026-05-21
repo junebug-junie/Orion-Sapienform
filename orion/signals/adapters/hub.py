@@ -36,12 +36,11 @@ class HubAdapter(OrionSignalAdapter):
             return None
 
         now = datetime.now(timezone.utc)
+        meta = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
         corr = (
             payload.get("correlation_id")
             or payload.get("root_correlation_id")
-            or (payload.get("metadata") or {}).get("correlation_id")
-            if isinstance(payload.get("metadata"), dict)
-            else None
+            or meta.get("correlation_id")
         )
         src_id = str(corr or payload.get("turn_id") or payload.get("message_id") or "")
         if not src_id:

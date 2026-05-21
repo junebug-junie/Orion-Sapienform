@@ -2,6 +2,7 @@
 All signal adapters, exported from one place.
 ``ADAPTERS`` is the live registry used by the gateway.
 """
+from .cognition_trace import CognitionTraceAdapter
 from .biometrics import BiometricsAdapter
 from .collapse_mirror import CollapseMirrorAdapter
 from .equilibrium import EquilibriumAdapter
@@ -28,6 +29,7 @@ from orion.signals.adapters.base import OrionSignalAdapter
 from typing import List
 
 ADAPTERS: List[OrionSignalAdapter] = [
+    CognitionTraceAdapter(),
     BiometricsAdapter(),
     CollapseMirrorAdapter(),
     EquilibriumAdapter(),
@@ -52,6 +54,7 @@ ADAPTERS: List[OrionSignalAdapter] = [
 ]
 
 __all__ = [
+    "CognitionTraceAdapter",
     "BiometricsAdapter",
     "CollapseMirrorAdapter",
     "EquilibriumAdapter",

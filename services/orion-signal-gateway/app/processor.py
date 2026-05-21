@@ -173,6 +173,9 @@ class SignalProcessor:
                 await self._emit_passthrough(signal)
             return
 
+        if (env.kind or "").startswith("orion:cognition:trace") and env.correlation_id:
+            payload = {**payload, "_envelope_correlation_id": env.correlation_id}
+
         prior = self._window.get_all()
         for adapter in ADAPTERS:
             try:

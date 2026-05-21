@@ -187,6 +187,9 @@ loadDismissedIds();
   const autonomyDebugModalClose = document.getElementById('autonomyDebugModalClose');
   const autonomyDebugModalMeta = document.getElementById('autonomyDebugModalMeta');
   const autonomyDebugModalBody = document.getElementById('autonomyDebugModalBody');
+  const autonomyGoalArchiveDryRun = document.getElementById('autonomyGoalArchiveDryRun');
+  const autonomyGoalArchiveApply = document.getElementById('autonomyGoalArchiveApply');
+  const autonomyGoalArchiveStatus = document.getElementById('autonomyGoalArchiveStatus');
   const chatStanceDebugPanel = document.getElementById('chatStanceDebugPanel');
   const chatStanceDebugToggle = document.getElementById('chatStanceDebugToggle');
   const chatStanceDebugCaret = document.getElementById('chatStanceDebugCaret');
@@ -4307,6 +4310,34 @@ loadDismissedIds();
     const payload = await substrateReviewFetch(`/api/debug/self-experiments/status${query}`);
     updateSelfExperimentsDebugPanel(payload || {});
     return payload;
+  }
+
+  async function runAutonomyGoalArchive(dryRun) {
+    const label = dryRun ? 'dry-run' : 'apply';
+    if (autonomyGoalArchiveStatus) autonomyGoalArchiveStatus.textContent = `Running goal archive (${label})...`;
+    try {
+      const payload = await substrateReviewFetch('/api/debug/autonomy/goal-archive', {
+        method: 'POST',
+        body: JSON.stringify({ dry_run: dryRun }),
+      });
+      const summaries = Array.isArray(payload && payload.summaries) ? payload.summaries : [];
+      const lines = summaries.map((row) => {
+        const subject = row.subject || '--';
+        if (row.error) return `${subject}: error=${row.error}`;
+        return `${subject}: candidates=${row.candidates ?? 0} applied=${row.applied ?? 0} scanned=${row.rows_scanned ?? 0}`;
+      });
+      if (autonomyGoalArchiveStatus) {
+        autonomyGoalArchiveStatus.textContent = lines.length
+          ? `${label} ok=${payload.ok ? 'yes' : 'no'} · ${lines.join(' · ')}`
+          : `${label} finished (no summaries)`;
+      }
+      return payload;
+    } catch (err) {
+      if (autonomyGoalArchiveStatus) {
+        autonomyGoalArchiveStatus.textContent = `Goal archive ${label} failed: ${err && err.message ? err.message : err}`;
+      }
+      throw err;
+    }
   }
 
   async function triggerSelfExperimentsDaily(action) {
@@ -9543,6 +9574,17 @@ loadDismissedIds();
   }
   if (autonomyDebugToggle) {
     autonomyDebugToggle.addEventListener('click', toggleAutonomyDebugPanel);
+  }
+  if (autonomyGoalArchiveDryRun) {
+    autonomyGoalArchiveDryRun.addEventListener('click', () => {
+      runAutonomyGoalArchive(true).catch(() => {});
+    });
+  }
+  if (autonomyGoalArchiveApply) {
+    autonomyGoalArchiveApply.addEventListener('click', () => {
+      if (!window.confirm('Archive stale autonomy goals for orion + relationship?')) return;
+      runAutonomyGoalArchive(false).catch(() => {});
+    });
   }
   ensureAutonomyModalRootOnBody();
   if (autonomyDebugOpenModal) {

@@ -24,6 +24,8 @@ def test_template_places_autonomy_runtime_panel_between_agent_trace_and_social_i
     assert 'id="autonomyDebugProposals"' in template
     assert 'id="autonomyDebugAlignment"' in template
     assert 'id="autonomyDebugRaw"' in template
+    assert 'id="autonomyGoalArchiveDryRun"' in template
+    assert 'id="autonomyGoalArchiveApply"' in template
     assert "Raw compact debug" in template
     assert 'id="hubUiBuildLabel"' in template
     assert 'data-ui-version="{{HUB_UI_ASSET_VERSION}}"' in template
@@ -45,6 +47,8 @@ def test_app_js_wires_autonomy_debug_panel_clear_update_and_toggle() -> None:
     assert "function closeAutonomyDebugModal()" in app_js
     assert "function ensureAutonomyModalRootOnBody()" in app_js
     assert "autonomyDebugToggle.addEventListener('click', toggleAutonomyDebugPanel);" in app_js
+    assert "function runAutonomyGoalArchive(dryRun)" in app_js
+    assert "autonomyGoalArchiveDryRun.addEventListener('click'" in app_js
     assert "autonomyDebugOpenModal.addEventListener('click', openAutonomyDebugModal);" in app_js
     assert "clearAutonomyDebugPanel();" in app_js
     assert "if (autonomyDebugAlignment) autonomyDebugAlignment.textContent = 'No meaningful autonomy signal for this turn.';" in app_js

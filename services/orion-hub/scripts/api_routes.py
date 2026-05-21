@@ -890,6 +890,30 @@ class SelfExperimentsTriggerRequest(BaseModel):
     date: str | None = None
 
 
+class AutonomyGoalArchiveRequest(BaseModel):
+    dry_run: bool = True
+    subjects: list[str] | None = None
+
+
+@router.post("/api/debug/autonomy/goal-archive")
+def api_debug_autonomy_goal_archive(req: AutonomyGoalArchiveRequest) -> Dict[str, Any]:
+    """Operator path for stale goal archive (same logic as orion-actions nightly job).
+
+    Built-in daily archive runs inside the orion-actions process at ACTIONS_DAILY_GOAL_ARCHIVE_* local time;
+    Hub does not surface that scheduler in the Schedule inventory panel (workflow schedules only).
+    """
+    from orion.autonomy.goal_archive import archive_subjects
+
+    summaries = archive_subjects(subjects=req.subjects, dry_run=req.dry_run)
+    ok = bool(summaries) and any("error" not in s for s in summaries)
+    return {
+        "ok": ok,
+        "dry_run": req.dry_run,
+        "summaries": summaries,
+        "note": "Nightly automation runs in orion-actions (not Hub). Check actions logs for autonomy_goal_archive_scheduler_result.",
+    }
+
+
 @router.post("/api/debug/self-experiments/trigger-daily")
 async def api_debug_self_experiments_trigger_daily(req: SelfExperimentsTriggerRequest) -> Dict[str, Any]:
     corr_id = str(uuid4())

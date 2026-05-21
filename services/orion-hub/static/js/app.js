@@ -7315,6 +7315,7 @@ loadDismissedIds();
       if (tracePanel) div.appendChild(tracePanel);
       const metacogPanel = createMetacogTracePanel(meta.metacogTraces || meta.metacog_traces || []);
       if (metacogPanel) div.appendChild(metacogPanel);
+      appendExecutionStepsPanel(div, meta);
     }
     conversationDiv.appendChild(div);
     conversationDiv.scrollTop = conversationDiv.scrollHeight;
@@ -8093,7 +8094,6 @@ loadDismissedIds();
 
     panel.appendChild(header);
     panel.appendChild(body);
-    appendExecutionStepsPanel(panel, meta);
     return panel;
   }
 
@@ -10183,6 +10183,7 @@ loadDismissedIds();
               model: d.model || (d.raw && d.raw.metadata ? d.raw.metadata.model : null),
               provider: d.provider || (d.raw && d.raw.metadata ? d.raw.metadata.provider : null),
               correlationId: d.correlation_id,
+              trace_linkage: d.trace_linkage,
               turnId: d.turn_id || d.turnId || d.correlation_id,
               messageId: d.message_id || d.messageId || null,
               routingDebug: d.routing_debug,
@@ -10508,6 +10509,7 @@ loadDismissedIds();
                 model: d.model || (d.raw && d.raw.metadata ? d.raw.metadata.model : null),
                 provider: d.provider || (d.raw && d.raw.metadata ? d.raw.metadata.provider : null),
                 correlationId: d.correlation_id,
+                trace_linkage: d.trace_linkage,
                 turnId: d.turn_id || d.turnId || d.correlation_id,
                 messageId: d.message_id || d.messageId || null,
                 routingDebug: d.routing_debug,

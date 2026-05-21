@@ -66,7 +66,7 @@ def test_app_js_wires_execution_steps_panel_hook() -> None:
     app_js = APP_JS_PATH.read_text(encoding="utf-8")
     assert "function appendExecutionStepsPanel" in app_js
     assert "mountExecutionStepsPanel" in app_js
-    assert "appendExecutionStepsPanel(panel, meta)" in app_js
+    assert "appendExecutionStepsPanel(div, meta)" in app_js
     assert "appendExecutionStepsPanel(root, meta)" in app_js
 
 

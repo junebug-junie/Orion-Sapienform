@@ -256,12 +256,33 @@ class GraphAutonomyRepository:
         )
         default_drives_limit = int(os.getenv("AUTONOMY_DRIVES_QUERY_LIMIT", "80"))
         self._drives_query_limit = max(12, min(int(drives_query_limit) if drives_query_limit is not None else default_drives_limit, 80))
+        drives_timeout_raw = os.getenv("AUTONOMY_DRIVES_SUBQUERY_TIMEOUT_SEC", "")
+        if drives_timeout_raw.strip():
+            self._drives_timeout_sec = max(3.0, min(float(drives_timeout_raw), self._timeout_sec))
+        else:
+            self._drives_timeout_sec = max(3.0, min(12.0, self._timeout_sec))
+        self._defer_orion_drives_for_chat_stance = str(
+            os.getenv("AUTONOMY_CHAT_STANCE_DEFER_ORION_DRIVES", "true")
+        ).strip().lower() in {"1", "true", "yes", "on"}
         self._query_client = query_client or (
             GraphQueryClient(
                 GraphQueryConfig(
                     endpoint=self._endpoint,
                     graph_uri=AUTONOMY_IDENTITY_GRAPH,
                     timeout_sec=self._timeout_sec,
+                    user=self._user,
+                    password=self._password,
+                )
+            )
+            if self._endpoint
+            else None
+        )
+        self._drives_query_client = (
+            GraphQueryClient(
+                GraphQueryConfig(
+                    endpoint=self._endpoint,
+                    graph_uri=AUTONOMY_DRIVES_GRAPH,
+                    timeout_sec=self._drives_timeout_sec,
                     user=self._user,
                     password=self._password,
                 )
@@ -277,10 +298,19 @@ class GraphAutonomyRepository:
             source_available=bool(self._endpoint),
         )
 
-    def _select_rows(self, sparql: str) -> list[dict[str, dict[str, str]]]:
-        if self._query_client is None:
+    def _select_rows(self, sparql: str, *, subquery: str | None = None) -> list[dict[str, dict[str, str]]]:
+        client = self._query_client
+        if subquery == "drives" and self._drives_query_client is not None:
+            client = self._drives_query_client
+        if client is None:
             raise GraphQueryError("graph_not_configured")
-        return self._query_client.select(sparql)
+        return client.select(sparql)
+
+    def _should_defer_orion_drives(self, subject: str, observer: dict[str, str] | None) -> bool:
+        if subject != "orion" or not self._defer_orion_drives_for_chat_stance:
+            return False
+        consumer = str((observer or {}).get("consumer") or "").strip().lower()
+        return consumer == "chat_stance"
 
     def _fetch_identity(self, *, subject: str, model_layer: str, entity_id: str) -> tuple[dict[str, str] | None, int]:
         sparql = f"""
@@ -356,7 +386,7 @@ WHERE {{
 }}
 LIMIT {self._drives_query_limit}
 """.strip()
-        rows = self._select_rows(sparql)
+        rows = self._select_rows(sparql, subquery="drives")
         if not rows:
             return None, 0
 
@@ -399,11 +429,34 @@ LIMIT {self._drives_query_limit}
         }, len(rows))
 
     def _fetch_active_goals(self, *, subject: str, model_layer: str, entity_id: str) -> tuple[list[AutonomyGoalHeadlineV1], int]:
+        # Aggregate in SPARQL (one row per drive_origin at max priority) so Fuseki does not
+        # scan/sort every ProposedGoal for the subject — mirrors latest-artifact pattern on drives.
         sparql = f"""
 PREFIX orion: <http://conjourney.net/orion#>
 SELECT ?artifact_id ?goal_statement ?drive_origin ?priority ?cooldown_until ?proposal_signature ?created_at ?proposal_status ?planned_task_id ?completed_at
 WHERE {{
   GRAPH <{AUTONOMY_GOALS_GRAPH}> {{
+    {{
+      SELECT ?drive_origin (MAX(?priority) AS ?max_priority)
+      WHERE {{
+        ?inner a orion:ProposedGoal ;
+          orion:subjectKey \"{_escape_sparql(subject)}\" ;
+          orion:modelLayerKey \"{_escape_sparql(model_layer)}\" ;
+          orion:entityId \"{_escape_sparql(entity_id)}\" ;
+          orion:driveOrigin ?drive_origin ;
+          orion:proposalPriority ?priority .
+        OPTIONAL {{ ?inner orion:proposalStatus ?inner_status . }}
+        FILTER(
+          !BOUND(?inner_status)
+          || (
+            ?inner_status != "superseded"
+            && ?inner_status != "archived"
+            && ?inner_status != "completed"
+          )
+        )
+      }}
+      GROUP BY ?drive_origin
+    }}
     ?artifact a orion:ProposedGoal ;
       orion:subjectKey \"{_escape_sparql(subject)}\" ;
       orion:modelLayerKey \"{_escape_sparql(model_layer)}\" ;
@@ -414,6 +467,7 @@ WHERE {{
       orion:driveOrigin ?drive_origin ;
       orion:proposalPriority ?priority ;
       orion:proposalSignature ?proposal_signature .
+    FILTER(?priority = ?max_priority)
     OPTIONAL {{ ?artifact orion:cooldownUntil ?cooldown_until . }}
     OPTIONAL {{ ?artifact orion:proposalStatus ?proposal_status . }}
     OPTIONAL {{ ?artifact orion:plannedTaskId ?planned_task_id . }}
@@ -429,7 +483,7 @@ WHERE {{
   }}
 }}
 ORDER BY DESC(?priority) DESC(?created_at) DESC(STR(?artifact_id))
-LIMIT {self._goals_limit * 4}
+LIMIT {self._goals_limit * 2}
 """.strip()
         rows = self._select_rows(sparql)
         candidates: list[AutonomyGoalHeadlineV1] = []
@@ -499,6 +553,9 @@ LIMIT {self._goals_limit * 4}
             ("goals", self._fetch_active_goals),
         )
         subqueries = [pair for pair in subqueries_all if pair[0] in self._active_subqueries_set]
+        defer_orion_drives = self._should_defer_orion_drives(subject, observer)
+        if defer_orion_drives:
+            subqueries = [pair for pair in subqueries if pair[0] != "drives"]
         subq_mode = "sequential" if self._subquery_max_workers <= 1 else "concurrent"
         logger.info(
             "autonomy_graph_subject_start subject=%s execution_mode=%s subquery_workers=%s correlation_id=%s",
@@ -576,6 +633,18 @@ LIMIT {self._goals_limit * 4}
                         "error_type": failure_type,
                         "reason": _bounded_reason(exc),
                     }
+
+        if defer_orion_drives:
+            subquery_diagnostics["drives"] = {
+                "status": "deferred",
+                "row_count": 0,
+                "elapsed_ms": 0.0,
+                "reason": "chat_stance_skips_orion_drives_when_relationship_fallback_expected",
+            }
+            logger.info(
+                "autonomy_graph_subquery subject=orion subquery=drives status=deferred correlation_id=%s",
+                correlation_id or "-",
+            )
 
         if failed_subquery is not None and not identity and not audit and not goals:
             logger.warning(

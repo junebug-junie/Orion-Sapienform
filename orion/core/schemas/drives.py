@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -117,12 +117,20 @@ class IdentitySnapshotV1(GraphReadyArtifact):
     drive_pressures: Dict[str, float] = Field(default_factory=dict)
 
 
+ProposalStatus = Literal["proposed", "active", "superseded", "archived", "planned", "completed"]
+SemanticSource = Literal["template", "evidence_rules", "llm"]
+
+
 class GoalProposalV1(GraphReadyArtifact):
     goal_statement: str
+    goal_statement_base: str | None = None
     proposal_signature: str
     drive_origin: str
     priority: float = Field(default=0.0, ge=0.0, le=1.0)
     cooldown_until: Optional[datetime] = None
+    proposal_status: ProposalStatus = "proposed"
+    supersedes_artifact_id: str | None = None
+    semantic_source: SemanticSource = "template"
     source_event_refs: List[ArtifactEventRef] = Field(default_factory=list)
     evidence_items: List[ArtifactEvidence] = Field(default_factory=list)
     tension_kinds: List[str] = Field(default_factory=list)

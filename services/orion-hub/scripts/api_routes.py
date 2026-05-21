@@ -1907,6 +1907,27 @@ def _should_retry_memory_graph_quick(
     return False, ""
 
 
+def _chat_turn_trace_linkage(
+    *,
+    hub_corr_id: str,
+    cortex_corr_id: str | None,
+    root_correlation_id: str | None = None,
+) -> dict[str, str | None]:
+    """Canonical correlation linkage for chat turn metadata (Runtime Trace Nexus §5.8)."""
+    canonical = hub_corr_id
+    if cortex_corr_id and cortex_corr_id != hub_corr_id:
+        return {
+            "correlation_id": canonical,
+            "root_correlation_id": root_correlation_id or hub_corr_id,
+            "cortex_correlation_id": cortex_corr_id,
+        }
+    return {
+        "correlation_id": canonical,
+        "root_correlation_id": None,
+        "cortex_correlation_id": cortex_corr_id,
+    }
+
+
 async def handle_chat_request(
     cortex_client,
     payload: dict,
@@ -2160,6 +2181,13 @@ async def handle_chat_request(
             recall_debug=recall_debug,
             source_event_id=f"chat_result:{correlation_id}",
         )
+        raw_meta = raw_result.get("metadata") if isinstance(raw_result, dict) else {}
+        root_corr = raw_meta.get("root_correlation_id") if isinstance(raw_meta, dict) else None
+        trace_linkage = _chat_turn_trace_linkage(
+            hub_corr_id=str(corr_id),
+            cortex_corr_id=getattr(resp.cortex_result, "correlation_id", None),
+            root_correlation_id=str(root_corr).strip() if root_corr else None,
+        )
 
         return {
             "session_id": session_id,
@@ -2177,6 +2205,7 @@ async def handle_chat_request(
             "no_write": no_write,
             "spark_meta": dict(autonomy_payload) if isinstance(autonomy_payload, dict) else {},
             "correlation_id": correlation_id,
+            "trace_linkage": trace_linkage,
             "routing_debug": route_debug,
             "metacog_traces": metacog_traces,
             "reasoning_content": turn_ctx.get("reasoning_content"),

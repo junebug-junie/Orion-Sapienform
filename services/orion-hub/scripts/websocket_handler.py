@@ -948,12 +948,23 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
             except Exception as exc:
                 logger.warning("ws_pressure_telemetry_record_failed corr=%s error=%s", trace_id, exc)
+            cortex_corr_id = getattr(resp.cortex_result, "correlation_id", None) if resp.cortex_result else None
+            raw_meta = cortex_result_dump.get("metadata") if isinstance(cortex_result_dump, dict) else {}
+            root_corr = raw_meta.get("root_correlation_id") if isinstance(raw_meta, dict) else None
+            from scripts.api_routes import _chat_turn_trace_linkage
+
+            trace_linkage = _chat_turn_trace_linkage(
+                hub_corr_id=str(trace_id),
+                cortex_corr_id=cortex_corr_id,
+                root_correlation_id=str(root_corr).strip() if root_corr else None,
+            )
             ws_payload = {
                 "llm_response": orion_response_text,
                 # Parity with HTTP /api/chat: lets the UI coalesce if primary string ever lags `raw.final_text`
                 "raw": cortex_result_dump if isinstance(cortex_result_dump, dict) else {},
                 "mode": mode,
                 "correlation_id": trace_id,
+                "trace_linkage": trace_linkage,
                 "memory_digest": memory_digest,
                 "memory_used": memory_used,
                 "recall_debug": recall_debug,

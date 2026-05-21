@@ -64,6 +64,46 @@ def _uuid_from_correlation_id(value: str) -> UUID:
         return uuid5(NAMESPACE_URL, str(value))
 
 
+def build_cognition_trace_metadata(
+    res: PlanExecutionResult,
+    *,
+    req_extra: dict | None = None,
+) -> dict[str, Any]:
+    extra = req_extra or {}
+    steps = res.steps or []
+    last_step = steps[-1].step_name if steps else None
+    stance_present = any(
+        s.step_name == "synthesize_chat_stance_brief" and s.status == "success" for s in steps
+    )
+    reasoning_present = bool(res.reasoning_content or res.reasoning_trace or res.metacog_traces)
+    thinking_present = bool(res.inline_think_content or res.thinking_source)
+    thought_source = None
+    if res.reasoning_trace:
+        thought_source = "reasoning_trace"
+    elif res.metacog_traces:
+        thought_source = "metacog_traces"
+    elif res.inline_think_content:
+        thought_source = "inline_think"
+    return {
+        "request_id": res.request_id,
+        "status": res.status,
+        "verb": res.verb_name,
+        "mode": res.mode,
+        "route_intent": extra.get("route_intent") or extra.get("routeIntent"),
+        "recall_profile": (res.metadata or {}).get("recall_profile") or extra.get("recall_profile"),
+        "chat_stance_debug_present": stance_present,
+        "mind_handoff_quality": (res.metadata or {}).get("mind_handoff_quality"),
+        "reasoning_present": reasoning_present,
+        "thinking_present": thinking_present,
+        "final_text_present": bool((res.final_text or "").strip()),
+        "canonical_final_step_name": last_step,
+        "canonical_thought_source": thought_source,
+        "session_id": extra.get("session_id") or extra.get("sessionId"),
+        "message_id": extra.get("message_id") or extra.get("messageId"),
+        "root_correlation_id": extra.get("root_correlation_id"),
+    }
+
+
 class CortexExecRequest(BaseEnvelope):
     kind: str = Field("cortex.exec.request", frozen=True)
     payload: PlanExecutionRequest
@@ -331,10 +371,10 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             source_node=settings.node_name,
             recall_used=res.memory_used,
             recall_debug=res.recall_debug,
-            metadata={
-                "request_id": res.request_id,
-                "status": res.status,
-            }
+            metadata=build_cognition_trace_metadata(
+                res,
+                req_extra=(req_env.payload.args.extra if req_env.payload.args else {}) or {},
+            ),
         )
 
         # Use the typed envelope

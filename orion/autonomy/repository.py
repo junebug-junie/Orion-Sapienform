@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Mapping, Protocol, Sequence
 
+from orion.autonomy.constants import AUTONOMY_DRIVES_GRAPH, AUTONOMY_GOALS_GRAPH, AUTONOMY_IDENTITY_GRAPH
 from orion.autonomy.models import AutonomyGoalHeadlineV1, AutonomyStateV1
 from orion.spark.concept_induction.graph_query import GraphQueryClient, GraphQueryConfig, GraphQueryError
 
@@ -16,10 +17,6 @@ logger = logging.getLogger("orion.autonomy.repository")
 
 AvailabilityKind = Literal["available", "degraded", "empty", "unavailable"]
 RepositoryBackendKind = Literal["local", "graph", "shadow"]
-
-AUTONOMY_IDENTITY_GRAPH = "http://conjourney.net/graph/autonomy/identity"
-AUTONOMY_DRIVES_GRAPH = "http://conjourney.net/graph/autonomy/drives"
-AUTONOMY_GOALS_GRAPH = "http://conjourney.net/graph/autonomy/goals"
 
 
 @dataclass(frozen=True)

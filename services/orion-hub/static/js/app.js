@@ -9577,13 +9577,17 @@ loadDismissedIds();
   }
   if (autonomyGoalArchiveDryRun) {
     autonomyGoalArchiveDryRun.addEventListener('click', () => {
-      runAutonomyGoalArchive(true).catch(() => {});
+      runAutonomyGoalArchive(true).catch((err) => {
+        if (typeof showToast === 'function') showToast(`Goal archive failed: ${err && err.message ? err.message : err}`, 'error');
+      });
     });
   }
   if (autonomyGoalArchiveApply) {
     autonomyGoalArchiveApply.addEventListener('click', () => {
       if (!window.confirm('Archive stale autonomy goals for orion + relationship?')) return;
-      runAutonomyGoalArchive(false).catch(() => {});
+      runAutonomyGoalArchive(false).catch((err) => {
+        if (typeof showToast === 'function') showToast(`Goal archive failed: ${err && err.message ? err.message : err}`, 'error');
+      });
     });
   }
   ensureAutonomyModalRootOnBody();

@@ -6,15 +6,20 @@ import logging
 import os
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Sequence
+from typing import Any, Sequence
 
-from orion.autonomy.repository import AUTONOMY_GOALS_GRAPH
-from orion.spark.concept_induction.graph_query import GraphQueryClient, GraphQueryConfig, GraphQueryError
+from orion.autonomy.constants import AUTONOMY_GOALS_GRAPH
+from orion.graph.backend_config import resolve_autonomy_read_query_url, resolve_graph_update_url, resolve_rdf_store_auth
+from orion.graph.sparql_client import SparqlHttpClient
 
 logger = logging.getLogger("orion.autonomy.goal_archive")
 
 AUTONOMY_GOALS_GRAPH_URI = AUTONOMY_GOALS_GRAPH
 DEFAULT_ARCHIVE_SUBJECTS = ("orion", "relationship")
+
+
+class GoalArchiveError(RuntimeError):
+    pass
 
 
 def build_archive_candidates(
@@ -51,9 +56,7 @@ def build_archive_candidates(
     return to_archive
 
 
-def _resolve_graph_query_config() -> tuple[str, str | None, str | None, str | None]:
-    from orion.graph.backend_config import resolve_autonomy_read_query_url, resolve_graph_update_url, resolve_rdf_store_auth
-
+def _resolve_graph_endpoints() -> tuple[str, str, str | None, str | None]:
     query_url, _src = resolve_autonomy_read_query_url()
     if query_url:
         update_url = resolve_graph_update_url() or query_url
@@ -62,7 +65,7 @@ def _resolve_graph_query_config() -> tuple[str, str | None, str | None, str | No
 
     base = os.getenv("GRAPHDB_URL", "").strip()
     if not base:
-        raise GraphQueryError("AUTONOMY_GRAPH_QUERY_URL or GRAPHDB_URL required")
+        raise GoalArchiveError("AUTONOMY_GRAPH_QUERY_URL or GRAPHDB_URL required")
     repo = (os.getenv("GRAPHDB_REPO") or "collapse").strip()
     endpoint = base if "/repositories/" in base else f"{base.rstrip('/')}/repositories/{repo}"
     user = (os.getenv("GRAPHDB_USER") or os.getenv("CONCEPT_PROFILE_GRAPHDB_USER") or "").strip() or None
@@ -70,21 +73,26 @@ def _resolve_graph_query_config() -> tuple[str, str | None, str | None, str | No
     return endpoint, endpoint, user, password
 
 
-def _build_client(*, timeout_sec: float) -> GraphQueryClient:
-    query_endpoint, update_endpoint, user, password = _resolve_graph_query_config()
-    return GraphQueryClient(
-        GraphQueryConfig(
-            endpoint=query_endpoint,
-            update_endpoint=update_endpoint,
-            graph_uri=AUTONOMY_GOALS_GRAPH_URI,
-            timeout_sec=timeout_sec,
-            user=user,
-            password=password,
-        )
+def _build_client(*, timeout_sec: float) -> SparqlHttpClient:
+    query_endpoint, update_endpoint, user, password = _resolve_graph_endpoints()
+    return SparqlHttpClient(
+        query_endpoint,
+        update_endpoint,
+        timeout_sec=timeout_sec,
+        user=user,
+        password=password,
     )
 
 
-def _fetch_goal_rows(client: GraphQueryClient, *, subject: str) -> list[dict]:
+def _binding_value(row: dict[str, Any], key: str) -> str | None:
+    cell = row.get(key)
+    if isinstance(cell, dict):
+        raw = cell.get("value")
+        return str(raw) if raw is not None else None
+    return None
+
+
+def _fetch_goal_rows(client: SparqlHttpClient, *, subject: str) -> list[dict]:
     select = f"""
 PREFIX orion: <http://conjourney.net/orion#>
 SELECT ?artifact_id ?drive_origin ?goal_statement ?priority ?proposal_status ?created_at
@@ -100,20 +108,26 @@ WHERE {{
     raw_rows = client.select(select)
     rows: list[dict] = []
     for r in raw_rows:
-        created_raw = (r.get("created_at") or {}).get("value")
+        created_raw = _binding_value(r, "created_at")
         created_at = None
         if isinstance(created_raw, str) and created_raw.strip():
             try:
                 created_at = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
             except ValueError:
                 created_at = None
+        artifact_id = _binding_value(r, "artifact_id")
+        drive_origin = _binding_value(r, "drive_origin")
+        goal_statement = _binding_value(r, "goal_statement") or ""
+        priority = _binding_value(r, "priority") or "0"
+        if not artifact_id or not drive_origin:
+            continue
         rows.append(
             {
-                "artifact_id": r["artifact_id"]["value"],
-                "drive_origin": r["drive_origin"]["value"],
-                "goal_statement_base": r["goal_statement"]["value"].split(" · ", 1)[0],
-                "priority": r["priority"]["value"],
-                "proposal_status": (r.get("proposal_status") or {}).get("value", "proposed"),
+                "artifact_id": artifact_id,
+                "drive_origin": drive_origin,
+                "goal_statement_base": goal_statement.split(" · ", 1)[0],
+                "priority": priority,
+                "proposal_status": _binding_value(r, "proposal_status") or "proposed",
                 "created_at": created_at,
             }
         )
@@ -187,7 +201,10 @@ def archive_subjects(
     for subject in subject_list:
         try:
             out.append(archive_subject_goals(subject, dry_run=dry_run))
-        except GraphQueryError as exc:
+        except (GoalArchiveError, OSError) as exc:
+            logger.warning("autonomy_goal_archive_failed subject=%s error=%s", subject, exc)
+            out.append({"subject": subject, "error": str(exc), "dry_run": dry_run})
+        except Exception as exc:
             logger.warning("autonomy_goal_archive_failed subject=%s error=%s", subject, exc)
             out.append({"subject": subject, "error": str(exc), "dry_run": dry_run})
     return out
@@ -209,5 +226,5 @@ def maybe_archive_after_goal_publish(*, subject: str) -> None:
     max_updates = int(os.getenv("AUTONOMY_GOAL_ARCHIVE_MAX_UPDATES_PER_TICK", "25"))
     try:
         archive_subject_goals(subject, dry_run=False, max_updates=max_updates)
-    except GraphQueryError as exc:
+    except (GoalArchiveError, OSError) as exc:
         logger.warning("autonomy_goal_archive_tick_failed subject=%s error=%s", subject, exc)

@@ -1984,28 +1984,37 @@ async def lifespan(app: FastAPI):
 
                     archive_corr = str(uuid4())
                     summaries = await asyncio.to_thread(archive_subjects, dry_run=False)
-                    goal_archive_cursor = scheduler_cursor_completed_local_date(
-                        forced_date=forced_date,
-                        window_request_date=build_daily_window(
-                            now_utc=now_utc,
-                            tz_name=settings.actions_daily_timezone,
-                            override_date=forced_date,
-                        ).request_date,
-                        scheduled_local_date=goal_archive_local_date,
-                    )
-                    last_daily_run[ACTION_DAILY_GOAL_ARCHIVE] = goal_archive_cursor
-                    scheduler_cursor_store.set_last_completed(ACTION_DAILY_GOAL_ARCHIVE, goal_archive_cursor)
-                    _scheduler_daily_structured_log(
-                        job_key=ACTION_DAILY_GOAL_ARCHIVE,
-                        local_date=goal_archive_cursor,
-                        correlation_id=archive_corr,
-                        restart_dedupe_source="durable" if ACTION_DAILY_GOAL_ARCHIVE in cursor_keys_at_startup else "memory",
-                    )
-                    logger.info(
-                        "autonomy_goal_archive_scheduler_result local_date=%s summaries=%s",
-                        goal_archive_cursor,
-                        summaries,
-                    )
+                    archive_ok = bool(summaries) and any("error" not in s for s in summaries)
+                    if archive_ok:
+                        goal_archive_cursor = scheduler_cursor_completed_local_date(
+                            forced_date=forced_date,
+                            window_request_date=build_daily_window(
+                                now_utc=now_utc,
+                                tz_name=settings.actions_daily_timezone,
+                                override_date=forced_date,
+                            ).request_date,
+                            scheduled_local_date=goal_archive_local_date,
+                        )
+                        last_daily_run[ACTION_DAILY_GOAL_ARCHIVE] = goal_archive_cursor
+                        scheduler_cursor_store.set_last_completed(ACTION_DAILY_GOAL_ARCHIVE, goal_archive_cursor)
+                        _scheduler_daily_structured_log(
+                            job_key=ACTION_DAILY_GOAL_ARCHIVE,
+                            local_date=goal_archive_cursor,
+                            correlation_id=archive_corr,
+                            restart_dedupe_source="durable" if ACTION_DAILY_GOAL_ARCHIVE in cursor_keys_at_startup else "memory",
+                        )
+                        logger.info(
+                            "autonomy_goal_archive_scheduler_result local_date=%s summaries=%s",
+                            goal_archive_cursor,
+                            summaries,
+                        )
+                    else:
+                        logger.warning(
+                            "autonomy_goal_archive_scheduler_failed correlation_id=%s summaries=%s "
+                            "(check AUTONOMY_GRAPH_QUERY_URL / AUTONOMY_GRAPH_UPDATE_URL on orion-actions)",
+                            archive_corr,
+                            summaries,
+                        )
 
                 journal_should_run, journal_local_date = should_run_daily(
                     now_utc=now_utc,

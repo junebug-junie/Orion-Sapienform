@@ -15,7 +15,7 @@ Implements the drives-timeout proposal (options A + B): automated goal-graph hyg
 | `scripts/autonomy/archive_stale_goal_proposals.py` | Thin CLI wrapper (`--apply`, `--all-subjects`) |
 | `orion/spark/.../bus_worker.py` | Optional `maybe_archive_after_goal_publish` after goal publish |
 | `orion/autonomy/repository.py` | Defer Orion drives for `chat_stance`; separate drives query timeout client |
-| `services/orion-actions` | Nightly scheduler job @ 03:15 local (`ACTIONS_DAILY_GOAL_ARCHIVE_*`) |
+| `services/orion-actions` | **Built-in scheduler** (45s poll loop, same as daily pulse) @ 03:15 local — **not** host `crontab`; needs `AUTONOMY_GRAPH_QUERY_URL` / `UPDATE_URL` on actions |
 | Env | cortex-exec, spark-concept-induction, orion-actions `.env_example` + `.env` + docker-compose |
 
 ---

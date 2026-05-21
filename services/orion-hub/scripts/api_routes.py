@@ -2099,10 +2099,14 @@ async def handle_chat_request(
                 route_debug_options["memory_graph_retry_from"] = "chat_timeout"
                 route_debug["options"] = route_debug_options
 
-        # Use the correlation_id from the response (gateway) if available
-        # or it might be passed back from the client logic if modified to do so.
-        # Here we rely on CortexChatResult having it.
-        correlation_id = resp.cortex_result.correlation_id or corr_id
+        raw_meta = raw_result.get("metadata") if isinstance(raw_result, dict) else {}
+        root_corr = raw_meta.get("root_correlation_id") if isinstance(raw_meta, dict) else None
+        trace_linkage = _chat_turn_trace_linkage(
+            hub_corr_id=str(corr_id),
+            cortex_corr_id=getattr(resp.cortex_result, "correlation_id", None),
+            root_correlation_id=str(root_corr).strip() if root_corr else None,
+        )
+        correlation_id = str(trace_linkage.get("correlation_id") or corr_id)
 
         memory_digest = None
         recall_debug = None
@@ -2181,14 +2185,6 @@ async def handle_chat_request(
             recall_debug=recall_debug,
             source_event_id=f"chat_result:{correlation_id}",
         )
-        raw_meta = raw_result.get("metadata") if isinstance(raw_result, dict) else {}
-        root_corr = raw_meta.get("root_correlation_id") if isinstance(raw_meta, dict) else None
-        trace_linkage = _chat_turn_trace_linkage(
-            hub_corr_id=str(corr_id),
-            cortex_corr_id=getattr(resp.cortex_result, "correlation_id", None),
-            root_correlation_id=str(root_corr).strip() if root_corr else None,
-        )
-
         return {
             "session_id": session_id,
             "mode": mode,

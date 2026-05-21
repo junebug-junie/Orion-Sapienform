@@ -52,3 +52,16 @@ def test_chat_response_metadata_includes_canonical_correlation_id() -> None:
     )
     assert out2["correlation_id"] == "hub-corr-abc"
     assert out2["root_correlation_id"] == "hub-corr-abc"
+
+
+def test_trace_linkage_canonical_preferred_over_cortex_result_id() -> None:
+    """HTTP chat must expose trace_linkage canonical id, not cortex-only id (§5.8)."""
+    from scripts.api_routes import _chat_turn_trace_linkage
+
+    linkage = _chat_turn_trace_linkage(
+        hub_corr_id="hub-corr-abc",
+        cortex_corr_id="cortex-different",
+        root_correlation_id=None,
+    )
+    assert linkage["correlation_id"] == "hub-corr-abc"
+    assert linkage["cortex_correlation_id"] == "cortex-different"

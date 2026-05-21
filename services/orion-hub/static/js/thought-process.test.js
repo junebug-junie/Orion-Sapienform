@@ -77,6 +77,18 @@ test('selectThoughtProcess supports older message shape', () => {
   assert.equal(out.metadata.mode, 'brain');
 });
 
+test('resolveCorrelationId prefers trace_linkage canonical id', () => {
+  const corr = thoughtProcess.resolveCorrelationId({
+    correlation_id: 'cortex-different',
+    trace_linkage: {
+      correlation_id: 'hub-corr-abc',
+      root_correlation_id: 'hub-corr-abc',
+      cortex_correlation_id: 'cortex-different',
+    },
+  });
+  assert.equal(corr, 'hub-corr-abc');
+});
+
 test('resolveCorrelationId prefers root_correlation_id', () => {
   const corr = thoughtProcess.resolveCorrelationId({
     correlation_id: 'child-corr',

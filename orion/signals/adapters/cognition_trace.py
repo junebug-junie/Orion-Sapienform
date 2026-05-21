@@ -40,7 +40,7 @@ def _map_step_organ(step_name: str, services: List[str]) -> tuple[str, List[str]
     if services:
         for prefix, organ in _SERVICE_PREFIX_ORGAN:
             if services[0].startswith(prefix) or prefix in services[0]:
-                return organ, [f"step_organ_fallback:{step_name}"]
+                return organ, []
     return "cortex_exec", [f"step_organ_fallback:{step_name}"]
 
 

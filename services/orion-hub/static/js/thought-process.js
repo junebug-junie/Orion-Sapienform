@@ -135,9 +135,12 @@
     const root = asObject(meta) || {};
     const raw = asObject(root.raw) || {};
     const routing = asObject(root.routingDebug) || asObject(root.routing_debug) || {};
+    const linkage = asObject(root.trace_linkage) || asObject(root.traceLinkage) || {};
     return firstText([
       root.root_correlation_id,
       root.rootCorrelationId,
+      linkage.root_correlation_id,
+      linkage.correlation_id,
       raw.root_correlation_id,
       routing.root_correlation_id,
       root.correlationId,

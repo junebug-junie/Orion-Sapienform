@@ -19,6 +19,7 @@ _BLANK_ENV_BOOL_FIELDS = (
     "actions_pending_attention_enabled",
     "actions_preserve_generic_notify_enabled",
     "actions_world_pulse_enabled",
+    "actions_world_pulse_journal_enabled",
     "actions_skills_scheduler_enabled",
     "actions_skills_run_on_startup",
     "actions_skills_notify_enabled",
@@ -101,6 +102,11 @@ class Settings(BaseSettings):
     actions_world_pulse_hour_local: int = Field(6, alias="ACTIONS_WORLD_PULSE_HOUR_LOCAL")
     actions_world_pulse_minute_local: int = Field(0, alias="ACTIONS_WORLD_PULSE_MINUTE_LOCAL")
     world_pulse_base_url: str = Field("http://orion-world-pulse:8628", alias="WORLD_PULSE_BASE_URL")
+    actions_world_pulse_journal_enabled: bool = Field(False, alias="ACTIONS_WORLD_PULSE_JOURNAL_ENABLED")
+    actions_journal_world_pulse_recall_profile: str = Field(
+        "journal.world_pulse.grounded.v1",
+        alias="ACTIONS_JOURNAL_WORLD_PULSE_RECALL_PROFILE",
+    )
 
     actions_skills_scheduler_enabled: bool = Field(True, alias="ACTIONS_SKILLS_SCHEDULER_ENABLED")
     actions_skills_run_on_startup: bool = Field(False, alias="ACTIONS_SKILLS_RUN_ON_STARTUP")
@@ -149,6 +155,7 @@ class Settings(BaseSettings):
         "actions_journal_scheduler_recall_profile",
         "actions_journal_metacog_recall_profile",
         "actions_journal_notify_recall_profile",
+        "actions_journal_world_pulse_recall_profile",
         mode="before",
     )
     @classmethod

@@ -42,7 +42,9 @@ from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorS
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.notify import NotificationRecord, NotificationRequest
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
+from orion.schemas.world_pulse import WorldPulseRunResultV1
 
+from .world_pulse_journal import build_world_pulse_journal_trigger, world_pulse_journal_skip_reason
 from .logic import (
     ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1,
     SKILL_BIOMETRICS_SNAPSHOT_V1,
@@ -1018,10 +1020,12 @@ async def lifespan(app: FastAPI):
             recall_profile = settings.actions_journal_metacog_recall_profile
         elif tk == "notify_summary":
             recall_profile = settings.actions_journal_notify_recall_profile
+        elif tk == "world_pulse_digest":
+            recall_profile = settings.actions_journal_world_pulse_recall_profile
         else:
             recall_profile = settings.actions_recall_profile
 
-        if sched_daily or tk == "metacog_digest" or tk == "notify_summary":
+        if sched_daily or tk in {"metacog_digest", "notify_summary", "world_pulse_digest"}:
             logger.info(
                 "journal_compose profile=%s trigger_kind=%s recall_enabled=true",
                 recall_profile,
@@ -1541,6 +1545,39 @@ async def lifespan(app: FastAPI):
             dedupe_key=cooldown_key_for_trigger(trigger),
         )
 
+    async def _handle_world_pulse_run_result_journal(env: BaseEnvelope) -> bool:
+        try:
+            result = WorldPulseRunResultV1.model_validate(env.payload)
+        except Exception:
+            logger.info(
+                "world_pulse_journal_skipped correlation_id=%s reason=invalid_run_result_payload",
+                env.correlation_id,
+            )
+            return False
+        skip = world_pulse_journal_skip_reason(
+            result,
+            enabled=settings.actions_world_pulse_journal_enabled,
+        )
+        if skip == "world_pulse_journal_disabled":
+            return False
+        if skip is not None:
+            await _audit(
+                env,
+                status="skipped",
+                event_id=result.run.run_id,
+                action_name="journal.world_pulse_digest",
+                reason=skip,
+            )
+            return True
+        trigger = build_world_pulse_journal_trigger(result)
+        await _dispatch_journal(
+            env,
+            trigger=trigger,
+            audit_action="journal.world_pulse_digest",
+            dedupe_key=cooldown_key_for_trigger(trigger),
+        )
+        return True
+
     async def _handle_journal_collapse_stored(env: BaseEnvelope) -> bool:
         try:
             stored = CollapseMirrorStoredV1.model_validate(env.payload)
@@ -1769,6 +1806,9 @@ async def lifespan(app: FastAPI):
         if kind == "orion.metacog.trigger.v1":
             await _handle_journal_metacog(env)
             return
+        if kind == "world.pulse.run.result.v1":
+            if await _handle_world_pulse_run_result_journal(env):
+                return
         if kind == "collapse.mirror.stored.v1":
             if await _handle_journal_collapse_stored(env):
                 return

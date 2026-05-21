@@ -264,12 +264,16 @@ def _handle_drive_audit(g: Graph, audit: DriveAuditV1) -> Tuple[str, str]:
 def _handle_goal_proposal(g: Graph, goal: GoalProposalV1) -> Tuple[str, str]:
     artifact_uri, _, _ = _add_common_artifact(g, goal)
     _add_literal(g, artifact_uri, ORION.goalStatement, goal.goal_statement, XSD.string)
+    _add_literal(g, artifact_uri, ORION.goalStatementBase, goal.goal_statement_base or goal.goal_statement, XSD.string)
     _add_literal(g, artifact_uri, ORION.proposalSignature, goal.proposal_signature, XSD.string)
     _add_literal(g, artifact_uri, ORION.driveOrigin, goal.drive_origin, XSD.string)
     _add_literal(g, artifact_uri, ORION.proposalPriority, goal.priority, XSD.float)
     _add_literal(g, artifact_uri, ORION.cooldownUntil, goal.cooldown_until.isoformat() if goal.cooldown_until else None, XSD.dateTime)
-    _add_literal(g, artifact_uri, ORION.proposalStatus, "proposed", XSD.string)
+    _add_literal(g, artifact_uri, ORION.proposalStatus, goal.proposal_status, XSD.string)
     _add_literal(g, artifact_uri, ORION.executionMode, "proposal-only", XSD.string)
+    if goal.supersedes_artifact_id:
+        prior_uri = _artifact_uri(goal.kind, goal.supersedes_artifact_id)
+        g.add((artifact_uri, ORION.supersedesArtifact, prior_uri))
     drive_uri = _add_drive_dimension(g, goal.drive_origin)
     g.add((artifact_uri, ORION.influencedByDrive, drive_uri))
     _add_tensions(g, artifact_uri, goal.provenance.tension_refs, goal.tension_kinds)

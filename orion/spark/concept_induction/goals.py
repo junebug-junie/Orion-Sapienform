@@ -137,6 +137,17 @@ class GoalProposalEngine:
         source_event_ref = build_source_event_ref(env, intake_channel)
         evidence_items = build_evidence_items(env, intake_channel, drive_state.provenance.evidence_text)
         goal_statement = goal_statement_base
+        prior_slot = store.load_goal_slot(drive_state.subject, drive_origin)
+        prior_signature = prior_slot.get("signature")
+        prior_artifact_id = prior_slot.get("artifact_id")
+        supersedes_artifact_id = None
+        if (
+            isinstance(prior_signature, str)
+            and prior_signature != signature
+            and isinstance(prior_artifact_id, str)
+            and prior_artifact_id
+        ):
+            supersedes_artifact_id = prior_artifact_id
         proposal = GoalProposalV1(
             artifact_id=f"goal-{signature}",
             subject=drive_state.subject,
@@ -163,9 +174,16 @@ class GoalProposalEngine:
             drive_origin=drive_origin,
             priority=self._priority(drive_state, drive_origin, tension_list),
             cooldown_until=now + self.cooldown,
+            supersedes_artifact_id=supersedes_artifact_id,
             source_event_refs=[source_event_ref],
             evidence_items=evidence_items,
             tension_kinds=[tension.kind for tension in tension_list],
         )
         store.save_goal_cooldown(signature, proposal.cooldown_until or now)
+        store.save_goal_slot(
+            drive_state.subject,
+            drive_origin,
+            signature=signature,
+            artifact_id=proposal.artifact_id,
+        )
         return GoalDecision(proposal=proposal)

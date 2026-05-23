@@ -41,7 +41,7 @@ def repair_appraisal_to_signal(
     """Project the appraisal onto the canonical graph_cognition/repair_pressure signal."""
 
     dimensions: dict[str, float] = {
-        key: appraisal.dimensions[key] for key in _DIMENSION_KEYS
+        key: appraisal.dimensions.get(key, 0.0) for key in _DIMENSION_KEYS
     }
 
     return OrionSignalV1(

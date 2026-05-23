@@ -46,6 +46,11 @@ def test_explicit_repair_command_arsonist_pov():
     assert _max_score(ev, "explicit_repair_command") >= 0.65
 
 
+def test_assistant_accountability_demand_you_gave():
+    ev = extract_repair_evidence([_obs("you gave me garbage directions")])
+    assert _max_score(ev, "assistant_accountability_demand") >= 0.55
+
+
 def test_evidence_emits_span_and_source_molecule_id():
     mol = _obs("you gave me garbage directions")
     ev = extract_repair_evidence([mol])

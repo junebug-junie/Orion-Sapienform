@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
+from orion.mind.substrate_emit import emit_observation
+from orion.signals.models import OrganClass, OrionSignalV1
 from orion.signals.registry import ORGAN_REGISTRY
+from orion.substrate.appraisal.repair_pressure import appraise_repair_pressure
+from orion.substrate.appraisal.signal_bridge import repair_appraisal_to_signal
 
 
 def test_graph_cognition_registers_repair_pressure_signal_kind():
@@ -27,14 +33,6 @@ def test_graph_cognition_canonical_dimensions_cover_repair_pressure():
     }
     missing = required - set(entry.canonical_dimensions)
     assert not missing, f"graph_cognition canonical_dimensions missing: {missing}"
-
-
-from datetime import datetime, timezone
-
-from orion.mind.substrate_emit import emit_observation
-from orion.signals.models import OrganClass, OrionSignalV1
-from orion.substrate.appraisal.repair_pressure import appraise_repair_pressure
-from orion.substrate.appraisal.signal_bridge import repair_appraisal_to_signal
 
 
 def _high_appraisal():

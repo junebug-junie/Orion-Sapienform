@@ -190,14 +190,34 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         organ_id="graph_cognition",
         organ_class=OrganClass.endogenous,
         service="orion-cortex-exec",
-        signal_kinds=["metacog_perception", "coherence_state", "goal_pressure"],
-        canonical_dimensions=["coherence", "tension", "goal_pressure", "confidence"],
+        signal_kinds=[
+            "metacog_perception",
+            "coherence_state",
+            "goal_pressure",
+            "repair_pressure",
+        ],
+        canonical_dimensions=[
+            "coherence",
+            "tension",
+            "goal_pressure",
+            "confidence",
+            "level",
+            "specificity_demand",
+            "trust_rupture",
+            "coherence_gap",
+            "repetition_failure",
+            "operational_block",
+            "explicit_repair_command",
+            "assistant_accountability_demand",
+        ],
         # recall omitted here to keep static causal_parent_organs acyclic (recall→autonomy→graph_cognition).
         causal_parent_organs=["social_memory"],
         bus_channels=["orion:cognition:trace", "orion:metacog:trace"],
         notes=[
             "Recall-linked metacog is carried via autonomy/recall in the mesh; not duplicated as a "
-            "registry parent edge to avoid a recall↔graph_cognition cycle in static DAG validation."
+            "registry parent edge to avoid a recall↔graph_cognition cycle in static DAG validation.",
+            "repair_pressure is a substrate-derived appraisal emitted by orion.substrate.appraisal; "
+            "see docs/plans/substrate/2026-05-23-repair-pressure-v1.md.",
         ],
     ),
     "autonomy": OrionOrganRegistryEntry(

@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from threading import Thread
-from typing import Any
+from collections.abc import Callable, Coroutine
+from typing import Any, TypeVar
 from uuid import uuid4
+
+_T = TypeVar("_T")
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -37,17 +40,18 @@ def should_emit_llm_surface_instability(unc: dict[str, Any]) -> tuple[bool, str]
     return False, "stable"
 
 
-def _run_blocking(coro):
+def _run_blocking(factory: Callable[[], Coroutine[Any, Any, _T]]) -> _T:
+    """Run an async factory in a fresh event loop (defer coroutine until execution)."""
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(coro)
+        return asyncio.run(factory())
 
     result: dict[str, Any] = {}
 
     def _runner() -> None:
         try:
-            result["value"] = asyncio.run(coro)
+            result["value"] = asyncio.run(factory())
         except Exception as exc:  # noqa: BLE001
             result["error"] = exc
 
@@ -105,6 +109,8 @@ def maybe_publish_llm_surface_instability_trigger(
     *,
     context: MindLLMRequestContext | None = None,
 ) -> None:
+    if telemetry.status != "ok":
+        return
     if not settings.MIND_LLM_UNCERTAINTY_METACOG_ENABLED:
         return
     unc = telemetry.llm_uncertainty
@@ -131,7 +137,9 @@ def maybe_publish_llm_surface_instability_trigger(
         },
     )
     try:
-        _run_blocking(_publish_metacog_trigger_async(trigger, context=context))
+        _run_blocking(
+            lambda: _publish_metacog_trigger_async(trigger, context=context)
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "mind_llm_surface_instability_metacog_publish_failed mind_run_id=%s err=%s",

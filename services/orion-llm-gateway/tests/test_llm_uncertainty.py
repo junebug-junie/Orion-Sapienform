@@ -47,3 +47,26 @@ def test_extract_returns_none_when_no_logprobs() -> None:
 def test_summarize_includes_confidence_semantics() -> None:
     summary = summarize_logprob_content(_sample_content())
     assert summary["confidence_semantics"] == "language_surface_stability_not_truth"
+
+
+def test_summarize_unstable_span_counts_one_run_at_min_len() -> None:
+    """Three consecutive low-margin tokens (min_len=3) produce one unstable span."""
+    low_margin = {
+        "token": "x",
+        "logprob": -0.1,
+        "top_logprobs": [
+            {"token": "x", "logprob": -0.1},
+            {"token": "y", "logprob": -0.15},
+        ],
+    }
+    high_margin = {
+        "token": "z",
+        "logprob": -0.1,
+        "top_logprobs": [
+            {"token": "z", "logprob": -0.1},
+            {"token": "w", "logprob": -2.0},
+        ],
+    }
+    content = [low_margin, low_margin, low_margin, high_margin]
+    summary = summarize_logprob_content(content)
+    assert summary["unstable_span_count"] == 1

@@ -137,6 +137,16 @@ class MindLLMClient:
                 unc = result_meta.get("llm_uncertainty")
                 if isinstance(unc, dict):
                     meta["llm_uncertainty"] = unc
+                elif options.get("return_logprobs"):
+                    logger.info(
+                        "mind_llm_logprobs_requested_but_no_uncertainty_summary "
+                        "correlation_id=%s mind_run_id=%s phase=%s route=%s "
+                        "hint=enable LLM_LOGPROB_SUMMARY_ENABLED on orion-llm-gateway",
+                        context.correlation_id if context else None,
+                        context.mind_run_id if context else None,
+                        context.phase_name if context else None,
+                        route,
+                    )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "mind_llm_bus_request_failed correlation_id=%s mind_run_id=%s phase=%s route=%s "

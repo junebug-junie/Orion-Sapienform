@@ -17,7 +17,7 @@ from .settings import settings
 from .profiles import LLMProfileRegistry, LLMProfile
 from .lane_routes import resolve_llm_lane_route
 from .structured_output import apply_structured_output_to_payload
-from app.llm_uncertainty import extract_llm_uncertainty_from_openai_response
+from .llm_uncertainty import extract_llm_uncertainty_from_openai_response
 
 from orion.spark.integration import (
     ingest_chat_and_get_state,

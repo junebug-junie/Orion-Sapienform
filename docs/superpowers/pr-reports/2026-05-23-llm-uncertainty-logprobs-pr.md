@@ -50,6 +50,10 @@ llama.cpp /v1/chat/completions (logprobs opt-in)
 | Mind semantic | `MIND_LLM_RETURN_LOGPROBS_SEMANTIC=false` |
 | Metacog trigger | `MIND_LLM_UNCERTAINTY_METACOG_ENABLED=false` |
 
+**Operator note:** Mind semantic logprobs require **both** `MIND_LLM_RETURN_LOGPROBS_SEMANTIC=true` **and** `LLM_LOGPROB_SUMMARY_ENABLED=true` on the gateway. Enabling only the Mind flag is a silent no-op; Mind logs `mind_llm_logprobs_requested_but_no_uncertainty_summary` when that happens.
+
+**Debug only:** Set `logprob_summary_only: false` in request options to retain full per-token logprobs in `ChatResultPayload.raw` (default strips them).
+
 ## `llm_uncertainty` v1 shape
 
 ```json
@@ -75,9 +79,9 @@ llama.cpp /v1/chat/completions (logprobs opt-in)
 - [x] `orion-llm-gateway` tests: 50 passed (extractor, passthrough, meta, strip raw, gate)
 - [x] `orion-cortex-exec` `test_llm_uncertainty_metadata.py`: 3 passed
 - [x] `orion-sql-writer` `test_llm_uncertainty_spark_meta.py`: 2 passed
-- [x] `orion-mind` uncertainty tests: 9 passed
-- [ ] Staging: enable `LLM_LOGPROB_SUMMARY_ENABLED=true`, one chat turn with `return_logprobs`, confirm `meta.llm_uncertainty` in gateway reply
-- [ ] Staging: enable `MIND_LLM_RETURN_LOGPROBS_SEMANTIC=true`, run Mind semantic synthesis, inspect phase telemetry
+- [x] `orion-mind` uncertainty tests: 11+ passed (incl. status gate, async envelope)
+- [x] Rebased onto `origin/main` (substrate MVP retained from main)
+- [ ] Staging: `LLM_LOGPROB_SUMMARY_ENABLED=true` **and** `MIND_LLM_RETURN_LOGPROBS_SEMANTIC=true`; confirm `meta.llm_uncertainty` + `spark_meta`
 - [ ] Phase 5 (Collapse Mirror / journal index) deferred per plan
 
 ## Local env sync (not committed)

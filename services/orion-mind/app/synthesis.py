@@ -415,5 +415,6 @@ def run_semantic_synthesis(
                 "diagnostics": filtered.diagnostics.model_copy(update={"notes": diag_notes}),
             }
         )
-    maybe_publish_llm_surface_instability_trigger(telemetry, context=context)
+    if telemetry.status == "ok":
+        maybe_publish_llm_surface_instability_trigger(telemetry, context=context)
     return filtered, None, telemetry

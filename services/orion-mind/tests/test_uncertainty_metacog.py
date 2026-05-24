@@ -98,7 +98,65 @@ def test_maybe_publish_runs_when_metacog_enabled(monkeypatch: pytest.MonkeyPatch
     telemetry = MindPhaseTelemetry(
         phase_name="semantic_synthesis",
         route="quick",
+        status="ok",
         llm_uncertainty=_unc(unstable_span_count=1),
     )
     uncertainty_metacog.maybe_publish_llm_surface_instability_trigger(telemetry)
     assert called is True
+
+
+def test_maybe_publish_skips_when_status_not_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.phase_telemetry import MindPhaseTelemetry
+    from app.settings import settings
+    from app import uncertainty_metacog
+
+    monkeypatch.setattr(settings, "MIND_LLM_UNCERTAINTY_METACOG_ENABLED", True)
+    called = False
+
+    def _fake_publish(*_args: Any, **_kwargs: Any) -> None:
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(uncertainty_metacog, "_run_blocking", _fake_publish)
+    telemetry = MindPhaseTelemetry(
+        phase_name="semantic_synthesis",
+        route="quick",
+        status="filtered",
+        llm_uncertainty=_unc(unstable_span_count=2),
+    )
+    uncertainty_metacog.maybe_publish_llm_surface_instability_trigger(telemetry)
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_publish_metacog_trigger_builds_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.uncertainty_metacog import _publish_metacog_trigger_async
+    from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
+
+    published: list[Any] = []
+
+    class _FakeBus:
+        async def connect(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+        async def publish(self, channel: str, env: Any) -> None:
+            published.append((channel, env))
+
+    monkeypatch.setattr(
+        "app.uncertainty_metacog.OrionBusAsync",
+        lambda **_kwargs: _FakeBus(),
+    )
+    trigger = MetacogTriggerV1(
+        trigger_kind="llm_surface_instability",
+        reason="language_surface_unstable",
+        pressure=0.2,
+    )
+    await _publish_metacog_trigger_async(trigger, context=None)
+    assert len(published) == 1
+    channel, env = published[0]
+    assert "metacog" in channel
+    assert env.kind == "orion.metacog.trigger.v1"
+    assert env.payload["trigger_kind"] == "llm_surface_instability"

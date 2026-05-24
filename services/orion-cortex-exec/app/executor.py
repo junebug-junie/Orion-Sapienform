@@ -1917,6 +1917,17 @@ def _local_skill_payload_failure_reason(skill_payload: Dict[str, Any]) -> str | 
     return None
 
 
+def _forward_llm_uncertainty_metadata(payload: Any, ctx: Dict[str, Any]) -> None:
+    """Copy gateway meta.llm_uncertainty into execution ctx metadata for Hub spark_meta merge."""
+    gw_meta = payload.get("meta") if isinstance(payload, dict) else None
+    if isinstance(gw_meta, dict):
+        unc = gw_meta.get("llm_uncertainty")
+        if isinstance(unc, dict):
+            md = ctx.setdefault("metadata", {})
+            if isinstance(md, dict):
+                md["llm_uncertainty"] = unc
+
+
 def _attempt_mind_handoff_chat_stance_shortcut(
     *,
     step: ExecutionStep,
@@ -3230,6 +3241,10 @@ async def call_step_services(
                 )
 
                 result_payload = result_object.model_dump(mode="json")
+                obj_meta = getattr(result_object, "meta", None)
+                if isinstance(obj_meta, dict) and obj_meta:
+                    result_payload["meta"] = obj_meta
+                _forward_llm_uncertainty_metadata(result_payload, ctx)
                 raw_payload = result_payload.get("raw") if isinstance(result_payload, dict) else {}
                 if not isinstance(raw_payload, dict):
                     raw_payload = {}

@@ -10,6 +10,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import ServiceRef
 
 from .executor import (
+    _forward_llm_uncertainty_metadata,
     call_step_services,
     prepare_brain_reply_context,
     prepare_chat_quick_reply_context,
@@ -644,10 +645,21 @@ def _autonomy_payload_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
             "mind_skip_reason",
             "mind_invocation_failed",
             "mind_artifact_persist_failed",
+            "llm_uncertainty",
         ):
             if key in ctx_meta:
                 payload[key] = ctx_meta[key]
     return payload
+
+
+def _harvest_llm_uncertainty_from_steps(ctx: Dict[str, Any], step_results: List[StepExecutionResult]) -> None:
+    for step in reversed(step_results):
+        if not isinstance(step.result, dict):
+            continue
+        gw_payload = step.result.get("LLMGatewayService")
+        if isinstance(gw_payload, dict):
+            _forward_llm_uncertainty_metadata(gw_payload, ctx)
+            return
 
 
 
@@ -1280,6 +1292,7 @@ class PlanRunner:
                 _debug_len(final_text),
                 len(metacog_traces) == 0,
             )
+        _harvest_llm_uncertainty_from_steps(ctx, step_results)
         metadata = _autonomy_payload_from_ctx(ctx)
         metadata.update(_situation_grounding_metadata_from_ctx(ctx))
         if final_text_diag.get("structured_output_rejected"):

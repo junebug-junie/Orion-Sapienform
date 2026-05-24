@@ -106,6 +106,8 @@ async def test_valid_frame_publishes_host_task(policy_path: Path) -> None:
     channel, envelope = bus.published[0]
     assert channel == settings.CHANNEL_HOST_INTAKE
     assert envelope.kind == "vision.task.request"
+    assert envelope.reply_to == f"{settings.CHANNEL_REPLY_PREFIX}:{env.correlation_id}"
+    assert envelope.correlation_id == env.correlation_id
     assert dispatcher.metrics.frames_dispatched_total == 1
 
 
@@ -165,7 +167,24 @@ async def test_timeout_clears_pending(policy_path: Path) -> None:
     corr = uuid4()
     await dispatcher.handle_frame_envelope(_frame_env(correlation_id=corr))
     assert dispatcher.state.inflight_total() == 1
-    cleared = dispatcher.sweep_timeouts(now=time.time() + settings.TASK_TIMEOUT_SECONDS + 1)
+    cleared = await dispatcher.sweep_timeouts(now=time.time() + settings.TASK_TIMEOUT_SECONDS + 1)
     assert cleared == 1
     assert dispatcher.state.inflight_total() == 0
     assert dispatcher.metrics.host_timeouts_total == 1
+
+
+@pytest.mark.asyncio
+async def test_reply_before_timeout_does_not_count_timeout(policy_path: Path) -> None:
+    dispatcher, _, settings = _make_dispatcher(policy_path)
+    corr = uuid4()
+    await dispatcher.handle_frame_envelope(_frame_env(correlation_id=corr))
+    reply = BaseEnvelope(
+        kind="vision.task.result",
+        source=ServiceRef(name="vision-host", version="0.1.0"),
+        correlation_id=corr,
+        payload=VisionTaskResultPayload(ok=True, task_type="retina_fast").model_dump(mode="json"),
+    )
+    await dispatcher.handle_reply_envelope(reply)
+    cleared = await dispatcher.sweep_timeouts(now=time.time() + settings.TASK_TIMEOUT_SECONDS + 1)
+    assert cleared == 0
+    assert dispatcher.metrics.host_timeouts_total == 0

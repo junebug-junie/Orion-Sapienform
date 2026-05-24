@@ -114,7 +114,7 @@ class FrameRouterService:
         assert self.dispatcher is not None
         while not self._shutdown.is_set():
             try:
-                self.dispatcher.sweep_timeouts(now=time.time())
+                await self.dispatcher.sweep_timeouts(now=time.time())
             except Exception as exc:
                 logger.warning(f"[FRAME-ROUTER] timeout sweep failed: {exc}")
             await asyncio.sleep(1.0)

@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -41,18 +42,21 @@ for key, value in {
     os.environ.setdefault(key, value)
 
 
-@pytest.fixture
-def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    import importlib
+def _atlas_test_app() -> FastAPI:
+    from scripts.grammar_atlas_routes import router
 
+    app = FastAPI()
+    app.include_router(router)
+    return app
+
+
+@pytest.fixture
+def client() -> TestClient:
     import app.settings as hub_app_settings
 
     hub_app_settings.get_settings.cache_clear()
     _ensure_hub_scripts_import_path()
-    import scripts.main as hub_main
-
-    importlib.reload(hub_main)
-    return TestClient(hub_main.app)
+    return TestClient(_atlas_test_app())
 
 
 async def _mock_with_session(fn):
@@ -97,16 +101,11 @@ def test_get_atom_not_found(client: TestClient, monkeypatch: pytest.MonkeyPatch)
 
 def test_grammar_atlas_disabled(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GRAMMAR_ATLAS_ENABLED", "false")
-    import importlib
-
     import app.settings as hub_app_settings
 
     hub_app_settings.get_settings.cache_clear()
     _ensure_hub_scripts_import_path()
-    import scripts.main as hub_main
-
-    importlib.reload(hub_main)
-    disabled_client = TestClient(hub_main.app)
+    disabled_client = TestClient(_atlas_test_app())
 
     r = disabled_client.get("/api/substrate/atlas/traces?limit=10")
     assert r.status_code == 503
@@ -116,16 +115,11 @@ def test_grammar_atlas_disabled(client: TestClient, monkeypatch: pytest.MonkeyPa
 def test_grammar_atlas_no_database_url(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("GRAMMAR_ATLAS_POSTGRES_URI", raising=False)
-    import importlib
-
     import app.settings as hub_app_settings
 
     hub_app_settings.get_settings.cache_clear()
     _ensure_hub_scripts_import_path()
-    import scripts.main as hub_main
-
-    importlib.reload(hub_main)
-    no_db_client = TestClient(hub_main.app)
+    no_db_client = TestClient(_atlas_test_app())
 
     r = no_db_client.get("/api/substrate/atlas/traces?limit=10")
     assert r.status_code == 503

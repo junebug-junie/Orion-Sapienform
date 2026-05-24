@@ -44,6 +44,7 @@ from .cortex_request_builder import (
     validate_single_verb_override,
 )
 from .mutation_cognition_context import build_mutation_cognition_context
+from .substrate_effect_pipeline import run_substrate_effect_pipeline
 from .autonomy_constitution import (
     COGNITIVE_LIVE_APPLY_ENABLED,
     PRODUCTION_RECALL_MODE,
@@ -1986,6 +1987,16 @@ async def handle_chat_request(
         return inactive
 
     corr_id = str(uuid4())
+
+    # ─── Substrate effect (best-effort, never blocks chat) ─────────────
+    substrate_summary, _ = run_substrate_effect_pipeline(
+        turn_id=corr_id,
+        message_id=None,
+        user_text=user_prompt,
+        source_id=session_id,
+        contract_before={"mode": "default"},
+    )
+
     context_turns = int(payload.get("context_turns") or getattr(settings, "HUB_CONTEXT_TURNS", 10))
     continuity_messages = build_continuity_messages(
         history=user_messages,
@@ -2209,7 +2220,7 @@ async def handle_chat_request(
             recall_debug=recall_debug,
             source_event_id=f"chat_result:{correlation_id}",
         )
-        return {
+        result = {
             "session_id": session_id,
             "mode": mode,
             "use_recall": use_recall,
@@ -2234,6 +2245,9 @@ async def handle_chat_request(
             "reasoning_trace": turn_ctx.get("explicit_reasoning_trace"),
             **autonomy_payload,
         }
+        if substrate_summary is not None:
+            result["substrate_effect_summary"] = substrate_summary
+        return result
 
     except Exception as e:
         logger.error(f"Chat RPC failed: {e}", exc_info=True)

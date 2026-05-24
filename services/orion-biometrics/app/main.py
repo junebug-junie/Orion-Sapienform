@@ -173,6 +173,10 @@ _pipeline = BiometricsPipeline(
     window_sec=settings.TELEMETRY_INTERVAL,
 )
 
+from app.node_catalog import NodeCatalog
+from app.grammar_emit import build_biometrics_node_grammar_events
+_NODE_CATALOG = NodeCatalog.load(settings.NODE_CATALOG_PATH)
+
 
 async def publish_metrics(bus: OrionBusAsync) -> None:
     if not settings.ORION_BUS_ENABLED:
@@ -205,6 +209,32 @@ async def publish_metrics(bus: OrionBusAsync) -> None:
         await _publish(bus, settings.BIOMETRICS_SAMPLE_CHANNEL, "biometrics.sample.v1", sample)
         await _publish(bus, settings.BIOMETRICS_SUMMARY_CHANNEL, "biometrics.summary.v1", summary)
         await _publish(bus, settings.BIOMETRICS_INDUCTION_CHANNEL, "biometrics.induction.v1", induction)
+        if settings.PUBLISH_BIOMETRICS_GRAMMAR:
+            try:
+                node_profile = _NODE_CATALOG.resolve(
+                    sample.node or summary.node or induction.node
+                )
+                grammar_events = build_biometrics_node_grammar_events(
+                    sample=sample,
+                    summary=summary,
+                    induction=induction,
+                    node_profile=node_profile,
+                    source_channel=settings.BIOMETRICS_INDUCTION_CHANNEL,
+                    code_version=settings.SERVICE_VERSION,
+                )
+                for event in grammar_events:
+                    await _publish(
+                        bus,
+                        settings.GRAMMAR_EVENT_CHANNEL,
+                        "grammar.event.v1",
+                        event,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to publish biometrics grammar events: %s",
+                    exc,
+                    exc_info=True,
+                )
         logger.debug("Published biometrics sample/summary/induction")
     except Exception as exc:
         logger.error(f"Failed to publish biometrics: {exc}")
@@ -393,6 +423,8 @@ def health():
         "summary_channel": settings.BIOMETRICS_SUMMARY_CHANNEL,
         "induction_channel": settings.BIOMETRICS_INDUCTION_CHANNEL,
         "cluster_channel": settings.BIOMETRICS_CLUSTER_CHANNEL,
+        "grammar_event_channel": settings.GRAMMAR_EVENT_CHANNEL,
+        "publish_biometrics_grammar": settings.PUBLISH_BIOMETRICS_GRAMMAR,
         "bus_url": settings.ORION_BUS_URL,
         "node": settings.NODE_NAME,
         "mode": settings.BIOMETRICS_MODE,

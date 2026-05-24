@@ -7,18 +7,18 @@ and return (None, None). The chat response then ships without a chip.
 from __future__ import annotations
 
 import logging
-from collections import deque
+from collections import OrderedDict, deque
 from typing import Any
 
 from orion.mind.substrate_emit import emit_observation
 from orion.substrate.appraisal import (
-    REPAIR_PRESSURE_DEBUG_KEY,
     apply_repair_pressure_contract,
     appraise_repair_pressure,
     extract_repair_evidence,
     repair_appraisal_to_signal,
     select_recent_chat_molecules,
 )
+from orion.substrate.appraisal.models import RepairPressureAppraisalV1
 from orion.substrate.molecules import SubstrateMoleculeV1
 
 from .substrate_effect_cache import (
@@ -31,10 +31,12 @@ logger = logging.getLogger("orion-hub.substrate_effect_pipeline")
 
 # Per-source rolling buffer of observation molecules. Keyed by `source_id`
 # (we use session_id or correlation_id). Bounded so memory stays flat.
-_RECENT_OBSERVATIONS: dict[str, deque[SubstrateMoleculeV1]] = {}
+_RECENT_OBSERVATIONS: OrderedDict[str, deque[SubstrateMoleculeV1]] = OrderedDict()
 _RECENT_MAX = 32
+_RECENT_SOURCES_MAX = 256
 
 
+# TODO(task-4): replace with orion.substrate.appraisal.view_model.pressure_label
 def _tmp_pressure_label(value: float) -> str:
     if value >= 0.75:
         return "HIGH"
@@ -48,14 +50,16 @@ def _tmp_pressure_label(value: float) -> str:
 def _push_observation(source_id: str, mol: SubstrateMoleculeV1) -> list[SubstrateMoleculeV1]:
     buf = _RECENT_OBSERVATIONS.setdefault(source_id, deque(maxlen=_RECENT_MAX))
     buf.append(mol)
+    _RECENT_OBSERVATIONS.move_to_end(source_id)
+    while len(_RECENT_OBSERVATIONS) > _RECENT_SOURCES_MAX:
+        _RECENT_OBSERVATIONS.popitem(last=False)
     return list(buf)
 
 
 def _summary_dict(
     *,
     turn_id: str,
-    appraisal,
-    signal,
+    appraisal: RepairPressureAppraisalV1 | None,
     contract_before: dict[str, Any],
     contract_after: dict[str, Any],
     evidence_count: int,
@@ -99,6 +103,7 @@ def run_substrate_effect_pipeline(
     store_in = cache if cache is not None else substrate_effect_cache
     try:
         if not (user_text or "").strip():
+            logger.debug("substrate_effect_pipeline_skipped_empty_text turn_id=%s", turn_id)
             return None, None
 
         mol = emit_observation(surface_text=user_text, source_id=source_id)
@@ -124,7 +129,6 @@ def run_substrate_effect_pipeline(
         summary = _summary_dict(
             turn_id=turn_id,
             appraisal=appraisal,
-            signal=signal,
             contract_before=contract_before,
             contract_after=contract_after,
             evidence_count=len(evidence),

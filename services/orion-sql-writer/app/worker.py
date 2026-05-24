@@ -827,6 +827,15 @@ def _write_row(sql_model_cls, data: dict) -> bool:
             if top_level_thinking_source:
                 merged_spark_meta = _merge_spark_meta(spark_meta, {"thinking_source": top_level_thinking_source})
                 filtered_data["spark_meta"] = merged_spark_meta
+            meta_block = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+            unc = meta_block.get("llm_uncertainty")
+            if not isinstance(unc, dict):
+                sm = data.get("spark_meta") if isinstance(data.get("spark_meta"), dict) else {}
+                unc = sm.get("llm_uncertainty")
+            if isinstance(unc, dict):
+                filtered_data["spark_meta"] = _merge_spark_meta(
+                    filtered_data.get("spark_meta"), {"llm_uncertainty": unc}
+                )
             persisted_value = filtered_data.get("thought_process")
             print(
                 "===THINK_HOP=== hop=sql_row_ready "

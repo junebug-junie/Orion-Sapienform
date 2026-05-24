@@ -64,6 +64,30 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS client_meta JSONB;"
             )
             conn.exec_driver_sql(
+                "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS llm_uncertainty_source TEXT;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS llm_mean_logprob DOUBLE PRECISION;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS llm_min_logprob DOUBLE PRECISION;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS llm_mean_top1_margin DOUBLE PRECISION;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS llm_low_margin_token_count INTEGER;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS llm_low_logprob_token_count INTEGER;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS llm_unstable_span_count INTEGER;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS llm_uncertainty_available BOOLEAN;"
+            )
+            conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS idx_chat_history_log_mem_status ON chat_history_log (memory_status);"
             )
             conn.exec_driver_sql(

@@ -54,7 +54,7 @@ def _count_unstable_spans(margins: list[float | None], *, min_len: int) -> int:
     for m in margins:
         if m is not None and m < threshold:
             run += 1
-            if run >= min_len:
+            if run == min_len:
                 count += 1
         else:
             run = 0

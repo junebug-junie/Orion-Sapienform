@@ -338,7 +338,6 @@ def run_semantic_synthesis(
     )
     if isinstance(meta.get("llm_uncertainty"), dict):
         telemetry.llm_uncertainty = meta["llm_uncertainty"]
-    maybe_publish_llm_surface_instability_trigger(telemetry, context=context)
     if raw is None:
         telemetry.status = "failed"
         return None, err or "semantic_synthesis_failed", telemetry
@@ -416,4 +415,5 @@ def run_semantic_synthesis(
                 "diagnostics": filtered.diagnostics.model_copy(update={"notes": diag_notes}),
             }
         )
+    maybe_publish_llm_surface_instability_trigger(telemetry, context=context)
     return filtered, None, telemetry

@@ -42,3 +42,8 @@ def test_extract_from_openai_response_reads_choices_logprobs() -> None:
 
 def test_extract_returns_none_when_no_logprobs() -> None:
     assert extract_llm_uncertainty_from_openai_response({"choices": [{}]}, source="x") is None
+
+
+def test_summarize_includes_confidence_semantics() -> None:
+    summary = summarize_logprob_content(_sample_content())
+    assert summary["confidence_semantics"] == "language_surface_stability_not_truth"

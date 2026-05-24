@@ -80,3 +80,25 @@ def test_maybe_publish_skips_when_metacog_disabled(monkeypatch: pytest.MonkeyPat
     )
     uncertainty_metacog.maybe_publish_llm_surface_instability_trigger(telemetry)
     assert called is False
+
+
+def test_maybe_publish_runs_when_metacog_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.phase_telemetry import MindPhaseTelemetry
+    from app.settings import settings
+    from app import uncertainty_metacog
+
+    monkeypatch.setattr(settings, "MIND_LLM_UNCERTAINTY_METACOG_ENABLED", True)
+    called = False
+
+    def _fake_publish(*_args: Any, **_kwargs: Any) -> None:
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(uncertainty_metacog, "_run_blocking", _fake_publish)
+    telemetry = MindPhaseTelemetry(
+        phase_name="semantic_synthesis",
+        route="quick",
+        llm_uncertainty=_unc(unstable_span_count=1),
+    )
+    uncertainty_metacog.maybe_publish_llm_surface_instability_trigger(telemetry)
+    assert called is True

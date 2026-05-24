@@ -1044,6 +1044,19 @@ def _execute_openai_chat(
                 flush=True,
             )
             raw_out = raw_data if isinstance(raw_data, dict) else {}
+            if (
+                return_logprobs
+                and logprob_summary_enabled
+                and opts.get("logprob_summary_only", True)
+                and isinstance(raw_out.get("choices"), list)
+            ):
+                stripped_choices = []
+                for choice in raw_out["choices"]:
+                    if isinstance(choice, dict):
+                        stripped_choices.append({k: v for k, v in choice.items() if k != "logprobs"})
+                    else:
+                        stripped_choices.append(choice)
+                raw_out = {**raw_out, "choices": stripped_choices}
             if structured_diag:
                 raw_out = {**raw_out, "structured_output_diagnostics": structured_diag}
             return {

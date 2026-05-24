@@ -368,6 +368,30 @@ class TestLLMBackendExecution(unittest.TestCase):
         assert payload.get("top_logprobs") == 3
         assert isinstance(result.get("llm_uncertainty"), dict)
         assert result["llm_uncertainty"].get("available") is True
+        assert "logprobs" not in (result.get("raw") or {}).get("choices", [{}])[0]
+
+    @patch("app.llm_backend._common_http_client")
+    def test_execute_openai_chat_skips_logprobs_when_summary_disabled(self, mock_client_factory):
+        mock_client = MagicMock()
+        mock_client_factory.return_value.__enter__.return_value = mock_client
+        mock_client.post.return_value.status_code = 200
+        mock_client.post.return_value.json.return_value = {
+            "choices": [{"message": {"content": "OK"}}]
+        }
+        body = ChatBody(
+            messages=[ChatMessage(role="user", content="hi")],
+            options={"return_logprobs": True},
+        )
+        with patch.object(settings, "llm_logprob_summary_enabled", False):
+            result = _execute_openai_chat(
+                body=body,
+                model="test-model",
+                base_url="http://localhost",
+                backend_name="llamacpp",
+            )
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert "logprobs" not in payload
+        assert result.get("llm_uncertainty") is None
 
     @patch("app.llm_backend._common_http_client")
     def test_execute_openai_chat_does_not_promote_inline_think_to_structured_reasoning(self, mock_client_factory):

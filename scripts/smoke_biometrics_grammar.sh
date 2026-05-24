@@ -5,7 +5,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 echo "== unit tests (host) =="
-PYTHONPATH="services/orion-biometrics:." pytest \
+export PYTHONPATH="services/orion-biometrics:."
+PYTEST=(python3 -m pytest)
+if command -v pytest >/dev/null 2>&1; then
+  PYTEST=(pytest)
+fi
+"${PYTEST[@]}" \
   services/orion-biometrics/tests/test_node_catalog.py \
   services/orion-biometrics/tests/test_biometrics_grammar_emit.py -q
 

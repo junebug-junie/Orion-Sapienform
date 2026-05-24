@@ -34,6 +34,7 @@ from scripts.autonomy_payloads import extract_autonomy_payload
 from scripts.workflow_payloads import extract_workflow_payload
 from scripts.mutation_cognition_context import build_mutation_cognition_context
 from scripts.presence_session import inject_session_presence
+from scripts.substrate_effect_pipeline import run_substrate_effect_pipeline
 from scripts.warm_start import mini_personality_summary
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
 from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
@@ -720,6 +721,22 @@ async def websocket_endpoint(websocket: WebSocket):
                 route_debug=route_debug,
                 user_prompt=transcript,
             )
+
+            substrate_summary, _ = run_substrate_effect_pipeline(
+                turn_id=trace_id,
+                message_id=None,
+                user_text=transcript,
+                source_id=str(session_id or "anonymous"),
+                contract_before={"mode": "default"},
+            )
+            if substrate_summary is not None:
+                logger.info(
+                    "substrate_effect_attached ws corr=%s level=%s changed=%s",
+                    trace_id,
+                    substrate_summary.get("level_label"),
+                    substrate_summary.get("changed_behavior"),
+                )
+
             if diagnostic:
                 logger.info("WS outbound CortexChatRequest corr=%s payload=%s", trace_id, chat_req.model_dump(mode="json"))
 
@@ -980,6 +997,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 "reasoning_trace": explicit_reasoning_trace,
                 **autonomy_payload,
             }
+            if substrate_summary is not None:
+                ws_payload["substrate_effect_summary"] = substrate_summary
             if mode == "council" or settings.HUB_DEBUG_COUNCIL:
                 council_debug = _extract_council_debug_from_result(resp)
                 if council_debug:

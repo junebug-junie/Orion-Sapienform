@@ -935,6 +935,19 @@ loadDismissedIds();
     substratePanel.classList.toggle("hidden", !isSubstrate);
     if (substrateAtlasPanel) {
       substrateAtlasPanel.classList.toggle("hidden", !isSubstrateAtlas);
+      if (isSubstrateAtlas && substrateAtlasPanelFrame) {
+        const pingAtlasFrame = () => {
+          try {
+            const atlasWin = substrateAtlasPanelFrame.contentWindow;
+            if (atlasWin && atlasWin.OrionSubstrateAtlas && typeof atlasWin.OrionSubstrateAtlas.activate === "function") {
+              atlasWin.OrionSubstrateAtlas.activate();
+            }
+          } catch {
+            /* iframe not ready */
+          }
+        };
+        setTimeout(pingAtlasFrame, 150);
+      }
     }
     if (memoryPanel) {
       memoryPanel.classList.toggle("hidden", !isMemory);

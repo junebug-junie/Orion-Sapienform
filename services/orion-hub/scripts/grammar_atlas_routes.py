@@ -17,22 +17,97 @@ logger = logging.getLogger("orion-hub.grammar-atlas")
 
 router = APIRouter(prefix="/api/substrate/atlas", tags=["substrate-atlas"])
 
-_SQL_WRITER_ROOT = Path(__file__).resolve().parents[2] / "orion-sql-writer"
 _engine = None
 _sessionmaker = None
 
 
+def _resolve_sql_writer_root() -> Path:
+    """Locate orion-sql-writer for `app.models` imports used by orion.grammar.query."""
+    repo_root = os.getenv("ORION_REPO_ROOT", "").strip()
+    if repo_root:
+        mounted = Path(repo_root) / "services" / "orion-sql-writer"
+        if mounted.is_dir():
+            return mounted
+
+    # Dev layout: services/orion-hub/scripts/grammar_atlas_routes.py -> services/orion-sql-writer
+    dev_root = Path(__file__).resolve().parents[2] / "orion-sql-writer"
+    if dev_root.is_dir():
+        return dev_root
+
+    # Hub Docker image flattens to /app; repo is mounted at /repo in compose.
+    docker_mounted = Path("/repo/services/orion-sql-writer")
+    if docker_mounted.is_dir():
+        return docker_mounted
+
+    return dev_root
+
+
 def _ensure_sql_writer_on_path() -> None:
-    if not _SQL_WRITER_ROOT.is_dir():
+    root_path = _resolve_sql_writer_root()
+    if not root_path.is_dir():
+        logger.warning("orion-sql-writer not found at %s; grammar atlas queries unavailable", root_path)
         return
-    root = str(_SQL_WRITER_ROOT)
+    root = str(root_path)
     if root not in sys.path:
         sys.path.insert(0, root)
 
 
+def _register_grammar_orm_models() -> None:
+    """Load sql-writer grammar ORM tables while Hub's top-level ``app`` package is active."""
+    import importlib.util
+    import types
+
+    from sqlalchemy.orm import declarative_base
+
+    existing = sys.modules.get("app.models.grammar_trace")
+    if existing is not None and hasattr(existing, "GrammarTraceSQL"):
+        return
+
+    writer_root = _resolve_sql_writer_root()
+    if not writer_root.is_dir():
+        raise HTTPException(status_code=503, detail="grammar_atlas_sql_writer_not_found")
+
+    if "app.db" not in sys.modules or not hasattr(sys.modules.get("app.db"), "Base"):
+        db_mod = types.ModuleType("app.db")
+        db_mod.Base = declarative_base()
+        sys.modules["app.db"] = db_mod
+        import app as hub_app
+
+        hub_app.db = db_mod
+
+    models_pkg = sys.modules.get("app.models")
+    if models_pkg is None:
+        import app as hub_app
+
+        models_pkg = types.ModuleType("app.models")
+        sys.modules["app.models"] = models_pkg
+        hub_app.models = models_pkg
+
+    gt_path = writer_root / "app" / "models" / "grammar_trace.py"
+    if not gt_path.is_file():
+        raise HTTPException(status_code=503, detail="grammar_atlas_models_missing")
+
+    spec = importlib.util.spec_from_file_location("app.models.grammar_trace", gt_path)
+    if spec is None or spec.loader is None:
+        raise HTTPException(status_code=503, detail="grammar_atlas_models_load_failed")
+
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["app.models.grammar_trace"] = mod
+    spec.loader.exec_module(mod)
+    setattr(models_pkg, "grammar_trace", mod)
+
+
 def _grammar_query():
     _ensure_sql_writer_on_path()
-    from orion.grammar import query as grammar_query
+    _register_grammar_orm_models()
+    try:
+        from orion.grammar import query as grammar_query
+    except ModuleNotFoundError as exc:
+        logger.exception("grammar atlas query import failed")
+        raise HTTPException(
+            status_code=503,
+            detail=f"grammar_atlas_query_unavailable: {exc}",
+        ) from exc
 
     return grammar_query
 

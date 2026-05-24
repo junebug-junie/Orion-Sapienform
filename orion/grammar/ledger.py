@@ -235,6 +235,7 @@ def apply_grammar_event(session: Any, event: GrammarEventV1) -> bool:
         return False
 
     _ensure_trace(session, event)
+    session.flush()
     _insert_event_row(session, event)
 
     if event.event_kind == "atom_emitted" and event.atom is not None:

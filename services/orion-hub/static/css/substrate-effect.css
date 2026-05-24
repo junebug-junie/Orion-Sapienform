@@ -3,16 +3,18 @@
 .substrate-effect-chip {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
+  flex-shrink: 0;
+  white-space: nowrap;
   border-radius: 9999px;
   border: 1px solid rgba(99, 102, 241, 0.40);
   background: rgba(99, 102, 241, 0.10);
   padding: 0.2rem 0.6rem;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   color: #c7d2fe;
   cursor: pointer;
   line-height: 1.2;
+  max-width: none;
 }
 .substrate-effect-chip:hover { background: rgba(99, 102, 241, 0.20); }
 .substrate-effect-chip[data-level="HIGH"] {

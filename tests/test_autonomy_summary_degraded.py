@@ -128,6 +128,41 @@ def test_drives_timeout_without_proposals_is_unavailable_stance() -> None:
     assert summary.raw_state_present is False
 
 
+def test_deferred_drives_degraded_reason_says_deferred_not_failed() -> None:
+    """'deferred' drives status should read 'drives facet deferred', not 'drives facet failed (deferred)'."""
+    state = AutonomyStateV1(
+        subject="orion",
+        model_layer="self-model",
+        entity_id="orion",
+        identity_summary="holds course",
+        goal_headlines=[
+            AutonomyGoalHeadlineV1(
+                artifact_id="goal-1",
+                goal_statement="Clarify autonomy boundaries without executing any new action.",
+                drive_origin="autonomy",
+                priority=0.8,
+                cooldown_until=None,
+                proposal_signature="sig-1",
+            )
+        ],
+        source="graph",
+    )
+    summary = summarize_autonomy_lookup(
+        state,
+        selected_subject="orion",
+        availability="available",
+        subquery_diagnostics={
+            "identity": {"status": "ok", "row_count": 1, "elapsed_ms": 120.0},
+            "drives": {"status": "deferred", "row_count": 0, "elapsed_ms": 0.0},
+            "goals": {"status": "ok", "row_count": 1, "elapsed_ms": 95.0},
+        },
+    )
+    assert summary.state_quality == "degraded_drives_error"
+    assert summary.stance_mode == "proposal_only"
+    assert summary.degraded_reason == "Orion drives facet deferred"
+    assert "failed" not in (summary.degraded_reason or "")
+
+
 def test_healthy_state_with_proposals_uses_normal_stance_mode() -> None:
     state = AutonomyStateV1(
         subject="orion",

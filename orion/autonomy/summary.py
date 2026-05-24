@@ -145,7 +145,10 @@ def _derive_degraded_reason(*, state_quality: AutonomyStateQuality, selected_sub
     if state_quality == "degraded_drives_timeout":
         return f"{subject_label} drives facet timed out"
     if state_quality == "degraded_drives_error":
-        return f"{subject_label} drives facet failed ({facet_health.get('drives', 'error')})"
+        drives_status = facet_health.get("drives", "error")
+        if drives_status == "deferred":
+            return f"{subject_label} drives facet deferred"
+        return f"{subject_label} drives facet failed ({drives_status})"
     if state_quality == "degraded_identity_timeout":
         return f"{subject_label} identity facet timed out"
     if state_quality == "degraded_goals_timeout":

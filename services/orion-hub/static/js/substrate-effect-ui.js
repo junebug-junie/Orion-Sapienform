@@ -23,12 +23,15 @@
   function renderSubstrateEffectChip(summary, { onClick } = {}) {
     if (!summary || typeof summary !== 'object') return null;
     const level = String(summary.level_label || 'NONE').toUpperCase();
-    const text = summary.chip_label || 'Substrate Effect';
+    const debugHint = summary.chip_label ? String(summary.chip_label) : '';
     const chip = el('button', {
       type: 'button',
       class: 'substrate-effect-chip',
       dataset: { level, turnId: summary.turn_id || '' },
-    }, [`Substrate Effect: ${text}`]);
+      title: debugHint
+        ? `View substrate effect for this turn (${debugHint})`
+        : 'View substrate effect for this turn',
+    }, ['Substrate Effect']);
     chip.addEventListener('click', () => {
       const turnId = summary.turn_id;
       if (!turnId) return;
@@ -82,7 +85,7 @@
       if (view.behavior_delta) body.appendChild(renderBehaviorDelta(view.behavior_delta));
       if (view.causal_chain && view.causal_chain.length) body.appendChild(renderCausalChain(view.causal_chain));
       if (view.evidence_cards && view.evidence_cards.length) body.appendChild(renderEvidenceCards(view.evidence_cards));
-      if (view.scorecard) body.appendChild(renderScorecard(view.scorecard));
+      if (view.scorecard && scorecardHasSignal(view.scorecard)) body.appendChild(renderScorecard(view.scorecard));
       if (view.molecule_summaries && view.molecule_summaries.length) body.appendChild(renderMoleculeSummaries(view.molecule_summaries));
       if (view.raw_debug) body.appendChild(renderRawDebug(view.raw_debug));
     }
@@ -94,14 +97,26 @@
     return root;
   }
 
+  function scorecardHasSignal(scorecard) {
+    const items = scorecard && scorecard.items;
+    if (!Array.isArray(items) || !items.length) return false;
+    return items.some((item) => Number(item && item.value) > 0.01);
+  }
+
   function renderOutcome(view) {
     const o = view.outcome || {};
     const section = el('section', { class: 'substrate-effect-section' });
     section.appendChild(el('h3', {}, ['Outcome']));
     section.appendChild(el('p', { class: 'lede' }, [o.summary || '']));
-    section.appendChild(el('p', { class: 'secondary' }, [
-      `Level: ${Number(o.level || 0).toFixed(2)} (${o.level_label || ''}) · Confidence: ${Number(o.confidence || 0).toFixed(2)} (${o.confidence_label || ''})`,
-    ]));
+    const showMetrics =
+      String(o.level_label || '').toUpperCase() !== 'NONE'
+      || Number(o.level || 0) > 0.01
+      || Number(o.confidence || 0) > 0.25;
+    if (showMetrics) {
+      section.appendChild(el('p', { class: 'secondary' }, [
+        `Level: ${Number(o.level || 0).toFixed(2)} (${o.level_label || ''}) · Confidence: ${Number(o.confidence || 0).toFixed(2)} (${o.confidence_label || ''})`,
+      ]));
+    }
     return section;
   }
 

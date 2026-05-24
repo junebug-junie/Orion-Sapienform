@@ -112,6 +112,17 @@ def test_grammar_atlas_disabled(client: TestClient, monkeypatch: pytest.MonkeyPa
     assert r.json()["detail"] == "grammar_atlas_disabled"
 
 
+def test_resolve_sql_writer_root_prefers_orion_repo_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import grammar_atlas_routes
+
+    monkeypatch.setenv("ORION_REPO_ROOT", str(REPO_ROOT))
+    resolved = grammar_atlas_routes._resolve_sql_writer_root()
+    assert resolved == REPO_ROOT / "services" / "orion-sql-writer"
+    assert resolved.is_dir()
+
+
 def test_grammar_atlas_no_database_url(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("GRAMMAR_ATLAS_POSTGRES_URI", raising=False)

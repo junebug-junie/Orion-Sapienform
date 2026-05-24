@@ -259,7 +259,7 @@ class GraphAutonomyRepository:
         else:
             self._drives_timeout_sec = max(3.0, min(12.0, self._timeout_sec))
         self._defer_orion_drives_for_chat_stance = str(
-            os.getenv("AUTONOMY_CHAT_STANCE_DEFER_ORION_DRIVES", "true")
+            os.getenv("AUTONOMY_CHAT_STANCE_DEFER_ORION_DRIVES", "false")
         ).strip().lower() in {"1", "true", "yes", "on"}
         self._query_client = query_client or (
             GraphQueryClient(

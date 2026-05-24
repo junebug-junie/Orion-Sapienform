@@ -1,6 +1,34 @@
-(function () {
-  "use strict";
+"use strict";
 
+async function apiFetch(path) {
+  const r = await fetch(path, { headers: { Accept: "application/json" } });
+  const text = await r.text();
+
+  let payload = null;
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = null;
+    }
+  }
+
+  if (!r.ok) {
+    const detail =
+      payload && payload.detail
+        ? payload.detail
+        : payload
+          ? JSON.stringify(payload)
+          : text || r.statusText;
+
+    throw new Error(`${r.status}: ${detail}`);
+  }
+
+  return payload || {};
+}
+
+if (typeof document !== "undefined") {
+(function () {
   const TRACE_LIST = document.getElementById("atlasTraceList");
   const LAYER_RAIL = document.getElementById("atlasLayerRail");
   const DIMENSION_BAR = document.getElementById("atlasDimensionBar");
@@ -32,29 +60,18 @@
   let activeDimensions = new Set();
   let pollTimer = null;
   let lastGraphPayload = null;
+  let lastGraphSignature = null;
   let lastTraceMeta = null;
   let nodeById = new Map();
+  let atlasUserHasPanned = false;
+  let atlasInitialFitDone = false;
+  let atlasFitTimer = null;
 
   function setStatus(msg, isErr) {
     if (!STATUS) return;
     STATUS.textContent = msg;
     STATUS.classList.toggle("text-red-400", !!isErr);
     STATUS.classList.toggle("text-gray-400", !isErr);
-  }
-
-  async function apiFetch(path) {
-    const r = await fetch(path, { headers: { Accept: "application/json" } });
-    if (!r.ok) {
-      let detail = "";
-      try {
-        const j = await r.json();
-        detail = j.detail || JSON.stringify(j);
-      } catch {
-        detail = await r.text();
-      }
-      throw new Error(`${r.status}: ${detail || r.statusText}`);
-    }
-    return r.json();
   }
 
   function layerColor(layer) {
@@ -76,6 +93,50 @@
     if (CY_HOST) CY_HOST.textContent = "";
   }
 
+  function graphPayloadSignature(payload) {
+    const nodes = (payload && payload.nodes) || [];
+    const edges = (payload && payload.edges) || [];
+    const nodeIds = nodes.map((n) => n.id).sort().join(",");
+    const edgeIds = edges.map((e) => e.id).sort().join(",");
+    return `${nodes.length}|${edges.length}|${nodeIds}|${edgeIds}`;
+  }
+
+  function fitAtlasGraph(force) {
+    if (!cy) return;
+    if (!force && atlasUserHasPanned) return;
+    try {
+      cy.resize();
+      cy.fit(undefined, 32);
+      atlasInitialFitDone = true;
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function scheduleAtlasFit(force) {
+    if (atlasFitTimer) clearTimeout(atlasFitTimer);
+    atlasFitTimer = setTimeout(() => fitAtlasGraph(force), force ? 0 : 80);
+  }
+
+  function traceIsLive(meta) {
+    return meta && String(meta.status || "").toLowerCase() === "open";
+  }
+
+  function activateAtlasPanel() {
+    if (selectedTraceId) {
+      if (!cy) {
+        loadGraph(selectedTraceId, { silent: true });
+        return;
+      }
+      if (!atlasUserHasPanned) scheduleAtlasFit(false);
+      return;
+    }
+    const firstBtn = TRACE_LIST && TRACE_LIST.querySelector("button[data-trace-id]");
+    if (firstBtn && firstBtn.__traceRow) {
+      selectTrace(firstBtn.__traceRow);
+    }
+  }
+
   function stopPoll() {
     if (pollTimer) {
       clearInterval(pollTimer);
@@ -83,11 +144,15 @@
     }
   }
 
-  function startPoll() {
+  function startPoll(traceMeta) {
     stopPoll();
-    if (!selectedTraceId) return;
+    if (!selectedTraceId || !traceIsLive(traceMeta || lastTraceMeta)) return;
     pollTimer = setInterval(() => {
-      if (selectedTraceId) loadGraph(selectedTraceId, { silent: true });
+      if (selectedTraceId && traceIsLive(lastTraceMeta)) {
+        loadGraph(selectedTraceId, { silent: true });
+      } else {
+        stopPoll();
+      }
     }, POLL_MS);
   }
 
@@ -328,12 +393,15 @@
     }
   }
 
-  function mountCytoscape(elements) {
+  function mountCytoscape(elements, opts) {
+    const allowAutoFit = !(opts && opts.skipAutoFit);
     if (!CY_HOST || typeof window.cytoscape !== "function") {
       setStatus("Cytoscape failed to load.", true);
       return;
     }
     destroyCy();
+    atlasUserHasPanned = false;
+    atlasInitialFitDone = false;
     CY_HOST.textContent = "";
     if (!elements.length) {
       CY_HOST.textContent = "No nodes in trace graph.";
@@ -390,23 +458,22 @@
         },
       ],
       layout: hasPreset
-        ? { name: "preset", fit: true, padding: 24 }
+        ? { name: "preset", fit: false, padding: 24 }
         : { name: "breadthfirst", directed: true, padding: 24, animate: false },
       wheelSensitivity: 0.3,
+      autoungrabify: false,
+    });
+    cy.on("zoom pan", () => {
+      atlasUserHasPanned = true;
     });
     cy.on("tap", "node", (evt) => {
       const id = evt.target.id();
       loadProvenance(id);
     });
     applyGraphFilters();
-    requestAnimationFrame(() => {
-      try {
-        cy.resize();
-        cy.fit(undefined, 32);
-      } catch {
-        /* ignore */
-      }
-    });
+    if (allowAutoFit) {
+      scheduleAtlasFit(true);
+    }
   }
 
   async function loadGraph(traceId, opts) {
@@ -416,9 +483,28 @@
       const payload = await apiFetch(
         `/api/substrate/atlas/traces/${encodeURIComponent(traceId)}/graph?layout=layered&depth=4`,
       );
+      const signature = graphPayloadSignature(payload);
+      if (silent && cy && signature === lastGraphSignature) {
+        return;
+      }
+      lastGraphSignature = signature;
       lastGraphPayload = payload;
       const elements = graphToElements(payload);
-      mountCytoscape(elements);
+      const preserveView = silent && cy && atlasUserHasPanned;
+      if (preserveView) {
+        const zoom = cy.zoom();
+        const pan = cy.pan();
+        mountCytoscape(elements, { skipAutoFit: true });
+        try {
+          cy.zoom(zoom);
+          cy.pan(pan);
+        } catch {
+          /* ignore */
+        }
+        atlasUserHasPanned = true;
+      } else {
+        mountCytoscape(elements);
+      }
       renderLayerRail((payload.groups) || {});
       renderDimensionBar((payload.groups) || {});
       renderTimeline(lastTraceMeta, payload);
@@ -446,9 +532,13 @@
       btn.className =
         "w-full text-left px-3 py-2 hover:bg-gray-900/80 " +
         (selectedTraceId === t.trace_id ? "bg-indigo-950/50 border-l-2 border-indigo-500" : "");
+      btn.dataset.traceId = t.trace_id || "";
+      btn.__traceRow = t;
+      const selected = selectedTraceId === t.trace_id;
       btn.innerHTML = `<div class="font-medium text-gray-200 truncate">${escapeHtml(t.trace_id || "")}</div>
         <div class="text-[10px] text-gray-500">${escapeHtml(t.trace_type || "")} · ${t.atom_count ?? 0} atoms · ${t.edge_count ?? 0} edges</div>
-        <div class="text-[10px] text-gray-600">${formatTs(t.started_at)}</div>`;
+        <div class="text-[10px] text-gray-600">${formatTs(t.started_at)}</div>
+        <div class="text-[10px] mt-1 ${selected ? "text-indigo-300" : "text-gray-500"}">${selected ? "Graph loaded" : "Click to load graph"}</div>`;
       btn.addEventListener("click", () => selectTrace(t));
       li.appendChild(btn);
       TRACE_LIST.appendChild(li);
@@ -462,7 +552,7 @@
     activeDimensions = new Set();
     await fetchTraces();
     await loadGraph(selectedTraceId);
-    startPoll();
+    startPoll(lastTraceMeta);
     try {
       const detail = await apiFetch(`/api/substrate/atlas/traces/${encodeURIComponent(selectedTraceId)}`);
       lastTraceMeta = detail.trace || traceRow;
@@ -482,7 +572,13 @@
       const payload = await apiFetch("/api/substrate/atlas/traces?limit=50");
       const items = payload.items || [];
       renderTraceList(items);
-      setStatus(`${items.length} trace(s)`);
+      if (items.length && !selectedTraceId) {
+        await selectTrace(items[0]);
+      } else if (items.length) {
+        setStatus(`${items.length} trace(s) · ${selectedTraceId}`);
+      } else {
+        setStatus(`${items.length} trace(s)`);
+      }
       return items;
     } catch (e) {
       renderTraceList([]);
@@ -499,6 +595,18 @@
       });
     }
     window.addEventListener("beforeunload", stopPoll);
+    window.addEventListener("resize", () => {
+      if (!atlasUserHasPanned) scheduleAtlasFit(false);
+    });
+    if (CY_HOST && typeof IntersectionObserver === "function") {
+      const obs = new IntersectionObserver((entries) => {
+        if (entries.some((e) => e.isIntersecting) && !atlasUserHasPanned && !atlasInitialFitDone) {
+          scheduleAtlasFit(false);
+        }
+      });
+      obs.observe(CY_HOST);
+    }
+    window.OrionSubstrateAtlas = { activate: activateAtlasPanel, fit: fitAtlasGraph };
     await fetchTraces();
   }
 
@@ -508,3 +616,8 @@
     init();
   }
 })();
+}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { apiFetch };
+}

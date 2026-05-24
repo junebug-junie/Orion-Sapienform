@@ -1,92 +1,154 @@
+from __future__ import annotations
+
 import asyncio
-import os
-import uuid
 import time
-from typing import Optional
-from pathlib import Path
 from contextlib import asynccontextmanager
+from typing import Optional
 
 from fastapi import FastAPI
 from loguru import logger
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.vision import VisionFramePointerPayload
 
-from .settings import Settings
+from .envelopes import make_frame_pointer_envelope
+from .frame_store import cleanup_old_frames, save_frame
+from .health import RetinaMetrics, make_system_health_envelope
+from .settings import Settings, get_settings
+from .sources import create_frame_source
 
-settings = Settings()
 
 class RetinaService:
-    def __init__(self):
-        self.bus = OrionBusAsync(url=settings.ORION_BUS_URL)
-        self._task: Optional[asyncio.Task] = None
-        self._shutdown_event = asyncio.Event()
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        bus: OrionBusAsync | None = None,
+    ) -> None:
+        self.settings = settings or get_settings()
+        self.bus = bus or OrionBusAsync(
+            url=self.settings.ORION_BUS_URL,
+            enforce_catalog=self.settings.ORION_BUS_ENFORCE_CATALOG,
+        )
+        self.source = create_frame_source(
+            self.settings.RETINA_SOURCE_TYPE,
+            self.settings.RETINA_SOURCE,
+            width=self.settings.RETINA_WIDTH,
+            height=self.settings.RETINA_HEIGHT,
+            reconnect_seconds=self.settings.SOURCE_RECONNECT_SECONDS,
+        )
+        self.metrics = RetinaMetrics()
+        self._capture_task: Optional[asyncio.Task] = None
+        self._health_task: Optional[asyncio.Task] = None
+        self._shutdown = asyncio.Event()
+        self._last_cleanup = 0.0
 
-    async def start(self):
+    async def start(self) -> None:
         logger.remove()
-        logger.add(lambda m: print(m, end=""), level=settings.LOG_LEVEL)
+        logger.add(lambda m: print(m, end=""), level=self.settings.LOG_LEVEL)
 
         await self.bus.connect()
-        self._task = asyncio.create_task(self._loop())
-        logger.info(f"[RETINA] Started. Publishing to {settings.CHANNEL_RETINA_PUB}")
+        await self.source.start()
+        self._shutdown.clear()
+        self._capture_task = asyncio.create_task(self.capture_loop())
+        self._health_task = asyncio.create_task(self._health_loop())
+        logger.info(f"[RETINA] Started → {self.settings.CHANNEL_RETINA_PUB}")
 
-    async def stop(self):
-        self._shutdown_event.set()
-        if self._task:
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+    async def stop(self) -> None:
+        self._shutdown.set()
+        for task in (self._capture_task, self._health_task):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        await self.source.stop()
         await self.bus.close()
 
-    async def _loop(self):
-        interval = 1.0 / settings.RETINA_FPS
-        while not self._shutdown_event.is_set():
-            start_ts = time.time()
-
+    async def capture_loop(self) -> None:
+        interval = 1.0 / max(self.settings.RETINA_FPS, 0.01)
+        while not self._shutdown.is_set():
+            t0 = time.time()
             try:
-                await self._capture_and_publish()
-            except Exception as e:
-                logger.error(f"[RETINA] Capture failed: {e}")
+                await self.capture_once()
+            except Exception as exc:
+                self.metrics.last_error = str(exc)
+                logger.error(f"[RETINA] capture_once failed: {exc}")
+            if time.time() - self._last_cleanup > 10:
+                await asyncio.to_thread(
+                    cleanup_old_frames,
+                    self.settings.FRAME_STORAGE_DIR,
+                    self.settings.FRAME_RETENTION_SECONDS,
+                )
+                self._last_cleanup = time.time()
+            elapsed = time.time() - t0
+            await asyncio.sleep(max(0.0, interval - elapsed))
 
-            elapsed = time.time() - start_ts
-            sleep_time = max(0.0, interval - elapsed)
-            if sleep_time > 0:
-                await asyncio.sleep(sleep_time)
+    async def capture_once(self) -> bool:
+        result = await self.source.read()
+        if result is None:
+            self.metrics.frames_failed += 1
+            self.metrics.last_error = "source read returned no frame"
+            return False
+        saved = await asyncio.to_thread(
+            save_frame,
+            result.frame,
+            directory=self.settings.FRAME_STORAGE_DIR,
+            camera_id=self.settings.RETINA_CAMERA_ID,
+            stream_id=self.settings.RETINA_STREAM_ID,
+            ts=result.ts,
+            quality=self.settings.JPEG_QUALITY,
+        )
+        payload = VisionFramePointerPayload(
+            image_path=saved.image_path,
+            camera_id=self.settings.RETINA_CAMERA_ID,
+            stream_id=self.settings.RETINA_STREAM_ID,
+            frame_ts=result.ts,
+            width=saved.width,
+            height=saved.height,
+            format=saved.format,
+        )
+        env = make_frame_pointer_envelope(
+            payload,
+            service_name=self.settings.SERVICE_NAME,
+            service_version=self.settings.SERVICE_VERSION,
+        )
+        await self.bus.publish(self.settings.CHANNEL_RETINA_PUB, env)
+        self.metrics.frames_published += 1
+        self.metrics.last_frame_ts = result.ts
+        self.metrics.last_error = None
+        logger.info(f"[RETINA] Published frame pointer: {saved.image_path}")
+        return True
 
-    async def _capture_and_publish(self):
-        # MOCK IMPLEMENTATION
-        if settings.RETINA_SOURCE_TYPE == "mock":
-             image_path = None
-             if os.path.exists(settings.RETINA_SOURCE_PATH):
-                 files = [f for f in os.listdir(settings.RETINA_SOURCE_PATH) if f.lower().endswith(('.jpg', '.png'))]
-                 if files:
-                     import random
-                     image_path = str(Path(settings.RETINA_SOURCE_PATH) / random.choice(files))
+    def _source_ok(self) -> bool:
+        if self.metrics.last_error is not None:
+            return False
+        if self.metrics.frames_published > 0:
+            return True
+        return self.metrics.frames_failed == 0
 
-             if not image_path:
-                 return
+    async def _health_loop(self) -> None:
+        while not self._shutdown.is_set():
+            try:
+                env = make_system_health_envelope(
+                    service_name=self.settings.SERVICE_NAME,
+                    service_version=self.settings.SERVICE_VERSION,
+                    camera_id=self.settings.RETINA_CAMERA_ID,
+                    stream_id=self.settings.RETINA_STREAM_ID,
+                    source_type=self.settings.RETINA_SOURCE_TYPE,
+                    source_ok=self._source_ok(),
+                    metrics=self.metrics,
+                    fps_target=self.settings.RETINA_FPS,
+                    storage_dir=self.settings.FRAME_STORAGE_DIR,
+                )
+                await self.bus.publish(self.settings.CHANNEL_SYSTEM_HEALTH, env)
+            except Exception as exc:
+                logger.warning(f"[RETINA] health publish failed: {exc}")
+            await asyncio.sleep(self.settings.HEALTH_INTERVAL_SECONDS)
 
-             payload = VisionFramePointerPayload(
-                 image_path=image_path,
-                 frame_ts=time.time(),
-                 camera_id="mock-cam-01"
-             )
-
-             envelope = BaseEnvelope(
-                 schema_id="vision.frame.pointer",
-                 schema_version="1.0.0",
-                 kind="vision.frame.pointer",
-                 source=f"{settings.SERVICE_NAME}:{settings.SERVICE_VERSION}",
-                 correlation_id=str(uuid.uuid4()),
-                 payload=payload
-             )
-
-             await self.bus.publish(settings.CHANNEL_RETINA_PUB, envelope)
-             logger.info(f"[RETINA] Published frame pointer: {image_path}")
 
 service = RetinaService()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -94,4 +156,5 @@ async def lifespan(app: FastAPI):
     yield
     await service.stop()
 
-app = FastAPI(title="Orion Vision Retina", version="0.1.0", lifespan=lifespan)
+
+app = FastAPI(title="Orion Vision Retina", version="0.2.0", lifespan=lifespan)

@@ -203,6 +203,52 @@
     return section;
   }
 
+  async function loadRecentEffects(container) {
+    try {
+      const resp = await fetch(`${API_BASE}/api/substrate-effect/recent?limit=25`);
+      if (!resp.ok) {
+        container.textContent = `Failed to load recent effects: ${resp.status} ${resp.statusText}`;
+        return;
+      }
+      const data = await resp.json();
+      const rows = (data && data.rows) || [];
+      container.innerHTML = '';
+      if (!rows.length) {
+        container.appendChild(el('p', { class: 'text-gray-400' }, ['No substrate effects recorded yet.']));
+        return;
+      }
+      const list = el('div', { class: 'grid grid-cols-1 gap-2' });
+      rows.forEach((row) => {
+        const card = el('button', {
+          type: 'button',
+          class: 'substrate-effect-card text-left',
+        }, [
+          el('h4', {}, [row.chip_label]),
+          el('p', { class: 'meta' }, [`${row.stored_at} · ${row.turn_summary}`]),
+        ]);
+        card.addEventListener('click', () => openSubstrateEffectModal(row.turn_id));
+        list.appendChild(card);
+      });
+      container.appendChild(list);
+    } catch (err) {
+      container.textContent = `Failed to load recent effects: ${String((err && err.message) || err)}`;
+    }
+  }
+
+  function initSubstrateEffectTab() {
+    const body = document.getElementById('substrateEffectRecentBody');
+    const refresh = document.getElementById('substrateEffectRecentRefresh');
+    if (!body) return;
+    loadRecentEffects(body);
+    if (refresh) refresh.addEventListener('click', () => loadRecentEffects(body));
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initSubstrateEffectTab);
+  } else {
+    initSubstrateEffectTab();
+  }
+
   window.SubstrateEffectUI = {
     renderChip: renderSubstrateEffectChip,
     openModal: openSubstrateEffectModal,

@@ -7,6 +7,7 @@ import uuid
 
 import cv2
 import numpy as np
+from loguru import logger
 from pydantic import BaseModel
 
 
@@ -69,6 +70,6 @@ def cleanup_old_frames(directory: str, max_age_seconds: int) -> int:
             try:
                 os.remove(fp)
                 removed += 1
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.debug(f"[RETINA] cleanup skip {fp}: {exc}")
     return removed

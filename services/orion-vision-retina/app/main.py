@@ -41,6 +41,9 @@ class RetinaService:
         self._health_task: Optional[asyncio.Task] = None
         self._shutdown = asyncio.Event()
         self._last_cleanup = 0.0
+        self._started_at = time.time()
+        self._last_publish_ts: float | None = None
+        self._sample_attempted = False
 
     async def start(self) -> None:
         logger.remove()
@@ -85,6 +88,7 @@ class RetinaService:
             await asyncio.sleep(max(0.0, interval - elapsed))
 
     async def capture_once(self) -> bool:
+        self._sample_attempted = True
         result = await self.source.read()
         if result is None:
             self.metrics.frames_failed += 1
@@ -114,13 +118,25 @@ class RetinaService:
             service_version=self.settings.SERVICE_VERSION,
         )
         await self.bus.publish(self.settings.CHANNEL_RETINA_PUB, env)
+        now = time.time()
         self.metrics.frames_published += 1
         self.metrics.last_frame_ts = result.ts
         self.metrics.last_error = None
+        if self._last_publish_ts is not None:
+            dt = now - self._last_publish_ts
+            if dt > 0:
+                self.metrics.fps_observed = 1.0 / dt
+        elif self.metrics.frames_published == 1:
+            elapsed = now - self._started_at
+            if elapsed > 0:
+                self.metrics.fps_observed = 1.0 / elapsed
+        self._last_publish_ts = now
         logger.info(f"[RETINA] Published frame pointer: {saved.image_path}")
         return True
 
     def _source_ok(self) -> bool:
+        if not self._sample_attempted:
+            return True
         if self.metrics.last_error is not None:
             return False
         if self.metrics.frames_published > 0:

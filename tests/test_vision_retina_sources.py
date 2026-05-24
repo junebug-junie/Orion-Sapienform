@@ -48,3 +48,16 @@ async def test_mock_source_reads_from_folder(tmp_path: Path) -> None:
 def test_create_frame_source_factory() -> None:
     assert isinstance(create_frame_source("folder", "/x"), FolderFrameSource)
     assert isinstance(create_frame_source("mock", "/x"), MockFrameSource)
+
+
+@pytest.mark.asyncio
+async def test_folder_source_refreshes_after_new_file(tmp_path: Path) -> None:
+    src = FolderFrameSource(str(tmp_path))
+    await src.start()
+    assert await src.read() is None
+
+    cv2.imwrite(str(tmp_path / "late.jpg"), np.zeros((6, 6, 3), dtype=np.uint8))
+    result = await src.read()
+    await src.stop()
+    assert result is not None
+    assert result.width == 6

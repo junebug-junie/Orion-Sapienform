@@ -39,7 +39,7 @@ class FolderFrameSource:
         self._files: list[str] = []
         self._index = 0
 
-    async def start(self) -> None:
+    def _refresh_files(self) -> None:
         if not os.path.isdir(self.directory):
             self._files = []
             return
@@ -48,12 +48,17 @@ class FolderFrameSource:
             for name in os.listdir(self.directory)
             if Path(name).suffix.lower() in _IMAGE_EXTS
         )
+
+    async def start(self) -> None:
+        self._refresh_files()
         self._index = 0
 
     async def stop(self) -> None:
         return None
 
     async def read(self) -> FrameReadResult | None:
+        if not self._files:
+            self._refresh_files()
         if not self._files:
             return None
         path = self._files[self._index % len(self._files)]

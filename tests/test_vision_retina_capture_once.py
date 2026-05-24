@@ -70,3 +70,19 @@ async def test_capture_once_skips_publish_on_read_failure(tmp_path: Path) -> Non
     ok = await svc.capture_once()
     assert ok is False
     bus.publish.assert_not_awaited()
+    assert svc.metrics.last_error == "source read returned no frame"
+    assert svc._source_ok() is False
+    assert svc.metrics.fps_observed == 0.0
+
+
+@pytest.mark.asyncio
+async def test_capture_once_updates_fps_observed(tmp_path: Path) -> None:
+    settings = Settings(FRAME_STORAGE_DIR=str(tmp_path))
+    bus = MagicMock()
+    bus.publish = AsyncMock()
+    svc = RetinaService(settings=settings, bus=bus)
+    svc.source = _FakeSource(np.zeros((4, 4, 3), dtype=np.uint8))
+    svc._last_publish_ts = 0.0
+
+    await svc.capture_once()
+    assert svc.metrics.fps_observed > 0.0

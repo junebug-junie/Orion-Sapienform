@@ -74,6 +74,7 @@ class MindLLMClientProtocol(Protocol):
         thinking: bool = False,
         context: MindLLMRequestContext | None = None,
         timeout_sec: float | None = None,
+        extra_options: dict[str, Any] | None = None,
     ) -> tuple[Optional[Dict[str, Any]], str | None, dict[str, Any]]: ...
 
 
@@ -99,6 +100,7 @@ class MindLLMClient:
         thinking: bool = False,
         context: MindLLMRequestContext | None = None,
         timeout_sec: float | None = None,
+        extra_options: dict[str, Any] | None = None,
     ) -> tuple[Optional[Dict[str, Any]], str | None, dict[str, Any]]:
         meta: dict[str, Any] = {"route": route, "phase": context.phase_name if context else None}
         if not self._bus_enabled():
@@ -112,6 +114,8 @@ class MindLLMClient:
             "return_json": True,
             "gateway_read_timeout_sec": effective_timeout,
         }
+        if extra_options:
+            options.update(extra_options)
         if thinking:
             options["thinking"] = True
         if context is not None:
@@ -257,6 +261,7 @@ class FakeMindLLMClient:
         thinking: bool = False,
         context: MindLLMRequestContext | None = None,
         timeout_sec: float | None = None,
+        extra_options: dict[str, Any] | None = None,
     ) -> tuple[Optional[Dict[str, Any]], str | None, dict[str, Any]]:
         self.calls.append(
             {
@@ -265,6 +270,7 @@ class FakeMindLLMClient:
                 "thinking": thinking,
                 "context": context,
                 "timeout_sec": timeout_sec,
+                "extra_options": extra_options,
             }
         )
         if self._idx >= len(self._responses):

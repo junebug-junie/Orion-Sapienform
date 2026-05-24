@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     MIND_LLM_THINKING_APPRAISAL: bool = Field(default=True, alias="MIND_LLM_THINKING_APPRAISAL")
     MIND_LLM_FAIL_OPEN_LEGACY: bool = Field(default=True, alias="MIND_LLM_FAIL_OPEN_LEGACY")
     MIND_LLM_PHASE_SAFETY_MS: float = Field(default=50.0, alias="MIND_LLM_PHASE_SAFETY_MS")
+    MIND_LLM_RETURN_LOGPROBS_SEMANTIC: bool = Field(default=False, alias="MIND_LLM_RETURN_LOGPROBS_SEMANTIC")
 
     MIND_LLM_USE_BUS: bool = Field(default=True, alias="MIND_LLM_USE_BUS")
     ORION_BUS_ENABLED: bool = Field(default=True, alias="ORION_BUS_ENABLED")

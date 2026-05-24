@@ -1,0 +1,36 @@
+version: 1
+
+defaults:
+  enabled: true
+  task_type: retina_fast
+  every_n_frames: 10
+  min_seconds_between_tasks_per_camera: 5
+  max_inflight_per_camera: 1
+  request: {}
+
+global:
+  max_inflight_total: 2
+  drop_when_busy: true
+  require_image_path_exists: true
+
+cameras:
+  mock-cam-01:
+    enabled: true
+    task_type: retina_fast
+    every_n_frames: 3
+    min_seconds_between_tasks_per_camera: 2
+
+  porch_eye:
+    enabled: true
+    task_type: detect_open_vocab
+    every_n_frames: 5
+    min_seconds_between_tasks_per_camera: 3
+    request:
+      prompts:
+        - person
+        - package
+        - vehicle
+        - animal
+
+  kitchen_eye:
+    enabled: false

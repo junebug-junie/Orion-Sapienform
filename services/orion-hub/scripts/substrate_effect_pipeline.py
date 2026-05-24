@@ -19,6 +19,7 @@ from orion.substrate.appraisal import (
     select_recent_chat_molecules,
 )
 from orion.substrate.appraisal.models import RepairPressureAppraisalV1
+from orion.substrate.appraisal.view_model import pressure_label
 from orion.substrate.molecules import SubstrateMoleculeV1
 
 from .substrate_effect_cache import (
@@ -34,17 +35,6 @@ logger = logging.getLogger("orion-hub.substrate_effect_pipeline")
 _RECENT_OBSERVATIONS: OrderedDict[str, deque[SubstrateMoleculeV1]] = OrderedDict()
 _RECENT_MAX = 32
 _RECENT_SOURCES_MAX = 256
-
-
-# TODO(task-4): replace with orion.substrate.appraisal.view_model.pressure_label
-def _tmp_pressure_label(value: float) -> str:
-    if value >= 0.75:
-        return "HIGH"
-    if value >= 0.45:
-        return "MEDIUM"
-    if value >= 0.25:
-        return "LOW"
-    return "NONE"
 
 
 def _push_observation(source_id: str, mol: SubstrateMoleculeV1) -> list[SubstrateMoleculeV1]:
@@ -66,7 +56,7 @@ def _summary_dict(
 ) -> dict[str, Any]:
     level = float(appraisal.dimensions.get("level", 0.0)) if appraisal else 0.0
     confidence = float(appraisal.confidence) if appraisal else 0.0
-    level_lbl = _tmp_pressure_label(level)
+    level_lbl = pressure_label(level)
     before_mode = str(contract_before.get("mode") or "")
     after_mode = str(contract_after.get("mode") or "")
     changed = before_mode != after_mode

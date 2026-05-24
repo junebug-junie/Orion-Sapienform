@@ -84,7 +84,11 @@ class FrameRouterService:
                             continue
                         decoded = self.bus.codec.decode(data)
                         if decoded.ok and decoded.envelope:
-                            asyncio.create_task(self.dispatcher.handle_frame_envelope(decoded.envelope))
+                            _spawn(self.dispatcher.handle_frame_envelope(decoded.envelope))
+                        elif not decoded.ok:
+                            self.metrics.decode_errors_total += 1
+                            self.metrics.last_error = f"frame_decode_error: {decoded.error}"
+                            logger.warning(f"[FRAME-ROUTER] frame decode failed: {decoded.error}")
                 except Exception as exc:
                     if not self._shutdown.is_set():
                         logger.error(f"[FRAME-ROUTER] frames consumer error: {exc}")
@@ -104,7 +108,11 @@ class FrameRouterService:
                             continue
                         decoded = self.bus.codec.decode(data)
                         if decoded.ok and decoded.envelope:
-                            asyncio.create_task(self.dispatcher.handle_reply_envelope(decoded.envelope))
+                            _spawn(self.dispatcher.handle_reply_envelope(decoded.envelope))
+                        elif not decoded.ok:
+                            self.metrics.decode_errors_total += 1
+                            self.metrics.last_error = f"reply_decode_error: {decoded.error}"
+                            logger.warning(f"[FRAME-ROUTER] reply decode failed: {decoded.error}")
                 except Exception as exc:
                     if not self._shutdown.is_set():
                         logger.error(f"[FRAME-ROUTER] reply consumer error: {exc}")
@@ -148,6 +156,21 @@ class FrameRouterService:
 
 
 service = FrameRouterService()
+
+
+def _log_task_failure(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        service.metrics.last_error = f"background_task_error: {exc}"
+        logger.error(f"[FRAME-ROUTER] background task failed: {exc}")
+
+
+def _spawn(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    task.add_done_callback(_log_task_failure)
+    return task
 
 
 @asynccontextmanager

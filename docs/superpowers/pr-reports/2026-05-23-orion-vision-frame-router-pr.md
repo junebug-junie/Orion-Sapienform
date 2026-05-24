@@ -35,15 +35,19 @@ timeout sweeper + SystemHealthV1 → orion:system:health
 | `metrics.py` | `RouterMetrics`, health envelope builder |
 | `main.py` | `FrameRouterService`, FastAPI lifespan |
 
-## Code review fixes (post-review)
+## Code review fixes
 
 | Issue | Fix |
 |-------|-----|
-| Race: concurrent frames could bypass `max_inflight_*` between `decide()` and `mark_dispatched()` | `asyncio.Lock` around decide → publish → mark |
+| Race: concurrent frames could bypass `max_inflight_*` | `asyncio.Lock` around decide → publish → mark |
 | False timeout metric when reply cleared pending before sweep | Only increment `host_timeouts_total` when `clear_pending` succeeds |
-| Reply vs timeout sweep state races | Same lock for reply clear and timeout sweep |
-| `sweep_timeouts` sync while handlers are async | Made `sweep_timeouts` async; `main` awaits it |
-| Missing dispatcher contract assertions | Tests assert `reply_to` and `correlation_id` on published task |
+| Blocking `os.path.isfile` under dispatcher lock | `asyncio.to_thread` before lock; `image_path_exists` passed into `decide()` |
+| Fire-and-forget task exceptions lost | `_spawn()` + `add_done_callback`; handler try/except sets `last_error` |
+| `drop_when_busy` inert in YAML | Wired: `false` → skip reason `global_inflight_backpressure` |
+| Health missing reply/timeout counters | Added to `SystemHealthV1.details` |
+| Decode failures silent | `decode_errors_total` + warning log on frame/reply loops |
+| Policy branch test gaps | Tests for rate limit, inflight, not visible, router disabled, publish failure |
+| Host may bypass router if subscribed to frames | README deployment note |
 
 ## Requirements checklist
 
@@ -61,12 +65,12 @@ timeout sweeper + SystemHealthV1 → orion:system:health
 ```bash
 cd .worktrees/orion-vision-frame-router
 PYTHONPATH=.:services/orion-vision-frame-router pytest services/orion-vision-frame-router/tests -q
-# 17 passed
+# 23 passed
 ```
 
 ## Test plan
 
-- [x] `PYTHONPATH=.:services/orion-vision-frame-router pytest services/orion-vision-frame-router/tests -q` (17 passed)
+- [x] `PYTHONPATH=.:services/orion-vision-frame-router pytest services/orion-vision-frame-router/tests -q` (23 passed)
 - [ ] `cd services/orion-vision-frame-router && docker compose build && docker compose up -d`
 - [ ] Retina publishing frames → router dispatches sampled tasks to host intake
 - [ ] `redis-cli PSUBSCRIBE 'orion:vision:reply:*'` receives `vision.task.result` replies

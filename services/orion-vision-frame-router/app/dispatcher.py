@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import TYPE_CHECKING
 
@@ -36,14 +37,31 @@ class FrameDispatcher:
 
     async def handle_frame_envelope(self, env: BaseEnvelope) -> None:
         try:
+            await self._handle_frame_envelope_inner(env)
+        except Exception as exc:
+            self.metrics.last_error = f"frame_handler_error: {exc}"
+
+    async def _handle_frame_envelope_inner(self, env: BaseEnvelope) -> None:
+        try:
             frame = VisionFramePointerPayload.model_validate(env.payload)
         except Exception as exc:
             self.metrics.last_error = f"invalid_frame_payload: {exc}"
             return
 
         self.metrics.record_seen()
+        camera_id = frame.camera_id or "unknown"
+        image_path = (frame.image_path or "").strip()
+        image_path_exists: bool | None = None
+        if image_path and self.policy.require_image_path_exists(camera_id):
+            image_path_exists = await asyncio.to_thread(os.path.isfile, image_path)
+
         async with self._state_lock:
-            decision = self.policy.decide(env, self.state, now=time.time())
+            decision = self.policy.decide(
+                env,
+                self.state,
+                now=time.time(),
+                image_path_exists=image_path_exists,
+            )
             if not decision.should_dispatch:
                 self.metrics.record_skip(decision.reason)
                 return
@@ -75,6 +93,12 @@ class FrameDispatcher:
             self.metrics.record_dispatch()
 
     async def handle_reply_envelope(self, env: BaseEnvelope) -> None:
+        try:
+            await self._handle_reply_envelope_inner(env)
+        except Exception as exc:
+            self.metrics.last_error = f"reply_handler_error: {exc}"
+
+    async def _handle_reply_envelope_inner(self, env: BaseEnvelope) -> None:
         try:
             result = VisionTaskResultPayload.model_validate(env.payload)
         except Exception as exc:

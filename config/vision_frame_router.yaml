@@ -10,6 +10,8 @@ defaults:
 
 global:
   max_inflight_total: 2
+  # When true, frames at global inflight cap skip with reason global_inflight_limit.
+  # When false, same drop behavior but reason global_inflight_backpressure (no queue in MVP).
   drop_when_busy: true
   require_image_path_exists: true
 

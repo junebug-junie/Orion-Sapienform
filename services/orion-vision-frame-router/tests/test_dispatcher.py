@@ -20,10 +20,13 @@ from app.state import RouterState
 
 
 class FakeBus:
-    def __init__(self) -> None:
+    def __init__(self, *, fail_publish: bool = False) -> None:
         self.published: list[tuple[str, object]] = []
+        self.fail_publish = fail_publish
 
     async def publish(self, channel: str, envelope: object) -> None:
+        if self.fail_publish:
+            raise RuntimeError("publish failed")
         self.published.append((channel, envelope))
 
 
@@ -56,6 +59,7 @@ def _make_dispatcher(
     *,
     dry_run: bool = False,
     every_n_frames: int = 1,
+    fail_publish: bool = False,
 ) -> tuple[FrameDispatcher, FakeBus, Settings]:
     p = policy_path
     if every_n_frames != 1:
@@ -66,7 +70,7 @@ def _make_dispatcher(
         REQUIRE_IMAGE_PATH_EXISTS=False,
         DRY_RUN=dry_run,
     )
-    bus = FakeBus()
+    bus = FakeBus(fail_publish=fail_publish)
     policy = FrameDispatchPolicy.load(settings)
     dispatcher = FrameDispatcher(
         settings=settings,
@@ -188,3 +192,14 @@ async def test_reply_before_timeout_does_not_count_timeout(policy_path: Path) ->
     cleared = await dispatcher.sweep_timeouts(now=time.time() + settings.TASK_TIMEOUT_SECONDS + 1)
     assert cleared == 0
     assert dispatcher.metrics.host_timeouts_total == 0
+
+
+@pytest.mark.asyncio
+async def test_publish_failure_does_not_mark_inflight(policy_path: Path) -> None:
+    dispatcher, bus, _ = _make_dispatcher(policy_path, fail_publish=True)
+    await dispatcher.handle_frame_envelope(_frame_env())
+    assert bus.published == []
+    assert dispatcher.state.inflight_total() == 0
+    assert dispatcher.metrics.frames_dispatched_total == 0
+    assert dispatcher.metrics.last_error is not None
+    assert "frame_handler_error" in dispatcher.metrics.last_error

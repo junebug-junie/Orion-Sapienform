@@ -52,7 +52,26 @@ class FrameDispatchPolicy:
             return merged, camera_id
         return dict(self.defaults), "defaults"
 
-    def decide(self, env: BaseEnvelope, state: RouterState, *, now: float) -> FrameDispatchDecision:
+    def require_image_path_exists(self, camera_id: str) -> bool:
+        cam_policy, _ = self.resolve_camera_policy(camera_id)
+        return bool(
+            cam_policy.get(
+                "require_image_path_exists",
+                self.global_cfg.get("require_image_path_exists", self.settings.REQUIRE_IMAGE_PATH_EXISTS),
+            )
+        )
+
+    def drop_when_busy(self) -> bool:
+        return bool(self.global_cfg.get("drop_when_busy", True))
+
+    def decide(
+        self,
+        env: BaseEnvelope,
+        state: RouterState,
+        *,
+        now: float,
+        image_path_exists: bool | None = None,
+    ) -> FrameDispatchDecision:
         if not self.settings.ROUTER_ENABLED:
             return FrameDispatchDecision(should_dispatch=False, policy_name="env", reason="router_disabled")
 
@@ -66,20 +85,17 @@ class FrameDispatchPolicy:
             return FrameDispatchDecision(should_dispatch=False, policy_name=policy_name, reason="camera_disabled")
 
         image_path = (frame.image_path or "").strip()
-        require_exists = bool(
-            cam_policy.get(
-                "require_image_path_exists",
-                self.global_cfg.get("require_image_path_exists", self.settings.REQUIRE_IMAGE_PATH_EXISTS),
-            )
-        )
+        require_exists = self.require_image_path_exists(camera_id)
         if not image_path:
             cam_state.last_skip_reason = "missing_image_path"
             return FrameDispatchDecision(should_dispatch=False, policy_name=policy_name, reason="missing_image_path")
-        if require_exists and not os.path.isfile(image_path):
-            cam_state.last_skip_reason = "image_path_not_visible"
-            return FrameDispatchDecision(
-                should_dispatch=False, policy_name=policy_name, reason="image_path_not_visible"
-            )
+        if require_exists:
+            visible = image_path_exists if image_path_exists is not None else os.path.isfile(image_path)
+            if not visible:
+                cam_state.last_skip_reason = "image_path_not_visible"
+                return FrameDispatchDecision(
+                    should_dispatch=False, policy_name=policy_name, reason="image_path_not_visible"
+                )
 
         every_n = int(cam_policy.get("every_n_frames", self.settings.DEFAULT_EVERY_N_FRAMES))
         if every_n > 1 and (cam_state.frames_seen % every_n) != 0:
@@ -100,8 +116,9 @@ class FrameDispatchPolicy:
 
         max_total = int(self.global_cfg.get("max_inflight_total", self.settings.MAX_INFLIGHT_TOTAL))
         if state.inflight_total() >= max_total:
-            cam_state.last_skip_reason = "global_inflight_limit"
-            return FrameDispatchDecision(should_dispatch=False, policy_name=policy_name, reason="global_inflight_limit")
+            reason = "global_inflight_limit" if self.drop_when_busy() else "global_inflight_backpressure"
+            cam_state.last_skip_reason = reason
+            return FrameDispatchDecision(should_dispatch=False, policy_name=policy_name, reason=reason)
 
         task_type = str(cam_policy.get("task_type", self.settings.DEFAULT_TASK_TYPE))
         if task_type not in SUPPORTED_TASK_TYPES:

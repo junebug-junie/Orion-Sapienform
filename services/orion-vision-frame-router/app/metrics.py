@@ -21,6 +21,7 @@ class RouterMetrics:
     host_replies_total: int = 0
     host_errors_total: int = 0
     host_timeouts_total: int = 0
+    decode_errors_total: int = 0
     last_error: str | None = None
 
     def record_skip(self, reason: str) -> None:
@@ -61,6 +62,10 @@ def make_health_envelope(
             "router_enabled": router_enabled,
             "dry_run": dry_run,
             "skip_reason_counts": dict(metrics.skip_reason_counts),
+            "host_replies_total": metrics.host_replies_total,
+            "host_errors_total": metrics.host_errors_total,
+            "host_timeouts_total": metrics.host_timeouts_total,
+            "decode_errors_total": metrics.decode_errors_total,
             "last_error": metrics.last_error,
         },
     )

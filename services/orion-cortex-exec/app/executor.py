@@ -2290,19 +2290,30 @@ async def call_step_services(
                 _md_step = SimpleNamespace(verb_name="log_orion_metacognition", step_name="metacog_draft")
                 _md_lane = resolve_llm_lane_for_step(step=_md_step, ctx=ctx, settings=settings)
 
+                md_options: Dict[str, Any] = {
+                    "temperature": 0.8,
+                    "max_tokens": 1024,
+                    "response_format": {"type": "json_object"},
+                    "stream": False,
+                    **_md_lane,
+                }
+                if getattr(settings, "cortex_metacog_return_logprobs", False):
+                    md_options["return_logprobs"] = True
+                    md_options["logprobs_top_k"] = 5
+                    md_options["logprob_summary_only"] = True
+                    probe_mode = str(
+                        getattr(settings, "cortex_metacog_logprob_probe_mode", "") or ""
+                    ).strip()
+                    if probe_mode:
+                        md_options["logprob_probe_mode"] = probe_mode
+
                 request_object = ChatRequestPayload(
                     model=req_model,
                     profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
                     messages=messages_payload,
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
                     route="metacog",
-                    options={
-                        "temperature": 0.8,
-                        "max_tokens": 1024,
-                        "response_format": {"type": "json_object"},
-                        "stream": False,
-                        **_md_lane,
-                    },
+                    options=md_options,
                 )
 
                 llm_res = await llm_client.chat(

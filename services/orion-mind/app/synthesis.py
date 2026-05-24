@@ -314,6 +314,9 @@ def run_semantic_synthesis(
             "logprobs_top_k": 5,
             "logprob_summary_only": True,
         }
+        probe_mode = str(getattr(settings, "MIND_LLM_LOGPROB_PROBE_MODE", "") or "").strip()
+        if probe_mode:
+            extra_options["logprob_probe_mode"] = probe_mode
     raw, err, meta = client.request_json(
         system_prompt=_SEMANTIC_SYSTEM,
         user_prompt=_pack_prompt(pack),

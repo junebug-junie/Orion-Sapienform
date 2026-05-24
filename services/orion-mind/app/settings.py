@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     MIND_LLM_FAIL_OPEN_LEGACY: bool = Field(default=True, alias="MIND_LLM_FAIL_OPEN_LEGACY")
     MIND_LLM_PHASE_SAFETY_MS: float = Field(default=50.0, alias="MIND_LLM_PHASE_SAFETY_MS")
     MIND_LLM_RETURN_LOGPROBS_SEMANTIC: bool = Field(default=False, alias="MIND_LLM_RETURN_LOGPROBS_SEMANTIC")
+    MIND_LLM_LOGPROB_PROBE_MODE: str = Field(
+        default="",
+        alias="MIND_LLM_LOGPROB_PROBE_MODE",
+        description="Empty=OpenAI chat logprobs; native_completion=aligned llama.cpp /completion (requires gateway LLM_LOGPROB_NATIVE_COMPLETION_ENABLED).",
+    )
     MIND_LLM_UNCERTAINTY_METACOG_ENABLED: bool = Field(default=False, alias="MIND_LLM_UNCERTAINTY_METACOG_ENABLED")
     MIND_METACOG_TRIGGER_CHANNEL: str = Field(
         default="orion:equilibrium:metacog:trigger",

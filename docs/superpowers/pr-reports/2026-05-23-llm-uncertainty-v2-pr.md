@@ -61,7 +61,15 @@ Framed throughout as **language surface stability**, not factual confidence (`la
 | Native mode | `options.logprob_probe_mode=native_completion` |
 | Backend | `llamacpp` route target |
 
-**Note:** No production caller sets `logprob_probe_mode=native_completion` yet. Infrastructure is ready; wire mind/metacog/hub when product wants aligned native metrics.
+**Local enablement (committed in `.env_example`; sync `.env` on your machine):**
+
+| Service | Variables |
+|---------|-----------|
+| orion-llm-gateway | `LLM_LOGPROB_SUMMARY_ENABLED=true`, `LLM_LOGPROB_NATIVE_COMPLETION_ENABLED=true` |
+| orion-mind | `MIND_LLM_RETURN_LOGPROBS_SEMANTIC=true`, `MIND_LLM_LOGPROB_PROBE_MODE=native_completion` |
+| orion-cortex-exec | `CORTEX_METACOG_RETURN_LOGPROBS=true`, `CORTEX_METACOG_LOGPROB_PROBE_MODE=native_completion` |
+
+**Not changed (no new surface):** `orion/schemas/registry.py` (existing `JournalEntryIndexV1` entry covers new fields), `orion/bus/channels`, `requirements.txt` (no new dependencies).
 
 ## Test evidence
 

@@ -66,6 +66,7 @@ def test_semantic_synthesis_telemetry_carries_llm_uncertainty(monkeypatch: pytes
     from app.synthesis import run_semantic_synthesis
 
     monkeypatch.setattr(settings, "MIND_LLM_RETURN_LOGPROBS_SEMANTIC", True)
+    monkeypatch.setattr(settings, "MIND_LLM_LOGPROB_PROBE_MODE", "native_completion")
 
     class FakeClient:
         def request_json(self, **kwargs: Any) -> tuple[dict[str, Any] | None, str | None, dict[str, Any]]:
@@ -73,6 +74,7 @@ def test_semantic_synthesis_telemetry_carries_llm_uncertainty(monkeypatch: pytes
                 "return_logprobs": True,
                 "logprobs_top_k": 5,
                 "logprob_summary_only": True,
+                "logprob_probe_mode": "native_completion",
             }
             return _semantic_payload(), None, {"model_used": "quick", "llm_uncertainty": _UNC}
 

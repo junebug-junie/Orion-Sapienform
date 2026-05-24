@@ -23,6 +23,8 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
 # App code
 COPY services/orion-biometrics/app ./app
 COPY orion /app/orion
+COPY config/biometrics /app/config/biometrics
+COPY services/orion-biometrics/tests ./tests
 
 ENV PYTHONPATH="/app:${PYTHONPATH}"
 

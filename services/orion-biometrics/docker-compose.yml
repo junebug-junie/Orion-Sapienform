@@ -33,6 +33,9 @@ services:
       - BIOMETRICS_INDUCTION_CHANNEL=${BIOMETRICS_INDUCTION_CHANNEL}
       - BIOMETRICS_CLUSTER_CHANNEL=${BIOMETRICS_CLUSTER_CHANNEL}
       - SPARK_SIGNAL_CHANNEL=${SPARK_SIGNAL_CHANNEL}
+      - PUBLISH_BIOMETRICS_GRAMMAR=${PUBLISH_BIOMETRICS_GRAMMAR:-true}
+      - GRAMMAR_EVENT_CHANNEL=${GRAMMAR_EVENT_CHANNEL:-orion:grammar:event}
+      - NODE_CATALOG_PATH=${NODE_CATALOG_PATH:-/app/config/biometrics/node_catalog.yaml}
       - EXTERNAL_SUBSCRIBE_CHANNEL=${EXTERNAL_SUBSCRIBE_CHANNEL}
       - BIOMETRICS_MODE=${BIOMETRICS_MODE}
       - CLUSTER_PUBLISH_INTERVAL=${CLUSTER_PUBLISH_INTERVAL}
@@ -45,6 +48,7 @@ services:
       - POWER_BAND_ALPHA=${POWER_BAND_ALPHA}
 
     volumes:
+      - ../../config/biometrics:/app/config/biometrics:ro
       - /mnt/scripts/Orion-Sapienform/orion/sensors:/orion/sensors # access host gpus
       - /mnt/storage-lukewarm/logs/biometrics/logs:/app/logs
 

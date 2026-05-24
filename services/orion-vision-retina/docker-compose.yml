@@ -1,12 +1,31 @@
 services:
   orion-vision-retina:
     build: .
+    container_name: orion-vision-retina
     environment:
-      - ORION_BUS_URL=redis://redis:6379/0
-      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
+      - ORION_BUS_URL=${ORION_BUS_URL:-redis://redis:6379/0}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG:-false}
       - CHANNEL_RETINA_PUB=orion:vision:frames
+      - CHANNEL_SYSTEM_HEALTH=orion:system:health
+      - RETINA_SOURCE_TYPE=${RETINA_SOURCE_TYPE:-folder}
+      - RETINA_SOURCE=${RETINA_SOURCE:-/mnt/telemetry/vision/intake}
+      - RETINA_CAMERA_ID=${RETINA_CAMERA_ID:-retina-cam-01}
+      - RETINA_STREAM_ID=${RETINA_STREAM_ID:-retina-stream-01}
+      - RETINA_FPS=${RETINA_FPS:-1.0}
+      - FRAME_STORAGE_DIR=/mnt/telemetry/vision/frames
+      - FRAME_RETENTION_SECONDS=${FRAME_RETENTION_SECONDS:-300}
     volumes:
       - ./app:/app/app
       - ../../orion:/app/orion
+      - /mnt/telemetry/vision/frames:/mnt/telemetry/vision/frames
+      - /mnt/telemetry/vision/intake:/mnt/telemetry/vision/intake
     depends_on:
       - redis
+    # Optional USB webcam:
+    # devices:
+    #   - /dev/video0:/dev/video0
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"

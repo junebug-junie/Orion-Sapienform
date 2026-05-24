@@ -1467,6 +1467,42 @@ def api_chat_turn_substrate_effect(turn_id: str) -> Dict[str, Any]:
     return view.model_dump(mode="json")
 
 
+@router.get("/api/substrate-effect/recent")
+def api_substrate_effect_recent(limit: int = Query(default=25, ge=1, le=100)) -> Dict[str, Any]:
+    """Lightweight recent-effects feed for the Substrate tab.
+
+    Returns the per-turn summary shape, not the full view. The full view is
+    only fetched on demand via /api/chat/turn/{turn_id}/substrate-effect.
+    """
+    rows: List[Dict[str, Any]] = []
+    for snap in substrate_effect_cache.recent(limit=limit):
+        appraisal = snap.appraisal
+        level = float(appraisal.dimensions.get("level", 0.0)) if appraisal else 0.0
+        from orion.substrate.appraisal.view_model import pressure_label
+        level_lbl = pressure_label(level)
+        before_mode = str(snap.contract_before.get("mode") or "")
+        after_mode = str(snap.contract_after.get("mode") or "")
+        changed = before_mode != after_mode
+        evidence_count = len(snap.evidence)
+        rows.append({
+            "turn_id": snap.turn_id,
+            "stored_at": snap.stored_at.isoformat(),
+            "appraisal_kind": "repair_pressure" if appraisal else "none",
+            "level": level,
+            "level_label": level_lbl,
+            "behavior_applied": after_mode if changed else None,
+            "evidence_count": evidence_count,
+            "changed_behavior": changed,
+            "chip_label": (
+                f"{(after_mode if changed else 'no behavior change')} · "
+                f"{level_lbl} repair pressure · "
+                f"{evidence_count} evidence driver{'s' if evidence_count != 1 else ''}"
+            ),
+            "turn_summary": (snap.user_text[:120] + "…") if len(snap.user_text) > 120 else snap.user_text,
+        })
+    return {"rows": rows}
+
+
 @router.post("/api/chat/message/{message_id}/receipt")
 def api_chat_message_receipt(message_id: str, payload: ChatMessageReceiptRequest):
     if not settings.NOTIFY_BASE_URL:

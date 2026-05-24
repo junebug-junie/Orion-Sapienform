@@ -70,6 +70,10 @@ gh pr create --title "feat(vision-retina): canonical frame intake organ" \
   --body-file docs/superpowers/pr-reports/2026-05-23-orion-vision-retina-canonical-pr.md
 ```
 
+## Relationship to `orion-vision-host`
+
+Retina does **not** run on or inside vision-host. Host is GPU task RPC (`VisionTaskRequestPayload`, `retina_fast` profile); retina is continuous capture publishing `orion:vision:frames`. Shared: Redis bus, `image_path` on disk, `VisionFramePointerPayload` schema. Host does not auto-subscribe to frame pointers yet — see `services/orion-vision-retina/README.md`.
+
 ## Non-goals (follow-up)
 
-Substrate grammar emitters, vision council/scribe, detectors, GraphDB/SQL/vector writes.
+Substrate grammar emitters, vision council/scribe, detectors, GraphDB/SQL/vector writes, host←frames auto-bridge.

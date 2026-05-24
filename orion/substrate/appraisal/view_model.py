@@ -204,6 +204,18 @@ def _evidence_card_label(ev: RepairEvidenceV1) -> str:
     return f"{KIND_LABELS.get(ev.evidence_kind, ev.evidence_kind)} — {strength_label(ev.score)}"
 
 
+def _modes_changed(
+    contract_before: dict[str, Any],
+    contract_after: dict[str, Any],
+) -> tuple[str | None, str | None, bool]:
+    """Return (before_str, after_str, changed) using a single normalization rule."""
+    raw_before = contract_before.get("mode")
+    raw_after = contract_after.get("mode")
+    before_str = None if raw_before is None else str(raw_before)
+    after_str = None if raw_after is None else str(raw_after)
+    return before_str, after_str, before_str != after_str
+
+
 def _build_outcome(
     appraisal: RepairPressureAppraisalV1 | None,
     contract_before: dict[str, Any],
@@ -221,9 +233,7 @@ def _build_outcome(
         )
     level = float(appraisal.dimensions.get("level", 0.0))
     confidence = float(appraisal.confidence)
-    before_mode = str(contract_before.get("mode") or "")
-    after_mode = str(contract_after.get("mode") or "")
-    changed = before_mode != after_mode
+    before_mode, after_mode, changed = _modes_changed(contract_before, contract_after)
     behavior_applied = after_mode if changed else None
     lvl_lbl = pressure_label(level)
     if behavior_applied:
@@ -249,24 +259,26 @@ def _build_outcome(
 def _build_behavior_delta(
     contract_before: dict[str, Any],
     contract_after: dict[str, Any],
+    *,
+    appraisal_present: bool = True,
 ) -> BehaviorDeltaV1:
-    before_mode = contract_before.get("mode")
-    after_mode = contract_after.get("mode")
-    changed = before_mode != after_mode
+    before_mode, after_mode, changed = _modes_changed(contract_before, contract_after)
     rules = list(contract_after.get("rules") or []) if changed else []
     if changed:
         explanation = (
             "The response contract was switched because repair pressure crossed "
             "the threshold defined by apply_repair_pressure_contract."
         )
-    else:
+    elif appraisal_present:
         explanation = (
             "No response contract change was applied because repair pressure was "
             "below threshold."
         )
+    else:
+        explanation = "No response contract change was applied."
     return BehaviorDeltaV1(
-        contract_before=str(before_mode) if before_mode is not None else None,
-        contract_after=str(after_mode) if after_mode is not None else None,
+        contract_before=before_mode,
+        contract_after=after_mode,
         changed=changed,
         rules_activated=rules,
         explanation=explanation,
@@ -320,7 +332,7 @@ def _build_causal_chain(
             CausalChainStepV1(
                 index=3,
                 title="Repair evidence was detected",
-                description="; ".join(bullets) if bullets else "no evidence",
+                description="; ".join(bullets),
             )
         )
     steps.append(
@@ -349,7 +361,9 @@ def _build_causal_chain(
                 index=len(steps) + 1,
                 title="Behavior changed",
                 description=(
-                    f"The response used {KIND_LABELS.get(behavior_applied or '', behavior_applied or 'updated')}."
+                    f"The response used {KIND_LABELS.get(behavior_applied, behavior_applied)}."
+                    if behavior_applied
+                    else "The response contract changed."
                 ),
             )
         )
@@ -415,7 +429,12 @@ def _build_scorecard(appraisal: RepairPressureAppraisalV1 | None) -> ScorecardV1
     level = float(appraisal.dimensions.get("level", 0.0))
     final = pressure_label(level)
     top_two = [item.label for item in items[:2] if item.value > 0.0]
-    if top_two:
+    if len(top_two) == 1:
+        explanation = (
+            f"The score was {final.lower()} mostly because "
+            f"{top_two[0]} was the strongest contributor."
+        )
+    elif top_two:
         explanation = (
             f"The score was {final.lower()} mostly because "
             + " and ".join(top_two)
@@ -485,7 +504,11 @@ def build_substrate_effect_view(
     include_raw_debug: bool = True,
 ) -> SubstrateEffectViewV1:
     outcome = _build_outcome(appraisal, contract_before, contract_after)
-    delta = _build_behavior_delta(contract_before, contract_after)
+    delta = _build_behavior_delta(
+        contract_before,
+        contract_after,
+        appraisal_present=appraisal is not None,
+    )
     chain = _build_causal_chain(
         user_text=user_text,
         appraisal=appraisal,
@@ -500,8 +523,8 @@ def build_substrate_effect_view(
             "appraisal": appraisal.model_dump(mode="json") if appraisal else None,
             "signal": signal.model_dump(mode="json") if signal else None,
             "evidence": [ev.model_dump(mode="json") for ev in evidence],
-            "contract_before": contract_before,
-            "contract_after": contract_after,
+            "contract_before": dict(contract_before),
+            "contract_after": dict(contract_after),
         }
     return SubstrateEffectViewV1(
         turn_id=turn_id,

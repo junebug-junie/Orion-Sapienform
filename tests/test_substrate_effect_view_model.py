@@ -103,6 +103,11 @@ def test_high_pressure_view_carries_repair_concrete_delta():
     primary = view.model_dump(exclude={"raw_debug"})
     assert primary["outcome"]["summary"]
     assert primary["behavior_delta"]["explanation"]
+    assert view.scorecard is not None and view.scorecard.items
+    assert view.molecule_summaries, "molecule summaries must populate"
+    assert view.why and view.why.startswith("Detected:")
+    assert view.behavior_delta.contract_before == "default"
+    assert view.behavior_delta.contract_after == "repair_concrete"
 
 
 def test_medium_view_does_not_overstate():
@@ -143,3 +148,7 @@ def test_no_effect_returns_valid_empty_view():
     assert view.causal_chain == []
     assert view.evidence_cards == []
     assert view.molecule_summaries == []
+    assert view.behavior_delta is not None
+    assert view.behavior_delta.changed is False
+    assert view.scorecard is None
+    assert "below threshold" not in (view.behavior_delta.explanation or "")

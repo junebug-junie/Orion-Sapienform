@@ -5562,6 +5562,7 @@ loadDismissedIds();
         raw: data.raw,
         workflow: data.workflow,
         correlationId: data.correlation_id,
+        substrateEffectSummary: data.substrate_effect_summary || null,
       });
     }
     if (statusElement) statusElement.textContent = data.error ? `Synthesis failed: ${data.error}` : 'Synthesis persisted to journal.';
@@ -7268,6 +7269,12 @@ loadDismissedIds();
         disabledMindButton.disabled = true;
         disabledMindButton.title = 'Mind data unavailable for this message';
         actionRow.appendChild(disabledMindButton);
+      }
+      // Substrate Effect chip — only renders when summary is present on meta.
+      const substrateSummary = meta.substrateEffectSummary || meta.substrate_effect_summary;
+      if (substrateSummary && window.SubstrateEffectUI && typeof window.SubstrateEffectUI.renderChip === 'function') {
+        const chip = window.SubstrateEffectUI.renderChip(substrateSummary);
+        if (chip) actionRow.appendChild(chip);
       }
       if (actionRow.childNodes.length) {
         headerRow.appendChild(actionRow);
@@ -10221,6 +10228,7 @@ loadDismissedIds();
               presenceContext: d.presence_context,
               temporalPhase: d.temporal_phase,
               situationAffordances: d.situation_affordances,
+              substrateEffectSummary: d.substrate_effect_summary || null,
             });
             updateMemoryPanelFromResponse(d);
             syncSocialInspectionFromRouteDebug(d.routing_debug);
@@ -10547,6 +10555,7 @@ loadDismissedIds();
                 presenceContext: d.presence_context,
                 temporalPhase: d.temporal_phase,
                 situationAffordances: d.situation_affordances,
+                substrateEffectSummary: d.substrate_effect_summary || null,
               });
               syncSocialInspectionFromRouteDebug(d.routing_debug);
             } else if(d.error) appendMessage('System', d.error, 'text-red-400');

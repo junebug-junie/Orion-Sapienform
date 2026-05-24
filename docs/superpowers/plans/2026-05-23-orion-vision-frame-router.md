@@ -43,7 +43,7 @@ cd .worktrees/orion-vision-frame-router
 | `services/orion-vision-frame-router/app/__init__.py` | Package marker |
 | `services/orion-vision-frame-router/requirements.txt` | Service deps (no opencv/torch) |
 | `services/orion-vision-frame-router/Dockerfile` | Repo-root context image |
-| `services/orion-vision-frame-router/docker-compose.yml` | Redis + volume mounts |
+| `services/orion-vision-frame-router/docker-compose.yml` | Frame-router only; mesh Redis via `ORION_BUS_URL` |
 | `services/orion-vision-frame-router/.env_example` | Full env contract |
 | `services/orion-vision-frame-router/.env` | Copy of example (gitignored) |
 | `services/orion-vision-frame-router/README.md` | Role, channels, smoke test |
@@ -1087,7 +1087,8 @@ Reply loop uses `patterns=True` on `f"{settings.CHANNEL_REPLY_PREFIX}:*"`.
 
 ```bash
 cd services/orion-vision-frame-router
-docker compose up -d redis
+# ORION_BUS_URL must point at existing mesh Redis (see .env)
+docker compose up -d --build orion-vision-frame-router
 # with host/retina running on shared app-net + frame volume
 ```
 
@@ -1130,6 +1131,8 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8010"]
 
 - [ ] **Step 2: docker-compose.yml**
 
+Do not define a local `redis` service in this compose file. The frame router must connect to the existing Orion mesh Redis via `ORION_BUS_URL`. This service should never publish host port `6379`; Redis is shared infrastructure, not owned by the frame-router compose project.
+
 ```yaml
 services:
   orion-vision-frame-router:
@@ -1140,7 +1143,7 @@ services:
     env_file:
       - .env
     environment:
-      - ORION_BUS_URL=${ORION_BUS_URL:-redis://redis:6379/0}
+      - ORION_BUS_URL=${ORION_BUS_URL}
       - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG:-false}
       - ROUTER_POLICY_PATH=/app/config/vision_frame_router.yaml
       - DRY_RUN=${DRY_RUN:-false}
@@ -1149,15 +1152,8 @@ services:
       - ../../orion:/app/orion
       - ../../config/vision_frame_router.yaml:/app/config/vision_frame_router.yaml:ro
       - /mnt/telemetry/vision/frames:/mnt/telemetry/vision/frames:ro
-    depends_on:
-      - redis
     networks:
       - app-net
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
 
 networks:
   app-net:
@@ -1288,7 +1284,7 @@ git commit -m "test(vision-frame-router): guard against inference/capture import
 
 ## Test plan
 - [ ] pytest services/orion-vision-frame-router/tests -q
-- [ ] docker compose up frame-router + redis; SUBSCRIBE frames/intake; PSUBSCRIBE replies
+- [ ] docker compose up orion-vision-frame-router (mesh Redis via ORION_BUS_URL); SUBSCRIBE frames/intake; PSUBSCRIBE replies
 - [ ] Confirm host receives retina_fast / detect_open_vocab tasks only for sampled frames
 
 ## Risk

@@ -1989,13 +1989,25 @@ async def handle_chat_request(
     corr_id = str(uuid4())
 
     # ─── Substrate effect (best-effort, never blocks chat) ─────────────
+    # Runs sync before the cortex call so the snapshot exists when the
+    # chat result is serialized. Today the appraiser is sub-millisecond;
+    # if it ever grows costly, move to asyncio.to_thread or post-cortex.
     substrate_summary, _ = run_substrate_effect_pipeline(
         turn_id=corr_id,
         message_id=None,
         user_text=user_prompt,
         source_id=session_id,
+        # TODO: derive contract_before from the active behavior contract
+        #       once one is assembled before chat. v1 uses a fixed baseline.
         contract_before={"mode": "default"},
     )
+    if substrate_summary is not None:
+        logger.info(
+            "substrate_effect_attached corr=%s level=%s changed=%s",
+            corr_id,
+            substrate_summary.get("level_label"),
+            substrate_summary.get("changed_behavior"),
+        )
 
     context_turns = int(payload.get("context_turns") or getattr(settings, "HUB_CONTEXT_TURNS", 10))
     continuity_messages = build_continuity_messages(

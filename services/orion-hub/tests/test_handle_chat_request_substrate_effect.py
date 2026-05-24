@@ -24,7 +24,7 @@ class _FakeCortex:
 
 @pytest.fixture(autouse=True)
 def _reset_cache():
-    substrate_effect_cache._entries.clear()  # type: ignore[attr-defined]
+    substrate_effect_cache.clear()
     yield
 
 
@@ -32,8 +32,7 @@ def _make_payload(text: str) -> dict:
     return {"mode": "brain", "messages": [{"role": "user", "content": text}]}
 
 
-def test_handle_chat_request_attaches_repair_summary_for_high_pressure(monkeypatch):
-    monkeypatch.setattr(api_routes, "validate_single_verb_override", lambda *a, **k: None)
+def test_handle_chat_request_attaches_repair_summary_for_high_pressure():
     cortex = _FakeCortex()
     payload = _make_payload(
         "you gave me garbage directions — stop, build me a design spec for claude, "
@@ -47,8 +46,7 @@ def test_handle_chat_request_attaches_repair_summary_for_high_pressure(monkeypat
     assert summary["evidence_count"] >= 1
 
 
-def test_handle_chat_request_summary_marks_no_change_for_benign(monkeypatch):
-    monkeypatch.setattr(api_routes, "validate_single_verb_override", lambda *a, **k: None)
+def test_handle_chat_request_summary_marks_no_change_for_benign():
     cortex = _FakeCortex()
     payload = _make_payload("what's the weather like in Paris?")
     result = asyncio.run(api_routes.handle_chat_request(cortex, payload, "session-y", no_write=True))

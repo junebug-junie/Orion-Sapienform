@@ -48,6 +48,9 @@ class SubstrateEffectCache:
         items.reverse()  # newest first
         return items[: max(0, int(limit))]
 
+    def clear(self) -> None:
+        self._entries.clear()
+
 
 # Module-level singleton used by the Hub.
 substrate_effect_cache = SubstrateEffectCache(max_entries=256)

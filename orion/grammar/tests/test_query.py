@@ -7,7 +7,7 @@ import pytest
 
 from orion.grammar.constants import GRAMMAR_DIMENSIONS, GRAMMAR_LAYERS
 from orion.grammar.graph_view import layer_y_position
-from orion.grammar.query import get_trace_graph, list_traces
+from orion.grammar.query import get_temporal_path, get_trace_graph, list_traces
 
 
 def _trace_row(
@@ -162,3 +162,62 @@ def test_get_trace_graph_unknown_trace_returns_none() -> None:
     session.query.return_value = q
 
     assert get_trace_graph(session, "trace:missing") is None
+
+
+def _hop_row(*, hop_id: str, from_id: str, to_id: str) -> MagicMock:
+    row = MagicMock()
+    row.hop_id = hop_id
+    row.trace_id = "trace:demo"
+    row.from_atom_id = from_id
+    row.to_atom_id = to_id
+    row.hop_type = "prior_turn"
+    row.direction = "backward"
+    row.reason = "similar complaint"
+    row.confidence = 0.8
+    row.turn_distance = 3
+    row.session_distance = None
+    row.target_time_start = None
+    row.target_time_end = None
+    row.hop_json = {}
+    return row
+
+
+def test_get_temporal_path_follows_atoms_not_hop_ids() -> None:
+    """Regression: BFS must track visited atoms, not hop ids (diamond-safe)."""
+    session = MagicMock()
+    a0 = _atom_row(atom_id="atom:a0")
+    hop1 = _hop_row(hop_id="hop:1", from_id="atom:a0", to_id="atom:a1")
+    hop2 = _hop_row(hop_id="hop:2", from_id="atom:a1", to_id="atom:a2")
+
+    def query_side_effect(model: type) -> MagicMock:
+        q = MagicMock()
+        name = getattr(model, "__name__", "")
+        if name == "GrammarAtomSQL":
+            atom_id = None
+            if q.filter.call_args:
+                pass
+            first = MagicMock()
+
+            def first_for_atom():
+                for call in session._atom_filters:
+                    if call == "atom:a0":
+                        return a0
+                return a0
+
+            q.filter.return_value.first.side_effect = lambda: a0
+            q.filter.return_value.all.return_value = [a0]
+            return q
+        if name == "GrammarTemporalHopSQL":
+            q.filter.return_value.all.return_value = [hop1, hop2]
+            return q
+        return q
+
+    session.query.side_effect = query_side_effect
+    session._atom_filters = ["atom:a0"]
+
+    result = get_temporal_path(session, "atom:a0", direction="backward", limit=10)
+    assert result is not None
+    assert result["start_atom_id"] == "atom:a0"
+    assert len(result["hops"]) == 2
+    hop_ids = {h["hop_id"] for h in result["hops"]}
+    assert hop_ids == {"hop:1", "hop:2"}

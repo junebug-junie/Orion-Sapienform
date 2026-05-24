@@ -4190,10 +4190,15 @@ async def substrate_page() -> HTMLResponse:
 
 @router.get("/substrate-atlas")
 async def substrate_atlas_page() -> HTMLResponse:
+    from app.settings import get_settings
     from .main import TEMPLATES_DIR, build_hub_ui_asset_version
 
     template = (TEMPLATES_DIR / "substrate_atlas.html").read_text(encoding="utf-8")
     rendered = template.replace("{{HUB_UI_ASSET_VERSION}}", build_hub_ui_asset_version())
+    rendered = rendered.replace(
+        "{{GRAMMAR_ATLAS_POLL_INTERVAL_MS}}",
+        str(get_settings().GRAMMAR_ATLAS_POLL_INTERVAL_MS),
+    )
     return HTMLResponse(
         content=rendered,
         status_code=200,

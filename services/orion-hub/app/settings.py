@@ -320,6 +320,12 @@ class Settings(BaseSettings):
 
     # --- Grammar Atlas (substrate trace/graph read API) ---
     GRAMMAR_ATLAS_ENABLED: bool = Field(default=True, alias="GRAMMAR_ATLAS_ENABLED")
+    GRAMMAR_ATLAS_POLL_INTERVAL_MS: int = Field(
+        default=3000,
+        ge=500,
+        le=60000,
+        alias="GRAMMAR_ATLAS_POLL_INTERVAL_MS",
+    )
     GRAMMAR_ATLAS_POSTGRES_URI: str = Field(
         default="",
         alias="GRAMMAR_ATLAS_POSTGRES_URI",

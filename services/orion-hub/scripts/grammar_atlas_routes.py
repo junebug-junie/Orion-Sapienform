@@ -18,6 +18,8 @@ logger = logging.getLogger("orion-hub.grammar-atlas")
 router = APIRouter(prefix="/api/substrate/atlas", tags=["substrate-atlas"])
 
 _SQL_WRITER_ROOT = Path(__file__).resolve().parents[2] / "orion-sql-writer"
+_engine = None
+_sessionmaker = None
 
 
 def _ensure_sql_writer_on_path() -> None:
@@ -43,9 +45,12 @@ def _postgres_uri() -> str:
 
 
 def _session_factory():
+    global _engine, _sessionmaker
     uri = os.getenv("GRAMMAR_ATLAS_POSTGRES_URI") or os.getenv("DATABASE_URL", "") or _postgres_uri()
-    engine = create_engine(uri, pool_pre_ping=True)
-    return sessionmaker(bind=engine)()
+    if _sessionmaker is None:
+        _engine = create_engine(uri, pool_pre_ping=True)
+        _sessionmaker = sessionmaker(bind=_engine)
+    return _sessionmaker()
 
 
 async def _with_session(fn: Callable[[Any], Any]) -> Any:

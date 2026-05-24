@@ -1,3 +1,6 @@
+-- Substrate Atlas / Grammar Observatory (manual apply before sql-writer + Hub atlas)
+-- Apply: psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_grammar_atlas.sql
+
 create table if not exists grammar_traces (
     trace_id text primary key
   , trace_type text not null

@@ -544,6 +544,7 @@ def get_temporal_path(
 
     path_hops: list[GrammarTemporalHopSQL] = []
     visited_hops: set[str] = set()
+    visited_atoms: set[str] = {atom_id}
     queue: deque[str] = deque([atom_id])
 
     while queue and len(path_hops) < limit:
@@ -554,7 +555,8 @@ def get_temporal_path(
                 continue
             visited_hops.add(hop.hop_id)
             path_hops.append(hop)
-            if hop.to_atom_id and hop.to_atom_id not in visited_hops:
+            if hop.to_atom_id and hop.to_atom_id not in visited_atoms:
+                visited_atoms.add(hop.to_atom_id)
                 queue.append(hop.to_atom_id)
             if len(path_hops) >= limit:
                 break

@@ -247,5 +247,6 @@ def apply_grammar_event(session: Any, event: GrammarEventV1) -> bool:
         _insert_compaction(session, event.compaction, event)
     elif event.event_kind == "projection_emitted" and event.projection is not None:
         _insert_projection(session, event.projection, event)
+    # annotation_emitted: event row only (no derived child table in MVP)
 
     return True

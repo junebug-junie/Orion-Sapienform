@@ -10,7 +10,8 @@
   const STATUS = document.getElementById("atlasStatus");
   const REFRESH_BTN = document.getElementById("atlasRefreshBtn");
 
-  const POLL_MS = 3000;
+  const pollAttr = document.body && document.body.getAttribute("data-atlas-poll-ms");
+  const POLL_MS = Math.max(500, parseInt(pollAttr || "3000", 10) || 3000);
   const LAYER_COLORS = [
     "#64748b",
     "#0ea5e9",

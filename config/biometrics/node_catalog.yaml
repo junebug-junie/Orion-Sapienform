@@ -1,0 +1,70 @@
+schema_version: biometrics_node_catalog.v1
+
+defaults:
+  expected_online: true
+  role: unknown
+  capabilities: {}
+
+nodes:
+  atlas:
+    aliases:
+      - atlas
+      - atlas.tail348bbe.ts.net
+    role: inference_gpu
+    expected_online: true
+    capabilities:
+      local_llm_heavy: true
+      local_llm_quick: true
+      embedding: true
+      batch_inference: true
+      graphdb: false
+      postgres: false
+      hub: false
+      monitoring: false
+
+  athena:
+    aliases:
+      - athena
+      - athena.tail348bbe.ts.net
+    role: orchestration
+    expected_online: true
+    capabilities:
+      hub: true
+      redis_bus: true
+      graphdb: true
+      postgres: true
+      orchestration: true
+      local_llm_heavy: false
+      local_llm_quick: false
+      monitoring: false
+
+  circe:
+    aliases:
+      - circe
+      - circe.tail348bbe.ts.net
+    role: burst_gpu
+    expected_online: false
+    capabilities:
+      local_llm_heavy: true
+      local_llm_quick: true
+      training: true
+      batch_inference: true
+      dream_batch: true
+      graphdb: false
+      postgres: false
+      hub: false
+
+  prometheus:
+    aliases:
+      - prometheus
+      - prometheous
+      - prometheus.tail348bbe.ts.net
+      - prometheous.tail348bbe.ts.net
+    role: observability
+    expected_online: true
+    capabilities:
+      monitoring: true
+      logs: true
+      metrics: true
+      orchestration: false
+      local_llm_heavy: false

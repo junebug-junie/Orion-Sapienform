@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     BIOMETRICS_INDUCTION_CHANNEL: str = Field(default="orion:biometrics:induction")
     BIOMETRICS_CLUSTER_CHANNEL: str = Field(default="orion:biometrics:cluster")
     SPARK_SIGNAL_CHANNEL: str = Field(default="orion:spark:signal")
+    PUBLISH_BIOMETRICS_GRAMMAR: bool = Field(default=True)
+    GRAMMAR_EVENT_CHANNEL: str = Field(default="orion:grammar:event")
+    NODE_CATALOG_PATH: str = Field(default="/app/config/biometrics/node_catalog.yaml")
 
     # Behavior
     TELEMETRY_INTERVAL: int = Field(default=30)

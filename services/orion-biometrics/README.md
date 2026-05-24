@@ -13,6 +13,7 @@ The **Biometrics** service collects hardware telemetry (CPU, memory, GPU usage, 
 | `orion:biometrics:induction` | `BIOMETRICS_INDUCTION_CHANNEL` | `biometrics.induction.v1` | EWMA level/trend/volatility/spikes. |
 | `orion:biometrics:cluster` | `BIOMETRICS_CLUSTER_CHANNEL` | `biometrics.cluster.v1` | Role-weighted cluster aggregate (hub mode). |
 | `orion:spark:signal` | `SPARK_SIGNAL_CHANNEL` | `spark.signal.v1` | Bounded resource signal from cluster strain (hub mode). |
+| `orion:grammar:event` | `GRAMMAR_EVENT_CHANNEL` | `grammar.event.v1` | Node-scoped grammar trace (one trace per observed node per tick). |
 
 ### Environment Variables
 Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
@@ -31,6 +32,11 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `DISK_BW_MBPS` | `200.0` | Disk bandwidth scale (MB/s). |
 | `NET_BW_MBPS` | `125.0` | Network bandwidth scale (MB/s). |
 | `ORION_HEALTH_CHANNEL` | `orion:system:health` | Health check channel. |
+| `PUBLISH_BIOMETRICS_GRAMMAR` | `true` | Enable grammar trace publish after each biometrics tick. |
+| `GRAMMAR_EVENT_CHANNEL` | `orion:grammar:event` | Grammar event publish channel. |
+| `NODE_CATALOG_PATH` | `/app/config/biometrics/node_catalog.yaml` | Path to node catalog YAML (host: `config/biometrics/node_catalog.yaml`). |
+
+Node identity for grammar traces is resolved via `config/biometrics/node_catalog.yaml` (aliases canonicalize hostnames, e.g. `prometheous` → `prometheus`).
 
 ## Running & Testing
 

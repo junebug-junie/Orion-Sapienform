@@ -348,6 +348,11 @@ def _extract_journal_index_context(payload: Any) -> tuple[JournalTriggerV1 | Non
     raw_trigger = container.get("journal_trigger") or container.get("trigger")
     raw_stance = container.get("chat_stance_brief") or container.get("stance")
     raw_stance_meta = container.get("stance_metadata")
+    raw_unc = container.get("llm_uncertainty")
+    if isinstance(raw_unc, dict):
+        if not isinstance(raw_stance_meta, dict):
+            raw_stance_meta = {}
+        raw_stance_meta = {**raw_stance_meta, "llm_uncertainty": raw_unc}
 
     trigger = None
     if isinstance(raw_trigger, dict):
@@ -437,6 +442,22 @@ def _spark_meta_minimal(row: Dict[str, Any]) -> Dict[str, Any]:
     if turn_effect_summary is not None:
         out["turn_effect_summary"] = turn_effect_summary
     return _json_sanitize(out)
+
+
+def _chat_history_llm_uncertainty_scalars(unc: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(unc, dict):
+        return {}
+    available = unc.get("available")
+    return {
+        "llm_uncertainty_source": unc.get("source"),
+        "llm_mean_logprob": unc.get("mean_logprob"),
+        "llm_min_logprob": unc.get("min_logprob"),
+        "llm_mean_top1_margin": unc.get("mean_top1_margin"),
+        "llm_low_margin_token_count": unc.get("low_margin_token_count"),
+        "llm_low_logprob_token_count": unc.get("low_logprob_token_count"),
+        "llm_unstable_span_count": unc.get("unstable_span_count"),
+        "llm_uncertainty_available": available if isinstance(available, bool) else None,
+    }
 
 
 def _merge_spark_meta(existing: Any, updates: Dict[str, Any]) -> Dict[str, Any]:
@@ -836,6 +857,7 @@ def _write_row(sql_model_cls, data: dict) -> bool:
                 filtered_data["spark_meta"] = _merge_spark_meta(
                     filtered_data.get("spark_meta"), {"llm_uncertainty": unc}
                 )
+                filtered_data.update(_chat_history_llm_uncertainty_scalars(unc))
             persisted_value = filtered_data.get("thought_process")
             print(
                 "===THINK_HOP=== hop=sql_row_ready "

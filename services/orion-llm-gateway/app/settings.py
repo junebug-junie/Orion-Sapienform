@@ -72,6 +72,12 @@ class Settings(BaseSettings):
     llm_logprob_low_margin_threshold: float = Field(0.5, alias="LLM_LOGPROB_LOW_MARGIN_THRESHOLD")
     llm_logprob_low_logprob_threshold: float = Field(-2.0, alias="LLM_LOGPROB_LOW_LOGPROB_THRESHOLD")
     llm_logprob_unstable_span_min_len: int = Field(3, alias="LLM_LOGPROB_UNSTABLE_SPAN_MIN_LEN")
+    llm_logprob_native_completion_enabled: bool = Field(
+        False, alias="LLM_LOGPROB_NATIVE_COMPLETION_ENABLED"
+    )
+    llm_logprob_native_completion_max_tokens: int = Field(
+        256, alias="LLM_LOGPROB_NATIVE_COMPLETION_MAX_TOKENS"
+    )
 
     # Profiles config
     llm_profiles_config_path: Optional[Path] = Field(None, alias="LLM_PROFILES_CONFIG_PATH")

@@ -8,7 +8,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
 
 from app.llm_uncertainty import (  # noqa: E402
+    extract_llm_uncertainty_from_native_completion,
     extract_llm_uncertainty_from_openai_response,
+    native_completion_probs_to_logprob_content,
     summarize_logprob_content,
 )
 
@@ -70,3 +72,57 @@ def test_summarize_unstable_span_counts_one_run_at_min_len() -> None:
     content = [low_margin, low_margin, low_margin, high_margin]
     summary = summarize_logprob_content(content)
     assert summary["unstable_span_count"] == 1
+
+
+def _native_prob_token(token: str, logprob: float, alt_token: str, alt_logprob: float) -> dict:
+    return {
+        "token": token,
+        "logprob": logprob,
+        "top_logprobs": [
+            {"token": token, "logprob": logprob},
+            {"token": alt_token, "logprob": alt_logprob},
+        ],
+    }
+
+
+def test_native_completion_probs_to_logprob_content_reads_probs_array() -> None:
+    raw = {
+        "content": "The cat sat",
+        "probs": [
+            _native_prob_token("The", -0.1, "A", -2.5),
+            _native_prob_token(" cat", -0.3, " dog", -1.8),
+        ],
+    }
+    content = native_completion_probs_to_logprob_content(raw)
+    assert len(content) == 2
+    assert content[0]["token"] == "The"
+
+
+def test_native_completion_probs_to_logprob_content_reads_completion_probabilities() -> None:
+    raw = {
+        "completion_probabilities": [
+            {
+                "content": "Hi",
+                "probs": [_native_prob_token("Hi", -0.2, "Hey", -1.5)],
+            }
+        ]
+    }
+    content = native_completion_probs_to_logprob_content(raw)
+    assert len(content) == 1
+    assert content[0]["logprob"] == pytest.approx(-0.2, rel=1e-3)
+
+
+def test_extract_from_native_completion_sets_source() -> None:
+    raw = {
+        "content": "OK",
+        "probs": [_native_prob_token("OK", -0.2, "NO", -2.0)],
+    }
+    out = extract_llm_uncertainty_from_native_completion(raw)
+    assert out is not None
+    assert out["source"] == "llamacpp_native_completion"
+    assert out["available"] is True
+    assert out["confidence_semantics"] == "language_surface_stability_not_truth"
+
+
+def test_extract_from_native_completion_returns_none_without_probs() -> None:
+    assert extract_llm_uncertainty_from_native_completion({"content": "x"}) is None

@@ -4,6 +4,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SQL_WRITER_ROOT = Path(__file__).resolve().parents[1]
@@ -86,3 +88,45 @@ def test_chat_history_spark_meta_merges_llm_uncertainty_from_spark_meta(monkeypa
     )
     assert spark_meta["llm_uncertainty"] == _UNC
     assert spark_meta["trace_verb"] == "chat_general"
+
+
+_UNC_FULL = {
+    "schema_version": "v1",
+    "available": True,
+    "source": "llamacpp_native_completion",
+    "mean_logprob": -0.74,
+    "min_logprob": -3.5,
+    "mean_top1_margin": 1.2,
+    "low_margin_token_count": 2,
+    "low_logprob_token_count": 1,
+    "unstable_span_count": 2,
+}
+
+
+def _write_chat_history_row(monkeypatch, payload: dict):
+    sess = _FakeSession()
+    monkeypatch.setattr(worker, "get_session", lambda: sess)
+    monkeypatch.setattr(worker, "remove_session", lambda: None)
+    assert worker._write_row(worker.ChatHistoryLogSQL, payload) is True
+    return sess.row
+
+
+def test_chat_history_log_scalar_columns_from_meta_llm_uncertainty(monkeypatch) -> None:
+    row = _write_chat_history_row(
+        monkeypatch,
+        {
+            "correlation_id": "corr-scalar-unc",
+            "prompt": "hello",
+            "response": "world",
+            "meta": {"llm_uncertainty": _UNC_FULL},
+        },
+    )
+    assert row.llm_uncertainty_source == "llamacpp_native_completion"
+    assert row.llm_mean_logprob == pytest.approx(-0.74, rel=1e-3)
+    assert row.llm_min_logprob == pytest.approx(-3.5, rel=1e-3)
+    assert row.llm_mean_top1_margin == pytest.approx(1.2, rel=1e-3)
+    assert row.llm_low_margin_token_count == 2
+    assert row.llm_low_logprob_token_count == 1
+    assert row.llm_unstable_span_count == 2
+    assert row.llm_uncertainty_available is True
+    assert row.spark_meta["llm_uncertainty"] == _UNC_FULL

@@ -27,7 +27,12 @@ from orion.core.contracts.recall import RecallQueryV1
 
 from orion.schemas.agents.schemas import AgentChainRequest, DeliberationRequest
 from orion.core.verbs import VerbResultV1
-from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, find_collapse_entry, normalize_collapse_entry
+from orion.schemas.collapse_mirror import (
+    CollapseMirrorEntryV2,
+    attach_llm_uncertainty_to_collapse_payload,
+    find_collapse_entry,
+    normalize_collapse_entry,
+)
 from orion.core.verbs.base import VerbContext
 from orion.schemas.cortex.schemas import ExecutionPlan, ExecutionStep, PlanExecutionArgs, PlanExecutionRequest, StepExecutionResult
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
@@ -2285,19 +2290,30 @@ async def call_step_services(
                 _md_step = SimpleNamespace(verb_name="log_orion_metacognition", step_name="metacog_draft")
                 _md_lane = resolve_llm_lane_for_step(step=_md_step, ctx=ctx, settings=settings)
 
+                md_options: Dict[str, Any] = {
+                    "temperature": 0.8,
+                    "max_tokens": 1024,
+                    "response_format": {"type": "json_object"},
+                    "stream": False,
+                    **_md_lane,
+                }
+                if getattr(settings, "cortex_metacog_return_logprobs", False):
+                    md_options["return_logprobs"] = True
+                    md_options["logprobs_top_k"] = 5
+                    md_options["logprob_summary_only"] = True
+                    probe_mode = str(
+                        getattr(settings, "cortex_metacog_logprob_probe_mode", "") or ""
+                    ).strip()
+                    if probe_mode:
+                        md_options["logprob_probe_mode"] = probe_mode
+
                 request_object = ChatRequestPayload(
                     model=req_model,
                     profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
                     messages=messages_payload,
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
                     route="metacog",
-                    options={
-                        "temperature": 0.8,
-                        "max_tokens": 1024,
-                        "response_format": {"type": "json_object"},
-                        "stream": False,
-                        **_md_lane,
-                    },
+                    options=md_options,
                 )
 
                 llm_res = await llm_client.chat(
@@ -2339,6 +2355,14 @@ async def call_step_services(
 
                     base_entry = _fallback_metacog_draft(ctx).model_dump(mode="json")
                     base_entry = _apply_metacog_system_fields(base_entry, ctx)
+                    unc = None
+                    md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+                    if isinstance(md.get("llm_uncertainty"), dict):
+                        unc = md["llm_uncertainty"]
+                    elif hasattr(llm_res, "meta") and isinstance(llm_res.meta, dict):
+                        unc = llm_res.meta.get("llm_uncertainty")
+                    if isinstance(unc, dict):
+                        attach_llm_uncertainty_to_collapse_payload(base_entry, unc)
                     raw_trigger_null = not isinstance(ctx.get("trigger"), dict)
                     draft_mode = "fallback" if draft_error or patch_error else "llm"
                     _set_metacog_draft_telemetry(

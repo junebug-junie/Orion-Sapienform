@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from sqlalchemy.dialects import postgresql
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -109,6 +110,25 @@ def test_index_payload_builds_with_trigger_and_chat_stance() -> None:
     assert payload["active_tensions"] == ["speed_vs_depth"]
     assert payload["dream_motifs"] == ["bridge"]
     assert payload["response_hazards"] == ["overgeneralization"]
+
+
+def test_index_payload_carries_llm_uncertainty_fields() -> None:
+    unc = {
+        "schema_version": "v1",
+        "available": True,
+        "source": "llamacpp_openai_chat",
+        "mean_logprob": -0.5,
+        "mean_top1_margin": 0.9,
+        "unstable_span_count": 1,
+    }
+    payload = build_journal_entry_index_payload(
+        _base_write(),
+        stance_metadata={"llm_uncertainty": unc},
+    )
+    assert payload["llm_uncertainty"] == unc
+    assert payload["llm_mean_logprob"] == pytest.approx(-0.5, rel=1e-3)
+    assert payload["llm_mean_top1_margin"] == pytest.approx(0.9, rel=1e-3)
+    assert payload["llm_unstable_span_count"] == 1
 
 
 def test_index_payload_gracefully_handles_missing_optional_stance_fields() -> None:

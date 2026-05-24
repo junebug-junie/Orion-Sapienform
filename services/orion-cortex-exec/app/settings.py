@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     # dream_cycle / dream_synthesis only (does not affect chat_quick / chat_general budgets)
     llm_dream_max_tokens: int = Field(32768, alias="LLM_DREAM_MAX_TOKENS")
     atlas_metacog_profile_name: str | None = Field(None, alias="ATLAS_METACOG_PROFILE_NAME")
+    cortex_metacog_return_logprobs: bool = Field(False, alias="CORTEX_METACOG_RETURN_LOGPROBS")
+    cortex_metacog_logprob_probe_mode: str = Field(
+        default="",
+        alias="CORTEX_METACOG_LOGPROB_PROBE_MODE",
+        description="When CORTEX_METACOG_RETURN_LOGPROBS: empty=OpenAI chat logprobs; native_completion=aligned llama.cpp /completion.",
+    )
 
     diagnostic_mode: bool = Field(False, alias="DIAGNOSTIC_MODE")
     diagnostic_recall_timeout_sec: float = Field(5.0, alias="DIAGNOSTIC_RECALL_TIMEOUT_SEC")

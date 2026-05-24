@@ -119,7 +119,7 @@ class MindLLMClient:
             options["mind_phase"] = context.phase_name
             options["mind_router_profile_id"] = context.router_profile_id
         try:
-            content, usage, model_used = self._bus_chat(
+            content, usage, model_used, result_meta = self._bus_chat(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 route=route,
@@ -129,6 +129,10 @@ class MindLLMClient:
             )
             meta["model_used"] = model_used
             meta["usage"] = usage
+            if isinstance(result_meta, dict):
+                unc = result_meta.get("llm_uncertainty")
+                if isinstance(unc, dict):
+                    meta["llm_uncertainty"] = unc
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "mind_llm_bus_request_failed correlation_id=%s mind_run_id=%s phase=%s route=%s "
@@ -157,8 +161,8 @@ class MindLLMClient:
         options: Dict[str, Any],
         context: MindLLMRequestContext | None,
         timeout_sec: float,
-    ) -> tuple[str, dict[str, Any], str | None]:
-        async def _call() -> tuple[str, dict[str, Any], str | None]:
+    ) -> tuple[str, dict[str, Any], str | None, dict[str, Any]]:
+        async def _call() -> tuple[str, dict[str, Any], str | None, dict[str, Any]]:
             bus = OrionBusAsync(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED)
             await bus.connect()
             try:
@@ -226,7 +230,8 @@ class MindLLMClient:
                     raise RuntimeError(f"LLM bus decode failed: {decoded.error}")
                 result = ChatResultPayload.model_validate(decoded.envelope.payload)
                 usage = dict(result.usage or {})
-                return str(result.content or result.text or ""), usage, result.model_used
+                result_meta = dict(result.meta or {})
+                return str(result.content or result.text or ""), usage, result.model_used, result_meta
             finally:
                 await bus.close()
 

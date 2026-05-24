@@ -348,6 +348,11 @@ def _extract_journal_index_context(payload: Any) -> tuple[JournalTriggerV1 | Non
     raw_trigger = container.get("journal_trigger") or container.get("trigger")
     raw_stance = container.get("chat_stance_brief") or container.get("stance")
     raw_stance_meta = container.get("stance_metadata")
+    raw_unc = container.get("llm_uncertainty")
+    if isinstance(raw_unc, dict):
+        if not isinstance(raw_stance_meta, dict):
+            raw_stance_meta = {}
+        raw_stance_meta = {**raw_stance_meta, "llm_uncertainty": raw_unc}
 
     trigger = None
     if isinstance(raw_trigger, dict):

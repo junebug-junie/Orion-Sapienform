@@ -1,4 +1,4 @@
-from sqlalchemy import Column, DateTime, Index, String, Text
+from sqlalchemy import Column, DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 
 from app.db import Base
@@ -34,6 +34,11 @@ class JournalEntryIndexSQL(Base):
     active_tensions = Column(JSONB, nullable=True)
     dream_motifs = Column(JSONB, nullable=True)
     response_hazards = Column(JSONB, nullable=True)
+
+    llm_uncertainty = Column(JSONB, nullable=True)
+    llm_mean_logprob = Column(Float, nullable=True)
+    llm_mean_top1_margin = Column(Float, nullable=True)
+    llm_unstable_span_count = Column(Integer, nullable=True)
 
     __table_args__ = (
         Index("idx_journal_entry_index_created_at", "created_at"),

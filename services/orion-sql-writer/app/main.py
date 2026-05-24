@@ -321,6 +321,18 @@ async def lifespan(app: FastAPI):
                 "CREATE INDEX IF NOT EXISTS idx_journal_entry_index_correlation_id ON journal_entry_index (correlation_id);"
             )
             conn.exec_driver_sql(
+                "ALTER TABLE journal_entry_index ADD COLUMN IF NOT EXISTS llm_uncertainty JSONB;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE journal_entry_index ADD COLUMN IF NOT EXISTS llm_mean_logprob DOUBLE PRECISION;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE journal_entry_index ADD COLUMN IF NOT EXISTS llm_mean_top1_margin DOUBLE PRECISION;"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE journal_entry_index ADD COLUMN IF NOT EXISTS llm_unstable_span_count INTEGER;"
+            )
+            conn.exec_driver_sql(
                 """
                 CREATE TABLE IF NOT EXISTS evidence_units (
                     unit_id TEXT PRIMARY KEY,

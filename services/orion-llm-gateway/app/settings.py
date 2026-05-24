@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     # Timeout knobs (shared across backends)
     connect_timeout_sec: float = Field(10.0, alias="CONNECT_TIMEOUT_SEC")
     read_timeout_sec: float = Field(60.0, alias="READ_TIMEOUT_SEC")
+    llm_logprob_summary_enabled: bool = Field(False, alias="LLM_LOGPROB_SUMMARY_ENABLED")
+    llm_logprob_top_k_default: int = Field(5, alias="LLM_LOGPROB_TOP_K_DEFAULT")
+    llm_logprob_low_margin_threshold: float = Field(0.5, alias="LLM_LOGPROB_LOW_MARGIN_THRESHOLD")
+    llm_logprob_low_logprob_threshold: float = Field(-2.0, alias="LLM_LOGPROB_LOW_LOGPROB_THRESHOLD")
+    llm_logprob_unstable_span_min_len: int = Field(3, alias="LLM_LOGPROB_UNSTABLE_SPAN_MIN_LEN")
 
     # Profiles config
     llm_profiles_config_path: Optional[Path] = Field(None, alias="LLM_PROFILES_CONFIG_PATH")

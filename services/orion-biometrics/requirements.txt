@@ -6,3 +6,5 @@ pydantic-settings==2.5.2
 redis[hiredis]==5.0.7
 psycopg2-binary==2.9.9
 loguru>0.7
+PyYAML==6.0.2
+pytest==8.3.4

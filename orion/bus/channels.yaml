@@ -681,7 +681,7 @@ channels:
     kind: "event"
     schema_id: "VisionFramePointerPayload"
     producer_services: ["orion-vision-edge", "orion-vision-retina"]
-    consumer_services: ["orion-vision-edge"]
+    consumer_services: ["orion-vision-host", "orion-vision-window", "orion-vision-edge", "*"]
     stability: "experimental"
     since: "2026-01-08"
 

@@ -27,7 +27,12 @@ from orion.core.contracts.recall import RecallQueryV1
 
 from orion.schemas.agents.schemas import AgentChainRequest, DeliberationRequest
 from orion.core.verbs import VerbResultV1
-from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, find_collapse_entry, normalize_collapse_entry
+from orion.schemas.collapse_mirror import (
+    CollapseMirrorEntryV2,
+    attach_llm_uncertainty_to_collapse_payload,
+    find_collapse_entry,
+    normalize_collapse_entry,
+)
 from orion.core.verbs.base import VerbContext
 from orion.schemas.cortex.schemas import ExecutionPlan, ExecutionStep, PlanExecutionArgs, PlanExecutionRequest, StepExecutionResult
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
@@ -2339,6 +2344,14 @@ async def call_step_services(
 
                     base_entry = _fallback_metacog_draft(ctx).model_dump(mode="json")
                     base_entry = _apply_metacog_system_fields(base_entry, ctx)
+                    unc = None
+                    md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+                    if isinstance(md.get("llm_uncertainty"), dict):
+                        unc = md["llm_uncertainty"]
+                    elif hasattr(llm_res, "meta") and isinstance(llm_res.meta, dict):
+                        unc = llm_res.meta.get("llm_uncertainty")
+                    if isinstance(unc, dict):
+                        attach_llm_uncertainty_to_collapse_payload(base_entry, unc)
                     raw_trigger_null = not isinstance(ctx.get("trigger"), dict)
                     draft_mode = "fallback" if draft_error or patch_error else "llm"
                     _set_metacog_draft_telemetry(

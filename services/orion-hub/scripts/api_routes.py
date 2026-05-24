@@ -45,6 +45,8 @@ from .cortex_request_builder import (
 )
 from .mutation_cognition_context import build_mutation_cognition_context
 from .substrate_effect_pipeline import run_substrate_effect_pipeline
+from orion.substrate.appraisal.view_model import build_substrate_effect_view
+from .substrate_effect_cache import substrate_effect_cache
 from .autonomy_constitution import (
     COGNITIVE_LIVE_APPLY_ENABLED,
     PRODUCTION_RECALL_MODE,
@@ -1439,6 +1441,30 @@ def api_chat_messages(limit: int = 50, status: Optional[str] = None, session_id:
     except Exception as exc:
         logger.warning("Failed to fetch chat messages: %s", exc)
         return []
+
+
+@router.get("/api/chat/turn/{turn_id}/substrate-effect")
+def api_chat_turn_substrate_effect(turn_id: str) -> Dict[str, Any]:
+    """Return the operator-readable Substrate Effect view for a chat turn.
+
+    404 only when the turn_id is unknown. Turns where the appraiser ran but
+    produced no behavior change still return 200 with a valid (empty-summary)
+    view.
+    """
+    snap = substrate_effect_cache.get(turn_id)
+    if snap is None:
+        raise HTTPException(status_code=404, detail="turn not found")
+    view = build_substrate_effect_view(
+        turn_id=snap.turn_id,
+        message_id=snap.message_id,
+        user_text=snap.user_text,
+        appraisal=snap.appraisal,
+        signal=snap.signal,
+        evidence=snap.evidence,
+        contract_before=snap.contract_before,
+        contract_after=snap.contract_after,
+    )
+    return view.model_dump(mode="json")
 
 
 @router.post("/api/chat/message/{message_id}/receipt")

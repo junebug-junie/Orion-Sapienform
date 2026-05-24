@@ -921,8 +921,14 @@ def _execute_llamacpp_native_completion(
 
         raw_out = dict(raw_data)
         if opts.get("logprob_summary_only", True):
-            if isinstance(raw_out.get("probs"), list):
-                raw_out = {k: v for k, v in raw_out.items() if k not in ("probs", "completion_probabilities")}
+            if isinstance(raw_out.get("probs"), list) or isinstance(
+                raw_out.get("completion_probabilities"), list
+            ):
+                raw_out = {
+                    k: v
+                    for k, v in raw_out.items()
+                    if k not in ("probs", "completion_probabilities")
+                }
 
         return {
             "text": text,

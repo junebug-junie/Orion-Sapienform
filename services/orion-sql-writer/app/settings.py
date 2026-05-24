@@ -68,6 +68,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "world.pulse.publish.status.v1": "WorldPulsePublishStatusSQL",
     "hub.messages.create.v1": "WorldPulseHubMessageSQL",
     "mind.run.artifact.v1": "MindRunSQL",
+    "grammar.event.v1": "GrammarEventSQL",
 }
 
 
@@ -147,6 +148,7 @@ class Settings(BaseSettings):
             "orion:world_pulse:publish:status",
             "orion:hub:messages:create",
             "orion:mind:artifact",
+            "orion:grammar:event",
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )

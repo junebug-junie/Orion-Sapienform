@@ -68,6 +68,7 @@ from app.models import (
     WorldPulseWorthReadingSQL,
     WorldPulseWorthWatchingSQL,
     MindRunSQL,
+    GrammarEventSQL,
 )
 from orion.evidence_index import build_evidence_units
 
@@ -113,6 +114,7 @@ from orion.core.schemas.endogenous_runtime import EndogenousRuntimeExecutionReco
 from orion.core.schemas.calibration_adoption import CalibrationProfileAuditV1
 from orion.schemas.evidence_index import EvidenceUnitV1
 from orion.schemas.mind.artifact import MindRunArtifactV1
+from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.world_pulse import (
     ClaimRecordV1,
     DailyWorldPulseItemV1,
@@ -229,6 +231,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "WorldPulsePublishStatusSQL": (WorldPulsePublishStatusSQL, None),
     "MindRunSQL": (MindRunSQL, MindRunArtifactV1),
     "ChatResponseFeedbackSQL": (ChatResponseFeedbackSQL, ChatResponseFeedbackV1),
+    "GrammarEventSQL": (GrammarEventSQL, GrammarEventV1),
 }
 
 
@@ -1206,6 +1209,14 @@ async def _write(
 
 
 async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
+    if env.kind == "grammar.event.v1":
+        from app.grammar_ledger_handler import persist_grammar_event
+
+        payload = env.payload if isinstance(env.payload, dict) else {}
+        event = GrammarEventV1.model_validate(payload)
+        await asyncio.to_thread(persist_grammar_event, event)
+        return
+
     route_key = settings.route_map.get(env.kind)
 
     async def _persist_evidence_units() -> bool:

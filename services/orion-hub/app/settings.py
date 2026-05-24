@@ -318,6 +318,20 @@ class Settings(BaseSettings):
     SUBSTRATE_GRAPHDB_USER: str = Field(default="", alias="SUBSTRATE_GRAPHDB_USER")
     SUBSTRATE_GRAPHDB_PASS: str = Field(default="", alias="SUBSTRATE_GRAPHDB_PASS")
 
+    # --- Grammar Atlas (substrate trace/graph read API) ---
+    GRAMMAR_ATLAS_ENABLED: bool = Field(default=True, alias="GRAMMAR_ATLAS_ENABLED")
+    GRAMMAR_ATLAS_POLL_INTERVAL_MS: int = Field(
+        default=3000,
+        ge=500,
+        le=60000,
+        alias="GRAMMAR_ATLAS_POLL_INTERVAL_MS",
+    )
+    GRAMMAR_ATLAS_POSTGRES_URI: str = Field(
+        default="",
+        alias="GRAMMAR_ATLAS_POSTGRES_URI",
+        description="Optional Postgres DSN for grammar_* tables; falls back to DATABASE_URL.",
+    )
+
     MEMORY_GRAPH_APPROVAL_BACKEND: str = Field(default="auto", alias="MEMORY_GRAPH_APPROVAL_BACKEND")
     RDF_STORE_GRAPH_STORE_URL: str = Field(default="", alias="RDF_STORE_GRAPH_STORE_URL")
     RDF_STORE_UPDATE_URL: str = Field(default="", alias="RDF_STORE_UPDATE_URL")

@@ -51,6 +51,7 @@ from orion.schemas.cortex.contracts import (
 from orion.schemas.cortex.exec import CortexExecRequestPayload, CortexExecResultPayload
 from orion.schemas.cortex.schemas import PlanExecutionRequest, PlanExecutionResult
 from orion.schemas.mind.artifact import MindRunArtifactV1
+from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.substrate_telemetry import SubstrateTierOutcomesPayloadV1
 from orion.schemas.agents.bound_capability import (
     BoundCapabilityExecutionFailureV1,
@@ -523,6 +524,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "RecallAdapterDiagnosticsV1": RecallAdapterDiagnosticsV1,
     "MindRunArtifactV1": MindRunArtifactV1,
     "SubstrateTierOutcomesPayloadV1": SubstrateTierOutcomesPayloadV1,
+    "GrammarEventV1": GrammarEventV1,
     "CortexClientRequest": CortexClientRequest,
     "CortexClientResult": CortexClientResult,
     "AgentTraceToolStatV1": AgentTraceToolStatV1,

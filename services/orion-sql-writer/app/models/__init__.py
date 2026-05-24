@@ -55,6 +55,15 @@ from .world_pulse import (
     WorldPulseWorthWatchingSQL,
 )
 from .mind_run import MindRunSQL
+from .grammar_trace import (
+    GrammarAtomSQL,
+    GrammarCompactionSQL,
+    GrammarEdgeSQL,
+    GrammarEventSQL,
+    GrammarProjectionSQL,
+    GrammarTemporalHopSQL,
+    GrammarTraceSQL,
+)
 
 __all__ = [
     "CollapseEnrichment",
@@ -106,4 +115,11 @@ __all__ = [
     "WorldPulseContextCapsuleSQL",
     "WorldPulsePublishStatusSQL",
     "MindRunSQL",
+    "GrammarTraceSQL",
+    "GrammarEventSQL",
+    "GrammarAtomSQL",
+    "GrammarEdgeSQL",
+    "GrammarTemporalHopSQL",
+    "GrammarCompactionSQL",
+    "GrammarProjectionSQL",
 ]

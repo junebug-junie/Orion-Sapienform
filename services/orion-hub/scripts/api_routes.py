@@ -4188,6 +4188,23 @@ async def substrate_page() -> HTMLResponse:
     )
 
 
+@router.get("/substrate-atlas")
+async def substrate_atlas_page() -> HTMLResponse:
+    from .main import TEMPLATES_DIR, build_hub_ui_asset_version
+
+    template = (TEMPLATES_DIR / "substrate_atlas.html").read_text(encoding="utf-8")
+    rendered = template.replace("{{HUB_UI_ASSET_VERSION}}", build_hub_ui_asset_version())
+    return HTMLResponse(
+        content=rendered,
+        status_code=200,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
+
 @router.get("/api/signals/layers")
 async def api_signals_layers() -> Dict[str, Any]:
     """Organ layer taxonomy for Organ Signals mesh filters (Runtime Trace Nexus B0)."""

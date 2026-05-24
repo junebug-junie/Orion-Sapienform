@@ -138,6 +138,10 @@ PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc)
 
 router = APIRouter()
 
+from .grammar_atlas_routes import router as grammar_atlas_router
+
+router.include_router(grammar_atlas_router)
+
 
 def _hub_uses_host_network_mode() -> bool:
     mode = str(os.getenv("HUB_DOCKER_NETWORK_MODE", "")).strip().lower()

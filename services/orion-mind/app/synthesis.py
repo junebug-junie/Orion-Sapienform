@@ -56,6 +56,7 @@ from .llm_client import MindLLMClientProtocol
 from .llm_context import MindLLMRequestContext
 from .phase_telemetry import MindPhaseTelemetry
 from .settings import settings
+from .uncertainty_metacog import maybe_publish_llm_surface_instability_trigger
 
 _SEMANTIC_SYSTEM = """You extract grounded semantic claims from evidence for an internal cognition organ.
 You are NOT writing the user-facing reply.
@@ -337,6 +338,7 @@ def run_semantic_synthesis(
     )
     if isinstance(meta.get("llm_uncertainty"), dict):
         telemetry.llm_uncertainty = meta["llm_uncertainty"]
+    maybe_publish_llm_surface_instability_trigger(telemetry, context=context)
     if raw is None:
         telemetry.status = "failed"
         return None, err or "semantic_synthesis_failed", telemetry

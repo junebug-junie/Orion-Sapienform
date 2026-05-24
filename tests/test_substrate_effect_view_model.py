@@ -12,23 +12,33 @@ def test_pressure_label_buckets():
     assert pressure_label(0.90) == "HIGH"
     assert pressure_label(0.75) == "HIGH"
     assert pressure_label(0.50) == "MEDIUM"
+    assert pressure_label(0.45) == "MEDIUM"
     assert pressure_label(0.30) == "LOW"
+    assert pressure_label(0.25) == "LOW"
     assert pressure_label(0.10) == "NONE"
 
 
 def test_strength_label_buckets():
     assert strength_label(0.95) == "Very strong"
+    assert strength_label(0.85) == "Very strong"
     assert strength_label(0.70) == "Strong"
+    assert strength_label(0.65) == "Strong"
     assert strength_label(0.50) == "Medium"
+    assert strength_label(0.45) == "Medium"
     assert strength_label(0.30) == "Low"
+    assert strength_label(0.25) == "Low"
     assert strength_label(0.10) == "Very low"
 
 
 def test_confidence_label_buckets():
     assert confidence_label(0.95) == "Very high"
+    assert confidence_label(0.85) == "Very high"
     assert confidence_label(0.70) == "High"
+    assert confidence_label(0.65) == "High"
     assert confidence_label(0.50) == "Medium"
+    assert confidence_label(0.45) == "Medium"
     assert confidence_label(0.30) == "Low"
+    assert confidence_label(0.25) == "Low"
     assert confidence_label(0.10) == "Very low"
 
 

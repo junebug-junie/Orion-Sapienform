@@ -4,3 +4,5 @@ redis[hiredis]==5.0.7
 pydantic==2.9.2
 pydantic-settings==2.5.2
 loguru==0.7.2
+opencv-python-headless==4.10.0.84
+numpy==1.26.4

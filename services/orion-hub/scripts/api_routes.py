@@ -141,6 +141,10 @@ PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc)
 
 router = APIRouter()
 
+from .grammar_atlas_routes import router as grammar_atlas_router
+
+router.include_router(grammar_atlas_router)
+
 
 def _hub_uses_host_network_mode() -> bool:
     mode = str(os.getenv("HUB_DOCKER_NETWORK_MODE", "")).strip().lower()
@@ -4261,6 +4265,28 @@ async def substrate_page() -> HTMLResponse:
 
     template = (TEMPLATES_DIR / "substrate.html").read_text(encoding="utf-8")
     rendered = template.replace("{{HUB_UI_ASSET_VERSION}}", build_hub_ui_asset_version())
+    return HTMLResponse(
+        content=rendered,
+        status_code=200,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
+
+@router.get("/substrate-atlas")
+async def substrate_atlas_page() -> HTMLResponse:
+    from app.settings import get_settings
+    from .main import TEMPLATES_DIR, build_hub_ui_asset_version
+
+    template = (TEMPLATES_DIR / "substrate_atlas.html").read_text(encoding="utf-8")
+    rendered = template.replace("{{HUB_UI_ASSET_VERSION}}", build_hub_ui_asset_version())
+    rendered = rendered.replace(
+        "{{GRAMMAR_ATLAS_POLL_INTERVAL_MS}}",
+        str(get_settings().GRAMMAR_ATLAS_POLL_INTERVAL_MS),
+    )
     return HTMLResponse(
         content=rendered,
         status_code=200,

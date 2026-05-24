@@ -424,7 +424,7 @@ channels:
   - name: "orion:exec:request:VisionHostService"
     kind: "request"
     schema_id: "VisionTaskRequestPayload"
-    producer_services: ["orion-cortex-exec", "orion-hub", "orion-vision-host"]
+    producer_services: ["orion-cortex-exec", "orion-hub", "orion-vision-host", "orion-vision-frame-router"]
     consumer_services: ["orion-vision-host"]
     stability: "experimental"
     since: "2026-01-08"
@@ -434,7 +434,9 @@ channels:
     schema_id: "VisionTaskResultPayload"
     message_kind: "vision.task.result"
     producer_services: ["orion-vision-host"]
-    consumer_services: ["*"]
+    consumer_services:
+      - "orion-vision-frame-router"
+      - "*"
     stability: "experimental"
     since: "2026-05-03"
 
@@ -681,7 +683,12 @@ channels:
     kind: "event"
     schema_id: "VisionFramePointerPayload"
     producer_services: ["orion-vision-edge", "orion-vision-retina"]
-    consumer_services: ["orion-vision-edge"]
+    consumer_services:
+      - "orion-vision-frame-router"
+      - "orion-vision-host"
+      - "orion-vision-window"
+      - "orion-vision-edge"
+      - "*"
     stability: "experimental"
     since: "2026-01-08"
 
@@ -1778,3 +1785,12 @@ channels:
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-05-02"
+
+  - name: "orion:grammar:event"
+    kind: "event"
+    schema_id: "GrammarEventV1"
+    message_kind: "grammar.event.v1"
+    producer_services: ["orion-vision-retina", "orion-hub", "orion-vision-edge", "orion-vision-window"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-05-23"

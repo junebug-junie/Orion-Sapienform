@@ -638,6 +638,10 @@ loadDismissedIds();
   const substratePanel = document.getElementById("substrate");
   const substratePanelFrame = document.getElementById("substratePanelFrame");
   const substratePanelRefresh = document.getElementById("substratePanelRefresh");
+  const substrateAtlasTabButton = document.getElementById("substrateAtlasTabButton");
+  const substrateAtlasPanel = document.getElementById("substrate-atlas");
+  const substrateAtlasPanelFrame = document.getElementById("substrateAtlasPanelFrame");
+  const substrateAtlasPanelRefresh = document.getElementById("substrateAtlasPanelRefresh");
   const pressureAnalyticsTabButton = document.getElementById("pressureAnalyticsTabButton");
   const pressurePanel = document.getElementById("pressure");
   const pressureAnalyticsFrame = document.getElementById("pressureAnalyticsFrame");
@@ -912,10 +916,14 @@ loadDismissedIds();
     if (tabKey === "forge" && !forgePanel) {
       effectiveTab = "hub";
     }
+    if (tabKey === "substrate-atlas" && !substrateAtlasPanel) {
+      effectiveTab = "hub";
+    }
     const isHub = effectiveTab === "hub";
     const isTopicStudio = effectiveTab === "topic-studio";
     const isServiceLogs = effectiveTab === "service-logs";
     const isSubstrate = effectiveTab === "substrate";
+    const isSubstrateAtlas = effectiveTab === "substrate-atlas";
     const isMemory = effectiveTab === "memory";
     const isPressure = effectiveTab === "pressure";
     const isMind = effectiveTab === "mind";
@@ -925,6 +933,9 @@ loadDismissedIds();
     topicStudioPanel.classList.toggle("hidden", !isTopicStudio);
     serviceLogsPanel.classList.toggle("hidden", !isServiceLogs);
     substratePanel.classList.toggle("hidden", !isSubstrate);
+    if (substrateAtlasPanel) {
+      substrateAtlasPanel.classList.toggle("hidden", !isSubstrateAtlas);
+    }
     if (memoryPanel) {
       memoryPanel.classList.toggle("hidden", !isMemory);
       if (isMemory) {
@@ -959,6 +970,9 @@ loadDismissedIds();
     styleTabButton(topicStudioTabButton, isTopicStudio);
     styleTabButton(serviceLogsTabButton, isServiceLogs);
     styleTabButton(substrateTabButton, isSubstrate);
+    if (substrateAtlasTabButton) {
+      styleTabButton(substrateAtlasTabButton, isSubstrateAtlas);
+    }
     if (memoryTabButton) {
       styleTabButton(memoryTabButton, isMemory);
     }
@@ -1516,6 +1530,8 @@ loadDismissedIds();
       setActiveTab("service-logs");
     } else if (h === "#substrate") {
       setActiveTab("substrate");
+    } else if (h === "#substrate-atlas" && substrateAtlasPanel && substrateAtlasTabButton) {
+      setActiveTab("substrate-atlas");
     } else if (h === "#pressure" && pressurePanel && pressureAnalyticsTabButton) {
       setActiveTab("pressure");
     } else if (h === "#memory" && memoryPanel && memoryTabButton) {
@@ -1527,7 +1543,14 @@ loadDismissedIds();
     } else if (h === "#forge" && forgePanel && forgeTabButton) {
       setActiveTab("forge");
     } else {
-      if (h === "#pressure" || h === "#memory" || h === "#mind" || h === "#signals" || h === "#forge") {
+      if (
+        h === "#pressure"
+        || h === "#memory"
+        || h === "#mind"
+        || h === "#signals"
+        || h === "#forge"
+        || h === "#substrate-atlas"
+      ) {
         history.replaceState(null, "", "#hub");
       }
       setActiveTab("hub");
@@ -11219,6 +11242,13 @@ loadDismissedIds();
       setActiveTab("substrate");
       history.replaceState(null, "", "#substrate");
     });
+    if (substrateAtlasTabButton && substrateAtlasPanel) {
+      substrateAtlasTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("substrate-atlas");
+        history.replaceState(null, "", "#substrate-atlas");
+      });
+    }
     if (memoryTabButton) {
       memoryTabButton.addEventListener("click", (event) => {
         event.preventDefault();
@@ -11263,6 +11293,16 @@ loadDismissedIds();
   if (substratePanelRefresh && substratePanelFrame) {
     substratePanelRefresh.addEventListener("click", () => {
       substratePanelFrame.contentWindow?.location.reload();
+    });
+  }
+
+  if (substrateAtlasPanelRefresh && substrateAtlasPanelFrame) {
+    substrateAtlasPanelRefresh.addEventListener("click", () => {
+      try {
+        substrateAtlasPanelFrame.contentWindow?.location.reload();
+      } catch {
+        /* ignore */
+      }
     });
   }
 

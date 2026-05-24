@@ -83,4 +83,12 @@ def build_journal_entry_index_payload(
         else:
             payload[field] = _list_of_str(stance_metadata.get(field))
 
+    unc = stance_metadata.get("llm_uncertainty")
+    if not isinstance(unc, dict):
+        unc = None
+    payload["llm_uncertainty"] = unc
+    payload["llm_mean_logprob"] = unc.get("mean_logprob") if isinstance(unc, dict) else None
+    payload["llm_mean_top1_margin"] = unc.get("mean_top1_margin") if isinstance(unc, dict) else None
+    payload["llm_unstable_span_count"] = unc.get("unstable_span_count") if isinstance(unc, dict) else None
+
     return payload

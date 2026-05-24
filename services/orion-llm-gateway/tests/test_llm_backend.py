@@ -13,6 +13,7 @@ from app.llm_backend import (  # noqa: E402
     _extract_vector_from_openai_response,
     _split_think_blocks,
     _serialize_messages,
+    _execute_llamacpp_native_completion,
     _execute_openai_chat,
     _load_route_targets,
     run_llm_chat,
@@ -334,6 +335,100 @@ class TestLLMBackendExecution(unittest.TestCase):
             _load_route_targets.cache_clear()
 
     @patch("app.llm_backend._common_http_client")
+    def test_execute_openai_chat_forwards_logprobs_when_requested(self, mock_client_factory):
+        mock_client = MagicMock()
+        mock_client_factory.return_value.__enter__.return_value = mock_client
+        mock_client.post.return_value.status_code = 200
+        mock_client.post.return_value.json.return_value = {
+            "choices": [{
+                "message": {"content": "OK"},
+                "logprobs": {
+                    "content": [
+                        {"token": "OK", "logprob": -0.2, "top_logprobs": [
+                            {"token": "OK", "logprob": -0.2},
+                            {"token": "NO", "logprob": -2.0},
+                        ]},
+                    ]
+                },
+            }]
+        }
+        body = ChatBody(
+            messages=[ChatMessage(role="user", content="hi")],
+            options={"return_logprobs": True, "logprobs_top_k": 3},
+        )
+        with patch.object(settings, "llm_logprob_summary_enabled", True):
+            result = _execute_openai_chat(
+                body=body,
+                model="test-model",
+                base_url="http://localhost",
+                backend_name="llamacpp",
+            )
+        args, kwargs = mock_client.post.call_args
+        payload = kwargs["json"]
+        assert payload.get("logprobs") is True
+        assert payload.get("top_logprobs") == 3
+        assert isinstance(result.get("llm_uncertainty"), dict)
+        assert result["llm_uncertainty"].get("available") is True
+        assert "logprobs" not in (result.get("raw") or {}).get("choices", [{}])[0]
+
+    @patch("app.llm_backend._common_http_client")
+    def test_execute_openai_chat_skips_logprobs_when_summary_disabled(self, mock_client_factory):
+        mock_client = MagicMock()
+        mock_client_factory.return_value.__enter__.return_value = mock_client
+        mock_client.post.return_value.status_code = 200
+        mock_client.post.return_value.json.return_value = {
+            "choices": [{"message": {"content": "OK"}}]
+        }
+        body = ChatBody(
+            messages=[ChatMessage(role="user", content="hi")],
+            options={"return_logprobs": True},
+        )
+        with patch.object(settings, "llm_logprob_summary_enabled", False):
+            result = _execute_openai_chat(
+                body=body,
+                model="test-model",
+                base_url="http://localhost",
+                backend_name="llamacpp",
+            )
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert "logprobs" not in payload
+        assert result.get("llm_uncertainty") is None
+
+    @patch("app.llm_backend._common_http_client")
+    def test_execute_openai_chat_keeps_raw_logprobs_when_summary_only_false(self, mock_client_factory):
+        mock_client = MagicMock()
+        mock_client_factory.return_value.__enter__.return_value = mock_client
+        logprobs_block = {
+            "content": [
+                {"token": "OK", "logprob": -0.2, "top_logprobs": [
+                    {"token": "OK", "logprob": -0.2},
+                    {"token": "NO", "logprob": -2.0},
+                ]},
+            ]
+        }
+        mock_client.post.return_value.status_code = 200
+        mock_client.post.return_value.json.return_value = {
+            "choices": [{"message": {"content": "OK"}, "logprobs": logprobs_block}]
+        }
+        body = ChatBody(
+            messages=[ChatMessage(role="user", content="hi")],
+            options={
+                "return_logprobs": True,
+                "logprob_summary_only": False,
+            },
+        )
+        with patch.object(settings, "llm_logprob_summary_enabled", True):
+            result = _execute_openai_chat(
+                body=body,
+                model="test-model",
+                base_url="http://localhost",
+                backend_name="llamacpp",
+            )
+        raw_choice = (result.get("raw") or {}).get("choices", [{}])[0]
+        assert "logprobs" in raw_choice
+        assert isinstance(result.get("llm_uncertainty"), dict)
+
+    @patch("app.llm_backend._common_http_client")
     def test_execute_openai_chat_does_not_promote_inline_think_to_structured_reasoning(self, mock_client_factory):
         mock_client = MagicMock()
         mock_client_factory.return_value.__enter__.return_value = mock_client
@@ -370,6 +465,95 @@ class TestLLMBackendExecution(unittest.TestCase):
         self.assertEqual(result.get("text"), "Visible answer")
         self.assertIsNone(result.get("reasoning_content"))
         self.assertEqual(result.get("inline_think_content"), "scratchpad only")
+
+    @patch("app.llm_backend._common_http_client")
+    def test_execute_llamacpp_native_completion_apply_template_then_completion(self, mock_client_factory):
+        mock_client = MagicMock()
+        mock_client_factory.return_value.__enter__.return_value = mock_client
+
+        apply_resp = MagicMock()
+        apply_resp.raise_for_status = MagicMock()
+        apply_resp.json.return_value = {"prompt": "<|user|>hi<|assistant|>"}
+
+        completion_resp = MagicMock()
+        completion_resp.raise_for_status = MagicMock()
+        completion_resp.json.return_value = {
+            "content": "OK",
+            "probs": [
+                {
+                    "token": "OK",
+                    "logprob": -0.2,
+                    "top_logprobs": [
+                        {"token": "OK", "logprob": -0.2},
+                        {"token": "NO", "logprob": -2.0},
+                    ],
+                }
+            ],
+        }
+
+        mock_client.post.side_effect = [apply_resp, completion_resp]
+
+        body = ChatBody(
+            messages=[ChatMessage(role="user", content="hi")],
+            options={
+                "return_logprobs": True,
+                "logprob_probe_mode": "native_completion",
+                "logprobs_top_k": 5,
+                "max_tokens": 64,
+            },
+        )
+        with patch.object(settings, "llm_logprob_summary_enabled", True):
+            result = _execute_llamacpp_native_completion(
+                body=body,
+                model="test-model",
+                base_url="http://llamacpp:8080",
+                backend_name="llamacpp",
+            )
+
+        self.assertEqual(mock_client.post.call_count, 2)
+        apply_url = mock_client.post.call_args_list[0][0][0]
+        completion_url = mock_client.post.call_args_list[1][0][0]
+        self.assertTrue(apply_url.endswith("/apply-template"))
+        self.assertTrue(completion_url.endswith("/completion"))
+        completion_payload = mock_client.post.call_args_list[1].kwargs["json"]
+        self.assertEqual(completion_payload["n_probs"], 5)
+        self.assertIs(completion_payload["post_sampling_probs"], False)
+        self.assertEqual(result.get("text"), "OK")
+        self.assertEqual(result["llm_uncertainty"]["source"], "llamacpp_native_completion")
+        self.assertTrue(result["llm_uncertainty"]["available"])
+
+    @patch("app.llm_backend._execute_llamacpp_native_completion")
+    @patch("app.llm_backend._execute_openai_chat")
+    def test_run_llm_chat_routes_native_completion_when_opted_in(self, mock_openai, mock_native):
+        mock_native.return_value = {
+            "text": "native",
+            "spark_meta": {},
+            "raw": {},
+            "llm_uncertainty": {"available": True},
+        }
+        original = settings.llm_route_table_json
+        try:
+            settings.llm_route_table_json = (
+                '{"chat":{"url":"http://llamacpp:8080","served_by":"atlas","backend":"llamacpp"}}'
+            )
+            _load_route_targets.cache_clear()
+            with patch.object(settings, "llm_logprob_summary_enabled", True), patch.object(
+                settings, "llm_logprob_native_completion_enabled", True
+            ):
+                run_llm_chat(
+                    ChatBody(
+                        messages=[ChatMessage(role="user", content="hi")],
+                        options={
+                            "return_logprobs": True,
+                            "logprob_probe_mode": "native_completion",
+                        },
+                    )
+                )
+            mock_native.assert_called_once()
+            mock_openai.assert_not_called()
+        finally:
+            settings.llm_route_table_json = original
+            _load_route_targets.cache_clear()
 
     @patch("app.llm_backend._execute_openai_chat")
     def test_no_route_still_uses_default_chat_when_route_table_active(self, mock_execute):

@@ -55,6 +55,8 @@ from .guardrails import (
 from .llm_client import MindLLMClientProtocol
 from .llm_context import MindLLMRequestContext
 from .phase_telemetry import MindPhaseTelemetry
+from .settings import settings
+from .uncertainty_metacog import maybe_publish_llm_surface_instability_trigger
 
 _SEMANTIC_SYSTEM = """You extract grounded semantic claims from evidence for an internal cognition organ.
 You are NOT writing the user-facing reply.
@@ -305,6 +307,16 @@ def run_semantic_synthesis(
 
     started = utc_now_iso()
     t0 = time.perf_counter()
+    extra_options: dict[str, Any] | None = None
+    if settings.MIND_LLM_RETURN_LOGPROBS_SEMANTIC:
+        extra_options = {
+            "return_logprobs": True,
+            "logprobs_top_k": 5,
+            "logprob_summary_only": True,
+        }
+        probe_mode = str(getattr(settings, "MIND_LLM_LOGPROB_PROBE_MODE", "") or "").strip()
+        if probe_mode:
+            extra_options["logprob_probe_mode"] = probe_mode
     raw, err, meta = client.request_json(
         system_prompt=_SEMANTIC_SYSTEM,
         user_prompt=_pack_prompt(pack),
@@ -313,6 +325,7 @@ def run_semantic_synthesis(
         temperature=0.15,
         context=context,
         timeout_sec=timeout_sec,
+        extra_options=extra_options,
     )
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
     telemetry = MindPhaseTelemetry(
@@ -326,6 +339,8 @@ def run_semantic_synthesis(
         error=err,
         token_usage=dict(meta.get("usage") or {}),
     )
+    if isinstance(meta.get("llm_uncertainty"), dict):
+        telemetry.llm_uncertainty = meta["llm_uncertainty"]
     if raw is None:
         telemetry.status = "failed"
         return None, err or "semantic_synthesis_failed", telemetry
@@ -403,4 +418,6 @@ def run_semantic_synthesis(
                 "diagnostics": filtered.diagnostics.model_copy(update={"notes": diag_notes}),
             }
         )
+    if telemetry.status == "ok":
+        maybe_publish_llm_surface_instability_trigger(telemetry, context=context)
     return filtered, None, telemetry

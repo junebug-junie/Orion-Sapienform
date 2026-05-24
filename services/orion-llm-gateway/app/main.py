@@ -241,6 +241,9 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
     }
     if isinstance(structured_diag, dict) and structured_diag:
         meta["structured_output_diagnostics"] = structured_diag
+    llm_uncertainty = result.get("llm_uncertainty") if isinstance(result, dict) else None
+    if isinstance(llm_uncertainty, dict):
+        meta["llm_uncertainty"] = llm_uncertainty
     meta = {k: v for k, v in meta.items() if v is not None}
     if _thought_debug_enabled():
         logger.info(

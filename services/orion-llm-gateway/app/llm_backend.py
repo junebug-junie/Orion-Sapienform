@@ -17,6 +17,10 @@ from .settings import settings
 from .profiles import LLMProfileRegistry, LLMProfile
 from .lane_routes import resolve_llm_lane_route
 from .structured_output import apply_structured_output_to_payload
+from .llm_uncertainty import (
+    extract_llm_uncertainty_from_native_completion,
+    extract_llm_uncertainty_from_openai_response,
+)
 
 from orion.spark.integration import (
     ingest_chat_and_get_state,
@@ -806,6 +810,145 @@ def _execute_ollama_chat(
         }
 
 
+def _should_use_native_llamacpp_completion(body: ChatBody, backend: str) -> bool:
+    opts = body.options or {}
+    return (
+        backend == "llamacpp"
+        and bool(opts.get("return_logprobs"))
+        and bool(getattr(settings, "llm_logprob_summary_enabled", False))
+        and bool(getattr(settings, "llm_logprob_native_completion_enabled", False))
+        and str(opts.get("logprob_probe_mode") or "").strip().lower() == "native_completion"
+    )
+
+
+def _execute_llamacpp_native_completion(
+    body: ChatBody,
+    model: str,
+    base_url: str,
+    backend_name: str,
+    route: Optional[str] = None,
+    served_by: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Aligned generation via llama.cpp /apply-template + /completion with n_probs."""
+    if not base_url:
+        err = f"{backend_name} URL not configured"
+        logger.error(f"[LLM-GW] {err}")
+        return {"text": f"[Error: {err}]", "spark_meta": {}, "raw": {}}
+
+    spark_meta = _spark_ingest_for_body(body)
+    opts = body.options or {}
+    apply_url = f"{base_url.rstrip('/')}/apply-template"
+    completion_url = f"{base_url.rstrip('/')}/completion"
+
+    top_k = int(opts.get("logprobs_top_k") or getattr(settings, "llm_logprob_top_k_default", 5))
+    n_probs = max(1, min(top_k, 20))
+    max_tokens = opts.get("max_tokens")
+    if max_tokens is None:
+        max_tokens = int(getattr(settings, "llm_logprob_native_completion_max_tokens", 256))
+    max_tokens = int(max_tokens)
+
+    apply_payload: Dict[str, Any] = {
+        "model": model,
+        "messages": _serialize_messages(body.messages or []),
+        "temperature": opts.get("temperature"),
+        "top_p": opts.get("top_p"),
+    }
+    ctk = opts.get("chat_template_kwargs")
+    if isinstance(ctk, dict) and ctk:
+        apply_payload["chat_template_kwargs"] = ctk
+    apply_payload = {k: v for k, v in apply_payload.items() if v is not None}
+
+    completion_payload: Dict[str, Any] = {
+        "n_predict": max_tokens,
+        "n_probs": n_probs,
+        "stream": False,
+        "post_sampling_probs": False,
+        "temperature": opts.get("temperature"),
+        "top_p": opts.get("top_p"),
+        "stop": opts.get("stop"),
+    }
+    completion_payload = {k: v for k, v in completion_payload.items() if v is not None}
+
+    logger.info(
+        "[LLM-GW] %s native completion corr=%s route=%s served_by=%s n_probs=%s n_predict=%s",
+        backend_name,
+        body.trace_id,
+        route,
+        served_by,
+        n_probs,
+        max_tokens,
+    )
+
+    try:
+        with _common_http_client(body) as client:
+            apply_resp = client.post(apply_url, json=apply_payload)
+            if apply_resp.status_code == 404:
+                return {
+                    "text": f"[Error: {backend_name} /apply-template 404 at {apply_url}]",
+                    "spark_meta": spark_meta,
+                    "raw": {},
+                }
+            apply_resp.raise_for_status()
+            apply_data = apply_resp.json()
+            prompt = apply_data.get("prompt") if isinstance(apply_data, dict) else None
+            if not isinstance(prompt, str) or not prompt.strip():
+                return {
+                    "text": f"[Error: {backend_name} /apply-template returned empty prompt]",
+                    "spark_meta": spark_meta,
+                    "raw": apply_data if isinstance(apply_data, dict) else {},
+                }
+
+            completion_payload["prompt"] = prompt
+            r = client.post(completion_url, json=completion_payload)
+            if r.status_code == 404:
+                return {
+                    "text": f"[Error: {backend_name} /completion 404 at {completion_url}]",
+                    "spark_meta": spark_meta,
+                    "raw": {},
+                }
+            r.raise_for_status()
+            raw_data = r.json()
+            if not isinstance(raw_data, dict):
+                raw_data = {}
+
+        text = str(raw_data.get("content") or "")
+        llm_uncertainty = None
+        if bool(getattr(settings, "llm_logprob_summary_enabled", False)):
+            llm_uncertainty = extract_llm_uncertainty_from_native_completion(raw_data)
+
+        text, think_reasoning = _split_think_blocks(text)
+        _spark_post_ingest_for_reply(body, spark_meta, text)
+
+        raw_out = dict(raw_data)
+        if opts.get("logprob_summary_only", True):
+            if isinstance(raw_out.get("probs"), list) or isinstance(
+                raw_out.get("completion_probabilities"), list
+            ):
+                raw_out = {
+                    k: v
+                    for k, v in raw_out.items()
+                    if k not in ("probs", "completion_probabilities")
+                }
+
+        return {
+            "text": text,
+            "spark_meta": spark_meta,
+            "spark_vector": None,
+            "raw": raw_out,
+            "reasoning_content": None,
+            "reasoning_trace": None,
+            "inline_think_content": think_reasoning or None,
+            "structured_output_diagnostics": None,
+            "llm_uncertainty": llm_uncertainty,
+        }
+    except httpx.TimeoutException:
+        logger.error("[LLM-GW] %s native completion TIMEOUT corr=%s", backend_name, body.trace_id)
+        return {"text": f"[Error: {backend_name} timed out]", "spark_meta": spark_meta, "raw": {}}
+    except Exception as e:
+        logger.error(f"[LLM-GW] {backend_name} native completion error: {e}", exc_info=True)
+        return {"text": f"[Error: {backend_name} failed: {str(e)}]", "spark_meta": spark_meta, "raw": {}}
+
+
 def _execute_openai_chat(
     body: ChatBody,
     model: str,
@@ -871,6 +1014,12 @@ def _execute_openai_chat(
             structured_diag.get("structured_output_schema_required_keys"),
             structured_diag.get("thinking_policy"),
         )
+    return_logprobs = bool(opts.get("return_logprobs"))
+    logprob_summary_enabled = bool(getattr(settings, "llm_logprob_summary_enabled", False))
+    if return_logprobs and logprob_summary_enabled and backend_name in ("vllm", "llamacpp", "llama-cola"):
+        top_k = int(opts.get("logprobs_top_k") or getattr(settings, "llm_logprob_top_k_default", 5))
+        payload["logprobs"] = True
+        payload["top_logprobs"] = max(1, min(top_k, 20))
     # Clean None values
     payload = {k: v for k, v in payload.items() if v is not None}
 
@@ -941,6 +1090,12 @@ def _execute_openai_chat(
                     _debug_snippet((raw_msg or {}).get("content") if isinstance(raw_msg, dict) else None),
                 )
             text = _extract_text_from_openai_response(raw_data)
+            llm_uncertainty = None
+            if return_logprobs and logprob_summary_enabled:
+                source_label = f"{backend_name}_openai_chat"
+                llm_uncertainty = extract_llm_uncertainty_from_openai_response(
+                    raw_data, source=source_label
+                )
             reasoning_content = _extract_reasoning_from_openai_response(raw_data)
             raw_usage = raw_data.get("usage") if isinstance(raw_data.get("usage"), dict) else {}
             raw_choices = raw_data.get("choices") if isinstance(raw_data.get("choices"), list) else []
@@ -1031,6 +1186,19 @@ def _execute_openai_chat(
                 flush=True,
             )
             raw_out = raw_data if isinstance(raw_data, dict) else {}
+            if (
+                return_logprobs
+                and logprob_summary_enabled
+                and opts.get("logprob_summary_only", True)
+                and isinstance(raw_out.get("choices"), list)
+            ):
+                stripped_choices = []
+                for choice in raw_out["choices"]:
+                    if isinstance(choice, dict):
+                        stripped_choices.append({k: v for k, v in choice.items() if k != "logprobs"})
+                    else:
+                        stripped_choices.append(choice)
+                raw_out = {**raw_out, "choices": stripped_choices}
             if structured_diag:
                 raw_out = {**raw_out, "structured_output_diagnostics": structured_diag}
             return {
@@ -1042,6 +1210,7 @@ def _execute_openai_chat(
                 "reasoning_trace": reasoning_trace,
                 "inline_think_content": think_reasoning or None,
                 "structured_output_diagnostics": structured_diag or None,
+                "llm_uncertainty": llm_uncertainty,
             }
 
     except httpx.TimeoutException:
@@ -1303,14 +1472,24 @@ def run_llm_chat(body: ChatBody) -> Dict[str, Any]:
         body.trace_id,
         _timeout_summary(_resolve_http_read_timeout_sec(body)),
     )
-    result = _execute_openai_chat(
-        body,
-        model,
-        base_url,
-        backend,
-        route=route,
-        served_by=served_by,
-    )
+    if _should_use_native_llamacpp_completion(body, backend):
+        result = _execute_llamacpp_native_completion(
+            body,
+            model,
+            base_url,
+            backend,
+            route=route,
+            served_by=served_by,
+        )
+    else:
+        result = _execute_openai_chat(
+            body,
+            model,
+            base_url,
+            backend,
+            route=route,
+            served_by=served_by,
+        )
     if isinstance(result, dict):
         result["backend"] = backend
         result["model"] = model

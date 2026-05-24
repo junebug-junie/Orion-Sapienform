@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -94,3 +94,8 @@ class JournalEntryIndexV1(BaseModel):
     active_tensions: list[str] | None = None
     dream_motifs: list[str] | None = None
     response_hazards: list[str] | None = None
+
+    llm_uncertainty: dict[str, Any] | None = None
+    llm_mean_logprob: float | None = None
+    llm_mean_top1_margin: float | None = None
+    llm_unstable_span_count: int | None = None

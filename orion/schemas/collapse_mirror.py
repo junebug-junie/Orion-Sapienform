@@ -114,6 +114,24 @@ def _normalize_string_list(value: Any) -> List[str]:
     return deduped
 
 
+def attach_llm_uncertainty_to_collapse_payload(
+    payload: dict[str, Any],
+    llm_uncertainty: dict[str, Any] | None,
+) -> None:
+    if not isinstance(payload, dict) or not isinstance(llm_uncertainty, dict):
+        return
+    state_snapshot = payload.setdefault("state_snapshot", {})
+    if not isinstance(state_snapshot, dict):
+        state_snapshot = {}
+        payload["state_snapshot"] = state_snapshot
+    telemetry = state_snapshot.setdefault("telemetry", {})
+    if not isinstance(telemetry, dict):
+        telemetry = {}
+        state_snapshot["telemetry"] = telemetry
+    telemetry["llm_uncertainty"] = llm_uncertainty
+    telemetry["llm_uncertainty_semantics"] = "language_surface_stability_not_truth"
+
+
 def _normalize_telemetry_key(key: Any) -> str:
     explicit = {
         "gpu_ mem": "gpu_mem",

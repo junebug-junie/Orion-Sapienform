@@ -1,0 +1,31 @@
+services:
+  orion-vision-frame-router:
+    build:
+      context: ../..
+      dockerfile: services/orion-vision-frame-router/Dockerfile
+    container_name: orion-${PROJECT:-dev}-vision-frame-router
+    env_file:
+      - .env
+    environment:
+      - ORION_BUS_URL=${ORION_BUS_URL:-redis://redis:6379/0}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG:-false}
+      - ROUTER_POLICY_PATH=/app/config/vision_frame_router.yaml
+      - DRY_RUN=${DRY_RUN:-false}
+    volumes:
+      - ./app:/app/app
+      - ../../orion:/app/orion
+      - ../../config/vision_frame_router.yaml:/app/config/vision_frame_router.yaml:ro
+      - /mnt/telemetry/vision/frames:/mnt/telemetry/vision/frames:ro
+    depends_on:
+      - redis
+    networks:
+      - app-net
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+networks:
+  app-net:
+    external: true

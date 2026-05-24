@@ -68,6 +68,7 @@ from app.models import (
     WorldPulseWorthReadingSQL,
     WorldPulseWorthWatchingSQL,
     MindRunSQL,
+    GrammarEventSQL,
 )
 from orion.evidence_index import build_evidence_units
 
@@ -113,6 +114,7 @@ from orion.core.schemas.endogenous_runtime import EndogenousRuntimeExecutionReco
 from orion.core.schemas.calibration_adoption import CalibrationProfileAuditV1
 from orion.schemas.evidence_index import EvidenceUnitV1
 from orion.schemas.mind.artifact import MindRunArtifactV1
+from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.world_pulse import (
     ClaimRecordV1,
     DailyWorldPulseItemV1,
@@ -229,6 +231,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "WorldPulsePublishStatusSQL": (WorldPulsePublishStatusSQL, None),
     "MindRunSQL": (MindRunSQL, MindRunArtifactV1),
     "ChatResponseFeedbackSQL": (ChatResponseFeedbackSQL, ChatResponseFeedbackV1),
+    "GrammarEventSQL": (GrammarEventSQL, GrammarEventV1),
 }
 
 
@@ -348,6 +351,11 @@ def _extract_journal_index_context(payload: Any) -> tuple[JournalTriggerV1 | Non
     raw_trigger = container.get("journal_trigger") or container.get("trigger")
     raw_stance = container.get("chat_stance_brief") or container.get("stance")
     raw_stance_meta = container.get("stance_metadata")
+    raw_unc = container.get("llm_uncertainty")
+    if isinstance(raw_unc, dict):
+        if not isinstance(raw_stance_meta, dict):
+            raw_stance_meta = {}
+        raw_stance_meta = {**raw_stance_meta, "llm_uncertainty": raw_unc}
 
     trigger = None
     if isinstance(raw_trigger, dict):
@@ -437,6 +445,22 @@ def _spark_meta_minimal(row: Dict[str, Any]) -> Dict[str, Any]:
     if turn_effect_summary is not None:
         out["turn_effect_summary"] = turn_effect_summary
     return _json_sanitize(out)
+
+
+def _chat_history_llm_uncertainty_scalars(unc: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(unc, dict):
+        return {}
+    available = unc.get("available")
+    return {
+        "llm_uncertainty_source": unc.get("source"),
+        "llm_mean_logprob": unc.get("mean_logprob"),
+        "llm_min_logprob": unc.get("min_logprob"),
+        "llm_mean_top1_margin": unc.get("mean_top1_margin"),
+        "llm_low_margin_token_count": unc.get("low_margin_token_count"),
+        "llm_low_logprob_token_count": unc.get("low_logprob_token_count"),
+        "llm_unstable_span_count": unc.get("unstable_span_count"),
+        "llm_uncertainty_available": available if isinstance(available, bool) else None,
+    }
 
 
 def _merge_spark_meta(existing: Any, updates: Dict[str, Any]) -> Dict[str, Any]:
@@ -827,6 +851,16 @@ def _write_row(sql_model_cls, data: dict) -> bool:
             if top_level_thinking_source:
                 merged_spark_meta = _merge_spark_meta(spark_meta, {"thinking_source": top_level_thinking_source})
                 filtered_data["spark_meta"] = merged_spark_meta
+            meta_block = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+            unc = meta_block.get("llm_uncertainty")
+            if not isinstance(unc, dict):
+                sm = data.get("spark_meta") if isinstance(data.get("spark_meta"), dict) else {}
+                unc = sm.get("llm_uncertainty")
+            if isinstance(unc, dict):
+                filtered_data["spark_meta"] = _merge_spark_meta(
+                    filtered_data.get("spark_meta"), {"llm_uncertainty": unc}
+                )
+                filtered_data.update(_chat_history_llm_uncertainty_scalars(unc))
             persisted_value = filtered_data.get("thought_process")
             print(
                 "===THINK_HOP=== hop=sql_row_ready "
@@ -1175,6 +1209,14 @@ async def _write(
 
 
 async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
+    if env.kind == "grammar.event.v1":
+        from app.grammar_ledger_handler import persist_grammar_event
+
+        payload = env.payload if isinstance(env.payload, dict) else {}
+        event = GrammarEventV1.model_validate(payload)
+        await asyncio.to_thread(persist_grammar_event, event)
+        return
+
     route_key = settings.route_map.get(env.kind)
 
     async def _persist_evidence_units() -> bool:

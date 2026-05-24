@@ -112,6 +112,60 @@ def summarize_logprob_content(content: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def native_completion_probs_to_logprob_content(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    """Normalize llama.cpp /completion prob shapes into OpenAI logprobs.content entries."""
+    if not isinstance(raw, dict):
+        return []
+
+    probs: list[Any] = []
+    if isinstance(raw.get("probs"), list):
+        probs = raw["probs"]
+    elif isinstance(raw.get("completion_probabilities"), list) and raw["completion_probabilities"]:
+        first = raw["completion_probabilities"][0]
+        if isinstance(first, dict) and isinstance(first.get("probs"), list):
+            probs = first["probs"]
+
+    content: list[dict[str, Any]] = []
+    for entry in probs:
+        if not isinstance(entry, dict):
+            continue
+        token = entry.get("token")
+        if token is None:
+            continue
+        lp = entry.get("logprob")
+        if lp is None and entry.get("prob") is not None:
+            continue
+        tops = entry.get("top_logprobs")
+        if tops is None:
+            tops = entry.get("top_probs")
+        normalized_tops: list[dict[str, Any]] = []
+        if isinstance(tops, list):
+            for t in tops:
+                if not isinstance(t, dict):
+                    continue
+                t_lp = t.get("logprob")
+                if t_lp is None and t.get("prob") is not None:
+                    continue
+                normalized_tops.append({"token": t.get("token"), "logprob": t_lp})
+        content.append({"token": token, "logprob": lp, "top_logprobs": normalized_tops})
+    return content
+
+
+def extract_llm_uncertainty_from_native_completion(
+    raw_data: dict[str, Any],
+    *,
+    source: str = "llamacpp_native_completion",
+) -> dict[str, Any] | None:
+    if not isinstance(raw_data, dict):
+        return None
+    content = native_completion_probs_to_logprob_content(raw_data)
+    if not content:
+        return None
+    summary = summarize_logprob_content(content)
+    summary["source"] = source
+    return summary
+
+
 def extract_llm_uncertainty_from_openai_response(
     raw_data: dict[str, Any],
     *,

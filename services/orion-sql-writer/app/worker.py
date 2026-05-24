@@ -1187,6 +1187,14 @@ async def _write(
 
 
 async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
+    if env.kind == "grammar.event.v1":
+        from app.grammar_ledger_handler import persist_grammar_event
+
+        payload = env.payload if isinstance(env.payload, dict) else {}
+        event = GrammarEventV1.model_validate(payload)
+        await asyncio.to_thread(persist_grammar_event, event)
+        return
+
     route_key = settings.route_map.get(env.kind)
 
     async def _persist_evidence_units() -> bool:

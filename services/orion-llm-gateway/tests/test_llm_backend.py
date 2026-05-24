@@ -334,6 +334,100 @@ class TestLLMBackendExecution(unittest.TestCase):
             _load_route_targets.cache_clear()
 
     @patch("app.llm_backend._common_http_client")
+    def test_execute_openai_chat_forwards_logprobs_when_requested(self, mock_client_factory):
+        mock_client = MagicMock()
+        mock_client_factory.return_value.__enter__.return_value = mock_client
+        mock_client.post.return_value.status_code = 200
+        mock_client.post.return_value.json.return_value = {
+            "choices": [{
+                "message": {"content": "OK"},
+                "logprobs": {
+                    "content": [
+                        {"token": "OK", "logprob": -0.2, "top_logprobs": [
+                            {"token": "OK", "logprob": -0.2},
+                            {"token": "NO", "logprob": -2.0},
+                        ]},
+                    ]
+                },
+            }]
+        }
+        body = ChatBody(
+            messages=[ChatMessage(role="user", content="hi")],
+            options={"return_logprobs": True, "logprobs_top_k": 3},
+        )
+        with patch.object(settings, "llm_logprob_summary_enabled", True):
+            result = _execute_openai_chat(
+                body=body,
+                model="test-model",
+                base_url="http://localhost",
+                backend_name="llamacpp",
+            )
+        args, kwargs = mock_client.post.call_args
+        payload = kwargs["json"]
+        assert payload.get("logprobs") is True
+        assert payload.get("top_logprobs") == 3
+        assert isinstance(result.get("llm_uncertainty"), dict)
+        assert result["llm_uncertainty"].get("available") is True
+        assert "logprobs" not in (result.get("raw") or {}).get("choices", [{}])[0]
+
+    @patch("app.llm_backend._common_http_client")
+    def test_execute_openai_chat_skips_logprobs_when_summary_disabled(self, mock_client_factory):
+        mock_client = MagicMock()
+        mock_client_factory.return_value.__enter__.return_value = mock_client
+        mock_client.post.return_value.status_code = 200
+        mock_client.post.return_value.json.return_value = {
+            "choices": [{"message": {"content": "OK"}}]
+        }
+        body = ChatBody(
+            messages=[ChatMessage(role="user", content="hi")],
+            options={"return_logprobs": True},
+        )
+        with patch.object(settings, "llm_logprob_summary_enabled", False):
+            result = _execute_openai_chat(
+                body=body,
+                model="test-model",
+                base_url="http://localhost",
+                backend_name="llamacpp",
+            )
+        payload = mock_client.post.call_args.kwargs["json"]
+        assert "logprobs" not in payload
+        assert result.get("llm_uncertainty") is None
+
+    @patch("app.llm_backend._common_http_client")
+    def test_execute_openai_chat_keeps_raw_logprobs_when_summary_only_false(self, mock_client_factory):
+        mock_client = MagicMock()
+        mock_client_factory.return_value.__enter__.return_value = mock_client
+        logprobs_block = {
+            "content": [
+                {"token": "OK", "logprob": -0.2, "top_logprobs": [
+                    {"token": "OK", "logprob": -0.2},
+                    {"token": "NO", "logprob": -2.0},
+                ]},
+            ]
+        }
+        mock_client.post.return_value.status_code = 200
+        mock_client.post.return_value.json.return_value = {
+            "choices": [{"message": {"content": "OK"}, "logprobs": logprobs_block}]
+        }
+        body = ChatBody(
+            messages=[ChatMessage(role="user", content="hi")],
+            options={
+                "return_logprobs": True,
+                "logprob_summary_only": False,
+            },
+        )
+        with patch.object(settings, "llm_logprob_summary_enabled", True):
+            result = _execute_openai_chat(
+                body=body,
+                model="test-model",
+                base_url="http://localhost",
+                backend_name="llamacpp",
+            )
+        raw_choice = (result.get("raw") or {}).get("choices", [{}])[0]
+        assert "logprobs" in raw_choice
+        assert isinstance(result.get("llm_uncertainty"), dict)
+
+    @patch("app.llm_backend._common_http_client")
     def test_execute_openai_chat_does_not_promote_inline_think_to_structured_reasoning(self, mock_client_factory):
         mock_client = MagicMock()
         mock_client_factory.return_value.__enter__.return_value = mock_client

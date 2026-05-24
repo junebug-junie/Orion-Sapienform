@@ -74,6 +74,7 @@ class MindLLMClientProtocol(Protocol):
         thinking: bool = False,
         context: MindLLMRequestContext | None = None,
         timeout_sec: float | None = None,
+        extra_options: dict[str, Any] | None = None,
     ) -> tuple[Optional[Dict[str, Any]], str | None, dict[str, Any]]: ...
 
 
@@ -99,6 +100,7 @@ class MindLLMClient:
         thinking: bool = False,
         context: MindLLMRequestContext | None = None,
         timeout_sec: float | None = None,
+        extra_options: dict[str, Any] | None = None,
     ) -> tuple[Optional[Dict[str, Any]], str | None, dict[str, Any]]:
         meta: dict[str, Any] = {"route": route, "phase": context.phase_name if context else None}
         if not self._bus_enabled():
@@ -112,6 +114,8 @@ class MindLLMClient:
             "return_json": True,
             "gateway_read_timeout_sec": effective_timeout,
         }
+        if extra_options:
+            options.update(extra_options)
         if thinking:
             options["thinking"] = True
         if context is not None:
@@ -119,7 +123,7 @@ class MindLLMClient:
             options["mind_phase"] = context.phase_name
             options["mind_router_profile_id"] = context.router_profile_id
         try:
-            content, usage, model_used = self._bus_chat(
+            content, usage, model_used, result_meta = self._bus_chat(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 route=route,
@@ -129,6 +133,20 @@ class MindLLMClient:
             )
             meta["model_used"] = model_used
             meta["usage"] = usage
+            if isinstance(result_meta, dict):
+                unc = result_meta.get("llm_uncertainty")
+                if isinstance(unc, dict):
+                    meta["llm_uncertainty"] = unc
+                elif options.get("return_logprobs"):
+                    logger.info(
+                        "mind_llm_logprobs_requested_but_no_uncertainty_summary "
+                        "correlation_id=%s mind_run_id=%s phase=%s route=%s "
+                        "hint=enable LLM_LOGPROB_SUMMARY_ENABLED on orion-llm-gateway",
+                        context.correlation_id if context else None,
+                        context.mind_run_id if context else None,
+                        context.phase_name if context else None,
+                        route,
+                    )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "mind_llm_bus_request_failed correlation_id=%s mind_run_id=%s phase=%s route=%s "
@@ -157,8 +175,8 @@ class MindLLMClient:
         options: Dict[str, Any],
         context: MindLLMRequestContext | None,
         timeout_sec: float,
-    ) -> tuple[str, dict[str, Any], str | None]:
-        async def _call() -> tuple[str, dict[str, Any], str | None]:
+    ) -> tuple[str, dict[str, Any], str | None, dict[str, Any]]:
+        async def _call() -> tuple[str, dict[str, Any], str | None, dict[str, Any]]:
             bus = OrionBusAsync(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED)
             await bus.connect()
             try:
@@ -226,7 +244,8 @@ class MindLLMClient:
                     raise RuntimeError(f"LLM bus decode failed: {decoded.error}")
                 result = ChatResultPayload.model_validate(decoded.envelope.payload)
                 usage = dict(result.usage or {})
-                return str(result.content or result.text or ""), usage, result.model_used
+                result_meta = dict(result.meta or {})
+                return str(result.content or result.text or ""), usage, result.model_used, result_meta
             finally:
                 await bus.close()
 
@@ -252,6 +271,7 @@ class FakeMindLLMClient:
         thinking: bool = False,
         context: MindLLMRequestContext | None = None,
         timeout_sec: float | None = None,
+        extra_options: dict[str, Any] | None = None,
     ) -> tuple[Optional[Dict[str, Any]], str | None, dict[str, Any]]:
         self.calls.append(
             {
@@ -260,6 +280,7 @@ class FakeMindLLMClient:
                 "thinking": thinking,
                 "context": context,
                 "timeout_sec": timeout_sec,
+                "extra_options": extra_options,
             }
         )
         if self._idx >= len(self._responses):

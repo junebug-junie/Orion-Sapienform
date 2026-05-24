@@ -33,6 +33,7 @@ class MindPhaseTelemetry:
     authorization_reason: str | None = None
     authorized_for_stance_use: bool | None = None
     authorized_for_stance_skip: bool | None = None
+    llm_uncertainty: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)

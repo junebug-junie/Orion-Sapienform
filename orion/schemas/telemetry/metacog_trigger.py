@@ -11,7 +11,13 @@ def _utc_now_iso() -> str:
 
 
 class MetacogTriggerV1(BaseModel):
-    trigger_kind: str = Field(..., description="baseline | dense | manual | pulse")
+    trigger_kind: str = Field(
+        ...,
+        description=(
+            "baseline | dense | manual | pulse | llm_surface_instability "
+            "(advisory: language-surface instability from logprob summary, not factual confidence)"
+        ),
+    )
     reason: str
     zen_state: str = Field("unknown", description="zen | not_zen | unknown")
     pressure: float = Field(0.0, ge=0.0, le=1.0)

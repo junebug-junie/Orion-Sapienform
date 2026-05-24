@@ -17,6 +17,7 @@ from .settings import settings
 from .profiles import LLMProfileRegistry, LLMProfile
 from .lane_routes import resolve_llm_lane_route
 from .structured_output import apply_structured_output_to_payload
+from app.llm_uncertainty import extract_llm_uncertainty_from_openai_response
 
 from orion.spark.integration import (
     ingest_chat_and_get_state,
@@ -871,6 +872,12 @@ def _execute_openai_chat(
             structured_diag.get("structured_output_schema_required_keys"),
             structured_diag.get("thinking_policy"),
         )
+    return_logprobs = bool(opts.get("return_logprobs"))
+    logprob_summary_enabled = bool(getattr(settings, "llm_logprob_summary_enabled", False))
+    if return_logprobs and logprob_summary_enabled and backend_name in ("vllm", "llamacpp", "llama-cola"):
+        top_k = int(opts.get("logprobs_top_k") or getattr(settings, "llm_logprob_top_k_default", 5))
+        payload["logprobs"] = True
+        payload["top_logprobs"] = max(1, min(top_k, 20))
     # Clean None values
     payload = {k: v for k, v in payload.items() if v is not None}
 
@@ -941,6 +948,12 @@ def _execute_openai_chat(
                     _debug_snippet((raw_msg or {}).get("content") if isinstance(raw_msg, dict) else None),
                 )
             text = _extract_text_from_openai_response(raw_data)
+            llm_uncertainty = None
+            if return_logprobs and logprob_summary_enabled:
+                source_label = f"{backend_name}_openai_chat"
+                llm_uncertainty = extract_llm_uncertainty_from_openai_response(
+                    raw_data, source=source_label
+                )
             reasoning_content = _extract_reasoning_from_openai_response(raw_data)
             raw_usage = raw_data.get("usage") if isinstance(raw_data.get("usage"), dict) else {}
             raw_choices = raw_data.get("choices") if isinstance(raw_data.get("choices"), list) else []
@@ -1042,6 +1055,7 @@ def _execute_openai_chat(
                 "reasoning_trace": reasoning_trace,
                 "inline_think_content": think_reasoning or None,
                 "structured_output_diagnostics": structured_diag or None,
+                "llm_uncertainty": llm_uncertainty,
             }
 
     except httpx.TimeoutException:

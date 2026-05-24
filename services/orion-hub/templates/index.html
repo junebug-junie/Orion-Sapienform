@@ -7,6 +7,7 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/css/style.css?v=1.0.8" />
+  <link rel="stylesheet" href="/static/css/substrate-effect.css" />
 </head>
 <body class="bg-black text-gray-200 flex items-center justify-center min-h-screen p-4 md:p-6" data-toast-seconds="{{NOTIFY_TOAST_SECONDS}}" data-ui-version="{{HUB_UI_ASSET_VERSION}}">
   <div
@@ -2600,6 +2601,13 @@
             <a id="substratePanelStandaloneLink" href="/substrate" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Open standalone</a>
           </div>
         </div>
+        <div id="substrateEffectRecentPanel" class="bg-gray-900/40 border border-gray-700 rounded-xl p-3 space-y-2">
+          <div class="flex items-center justify-between">
+            <h2 class="text-sm font-semibold text-gray-200">Recent Substrate Effects</h2>
+            <button id="substrateEffectRecentRefresh" type="button" class="text-xs text-indigo-300 hover:text-indigo-200">Refresh</button>
+          </div>
+          <div id="substrateEffectRecentBody" class="text-xs text-gray-300">Loading…</div>
+        </div>
         <div class="rounded-xl border border-gray-800 bg-gray-950/40 overflow-hidden flex-1 min-h-[40rem]">
           <iframe
             id="substratePanelFrame"
@@ -3306,6 +3314,7 @@
   <script src="/static/js/memory-graph-draft-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/memory.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/mind_provenance.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/substrate-effect-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/app.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
 </body>
 </html>

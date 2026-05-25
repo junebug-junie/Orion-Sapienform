@@ -37,6 +37,33 @@ class MotifObservationV1(BaseModel):
     reasons: list[str] = Field(default_factory=list)
 
 
+class ExpectationV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expectation_id: str
+
+    trigger_motif_id: str
+
+    expected_outcome_kind: Literal[
+        "loaded_self_state",
+        "attention_saturation",
+        "policy_review_required",
+        "read_only_approved",
+        "dry_run_feedback",
+        "absence_feedback",
+        "reliability_clear",
+        "execution_pressure_high",
+        "resource_pressure_high",
+        "unknown",
+    ]
+
+    confidence_score: float = Field(ge=0.0, le=1.0)
+    support_count: int = Field(ge=1)
+
+    evidence_refs: list[str] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list)
+
+
 class ConsolidationFrameV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -52,6 +79,8 @@ class ConsolidationFrameV1(BaseModel):
 
     motif_observations: list[MotifObservationV1] = Field(default_factory=list)
     dominant_motifs: list[str] = Field(default_factory=list)
+
+    expectations: list[ExpectationV1] = Field(default_factory=list)
 
     source_counts: dict[str, int] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)

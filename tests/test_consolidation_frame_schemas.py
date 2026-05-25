@@ -3,7 +3,8 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from orion.schemas.consolidation_frame import ConsolidationFrameV1, MotifObservationV1
+from orion.schemas.consolidation_frame import ConsolidationFrameV1, ExpectationV1, MotifObservationV1
+from orion.schemas.registry import resolve
 
 NOW = datetime(2026, 5, 25, 15, 30, tzinfo=timezone.utc)
 
@@ -64,3 +65,39 @@ def test_recurrence_count_min_one() -> None:
             support_score=0.5,
             confidence_score=0.5,
         )
+
+
+def test_expectation_v1_validates() -> None:
+    expectation = ExpectationV1(
+        expectation_id="expectation:motif:loaded_but_reliable:consolidation_policy.v1:reliability_clear",
+        trigger_motif_id="motif:loaded_but_reliable:consolidation_policy.v1",
+        expected_outcome_kind="reliability_clear",
+        confidence_score=0.7,
+        support_count=3,
+        evidence_refs=["self.state:s1"],
+        reasons=["derived_from_motif:loaded_but_reliable"],
+    )
+    assert expectation.expected_outcome_kind == "reliability_clear"
+
+
+def test_consolidation_frame_includes_expectations() -> None:
+    frame = ConsolidationFrameV1(
+        frame_id="consolidation.frame:test",
+        generated_at=NOW,
+        window_start=datetime(2026, 5, 25, 14, 30, tzinfo=timezone.utc),
+        window_end=NOW,
+        expectations=[
+            ExpectationV1(
+                expectation_id="expectation:test",
+                trigger_motif_id="motif:test",
+                expected_outcome_kind="unknown",
+                confidence_score=0.5,
+                support_count=1,
+            )
+        ],
+    )
+    assert frame.expectations[0].expectation_id == "expectation:test"
+
+
+def test_expectation_v1_registered() -> None:
+    assert resolve("ExpectationV1") is ExpectationV1

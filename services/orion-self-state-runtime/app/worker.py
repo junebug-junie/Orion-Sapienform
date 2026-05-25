@@ -55,6 +55,11 @@ class SelfStateRuntimeWorker:
 
         field = self._store.load_field_for_tick(attention.source_field_tick_id)
         if field is None:
+            logger.warning(
+                "self_state_skip_missing_field tick_id=%s frame_id=%s",
+                attention.source_field_tick_id,
+                attention.frame_id,
+            )
             return
 
         previous = self._store.load_latest_self_state()

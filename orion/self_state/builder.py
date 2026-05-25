@@ -64,6 +64,7 @@ def _emit_summary_labels(
     *,
     dimension_scores: dict[str, float],
     overall_condition: str,
+    overall_salience: float,
 ) -> list[str]:
     labels: list[str] = []
     if dimension_scores.get("execution_pressure", 0.0) >= 0.5:
@@ -74,8 +75,10 @@ def _emit_summary_labels(
         labels.append("reliability_clear")
     if dimension_scores.get("field_intensity", 0.0) >= 0.5:
         labels.append("field_active")
+    if overall_salience >= 0.7:
+        labels.append("attention_saturated")
     if overall_condition in ("loaded", "strained", "unstable"):
-        labels.append("condition_elevated")
+        labels.append("orchestration_pressurized")
     return sorted(set(labels))
 
 
@@ -153,11 +156,12 @@ def build_self_state(
     evidence_density = clamp01(len(dominant_targets) / 5.0)
     overall_confidence = clamp01(0.5 + 0.5 * evidence_density)
 
-    dominant_field_channels = {
-        ch: v
+    ranked_channels = [
+        (ch, v)
         for ch, v in sorted(field_channels.items(), key=lambda kv: kv[1], reverse=True)
         if v >= policy.dominant_channel_threshold
-    }
+    ]
+    dominant_field_channels = {ch: v for ch, v in ranked_channels[:8]}
 
     unresolved: list[str] = []
     stabilizing: list[str] = []
@@ -185,6 +189,7 @@ def build_self_state(
     summary_labels = _emit_summary_labels(
         dimension_scores=dimension_scores,
         overall_condition=overall_condition,
+        overall_salience=attention.overall_salience,
     )
 
     return SelfStateV1(

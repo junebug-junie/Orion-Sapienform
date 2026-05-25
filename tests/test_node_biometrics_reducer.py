@@ -210,3 +210,29 @@ def test_non_biometrics_source_is_noop(
     )
     assert projection == empty_projection
     assert receipt.noop_event_ids == ["gev_other"]
+
+
+def test_node_reducer_ids_are_stable_on_replay(
+    catalog: NodeCatalog, empty_projection: NodeBiometricsProjectionV1
+) -> None:
+    trace_id = "biometrics.node:atlas:2026-05-24T12:00:00Z"
+    event = _atom_event(
+        trace_id=trace_id,
+        event_id="gev_body",
+        role="body_state",
+        payload_ref="biometrics.summary:atlas:2026-05-24T12:00:00Z",
+    )
+    _, r1 = reduce_biometrics_node_event(
+        event=event,
+        projection=empty_projection,
+        catalog=catalog,
+        now=FIXED_TS,
+    )
+    _, r2 = reduce_biometrics_node_event(
+        event=event,
+        projection=empty_projection,
+        catalog=catalog,
+        now=FIXED_TS,
+    )
+    assert r1.receipt_id == r2.receipt_id
+    assert r1.state_deltas[0].delta_id == r2.state_deltas[0].delta_id

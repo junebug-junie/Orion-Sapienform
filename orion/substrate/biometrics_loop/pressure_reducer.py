@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
-from uuid import uuid4
 
 from orion.biometrics.node_catalog import NodeCatalog
+from orion.substrate.ids import stable_delta_id, stable_receipt_id
 from orion.schemas.biometrics_projection import ActiveNodePressureProjectionV1, ActiveNodePressureStateV1
 from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.reduction_receipt import ProjectionUpdateV1, ReductionReceiptV1
@@ -214,7 +214,14 @@ def reduce_node_pressure_candidates(
 
         state_deltas.append(
             StateDeltaV1(
-                delta_id=f"delta_{uuid4().hex[:12]}",
+                delta_id=stable_delta_id(
+                    reducer_id=reducer_id,
+                    target_projection=updated.projection_id,
+                    target_kind="active_node_pressure",
+                    target_id=canonical_node_id,
+                    operation=ROLE_TO_OPERATION[role],
+                    caused_by_event_ids=[atom_event_id],
+                ),
                 target_projection=updated.projection_id,
                 target_kind="active_node_pressure",
                 target_id=canonical_node_id,
@@ -235,7 +242,14 @@ def reduce_node_pressure_candidates(
         )
 
     receipt = ReductionReceiptV1(
-        receipt_id=f"rcpt_{uuid4().hex[:12]}",
+        receipt_id=stable_receipt_id(
+            reducer_id=reducer_id,
+            accepted_event_ids=accepted,
+            rejected_event_ids=rejected,
+            merged_event_ids=merged,
+            noop_event_ids=[],
+            emission_id=emission_id,
+        ),
         emission_id=emission_id,
         organ_id=organ_id,
         accepted_event_ids=accepted,

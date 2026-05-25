@@ -27,6 +27,8 @@ Health: `GET http://localhost:8115/health`
 
 `ReductionReceiptV1.receipt_id` and `StateDeltaV1.delta_id` are derived from reducer inputs via `orion.substrate.ids` so replay/retry does not mint duplicate committed identities. Postgres inserts use `ON CONFLICT (receipt_id) DO NOTHING`.
 
+Pressure receipts also include `emission_id` in the receipt preimage (organ still mints a fresh `emission_id` per invocation). Field digester dedupe should key on **`delta_id`** (event-scoped), not `receipt_id`, when comparing across emissions.
+
 Hub debug (node-scoped lineage):
 
 - `GET /api/substrate/biometrics-node/{node_id}/latest`

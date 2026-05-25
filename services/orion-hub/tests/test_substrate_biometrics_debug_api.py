@@ -142,6 +142,59 @@ def test_latest_chain_shape(client):
     assert body["committed_state_deltas"][0]["target_id"] == "atlas"
 
 
+def test_latest_chain_skips_non_matching_global_receipt(client):
+    """Newest global receipt for another node must not appear on atlas latest."""
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+
+    circe_receipt = {
+        "receipt_id": "rcpt_circe_only",
+        "created_at": "2026-05-24T12:01:00+00:00",
+        "state_deltas": [
+            {
+                "delta_id": "delta_circe",
+                "target_projection": "active_node_pressure_projection",
+                "target_kind": "active_node_pressure",
+                "target_id": "circe",
+                "operation": "create",
+                "caused_by_event_ids": ["gev_circe"],
+                "reducer_id": "node_pressure_reducer",
+            }
+        ],
+    }
+    receipt_rows = [
+        {"receipt_json": circe_receipt},
+        {"receipt_json": _atlas_pressure_receipt()},
+    ]
+
+    def execute(stmt, params=None):
+        sql = str(stmt)
+        m = MagicMock()
+        if "grammar_events" in sql:
+            m.mappings.return_value.first.return_value = None
+        elif "substrate_reduction_receipts" in sql and "LIMIT" in sql:
+            m.mappings.return_value.all.return_value = receipt_rows
+        elif "substrate_organ_emissions" in sql and "LIMIT" in sql:
+            m.mappings.return_value.all.return_value = []
+        elif "substrate_node_biometrics_projection" in sql:
+            m.mappings.return_value.first.return_value = {"projection_json": {"nodes": {}}}
+        elif "substrate_active_node_pressure_projection" in sql:
+            m.mappings.return_value.first.return_value = {"projection_json": {"nodes": {}}}
+        else:
+            m.mappings.return_value.first.return_value = None
+        return m
+
+    conn.execute.side_effect = execute
+
+    with patch.object(substrate_biometrics_routes, "_engine", return_value=fake_engine):
+        r = client.get("/api/substrate/biometrics-node/atlas/latest")
+
+    assert r.status_code == 200
+    assert r.json()["latest_reduction_receipt"]["receipt_id"] == "rcpt_atlas_pressure"
+
+
 def test_receipt_by_id(client):
     fake_engine = MagicMock()
     conn = MagicMock()

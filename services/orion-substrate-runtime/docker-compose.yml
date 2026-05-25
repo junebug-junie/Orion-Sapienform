@@ -1,0 +1,32 @@
+services:
+  substrate-runtime:
+    build:
+      context: ../..
+      dockerfile: services/orion-substrate-runtime/Dockerfile
+    container_name: ${PROJECT}-substrate-runtime
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      - "${SUBSTRATE_RUNTIME_PORT:-8115}:8115"
+    environment:
+      - PROJECT=${PROJECT}
+      - NODE_NAME=${NODE_NAME}
+      - SERVICE_NAME=${SERVICE_NAME:-orion-substrate-runtime}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - POSTGRES_URI=${POSTGRES_URI}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED:-true}
+      - ENABLE_BIOMETRICS_NODE_REDUCER=${ENABLE_BIOMETRICS_NODE_REDUCER:-true}
+      - ENABLE_BIOMETRICS_PRESSURE_ORGAN=${ENABLE_BIOMETRICS_PRESSURE_ORGAN:-true}
+      - ENABLE_NODE_PRESSURE_REDUCER=${ENABLE_NODE_PRESSURE_REDUCER:-true}
+      - BIOMETRICS_NODE_STALE_AFTER_SEC=${BIOMETRICS_NODE_STALE_AFTER_SEC:-180}
+      - BIOMETRICS_PRESSURE_MIN_CONFIDENCE=${BIOMETRICS_PRESSURE_MIN_CONFIDENCE:-0.60}
+      - NODE_CATALOG_PATH=${NODE_CATALOG_PATH:-/app/config/biometrics/node_catalog.yaml}
+      - GRAMMAR_POLL_INTERVAL_SEC=${GRAMMAR_POLL_INTERVAL_SEC:-2.0}
+      - PUBLISH_ACCEPTED_PRESSURE_GRAMMAR=${PUBLISH_ACCEPTED_PRESSURE_GRAMMAR:-true}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+networks:
+  app-net:
+    external: true

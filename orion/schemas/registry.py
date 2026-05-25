@@ -51,7 +51,14 @@ from orion.schemas.cortex.contracts import (
 from orion.schemas.cortex.exec import CortexExecRequestPayload, CortexExecResultPayload
 from orion.schemas.cortex.schemas import PlanExecutionRequest, PlanExecutionResult
 from orion.schemas.mind.artifact import MindRunArtifactV1
+from orion.schemas.biometrics_projection import (
+    ActiveNodePressureProjectionV1,
+    NodeBiometricsProjectionV1,
+)
 from orion.schemas.grammar import GrammarEventV1
+from orion.schemas.organ_emission import OrganEmissionV1
+from orion.schemas.reduction_receipt import ProjectionUpdateV1, ReductionReceiptV1
+from orion.schemas.state_delta import StateDeltaV1
 from orion.schemas.substrate_telemetry import SubstrateTierOutcomesPayloadV1
 from orion.schemas.agents.bound_capability import (
     BoundCapabilityExecutionFailureV1,
@@ -525,6 +532,12 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "MindRunArtifactV1": MindRunArtifactV1,
     "SubstrateTierOutcomesPayloadV1": SubstrateTierOutcomesPayloadV1,
     "GrammarEventV1": GrammarEventV1,
+    "OrganEmissionV1": OrganEmissionV1,
+    "ReductionReceiptV1": ReductionReceiptV1,
+    "StateDeltaV1": StateDeltaV1,
+    "ProjectionUpdateV1": ProjectionUpdateV1,
+    "NodeBiometricsProjectionV1": NodeBiometricsProjectionV1,
+    "ActiveNodePressureProjectionV1": ActiveNodePressureProjectionV1,
     "CortexClientRequest": CortexClientRequest,
     "CortexClientResult": CortexClientResult,
     "AgentTraceToolStatV1": AgentTraceToolStatV1,

@@ -11,7 +11,7 @@ from app.tensor.field_state import empty_field_state
 from app.tensor.update_rules import run_digestion_tick
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-LATTICE = REPO_ROOT / "config" / "field" / "biometrics_lattice.yaml"
+LATTICE = REPO_ROOT / "config" / "field" / "orion_field_topology.v1.yaml"
 FIXED_TS = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
 
 

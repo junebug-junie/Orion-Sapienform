@@ -460,6 +460,7 @@ from orion.schemas.situation import (
     WeatherForecastWindowV1,
     WeatherPracticalFlagsV1,
 )
+from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 from orion.schemas.field_state import FieldEdgeV1, FieldStateV1
 from orion.schemas.evidence_index import (
     EvidenceQueryResultItemV1,
@@ -941,6 +942,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "BoundCapabilityExecutionFailureV1": BoundCapabilityExecutionFailureV1,
     "FieldEdgeV1": FieldEdgeV1,
     "FieldStateV1": FieldStateV1,
+    "FieldAttentionTargetV1": FieldAttentionTargetV1,
+    "FieldAttentionFrameV1": FieldAttentionFrameV1,
     "EvidenceUnitV1": EvidenceUnitV1,
     "EvidenceQueryV1": EvidenceQueryV1,
     "EvidenceQueryResultItemV1": EvidenceQueryResultItemV1,

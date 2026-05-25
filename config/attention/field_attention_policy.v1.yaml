@@ -1,0 +1,46 @@
+schema_version: attention_policy.v1
+policy_id: field_attention_policy.v1
+
+limits:
+  max_targets_total: 12
+  max_node_targets: 5
+  max_capability_targets: 5
+  max_system_targets: 3
+
+thresholds:
+  min_salience: 0.10
+  high_salience: 0.70
+  suppress_below: 0.03
+
+weights:
+  pressure: 0.45
+  novelty: 0.20
+  urgency: 0.25
+  confidence: 0.10
+
+node_channel_weights:
+  cpu_pressure: 0.50
+  gpu_pressure: 0.60
+  memory_pressure: 0.55
+  disk_pressure: 0.45
+  thermal_pressure: 0.75
+  staleness: 0.60
+  availability: -0.40
+  execution_load: 0.70
+  execution_friction: 0.85
+  reasoning_load: 0.45
+  failure_pressure: 1.00
+  expected_offline_suppression: -0.70
+
+capability_channel_weights:
+  pressure: 0.70
+  execution_pressure: 0.80
+  reasoning_pressure: 0.60
+  reliability_pressure: 1.00
+  confidence: -0.35
+  available_capacity: -0.45
+
+observation_modes:
+  inspect_threshold: 0.75
+  summarize_threshold: 0.45
+  watch_threshold: 0.10

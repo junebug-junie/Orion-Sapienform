@@ -32,5 +32,6 @@ Health: `GET http://localhost:8116/health`
 | `BIOMETRICS_FIELD_DECAY_RATE` | `0.92` | Per-tick pressure decay multiplier |
 | `BIOMETRICS_FIELD_DIFFUSION_RATE` | `1.0` | Node→capability diffusion strength |
 | `LOG_LEVEL` | `INFO` | Python log level |
+| `FIELD_DIGESTER_PORT` | `8116` | Host port for `docker compose` (compose-only) |
 
-v1 persists projections to Postgres only; bus emit is deferred.
+v1 persists projections to Postgres only; bus emit is deferred (`orion/bus/channels.yaml` unchanged).

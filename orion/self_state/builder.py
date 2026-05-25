@@ -79,7 +79,27 @@ def _emit_summary_labels(
         labels.append("attention_saturated")
     if overall_condition in ("loaded", "strained", "unstable"):
         labels.append("orchestration_pressurized")
+    if (
+        dimension_scores.get("coherence", 0.0) >= 0.8
+        and dimension_scores.get("execution_pressure", 0.0) >= 0.7
+    ):
+        labels.append("stabilized_but_loaded")
     return sorted(set(labels))
+
+
+def evidence_for_dimension(
+    *,
+    dim_id: str,
+    merged_channels: dict[str, float],
+    policy: SelfStatePolicyV1,
+    limit: int = 3,
+) -> list[str]:
+    pairs: list[tuple[str, float]] = []
+    for channel, value in merged_channels.items():
+        if policy.channel_dimension_map.get(channel) == dim_id:
+            pairs.append((channel, value))
+    pairs.sort(key=lambda kv: kv[1], reverse=True)
+    return [f"{ch}={v:.2f}" for ch, v in pairs[:limit]]
 
 
 def build_self_state(
@@ -163,14 +183,23 @@ def build_self_state(
     ]
     dominant_field_channels = {ch: v for ch, v in ranked_channels[:8]}
 
+    pressure_channel_set = set(policy.pressure_channels)
+
     unresolved: list[str] = []
     stabilizing: list[str] = []
     for ch, v in merged_channels.items():
         if ch in policy.stabilizing_channels and v >= 0.3:
             stabilizing.append(f"{ch}={v:.2f}")
         dim = policy.channel_dimension_map.get(ch)
-        if dim and v >= policy.unresolved_pressure_threshold:
+        if (
+            dim
+            and ch in pressure_channel_set
+            and v >= policy.unresolved_pressure_threshold
+        ):
             unresolved.append(f"{ch}→{dim}")
+
+    unresolved = sorted(set(unresolved))
+    stabilizing = sorted(set(stabilizing))
 
     dimensions: dict[str, SelfStateDimensionV1] = {}
     for dim_id in ALL_DIMENSION_IDS:
@@ -179,10 +208,11 @@ def build_self_state(
             dimension_id=dim_id,
             score=clamp01(score),
             confidence=overall_confidence,
-            dominant_evidence=[
-                f"{ch}={dominant_field_channels[ch]:.2f}"
-                for ch in list(dominant_field_channels.keys())[:3]
-            ],
+            dominant_evidence=evidence_for_dimension(
+                dim_id=dim_id,
+                merged_channels=merged_channels,
+                policy=policy,
+            ),
             reasons=[f"{dim_id} from field+attention channel synthesis"],
         )
 

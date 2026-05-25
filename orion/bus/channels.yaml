@@ -277,22 +277,6 @@ channels:
     stability: "experimental"
     since: "2026-01-08"
 
-  - name: "orion:topic:summary.v1"
-    kind: "event"
-    schema_id: "TopicSummaryEventV1"
-    producer_services: ["orion-topic-rail"]
-    consumer_services: ["*"]
-    stability: "experimental"
-    since: "2026-01-08"
-
-  - name: "orion:topic:shift.v1"
-    kind: "event"
-    schema_id: "TopicShiftEventV1"
-    producer_services: ["orion-topic-rail"]
-    consumer_services: ["*"]
-    stability: "experimental"
-    since: "2026-01-08"
-
   - name: "orion:topic:foundry:run:complete.v1"
     kind: "event"
     schema_id: "TopicFoundryRunCompleteV1"
@@ -707,14 +691,6 @@ channels:
     consumer_services: ["orion-security-watcher", "orion-vision-council"]
     stability: "experimental"
     since: "2026-01-08"
-
-  - name: "orion:topic:rail:assigned.v1"
-    kind: "event"
-    schema_id: "TopicRailAssignedV1"
-    producer_services: ["orion-topic-rail"]
-    consumer_services: ["*"]
-    stability: "experimental"
-    since: "2026-02-04"
 
   - name: "orion:vision:edge:raw"
     kind: "event"

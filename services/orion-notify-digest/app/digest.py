@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -285,11 +285,11 @@ def _format_md_failures(attempts: List[NotificationAttemptDB]) -> List[str]:
 
 
 def fetch_topics_snapshot(
-    landing_pad_url: Optional[str],
+    topic_foundry_url: Optional[str],
+    model_name: Optional[str],
     window_minutes: int,
     max_topics: int,
-    drift_min_turns: int,
-    drift_max_sessions: int,
+    drift_max_records: int,
     timeout_seconds: int = 5,
 ) -> TopicsSnapshot:
     summary_items: List[TopicItem] = []
@@ -297,40 +297,48 @@ def fetch_topics_snapshot(
     summary_error = None
     drift_error = None
 
-    if not landing_pad_url:
+    if not topic_foundry_url:
         return TopicsSnapshot(
             window_minutes=window_minutes,
             summary_items=[],
             drift_items=[],
-            summary_error="LANDING_PAD_URL not set",
-            drift_error="LANDING_PAD_URL not set",
+            summary_error="TOPIC_FOUNDRY_URL not set",
+            drift_error="TOPIC_FOUNDRY_URL not set",
         )
 
-    base_url = landing_pad_url.rstrip("/")
+    base_url = topic_foundry_url.rstrip("/")
 
     try:
-        summary_resp = requests.get(
-            f"{base_url}/api/topics/summary",
-            params={"window_minutes": window_minutes, "max_topics": max_topics},
-            timeout=timeout_seconds,
-        )
-        summary_resp.raise_for_status()
-        summary_items = _parse_topic_summary(summary_resp.json())
+        run_id = _resolve_latest_completed_run_id(base_url, model_name, timeout_seconds)
+        if not run_id:
+            summary_error = "No completed Topic Foundry run available"
+        else:
+            summary_resp = requests.get(
+                f"{base_url}/topics",
+                params={"run_id": run_id, "limit": max_topics, "offset": 0},
+                timeout=timeout_seconds,
+            )
+            summary_resp.raise_for_status()
+            summary_items = _parse_foundry_topic_summary(summary_resp.json())
     except Exception as exc:
         summary_error = str(exc)
 
     try:
-        drift_resp = requests.get(
-            f"{base_url}/api/topics/drift",
-            params={
-                "window_minutes": window_minutes,
-                "min_turns": drift_min_turns,
-                "max_sessions": drift_max_sessions,
-            },
-            timeout=timeout_seconds,
-        )
-        drift_resp.raise_for_status()
-        drift_items = _parse_topic_drift(drift_resp.json())
+        resolved_model = model_name or _resolve_active_model_name(base_url, timeout_seconds)
+        if not resolved_model:
+            drift_error = "TOPIC_FOUNDRY_MODEL_NAME not set and no active model found"
+        else:
+            drift_resp = requests.get(
+                f"{base_url}/drift",
+                params={"model_name": resolved_model, "limit": drift_max_records},
+                timeout=timeout_seconds,
+            )
+            drift_resp.raise_for_status()
+            drift_items = _parse_foundry_topic_drift(
+                drift_resp.json(),
+                resolved_model,
+                window_minutes=window_minutes,
+            )
     except Exception as exc:
         drift_error = str(exc)
 
@@ -341,6 +349,118 @@ def fetch_topics_snapshot(
         summary_error=summary_error,
         drift_error=drift_error,
     )
+
+
+def _resolve_latest_completed_run_id(
+    base_url: str,
+    model_name: Optional[str],
+    timeout_seconds: int,
+) -> Optional[str]:
+    params: Dict[str, Any] = {
+        "format": "wrapped",
+        "status": "complete",
+        "limit": 1,
+        "offset": 0,
+    }
+    if model_name:
+        params["model_name"] = model_name
+    response = requests.get(f"{base_url}/runs", params=params, timeout=timeout_seconds)
+    response.raise_for_status()
+    payload = response.json()
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list) or not items:
+        return None
+    first = items[0]
+    if not isinstance(first, dict):
+        return None
+    run_id = first.get("run_id")
+    return str(run_id) if run_id else None
+
+
+def _resolve_active_model_name(base_url: str, timeout_seconds: int) -> Optional[str]:
+    response = requests.get(
+        f"{base_url}/runs",
+        params={"format": "wrapped", "status": "complete", "limit": 1, "offset": 0},
+        timeout=timeout_seconds,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list) or not items:
+        return None
+    model = items[0].get("model") if isinstance(items[0], dict) else None
+    if not isinstance(model, dict):
+        return None
+    name = model.get("name")
+    return str(name) if name else None
+
+
+def _parse_foundry_topic_summary(payload: Any) -> List[TopicItem]:
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return _parse_topic_summary(payload)
+    results: List[TopicItem] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        topic_id = item.get("topic_id")
+        label = item.get("label")
+        if not label and topic_id is not None:
+            label = f"Topic {topic_id}"
+        results.append(
+            TopicItem(
+                label=str(label or "unknown"),
+                value=_to_float(item.get("count")),
+            )
+        )
+    return results
+
+
+def _parse_foundry_topic_drift(
+    payload: Any,
+    model_name: str,
+    *,
+    window_minutes: int,
+) -> List[DriftItem]:
+    records = payload.get("records") if isinstance(payload, dict) else None
+    if not isinstance(records, list):
+        return _parse_topic_drift(payload)
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
+    results: List[DriftItem] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        score = _to_float(record.get("js_divergence"))
+        if score is None:
+            continue
+        window_end = _parse_datetime(record.get("window_end"))
+        if window_end is not None and window_end < cutoff:
+            continue
+        label = f"{model_name}"
+        if window_end is not None:
+            label = f"{model_name} @ {window_end.isoformat()}"
+        elif record.get("window_end"):
+            label = f"{model_name} @ {record.get('window_end')}"
+        results.append(DriftItem(label=label, score=score))
+    results.sort(key=lambda entry: entry.score, reverse=True)
+    return results
+
+
+def _parse_datetime(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+    try:
+        normalized = str(value).replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    except (TypeError, ValueError):
+        return None
 
 
 def _parse_topic_summary(payload: Any) -> List[TopicItem]:

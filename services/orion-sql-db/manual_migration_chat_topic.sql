@@ -1,4 +1,4 @@
--- Create chat_topic join table for Topic Rail
+-- Create chat_topic join table (legacy topic assignment; superseded by Topic Foundry)
 CREATE TABLE IF NOT EXISTS chat_topic (
     chat_id           VARCHAR NOT NULL
   , correlation_id    VARCHAR

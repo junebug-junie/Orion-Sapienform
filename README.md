@@ -453,8 +453,7 @@ Representative services:
 |---|---|
 | `orion-spark-introspector` | Reviews recent signals and produces introspective / salience state. |
 | `orion-spark-concept-induction` | Consolidates experience into concept profiles and deltas. |
-| `orion-topic-foundry` | Forms and extracts topics from activity. |
-| `orion-topic-rail` | Tracks topic rails, drift, and attention pressure. |
+| `orion-topic-foundry` | Forms and extracts topics from activity, including drift alerts. |
 | `orion-meta-tags` | Adds metadata and tags to events so memory can become more structured. |
 
 Spark produces things like:
@@ -847,7 +846,6 @@ Reflection / state / sensemaking:
   orion-equilibrium-service
   orion-meta-tags
   orion-topic-foundry
-  orion-topic-rail
 
 Working memory / perception / embodiment:
   orion-landing-pad
@@ -1185,7 +1183,7 @@ What should feed autonomy pressure?
 event residue
   → tag enrichment
   → topic formation
-  → topic rail / drift detection
+  → Topic Foundry drift detection
   → Spark introspection
   → concept induction
   → concept profile / concept delta
@@ -1199,8 +1197,7 @@ event residue
 |---|---|
 | `orion-spark-introspector` | Reviews recent activity and emits Spark/introspection state. |
 | `orion-spark-concept-induction` | Converts accumulated experience into concept profiles and deltas. |
-| `orion-topic-foundry` | Extracts and forms topics from activity. |
-| `orion-topic-rail` | Tracks topic continuity, drift, and attention pressure. |
+| `orion-topic-foundry` | Extracts and forms topics from activity, including drift alerts. |
 | `orion-meta-tags` | Enriches events with tags and metadata. |
 | `orion-notify-digest` | Uses topic summaries/drift for digest and alert surfaces. |
 
@@ -1225,7 +1222,7 @@ stance_hint
 Juniper says recall sucks
   → chat turn written to SQL/vector/RDF
   → Spark sees repeated recall complaints
-  → topic rail marks recall_quality as active drift
+  → Topic Foundry marks recall_quality as active drift
   → concept induction updates “Orion recall failure” concept
   → metacog reflects on retrieval relevance
   → daily journal captures the state

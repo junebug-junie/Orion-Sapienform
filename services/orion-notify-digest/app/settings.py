@@ -1,7 +1,10 @@
+import logging
 from typing import Optional
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
+
+logger = logging.getLogger("orion-notify-digest")
 
 
 class Settings(BaseSettings):
@@ -20,11 +23,12 @@ class Settings(BaseSettings):
     DIGEST_RECIPIENT_GROUP: str = Field("juniper_primary", alias="DIGEST_RECIPIENT_GROUP")
     DIGEST_RUN_ON_START: bool = Field(False, alias="DIGEST_RUN_ON_START")
 
+    TOPIC_FOUNDRY_URL: Optional[str] = Field(None, alias="TOPIC_FOUNDRY_URL")
     LANDING_PAD_URL: Optional[str] = Field(None, alias="LANDING_PAD_URL")
+    TOPIC_FOUNDRY_MODEL_NAME: Optional[str] = Field(None, alias="TOPIC_FOUNDRY_MODEL_NAME")
     TOPICS_WINDOW_MINUTES: Optional[int] = Field(None, alias="TOPICS_WINDOW_MINUTES")
     TOPICS_MAX_TOPICS: int = Field(20, alias="TOPICS_MAX_TOPICS")
-    TOPICS_DRIFT_MIN_TURNS: int = Field(10, alias="TOPICS_DRIFT_MIN_TURNS")
-    TOPICS_DRIFT_MAX_SESSIONS: int = Field(50, alias="TOPICS_DRIFT_MAX_SESSIONS")
+    TOPICS_DRIFT_MAX_RECORDS: int = Field(50, alias="TOPICS_DRIFT_MAX_RECORDS")
 
     DRIFT_ALERTS_ENABLED: bool = Field(False, alias="DRIFT_ALERTS_ENABLED")
     DRIFT_CHECK_INTERVAL_SECONDS: int = Field(900, alias="DRIFT_CHECK_INTERVAL_SECONDS")
@@ -33,6 +37,15 @@ class Settings(BaseSettings):
     DRIFT_ALERT_SEVERITY: str = Field("warning", alias="DRIFT_ALERT_SEVERITY")
     DRIFT_ALERT_EVENT_KIND: str = Field("orion.topics.drift", alias="DRIFT_ALERT_EVENT_KIND")
     DRIFT_ALERT_DEDUPE_WINDOW_SECONDS: int = Field(3600, alias="DRIFT_ALERT_DEDUPE_WINDOW_SECONDS")
+
+    @model_validator(mode="after")
+    def warn_deprecated_landing_pad_url(self) -> "Settings":
+        if self.LANDING_PAD_URL and not self.TOPIC_FOUNDRY_URL:
+            logger.warning(
+                "LANDING_PAD_URL is deprecated for topics; set TOPIC_FOUNDRY_URL "
+                "(direct Foundry or Hub /api/topic-foundry proxy) instead."
+            )
+        return self
 
 
 settings = Settings()

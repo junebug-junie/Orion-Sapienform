@@ -34,17 +34,14 @@ for dir in "${NOTIFY_DIR}" "${DIGEST_DIR}"; do
     echo "NOTIFY_API_TOKEN=" >> "${dir}/.env"
   fi
   if [[ "${dir}" == "${DIGEST_DIR}" ]]; then
-    if ! grep -q '^LANDING_PAD_URL=' "${dir}/.env"; then
-      echo "LANDING_PAD_URL=http://localhost:8371" >> "${dir}/.env"
+    if ! grep -q '^TOPIC_FOUNDRY_URL=' "${dir}/.env"; then
+      echo "TOPIC_FOUNDRY_URL=http://localhost:8615" >> "${dir}/.env"
     fi
     if ! grep -q '^TOPICS_MAX_TOPICS=' "${dir}/.env"; then
       echo "TOPICS_MAX_TOPICS=5" >> "${dir}/.env"
     fi
-    if ! grep -q '^TOPICS_DRIFT_MIN_TURNS=' "${dir}/.env"; then
-      echo "TOPICS_DRIFT_MIN_TURNS=1" >> "${dir}/.env"
-    fi
-    if ! grep -q '^TOPICS_DRIFT_MAX_SESSIONS=' "${dir}/.env"; then
-      echo "TOPICS_DRIFT_MAX_SESSIONS=10" >> "${dir}/.env"
+    if ! grep -q '^TOPICS_DRIFT_MAX_RECORDS=' "${dir}/.env"; then
+      echo "TOPICS_DRIFT_MAX_RECORDS=10" >> "${dir}/.env"
     fi
   fi
 done
@@ -61,25 +58,50 @@ if [[ -z "${DIGEST_CONTAINER}" ]]; then
   exit 1
 fi
 
-docker exec "${DIGEST_CONTAINER}" bash -c 'cat > /tmp/mock_landing_pad.py <<"PY"
+docker exec "${DIGEST_CONTAINER}" bash -c 'cat > /tmp/mock_topic_foundry.py <<"PY"
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs, urlparse
+
+RUN_ID = "00000000-0000-0000-0000-000000000001"
+MODEL_NAME = "smoke-model"
+
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path.startswith("/api/topics/summary"):
+        parsed = urlparse(self.path)
+        if parsed.path == "/runs":
             payload = {
-                "topics": [
-                    {"topic": "security", "count": 5},
-                    {"topic": "memory", "count": 3},
+                "items": [
+                    {
+                        "run_id": RUN_ID,
+                        "status": "complete",
+                        "model": {"name": MODEL_NAME, "version": "v1"},
+                    }
                 ]
             }
-        elif self.path.startswith("/api/topics/drift"):
+        elif parsed.path == "/topics":
             payload = {
-                "topics": [
-                    {"topic": "security", "drift_score": 0.7},
-                    {"topic": "memory", "drift_score": 0.4},
+                "items": [
+                    {"topic_id": 1, "label": "security", "count": 5},
+                    {"topic_id": 2, "label": "memory", "count": 3},
                 ]
+            }
+        elif parsed.path == "/drift":
+            payload = {
+                "model_name": MODEL_NAME,
+                "records": [
+                    {
+                        "drift_id": "00000000-0000-0000-0000-000000000002",
+                        "js_divergence": 0.7,
+                        "window_end": "2026-05-24T12:00:00Z",
+                    },
+                    {
+                        "drift_id": "00000000-0000-0000-0000-000000000003",
+                        "js_divergence": 0.4,
+                        "window_end": "2026-05-24T11:00:00Z",
+                    },
+                ],
             }
         else:
             self.send_response(404)
@@ -92,10 +114,11 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-HTTPServer(("0.0.0.0", 8371), Handler).serve_forever()
+
+HTTPServer(("0.0.0.0", 8615), Handler).serve_forever()
 PY'
 
-docker exec -d "${DIGEST_CONTAINER}" python /tmp/mock_landing_pad.py
+docker exec -d "${DIGEST_CONTAINER}" python /tmp/mock_topic_foundry.py
 
 NOTIFY_PORT=$(grep -E '^PORT=' "${NOTIFY_DIR}/.env" | cut -d '=' -f2)
 NOTIFY_PORT=${NOTIFY_PORT:-7140}

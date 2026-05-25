@@ -14,10 +14,11 @@ See `.env_example` for full configuration. Key variables:
 - `DIGEST_RUN_ON_START` — run once at startup (useful for smoke tests)
 - `NOTIFY_SERVICE_URL` / `NOTIFY_API_TOKEN` — notify host connection
 - `POSTGRES_URI` — database shared with orion-notify
-- `LANDING_PAD_URL` — base URL for Landing Pad (or Hub proxy) topics endpoints
-- `TOPICS_WINDOW_MINUTES` — lookback window for topics (default: `DIGEST_WINDOW_HOURS * 60`)
+- `TOPIC_FOUNDRY_URL` — base URL for Topic Foundry (direct or Hub `/api/topic-foundry` proxy)
+- `TOPIC_FOUNDRY_MODEL_NAME` — optional model name filter for runs and drift
+- `TOPICS_WINDOW_MINUTES` — lookback window label for digest context (default: `DIGEST_WINDOW_HOURS * 60`)
 - `TOPICS_MAX_TOPICS` — max topics to include in digest
-- `TOPICS_DRIFT_MIN_TURNS` / `TOPICS_DRIFT_MAX_SESSIONS` — drift query filters
+- `TOPICS_DRIFT_MAX_RECORDS` — max drift records to fetch from Foundry
 - `DRIFT_ALERTS_ENABLED` — enable periodic drift alerts
 - `DRIFT_CHECK_INTERVAL_SECONDS` — drift check interval (seconds)
 - `DRIFT_ALERT_THRESHOLD` — drift score threshold (default: 0.5)
@@ -37,18 +38,17 @@ matches the notify service configuration (for SQLite, use a shared volume with
 
 ## Topics Integration
 
-If `LANDING_PAD_URL` is set, the digest fetches topics from:
+If `TOPIC_FOUNDRY_URL` is set, the digest fetches topics from:
 
-- `GET {LANDING_PAD_URL}/api/topics/summary?window_minutes=...&max_topics=...`
-- `GET {LANDING_PAD_URL}/api/topics/drift?window_minutes=...&min_turns=...&max_sessions=...`
+- `GET {TOPIC_FOUNDRY_URL}/runs?format=wrapped&status=complete&limit=1` (resolve latest run)
+- `GET {TOPIC_FOUNDRY_URL}/topics?run_id=...&limit=...`
+- `GET {TOPIC_FOUNDRY_URL}/drift?model_name=...&limit=...`
 
-`LANDING_PAD_URL` can point directly to Landing Pad or to a Hub proxy that forwards these routes. If it is not set or the request fails, the digest includes a “Topics unavailable” note.
-
-Topic summary values use the first numeric field found in each item (`count`, `weight`, `score`, or `value`). Drift scores use the first numeric drift field (`drift_score`, `score`, `delta`, `drift`, `magnitude`, `change`).
+`TOPIC_FOUNDRY_URL` can point directly to Topic Foundry or to a Hub proxy (`http://host:8080/api/topic-foundry`). If it is not set or a request fails, the digest includes a “Topics unavailable” note without crashing.
 
 ## Drift Alerts
 
-When `DRIFT_ALERTS_ENABLED=true`, the digest service runs a lightweight periodic loop (default: every 900s) that checks the drift endpoint. If any drift score meets or exceeds `DRIFT_ALERT_THRESHOLD`, the service sends an in-app notification with:
+When `DRIFT_ALERTS_ENABLED=true`, the digest service runs a lightweight periodic loop (default: every 900s) that checks Topic Foundry drift records. If any JS divergence score meets or exceeds `DRIFT_ALERT_THRESHOLD`, the service sends an in-app notification with:
 
 - `event_kind`: `DRIFT_ALERT_EVENT_KIND` (default `orion.topics.drift`)
 - `severity`: `DRIFT_ALERT_SEVERITY`

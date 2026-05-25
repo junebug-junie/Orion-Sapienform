@@ -16,7 +16,7 @@ from .constants import (
     ACTIVE_NODE_PRESSURE_PROJECTION_ID,
     NODE_BIOMETRICS_PROJECTION_ID,
 )
-from .emission_validator import validate_organ_emission
+from .emission_validator import group_candidate_events_by_trace, validate_organ_emission
 from .node_reducer import reduce_biometrics_node_event
 from .pressure_organ import invoke_biometrics_pressure
 from .pressure_reducer import reduce_node_pressure_candidates
@@ -105,11 +105,17 @@ def process_biometrics_grammar_events(
         if not enable_pressure_reducer:
             continue
 
+        candidate_traces = (
+            group_candidate_events_by_trace(emission.candidate_events)
+            if emission.candidate_events
+            else []
+        )
         pressure, pressure_receipt = reduce_node_pressure_candidates(
-            emission=emission,
+            candidates=candidate_traces,
             projection=pressure,
             catalog=catalog,
             min_confidence=min_confidence,
+            emission_id=emission.emission_id,
             now=clock,
         )
         save_pressure(pressure)

@@ -7,7 +7,7 @@ from orion.schemas.organ_emission import OrganEmissionV1
 from orion.substrate.biometrics_loop.pressure_organ import ALLOWED_PRESSURE_ROLES
 
 
-def _group_by_trace(events: list) -> list[list]:
+def group_candidate_events_by_trace(events: list) -> list[list]:
     grouped: dict[str, list] = defaultdict(list)
     order: list[str] = []
     for event in events:
@@ -18,8 +18,8 @@ def _group_by_trace(events: list) -> list[list]:
     return [grouped[trace_id] for trace_id in order]
 
 
-def validate_organ_emission(emission: OrganEmissionV1, *, max_events: int = 8) -> None:
-    traces = _group_by_trace(emission.candidate_events)
+def validate_organ_emission(emission: OrganEmissionV1, *, max_events: int = 8) -> OrganEmissionV1:
+    traces = group_candidate_events_by_trace(emission.candidate_events)
     if len(traces) > max_events:
         raise ValueError(f"organ emission exceeds max_events ({max_events})")
 
@@ -36,3 +36,4 @@ def validate_organ_emission(emission: OrganEmissionV1, *, max_events: int = 8) -
 
     if emission.debug_trace is not None:
         raise ValueError("organ emission must not include debug_trace")
+    return emission

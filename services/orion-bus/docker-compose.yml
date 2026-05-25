@@ -37,6 +37,30 @@ services:
     networks:
       - app-net
 
+  bus-observer:
+    build:
+      context: ../..
+      dockerfile: services/orion-bus/Dockerfile
+    container_name: orion-${PROJECT}-bus-observer
+    env_file:
+      - .env
+    environment:
+      REDIS_URL: redis://bus-core:6379/0
+      PUBLISH_ORION_BUS_GRAMMAR: ${PUBLISH_ORION_BUS_GRAMMAR:-false}
+      GRAMMAR_EVENT_CHANNEL: ${GRAMMAR_EVENT_CHANNEL:-orion:grammar:event}
+      BUS_OBSERVER_ENABLED: ${BUS_OBSERVER_ENABLED:-true}
+      BUS_OBSERVER_POLL_INTERVAL_SEC: ${BUS_OBSERVER_POLL_INTERVAL_SEC:-10}
+      BUS_OBSERVER_STREAMS: ${BUS_OBSERVER_STREAMS:-orion:evt:gateway,orion:bus:out}
+      BUS_STREAM_DEPTH_WARNING: ${BUS_STREAM_DEPTH_WARNING:-25000}
+      BUS_STREAM_DEPTH_CRITICAL: ${BUS_STREAM_DEPTH_CRITICAL:-100000}
+      BUS_OBSERVER_NODE_ID: ${BUS_OBSERVER_NODE_ID:-athena}
+    depends_on:
+      bus-core:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - app-net
+
 # ───────────────────────────────────────────────────────────────
 # Shared Network
 # ───────────────────────────────────────────────────────────────

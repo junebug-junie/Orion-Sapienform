@@ -1,0 +1,49 @@
+service: orion-bus
+status: draft
+
+ports:
+  - name: redis_transport
+    role: transport_infrastructure
+    native_contract: redis_streams
+    substrate_trace_required: true
+    trace_roles:
+      - bus_health_observed
+      - bus_stream_depth_observed
+      - bus_stream_lag_observed
+      - bus_backpressure_observed
+      - bus_configured_stream_uncataloged
+      - bus_schema_validation_failed
+      - bus_delivery_anomaly_observed
+    downstream_layers: [1, 2, 3, 4, 5, 6, 10, 11]
+    evidence_refs:
+      - stream_key
+      - sample_window_id
+      - observed_at
+      - node_id
+    redaction:
+      never_emit:
+        - full_message_payload
+        - credential_material
+        - private_user_text
+        - raw_model_prompt
+        - raw_model_completion
+
+  - name: redis_exporter_metrics
+    role: transport_infrastructure
+    native_contract: prometheus_metrics
+    substrate_trace_required: true
+    trace_roles:
+      - bus_metrics_scrape_observed
+      - bus_metrics_scrape_failed
+      - bus_memory_pressure_observed
+    downstream_layers: [1, 2, 3, 4, 5, 6, 10, 11]
+    evidence_refs:
+      - scrape_window_id
+      - metric_name
+      - node_id
+
+  - name: operator_stream_inspection
+    role: operator_read_surface
+    native_contract: redis_cli
+    substrate_trace_required: false
+    notes: Manual read-only inspection; no trace required by default.

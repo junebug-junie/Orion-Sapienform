@@ -6,8 +6,9 @@ PROJECT ?= $(shell grep ^PROJECT= /mnt/services/Orion-Sapienform/.env | cut -d= 
 NET ?= app-net
 CORE ?= $(PROJECT)-bus-core
 EXPORTER ?= $(PROJECT)-bus-exporter
+OBSERVER ?= orion-$(PROJECT)-bus-observer
 
-.PHONY: up down ps status logs cli tail stream.metrics
+.PHONY: up down ps status logs cli tail stream metrics observer-logs observer-ps
 
 # Start or rebuild the bus stack
 up:
@@ -25,7 +26,13 @@ ps status:
 	@docker compose ps
 	@echo
 	@docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}' \
-	  | awk 'NR==1 || /bus-core|bus-exporter/'
+	  | awk 'NR==1 || /bus-core|bus-exporter|bus-observer/'
+
+observer-logs:
+	@docker logs --tail=200 $(OBSERVER) 2>&1
+
+observer-ps:
+	@docker ps --format 'table {{.Names}}\t{{.Image}}' | awk 'NR==1 || /bus/'
 
 # Follow logs from all services
 logs:

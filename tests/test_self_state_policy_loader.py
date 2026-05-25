@@ -12,3 +12,11 @@ def test_load_self_state_policy_v1() -> None:
     assert policy.policy_id == "self_state_policy.v1"
     assert policy.channel_dimension_map["execution_load"] == "execution_pressure"
     assert policy.condition_thresholds.quiet_max == 0.15
+
+
+def test_policy_channel_role_lists() -> None:
+    policy = load_self_state_policy(POLICY)
+    assert "execution_load" in policy.pressure_channels
+    assert "availability" not in policy.pressure_channels
+    assert "recent_perturbation_count" in policy.context_channels
+    assert "availability" in policy.stabilizing_channels

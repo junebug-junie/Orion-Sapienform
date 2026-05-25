@@ -230,7 +230,11 @@ async def suggest_with_escalation(
         }
     user_prompt = str(user_messages[-1].get("content", "") or "")
 
-    context_turns = int(payload.get("context_turns") or getattr(settings, "HUB_CONTEXT_TURNS", 10))
+    context_turns = int(
+        payload.get("context_turns")
+        or getattr(settings, "MEMORY_GRAPH_SUGGEST_CONTEXT_TURNS", None)
+        or getattr(settings, "HUB_CONTEXT_TURNS", 10)
+    )
     continuity = build_continuity_messages(
         history=user_messages,
         latest_user_prompt=user_prompt,

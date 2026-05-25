@@ -380,6 +380,14 @@ class Settings(BaseSettings):
         alias="MEMORY_GRAPH_SUGGEST_MAX_TOKENS",
         description="Min completion budget for suggest draft JSON (gateway max_tokens).",
     )
+    MEMORY_GRAPH_SUGGEST_CONTEXT_TURNS: int = Field(
+        default=3,
+        alias="MEMORY_GRAPH_SUGGEST_CONTEXT_TURNS",
+        description=(
+            "History turns passed to memory_graph_suggest LLM call. "
+            "Kept low (default 3) to avoid context-window overflow on grammar-constrained generation."
+        ),
+    )
     # Deprecated aliases (read by legacy env only)
     MEMORY_GRAPH_SUGGEST_FALLBACK_ROUTE: str = Field(default="brain", alias="MEMORY_GRAPH_SUGGEST_FALLBACK_ROUTE")
     MEMORY_GRAPH_SUGGEST_ENABLE_FALLBACK: bool = Field(default=True, alias="MEMORY_GRAPH_SUGGEST_ENABLE_FALLBACK")

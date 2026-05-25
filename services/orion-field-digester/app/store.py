@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+from psycopg2.extras import Json
 
 from orion.schemas.field_state import FieldStateV1
 from orion.schemas.reduction_receipt import ReductionReceiptV1
@@ -166,7 +167,7 @@ class FieldDigesterStore:
                 {
                     "tick_id": state.tick_id,
                     "generated_at": state.generated_at,
-                    "field_json": state.model_dump(mode="json"),
+                    "field_json": Json(state.model_dump(mode="json")),
                     "created_at": now,
                 },
             )
@@ -223,7 +224,7 @@ class FieldDigesterStore:
                 {
                     "tick_id": state.tick_id,
                     "generated_at": state.generated_at,
-                    "field_json": state.model_dump(mode="json"),
+                    "field_json": Json(state.model_dump(mode="json")),
                     "created_at": now,
                 },
             )

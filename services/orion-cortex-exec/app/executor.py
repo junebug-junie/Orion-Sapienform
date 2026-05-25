@@ -3172,6 +3172,8 @@ async def call_step_services(
                         if step.verb_name == "chat_general" and step.step_name == "llm_chat_general"
                         else "quick"
                         if step.verb_name in FAST_SINGLE_PASS_CHAT_VERBS or step.verb_name == "introspect_spark"
+                        else "quick"
+                        if step.verb_name == "memory_graph_suggest"
                         else "metacog"
                         if ctx.get("mode") == "metacog"
                         else None

@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+from psycopg2.extras import Json
 
 from orion.schemas.biometrics_projection import (
     ActiveNodePressureProjectionV1,
@@ -136,7 +137,7 @@ class BiometricsSubstrateStore:
                 {
                     "projection_id": projection.projection_id,
                     "generated_at": projection.generated_at,
-                    "projection_json": projection.model_dump(mode="json"),
+                    "projection_json": Json(projection.model_dump(mode="json")),
                     "created_at": now,
                 },
             )
@@ -179,7 +180,7 @@ class BiometricsSubstrateStore:
                     "receipt_id": receipt.receipt_id,
                     "organ_id": receipt.organ_id,
                     "emission_id": receipt.emission_id,
-                    "receipt_json": receipt.model_dump(mode="json"),
+                    "receipt_json": Json(receipt.model_dump(mode="json")),
                     "created_at": now,
                 },
             )
@@ -202,7 +203,7 @@ class BiometricsSubstrateStore:
                     "emission_id": emission.emission_id,
                     "organ_id": emission.organ_id,
                     "invocation_id": emission.invocation_id,
-                    "emission_json": emission.model_dump(mode="json"),
+                    "emission_json": Json(emission.model_dump(mode="json")),
                     "created_at": now,
                 },
             )

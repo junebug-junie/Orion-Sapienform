@@ -461,6 +461,10 @@ from orion.schemas.situation import (
 )
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 from orion.schemas.field_state import FieldEdgeV1, FieldStateV1
+from orion.schemas.execution_dispatch_frame import (
+    ExecutionDispatchCandidateV1,
+    ExecutionDispatchFrameV1,
+)
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1
 from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
 from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
@@ -949,6 +953,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "PolicyDecisionFrameV1": PolicyDecisionFrameV1,
     "ProposalCandidateV1": ProposalCandidateV1,
     "ProposalFrameV1": ProposalFrameV1,
+    "ExecutionDispatchCandidateV1": ExecutionDispatchCandidateV1,
+    "ExecutionDispatchFrameV1": ExecutionDispatchFrameV1,
     "EvidenceUnitV1": EvidenceUnitV1,
     "EvidenceQueryV1": EvidenceQueryV1,
     "EvidenceQueryResultItemV1": EvidenceQueryResultItemV1,

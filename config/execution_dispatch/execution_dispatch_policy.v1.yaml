@@ -1,0 +1,49 @@
+schema_version: execution_dispatch_policy.v1
+policy_id: execution_dispatch_policy.v1
+
+mode:
+  default_dispatch_mode: dry_run
+  allow_dispatch_read_only: false
+  allow_mutating_dispatch: false
+
+allowed_policy_decisions:
+  - approved_read_only
+
+blocked_policy_decisions:
+  - requires_operator_review
+  - deferred
+  - rejected
+
+proposal_kind_to_cortex:
+  inspect:
+    dispatch_kind: inspect
+    cortex_verb: substrate.inspect
+    cortex_mode: brain
+    allowed_scope: inspect_only
+
+  summarize:
+    dispatch_kind: summarize
+    cortex_verb: substrate.summarize
+    cortex_mode: brain
+    allowed_scope: summarize_only
+
+  observe:
+    dispatch_kind: observe
+    cortex_verb: substrate.observe
+    cortex_mode: brain
+    allowed_scope: inspect_only
+
+hard_blocks:
+  - approved_for_execution
+  - prepare_action
+  - external_side_effect
+  - settings_mutation
+  - service_restart
+  - operator_notification
+  - file_write
+  - network_call
+  - destructive_action
+
+limits:
+  max_dispatch_candidates: 5
+  max_dispatches_per_tick: 1

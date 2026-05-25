@@ -16,6 +16,7 @@ from orion.schemas.organ_emission import OrganEmissionV1
 from orion.schemas.reduction_receipt import ReductionReceiptV1
 
 from orion.substrate.biometrics_loop.constants import GRAMMAR_CURSOR_NAME
+from orion.substrate.biometrics_loop.lineage import emission_touches_node, receipt_touches_node
 
 
 class BiometricsSubstrateStore:
@@ -214,7 +215,7 @@ class BiometricsSubstrateStore:
                     SELECT emission_json FROM substrate_organ_emissions
                     WHERE organ_id = 'biometrics_pressure'
                     ORDER BY created_at DESC
-                    LIMIT 20
+                    LIMIT 50
                     """
                 ),
             ).mappings().all()
@@ -223,10 +224,47 @@ class BiometricsSubstrateStore:
             if isinstance(payload, str):
                 payload = json.loads(payload)
             emission = OrganEmissionV1.model_validate(payload)
-            for ev in emission.candidate_events:
-                if node_id in ev.trace_id:
-                    return emission
+            if emission_touches_node(emission, node_id):
+                return emission
         return None
+
+    def latest_receipt_for_node(self, node_id: str) -> ReductionReceiptV1 | None:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT receipt_json FROM substrate_reduction_receipts
+                    ORDER BY created_at DESC
+                    LIMIT 50
+                    """
+                ),
+            ).mappings().all()
+        for row in rows:
+            payload = row["receipt_json"]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            receipt = ReductionReceiptV1.model_validate(payload)
+            if receipt_touches_node(receipt, node_id):
+                return receipt
+        return None
+
+    def load_receipt(self, receipt_id: str) -> ReductionReceiptV1 | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT receipt_json FROM substrate_reduction_receipts
+                    WHERE receipt_id = :receipt_id
+                    """
+                ),
+                {"receipt_id": receipt_id},
+            ).mappings().first()
+        if not row:
+            return None
+        payload = row["receipt_json"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        return ReductionReceiptV1.model_validate(payload)
 
     def grammar_event_created_at(self, event_id: str) -> datetime | None:
         with self._engine.connect() as conn:

@@ -38,11 +38,63 @@ def client(monkeypatch):
     return TestClient(app)
 
 
+def _atlas_pressure_receipt() -> dict:
+    return {
+        "receipt_id": "rcpt_atlas_pressure",
+        "created_at": "2026-05-24T12:00:00+00:00",
+        "organ_id": "biometrics_pressure",
+        "accepted_event_ids": ["gev_pressure_1"],
+        "state_deltas": [
+            {
+                "delta_id": "delta_atlas_pressure",
+                "target_projection": "active_node_pressure_projection",
+                "target_kind": "active_node_pressure",
+                "target_id": "atlas",
+                "operation": "create",
+                "caused_by_event_ids": ["gev_pressure_1"],
+                "reducer_id": "node_pressure_reducer",
+            }
+        ],
+        "projection_updates": [
+            {
+                "projection_kind": "active_node_pressure",
+                "projection_id": "active_node_pressure_projection",
+                "node_id": "atlas",
+                "operation": "create",
+            }
+        ],
+    }
+
+
+def _atlas_emission() -> dict:
+    return {
+        "emission_id": "oem_atlas",
+        "invocation_id": "inv_atlas",
+        "created_at": "2026-05-24T12:00:00+00:00",
+        "organ_id": "biometrics_pressure",
+        "candidate_events": [
+            {
+                "event_id": "gev_pressure_1",
+                "trace_id": "substrate.pressure:atlas:2026-05-24T12:00:00Z",
+                "event_kind": "atom_emitted",
+                "emitted_at": "2026-05-24T12:00:00+00:00",
+                "provenance": {
+                    "source_service": "orion-substrate-runtime",
+                    "source_component": "biometrics_pressure",
+                },
+            }
+        ],
+    }
+
+
 def test_latest_chain_shape(client):
     fake_engine = MagicMock()
     conn = MagicMock()
     fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
     fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+
+    receipt_rows = [{"receipt_json": _atlas_pressure_receipt()}]
+    emission_rows = [{"emission_json": _atlas_emission()}]
 
     def execute(stmt, params=None):
         sql = str(stmt)
@@ -51,14 +103,10 @@ def test_latest_chain_shape(client):
             m.mappings.return_value.first.return_value = {
                 "trace_id": "biometrics.node:atlas:2026-05-24T12:00:00Z",
             }
-        elif "substrate_organ_emissions" in sql:
-            m.mappings.return_value.first.return_value = {
-                "emission_json": {"emission_id": "oem_1", "organ_id": "biometrics_pressure"},
-            }
-        elif "substrate_reduction_receipts" in sql:
-            m.mappings.return_value.first.return_value = {
-                "receipt_json": {"receipt_id": "rcpt_1", "accepted_event_ids": ["gev_1"]},
-            }
+        elif "substrate_organ_emissions" in sql and "LIMIT" in sql:
+            m.mappings.return_value.all.return_value = emission_rows
+        elif "substrate_reduction_receipts" in sql and "LIMIT" in sql:
+            m.mappings.return_value.all.return_value = receipt_rows
         elif "substrate_node_biometrics_projection" in sql:
             m.mappings.return_value.first.return_value = {
                 "projection_json": {
@@ -89,4 +137,28 @@ def test_latest_chain_shape(client):
     assert body["node_id"] == "atlas"
     assert "event_chain" in body
     assert len(body["event_chain"]) == 6
-    assert body["latest_reduction_receipt"]["receipt_id"] == "rcpt_1"
+    assert body["latest_reduction_receipt"]["receipt_id"] == "rcpt_atlas_pressure"
+    assert body["latest_organ_emission"]["emission_id"] == "oem_atlas"
+    assert body["committed_state_deltas"][0]["target_id"] == "atlas"
+
+
+def test_receipt_by_id(client):
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+
+    def execute(stmt, params=None):
+        m = MagicMock()
+        m.mappings.return_value.first.return_value = {
+            "receipt_json": _atlas_pressure_receipt(),
+        }
+        return m
+
+    conn.execute.side_effect = execute
+
+    with patch.object(substrate_biometrics_routes, "_engine", return_value=fake_engine):
+        r = client.get("/api/substrate/receipts/rcpt_atlas_pressure")
+
+    assert r.status_code == 200
+    assert r.json()["receipt_id"] == "rcpt_atlas_pressure"

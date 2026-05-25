@@ -22,3 +22,12 @@ docker compose up --build
 ```
 
 Health: `GET http://localhost:8115/health`
+
+## Idempotent committed deltas
+
+`ReductionReceiptV1.receipt_id` and `StateDeltaV1.delta_id` are derived from reducer inputs via `orion.substrate.ids` so replay/retry does not mint duplicate committed identities. Postgres inserts use `ON CONFLICT (receipt_id) DO NOTHING`.
+
+Hub debug (node-scoped lineage):
+
+- `GET /api/substrate/biometrics-node/{node_id}/latest`
+- `GET /api/substrate/receipts/{receipt_id}`

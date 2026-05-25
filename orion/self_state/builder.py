@@ -194,6 +194,7 @@ def build_self_state(
         if (
             dim
             and ch in pressure_channel_set
+            and ch not in policy.stabilizing_channels
             and v >= policy.unresolved_pressure_threshold
         ):
             unresolved.append(f"{ch}→{dim}")

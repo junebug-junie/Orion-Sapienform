@@ -67,6 +67,7 @@ def test_pressure_channels_in_unresolved_pressures() -> None:
     state = _built_state()
     assert "execution_load→execution_pressure" in state.unresolved_pressures
     assert "execution_pressure→execution_pressure" in state.unresolved_pressures
+    assert "cpu_pressure→resource_pressure" in state.unresolved_pressures
     assert "pressure→resource_pressure" in state.unresolved_pressures
 
 

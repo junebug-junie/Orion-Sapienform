@@ -1,0 +1,54 @@
+schema_version: self_state_policy.v1
+policy_id: self_state_policy.v1
+
+condition_thresholds:
+  quiet_max: 0.15
+  steady_max: 0.40
+  loaded_max: 0.70
+  strained_max: 0.90
+
+dimension_weights:
+  field_intensity: 0.15
+  coherence: 0.15
+  uncertainty: 0.10
+  agency_readiness: 0.10
+  resource_pressure: 0.10
+  execution_pressure: 0.15
+  reasoning_pressure: 0.05
+  reliability_pressure: 0.15
+  continuity_pressure: 0.03
+  introspection_pressure: 0.02
+
+attention_target_weights:
+  system: 0.30
+  node: 0.35
+  capability: 0.35
+
+channel_dimension_map:
+  execution_load: execution_pressure
+  execution_friction: reliability_pressure
+  failure_pressure: reliability_pressure
+  reasoning_load: reasoning_pressure
+  cpu_pressure: resource_pressure
+  gpu_pressure: resource_pressure
+  memory_pressure: resource_pressure
+  disk_pressure: resource_pressure
+  thermal_pressure: resource_pressure
+  staleness: continuity_pressure
+  availability: coherence
+  expected_offline_suppression: coherence
+  pressure: resource_pressure
+  execution_pressure: execution_pressure
+  reasoning_pressure: reasoning_pressure
+  reliability_pressure: reliability_pressure
+  confidence: coherence
+  available_capacity: coherence
+
+stabilizing_channels:
+  availability: 0.50
+  confidence: 0.50
+  available_capacity: 0.50
+  expected_offline_suppression: 0.30
+
+unresolved_pressure_threshold: 0.60
+dominant_channel_threshold: 0.25

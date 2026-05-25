@@ -1,0 +1,24 @@
+services:
+  self-state-runtime:
+    build:
+      context: ../..
+      dockerfile: services/orion-self-state-runtime/Dockerfile
+    container_name: ${PROJECT}-self-state-runtime
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      - "${SELF_STATE_RUNTIME_PORT:-8118}:8118"
+    environment:
+      - PROJECT=${PROJECT}
+      - SERVICE_NAME=${SERVICE_NAME:-orion-self-state-runtime}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - POSTGRES_URI=${POSTGRES_URI}
+      - SELF_STATE_POLICY_PATH=${SELF_STATE_POLICY_PATH:-/app/config/self_state/self_state_policy.v1.yaml}
+      - SELF_STATE_POLL_INTERVAL_SEC=${SELF_STATE_POLL_INTERVAL_SEC:-2.0}
+      - ENABLE_SELF_STATE_RUNTIME=${ENABLE_SELF_STATE_RUNTIME:-true}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+networks:
+  app-net:
+    external: true

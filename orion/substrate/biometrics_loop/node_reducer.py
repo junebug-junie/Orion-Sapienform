@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
-from uuid import uuid4
 
 from orion.biometrics.node_catalog import NodeCatalog
+from orion.substrate.ids import stable_delta_id, stable_receipt_id
 from orion.schemas.biometrics_projection import NodeBiometricsProjectionV1
 from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.reduction_receipt import ProjectionUpdateV1, ReductionReceiptV1
@@ -23,9 +23,15 @@ def _utc_now(now: datetime | None) -> datetime:
     return now if now.tzinfo else now.replace(tzinfo=timezone.utc)
 
 
-def _noop_receipt(*, event_id: str, now: datetime) -> ReductionReceiptV1:
+def _noop_receipt(*, event_id: str, now: datetime, reducer_id: str) -> ReductionReceiptV1:
     return ReductionReceiptV1(
-        receipt_id=f"rcpt_{uuid4().hex[:12]}",
+        receipt_id=stable_receipt_id(
+            reducer_id=reducer_id,
+            accepted_event_ids=[],
+            rejected_event_ids=[],
+            merged_event_ids=[],
+            noop_event_ids=[event_id],
+        ),
         noop_event_ids=[event_id],
         created_at=now,
     )
@@ -43,10 +49,14 @@ def reduce_biometrics_node_event(
     clock = _utc_now(now)
 
     if event.provenance.source_service != BIOMETRICS_SOURCE_SERVICE:
-        return projection, _noop_receipt(event_id=event.event_id, now=clock)
+        return projection, _noop_receipt(
+            event_id=event.event_id, now=clock, reducer_id=reducer_id
+        )
 
     if not parse_biometrics_trace_id(event.trace_id):
-        return projection, _noop_receipt(event_id=event.event_id, now=clock)
+        return projection, _noop_receipt(
+            event_id=event.event_id, now=clock, reducer_id=reducer_id
+        )
 
     updated = deepcopy(projection)
     updated.generated_at = clock
@@ -91,11 +101,24 @@ def reduce_biometrics_node_event(
     updated.nodes[node_id] = merged
 
     receipt = ReductionReceiptV1(
-        receipt_id=f"rcpt_{uuid4().hex[:12]}",
+        receipt_id=stable_receipt_id(
+            reducer_id=reducer_id,
+            accepted_event_ids=[event.event_id],
+            rejected_event_ids=[],
+            merged_event_ids=[],
+            noop_event_ids=[],
+        ),
         accepted_event_ids=[event.event_id],
         state_deltas=[
             StateDeltaV1(
-                delta_id=f"delta_{uuid4().hex[:12]}",
+                delta_id=stable_delta_id(
+                    reducer_id=reducer_id,
+                    target_projection=updated.projection_id,
+                    target_kind="node_biometrics",
+                    target_id=node_id,
+                    operation=operation,
+                    caused_by_event_ids=[event.event_id],
+                ),
                 target_projection=updated.projection_id,
                 target_kind="node_biometrics",
                 target_id=node_id,

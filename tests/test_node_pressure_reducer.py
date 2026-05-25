@@ -133,6 +133,8 @@ def test_projection_rebuilds_deterministically(
     )
     assert p1.model_dump(mode="json") == p2.model_dump(mode="json")
     assert r1.accepted_event_ids == r2.accepted_event_ids
+    assert r1.receipt_id == r2.receipt_id
+    assert [d.delta_id for d in r1.state_deltas] == [d.delta_id for d in r2.state_deltas]
 
 
 def test_low_confidence_rejected(

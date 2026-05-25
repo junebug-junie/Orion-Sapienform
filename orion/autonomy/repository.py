@@ -165,6 +165,9 @@ def select_preferred_autonomy_lookup(by_subject: Mapping[str, AutonomyLookupV1])
                 and not _drives_facet_ok(orion)
             )
             return SelectedAutonomyLookup(lookup, subject, contextual, orion)
+    # Last resort: Orion partial state (identity/goals) for proposal_only degraded stance.
+    if orion and orion.availability in {"available", "degraded"} and orion.state is not None:
+        return SelectedAutonomyLookup(orion, "orion", False, orion)
     return SelectedAutonomyLookup(None, None, False, orion)
 
 

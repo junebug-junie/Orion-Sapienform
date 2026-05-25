@@ -143,9 +143,11 @@ router = APIRouter()
 
 from .grammar_atlas_routes import router as grammar_atlas_router
 from .substrate_biometrics_routes import router as substrate_biometrics_router
+from .substrate_field_routes import router as substrate_field_router
 
 router.include_router(grammar_atlas_router)
 router.include_router(substrate_biometrics_router)
+router.include_router(substrate_field_router)
 
 
 def _hub_uses_host_network_mode() -> bool:

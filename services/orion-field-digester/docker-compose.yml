@@ -1,0 +1,26 @@
+services:
+  field-digester:
+    build:
+      context: ../..
+      dockerfile: services/orion-field-digester/Dockerfile
+    container_name: ${PROJECT}-field-digester
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      - "${FIELD_DIGESTER_PORT:-8116}:8116"
+    environment:
+      - PROJECT=${PROJECT}
+      - NODE_NAME=${NODE_NAME}
+      - SERVICE_NAME=${SERVICE_NAME:-orion-field-digester}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - POSTGRES_URI=${POSTGRES_URI}
+      - LATTICE_PATH=${LATTICE_PATH:-/app/config/field/biometrics_lattice.yaml}
+      - BIOMETRICS_FIELD_DECAY_RATE=${BIOMETRICS_FIELD_DECAY_RATE:-0.92}
+      - BIOMETRICS_FIELD_DIFFUSION_RATE=${BIOMETRICS_FIELD_DIFFUSION_RATE:-1.0}
+      - RECEIPT_POLL_INTERVAL_SEC=${RECEIPT_POLL_INTERVAL_SEC:-2.0}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+networks:
+  app-net:
+    external: true

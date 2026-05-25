@@ -30,6 +30,8 @@ class SelfStatePolicyV1(BaseModel):
     attention_target_weights: dict[str, float] = Field(default_factory=dict)
     channel_dimension_map: dict[str, str] = Field(default_factory=dict)
     stabilizing_channels: dict[str, float] = Field(default_factory=dict)
+    pressure_channels: list[str] = Field(default_factory=list)
+    context_channels: list[str] = Field(default_factory=list)
 
     unresolved_pressure_threshold: float = 0.60
     dominant_channel_threshold: float = 0.25

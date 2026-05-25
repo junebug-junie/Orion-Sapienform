@@ -1,0 +1,3 @@
+NODE_BIOMETRICS_PROJECTION_ID = "node_biometrics_projection"
+ACTIVE_NODE_PRESSURE_PROJECTION_ID = "active_node_pressure_projection"
+GRAMMAR_CURSOR_NAME = "biometrics_grammar_consumer"

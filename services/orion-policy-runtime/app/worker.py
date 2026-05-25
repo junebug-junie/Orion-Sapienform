@@ -46,11 +46,8 @@ class PolicyRuntimeWorker:
         if not self._settings.enable_policy_runtime:
             return
 
-        proposal = self._store.load_latest_proposal_frame()
+        proposal = self._store.load_next_proposal_without_policy_frame()
         if proposal is None:
-            return
-
-        if self._store.load_policy_frame_for_proposal(proposal.frame_id) is not None:
             return
 
         self_state = self._store.load_self_state(proposal.source_self_state_id)

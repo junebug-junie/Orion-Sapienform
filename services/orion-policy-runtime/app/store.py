@@ -21,6 +21,32 @@ class PolicyRuntimeStore:
             json_deserializer=json.loads,
         )
 
+    def load_next_proposal_without_policy_frame(self) -> ProposalFrameV1 | None:
+        with self._engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT p.proposal_frame_json
+                        FROM substrate_proposal_frames p
+                        LEFT JOIN substrate_policy_decision_frames d
+                          ON d.source_proposal_frame_id = p.frame_id
+                        WHERE d.frame_id IS NULL
+                        ORDER BY p.generated_at ASC
+                        LIMIT 1
+                        """
+                    ),
+                )
+                .mappings()
+                .first()
+            )
+        if not row:
+            return None
+        payload = row["proposal_frame_json"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        return ProposalFrameV1.model_validate(payload)
+
     def load_latest_proposal_frame(self) -> ProposalFrameV1 | None:
         with self._engine.connect() as conn:
             row = (

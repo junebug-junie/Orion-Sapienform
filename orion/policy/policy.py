@@ -8,12 +8,16 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class AutonomyConfigV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     default_tier: str = "observe_only"
     max_tier_without_operator: str = "read_only"
     allow_execution_without_operator: bool = False
 
 
 class PolicyThresholdsV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     approve_read_only_max_risk: float = 0.15
     defer_above_risk: float = 0.60
     reject_above_risk: float = 0.85
@@ -23,6 +27,8 @@ class PolicyThresholdsV1(BaseModel):
 
 
 class ProposalKindRuleV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     allowed_scope: str
     default_decision: str
     max_autonomy_tier: str

@@ -1,6 +1,9 @@
 from pathlib import Path
 
-from orion.policy.policy import load_substrate_policy
+import pytest
+from pydantic import ValidationError
+
+from orion.policy.policy import SubstratePolicyV1, load_substrate_policy
 
 REPO = Path(__file__).resolve().parents[1]
 POLICY_PATH = REPO / "config" / "policy" / "substrate_policy.v1.yaml"
@@ -38,3 +41,14 @@ def test_inspect_read_only() -> None:
 def test_hard_blocks_include_cortex_exec() -> None:
     policy = load_substrate_policy(POLICY_PATH)
     assert "cortex_exec_direct_call" in policy.hard_blocks
+
+
+def test_nested_extra_fields_forbidden() -> None:
+    with pytest.raises(ValidationError):
+        SubstratePolicyV1.model_validate(
+            {
+                "schema_version": "substrate_policy.v1",
+                "policy_id": "substrate_policy.v1",
+                "autonomy": {"allow_executon_without_operator": False},
+            }
+        )

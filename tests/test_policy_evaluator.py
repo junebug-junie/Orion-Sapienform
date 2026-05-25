@@ -138,6 +138,18 @@ def test_hard_blocked_execution_intent_rejected() -> None:
     assert "cortex_exec_direct_call" in result.blocked_by
 
 
+def test_elevated_policy_gate_requires_review() -> None:
+    for gate in ("autonomy_policy", "execution_policy"):
+        result = evaluate_proposal_candidate(
+            candidate=_candidate(required_policy_gate=gate, risk_score=0.05),
+            proposal_frame=_proposal_frame(),
+            self_state=_self_state(),
+            policy=POLICY,
+        )
+        assert result.decision == "requires_operator_review"
+        assert "elevated_policy_gate_required" in result.reasons
+
+
 def test_no_approved_for_execution_when_disabled() -> None:
     kinds = (
         "observe",

@@ -146,6 +146,9 @@ def evaluate_proposal_candidate(
     elif candidate.confidence_score < policy.thresholds.require_review_below_confidence:
         decision = "requires_operator_review"
         reasons.append("confidence_below_threshold")
+    elif candidate.required_policy_gate in ("autonomy_policy", "execution_policy"):
+        decision = "requires_operator_review"
+        reasons.append("elevated_policy_gate_required")
     elif (
         is_read_only_candidate(candidate, policy)
         and candidate.risk_score <= policy.thresholds.approve_read_only_max_risk

@@ -99,13 +99,19 @@ def _lookup_healthy_for_short_circuit(lookup: AutonomyLookupV1) -> bool:
     return True
 
 
+def _drives_facet_status(lookup: AutonomyLookupV1 | None) -> str:
+    if lookup is None:
+        return ""
+    diags = (lookup.subquery_diagnostics or {}).get("drives")
+    if not isinstance(diags, dict):
+        return ""
+    return str(diags.get("status") or "").strip().lower()
+
+
 def _drives_facet_ok(lookup: AutonomyLookupV1 | None) -> bool:
     if lookup is None or lookup.availability not in {"available", "degraded"}:
         return False
-    diags = (lookup.subquery_diagnostics or {}).get("drives")
-    if not isinstance(diags, dict):
-        return False
-    status = str(diags.get("status") or "")
+    status = _drives_facet_status(lookup)
     if status != "ok":
         return False
     if lookup.state and (
@@ -114,6 +120,9 @@ def _drives_facet_ok(lookup: AutonomyLookupV1 | None) -> bool:
         or lookup.state.active_drives
     ):
         return True
+    diags = (lookup.subquery_diagnostics or {}).get("drives")
+    if not isinstance(diags, dict):
+        return False
     return int(diags.get("row_count") or 0) > 0
 
 
@@ -133,14 +142,32 @@ def select_preferred_autonomy_lookup(by_subject: Mapping[str, AutonomyLookupV1])
         return SelectedAutonomyLookup(orion, "orion", False, orion)
     if _drives_facet_ok(relationship):
         return SelectedAutonomyLookup(relationship, "relationship", True, orion)
-    for subject in ("orion", "relationship", "juniper"):
+    _ORION_DRIVES_BAD = frozenset({"timeout", "error", "deferred", "query_error", "connection_error"})
+    for subject in ("relationship", "orion", "juniper"):
         lookup = by_subject.get(subject)
         if lookup and lookup.availability in {"available", "degraded"} and lookup.state is not None:
-            return SelectedAutonomyLookup(lookup, subject, False, orion)
-    for subject in ("orion", "relationship", "juniper"):
+            if subject == "orion" and _drives_facet_status(lookup) in _ORION_DRIVES_BAD:
+                continue
+            contextual = (
+                subject == "relationship"
+                and _drives_facet_ok(relationship)
+                and not _drives_facet_ok(orion)
+            )
+            return SelectedAutonomyLookup(lookup, subject, contextual, orion)
+    for subject in ("relationship", "orion", "juniper"):
         lookup = by_subject.get(subject)
-        if lookup and lookup.availability not in {"empty"}:
-            return SelectedAutonomyLookup(lookup if lookup.state is not None else None, subject if lookup.state is not None else None, False, orion)
+        if lookup and lookup.availability not in {"empty"} and lookup.state is not None:
+            if subject == "orion" and _drives_facet_status(lookup) in _ORION_DRIVES_BAD:
+                continue
+            contextual = (
+                subject == "relationship"
+                and _drives_facet_ok(relationship)
+                and not _drives_facet_ok(orion)
+            )
+            return SelectedAutonomyLookup(lookup, subject, contextual, orion)
+    # Last resort: Orion partial state (identity/goals) for proposal_only degraded stance.
+    if orion and orion.availability in {"available", "degraded"} and orion.state is not None:
+        return SelectedAutonomyLookup(orion, "orion", False, orion)
     return SelectedAutonomyLookup(None, None, False, orion)
 
 
@@ -255,11 +282,13 @@ class GraphAutonomyRepository:
         self._drives_query_limit = max(12, min(int(drives_query_limit) if drives_query_limit is not None else default_drives_limit, 80))
         drives_timeout_raw = os.getenv("AUTONOMY_DRIVES_SUBQUERY_TIMEOUT_SEC", "")
         if drives_timeout_raw.strip():
-            self._drives_timeout_sec = max(3.0, min(float(drives_timeout_raw), self._timeout_sec))
+            # Explicit drives budget may exceed identity/goals timeout so chat can fail fast on Orion
+            # while still allowing relationship drives to complete.
+            self._drives_timeout_sec = max(3.0, min(float(drives_timeout_raw), 30.0))
         else:
             self._drives_timeout_sec = max(3.0, min(12.0, self._timeout_sec))
         self._defer_orion_drives_for_chat_stance = str(
-            os.getenv("AUTONOMY_CHAT_STANCE_DEFER_ORION_DRIVES", "false")
+            os.getenv("AUTONOMY_CHAT_STANCE_DEFER_ORION_DRIVES", "true")
         ).strip().lower() in {"1", "true", "yes", "on"}
         self._query_client = query_client or (
             GraphQueryClient(
@@ -274,8 +303,10 @@ class GraphAutonomyRepository:
             if self._endpoint
             else None
         )
-        self._drives_query_client = (
-            GraphQueryClient(
+        if query_client is not None:
+            self._drives_query_client = query_client
+        elif self._endpoint:
+            self._drives_query_client = GraphQueryClient(
                 GraphQueryConfig(
                     endpoint=self._endpoint,
                     graph_uri=AUTONOMY_DRIVES_GRAPH,
@@ -284,9 +315,8 @@ class GraphAutonomyRepository:
                     password=self._password,
                 )
             )
-            if self._endpoint
-            else None
-        )
+        else:
+            self._drives_query_client = None
 
     def status(self) -> AutonomyRepositoryStatus:
         return AutonomyRepositoryStatus(

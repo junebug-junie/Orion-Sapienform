@@ -4,6 +4,19 @@ Autonomy goals and drives are keyed by subject (`orion`, `relationship`, `junipe
 
 - [Autonomy subject routing contract](../../docs/architecture/autonomy_subjects.md)
 
+## Chat stance drives (Hub compact card)
+
+On `chat_stance`, Orion’s drives graph is large and often exceeds SPARQL budgets. Defaults:
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `AUTONOMY_CHAT_STANCE_DEFER_ORION_DRIVES` | `true` | Skip Orion `drives` subquery; use relationship drives + Orion goals |
+| `AUTONOMY_CHAT_STANCE_DRIVES_QUERY_LIMIT` | `20` | Row cap when defer is off |
+| `AUTONOMY_DRIVES_SUBQUERY_TIMEOUT_SEC` | `12` | Drives-only timeout when defer is off |
+| `AUTONOMY_CHAT_STANCE_SUBQUERY_MAX_WORKERS` | `1` | Serialize identity/drives/goals per subject under load |
+
+Set `AUTONOMY_CHAT_STANCE_DEFER_ORION_DRIVES=false` only if Orion drives must appear on every chat turn and Fuseki keeps p95 under the drives timeout.
+
 Run tests:
 
 Prove local semantics:

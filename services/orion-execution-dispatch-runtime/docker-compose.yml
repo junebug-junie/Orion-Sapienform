@@ -1,0 +1,26 @@
+services:
+  execution-dispatch-runtime:
+    build:
+      context: ../..
+      dockerfile: services/orion-execution-dispatch-runtime/Dockerfile
+    container_name: ${PROJECT}-execution-dispatch-runtime
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      - "${EXECUTION_DISPATCH_RUNTIME_PORT:-8121}:8121"
+    environment:
+      - PROJECT=${PROJECT}
+      - SERVICE_NAME=${SERVICE_NAME:-orion-execution-dispatch-runtime}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - POSTGRES_URI=${POSTGRES_URI}
+      - EXECUTION_DISPATCH_POLICY_PATH=${EXECUTION_DISPATCH_POLICY_PATH:-/app/config/execution_dispatch/execution_dispatch_policy.v1.yaml}
+      - EXECUTION_DISPATCH_MODE=${EXECUTION_DISPATCH_MODE:-dry_run}
+      - EXECUTION_DISPATCH_POLL_INTERVAL_SEC=${EXECUTION_DISPATCH_POLL_INTERVAL_SEC:-2.0}
+      - ENABLE_EXECUTION_DISPATCH_RUNTIME=${ENABLE_EXECUTION_DISPATCH_RUNTIME:-true}
+      - CORTEX_EXEC_CHANNEL=${CORTEX_EXEC_CHANNEL:-orion:cortex:request}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+networks:
+  app-net:
+    external: true

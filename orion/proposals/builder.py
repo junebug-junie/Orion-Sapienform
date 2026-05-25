@@ -44,6 +44,7 @@ def _build_candidate(
     match_score, motivating_dimensions = template_match_score(
         self_state=self_state,
         template=template,
+        policy=policy,
     )
     urgency = proposal_urgency(self_state=self_state, template=template)
     confidence = proposal_confidence(self_state=self_state, template=template)

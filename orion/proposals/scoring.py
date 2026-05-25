@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from orion.proposals.policy import ProposalTemplateV1
+from orion.proposals.policy import ProposalPolicyV1, ProposalTemplateV1
 from orion.schemas.self_state import SelfStateV1
 
 PRESSURE_DIMENSIONS = frozenset({
@@ -36,10 +36,16 @@ def template_match_score(
     *,
     self_state: SelfStateV1,
     template: ProposalTemplateV1,
+    policy: ProposalPolicyV1 | None = None,
 ) -> tuple[float, dict[str, float]]:
     contributions: dict[str, float] = {}
     for dim_id, weight in template.dimensions.items():
-        contributions[dim_id] = clamp01(dimension_score(self_state, dim_id) * float(weight))
+        policy_weight = 1.0
+        if policy is not None:
+            policy_weight = float(policy.dimension_weights.get(dim_id, 1.0))
+        contributions[dim_id] = clamp01(
+            dimension_score(self_state, dim_id) * float(weight) * abs(policy_weight)
+        )
     match = max(contributions.values()) if contributions else 0.0
     return clamp01(match), contributions
 

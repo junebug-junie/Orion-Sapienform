@@ -18,6 +18,10 @@ substrate_self_state
 - No policy approval, cortex-exec, bus publish, operator notifications, or LLM calls.
 - `execution_intent` on candidates is descriptive only.
 
+## Idempotency
+
+One proposal frame per `source_self_state_id`. Re-running the worker for the same self-state snapshot is a no-op. Policy/template changes do not regenerate until a new self-state row exists (v1 semantics).
+
 ## Run
 
 ```bash

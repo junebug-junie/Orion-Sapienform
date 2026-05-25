@@ -61,6 +61,7 @@ class ProposalRuntimeWorker:
                 self_state.source_field_tick_id,
                 self_state.self_state_id,
             )
+            return
 
         previous = self._store.load_latest_proposal_frame()
         frame = build_proposal_frame(

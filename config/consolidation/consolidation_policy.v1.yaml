@@ -1,0 +1,83 @@
+schema_version: consolidation_policy.v1
+policy_id: consolidation_policy.v1
+
+window:
+  lookback_minutes: 60
+  min_support_count: 3
+  max_frames_per_source: 500
+
+motif_thresholds:
+  min_support_score: 0.20
+  min_confidence_score: 0.30
+  dominant_motif_min_support: 0.50
+
+tracked_self_dimensions:
+  - field_intensity
+  - execution_pressure
+  - reasoning_pressure
+  - resource_pressure
+  - reliability_pressure
+  - agency_readiness
+  - uncertainty
+  - coherence
+
+tracked_attention_targets:
+  - node:athena
+  - capability:orchestration
+  - capability:graph
+  - field:recent_perturbations
+
+tracked_feedback_outcomes:
+  - dry_run_only
+  - prepared_only
+  - completed
+  - failed
+  - blocked
+  - absent
+  - deferred
+  - mixed
+
+motif_rules:
+  loaded_but_reliable:
+    kind: self_state_pattern
+    label: loaded_but_reliable
+    conditions:
+      overall_condition: loaded
+      reliability_pressure_max: 0.30
+      execution_pressure_min: 0.70
+
+  attention_saturated_execution:
+    kind: attention_pattern
+    label: attention_saturated_execution
+    conditions:
+      attention_target_any:
+        - node:athena
+        - capability:orchestration
+      min_overall_salience: 0.70
+
+  read_only_policy_loop:
+    kind: proposal_policy_pattern
+    label: read_only_policy_loop
+    conditions:
+      approved_read_only_min: 1
+
+  dry_run_feedback_loop:
+    kind: dispatch_feedback_pattern
+    label: dry_run_feedback_loop
+    conditions:
+      outcome_status: dry_run_only
+
+  blocked_review_loop:
+    kind: dispatch_feedback_pattern
+    label: blocked_review_loop
+    conditions:
+      blocked_or_review_min: 1
+
+  stable_after_dry_run:
+    kind: stability_pattern
+    label: stable_after_dry_run
+    conditions:
+      outcome_status: dry_run_only
+      self_state_delta:
+        allowed:
+          - unchanged

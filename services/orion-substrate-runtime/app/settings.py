@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     enable_biometrics_node_reducer: bool = Field(True, alias="ENABLE_BIOMETRICS_NODE_REDUCER")
     enable_biometrics_pressure_organ: bool = Field(True, alias="ENABLE_BIOMETRICS_PRESSURE_ORGAN")
     enable_node_pressure_reducer: bool = Field(True, alias="ENABLE_NODE_PRESSURE_REDUCER")
+    enable_execution_trajectory_reducer: bool = Field(
+        False,
+        alias="ENABLE_EXECUTION_TRAJECTORY_REDUCER",
+    )
     biometrics_node_stale_after_sec: int = Field(180, alias="BIOMETRICS_NODE_STALE_AFTER_SEC")
     biometrics_pressure_min_confidence: float = Field(0.60, alias="BIOMETRICS_PRESSURE_MIN_CONFIDENCE")
     node_catalog_path: str = Field(

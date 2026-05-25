@@ -11,11 +11,13 @@ from orion.schemas.biometrics_projection import (
     ActiveNodePressureProjectionV1,
     NodeBiometricsProjectionV1,
 )
+from orion.schemas.execution_projection import ExecutionTrajectoryProjectionV1
 from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.organ_emission import OrganEmissionV1
 from orion.schemas.reduction_receipt import ReductionReceiptV1
 
 from orion.substrate.biometrics_loop.constants import GRAMMAR_CURSOR_NAME
+from orion.substrate.execution_loop.constants import EXECUTION_GRAMMAR_CURSOR_NAME
 from orion.substrate.biometrics_loop.lineage import emission_touches_node, receipt_touches_node
 
 
@@ -77,6 +79,55 @@ class BiometricsSubstrateStore:
             events.append(GrammarEventV1.model_validate(payload))
         return events
 
+    def fetch_execution_grammar_events(self, *, limit: int = 50) -> list[GrammarEventV1]:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT last_event_created_at, last_event_id
+                    FROM substrate_reduction_cursor
+                    WHERE cursor_name = :cursor_name
+                    """
+                ),
+                {"cursor_name": EXECUTION_GRAMMAR_CURSOR_NAME},
+            ).mappings().first()
+
+            params: dict[str, Any] = {"limit": limit}
+            if row and row["last_event_created_at"]:
+                params["cursor_ts"] = row["last_event_created_at"]
+                params["cursor_id"] = row["last_event_id"] or ""
+                query = """
+                    SELECT event_id, event_json, created_at
+                    FROM grammar_events
+                    WHERE source_service = 'orion-cortex-exec'
+                      AND trace_id LIKE 'cortex.exec:%'
+                      AND (
+                        created_at > :cursor_ts
+                        OR (created_at = :cursor_ts AND event_id > :cursor_id)
+                      )
+                    ORDER BY created_at ASC, event_id ASC
+                    LIMIT :limit
+                """
+            else:
+                query = """
+                    SELECT event_id, event_json, created_at
+                    FROM grammar_events
+                    WHERE source_service = 'orion-cortex-exec'
+                      AND trace_id LIKE 'cortex.exec:%'
+                    ORDER BY created_at ASC, event_id ASC
+                    LIMIT :limit
+                """
+
+            rows = conn.execute(text(query), params).mappings().all()
+
+        events: list[GrammarEventV1] = []
+        for r in rows:
+            payload = r["event_json"]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            events.append(GrammarEventV1.model_validate(payload))
+        return events
+
     def advance_cursor(self, *, event_id: str, created_at: datetime) -> None:
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
@@ -96,6 +147,31 @@ class BiometricsSubstrateStore:
                 ),
                 {
                     "cursor_name": GRAMMAR_CURSOR_NAME,
+                    "created_at": created_at,
+                    "event_id": event_id,
+                    "updated_at": now,
+                },
+            )
+
+    def advance_execution_cursor(self, *, event_id: str, created_at: datetime) -> None:
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_reduction_cursor (
+                        cursor_name, last_event_created_at, last_event_id, updated_at
+                    ) VALUES (
+                        :cursor_name, :created_at, :event_id, :updated_at
+                    )
+                    ON CONFLICT (cursor_name) DO UPDATE SET
+                        last_event_created_at = EXCLUDED.last_event_created_at,
+                        last_event_id = EXCLUDED.last_event_id,
+                        updated_at = EXCLUDED.updated_at
+                    """
+                ),
+                {
+                    "cursor_name": EXECUTION_GRAMMAR_CURSOR_NAME,
                     "created_at": created_at,
                     "event_id": event_id,
                     "updated_at": now,
@@ -160,6 +236,18 @@ class BiometricsSubstrateStore:
 
     def save_active_pressure(self, projection: ActiveNodePressureProjectionV1) -> None:
         self._save_projection("substrate_active_node_pressure_projection", projection)
+
+    def load_execution_trajectory(
+        self, projection_id: str
+    ) -> ExecutionTrajectoryProjectionV1 | None:
+        return self._load_projection(
+            "substrate_execution_trajectory_projection",
+            projection_id,
+            ExecutionTrajectoryProjectionV1,
+        )
+
+    def save_execution_trajectory(self, projection: ExecutionTrajectoryProjectionV1) -> None:
+        self._save_projection("substrate_execution_trajectory_projection", projection)
 
     def save_receipt(self, receipt: ReductionReceiptV1) -> None:
         now = datetime.now(timezone.utc)

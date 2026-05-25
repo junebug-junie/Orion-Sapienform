@@ -19,6 +19,9 @@ from orion.substrate.biometrics_loop.pipeline import (
     _empty_pressure,
     process_biometrics_grammar_events,
 )
+from orion.substrate.execution_loop.constants import EXECUTION_TRAJECTORY_PROJECTION_ID
+from orion.substrate.execution_loop.pipeline import process_execution_grammar_events
+from orion.substrate.execution_loop.projection import empty_execution_projection
 
 from .publish import publish_accepted_events
 from .settings import get_settings
@@ -62,6 +65,15 @@ class BiometricsSubstrateWorker:
                             event_id=last_event_id,
                             created_at=created_at,
                         )
+                if self._settings.enable_execution_trajectory_reducer:
+                    last_exec_id = await asyncio.to_thread(self._execution_tick)
+                    if last_exec_id:
+                        created_at = self._store.grammar_event_created_at(last_exec_id)
+                        if created_at:
+                            self._store.advance_execution_cursor(
+                                event_id=last_exec_id,
+                                created_at=created_at,
+                            )
             except Exception:
                 logger.exception("biometrics_substrate_tick_failed")
             try:
@@ -112,3 +124,24 @@ class BiometricsSubstrateWorker:
         )
 
         return events[-1].event_id, published
+
+    def _execution_tick(self) -> str | None:
+        events = self._store.fetch_execution_grammar_events(limit=50)
+        if not events:
+            return None
+
+        now = datetime.now(timezone.utc)
+
+        def load_projection():
+            loaded = self._store.load_execution_trajectory(EXECUTION_TRAJECTORY_PROJECTION_ID)
+            return loaded or empty_execution_projection(now=now)
+
+        process_execution_grammar_events(
+            events=events,
+            load_projection=load_projection,
+            save_projection=self._store.save_execution_trajectory,
+            save_receipt=self._store.save_receipt,
+            now=now,
+        )
+
+        return events[-1].event_id

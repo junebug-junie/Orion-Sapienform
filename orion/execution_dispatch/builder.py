@@ -221,7 +221,17 @@ def build_execution_dispatch_frame(
             confidence_score=decision.confidence_score,
         )
         if dispatch_status == "dispatched":
-            dispatched.append(item)
+            if len(dispatched) < policy.limits.max_dispatches_per_tick:
+                dispatched.append(item)
+            else:
+                blocked.append(
+                    make_blocked(
+                        decision,
+                        candidate,
+                        reasons=["max_dispatches_per_tick_exceeded"],
+                        blocked_by=["limit"],
+                    )
+                )
         else:
             candidates.append(item)
 

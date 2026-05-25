@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
@@ -14,7 +16,10 @@ class Settings(BaseSettings):
         "config/execution_dispatch/execution_dispatch_policy.v1.yaml",
         alias="EXECUTION_DISPATCH_POLICY_PATH",
     )
-    execution_dispatch_mode: str = Field("dry_run", alias="EXECUTION_DISPATCH_MODE")
+    execution_dispatch_mode: Literal["dry_run", "prepare_only", "dispatch_read_only"] = Field(
+        "dry_run",
+        alias="EXECUTION_DISPATCH_MODE",
+    )
     execution_dispatch_poll_interval_sec: float = Field(
         2.0,
         alias="EXECUTION_DISPATCH_POLL_INTERVAL_SEC",

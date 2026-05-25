@@ -22,15 +22,18 @@ class ExecutionDispatchRuntimeStore:
             json_deserializer=json.loads,
         )
 
-    def load_latest_policy_frame(self) -> PolicyDecisionFrameV1 | None:
+    def load_latest_policy_frame_without_dispatch(self) -> PolicyDecisionFrameV1 | None:
         with self._engine.connect() as conn:
             row = (
                 conn.execute(
                     text(
                         """
-                        SELECT policy_decision_frame_json
-                        FROM substrate_policy_decision_frames
-                        ORDER BY generated_at DESC
+                        SELECT p.policy_decision_frame_json
+                        FROM substrate_policy_decision_frames p
+                        LEFT JOIN substrate_execution_dispatch_frames d
+                          ON d.source_policy_frame_id = p.frame_id
+                        WHERE d.frame_id IS NULL
+                        ORDER BY p.generated_at ASC
                         LIMIT 1
                         """
                     ),

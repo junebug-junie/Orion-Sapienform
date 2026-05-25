@@ -17,3 +17,6 @@ create index if not exists idx_substrate_execution_dispatch_frames_source_policy
 
 create index if not exists idx_substrate_execution_dispatch_frames_source_self_state
     on substrate_execution_dispatch_frames (source_self_state_id);
+
+create unique index if not exists uq_substrate_execution_dispatch_source_policy
+    on substrate_execution_dispatch_frames (source_policy_frame_id);

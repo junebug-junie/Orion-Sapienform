@@ -48,11 +48,8 @@ class ExecutionDispatchRuntimeWorker:
         if not self._settings.enable_execution_dispatch_runtime:
             return
 
-        policy_frame = self._store.load_latest_policy_frame()
+        policy_frame = self._store.load_latest_policy_frame_without_dispatch()
         if policy_frame is None:
-            return
-
-        if self._store.load_dispatch_frame_for_policy_frame(policy_frame.frame_id) is not None:
             return
 
         proposal = self._store.load_proposal_frame(policy_frame.source_proposal_frame_id)

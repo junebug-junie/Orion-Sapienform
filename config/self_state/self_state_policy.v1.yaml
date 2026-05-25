@@ -50,5 +50,25 @@ stabilizing_channels:
   available_capacity: 0.50
   expected_offline_suppression: 0.30
 
+pressure_channels:
+  - execution_load
+  - execution_friction
+  - failure_pressure
+  - reasoning_load
+  - cpu_pressure
+  - gpu_pressure
+  - memory_pressure
+  - disk_pressure
+  - thermal_pressure
+  - staleness
+  - pressure
+  - execution_pressure
+  - reasoning_pressure
+  - reliability_pressure
+
+context_channels:
+  - recent_perturbation_count
+  - overall_salience
+
 unresolved_pressure_threshold: 0.60
 dominant_channel_threshold: 0.25

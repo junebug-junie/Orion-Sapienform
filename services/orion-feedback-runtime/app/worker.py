@@ -55,7 +55,10 @@ class FeedbackRuntimeWorker:
         policy_frame = self._store.load_policy_frame(dispatch.source_policy_frame_id)
         proposal_frame = self._store.load_proposal_frame(dispatch.source_proposal_frame_id)
         self_state_before = self._store.load_self_state(dispatch.source_self_state_id)
-        self_state_after = self._store.load_latest_self_state_after(dispatch.generated_at)
+        self_state_after = self._store.load_latest_self_state_after(
+            dispatch.generated_at,
+            window_sec=self._policy.windows.field_after_window_sec,
+        )
         cortex_results = self._store.load_cortex_result_evidence(dispatch)
 
         frame = build_feedback_frame(

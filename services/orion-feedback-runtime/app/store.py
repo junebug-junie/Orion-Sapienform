@@ -143,7 +143,12 @@ class FeedbackRuntimeStore:
             payload = json.loads(payload)
         return SelfStateV1.model_validate(payload)
 
-    def load_latest_self_state_after(self, generated_at: datetime) -> SelfStateV1 | None:
+    def load_latest_self_state_after(
+        self,
+        generated_at: datetime,
+        *,
+        window_sec: int = 30,
+    ) -> SelfStateV1 | None:
         with self._engine.connect() as conn:
             row = (
                 conn.execute(
@@ -151,11 +156,12 @@ class FeedbackRuntimeStore:
                         """
                         SELECT self_state_json FROM substrate_self_state
                         WHERE generated_at > :generated_at
+                          AND generated_at <= :generated_at + make_interval(secs => :window_sec)
                         ORDER BY generated_at ASC
                         LIMIT 1
                         """
                     ),
-                    {"generated_at": generated_at},
+                    {"generated_at": generated_at, "window_sec": float(window_sec)},
                 )
                 .mappings()
                 .first()

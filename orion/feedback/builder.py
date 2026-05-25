@@ -129,14 +129,14 @@ def _aggregate_outcome_status(
         return "dry_run_only"
     if dispatch.dispatch_mode == "prepare_only" and not dispatch.dispatch_attempted:
         return "prepared_only"
-    if "completed" in kinds and "failed" not in kinds:
-        return "completed"
-    if "failed" in kinds and "completed" not in kinds:
-        return "failed"
     if "absent" in kinds:
         if "completed" in kinds or "failed" in kinds:
             return "mixed"
         return "absent"
+    if "completed" in kinds and "failed" not in kinds:
+        return "completed"
+    if "failed" in kinds and "completed" not in kinds:
+        return "failed"
     if kinds <= {"blocked", "deferred"} or ("blocked" in kinds and not dispatch.dispatch_attempted):
         if "deferred" in kinds:
             return "deferred"

@@ -367,6 +367,100 @@ def test_stable_frame_id() -> None:
     assert frame.frame_id == expected
 
 
+def test_partial_dispatch_completed_and_absent_is_mixed() -> None:
+    dispatch = ExecutionDispatchFrameV1(
+        frame_id="execution.dispatch.frame:partial:execution_dispatch_policy.v1",
+        generated_at=NOW,
+        source_policy_frame_id="policy.frame:partial",
+        source_proposal_frame_id="proposal.frame:partial",
+        source_self_state_id="self.state:partial",
+        dispatch_mode="dispatch_read_only",
+        dispatch_attempted=True,
+        dispatch_count=2,
+        dispatched_candidates=[
+            ExecutionDispatchCandidateV1(
+                dispatch_id="dispatch:proposal:inspect:execution_dispatch_policy.v1",
+                source_decision_id="pd1",
+                source_proposal_id="proposal:inspect:state",
+                dispatch_status="dispatched",
+                dispatch_mode="dispatch_read_only",
+                dispatch_kind="inspect",
+                target_id="t1",
+                target_kind="capability",
+                risk_score=0.05,
+                confidence_score=0.9,
+            ),
+            ExecutionDispatchCandidateV1(
+                dispatch_id="dispatch:proposal:summarize:execution_dispatch_policy.v1",
+                source_decision_id="pd2",
+                source_proposal_id="proposal:summarize:state",
+                dispatch_status="dispatched",
+                dispatch_mode="dispatch_read_only",
+                dispatch_kind="summarize",
+                target_id="t2",
+                target_kind="capability",
+                risk_score=0.05,
+                confidence_score=0.9,
+            ),
+        ],
+    )
+    frame = build_feedback_frame(
+        dispatch_frame=dispatch,
+        policy_frame=None,
+        proposal_frame=None,
+        self_state_before=None,
+        self_state_after=None,
+        cortex_results=[
+            {"dispatch_id": "dispatch:proposal:inspect:execution_dispatch_policy.v1", "status": "success"}
+        ],
+        policy=FEEDBACK_POLICY,
+        now=NOW,
+    )
+    assert frame.outcome_status == "mixed"
+    assert len(frame.absence_evidence) >= 1
+
+
+def test_completed_and_failed_is_mixed() -> None:
+    dispatch = ExecutionDispatchFrameV1(
+        frame_id="execution.dispatch.frame:mix:execution_dispatch_policy.v1",
+        generated_at=NOW,
+        source_policy_frame_id="policy.frame:mix",
+        source_proposal_frame_id="proposal.frame:mix",
+        source_self_state_id="self.state:mix",
+        dispatch_mode="dispatch_read_only",
+        dispatch_attempted=True,
+        dispatch_count=2,
+        dispatched_candidates=[
+            ExecutionDispatchCandidateV1(
+                dispatch_id="dispatch:proposal:inspect:execution_dispatch_policy.v1",
+                source_decision_id="pd1",
+                source_proposal_id="proposal:inspect:state",
+                dispatch_status="dispatched",
+                dispatch_mode="dispatch_read_only",
+                dispatch_kind="inspect",
+                target_id="t1",
+                target_kind="capability",
+                risk_score=0.05,
+                confidence_score=0.9,
+            )
+        ],
+    )
+    frame = build_feedback_frame(
+        dispatch_frame=dispatch,
+        policy_frame=None,
+        proposal_frame=None,
+        self_state_before=None,
+        self_state_after=None,
+        cortex_results=[
+            {"dispatch_id": "dispatch:proposal:inspect:execution_dispatch_policy.v1", "status": "success"},
+            {"dispatch_id": "dispatch:proposal:inspect:execution_dispatch_policy.v1", "status": "failed"},
+        ],
+        policy=FEEDBACK_POLICY,
+        now=NOW,
+    )
+    assert frame.outcome_status == "mixed"
+
+
 def test_no_mutation_side_effects() -> None:
     dispatch = _dispatch_dry_run()
     policy_frame = _policy_frame(_proposal())

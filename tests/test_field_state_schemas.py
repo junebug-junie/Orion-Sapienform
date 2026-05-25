@@ -38,3 +38,16 @@ def test_field_state_v1_roundtrip() -> None:
     assert restored.schema_version == "field.state.v1"
     assert restored.node_vectors["node:atlas"]["gpu_pressure"] == 0.72
     assert restored.edges[0].weight == 0.85
+
+
+def test_field_state_accepts_topology_metadata() -> None:
+    now = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
+    state = FieldStateV1(
+        generated_at=now,
+        tick_id="tick_meta",
+        topology_id="orion_field_topology",
+        topology_version="v1",
+        topology_loaded_from="config/field/orion_field_topology.v1.yaml",
+    )
+    restored = FieldStateV1.model_validate(state.model_dump(mode="json"))
+    assert restored.topology_id == "orion_field_topology"

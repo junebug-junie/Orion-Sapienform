@@ -15,7 +15,7 @@ services:
       - SERVICE_NAME=${SERVICE_NAME:-orion-field-digester}
       - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
       - POSTGRES_URI=${POSTGRES_URI}
-      - LATTICE_PATH=${LATTICE_PATH:-/app/config/field/biometrics_lattice.yaml}
+      - LATTICE_PATH=${LATTICE_PATH:-/app/config/field/orion_field_topology.v1.yaml}
       - BIOMETRICS_FIELD_DECAY_RATE=${BIOMETRICS_FIELD_DECAY_RATE:-0.92}
       - BIOMETRICS_FIELD_DIFFUSION_RATE=${BIOMETRICS_FIELD_DIFFUSION_RATE:-1.0}
       - RECEIPT_POLL_INTERVAL_SEC=${RECEIPT_POLL_INTERVAL_SEC:-2.0}

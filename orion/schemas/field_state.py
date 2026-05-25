@@ -26,3 +26,6 @@ class FieldStateV1(BaseModel):
     capability_vectors: dict[str, dict[str, float]] = Field(default_factory=dict)
     edges: list[FieldEdgeV1] = Field(default_factory=list)
     recent_perturbations: list[str] = Field(default_factory=list)
+    topology_id: str | None = None
+    topology_version: str | None = None
+    topology_loaded_from: str | None = None

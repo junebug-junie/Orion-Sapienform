@@ -10,6 +10,7 @@ from app.ingest.state_deltas import Perturbation, delta_to_perturbations
 from app.settings import get_settings
 from app.store import FieldDigesterStore, PendingDelta
 from app.tensor.field_state import empty_field_state, new_tick_id
+from app.tensor.reconcile import reconcile_field_state_with_lattice
 from app.tensor.update_rules import run_digestion_tick
 
 logger = logging.getLogger("orion.field.digester")
@@ -57,6 +58,10 @@ class FieldDigesterWorker:
                 now=now,
                 tick_id=new_tick_id(),
             )
+        state = reconcile_field_state_with_lattice(state, lattice=self._lattice)
+        state.topology_loaded_from = self._settings.lattice_path
+        state.topology_id = "orion_field_topology"
+        state.topology_version = "v1"
 
         perturbations: list[Perturbation] = []
         pending_deltas: list[PendingDelta] = []

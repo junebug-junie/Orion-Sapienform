@@ -11,6 +11,8 @@ from orion.substrate.execution_loop.grammar_extract import (
     compute_pressure_hints,
     extract_execution_state_from_events,
 )
+from orion.schemas.execution_projection import ExecutionRunStateV1
+from orion.substrate.execution_loop.merge import merge_execution_run_state
 from orion.substrate.execution_loop.reducer import reduce_execution_trace_events
 
 FIXED_TS = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc)
@@ -180,3 +182,109 @@ def test_stable_delta_id_on_replay() -> None:
     )
     assert r1.receipt_id == r2.receipt_id
     assert r1.state_deltas[0].delta_id == r2.state_deltas[0].delta_id
+
+
+def _run_with_full_egress() -> ExecutionRunStateV1:
+    events = [
+        _exec_atom(
+            "exec_plan_started",
+            "Execution plan started for verb=chat_general; step_count=2; depth=none",
+            event_id="gev_full_1",
+        ),
+        _exec_atom(
+            "exec_step_started",
+            "Step started: order=1, step=step_1, verb=chat_general, services=LLMGatewayService",
+            event_id="gev_full_2",
+        ),
+        _exec_atom(
+            "exec_result_assembled",
+            "Final result assembled: status=success, final_text_present=True, reasoning_present=True, thinking_source=provider_reasoning",
+            event_id="gev_full_3",
+        ),
+        _exec_atom(
+            "exec_result_emitted",
+            "Cortex exec result emitted to reply_to=True, status=success",
+            event_id="gev_full_4",
+        ),
+    ]
+    return extract_execution_state_from_events(events, now=FIXED_TS)
+
+
+def _partial_batch_no_egress() -> list:
+    return [
+        _exec_atom(
+            "exec_step_started",
+            "Step started: order=1, step=step_2, verb=chat_general, services=LLMGatewayService",
+            event_id="gev_partial_1",
+        ),
+    ]
+
+
+def test_merge_does_not_downgrade_egress_confidence() -> None:
+    full = _run_with_full_egress()
+    assert full.pressure_hints["egress_confidence"] == 1.0
+    partial = extract_execution_state_from_events(_partial_batch_no_egress(), now=FIXED_TS)
+    merged = merge_execution_run_state(full, partial)
+    assert merged.pressure_hints["egress_confidence"] == 1.0
+
+
+def test_merge_does_not_downgrade_status_or_flags() -> None:
+    full = _run_with_full_egress()
+    partial = extract_execution_state_from_events(_partial_batch_no_egress(), now=FIXED_TS)
+    merged = merge_execution_run_state(full, partial)
+    assert merged.status == "success"
+    assert merged.final_text_present is True
+    assert merged.reasoning_present is True
+
+
+def test_merge_unions_evidence_event_ids() -> None:
+    full = _run_with_full_egress()
+    partial = extract_execution_state_from_events(_partial_batch_no_egress(), now=FIXED_TS)
+    merged = merge_execution_run_state(full, partial)
+    assert "gev_full_4" in merged.evidence_event_ids
+    assert "gev_partial_1" in merged.evidence_event_ids
+
+
+def test_reducer_partial_batch_after_full_does_not_downgrade() -> None:
+    full_events = [
+        _exec_atom(
+            "exec_plan_started",
+            "Execution plan started for verb=chat_general; step_count=1; depth=none",
+            event_id="gev_r1",
+        ),
+        _exec_atom(
+            "exec_result_assembled",
+            "Final result assembled: status=success, final_text_present=True, reasoning_present=True, thinking_source=provider_reasoning",
+            event_id="gev_r2",
+        ),
+        _exec_atom(
+            "exec_result_emitted",
+            "Cortex exec result emitted to reply_to=True, status=success",
+            event_id="gev_r3",
+        ),
+    ]
+    proj = _empty_projection()
+    proj, _ = reduce_execution_trace_events(events=full_events, projection=proj, now=FIXED_TS)
+    proj, receipt2 = reduce_execution_trace_events(
+        events=_partial_batch_no_egress(),
+        projection=proj,
+        now=FIXED_TS,
+    )
+    run = proj.runs[TRACE]
+    assert run.pressure_hints["egress_confidence"] == 1.0
+    assert run.status == "success"
+    assert run.final_text_present is True
+    assert run.reasoning_present is True
+    delta = receipt2.state_deltas[0]
+    assert delta.before["pressure_hints"]["egress_confidence"] == 1.0
+
+
+def test_merge_failed_step_raises_failure_pressure() -> None:
+    full = _run_with_full_egress()
+    fail_events = [
+        _exec_atom("exec_step_failed", "Step failed: step=step_9, error_kind=timeout", event_id="gev_fail"),
+    ]
+    incoming = extract_execution_state_from_events(fail_events, now=FIXED_TS)
+    merged = merge_execution_run_state(full, incoming)
+    assert merged.failed_step_count >= 1
+    assert merged.pressure_hints["failure_pressure"] == 1.0

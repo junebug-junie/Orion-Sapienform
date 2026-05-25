@@ -8,7 +8,7 @@ from app.tensor.field_state import empty_field_state
 
 
 def test_empty_field_state_has_all_lattice_nodes() -> None:
-    lattice_path = Path("config/field/biometrics_lattice.yaml")
+    lattice_path = Path("config/field/orion_field_topology.v1.yaml")
     lattice = load_lattice(lattice_path)
     now = datetime(2026, 5, 24, tzinfo=timezone.utc)
     state = empty_field_state(lattice=lattice, now=now, tick_id="tick_test")

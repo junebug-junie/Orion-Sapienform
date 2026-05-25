@@ -84,4 +84,23 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                     label=delta.delta_id,
                 )
             )
+
+    if delta.target_kind == "execution_run":
+        hints = dict(after.get("pressure_hints") or {})
+        node_key = _node_key(str(after.get("node_id") or delta.target_id))
+        for channel, key in (
+            ("execution_load", "execution_load"),
+            ("execution_friction", "execution_friction"),
+            ("reasoning_load", "reasoning_load"),
+            ("failure_pressure", "failure_pressure"),
+        ):
+            if key in hints:
+                out.append(
+                    Perturbation(
+                        node_id=node_key,
+                        channel=channel,
+                        intensity=float(hints[key]),
+                        label=delta.delta_id,
+                    )
+                )
     return out

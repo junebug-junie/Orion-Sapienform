@@ -55,6 +55,10 @@ from orion.schemas.biometrics_projection import (
     ActiveNodePressureProjectionV1,
     NodeBiometricsProjectionV1,
 )
+from orion.schemas.execution_projection import (
+    ExecutionRunStateV1,
+    ExecutionTrajectoryProjectionV1,
+)
 from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.organ_emission import OrganEmissionV1
 from orion.schemas.reduction_receipt import ProjectionUpdateV1, ReductionReceiptV1
@@ -539,6 +543,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ProjectionUpdateV1": ProjectionUpdateV1,
     "NodeBiometricsProjectionV1": NodeBiometricsProjectionV1,
     "ActiveNodePressureProjectionV1": ActiveNodePressureProjectionV1,
+    "ExecutionRunStateV1": ExecutionRunStateV1,
+    "ExecutionTrajectoryProjectionV1": ExecutionTrajectoryProjectionV1,
     "CortexClientRequest": CortexClientRequest,
     "CortexClientResult": CortexClientResult,
     "AgentTraceToolStatV1": AgentTraceToolStatV1,

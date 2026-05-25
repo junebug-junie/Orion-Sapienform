@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -334,7 +334,11 @@ def fetch_topics_snapshot(
                 timeout=timeout_seconds,
             )
             drift_resp.raise_for_status()
-            drift_items = _parse_foundry_topic_drift(drift_resp.json(), resolved_model)
+            drift_items = _parse_foundry_topic_drift(
+                drift_resp.json(),
+                resolved_model,
+                window_minutes=window_minutes,
+            )
     except Exception as exc:
         drift_error = str(exc)
 
@@ -412,10 +416,16 @@ def _parse_foundry_topic_summary(payload: Any) -> List[TopicItem]:
     return results
 
 
-def _parse_foundry_topic_drift(payload: Any, model_name: str) -> List[DriftItem]:
+def _parse_foundry_topic_drift(
+    payload: Any,
+    model_name: str,
+    *,
+    window_minutes: int,
+) -> List[DriftItem]:
     records = payload.get("records") if isinstance(payload, dict) else None
     if not isinstance(records, list):
         return _parse_topic_drift(payload)
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
     results: List[DriftItem] = []
     for record in records:
         if not isinstance(record, dict):
@@ -423,13 +433,34 @@ def _parse_foundry_topic_drift(payload: Any, model_name: str) -> List[DriftItem]
         score = _to_float(record.get("js_divergence"))
         if score is None:
             continue
-        window_end = record.get("window_end")
+        window_end = _parse_datetime(record.get("window_end"))
+        if window_end is not None and window_end < cutoff:
+            continue
         label = f"{model_name}"
-        if window_end:
-            label = f"{model_name} @ {window_end}"
+        if window_end is not None:
+            label = f"{model_name} @ {window_end.isoformat()}"
+        elif record.get("window_end"):
+            label = f"{model_name} @ {record.get('window_end')}"
         results.append(DriftItem(label=label, score=score))
     results.sort(key=lambda entry: entry.score, reverse=True)
     return results
+
+
+def _parse_datetime(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+    try:
+        normalized = str(value).replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    except (TypeError, ValueError):
+        return None
 
 
 def _parse_topic_summary(payload: Any) -> List[TopicItem]:

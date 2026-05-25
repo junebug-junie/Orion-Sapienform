@@ -93,12 +93,13 @@ async def run_digest_now(
         return None
 
     digest_summary = summarize_window(window_start, window_end)
-    topics_snapshot = fetch_topics_snapshot(
-        topic_foundry_url=settings.TOPIC_FOUNDRY_URL,
-        model_name=settings.TOPIC_FOUNDRY_MODEL_NAME,
-        window_minutes=_topics_window_minutes(),
-        max_topics=settings.TOPICS_MAX_TOPICS,
-        drift_max_records=settings.TOPICS_DRIFT_MAX_RECORDS,
+    topics_snapshot = await asyncio.to_thread(
+        fetch_topics_snapshot,
+        settings.TOPIC_FOUNDRY_URL,
+        settings.TOPIC_FOUNDRY_MODEL_NAME,
+        _topics_window_minutes(),
+        settings.TOPICS_MAX_TOPICS,
+        settings.TOPICS_DRIFT_MAX_RECORDS,
     )
     body_text, body_md = build_digest_content(
         digest_summary,
@@ -216,13 +217,17 @@ async def _check_topic_drift() -> None:
         logger.warning("Invalid DRIFT_ALERT_SEVERITY=%s; expected warning|error", settings.DRIFT_ALERT_SEVERITY)
         return
 
-    topics_snapshot = fetch_topics_snapshot(
-        topic_foundry_url=settings.TOPIC_FOUNDRY_URL,
-        model_name=settings.TOPIC_FOUNDRY_MODEL_NAME,
-        window_minutes=_topics_window_minutes(),
-        max_topics=settings.TOPICS_MAX_TOPICS,
-        drift_max_records=settings.TOPICS_DRIFT_MAX_RECORDS,
+    topics_snapshot = await asyncio.to_thread(
+        fetch_topics_snapshot,
+        settings.TOPIC_FOUNDRY_URL,
+        settings.TOPIC_FOUNDRY_MODEL_NAME,
+        _topics_window_minutes(),
+        settings.TOPICS_MAX_TOPICS,
+        settings.TOPICS_DRIFT_MAX_RECORDS,
     )
+    if topics_snapshot.drift_error and not topics_snapshot.drift_items:
+        logger.warning("Drift check unavailable: %s", topics_snapshot.drift_error)
+        return
     if not topics_snapshot.drift_items:
         logger.info("No drift items found for window=%s", topics_snapshot.window_minutes)
         return
@@ -242,7 +247,7 @@ async def _check_topic_drift() -> None:
             f"Window (minutes): {window_minutes}",
             f"Threshold: {settings.DRIFT_ALERT_THRESHOLD:.2f}",
             "",
-            "Top drifting topics:",
+            "Top drift records:",
             *topic_lines,
             "",
             f"Hub: {hub_hint} (if available)",

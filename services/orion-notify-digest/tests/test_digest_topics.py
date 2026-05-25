@@ -87,6 +87,25 @@ def test_fetch_topics_snapshot_maps_foundry_success(monkeypatch):
     assert model_name in snapshot.drift_items[0].label
 
 
+def test_parse_foundry_drift_filters_by_window_minutes():
+    from app.digest import _parse_foundry_topic_drift
+
+    recent = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc).isoformat()
+    stale = datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc).isoformat()
+    items = _parse_foundry_topic_drift(
+        {
+            "records": [
+                {"js_divergence": 0.95, "window_end": stale},
+                {"js_divergence": 0.55, "window_end": recent},
+            ]
+        },
+        "digest-model",
+        window_minutes=60,
+    )
+    assert len(items) == 1
+    assert items[0].score == pytest.approx(0.55)
+
+
 def test_fetch_topics_snapshot_unavailable_is_graceful():
     snapshot = fetch_topics_snapshot(
         topic_foundry_url=None,

@@ -1774,6 +1774,7 @@ channels:
       - orion-biometrics
       - orion-substrate-runtime
       - orion-cortex-exec
+      - orion-bus
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-05-23"

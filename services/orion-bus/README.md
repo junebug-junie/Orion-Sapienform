@@ -107,6 +107,24 @@ make stream STREAM=orion:bus:out
 
 ---
 
+## Substrate transport traces
+
+Optional `bus-observer` sidecar emits bounded periodic `GrammarEventV1` rollups on `orion:grammar:event` when `PUBLISH_ORION_BUS_GRAMMAR=true` (default **off**).
+
+Observes transport health (`PING`), stream depth (`XLEN`), backpressure thresholds, and configured streams missing from `orion/bus/channels.yaml`. Does **not** emit per-message traces.
+
+| Variable | Default | Purpose |
+| -------- | ------- | ------- |
+| `PUBLISH_ORION_BUS_GRAMMAR` | `false` | Publish grammar traces to bus |
+| `BUS_OBSERVER_STREAMS` | `orion:evt:gateway,orion:bus:out` | Streams to sample (not `orion:grammar:event` by default) |
+| `BUS_OBSERVER_POLL_INTERVAL_SEC` | `10` | Rollup interval |
+
+Smoke: `../../scripts/smoke_orion_bus_substrate_trace.sh`
+
+Layer 3 `bus_transport_reducer` is deferred — see `LAYER_PIPELINE_PLAN.md`.
+
+---
+
 ## 🛠️ Future Roadmap
 
 * Transition from Redis Streams to a custom event-bus abstraction.

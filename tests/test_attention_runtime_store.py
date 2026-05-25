@@ -54,6 +54,34 @@ def _mock_engine_for_frames(*, latest: dict | None, by_tick: dict | None = None)
     return fake_engine
 
 
+def test_load_latest_field(monkeypatch) -> None:
+    from orion.schemas.field_state import FieldStateV1
+
+    field = FieldStateV1(
+        generated_at=NOW,
+        tick_id="tick_field",
+        node_vectors={"node:athena": {"execution_load": 0.5}},
+    )
+    payload = field.model_dump(mode="json")
+    store = AttentionRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.connect.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+
+    def execute_side_effect(stmt, params=None):
+        result = MagicMock()
+        result.mappings.return_value.first.return_value = {"field_json": payload}
+        return result
+
+    conn.execute.side_effect = execute_side_effect
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    loaded = store.load_latest_field()
+    assert loaded is not None
+    assert loaded.tick_id == "tick_field"
+
+
 def test_load_latest_attention_frame(monkeypatch) -> None:
     payload = _frame().model_dump(mode="json")
     store = AttentionRuntimeStore("postgresql://test:test@localhost/test")

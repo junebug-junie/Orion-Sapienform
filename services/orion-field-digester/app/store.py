@@ -22,6 +22,12 @@ class FetchedReceipt:
     created_at: datetime
 
 
+@dataclass(frozen=True)
+class PendingDelta:
+    delta_id: str
+    receipt_id: str
+
+
 class FieldDigesterStore:
     def __init__(self, postgres_uri: str) -> None:
         self._engine: Engine = create_engine(
@@ -186,6 +192,77 @@ class FieldDigesterStore:
                     "cursor_name": FIELD_DIGEST_CURSOR_NAME,
                     "created_at": created_at,
                     "receipt_id": receipt_id,
+                    "updated_at": now,
+                },
+            )
+
+    def commit_digest_tick(
+        self,
+        *,
+        state: FieldStateV1,
+        pending_deltas: list[PendingDelta],
+        cursor_receipt_id: str,
+        cursor_created_at: datetime,
+    ) -> None:
+        """Atomically persist field state, applied deltas, and receipt cursor."""
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_field_state (
+                        tick_id, generated_at, field_json, created_at
+                    ) VALUES (
+                        :tick_id, :generated_at, :field_json, :created_at
+                    )
+                    ON CONFLICT (tick_id) DO UPDATE SET
+                        generated_at = EXCLUDED.generated_at,
+                        field_json = EXCLUDED.field_json
+                    """
+                ),
+                {
+                    "tick_id": state.tick_id,
+                    "generated_at": state.generated_at,
+                    "field_json": state.model_dump(mode="json"),
+                    "created_at": now,
+                },
+            )
+            for pending in pending_deltas:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO substrate_field_applied_deltas (
+                            delta_id, receipt_id, applied_at
+                        ) VALUES (
+                            :delta_id, :receipt_id, :applied_at
+                        )
+                        ON CONFLICT (delta_id) DO NOTHING
+                        """
+                    ),
+                    {
+                        "delta_id": pending.delta_id,
+                        "receipt_id": pending.receipt_id,
+                        "applied_at": now,
+                    },
+                )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_field_digest_cursor (
+                        cursor_name, last_receipt_created_at, last_receipt_id, updated_at
+                    ) VALUES (
+                        :cursor_name, :created_at, :receipt_id, :updated_at
+                    )
+                    ON CONFLICT (cursor_name) DO UPDATE SET
+                        last_receipt_created_at = EXCLUDED.last_receipt_created_at,
+                        last_receipt_id = EXCLUDED.last_receipt_id,
+                        updated_at = EXCLUDED.updated_at
+                    """
+                ),
+                {
+                    "cursor_name": FIELD_DIGEST_CURSOR_NAME,
+                    "created_at": cursor_created_at,
+                    "receipt_id": cursor_receipt_id,
                     "updated_at": now,
                 },
             )

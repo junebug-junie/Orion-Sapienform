@@ -8,7 +8,7 @@ from pathlib import Path
 from app.graph.lattice import load_lattice
 from app.ingest.state_deltas import Perturbation, delta_to_perturbations
 from app.settings import get_settings
-from app.store import FieldDigesterStore
+from app.store import FieldDigesterStore, PendingDelta
 from app.tensor.field_state import empty_field_state, new_tick_id
 from app.tensor.update_rules import run_digestion_tick
 
@@ -59,13 +59,16 @@ class FieldDigesterWorker:
             )
 
         perturbations: list[Perturbation] = []
+        pending_deltas: list[PendingDelta] = []
         for item in fetched:
             receipt = item.receipt
             for delta in receipt.state_deltas:
                 if self._store.is_delta_applied(delta.delta_id):
                     continue
                 perturbations.extend(delta_to_perturbations(delta))
-                self._store.mark_delta_applied(delta.delta_id, receipt.receipt_id)
+                pending_deltas.append(
+                    PendingDelta(delta_id=delta.delta_id, receipt_id=receipt.receipt_id)
+                )
 
         state.generated_at = now
         state.tick_id = new_tick_id()
@@ -75,7 +78,11 @@ class FieldDigesterWorker:
             decay_rate=self._settings.biometrics_field_decay_rate,
             diffusion_rate=self._settings.biometrics_field_diffusion_rate,
         )
-        self._store.save_field(state)
 
         last = fetched[-1]
-        self._store.advance_cursor(last.receipt.receipt_id, last.created_at)
+        self._store.commit_digest_tick(
+            state=state,
+            pending_deltas=pending_deltas,
+            cursor_receipt_id=last.receipt.receipt_id,
+            cursor_created_at=last.created_at,
+        )

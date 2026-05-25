@@ -40,3 +40,12 @@ def test_unset_defaults_to_json_object_schema(monkeypatch) -> None:
     monkeypatch.delenv("LLM_STRUCTURED_OUTPUT_METHOD", raising=False)
     settings = SimpleNamespace(MEMORY_GRAPH_SUGGEST_STRUCTURED_OUTPUT_METHOD="")
     assert resolve_memory_graph_structured_output_method(settings) == "json_object_schema"
+
+
+def test_auto_with_env_none_maps_to_json_object_schema(monkeypatch) -> None:
+    _ensure_imports()
+    from scripts.memory_graph_structured_output import resolve_memory_graph_structured_output_method
+
+    monkeypatch.setenv("MEMORY_GRAPH_SUGGEST_STRUCTURED_OUTPUT_METHOD", "none")
+    settings = SimpleNamespace(MEMORY_GRAPH_SUGGEST_STRUCTURED_OUTPUT_METHOD="auto")
+    assert resolve_memory_graph_structured_output_method(settings) == "json_object_schema"

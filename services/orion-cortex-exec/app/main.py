@@ -504,120 +504,126 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         ctx=ctx,
     )
 
-    # 4. Publish Cognition Trace
+    # 4. Side effects after plan (grammar flush in finally — independent of cognition success)
+    cognition_error: str | None = None
     try:
-        await _publish_cognition_trace_for_plan_result(
-            corr_id=corr_id,
-            env=env,
-            res=res,
-            req_extra=(req_env.payload.args.extra if req_env.payload.args else {}) or {},
-            ctx=ctx,
-        )
-    except Exception as e:
-        logger.error(f"Failed to publish CognitionTrace: {e}", exc_info=True)
+        try:
+            await _publish_cognition_trace_for_plan_result(
+                corr_id=corr_id,
+                env=env,
+                res=res,
+                req_extra=(req_env.payload.args.extra if req_env.payload.args else {}) or {},
+                ctx=ctx,
+            )
+        except Exception as e:
+            logger.error(f"Failed to publish CognitionTrace: {e}", exc_info=True)
+            cognition_error = str(e)
+
+        if cognition_error is None:
+            dream_publish_attempted = False
+            dream_publish_ok = False
+            dream_publish_error: str | None = None
+            try:
+                dream_env = build_dream_publish_envelope(
+                    source=_source(),
+                    causality_chain=list(env.causality_chain or []),
+                    correlation_id=corr_id,
+                    res=res,
+                    context=ctx,
+                    extra=req_env.payload.args.extra if req_env.payload.args else None,
+                )
+                if dream_env is not None:
+                    dream_publish_attempted = True
+                    await svc.bus.publish(settings.channel_dream_log, dream_env)
+                    dream_publish_ok = True
+                    logger.info("Published dream.result.v1 to %s", settings.channel_dream_log)
+            except Exception as exc:
+                dream_publish_error = str(exc)
+                logger.warning("dream.result.v1 publish skipped/failed corr=%s err=%s", corr_id, exc)
+            finally:
+                metadata = res.metadata if isinstance(res.metadata, dict) else {}
+                metadata = dict(metadata)
+                metadata["dream_result_publish_attempted"] = dream_publish_attempted
+                metadata["dream_result_published"] = dream_publish_ok
+                if dream_publish_error:
+                    metadata["dream_result_publish_error"] = dream_publish_error
+                res.metadata = metadata
+
+            if env.reply_to:
+                res_payload = res.model_dump(mode="json")
+                reasoning_content = res_payload.get("reasoning_content") if isinstance(res_payload, dict) else None
+                reasoning_trace = res_payload.get("reasoning_trace") if isinstance(res_payload, dict) else None
+                trace_content = reasoning_trace.get("content") if isinstance(reasoning_trace, dict) else None
+                preview_text = repr(str((reasoning_content if isinstance(reasoning_content, str) else None) or trace_content or "")[:220])
+                print(
+                    "===THINK_HOP=== hop=exec_out "
+                    f"corr={corr_id} "
+                    f"payload_keys={sorted(res_payload.keys()) if isinstance(res_payload, dict) else []} "
+                    f"reasoning_len={len(reasoning_content) if isinstance(reasoning_content, str) else 0} "
+                    f"trace_len={len(trace_content) if isinstance(trace_content, str) else 0} "
+                    f"metacog_count={len(res_payload.get('metacog_traces')) if isinstance(res_payload.get('metacog_traces'), list) else 0} "
+                    f"preview={preview_text}",
+                    flush=True,
+                )
+                manual_result = CortexExecResult(
+                    source=_source(),
+                    correlation_id=corr_id,
+                    causality_chain=env.causality_chain,
+                    payload=CortexExecResultPayload(ok=True, result=res_payload),
+                )
+                publish_started = time.perf_counter()
+                try:
+                    await svc.bus.publish(env.reply_to, manual_result)
+                except Exception as exc:
+                    elapsed = time.perf_counter() - publish_started
+                    logger.warning(
+                        "Exec result publish failed corr=%s reply=%s elapsed=%.2fs error=%s",
+                        corr_id,
+                        env.reply_to,
+                        elapsed,
+                        exc,
+                    )
+                else:
+                    elapsed = time.perf_counter() - publish_started
+                    logger.info(
+                        "Exec result published corr=%s reply=%s elapsed=%.2fs",
+                        corr_id,
+                        env.reply_to,
+                        elapsed,
+                    )
+            else:
+                logger.warning("Exec result missing reply_to corr=%s", corr_id)
+    finally:
+        try:
+            from .grammar_publish import flush_cortex_exec_grammar
+
+            collector = ctx.get("_cortex_exec_grammar_collector")
+            if collector is not None:
+                collector.record_result_emitted(
+                    reply_present=bool(env.reply_to),
+                    status=str(res.status),
+                )
+            await flush_cortex_exec_grammar(
+                svc.bus,
+                collector,
+                correlation_id=corr_id,
+                channel=settings.grammar_event_channel,
+                source_name=settings.service_name,
+                enabled=settings.publish_cortex_exec_grammar,
+            )
+        except Exception:
+            logger.warning(
+                "cortex_exec_grammar_egress_publish_failed corr=%s",
+                corr_id,
+                exc_info=True,
+            )
+
+    if cognition_error is not None:
         return CortexExecResult(
             source=_source(),
             correlation_id=corr_id,
             causality_chain=env.causality_chain,
-            payload=CortexExecResultPayload(ok=False, error=str(e)),
-        )
-
-    dream_publish_attempted = False
-    dream_publish_ok = False
-    dream_publish_error: str | None = None
-    try:
-        dream_env = build_dream_publish_envelope(
-            source=_source(),
-            causality_chain=list(env.causality_chain or []),
-            correlation_id=corr_id,
-            res=res,
-            context=ctx,
-            extra=req_env.payload.args.extra if req_env.payload.args else None,
-        )
-        if dream_env is not None:
-            dream_publish_attempted = True
-            await svc.bus.publish(settings.channel_dream_log, dream_env)
-            dream_publish_ok = True
-            logger.info("Published dream.result.v1 to %s", settings.channel_dream_log)
-    except Exception as exc:
-        dream_publish_error = str(exc)
-        logger.warning("dream.result.v1 publish skipped/failed corr=%s err=%s", corr_id, exc)
-    finally:
-        metadata = res.metadata if isinstance(res.metadata, dict) else {}
-        metadata = dict(metadata)
-        metadata["dream_result_publish_attempted"] = dream_publish_attempted
-        metadata["dream_result_published"] = dream_publish_ok
-        if dream_publish_error:
-            metadata["dream_result_publish_error"] = dream_publish_error
-        res.metadata = metadata
-
-    if env.reply_to:
-        res_payload = res.model_dump(mode="json")
-        reasoning_content = res_payload.get("reasoning_content") if isinstance(res_payload, dict) else None
-        reasoning_trace = res_payload.get("reasoning_trace") if isinstance(res_payload, dict) else None
-        trace_content = reasoning_trace.get("content") if isinstance(reasoning_trace, dict) else None
-        preview_text = repr(str((reasoning_content if isinstance(reasoning_content, str) else None) or trace_content or "")[:220])
-        print(
-            "===THINK_HOP=== hop=exec_out "
-            f"corr={corr_id} "
-            f"payload_keys={sorted(res_payload.keys()) if isinstance(res_payload, dict) else []} "
-            f"reasoning_len={len(reasoning_content) if isinstance(reasoning_content, str) else 0} "
-            f"trace_len={len(trace_content) if isinstance(trace_content, str) else 0} "
-            f"metacog_count={len(res_payload.get('metacog_traces')) if isinstance(res_payload.get('metacog_traces'), list) else 0} "
-            f"preview={preview_text}",
-            flush=True,
-        )
-        manual_result = CortexExecResult(
-            source=_source(),
-            correlation_id=corr_id,
-            causality_chain=env.causality_chain,
-            payload=CortexExecResultPayload(ok=True, result=res_payload),
-        )
-        publish_started = time.perf_counter()
-        try:
-            await svc.bus.publish(env.reply_to, manual_result)
-        except Exception as exc:
-            elapsed = time.perf_counter() - publish_started
-            logger.warning(
-                "Exec result publish failed corr=%s reply=%s elapsed=%.2fs error=%s",
-                corr_id,
-                env.reply_to,
-                elapsed,
-                exc,
-            )
-        else:
-            elapsed = time.perf_counter() - publish_started
-            logger.info(
-                "Exec result published corr=%s reply=%s elapsed=%.2fs",
-                corr_id,
-                env.reply_to,
-                elapsed,
-            )
-    else:
-        logger.warning("Exec result missing reply_to corr=%s", corr_id)
-
-    try:
-        from .grammar_publish import flush_cortex_exec_grammar
-
-        collector = ctx.get("_cortex_exec_grammar_collector")
-        if collector is not None:
-            collector.record_result_emitted(
-                reply_present=bool(env.reply_to),
-                status=str(res.status),
-            )
-        await flush_cortex_exec_grammar(
-            svc.bus,
-            collector,
-            correlation_id=corr_id,
-            channel=settings.grammar_event_channel,
-            source_name=settings.service_name,
-            enabled=settings.publish_cortex_exec_grammar,
-        )
-    except Exception:
-        logger.warning(
-            "cortex_exec_grammar_egress_publish_failed corr=%s",
-            corr_id,
-            exc_info=True,
+            payload=CortexExecResultPayload(ok=False, error=cognition_error),
         )
 
     return CortexExecResult(

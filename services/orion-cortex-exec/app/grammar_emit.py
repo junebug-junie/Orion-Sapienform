@@ -201,7 +201,6 @@ class CortexExecGrammarCollector:
             self._edge_specs.append(
                 (self._last_completed_atom_id, atom.atom_id, "temporal_successor")
             )
-            self._edge_specs.append((atom.atom_id, self._last_completed_atom_id, "derived_from"))
         elif "exec_recall_gate_observed" in self._atoms:
             self._edge_specs.append(
                 (

@@ -255,7 +255,7 @@ class LegacyPlanVerb(BaseVerb[PlanExecutionRequest, LegacyPlanOutput]):
             collector = ctx_payload.get("_cortex_exec_grammar_collector")
             if collector is not None:
                 collector.record_result_emitted(
-                    reply_present=True,
+                    reply_present=bool(ctx.meta.get("reply_to") or ctx.meta.get("reply_channel")),
                     status=str(result.status),
                 )
             await flush_cortex_exec_grammar(

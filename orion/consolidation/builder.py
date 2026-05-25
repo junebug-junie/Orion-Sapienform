@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from orion.consolidation.expectation import build_expectations_from_motifs
 from orion.consolidation.motif import detect_motifs
+from orion.consolidation.schema_candidates import build_schema_candidates
 from orion.consolidation.tensorize import build_sparse_tensor_slices
 from orion.consolidation.policy import ConsolidationPolicyV1
 from orion.consolidation.windows import ConsolidationWindowData, stable_consolidation_frame_id
@@ -29,6 +30,11 @@ def build_consolidation_frame(
         expectations=expectations,
         policy=policy,
     )
+    schema_candidates = build_schema_candidates(
+        motifs=motifs,
+        expectations=expectations,
+        policy=policy,
+    )
     dominant = [
         m.label
         for m in sorted(motifs, key=lambda x: x.support_score, reverse=True)
@@ -48,6 +54,7 @@ def build_consolidation_frame(
         dominant_motifs=dominant,
         expectations=expectations,
         tensor_slices=tensor_slices,
+        schema_candidates=schema_candidates,
         source_counts={
             "self_state": len(window.self_states),
             "attention": len(window.attention_frames),

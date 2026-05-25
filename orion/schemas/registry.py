@@ -465,7 +465,13 @@ from orion.schemas.execution_dispatch_frame import (
     ExecutionDispatchCandidateV1,
     ExecutionDispatchFrameV1,
 )
-from orion.schemas.consolidation_frame import ConsolidationFrameV1, ExpectationV1, MotifObservationV1, SparseTensorSliceV1
+from orion.schemas.consolidation_frame import (
+    ConsolidationFrameV1,
+    ExpectationV1,
+    MotifObservationV1,
+    SchemaCandidateV1,
+    SparseTensorSliceV1,
+)
 from orion.schemas.feedback_frame import FeedbackFrameV1, OutcomeObservationV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1
 from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
@@ -961,6 +967,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "MotifObservationV1": MotifObservationV1,
     "ExpectationV1": ExpectationV1,
     "SparseTensorSliceV1": SparseTensorSliceV1,
+    "SchemaCandidateV1": SchemaCandidateV1,
     "FeedbackFrameV1": FeedbackFrameV1,
     "OutcomeObservationV1": OutcomeObservationV1,
     "EvidenceUnitV1": EvidenceUnitV1,

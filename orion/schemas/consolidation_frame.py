@@ -83,6 +83,40 @@ class SparseTensorSliceV1(BaseModel):
     evidence_refs: list[str] = Field(default_factory=list)
 
 
+class SchemaCandidateV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_candidate_id: str
+
+    candidate_kind: Literal[
+        "concept_candidate",
+        "habit_candidate",
+        "prior_candidate",
+        "ontology_candidate",
+        "policy_candidate",
+    ]
+
+    label: str
+
+    source_motif_ids: list[str] = Field(default_factory=list)
+    source_expectation_ids: list[str] = Field(default_factory=list)
+
+    support_score: float = Field(ge=0.0, le=1.0)
+    confidence_score: float = Field(ge=0.0, le=1.0)
+
+    proposed_schema: dict[str, object] = Field(default_factory=dict)
+
+    promotion_status: Literal[
+        "candidate_only",
+        "needs_review",
+        "rejected",
+        "promoted_elsewhere",
+    ] = "candidate_only"
+
+    reasons: list[str] = Field(default_factory=list)
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
 class ConsolidationFrameV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -101,6 +135,7 @@ class ConsolidationFrameV1(BaseModel):
 
     expectations: list[ExpectationV1] = Field(default_factory=list)
     tensor_slices: list[SparseTensorSliceV1] = Field(default_factory=list)
+    schema_candidates: list[SchemaCandidateV1] = Field(default_factory=list)
 
     source_counts: dict[str, int] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)

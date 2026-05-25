@@ -3,7 +3,13 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from orion.schemas.consolidation_frame import ConsolidationFrameV1, ExpectationV1, MotifObservationV1, SparseTensorSliceV1
+from orion.schemas.consolidation_frame import (
+    ConsolidationFrameV1,
+    ExpectationV1,
+    MotifObservationV1,
+    SchemaCandidateV1,
+    SparseTensorSliceV1,
+)
 from orion.schemas.registry import resolve
 
 NOW = datetime(2026, 5, 25, 15, 30, tzinfo=timezone.utc)
@@ -125,3 +131,21 @@ def test_sparse_tensor_slice_v1_validates() -> None:
 
 def test_sparse_tensor_slice_v1_registered() -> None:
     assert resolve("SparseTensorSliceV1") is SparseTensorSliceV1
+
+
+def test_schema_candidate_v1_validates() -> None:
+    candidate = SchemaCandidateV1(
+        schema_candidate_id="schema_candidate:prior:loaded_but_reliable",
+        candidate_kind="prior_candidate",
+        label="loaded_but_reliable_operating_mode",
+        source_motif_ids=["motif:loaded_but_reliable:consolidation_policy.v1"],
+        support_score=0.75,
+        confidence_score=1.0,
+        proposed_schema={"condition": "loaded"},
+        promotion_status="candidate_only",
+    )
+    assert candidate.promotion_status == "candidate_only"
+
+
+def test_schema_candidate_v1_registered() -> None:
+    assert resolve("SchemaCandidateV1") is SchemaCandidateV1

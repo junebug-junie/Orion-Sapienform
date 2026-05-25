@@ -6,6 +6,7 @@ from orion.autonomy.models import AutonomyStateV1
 from orion.autonomy.repository import (
     AutonomyLookupV1,
     GraphAutonomyRepository,
+    _drives_facet_ok,
     select_preferred_autonomy_lookup,
 )
 
@@ -82,6 +83,51 @@ def test_select_preferred_autonomy_lookup_falls_back_to_relationship_drives() ->
     assert selected.lookup is not None
     assert selected.lookup.state is not None
     assert selected.lookup.state.dominant_drive == "relational"
+
+
+def test_drives_facet_ok_with_row_count_only() -> None:
+    lookup = AutonomyLookupV1(
+        subject="relationship",
+        state=None,
+        availability="available",
+        subquery_diagnostics={"drives": {"status": "ok", "row_count": 5}},
+    )
+    assert _drives_facet_ok(lookup) is True
+
+
+def test_select_preferred_skips_orion_when_drives_deferred() -> None:
+    orion_state = AutonomyStateV1(
+        subject="orion",
+        model_layer="self-model",
+        entity_id="orion",
+        identity_summary="holds course",
+        source="graph",
+    )
+    relationship_state = AutonomyStateV1(
+        subject="relationship",
+        model_layer="relationship-model",
+        entity_id="relationship:orion|juniper",
+        dominant_drive="relational",
+        drive_pressures={"relational": 0.8},
+        source="graph",
+    )
+    by_subject = {
+        "orion": AutonomyLookupV1(
+            subject="orion",
+            state=orion_state,
+            availability="available",
+            subquery_diagnostics={"drives": {"status": "deferred", "row_count": 0}},
+        ),
+        "relationship": AutonomyLookupV1(
+            subject="relationship",
+            state=relationship_state,
+            availability="available",
+            subquery_diagnostics={"drives": {"status": "ok", "row_count": 3}},
+        ),
+    }
+    selected = select_preferred_autonomy_lookup(by_subject)
+    assert selected.selected_subject == "relationship"
+    assert selected.contextual_fallback is True
 
 
 def test_select_preferred_skips_orion_identity_only_when_drives_timeout() -> None:

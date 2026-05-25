@@ -120,6 +120,9 @@ def _drives_facet_ok(lookup: AutonomyLookupV1 | None) -> bool:
         or lookup.state.active_drives
     ):
         return True
+    diags = (lookup.subquery_diagnostics or {}).get("drives")
+    if not isinstance(diags, dict):
+        return False
     return int(diags.get("row_count") or 0) > 0
 
 
@@ -145,12 +148,23 @@ def select_preferred_autonomy_lookup(by_subject: Mapping[str, AutonomyLookupV1])
         if lookup and lookup.availability in {"available", "degraded"} and lookup.state is not None:
             if subject == "orion" and _drives_facet_status(lookup) in _ORION_DRIVES_BAD:
                 continue
-            contextual = subject == "relationship" and not _drives_facet_ok(orion)
+            contextual = (
+                subject == "relationship"
+                and _drives_facet_ok(relationship)
+                and not _drives_facet_ok(orion)
+            )
             return SelectedAutonomyLookup(lookup, subject, contextual, orion)
     for subject in ("relationship", "orion", "juniper"):
         lookup = by_subject.get(subject)
-        if lookup and lookup.availability not in {"empty"}:
-            return SelectedAutonomyLookup(lookup if lookup.state is not None else None, subject if lookup.state is not None else None, False, orion)
+        if lookup and lookup.availability not in {"empty"} and lookup.state is not None:
+            if subject == "orion" and _drives_facet_status(lookup) in _ORION_DRIVES_BAD:
+                continue
+            contextual = (
+                subject == "relationship"
+                and _drives_facet_ok(relationship)
+                and not _drives_facet_ok(orion)
+            )
+            return SelectedAutonomyLookup(lookup, subject, contextual, orion)
     return SelectedAutonomyLookup(None, None, False, orion)
 
 

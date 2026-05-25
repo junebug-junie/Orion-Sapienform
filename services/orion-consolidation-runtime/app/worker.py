@@ -68,11 +68,17 @@ class ConsolidationRuntimeWorker:
         frame = build_consolidation_frame(window=data, policy=self._policy)
         self._store.save_consolidation_frame(frame)
         self._store.upsert_expectations(frame.expectations)
+        self._store.save_tensor_slices(
+            frame.tensor_slices,
+            window_start=frame.window_start,
+            window_end=frame.window_end,
+        )
         logger.info(
-            "consolidation_frame_saved frame_id=%s window_start=%s window_end=%s motifs=%d expectations=%d",
+            "consolidation_frame_saved frame_id=%s window_start=%s window_end=%s motifs=%d expectations=%d tensor_slices=%d",
             frame.frame_id,
             frame.window_start.isoformat(),
             frame.window_end.isoformat(),
             len(frame.motif_observations),
             len(frame.expectations),
+            len(frame.tensor_slices),
         )

@@ -25,7 +25,7 @@ def _load_store_class():
 
 ConsolidationRuntimeStore = _load_store_class()
 
-from orion.schemas.consolidation_frame import ConsolidationFrameV1, ExpectationV1  # noqa: E402
+from orion.schemas.consolidation_frame import ConsolidationFrameV1, ExpectationV1, SparseTensorSliceV1  # noqa: E402
 
 NOW = datetime(2026, 5, 25, 15, 30, tzinfo=timezone.utc)
 START = datetime(2026, 5, 25, 14, 30, tzinfo=timezone.utc)
@@ -148,3 +148,32 @@ def test_upsert_expectations_idempotent(monkeypatch) -> None:
     store.upsert_expectations([expectation])
     assert sum("INSERT INTO substrate_expectations" in sql for sql in calls) == 2
     assert all("ON CONFLICT (expectation_id) DO UPDATE" in sql for sql in calls if "substrate_expectations" in sql)
+
+
+def test_save_tensor_slices_idempotent(monkeypatch) -> None:
+    store = ConsolidationRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.begin.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.begin.return_value.__exit__ = MagicMock(return_value=False)
+
+    calls: list[str] = []
+
+    def execute_side_effect(stmt, params=None):
+        calls.append(str(stmt))
+        return MagicMock()
+
+    conn.execute.side_effect = execute_side_effect
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    tensor_slice = SparseTensorSliceV1(
+        tensor_id="tensor:field_attention_self:2026-05-25T14:30:00+00:00:2026-05-25T15:30:00+00:00",
+        tensor_kind="field_attention_self",
+        axes=["time_bucket", "self_condition", "attention_target", "dimension"],
+        coordinates=[{"time_bucket": "2026-05-25T15:00:00+00:00", "self_condition": "loaded", "attention_target": "node:athena", "dimension": "execution_pressure"}],
+        values=[0.8],
+    )
+    store.save_tensor_slices([tensor_slice], START, NOW)
+    store.save_tensor_slices([tensor_slice], START, NOW)
+    assert sum("INSERT INTO substrate_tensor_slices" in sql for sql in calls) == 2
+    assert all("ON CONFLICT (tensor_id) DO NOTHING" in sql for sql in calls if "substrate_tensor_slices" in sql)

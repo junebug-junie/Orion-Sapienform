@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from orion.consolidation.windows import ConsolidationWindowData
-from orion.schemas.consolidation_frame import ConsolidationFrameV1, ExpectationV1
+from orion.schemas.consolidation_frame import ConsolidationFrameV1, ExpectationV1, SparseTensorSliceV1
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchFrameV1
 from orion.schemas.feedback_frame import FeedbackFrameV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
@@ -245,6 +245,48 @@ class ConsolidationRuntimeStore:
                         "expected_outcome_kind": expectation.expected_outcome_kind,
                         "expectation_json": Json(expectation.model_dump(mode="json")),
                         "updated_at": now,
+                    },
+                )
+
+    def save_tensor_slices(
+        self,
+        slices: list[SparseTensorSliceV1],
+        window_start: datetime,
+        window_end: datetime,
+    ) -> None:
+        if not slices:
+            return
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            for tensor_slice in slices:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO substrate_tensor_slices (
+                            tensor_id,
+                            tensor_kind,
+                            window_start,
+                            window_end,
+                            tensor_json,
+                            created_at
+                        ) VALUES (
+                            :tensor_id,
+                            :tensor_kind,
+                            :window_start,
+                            :window_end,
+                            :tensor_json,
+                            :created_at
+                        )
+                        ON CONFLICT (tensor_id) DO NOTHING
+                        """
+                    ),
+                    {
+                        "tensor_id": tensor_slice.tensor_id,
+                        "tensor_kind": tensor_slice.tensor_kind,
+                        "window_start": window_start,
+                        "window_end": window_end,
+                        "tensor_json": Json(tensor_slice.model_dump(mode="json")),
+                        "created_at": now,
                     },
                 )
 

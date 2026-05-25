@@ -1,0 +1,7 @@
+redis[hiredis]==5.0.7
+pydantic==2.11.5
+pydantic-settings==2.5.2
+PyYAML==6.0.2
+loguru==0.7.2
+pytest==8.3.4
+pytest-asyncio==0.24.0

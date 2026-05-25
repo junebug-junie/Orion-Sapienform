@@ -1,0 +1,85 @@
+schema_version: proposal_policy.v1
+policy_id: proposal_policy.v1
+
+limits:
+  max_candidates: 10
+  max_suppressed: 10
+
+thresholds:
+  min_priority: 0.10
+  suppress_below: 0.05
+  policy_required_above_risk: 0.20
+
+dimension_weights:
+  execution_pressure: 0.30
+  resource_pressure: 0.25
+  reasoning_pressure: 0.15
+  reliability_pressure: 0.35
+  uncertainty: 0.25
+  field_intensity: 0.20
+  agency_readiness: -0.15
+  coherence: -0.20
+
+proposal_templates:
+  inspect_execution_pressure:
+    kind: inspect
+    target_kind: capability
+    target_id: capability:orchestration
+    proposed_effect: increase_observability
+    required_policy_gate: read_only
+    base_priority: 0.40
+    base_risk: 0.05
+    reversibility: 1.0
+    dimensions:
+      execution_pressure: 0.60
+
+  summarize_loaded_state:
+    kind: summarize
+    target_kind: self_state
+    target_id: self:current
+    proposed_effect: increase_observability
+    required_policy_gate: read_only
+    base_priority: 0.35
+    base_risk: 0.05
+    reversibility: 1.0
+    dimensions:
+      field_intensity: 0.50
+      resource_pressure: 0.40
+
+  watch_reliability:
+    kind: observe
+    target_kind: capability
+    target_id: capability:orchestration
+    proposed_effect: preserve_stability
+    required_policy_gate: read_only
+    base_priority: 0.30
+    base_risk: 0.02
+    reversibility: 1.0
+    dimensions:
+      reliability_pressure: 0.50
+
+  request_policy_review_for_action:
+    kind: request_policy_review
+    target_kind: system
+    target_id: policy:execution
+    proposed_effect: prepare_for_policy_gate
+    required_policy_gate: operator_review
+    base_priority: 0.20
+    base_risk: 0.30
+    reversibility: 0.8
+    dimensions:
+      agency_readiness: 0.50
+      execution_pressure: 0.40
+
+  defer_due_to_low_readiness:
+    kind: defer
+    target_kind: self_state
+    target_id: self:current
+    proposed_effect: preserve_stability
+    required_policy_gate: none
+    base_priority: 0.25
+    base_risk: 0.0
+    reversibility: 1.0
+    dimensions:
+      uncertainty: 0.50
+      reliability_pressure: 0.50

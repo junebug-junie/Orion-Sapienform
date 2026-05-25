@@ -8,20 +8,25 @@ from typing import Any, Dict
 from orion.memory_graph.schema_contract import compact_suggest_draft_json_schema
 
 
+_DEFAULT_STRUCTURED_METHOD = "json_object_schema"
+
+
 def resolve_memory_graph_structured_output_method(settings: Any) -> str:
     raw = (
         str(getattr(settings, "MEMORY_GRAPH_SUGGEST_STRUCTURED_OUTPUT_METHOD", "") or "").strip()
         or os.getenv("MEMORY_GRAPH_SUGGEST_STRUCTURED_OUTPUT_METHOD", "").strip()
         or os.getenv("LLM_STRUCTURED_OUTPUT_METHOD", "").strip()
-        or "none"
+        or _DEFAULT_STRUCTURED_METHOD
     )
     if raw == "auto":
         return (
             os.getenv("MEMORY_GRAPH_SUGGEST_STRUCTURED_OUTPUT_METHOD", "").strip()
             or os.getenv("LLM_STRUCTURED_OUTPUT_METHOD", "").strip()
-            or "none"
+            or _DEFAULT_STRUCTURED_METHOD
         )
-    return raw or "none"
+    if raw == "none":
+        return _DEFAULT_STRUCTURED_METHOD
+    return raw or _DEFAULT_STRUCTURED_METHOD
 
 
 def memory_graph_suggest_llm_options(settings: Any, *, diagnostic: bool) -> Dict[str, Any]:

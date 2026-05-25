@@ -384,6 +384,9 @@
           (typeof block.content === "string" && block.content.trim() && block.content) ||
           (typeof block.final_text === "string" && block.final_text.trim() && block.final_text) ||
           (typeof block.text === "string" && block.text.trim() && block.text) ||
+          (typeof block.reasoning_content === "string" &&
+            block.reasoning_content.trim() &&
+            block.reasoning_content) ||
           "";
         const s = String(candidate || "").trim();
         if (!s || contentLooksLikeGatewayFailureBlurb(s)) continue;

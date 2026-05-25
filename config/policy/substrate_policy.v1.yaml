@@ -1,0 +1,67 @@
+schema_version: substrate_policy.v1
+policy_id: substrate_policy.v1
+
+autonomy:
+  default_tier: observe_only
+  max_tier_without_operator: read_only
+  allow_execution_without_operator: false
+
+thresholds:
+  approve_read_only_max_risk: 0.15
+  defer_above_risk: 0.60
+  reject_above_risk: 0.85
+  require_review_above_risk: 0.20
+  require_review_below_reversibility: 0.50
+  require_review_below_confidence: 0.50
+
+proposal_kind_rules:
+  observe:
+    allowed_scope: inspect_only
+    default_decision: approved_read_only
+    max_autonomy_tier: read_only
+
+  inspect:
+    allowed_scope: inspect_only
+    default_decision: approved_read_only
+    max_autonomy_tier: read_only
+
+  summarize:
+    allowed_scope: summarize_only
+    default_decision: approved_read_only
+    max_autonomy_tier: read_only
+
+  stabilize:
+    allowed_scope: prepare_only
+    default_decision: requires_operator_review
+    max_autonomy_tier: operator_review
+
+  defer:
+    allowed_scope: none
+    default_decision: deferred
+    max_autonomy_tier: observe_only
+
+  request_policy_review:
+    allowed_scope: operator_review_required
+    default_decision: requires_operator_review
+    max_autonomy_tier: operator_review
+
+  prepare_action:
+    allowed_scope: prepare_only
+    default_decision: requires_operator_review
+    max_autonomy_tier: operator_review
+
+hard_blocks:
+  - cortex_exec_direct_call
+  - external_side_effect
+  - settings_mutation
+  - file_write
+  - network_call
+  - operator_notification
+  - service_restart
+  - destructive_action
+
+read_only_effects:
+  - increase_observability
+  - preserve_stability
+  - increase_coherence
+  - no_effect

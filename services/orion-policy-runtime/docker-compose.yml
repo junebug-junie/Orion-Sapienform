@@ -1,0 +1,24 @@
+services:
+  policy-runtime:
+    build:
+      context: ../..
+      dockerfile: services/orion-policy-runtime/Dockerfile
+    container_name: ${PROJECT}-policy-runtime
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      - "${POLICY_RUNTIME_PORT:-8120}:8120"
+    environment:
+      - PROJECT=${PROJECT}
+      - SERVICE_NAME=${SERVICE_NAME:-orion-policy-runtime}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - POSTGRES_URI=${POSTGRES_URI}
+      - SUBSTRATE_POLICY_PATH=${SUBSTRATE_POLICY_PATH:-/app/config/policy/substrate_policy.v1.yaml}
+      - POLICY_POLL_INTERVAL_SEC=${POLICY_POLL_INTERVAL_SEC:-2.0}
+      - ENABLE_POLICY_RUNTIME=${ENABLE_POLICY_RUNTIME:-true}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+networks:
+  app-net:
+    external: true

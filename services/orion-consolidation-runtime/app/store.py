@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from orion.consolidation.windows import ConsolidationWindowData
-from orion.schemas.consolidation_frame import ConsolidationFrameV1, ExpectationV1, SparseTensorSliceV1
+from orion.schemas.consolidation_frame import ConsolidationFrameV1, ExpectationV1, SchemaCandidateV1, SparseTensorSliceV1
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchFrameV1
 from orion.schemas.feedback_frame import FeedbackFrameV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
@@ -287,6 +287,48 @@ class ConsolidationRuntimeStore:
                         "window_end": window_end,
                         "tensor_json": Json(tensor_slice.model_dump(mode="json")),
                         "created_at": now,
+                    },
+                )
+
+    def upsert_schema_candidates(self, candidates: list[SchemaCandidateV1]) -> None:
+        if not candidates:
+            return
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            for candidate in candidates:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO substrate_schema_candidates (
+                            schema_candidate_id,
+                            candidate_kind,
+                            label,
+                            promotion_status,
+                            schema_candidate_json,
+                            updated_at
+                        ) VALUES (
+                            :schema_candidate_id,
+                            :candidate_kind,
+                            :label,
+                            :promotion_status,
+                            :schema_candidate_json,
+                            :updated_at
+                        )
+                        ON CONFLICT (schema_candidate_id) DO UPDATE SET
+                            candidate_kind = EXCLUDED.candidate_kind,
+                            label = EXCLUDED.label,
+                            promotion_status = EXCLUDED.promotion_status,
+                            schema_candidate_json = EXCLUDED.schema_candidate_json,
+                            updated_at = EXCLUDED.updated_at
+                        """
+                    ),
+                    {
+                        "schema_candidate_id": candidate.schema_candidate_id,
+                        "candidate_kind": candidate.candidate_kind,
+                        "label": candidate.label,
+                        "promotion_status": candidate.promotion_status,
+                        "schema_candidate_json": Json(candidate.model_dump(mode="json")),
+                        "updated_at": now,
                     },
                 )
 

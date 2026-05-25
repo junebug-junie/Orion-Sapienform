@@ -25,7 +25,12 @@ def _load_store_class():
 
 ConsolidationRuntimeStore = _load_store_class()
 
-from orion.schemas.consolidation_frame import ConsolidationFrameV1, ExpectationV1, SparseTensorSliceV1  # noqa: E402
+from orion.schemas.consolidation_frame import (  # noqa: E402
+    ConsolidationFrameV1,
+    ExpectationV1,
+    SchemaCandidateV1,
+    SparseTensorSliceV1,
+)
 
 NOW = datetime(2026, 5, 25, 15, 30, tzinfo=timezone.utc)
 START = datetime(2026, 5, 25, 14, 30, tzinfo=timezone.utc)
@@ -177,3 +182,37 @@ def test_save_tensor_slices_idempotent(monkeypatch) -> None:
     store.save_tensor_slices([tensor_slice], START, NOW)
     assert sum("INSERT INTO substrate_tensor_slices" in sql for sql in calls) == 2
     assert all("ON CONFLICT (tensor_id) DO NOTHING" in sql for sql in calls if "substrate_tensor_slices" in sql)
+
+
+def test_upsert_schema_candidates_idempotent(monkeypatch) -> None:
+    store = ConsolidationRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.begin.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.begin.return_value.__exit__ = MagicMock(return_value=False)
+
+    calls: list[str] = []
+
+    def execute_side_effect(stmt, params=None):
+        calls.append(str(stmt))
+        return MagicMock()
+
+    conn.execute.side_effect = execute_side_effect
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    candidate = SchemaCandidateV1(
+        schema_candidate_id="schema_candidate:prior:motif:loaded_but_reliable:consolidation_policy.v1",
+        candidate_kind="prior_candidate",
+        label="loaded_but_reliable_operating_mode",
+        support_score=0.75,
+        confidence_score=1.0,
+        promotion_status="candidate_only",
+    )
+    store.upsert_schema_candidates([candidate])
+    store.upsert_schema_candidates([candidate])
+    assert sum("INSERT INTO substrate_schema_candidates" in sql for sql in calls) == 2
+    assert all(
+        "ON CONFLICT (schema_candidate_id) DO UPDATE" in sql
+        for sql in calls
+        if "substrate_schema_candidates" in sql
+    )

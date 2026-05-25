@@ -73,12 +73,14 @@ class ConsolidationRuntimeWorker:
             window_start=frame.window_start,
             window_end=frame.window_end,
         )
+        self._store.upsert_schema_candidates(frame.schema_candidates)
         logger.info(
-            "consolidation_frame_saved frame_id=%s window_start=%s window_end=%s motifs=%d expectations=%d tensor_slices=%d",
+            "consolidation_frame_saved frame_id=%s window_start=%s window_end=%s motifs=%d expectations=%d tensor_slices=%d schema_candidates=%d",
             frame.frame_id,
             frame.window_start.isoformat(),
             frame.window_end.isoformat(),
             len(frame.motif_observations),
             len(frame.expectations),
             len(frame.tensor_slices),
+            len(frame.schema_candidates),
         )

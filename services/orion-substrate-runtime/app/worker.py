@@ -65,7 +65,11 @@ class BiometricsSubstrateWorker:
                             event_id=last_event_id,
                             created_at=created_at,
                         )
-                if self._settings.enable_execution_trajectory_reducer:
+            except Exception:
+                logger.exception("biometrics_substrate_tick_failed")
+
+            if self._settings.enable_execution_trajectory_reducer:
+                try:
                     last_exec_id = await asyncio.to_thread(self._execution_tick)
                     if last_exec_id:
                         created_at = self._store.grammar_event_created_at(last_exec_id)
@@ -74,8 +78,8 @@ class BiometricsSubstrateWorker:
                                 event_id=last_exec_id,
                                 created_at=created_at,
                             )
-            except Exception:
-                logger.exception("biometrics_substrate_tick_failed")
+                except Exception:
+                    logger.exception("execution_substrate_tick_failed")
             try:
                 await asyncio.wait_for(
                     self._stop.wait(),

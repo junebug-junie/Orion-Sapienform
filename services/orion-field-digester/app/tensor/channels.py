@@ -24,8 +24,6 @@ CAPABILITY_CHANNELS = [
 DEFAULT_NODE_VECTOR = {ch: 0.0 for ch in NODE_CHANNELS}
 DEFAULT_NODE_VECTOR["availability"] = 1.0
 
-DEFAULT_CAPABILITY_VECTOR = {
-    "pressure": 0.0,
-    "confidence": 1.0,
-    "available_capacity": 1.0,
-}
+DEFAULT_CAPABILITY_VECTOR = {ch: 0.0 for ch in CAPABILITY_CHANNELS}
+DEFAULT_CAPABILITY_VECTOR["confidence"] = 1.0
+DEFAULT_CAPABILITY_VECTOR["available_capacity"] = 1.0

@@ -1,6 +1,6 @@
 # orion-field-digester
 
-Biometrics-only digestion worker that consumes committed substrate reduction receipts and compiles lattice field state:
+Substrate field digestion worker that consumes committed reduction receipts (biometrics + cortex-exec execution trajectories) and compiles lattice field state:
 
 ```text
 substrate_reduction_receipts → delta dedupe → perturb/decay/diffuse/suppress → substrate_field_state

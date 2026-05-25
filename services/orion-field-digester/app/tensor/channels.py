@@ -7,8 +7,19 @@ NODE_CHANNELS = [
     "thermal_pressure",
     "disk_pressure",
     "expected_offline_suppression",
+    "execution_load",
+    "execution_friction",
+    "reasoning_load",
+    "failure_pressure",
 ]
-CAPABILITY_CHANNELS = ["pressure", "confidence", "available_capacity"]
+CAPABILITY_CHANNELS = [
+    "pressure",
+    "confidence",
+    "available_capacity",
+    "execution_pressure",
+    "reasoning_pressure",
+    "reliability_pressure",
+]
 
 DEFAULT_NODE_VECTOR = {ch: 0.0 for ch in NODE_CHANNELS}
 DEFAULT_NODE_VECTOR["availability"] = 1.0

@@ -23,11 +23,18 @@ node_channels:
   - thermal_pressure
   - disk_pressure
   - expected_offline_suppression
+  - execution_load
+  - execution_friction
+  - reasoning_load
+  - failure_pressure
 
 capability_channels:
   - pressure
   - confidence
   - available_capacity
+  - execution_pressure
+  - reasoning_pressure
+  - reliability_pressure
 
 edges:
   - source_id: node:atlas
@@ -37,6 +44,7 @@ edges:
     channel_map:
       gpu_pressure: pressure
       memory_pressure: pressure
+      reasoning_load: reasoning_pressure
 
   - source_id: node:athena
     target_id: capability:orchestration
@@ -44,6 +52,9 @@ edges:
     weight: 0.90
     channel_map:
       cpu_pressure: pressure
+      execution_load: execution_pressure
+      execution_friction: reliability_pressure
+      failure_pressure: reliability_pressure
 
   - source_id: node:athena
     target_id: capability:storage

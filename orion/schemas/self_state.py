@@ -1,0 +1,71 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class SelfStateDimensionV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dimension_id: Literal[
+        "field_intensity",
+        "coherence",
+        "uncertainty",
+        "agency_readiness",
+        "resource_pressure",
+        "execution_pressure",
+        "reasoning_pressure",
+        "reliability_pressure",
+        "continuity_pressure",
+        "introspection_pressure",
+        "social_pressure",
+        "policy_pressure",
+    ]
+
+    score: float = Field(ge=0.0, le=1.0)
+    confidence: float = Field(ge=0.0, le=1.0)
+
+    dominant_evidence: list[str] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list)
+
+
+class SelfStateV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["self.state.v1"] = "self.state.v1"
+
+    self_state_id: str
+    generated_at: datetime
+
+    source_field_tick_id: str
+    source_field_generated_at: datetime
+
+    source_attention_frame_id: str
+    source_attention_generated_at: datetime
+
+    self_state_policy_id: str = "self_state_policy.v1"
+
+    overall_condition: Literal[
+        "quiet",
+        "steady",
+        "loaded",
+        "strained",
+        "unstable",
+        "unknown",
+    ] = "unknown"
+
+    overall_intensity: float = Field(ge=0.0, le=1.0)
+    overall_confidence: float = Field(ge=0.0, le=1.0)
+
+    dimensions: dict[str, SelfStateDimensionV1] = Field(default_factory=dict)
+
+    dominant_attention_targets: list[str] = Field(default_factory=list)
+    dominant_field_channels: dict[str, float] = Field(default_factory=dict)
+
+    unresolved_pressures: list[str] = Field(default_factory=list)
+    stabilizing_factors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+    summary_labels: list[str] = Field(default_factory=list)

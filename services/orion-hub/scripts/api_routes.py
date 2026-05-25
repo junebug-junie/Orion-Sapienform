@@ -150,6 +150,7 @@ from .substrate_proposal_routes import router as substrate_proposal_router
 from .substrate_policy_routes import router as substrate_policy_router
 from .substrate_execution_dispatch_routes import router as substrate_execution_dispatch_router
 from .substrate_feedback_routes import router as substrate_feedback_router
+from .substrate_consolidation_routes import router as substrate_consolidation_router
 
 router.include_router(grammar_atlas_router)
 router.include_router(substrate_biometrics_router)
@@ -160,6 +161,7 @@ router.include_router(substrate_proposal_router)
 router.include_router(substrate_policy_router)
 router.include_router(substrate_execution_dispatch_router)
 router.include_router(substrate_feedback_router)
+router.include_router(substrate_consolidation_router)
 
 
 def _hub_uses_host_network_mode() -> bool:

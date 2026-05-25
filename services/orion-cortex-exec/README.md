@@ -9,6 +9,19 @@
 | :--- | :--- | :--- | :--- |
 | `orion-cortex-exec:request` | `CHANNEL_EXEC_REQUEST` | `cortex.exec.request` | Request from Orchestrator. |
 
+### Grammar substrate (shadow observability)
+
+| Channel | Env Var | Kind | Description |
+| :--- | :--- | :--- | :--- |
+| `orion:grammar:event` | `GRAMMAR_EVENT_CHANNEL` | `grammar.event.v1` | Execution trajectory trace (one per plan run). |
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `PUBLISH_CORTEX_EXEC_GRAMMAR` | `false` | Enable grammar publish after plan execution. |
+| `GRAMMAR_EVENT_CHANNEL` | `orion:grammar:event` | Grammar bus channel. |
+
+Trace id format: `cortex.exec:{NODE_NAME}:{correlation_id}`. Execution semantics use `GrammarAtomV1.semantic_role` (e.g. `exec_step_started`), not custom `GrammarEventKind` values.
+
 ### Published Channels (Worker RPC)
 Exec sends requests to these channels and listens for replies on ephemeral `reply_to` channels.
 

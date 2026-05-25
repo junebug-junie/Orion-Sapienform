@@ -249,6 +249,29 @@ class LegacyPlanVerb(BaseVerb[PlanExecutionRequest, LegacyPlanOutput]):
         )
         if journal_err:
             result = result.model_copy(update={"status": "fail", "error": journal_err})
+        try:
+            from .grammar_publish import flush_cortex_exec_grammar
+
+            collector = ctx_payload.get("_cortex_exec_grammar_collector")
+            if collector is not None:
+                collector.record_result_emitted(
+                    reply_present=True,
+                    status=str(result.status),
+                )
+            await flush_cortex_exec_grammar(
+                bus,
+                collector,
+                correlation_id=correlation_id,
+                channel=settings.grammar_event_channel,
+                source_name=settings.service_name,
+                enabled=settings.publish_cortex_exec_grammar,
+            )
+        except Exception:
+            logger.warning(
+                "cortex_exec_grammar_legacy_plan_publish_failed corr=%s",
+                correlation_id,
+                exc_info=True,
+            )
         return LegacyPlanOutput(result=result), []
 
 

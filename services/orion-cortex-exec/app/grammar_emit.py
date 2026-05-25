@@ -374,6 +374,75 @@ def _event(
     )
 
 
+def get_or_create_collector(
+    ctx: dict[str, Any],
+    *,
+    correlation_id: str,
+    node_name: str,
+    code_version: str | None,
+) -> CortexExecGrammarCollector:
+    collector = ctx.get("_cortex_exec_grammar_collector")
+    if collector is None:
+        collector = new_cortex_exec_collector(
+            correlation_id=correlation_id,
+            ctx=ctx,
+            code_version=code_version,
+            node_name=node_name,
+        )
+        ctx["_cortex_exec_grammar_collector"] = collector
+    return collector
+
+
+def begin_plan_grammar(
+    ctx: dict[str, Any],
+    *,
+    correlation_id: str,
+    req: PlanExecutionRequest,
+    mode: str,
+    depth: int | None,
+    run_recall: bool,
+    recall_profile: str | None,
+    recall_reason: str,
+    node_name: str,
+    code_version: str | None,
+) -> CortexExecGrammarCollector:
+    collector = get_or_create_collector(
+        ctx,
+        correlation_id=correlation_id,
+        node_name=node_name,
+        code_version=code_version,
+    )
+    if not ctx.get("_cortex_exec_grammar_request_recorded"):
+        collector.record_request_received(req=req, mode=mode)
+        ctx["_cortex_exec_grammar_request_recorded"] = True
+    collector.record_plan_started(req=req, depth=depth, step_count=len(req.plan.steps or []))
+    collector.record_recall_gate_observed(
+        run_recall=run_recall,
+        profile=recall_profile,
+        reason=recall_reason,
+    )
+    return collector
+
+
+def record_assembled_grammar(
+    ctx: dict[str, Any],
+    *,
+    status: str,
+    final_text_present: bool,
+    reasoning_present: bool,
+    thinking_source: str,
+) -> None:
+    collector = ctx.get("_cortex_exec_grammar_collector")
+    if collector is None:
+        return
+    collector.record_result_assembled(
+        status=status,
+        final_text_present=final_text_present,
+        reasoning_present=reasoning_present,
+        thinking_source=thinking_source,
+    )
+
+
 def new_cortex_exec_collector(
     *,
     correlation_id: str,

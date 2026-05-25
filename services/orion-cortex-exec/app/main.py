@@ -403,6 +403,35 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         req_env = CortexExecRequest.model_validate(env.model_dump(mode="json"))
     except ValidationError as ve:
         logger.error("Validation failed trace_id=%s error=%s", trace_id, ve)
+        if settings.publish_cortex_exec_grammar and svc is not None:
+            try:
+                from .grammar_emit import (
+                    build_cortex_exec_grammar_events,
+                    new_cortex_exec_collector,
+                )
+                from .grammar_publish import publish_cortex_exec_grammar_trace
+
+                collector = new_cortex_exec_collector(
+                    correlation_id=corr_id,
+                    ctx={},
+                    code_version=settings.service_version,
+                    node_name=settings.node_name,
+                )
+                collector.record_validation_failed(error_kind="validation_failed")
+                await publish_cortex_exec_grammar_trace(
+                    svc.bus,
+                    build_cortex_exec_grammar_events(collector),
+                    correlation_id=corr_id,
+                    channel=settings.grammar_event_channel,
+                    source_name=settings.service_name,
+                    enabled=True,
+                )
+            except Exception:
+                logger.warning(
+                    "cortex_exec_grammar_validation_publish_failed corr=%s",
+                    corr_id,
+                    exc_info=True,
+                )
         return BaseEnvelope(
             kind="cortex.exec.result",
             source=_source(),
@@ -566,6 +595,30 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             )
     else:
         logger.warning("Exec result missing reply_to corr=%s", corr_id)
+
+    try:
+        from .grammar_publish import flush_cortex_exec_grammar
+
+        collector = ctx.get("_cortex_exec_grammar_collector")
+        if collector is not None:
+            collector.record_result_emitted(
+                reply_present=bool(env.reply_to),
+                status=str(res.status),
+            )
+        await flush_cortex_exec_grammar(
+            svc.bus,
+            collector,
+            correlation_id=corr_id,
+            channel=settings.grammar_event_channel,
+            source_name=settings.service_name,
+            enabled=settings.publish_cortex_exec_grammar,
+        )
+    except Exception:
+        logger.warning(
+            "cortex_exec_grammar_egress_publish_failed corr=%s",
+            corr_id,
+            exc_info=True,
+        )
 
     return CortexExecResult(
         source=_source(),

@@ -1,0 +1,24 @@
+services:
+  proposal-runtime:
+    build:
+      context: ../..
+      dockerfile: services/orion-proposal-runtime/Dockerfile
+    container_name: ${PROJECT}-proposal-runtime
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      - "${PROPOSAL_RUNTIME_PORT:-8119}:8119"
+    environment:
+      - PROJECT=${PROJECT}
+      - SERVICE_NAME=${SERVICE_NAME:-orion-proposal-runtime}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - POSTGRES_URI=${POSTGRES_URI}
+      - PROPOSAL_POLICY_PATH=${PROPOSAL_POLICY_PATH:-/app/config/proposals/proposal_policy.v1.yaml}
+      - PROPOSAL_POLL_INTERVAL_SEC=${PROPOSAL_POLL_INTERVAL_SEC:-2.0}
+      - ENABLE_PROPOSAL_RUNTIME=${ENABLE_PROPOSAL_RUNTIME:-true}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+networks:
+  app-net:
+    external: true

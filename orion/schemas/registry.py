@@ -461,6 +461,7 @@ from orion.schemas.situation import (
 )
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1, FieldAttentionTargetV1
 from orion.schemas.field_state import FieldEdgeV1, FieldStateV1
+from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
 from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
 from orion.schemas.evidence_index import (
     EvidenceQueryResultItemV1,
@@ -943,6 +944,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "FieldAttentionFrameV1": FieldAttentionFrameV1,
     "SelfStateDimensionV1": SelfStateDimensionV1,
     "SelfStateV1": SelfStateV1,
+    "ProposalCandidateV1": ProposalCandidateV1,
+    "ProposalFrameV1": ProposalFrameV1,
     "EvidenceUnitV1": EvidenceUnitV1,
     "EvidenceQueryV1": EvidenceQueryV1,
     "EvidenceQueryResultItemV1": EvidenceQueryResultItemV1,

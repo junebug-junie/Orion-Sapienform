@@ -27,7 +27,9 @@ Health: `GET http://localhost:8116/health`
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `POSTGRES_URI` | (required) | Postgres connection string |
-| `LATTICE_PATH` | `config/field/biometrics_lattice.yaml` | Node/capability lattice YAML |
+| `LATTICE_PATH` | `config/field/orion_field_topology.v1.yaml` | Node/capability lattice YAML (canonical) |
+
+`biometrics_lattice.yaml` is retained as a compatibility alias; `orion_field_topology.v1.yaml` is the canonical config. Operators may keep `LATTICE_PATH` pointed at either file.
 | `RECEIPT_POLL_INTERVAL_SEC` | `2.0` | Receipt poll interval |
 | `BIOMETRICS_FIELD_DECAY_RATE` | `0.92` | Per-tick pressure decay multiplier |
 | `BIOMETRICS_FIELD_DIFFUSION_RATE` | `1.0` | Node→capability diffusion strength |

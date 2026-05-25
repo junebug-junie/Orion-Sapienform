@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     postgres_uri: str = Field(..., alias="POSTGRES_URI")
     lattice_path: str = Field(
-        "config/field/biometrics_lattice.yaml",
+        "config/field/orion_field_topology.v1.yaml",
         alias="LATTICE_PATH",
     )
     receipt_poll_interval_sec: float = Field(2.0, alias="RECEIPT_POLL_INTERVAL_SEC")

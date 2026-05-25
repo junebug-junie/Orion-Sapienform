@@ -1,4 +1,4 @@
-# Compatibility alias — canonical: config/field/orion_field_topology.v1.yaml
+# Canonical Orion field topology (biometrics + execution dynamics).
 schema_version: field_lattice.v1
 
 nodes:

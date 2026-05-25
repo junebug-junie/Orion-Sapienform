@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from orion.consolidation.expectation import build_expectations_from_motifs
 from orion.consolidation.motif import detect_motifs
+from orion.consolidation.tensorize import build_sparse_tensor_slices
 from orion.consolidation.policy import ConsolidationPolicyV1
 from orion.consolidation.windows import ConsolidationWindowData, stable_consolidation_frame_id
 from orion.schemas.consolidation_frame import ConsolidationFrameV1
@@ -20,6 +21,12 @@ def build_consolidation_frame(
     expectations = build_expectations_from_motifs(
         motifs=motifs,
         feedback_frames=window.feedback_frames,
+        policy=policy,
+    )
+    tensor_slices = build_sparse_tensor_slices(
+        window=window,
+        motifs=motifs,
+        expectations=expectations,
         policy=policy,
     )
     dominant = [
@@ -40,6 +47,7 @@ def build_consolidation_frame(
         motif_observations=motifs,
         dominant_motifs=dominant,
         expectations=expectations,
+        tensor_slices=tensor_slices,
         source_counts={
             "self_state": len(window.self_states),
             "attention": len(window.attention_frames),

@@ -39,6 +39,13 @@ class MotifRuleV1(BaseModel):
     conditions: dict[str, Any] = Field(default_factory=dict)
 
 
+class TensorConfigV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    max_coordinates: int = 200
+
+
 class ConsolidationPolicyV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -53,6 +60,9 @@ class ConsolidationPolicyV1(BaseModel):
     tracked_feedback_outcomes: list[str] = Field(default_factory=list)
 
     motif_rules: dict[str, MotifRuleV1] = Field(default_factory=dict)
+
+    tensor: TensorConfigV1 = Field(default_factory=TensorConfigV1)
+    tensor_axes: dict[str, list[str]] = Field(default_factory=dict)
 
 
 def load_consolidation_policy(path: str | Path) -> ConsolidationPolicyV1:

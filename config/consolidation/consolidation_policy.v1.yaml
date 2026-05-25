@@ -81,3 +81,23 @@ motif_rules:
       self_state_delta:
         allowed:
           - unchanged
+
+tensor:
+  enabled: true
+  max_coordinates: 200
+
+tensor_axes:
+  field_attention_self:
+    - time_bucket
+    - self_condition
+    - attention_target
+    - dimension
+  policy_dispatch_feedback:
+    - proposal_kind
+    - policy_decision
+    - dispatch_status
+    - feedback_outcome
+  motif_condition_outcome:
+    - motif
+    - self_condition
+    - outcome_status

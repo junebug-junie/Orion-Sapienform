@@ -29,3 +29,26 @@ def test_motif_rules_present() -> None:
 def test_tracked_dimensions() -> None:
     policy = load_consolidation_policy(POLICY_PATH)
     assert "execution_pressure" in policy.tracked_self_dimensions
+
+
+def test_tensor_config() -> None:
+    policy = load_consolidation_policy(POLICY_PATH)
+    assert policy.tensor.enabled is True
+    assert policy.tensor.max_coordinates == 200
+    assert policy.tensor_axes["field_attention_self"] == [
+        "time_bucket",
+        "self_condition",
+        "attention_target",
+        "dimension",
+    ]
+    assert policy.tensor_axes["policy_dispatch_feedback"] == [
+        "proposal_kind",
+        "policy_decision",
+        "dispatch_status",
+        "feedback_outcome",
+    ]
+    assert policy.tensor_axes["motif_condition_outcome"] == [
+        "motif",
+        "self_condition",
+        "outcome_status",
+    ]

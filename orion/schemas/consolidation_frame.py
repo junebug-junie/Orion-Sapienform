@@ -64,6 +64,25 @@ class ExpectationV1(BaseModel):
     reasons: list[str] = Field(default_factory=list)
 
 
+class SparseTensorSliceV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tensor_id: str
+
+    tensor_kind: Literal[
+        "substrate_history_sparse",
+        "motif_condition_outcome",
+        "field_attention_self",
+        "policy_dispatch_feedback",
+    ]
+
+    axes: list[str] = Field(default_factory=list)
+    coordinates: list[dict[str, str]] = Field(default_factory=list)
+    values: list[float] = Field(default_factory=list)
+
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
 class ConsolidationFrameV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -81,6 +100,7 @@ class ConsolidationFrameV1(BaseModel):
     dominant_motifs: list[str] = Field(default_factory=list)
 
     expectations: list[ExpectationV1] = Field(default_factory=list)
+    tensor_slices: list[SparseTensorSliceV1] = Field(default_factory=list)
 
     source_counts: dict[str, int] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)

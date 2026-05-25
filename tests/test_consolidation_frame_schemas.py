@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from orion.schemas.consolidation_frame import ConsolidationFrameV1, ExpectationV1, MotifObservationV1
+from orion.schemas.consolidation_frame import ConsolidationFrameV1, ExpectationV1, MotifObservationV1, SparseTensorSliceV1
 from orion.schemas.registry import resolve
 
 NOW = datetime(2026, 5, 25, 15, 30, tzinfo=timezone.utc)
@@ -101,3 +101,27 @@ def test_consolidation_frame_includes_expectations() -> None:
 
 def test_expectation_v1_registered() -> None:
     assert resolve("ExpectationV1") is ExpectationV1
+
+
+def test_sparse_tensor_slice_v1_validates() -> None:
+    tensor = SparseTensorSliceV1(
+        tensor_id="tensor:field_attention_self:2026-05-25T14:30:00+00:00:2026-05-25T15:30:00+00:00",
+        tensor_kind="field_attention_self",
+        axes=["time_bucket", "self_condition", "attention_target", "dimension"],
+        coordinates=[
+            {
+                "time_bucket": "2026-05-25T15:00:00+00:00",
+                "self_condition": "loaded",
+                "attention_target": "node:athena",
+                "dimension": "execution_pressure",
+            }
+        ],
+        values=[0.8],
+        evidence_refs=["self.state:s1"],
+    )
+    assert tensor.tensor_kind == "field_attention_self"
+    assert len(tensor.values) == len(tensor.coordinates)
+
+
+def test_sparse_tensor_slice_v1_registered() -> None:
+    assert resolve("SparseTensorSliceV1") is SparseTensorSliceV1

@@ -1,0 +1,22 @@
+service: <service>
+status: draft
+
+ports:
+  - name: <port_name>
+    role: <organ_ingress|reducer|substrate_frame_runtime|transport_infrastructure|persistence_infrastructure|operator_read_surface|operator_ingress|runtime_engine|model_host|external_gateway|effector|control_plane>
+    native_contract: <http_json|websocket_json|redis_channel|sql_table|file|model_api|audio_stream|internal_worker_tick>
+    substrate_trace_required: true
+    trace_roles:
+      - <semantic_role_1>
+      - <semantic_role_2>
+    downstream_layers: [1, 2]
+    evidence_refs:
+      - correlation_id
+      - source_event_id
+    redaction:
+      never_emit:
+        - raw_model_prompt
+        - raw_model_completion
+        - credential_material
+        - full_payload_blob
+    notes: <brief notes>

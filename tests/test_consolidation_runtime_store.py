@@ -25,7 +25,7 @@ def _load_store_class():
 
 ConsolidationRuntimeStore = _load_store_class()
 
-from orion.schemas.consolidation_frame import ConsolidationFrameV1  # noqa: E402
+from orion.schemas.consolidation_frame import ConsolidationFrameV1, ExpectationV1  # noqa: E402
 
 NOW = datetime(2026, 5, 25, 15, 30, tzinfo=timezone.utc)
 START = datetime(2026, 5, 25, 14, 30, tzinfo=timezone.utc)
@@ -119,3 +119,32 @@ def test_save_idempotent_by_frame_id(monkeypatch) -> None:
 
     store.save_consolidation_frame(_frame())
     assert any("ON CONFLICT (frame_id) DO NOTHING" in sql for sql in calls)
+
+
+def test_upsert_expectations_idempotent(monkeypatch) -> None:
+    store = ConsolidationRuntimeStore("postgresql://test:test@localhost/test")
+    fake_engine = MagicMock()
+    conn = MagicMock()
+    fake_engine.begin.return_value.__enter__ = MagicMock(return_value=conn)
+    fake_engine.begin.return_value.__exit__ = MagicMock(return_value=False)
+
+    calls: list[str] = []
+
+    def execute_side_effect(stmt, params=None):
+        calls.append(str(stmt))
+        return MagicMock()
+
+    conn.execute.side_effect = execute_side_effect
+    monkeypatch.setattr(store, "_engine", fake_engine)
+
+    expectation = ExpectationV1(
+        expectation_id="expectation:motif:loaded_but_reliable:consolidation_policy.v1:reliability_clear",
+        trigger_motif_id="motif:loaded_but_reliable:consolidation_policy.v1",
+        expected_outcome_kind="reliability_clear",
+        confidence_score=0.7,
+        support_count=3,
+    )
+    store.upsert_expectations([expectation])
+    store.upsert_expectations([expectation])
+    assert sum("INSERT INTO substrate_expectations" in sql for sql in calls) == 2
+    assert all("ON CONFLICT (expectation_id) DO UPDATE" in sql for sql in calls if "substrate_expectations" in sql)

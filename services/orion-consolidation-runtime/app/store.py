@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from orion.consolidation.windows import ConsolidationWindowData
-from orion.schemas.consolidation_frame import ConsolidationFrameV1
+from orion.schemas.consolidation_frame import ConsolidationFrameV1, ExpectationV1
 from orion.schemas.execution_dispatch_frame import ExecutionDispatchFrameV1
 from orion.schemas.feedback_frame import FeedbackFrameV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
@@ -209,6 +209,44 @@ class ConsolidationRuntimeStore:
                     "created_at": now,
                 },
             )
+
+    def upsert_expectations(self, expectations: list[ExpectationV1]) -> None:
+        if not expectations:
+            return
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            for expectation in expectations:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO substrate_expectations (
+                            expectation_id,
+                            trigger_motif_id,
+                            expected_outcome_kind,
+                            expectation_json,
+                            updated_at
+                        ) VALUES (
+                            :expectation_id,
+                            :trigger_motif_id,
+                            :expected_outcome_kind,
+                            :expectation_json,
+                            :updated_at
+                        )
+                        ON CONFLICT (expectation_id) DO UPDATE SET
+                            trigger_motif_id = EXCLUDED.trigger_motif_id,
+                            expected_outcome_kind = EXCLUDED.expected_outcome_kind,
+                            expectation_json = EXCLUDED.expectation_json,
+                            updated_at = EXCLUDED.updated_at
+                        """
+                    ),
+                    {
+                        "expectation_id": expectation.expectation_id,
+                        "trigger_motif_id": expectation.trigger_motif_id,
+                        "expected_outcome_kind": expectation.expected_outcome_kind,
+                        "expectation_json": Json(expectation.model_dump(mode="json")),
+                        "updated_at": now,
+                    },
+                )
 
     def _load_rows(
         self,

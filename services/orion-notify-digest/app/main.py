@@ -94,11 +94,11 @@ async def run_digest_now(
 
     digest_summary = summarize_window(window_start, window_end)
     topics_snapshot = fetch_topics_snapshot(
-        landing_pad_url=settings.LANDING_PAD_URL,
+        topic_foundry_url=settings.TOPIC_FOUNDRY_URL,
+        model_name=settings.TOPIC_FOUNDRY_MODEL_NAME,
         window_minutes=_topics_window_minutes(),
         max_topics=settings.TOPICS_MAX_TOPICS,
-        drift_min_turns=settings.TOPICS_DRIFT_MIN_TURNS,
-        drift_max_sessions=settings.TOPICS_DRIFT_MAX_SESSIONS,
+        drift_max_records=settings.TOPICS_DRIFT_MAX_RECORDS,
     )
     body_text, body_md = build_digest_content(
         digest_summary,
@@ -209,19 +209,19 @@ async def _drift_alert_loop() -> None:
 
 
 async def _check_topic_drift() -> None:
-    if not settings.LANDING_PAD_URL:
-        logger.info("Drift alerts skipped: LANDING_PAD_URL not set")
+    if not settings.TOPIC_FOUNDRY_URL:
+        logger.info("Drift alerts skipped: TOPIC_FOUNDRY_URL not set")
         return
     if settings.DRIFT_ALERT_SEVERITY not in {"warning", "error"}:
         logger.warning("Invalid DRIFT_ALERT_SEVERITY=%s; expected warning|error", settings.DRIFT_ALERT_SEVERITY)
         return
 
     topics_snapshot = fetch_topics_snapshot(
-        landing_pad_url=settings.LANDING_PAD_URL,
+        topic_foundry_url=settings.TOPIC_FOUNDRY_URL,
+        model_name=settings.TOPIC_FOUNDRY_MODEL_NAME,
         window_minutes=_topics_window_minutes(),
         max_topics=settings.TOPICS_MAX_TOPICS,
-        drift_min_turns=settings.TOPICS_DRIFT_MIN_TURNS,
-        drift_max_sessions=settings.TOPICS_DRIFT_MAX_SESSIONS,
+        drift_max_records=settings.TOPICS_DRIFT_MAX_RECORDS,
     )
     if not topics_snapshot.drift_items:
         logger.info("No drift items found for window=%s", topics_snapshot.window_minutes)

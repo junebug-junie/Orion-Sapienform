@@ -20,11 +20,11 @@ class Settings(BaseSettings):
     DIGEST_RECIPIENT_GROUP: str = Field("juniper_primary", alias="DIGEST_RECIPIENT_GROUP")
     DIGEST_RUN_ON_START: bool = Field(False, alias="DIGEST_RUN_ON_START")
 
-    LANDING_PAD_URL: Optional[str] = Field(None, alias="LANDING_PAD_URL")
+    TOPIC_FOUNDRY_URL: Optional[str] = Field(None, alias="TOPIC_FOUNDRY_URL")
+    TOPIC_FOUNDRY_MODEL_NAME: Optional[str] = Field(None, alias="TOPIC_FOUNDRY_MODEL_NAME")
     TOPICS_WINDOW_MINUTES: Optional[int] = Field(None, alias="TOPICS_WINDOW_MINUTES")
     TOPICS_MAX_TOPICS: int = Field(20, alias="TOPICS_MAX_TOPICS")
-    TOPICS_DRIFT_MIN_TURNS: int = Field(10, alias="TOPICS_DRIFT_MIN_TURNS")
-    TOPICS_DRIFT_MAX_SESSIONS: int = Field(50, alias="TOPICS_DRIFT_MAX_SESSIONS")
+    TOPICS_DRIFT_MAX_RECORDS: int = Field(50, alias="TOPICS_DRIFT_MAX_RECORDS")
 
     DRIFT_ALERTS_ENABLED: bool = Field(False, alias="DRIFT_ALERTS_ENABLED")
     DRIFT_CHECK_INTERVAL_SECONDS: int = Field(900, alias="DRIFT_CHECK_INTERVAL_SECONDS")

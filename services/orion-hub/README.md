@@ -277,7 +277,7 @@ ORION_BUS_URL=redis://localhost:6379/0
 CORTEX_GATEWAY_REQUEST_CHANNEL=orion-cortex-gateway:request
 TTS_REQUEST_CHANNEL=orion:tts:intake
 
-# Landing Pad (Topic Rail)
+# Landing Pad
 LANDING_PAD_URL=http://orion-landing-pad:8370
 LANDING_PAD_TIMEOUT_SEC=5
 

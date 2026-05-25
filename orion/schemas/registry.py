@@ -432,7 +432,6 @@ from orion.schemas.notify import (
     RecipientProfile,
     RecipientProfileUpdate,
 )
-from orion.schemas.topic import TopicSummaryEventV1, TopicShiftEventV1, TopicRailAssignedV1
 from orion.schemas.attention_frame import AttentionFrameV1, AttentionSignalV1
 from orion.schemas.chat_stance import ChatStanceBrief
 from orion.schemas.situation import (
@@ -912,9 +911,6 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "MeshOpsRoundResultV1": MeshOpsRoundResultV1,
     "OpsMeshRoundJournalEntryV1": OpsMeshRoundJournalEntryV1,
     "OrionSignalV1": OrionSignalV1,
-    "TopicSummaryEventV1": TopicSummaryEventV1,
-    "TopicShiftEventV1": TopicShiftEventV1,
-    "TopicRailAssignedV1": TopicRailAssignedV1,
     "TopicFoundryRunCompleteV1": TopicFoundryRunCompleteV1,
     "TopicFoundryEnrichCompleteV1": TopicFoundryEnrichCompleteV1,
     "TopicFoundryDriftAlertV1": TopicFoundryDriftAlertV1,

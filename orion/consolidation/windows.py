@@ -28,11 +28,24 @@ def compute_consolidation_window(
     now: datetime | None = None,
     lookback_minutes: int,
 ) -> tuple[datetime, datetime]:
+    """Return a stable UTC window aligned to lookback bucket boundaries.
+
+    For lookback_minutes=60, window_end is truncated to the hour so repeated
+    polls within the same hour share one frame_id (idempotent per window).
+    """
     end = now or datetime.now(timezone.utc)
     if end.tzinfo is None:
         end = end.replace(tzinfo=timezone.utc)
-    start = end - timedelta(minutes=lookback_minutes)
-    return start, end
+    else:
+        end = end.astimezone(timezone.utc)
+
+    bucket_minutes = max(1, lookback_minutes)
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    total_minutes = int((end - epoch).total_seconds() // 60)
+    aligned_end_minutes = (total_minutes // bucket_minutes) * bucket_minutes
+    window_end = epoch + timedelta(minutes=aligned_end_minutes)
+    window_start = window_end - timedelta(minutes=lookback_minutes)
+    return window_start, window_end
 
 
 def stable_consolidation_frame_id(

@@ -17,8 +17,9 @@ async def publish_grammar_event(
     *,
     source_name: str = "orion-grammar",
     correlation_id: UUID | None = None,
+    channel: str | None = None,
 ) -> None:
-    """Publish a ``grammar.event.v1`` envelope on ``orion:grammar:event``."""
+    """Publish a ``grammar.event.v1`` envelope on the grammar event channel."""
     corr = correlation_id
     if corr is None and event.correlation_id:
         try:
@@ -34,4 +35,4 @@ async def publish_grammar_event(
         correlation_id=corr,
         payload=event.model_dump(mode="json"),
     )
-    await bus.publish(GRAMMAR_EVENT_CHANNEL, envelope)
+    await bus.publish(channel or GRAMMAR_EVENT_CHANNEL, envelope)

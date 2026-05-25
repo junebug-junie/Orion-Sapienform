@@ -29,6 +29,12 @@ from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionRequest, Pl
 from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
 from .supervisor import Supervisor
 from .settings import settings
+from .grammar_emit import (
+    begin_plan_grammar,
+    get_or_create_collector,
+    record_assembled_grammar,
+    short_error_kind,
+)
 from .metacog_enrichment import extract_reasoning_features
 from .chat_stance import strip_identity_recital_leadin
 from orion.cognition.verb_activation import is_active
@@ -887,6 +893,19 @@ class PlanRunner:
         ctx.setdefault("debug", {})["recall_profile_source"] = profile_source
         ctx.setdefault("debug", {})["recall_profile_override_source"] = recall_policy.get("profile_override_source")
 
+        grammar_collector = begin_plan_grammar(
+            ctx,
+            correlation_id=correlation_id,
+            req=req,
+            mode=str(mode),
+            depth=depth,
+            run_recall=bool(recall_policy["run_recall"]),
+            recall_profile=str(selected_profile) if selected_profile else None,
+            recall_reason=str(recall_policy.get("reason") or recall_policy.get("recall_gating_reason") or "unknown"),
+            node_name=settings.node_name,
+            code_version=settings.service_version,
+        )
+
         if diagnostic:
             logger.info("Diagnostic PlanExecutionRequest json=%s", req.model_dump_json())
             logger.info(
@@ -960,6 +979,13 @@ class PlanRunner:
         ctx["prior_step_results"] = list(existing_scoped_results)
         if mode == "brain" and plan.verb_name and not is_active(plan.verb_name, node_name=settings.node_name):
             logger.warning("Inactive verb blocked in router corr_id=%s verb=%s", correlation_id, plan.verb_name)
+            record_assembled_grammar(
+                ctx,
+                status="fail",
+                final_text_present=True,
+                reasoning_present=False,
+                thinking_source="none",
+            )
             return PlanExecutionResult(
                 verb_name=plan.verb_name,
                 request_id=req.args.request_id,
@@ -1007,6 +1033,26 @@ class PlanRunner:
                 rpc_timeout_sec=None,
             )
             step_results.append(recall_step)
+            grammar_collector.record_step_started(
+                order=0,
+                step_name=recall_step.step_name or "pre_recall",
+                verb_name=recall_step.verb_name or "recall",
+                services=["RecallService"],
+            )
+            if recall_step.status == "success":
+                keys = sorted(recall_step.result.keys()) if isinstance(recall_step.result, dict) else []
+                grammar_collector.record_step_completed(
+                    order=0,
+                    step_name=recall_step.step_name or "pre_recall",
+                    latency_ms=recall_step.latency_ms,
+                    result_service_keys=keys,
+                )
+            else:
+                grammar_collector.record_step_failed(
+                    order=0,
+                    step_name=recall_step.step_name or "pre_recall",
+                    error_kind=short_error_kind(recall_step.error),
+                )
             memory_used = recall_step.status == "success"
             recall_count = 0
             if isinstance(recall_step.result, dict):
@@ -1026,6 +1072,13 @@ class PlanRunner:
                         ctx.get("session_id"),
                         ctx.get("trace_id"),
                     )
+                record_assembled_grammar(
+                    ctx,
+                    status="fail",
+                    final_text_present=False,
+                    reasoning_present=False,
+                    thinking_source="none",
+                )
                 return PlanExecutionResult(
                     verb_name=plan.verb_name,
                     request_id=req.args.request_id,
@@ -1052,6 +1105,13 @@ class PlanRunner:
                         recall_step.error,
                     )
                 if recall_required:
+                    record_assembled_grammar(
+                        ctx,
+                        status=overall_status,
+                        final_text_present=False,
+                        reasoning_present=False,
+                        thinking_source="none",
+                    )
                     return PlanExecutionResult(
                         verb_name=plan.verb_name,
                         request_id=req.args.request_id,
@@ -1111,6 +1171,18 @@ class PlanRunner:
             scoped = ctx.setdefault("prior_step_results_by_corr", {})
             if isinstance(scoped, dict):
                 scoped[correlation_id] = list(ctx["prior_step_results"])
+            grammar_collector = get_or_create_collector(
+                ctx,
+                correlation_id=correlation_id,
+                node_name=settings.node_name,
+                code_version=settings.service_version,
+            )
+            grammar_collector.record_step_started(
+                order=step.order,
+                step_name=step.step_name,
+                verb_name=step.verb_name or plan.verb_name or "unknown",
+                services=list(step.services or []),
+            )
             step_res = await call_step_services(
                 bus,
                 source=source,
@@ -1120,6 +1192,20 @@ class PlanRunner:
                 diagnostic=diagnostic,
             )
             step_results.append(step_res)
+            if step_res.status == "success":
+                keys = sorted(step_res.result.keys()) if isinstance(step_res.result, dict) else []
+                grammar_collector.record_step_completed(
+                    order=step.order,
+                    step_name=step.step_name,
+                    latency_ms=step_res.latency_ms,
+                    result_service_keys=keys,
+                )
+            else:
+                grammar_collector.record_step_failed(
+                    order=step.order,
+                    step_name=step.step_name,
+                    error_kind=short_error_kind(step_res.error),
+                )
             if isinstance(step_res.result, dict) and "RecallService" in step_res.result:
                 recall_debug = step_res.result.get("RecallService", {})
                 memory_used = step_res.status == "success"
@@ -1300,6 +1386,14 @@ class PlanRunner:
             if final_text_diag.get("structured_rejection_preview"):
                 metadata["structured_rejection_preview"] = str(final_text_diag["structured_rejection_preview"])[:500]
         mark_orion_turn(str(ctx.get("session_id") or "global"))
+
+        record_assembled_grammar(
+            ctx,
+            status=overall_status,
+            final_text_present=bool((final_text or "").strip()),
+            reasoning_present=bool(reasoning_content or reasoning_trace or metacog_traces),
+            thinking_source=str(thinking_source or "none"),
+        )
 
         return PlanExecutionResult(
             verb_name=plan.verb_name,

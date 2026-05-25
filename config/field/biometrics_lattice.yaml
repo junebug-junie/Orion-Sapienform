@@ -1,0 +1,75 @@
+schema_version: field_lattice.v1
+
+nodes:
+  - node_id: atlas
+  - node_id: athena
+  - node_id: circe
+  - node_id: prometheus
+
+capabilities:
+  - capability_id: llm_inference
+  - capability_id: orchestration
+  - capability_id: storage
+  - capability_id: vision
+  - capability_id: graph
+  - capability_id: memory
+
+node_channels:
+  - availability
+  - staleness
+  - cpu_pressure
+  - memory_pressure
+  - gpu_pressure
+  - thermal_pressure
+  - disk_pressure
+  - expected_offline_suppression
+
+capability_channels:
+  - pressure
+  - confidence
+  - available_capacity
+
+edges:
+  - source_id: node:atlas
+    target_id: capability:llm_inference
+    edge_type: node_capability
+    weight: 0.85
+    channel_map:
+      gpu_pressure: pressure
+      memory_pressure: pressure
+
+  - source_id: node:athena
+    target_id: capability:orchestration
+    edge_type: node_capability
+    weight: 0.90
+    channel_map:
+      cpu_pressure: pressure
+
+  - source_id: node:athena
+    target_id: capability:storage
+    edge_type: node_capability
+    weight: 0.75
+    channel_map:
+      disk_pressure: pressure
+      memory_pressure: pressure
+
+  - source_id: node:athena
+    target_id: capability:graph
+    edge_type: node_capability
+    weight: 0.70
+    channel_map:
+      cpu_pressure: pressure
+
+  - source_id: node:prometheus
+    target_id: capability:memory
+    edge_type: node_capability
+    weight: 0.60
+    channel_map:
+      cpu_pressure: pressure
+
+  - source_id: node:circe
+    target_id: capability:llm_inference
+    edge_type: node_capability
+    weight: 0.50
+    channel_map:
+      gpu_pressure: pressure

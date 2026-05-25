@@ -1,0 +1,24 @@
+services:
+  consolidation-runtime:
+    build:
+      context: ../..
+      dockerfile: services/orion-consolidation-runtime/Dockerfile
+    container_name: ${PROJECT}-consolidation-runtime
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      - "${CONSOLIDATION_RUNTIME_PORT:-8123}:8123"
+    environment:
+      - PROJECT=${PROJECT}
+      - SERVICE_NAME=${SERVICE_NAME:-orion-consolidation-runtime}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - POSTGRES_URI=${POSTGRES_URI}
+      - CONSOLIDATION_POLICY_PATH=${CONSOLIDATION_POLICY_PATH:-/app/config/consolidation/consolidation_policy.v1.yaml}
+      - CONSOLIDATION_POLL_INTERVAL_SEC=${CONSOLIDATION_POLL_INTERVAL_SEC:-60.0}
+      - ENABLE_CONSOLIDATION_RUNTIME=${ENABLE_CONSOLIDATION_RUNTIME:-true}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+networks:
+  app-net:
+    external: true

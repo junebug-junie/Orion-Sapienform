@@ -1,0 +1,18 @@
+organ_id: biometrics_pressure
+schema_version: organ.contract.v1
+subscribes_to:
+  - biometrics.node.trace.lifecycle
+  - biometrics.node.sample.observed
+  - biometrics.node.summary.observed
+  - biometrics.node.induction.observed
+reads_projections:
+  - node_biometrics_projection
+  - active_node_pressure_projection
+emits:
+  - node_pressure_detected
+  - node_pressure_reinforced
+  - node_pressure_decayed
+  - node_availability_concern
+  - node_pressure_suppressed
+  - node_capability_impact
+max_events_per_invocation: 8

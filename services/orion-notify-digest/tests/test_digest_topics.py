@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -62,7 +62,7 @@ def test_fetch_topics_snapshot_maps_foundry_success(monkeypatch):
                         {
                             "drift_id": "00000000-0000-0000-0000-0000000000aa",
                             "js_divergence": 0.82,
-                            "window_end": "2026-05-24T10:00:00+00:00",
+                            "window_end": datetime.now(timezone.utc).isoformat(),
                         }
                     ],
                 }
@@ -90,8 +90,9 @@ def test_fetch_topics_snapshot_maps_foundry_success(monkeypatch):
 def test_parse_foundry_drift_filters_by_window_minutes():
     from app.digest import _parse_foundry_topic_drift
 
-    recent = datetime(2026, 5, 24, 12, 0, tzinfo=timezone.utc).isoformat()
-    stale = datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+    recent = (now - timedelta(minutes=30)).isoformat()
+    stale = (now - timedelta(days=7)).isoformat()
     items = _parse_foundry_topic_drift(
         {
             "records": [

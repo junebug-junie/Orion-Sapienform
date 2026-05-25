@@ -71,3 +71,53 @@ def test_hub_memory_graph_suggest_text_reads_step_content_when_final_text_empty(
     text, diag = hub_memory_graph_suggest_text(resp)
     assert "ontology_version" in text
     assert diag["selected_text_source"] == "LLMGatewayService.content"
+
+
+def test_hub_memory_graph_suggest_text_reads_raw_openai_choices_when_content_empty() -> None:
+    from orion.schemas.cortex.contracts import CortexChatResult, CortexClientResult
+    from orion.schemas.cortex.schemas import StepExecutionResult
+
+    draft = {
+        "ontology_version": "orionmem-2026-05",
+        "utterance_ids": ["u1"],
+        "entities": [],
+        "situations": [],
+        "edges": [],
+        "dispositions": [],
+    }
+    raw = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": json.dumps(draft),
+                },
+                "finish_reason": "stop",
+            }
+        ]
+    }
+    step = StepExecutionResult(
+        status="success",
+        verb_name="memory_graph_suggest",
+        step_name="llm_memory_graph_suggest",
+        order=0,
+        result={"LLMGatewayService": {"content": "", "raw": raw}},
+        latency_ms=1,
+        node="n",
+        logs=[],
+        error=None,
+    )
+    cr = CortexClientResult(
+        ok=True,
+        mode="brain",
+        verb="memory_graph_suggest",
+        status="success",
+        final_text="",
+        steps=[step],
+    )
+    resp = CortexChatResult(cortex_result=cr, final_text="")
+    from scripts.cortex_memory_graph_text import hub_memory_graph_suggest_text
+
+    text, diag = hub_memory_graph_suggest_text(resp)
+    assert "ontology_version" in text
+    assert "raw.choices[0].message.content" in str(diag.get("selected_text_source") or "")

@@ -16,6 +16,7 @@ from .constants import (
 )
 from .grammar_extract import extract_execution_state_from_events
 from .ids import parse_execution_trace_id
+from .merge import merge_execution_run_state
 
 
 def _utc_now(now: datetime | None) -> datetime:
@@ -82,7 +83,7 @@ def reduce_execution_trace_events(
 
     warnings: list[str] = []
     try:
-        merged = extract_execution_state_from_events(events, now=clock)
+        incoming = extract_execution_state_from_events(events, now=clock)
     except ValueError as exc:
         warnings.append(str(exc))
         noop_ids = [e.event_id for e in events]
@@ -101,6 +102,7 @@ def reduce_execution_trace_events(
 
     existing = updated.runs.get(trace_id)
     operation = "create" if existing is None else "update"
+    merged = merge_execution_run_state(existing, incoming)
     updated.runs[trace_id] = merged
 
     event_ids = [e.event_id for e in events if e.atom]

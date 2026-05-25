@@ -41,6 +41,27 @@ def _first_json_object(text: str) -> Optional[str]:
     return None
 
 
+def _openai_choice_message_text(raw: Any) -> List[Tuple[str, str]]:
+    """Recover visible assistant text from gateway ``raw`` OpenAI completion shape."""
+    out: List[Tuple[str, str]] = []
+    if not isinstance(raw, dict):
+        return out
+    choices = raw.get("choices")
+    if not isinstance(choices, list):
+        return out
+    for idx, choice in enumerate(choices):
+        if not isinstance(choice, dict):
+            continue
+        msg = choice.get("message")
+        if not isinstance(msg, dict):
+            continue
+        for field in ("content", "reasoning_content", "reasoning", "reasoning_text"):
+            val = msg.get(field)
+            if isinstance(val, str) and val.strip():
+                out.append((f"raw.choices[{idx}].message.{field}", val.strip()))
+    return out
+
+
 def _step_text_candidates(step: Any) -> List[Tuple[str, str]]:
     out: List[Tuple[str, str]] = []
     if not step or not getattr(step, "result", None):
@@ -51,10 +72,20 @@ def _step_text_candidates(step: Any) -> List[Tuple[str, str]]:
     for service_name, block in res.items():
         if not isinstance(block, dict):
             continue
-        for field in ("content", "final_text", "text", "reasoning_content"):
+        for field in (
+            "content",
+            "final_text",
+            "text",
+            "reasoning_content",
+            "inline_think_content",
+        ):
             val = block.get(field)
             if isinstance(val, str) and val.strip():
                 out.append((f"{service_name}.{field}", val.strip()))
+        raw = block.get("raw")
+        if isinstance(raw, dict):
+            for source, val in _openai_choice_message_text(raw):
+                out.append((f"{service_name}.{source}", val))
     return out
 
 
@@ -93,7 +124,9 @@ def hub_memory_graph_suggest_text(resp: CortexChatResult) -> Tuple[str, Dict[str
             )
             json_blob = _first_json_object(candidate)
             pick = json_blob if json_blob else candidate
-            if len(pick) > len(best):
+            pick_score = len(pick) + (1_000_000 if json_blob else 0)
+            best_score = len(best) + (1_000_000 if _first_json_object(best) else 0)
+            if pick_score > best_score:
                 best = pick
                 best_source = source
     if best:

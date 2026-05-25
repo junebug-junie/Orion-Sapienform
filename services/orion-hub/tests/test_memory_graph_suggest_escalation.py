@@ -461,6 +461,63 @@ def test_both_routes_empty_role_grounded_returns_failed(hub_settings) -> None:
     assert any("no_entities_when_role_grounded_subjects_expected" in e for e in validation_errors)
 
 
+def test_suggest_succeeds_when_final_text_empty_but_raw_choices_have_json(
+    hub_settings, fixture_draft_text
+) -> None:
+    _ensure_hub_scripts_import_path()
+    import json
+
+    from orion.schemas.cortex.contracts import CortexChatResult, CortexClientResult
+    from orion.schemas.cortex.schemas import StepExecutionResult
+    from scripts.memory_graph_suggest import suggest_with_escalation
+
+    raw = {
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": fixture_draft_text},
+                "finish_reason": "stop",
+            }
+        ]
+    }
+    step = StepExecutionResult(
+        status="success",
+        verb_name="memory_graph_suggest",
+        step_name="llm_memory_graph_suggest",
+        order=0,
+        result={"LLMGatewayService": {"content": "", "raw": raw}},
+        latency_ms=1,
+        node="n",
+        logs=[],
+        error=None,
+    )
+    cr = CortexClientResult(
+        ok=True,
+        mode="brain",
+        verb="memory_graph_suggest",
+        status="success",
+        final_text="",
+        steps=[step],
+    )
+    resp = CortexChatResult(cortex_result=cr, final_text="")
+
+    client = AsyncMock()
+    client.chat = AsyncMock(return_value=resp)
+
+    out = asyncio.run(
+        suggest_with_escalation(
+            cortex_client=client,
+            payload=_msg_payload("role=user\nTest"),
+            session_id="sid-raw-choices",
+            user_id=None,
+            settings=hub_settings,
+            mutation_context={},
+        )
+    )
+    assert out["ok"] is True
+    assert out.get("draft")
+    assert json.loads(fixture_draft_text)["ontology_version"] == out["draft"]["ontology_version"]
+
+
 def test_approve_route_module_has_no_llm_client_imports() -> None:
     import ast
 

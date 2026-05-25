@@ -77,9 +77,9 @@ def test_deferred_drives_degraded_reason_says_deferred_not_failed(monkeypatch) -
     assert "deferred" in summary.degraded_reason
 
 
-def test_orion_drives_queried_for_chat_stance_by_default(monkeypatch) -> None:
-    """By default (env var unset), Orion drives must be queried even for chat_stance."""
-    monkeypatch.delenv("AUTONOMY_CHAT_STANCE_DEFER_ORION_DRIVES", raising=False)
+def test_orion_drives_queried_for_chat_stance_when_defer_disabled(monkeypatch) -> None:
+    """Orion drives are queried on chat_stance only when AUTONOMY_CHAT_STANCE_DEFER_ORION_DRIVES=false."""
+    monkeypatch.setenv("AUTONOMY_CHAT_STANCE_DEFER_ORION_DRIVES", "false")
     drive_rows = [
         {
             "artifact_id": {"value": "drive-1"},

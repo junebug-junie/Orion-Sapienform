@@ -3639,8 +3639,12 @@ loadDismissedIds();
   function formatAutonomyFieldLabel(model, field) {
     const degraded = model && model.stateQuality && String(model.stateQuality).startsWith('degraded');
     const reason = String((model && model.degradedReason) || '').trim();
+    const contextNote = String((model && model.contextNote) || '').trim();
+    const selectedSubject = String((model && model.selectedSubject) || '').trim().toLowerCase();
+    const usingRelationshipFallback = selectedSubject === 'relationship' && contextNote.toLowerCase().includes('orion drives unavailable');
     if (field === 'dominantDrive') {
       if (model && model.dominantDrive) return model.dominantDrive;
+      if (degraded && usingRelationshipFallback) return 'unavailable — Orion drives skipped or timed out (see context note)';
       if (degraded) return `unavailable — ${reason || 'selected subject drives unavailable'}`;
       return '--';
     }
@@ -3787,7 +3791,7 @@ loadDismissedIds();
         source_path: String(repositoryStatus.source_path || '').trim() || '--',
       },
       alignment: computeAutonomyAlignment(
-        { dominantDrive, stateQuality, stanceMode, degradedReason },
+        { dominantDrive, stateQuality, stanceMode, degradedReason, contextNote, selectedSubject },
         meta.replyText || meta.reply_text || '',
       ),
       raw: {

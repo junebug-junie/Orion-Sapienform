@@ -465,6 +465,7 @@ from orion.schemas.execution_dispatch_frame import (
     ExecutionDispatchCandidateV1,
     ExecutionDispatchFrameV1,
 )
+from orion.schemas.feedback_frame import FeedbackFrameV1, OutcomeObservationV1
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1
 from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
 from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
@@ -955,6 +956,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ProposalFrameV1": ProposalFrameV1,
     "ExecutionDispatchCandidateV1": ExecutionDispatchCandidateV1,
     "ExecutionDispatchFrameV1": ExecutionDispatchFrameV1,
+    "FeedbackFrameV1": FeedbackFrameV1,
+    "OutcomeObservationV1": OutcomeObservationV1,
     "EvidenceUnitV1": EvidenceUnitV1,
     "EvidenceQueryV1": EvidenceQueryV1,
     "EvidenceQueryResultItemV1": EvidenceQueryResultItemV1,

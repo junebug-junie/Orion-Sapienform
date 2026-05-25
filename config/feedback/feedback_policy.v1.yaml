@@ -1,0 +1,39 @@
+schema_version: feedback_policy.v1
+policy_id: feedback_policy.v1
+
+windows:
+  field_after_window_sec: 30
+  result_wait_window_sec: 30
+  stale_after_sec: 120
+
+scoring:
+  dry_run_score: 0.50
+  prepared_score: 0.55
+  completed_score: 0.85
+  blocked_score: 0.40
+  deferred_score: 0.45
+  failed_score: 0.10
+  absent_score: 0.15
+  unknown_score: 0.25
+
+pressure_channels:
+  - execution_pressure
+  - resource_pressure
+  - reasoning_pressure
+  - reliability_pressure
+  - field_intensity
+  - uncertainty
+  - agency_readiness
+
+positive_delta_channels:
+  agency_readiness: increase
+  coherence: increase
+  uncertainty: decrease
+  reliability_pressure: decrease
+  execution_pressure: decrease
+  resource_pressure: decrease
+
+absence_rules:
+  dry_run_needs_no_cortex_result: true
+  dispatch_read_only_requires_result: true
+  missing_expected_result_kind: absent

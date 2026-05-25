@@ -1,0 +1,24 @@
+services:
+  feedback-runtime:
+    build:
+      context: ../..
+      dockerfile: services/orion-feedback-runtime/Dockerfile
+    container_name: ${PROJECT}-feedback-runtime
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      - "${FEEDBACK_RUNTIME_PORT:-8122}:8122"
+    environment:
+      - PROJECT=${PROJECT}
+      - SERVICE_NAME=${SERVICE_NAME:-orion-feedback-runtime}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - POSTGRES_URI=${POSTGRES_URI}
+      - FEEDBACK_POLICY_PATH=${FEEDBACK_POLICY_PATH:-/app/config/feedback/feedback_policy.v1.yaml}
+      - FEEDBACK_POLL_INTERVAL_SEC=${FEEDBACK_POLL_INTERVAL_SEC:-2.0}
+      - ENABLE_FEEDBACK_RUNTIME=${ENABLE_FEEDBACK_RUNTIME:-true}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+networks:
+  app-net:
+    external: true

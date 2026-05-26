@@ -21,6 +21,15 @@ class Settings(BaseSettings):
         False,
         alias="ENABLE_EXECUTION_TRAJECTORY_REDUCER",
     )
+    enable_transport_bus_reducer: bool = Field(
+        False,
+        alias="ENABLE_TRANSPORT_BUS_REDUCER",
+    )
+    bus_stream_depth_critical: int = Field(100_000, alias="BUS_STREAM_DEPTH_CRITICAL")
+    transport_substrate_maturity: str = Field(
+        "trace_only",
+        alias="TRANSPORT_SUBSTRATE_MATURITY",
+    )
     biometrics_node_stale_after_sec: int = Field(180, alias="BIOMETRICS_NODE_STALE_AFTER_SEC")
     biometrics_pressure_min_confidence: float = Field(0.60, alias="BIOMETRICS_PRESSURE_MIN_CONFIDENCE")
     node_catalog_path: str = Field(

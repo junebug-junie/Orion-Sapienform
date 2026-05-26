@@ -182,6 +182,9 @@ def test_thought_process_js_registers_grounded_small_lane_contract() -> None:
     assert "payload.context.metadata.mind_enabled = true" in thought_js
     assert "patchWebSocketSend" in thought_js
     assert "patchFetch" in thought_js
+    assert "syncRecallProfileForLane" in thought_js
+    assert "LANE_RECALL_PROFILE" in thought_js
+    assert "assist.light.v1" in thought_js
 
 
 def test_mind_projection_handoff_reuses_one_populated_projection() -> None:

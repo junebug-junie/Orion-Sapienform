@@ -190,6 +190,58 @@ WHERE {{
     return summary
 
 
+def archive_subjects_drain(
+    subjects: Sequence[str] | None = None,
+    *,
+    dry_run: bool = False,
+    max_rounds: int | None = None,
+) -> dict[str, object]:
+    """Repeated archive rounds for backlog drain (orion-actions startup / first deploy)."""
+    rounds_cap = max_rounds if max_rounds is not None else int(
+        os.getenv("AUTONOMY_GOAL_ARCHIVE_BOOTSTRAP_MAX_ROUNDS", "30")
+    )
+    rounds_cap = max(1, min(rounds_cap, 200))
+    per_round_cap = int(os.getenv("AUTONOMY_GOAL_ARCHIVE_MAX_UPDATES", "200"))
+    totals: dict[str, object] = {
+        "dry_run": dry_run,
+        "rounds": 0,
+        "applied": 0,
+        "candidates": 0,
+        "subjects": [],
+    }
+    subject_summaries: list[dict[str, object]] = []
+    for _round in range(rounds_cap):
+        summaries = archive_subjects(subjects, dry_run=dry_run)
+        totals["rounds"] = int(totals["rounds"]) + 1  # type: ignore[assignment]
+        subject_summaries = summaries
+        if any("error" in s for s in summaries):
+            totals["error"] = "subject_errors"
+            totals["subjects"] = summaries
+            break
+        round_candidates = sum(int(s.get("candidates") or 0) for s in summaries)
+        round_applied = sum(int(s.get("applied") or 0) for s in summaries)
+        totals["candidates"] = int(totals["candidates"]) + round_candidates  # type: ignore[assignment]
+        totals["applied"] = int(totals["applied"]) + round_applied  # type: ignore[assignment]
+        if dry_run or round_candidates == 0 or (not dry_run and round_applied == 0):
+            totals["subjects"] = summaries
+            break
+        if round_candidates < per_round_cap:
+            totals["subjects"] = summaries
+            break
+    else:
+        totals["subjects"] = subject_summaries
+        totals["truncated"] = True
+    logger.info(
+        "autonomy_goal_archive_drain rounds=%s applied=%s candidates=%s dry_run=%s truncated=%s",
+        totals.get("rounds"),
+        totals.get("applied"),
+        totals.get("candidates"),
+        dry_run,
+        totals.get("truncated", False),
+    )
+    return totals
+
+
 def archive_subjects(
     subjects: Sequence[str] | None = None,
     *,

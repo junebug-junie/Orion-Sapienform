@@ -20,6 +20,7 @@ from .situation import mark_orion_turn
 from .recall_utils import (
     delivery_safe_recall_decision,
     has_inline_recall,
+    hub_chat_lane_from_ctx,
     plan_ctx_latest_user_text,
     recall_enabled_value,
     resolve_profile,
@@ -883,6 +884,7 @@ class PlanRunner:
             user_text=plan_ctx_latest_user_text(ctx),
             runtime_mode=mode,
             plan_verb_name=plan.verb_name,
+            hub_chat_lane=hub_chat_lane_from_ctx(ctx),
             chat_quick_recall_profile=settings.chat_quick_recall_profile,
             chat_kids_story_recall_profile=settings.chat_kids_story_recall_profile,
         )
@@ -955,7 +957,11 @@ class PlanRunner:
                     prepare_chat_quick_reply_context(ctx)
             elif verb_lc == "chat_kids_story":
                 prepare_chat_quick_reply_context(ctx)
-            elif ctx.get("skip_brain_reply_context") or str(plan.verb_name or "").strip().lower() == "introspect_spark":
+            elif (
+                ctx.get("skip_brain_reply_context")
+                or str(plan.verb_name or "").strip().lower()
+                in {"introspect_spark", "memory_graph_suggest"}
+            ):
                 logger.info(
                     "router_skip_prepare_brain_reply_context corr=%s verb=%s reason=spark_or_skip_flag",
                     correlation_id,

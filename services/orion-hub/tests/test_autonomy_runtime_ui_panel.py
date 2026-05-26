@@ -149,7 +149,8 @@ def test_autonomy_populated_render_path_replaces_prior_turn_content() -> None:
     assert "autonomyDebugAlignment.innerHTML = '';" in app_js
     assert "autonomyDebugRaw.textContent = safeHubJsonStringify(model.raw);" in app_js
     assert "conversationDiv.appendChild(div);" in app_js
-    assert "Orion message enrichment failed" in app_js
+    assert "Orion message chrome failed" in app_js
+    assert "Autonomy debug panel failed" in app_js
 
 
 def test_degraded_autonomy_renders_explicit_unavailable_labels() -> None:

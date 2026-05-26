@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from orion.autonomy.goal_archive import (
+    archive_subjects_drain,
     build_archive_candidates,
     goal_archive_enabled,
     maybe_archive_after_goal_publish,
@@ -47,6 +48,21 @@ def test_maybe_archive_after_goal_publish_skips_when_disabled(monkeypatch) -> No
     with patch("orion.autonomy.goal_archive.archive_subject_goals") as mock_archive:
         maybe_archive_after_goal_publish(subject="orion")
         mock_archive.assert_not_called()
+
+
+def test_archive_subjects_drain_stops_when_candidates_below_cap(monkeypatch) -> None:
+    monkeypatch.setenv("AUTONOMY_GOAL_ARCHIVE_MAX_UPDATES", "200")
+    monkeypatch.setenv("AUTONOMY_GOAL_ARCHIVE_BOOTSTRAP_MAX_ROUNDS", "5")
+    rounds = [
+        [{"subject": "orion", "candidates": 200, "applied": 200, "dry_run": False}],
+        [{"subject": "orion", "candidates": 50, "applied": 50, "dry_run": False}],
+    ]
+
+    with patch("orion.autonomy.goal_archive.archive_subjects", side_effect=rounds) as mock_archive:
+        result = archive_subjects_drain(dry_run=False)
+    assert mock_archive.call_count == 2
+    assert result["rounds"] == 2
+    assert result["applied"] == 250
 
 
 def test_maybe_archive_after_goal_publish_runs_when_enabled(monkeypatch) -> None:

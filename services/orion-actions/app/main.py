@@ -1976,15 +1976,29 @@ async def lifespan(app: FastAPI):
                     minute_local=settings.actions_daily_goal_archive_minute_local,
                     last_ran_date=last_daily_run.get(ACTION_DAILY_GOAL_ARCHIVE),
                 )
+                goal_archive_first_run = ACTION_DAILY_GOAL_ARCHIVE not in last_daily_run
+                goal_archive_startup = (
+                    settings.actions_daily_goal_archive_run_on_startup and goal_archive_first_run
+                )
                 if settings.actions_daily_goal_archive_enabled and (
-                    goal_archive_should_run
-                    or (settings.actions_daily_run_on_startup and ACTION_DAILY_GOAL_ARCHIVE not in last_daily_run)
+                    goal_archive_should_run or goal_archive_startup
                 ):
-                    from orion.autonomy.goal_archive import archive_subjects
+                    from orion.autonomy.goal_archive import archive_subjects, archive_subjects_drain
 
                     archive_corr = str(uuid4())
-                    summaries = await asyncio.to_thread(archive_subjects, dry_run=False)
-                    archive_ok = bool(summaries) and any("error" not in s for s in summaries)
+                    if goal_archive_first_run and not goal_archive_should_run:
+                        drain_result = await asyncio.to_thread(archive_subjects_drain, dry_run=False)
+                        summaries = list(drain_result.get("subjects") or [])
+                        if drain_result.get("error"):
+                            summaries.append({"error": drain_result["error"], "drain": drain_result})
+                        archive_ok = bool(summaries) and not drain_result.get("error") and all(
+                            "error" not in s for s in summaries if isinstance(s, dict)
+                        )
+                    else:
+                        summaries = await asyncio.to_thread(archive_subjects, dry_run=False)
+                        archive_ok = bool(summaries) and all(
+                            "error" not in s for s in summaries if isinstance(s, dict)
+                        )
                     if archive_ok:
                         goal_archive_cursor = scheduler_cursor_completed_local_date(
                             forced_date=forced_date,

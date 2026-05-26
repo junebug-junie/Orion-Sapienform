@@ -7,6 +7,7 @@ from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import RDF, RDFS, XSD
 
 from orion.memory_graph.dto import SuggestDraftV1
+from orion.memory_graph.utterance_text import ensure_draft_utterance_text
 
 ORIONMEM = Namespace("https://orion.local/ns/mem/v2026-05#")
 PROV = Namespace("http://www.w3.org/ns/prov#")
@@ -73,6 +74,7 @@ def draft_to_graph(
     revision_batch: Optional[str] = None,
 ) -> Graph:
     """Appendix C JSON → rdflib Graph (batch tagging optional until approve)."""
+    draft = ensure_draft_utterance_text(draft)
     g = Graph()
     g.bind("orionmem", ORIONMEM)
     g.bind("prov", PROV)

@@ -377,7 +377,7 @@ class Settings(BaseSettings):
         ),
     )
     MEMORY_GRAPH_SUGGEST_MAX_TOKENS: int = Field(
-        default=1600,
+        default=4096,
         alias="MEMORY_GRAPH_SUGGEST_MAX_TOKENS",
         description="Min completion budget for suggest draft JSON (gateway max_tokens).",
     )

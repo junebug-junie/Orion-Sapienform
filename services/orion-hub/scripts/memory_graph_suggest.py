@@ -50,11 +50,10 @@ def _normalize_route(raw: str | None, default: RouteName) -> RouteName:
 
 
 def _apply_llm_route(options: Dict[str, Any], route: RouteName) -> Dict[str, Any]:
+    """Map suggest escalation labels to LLM gateway lanes (always cheap quick, not UI brain/chat)."""
     out = dict(options or {})
-    if route == "quick":
-        out["llm_route"] = "quick"
-    else:
-        out.pop("llm_route", None)
+    # MEMORY_GRAPH_SUGGEST_ESCALATION_ROUTE=brain is a retry label only — not Hub UI brain mode.
+    out["llm_route"] = "quick"
     return out
 
 
@@ -147,10 +146,18 @@ def _parse_suggest_draft_from_text(
     text: str,
     *,
     utterance_text: str,
+    finish_reason: Optional[str] = None,
 ) -> Tuple[Optional[SuggestDraftV1], bool, List[str], Optional[str]]:
     """Return (draft, should_escalate, validation_errors, parse_error_code)."""
     data, parse_err = parse_json_object(text)
     if data is None:
+        raw = (text or "").strip()
+        if (
+            parse_err == "no_json_object"
+            and raw.startswith("{")
+            and str(finish_reason or "").strip().lower() == "length"
+        ):
+            return None, True, ["json_truncated"], "json_truncated"
         return None, True, [parse_err or "parse_failed"], parse_err
 
     should_escalate, validation_errors = validate_for_escalation(data, utterance_text=utterance_text)
@@ -279,7 +286,7 @@ async def suggest_with_escalation(
                 session_id=session_id,
                 user_id=user_id,
                 trace_id=None,
-                default_mode="brain",
+                default_mode="quick",
                 auto_default_enabled=bool(getattr(settings, "HUB_AUTO_DEFAULT_ENABLED", False)),
                 source_label="hub_memory_graph_suggest",
                 prompt=user_prompt,
@@ -305,6 +312,7 @@ async def suggest_with_escalation(
             opts["memory_graph_include_grounding"] = True
         structured_opts = memory_graph_suggest_llm_options(settings, diagnostic=diagnostic)
         opts.update(structured_opts)
+        opts["skip_brain_reply_context"] = True
         opts["structured_output_method_requested"] = resolve_memory_graph_structured_output_method(
             settings
         )
@@ -369,6 +377,7 @@ async def suggest_with_escalation(
         draft, should_escalate, validation_errors, parse_err = _parse_suggest_draft_from_text(
             text,
             utterance_text=user_prompt,
+            finish_reason=attempt.get("finish_reason"),
         )
         attempt["validation_errors"] = validation_errors
         structured_diag = extract_gateway_structured_diagnostics(resp)

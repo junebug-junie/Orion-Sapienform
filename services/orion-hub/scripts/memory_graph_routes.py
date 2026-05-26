@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from orion.memory_graph.approve import approve_memory_graph_draft, preview_validate_only
 from orion.memory_graph.dto import SuggestDraftV1
+from orion.memory_graph.utterance_text import ensure_draft_utterance_text
 
 from .mutation_cognition_context import build_mutation_cognition_context
 from .session import ensure_session
@@ -17,6 +18,31 @@ from .session import ensure_session
 logger = logging.getLogger("orion-hub.memory_graph")
 
 router = APIRouter(tags=["memory-graph"])
+
+
+def _supplemental_utterance_text(body: Dict[str, Any], draft_payload: Dict[str, Any]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for source in (
+        draft_payload.get("utterance_text_by_id") if isinstance(draft_payload, dict) else None,
+        body.get("utterance_text_by_id"),
+    ):
+        if not isinstance(source, dict):
+            continue
+        for key, val in source.items():
+            k = str(key or "").strip()
+            v = str(val or "").strip()
+            if k and v:
+                out[k] = v
+    return out
+
+
+def _parse_draft_body(body: Dict[str, Any]) -> tuple[SuggestDraftV1, Dict[str, str]]:
+    payload = body.get("draft") if isinstance(body.get("draft"), dict) else body
+    if not isinstance(payload, dict):
+        payload = {}
+    draft = SuggestDraftV1.model_validate(payload)
+    supplemental = _supplemental_utterance_text(body, payload)
+    return draft, supplemental
 
 
 def _pool(request: Request):
@@ -36,10 +62,13 @@ async def memory_graph_validate(
 
     await ensure_session(x_orion_session_id, bus)
     try:
-        draft = SuggestDraftV1.model_validate(body)
+        draft, supplemental = _parse_draft_body(body if isinstance(body, dict) else {})
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=e.errors()) from e
-    ok, violations, preview = preview_validate_only(draft)
+    ok, violations, preview = preview_validate_only(
+        draft,
+        supplemental_utterance_text=supplemental,
+    )
     return {"ok": ok, "violations": violations, "preview": preview}
 
 
@@ -92,9 +121,14 @@ async def memory_graph_approve(
     if target is None:
         raise HTTPException(status_code=503, detail="graph_backend_unconfigured")
     try:
-        draft = SuggestDraftV1.model_validate(body.get("draft") or body)
+        draft, supplemental = _parse_draft_body(body if isinstance(body, dict) else {})
+        draft = ensure_draft_utterance_text(draft, supplemental=supplemental)
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=e.errors()) from e
+    except ValueError as exc:
+        if str(exc).startswith("utterance_text_missing:"):
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise
     named = (
         str(body.get("named_graph_iri") or "").strip()
         or getattr(settings, "MEMORY_GRAPH_DEFAULT_NAMED_GRAPH", "").strip()

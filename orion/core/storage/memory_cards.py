@@ -25,6 +25,13 @@ from orion.core.contracts.memory_cards import (
 logger = logging.getLogger(__name__)
 
 
+def _jsonb_param(value: Any) -> Optional[str]:
+    """asyncpg jsonb columns expect a JSON string, not a raw list/dict."""
+    if value is None:
+        return None
+    return json.dumps(value)
+
+
 def _memory_cards_sql_path() -> Path:
     """DDL path: bundled under this package (Hub Docker COPY orion only) or repo services/orion-recall."""
     here = Path(__file__).resolve().parent
@@ -179,9 +186,9 @@ async def insert_card(pool: asyncpg.Pool, card: MemoryCardCreateV1, *, actor: st
     slug = (card.slug or "").strip() or _slugify(card.title)
     body = card.model_dump(mode="json", exclude={"slug"})
     body["slug"] = slug
-    th_val = card.time_horizon.model_dump(mode="json") if card.time_horizon else None
-    evidence_val = [e.model_dump(mode="json") for e in card.evidence]
-    sub_val = dict(card.subschema or {})
+    th_val = _jsonb_param(card.time_horizon.model_dump(mode="json") if card.time_horizon else None)
+    evidence_val = _jsonb_param([e.model_dump(mode="json") for e in card.evidence])
+    sub_val = _jsonb_param(dict(card.subschema or {}))
     async with pool.acquire() as conn:
         async with conn.transaction():
             row = await conn.fetchrow(
@@ -414,9 +421,9 @@ async def _insert_card_on_conn(
     slug = (card.slug or "").strip() or _slugify(card.title)
     body = card.model_dump(mode="json", exclude={"slug"})
     body["slug"] = slug
-    th_val = card.time_horizon.model_dump(mode="json") if card.time_horizon else None
-    evidence_val = [e.model_dump(mode="json") for e in card.evidence]
-    sub_val = dict(card.subschema or {})
+    th_val = _jsonb_param(card.time_horizon.model_dump(mode="json") if card.time_horizon else None)
+    evidence_val = _jsonb_param([e.model_dump(mode="json") for e in card.evidence])
+    sub_val = _jsonb_param(dict(card.subschema or {}))
     row = await conn.fetchrow(
         """
         INSERT INTO memory_cards (

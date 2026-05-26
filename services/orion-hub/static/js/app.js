@@ -3,12 +3,35 @@
 // ───────────────────────────────────────────────────────────────
 // Global State
 // ───────────────────────────────────────────────────────────────
-const pathSegments = window.location.pathname.split('/').filter(p => p.length > 0);
-const URL_PREFIX = pathSegments.length > 0 ? `/${pathSegments[0]}` : "";
-const API_BASE_URL = window.location.origin + URL_PREFIX;
+function resolveHubApiBaseUrl() {
+  const cfg = window.__HUB_CFG__ || {};
+  const override = String(cfg.apiBaseOverride || '').trim();
+  if (override) {
+    return override.replace(/\/+$/, '');
+  }
+  // Hub REST routes are mounted at /api on the app root (not /{first-path-segment}/api).
+  return String(window.location.origin || '').replace(/\/+$/, '');
+}
+
+function resolveHubWebSocketUrl() {
+  const cfg = window.__HUB_CFG__ || {};
+  const override = String(cfg.wsBaseOverride || '').trim();
+  if (override) {
+    const normalized = override.replace(/\/+$/, '');
+    return normalized.endsWith('/ws') ? normalized : `${normalized}/ws`;
+  }
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${window.location.host}/ws`;
+}
+
+const URL_PREFIX = '';
+const API_BASE_URL = resolveHubApiBaseUrl();
+const HUB_WEBSOCKET_URL = resolveHubWebSocketUrl();
 const VISION_EDGE_BASE = "https://athena.tail348bbe.ts.net/vision-edge";
 
 let socket;
+let wsReadyResolve = null;
+let wsReadyPromise = null;
 let mediaRecorder;
 let audioChunks = [];
 let audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -3820,7 +3843,19 @@ loadDismissedIds();
     const dc = model.driveCompetition;
     const hasDc = dc && typeof dc === 'object' && (dc.top_drive || dc.runner_drive);
     const degraded = model.stateQuality && String(model.stateQuality).startsWith('degraded');
-    return !!(model.dominantDrive || (model.topDrives || []).length || (model.tensions || []).length || (model.proposals || []).length || hasDc || degraded);
+    const hasDebug = Boolean(model.hasDebugSignal);
+    const hasStanceHint = Boolean(String(model.stanceHint || '').trim());
+    return !!(
+      model.dominantDrive
+      || (model.topDrives || []).length
+      || (model.tensions || []).length
+      || (model.proposals || []).length
+      || (model.proposalHeadlines || []).length
+      || hasDc
+      || degraded
+      || hasDebug
+      || hasStanceHint
+    );
   }
 
   function updateAutonomyDebugPanel(summary, debug, meta = {}) {
@@ -4045,7 +4080,7 @@ loadDismissedIds();
         });
       }
     }
-    if (chatStanceDebugRaw) chatStanceDebugRaw.textContent = JSON.stringify(model, null, 2);
+    if (chatStanceDebugRaw) chatStanceDebugRaw.textContent = safeHubJsonStringify(model);
     if (chatStanceDebugModalMeta) chatStanceDebugModalMeta.textContent = chatStanceDebugMeta ? chatStanceDebugMeta.textContent : '--';
     if (chatStanceDebugModalBody) {
       chatStanceDebugModalBody.innerHTML = '';
@@ -6636,8 +6671,14 @@ loadDismissedIds();
         opt.textContent = 'chat.general.v1';
       }
     });
-    if (!recallProfileSelect.value || recallProfileSelect.value === 'auto') {
-      recallProfileSelect.value = 'recall.v1';
+    const laneApi = global.OrionHubGroundedSmallLane;
+    if (laneApi && typeof laneApi.syncRecallProfileForLane === 'function') {
+      const lane =
+        (typeof document !== 'undefined' && document.body && document.body.dataset.orionChatLane) ||
+        'grounded_small';
+      laneApi.syncRecallProfileForLane(lane);
+    } else if (!recallProfileSelect.value || recallProfileSelect.value === 'auto') {
+      recallProfileSelect.value = 'assist.light.v1';
     }
   }
 
@@ -7205,11 +7246,8 @@ loadDismissedIds();
     conversationDiv.scrollTop = conversationDiv.scrollHeight;
 
     if (sender === 'Orion') {
-      try {
       const autonomyMeta = { ...meta, replyText: displayText };
-      updateAgentTraceDebugPanel(meta.agentTrace, meta);
-      updateAutonomyDebugPanel(meta.autonomySummary || meta.autonomy_summary, meta.autonomyDebug || meta.autonomy_debug, autonomyMeta);
-      updateChatStanceDebugPanel(meta.chatStanceDebug || meta.chat_stance_debug);
+      try {
       const actionRow = document.createElement('div');
       actionRow.className = 'flex items-center gap-2';
       if (agentTraceApi.shouldShowAgentTrace && agentTraceApi.shouldShowAgentTrace(meta.agentTrace)) {
@@ -7323,7 +7361,26 @@ loadDismissedIds();
       if (metacogPanel) div.appendChild(metacogPanel);
       appendExecutionStepsPanel(div, meta);
       } catch (err) {
-        console.warn('[Hub] Orion message enrichment failed (message still shown)', err);
+        console.warn('[Hub] Orion message chrome failed (body still shown)', err);
+      }
+      try {
+        updateAgentTraceDebugPanel(meta.agentTrace, meta);
+      } catch (err) {
+        console.warn('[Hub] Agent trace debug panel failed', err);
+      }
+      try {
+        updateAutonomyDebugPanel(
+          meta.autonomySummary || meta.autonomy_summary,
+          meta.autonomyDebug || meta.autonomy_debug,
+          autonomyMeta,
+        );
+      } catch (err) {
+        console.warn('[Hub] Autonomy debug panel failed', err);
+      }
+      try {
+        updateChatStanceDebugPanel(meta.chatStanceDebug || meta.chat_stance_debug);
+      } catch (err) {
+        console.warn('[Hub] Chat stance debug panel failed', err);
       }
     }
   }
@@ -10005,15 +10062,62 @@ loadDismissedIds();
     return false;
   }
 
+  function beginWsReadyWait() {
+    wsReadyPromise = new Promise((resolve) => {
+      wsReadyResolve = resolve;
+    });
+  }
+
+  async function waitForWebSocketOpen(timeoutMs = 5000) {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      return true;
+    }
+    if (!socket || socket.readyState === WebSocket.CLOSED) {
+      setupWebSocket();
+    }
+    if (!wsReadyPromise) {
+      beginWsReadyWait();
+    }
+    const timeout = new Promise((resolve) => {
+      setTimeout(() => resolve(false), Math.max(0, timeoutMs));
+    });
+    const opened = await Promise.race([
+      wsReadyPromise.then(() => socket && socket.readyState === WebSocket.OPEN),
+      timeout,
+    ]);
+    return Boolean(opened);
+  }
+
   function setupWebSocket() {
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${proto}//${window.location.host}${URL_PREFIX}/ws`;
-    
+    const wsUrl = HUB_WEBSOCKET_URL;
     console.log(`[WS] Connecting to ${wsUrl}...`);
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      return;
+    }
+    if (socket && socket.readyState === WebSocket.CONNECTING) {
+      return;
+    }
+    if (socket) {
+      try {
+        socket.onopen = null;
+        socket.onclose = null;
+        socket.onerror = null;
+        socket.onmessage = null;
+        socket.close();
+      } catch (_err) {
+        // ignore close errors during reconnect
+      }
+    }
+    beginWsReadyWait();
     socket = new WebSocket(wsUrl);
 
     socket.onopen = () => {
         console.log("[WS] Connected");
+        window.__orionWsFallbackWarned = false;
+        if (typeof wsReadyResolve === 'function') {
+          wsReadyResolve(true);
+          wsReadyResolve = null;
+        }
         updateStatus('Connected.');
     };
 
@@ -10300,6 +10404,9 @@ loadDismissedIds();
        use_recall: omitChatUiMode ? false : (recallToggle ? recallToggle.checked : true),
        recall_mode: omitChatUiMode ? null : (recallMode !== "auto" ? recallMode : null),
        recall_profile: omitChatUiMode ? null : (recallProfile !== "auto" ? recallProfile : null),
+       recall_profile_explicit: omitChatUiMode
+         ? false
+         : (recallProfile !== "auto"),
        recall_required: omitChatUiMode ? false : (recallRequiredToggle ? recallRequiredToggle.checked : false),
        packs: omitChatUiMode ? [] : selectedPacks,
        verbs: effectiveVerbs,
@@ -10328,11 +10435,25 @@ loadDismissedIds();
       payload.workflow_request_override = opts.workflowRequestOverride;
     }
 
-    if (socket && socket.readyState === WebSocket.OPEN) {
+    let wsOpen = socket && socket.readyState === WebSocket.OPEN;
+    if (!wsOpen) {
+      updateStatus('Connecting...');
+      wsOpen = await waitForWebSocketOpen(5000);
+    }
+
+    if (wsOpen && socket && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify(payload));
         updateStatus('Sent...');
     } else {
-        appendMessage('System', 'WebSocket not connected. Trying HTTP fallback...', 'text-yellow-400');
+        if (!window.__orionWsFallbackWarned) {
+          appendMessage(
+            'System',
+            'WebSocket not connected — using HTTP. Replies may take longer; check status bar for Connected.',
+            'text-yellow-400'
+          );
+          window.__orionWsFallbackWarned = true;
+        }
+        updateStatus('Processing (HTTP)...');
 
         if (!orionSessionId) await initSession();
         payload.session_id = orionSessionId;
@@ -10346,7 +10467,14 @@ loadDismissedIds();
             headers: headers,
             body: JSON.stringify({messages:[{role:'user', content:value}], ...payload})
         })
-        .then(r => r.json())
+        .then(async (r) => {
+          const body = await r.json().catch(() => ({}));
+          if (!r.ok) {
+            const detail = body && (body.detail || body.error) ? String(body.detail || body.error) : r.statusText;
+            throw new Error(detail || `HTTP ${r.status}`);
+          }
+          return body;
+        })
         .then(d => {
             const displayText = resolveAssistantDisplayText(d);
             if (shouldAppendOrionWsPayload(d)) {
@@ -10389,10 +10517,22 @@ loadDismissedIds();
                 substrateEffectSummary: d.substrate_effect_summary || null,
               });
               syncSocialInspectionFromRouteDebug(d.routing_debug);
-            } else if(d.error) appendMessage('System', d.error, 'text-red-400');
+            } else if (d.error) {
+              appendMessage('System', d.error, 'text-red-400');
+            } else {
+              appendMessage(
+                'System',
+                'HTTP completed but no assistant text was returned (empty or blocked response).',
+                'text-yellow-400'
+              );
+            }
             updateMemoryPanelFromResponse(d);
+            updateStatusBasedOnState();
         })
-        .catch(e => appendMessage('System', "HTTP Failed: " + e.message, 'text-red-400'));
+        .catch(e => {
+          appendMessage('System', `HTTP failed: ${e.message}`, 'text-red-400');
+          updateStatus('HTTP error.');
+        });
     }
   }
 
@@ -10425,6 +10565,8 @@ loadDismissedIds();
                use_recall: recallToggle ? recallToggle.checked : true,
                recall_mode: recallModeSelect && recallModeSelect.value !== "auto" ? recallModeSelect.value : null,
                recall_profile: recallProfileSelect && recallProfileSelect.value !== "auto" ? recallProfileSelect.value : null,
+               recall_profile_explicit:
+                 recallProfileSelect && recallProfileSelect.value !== "auto",
                recall_required: recallRequiredToggle ? recallRequiredToggle.checked : false,
                presence_context: presenceContext,
                surface_context: { surface: 'hub_desktop', input_modality: 'spoken' },
@@ -10743,14 +10885,15 @@ loadDismissedIds();
     showGuided();
   })();
 
+  // Connect WebSocket immediately so chat is not blocked on slow initSession/library loads.
+  setupWebSocket();
+
   (async () => {
       // 1. Session
       await initSession();
       await loadPresenceContext();
       // 2. Library (Safe)
       await loadCognitionLibrary();
-      // 3. WS
-      setupWebSocket();
       // 4. UI
       if (document.body && document.body.dataset.toastSeconds) {
         const parsed = parseInt(document.body.dataset.toastSeconds, 10);

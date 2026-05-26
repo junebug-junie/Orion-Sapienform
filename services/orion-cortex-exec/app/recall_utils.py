@@ -55,6 +55,12 @@ DELIVERY_SAFE_OUTPUT_MODES = frozenset(
     }
 )
 
+# Hub chat lanes (surface_context.hub_chat_lane) → recall profile for echo-safe continuity.
+HUB_CHAT_LANE_RECALL_PROFILES: Dict[str, str] = {
+    "grounded_small": "assist.light.v1",
+    "quick": "assist.light.v1",
+}
+
 
 def _is_concrete_ops_query(text: str | None) -> bool:
     lowered = str(text or "").lower()
@@ -132,6 +138,53 @@ def resolve_recall_bus_rpc_wait_sec(
         else float(recall_rpc_timeout_sec)
     )
     return max(1.0, min(step_budget, lane_cap))
+
+
+def hub_chat_lane_from_ctx(ctx: Dict[str, Any] | None) -> Optional[str]:
+    """Read Hub lane marker from exec plan context (surface_context or metadata)."""
+    if not isinstance(ctx, dict):
+        return None
+    candidates: List[Dict[str, Any]] = []
+    sc = ctx.get("surface_context")
+    if isinstance(sc, dict):
+        candidates.append(sc)
+    md = ctx.get("metadata")
+    if isinstance(md, dict):
+        candidates.append(md)
+        nested = md.get("surface_context")
+        if isinstance(nested, dict):
+            candidates.append(nested)
+    for container in candidates:
+        lane = container.get("hub_chat_lane")
+        if isinstance(lane, str) and lane.strip():
+            return lane.strip().lower()
+    return None
+
+
+def apply_hub_chat_lane_recall_clamp(
+    *,
+    recall_cfg: Dict[str, Any],
+    profile: str,
+    profile_source: str,
+    hub_chat_lane: str | None,
+    hub_lane_profiles: Dict[str, str] | None = None,
+) -> Tuple[str, str]:
+    """
+  When Hub runs Grounded Small / Quick, use echo-safe recall even if verb YAML says chat.general.v1.
+
+  Caller profile wins when profile_explicit is set (manual Hub dropdown override).
+  """
+    lane = (hub_chat_lane or "").strip().lower()
+    if not lane:
+        return profile, profile_source
+    _explicit_profile, explicit_source = _resolve_explicit_profile(recall_cfg)
+    if explicit_source == "explicit":
+        return profile, profile_source
+    mapping = hub_lane_profiles if hub_lane_profiles is not None else HUB_CHAT_LANE_RECALL_PROFILES
+    target = mapping.get(lane)
+    if not target:
+        return profile, profile_source
+    return target, f"hub_chat_lane_{lane}"
 
 
 def apply_fast_chat_recall_profile_clamp(
@@ -212,6 +265,7 @@ def delivery_safe_recall_decision(
     user_text: str | None = None,
     runtime_mode: str | None = None,
     plan_verb_name: str | None = None,
+    hub_chat_lane: str | None = None,
     chat_quick_recall_profile: str = "assist.light.v1",
     chat_kids_story_recall_profile: str = "chat.story.kids.v1",
 ) -> Dict[str, Any]:
@@ -226,6 +280,12 @@ def delivery_safe_recall_decision(
         profile_source=profile_source,
         chat_quick_recall_profile=chat_quick_recall_profile,
         chat_kids_story_recall_profile=chat_kids_story_recall_profile,
+    )
+    base_profile, profile_source = apply_hub_chat_lane_recall_clamp(
+        recall_cfg=recall_cfg,
+        profile=base_profile,
+        profile_source=profile_source,
+        hub_chat_lane=hub_chat_lane,
     )
     base_should_run, base_reason = should_run_recall(recall_cfg, steps)
 

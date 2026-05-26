@@ -40,7 +40,7 @@ from orion.schemas.agents.bound_capability import (
 
 from .clients import AgentChainClient, CouncilClient, LLMGatewayClient, PlannerReactClient
 from .executor import _last_user_message, call_step_services, run_recall_step
-from .recall_utils import delivery_safe_recall_decision, has_inline_recall
+from .recall_utils import delivery_safe_recall_decision, has_inline_recall, hub_chat_lane_from_ctx
 from .settings import settings
 
 logger = logging.getLogger("orion.cortex.exec.supervisor")
@@ -1413,6 +1413,7 @@ class Supervisor:
             user_text=_last_user_message(ctx),
             runtime_mode=ctx.get("mode") or req.metadata.get("mode") or "agent",
             plan_verb_name=req.verb_name,
+            hub_chat_lane=hub_chat_lane_from_ctx(ctx),
             chat_quick_recall_profile=settings.chat_quick_recall_profile,
             chat_kids_story_recall_profile=settings.chat_kids_story_recall_profile,
         )

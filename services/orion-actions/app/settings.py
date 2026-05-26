@@ -34,6 +34,7 @@ _BLANK_ENV_BOOL_FIELDS = (
     "actions_journal_post_persist_notify_enabled",
     "actions_self_experiments_enabled",
     "actions_daily_goal_archive_enabled",
+    "actions_daily_goal_archive_run_on_startup",
 )
 
 
@@ -98,6 +99,9 @@ class Settings(BaseSettings):
     actions_daily_metacog_minute_local: int = Field(15, alias="ACTIONS_DAILY_METACOG_MINUTE_LOCAL")
 
     actions_daily_goal_archive_enabled: bool = Field(True, alias="ACTIONS_DAILY_GOAL_ARCHIVE_ENABLED")
+    actions_daily_goal_archive_run_on_startup: bool = Field(
+        True, alias="ACTIONS_DAILY_GOAL_ARCHIVE_RUN_ON_STARTUP"
+    )
     actions_daily_goal_archive_hour_local: int = Field(3, alias="ACTIONS_DAILY_GOAL_ARCHIVE_HOUR_LOCAL")
     actions_daily_goal_archive_minute_local: int = Field(15, alias="ACTIONS_DAILY_GOAL_ARCHIVE_MINUTE_LOCAL")
     actions_async_messages_enabled: bool = Field(True, alias="ACTIONS_ASYNC_MESSAGES_ENABLED")

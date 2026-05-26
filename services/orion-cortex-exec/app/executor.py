@@ -59,7 +59,13 @@ from .clients import AgentChainClient, LLMGatewayClient, RecallClient, PlannerRe
 from .pageindex_client import JournalPageIndexClient
 from orion.cognition.fast_chat_verbs import FAST_SINGLE_PASS_CHAT_VERBS
 
-from .recall_utils import apply_fast_chat_recall_profile_clamp, resolve_profile, resolve_recall_bus_rpc_wait_sec
+from .recall_utils import (
+    apply_fast_chat_recall_profile_clamp,
+    apply_hub_chat_lane_recall_clamp,
+    hub_chat_lane_from_ctx,
+    resolve_profile,
+    resolve_recall_bus_rpc_wait_sec,
+)
 from .core_event_cache import format_recent_turn_effect_alerts, get_core_event_cache
 from .trace_cache import get_trace_cache
 from .spark_narrative import spark_phi_hint, spark_phi_narrative
@@ -3042,6 +3048,12 @@ async def call_step_services(
                     profile_source=profile_source,
                     chat_quick_recall_profile=settings.chat_quick_recall_profile,
                     chat_kids_story_recall_profile=settings.chat_kids_story_recall_profile,
+                )
+                resolved_profile, profile_source = apply_hub_chat_lane_recall_clamp(
+                    recall_cfg=recall_cfg,
+                    profile=resolved_profile,
+                    profile_source=profile_source,
+                    hub_chat_lane=hub_chat_lane_from_ctx(ctx),
                 )
                 logs.append(
                     f"rpc -> RecallService (reply={reply_channel}, profile={resolved_profile}, source={profile_source})"

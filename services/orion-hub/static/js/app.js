@@ -3925,8 +3925,8 @@ loadDismissedIds();
     autonomyDebugAlignment.innerHTML = '';
     [
       `expected posture: ${formatAutonomyFieldLabel(model, 'expectedPosture')}`,
-      `visible cues: ${model.alignment.visible_cues.length ? model.alignment.visible_cues.join(', ') : '--'}`,
-      `alignment note: ${model.alignment.alignment_note}`,
+      `visible cues: ${model.alignment && model.alignment.visible_cues && model.alignment.visible_cues.length ? model.alignment.visible_cues.join(', ') : '--'}`,
+      `alignment note: ${(model.alignment && model.alignment.alignment_note) || '--'}`,
       ...(model.stanceMode === 'proposal_only' && model.degradedReason
         ? [`stance: proposal-only because ${model.degradedReason.toLowerCase()}`]
         : []),
@@ -3936,7 +3936,7 @@ loadDismissedIds();
       autonomyDebugAlignment.appendChild(row);
     });
 
-    autonomyDebugRaw.textContent = JSON.stringify(model.raw, null, 2);
+    autonomyDebugRaw.textContent = safeHubJsonStringify(model.raw);
     if (autonomyDebugModalMeta) autonomyDebugModalMeta.textContent = autonomyDebugMeta ? autonomyDebugMeta.textContent : '';
     if (autonomyDebugModalBody) autonomyDebugModalBody.innerHTML = autonomyDebugBody ? autonomyDebugBody.innerHTML : '';
   }
@@ -7184,60 +7184,28 @@ loadDismissedIds();
       && (!String(displayText || '').trim())
     );
     let inspectPanel = null;
+    let feedbackRow = null;
     const headerRow = document.createElement('div');
     headerRow.className = 'mb-1 flex items-center justify-between gap-3';
     const header = document.createElement('p');
     header.className = `font-bold ${color}`;
     header.textContent = sender;
     headerRow.appendChild(header);
-    let feedbackRow = null;
-    if (sender === 'Orion') {
-      const actionRow = document.createElement('div');
-      actionRow.className = 'flex items-center gap-2';
-      if (
-        socialInspectionApi.shouldShowSocialInspection
-        && socialInspectionApi.shouldShowSocialInspection(meta.routingDebug)
-        && typeof window.syncSocialInspectionFromRouteDebug === 'function'
-        && typeof window.openSocialInspectionModal === 'function'
-      ) {
-        const inspectionButton = document.createElement('button');
-        inspectionButton.className = 'rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold text-emerald-200 hover:bg-emerald-500/20';
-        inspectionButton.type = 'button';
-        inspectionButton.textContent = 'Social Inspect';
-        inspectionButton.addEventListener('click', () => {
-          window.syncSocialInspectionFromRouteDebug(meta.routingDebug);
-          window.openSocialInspectionModal({
-            routeDebug: meta.routingDebug,
-            liveSnapshot: meta.routingDebug && meta.routingDebug.social_inspection,
-            memorySnapshot: null,
-            loadingMemory: false,
-            error: '',
-          });
-        });
-        actionRow.appendChild(inspectionButton);
-      }
-      inspectPanel = buildResponseInspectPanel(meta);
-      if (inspectPanel) {
-        const inspectButton = document.createElement('button');
-        inspectButton.className = 'rounded-full border border-blue-500/40 bg-blue-500/10 px-2 py-1 text-[10px] font-semibold text-blue-200 hover:bg-blue-500/20';
-        inspectButton.type = 'button';
-        inspectButton.textContent = 'Inspect';
-        inspectButton.addEventListener('click', () => {
-          const nextHidden = inspectPanel.classList.contains('hidden');
-          inspectPanel.classList.toggle('hidden', !nextHidden);
-          inspectButton.textContent = nextHidden ? 'Hide Inspect' : 'Inspect';
-        });
-        actionRow.appendChild(inspectButton);
-      }
-      if (actionRow.childNodes.length) {
-        headerRow.appendChild(actionRow);
-      }
-    }
     const body = document.createElement('p');
     body.className = `${colorClass} whitespace-pre-wrap`;
     body.textContent = displayText;
     div.className = "mb-2 border-b border-gray-800/50 pb-2 last:border-0";
+    div.appendChild(headerRow);
+    const workflowPanel = sender === 'Orion' ? createWorkflowPanel(meta.workflow, {
+      onRunAgain: async (workflow) => submitExplicitChatText(workflow.rerun_prompt),
+    }) : null;
+    if (workflowPanel) div.appendChild(workflowPanel);
+    if (!workflowOnlyTurn) div.appendChild(body);
+    conversationDiv.appendChild(div);
+    conversationDiv.scrollTop = conversationDiv.scrollHeight;
+
     if (sender === 'Orion') {
+      try {
       const autonomyMeta = { ...meta, replyText: displayText };
       updateAgentTraceDebugPanel(meta.agentTrace, meta);
       updateAutonomyDebugPanel(meta.autonomySummary || meta.autonomy_summary, meta.autonomyDebug || meta.autonomy_debug, autonomyMeta);
@@ -7302,6 +7270,19 @@ loadDismissedIds();
         const chip = window.SubstrateEffectUI.renderChip(substrateSummary);
         if (chip) actionRow.appendChild(chip);
       }
+      inspectPanel = buildResponseInspectPanel(meta);
+      if (inspectPanel) {
+        const inspectButton = document.createElement('button');
+        inspectButton.className = 'rounded-full border border-blue-500/40 bg-blue-500/10 px-2 py-1 text-[10px] font-semibold text-blue-200 hover:bg-blue-500/20';
+        inspectButton.type = 'button';
+        inspectButton.textContent = 'Inspect';
+        inspectButton.addEventListener('click', () => {
+          const nextHidden = inspectPanel.classList.contains('hidden');
+          inspectPanel.classList.toggle('hidden', !nextHidden);
+          inspectButton.textContent = nextHidden ? 'Hide Inspect' : 'Inspect';
+        });
+        actionRow.appendChild(inspectButton);
+      }
       if (actionRow.childNodes.length) {
         headerRow.appendChild(actionRow);
       }
@@ -7328,16 +7309,8 @@ loadDismissedIds();
       feedbackRow.appendChild(thumbsUp);
       feedbackRow.appendChild(thumbsDown);
       feedbackRow.appendChild(ack);
-    }
-    div.appendChild(headerRow);
-    const workflowPanel = sender === 'Orion' ? createWorkflowPanel(meta.workflow, {
-      onRunAgain: async (workflow) => submitExplicitChatText(workflow.rerun_prompt),
-    }) : null;
-    if (workflowPanel) div.appendChild(workflowPanel);
-    if (!workflowOnlyTurn) div.appendChild(body);
-    if (feedbackRow) div.appendChild(feedbackRow);
-    if (inspectPanel) div.appendChild(inspectPanel);
-    if (sender === 'Orion') {
+      if (feedbackRow) div.appendChild(feedbackRow);
+      if (inspectPanel) div.appendChild(inspectPanel);
       const autonomyPanel = createAutonomyPanel(
         meta.autonomySummary || meta.autonomy_summary,
         meta.autonomyDebug || meta.autonomy_debug,
@@ -7349,9 +7322,10 @@ loadDismissedIds();
       const metacogPanel = createMetacogTracePanel(meta.metacogTraces || meta.metacog_traces || []);
       if (metacogPanel) div.appendChild(metacogPanel);
       appendExecutionStepsPanel(div, meta);
+      } catch (err) {
+        console.warn('[Hub] Orion message enrichment failed (message still shown)', err);
+      }
     }
-    conversationDiv.appendChild(div);
-    conversationDiv.scrollTop = conversationDiv.scrollHeight;
   }
 
   function collectConversationTurnsUpTo(anchorEl, maxTurns) {
@@ -8186,7 +8160,7 @@ loadDismissedIds();
         ? [['competing pressures', `${model.driveCompetition.top_drive} ${Number(model.driveCompetition.pressure_top).toFixed(2)} vs ${model.driveCompetition.runner_drive} ${Number(model.driveCompetition.pressure_runner).toFixed(2)} (spread ${Number(model.driveCompetition.spread).toFixed(2)})`]]
         : []),
       ['proposal headlines', model.proposalHeadlines.length ? model.proposalHeadlines.join('; ') : '--'],
-      ['alignment', model.alignment.alignment_note],
+      ['alignment', (model.alignment && model.alignment.alignment_note) || '--'],
     ].forEach(([label, value]) => {
       const row = document.createElement('div');
       row.className = 'text-xs text-violet-100/90';
@@ -9992,12 +9966,24 @@ loadDismissedIds();
   loadScheduleInventory();
 
   // --- WebSocket ---
+  function safeHubJsonStringify(value) {
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch (err) {
+      return `{"error":"${String((err && err.message) || err).replace(/"/g, "'")}"}`;
+    }
+  }
+
   function resolveAssistantDisplayText(d) {
     if (!d || typeof d !== 'object') return '';
     const top = String(d.llm_response ?? d.text ?? '').trim();
     const raw = d.raw && typeof d.raw === 'object' ? d.raw : {};
     const nested = String(raw.final_text ?? '').trim();
+    const cortexNested = raw.cortex_result && typeof raw.cortex_result === 'object'
+      ? String(raw.cortex_result.final_text ?? '').trim()
+      : '';
     let pick = nested.length > top.length ? nested : top;
+    if (cortexNested.length > pick.length) pick = cortexNested;
     if (pick) return pick;
     const meta = raw.metadata && typeof raw.metadata === 'object' ? raw.metadata : {};
     const sr = meta.skill_result != null ? meta.skill_result : meta.skillResult;
@@ -10009,6 +9995,14 @@ loadDismissedIds();
       }
     }
     return '';
+  }
+
+  function shouldAppendOrionWsPayload(d) {
+    if (!d || typeof d !== 'object') return false;
+    if (d.workflow) return true;
+    if (resolveAssistantDisplayText(d)) return true;
+    if (d.error) return false;
+    return false;
   }
 
   function setupWebSocket() {
@@ -10028,7 +10022,7 @@ loadDismissedIds();
           const d = JSON.parse(e.data);
           const displayText = resolveAssistantDisplayText(d);
           if (d.transcript && !d.is_text_input) appendMessage('You', d.transcript);
-          if (displayText || d.workflow) {
+          if (shouldAppendOrionWsPayload(d)) {
             appendMessage('Orion', displayText || '', 'text-white', {
               raw: d.raw,
               reasoning: d.reasoning,
@@ -10355,7 +10349,7 @@ loadDismissedIds();
         .then(r => r.json())
         .then(d => {
             const displayText = resolveAssistantDisplayText(d);
-            if(displayText || d.workflow) {
+            if (shouldAppendOrionWsPayload(d)) {
               appendMessage('Orion', displayText || '', 'text-white', {
                 raw: d.raw,
                 reasoning: d.reasoning,

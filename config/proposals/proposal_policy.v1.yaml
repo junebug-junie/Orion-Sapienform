@@ -71,6 +71,55 @@ proposal_templates:
       agency_readiness: 0.50
       execution_pressure: 0.40
 
+  inspect_transport_status:
+    kind: inspect
+    target_kind: capability
+    target_id: capability:transport
+    proposed_effect: increase_observability
+    required_policy_gate: read_only
+    base_priority: 0.42
+    base_risk: 0.05
+    reversibility: 1.0
+    dimensions:
+      contract_pressure: 0.55
+      reliability_pressure: 0.40
+
+  inspect_bus_channel_catalog:
+    kind: inspect
+    target_kind: system
+    target_id: orion/bus/channels.yaml
+    proposed_effect: increase_observability
+    required_policy_gate: read_only
+    base_priority: 0.38
+    base_risk: 0.05
+    reversibility: 1.0
+    dimensions:
+      contract_pressure: 0.60
+
+  summarize_transport_contract_drift:
+    kind: summarize
+    target_kind: capability
+    target_id: capability:transport
+    proposed_effect: increase_observability
+    required_policy_gate: read_only
+    base_priority: 0.36
+    base_risk: 0.05
+    reversibility: 1.0
+    dimensions:
+      contract_pressure: 0.65
+
+  watch_transport_backpressure:
+    kind: observe
+    target_kind: capability
+    target_id: capability:transport
+    proposed_effect: preserve_stability
+    required_policy_gate: read_only
+    base_priority: 0.32
+    base_risk: 0.02
+    reversibility: 1.0
+    dimensions:
+      contract_pressure: 0.50
+
   defer_due_to_low_readiness:
     kind: defer
     target_kind: self_state

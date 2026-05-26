@@ -11,6 +11,12 @@ NODE_CHANNELS = [
     "execution_friction",
     "reasoning_load",
     "failure_pressure",
+    "transport_pressure",
+    "contract_pressure",
+    "catalog_drift_pressure",
+    "delivery_confidence",
+    "bus_health",
+    "observer_failure_pressure",
 ]
 CAPABILITY_CHANNELS = [
     "pressure",
@@ -19,6 +25,8 @@ CAPABILITY_CHANNELS = [
     "execution_pressure",
     "reasoning_pressure",
     "reliability_pressure",
+    "transport_pressure",
+    "contract_pressure",
 ]
 
 DEFAULT_NODE_VECTOR = {ch: 0.0 for ch in NODE_CHANNELS}

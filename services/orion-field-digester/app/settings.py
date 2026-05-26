@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     receipt_poll_interval_sec: float = Field(2.0, alias="RECEIPT_POLL_INTERVAL_SEC")
     biometrics_field_decay_rate: float = Field(0.92, alias="BIOMETRICS_FIELD_DECAY_RATE")
     biometrics_field_diffusion_rate: float = Field(1.0, alias="BIOMETRICS_FIELD_DIFFUSION_RATE")
+    enable_transport_field_digestion: bool = Field(
+        False,
+        alias="ENABLE_TRANSPORT_FIELD_DIGESTION",
+    )
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
 

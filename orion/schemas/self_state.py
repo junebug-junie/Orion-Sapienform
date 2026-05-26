@@ -22,6 +22,7 @@ class SelfStateDimensionV1(BaseModel):
         "introspection_pressure",
         "social_pressure",
         "policy_pressure",
+        "transport_integrity",
     ]
 
     score: float = Field(ge=0.0, le=1.0)

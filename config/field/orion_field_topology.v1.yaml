@@ -9,6 +9,7 @@ nodes:
 
 capabilities:
   - capability_id: llm_inference
+  - capability_id: transport
   - capability_id: orchestration
   - capability_id: storage
   - capability_id: vision
@@ -28,6 +29,12 @@ node_channels:
   - execution_friction
   - reasoning_load
   - failure_pressure
+  - transport_pressure
+  - contract_pressure
+  - catalog_drift_pressure
+  - delivery_confidence
+  - bus_health
+  - observer_failure_pressure
 
 capability_channels:
   - pressure
@@ -36,6 +43,8 @@ capability_channels:
   - execution_pressure
   - reasoning_pressure
   - reliability_pressure
+  - transport_pressure
+  - contract_pressure
 
 edges:
   - source_id: node:atlas
@@ -48,6 +57,17 @@ edges:
       reasoning_load: reasoning_pressure
 
   - source_id: node:athena
+    target_id: capability:transport
+    edge_type: node_capability
+    weight: 0.85
+    channel_map:
+      transport_pressure: pressure
+      catalog_drift_pressure: contract_pressure
+      observer_failure_pressure: reliability_pressure
+      delivery_confidence: confidence
+      bus_health: available_capacity
+
+  - source_id: node:athena
     target_id: capability:orchestration
     edge_type: node_capability
     weight: 0.90
@@ -56,6 +76,7 @@ edges:
       execution_load: execution_pressure
       execution_friction: reliability_pressure
       failure_pressure: reliability_pressure
+      transport_pressure: pressure
 
   - source_id: node:athena
     target_id: capability:storage

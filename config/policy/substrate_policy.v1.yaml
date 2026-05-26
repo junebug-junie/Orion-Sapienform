@@ -58,6 +58,14 @@ hard_blocks:
   - network_call
   - operator_notification
   - service_restart
+  - restart_bus
+  - purge_stream
+  - replay_stream
+  - stream_replay
+  - stream_purge
+  - change_catalog
+  - change_bus_config
+  - catalog_write
   - destructive_action
 
 read_only_effects:

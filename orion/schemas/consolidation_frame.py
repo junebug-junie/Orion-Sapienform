@@ -54,6 +54,8 @@ class ExpectationV1(BaseModel):
         "reliability_clear",
         "execution_pressure_high",
         "resource_pressure_high",
+        "contract_drift_persists",
+        "transport_stable",
         "unknown",
     ]
 

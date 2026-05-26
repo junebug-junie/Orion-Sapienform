@@ -82,6 +82,21 @@ motif_rules:
         allowed:
           - unchanged
 
+  transport_contract_drift_loop:
+    kind: attention_pattern
+    label: transport_contract_drift_loop
+    conditions:
+      attention_target: capability:transport
+      min_contract_pressure: 0.70
+
+  transport_healthy_idle:
+    kind: attention_pattern
+    label: transport_healthy_idle
+    conditions:
+      attention_target: capability:transport
+      max_transport_pressure: 0.10
+      min_bus_health: 0.90
+
 tensor:
   enabled: true
   max_coordinates: 200

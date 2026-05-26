@@ -31,12 +31,17 @@ node_channel_weights:
   reasoning_load: 0.45
   failure_pressure: 1.00
   expected_offline_suppression: -0.70
+  transport_pressure: 0.70
+  contract_pressure: 0.85
+  bus_health: -0.30
 
 capability_channel_weights:
   pressure: 0.70
   execution_pressure: 0.80
   reasoning_pressure: 0.60
   reliability_pressure: 1.00
+  transport_pressure: 0.75
+  contract_pressure: 0.90
   confidence: -0.35
   available_capacity: -0.45
 

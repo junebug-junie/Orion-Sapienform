@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 
 from orion.proposals.builder import build_proposal_frame
+from orion.proposals.templates import FORBIDDEN_TRANSPORT_PROPOSAL_KEYS, TRANSPORT_PROPOSAL_TEMPLATE_KEYS
 from orion.proposals.policy import load_proposal_policy
 
 from app.settings import get_settings
@@ -71,6 +72,20 @@ class ProposalRuntimeWorker:
             policy=self._policy,
             previous_frame=previous,
         )
+        if not self._settings.enable_transport_proposals:
+            filtered = [
+                c
+                for c in frame.candidates
+                if not any(key in c.proposal_id for key in TRANSPORT_PROPOSAL_TEMPLATE_KEYS)
+            ]
+            frame = frame.model_copy(update={"candidates": filtered})
+        elif self._settings.transport_proposal_mode == "read_only":
+            filtered = [
+                c
+                for c in frame.candidates
+                if not any(key in c.proposal_id for key in FORBIDDEN_TRANSPORT_PROPOSAL_KEYS)
+            ]
+            frame = frame.model_copy(update={"candidates": filtered})
         self._store.save_proposal_frame(frame)
         logger.info(
             "proposal_frame_saved frame_id=%s self_state_id=%s candidates=%d",

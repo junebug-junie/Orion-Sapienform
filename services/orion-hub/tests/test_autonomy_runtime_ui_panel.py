@@ -89,7 +89,7 @@ def test_autonomy_inline_card_and_debug_panel_use_semantic_and_runtime_payloads(
     assert "state_preview: safePreview || {}" in app_js
     assert "repository_status:" in app_js
     assert "normalizeAutonomyModel(summary, debug, meta)" in app_js
-    assert "['alignment', model.alignment.alignment_note]" in app_js
+    assert "model.alignment && model.alignment.alignment_note" in app_js
 
 
 def test_autonomy_debug_panel_clears_when_payload_absent() -> None:
@@ -147,7 +147,9 @@ def test_autonomy_populated_render_path_replaces_prior_turn_content() -> None:
     assert "autonomyDebugState.innerHTML = '';" in app_js
     assert "autonomyDebugProposals.innerHTML = '';" in app_js
     assert "autonomyDebugAlignment.innerHTML = '';" in app_js
-    assert "autonomyDebugRaw.textContent = JSON.stringify(model.raw, null, 2);" in app_js
+    assert "autonomyDebugRaw.textContent = safeHubJsonStringify(model.raw);" in app_js
+    assert "conversationDiv.appendChild(div);" in app_js
+    assert "Orion message enrichment failed" in app_js
 
 
 def test_degraded_autonomy_renders_explicit_unavailable_labels() -> None:

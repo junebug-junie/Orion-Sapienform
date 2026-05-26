@@ -253,7 +253,31 @@
       return rejectResult("memory_graph_suggest_failed", { reason: "empty_response" });
     }
 
+    function mergeUtteranceTextIntoDraft(obj) {
+      if (!obj || typeof obj !== "object" || Array.isArray(obj)) return obj;
+      const merged = Object.assign({}, obj);
+      const map = Object.assign({}, obj.utterance_text_by_id && typeof obj.utterance_text_by_id === "object" ? obj.utterance_text_by_id : {});
+      if (utteranceTextById && typeof utteranceTextById === "object" && !Array.isArray(utteranceTextById)) {
+        Object.keys(utteranceTextById).forEach((id) => {
+          const key = String(id || "").trim();
+          const text = String(utteranceTextById[id] || "").trim();
+          if (key && text && !String(map[key] || "").trim()) map[key] = text;
+        });
+      }
+      const ids = Array.isArray(obj.utterance_ids) ? obj.utterance_ids : [];
+      ids.forEach((rawId) => {
+        const key = String(rawId || "").trim();
+        if (!key || String(map[key] || "").trim()) return;
+        if (utteranceTextById && utteranceTextById[key]) {
+          map[key] = String(utteranceTextById[key]).trim();
+        }
+      });
+      merged.utterance_text_by_id = map;
+      return merged;
+    }
+
     function successFromObject(obj) {
+      const withText = mergeUtteranceTextIntoDraft(obj);
       const diagnostics = collectSuggestDiagnostics(data);
       if (Array.isArray(data.violations) && data.violations.length) {
         data.violations.forEach((v) => {
@@ -271,7 +295,7 @@
       const apiErr = data.error != null ? String(data.error).trim() : "";
       const failed = data.ok === false;
       return {
-        draftText: JSON.stringify(obj, null, 2),
+        draftText: JSON.stringify(withText, null, 2),
         error: failed ? apiErr || "memory_graph_suggest_failed" : null,
         diagnostics,
         graphEmpty,
@@ -415,6 +439,10 @@
     }
     if (err === "evidence_envelope_not_draft") {
       return "Blocked selected-turn evidence envelope from Draft JSON; evidence is request input, not graph output.";
+    }
+    const validationErrors = Array.isArray(coalesce.validation_errors) ? coalesce.validation_errors : [];
+    if (validationErrors.indexOf("json_truncated") >= 0) {
+      return "Suggest draft JSON was truncated (model hit length limit). Retry after hub/cortex token budget increase, or select fewer turns.";
     }
     return "Extractor did not return a valid role-grounded SuggestDraftV1. Empty valid fallback draft loaded; see diagnostics.";
   }

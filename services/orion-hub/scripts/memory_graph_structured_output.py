@@ -9,6 +9,8 @@ from orion.memory_graph.schema_contract import compact_suggest_draft_json_schema
 
 
 _DEFAULT_STRUCTURED_METHOD = "json_object_schema"
+# Two-turn drafts with entities/situations/edges routinely exceed ~2k chars; 1600 tokens truncates.
+_DEFAULT_SUGGEST_MAX_TOKENS = 4096
 
 
 def _normalize_structured_output_method(method: str) -> str:
@@ -39,7 +41,7 @@ def memory_graph_suggest_llm_options(settings: Any, *, diagnostic: bool) -> Dict
     """Options merged into CortexChatRequest for structured SuggestDraftV1 extraction."""
     method = resolve_memory_graph_structured_output_method(settings)
     max_tokens = max(
-        1600,
+        _DEFAULT_SUGGEST_MAX_TOKENS,
         int(getattr(settings, "MEMORY_GRAPH_SUGGEST_MAX_TOKENS", 0) or 0),
     )
     opts: Dict[str, Any] = {

@@ -453,8 +453,9 @@ app.include_router(memory_router)
 app.include_router(mind_router)
 app.include_router(memory_graph_router)
 
-# Real-time WS endpoint
+# Real-time WS endpoint (also /hub/ws for path-prefixed reverse proxies where the browser path includes /hub)
 app.add_websocket_route("/ws", websocket_endpoint)
+app.add_websocket_route("/hub/ws", websocket_endpoint)
 app.add_websocket_route("/ws/service-logs", service_logs_websocket_endpoint)
 
 # Static files for JS/CSS

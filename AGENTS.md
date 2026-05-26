@@ -90,6 +90,8 @@ Check whether the change also requires updating:
 
 **`.env` / template parity (non-negotiable):** If you add, remove, rename, or change the meaning of any key in a service **`.env`**, update the accompanying **`.env_example`** in the **same** `services/<service_name>/` directory in the **same** change set so the example stays an accurate, copy-pastable contract (use empty or safe placeholder values for secrets; keep comments in sync where they document behavior). The reverse applies when you introduce variables in `.env_example` that operators are expected to copy into `.env`.
 
+**Local `.env` sync (non-negotiable on host):** After you change any **`.env_example`** for feature work, run `python scripts/sync_local_env_from_example.py` (from repo root) so the operator’s local `services/*/.env` picks up the same keys. Do this in the same session before saying env is ready; do not ask the operator to hand-edit unless a key is in the script’s skip list (`ORION_KNOWLEDGE_ROOT`, `PUBLISH_CORTEX_EXEC_GRAMMAR`). Restart affected containers when the keys are read at boot.
+
 ### Bus/schema/channel changes
 Check whether the change also requires updating:
 - schema registry references

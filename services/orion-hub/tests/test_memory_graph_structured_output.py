@@ -108,7 +108,7 @@ def test_suggest_request_includes_structured_options(hub_settings, monkeypatch) 
     assert isinstance(opts.get("structured_output_schema"), dict)
     assert opts.get("structured_output_thinking_policy") == "disabled_for_artifact"
     assert opts.get("chat_template_kwargs") == {"enable_thinking": False}
-    assert int(opts.get("max_tokens") or 0) >= 1600
+    assert int(opts.get("max_tokens") or 0) >= 4096
     assert out.get("ok") is True
     diag = out.get("structured_output_diagnostics") or {}
     assert diag.get("structured_output_method_requested") == "json_object_schema"

@@ -1152,6 +1152,13 @@
   const LANE_QUICK = 'quick';
   const LANE_BRAIN = 'brain';
 
+  /** Hub recall dropdown defaults per lane (must match exec hub_chat_lane clamp). */
+  const LANE_RECALL_PROFILE = {
+    [LANE_GROUNDED_SMALL]: 'assist.light.v1',
+    [LANE_QUICK]: 'assist.light.v1',
+    [LANE_BRAIN]: 'recall.v1',
+  };
+
   function asObject(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
   }
@@ -1169,9 +1176,36 @@
     return document.body.dataset.orionChatLane || LANE_GROUNDED_SMALL;
   }
 
+  function ensureRecallProfileOption(selectEl, profileId) {
+    if (!selectEl || !profileId) return;
+    const normalized = String(profileId).trim();
+    if (!normalized) return;
+    const options = Array.from(selectEl.options || []);
+    if (!options.some((opt) => String(opt.value || '').trim() === normalized)) {
+      const opt = document.createElement('option');
+      opt.value = normalized;
+      opt.textContent = normalized;
+      selectEl.appendChild(opt);
+    }
+  }
+
+  function syncRecallProfileForLane(lane) {
+    if (typeof document === 'undefined') return;
+    const profileId = LANE_RECALL_PROFILE[lane];
+    if (!profileId) return;
+    const selectEl = document.getElementById('recallProfileSelect');
+    if (!selectEl) return;
+    ensureRecallProfileOption(selectEl, profileId);
+    selectEl.value = profileId;
+    selectEl.dataset.orionLaneRecallAuto = 'true';
+    selectEl.dataset.orionLaneRecallProfile = profileId;
+  }
+
   function setLane(lane) {
     if (typeof document === 'undefined' || !document.body) return;
-    document.body.dataset.orionChatLane = lane || LANE_GROUNDED_SMALL;
+    const resolved = lane || LANE_GROUNDED_SMALL;
+    document.body.dataset.orionChatLane = resolved;
+    syncRecallProfileForLane(resolved);
   }
 
   function normalizeOutboundPayload(payload) {
@@ -1326,5 +1360,10 @@
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', configureModeRow);
     else configureModeRow();
   }
-  global.OrionHubGroundedSmallLane = { normalizeOutboundPayload, configureModeRow };
+  global.OrionHubGroundedSmallLane = {
+    normalizeOutboundPayload,
+    configureModeRow,
+    syncRecallProfileForLane,
+    LANE_RECALL_PROFILE,
+  };
 })(typeof window !== 'undefined' ? window : globalThis);

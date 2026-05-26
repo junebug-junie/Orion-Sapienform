@@ -74,7 +74,13 @@ def _msg_payload(content: str) -> Dict[str, Any]:
     }
 
 
-def _client_result(text: str, *, ok: bool = True, status: str = "ok") -> Any:
+def _client_result(
+    text: str,
+    *,
+    ok: bool = True,
+    status: str = "ok",
+    finish_reason: str = "stop",
+) -> Any:
     from orion.schemas.cortex.contracts import CortexChatResult, CortexClientResult
 
     cr = CortexClientResult(
@@ -83,7 +89,11 @@ def _client_result(text: str, *, ok: bool = True, status: str = "ok") -> Any:
         verb="memory_graph_suggest",
         status=status,
         final_text=text,
-        metadata={"model": "test-model", "provider_finish_reason": "stop", "provider_completion_tokens": 42},
+        metadata={
+            "model": "test-model",
+            "provider_finish_reason": finish_reason,
+            "provider_completion_tokens": 42,
+        },
     )
     return CortexChatResult(cortex_result=cr, final_text=text)
 
@@ -275,6 +285,43 @@ def test_quick_timeout_escalates_to_brain(hub_settings, fixture_draft_text) -> N
     assert out["route_used"] == "brain"
     assert calls == ["quick", None]
     assert "hub_wait_for_timeout" in str(out["attempts"][0].get("validation_errors", []))
+
+
+def test_truncated_json_escalates_to_brain(hub_settings, fixture_draft_text: str) -> None:
+    _ensure_hub_scripts_import_path()
+    from scripts.memory_graph_suggest import suggest_with_escalation
+
+    truncated = (
+        '{"ontology_version":"orionmem-2026-05","utterance_ids":["u1"],'
+        '"entities":[{"id":"urn:uuid:10000001-0000-4000-8000-000000000001"'
+    )
+    calls: List[str] = []
+
+    async def chat(req, correlation_id=None):
+        route = str((req.options or {}).get("llm_route") or "brain")
+        calls.append(route)
+        if len(calls) == 1:
+            return _client_result(truncated, finish_reason="length")
+        return _client_result(fixture_draft_text)
+
+    client = AsyncMock()
+    client.chat.side_effect = chat
+
+    out = asyncio.run(
+        suggest_with_escalation(
+            cortex_client=client,
+            payload=_msg_payload("extract memory graph"),
+            session_id="sid-trunc",
+            user_id=None,
+            settings=hub_settings,
+            mutation_context={},
+        )
+    )
+    assert out["ok"] is True
+    assert out["route_used"] == "brain"
+    assert calls == ["quick", None]
+    phases = [str(a.get("phase") or "") for a in out.get("attempts") or []]
+    assert "json_truncated" in phases
 
 
 def test_cortex_prose_returns_no_json_object_without_draft(hub_settings) -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 from uuid import UUID, uuid4
 
 import requests
@@ -11,6 +11,7 @@ from orion.core.storage.memory_cards import insert_cards_and_edges_batch
 from orion.memory_graph.dto import SuggestDraftV1
 from orion.memory_graph.graphdb import compensate_batch, insert_batch
 from orion.memory_graph.json_to_rdf import draft_to_graph
+from orion.memory_graph.utterance_text import ensure_draft_utterance_text
 from orion.memory_graph.project import project_graph_to_cards
 from orion.memory_graph.rdf_target import (
     MemoryGraphSparqlTarget,
@@ -97,6 +98,7 @@ async def approve_memory_graph_draft(
     implicitly select GraphDB from stale ``GRAPHDB_URL`` while ``MEMORY_GRAPH_APPROVAL_BACKEND=auto``.
     """
     batch_id = str(uuid4())
+    draft = ensure_draft_utterance_text(draft)
     g2 = draft_to_graph(draft, revision_batch=batch_id)
     violations = validate_graph(g2)
     if violations:
@@ -163,8 +165,18 @@ async def approve_memory_graph_draft(
     return ApproveOutcome(ok=True, card_ids=card_ids, violations=[])
 
 
-def preview_validate_only(draft: SuggestDraftV1) -> tuple[bool, List[str], Dict[str, Any]]:
+def preview_validate_only(
+    draft: SuggestDraftV1,
+    *,
+    supplemental_utterance_text: Optional[Mapping[str, str]] = None,
+) -> tuple[bool, List[str], Dict[str, Any]]:
     """Validate RDF + SHACL without persistence; return preview card shells."""
+    try:
+        draft = ensure_draft_utterance_text(draft, supplemental=supplemental_utterance_text)
+    except ValueError as exc:
+        if str(exc).startswith("utterance_text_missing:"):
+            return (False, [str(exc)], {"card_count": 0, "edge_count": 0, "titles": []})
+        raise
     g = draft_to_graph(draft)
     violations = validate_graph(g)
     pack = project_graph_to_cards(g, draft)

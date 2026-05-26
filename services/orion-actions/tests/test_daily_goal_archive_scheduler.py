@@ -19,3 +19,8 @@ def test_daily_goal_archive_enabled_by_default() -> None:
     assert cfg.actions_daily_goal_archive_enabled is True
     assert cfg.actions_daily_goal_archive_hour_local == 3
     assert cfg.actions_daily_goal_archive_minute_local == 15
+
+
+def test_daily_goal_archive_run_on_startup_default() -> None:
+    cfg = Settings()
+    assert cfg.actions_daily_goal_archive_run_on_startup is True

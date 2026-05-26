@@ -58,7 +58,22 @@ Important clarification:
 
 Built-in daily triggers (daily pulse, world pulse, daily metacog, daily journal) compare local wall time in `ACTIONS_DAILY_TIMEZONE` to configured hour/minute windows. **Before durable cursors**, in-memory `last_*` maps reset on restart; if local time is already past the cutoff, the same calendar day can be **eligible again**, which can queue duplicate downstream work and notify/email bursts. **With cursors** (default path next to the workflow schedule JSON under `/tmp/orion-actions/` in dev), a successful completion is persisted per job; restart hydrates from disk before the first scheduler tick. `ACTIONS_DAILY_RUN_ON_STARTUP` still allows an initial run when no completion is recorded for the process session, but **does not** bypass a cursor that already marks today complete. Tune `ACTIONS_DAILY_TIMEZONE`, per-job hours, and `ACTIONS_DAILY_RUN_ONCE_DATE` for operator overrides.
 
-Cursor JSON keys match the scheduler store: `daily_pulse_v1`, `world_pulse`, `daily_metacog_v1`, `daily_journal`. **Single writer:** assume one `orion-actions` replica (same as the workflow schedule store); multiple replicas would race on the same cursor file unless you add coordination or split paths in a follow-up.
+Cursor JSON keys match the scheduler store: `daily_pulse_v1`, `world_pulse`, `daily_metacog_v1`, `daily_journal`, `autonomy_goal_archive`. **Single writer:** assume one `orion-actions` replica (same as the workflow schedule store); multiple replicas would race on the same cursor file unless you add coordination or split paths in a follow-up.
+
+### Autonomy goal archive (built-in — no host cron)
+
+Goal-graph hygiene runs **inside** this container. You do **not** need `scripts/autonomy/archive_stale_goal_proposals.py` on the host.
+
+| Trigger | Env | Behavior |
+|---------|-----|----------|
+| Startup / first tick | `ACTIONS_DAILY_GOAL_ARCHIVE_RUN_ON_STARTUP=true` (default) | `archive_subjects_drain`: up to `AUTONOMY_GOAL_ARCHIVE_BOOTSTRAP_MAX_ROUNDS` × `AUTONOMY_GOAL_ARCHIVE_MAX_UPDATES` per subject |
+| Nightly | `ACTIONS_DAILY_GOAL_ARCHIVE_HOUR_LOCAL` / `MINUTE_LOCAL` (default 03:15) | Single maintenance pass (200 updates/subject cap) |
+
+Requires `AUTONOMY_GRAPH_QUERY_URL`, `AUTONOMY_GRAPH_UPDATE_URL`, and `RDF_STORE_USER` / `RDF_STORE_PASS` in `services/orion-actions/.env` (Docker network hostnames, e.g. `orion-athena-fuseki`).
+
+Incremental trim after concept-induction publishes goals: enable `AUTONOMY_GOAL_ARCHIVE_ENABLED=true` on **orion-spark-concept-induction** (default on in compose).
+
+Verify in logs: `autonomy_goal_archive_scheduler_result` or `autonomy_goal_archive_drain`.
 
 ### What Actions does **not** own
 

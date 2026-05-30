@@ -142,6 +142,33 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def verify_cuda_device(device: torch.device, rank: int = 0) -> None:
+    """Fail fast when PyTorch CUDA wheels do not match GPU architecture (e.g. P100 + torch 2.5)."""
+    if device.type != "cuda":
+        return
+    idx = device.index if device.index is not None else 0
+    name = torch.cuda.get_device_name(idx)
+    cap = torch.cuda.get_device_capability(idx)
+    try:
+        x = torch.zeros(1, device=device)
+        x += 1
+        torch.cuda.synchronize(device)
+    except Exception as exc:
+        raise RuntimeError(
+            f"CUDA device {idx} ({name}, sm_{cap[0]}{cap[1]}) is not usable with this "
+            f"PyTorch build ({torch.__version__}). NCCL/DDP will fail with 'named symbol not found'.\n"
+            "Fix: install a PyTorch wheel that includes your GPU arch (Pascal P100/P4 need "
+            "torch<=2.3.x cu118), or train on V100+ / CPU.\n"
+            "Example (P100/P4): pip install torch==2.3.1 --index-url "
+            "https://download.pytorch.org/whl/cu118"
+        ) from exc
+    if rank == 0:
+        print(
+            f"[cuda] device {idx}: {name} (sm_{cap[0]}{cap[1]}), torch {torch.__version__}",
+            flush=True,
+        )
+
+
 def main() -> None:
     args = parse_args()
     is_ddp, rank, world_size, local_rank = ddp_setup()
@@ -153,11 +180,14 @@ def main() -> None:
         dist.init_process_group(backend="nccl")
         torch.cuda.set_device(local_rank)
         device = torch.device("cuda", local_rank)
+        verify_cuda_device(device, rank=rank)
     else:
         if args.device:
             device = torch.device(args.device)
         else:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if device.type == "cuda":
+            verify_cuda_device(device, rank=0)
 
     config = HyperbolicGPTConfig(
         block_size=args.block_size,

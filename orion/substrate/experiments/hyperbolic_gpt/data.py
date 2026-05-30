@@ -9,13 +9,28 @@ from torch.utils.data import IterableDataset
 from transformers import PreTrainedTokenizer
 
 
+# GPT-2 positional table is 1024; cap per-story encode to avoid HF warnings.
+_MAX_ENCODE_LEN = 1024
+
+
 def load_gpt2_tokenizer() -> PreTrainedTokenizer:
     from transformers import AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained("gpt2")
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
+    tok.model_max_length = _MAX_ENCODE_LEN
     return tok
+
+
+def encode_text_chunk(tok: PreTrainedTokenizer, text: str) -> list[int]:
+    """Encode one story/paragraph with truncation (training uses block_size windows)."""
+    return tok.encode(
+        text + tok.eos_token,
+        add_special_tokens=False,
+        truncation=True,
+        max_length=_MAX_ENCODE_LEN,
+    )
 
 
 class TokenBlockIterable(IterableDataset):
@@ -64,7 +79,7 @@ def load_tinystories_tokens(
         if max_docs is not None and i >= max_docs:
             break
         text = row.get("text") or row.get("story") or ""
-        ids.extend(tok.encode(text + tok.eos_token))
+        ids.extend(encode_text_chunk(tok, text))
         if max_tokens is not None and len(ids) >= max_tokens:
             ids = ids[:max_tokens]
             break
@@ -76,7 +91,7 @@ def load_tinystories_tokens(
 def load_text_file_tokens(path: str | Path, max_tokens: int | None = None) -> list[int]:
     tok = load_gpt2_tokenizer()
     text = Path(path).read_text(encoding="utf-8")
-    return _truncate_tokens(tok.encode(text + tok.eos_token), max_tokens)
+    return _truncate_tokens(encode_text_chunk(tok, text), max_tokens)
 
 
 def shard_token_ids(token_ids: list[int], rank: int, world_size: int) -> list[int]:

@@ -14,9 +14,10 @@ _MAX_ENCODE_LEN = 1024
 
 
 def load_gpt2_tokenizer() -> PreTrainedTokenizer:
-    from transformers import AutoTokenizer
+    # GPT2Tokenizer avoids AutoTokenizer -> generation stack (needs torch>=2.5 device_mesh)
+    from transformers import GPT2Tokenizer
 
-    tok = AutoTokenizer.from_pretrained("gpt2")
+    tok = GPT2Tokenizer.from_pretrained("gpt2")
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     tok.model_max_length = _MAX_ENCODE_LEN

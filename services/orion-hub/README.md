@@ -11,7 +11,7 @@
 
 It is a **"Dumb" UI** that:
 
-- Captures **voice** and **text** from the browser
+- Captures **voice** and **text** from the browser (PCM → WAV over WebSocket; see **Voice debugging** below)
 - Maintains lightweight UI state (history, mode, visualizers)
 - Publishes strictly typed **Titanium Contracts** onto the **Orion Bus**
 - Waits for answers from downstream workers:
@@ -291,6 +291,32 @@ TOPIC_FOUNDRY_BASE_URL=http://orion-topic-foundry:8615
 - Train a run, poll for completion, then load segments and click a segment to confirm full text renders in the detail pane.
 
 Topic Studio relies on the Topic Foundry `/capabilities` endpoint to configure supported segmentation modes and defaults, uses `/runs?limit=20` to populate the recent run picker, and the segments list uses `include_snippet=true&include_bounds=true` with `limit/offset` for faster previews and paging.
+
+---
+
+## Voice debugging
+
+Hub records PCM in the browser, resamples to 16 kHz WAV, and sends `client_audio_meta` with peak, RMS, duration, and chunk count. Low peak warns in the UI but still sends audio. STT silence rejection is configured in `orion-whisper-tts` via `STT_NEAR_SILENT_PEAK_INT16` (default `50`).
+
+**Browser console** (after mic release):
+
+```
+[voice] chunk_count=… peak=… rms=… sent audio payload…
+```
+
+**Hub logs:**
+
+```bash
+docker compose logs -f orion-hub | grep -E 'voice\.ws\.audio_received|voice\.stt'
+```
+
+**STT logs:**
+
+```bash
+docker compose logs -f orion-whisper-tts | grep -E '\[STT\]|Sent STT result'
+```
+
+Empty-transcript WebSocket errors include `audio_debug` with client and STT metadata. No JS unit harness — verify manually in the browser.
 
 ---
 

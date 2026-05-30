@@ -527,11 +527,20 @@ async def websocket_endpoint(websocket: WebSocket):
                     audio_byte_len = len(base64.b64decode(audio_b64, validate=False))
                 except Exception:
                     audio_byte_len = 0
-                logger.info(
-                    "voice.ws.audio_received session_id=%s audio_bytes=%d",
-                    session_id,
-                    audio_byte_len,
-                )
+                client_audio_meta = data.get("client_audio_meta")
+                if isinstance(client_audio_meta, dict):
+                    logger.info(
+                        "voice.ws.audio_received session_id=%s audio_bytes=%d client_meta=%s",
+                        session_id,
+                        audio_byte_len,
+                        client_audio_meta,
+                    )
+                else:
+                    logger.info(
+                        "voice.ws.audio_received session_id=%s audio_bytes=%d",
+                        session_id,
+                        audio_byte_len,
+                    )
                 if tts_client:
                     try:
                         await websocket.send_json(
@@ -542,10 +551,14 @@ async def websocket_endpoint(websocket: WebSocket):
                             or data.get("format")
                             or "wav"
                         )
+                        stt_options: Dict[str, Any] = {}
+                        if isinstance(client_audio_meta, dict):
+                            stt_options["client_audio_meta"] = client_audio_meta
                         stt_req = STTRequestPayload(
                             audio_b64=data.get("audio"),
                             language=data.get("language") or "en",
                             format=audio_format,
+                            options=stt_options or None,
                         )
                         logger.info(
                             "voice.stt.start session_id=%s format=%s",
@@ -565,27 +578,63 @@ async def websocket_endpoint(websocket: WebSocket):
                         if not transcript:
                             meta = stt_result.metadata or {}
                             logger.info(
-                                "voice.stt.empty session_id=%s meta=%s",
+                                "voice.stt.empty session_id=%s meta=%s client_meta=%s",
                                 session_id,
                                 meta,
+                                client_audio_meta,
                             )
                             peak_val = meta.get("peak")
+                            peak_threshold = meta.get("peak_threshold")
+                            silence_gate = meta.get("silence_gate")
                             try:
                                 peak_num = float(peak_val) if peak_val is not None else None
                             except (TypeError, ValueError):
                                 peak_num = None
-                            if peak_num is not None and peak_num < 200:
+                            try:
+                                threshold_num = (
+                                    float(peak_threshold) if peak_threshold is not None else None
+                                )
+                            except (TypeError, ValueError):
+                                threshold_num = None
+                            client_chunks = None
+                            client_gate = None
+                            if isinstance(client_audio_meta, dict):
+                                client_chunks = client_audio_meta.get("chunk_count")
+                                client_gate = client_audio_meta.get("client_gate")
+                            if (
+                                client_chunks == 0
+                                or client_gate == "empty"
+                                or (
+                                    not isinstance(client_audio_meta, dict)
+                                    and audio_byte_len == 0
+                                )
+                            ):
+                                err_msg = "Browser did not capture microphone frames."
+                            elif (
+                                silence_gate == "rejected"
+                                and peak_num is not None
+                                and threshold_num is not None
+                            ):
                                 err_msg = (
-                                    "Microphone level too low (silent recording). "
-                                    "Check your OS input device and browser mic permission."
+                                    f"STT rejected near-silent audio: peak={int(peak_num)}, "
+                                    f"threshold={int(threshold_num)}."
+                                )
+                            elif client_gate == "low_peak_warn":
+                                err_msg = (
+                                    "Low microphone level captured. Audio was recorded "
+                                    "but too quiet for STT."
                                 )
                             else:
-                                err_msg = "No speech detected in recording"
+                                err_msg = "No speech detected in recording."
+                            audio_debug: Dict[str, Any] = {"stt": meta}
+                            if isinstance(client_audio_meta, dict):
+                                audio_debug["client"] = client_audio_meta
                             await websocket.send_json(
                                 await _with_biometrics(
                                     {
                                         "error": err_msg,
                                         "state": "idle",
+                                        "audio_debug": audio_debug,
                                     },
                                     cache=biometrics_cache,
                                 )

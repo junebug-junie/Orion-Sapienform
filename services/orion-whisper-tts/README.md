@@ -151,6 +151,12 @@ Kind: `tts.synthesize.request`, `reply_to`: `orion:tts:result:<uuid>`.
 
 Metadata includes `backend`, `model_name`, `language`, `voice_id`, `speaker`, `speaker_wav_used`, `split_sentences`, `synthesis_ms`.
 
+## STT silence gate
+
+`STT_NEAR_SILENT_PEAK_INT16` (default `50`) controls when incoming audio is treated as
+near-silent and Whisper is skipped. Browser capture telemetry is sent separately via Hub
+(`client_audio_meta` on the WebSocket audio payload).
+
 ## Local unit tests
 
 ```bash
@@ -158,3 +164,11 @@ cd services/orion-whisper-tts
 python -m pytest tests/ -v
 python -m compileall app
 ```
+
+### Voice ingress manual check (Hub + browser)
+
+1. Record from Hub mic button; browser console should log `[voice] chunk_count=`, `peak=`, `rms=`, and `sent audio payload`.
+2. Hub: `docker compose logs -f orion-hub | grep -E 'voice\.ws\.audio_received|voice\.stt'`
+3. STT: `docker compose logs -f orion-whisper-tts | grep -E '\[STT\]|Sent STT result'`
+
+If the browser warns on low peak but Hub never logs `voice.ws.audio_received`, the client still blocked send. If Hub receives audio but STT `peak` is low, tune `STT_NEAR_SILENT_PEAK_INT16` or check mic gain.

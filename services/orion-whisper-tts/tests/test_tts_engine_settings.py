@@ -26,6 +26,7 @@ def test_whisper_tts_timeout_settings_defaults() -> None:
     assert s.tts_voice_profile_dir == "/models/voices"
     assert s.whisper_tts_stt_timeout_sec == 90.0
     assert s.whisper_tts_synth_timeout_sec == 120.0
+    assert s.stt_near_silent_peak_int16 == 50
 
 
 def test_tts_settings_xtts_defaults() -> None:
@@ -44,6 +45,7 @@ def test_tts_engine_reads_settings_not_hardcoded_gpu() -> None:
     assert "TTS_VOICE_PROFILE_DIR" in compose
     assert "WHISPER_TTS_STT_TIMEOUT_SEC" in compose
     assert "WHISPER_TTS_SYNTH_TIMEOUT_SEC" in compose
+    assert "STT_NEAR_SILENT_PEAK_INT16" in compose
 
 
 def test_stt_and_tts_workers_use_wait_for() -> None:
@@ -57,5 +59,7 @@ def test_stt_and_tts_workers_use_wait_for() -> None:
 
 def test_stt_engine_exports_near_silent_constant() -> None:
     stt_py = (SERVICE_ROOT / "app" / "stt.py").read_text(encoding="utf-8")
-    assert "STT_NEAR_SILENT_PEAK_INT16" in stt_py
+    assert "_peak_threshold" in stt_py
     assert "_measure_wav_levels" in stt_py
+    assert "_canonicalize_wav" in stt_py
+    assert "silence_gate" in stt_py

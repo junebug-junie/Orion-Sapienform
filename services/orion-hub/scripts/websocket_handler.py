@@ -31,6 +31,11 @@ from scripts.chat_history import (
 from scripts.social_room import is_social_room_payload, social_room_client_meta
 from scripts.cortex_chat_display import hub_effective_chat_text
 from scripts.trace_payloads import extract_agent_trace_payload
+from scripts.voice_stt_errors import (
+    build_audio_debug,
+    empty_transcript_error_message,
+    sanitize_client_audio_meta,
+)
 from scripts.autonomy_payloads import extract_autonomy_payload
 from scripts.workflow_payloads import extract_workflow_payload
 from scripts.mutation_cognition_context import build_mutation_cognition_context
@@ -390,9 +395,27 @@ async def run_tts_remote(text: str, tts_client, queue: asyncio.Queue):
             tts_client.speak(req),
             timeout=float(settings.HUB_TTS_TIMEOUT_SEC),
         )
-        msg = {"audio_response": result.audio_b64, "text": text}
+        audio_b64_len = len(result.audio_b64 or "")
+        logger.info(
+            "voice.tts.done text_len=%d audio_b64_len=%d content_type=%s duration_sec=%s metadata=%s",
+            len(text),
+            audio_b64_len,
+            result.content_type,
+            result.duration_sec,
+            result.metadata,
+        )
+        msg = {
+            "audio_response": result.audio_b64,
+            # Not `text` — the UI treats d.text like llm_response and would duplicate the bubble.
+            "tts_source_text": text,
+            "tts_meta": {
+                "content_type": result.content_type,
+                "duration_sec": result.duration_sec,
+                "metadata": result.metadata,
+            },
+            "state": "speaking",
+        }
         await queue.put(msg)
-        logger.info("voice.tts.done text_len=%d", len(text))
     except asyncio.TimeoutError:
         err = f"TTS timed out after {settings.HUB_TTS_TIMEOUT_SEC}s"
         logger.error("voice.tts.error %s", err)
@@ -527,11 +550,20 @@ async def websocket_endpoint(websocket: WebSocket):
                     audio_byte_len = len(base64.b64decode(audio_b64, validate=False))
                 except Exception:
                     audio_byte_len = 0
-                logger.info(
-                    "voice.ws.audio_received session_id=%s audio_bytes=%d",
-                    session_id,
-                    audio_byte_len,
-                )
+                client_audio_meta = sanitize_client_audio_meta(data.get("client_audio_meta"))
+                if client_audio_meta:
+                    logger.info(
+                        "voice.ws.audio_received session_id=%s audio_bytes=%d client_meta=%s",
+                        session_id,
+                        audio_byte_len,
+                        client_audio_meta,
+                    )
+                else:
+                    logger.info(
+                        "voice.ws.audio_received session_id=%s audio_bytes=%d",
+                        session_id,
+                        audio_byte_len,
+                    )
                 if tts_client:
                     try:
                         await websocket.send_json(
@@ -542,10 +574,14 @@ async def websocket_endpoint(websocket: WebSocket):
                             or data.get("format")
                             or "wav"
                         )
+                        stt_options: Dict[str, Any] = {}
+                        if client_audio_meta:
+                            stt_options["client_audio_meta"] = client_audio_meta
                         stt_req = STTRequestPayload(
                             audio_b64=data.get("audio"),
                             language=data.get("language") or "en",
                             format=audio_format,
+                            options=stt_options or None,
                         )
                         logger.info(
                             "voice.stt.start session_id=%s format=%s",
@@ -565,28 +601,29 @@ async def websocket_endpoint(websocket: WebSocket):
                         if not transcript:
                             meta = stt_result.metadata or {}
                             logger.info(
-                                "voice.stt.empty session_id=%s meta=%s",
+                                "voice.stt.empty session_id=%s meta=%s client_meta=%s",
                                 session_id,
                                 meta,
+                                client_audio_meta,
                             )
-                            peak_val = meta.get("peak")
-                            try:
-                                peak_num = float(peak_val) if peak_val is not None else None
-                            except (TypeError, ValueError):
-                                peak_num = None
-                            if peak_num is not None and peak_num < 200:
-                                err_msg = (
-                                    "Microphone level too low (silent recording). "
-                                    "Check your OS input device and browser mic permission."
-                                )
-                            else:
-                                err_msg = "No speech detected in recording"
+                            err_msg = empty_transcript_error_message(
+                                client_audio_meta=client_audio_meta,
+                                stt_meta=meta,
+                                audio_byte_len=audio_byte_len,
+                            )
+                            audio_debug = build_audio_debug(
+                                stt_meta=meta,
+                                client_audio_meta=client_audio_meta,
+                            )
+                            err_payload: Dict[str, Any] = {
+                                "error": err_msg,
+                                "state": "idle",
+                            }
+                            if audio_debug:
+                                err_payload["audio_debug"] = audio_debug
                             await websocket.send_json(
                                 await _with_biometrics(
-                                    {
-                                        "error": err_msg,
-                                        "state": "idle",
-                                    },
+                                    err_payload,
                                     cache=biometrics_cache,
                                 )
                             )
@@ -597,9 +634,16 @@ async def websocket_endpoint(websocket: WebSocket):
                             session_id,
                             settings.HUB_STT_TIMEOUT_SEC,
                         )
+                        timeout_payload: Dict[str, Any] = {
+                            "error": "Transcription timed out",
+                            "state": "idle",
+                        }
+                        audio_debug = build_audio_debug(client_audio_meta=client_audio_meta)
+                        if audio_debug:
+                            timeout_payload["audio_debug"] = audio_debug
                         await websocket.send_json(
                             await _with_biometrics(
-                                {"error": "Transcription timed out", "state": "idle"},
+                                timeout_payload,
                                 cache=biometrics_cache,
                             )
                         )
@@ -609,12 +653,16 @@ async def websocket_endpoint(websocket: WebSocket):
                         err_text = str(e).strip()
                         if err_text.startswith("STT error:"):
                             err_text = err_text[len("STT error:") :].strip()
+                        fail_payload: Dict[str, Any] = {
+                            "error": err_text or "Transcription failed",
+                            "state": "idle",
+                        }
+                        audio_debug = build_audio_debug(client_audio_meta=client_audio_meta)
+                        if audio_debug:
+                            fail_payload["audio_debug"] = audio_debug
                         await websocket.send_json(
                             await _with_biometrics(
-                                {
-                                    "error": err_text or "Transcription failed",
-                                    "state": "idle",
-                                },
+                                fail_payload,
                                 cache=biometrics_cache,
                             )
                         )
@@ -1274,8 +1322,43 @@ async def websocket_endpoint(websocket: WebSocket):
                     logger.warning("Failed to publish assistant chat history: %s", e, exc_info=True)
 
             # 4. TTS
-            if orion_response_text and not workflow_metadata_only and not disable_tts and tts_client:
-                 asyncio.create_task(run_tts_remote(orion_response_text, tts_client, tts_q))
+            will_tts = bool(
+                orion_response_text
+                and not workflow_metadata_only
+                and not disable_tts
+                and tts_client
+            )
+            logger.info(
+                "voice.tts.decision corr=%s sid=%s response_len=%d workflow_metadata_only=%s "
+                "disable_tts=%s has_tts_client=%s will_tts=%s",
+                trace_id,
+                session_id,
+                len(orion_response_text or ""),
+                workflow_metadata_only,
+                disable_tts,
+                bool(tts_client),
+                will_tts,
+            )
+            if not will_tts and not disable_tts and orion_response_text:
+                tts_debug_payload = await _with_biometrics(
+                    {
+                        "tts_debug": {
+                            "stage": "hub_decision",
+                            "will_tts": False,
+                            "response_len": len(orion_response_text or ""),
+                            "workflow_metadata_only": workflow_metadata_only,
+                            "disable_tts": disable_tts,
+                            "has_tts_client": bool(tts_client),
+                        },
+                    },
+                    cache=biometrics_cache,
+                )
+                if not await _safe_ws_send_json(websocket, tts_debug_payload):
+                    continue
+            if will_tts:
+                asyncio.create_task(
+                    run_tts_remote(orion_response_text, tts_client, tts_q)
+                )
 
             if orion_response_text and not workflow_metadata_only:
                 history.append({"role": "assistant", "content": orion_response_text})

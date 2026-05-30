@@ -169,9 +169,14 @@ class CoquiBackend:
         self.cfg = cfg
         _validate_xtts_defaults(cfg)
         logger.info(
-            "[TTS] Loading coqui model=%s gpu=%s",
+            "[TTS] Loading coqui backend=%s model=%s use_gpu=%s language=%s "
+            "default_speaker=%s default_speaker_wav=%s",
+            cfg.tts_backend,
             cfg.tts_model_name,
             cfg.tts_use_gpu,
+            cfg.tts_default_language,
+            cfg.tts_default_speaker,
+            cfg.tts_default_speaker_wav,
         )
         self.tts = TTS(cfg.tts_model_name, gpu=cfg.tts_use_gpu)
         logger.info("[TTS] Coqui model loaded.")
@@ -195,20 +200,36 @@ class CoquiBackend:
         )
         started = time.perf_counter()
 
+        speaker_wav_path = plan.kwargs.get("speaker_wav")
+        logger.info(
+            "[TTS] tts_to_file language=%s speaker_set=%s speaker_wav_set=%s "
+            "speaker_wav_exists=%s split_sentences=%s",
+            plan.kwargs.get("language"),
+            bool(plan.kwargs.get("speaker")),
+            bool(speaker_wav_path),
+            bool(speaker_wav_path and Path(str(speaker_wav_path)).is_file()),
+            plan.kwargs.get("split_sentences"),
+        )
         with tempfile.NamedTemporaryFile(suffix=".wav") as f:
             call_kwargs = {"text": text, "file_path": f.name, **plan.kwargs}
             try:
                 self.tts.tts_to_file(**call_kwargs)
-            except TypeError as exc:
+            except Exception as exc:
                 logger.error(
-                    "[TTS] Coqui tts_to_file rejected kwargs=%s model=%s error=%s",
-                    sorted(plan.kwargs.keys()),
+                    "[TTS] synthesis failed model=%s language=%s speaker=%s "
+                    "speaker_wav=%s speaker_wav_exists=%s error=%s",
                     self.cfg.tts_model_name,
+                    plan.kwargs.get("language"),
+                    plan.kwargs.get("speaker"),
+                    speaker_wav_path,
+                    bool(speaker_wav_path and Path(str(speaker_wav_path)).is_file()),
                     exc,
+                    exc_info=True,
                 )
                 raise RuntimeError(
                     f"Coqui synthesis failed for model={self.cfg.tts_model_name}: {exc}. "
-                    f"kwargs={sorted(plan.kwargs.keys())}"
+                    f"language={plan.kwargs.get('language')!r} speaker={plan.kwargs.get('speaker')!r} "
+                    f"speaker_wav={speaker_wav_path!r}"
                 ) from exc
             f.seek(0)
             audio_bytes = f.read()
@@ -247,10 +268,14 @@ class TTSEngine:
                 f"Unsupported TTS_BACKEND={settings.tts_backend!r}. Supported: coqui"
             )
         logger.info(
-            "[TTS] Engine ready backend=%s model=%s gpu=%s",
+            "[TTS] Engine ready backend=%s model=%s use_gpu=%s language=%s "
+            "default_speaker=%s default_speaker_wav=%s",
             self.backend_name,
             settings.tts_model_name,
             settings.tts_use_gpu,
+            settings.tts_default_language,
+            settings.tts_default_speaker,
+            settings.tts_default_speaker_wav,
         )
 
     def synthesize_to_b64(

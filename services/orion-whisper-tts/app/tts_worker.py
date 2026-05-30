@@ -98,12 +98,21 @@ async def process_tts_request(
         logger.warning("[%s] No reply_to/response_channel specified. Dropping.", envelope.correlation_id)
         return
 
+    option_keys = (
+        sorted(request_data.options.keys())
+        if isinstance(request_data.options, dict)
+        else []
+    )
     logger.info(
-        "[%s] Processing TTS request (len=%d, legacy=%s) -> %s",
+        "[%s] Processing TTS request -> %s text_len=%d voice_id=%s language=%s "
+        "options_keys=%s legacy=%s",
         envelope.correlation_id,
-        len(request_data.text),
-        is_legacy,
         reply_to,
+        len(request_data.text),
+        request_data.voice_id,
+        request_data.language,
+        option_keys,
+        is_legacy,
     )
 
     # 2. Synthesize (run in thread pool)
@@ -164,10 +173,14 @@ async def process_tts_request(
             await bus.publish(reply_to, response_envelope)
 
         logger.info(
-            "[%s] Sent TTS reply to %s (bytes=%d)",
+            "[%s] Sent TTS reply to %s audio_b64_len=%d content_type=%s "
+            "duration_sec=%s metadata=%s",
             envelope.correlation_id,
             reply_to,
             len(audio_b64),
+            result.content_type,
+            result.duration_sec,
+            metadata,
         )
 
     except Exception as e:

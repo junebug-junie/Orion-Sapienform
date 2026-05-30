@@ -19,7 +19,19 @@ os.environ.setdefault("CHANNEL_VOICE_TTS", "orion:voice:tts")
 os.environ.setdefault("CHANNEL_COLLAPSE_INTAKE", "orion:collapse:intake")
 os.environ.setdefault("CHANNEL_COLLAPSE_TRIAGE", "orion:collapse:triage")
 
+from orion.schemas.tts import TTSResultPayload
+
 from scripts import websocket_handler as wh
+
+
+class _OkTTSClient:
+    async def speak(self, _request):
+        return TTSResultPayload(
+            audio_b64="YWJj",
+            content_type="audio/wav",
+            duration_sec=1.5,
+            metadata={"backend": "coqui"},
+        )
 
 
 class _FailingTTSClient:
@@ -31,6 +43,20 @@ class _SlowTTSClient:
     async def speak(self, _request):
         await asyncio.sleep(60)
         return None
+
+
+@pytest.mark.asyncio
+async def test_run_tts_remote_enqueues_speaking_payload(monkeypatch) -> None:
+    monkeypatch.setattr(wh.settings, "HUB_TTS_TIMEOUT_SEC", 5.0, raising=False)
+    queue: asyncio.Queue = asyncio.Queue()
+    await wh.run_tts_remote("hello", _OkTTSClient(), queue)
+    msg = await asyncio.wait_for(queue.get(), timeout=1.0)
+    assert msg["audio_response"] == "YWJj"
+    assert msg["state"] == "speaking"
+    assert msg.get("text") is None
+    assert msg["tts_source_text"] == "hello"
+    assert msg["tts_meta"]["content_type"] == "audio/wav"
+    assert msg["tts_meta"]["duration_sec"] == 1.5
 
 
 @pytest.mark.asyncio
@@ -59,6 +85,12 @@ def test_start_recording_audio_payload_includes_disable_tts() -> None:
     app_js = (hub_root / "static" / "js" / "app.js").read_text(encoding="utf-8")
     assert "disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false" in app_js
     assert "d.tts_error" in app_js
+    assert "[voice] audio_debug" in app_js
+    assert "client_audio_meta" in app_js
+    assert "[tts] audio_response received" in app_js
+    assert "[tts] playback started" in app_js
+    assert "audioContext.resume" in app_js
+    assert "d.audio_response && !d.llm_response" in app_js
 
 
 def test_hub_voice_timeout_settings_defaults() -> None:

@@ -46,6 +46,10 @@ class Settings(BaseSettings):
         120.0,
         env="WHISPER_TTS_SYNTH_TIMEOUT_SEC",
     )
+    stt_near_silent_peak_int16: int = Field(
+        50,
+        env="STT_NEAR_SILENT_PEAK_INT16",
+    )
 
     class Config:
         env_file = ".env"

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import base64
+import shutil
 import struct
 import sys
+import tempfile
 import wave
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -31,13 +33,20 @@ def _load_stt_module():
     import importlib.util
     import sys
 
-    # Avoid loading whisper/torch when testing helpers only.
     path = SERVICE_ROOT / "app" / "stt.py"
     spec = importlib.util.spec_from_file_location("whisper_stt", path)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
     sys.modules["whisper_stt_test"] = mod
+    spec.loader.exec_module(mod)
     return mod
+
+
+def _mock_canonicalize(_self, src_path: str) -> str:
+    out = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    out.close()
+    shutil.copy(src_path, out.name)
+    return out.name
 
 
 @pytest.fixture
@@ -46,9 +55,12 @@ def stt_engine(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr(mod, "whisper", MagicMock())
     monkeypatch.setattr(mod.torch, "cuda", MagicMock(is_available=lambda: False))
     mod.whisper.load_model = MagicMock(return_value=MagicMock())
+    monkeypatch.setenv("STT_NEAR_SILENT_PEAK_INT16", "50")
+    monkeypatch.setattr(mod, "_peak_threshold", lambda: 50)
     engine = mod.STTEngine.__new__(mod.STTEngine)
     engine.model = MagicMock()
     engine.model.transcribe = MagicMock(return_value={"text": "hello world"})
+    monkeypatch.setattr(mod.STTEngine, "_canonicalize_wav", _mock_canonicalize)
     return engine, mod
 
 
@@ -77,12 +89,34 @@ def test_transcribe_near_silent_skips_whisper(tmp_path: Path, stt_engine) -> Non
     text, meta = engine.transcribe(audio_b64, language="en", audio_format="wav")
 
     assert text == ""
-    assert meta["peak"] < mod.STT_NEAR_SILENT_PEAK_INT16
+    assert meta["peak"] < meta["peak_threshold"]
+    assert meta["silence_gate"] == "rejected"
+    assert meta["duration_sec"] >= 0
+    assert meta["input_bytes"] > 0
+    assert meta["wav_bytes"] > 0
     engine.model.transcribe.assert_not_called()
 
 
-def test_transcribe_tone_calls_whisper(tmp_path: Path, stt_engine) -> None:
+def test_transcribe_low_amplitude_passes_with_lower_threshold(
+    tmp_path: Path, stt_engine, monkeypatch: pytest.MonkeyPatch
+) -> None:
     engine, mod = stt_engine
+    monkeypatch.setattr(mod, "_peak_threshold", lambda: 40)
+    wav_path = tmp_path / "low.wav"
+    _write_pcm16_wav(wav_path, [60] * 3200)
+    audio_b64 = base64.b64encode(wav_path.read_bytes()).decode()
+
+    text, meta = engine.transcribe(audio_b64, language="en", audio_format="wav")
+
+    assert text == "hello world"
+    assert meta["peak"] == 60
+    assert meta["peak_threshold"] == 40
+    assert meta["silence_gate"] == "passed"
+    engine.model.transcribe.assert_called_once()
+
+
+def test_transcribe_tone_calls_whisper(tmp_path: Path, stt_engine) -> None:
+    engine, _mod = stt_engine
     wav_path = tmp_path / "tone.wav"
     _write_pcm16_wav(wav_path, [0] * 400 + [14000] * 1200)
     audio_b64 = base64.b64encode(wav_path.read_bytes()).decode()
@@ -90,7 +124,27 @@ def test_transcribe_tone_calls_whisper(tmp_path: Path, stt_engine) -> None:
     text, meta = engine.transcribe(audio_b64, language="en", audio_format="wav")
 
     assert text == "hello world"
-    assert meta["peak"] >= mod.STT_NEAR_SILENT_PEAK_INT16
+    assert meta["peak"] >= meta["peak_threshold"]
+    assert meta["silence_gate"] == "passed"
+    engine.model.transcribe.assert_called_once()
+
+
+def test_transcribe_client_override_when_server_peak_zero(tmp_path: Path, stt_engine) -> None:
+    engine, _mod = stt_engine
+    wav_path = tmp_path / "silent.wav"
+    _write_pcm16_wav(wav_path, [0] * 3200)
+    audio_b64 = base64.b64encode(wav_path.read_bytes()).decode()
+    client_meta = {"source_peak": 0.05, "chunk_count": 40, "client_gate": "passed"}
+
+    text, meta = engine.transcribe(
+        audio_b64,
+        language="en",
+        audio_format="wav",
+        client_audio_meta=client_meta,
+    )
+
+    assert text == "hello world"
+    assert meta["silence_gate"] == "passed_client_override"
     engine.model.transcribe.assert_called_once()
 
 
@@ -99,7 +153,43 @@ def test_transcribe_empty_payload(stt_engine) -> None:
     text, meta = engine.transcribe("", language="en", audio_format="wav")
     assert text == ""
     assert meta["peak"] == 0
+    assert meta["silence_gate"] == "rejected"
+    assert meta["peak_threshold"] == 50
     engine.model.transcribe.assert_not_called()
+
+
+def test_peak_threshold_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = _load_stt_module()
+    monkeypatch.setenv("STT_NEAR_SILENT_PEAK_INT16", "40")
+    assert mod._peak_threshold() == 40
+
+
+def test_peak_threshold_invalid_env_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = _load_stt_module()
+    monkeypatch.setenv("STT_NEAR_SILENT_PEAK_INT16", "not-a-number")
+    assert mod._peak_threshold() == 50
+
+
+@pytest.mark.skipif(
+    __import__("shutil").which("ffmpeg") is None,
+    reason="ffmpeg not installed",
+)
+def test_canonicalize_wav_produces_16k_mono_s16(tmp_path: Path) -> None:
+    mod = _load_stt_module()
+    engine = mod.STTEngine.__new__(mod.STTEngine)
+    wav_path = tmp_path / "low.wav"
+    _write_pcm16_wav(wav_path, [60] * 1600, sample_rate=48000)
+    out = engine._canonicalize_wav(str(wav_path))
+    try:
+        rms, peak = engine._measure_wav_levels(out)
+        with wave.open(out, "rb") as wf:
+            assert wf.getnchannels() == 1
+            assert wf.getframerate() == 16000
+            assert wf.getsampwidth() == 2
+        assert peak == 60
+        assert rms > 0
+    finally:
+        Path(out).unlink(missing_ok=True)
 
 
 def test_stt_worker_publishes_typed_envelope() -> None:

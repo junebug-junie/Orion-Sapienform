@@ -9,4 +9,6 @@ typing-extensions==4.12.2
 pyyaml==6.0.2
 numpy==1.22.0
 TTS==0.22.0
+# XTTS-v2: TTS 0.22 breaks with transformers 4.56+ / 5.x (BeamSearchScorer moved)
+transformers>=4.33.0,<4.46.0
 openai-whisper

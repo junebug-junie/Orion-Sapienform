@@ -11,7 +11,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.tts import TTSRequestPayload, TTSResultPayload
 
 from .settings import settings
-from .tts import TTSEngine
+from .tts import TTSOutput, TTSEngine
 
 logger = logging.getLogger("orion-whisper-tts.worker")
 
@@ -83,6 +83,7 @@ async def process_tts_request(
                 text=text,
                 voice_id=voice_id,
                 language=language,
+                options=payload_src.get("options"),
             )
 
             # Legacy reply channel handling if envelope.reply_to is missing
@@ -111,12 +112,19 @@ async def process_tts_request(
 
         def _synthesize():
             engine = get_tts_engine()
-            return engine.synthesize_to_b64(request_data.text)
+            return engine.synthesize_to_b64(
+                request_data.text,
+                voice_id=request_data.voice_id,
+                language=request_data.language,
+                options=request_data.options,
+            )
 
-        audio_b64 = await asyncio.wait_for(
+        result: TTSOutput = await asyncio.wait_for(
             loop.run_in_executor(None, _synthesize),
             timeout=float(settings.whisper_tts_synth_timeout_sec),
         )
+        audio_b64 = result.audio_b64
+        metadata = result.metadata or {}
 
         # 3. Reply
         if is_legacy:
@@ -128,16 +136,19 @@ async def process_tts_request(
             legacy_reply = {
                 "trace_id": final_trace_id,
                 "audio_b64": audio_b64,
-                "mime_type": "audio/wav",
+                "mime_type": result.content_type or "audio/wav",
+                "metadata": metadata,
             }
             # Publish as dict -> JSON on wire
             await bus.publish(reply_to, legacy_reply)
 
         else:
             # Typed Reply: Envelope
-            result = TTSResultPayload(
+            result_payload = TTSResultPayload(
                 audio_b64=audio_b64,
-                content_type="audio/wav",
+                content_type=result.content_type,
+                duration_sec=result.duration_sec,
+                metadata=metadata,
             )
 
             response_envelope = envelope.derive_child(
@@ -146,7 +157,7 @@ async def process_tts_request(
                     name=settings.service_name,
                     version=settings.service_version,
                 ),
-                payload=result,
+                payload=result_payload,
                 reply_to=None, # End of RPC chain
             )
 
@@ -169,7 +180,12 @@ async def process_tts_request(
         # Publish error if possible
         try:
             if is_legacy:
-                 await bus.publish(reply_to, {"error": str(e), "ok": False})
+                err_payload: dict[str, Any] = {"error": str(e), "ok": False}
+                if legacy_trace_id:
+                    err_payload["trace_id"] = legacy_trace_id
+                elif request_data and envelope:
+                    err_payload["trace_id"] = str(envelope.correlation_id)
+                await bus.publish(reply_to, err_payload)
             else:
                 error_envelope = envelope.derive_child(
                     kind="system.error",

@@ -32,8 +32,14 @@ const VISION_EDGE_BASE = "https://athena.tail348bbe.ts.net/vision-edge";
 let socket;
 let wsReadyResolve = null;
 let wsReadyPromise = null;
-let mediaRecorder;
-let audioChunks = [];
+let recordingStream = null;
+/** @type {{ source: MediaStreamAudioSourceNode, processor: ScriptProcessorNode, gain: GainNode, chunks: Float32Array[], active: boolean } | null} */
+let pcmCapture = null;
+/** @type {{ generation: number, stopRequested: boolean, starting: boolean }} */
+let voiceCapture = { generation: 0, stopRequested: false, starting: false };
+// Client float peak gate; server uses STT_NEAR_SILENT_PEAK_INT16 (~200) in whisper stt.py.
+const VOICE_CLIENT_PEAK_MIN = 0.003;
+const VOICE_PCM_FLUSH_MS = 150;
 let audioContext = new (window.AudioContext || window.webkitAudioContext)();
 let currentAudioSource = null;
 let analyser;
@@ -8985,10 +8991,27 @@ loadDismissedIds();
   // --- 3. Event Listeners ---
 
   if (recordButton) {
-    recordButton.addEventListener('mousedown', startRecording);
-    recordButton.addEventListener('mouseup', stopRecording);
-    recordButton.addEventListener('touchstart', (e) => { e.preventDefault(); startRecording(); });
-    recordButton.addEventListener('touchend', stopRecording);
+    recordButton.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      try {
+        recordButton.setPointerCapture(e.pointerId);
+      } catch (_) {
+        /* ignore */
+      }
+      startRecording();
+    });
+    recordButton.addEventListener('pointerup', (e) => {
+      e.preventDefault();
+      try {
+        if (recordButton.hasPointerCapture(e.pointerId)) {
+          recordButton.releasePointerCapture(e.pointerId);
+        }
+      } catch (_) {
+        /* ignore */
+      }
+      stopRecording();
+    });
+    recordButton.addEventListener('pointercancel', () => stopRecording());
   }
 
   if (sendButton) sendButton.addEventListener('click', sendTextMessage);
@@ -10543,68 +10566,266 @@ loadDismissedIds();
   }
 
   // --- Audio ---
-  async function startRecording() {
+  function _uint8ToBase64(bytes) {
+    let binary = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+  }
+
+  function _encodeWavPcm16(audioBuffer) {
+    const channel = audioBuffer.getChannelData(0);
+    const sampleRate = audioBuffer.sampleRate;
+    const numSamples = channel.length;
+    const bytesPerSample = 2;
+    const blockAlign = bytesPerSample;
+    const byteRate = sampleRate * blockAlign;
+    const dataSize = numSamples * bytesPerSample;
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+    const writeStr = (offset, str) => {
+      for (let i = 0; i < str.length; i += 1) {
+        view.setUint8(offset + i, str.charCodeAt(i));
+      }
+    };
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, 16, true);
+    writeStr(36, 'data');
+    view.setUint32(40, dataSize, true);
+    let offset = 44;
+    for (let i = 0; i < numSamples; i += 1) {
+      const sample = Math.max(-1, Math.min(1, channel[i]));
+      const int16 = Math.max(-32768, Math.min(32767, Math.round(sample * 32767)));
+      view.setInt16(offset, int16, true);
+      offset += 2;
+    }
+    return new Uint8Array(buffer);
+  }
+
+  function _mergePcmChunks(chunks) {
+    let total = 0;
+    for (const chunk of chunks) {
+      total += chunk.length;
+    }
+    const merged = new Float32Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return merged;
+  }
+
+  /** PCM float32 → 16 kHz mono WAV base64; throws if signal is effectively silent. */
+  async function _pcmToWavBase64(pcm, sampleRate) {
+    const ctx = audioContext || new (window.AudioContext || window.webkitAudioContext)();
+    const buffer = ctx.createBuffer(1, pcm.length, sampleRate);
+    buffer.getChannelData(0).set(pcm);
+    const targetRate = 16000;
+    const frames = Math.max(1, Math.ceil(buffer.duration * targetRate));
+    const offline = new OfflineAudioContext(1, frames, targetRate);
+    const src = offline.createBufferSource();
+    src.buffer = buffer;
+    src.connect(offline.destination);
+    src.start(0);
+    const rendered = await offline.startRendering();
+    const channel = rendered.getChannelData(0);
+    let peak = 0;
+    for (let i = 0; i < channel.length; i += 1) {
+      peak = Math.max(peak, Math.abs(channel[i]));
+    }
+    console.info('[voice] peak amplitude=%s duration=%ss', peak.toFixed(5), rendered.duration.toFixed(2));
+    if (peak < VOICE_CLIENT_PEAK_MIN) {
+      const err = new Error('silent');
+      err.peak = peak;
+      throw err;
+    }
+    return _uint8ToBase64(_encodeWavPcm16(rendered));
+  }
+
+  function _teardownPcmCapture() {
+    if (!pcmCapture) {
+      return;
+    }
+    pcmCapture.active = false;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      mediaRecorder = new MediaRecorder(stream);
-      audioChunks = [];
-      mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
-      mediaRecorder.onstop = () => {
-        const blob = new Blob(audioChunks);
-        const reader = new FileReader();
-        reader.readAsDataURL(blob);
-        reader.onloadend = () => {
-           if(socket && socket.readyState === WebSocket.OPEN) {
-              const audioPayload = {
-               audio: reader.result.split(',')[1],
-               mode: currentMode,
-               session_id: orionSessionId,
-               browser_client_id: ensureBrowserClientId(),
-               disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
-               no_write: noWriteToggle ? noWriteToggle.checked : false,
-               use_recall: recallToggle ? recallToggle.checked : true,
-               recall_mode: recallModeSelect && recallModeSelect.value !== "auto" ? recallModeSelect.value : null,
-               recall_profile: recallProfileSelect && recallProfileSelect.value !== "auto" ? recallProfileSelect.value : null,
-               recall_profile_explicit:
-                 recallProfileSelect && recallProfileSelect.value !== "auto",
-               recall_required: recallRequiredToggle ? recallRequiredToggle.checked : false,
-               presence_context: presenceContext,
-               surface_context: { surface: 'hub_desktop', input_modality: 'spoken' },
-              };
-              const audioLaneVerbs = modeVerbOverride ? [modeVerbOverride] : selectedVerbs;
-              const audioIsChatQuick =
-                Array.isArray(audioLaneVerbs) &&
-                audioLaneVerbs.length === 1 &&
-                String(audioLaneVerbs[0] || '').trim().toLowerCase() === 'chat_quick';
-              if (audioIsChatQuick) {
-                audioPayload.verbs = ['chat_quick'];
-                audioPayload.options = { chat_quick_full_stance: chatQuickVariant === 'stance' };
-              } else if (
-                Array.isArray(audioLaneVerbs) &&
-                audioLaneVerbs.length === 1 &&
-                String(audioLaneVerbs[0] || '').trim().toLowerCase() === 'chat_kids_story'
-              ) {
-                audioPayload.verbs = ['chat_kids_story'];
-              }
-              socket.send(JSON.stringify(audioPayload));
-             updateStatus('Audio sent.');
-           } else {
-               updateStatus('Offline. Cannot send audio.');
-           }
+      pcmCapture.processor.disconnect();
+      pcmCapture.source.disconnect();
+      pcmCapture.gain.disconnect();
+    } catch (_) {
+      /* ignore */
+    }
+    pcmCapture = null;
+  }
+
+  async function _finalizePcmCapture() {
+    const capture = pcmCapture;
+    _teardownPcmCapture();
+    recordButton.classList.remove('pulse');
+    if (recordingStream) {
+      recordingStream.getTracks().forEach(t => t.stop());
+      recordingStream = null;
+    }
+    if (!capture || !capture.chunks.length) {
+      updateStatus('No audio captured — check microphone permissions.');
+      return;
+    }
+    const pcm = _mergePcmChunks(capture.chunks);
+    const durationSec = pcm.length / (audioContext.sampleRate || 48000);
+    console.info('[voice] pcm samples=%d duration=%ss', pcm.length, durationSec.toFixed(2));
+    let audioB64;
+    try {
+      audioB64 = await _pcmToWavBase64(pcm, audioContext.sampleRate || 48000);
+    } catch (err) {
+      console.error('[voice] encode failed', err);
+      if (err && err.message === 'silent') {
+        updateStatus('No microphone signal — check OS input device and browser mic permission.');
+      } else {
+        updateStatus('Could not process recording — try again.');
+      }
+      return;
+    }
+    try {
+      let wsOpen = socket && socket.readyState === WebSocket.OPEN;
+      if (!wsOpen) {
+        updateStatus('Connecting...');
+        wsOpen = await waitForWebSocketOpen(5000);
+      }
+      if (wsOpen && socket && socket.readyState === WebSocket.OPEN) {
+        const audioPayload = {
+          audio: audioB64,
+          audio_format: 'wav',
+          mode: currentMode,
+          session_id: orionSessionId,
+          browser_client_id: ensureBrowserClientId(),
+          disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false,
+          no_write: noWriteToggle ? noWriteToggle.checked : false,
+          use_recall: recallToggle ? recallToggle.checked : true,
+          recall_mode: recallModeSelect && recallModeSelect.value !== 'auto' ? recallModeSelect.value : null,
+          recall_profile: recallProfileSelect && recallProfileSelect.value !== 'auto' ? recallProfileSelect.value : null,
+          recall_profile_explicit:
+            recallProfileSelect && recallProfileSelect.value !== 'auto',
+          recall_required: recallRequiredToggle ? recallRequiredToggle.checked : false,
+          presence_context: presenceContext,
+          surface_context: { surface: 'hub_desktop', input_modality: 'spoken' },
         };
+        const audioLaneVerbs = modeVerbOverride ? [modeVerbOverride] : selectedVerbs;
+        const audioIsChatQuick =
+          Array.isArray(audioLaneVerbs) &&
+          audioLaneVerbs.length === 1 &&
+          String(audioLaneVerbs[0] || '').trim().toLowerCase() === 'chat_quick';
+        if (audioIsChatQuick) {
+          audioPayload.verbs = ['chat_quick'];
+          audioPayload.options = { chat_quick_full_stance: chatQuickVariant === 'stance' };
+        } else if (
+          Array.isArray(audioLaneVerbs) &&
+          audioLaneVerbs.length === 1 &&
+          String(audioLaneVerbs[0] || '').trim().toLowerCase() === 'chat_kids_story'
+        ) {
+          audioPayload.verbs = ['chat_kids_story'];
+        }
+        socket.send(JSON.stringify(audioPayload));
+        updateStatus('Processing audio...');
+      } else {
+        updateStatus('Offline. Cannot send audio.');
+      }
+    } catch (err) {
+      console.error('[voice] send failed', err);
+      updateStatus('Failed to send audio.');
+    }
+  }
+
+  function _finishVoiceStop() {
+    if (!pcmCapture || !pcmCapture.active) {
+      recordButton.classList.remove('pulse');
+      return;
+    }
+    pcmCapture.active = false;
+    // Let ScriptProcessor flush one more buffer.
+    setTimeout(() => _finalizePcmCapture(), VOICE_PCM_FLUSH_MS);
+  }
+
+  async function startRecording() {
+    if (pcmCapture && pcmCapture.active) {
+      return;
+    }
+    const captureGen = ++voiceCapture.generation;
+    voiceCapture.stopRequested = false;
+    voiceCapture.starting = true;
+    try {
+      if (recordingStream) {
+        recordingStream.getTracks().forEach(t => t.stop());
+        recordingStream = null;
+      }
+      _teardownPcmCapture();
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: false,
+          autoGainControl: true,
+        },
+      });
+      if (captureGen !== voiceCapture.generation || voiceCapture.stopRequested) {
         stream.getTracks().forEach(t => t.stop());
+        if (voiceCapture.stopRequested) {
+          updateStatus('Mic not ready in time — hold the button a moment longer.');
+        }
+        return;
+      }
+      recordingStream = stream;
+      const source = audioContext.createMediaStreamSource(stream);
+      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+      const gain = audioContext.createGain();
+      gain.gain.value = 0;
+      pcmCapture = { source, processor, gain, chunks: [], active: true };
+      processor.onaudioprocess = e => {
+        if (!pcmCapture || !pcmCapture.active) {
+          return;
+        }
+        pcmCapture.chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
       };
-      mediaRecorder.start();
+      source.connect(processor);
+      processor.connect(gain);
+      gain.connect(audioContext.destination);
       updateStatus('Recording...');
       recordButton.classList.add('pulse');
-    } catch (e) { console.error(e); updateStatus('Mic Access Denied'); }
+      if (voiceCapture.stopRequested) {
+        _finishVoiceStop();
+      }
+    } catch (e) {
+      console.error(e);
+      updateStatus('Mic Access Denied');
+    } finally {
+      if (captureGen === voiceCapture.generation) {
+        voiceCapture.starting = false;
+      }
+    }
   }
 
   function stopRecording() {
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      mediaRecorder.stop();
+    voiceCapture.stopRequested = true;
+    if (!pcmCapture || !pcmCapture.active) {
       recordButton.classList.remove('pulse');
+      if (voiceCapture.starting) {
+        updateStatus('Mic not ready in time — hold the button a moment longer.');
+      }
+      return;
     }
+    _finishVoiceStop();
   }
 
   function processAudioQueue() {

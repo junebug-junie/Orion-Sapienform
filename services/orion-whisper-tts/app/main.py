@@ -92,6 +92,15 @@ async def startup() -> None:
         settings.service_name,
         settings.service_version,
     )
+    logger.info(
+        "TTS configured backend=%s model=%s gpu=%s language=%s default_speaker=%s default_speaker_wav=%s",
+        settings.tts_backend,
+        settings.tts_model_name,
+        settings.tts_use_gpu,
+        settings.tts_default_language,
+        settings.tts_default_speaker or "(none)",
+        settings.tts_default_speaker_wav or "(none)",
+    )
 
     bus = OrionBusAsync(
         url=settings.orion_bus_url,

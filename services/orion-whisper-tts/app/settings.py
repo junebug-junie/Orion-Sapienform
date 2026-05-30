@@ -1,5 +1,7 @@
 # services/orion-whisper-tts/app/settings.py
 
+from typing import Optional
+
 from pydantic_settings import BaseSettings
 from pydantic import Field
 
@@ -25,11 +27,17 @@ class Settings(BaseSettings):
     read_timeout_sec: int = Field(60, env="READ_TIMEOUT_SEC")
 
     # TTS config
+    tts_backend: str = Field("coqui", env="TTS_BACKEND")
     tts_model_name: str = Field(
-        "tts_models/en/ljspeech/vits",
+        "tts_models/multilingual/multi-dataset/xtts_v2",
         env="TTS_MODEL_NAME",
     )
     tts_use_gpu: bool = Field(True, env="TTS_USE_GPU")
+    tts_default_language: str = Field("en", env="TTS_DEFAULT_LANGUAGE")
+    tts_default_speaker: Optional[str] = Field(None, env="TTS_DEFAULT_SPEAKER")
+    tts_default_speaker_wav: Optional[str] = Field(None, env="TTS_DEFAULT_SPEAKER_WAV")
+    tts_split_sentences: bool = Field(True, env="TTS_SPLIT_SENTENCES")
+    tts_voice_profile_dir: str = Field("/models/voices", env="TTS_VOICE_PROFILE_DIR")
     whisper_tts_stt_timeout_sec: float = Field(
         90.0,
         env="WHISPER_TTS_STT_TIMEOUT_SEC",

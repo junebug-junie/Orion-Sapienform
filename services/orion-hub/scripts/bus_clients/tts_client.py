@@ -97,6 +97,15 @@ class TTSClient:
              logger.error(f"[{correlation_id}] Decode failed: {decoded.error}")
              raise ValueError(f"Bus decode error: {decoded.error}")
 
+        if decoded.envelope.kind == "system.error":
+            err_payload = decoded.envelope.payload
+            details = (
+                err_payload.get("details")
+                if isinstance(err_payload, dict)
+                else str(err_payload)
+            )
+            raise ValueError(f"STT error: {details}")
+
         # Strict validation
         payload = decoded.envelope.payload
 

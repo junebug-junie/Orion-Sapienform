@@ -6,6 +6,7 @@ import asyncio
 import logging
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_schemas import ServiceRef
 from orion.schemas.tts import STTRequestPayload, STTResultPayload
 
 from .settings import settings
@@ -55,18 +56,51 @@ async def stt_listener_worker(bus: OrionBusAsync) -> None:
             try:
                 loop = asyncio.get_running_loop()
 
-                def _transcribe() -> str:
+                def _transcribe() -> tuple[str, dict]:
                     engine = get_stt_engine()
-                    return engine.transcribe(request.audio_b64, language=request.language or "en")
+                    return engine.transcribe(
+                        request.audio_b64,
+                        language=request.language or "en",
+                        audio_format=request.format or "wav",
+                    )
 
-                text = await asyncio.wait_for(
+                text, meta = await asyncio.wait_for(
                     loop.run_in_executor(None, _transcribe),
                     timeout=float(settings.whisper_tts_stt_timeout_sec),
                 )
 
-                result = STTResultPayload(text=text)
-                await bus.publish(result_channel, result)
-                logger.info("[%s] Sent STT result (len=%d)", correlation_id, len(text))
+                result = STTResultPayload(text=text, metadata=meta)
+                response_envelope = envelope.derive_child(
+                    kind="stt.transcribe.result",
+                    source=ServiceRef(
+                        name=settings.service_name,
+                        version=settings.service_version,
+                    ),
+                    payload=result,
+                    reply_to=None,
+                )
+                await bus.publish(result_channel, response_envelope)
+                logger.info(
+                    "[%s] Sent STT result (len=%d peak=%s)",
+                    correlation_id,
+                    len(text),
+                    meta.get("peak"),
+                )
             except Exception as exc:
                 logger.error("[%s] FAILED to transcribe STT: %s", correlation_id, exc, exc_info=True)
-                await bus.publish(result_channel, {"error": str(exc), "ok": False})
+                try:
+                    error_envelope = envelope.derive_child(
+                        kind="system.error",
+                        source=ServiceRef(
+                            name=settings.service_name,
+                            version=settings.service_version,
+                        ),
+                        payload={
+                            "error": "stt_transcribe_failed",
+                            "details": str(exc),
+                        },
+                        reply_to=None,
+                    )
+                    await bus.publish(result_channel, error_envelope)
+                except Exception:
+                    pass

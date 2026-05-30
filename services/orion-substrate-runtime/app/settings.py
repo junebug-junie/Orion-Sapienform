@@ -35,6 +35,24 @@ class Settings(BaseSettings):
     )
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
+    receipt_retention_success_hours: int = Field(48, alias="ORION_RECEIPT_RETENTION_SUCCESS_HOURS")
+    receipt_retention_error_days: int = Field(7, alias="ORION_RECEIPT_RETENTION_ERROR_DAYS")
+    receipt_full_payload_success: bool = Field(False, alias="ORION_RECEIPT_FULL_PAYLOAD_SUCCESS")
+    receipt_full_payload_sample_rate: float = Field(
+        0.01, alias="ORION_RECEIPT_FULL_PAYLOAD_SAMPLE_RATE"
+    )
+    receipt_max_table_gb: float = Field(25.0, alias="ORION_RECEIPT_MAX_TABLE_GB")
+    receipt_warn_table_gb: float = Field(15.0, alias="ORION_RECEIPT_WARN_TABLE_GB")
+    receipt_critical_table_gb: float = Field(20.0, alias="ORION_RECEIPT_CRITICAL_TABLE_GB")
+    receipt_emergency_metadata_only: bool = Field(
+        True, alias="ORION_RECEIPT_EMERGENCY_METADATA_ONLY"
+    )
+    receipt_prune_interval_sec: float = Field(900.0, alias="ORION_RECEIPT_PRUNE_INTERVAL_SEC")
+    receipt_postgres_data_path: str = Field(
+        "/mnt/postgres", alias="ORION_RECEIPT_POSTGRES_DATA_PATH"
+    )
+    receipt_disk_critical_pct: float = Field(85.0, alias="ORION_RECEIPT_DISK_CRITICAL_PCT")
+
 
 _settings: Settings | None = None
 

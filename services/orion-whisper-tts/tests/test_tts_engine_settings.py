@@ -19,9 +19,17 @@ def _load_settings_module():
 def test_whisper_tts_timeout_settings_defaults() -> None:
     mod = _load_settings_module()
     s = mod.Settings()
-    assert s.tts_model_name == "tts_models/en/ljspeech/vits"
+    assert s.tts_backend == "coqui"
+    assert s.tts_model_name == "tts_models/multilingual/multi-dataset/xtts_v2"
+    assert s.tts_default_language == "en"
+    assert s.tts_split_sentences is True
+    assert s.tts_voice_profile_dir == "/models/voices"
     assert s.whisper_tts_stt_timeout_sec == 90.0
     assert s.whisper_tts_synth_timeout_sec == 120.0
+
+
+def test_tts_settings_xtts_defaults() -> None:
+    test_whisper_tts_timeout_settings_defaults()
 
 
 def test_tts_engine_reads_settings_not_hardcoded_gpu() -> None:
@@ -30,8 +38,10 @@ def test_tts_engine_reads_settings_not_hardcoded_gpu() -> None:
     compose = (SERVICE_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     assert "settings.tts_use_gpu" in tts_py
     assert "gpu=True" not in tts_py
-    assert '"tts_models/en/ljspeech/vits"' in settings_py
-    assert "tts_models/en/ljspeech/vits" in compose
+    assert "xtts_v2" in settings_py
+    assert "xtts_v2" in compose
+    assert "TTS_BACKEND" in compose
+    assert "TTS_VOICE_PROFILE_DIR" in compose
     assert "WHISPER_TTS_STT_TIMEOUT_SEC" in compose
     assert "WHISPER_TTS_SYNTH_TIMEOUT_SEC" in compose
 

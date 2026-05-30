@@ -5,6 +5,7 @@ from pathlib import Path
 
 from orion.memory_graph.suggest_validate import (
     extract_selected_role_evidence,
+    repair_role_grounded_suggest_draft,
     role_grounded_extraction_expected,
     validate_for_escalation,
 )
@@ -182,3 +183,85 @@ def test_extract_selected_role_evidence_shower() -> None:
     assert ev["has_nonempty_text"] is True
     assert ev["has_extractable_relation"] is True
     assert role_grounded_extraction_expected(SHOWER_UTTERANCE_TEXT) is True
+
+
+def test_repair_injects_orion_when_model_omits_assistant_role_entity() -> None:
+    partial = {
+        "ontology_version": "orionmem-2026-05",
+        "utterance_ids": ["u1", "a1"],
+        "entities": [
+            {
+                "id": "urn:uuid:f0000001-0000-4000-8000-000000000001",
+                "label": "User",
+                "entityKind": "person",
+                "surfaceForms": ["I"],
+                "generalizes_to": None,
+            }
+        ],
+        "situations": [
+            {
+                "id": "urn:uuid:f0000003-0000-4000-8000-000000000003",
+                "utterance_ids": ["u1"],
+                "label": "User leaves to shower",
+                "stimulus_entity_id": "urn:uuid:f0000001-0000-4000-8000-000000000001",
+                "about_entity_ids": [],
+                "target_entity_ids": [],
+                "affectLabel": "neutral",
+                "timeQualitative": "today",
+                "occurredAt": None,
+            }
+        ],
+        "edges": [],
+        "dispositions": [],
+    }
+    should_before, errors_before = validate_for_escalation(partial, utterance_text=SHOWER_UTTERANCE_TEXT)
+    assert should_before is True
+    assert "missing_assistant_role_entity" in errors_before
+
+    repaired = repair_role_grounded_suggest_draft(partial, utterance_text=SHOWER_UTTERANCE_TEXT)
+    should_after, errors_after = validate_for_escalation(repaired, utterance_text=SHOWER_UTTERANCE_TEXT)
+    assert should_after is False
+    assert "missing_assistant_role_entity" not in errors_after
+    labels = {str(ent.get("label") or "").lower() for ent in repaired.get("entities") or []}
+    assert "orion" in labels
+
+
+def test_assistant_role_detected_via_assistant_turn_situation_without_orion_label() -> None:
+    draft = {
+        "ontology_version": "orionmem-2026-05",
+        "utterance_ids": ["u1", "a1"],
+        "entities": [
+            {
+                "id": "urn:uuid:f0000001-0000-4000-8000-000000000001",
+                "label": "User",
+                "entityKind": "person",
+                "surfaceForms": ["I"],
+                "generalizes_to": None,
+            },
+            {
+                "id": "urn:uuid:f0000002-0000-4000-8000-000000000002",
+                "label": "Speaker B",
+                "entityKind": "abstract",
+                "surfaceForms": ["here"],
+                "generalizes_to": None,
+            },
+        ],
+        "situations": [
+            {
+                "id": "urn:uuid:f0000003-0000-4000-8000-000000000003",
+                "utterance_ids": ["a1"],
+                "label": "Speaker remains available",
+                "stimulus_entity_id": "urn:uuid:f0000002-0000-4000-8000-000000000002",
+                "about_entity_ids": [],
+                "target_entity_ids": [],
+                "affectLabel": "neutral",
+                "timeQualitative": "today",
+                "occurredAt": None,
+            }
+        ],
+        "edges": [],
+        "dispositions": [],
+    }
+    should, errors = validate_for_escalation(draft, utterance_text=SHOWER_UTTERANCE_TEXT)
+    assert should is False
+    assert "missing_assistant_role_entity" not in errors

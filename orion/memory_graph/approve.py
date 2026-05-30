@@ -177,7 +177,10 @@ def preview_validate_only(
         if str(exc).startswith("utterance_text_missing:"):
             return (False, [str(exc)], {"card_count": 0, "edge_count": 0, "titles": []})
         raise
-    g = draft_to_graph(draft)
+    try:
+        g = draft_to_graph(draft)
+    except ValueError as exc:
+        return (False, [str(exc)], {"card_count": 0, "edge_count": 0, "titles": []})
     violations = validate_graph(g)
     pack = project_graph_to_cards(g, draft)
     preview = {

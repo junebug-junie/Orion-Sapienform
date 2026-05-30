@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Dict, Mapping, Optional
+from uuid import uuid4
 
 from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import RDF, RDFS, XSD
@@ -133,8 +134,8 @@ def draft_to_graph(
         if revision_batch:
             g.add((snode, ORIONMEM.revisionBatch, Literal(revision_batch)))
 
-    for idx, disp in enumerate(draft.dispositions):
-        disp_id = disp.id or f"urn:uuid:disposition-{idx:04d}"
+    for disp in draft.dispositions:
+        disp_id = (disp.id or "").strip() or f"urn:uuid:{uuid4()}"
         dnode = eb(disp_id)
         g.add((dnode, RDF.type, ORIONMEM.AffectiveDisposition))
         g.add((dnode, ORIONMEM.trustPolarity, Literal(disp.trustPolarity)))

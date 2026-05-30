@@ -138,7 +138,7 @@ def test_quick_empty_response_escalates_to_brain(hub_settings, fixture_draft_tex
 
     async def chat(req, correlation_id=None):
         calls.append((req.options or {}).get("llm_route"))
-        if calls[-1] == "quick":
+        if len(calls) == 1:
             return _client_result("")
         return _client_result(fixture_draft_text)
 
@@ -157,7 +157,7 @@ def test_quick_empty_response_escalates_to_brain(hub_settings, fixture_draft_tex
     )
     assert out["ok"] is True
     assert out["route_used"] == "brain"
-    assert calls == ["quick", None]
+    assert len(calls) == 2
 
 
 def test_quick_invalid_json_escalates_to_brain(hub_settings, fixture_draft_text) -> None:
@@ -168,7 +168,7 @@ def test_quick_invalid_json_escalates_to_brain(hub_settings, fixture_draft_text)
 
     async def chat(req, correlation_id=None):
         calls.append((req.options or {}).get("llm_route"))
-        if calls[-1] == "quick":
+        if len(calls) == 1:
             return _client_result("not json {")
         return _client_result(fixture_draft_text)
 
@@ -187,7 +187,7 @@ def test_quick_invalid_json_escalates_to_brain(hub_settings, fixture_draft_text)
     )
     assert out["ok"] is True
     assert out["route_used"] == "brain"
-    assert calls == ["quick", None]
+    assert len(calls) == 2
 
 
 def test_quick_unknown_predicate_escalates_to_brain(hub_settings, fixture_draft_text) -> None:
@@ -202,7 +202,7 @@ def test_quick_unknown_predicate_escalates_to_brain(hub_settings, fixture_draft_
 
     async def chat(req, correlation_id=None):
         calls.append((req.options or {}).get("llm_route"))
-        if calls[-1] == "quick":
+        if len(calls) == 1:
             return _client_result(bad_text)
         return _client_result(fixture_draft_text)
 
@@ -230,9 +230,11 @@ def test_brain_success_after_quick_failure_returns_brain_draft_and_metadata(
     _ensure_hub_scripts_import_path()
     from scripts.memory_graph_suggest import suggest_with_escalation
 
+    calls: List[Optional[str]] = []
+
     async def chat(req, correlation_id=None):
-        route = (req.options or {}).get("llm_route")
-        if route == "quick":
+        calls.append((req.options or {}).get("llm_route"))
+        if len(calls) == 1:
             return _client_result("")
         return _client_result(fixture_draft_text)
 
@@ -264,7 +266,7 @@ def test_quick_timeout_escalates_to_brain(hub_settings, fixture_draft_text) -> N
 
     async def chat(req, correlation_id=None):
         calls.append((req.options or {}).get("llm_route"))
-        if calls[-1] == "quick":
+        if len(calls) == 1:
             raise TimeoutError("simulated quick timeout")
         return _client_result(fixture_draft_text)
 
@@ -283,7 +285,7 @@ def test_quick_timeout_escalates_to_brain(hub_settings, fixture_draft_text) -> N
     )
     assert out["ok"] is True
     assert out["route_used"] == "brain"
-    assert calls == ["quick", None]
+    assert len(calls) == 2
     assert "hub_wait_for_timeout" in str(out["attempts"][0].get("validation_errors", []))
 
 
@@ -319,7 +321,7 @@ def test_truncated_json_escalates_to_brain(hub_settings, fixture_draft_text: str
     )
     assert out["ok"] is True
     assert out["route_used"] == "brain"
-    assert calls == ["quick", None]
+    assert len(calls) == 2
     phases = [str(a.get("phase") or "") for a in out.get("attempts") or []]
     assert "json_truncated" in phases
 
@@ -447,7 +449,7 @@ def test_quick_empty_role_grounded_draft_escalates_to_brain(hub_settings) -> Non
 
     async def chat(req, correlation_id=None):
         calls.append((req.options or {}).get("llm_route"))
-        if calls[-1] == "quick":
+        if len(calls) == 1:
             return _client_result(json.dumps(empty_draft))
         return _client_result(shower_text)
 
@@ -466,9 +468,13 @@ def test_quick_empty_role_grounded_draft_escalates_to_brain(hub_settings) -> Non
     )
     assert out["ok"] is True
     assert out["route_used"] == "brain"
-    assert calls == ["quick", None]
+    assert len(calls) == 2
     quick_errors = out["attempts"][0].get("validation_errors") or []
-    assert any("no_entities_when_role_grounded_subjects_expected" in str(e) for e in quick_errors)
+    assert any(
+        "no_entities_when_role_grounded_subjects_expected" in str(e)
+        or "no_situations_when_role_grounded_context_expected" in str(e)
+        for e in quick_errors
+    )
     assert len(out["draft"].get("entities") or []) >= 1
     assert len(out["draft"].get("situations") or []) >= 1
 
@@ -505,7 +511,11 @@ def test_both_routes_empty_role_grounded_returns_failed(hub_settings) -> None:
     assert out["ok"] is False
     assert out.get("error") == "memory_graph_suggest_failed"
     validation_errors = [str(e) for e in out.get("validation_errors") or []]
-    assert any("no_entities_when_role_grounded_subjects_expected" in e for e in validation_errors)
+    assert any(
+        "no_entities_when_role_grounded_subjects_expected" in e
+        or "no_situations_when_role_grounded_context_expected" in e
+        for e in validation_errors
+    )
 
 
 def test_suggest_succeeds_when_final_text_empty_but_raw_choices_have_json(

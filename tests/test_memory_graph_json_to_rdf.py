@@ -19,6 +19,38 @@ def test_draft_graph_has_situation_and_min_triples() -> None:
     assert len(sits) >= 1
 
 
+def test_disposition_without_id_gets_valid_uuid_fallback() -> None:
+    draft = SuggestDraftV1.model_validate(
+        {
+            "ontology_version": "orionmem-2026-05",
+            "utterance_ids": ["t1"],
+            "entities": [
+                {
+                    "id": "urn:uuid:a0000001-0000-4000-8000-000000000001",
+                    "label": "Holder",
+                    "entityKind": "person",
+                },
+                {
+                    "id": "urn:uuid:a0000002-0000-4000-8000-000000000002",
+                    "label": "Target",
+                    "entityKind": "person",
+                },
+            ],
+            "dispositions": [
+                {
+                    "holder_id": "urn:uuid:a0000001-0000-4000-8000-000000000001",
+                    "target_id": "urn:uuid:a0000002-0000-4000-8000-000000000002",
+                    "trustPolarity": "positive",
+                }
+            ],
+            "utterance_text_by_id": {"t1": "trusts them"},
+        }
+    )
+    g = draft_to_graph(draft)
+    disps = list(g.subjects(RDF.type, ORIONMEM.AffectiveDisposition))
+    assert len(disps) == 1
+
+
 def test_revision_batch_tags_edge_endpoints() -> None:
     raw = json.loads(Path("tests/fixtures/memory_graph/joey_cats_draft.json").read_text(encoding="utf-8"))
     draft = SuggestDraftV1.model_validate(raw)

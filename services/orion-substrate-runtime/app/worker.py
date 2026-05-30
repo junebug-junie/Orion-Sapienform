@@ -46,11 +46,32 @@ class BiometricsSubstrateWorker:
             self._bus = OrionBusAsync(url=s.orion_bus_url)
             await self._bus.connect()
         asyncio.create_task(self._poll_loop(), name="biometrics-substrate-poll")
+        asyncio.create_task(self._prune_loop(), name="substrate-receipt-pruner")
 
     async def stop(self) -> None:
         self._stop.set()
         if self._bus is not None:
             await self._bus.close()
+
+    async def _prune_loop(self) -> None:
+        interval = float(self._settings.receipt_prune_interval_sec)
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._prune_tick)
+            except Exception:
+                logger.exception("substrate_receipt_prune_failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+    def _prune_tick(self) -> None:
+        from app.receipt_pruner import log_receipt_pressure, run_safe_prune
+
+        run_safe_prune(self._store._engine)
+        log_receipt_pressure(self._store._engine, self._settings)
 
     async def _poll_loop(self) -> None:
         while not self._stop.is_set():

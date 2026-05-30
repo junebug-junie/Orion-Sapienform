@@ -1,6 +1,7 @@
 profile_id: story_weave
 profile: story_weave
-vector_top_k: 8
+enable_vector: false
+vector_top_k: 0
 rdf_top_k: 4
 max_per_source: 3
 max_total_items: 12
@@ -12,7 +13,7 @@ sql_since_minutes: 1440
 sql_top_k: 24
 relevance:
   backend_weights:
-    vector: 1.0
+    vector: 0.0
     sql_timeline: 0.9
     sql_chat: 0.6
     rdf_chat: 0.55

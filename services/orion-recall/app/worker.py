@@ -25,7 +25,7 @@ try:
     from .fusion import fuse_candidates
     from .profiles import get_profile
     from .settings import settings
-    from .source_policy import build_vector_policy, log_vector_skipped, recall_vector_allowed
+    from .source_policy import build_vector_policy
     from .storage.rdf_adapter import (
         fetch_rdf_fragments,
         fetch_rdf_expansion_terms,
@@ -36,7 +36,6 @@ try:
         fetch_rdf_chatturn_fragments,
         fetch_rdf_chatturn_exact_matches,
     )
-    from .storage.vector_adapter import fetch_vector_fragments, fetch_vector_exact_matches
     from .sql_timeline import fetch_recent_fragments, fetch_related_by_entities, fetch_exact_fragments
     from .sql_chat import fetch_chat_history_pairs, fetch_chat_messages
     from .cards_adapter import fetch_card_fragments_guarded
@@ -48,7 +47,7 @@ except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
         from app.fusion import fuse_candidates  # type: ignore
         from app.profiles import get_profile  # type: ignore
         from app.settings import settings  # type: ignore
-        from app.source_policy import build_vector_policy, log_vector_skipped, recall_vector_allowed  # type: ignore
+        from app.source_policy import build_vector_policy  # type: ignore
         from app.storage.rdf_adapter import (  # type: ignore
             fetch_rdf_fragments,
             fetch_rdf_expansion_terms,
@@ -59,7 +58,6 @@ except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
             fetch_rdf_chatturn_fragments,
             fetch_rdf_chatturn_exact_matches,
         )
-        from app.storage.vector_adapter import fetch_vector_fragments, fetch_vector_exact_matches  # type: ignore
         from app.sql_timeline import fetch_recent_fragments, fetch_related_by_entities, fetch_exact_fragments  # type: ignore
         from app.sql_chat import fetch_chat_history_pairs, fetch_chat_messages  # type: ignore
         from app.cards_adapter import fetch_card_fragments_guarded  # type: ignore
@@ -569,28 +567,7 @@ async def _fetch_anchor_candidates(
     except Exception as exc:
         logger.debug(f"sql anchor fetch skipped: {exc}")
 
-    vec_allowed, vec_policy = recall_vector_allowed(profile, settings, path="anchor")
-    if vec_allowed:
-        try:
-            vec = fetch_vector_exact_matches(
-                tokens=tokens,
-                max_items=limit,
-                session_id=session_id,
-                profile_name=profile.get("profile"),
-                node_id=node_id,
-                exclude_ids=exclusion.get("active_turn_ids"),
-                exclude_text=exclusion.get("active_turn_text"),
-            )
-            counts["vector_anchor"] = len(vec)
-            for item in vec:
-                item = dict(item)
-                item["tags"] = list(item.get("tags") or []) + ["anchor_exact"]
-                item["score"] = max(0.95, float(item.get("score") or 0.0))
-                candidates.append(item)
-        except Exception as exc:
-            logger.debug(f"vector anchor fetch skipped: {exc}")
-    elif diagnostic:
-        log_vector_skipped("anchor", vec_policy, logger)
+    counts["vector_anchor"] = 0
 
     if _rdf_enabled(profile) and settings.RECALL_RDF_ENDPOINT_URL:
         try:
@@ -695,56 +672,7 @@ async def _query_backends(
             logger.debug(f"rdf backend skipped: {exc}")
 
 
-    vec_allowed, vec_policy = recall_vector_allowed(profile, settings, path="main")
-    if vec_allowed:
-        seeds = [fragment, *entities]
-        expansions = expansion_terms[:6]
-        vector_queries: List[str] = []
-        seen = set()
-        for term in [*seeds, *expansions]:
-            cleaned = (term or "").strip()
-            if not cleaned or cleaned in seen:
-                continue
-            seen.add(cleaned)
-            vector_queries.append(cleaned)
-            if len(vector_queries) >= 4:
-                break
-        if not vector_queries:
-            vector_queries = [fragment]
-        per_query = max(1, int(profile.get("vector_top_k", settings.RECALL_DEFAULT_MAX_ITEMS)) // len(vector_queries))
-        vec_count = 0
-        raw_vector_filters = profile.get("vector_meta_filters")
-        vector_filters = raw_vector_filters if isinstance(raw_vector_filters, dict) else None
-        for term in vector_queries:
-            try:
-                vec = fetch_vector_fragments(
-                    query_text=term,
-                    time_window_days=settings.RECALL_DEFAULT_TIME_WINDOW_DAYS,
-                    max_items=per_query,
-                    session_id=session_id,
-                    profile_name=profile.get("profile"),
-                    node_id=node_id,
-                    metadata_filters=vector_filters,
-                    exclude_ids=exclusion.get("active_turn_ids"),
-                    exclude_text=exclusion.get("active_turn_text"),
-                )
-                vec_count += len(vec)
-                candidates.extend(vec)
-            except Exception as exc:
-                logger.debug(f"vector backend skipped: {exc}")
-        backend_counts["vector"] = vec_count
-        if diagnostic:
-            logger.info(
-                "recall expansions profile=%s session_id=%s seeds=%s expansions=%s vector_queries=%s vector_count=%s",
-                profile.get("profile"),
-                session_id,
-                seeds,
-                expansions,
-                vector_queries,
-                vec_count,
-            )
-    elif diagnostic:
-        log_vector_skipped("main", vec_policy, logger)
+    backend_counts["vector"] = 0
 
     if diagnostic:
         logger.info(
@@ -1049,7 +977,7 @@ async def process_recall(
     exclusion = _parse_exclusion(q)
     source_gating: Dict[str, str] = {}
     vector_policy = build_vector_policy(profile, settings)
-    source_gating["vector"] = "enabled" if vector_policy.get("main", {}).get("allowed") else "disabled_by_profile_or_global"
+    source_gating["vector"] = "removed_from_orion_recall"
     source_gating["sql_timeline"] = "enabled" if _sql_timeline_enabled_for_profile(profile) else "disabled_by_profile_or_global"
     source_gating["sql_chat"] = "enabled" if _sql_chat_enabled_for_profile(profile) else "disabled_by_profile_or_global"
     source_gating["rdf"] = "enabled" if _rdf_enabled(profile) else "disabled_by_profile_or_global"
@@ -1230,74 +1158,8 @@ async def process_recall(
                     candidates.extend(rdf_connected)
             except Exception as exc:
                 logger.debug(f"rdf backend skipped: {exc}")
-        graphtri_vec_allowed, graphtri_vec_policy = recall_vector_allowed(profile, settings, path="graphtri")
-        if graphtri_vec_allowed:
-            source_gating["vector"] = "enabled"
-            vector_top_k = int(profile.get("vector_top_k", settings.RECALL_DEFAULT_MAX_ITEMS))
-            per_query = max(1, vector_top_k // max(1, len(vector_queries)))
-            seen_vec = set()
-            vec_count = 0
-            vector_candidates: List[Dict[str, Any]] = []
-            raw_vector_filters = profile.get("vector_meta_filters")
-            vector_filters = raw_vector_filters if isinstance(raw_vector_filters, dict) else None
-            for term in vector_queries:
-                try:
-                    vec = fetch_vector_fragments(
-                        query_text=term,
-                        time_window_days=settings.RECALL_DEFAULT_TIME_WINDOW_DAYS,
-                        max_items=per_query,
-                        session_id=effective_session_id,
-                        profile_name=profile.get("profile"),
-                        node_id=q.node_id,
-                        metadata_filters=vector_filters,
-                        exclude_ids=exclusion.get("active_turn_ids"),
-                        exclude_text=exclusion.get("active_turn_text"),
-                    )
-                except Exception as exc:
-                    logger.debug(f"vector backend skipped: {exc}")
-                    continue
-                for item in vec:
-                    item = dict(item)
-                    item["meta"] = dict(item.get("meta") or {})
-                    item["meta"]["vector_query"] = term
-                    vector_candidates.append(item)
-
-            vector_candidates_total = len(vector_candidates)
-            rerank_weights = {"anchor_overlap": 0.15, "artifact_density": 0.10}
-            reranked: List[Dict[str, Any]] = []
-            for item in vector_candidates:
-                item_id = item.get("id") or item.get("uri")
-                if item_id in seen_vec:
-                    continue
-                seen_vec.add(item_id)
-                text = str(item.get("text") or item.get("snippet") or "")
-                anchor_count = _anchor_overlap(text, anchor_terms)
-                density = _artifact_density(text)
-                base = float(item.get("score") or 0.0)
-                item["meta"]["anchor_overlap"] = anchor_count
-                item["meta"]["artifact_density"] = density
-                item["score"] = base + rerank_weights["anchor_overlap"] * anchor_count + rerank_weights["artifact_density"] * density
-                reranked.append(item)
-
-            reranked.sort(key=lambda x: float(x.get("score") or 0.0), reverse=True)
-            for item in reranked[:vector_top_k]:
-                candidates.append(item)
-                vec_count += 1
-
-            backend_counts_total["vector"] = vec_count
-            if diagnostic:
-                logger.info(
-                    "graphtri vector rerank queries_used=%s total=%s deduped=%s top_anchors=%s weights=%s",
-                    vector_queries,
-                    vector_candidates_total,
-                    len(reranked),
-                    anchor_terms[:6],
-                    rerank_weights,
-                )
-
-        elif diagnostic:
-            source_gating["vector"] = "disabled_by_profile_or_global"
-            log_vector_skipped("graphtri", graphtri_vec_policy, logger)
+        source_gating["vector"] = "removed_from_orion_recall"
+        backend_counts_total["vector"] = 0
 
         sql_attempted = False
         sql_session_id = effective_session_id

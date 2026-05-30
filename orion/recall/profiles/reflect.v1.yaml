@@ -1,5 +1,6 @@
 profile: reflect.v1
-vector_top_k: 12
+enable_vector: false
+vector_top_k: 0
 rdf_top_k: 8
 max_per_source: 4
 max_total_items: 24
@@ -12,7 +13,7 @@ sql_since_minutes: 10080
 sql_top_k: 200
 relevance:
   backend_weights:
-    vector: 1.0
+    vector: 0.0
     sql_timeline: 0.9
     sql_chat: 0.6
     rdf_chat: 0.55

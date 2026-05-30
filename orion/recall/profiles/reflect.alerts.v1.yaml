@@ -1,13 +1,14 @@
 profile: reflect.alerts.v1
+enable_vector: false
 
-vector_top_k: 10
+vector_top_k: 0
 rdf_top_k: 6
 sql_top_k: 250
 sql_since_minutes: 10080
 
 relevance:
   backend_weights:
-    vector: 0.8
+    vector: 0.0
     sql_timeline: 1.0
     sql_chat: 0.8
     rdf_chat: 0.6

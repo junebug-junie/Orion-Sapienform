@@ -10,7 +10,7 @@ def run_recall_pipeline(query: RecallQuery) -> RecallResult:
     """
     End-to-end recall pipeline:
 
-    1. Collect candidate fragments from SQL, vector, RDF.
+    1. Collect candidate fragments from SQL and RDF.
     2. Score them with semantic + salience + recency.
     3. Return a pruned, ranked RecallResult.
     """

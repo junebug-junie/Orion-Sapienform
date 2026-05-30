@@ -33,7 +33,7 @@ let socket;
 let wsReadyResolve = null;
 let wsReadyPromise = null;
 let recordingStream = null;
-/** @type {{ source: MediaStreamAudioSourceNode, processor: ScriptProcessorNode, gain: GainNode, chunks: Float32Array[], active: boolean } | null} */
+/** @type {{ source: MediaStreamAudioSourceNode, processor: ScriptProcessorNode, gain: GainNode, chunks: Float32Array[], capturing: boolean, flushing: boolean } | null} */
 let pcmCapture = null;
 /** @type {{ generation: number, stopRequested: boolean, starting: boolean }} */
 let voiceCapture = { generation: 0, stopRequested: false, starting: false };
@@ -10639,9 +10639,18 @@ loadDismissedIds();
     return merged;
   }
 
+  function _measureFloatPeak(pcm) {
+    let peak = 0;
+    for (let i = 0; i < pcm.length; i += 1) {
+      peak = Math.max(peak, Math.abs(pcm[i]));
+    }
+    return peak;
+  }
+
   /** PCM float32 → 16 kHz mono WAV base64 with capture telemetry (warn on low peak, do not block send). */
   async function _pcmToWavBase64(pcm, sampleRate, chunkCount) {
     const sourceSampleRate = sampleRate || 48000;
+    const sourcePeak = _measureFloatPeak(pcm);
     const ctx = audioContext || new (window.AudioContext || window.webkitAudioContext)();
     const buffer = ctx.createBuffer(1, pcm.length, sourceSampleRate);
     buffer.getChannelData(0).set(pcm);
@@ -10680,6 +10689,7 @@ loadDismissedIds();
         rms,
         pcm_samples: pcm.length,
         chunk_count: chunkCount,
+        source_peak: sourcePeak,
         client_peak_threshold: VOICE_CLIENT_PEAK_MIN,
         client_gate: clientGate,
       },
@@ -10690,7 +10700,8 @@ loadDismissedIds();
     if (!pcmCapture) {
       return;
     }
-    pcmCapture.active = false;
+    pcmCapture.capturing = false;
+    pcmCapture.flushing = false;
     try {
       pcmCapture.processor.disconnect();
       pcmCapture.source.disconnect();
@@ -10745,8 +10756,11 @@ loadDismissedIds();
       audioMeta.duration_sec.toFixed(2),
       audioMeta.client_gate,
     );
-    if (audioMeta.client_gate === 'empty') {
-      updateStatus('No audio chunks captured — browser did not deliver mic frames.');
+    if (audioMeta.client_gate === 'empty' || (audioMeta.source_peak === 0 && audioMeta.peak === 0)) {
+      updateStatus(
+        'No microphone signal in capture — check OS input device, browser mic permission, and input level.',
+      );
+      console.warn('[voice] silent capture source_peak=0 chunk_count=%d', audioMeta.chunk_count);
       return;
     }
     if (audioMeta.client_gate === 'low_peak_warn') {
@@ -10807,17 +10821,22 @@ loadDismissedIds();
   }
 
   function _finishVoiceStop() {
-    if (!pcmCapture || !pcmCapture.active) {
+    if (!pcmCapture || !pcmCapture.capturing) {
       recordButton.classList.remove('pulse');
       return;
     }
-    pcmCapture.active = false;
-    // Let ScriptProcessor flush one more buffer.
-    setTimeout(() => _finalizePcmCapture(), VOICE_PCM_FLUSH_MS);
+    pcmCapture.flushing = true;
+    // Keep capturing=true so ScriptProcessor keeps delivering buffers during flush.
+    setTimeout(() => {
+      if (pcmCapture) {
+        pcmCapture.capturing = false;
+      }
+      _finalizePcmCapture();
+    }, VOICE_PCM_FLUSH_MS);
   }
 
   async function startRecording() {
-    if (pcmCapture && pcmCapture.active) {
+    if (pcmCapture && pcmCapture.capturing) {
       return;
     }
     const captureGen = ++voiceCapture.generation;
@@ -10834,7 +10853,8 @@ loadDismissedIds();
       }
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: true,
+          channelCount: 1,
+          echoCancellation: false,
           noiseSuppression: false,
           autoGainControl: true,
         },
@@ -10856,14 +10876,19 @@ loadDismissedIds();
         processor,
         gain,
         chunks: [],
-        active: true,
+        capturing: true,
+        flushing: false,
         sampleRate: audioContext.sampleRate,
       };
       processor.onaudioprocess = e => {
-        if (!pcmCapture || !pcmCapture.active) {
+        if (!pcmCapture || !pcmCapture.capturing) {
           return;
         }
-        pcmCapture.chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+        const input = e.inputBuffer.getChannelData(0);
+        const output = e.outputBuffer.getChannelData(0);
+        // Required in Chromium: without copying input→output, inputBuffer is often silent.
+        output.set(input);
+        pcmCapture.chunks.push(new Float32Array(input));
       };
       source.connect(processor);
       processor.connect(gain);
@@ -10885,7 +10910,7 @@ loadDismissedIds();
 
   function stopRecording() {
     voiceCapture.stopRequested = true;
-    if (!pcmCapture || !pcmCapture.active) {
+    if (!pcmCapture || !pcmCapture.capturing) {
       recordButton.classList.remove('pulse');
       if (voiceCapture.starting) {
         updateStatus('Mic not ready in time — hold the button a moment longer.');

@@ -115,11 +115,24 @@ class STTEngine:
             raise RuntimeError(f"ffmpeg convert failed: {stderr_tail or proc.returncode}")
         return out.name
 
+    @staticmethod
+    def _client_suggests_speech(client_audio_meta: dict | None) -> bool:
+        if not isinstance(client_audio_meta, dict):
+            return False
+        raw = client_audio_meta.get("source_peak")
+        if raw is None:
+            raw = client_audio_meta.get("peak")
+        try:
+            return float(raw) >= 0.00025
+        except (TypeError, ValueError):
+            return False
+
     def transcribe(
         self,
         audio_b64: str,
         language: str = "en",
         audio_format: str = "wav",
+        client_audio_meta: dict | None = None,
     ) -> tuple[str, dict]:
         fmt = (audio_format or "wav").lower().strip()
         peak_threshold = _peak_threshold()
@@ -148,6 +161,10 @@ class STTEngine:
                 temp_in.flush()
                 src_path = temp_in.name
 
+            input_peak = 0
+            if suffix == ".wav":
+                _, input_peak = self._measure_wav_levels(src_path)
+
             wav_path = self._canonicalize_wav(src_path)
 
             wav_size = Path(wav_path).stat().st_size if wav_path else 0
@@ -165,6 +182,7 @@ class STTEngine:
             meta = {
                 "input_bytes": len(audio_bytes),
                 "input_format": fmt,
+                "input_peak": input_peak,
                 "wav_bytes": wav_size,
                 "duration_sec": round(duration_sec, 3),
                 "peak": peak,
@@ -173,14 +191,28 @@ class STTEngine:
                 "silence_gate": "passed",
             }
             if peak < peak_threshold:
-                meta["silence_gate"] = "rejected"
-                logger.warning(
-                    "[STT] near-silent input peak=%d rms=%.1f threshold=%d",
-                    peak,
-                    rms,
-                    peak_threshold,
-                )
-                return "", meta
+                if (
+                    input_peak >= peak_threshold
+                    or self._client_suggests_speech(client_audio_meta)
+                ):
+                    logger.warning(
+                        "[STT] canonical peak=%d below threshold=%d but "
+                        "input_peak=%d or client meta suggests speech; running Whisper",
+                        peak,
+                        peak_threshold,
+                        input_peak,
+                    )
+                    meta["silence_gate"] = "passed_client_override"
+                else:
+                    meta["silence_gate"] = "rejected"
+                    logger.warning(
+                        "[STT] near-silent input peak=%d input_peak=%d rms=%.1f threshold=%d",
+                        peak,
+                        input_peak,
+                        rms,
+                        peak_threshold,
+                    )
+                    return "", meta
             result = self.model.transcribe(
                 wav_path,
                 language=language,

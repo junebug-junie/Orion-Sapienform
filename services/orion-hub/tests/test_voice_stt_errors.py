@@ -31,6 +31,15 @@ def test_empty_transcript_browser_no_chunks() -> None:
     assert msg == "Browser did not capture microphone frames."
 
 
+def test_empty_transcript_stt_rejected_with_client_signal_hint() -> None:
+    msg = empty_transcript_error_message(
+        client_audio_meta={"chunk_count": 40, "source_peak": 0.01, "client_gate": "passed"},
+        stt_meta={"peak": 0, "silence_gate": "rejected", "peak_threshold": 50},
+        audio_byte_len=5000,
+    )
+    assert "hard-refresh" in msg.lower()
+
+
 def test_empty_transcript_stt_rejected() -> None:
     msg = empty_transcript_error_message(
         client_audio_meta={"chunk_count": 40, "client_gate": "low_peak_warn"},

@@ -69,10 +69,16 @@ async def stt_listener_worker(bus: OrionBusAsync) -> None:
 
                 def _transcribe() -> tuple[str, dict]:
                     engine = get_stt_engine()
+                    client_meta = None
+                    if request.options and isinstance(request.options, dict):
+                        raw = request.options.get("client_audio_meta")
+                        if isinstance(raw, dict):
+                            client_meta = raw
                     return engine.transcribe(
                         request.audio_b64,
                         language=request.language or "en",
                         audio_format=request.format or "wav",
+                        client_audio_meta=client_meta,
                     )
 
                 text, meta = await asyncio.wait_for(

@@ -129,6 +129,25 @@ def test_transcribe_tone_calls_whisper(tmp_path: Path, stt_engine) -> None:
     engine.model.transcribe.assert_called_once()
 
 
+def test_transcribe_client_override_when_server_peak_zero(tmp_path: Path, stt_engine) -> None:
+    engine, _mod = stt_engine
+    wav_path = tmp_path / "silent.wav"
+    _write_pcm16_wav(wav_path, [0] * 3200)
+    audio_b64 = base64.b64encode(wav_path.read_bytes()).decode()
+    client_meta = {"source_peak": 0.05, "chunk_count": 40, "client_gate": "passed"}
+
+    text, meta = engine.transcribe(
+        audio_b64,
+        language="en",
+        audio_format="wav",
+        client_audio_meta=client_meta,
+    )
+
+    assert text == "hello world"
+    assert meta["silence_gate"] == "passed_client_override"
+    engine.model.transcribe.assert_called_once()
+
+
 def test_transcribe_empty_payload(stt_engine) -> None:
     engine, _mod = stt_engine
     text, meta = engine.transcribe("", language="en", audio_format="wav")

@@ -9,6 +9,7 @@ ALLOWED_CLIENT_AUDIO_META_KEYS = frozenset(
         "target_sample_rate",
         "duration_sec",
         "peak",
+        "source_peak",
         "rms",
         "pcm_samples",
         "chunk_count",
@@ -69,6 +70,19 @@ def empty_transcript_error_message(
         threshold_num = None
 
     if silence_gate == "rejected" and peak_num is not None and threshold_num is not None:
+        client_src = None
+        if isinstance(client_audio_meta, dict):
+            client_src = client_audio_meta.get("source_peak")
+            if client_src is None:
+                client_src = client_audio_meta.get("peak")
+        try:
+            if client_src is not None and float(client_src) >= 0.00025:
+                return (
+                    "STT measured silence after decode (peak=0) but the browser captured "
+                    "a signal — hard-refresh Hub (Ctrl+Shift+R) and retry recording."
+                )
+        except (TypeError, ValueError):
+            pass
         return (
             f"STT rejected near-silent audio: peak={int(peak_num)}, "
             f"threshold={int(threshold_num)}."

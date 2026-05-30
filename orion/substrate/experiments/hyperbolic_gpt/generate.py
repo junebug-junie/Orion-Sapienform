@@ -35,7 +35,11 @@ def main() -> None:
 
     config = HyperbolicGPTConfig.load_json(ckpt_dir / "config.json")
     model = HyperbolicGPT(config).to(device)
-    payload = torch.load(ckpt_dir / "model.pt", map_location=device, weights_only=False)
+    ckpt_path = ckpt_dir / "model.pt"
+    try:
+        payload = torch.load(ckpt_path, map_location=device, weights_only=True)
+    except TypeError:
+        payload = torch.load(ckpt_path, map_location=device)
     model.load_state_dict(payload["model"])
     model.eval()
 

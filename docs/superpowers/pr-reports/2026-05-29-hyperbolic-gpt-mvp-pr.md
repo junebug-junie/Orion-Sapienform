@@ -2,78 +2,84 @@
 
 **Branch:** `feat/hyperbolic-gpt-mvp`  
 **Base:** `main`  
-**Worktree:** `.worktrees/feat-hyperbolic-gpt-mvp`
+**Compare:** https://github.com/junebug-junie/Orion-Sapienform/compare/main...feat/hyperbolic-gpt-mvp
 
 ## Summary
 
 Adds a self-contained research experiment at `orion/substrate/experiments/hyperbolic_gpt/`: a tiny decoder-only GPT where **Poincaré distance is subtracted from attention logits inside `HyperbolicCausalSelfAttention.forward`** (before causal mask and softmax), not as post-hoc analysis.
 
-Includes hand-rolled Poincaré ball math, GPT-2 tokenizer + TinyStories/text training, AMP, single-node **DDP via torchrun**, smoke test, and generation CLI. No Docker, bus, or service wiring.
+- Hand-rolled Poincaré ball math (`hyperbolic.py`), fp32 geo ops in attention, fp16 AMP elsewhere
+- Training on TinyStories or local text (GPT-2 tokenizer)
+- Single-node **DDP** via `torchrun` (rank-0 checkpoints, `model.module.state_dict()`)
+- Smoke test, generation CLI, shell scripts
+- No Docker, bus, or service changes
 
 ## Files changed
 
 | File | Change |
 |------|--------|
 | `docs/superpowers/plans/2026-05-29-hyperbolic-gpt-mvp.md` | Implementation plan |
+| `docs/superpowers/pr-reports/2026-05-29-hyperbolic-gpt-mvp-pr.md` | This report |
 | `orion/substrate/experiments/__init__.py` | Package marker |
-| `orion/substrate/experiments/hyperbolic_gpt/*` | MVP module (config, hyperbolic, model, data, train, generate, smoke_test, README, scripts) |
+| `orion/substrate/experiments/hyperbolic_gpt/config.py` | `HyperbolicGPTConfig` |
+| `orion/substrate/experiments/hyperbolic_gpt/hyperbolic.py` | Poincaré primitives + pairwise distances |
+| `orion/substrate/experiments/hyperbolic_gpt/model.py` | `HyperbolicGPT` + hyperbolic causal attention |
+| `orion/substrate/experiments/hyperbolic_gpt/data.py` | Tokenizer, TinyStories/text, sharding |
+| `orion/substrate/experiments/hyperbolic_gpt/train.py` | AMP, DDP, checkpoints |
+| `orion/substrate/experiments/hyperbolic_gpt/generate.py` | Sampling from checkpoint |
+| `orion/substrate/experiments/hyperbolic_gpt/smoke_test.py` | Forward/backward/generate sanity |
+| `orion/substrate/experiments/hyperbolic_gpt/README.md` | Usage, memory/DDP notes |
+| `orion/substrate/experiments/hyperbolic_gpt/requirements.txt` | torch, transformers, datasets, … |
+| `orion/substrate/experiments/hyperbolic_gpt/scripts/*.sh` | smoke, train, generate wrappers |
 
-**Not changed:** services, docker-compose, `orion/bus/channels.yaml`, `orion/schemas/registry.py`, root `requirements.txt`.
+**Not changed:** `services/*`, docker-compose, `orion/bus/channels.yaml`, `orion/schemas/registry.py`, root `requirements.txt`.
 
-## Core attention modification
+## Attention modification
 
 ```text
 attn_logits = (Q @ K^T / sqrt(d)) - softplus(λ) * d_Poincaré(expmap0(q_geo), expmap0(k_geo))
-attn = softmax(mask(attn_logits)) @ V
+attn = softmax(causal_mask(attn_logits)) @ V
 ```
 
-Hyperbolic ops run in fp32 inside the attention block; outer training may use fp16 AMP.
+## Code review
 
-## Verification
+- **Verdict:** APPROVED (research MVP)
+- **Smoke test:** `SMOKE TEST PASSED` (CPU; host P100/P4 incompatible with default torch CUDA wheels)
+- **Follow-ups applied:** `--seed`, `--max_tokens`, README memory/DDP eval notes, batch 16 in train script, safer `torch.load`, eval shard + optimizer-step semantics from prior review
 
-```bash
-cd .worktrees/feat-hyperbolic-gpt-mvp
-pip install -r orion/substrate/experiments/hyperbolic_gpt/requirements.txt
-export PYTHONPATH=.
-CUDA_VISIBLE_DEVICES= python3 orion/substrate/experiments/hyperbolic_gpt/smoke_test.py
-# => SMOKE TEST PASSED
+## Test plan
 
-python3 orion/substrate/experiments/hyperbolic_gpt/train.py \
-  --dataset text --text_path /path/to/corpus.txt \
-  --max_steps 2 --device cpu --no-amp ...
-# => training complete
-```
-
-**Note:** Host GPUs (P100/P4) may be incompatible with default PyTorch CUDA wheels; smoke test auto-falls back to CPU when CUDA init fails.
+- [x] `PYTHONPATH=. CUDA_VISIBLE_DEVICES= python3 orion/substrate/experiments/hyperbolic_gpt/smoke_test.py`
+- [x] CPU `train.py` dry-run (2 optimizer steps on local text)
+- [ ] Optional: 10k-step DDP TinyStories on CUDA GPUs with compatible PyTorch (e.g. V100+)
 
 ## Commands
+
+### Setup
+
+```bash
+cd /path/to/Orion-Sapienform/.worktrees/feat-hyperbolic-gpt-mvp
+pip install -r orion/substrate/experiments/hyperbolic_gpt/requirements.txt
+export PYTHONPATH=.
+```
 
 ### Smoke test
 
 ```bash
-export PYTHONPATH=.
 CUDA_VISIBLE_DEVICES= python3 orion/substrate/experiments/hyperbolic_gpt/smoke_test.py
-```
-
-### Single-GPU / CPU training
-
-```bash
-export PYTHONPATH=.
-python3 orion/substrate/experiments/hyperbolic_gpt/train.py \
-  --dataset tinystories --device cuda --amp
 ```
 
 ### DDP TinyStories (2 GPU)
 
 ```bash
-export PYTHONPATH=.
 CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc_per_node=2 \
   orion/substrate/experiments/hyperbolic_gpt/train.py \
   --dataset tinystories \
   --max_docs 50000 \
+  --max_tokens 5000000 \
   --out_dir ./runs/tinystories_hypgpt_4l_256d \
   --max_steps 10000 \
-  --batch_size 32 \
+  --batch_size 16 \
   --block_size 256 \
   --n_layer 4 \
   --n_head 4 \
@@ -86,13 +92,24 @@ CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc_per_node=2 \
 
 Or: `bash orion/substrate/experiments/hyperbolic_gpt/scripts/train_tinystories.sh`
 
-## Test plan
+### Single-GPU
 
-- [x] `smoke_test.py` — forward, backward, short generate, no NaNs (CPU)
-- [x] `train.py` — 2-step CPU dry-run on local text
-- [ ] Optional: full 10k-step DDP TinyStories on CUDA-capable GPUs (V100+ with matching torch build)
+```bash
+python3 orion/substrate/experiments/hyperbolic_gpt/train.py \
+  --dataset tinystories --device cuda --amp
+```
+
+### Generate
+
+```bash
+python3 orion/substrate/experiments/hyperbolic_gpt/generate.py \
+  --checkpoint ./runs/tinystories_hypgpt_4l_256d \
+  --prompt "Once upon a time" --max_new_tokens 120 --temperature 0.9 --top_k 40
+```
 
 ## Known limitations
 
-- TinyStories still materializes tokens per process; `--max_docs` caps RAM (default 50k in shell script).
-- Research code; no Euclidean baseline or benchmark harness in this PR.
+- Hyperbolic pairwise distance is **O(B·H·T²·D)** memory in attention — tune batch size for 16GB GPUs.
+- TinyStories tokens are materialized per process; use `--max_docs` / `--max_tokens`.
+- DDP eval loss is a sharded estimate, not exact corpus NLL.
+- Research code; no Euclidean baseline in this PR.

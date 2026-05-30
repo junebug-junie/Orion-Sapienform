@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import sys
 from pathlib import Path
 
@@ -124,12 +125,27 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Cap TinyStories documents (limits RAM; useful for DDP smoke)",
     )
+    p.add_argument(
+        "--max_tokens",
+        type=int,
+        default=None,
+        help="Cap total token count after load (stronger RAM limit than max_docs)",
+    )
+    p.add_argument("--seed", type=int, default=42, help="RNG seed (offset per DDP rank)")
     return p.parse_args()
+
+
+def set_seed(seed: int) -> None:
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def main() -> None:
     args = parse_args()
     is_ddp, rank, world_size, local_rank = ddp_setup()
+    set_seed(args.seed + rank)
 
     if is_ddp:
         if not torch.cuda.is_available():
@@ -152,18 +168,20 @@ def main() -> None:
 
     if args.dataset == "tinystories":
         try:
-            all_ids = load_tinystories_tokens(max_docs=args.max_docs)
+            all_ids = load_tinystories_tokens(
+                max_docs=args.max_docs, max_tokens=args.max_tokens
+            )
         except Exception as exc:
             if not args.text_path:
                 raise RuntimeError(
                     "TinyStories unavailable; pass --text_path for local .txt fallback"
                 ) from exc
             ddp_print(rank, f"TinyStories failed ({exc}); using --text_path fallback")
-            all_ids = load_text_file_tokens(args.text_path)
+            all_ids = load_text_file_tokens(args.text_path, max_tokens=args.max_tokens)
     else:
         if not args.text_path:
             raise ValueError("--text_path required when --dataset text")
-        all_ids = load_text_file_tokens(args.text_path)
+        all_ids = load_text_file_tokens(args.text_path, max_tokens=args.max_tokens)
 
     train_ids, eval_ids = split_train_eval(all_ids)
     if is_ddp:

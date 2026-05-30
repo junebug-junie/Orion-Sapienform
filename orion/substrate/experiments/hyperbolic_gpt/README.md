@@ -55,7 +55,9 @@ CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc_per_node=2 \
   --dataset tinystories \
   --out_dir ./runs/tinystories_hypgpt_4l_256d \
   --max_steps 10000 \
-  --batch_size 32 \
+  --max_docs 50000 \
+  --max_tokens 5000000 \
+  --batch_size 16 \
   --block_size 256 \
   --n_layer 4 \
   --n_head 4 \
@@ -69,6 +71,12 @@ CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc_per_node=2 \
 Per-process batch size is `--batch_size`; effective global batch ≈ `batch_size × nproc_per_node × grad_accum`.
 
 Without `torchrun` env vars, `train.py` behaves as a normal single-process script.
+
+### Memory and eval notes
+
+- Hyperbolic attention builds pairwise distances with broadcast shape `(B, H, T, T, D)` — much heavier than dot-product attention alone. On 16GB GPUs, prefer `--batch_size 16` or lower (default in `train_tinystories.sh`).
+- `--max_docs` caps stories; `--max_tokens` caps the token list after encoding (stronger RAM bound).
+- Under DDP, logged **eval loss** is the mean of per-rank estimates on sharded eval tokens (`all_reduce`), not exact full-corpus NLL. Use for trend monitoring only.
 
 ## Target runs
 

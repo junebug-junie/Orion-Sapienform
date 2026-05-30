@@ -45,7 +45,16 @@ class TokenBlockIterable(IterableDataset):
             yield x, y
 
 
-def load_tinystories_tokens(max_docs: int | None = None) -> list[int]:
+def _truncate_tokens(ids: list[int], max_tokens: int | None) -> list[int]:
+    if max_tokens is not None and len(ids) > max_tokens:
+        return ids[:max_tokens]
+    return ids
+
+
+def load_tinystories_tokens(
+    max_docs: int | None = None,
+    max_tokens: int | None = None,
+) -> list[int]:
     from datasets import load_dataset
 
     ds = load_dataset("roneneldan/TinyStories", split="train", streaming=True)
@@ -56,15 +65,18 @@ def load_tinystories_tokens(max_docs: int | None = None) -> list[int]:
             break
         text = row.get("text") or row.get("story") or ""
         ids.extend(tok.encode(text + tok.eos_token))
+        if max_tokens is not None and len(ids) >= max_tokens:
+            ids = ids[:max_tokens]
+            break
     if len(ids) < 256:
         raise RuntimeError("TinyStories load produced too few tokens")
     return ids
 
 
-def load_text_file_tokens(path: str | Path) -> list[int]:
+def load_text_file_tokens(path: str | Path, max_tokens: int | None = None) -> list[int]:
     tok = load_gpt2_tokenizer()
     text = Path(path).read_text(encoding="utf-8")
-    return tok.encode(text + tok.eos_token)
+    return _truncate_tokens(tok.encode(text + tok.eos_token), max_tokens)
 
 
 def shard_token_ids(token_ids: list[int], rank: int, world_size: int) -> list[int]:

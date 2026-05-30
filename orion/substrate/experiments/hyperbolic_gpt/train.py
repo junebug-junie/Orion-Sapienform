@@ -118,6 +118,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", type=str, default=None)
     p.add_argument("--compile", action="store_true", default=False)
     p.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
+    p.add_argument(
+        "--max_docs",
+        type=int,
+        default=None,
+        help="Cap TinyStories documents (limits RAM; useful for DDP smoke)",
+    )
     return p.parse_args()
 
 
@@ -146,7 +152,7 @@ def main() -> None:
 
     if args.dataset == "tinystories":
         try:
-            all_ids = load_tinystories_tokens()
+            all_ids = load_tinystories_tokens(max_docs=args.max_docs)
         except Exception as exc:
             if not args.text_path:
                 raise RuntimeError(
@@ -162,23 +168,51 @@ def main() -> None:
     train_ids, eval_ids = split_train_eval(all_ids)
     if is_ddp:
         train_ids = shard_token_ids(train_ids, rank, world_size)
+        eval_ids = shard_token_ids(eval_ids, rank, world_size)
 
     model = HyperbolicGPT(config).to(device)
-    if args.compile and hasattr(torch, "compile"):
-        model = torch.compile(model)
     if is_ddp:
         model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+    if args.compile and hasattr(torch, "compile"):
+        model = torch.compile(model)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
     scaler = GradScaler(enabled=args.amp and device.type == "cuda")
 
     out_dir = Path(args.out_dir)
-    step = 0
+    opt_step = 0
+    micro_step = 0
     accum_loss = 0.0
+    loss_window = 0
     optimizer.zero_grad(set_to_none=True)
 
     batch_iter = iter_batches(train_ids, config.block_size, args.batch_size, device)
-    while step < args.max_steps:
+
+    def _optimizer_step() -> None:
+        nonlocal opt_step, accum_loss, loss_window
+        if scaler.is_enabled():
+            scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        if scaler.is_enabled():
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        opt_step += 1
+        if opt_step % 10 == 0:
+            ddp_print(rank, f"step {opt_step} loss {accum_loss / max(loss_window, 1):.4f}")
+            accum_loss = 0.0
+            loss_window = 0
+        if opt_step % args.eval_interval == 0:
+            ev = eval_loss(unwrap_model(model), eval_ids, config, device, args.batch_size)
+            ev_mean = reduce_mean_scalar(ev, device, is_ddp)
+            ddp_print(rank, f"eval step {opt_step} loss {ev_mean:.4f}")
+        if opt_step % args.save_interval == 0:
+            save_checkpoint(out_dir, model, config, rank)
+            ddp_print(rank, f"saved checkpoint to {out_dir}")
+
+    while opt_step < args.max_steps:
         try:
             x, y = next(batch_iter)
         except StopIteration:
@@ -187,6 +221,8 @@ def main() -> None:
 
         with autocast(enabled=args.amp and device.type == "cuda"):
             _, loss = model(x, y)
+            if not torch.isfinite(loss):
+                raise RuntimeError(f"non-finite loss at micro_step {micro_step}")
             loss = loss / args.grad_accum
 
         if scaler.is_enabled():
@@ -195,32 +231,14 @@ def main() -> None:
             loss.backward()
 
         accum_loss += float(loss.item()) * args.grad_accum
+        loss_window += 1
+        micro_step += 1
 
-        if (step + 1) % args.grad_accum == 0:
-            if scaler.is_enabled():
-                scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            if scaler.is_enabled():
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
+        if micro_step % args.grad_accum == 0:
+            _optimizer_step()
 
-        if (step + 1) % 10 == 0:
-            ddp_print(rank, f"step {step + 1} loss {accum_loss / 10:.4f}")
-            accum_loss = 0.0
-
-        if (step + 1) % args.eval_interval == 0:
-            ev = eval_loss(unwrap_model(model), eval_ids, config, device, args.batch_size)
-            ev_mean = reduce_mean_scalar(ev, device, is_ddp)
-            ddp_print(rank, f"eval step {step + 1} loss {ev_mean:.4f}")
-
-        if (step + 1) % args.save_interval == 0:
-            save_checkpoint(out_dir, model, config, rank)
-            ddp_print(rank, f"saved checkpoint to {out_dir}")
-
-        step += 1
+    if micro_step % args.grad_accum != 0 and opt_step < args.max_steps:
+        _optimizer_step()
 
     save_checkpoint(out_dir, model, config, rank)
     ddp_print(rank, "training complete")

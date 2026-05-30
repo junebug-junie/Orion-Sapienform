@@ -7,6 +7,7 @@ TRAIN="${ROOT}/orion/substrate/experiments/hyperbolic_gpt/train.py"
 CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc_per_node=2 \
   "${TRAIN}" \
   --dataset tinystories \
+  --max_docs 50000 \
   --out_dir ./runs/tinystories_hypgpt_4l_256d \
   --max_steps 10000 \
   --batch_size 32 \

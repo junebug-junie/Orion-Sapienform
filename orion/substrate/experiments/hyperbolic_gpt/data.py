@@ -64,7 +64,7 @@ def load_tinystories_tokens(max_docs: int | None = None) -> list[int]:
 def load_text_file_tokens(path: str | Path) -> list[int]:
     tok = load_gpt2_tokenizer()
     text = Path(path).read_text(encoding="utf-8")
-    return tok.encode(text)
+    return tok.encode(text + tok.eos_token)
 
 
 def shard_token_ids(token_ids: list[int], rank: int, world_size: int) -> list[int]:

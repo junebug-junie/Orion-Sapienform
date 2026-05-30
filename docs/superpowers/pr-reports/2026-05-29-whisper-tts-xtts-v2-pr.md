@@ -5,7 +5,9 @@
 
 ## Summary
 
-Upgrades `services/orion-whisper-tts` from single-speaker VITS to Coqui **XTTS-v2** as the default model, wiring `voice_id`, `language`, and `options` from the bus through `TTSEngine.synthesize_to_b64()` → `TTSOutput` with synthesis metadata on legacy and typed replies. Adds reference-voice support via `speaker_wav`, Docker voice-profile mount, smoke script, and README bus examples. Backend seam (`TTS_BACKEND`) is ready for future HTTP backends without touching the worker.
+Upgrades `services/orion-whisper-tts` from single-speaker VITS to Coqui **XTTS-v2** as the default model, wiring `voice_id`, `language`, and `options` from the bus through `TTSEngine.synthesize_to_b64()` → `TTSOutput` with synthesis metadata on legacy and typed replies. Adds reference-voice support via `speaker_wav`, Docker voice-profile mount, smoke/download scripts, and README bus examples. Backend seam (`TTS_BACKEND`) is ready for future HTTP backends without touching the worker.
+
+**Telemetry:** XTTS-v2 weights (~1.8 GB) pre-downloaded to `/mnt/telemetry/models/coqui/tts/tts_models--multilingual--multi-dataset--xtts_v2`.
 
 ## Files changed
 
@@ -13,81 +15,73 @@ Upgrades `services/orion-whisper-tts` from single-speaker VITS to Coqui **XTTS-v
 |------|--------|
 | `docs/superpowers/plans/2026-05-29-orion-whisper-tts-xtts-v2.md` | Implementation plan |
 | `services/orion-whisper-tts/app/settings.py` | New TTS env fields; XTTS-v2 defaults |
-| `services/orion-whisper-tts/app/tts.py` | `TTSOutput`, `resolve_synthesis_plan`, `CoquiBackend`, `TTSEngine` |
+| `services/orion-whisper-tts/app/tts.py` | `TTSOutput`, voice resolution, `CoquiBackend`, `TTSEngine`, torch.load shim |
 | `services/orion-whisper-tts/app/tts_worker.py` | Voice-aware synthesis + metadata replies |
-| `services/orion-whisper-tts/.env_example` | XTTS defaults, speaker modes, voice mount host dir |
-| `services/orion-whisper-tts/docker-compose.yml` | Env passthrough + `/models/voices` volume |
-| `services/orion-whisper-tts/README.md` | Runbook, smoke, bus payload examples |
+| `services/orion-whisper-tts/app/main.py` | Startup TTS config logging |
+| `services/orion-whisper-tts/.env_example` | XTTS defaults, `COQUI_TOS_AGREED`, voice mount |
+| `services/orion-whisper-tts/docker-compose.yml` | Env passthrough, voices volume, `COQUI_TOS_AGREED` |
+| `services/orion-whisper-tts/Dockerfile` | Pin `transformers<4.46` after torch install |
+| `services/orion-whisper-tts/requirements.txt` | `transformers>=4.33,<4.46` for XTTS + TTS 0.22 |
+| `services/orion-whisper-tts/README.md` | Runbook, pre-download, smoke, bus examples |
 | `services/orion-whisper-tts/scripts/smoke_xtts.py` | Container smoke synthesis |
+| `services/orion-whisper-tts/scripts/download_xtts_model.py` | Pre-download model to telemetry cache |
 | `services/orion-whisper-tts/tests/test_tts_voice_resolution.py` | Voice resolution + path containment |
-| `services/orion-whisper-tts/tests/test_tts_worker_replies.py` | Typed reply metadata |
+| `services/orion-whisper-tts/tests/test_tts_worker_replies.py` | Typed + legacy reply metadata |
 | `services/orion-whisper-tts/tests/test_tts_engine_settings.py` | Updated defaults / compose guards |
 
-**Not changed:** `orion/schemas/tts.py`, `orion/schemas/registry.py`, `orion/bus/channels.yaml` (already correct).
+**Not changed:** `orion/schemas/tts.py`, `orion/schemas/registry.py`, `orion/bus/channels.yaml`.
 
 ## Commands
 
-### Rebuild and run
+### Rebuild and run (required after merge — image must include transformers pin)
 
 ```bash
 cd services/orion-whisper-tts
-cp .env_example .env   # set ORION_BUS_URL, GPU as needed
+cp .env_example .env
 export PROJECT=orion
 docker compose build whisper-tts
 docker compose up -d whisper-tts
 docker compose logs whisper-tts | tail -n 80
 ```
 
-### Unit tests (host with deps)
+### Pre-download (already done on this host; idempotent)
 
 ```bash
-cd services/orion-whisper-tts
-python3 -m pytest tests/ -v
-python3 -m compileall app
+COQUI_TOS_AGREED=1 docker compose run --rm whisper-tts python3 scripts/download_xtts_model.py
 ```
 
-### Smoke (inside container; requires GPU + model cache)
+### Smoke
 
 ```bash
 docker compose exec whisper-tts python3 scripts/smoke_xtts.py
-docker compose exec whisper-tts ls -la /tmp/orion_xtts_smoke.wav
 ```
 
-### Bus legacy test (redis-cli)
+### Unit tests
 
 ```bash
-TRACE=$(uuidgen)
-REPLY="orion:tts:result:manual-${TRACE}"
-redis-cli -u "$ORION_BUS_URL" SUBSCRIBE "$REPLY" &
-sleep 1
-redis-cli -u "$ORION_BUS_URL" PUBLISH orion:tts:intake \
-  '{"kind":"legacy.message","payload":{"text":"Hello legacy","response_channel":"'"$REPLY"'","trace_id":"'"$TRACE"'"}}'
+cd services/orion-whisper-tts && python3 -m pytest tests/ -v
 ```
-
-### Typed bus test (Hub)
-
-Use `TTSClient.speak(TTSRequestPayload(...))` from `services/orion-hub/scripts/bus_clients/tts_client.py` with full payload (see README example with `options.speaker_wav`).
 
 ## Test plan
 
 - [x] `python3 -m compileall services/orion-whisper-tts/app orion/schemas`
-- [ ] `python3 -m pytest services/orion-whisper-tts/tests/ -v` (CI / venv with pydantic + pytest)
-- [ ] Container build on GPU host
-- [ ] Startup logs: backend, model, gpu
+- [x] XTTS-v2 weights on `/mnt/telemetry/models/coqui/tts` (~1.8 GB)
+- [x] Model load verified in container (transformers pin + `weights_only=False` shim)
+- [ ] `python3 -m pytest services/orion-whisper-tts/tests/ -v` in CI/venv
+- [ ] `docker compose build` + service restart on GPU host
 - [ ] Smoke WAV at `/tmp/orion_xtts_smoke.wav`
-- [ ] Legacy reply: `audio_b64`, `mime_type`, `metadata`
-- [ ] Typed reply: `metadata.speaker_wav_used` when wav provided
+- [ ] Legacy + typed bus requests with metadata
 
 ## Known risks
 
-- **First XTTS load** is slow and downloads large weights into the Coqui cache volume.
-- **GPU RAM** — XTTS-v2 needs a capable NVIDIA GPU; startup fails loudly if CUDA/torch mismatch.
-- **Voice required** — XTTS needs `TTS_DEFAULT_SPEAKER`, `TTS_DEFAULT_SPEAKER_WAV`, or per-request voice fields; compose defaults to `Ana Florence`.
-- **Breaking default** — Deployments pinned to `ljspeech/vits` must set `TTS_MODEL_NAME` explicitly.
-- **speaker_wav paths** must live under `TTS_VOICE_PROFILE_DIR` (path traversal blocked).
+- **Rebuild required** — existing images have `transformers` 5.x; Dockerfile now pins `<4.46`.
+- **PyTorch 2.8** — Coqui checkpoints need `weights_only=False` (shim in `app/tts.py`).
+- **GPU RAM** — XTTS-v2 needs a capable NVIDIA GPU.
+- **Breaking default** — was `ljspeech/vits`; set `TTS_MODEL_NAME` explicitly to stay on VITS.
+- **Voice required** — compose defaults `TTS_DEFAULT_SPEAKER=Ana Florence` for text-only callers.
 
 ## Diff summary
 
-- ~400 lines production code + tests; plan doc included in branch for agentic execution trace.
-- Legacy replies gain optional `metadata`; typed replies populate `duration_sec` and `metadata`.
+- Voice-aware bus path end-to-end with synthesis metadata.
+- Path confinement for `speaker_wav` under `TTS_VOICE_PROFILE_DIR`.
 - No new external services; `TTS_BACKEND=coqui` only.

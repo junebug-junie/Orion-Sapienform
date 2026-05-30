@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -521,24 +522,75 @@ async def websocket_endpoint(websocket: WebSocket):
                 transcript = possible_text
                 is_text_input = True
             elif data.get("audio"):
-                logger.info("voice.ws.audio_received session_id=%s", session_id)
+                audio_b64 = data.get("audio") or ""
+                try:
+                    audio_byte_len = len(base64.b64decode(audio_b64, validate=False))
+                except Exception:
+                    audio_byte_len = 0
+                logger.info(
+                    "voice.ws.audio_received session_id=%s audio_bytes=%d",
+                    session_id,
+                    audio_byte_len,
+                )
                 if tts_client:
                     try:
                         await websocket.send_json(
                             await _with_biometrics({"state": "processing"}, cache=biometrics_cache)
                         )
-                        stt_req = STTRequestPayload(audio_b64=data.get("audio"))
-                        logger.info("voice.stt.start session_id=%s", session_id)
+                        audio_format = (
+                            data.get("audio_format")
+                            or data.get("format")
+                            or "wav"
+                        )
+                        stt_req = STTRequestPayload(
+                            audio_b64=data.get("audio"),
+                            language=data.get("language") or "en",
+                            format=audio_format,
+                        )
+                        logger.info(
+                            "voice.stt.start session_id=%s format=%s",
+                            session_id,
+                            audio_format,
+                        )
                         stt_result = await asyncio.wait_for(
                             tts_client.transcribe(stt_req),
                             timeout=float(settings.HUB_STT_TIMEOUT_SEC),
                         )
-                        transcript = stt_result.text
+                        transcript = (stt_result.text or "").strip()
                         logger.info(
                             "voice.stt.done session_id=%s transcript_len=%d",
                             session_id,
-                            len(transcript or ""),
+                            len(transcript),
                         )
+                        if not transcript:
+                            meta = stt_result.metadata or {}
+                            logger.info(
+                                "voice.stt.empty session_id=%s meta=%s",
+                                session_id,
+                                meta,
+                            )
+                            peak_val = meta.get("peak")
+                            try:
+                                peak_num = float(peak_val) if peak_val is not None else None
+                            except (TypeError, ValueError):
+                                peak_num = None
+                            if peak_num is not None and peak_num < 200:
+                                err_msg = (
+                                    "Microphone level too low (silent recording). "
+                                    "Check your OS input device and browser mic permission."
+                                )
+                            else:
+                                err_msg = "No speech detected in recording"
+                            await websocket.send_json(
+                                await _with_biometrics(
+                                    {
+                                        "error": err_msg,
+                                        "state": "idle",
+                                    },
+                                    cache=biometrics_cache,
+                                )
+                            )
+                            continue
                     except asyncio.TimeoutError:
                         logger.error(
                             "voice.stt.error session_id=%s err=STT timed out after %ss",
@@ -554,9 +606,15 @@ async def websocket_endpoint(websocket: WebSocket):
                         continue
                     except Exception as e:
                         logger.error("voice.stt.error session_id=%s err=%s", session_id, e)
+                        err_text = str(e).strip()
+                        if err_text.startswith("STT error:"):
+                            err_text = err_text[len("STT error:") :].strip()
                         await websocket.send_json(
                             await _with_biometrics(
-                                {"error": "Transcription failed", "state": "idle"},
+                                {
+                                    "error": err_text or "Transcription failed",
+                                    "state": "idle",
+                                },
                                 cache=biometrics_cache,
                             )
                         )

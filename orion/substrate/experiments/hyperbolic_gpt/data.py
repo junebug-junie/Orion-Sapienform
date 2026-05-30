@@ -9,12 +9,18 @@ from torch.utils.data import IterableDataset
 from transformers import PreTrainedTokenizer
 
 
+FINEWEB_EDU_DATASET = "HuggingFaceFW/fineweb-edu"
+FINEWEB_EDU_DEFAULT_NAME = "sample-10BT"
+
+
 def load_gpt2_tokenizer() -> PreTrainedTokenizer:
     from transformers import AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained("gpt2")
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
+    # We stream long docs and chunk later; suppress tokenizer max-length warnings.
+    tok.model_max_length = int(1e9)
     return tok
 
 
@@ -51,26 +57,77 @@ def _truncate_tokens(ids: list[int], max_tokens: int | None) -> list[int]:
     return ids
 
 
-def load_tinystories_tokens(
+def _row_text(row: dict) -> str:
+    for key in ("text", "story", "content"):
+        val = row.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+    return ""
+
+
+def _load_streaming_text_tokens(
+    dataset_name: str,
+    *,
+    split: str = "train",
+    config_name: str | None = None,
     max_docs: int | None = None,
     max_tokens: int | None = None,
 ) -> list[int]:
     from datasets import load_dataset
 
-    ds = load_dataset("roneneldan/TinyStories", split="train", streaming=True)
     tok = load_gpt2_tokenizer()
+    if config_name:
+        ds = load_dataset(dataset_name, config_name, split=split, streaming=True)
+    else:
+        ds = load_dataset(dataset_name, split=split, streaming=True)
+
     ids: list[int] = []
     for i, row in enumerate(ds):
         if max_docs is not None and i >= max_docs:
             break
-        text = row.get("text") or row.get("story") or ""
+        text = _row_text(row)
+        if not text:
+            continue
         ids.extend(tok.encode(text + tok.eos_token))
         if max_tokens is not None and len(ids) >= max_tokens:
             ids = ids[:max_tokens]
             break
     if len(ids) < 256:
-        raise RuntimeError("TinyStories load produced too few tokens")
+        raise RuntimeError(f"{dataset_name} load produced too few tokens")
     return ids
+
+
+def load_tinystories_tokens(
+    max_docs: int | None = None,
+    max_tokens: int | None = None,
+) -> list[int]:
+    return _load_streaming_text_tokens(
+        "roneneldan/TinyStories",
+        split="train",
+        config_name=None,
+        max_docs=max_docs,
+        max_tokens=max_tokens,
+    )
+
+
+def load_fineweb_edu_tokens(
+    max_docs: int | None = None,
+    max_tokens: int | None = None,
+    name: str = FINEWEB_EDU_DEFAULT_NAME,
+) -> list[int]:
+    """Load a streaming FineWeb-Edu token slice.
+
+    Default uses HuggingFaceFW/fineweb-edu sample-10BT, which is large enough for
+    local real-corpus runs without committing to the full 1.3T-token collection.
+    Use --fineweb_edu_name to change the dataset config when supported locally.
+    """
+    return _load_streaming_text_tokens(
+        FINEWEB_EDU_DATASET,
+        split="train",
+        config_name=name,
+        max_docs=max_docs,
+        max_tokens=max_tokens,
+    )
 
 
 def load_text_file_tokens(path: str | Path, max_tokens: int | None = None) -> list[int]:

@@ -49,6 +49,31 @@ On startup you should see **TTS configured** logs (`backend`, `model`, `gpu`, de
 
 Mount reference voices on the host at `TTS_VOICE_PROFILE_HOST_DIR` (default `/mnt/telemetry/models/coqui/voices`) → `/models/voices`.
 
+### Pre-download XTTS-v2 to the telemetry cache
+
+Coqui stores weights under `~/.local/share/tts` in the container, which maps to `/mnt/telemetry/models/coqui/tts` on the host. Run once after build (before first bus request):
+
+```bash
+mkdir -p /mnt/telemetry/models/coqui/tts
+export PROJECT=orion
+docker compose run --rm whisper-tts python3 scripts/download_xtts_model.py
+```
+
+One-liner (same thing):
+
+```bash
+mkdir -p /mnt/telemetry/models/coqui/tts && cd services/orion-whisper-tts && PROJECT=orion docker compose run --rm whisper-tts python3 scripts/download_xtts_model.py
+```
+
+On the host without Docker (writes directly to telemetry):
+
+```bash
+mkdir -p /mnt/telemetry/models/coqui/tts
+TTS_HOME=/mnt/telemetry/models/coqui/tts TTS_MODEL_NAME=tts_models/multilingual/multi-dataset/xtts_v2 python3 scripts/download_xtts_model.py
+```
+
+After download, expect a folder like `tts_models--multilingual--multi-dataset--xtts_v2` under that cache path.
+
 ### List Coqui XTTS speakers (inside container)
 
 ```bash

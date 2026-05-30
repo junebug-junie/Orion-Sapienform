@@ -72,9 +72,30 @@ Per-process batch size is `--batch_size`; effective global batch ≈ `batch_size
 
 Without `torchrun` env vars, `train.py` behaves as a normal single-process script.
 
+### Run diagnostics
+
+Each training run writes (rank 0):
+
+```text
+run_summary.json    # args, config, param count, effective batch tokens
+train_log.jsonl     # train/eval metrics per log interval
+config.json
+meta.json
+model.pt
+```
+
+Print a console report:
+
+```bash
+python orion/substrate/experiments/hyperbolic_gpt/report.py \
+  --run_dir ./runs/tinystories_hypgpt_4l_256d
+```
+
+Logged fields include loss, perplexity, tokens/sec, VRAM, `geo_lambda`, `curvature`, and `grad_norm`.
+
 ### Memory and eval notes
 
-- Hyperbolic attention builds pairwise distances with broadcast shape `(B, H, T, T, D)` — much heavier than dot-product attention alone. On 16GB GPUs, prefer `--batch_size 16` or lower (default in `train_tinystories.sh`).
+- Hyperbolic attention builds pairwise distance matrices `(B, H, T, T)` — still O(T²) memory. On 16GB–32GB GPUs, tune `--batch_size` and `--block_size` carefully.
 - `--max_docs` caps stories; `--max_tokens` caps the token list after encoding (stronger RAM bound).
 - Under DDP, logged **eval loss** is the mean of per-rank estimates on sharded eval tokens (`all_reduce`), not exact full-corpus NLL. Use for trend monitoring only.
 

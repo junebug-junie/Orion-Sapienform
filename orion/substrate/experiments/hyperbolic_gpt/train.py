@@ -5,6 +5,7 @@ import json
 import os
 import random
 import sys
+import time
 from pathlib import Path
 
 import torch
@@ -22,6 +23,12 @@ from orion.substrate.experiments.hyperbolic_gpt.data import (
     load_text_file_tokens,
     load_tinystories_tokens,
     shard_token_ids,
+)
+from orion.substrate.experiments.hyperbolic_gpt.diagnostics import (
+    append_jsonl,
+    build_log_record,
+    unwrap_model,
+    write_run_summary,
 )
 from orion.substrate.experiments.hyperbolic_gpt.model import HyperbolicGPT
 
@@ -41,10 +48,6 @@ def ddp_setup() -> tuple[bool, int, int, int]:
 def ddp_print(rank: int, msg: str) -> None:
     if rank == 0:
         print(msg, flush=True)
-
-
-def unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
-    return model.module if isinstance(model, DDP) else model
 
 
 def reduce_mean_scalar(value: float, device: torch.device, is_ddp: bool) -> float:
@@ -116,6 +119,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--grad_accum", type=int, default=1)
     p.add_argument("--eval_interval", type=int, default=100)
     p.add_argument("--save_interval", type=int, default=500)
+    p.add_argument("--log_interval", type=int, default=10)
     p.add_argument("--device", type=str, default=None)
     p.add_argument("--compile", action="store_true", default=False)
     p.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
@@ -143,7 +147,6 @@ def set_seed(seed: int) -> None:
 
 
 def verify_cuda_device(device: torch.device, rank: int = 0) -> None:
-    """Fail fast when PyTorch CUDA wheels do not match GPU architecture (e.g. P100 + torch 2.5)."""
     if device.type != "cuda":
         return
     idx = device.index if device.index is not None else 0
@@ -155,12 +158,8 @@ def verify_cuda_device(device: torch.device, rank: int = 0) -> None:
         torch.cuda.synchronize(device)
     except Exception as exc:
         raise RuntimeError(
-            f"CUDA device {idx} ({name}, sm_{cap[0]}{cap[1]}) is not usable with this "
-            f"PyTorch build ({torch.__version__}). NCCL/DDP will fail with 'named symbol not found'.\n"
-            "Fix: install a PyTorch wheel that includes your GPU arch (Pascal P100/P4 need "
-            "torch<=2.3.x cu118), or train on V100+ / CPU.\n"
-            "Example (P100/P4): pip install torch==2.3.1 --index-url "
-            "https://download.pytorch.org/whl/cu118"
+            f"CUDA device {idx} ({name}, sm_{cap[0]}{cap[1]}) is not usable with "
+            f"PyTorch {torch.__version__}. Reinstall a compatible torch build."
         ) from exc
     if rank == 0:
         print(
@@ -228,6 +227,15 @@ def main() -> None:
     scaler = GradScaler(enabled=args.amp and device.type == "cuda")
 
     out_dir = Path(args.out_dir)
+    log_path = out_dir / "train_log.jsonl"
+    if rank == 0:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        write_run_summary(out_dir, args, config, model, world_size, len(all_ids))
+
+    tokens_per_step = args.batch_size * world_size * args.grad_accum * config.block_size
+    train_start = time.time()
+    last_log_step = 0
+    total_tokens_seen = 0
     opt_step = 0
     micro_step = 0
     accum_loss = 0.0
@@ -236,11 +244,43 @@ def main() -> None:
 
     batch_iter = iter_batches(train_ids, config.block_size, args.batch_size, device)
 
+    def _log_record(
+        step: int,
+        split: str,
+        loss: float,
+        grad_norm: float | None = None,
+    ) -> None:
+        if rank != 0:
+            return
+        elapsed = time.time() - train_start
+        sec_per_step = elapsed / step if step > 0 else None
+        append_jsonl(
+            log_path,
+            build_log_record(
+                step=step,
+                split=split,
+                loss=loss,
+                lr=optimizer.param_groups[0]["lr"],
+                elapsed_seconds=elapsed,
+                seconds_per_step=sec_per_step,
+                total_tokens_seen=total_tokens_seen,
+                args=args,
+                config=config,
+                device=device,
+                world_size=world_size,
+                model=model,
+                grad_norm=grad_norm,
+            ),
+        )
+
     def _optimizer_step() -> None:
-        nonlocal opt_step, accum_loss, loss_window
+        nonlocal opt_step, accum_loss, loss_window, last_log_step, total_tokens_seen
+        grad_norm_val: float | None = None
         if scaler.is_enabled():
             scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        grad_norm_val = float(
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
+        )
         if scaler.is_enabled():
             scaler.step(optimizer)
             scaler.update()
@@ -248,14 +288,22 @@ def main() -> None:
             optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         opt_step += 1
-        if opt_step % 10 == 0:
-            ddp_print(rank, f"step {opt_step} loss {accum_loss / max(loss_window, 1):.4f}")
+        total_tokens_seen += tokens_per_step
+
+        train_loss = accum_loss / max(loss_window, 1)
+        if opt_step % args.log_interval == 0:
+            ddp_print(rank, f"step {opt_step} loss {train_loss:.4f}")
+            _log_record(opt_step, "train", train_loss, grad_norm=grad_norm_val)
+            last_log_step = opt_step
             accum_loss = 0.0
             loss_window = 0
+
         if opt_step % args.eval_interval == 0:
             ev = eval_loss(unwrap_model(model), eval_ids, config, device, args.batch_size)
             ev_mean = reduce_mean_scalar(ev, device, is_ddp)
             ddp_print(rank, f"eval step {opt_step} loss {ev_mean:.4f}")
+            _log_record(opt_step, "eval", ev_mean)
+
         if opt_step % args.save_interval == 0:
             save_checkpoint(out_dir, model, config, rank)
             ddp_print(rank, f"saved checkpoint to {out_dir}")
@@ -289,6 +337,8 @@ def main() -> None:
         _optimizer_step()
 
     save_checkpoint(out_dir, model, config, rank)
+    if rank == 0 and opt_step > last_log_step:
+        _log_record(opt_step, "train", accum_loss / max(loss_window, 1))
     ddp_print(rank, "training complete")
 
     if is_ddp:

@@ -59,6 +59,7 @@ DELIVERY_SAFE_OUTPUT_MODES = frozenset(
 HUB_CHAT_LANE_RECALL_PROFILES: Dict[str, str] = {
     "grounded_small": "assist.light.v1",
     "quick": "assist.light.v1",
+    "brain": "recall.v1",
 }
 
 

@@ -3235,20 +3235,29 @@ loadDismissedIds();
   function normalizeMemoryDebugModel(data) {
     const recallDebug = data && typeof data.recall_debug === 'object' ? data.recall_debug : null;
     const recallCount = recallDebug && typeof recallDebug.count === 'number' ? recallDebug.count : null;
-    const backendCounts = recallDebug && recallDebug.backend_counts
-      ? recallDebug.backend_counts
-      : (recallDebug && recallDebug.debug && recallDebug.debug.backend_counts) || null;
+    const routingDebug = data && typeof data.routing_debug === 'object' ? data.routing_debug : null;
+    const decisionDbg = recallDebug && recallDebug.decision && typeof recallDebug.decision === 'object'
+      ? recallDebug.decision
+      : null;
+    const backendCounts = (recallDebug && recallDebug.backend_counts)
+      || (decisionDbg && decisionDbg.backend_counts)
+      || (recallDebug && recallDebug.debug && recallDebug.debug.backend_counts)
+      || null;
+    const recallProfileResolved = (recallDebug && (recallDebug.profile || recallDebug.profile_selected))
+      || (decisionDbg && (decisionDbg.profile || (decisionDbg.recall_debug && decisionDbg.recall_debug.profile_selected)))
+      || (routingDebug && routingDebug.recall_profile)
+      || null;
     const memoryUsed = typeof data.memory_used === 'boolean'
       ? data.memory_used
       : (typeof recallCount === 'number' ? recallCount > 0 : false);
     const memoryDigest = data.memory_digest || (recallDebug && recallDebug.memory_digest) || '';
-    const routingDebug = data && typeof data.routing_debug === 'object' ? data.routing_debug : null;
     const recallEntries = collectRecallEntries(recallDebug);
 
     return {
       memoryUsed,
       recallCount,
       backendCounts,
+      recallProfileResolved,
       memoryDigest,
       routingDebug,
       recallEntries,
@@ -3314,7 +3323,8 @@ loadDismissedIds();
     if (!memoryDebugModalMeta || !memoryDebugModalBody) return;
     const safeModel = model || normalizeMemoryDebugModel({});
     const backendLabel = safeModel.backendCounts ? toPrettyText(safeModel.backendCounts).replace(/\s+/g, ' ') : '--';
-    memoryDebugModalMeta.textContent = `memory ${safeModel.memoryUsed ? 'used' : 'unused'} · recall ${safeModel.recallCount ?? '--'} · backends ${backendLabel}`;
+    const profileLabel = safeModel.recallProfileResolved ? String(safeModel.recallProfileResolved) : '--';
+    memoryDebugModalMeta.textContent = `memory ${safeModel.memoryUsed ? 'used' : 'unused'} · recall ${safeModel.recallCount ?? '--'} · profile ${profileLabel} · backends ${backendLabel}`;
 
     memoryDebugModalBody.innerHTML = '';
     const summaryGrid = document.createElement('div');
@@ -3322,6 +3332,7 @@ loadDismissedIds();
     [
       ['memory used', safeModel.memoryUsed ? 'true' : 'false'],
       ['recall count', safeModel.recallCount ?? '--'],
+      ['recall profile (resolved)', safeModel.recallProfileResolved ?? '--'],
       ['backend counts', toPrettyText(safeModel.backendCounts)],
       ['recall entries', safeModel.recallEntries.length],
     ].forEach(([label, value]) => {
@@ -3726,7 +3737,15 @@ loadDismissedIds();
     const safePreview = meta && meta.autonomyStatePreview && typeof meta.autonomyStatePreview === 'object'
       ? meta.autonomyStatePreview
       : (meta && meta.autonomy_state_preview && typeof meta.autonomy_state_preview === 'object' ? meta.autonomy_state_preview : null);
-    if (!safeSummary && !safeDebug) return null;
+    const safeV2Preview = meta && meta.autonomyStateV2Preview && typeof meta.autonomyStateV2Preview === 'object'
+      ? meta.autonomyStateV2Preview
+      : (meta && meta.autonomy_state_v2_preview && typeof meta.autonomy_state_v2_preview === 'object' ? meta.autonomy_state_v2_preview : null);
+    const safeDelta = meta && meta.autonomyStateDelta && typeof meta.autonomyStateDelta === 'object'
+      ? meta.autonomyStateDelta
+      : (meta && meta.autonomy_state_delta && typeof meta.autonomy_state_delta === 'object' ? meta.autonomy_state_delta : null);
+    const safeChatStanceDebug = meta && meta.chatStanceDebug && typeof meta.chatStanceDebug === 'object'
+      ? meta.chatStanceDebug
+      : (meta && meta.chat_stance_debug && typeof meta.chat_stance_debug === 'object' ? meta.chat_stance_debug : null);
     const topDrives = Array.isArray((safeSummary && safeSummary.top_drives) || (safePreview && safePreview.top_drives))
       ? ((safeSummary && safeSummary.top_drives) || (safePreview && safePreview.top_drives)).map((v) => String(v || '').trim()).filter(Boolean).slice(0, 3)
       : [];
@@ -3785,8 +3804,28 @@ loadDismissedIds();
       || (driveCompetition && (driveCompetition.top_drive || driveCompetition.runner_drive))
       || (stateQuality && stateQuality.startsWith('degraded')));
     const hasDebugSignal = !!(safeDebug && typeof safeDebug === 'object' && Object.keys(safeDebug).length);
+    const hasPreviewSignal = !!(safePreview && (
+      safePreview.dominant_drive
+      || (Array.isArray(safePreview.top_drives) && safePreview.top_drives.length)
+      || (Array.isArray(safePreview.active_tensions) && safePreview.active_tensions.length)
+      || (Array.isArray(safePreview.proposal_headlines) && safePreview.proposal_headlines.length)
+      || (safePreview.drive_competition && (safePreview.drive_competition.top_drive || safePreview.drive_competition.runner_drive))
+      || (safePreview.goal_lineage && Object.keys(safePreview.goal_lineage).length)
+    ));
+    const hasV2PreviewSignal = !!(safeV2Preview && Object.keys(safeV2Preview).length);
+    const hasDeltaSignal = !!(safeDelta && Object.keys(safeDelta).length);
+    const hasChatStanceDebugSignal = !!(safeChatStanceDebug && Object.keys(safeChatStanceDebug).length);
     const hasLineageMeta = !!(executionMode || (goalLineageRaw && Object.keys(goalLineageRaw).length));
-    const hasAnySignal = !!(hasSemanticSignal || hasDebugSignal || String((safeSummary && safeSummary.stance_hint) || '').trim() || hasLineageMeta);
+    const hasAnySignal = !!(
+      hasSemanticSignal
+      || hasDebugSignal
+      || hasPreviewSignal
+      || hasV2PreviewSignal
+      || hasDeltaSignal
+      || hasChatStanceDebugSignal
+      || String((safeSummary && safeSummary.stance_hint) || '').trim()
+      || hasLineageMeta
+    );
     if (!hasAnySignal) return null;
 
     return {
@@ -3800,6 +3839,10 @@ loadDismissedIds();
       stanceHint: String((safeSummary && safeSummary.stance_hint) || '').trim(),
       hasSemanticSignal,
       hasDebugSignal,
+      hasPreviewSignal,
+      hasV2PreviewSignal,
+      hasDeltaSignal,
+      hasChatStanceDebugSignal,
       executionMode,
       goalLineage: goalLineageRaw,
       backend: String((meta.autonomyBackend || (safeDebug && safeDebug._runtime && safeDebug._runtime.backend) || meta.backend || '')).trim() || '--',
@@ -3828,6 +3871,9 @@ loadDismissedIds();
         summary: safeSummary || {},
         debug: safeDebug || {},
         state_preview: safePreview || {},
+        state_v2_preview: safeV2Preview || {},
+        state_delta: safeDelta || {},
+        chat_stance_debug: safeChatStanceDebug || {},
         runtime: {
           backend: String((meta.autonomyBackend || (safeDebug && safeDebug._runtime && safeDebug._runtime.backend) || meta.backend || '')).trim() || '--',
           selected_subject: String((meta.autonomySelectedSubject || (safeDebug && safeDebug._runtime && safeDebug._runtime.selected_subject) || meta.selectedSubject || '')).trim() || '--',
@@ -3852,6 +3898,7 @@ loadDismissedIds();
     const degraded = model.stateQuality && String(model.stateQuality).startsWith('degraded');
     const hasDebug = Boolean(model.hasDebugSignal);
     const hasStanceHint = Boolean(String(model.stanceHint || '').trim());
+    const hasLineage = Boolean(model.executionMode || (model.goalLineage && Object.keys(model.goalLineage).length));
     return !!(
       model.dominantDrive
       || (model.topDrives || []).length
@@ -3862,6 +3909,11 @@ loadDismissedIds();
       || degraded
       || hasDebug
       || hasStanceHint
+      || model.hasPreviewSignal
+      || model.hasV2PreviewSignal
+      || model.hasDeltaSignal
+      || model.hasChatStanceDebugSignal
+      || hasLineage
     );
   }
 
@@ -6678,7 +6730,7 @@ loadDismissedIds();
         opt.textContent = 'chat.general.v1';
       }
     });
-    const laneApi = window.OrionHubGroundedSmallLane;
+    const laneApi = global.OrionHubGroundedSmallLane;
     if (laneApi && typeof laneApi.syncRecallProfileForLane === 'function') {
       const lane =
         (typeof document !== 'undefined' && document.body && document.body.dataset.orionChatLane) ||
@@ -8213,6 +8265,13 @@ loadDismissedIds();
     });
     headerRow.appendChild(badges);
     panel.appendChild(headerRow);
+
+    if (!model.hasSemanticSignal && (model.hasDebugSignal || model.hasPreviewSignal || model.hasV2PreviewSignal || model.hasChatStanceDebugSignal)) {
+      const sparseNote = document.createElement('div');
+      sparseNote.className = 'text-xs text-violet-100/90';
+      sparseNote.textContent = 'Autonomy observed, semantic summary unavailable';
+      panel.appendChild(sparseNote);
+    }
 
     [
       ['dominant drive', formatAutonomyFieldLabel(model, 'dominantDrive')],
@@ -10184,6 +10243,8 @@ loadDismissedIds();
               autonomyBackend: d.autonomy_backend,
               autonomySelectedSubject: d.autonomy_selected_subject,
               autonomyRepositoryStatus: d.autonomy_repository_status,
+              autonomyStateV2Preview: d.autonomy_state_v2_preview,
+              autonomyStateDelta: d.autonomy_state_delta,
               chatStanceDebug: d.chat_stance_debug,
               situationBrief: d.situation_brief,
               situationPromptFragment: d.situation_prompt_fragment,
@@ -10556,6 +10617,8 @@ loadDismissedIds();
                 autonomyBackend: d.autonomy_backend,
                 autonomySelectedSubject: d.autonomy_selected_subject,
                 autonomyRepositoryStatus: d.autonomy_repository_status,
+                autonomyStateV2Preview: d.autonomy_state_v2_preview,
+                autonomyStateDelta: d.autonomy_state_delta,
                 chatStanceDebug: d.chat_stance_debug,
                 situationBrief: d.situation_brief,
                 situationPromptFragment: d.situation_prompt_fragment,

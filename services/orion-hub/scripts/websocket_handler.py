@@ -36,7 +36,7 @@ from scripts.voice_stt_errors import (
     empty_transcript_error_message,
     sanitize_client_audio_meta,
 )
-from scripts.autonomy_payloads import extract_autonomy_payload
+from scripts.autonomy_payloads import extract_autonomy_payload, log_autonomy_payload_extraction
 from scripts.workflow_payloads import extract_workflow_payload
 from scripts.mutation_cognition_context import build_mutation_cognition_context
 from scripts.presence_session import inject_session_presence
@@ -983,6 +983,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
                 workflow = extract_workflow_payload(resp.cortex_result)
                 autonomy_payload = extract_autonomy_payload(resp.cortex_result)
+                log_autonomy_payload_extraction(
+                    correlation_id=trace_id,
+                    cortex_result=resp.cortex_result,
+                    payload=autonomy_payload if isinstance(autonomy_payload, dict) else {},
+                    source="ws",
+                )
                 workflow_metadata_only = bool(
                     isinstance(workflow, dict)
                     and str(

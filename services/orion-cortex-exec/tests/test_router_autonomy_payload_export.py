@@ -501,6 +501,65 @@ def test_router_exports_turn_effect_in_plan_metadata(monkeypatch) -> None:
     assert result.metadata["turn_effect_status"] == "present"
 
 
+def test_router_exports_relationship_fallback_when_orion_drives_deferred(monkeypatch) -> None:
+    runner = PlanRunner()
+    fake_step = StepExecutionResult(
+        status="success",
+        verb_name="chat_general",
+        step_name="llm_chat_general",
+        order=0,
+        result={"LLMGatewayService": {"content": "ok"}},
+        latency_ms=1,
+        node="n",
+        logs=[],
+        error=None,
+    )
+    monkeypatch.setattr("app.router.call_step_services", AsyncMock(return_value=fake_step))
+    monkeypatch.setattr("app.router.prepare_brain_reply_context", lambda _ctx: None)
+    ctx = {
+        "mode": "brain",
+        "raw_user_text": "hello",
+        "chat_autonomy_summary": {
+            "stance_mode": "fallback_contextual",
+            "dominant_drive": "relational",
+            "top_drives": ["relational"],
+            "context_note": "Orion drives unavailable; stance context from relationship drives (not substituted as Orion drives)",
+        },
+        "chat_autonomy_debug": {
+            "relationship": {"availability": "available", "present": True},
+            "orion": {"availability": "degraded", "present": True},
+            "_runtime": {
+                "backend": "graph",
+                "selected_subject": "relationship",
+                "contextual_fallback": True,
+            },
+        },
+        "chat_autonomy_state": {
+            "subject": "relationship",
+            "source": "graph",
+            "dominant_drive": "relational",
+            "active_drives": ["relational"],
+        },
+        "chat_autonomy_backend": "graph",
+        "chat_autonomy_selected_subject": "relationship",
+        "chat_stance_debug": {"overview": {"fallback_invoked": False}},
+    }
+    result = asyncio.run(
+        runner.run_plan(
+            bus=object(),
+            source=ServiceRef(name="x", version="0", node="n"),
+            req=_request(),
+            correlation_id="corr-relationship-fallback",
+            ctx=ctx,
+        )
+    )
+    assert result.metadata["autonomy_selected_subject"] == "relationship"
+    assert result.metadata["autonomy_summary"]["dominant_drive"] == "relational"
+    assert result.metadata["autonomy_state_preview"]["dominant_drive"] == "relational"
+    assert result.metadata["autonomy_debug"]["_runtime"]["contextual_fallback"] is True
+    assert result.metadata["chat_stance_debug"]["overview"]["fallback_invoked"] is False
+
+
 def test_router_exports_turn_effect_status_for_chat_quick_when_missing(monkeypatch) -> None:
     runner = PlanRunner()
     fake_step = StepExecutionResult(

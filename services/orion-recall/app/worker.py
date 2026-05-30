@@ -510,6 +510,21 @@ def _rdf_enabled(profile: Dict[str, Any]) -> bool:
     ) and int(profile.get("rdf_top_k", 0)) > 0
 
 
+def _rdf_expansion_enabled(profile: Dict[str, Any]) -> bool:
+    if not _rdf_enabled(profile):
+        return False
+    return bool(profile.get("enable_rdf_expansion", False))
+
+
+def _rdf_graphtri_mode(profile: Dict[str, Any]) -> bool:
+    profile_name = str(profile.get("profile") or "")
+    return (
+        bool(profile.get("rdf_graphtri_mode", False))
+        or profile_name.startswith("graphtri")
+        or profile_name.startswith("deep.graph")
+    )
+
+
 def _sql_timeline_enabled_for_profile(profile: Dict[str, Any]) -> bool:
     if not settings.RECALL_ENABLE_SQL_TIMELINE:
         return False
@@ -633,13 +648,31 @@ async def _query_backends(
     rdf_enabled = _rdf_enabled(profile) and bool(settings.RECALL_RDF_ENDPOINT_URL)
     rdf_top_k = int(profile.get("rdf_top_k", 0))
     expansion_terms: List[str] = []
+    anchor_plan: Dict[str, Any] = {
+        "entities_terms": [],
+        "tags_terms": [],
+        "claim_objs": [],
+        "related_terms": [],
+    }
     if rdf_enabled:
         try:
-
-            profile_name = str(profile.get("profile") or "")
+            if _rdf_expansion_enabled(profile):
+                try:
+                    query_terms = _extract_keywords(fragment) if fragment else []
+                    anchor_plan = fetch_graphtri_anchors(
+                        session_id=session_id,
+                        query_terms=query_terms,
+                        max_terms=int(profile.get("rdf_expansion_top_k", 8)),
+                    )
+                    expansion_terms = list(anchor_plan.get("related_terms") or [])
+                    backend_counts["rdf_anchor_terms"] = len(expansion_terms)
+                except Exception as exc:
+                    logger.debug(f"rdf expansion anchor fetch skipped: {exc}")
+                    backend_counts["rdf_anchor_terms"] = 0
+            else:
+                backend_counts["rdf_anchor_terms"] = 0
 
             # 0) Pull raw ChatTurns (prompt/response) from GRAPH <orion:chat>.
-            # This is the only place your "exact text I used" lives.
             rdf_chat: List[Dict[str, Any]] = []
             rdf_chat = fetch_rdf_chatturn_fragments(
                 query_text=fragment,
@@ -649,9 +682,25 @@ async def _query_backends(
             backend_counts["rdf_chat"] = len(rdf_chat)
             candidates.extend(rdf_chat)
 
-            # 1) Keep existing RDF paths (claims / neighborhood) as additional context.
+            if expansion_terms:
+                try:
+                    connected = fetch_rdf_connected_chatturns(
+                        terms=expansion_terms,
+                        max_items=int(
+                            profile.get("rdf_connected_chat_top_k", rdf_top_k)
+                        ),
+                    )
+                    backend_counts["rdf_connected_chat"] = len(connected)
+                    candidates.extend(connected)
+                except Exception as exc:
+                    logger.debug(f"rdf connected chat fetch skipped: {exc}")
+                    backend_counts["rdf_connected_chat"] = 0
+            else:
+                backend_counts["rdf_connected_chat"] = 0
+
+            # Claims / neighborhood fragments (graphtri lane for brain.recall.v1).
             rdf: List[Dict[str, Any]] = []
-            if profile_name.startswith("graphtri"):
+            if _rdf_graphtri_mode(profile):
                 rdf = fetch_rdf_graphtri_fragments(
                     query_text=fragment,
                     session_id=session_id,
@@ -684,6 +733,16 @@ async def _query_backends(
             backend_counts.get("rdf", 0),
             expansion_terms,
         )
+        if rdf_enabled:
+            logger.info(
+                "recall rdf_expansion profile=%s enabled=%s graphtri_mode=%s anchor_terms=%s anchor_plan=%s connected_chat=%s",
+                profile.get("profile"),
+                _rdf_expansion_enabled(profile),
+                _rdf_graphtri_mode(profile),
+                expansion_terms,
+                anchor_plan,
+                backend_counts.get("rdf_connected_chat", 0),
+            )
 
     if _sql_chat_enabled_for_profile(profile):
         try:

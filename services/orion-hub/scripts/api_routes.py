@@ -34,7 +34,7 @@ from .chat_history import (
 )
 from .library import scan_cognition_library
 from .trace_payloads import extract_agent_trace_payload
-from .autonomy_payloads import extract_autonomy_payload
+from .autonomy_payloads import extract_autonomy_payload, log_autonomy_payload_extraction
 from .workflow_payloads import extract_workflow_payload
 from .cortex_chat_display import hub_effective_chat_text
 from .cortex_request_builder import (
@@ -2259,6 +2259,12 @@ async def handle_chat_request(
         )
         workflow = extract_workflow_payload(resp.cortex_result)
         autonomy_payload = extract_autonomy_payload(resp.cortex_result)
+        log_autonomy_payload_extraction(
+            correlation_id=str(correlation_id),
+            cortex_result=resp.cortex_result,
+            payload=autonomy_payload if isinstance(autonomy_payload, dict) else {},
+            source="http",
+        )
         workflow_metadata_only = _workflow_is_metadata_only(workflow)
         if workflow_metadata_only:
             # Dream workflow surfaces via workflow panel card only (no assistant prose body).

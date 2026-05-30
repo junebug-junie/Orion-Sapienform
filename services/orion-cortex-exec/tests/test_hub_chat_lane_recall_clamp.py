@@ -64,7 +64,7 @@ def test_delivery_safe_recall_decision_uses_lane_clamp_for_chat_general() -> Non
     assert decision["profile_source"] == "hub_chat_lane_grounded_small"
 
 
-def test_delivery_safe_recall_decision_brain_lane_keeps_verb_profile() -> None:
+def test_delivery_safe_recall_decision_brain_lane_maps_to_recall_v1() -> None:
     decision = delivery_safe_recall_decision(
         {"enabled": True},
         [_chat_general_step()],
@@ -72,5 +72,5 @@ def test_delivery_safe_recall_decision_brain_lane_keeps_verb_profile() -> None:
         plan_verb_name="chat_general",
         hub_chat_lane="brain",
     )
-    assert decision["profile"] == "chat.general.v1"
-    assert decision["profile_source"] == "verb"
+    assert decision["profile"] == "recall.v1"
+    assert decision["profile_source"] == "hub_chat_lane_brain"

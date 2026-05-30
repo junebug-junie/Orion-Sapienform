@@ -6,6 +6,10 @@ vector_top_k: 0
 
 # Brain recall should use structured memory.
 enable_rdf: true
+enable_rdf_expansion: true
+rdf_expansion_top_k: 8
+rdf_connected_chat_top_k: 8
+rdf_graphtri_mode: true
 rdf_top_k: 8
 
 # Literal / durable memory lanes.

@@ -134,7 +134,7 @@ def _build_graphtri_anchor_sparql(
 
 
 def _build_graphtri_anchor_kind_sparql(
-    session_id: str,
+    session_id: str | None,
     query_terms: List[str],
     *,
     max_terms: int,
@@ -178,7 +178,7 @@ def _build_graphtri_anchor_kind_sparql(
 
 def fetch_graphtri_anchors(
     *,
-    session_id: str,
+    session_id: str | None = None,
     query_terms: List[str],
     max_terms: int = 12,
 ) -> Dict[str, List[str]]:

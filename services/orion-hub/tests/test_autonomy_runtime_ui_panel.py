@@ -137,7 +137,39 @@ def test_right_rail_can_render_from_debug_even_without_semantic_inline_signal() 
     app_js = APP_JS_PATH.read_text(encoding="utf-8")
 
     assert "const hasDebugSignal = !!(safeDebug && typeof safeDebug === 'object' && Object.keys(safeDebug).length);" in app_js
-    assert "const hasAnySignal = !!(hasSemanticSignal || hasDebugSignal" in app_js
+    assert "hasPreviewSignal" in app_js
+    assert "hasChatStanceDebugSignal" in app_js
+    assert "if (!hasAnySignal) return null;" in app_js
+
+
+def test_normalize_autonomy_model_accepts_preview_v2_delta_and_chat_stance_without_summary() -> None:
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "const safeV2Preview = meta && meta.autonomyStateV2Preview" in app_js
+    assert "const safeDelta = meta && meta.autonomyStateDelta" in app_js
+    assert "const safeChatStanceDebug = meta && meta.chatStanceDebug" in app_js
+    assert "hasPreviewSignal" in app_js
+    assert "hasV2PreviewSignal" in app_js
+    assert "hasDeltaSignal" in app_js
+    assert "hasChatStanceDebugSignal" in app_js
+    assert "if (!safeSummary && !safeDebug) return null;" not in app_js
+
+
+def test_inline_autonomy_renders_debug_only_and_chat_stance_debug_contract() -> None:
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "model.hasChatStanceDebugSignal" in app_js
+    assert "Autonomy observed, semantic summary unavailable" in app_js
+    assert "autonomyStateV2Preview: d.autonomy_state_v2_preview" in app_js
+    assert "autonomyStateDelta: d.autonomy_state_delta" in app_js
+
+
+def test_should_render_autonomy_inline_allows_runtime_debug_and_lineage_without_dominant_drive() -> None:
+    app_js = APP_JS_PATH.read_text(encoding="utf-8")
+
+    assert "model.hasPreviewSignal" in app_js
+    assert "model.hasChatStanceDebugSignal" in app_js
+    assert "const hasLineage = Boolean(model.executionMode" in app_js
 
 
 def test_autonomy_populated_render_path_replaces_prior_turn_content() -> None:

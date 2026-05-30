@@ -1596,6 +1596,8 @@ async def run_recall_step(
             decision_dbg = res.debug.get("decision")
             if isinstance(decision_dbg, dict):
                 debug["decision"] = decision_dbg
+                if isinstance(decision_dbg.get("backend_counts"), dict):
+                    debug["backend_counts"] = decision_dbg["backend_counts"]
                 recall_dbg = decision_dbg.get("recall_debug")
                 if isinstance(recall_dbg, dict):
                     debug["source_gating"] = recall_dbg.get("source_gating") or {}

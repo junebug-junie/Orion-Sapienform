@@ -1,6 +1,43 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+import logging
+from typing import Any, Dict, Mapping
+
+logger = logging.getLogger(__name__)
+
+
+def log_autonomy_payload_extraction(
+    *,
+    correlation_id: str,
+    cortex_result: Any,
+    payload: Dict[str, Any],
+    source: str,
+) -> None:
+    """Diagnostic logging after autonomy extraction on Hub chat ingress paths."""
+    metadata = getattr(cortex_result, "metadata", None)
+    md_keys = sorted(metadata.keys()) if isinstance(metadata, Mapping) else []
+    corr = str(correlation_id or "").strip() or "-"
+    if not payload:
+        logger.info(
+            "hub_autonomy_extract_empty corr=%s source=%s cortex_metadata_keys=%s",
+            corr,
+            source,
+            md_keys,
+        )
+        return
+    summary = payload.get("autonomy_summary")
+    debug = payload.get("autonomy_debug")
+    logger.info(
+        "hub_autonomy_extract_present corr=%s source=%s payload_keys=%s selected_subject=%s backend=%s summary_present=%s debug_present=%s state_preview_present=%s",
+        corr,
+        source,
+        sorted(payload.keys()),
+        payload.get("autonomy_selected_subject"),
+        payload.get("autonomy_backend"),
+        isinstance(summary, dict) and bool(summary),
+        isinstance(debug, dict) and bool(debug),
+        isinstance(payload.get("autonomy_state_preview"), dict) and bool(payload.get("autonomy_state_preview")),
+    )
 
 
 def extract_autonomy_payload(cortex_result: Any) -> Dict[str, Any]:

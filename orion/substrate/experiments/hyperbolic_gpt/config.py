@@ -31,6 +31,15 @@ class HyperbolicGPTConfig:
     entropy_floor_loss_weight: float = 0.0
     min_entropy: float = 0.0
 
+    # v3 / MoC knobs. These are intentionally inert for v1/v2 unless model_moc
+    # is selected. "global" means one scalar per attention block; "per_head" means
+    # one learned value per attention head inside each block.
+    curvature_mode: str = "global"
+    geo_lambda_mode: str = "global"
+    moc_curvature_jitter: float = 0.0
+    moc_lambda_jitter: float = 0.0
+    tie_lm_head: bool = True
+
     def __post_init__(self) -> None:
         if self.n_embd % self.n_head != 0:
             raise ValueError(
@@ -38,6 +47,19 @@ class HyperbolicGPTConfig:
             )
         if self.semantic_adapter_rank < 0:
             raise ValueError("semantic_adapter_rank must be >= 0")
+        allowed_modes = {"global", "per_head"}
+        if self.curvature_mode not in allowed_modes:
+            raise ValueError(
+                f"curvature_mode must be one of {sorted(allowed_modes)}, got {self.curvature_mode!r}"
+            )
+        if self.geo_lambda_mode not in allowed_modes:
+            raise ValueError(
+                f"geo_lambda_mode must be one of {sorted(allowed_modes)}, got {self.geo_lambda_mode!r}"
+            )
+        if self.moc_curvature_jitter < 0:
+            raise ValueError("moc_curvature_jitter must be >= 0")
+        if self.moc_lambda_jitter < 0:
+            raise ValueError("moc_lambda_jitter must be >= 0")
 
     @property
     def head_dim(self) -> int:

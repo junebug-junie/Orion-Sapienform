@@ -45,7 +45,7 @@ docker compose up -d whisper-tts
 docker compose logs -f whisper-tts
 ```
 
-On startup you should see logs for `backend=coqui`, `model=tts_models/multilingual/multi-dataset/xtts_v2`, and `gpu=True`.
+On startup you should see **TTS configured** logs (`backend`, `model`, `gpu`, defaults). Coqui model load logs appear on the first synthesis request (`[TTS] Loading coqui model=...`).
 
 Mount reference voices on the host at `TTS_VOICE_PROFILE_HOST_DIR` (default `/mnt/telemetry/models/coqui/voices`) → `/models/voices`.
 

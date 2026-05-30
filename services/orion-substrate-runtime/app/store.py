@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import random
+import shutil
 from datetime import datetime, timezone
 from typing import Any
 
@@ -8,6 +11,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from psycopg2.extras import Json
 
+from app.settings import Settings, get_settings
 from orion.schemas.biometrics_projection import (
     ActiveNodePressureProjectionV1,
     NodeBiometricsProjectionV1,
@@ -20,6 +24,70 @@ from orion.schemas.reduction_receipt import ReductionReceiptV1
 from orion.substrate.biometrics_loop.constants import GRAMMAR_CURSOR_NAME
 from orion.substrate.execution_loop.constants import EXECUTION_GRAMMAR_CURSOR_NAME
 from orion.substrate.biometrics_loop.lineage import emission_touches_node, receipt_touches_node
+from orion.substrate.receipts.retention import (
+    ReceiptRetentionSettings,
+    classify_receipt,
+    compact_receipt_json,
+    payload_byte_length,
+    payload_fingerprint,
+    primary_delta_id,
+    primary_event_id,
+    primary_reducer_name,
+    retention_expires_at,
+)
+
+
+def _retention_settings_from_app(settings: Settings) -> ReceiptRetentionSettings:
+    return ReceiptRetentionSettings(
+        success_hours=settings.receipt_retention_success_hours,
+        error_days=settings.receipt_retention_error_days,
+        full_payload_success=settings.receipt_full_payload_success,
+        full_payload_sample_rate=settings.receipt_full_payload_sample_rate,
+    )
+
+
+def _build_receipt_insert_params(
+    receipt: ReductionReceiptV1,
+    *,
+    retention_settings: ReceiptRetentionSettings,
+    rng_value: float,
+    force_metadata: bool,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    clock = now or datetime.now(timezone.utc)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=timezone.utc)
+
+    classification = classify_receipt(
+        receipt, settings=retention_settings, rng_value=rng_value
+    )
+    is_full = classification.is_full_payload and not force_metadata
+    receipt_json = compact_receipt_json(receipt, is_full_payload=is_full)
+    if force_metadata and classification.receipt_kind != "error":
+        is_full = False
+        receipt_json = compact_receipt_json(receipt, is_full_payload=False)
+
+    expires_at = retention_expires_at(
+        classification, settings=retention_settings, now=clock
+    )
+
+    return {
+        "receipt_id": receipt.receipt_id,
+        "organ_id": receipt.organ_id,
+        "emission_id": receipt.emission_id,
+        "receipt_json": receipt_json,
+        "created_at": clock,
+        "receipt_kind": classification.receipt_kind,
+        "receipt_status": classification.receipt_status,
+        "event_id": primary_event_id(receipt),
+        "delta_id": primary_delta_id(receipt),
+        "reducer_name": primary_reducer_name(receipt),
+        "stream_name": None,
+        "payload_hash": payload_fingerprint(receipt),
+        "payload_bytes": payload_byte_length(receipt_json),
+        "is_full_payload": is_full,
+        "expires_at": expires_at,
+    }
 
 
 class BiometricsSubstrateStore:
@@ -250,27 +318,72 @@ class BiometricsSubstrateStore:
     def save_execution_trajectory(self, projection: ExecutionTrajectoryProjectionV1) -> None:
         self._save_projection("substrate_execution_trajectory_projection", projection)
 
+    def _receipt_pressure_state(self) -> tuple[bool, bool]:
+        s = get_settings()
+        disk_critical = False
+        if os.path.exists(s.receipt_postgres_data_path):
+            try:
+                usage = shutil.disk_usage(s.receipt_postgres_data_path)
+                if usage.total > 0:
+                    used_pct = 100.0 * usage.used / usage.total
+                    disk_critical = used_pct >= s.receipt_disk_critical_pct
+            except OSError:
+                pass
+
+        table_critical = False
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT pg_total_relation_size('substrate_reduction_receipts') AS bytes"
+                )
+            ).mappings().first()
+        bytes_val = int(row["bytes"] or 0)
+        size_gb = bytes_val / (1024**3)
+        table_critical = size_gb >= s.receipt_critical_table_gb
+        return disk_critical, table_critical
+
     def save_receipt(self, receipt: ReductionReceiptV1) -> None:
-        now = datetime.now(timezone.utc)
+        s = get_settings()
+        retention_settings = _retention_settings_from_app(s)
+        disk_critical, table_critical = self._receipt_pressure_state()
+        force_metadata = (
+            s.receipt_emergency_metadata_only and (disk_critical or table_critical)
+        )
+        if table_critical and s.receipt_max_table_gb > 0:
+            from app.receipt_pruner import run_emergency_prune
+
+            run_emergency_prune(self._engine, settings=s)
+
+        params = _build_receipt_insert_params(
+            receipt,
+            retention_settings=retention_settings,
+            rng_value=random.random(),
+            force_metadata=force_metadata,
+        )
+        insert_params = {
+            **params,
+            "receipt_json": Json(params["receipt_json"]),
+        }
+
         with self._engine.begin() as conn:
             conn.execute(
                 text(
                     """
                     INSERT INTO substrate_reduction_receipts (
-                        receipt_id, organ_id, emission_id, receipt_json, created_at
+                        receipt_id, organ_id, emission_id, receipt_json, created_at,
+                        receipt_kind, receipt_status, event_id, delta_id, reducer_name,
+                        stream_name, payload_hash, payload_bytes, is_full_payload,
+                        expires_at
                     ) VALUES (
-                        :receipt_id, :organ_id, :emission_id, :receipt_json, :created_at
+                        :receipt_id, :organ_id, :emission_id, :receipt_json, :created_at,
+                        :receipt_kind, :receipt_status, :event_id, :delta_id, :reducer_name,
+                        :stream_name, :payload_hash, :payload_bytes, :is_full_payload,
+                        :expires_at
                     )
                     ON CONFLICT (receipt_id) DO NOTHING
                     """
                 ),
-                {
-                    "receipt_id": receipt.receipt_id,
-                    "organ_id": receipt.organ_id,
-                    "emission_id": receipt.emission_id,
-                    "receipt_json": Json(receipt.model_dump(mode="json")),
-                    "created_at": now,
-                },
+                insert_params,
             )
 
     def save_emission(self, emission: OrganEmissionV1) -> None:

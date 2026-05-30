@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import json
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from orion.schemas.reduction_receipt import ReductionReceiptV1
 from orion.schemas.state_delta import StateDeltaV1
@@ -12,6 +13,10 @@ from orion.substrate.receipts.retention import (
     payload_fingerprint,
     retention_expires_at,
 )
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "services/orion-substrate-runtime"))
+
+from app.store import _build_receipt_insert_params
 
 
 FIXED = datetime(2026, 5, 29, 12, 0, tzinfo=timezone.utc)
@@ -94,3 +99,34 @@ def test_retention_expires_at_success_hours():
     c = classify_receipt(_receipt(), settings=settings, rng_value=0.99)
     exp = retention_expires_at(c, settings=settings, now=FIXED)
     assert exp == FIXED + timedelta(hours=48)
+
+
+def test_build_receipt_insert_params_success_compact():
+    settings = ReceiptRetentionSettings(success_hours=48)
+    params = _build_receipt_insert_params(
+        _receipt(),
+        retention_settings=settings,
+        rng_value=0.99,
+        force_metadata=False,
+        now=FIXED,
+    )
+    assert params["is_full_payload"] is False
+    assert params["receipt_kind"] == "success"
+    assert "state_deltas" in params["receipt_json"]
+    assert len(params["receipt_json"]["state_deltas"]) == 1
+    assert params["expires_at"] == FIXED + timedelta(hours=48)
+
+
+def test_build_receipt_insert_params_warning_full_error():
+    settings = ReceiptRetentionSettings()
+    params = _build_receipt_insert_params(
+        _receipt(warnings=["reducer_failed"]),
+        retention_settings=settings,
+        rng_value=0.0,
+        force_metadata=False,
+        now=FIXED,
+    )
+    assert params["is_full_payload"] is True
+    assert params["receipt_kind"] == "error"
+    assert params["receipt_status"] == "error"
+    assert params["receipt_json"]["accepted_event_ids"] == ["e1", "e2", "e3"]

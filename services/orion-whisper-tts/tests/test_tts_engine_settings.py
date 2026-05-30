@@ -53,3 +53,9 @@ def test_stt_and_tts_workers_use_wait_for() -> None:
     assert "whisper_tts_stt_timeout_sec" in stt_worker
     assert "asyncio.wait_for" in tts_worker
     assert "whisper_tts_synth_timeout_sec" in tts_worker
+
+
+def test_stt_engine_exports_near_silent_constant() -> None:
+    stt_py = (SERVICE_ROOT / "app" / "stt.py").read_text(encoding="utf-8")
+    assert "STT_NEAR_SILENT_PEAK_INT16" in stt_py
+    assert "_measure_wav_levels" in stt_py

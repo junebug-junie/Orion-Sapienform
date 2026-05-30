@@ -395,9 +395,26 @@ async def run_tts_remote(text: str, tts_client, queue: asyncio.Queue):
             tts_client.speak(req),
             timeout=float(settings.HUB_TTS_TIMEOUT_SEC),
         )
-        msg = {"audio_response": result.audio_b64, "text": text}
+        audio_b64_len = len(result.audio_b64 or "")
+        logger.info(
+            "voice.tts.done text_len=%d audio_b64_len=%d content_type=%s duration_sec=%s metadata=%s",
+            len(text),
+            audio_b64_len,
+            result.content_type,
+            result.duration_sec,
+            result.metadata,
+        )
+        msg = {
+            "audio_response": result.audio_b64,
+            "text": text,
+            "tts_meta": {
+                "content_type": result.content_type,
+                "duration_sec": result.duration_sec,
+                "metadata": result.metadata,
+            },
+            "state": "speaking",
+        }
         await queue.put(msg)
-        logger.info("voice.tts.done text_len=%d", len(text))
     except asyncio.TimeoutError:
         err = f"TTS timed out after {settings.HUB_TTS_TIMEOUT_SEC}s"
         logger.error("voice.tts.error %s", err)
@@ -1304,8 +1321,43 @@ async def websocket_endpoint(websocket: WebSocket):
                     logger.warning("Failed to publish assistant chat history: %s", e, exc_info=True)
 
             # 4. TTS
-            if orion_response_text and not workflow_metadata_only and not disable_tts and tts_client:
-                 asyncio.create_task(run_tts_remote(orion_response_text, tts_client, tts_q))
+            will_tts = bool(
+                orion_response_text
+                and not workflow_metadata_only
+                and not disable_tts
+                and tts_client
+            )
+            logger.info(
+                "voice.tts.decision corr=%s sid=%s response_len=%d workflow_metadata_only=%s "
+                "disable_tts=%s has_tts_client=%s will_tts=%s",
+                trace_id,
+                session_id,
+                len(orion_response_text or ""),
+                workflow_metadata_only,
+                disable_tts,
+                bool(tts_client),
+                will_tts,
+            )
+            if not will_tts and not disable_tts and orion_response_text:
+                tts_debug_payload = await _with_biometrics(
+                    {
+                        "tts_debug": {
+                            "stage": "hub_decision",
+                            "will_tts": False,
+                            "response_len": len(orion_response_text or ""),
+                            "workflow_metadata_only": workflow_metadata_only,
+                            "disable_tts": disable_tts,
+                            "has_tts_client": bool(tts_client),
+                        },
+                    },
+                    cache=biometrics_cache,
+                )
+                if not await _safe_ws_send_json(websocket, tts_debug_payload):
+                    continue
+            if will_tts:
+                asyncio.create_task(
+                    run_tts_remote(orion_response_text, tts_client, tts_q)
+                )
 
             if orion_response_text and not workflow_metadata_only:
                 history.append({"role": "assistant", "content": orion_response_text})

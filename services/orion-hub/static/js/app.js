@@ -10193,7 +10193,17 @@ loadDismissedIds();
             syncSocialInspectionFromRouteDebug(d.routing_debug);
           }
           if (d.state) { orionState = d.state; updateStatusBasedOnState(); }
-          if (d.audio_response) { audioQueue.push(d.audio_response); processAudioQueue(); }
+          if (d.tts_debug) {
+            console.info('[tts] debug', d.tts_debug);
+          }
+          if (d.audio_response) {
+            console.info('[tts] audio_response received', {
+              audio_b64_len: d.audio_response.length,
+              tts_meta: d.tts_meta || null,
+            });
+            audioQueue.push({ audio_b64: d.audio_response, meta: d.tts_meta || null });
+            processAudioQueue();
+          }
           if (d.tts_error) appendMessage('System', `TTS warning: ${d.tts_error}`, 'text-yellow-400');
           if (d.error) {
             appendMessage('System', `Error: ${d.error}`, 'text-red-400');
@@ -10923,36 +10933,60 @@ loadDismissedIds();
   function processAudioQueue() {
     if (isPlayingAudio || !audioQueue.length) return;
     isPlayingAudio = true;
-    playAudio(audioQueue.shift());
+    const item = audioQueue.shift();
+    playAudio(item);
   }
 
-  async function playAudio(b64) {
+  async function playAudio(item) {
+    const audioB64 = typeof item === 'string' ? item : item.audio_b64;
+    const meta = typeof item === 'object' && item !== null ? item.meta : null;
     try {
-        const bin = atob(b64);
+        if (!audioB64) {
+          throw new Error('empty audio payload');
+        }
+        if (!audioContext) {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        const beforeState = audioContext.state;
+        if (audioContext.state === 'suspended') {
+          await audioContext.resume();
+        }
+        console.info('[tts] playback decode start', {
+          beforeState,
+          afterState: audioContext.state,
+          audio_b64_len: audioB64.length,
+          meta,
+        });
+        const bin = atob(audioB64);
         const arr = new Uint8Array(bin.length);
-        for(let i=0; i<bin.length; i++) arr[i] = bin.charCodeAt(i);
-        const buf = await audioContext.decodeAudioData(arr.buffer);
+        for (let i = 0; i < bin.length; i += 1) arr[i] = bin.charCodeAt(i);
+        const buf = await audioContext.decodeAudioData(arr.buffer.slice(0));
+        console.info('[tts] decoded', { duration: buf.duration, sampleRate: buf.sampleRate });
         const src = audioContext.createBufferSource();
         src.buffer = buf;
         const gain = audioContext.createGain();
+        gain.gain.value = 1.0;
         src.connect(gain);
         gain.connect(audioContext.destination);
-        
+
         analyser = audioContext.createAnalyser();
         src.connect(analyser);
         drawVisualizer();
 
         src.start(0);
+        console.info('[tts] playback started');
         currentAudioSource = src;
         src.onended = () => {
+          console.info('[tts] playback ended');
           isPlayingAudio = false;
           cancelAnimationFrame(animationFrameId);
-          // Clear canvas
-          if(canvasCtx) canvasCtx.clearRect(0,0,visualizerCanvas.width, visualizerCanvas.height);
+          if (canvasCtx) canvasCtx.clearRect(0, 0, visualizerCanvas.width, visualizerCanvas.height);
           processAudioQueue();
         };
-    } catch(e) {
-        console.error("Audio Playback Error", e);
+    } catch (e) {
+        console.error('[tts] playback failed', e);
+        appendMessage('System', `TTS playback failed: ${e.message || e}`, 'text-yellow-400');
+        updateStatus('TTS playback failed.');
         isPlayingAudio = false;
         processAudioQueue();
     }

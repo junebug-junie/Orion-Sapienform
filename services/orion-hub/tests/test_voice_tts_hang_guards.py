@@ -59,6 +59,8 @@ def test_start_recording_audio_payload_includes_disable_tts() -> None:
     app_js = (hub_root / "static" / "js" / "app.js").read_text(encoding="utf-8")
     assert "disable_tts: textToSpeechToggle ? !textToSpeechToggle.checked : false" in app_js
     assert "d.tts_error" in app_js
+    assert "[voice] audio_debug" in app_js
+    assert "client_audio_meta" in app_js
 
 
 def test_hub_voice_timeout_settings_defaults() -> None:

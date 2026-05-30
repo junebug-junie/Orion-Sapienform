@@ -139,6 +139,40 @@ def test_transcribe_empty_payload(stt_engine) -> None:
     engine.model.transcribe.assert_not_called()
 
 
+def test_peak_threshold_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = _load_stt_module()
+    monkeypatch.setenv("STT_NEAR_SILENT_PEAK_INT16", "40")
+    assert mod._peak_threshold() == 40
+
+
+def test_peak_threshold_invalid_env_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = _load_stt_module()
+    monkeypatch.setenv("STT_NEAR_SILENT_PEAK_INT16", "not-a-number")
+    assert mod._peak_threshold() == 50
+
+
+@pytest.mark.skipif(
+    __import__("shutil").which("ffmpeg") is None,
+    reason="ffmpeg not installed",
+)
+def test_canonicalize_wav_produces_16k_mono_s16(tmp_path: Path) -> None:
+    mod = _load_stt_module()
+    engine = mod.STTEngine.__new__(mod.STTEngine)
+    wav_path = tmp_path / "low.wav"
+    _write_pcm16_wav(wav_path, [60] * 1600, sample_rate=48000)
+    out = engine._canonicalize_wav(str(wav_path))
+    try:
+        rms, peak = engine._measure_wav_levels(out)
+        with wave.open(out, "rb") as wf:
+            assert wf.getnchannels() == 1
+            assert wf.getframerate() == 16000
+            assert wf.getsampwidth() == 2
+        assert peak == 60
+        assert rms > 0
+    finally:
+        Path(out).unlink(missing_ok=True)
+
+
 def test_stt_worker_publishes_typed_envelope() -> None:
     worker_src = (SERVICE_ROOT / "app" / "stt_worker.py").read_text(encoding="utf-8")
     assert 'kind="stt.transcribe.result"' in worker_src

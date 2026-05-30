@@ -10195,7 +10195,18 @@ loadDismissedIds();
           if (d.state) { orionState = d.state; updateStatusBasedOnState(); }
           if (d.audio_response) { audioQueue.push(d.audio_response); processAudioQueue(); }
           if (d.tts_error) appendMessage('System', `TTS warning: ${d.tts_error}`, 'text-yellow-400');
-          if (d.error) appendMessage('System', `Error: ${d.error}`, 'text-red-400');
+          if (d.error) {
+            appendMessage('System', `Error: ${d.error}`, 'text-red-400');
+            if (d.audio_debug) {
+              console.info('[voice] audio_debug', d.audio_debug);
+              const sttDbg = d.audio_debug.stt;
+              if (sttDbg && sttDbg.peak != null && sttDbg.peak_threshold != null) {
+                updateStatus(
+                  `Voice error — peak=${sttDbg.peak} threshold=${sttDbg.peak_threshold}`,
+                );
+              }
+            }
+          }
           if (d.biometrics) updateBiometricsPanel(d.biometrics);
           if (d.kind === 'notification' && d.notification) {
             addNotification(d.notification);

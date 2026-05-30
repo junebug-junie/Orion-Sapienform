@@ -59,7 +59,7 @@ def test_stt_and_tts_workers_use_wait_for() -> None:
 
 def test_stt_engine_exports_near_silent_constant() -> None:
     stt_py = (SERVICE_ROOT / "app" / "stt.py").read_text(encoding="utf-8")
-    assert "STT_NEAR_SILENT_PEAK_INT16" in stt_py
+    assert "_peak_threshold" in stt_py
     assert "_measure_wav_levels" in stt_py
     assert "_canonicalize_wav" in stt_py
     assert "silence_gate" in stt_py

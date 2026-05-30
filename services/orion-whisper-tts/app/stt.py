@@ -25,19 +25,19 @@ def _peak_threshold() -> int:
     raw = os.environ.get("STT_NEAR_SILENT_PEAK_INT16")
     if raw is not None:
         try:
-            return int(raw)
+            return max(1, min(32767, int(raw)))
         except ValueError:
-            pass
+            logger.warning(
+                "[STT] invalid STT_NEAR_SILENT_PEAK_INT16=%r; using default %d",
+                raw,
+                _DEFAULT_NEAR_SILENT_PEAK_INT16,
+            )
     try:
         from .settings import settings
 
-        return int(settings.stt_near_silent_peak_int16)
+        return max(1, min(32767, int(settings.stt_near_silent_peak_int16)))
     except Exception:
         return _DEFAULT_NEAR_SILENT_PEAK_INT16
-
-
-# Back-compat for tests that import the module constant.
-STT_NEAR_SILENT_PEAK_INT16 = _peak_threshold()
 
 
 class STTEngine:

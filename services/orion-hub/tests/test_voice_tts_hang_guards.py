@@ -53,6 +53,8 @@ async def test_run_tts_remote_enqueues_speaking_payload(monkeypatch) -> None:
     msg = await asyncio.wait_for(queue.get(), timeout=1.0)
     assert msg["audio_response"] == "YWJj"
     assert msg["state"] == "speaking"
+    assert msg.get("text") is None
+    assert msg["tts_source_text"] == "hello"
     assert msg["tts_meta"]["content_type"] == "audio/wav"
     assert msg["tts_meta"]["duration_sec"] == 1.5
 
@@ -88,6 +90,7 @@ def test_start_recording_audio_payload_includes_disable_tts() -> None:
     assert "[tts] audio_response received" in app_js
     assert "[tts] playback started" in app_js
     assert "audioContext.resume" in app_js
+    assert "d.audio_response && !d.llm_response" in app_js
 
 
 def test_hub_voice_timeout_settings_defaults() -> None:

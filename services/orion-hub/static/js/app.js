@@ -10080,6 +10080,9 @@ loadDismissedIds();
 
   function shouldAppendOrionWsPayload(d) {
     if (!d || typeof d !== 'object') return false;
+    if (d.tts_error) return false;
+    // TTS playback follow-up may carry assistant text for logging; never spawn a second bubble.
+    if (d.audio_response && !d.llm_response) return Boolean(d.workflow);
     if (d.workflow) return true;
     if (resolveAssistantDisplayText(d)) return true;
     if (d.error) return false;

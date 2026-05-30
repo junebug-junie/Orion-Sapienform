@@ -406,7 +406,8 @@ async def run_tts_remote(text: str, tts_client, queue: asyncio.Queue):
         )
         msg = {
             "audio_response": result.audio_b64,
-            "text": text,
+            # Not `text` — the UI treats d.text like llm_response and would duplicate the bubble.
+            "tts_source_text": text,
             "tts_meta": {
                 "content_type": result.content_type,
                 "duration_sec": result.duration_sec,

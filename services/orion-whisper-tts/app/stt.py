@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 import struct
 import subprocess
 import tempfile
@@ -15,9 +16,28 @@ import whisper
 
 logger = logging.getLogger(__name__)
 
-# Client float peak gate in Hub app.js uses VOICE_CLIENT_PEAK_MIN (~0.003).
-# int16 peak below this skips Whisper (saves GPU; matches silent WAV uploads).
-STT_NEAR_SILENT_PEAK_INT16 = 200
+# Client float peak warn threshold in Hub app.js uses VOICE_CLIENT_PEAK_MIN (~0.00025).
+# int16 peak below STT_NEAR_SILENT_PEAK_INT16 skips Whisper (saves GPU).
+_DEFAULT_NEAR_SILENT_PEAK_INT16 = 50
+
+
+def _peak_threshold() -> int:
+    raw = os.environ.get("STT_NEAR_SILENT_PEAK_INT16")
+    if raw is not None:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+    try:
+        from .settings import settings
+
+        return int(settings.stt_near_silent_peak_int16)
+    except Exception:
+        return _DEFAULT_NEAR_SILENT_PEAK_INT16
+
+
+# Back-compat for tests that import the module constant.
+STT_NEAR_SILENT_PEAK_INT16 = _peak_threshold()
 
 
 class STTEngine:
@@ -70,7 +90,7 @@ class STTEngine:
         except ValueError:
             return 0.0
 
-    def _to_wav(self, src_path: str) -> str:
+    def _canonicalize_wav(self, src_path: str) -> str:
         out = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         out.close()
         proc = subprocess.run(
@@ -83,15 +103,16 @@ class STTEngine:
                 "16000",
                 "-ac",
                 "1",
+                "-sample_fmt",
+                "s16",
                 out.name,
             ],
             capture_output=True,
             text=True,
         )
         if proc.returncode != 0:
-            raise RuntimeError(
-                f"ffmpeg convert failed: {proc.stderr[-500:] if proc.stderr else proc.returncode}"
-            )
+            stderr_tail = (proc.stderr or "")[-500:]
+            raise RuntimeError(f"ffmpeg convert failed: {stderr_tail or proc.returncode}")
         return out.name
 
     def transcribe(
@@ -100,13 +121,23 @@ class STTEngine:
         language: str = "en",
         audio_format: str = "wav",
     ) -> tuple[str, dict]:
+        fmt = (audio_format or "wav").lower().strip()
+        peak_threshold = _peak_threshold()
         audio_bytes = base64.b64decode(audio_b64)
         if not audio_bytes:
-            logger.warning("[STT] empty audio payload format=%s", audio_format)
-            return "", {"peak": 0, "rms": 0.0, "duration_sec": 0.0}
-        logger.info("[STT] audio_bytes=%d format=%s", len(audio_bytes), audio_format)
+            logger.warning("[STT] empty audio payload format=%s", fmt)
+            return "", {
+                "input_bytes": 0,
+                "input_format": fmt,
+                "wav_bytes": 0,
+                "duration_sec": 0.0,
+                "peak": 0,
+                "rms": 0.0,
+                "peak_threshold": peak_threshold,
+                "silence_gate": "rejected",
+            }
+        logger.info("[STT] audio_bytes=%d format=%s", len(audio_bytes), fmt)
 
-        fmt = (audio_format or "wav").lower().strip()
         suffix = ".webm" if "webm" in fmt else ".wav" if "wav" in fmt else f".{fmt}"
 
         src_path: str | None = None
@@ -117,29 +148,38 @@ class STTEngine:
                 temp_in.flush()
                 src_path = temp_in.name
 
-            if suffix == ".wav":
-                wav_path = src_path
-            else:
-                wav_path = self._to_wav(src_path)
+            wav_path = self._canonicalize_wav(src_path)
 
             wav_size = Path(wav_path).stat().st_size if wav_path else 0
             duration_sec = self._probe_duration_sec(wav_path)
             rms, peak = self._measure_wav_levels(wav_path)
             logger.info(
-                "[STT] wav_bytes=%d duration_sec=%.2f peak=%d rms=%.1f format=%s",
+                "[STT] wav_bytes=%d duration_sec=%.2f peak=%d rms=%.1f format=%s threshold=%d",
                 wav_size,
                 duration_sec,
                 peak,
                 rms,
                 fmt,
+                peak_threshold,
             )
             meta = {
+                "input_bytes": len(audio_bytes),
+                "input_format": fmt,
+                "wav_bytes": wav_size,
+                "duration_sec": round(duration_sec, 3),
                 "peak": peak,
                 "rms": round(rms, 2),
-                "duration_sec": round(duration_sec, 3),
+                "peak_threshold": peak_threshold,
+                "silence_gate": "passed",
             }
-            if peak < STT_NEAR_SILENT_PEAK_INT16:
-                logger.warning("[STT] near-silent input peak=%d rms=%.1f", peak, rms)
+            if peak < peak_threshold:
+                meta["silence_gate"] = "rejected"
+                logger.warning(
+                    "[STT] near-silent input peak=%d rms=%.1f threshold=%d",
+                    peak,
+                    rms,
+                    peak_threshold,
+                )
                 return "", meta
             result = self.model.transcribe(
                 wav_path,

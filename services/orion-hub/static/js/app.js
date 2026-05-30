@@ -37,8 +37,9 @@ let recordingStream = null;
 let pcmCapture = null;
 /** @type {{ generation: number, stopRequested: boolean, starting: boolean }} */
 let voiceCapture = { generation: 0, stopRequested: false, starting: false };
-// Client float peak gate; server uses STT_NEAR_SILENT_PEAK_INT16 (~200) in whisper stt.py.
-const VOICE_CLIENT_PEAK_MIN = 0.003;
+// Client float peak warn threshold (metadata only); server gate is STT_NEAR_SILENT_PEAK_INT16 in whisper stt.py.
+const VOICE_CLIENT_PEAK_MIN = 0.00025;
+const VOICE_MIN_CAPTURE_DURATION_SEC = 0.15;
 const VOICE_PCM_FLUSH_MS = 150;
 let audioContext = new (window.AudioContext || window.webkitAudioContext)();
 let currentAudioSource = null;
@@ -10627,10 +10628,11 @@ loadDismissedIds();
     return merged;
   }
 
-  /** PCM float32 → 16 kHz mono WAV base64; throws if signal is effectively silent. */
-  async function _pcmToWavBase64(pcm, sampleRate) {
+  /** PCM float32 → 16 kHz mono WAV base64 with capture telemetry (warn on low peak, do not block send). */
+  async function _pcmToWavBase64(pcm, sampleRate, chunkCount) {
+    const sourceSampleRate = sampleRate || 48000;
     const ctx = audioContext || new (window.AudioContext || window.webkitAudioContext)();
-    const buffer = ctx.createBuffer(1, pcm.length, sampleRate);
+    const buffer = ctx.createBuffer(1, pcm.length, sourceSampleRate);
     buffer.getChannelData(0).set(pcm);
     const targetRate = 16000;
     const frames = Math.max(1, Math.ceil(buffer.duration * targetRate));
@@ -10642,16 +10644,35 @@ loadDismissedIds();
     const rendered = await offline.startRendering();
     const channel = rendered.getChannelData(0);
     let peak = 0;
+    let sumSq = 0;
     for (let i = 0; i < channel.length; i += 1) {
-      peak = Math.max(peak, Math.abs(channel[i]));
+      const v = channel[i];
+      peak = Math.max(peak, Math.abs(v));
+      sumSq += v * v;
     }
-    console.info('[voice] peak amplitude=%s duration=%ss', peak.toFixed(5), rendered.duration.toFixed(2));
-    if (peak < VOICE_CLIENT_PEAK_MIN) {
-      const err = new Error('silent');
-      err.peak = peak;
-      throw err;
+    const rms = channel.length ? Math.sqrt(sumSq / channel.length) : 0;
+    const durationSec = rendered.duration;
+    let clientGate = 'passed';
+    if (pcm.length === 0 || channel.length === 0) {
+      clientGate = 'empty';
+    } else if (peak < VOICE_CLIENT_PEAK_MIN) {
+      clientGate = 'low_peak_warn';
     }
-    return _uint8ToBase64(_encodeWavPcm16(rendered));
+    const audioB64 = _uint8ToBase64(_encodeWavPcm16(rendered));
+    return {
+      audio_b64: audioB64,
+      metadata: {
+        source_sample_rate: sourceSampleRate,
+        target_sample_rate: targetRate,
+        duration_sec: durationSec,
+        peak,
+        rms,
+        pcm_samples: pcm.length,
+        chunk_count: chunkCount,
+        client_peak_threshold: VOICE_CLIENT_PEAK_MIN,
+        client_gate: clientGate,
+      },
+    };
   }
 
   function _teardownPcmCapture() {
@@ -10678,23 +10699,47 @@ loadDismissedIds();
       recordingStream = null;
     }
     if (!capture || !capture.chunks.length) {
-      updateStatus('No audio captured — check microphone permissions.');
+      updateStatus('No audio chunks captured — browser did not deliver mic frames.');
       return;
     }
+    const captureSampleRate = capture.sampleRate || audioContext.sampleRate || 48000;
     const pcm = _mergePcmChunks(capture.chunks);
-    const durationSec = pcm.length / (audioContext.sampleRate || 48000);
-    console.info('[voice] pcm samples=%d duration=%ss', pcm.length, durationSec.toFixed(2));
-    let audioB64;
+    const durationSec = pcm.length / captureSampleRate;
+    console.info(
+      '[voice] chunk_count=%d source_sample_rate=%d pcm_samples=%d duration=%ss',
+      capture.chunks.length,
+      captureSampleRate,
+      pcm.length,
+      durationSec.toFixed(2),
+    );
+    if (durationSec < VOICE_MIN_CAPTURE_DURATION_SEC) {
+      updateStatus('Recording too short — hold the mic button longer.');
+      return;
+    }
+    let encoded;
     try {
-      audioB64 = await _pcmToWavBase64(pcm, audioContext.sampleRate || 48000);
+      encoded = await _pcmToWavBase64(pcm, captureSampleRate, capture.chunks.length);
     } catch (err) {
       console.error('[voice] encode failed', err);
-      if (err && err.message === 'silent') {
-        updateStatus('No microphone signal — check OS input device and browser mic permission.');
-      } else {
-        updateStatus('Could not process recording — try again.');
-      }
+      updateStatus('Could not process recording — try again.');
       return;
+    }
+    const audioB64 = encoded.audio_b64;
+    const audioMeta = encoded.metadata;
+    console.info(
+      '[voice] peak=%s rms=%s target_sample_rate=%d duration=%ss client_gate=%s',
+      audioMeta.peak.toFixed(6),
+      audioMeta.rms.toFixed(6),
+      audioMeta.target_sample_rate,
+      audioMeta.duration_sec.toFixed(2),
+      audioMeta.client_gate,
+    );
+    if (audioMeta.client_gate === 'empty') {
+      updateStatus('No audio chunks captured — browser did not deliver mic frames.');
+      return;
+    }
+    if (audioMeta.client_gate === 'low_peak_warn') {
+      updateStatus('Low mic level, sending anyway...');
     }
     try {
       let wsOpen = socket && socket.readyState === WebSocket.OPEN;
@@ -10706,6 +10751,7 @@ loadDismissedIds();
         const audioPayload = {
           audio: audioB64,
           audio_format: 'wav',
+          client_audio_meta: audioMeta,
           mode: currentMode,
           session_id: orionSessionId,
           browser_client_id: ensureBrowserClientId(),
@@ -10736,7 +10782,10 @@ loadDismissedIds();
           audioPayload.verbs = ['chat_kids_story'];
         }
         socket.send(JSON.stringify(audioPayload));
-        updateStatus('Processing audio...');
+        console.info('[voice] sent audio payload bytes=%d', audioB64.length);
+        updateStatus(
+          `Processing audio... peak=${audioMeta.peak.toFixed(5)} duration=${audioMeta.duration_sec.toFixed(2)}s`,
+        );
       } else {
         updateStatus('Offline. Cannot send audio.');
       }
@@ -10791,7 +10840,14 @@ loadDismissedIds();
       const processor = audioContext.createScriptProcessor(4096, 1, 1);
       const gain = audioContext.createGain();
       gain.gain.value = 0;
-      pcmCapture = { source, processor, gain, chunks: [], active: true };
+      pcmCapture = {
+        source,
+        processor,
+        gain,
+        chunks: [],
+        active: true,
+        sampleRate: audioContext.sampleRate,
+      };
       processor.onaudioprocess = e => {
         if (!pcmCapture || !pcmCapture.active) {
           return;

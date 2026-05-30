@@ -7,6 +7,8 @@
 
 Upgrades `services/orion-whisper-tts` from single-speaker VITS to Coqui **XTTS-v2** as the default model, wiring `voice_id`, `language`, and `options` from the bus through `TTSEngine.synthesize_to_b64()` → `TTSOutput` with synthesis metadata on legacy and typed replies. Adds reference-voice support via `speaker_wav`, Docker voice-profile mount, smoke/download scripts, and README bus examples. Backend seam (`TTS_BACKEND`) is ready for future HTTP backends without touching the worker.
 
+Also fixes Hub hold-to-talk **STT**: Web Audio PCM → 16 kHz WAV upload (replaces broken WebM path), silent-audio detection, typed `stt.transcribe.result` envelopes, and clearer WS errors for silent mic vs empty Whisper output.
+
 **Telemetry:** XTTS-v2 weights (~1.8 GB) pre-downloaded to `/mnt/telemetry/models/coqui/tts/tts_models--multilingual--multi-dataset--xtts_v2`.
 
 ## Files changed
@@ -28,6 +30,12 @@ Upgrades `services/orion-whisper-tts` from single-speaker VITS to Coqui **XTTS-v
 | `services/orion-whisper-tts/tests/test_tts_voice_resolution.py` | Voice resolution + path containment |
 | `services/orion-whisper-tts/tests/test_tts_worker_replies.py` | Typed + legacy reply metadata |
 | `services/orion-whisper-tts/tests/test_tts_engine_settings.py` | Updated defaults / compose guards |
+| `services/orion-whisper-tts/app/stt.py` | ffmpeg WebM/WAV, level measurement, Whisper short-utterance tuning |
+| `services/orion-whisper-tts/app/stt_worker.py` | Typed STT result + `system.error` envelopes |
+| `services/orion-whisper-tts/tests/test_stt_engine.py` | STT level + near-silent unit tests |
+| `services/orion-hub/static/js/app.js` | Web Audio PCM capture → WAV for STT |
+| `services/orion-hub/scripts/websocket_handler.py` | STT errors, `audio_bytes` logging |
+| `services/orion-hub/scripts/bus_clients/tts_client.py` | `system.error` STT handling |
 
 **Not changed:** `orion/schemas/tts.py`, `orion/schemas/registry.py`, `orion/bus/channels.yaml`.
 
@@ -71,6 +79,8 @@ cd services/orion-whisper-tts && python3 -m pytest tests/ -v
 - [ ] `docker compose build` + service restart on GPU host
 - [ ] Smoke WAV at `/tmp/orion_xtts_smoke.wav`
 - [ ] Legacy + typed bus requests with metadata
+- [ ] Hub hold-to-talk: console `[voice] peak amplitude` above ~0.003 when speaking; short utterance transcribes
+- [ ] Deploy **hub + whisper-tts together** from this branch (hard refresh Hub)
 
 ## Known risks
 

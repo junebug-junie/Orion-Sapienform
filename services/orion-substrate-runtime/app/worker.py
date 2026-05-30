@@ -68,9 +68,16 @@ class BiometricsSubstrateWorker:
                 break
 
     def _prune_tick(self) -> None:
-        from app.receipt_pruner import log_receipt_pressure, run_safe_prune
+        from app.receipt_pruner import (
+            log_receipt_pressure,
+            maybe_run_emergency_prune,
+            refresh_pressure_cache,
+            run_safe_prune,
+        )
 
+        refresh_pressure_cache(self._store._engine, self._settings)
         run_safe_prune(self._store._engine)
+        maybe_run_emergency_prune(self._store._engine, self._settings)
         log_receipt_pressure(self._store._engine, self._settings)
 
     async def _poll_loop(self) -> None:

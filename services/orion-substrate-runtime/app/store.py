@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import json
-import os
 import random
-import shutil
 from datetime import datetime, timezone
 from typing import Any
 
@@ -318,41 +316,15 @@ class BiometricsSubstrateStore:
     def save_execution_trajectory(self, projection: ExecutionTrajectoryProjectionV1) -> None:
         self._save_projection("substrate_execution_trajectory_projection", projection)
 
-    def _receipt_pressure_state(self) -> tuple[bool, bool]:
-        s = get_settings()
-        disk_critical = False
-        if os.path.exists(s.receipt_postgres_data_path):
-            try:
-                usage = shutil.disk_usage(s.receipt_postgres_data_path)
-                if usage.total > 0:
-                    used_pct = 100.0 * usage.used / usage.total
-                    disk_critical = used_pct >= s.receipt_disk_critical_pct
-            except OSError:
-                pass
-
-        table_critical = False
-        with self._engine.connect() as conn:
-            row = conn.execute(
-                text(
-                    "SELECT pg_total_relation_size('substrate_reduction_receipts') AS bytes"
-                )
-            ).mappings().first()
-        bytes_val = int(row["bytes"] or 0)
-        size_gb = bytes_val / (1024**3)
-        table_critical = size_gb >= s.receipt_critical_table_gb
-        return disk_critical, table_critical
-
     def save_receipt(self, receipt: ReductionReceiptV1) -> None:
+        from app.receipt_pruner import get_cached_pressure_state
+
         s = get_settings()
         retention_settings = _retention_settings_from_app(s)
-        disk_critical, table_critical = self._receipt_pressure_state()
+        disk_critical, table_critical = get_cached_pressure_state()
         force_metadata = (
             s.receipt_emergency_metadata_only and (disk_critical or table_critical)
         )
-        if table_critical and s.receipt_max_table_gb > 0:
-            from app.receipt_pruner import run_emergency_prune
-
-            run_emergency_prune(self._engine, settings=s)
 
         params = _build_receipt_insert_params(
             receipt,

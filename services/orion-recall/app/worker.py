@@ -501,8 +501,10 @@ def _build_anchor_set(
 
 def _rdf_enabled(profile: Dict[str, Any]) -> bool:
     profile_name = str(profile.get("profile") or "")
+    profile_enable_rdf = bool(profile.get("enable_rdf", False))
     return (
-        profile_name.startswith("deep.graph")
+        profile_enable_rdf
+        or profile_name.startswith("deep.graph")
         or profile_name.startswith("graphtri")
         or settings.RECALL_ENABLE_RDF
     ) and int(profile.get("rdf_top_k", 0)) > 0

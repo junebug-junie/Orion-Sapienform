@@ -245,10 +245,13 @@ def _build_recall_payload(payload: Dict[str, Any], *, use_recall: bool, route_mo
     recall_profile = payload.get("recall_profile")
     if isinstance(recall_profile, str):
         recall_profile = recall_profile.strip() or None
-    # Agent-mode continuity should not inherit broad reflective recall unless the caller
-    # intentionally selected a profile.
-    if use_recall and recall_profile is None and str(route_mode or "").strip().lower() != "agent":
-        recall_profile = "reflect.v1"
+    # Route-aware defaults: brain lane uses structured SQL+RDF recall; agent stays unset unless explicit.
+    if use_recall and recall_profile is None:
+        route = str(route_mode or "").strip().lower()
+        if route == "brain":
+            recall_profile = "brain.recall.v1"
+        elif route != "agent":
+            recall_profile = "reflect.v1"
 
     return {
         "enabled": use_recall,

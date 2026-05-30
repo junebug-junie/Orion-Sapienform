@@ -1,0 +1,38 @@
+profile: brain.recall.v1
+
+# Vector is permanently amputated from recall.
+enable_vector: false
+vector_top_k: 0
+
+# Brain recall should use structured memory.
+enable_rdf: true
+rdf_top_k: 8
+
+# Literal / durable memory lanes.
+enable_sql_chat: true
+enable_sql_timeline: true
+enable_query_expansion: true
+
+sql_since_minutes: 10080 # 7 days
+sql_chat_top_k: 8
+sql_top_k: 16
+
+max_per_source: 4
+max_total_items: 16
+render_budget_tokens: 320
+time_decay_half_life_hours: 72
+
+relevance:
+  backend_weights:
+    vector: 0.0
+    sql_chat: 0.75
+    sql_timeline: 0.85
+    rdf_chat: 0.8
+    rdf: 0.65
+    cards: 0.5
+  score_weight: 0.7
+  text_similarity_weight: 0.15
+  recency_weight: 0.1
+  enable_recency: true
+  recency_half_life_hours: 72
+  session_boost: 0.1

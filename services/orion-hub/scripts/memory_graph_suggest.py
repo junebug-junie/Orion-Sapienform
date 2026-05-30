@@ -14,7 +14,12 @@ from pydantic import ValidationError
 
 from orion.memory_graph.approve import preview_validate_only
 from orion.memory_graph.dto import SuggestDraftV1
-from orion.memory_graph.suggest_validate import parse_json_object, validate_for_escalation
+from orion.memory_graph.suggest_validate import (
+    parse_json_object,
+    repair_role_grounded_suggest_draft,
+    role_grounded_extraction_expected,
+    validate_for_escalation,
+)
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
 
 from scripts.cortex_memory_graph_text import hub_memory_graph_suggest_text
@@ -159,6 +164,9 @@ def _parse_suggest_draft_from_text(
         ):
             return None, True, ["json_truncated"], "json_truncated"
         return None, True, [parse_err or "parse_failed"], parse_err
+
+    if role_grounded_extraction_expected(utterance_text):
+        data = repair_role_grounded_suggest_draft(data, utterance_text=utterance_text)
 
     should_escalate, validation_errors = validate_for_escalation(data, utterance_text=utterance_text)
     if should_escalate:

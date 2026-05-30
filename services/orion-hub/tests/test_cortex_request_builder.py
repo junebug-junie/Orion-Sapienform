@@ -116,6 +116,61 @@ def test_agent_mode_recall_toggle_preserves_supervised_routing_intent() -> None:
     assert disabled_debug["supervised"] is True
 
 
+def test_brain_mode_defaults_recall_profile_to_brain_recall_v1() -> None:
+    req, debug, _ = hub_builder.build_chat_request(
+        payload={"mode": "brain", "use_recall": True},
+        session_id="sid-brain-recall",
+        user_id="user-1",
+        trace_id="trace-brain-recall",
+        default_mode="brain",
+        auto_default_enabled=False,
+        source_label="hub_http",
+        prompt="What did we decide about the deployment?",
+    )
+
+    assert req.mode == "brain"
+    assert req.recall["enabled"] is True
+    assert req.recall["profile"] == "brain.recall.v1"
+    assert debug["recall_profile"] == "brain.recall.v1"
+
+
+def test_brain_mode_preserves_explicit_chat_general_recall_profile() -> None:
+    req, debug, _ = hub_builder.build_chat_request(
+        payload={
+            "mode": "brain",
+            "use_recall": True,
+            "recall_profile": "chat.general.v1",
+        },
+        session_id="sid-brain-explicit-chat",
+        user_id="user-1",
+        trace_id="trace-brain-explicit-chat",
+        default_mode="brain",
+        auto_default_enabled=False,
+        source_label="hub_http",
+        prompt="Quick factual check.",
+    )
+
+    assert req.recall["profile"] == "chat.general.v1"
+    assert debug["recall_profile"] == "chat.general.v1"
+
+
+def test_agent_mode_does_not_inherit_brain_recall_default() -> None:
+    req, debug, _ = hub_builder.build_chat_request(
+        payload={"mode": "agent", "use_recall": True},
+        session_id="sid-agent-no-brain-recall",
+        user_id="user-1",
+        trace_id="trace-agent-no-brain-recall",
+        default_mode="brain",
+        auto_default_enabled=False,
+        source_label="hub_http",
+        prompt="Continue the deployment guide.",
+    )
+
+    assert req.mode == "agent"
+    assert req.recall["profile"] is None
+    assert debug["recall_profile"] is None
+
+
 def test_agent_mode_preserves_explicit_recall_profile_override() -> None:
     req, debug, _ = hub_builder.build_chat_request(
         payload={"mode": "agent", "use_recall": True, "recall_profile": "reflect.v1"},

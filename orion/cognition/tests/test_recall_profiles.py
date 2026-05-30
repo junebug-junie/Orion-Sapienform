@@ -45,8 +45,10 @@ load_profiles = profiles.load_profiles
 
 
 def test_profiles_load_default():
+    load_profiles.cache_clear()
     profiles = load_profiles()
     assert "reflect.v1" in profiles
+    assert "brain.recall.v1" in profiles
     prof = get_profile("reflect.v1")
     assert prof["profile"] == "reflect.v1"
     assert prof["max_total_items"] > 0
@@ -69,10 +71,23 @@ def test_dream_v1_profile_loads():
     assert int(prof.get("render_budget_tokens") or 0) >= 256
 
 
-def test_recall_v1_hub_alias_maps_to_chat_general():
-    """Hub default option value ``recall.v1`` must resolve to the on-disk chat profile, not RECALL_DEFAULT_PROFILE."""
-    assert get_profile("recall.v1").get("profile") == "chat.general.v1"
-    assert get_profile("RECALL.V1").get("profile") == "chat.general.v1"
+def test_recall_v1_hub_alias_maps_to_brain_recall():
+    """Hub legacy label ``recall.v1`` must resolve to structured brain recall, not chat.general.v1."""
+    load_profiles.cache_clear()
+    prof = get_profile("recall.v1")
+    assert prof.get("profile") == "brain.recall.v1"
+    assert get_profile("RECALL.V1").get("profile") == "brain.recall.v1"
+
+
+def test_brain_recall_v1_profile_is_sql_rdf_non_vector():
+    load_profiles.cache_clear()
+    prof = get_profile("brain.recall.v1")
+    assert prof["profile"] == "brain.recall.v1"
+    assert prof.get("enable_vector") is False
+    assert int(prof.get("vector_top_k", -1)) == 0
+    assert prof.get("enable_rdf") is True
+    assert int(prof.get("rdf_top_k", 0)) > 0
+    assert float(prof.get("relevance", {}).get("backend_weights", {}).get("vector", 1.0)) == 0.0
 
 
 def test_chat_general_profile_is_narrower_than_reflect_profile():
@@ -82,7 +97,8 @@ def test_chat_general_profile_is_narrower_than_reflect_profile():
     assert chat["enable_sql_timeline"] is False
     assert reflect["enable_sql_timeline"] is True
     assert chat["max_total_items"] < reflect["max_total_items"]
-    assert chat["vector_top_k"] < reflect["vector_top_k"]
+    assert int(chat.get("vector_top_k", 0)) == 0
+    assert int(reflect.get("vector_top_k", 0)) == 0
     assert chat["rdf_top_k"] < reflect["rdf_top_k"]
     assert chat["sql_top_k"] < reflect["sql_top_k"]
 

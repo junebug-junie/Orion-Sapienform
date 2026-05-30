@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 ONTOLOGY_VERSION = "orionmem-2026-05"
@@ -57,7 +58,11 @@ _RELATION_CUE_RE = re.compile(
     re.I,
 )
 _USER_ENTITY_HINTS = frozenset({"user", "juniper", "entity:user"})
-_ASSISTANT_ENTITY_HINTS = frozenset({"orion", "assistant", "entity:orion"})
+_ASSISTANT_ENTITY_HINTS = frozenset(
+    {"orion", "assistant", "entity:orion", "sapienform", "orion-sapienform"}
+)
+
+_ROLE_ENTITY_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c0")
 
 
 def extract_selected_role_evidence(utterance_text: str) -> Dict[str, bool]:
@@ -145,12 +150,145 @@ def _has_role_entity(entities: List[Any], hints: frozenset[str]) -> bool:
     return False
 
 
-def _has_user_role_entity(entities: List[Any]) -> bool:
-    return _has_role_entity(entities, _USER_ENTITY_HINTS)
+def _turn_ids_by_role(utterance_text: str) -> Dict[str, List[str]]:
+    """Map user/assistant turn ids from bridge-style transcript evidence."""
+    out: Dict[str, List[str]] = {"user": [], "assistant": []}
+    for match in re.finditer(
+        r"---\s*turn\s+\d+\s+id=(\S+)\s+role=(user|assistant)\s*---",
+        utterance_text or "",
+        re.I,
+    ):
+        out[str(match.group(2)).lower()].append(str(match.group(1)).strip())
+    return out
 
 
-def _has_assistant_role_entity(entities: List[Any]) -> bool:
-    return _has_role_entity(entities, _ASSISTANT_ENTITY_HINTS)
+def _stable_role_entity_id(role: str, utterance_ids: List[str]) -> str:
+    key = f"{role}:{','.join(sorted(str(u).strip() for u in utterance_ids if str(u).strip()))}"
+    return f"urn:uuid:{uuid.uuid5(_ROLE_ENTITY_NAMESPACE, key)}"
+
+
+def _has_user_role_entity(
+    entities: List[Any],
+    *,
+    situations: Optional[List[Any]] = None,
+    utterance_text: str = "",
+) -> bool:
+    if _has_role_entity(entities, _USER_ENTITY_HINTS):
+        return True
+    user_turns = set(_turn_ids_by_role(utterance_text).get("user") or [])
+    if not user_turns or not situations:
+        return False
+    ent_ids = {
+        str(ent.get("id") or "").strip()
+        for ent in entities
+        if isinstance(ent, dict) and str(ent.get("id") or "").strip()
+    }
+    for sit in situations:
+        if not isinstance(sit, dict):
+            continue
+        uids = {str(uid).strip() for uid in (sit.get("utterance_ids") or [])}
+        if not uids & user_turns:
+            continue
+        stim = str(sit.get("stimulus_entity_id") or "").strip()
+        if stim and stim in ent_ids:
+            return True
+        for part in sit.get("participants") or []:
+            if isinstance(part, dict):
+                eid = str(part.get("entity_id") or "").strip()
+                if eid and eid in ent_ids:
+                    return True
+    return False
+
+
+def _has_assistant_role_entity(
+    entities: List[Any],
+    *,
+    situations: Optional[List[Any]] = None,
+    utterance_text: str = "",
+) -> bool:
+    if _has_role_entity(entities, _ASSISTANT_ENTITY_HINTS):
+        return True
+    asst_turns = set(_turn_ids_by_role(utterance_text).get("assistant") or [])
+    if not asst_turns or not situations:
+        return False
+    ent_ids = {
+        str(ent.get("id") or "").strip()
+        for ent in entities
+        if isinstance(ent, dict) and str(ent.get("id") or "").strip()
+    }
+    for sit in situations:
+        if not isinstance(sit, dict):
+            continue
+        uids = {str(uid).strip() for uid in (sit.get("utterance_ids") or [])}
+        if not uids & asst_turns:
+            continue
+        stim = str(sit.get("stimulus_entity_id") or "").strip()
+        if stim and stim in ent_ids:
+            return True
+        for part in sit.get("participants") or []:
+            if isinstance(part, dict):
+                eid = str(part.get("entity_id") or "").strip()
+                if eid and eid in ent_ids:
+                    return True
+    return False
+
+
+def repair_role_grounded_suggest_draft(
+    data: Dict[str, Any],
+    *,
+    utterance_text: str = "",
+) -> Dict[str, Any]:
+    """Inject canonical User/Orion entities when both roles are present but the model omitted one."""
+    if not isinstance(data, dict):
+        return data
+    role_ev = extract_selected_role_evidence(utterance_text)
+    if not (
+        role_grounded_extraction_expected(utterance_text)
+        and role_ev.get("has_user_turn")
+        and role_ev.get("has_assistant_turn")
+    ):
+        return data
+
+    out = dict(data)
+    entities = list(out.get("entities") or [])
+    if not isinstance(entities, list):
+        entities = []
+    situations = list(out.get("situations") or [])
+    if not isinstance(situations, list):
+        situations = []
+
+    utterance_ids = [
+        str(uid).strip() for uid in (out.get("utterance_ids") or []) if str(uid).strip()
+    ]
+    if not utterance_ids:
+        utterance_ids = [
+            *(_turn_ids_by_role(utterance_text).get("user") or []),
+            *(_turn_ids_by_role(utterance_text).get("assistant") or []),
+        ]
+
+    if not _has_user_role_entity(entities, situations=situations, utterance_text=utterance_text):
+        entities.append(
+            {
+                "id": _stable_role_entity_id("user", utterance_ids),
+                "label": "User",
+                "entityKind": "person",
+                "surfaceForms": ["I"],
+                "generalizes_to": None,
+            }
+        )
+    if not _has_assistant_role_entity(entities, situations=situations, utterance_text=utterance_text):
+        entities.append(
+            {
+                "id": _stable_role_entity_id("assistant", utterance_ids),
+                "label": "Orion",
+                "entityKind": "abstract",
+                "surfaceForms": ["I"],
+                "generalizes_to": None,
+            }
+        )
+
+    out["entities"] = entities
+    return out
 
 
 def validate_for_escalation(
@@ -245,9 +383,11 @@ def validate_for_escalation(
         if len(situations) == 0:
             errors.append("no_situations_when_role_grounded_context_expected")
         if role_ev.get("has_user_turn") and role_ev.get("has_assistant_turn"):
-            if not _has_user_role_entity(entities):
+            if not _has_user_role_entity(entities, situations=situations, utterance_text=utterance_text):
                 errors.append("missing_user_role_entity")
-            if not _has_assistant_role_entity(entities):
+            if not _has_assistant_role_entity(
+                entities, situations=situations, utterance_text=utterance_text
+            ):
                 errors.append("missing_assistant_role_entity")
     elif utterance_likely_has_named_subjects(utterance_text) and len(entities) == 0:
         errors.append("no_entities_when_subjects_expected")

@@ -14,9 +14,9 @@ except ImportError:  # pragma: no cover - fallback for test harness
     from settings import settings  # type: ignore
 
 
-# Hub UI historically labels the default lane as ``recall.v1``; on-disk profile is ``chat.general.v1``.
+# Hub UI historically labels the brain lane as ``recall.v1``; resolve to structured brain recall.
 _PROFILE_ALIASES: Dict[str, str] = {
-    "recall.v1": "chat.general.v1",
+    "recall.v1": "brain.recall.v1",
 }
 
 
@@ -84,16 +84,19 @@ def load_profiles() -> Dict[str, Dict[str, Any]]:
     if settings.RECALL_DEFAULT_PROFILE and settings.RECALL_DEFAULT_PROFILE not in profiles:
         profiles[settings.RECALL_DEFAULT_PROFILE] = {
             "profile": settings.RECALL_DEFAULT_PROFILE,
-            "vector_top_k": settings.RECALL_DEFAULT_MAX_ITEMS,
-            "rdf_top_k": 0,  # stays 0 if profiles aren't mounted; avoids surprises
+            "enable_vector": False,
+            "vector_top_k": 0,
+            "enable_rdf": True,
+            "rdf_top_k": 8,
+            "enable_sql_chat": True,
+            "enable_sql_timeline": True,
             "max_per_source": 4,
             "max_total_items": settings.RECALL_DEFAULT_MAX_ITEMS,
             "render_budget_tokens": 256,
             "enable_query_expansion": True,
-            "enable_sql_timeline": True,
             "relevance": {
                 "backend_weights": {
-                    "vector": 1.0,
+                    "vector": 0.0,
                     "sql_timeline": 0.9,
                     "sql_chat": 0.6,
                     "rdf_chat": 0.5,

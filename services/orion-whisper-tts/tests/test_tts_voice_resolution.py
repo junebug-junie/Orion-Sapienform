@@ -91,3 +91,27 @@ def test_missing_speaker_wav_raises_loud(tmp_path) -> None:
             language="en",
             options=None,
         )
+
+
+def test_speaker_wav_rejects_path_outside_profile_dir(tmp_path) -> None:
+    root = tmp_path / "voices"
+    root.mkdir()
+    outside = tmp_path / "outside.wav"
+    outside.write_bytes(b"RIFF")
+    with pytest.raises(ValueError, match="must be under"):
+        resolve_synthesis_plan(
+            _settings(tts_voice_profile_dir=str(root)),
+            voice_id=None,
+            language="en",
+            options={"speaker_wav": str(outside)},
+        )
+
+
+def test_xtts_requires_speaker() -> None:
+    with pytest.raises(ValueError, match="XTTS requires a speaker"):
+        resolve_synthesis_plan(
+            _settings(),
+            voice_id=None,
+            language="en",
+            options=None,
+        )

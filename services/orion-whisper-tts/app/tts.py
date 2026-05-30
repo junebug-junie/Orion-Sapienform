@@ -35,15 +35,20 @@ def _is_xtts_model(model_name: str) -> bool:
 
 
 def _resolve_speaker_wav_path(candidate: str, profile_dir: str) -> Path:
-    p = Path(candidate)
-    if not p.is_absolute():
-        p = Path(profile_dir) / p
-    p = p.resolve()
-    if not p.is_file():
+    root = Path(profile_dir).resolve()
+    raw = Path(candidate)
+    resolved = (raw if raw.is_absolute() else root / raw).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(
+            f"TTS speaker_wav must be under {root}, got {candidate!r}"
+        ) from exc
+    if not resolved.is_file():
         raise FileNotFoundError(
-            f"TTS speaker_wav not found: {p} (profile_dir={profile_dir})"
+            f"TTS speaker_wav not found: {resolved} (profile_dir={root})"
         )
-    return p
+    return resolved
 
 
 def resolve_synthesis_plan(
@@ -94,7 +99,7 @@ def resolve_synthesis_plan(
         "language": lang,
         "voice_id": voice_id,
         "speaker": speaker,
-        "speaker_wav": speaker_wav,
+        "speaker_wav_basename": Path(speaker_wav).name if speaker_wav else None,
         "speaker_wav_used": speaker_wav_used,
         "split_sentences": split,
     }
@@ -124,11 +129,28 @@ def resolve_synthesis_plan(
     return SynthesisPlan(kwargs=kwargs, metadata=meta)
 
 
+def _validate_xtts_defaults(cfg: Settings) -> None:
+    if not _is_xtts_model(cfg.tts_model_name):
+        return
+    has_speaker = bool(cfg.tts_default_speaker)
+    has_wav = bool(cfg.tts_default_speaker_wav)
+    if has_speaker or has_wav:
+        if has_wav:
+            _resolve_speaker_wav_path(cfg.tts_default_speaker_wav, cfg.tts_voice_profile_dir)
+        return
+    raise RuntimeError(
+        "XTTS model configured but no default voice: set TTS_DEFAULT_SPEAKER "
+        "(built-in name) or TTS_DEFAULT_SPEAKER_WAV (reference .wav under "
+        f"TTS_VOICE_PROFILE_DIR={cfg.tts_voice_profile_dir})"
+    )
+
+
 class CoquiBackend:
     def __init__(self, cfg: Settings):
         from TTS.api import TTS
 
         self.cfg = cfg
+        _validate_xtts_defaults(cfg)
         logger.info(
             "[TTS] Loading coqui model=%s gpu=%s",
             cfg.tts_model_name,

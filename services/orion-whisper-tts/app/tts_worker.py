@@ -180,7 +180,12 @@ async def process_tts_request(
         # Publish error if possible
         try:
             if is_legacy:
-                 await bus.publish(reply_to, {"error": str(e), "ok": False})
+                err_payload: dict[str, Any] = {"error": str(e), "ok": False}
+                if legacy_trace_id:
+                    err_payload["trace_id"] = legacy_trace_id
+                elif request_data and envelope:
+                    err_payload["trace_id"] = str(envelope.correlation_id)
+                await bus.publish(reply_to, err_payload)
             else:
                 error_envelope = envelope.derive_child(
                     kind="system.error",

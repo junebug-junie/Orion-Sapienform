@@ -15,16 +15,29 @@ class HyperbolicGPTConfig:
     n_embd: int = 256
     dropout: float = 0.1
     bias: bool = True
+
+    # v1 hyperbolic attention knobs
     geo_lambda_init: float = 0.05
     curvature_init: float = 1.0
     use_learned_curvature: bool = True
     use_learned_geo_lambda: bool = True
+
+    # v2 manifold-aware knobs. Defaults preserve v1-ish behavior unless model_v2
+    # is explicitly selected.
+    use_hyperbolic_attention: bool = True
+    semantic_adapter_rank: int = 0
+    margin_gap_loss_weight: float = 0.0
+    margin_gap_epsilon: float = 0.5
+    entropy_floor_loss_weight: float = 0.0
+    min_entropy: float = 0.0
 
     def __post_init__(self) -> None:
         if self.n_embd % self.n_head != 0:
             raise ValueError(
                 f"n_embd ({self.n_embd}) must be divisible by n_head ({self.n_head})"
             )
+        if self.semantic_adapter_rank < 0:
+            raise ValueError("semantic_adapter_rank must be >= 0")
 
     @property
     def head_dim(self) -> int:

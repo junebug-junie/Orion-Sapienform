@@ -1,8 +1,19 @@
-torch>=2.1.0
-# Upper bound: transformers 4.46+ expects torch>=2.5 (device_mesh) for AutoTokenizer paths
+# Hyperbolic GPT experiment deps (V100 / sm_70 tested on circe).
+# Install from repo root:
+#   python3 -m venv .venv-hyperbolic-gpt && source .venv-hyperbolic-gpt/bin/activate
+#   pip install -U pip && pip install -r orion/substrate/experiments/hyperbolic_gpt/requirements.txt
+#
+# torch 2.4.1+cu124 includes Volta (V100). torch 2.5+ / 2.12+cu130 drops sm_70.
+# transformers>=4.46 expects torch>=2.5 (device_mesh) — keep transformers<4.46 with torch 2.4.
+
+--extra-index-url https://download.pytorch.org/whl/cu124
+torch==2.4.1
+torchvision==0.19.1
+torchaudio==2.4.1
+
 transformers>=4.36.0,<4.46.0
-datasets>=2.16.0
+datasets>=2.16.0,<3.0.0
 tqdm>=4.66.0
-numpy>=1.24.0
+numpy>=1.24.0,<3.0.0
 # Required when importing via orion.substrate.* (parent package loads pydantic schemas)
-pydantic>=2.0.0
+pydantic>=2.0.0,<3.0.0

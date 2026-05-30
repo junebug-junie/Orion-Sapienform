@@ -56,13 +56,13 @@ Coqui stores weights under `~/.local/share/tts` in the container, which maps to 
 ```bash
 mkdir -p /mnt/telemetry/models/coqui/tts
 export PROJECT=orion
-docker compose run --rm whisper-tts python3 scripts/download_xtts_model.py
+COQUI_TOS_AGREED=1 docker compose run --rm whisper-tts python3 scripts/download_xtts_model.py
 ```
 
 One-liner (same thing):
 
 ```bash
-mkdir -p /mnt/telemetry/models/coqui/tts && cd services/orion-whisper-tts && PROJECT=orion docker compose run --rm whisper-tts python3 scripts/download_xtts_model.py
+mkdir -p /mnt/telemetry/models/coqui/tts && cd services/orion-whisper-tts && PROJECT=orion COQUI_TOS_AGREED=1 docker compose run --rm whisper-tts python3 scripts/download_xtts_model.py
 ```
 
 On the host without Docker (writes directly to telemetry):

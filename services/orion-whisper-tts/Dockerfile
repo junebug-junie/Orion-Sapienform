@@ -27,6 +27,9 @@ RUN pip3 install --no-cache-dir --upgrade --force-reinstall \
     torch==2.8.0 torchaudio==2.8.0 \
     --index-url https://download.pytorch.org/whl/cu126
 
+# torch reinstall can bump transformers; pin for XTTS-v2 + Coqui TTS 0.22
+RUN pip3 install --no-cache-dir 'transformers>=4.33.0,<4.46.0'
+
 # Build-time proof: wheel includes sm_61 support
 RUN python3 - <<'PY'
 import torch

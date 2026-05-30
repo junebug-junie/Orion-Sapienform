@@ -30,6 +30,22 @@ class SynthesisPlan:
     metadata: dict[str, Any]
 
 
+def _ensure_torch_load_compat() -> None:
+    """PyTorch 2.6+ defaults weights_only=True; Coqui XTTS checkpoints need False."""
+    import torch
+
+    if getattr(_ensure_torch_load_compat, "_patched", False):
+        return
+    _orig_load = torch.load
+
+    def _load(*args, **kwargs):
+        kwargs.setdefault("weights_only", False)
+        return _orig_load(*args, **kwargs)
+
+    torch.load = _load  # type: ignore[method-assign]
+    _ensure_torch_load_compat._patched = True
+
+
 def _is_xtts_model(model_name: str) -> bool:
     return "xtts" in model_name.lower()
 
@@ -147,6 +163,7 @@ def _validate_xtts_defaults(cfg: Settings) -> None:
 
 class CoquiBackend:
     def __init__(self, cfg: Settings):
+        _ensure_torch_load_compat()
         from TTS.api import TTS
 
         self.cfg = cfg

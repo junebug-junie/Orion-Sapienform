@@ -14,12 +14,18 @@ from app.settings import Settings  # noqa: E402
 
 
 def main() -> int:
+    # Non-interactive CPML acceptance (see TTS.utils.manage.ModelManager.tos_agreed)
+    os.environ.setdefault("COQUI_TOS_AGREED", "1")
+
     cfg = Settings()
     cache_dir = os.environ.get("TTS_HOME") or str(Path.home() / ".local/share" / "tts")
     print(f"TTS_HOME/cache={cache_dir}")
     print(f"Downloading model={cfg.tts_model_name} gpu={cfg.tts_use_gpu}")
 
-    from TTS.api import TTS
+    from app.tts import _ensure_torch_load_compat  # noqa: E402
+
+    _ensure_torch_load_compat()
+    from TTS.api import TTS  # noqa: E402
 
     TTS(cfg.tts_model_name, gpu=cfg.tts_use_gpu)
     print(f"Done. Weights should be under: {cache_dir}")

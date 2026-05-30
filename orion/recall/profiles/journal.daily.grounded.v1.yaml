@@ -4,8 +4,9 @@
 # PageIndex over journal_entry_index is still skipped in cortex-exec for this trigger;
 # recall itself stays useful for chat / collapse / semantic memory that is not those rows.
 profile: journal.daily.grounded.v1
+enable_vector: false
 
-vector_top_k: 12
+vector_top_k: 0
 rdf_top_k: 8
 max_per_source: 4
 max_total_items: 24
@@ -32,7 +33,7 @@ filters:
 
 relevance:
   backend_weights:
-    vector: 1.0
+    vector: 0.0
     sql_timeline: 0.9
     sql_chat: 0.6
     rdf_chat: 0.55

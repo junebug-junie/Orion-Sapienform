@@ -68,15 +68,10 @@ def test_fusion_enable_recency_false_disables_recency_effect():
     assert bundle.items[0].id == "older"
 
 
-def test_query_backends_vector_top_k_zero_disables_vector(monkeypatch):
+def test_query_backends_never_emits_vector(monkeypatch):
     monkeypatch.setattr(worker.settings, "RECALL_ENABLE_VECTOR", True)
     monkeypatch.setattr(worker.settings, "RECALL_ENABLE_SQL_CHAT", False)
     monkeypatch.setattr(worker.settings, "RECALL_ENABLE_SQL_TIMELINE", False)
-
-    def _fail_vector(**kwargs):
-        raise AssertionError("vector backend should be disabled when vector_top_k=0")
-
-    monkeypatch.setattr(worker, "fetch_vector_fragments", _fail_vector)
 
     candidates, counts = asyncio.run(
         worker._query_backends(

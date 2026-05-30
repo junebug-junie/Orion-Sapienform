@@ -14,10 +14,9 @@ from orion.core.contracts.recall import MemoryBundleStatsV1, MemoryBundleV1, Mem
 from .profiles import get_profile
 from .render import render_items
 from .settings import settings
-from .source_policy import build_vector_policy, log_vector_skipped, recall_vector_allowed
+from .source_policy import build_vector_policy
 from .sql_timeline import fetch_exact_fragments, fetch_recent_fragments
 from .storage.rdf_adapter import fetch_rdf_chatturn_exact_matches, fetch_rdf_fragments
-from .storage.vector_adapter import fetch_vector_exact_matches, fetch_vector_fragments
 
 logger = logging.getLogger("orion-recall.recall_v2")
 
@@ -139,7 +138,10 @@ async def run_recall_v2_shadow(
     profile = profile if isinstance(profile, dict) else get_profile(str(query.profile or settings.RECALL_DEFAULT_PROFILE))
     vector_policy = build_vector_policy(profile, settings)
     candidates: List[Dict[str, Any]] = []
-    backend_counts: Dict[str, int] = {}
+    backend_counts: Dict[str, int] = {
+        "vector": 0,
+        "vector_exact_anchor": 0,
+    }
     filter_debug: Dict[str, Any] = {
         "entity_anchors": list(plan.entity_anchors),
         "project_anchors": list(plan.project_anchors),
@@ -169,26 +171,6 @@ async def run_recall_v2_shadow(
                     "explain": {"exact_anchor": True, "backend": "sql_timeline"},
                 }
             )
-        exact_allowed, exact_policy = recall_vector_allowed(profile, settings, path="v2_shadow_exact")
-        if exact_allowed:
-            vector_exact = fetch_vector_exact_matches(
-                tokens=list(plan.exact_anchor_tokens),
-                max_items=8,
-                session_id=query.session_id,
-                profile_name=profile.get("profile"),
-                node_id=query.node_id,
-            )
-            backend_counts["vector_exact_anchor"] = len(vector_exact)
-            for row in vector_exact:
-                row = dict(row)
-                row["source"] = "vector"
-                row["score"] = max(0.7, float(row.get("score") or 0.0))
-                row["tags"] = list(row.get("tags") or []) + ["exact_anchor"]
-                row["explain"] = {"exact_anchor": True, "backend": "vector"}
-                candidates.append(row)
-        else:
-            backend_counts["vector_exact_anchor"] = 0
-            log_vector_skipped("v2_shadow_exact", exact_policy, logger)
 
         rdf_exact = fetch_rdf_chatturn_exact_matches(tokens=list(plan.exact_anchor_tokens), session_id=query.session_id, max_items=8)
         backend_counts["rdf_exact_anchor"] = len(rdf_exact)
@@ -203,26 +185,6 @@ async def run_recall_v2_shadow(
     pageindex = _pageindex_candidates(plan, top_k=8)
     backend_counts["pageindex_lexical"] = len(pageindex)
     candidates.extend(pageindex)
-
-    semantic_allowed, semantic_policy = recall_vector_allowed(profile, settings, path="v2_shadow_semantic")
-    if semantic_allowed:
-        vector = fetch_vector_fragments(
-            query_text=plan.query_text,
-            time_window_days=plan.time_window_days,
-            max_items=10,
-            session_id=query.session_id,
-            profile_name=profile.get("profile"),
-            node_id=query.node_id,
-        )
-        backend_counts["vector"] = len(vector)
-        for row in vector:
-            item = dict(row)
-            item["source"] = "vector"
-            item["explain"] = {"backend": "vector", "semantic_signal": float(item.get("score") or 0.0)}
-            candidates.append(item)
-    else:
-        backend_counts["vector"] = 0
-        log_vector_skipped("v2_shadow_semantic", semantic_policy, logger)
 
     rdf = fetch_rdf_fragments(query_text=plan.query_text, max_items=8)
     backend_counts["rdf"] = len(rdf)

@@ -1,4 +1,5 @@
 profile: chat.story.kids.v1
+enable_vector: false
 render_transcript_user_only: true
 vector_top_k: 0
 rdf_top_k: 0

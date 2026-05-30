@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     # ── Source Toggles ────────────────────────────────────────────────
     RECALL_ENABLE_SQL_CHAT: bool = Field(default=True, validation_alias=AliasChoices("RECALL_ENABLE_SQL_CHAT"))
     RECALL_ENABLE_SQL_MIRRORS: bool = Field(default=True, validation_alias=AliasChoices("RECALL_ENABLE_SQL_MIRRORS"))
-    RECALL_ENABLE_VECTOR: bool = Field(default=True, validation_alias=AliasChoices("RECALL_ENABLE_VECTOR"))
+    RECALL_ENABLE_VECTOR: bool = Field(default=False, validation_alias=AliasChoices("RECALL_ENABLE_VECTOR"))
     RECALL_ENABLE_RDF: bool = Field(default=False, validation_alias=AliasChoices("RECALL_ENABLE_RDF"))
 
     # ── Postgres / SQL ────────────────────────────────────────────────
@@ -142,7 +142,7 @@ class Settings(BaseSettings):
     RECALL_VECTOR_BASE_URL: Optional[str] = Field(default=None, validation_alias=AliasChoices("RECALL_VECTOR_BASE_URL"))
     RECALL_VECTOR_COLLECTIONS: Optional[str] = Field(default=None, validation_alias=AliasChoices("RECALL_VECTOR_COLLECTIONS"))
     RECALL_VECTOR_EMBEDDING_URL: Optional[str] = Field(
-        default="http://orion-vector-host:8320/embedding",
+        default=None,
         validation_alias=AliasChoices("RECALL_VECTOR_EMBEDDING_URL"),
     )
     RECALL_VECTOR_TIMEOUT_SEC: float = Field(default=5.0, validation_alias=AliasChoices("RECALL_VECTOR_TIMEOUT_SEC"))

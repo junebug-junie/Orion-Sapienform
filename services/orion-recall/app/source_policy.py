@@ -1,4 +1,4 @@
-"""Shared recall source policy — vector gating with path-specific diagnostics."""
+"""Shared recall source policy — vector removal diagnostics (vector no longer fetched)."""
 
 from __future__ import annotations
 
@@ -20,44 +20,16 @@ def recall_vector_allowed(
     *,
     path: str,
 ) -> tuple[bool, dict[str, Any]]:
-    """Return whether vector fetch is allowed for this profile/path and why."""
+    """Vector retrieval was removed from orion-recall; always disabled (diagnostics only)."""
     s = settings_obj or settings
     profile_name = str(profile.get("profile") or "")
     vector_top_k = _profile_vector_top_k(profile)
-    enable_vector = profile.get("enable_vector")
-    if enable_vector is False:
-        return False, {
-            "allowed": False,
-            "reason": "disabled_profile_enable_vector_false",
-            "profile": profile_name,
-            "vector_top_k": vector_top_k,
-            "RECALL_ENABLE_VECTOR": bool(getattr(s, "RECALL_ENABLE_VECTOR", True)),
-            "path": path,
-        }
-    if not bool(getattr(s, "RECALL_ENABLE_VECTOR", True)):
-        return False, {
-            "allowed": False,
-            "reason": "disabled_global",
-            "profile": profile_name,
-            "vector_top_k": vector_top_k,
-            "RECALL_ENABLE_VECTOR": False,
-            "path": path,
-        }
-    if vector_top_k <= 0:
-        return False, {
-            "allowed": False,
-            "reason": "disabled_profile_vector_top_k_zero",
-            "profile": profile_name,
-            "vector_top_k": vector_top_k,
-            "RECALL_ENABLE_VECTOR": bool(getattr(s, "RECALL_ENABLE_VECTOR", True)),
-            "path": path,
-        }
-    return True, {
-        "allowed": True,
-        "reason": "enabled",
+    return False, {
+        "allowed": False,
+        "reason": "removed_from_orion_recall",
         "profile": profile_name,
         "vector_top_k": vector_top_k,
-        "RECALL_ENABLE_VECTOR": bool(getattr(s, "RECALL_ENABLE_VECTOR", True)),
+        "RECALL_ENABLE_VECTOR": bool(getattr(s, "RECALL_ENABLE_VECTOR", False)),
         "path": path,
     }
 
@@ -88,13 +60,3 @@ def build_vector_policy(
         }
     return out
 
-
-def log_vector_skipped(path: str, detail: dict[str, Any], logger: Any) -> None:
-    logger.info(
-        "recall vector skipped path=%s reason=%s profile=%s vector_top_k=%s global_vector_enabled=%s",
-        path,
-        detail.get("reason"),
-        detail.get("profile"),
-        detail.get("vector_top_k"),
-        detail.get("RECALL_ENABLE_VECTOR"),
-    )

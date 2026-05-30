@@ -44,9 +44,9 @@ def _compute_recency_factor(ts: float | None, mode: str) -> float:
 
 def _compute_semantic_score(f: Fragment) -> float:
     """
-    Look for semantic similarity coming from vector backends.
+    Look for semantic similarity in fragment meta (legacy vector-shaped fields).
 
-    We expect vector_adapter to stash a similarity / score field into meta.
+    Similarity may appear as score/similarity/distance in meta when present.
     If none is present, we fall back to 0.0 and let salience/recency carry.
     """
     meta = f.meta or {}

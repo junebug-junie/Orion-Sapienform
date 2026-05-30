@@ -1,5 +1,6 @@
 profile: deep.graph.v1
-vector_top_k: 20
+enable_vector: false
+vector_top_k: 0
 rdf_top_k: 12
 max_per_source: 5
 max_total_items: 14
@@ -11,7 +12,7 @@ sql_since_minutes: 43200 #30 days
 sql_top_k: 12
 relevance:
   backend_weights:
-    vector: 0.95
+    vector: 0.0
     sql_timeline: 0.85
     sql_chat: 0.6
     rdf_chat: 0.6

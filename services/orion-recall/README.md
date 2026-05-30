@@ -2,9 +2,10 @@
 
 The **Recall Service** is Orion’s memory retrieval engine. It pulls candidate “memory fragments” from:
 
-- **RDF (GraphDB)** — structured facts + chat turns + enrichment claims
-- **Vector (Chroma)** — semantic similarity retrieval across document collections
+- **RDF (GraphDB / Fuseki)** — structured facts + chat turns + enrichment claims
 - **SQL (Postgres)** — timeline + mirror tables (structured / time-bounded)
+
+Vector/Chroma semantic retrieval was **removed from orion-recall** (May 2026). Vector services (`orion-vector-host`, `orion-vector-writer`, `orion-vector-db`) remain in the mesh for ingestion and other callers; recall exposes `vector_policy` diagnostics with `reason: removed_from_orion_recall` only.
 
 It then **fuses** candidates into a prompt-ready `MemoryBundleV1` with per-source caps, a total cap, and a render token budget.
 

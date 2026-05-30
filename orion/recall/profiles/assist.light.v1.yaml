@@ -1,4 +1,5 @@
 profile: assist.light.v1
+enable_vector: false
 # Low-latency lane: vector_top_k=0 disables all vector/Chroma recall (see source_policy.recall_vector_allowed).
 # render_transcript_user_only still applies to transcript-shaped sql_chat rows if that backend is enabled.
 render_transcript_user_only: true
@@ -12,7 +13,7 @@ enable_query_expansion: true
 enable_sql_timeline: false
 relevance:
   backend_weights:
-    vector: 1.0
+    vector: 0.0
     sql_timeline: 0.85
     sql_chat: 0.6
     rdf_chat: 0.4

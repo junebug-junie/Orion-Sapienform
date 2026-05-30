@@ -52,9 +52,8 @@ def test_recall_v2_shadow_exposes_explainable_ranked_cards(monkeypatch) -> None:
 
     monkeypatch.setattr("app.recall_v2.fetch_exact_fragments", _sql_exact)
     monkeypatch.setattr("app.recall_v2.fetch_recent_fragments", _sql_recent)
-    monkeypatch.setattr("app.recall_v2.fetch_vector_exact_matches", lambda **kwargs: [])
+    monkeypatch.setattr("app.sql_timeline.fetch_recent_fragments", _sql_recent)
     monkeypatch.setattr("app.recall_v2.fetch_rdf_chatturn_exact_matches", lambda **kwargs: [])
-    monkeypatch.setattr("app.recall_v2.fetch_vector_fragments", lambda **kwargs: [])
     monkeypatch.setattr("app.recall_v2.fetch_rdf_fragments", lambda **kwargs: [])
     monkeypatch.setattr(
         "app.recall_v2._pageindex_candidates",

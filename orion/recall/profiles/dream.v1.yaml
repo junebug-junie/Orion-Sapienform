@@ -1,5 +1,6 @@
 profile: dream.v1
-vector_top_k: 14
+enable_vector: false
+vector_top_k: 0
 rdf_top_k: 10
 max_per_source: 5
 max_total_items: 32
@@ -12,7 +13,7 @@ sql_since_minutes: 10080
 sql_top_k: 220
 relevance:
   backend_weights:
-    vector: 1.0
+    vector: 0.0
     sql_timeline: 1.0
     sql_chat: 0.55
     rdf_chat: 0.6

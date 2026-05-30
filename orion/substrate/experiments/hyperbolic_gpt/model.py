@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from orion.substrate.experiments.hyperbolic_gpt.config import HyperbolicGPTConfig
 from orion.substrate.experiments.hyperbolic_gpt.hyperbolic import (
     expmap0,
-    poincare_distance_pairs,
+    pairwise_poincare_distance,
 )
 
 
@@ -82,7 +82,7 @@ class HyperbolicCausalSelfAttention(nn.Module):
         with torch.autocast(device_type=x.device.type, enabled=False):
             qh = expmap0(qg.float(), c, eps=1e-5)
             kh = expmap0(kg.float(), c, eps=1e-5)
-            dist = poincare_distance_pairs(qh, kh, c, eps=1e-5)
+            dist = pairwise_poincare_distance(qh, kh, c, eps=1e-5)
 
         att = att - lam * dist.to(dtype=att.dtype)
 

@@ -13,7 +13,7 @@ Fixes Hub hold-to-talk returning empty transcripts when the browser sent valid-s
 
 ## Test plan
 
-- [ ] Hard refresh Hub; hold mic — console shows `[voice] peak amplitude` > 0.01 when speaking.
+- [ ] Hard refresh Hub; hold mic — console shows `[voice] peak amplitude` above ~0.003 when speaking.
 - [ ] Short utterance (~0.5s) transcribes when mic level is healthy.
 - [ ] Muted/wrong input → client or server “microphone level too low” message.
 - [ ] `python3 -m pytest services/orion-whisper-tts/tests/test_stt_engine.py` (in whisper image or venv with deps).

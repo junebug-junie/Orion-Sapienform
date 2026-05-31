@@ -23,9 +23,6 @@ CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}" torchrun --standalone --npro
   --n_head "${N_HEAD:-12}" \
   --n_embd "${N_EMBD:-768}" \
   --lr "${LR:-2e-4}" \
-  --semantic_adapter_rank "${SEMANTIC_ADAPTER_RANK:-128}" \
-  --margin_gap_loss_weight "${MARGIN_GAP_LOSS_WEIGHT:-0.001}" \
-  --margin_gap_epsilon "${MARGIN_GAP_EPSILON:-0.5}" \
   --curvature_mode "${CURVATURE_MODE:-per_head}" \
   --geo_lambda_mode "${GEO_LAMBDA_MODE:-per_head}" \
   --moc_curvature_jitter "${MOC_CURVATURE_JITTER:-0.05}" \

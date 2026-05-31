@@ -7,7 +7,7 @@ def project_to_ball(
     x: torch.Tensor, c: torch.Tensor | float, eps: float = 1e-5
 ) -> torch.Tensor:
     """Project ambient vectors into the open Poincaré ball."""
-    c_t = torch.as_tensor(c, dtype=x.dtype, device=x.device)
+    c_t = torch.as_tensor(c, dtype=x.dtype, device=x.device).clamp_min(eps)
     max_norm = (1.0 - eps) / torch.sqrt(c_t)
     norm = torch.linalg.vector_norm(x, dim=-1, keepdim=True).clamp_min(eps)
     factor = torch.clamp(max_norm / norm, max=1.0)
@@ -17,7 +17,7 @@ def project_to_ball(
 def mobius_add(
     x: torch.Tensor, y: torch.Tensor, c: torch.Tensor | float, eps: float = 1e-5
 ) -> torch.Tensor:
-    c_t = torch.as_tensor(c, dtype=x.dtype, device=x.device)
+    c_t = torch.as_tensor(c, dtype=x.dtype, device=x.device).clamp_min(eps)
     x2 = (x * x).sum(dim=-1, keepdim=True)
     y2 = (y * y).sum(dim=-1, keepdim=True)
     xy = (x * y).sum(dim=-1, keepdim=True)
@@ -29,7 +29,7 @@ def mobius_add(
 
 def expmap0(v: torch.Tensor, c: torch.Tensor | float, eps: float = 1e-5) -> torch.Tensor:
     """Exponential map at origin: tangent vector -> point on ball."""
-    c_t = torch.as_tensor(c, dtype=v.dtype, device=v.device)
+    c_t = torch.as_tensor(c, dtype=v.dtype, device=v.device).clamp_min(eps)
     sqrt_c = torch.sqrt(c_t)
     v_norm = torch.linalg.vector_norm(v, dim=-1, keepdim=True).clamp_min(eps)
     coef = torch.tanh(sqrt_c * 0.5 * v_norm) / (sqrt_c * v_norm)
@@ -51,7 +51,7 @@ def poincare_distance(
     """
     d_c(x, y) = 2/sqrt(c) * artanh( sqrt(c) * || (-x) ⊕_c y || )
     """
-    c_t = torch.as_tensor(c, dtype=x.dtype, device=x.device)
+    c_t = torch.as_tensor(c, dtype=x.dtype, device=x.device).clamp_min(eps)
     x_b = project_to_ball(x, c_t, eps=eps)
     y_b = project_to_ball(y, c_t, eps=eps)
     diff = mobius_add(-x_b, y_b, c_t, eps=eps)
@@ -67,14 +67,35 @@ def poincare_distance_pairs(
     eps: float = 1e-5,
 ) -> torch.Tensor:
     """
-    Pairwise distances for attention.
+    Memory-efficient pairwise distances for attention.
+
     q: (B, H, Tq, D), k: (B, H, Tk, D) -> (B, H, Tq, Tk)
+
+    Uses the closed-form Poincaré ball distance:
+
+        d_c(x, y) = arcosh(
+            1 + 2c ||x-y||^2 / ((1 - c||x||^2)(1 - c||y||^2))
+        ) / sqrt(c)
+
+    This avoids materializing the old (B,H,Tq,Tk,D) Mobius tensor.
+    c may be scalar, (H,), or broadcastable to (1,H,1,1).
     """
-    c_t = torch.as_tensor(c, dtype=q.dtype, device=q.device)
-    qi = project_to_ball(q, c_t, eps=eps).unsqueeze(-2)  # B,H,Tq,1,D
-    kj = project_to_ball(k, c_t, eps=eps).unsqueeze(-3)  # B,H,1,Tk,D
-    minus_q = -qi
-    diff = mobius_add(minus_q, kj, c_t, eps=eps)
-    diff_norm = torch.linalg.vector_norm(diff, dim=-1).clamp_min(eps)
-    arg = (torch.sqrt(c_t) * diff_norm).clamp(max=1.0 - eps)
-    return (2.0 / torch.sqrt(c_t)) * _artanh_clamped(arg, eps=eps)
+    q = q.float()
+    k = k.float()
+    c_t = torch.as_tensor(c, dtype=q.dtype, device=q.device).clamp_min(eps)
+    if c_t.ndim == 1:
+        c_t = c_t.view(1, -1, 1, 1)
+
+    q_b = project_to_ball(q, c_t, eps=eps)
+    k_b = project_to_ball(k, c_t, eps=eps)
+
+    q2 = (q_b * q_b).sum(dim=-1, keepdim=True)
+    k2 = (k_b * k_b).sum(dim=-1, keepdim=True).transpose(-2, -1)
+    qk = torch.matmul(q_b, k_b.transpose(-2, -1))
+    dist2 = (q2 + k2 - 2.0 * qk).clamp_min(0.0)
+
+    denom_q = (1.0 - c_t * q2).clamp_min(eps)
+    denom_k = (1.0 - c_t * k2).clamp_min(eps)
+    z = 1.0 + 2.0 * c_t * dist2 / (denom_q * denom_k).clamp_min(eps)
+    z = z.clamp_min(1.0 + eps)
+    return torch.acosh(z) / torch.sqrt(c_t)

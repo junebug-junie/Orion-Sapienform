@@ -1155,6 +1155,20 @@ loadDismissedIds();
     return lines.join("\n");
   }
 
+  function formatMindRunsApiError(status, detailText) {
+    const detail = String(detailText || "").trim();
+    if (status === 503) {
+      if (/postgres_pool_unavailable|mind_store_unavailable/.test(detail)) {
+        return "Mind run store is unavailable. Postgres (RECALL_PG_DSN) is down or unreachable — check orion-athena-sql-db and /mnt/postgres disk space, then restart Hub.";
+      }
+      if (/mind_schema_missing/.test(detail)) {
+        return "Mind tables are missing. Restart Hub after Postgres is up.";
+      }
+      return "Mind run store temporarily unavailable.";
+    }
+    return detail || (status ? `HTTP ${status}` : "Request failed");
+  }
+
   function openMindRunsModal(correlationId, triggerEl = null, turnMeta = null) {
     if (!mindRunsModal || !correlationId) return;
     mindModalLastFocus = triggerEl && typeof triggerEl.focus === "function" ? triggerEl : document.activeElement;
@@ -1303,7 +1317,9 @@ loadDismissedIds();
     );
     if (!response.ok) {
       const detail = await response.text();
-      throw new Error(`status ${response.status} ${detail || ""}`.trim());
+      const err = new Error(formatMindRunsApiError(response.status, detail || "(no body)"));
+      err.status = response.status;
+      throw err;
     }
     return await response.json();
   }
@@ -1323,7 +1339,9 @@ loadDismissedIds();
       const response = await fetch(`${API_BASE_URL}/api/mind/runs?${params.toString()}`, { headers });
       if (!response.ok) {
         const detail = await response.text();
-        throw new Error(`HTTP ${response.status}: ${detail || "(no body)"}`.trim());
+        const err = new Error(formatMindRunsApiError(response.status, detail || "(no body)"));
+        err.status = response.status;
+        throw err;
       }
       const rows = await response.json();
       if (!Array.isArray(rows) || rows.length === 0) {
@@ -1530,7 +1548,7 @@ loadDismissedIds();
       const response = await fetch(`${API_BASE_URL}/api/mind/runs/recent?${params.toString()}`, { headers });
       if (!response.ok) {
         const detail = await response.text();
-        throw new Error(`status ${response.status} ${detail || ""}`.trim());
+        throw new Error(formatMindRunsApiError(response.status, detail || `status ${response.status}`));
       }
       const payload = await response.json();
       renderMindRows(payload.items || []);

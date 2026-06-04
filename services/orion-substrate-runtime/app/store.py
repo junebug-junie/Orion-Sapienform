@@ -37,8 +37,8 @@ from orion.substrate.receipts.retention import (
 
 def _retention_settings_from_app(settings: Settings) -> ReceiptRetentionSettings:
     return ReceiptRetentionSettings(
-        success_hours=settings.receipt_retention_success_hours,
-        error_days=settings.receipt_retention_error_days,
+        success_minutes=settings.receipt_retention_success_minutes,
+        error_hours=settings.receipt_retention_error_hours,
         full_payload_success=settings.receipt_full_payload_success,
         full_payload_sample_rate=settings.receipt_full_payload_sample_rate,
     )

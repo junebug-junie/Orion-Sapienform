@@ -19,7 +19,10 @@ from app.receipt_pruner import (
 class _PrunerSettings:
     receipt_critical_table_gb: float = 20.0
     receipt_max_table_gb: float = 25.0
-    receipt_prune_interval_sec: float = 900.0
+    receipt_prune_interval_sec: float = 300.0
+    receipt_prune_batch_size: int = 10000
+    receipt_retention_success_minutes: int = 30
+    receipt_retention_error_hours: int = 6
     receipt_postgres_data_path: str = "/nonexistent"
     receipt_disk_critical_pct: float = 85.0
     receipt_warn_table_gb: float = 15.0
@@ -34,7 +37,7 @@ def test_emergency_success_delete_requires_applied_deltas_guard():
     engine = MagicMock()
     conn = MagicMock()
     engine.begin.return_value.__enter__.return_value = conn
-    pruner.run_emergency_prune(engine)
+    pruner.run_emergency_prune(engine, _PrunerSettings())
     calls = [str(c.args[0]) for c in conn.execute.call_args_list]
     success_sql = calls[0]
     debug_sql = calls[1]

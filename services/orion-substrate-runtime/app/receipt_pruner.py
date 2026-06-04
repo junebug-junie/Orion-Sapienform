@@ -28,9 +28,8 @@ UNAPPLIED_STATE_DELTAS_EXISTS = """
         )
 """
 
-SAFE_PRUNE_DELETE_SQL_FRAGMENT = f"""
-DELETE FROM substrate_reduction_receipts r
-WHERE r.expires_at IS NOT NULL
+SAFE_PRUNE_WHERE = f"""
+  r.expires_at IS NOT NULL
   AND r.expires_at < now()
   AND (
     r.receipt_status = 'error'
@@ -38,6 +37,22 @@ WHERE r.expires_at IS NOT NULL
 {UNAPPLIED_STATE_DELTAS_EXISTS}
     )
   )
+"""
+
+SAFE_PRUNE_BATCH_DELETE_SQL = f"""
+DELETE FROM substrate_reduction_receipts
+WHERE ctid IN (
+  SELECT r.ctid
+  FROM substrate_reduction_receipts r
+  WHERE {SAFE_PRUNE_WHERE}
+  LIMIT :batch_size
+)
+"""
+
+# Backward-compatible export for tests that assert SQL shape.
+SAFE_PRUNE_DELETE_SQL_FRAGMENT = f"""
+DELETE FROM substrate_reduction_receipts r
+WHERE {SAFE_PRUNE_WHERE}
 """
 
 _cached_disk_critical = False
@@ -88,17 +103,25 @@ def get_cached_pressure_state() -> tuple[bool, bool]:
     return _cached_disk_critical, _cached_table_critical
 
 
-def run_safe_prune(engine: Engine) -> int:
-    with engine.begin() as conn:
-        result = conn.execute(text(SAFE_PRUNE_DELETE_SQL_FRAGMENT))
-    deleted = result.rowcount or 0
-    if deleted:
-        logger.warning("substrate_receipt_safe_prune deleted=%s", deleted)
-    return deleted
+def run_safe_prune(engine: Engine, *, batch_size: int = 10000) -> int:
+    total_deleted = 0
+    while True:
+        with engine.begin() as conn:
+            result = conn.execute(text(SAFE_PRUNE_BATCH_DELETE_SQL), {"batch_size": batch_size})
+        deleted = result.rowcount or 0
+        total_deleted += deleted
+        if deleted < batch_size:
+            break
+    if total_deleted:
+        logger.warning("substrate_receipt_safe_prune deleted=%s", total_deleted)
+    return total_deleted
 
 
-def run_emergency_prune(engine: Engine) -> None:
+def run_emergency_prune(engine: Engine, settings: Settings | None = None) -> None:
+    s = settings or get_settings()
     now = datetime.now(timezone.utc)
+    debug_cutoff = now - timedelta(minutes=s.receipt_retention_success_minutes)
+    error_cutoff = now - timedelta(hours=s.receipt_retention_error_hours)
     unapplied_guard = f"NOT EXISTS ({UNAPPLIED_STATE_DELTAS_EXISTS})"
     with engine.begin() as conn:
         conn.execute(
@@ -122,7 +145,7 @@ def run_emergency_prune(engine: Engine) -> None:
                   AND {unapplied_guard}
                 """
             ),
-            {"cutoff": now - timedelta(hours=24)},
+            {"cutoff": debug_cutoff},
         )
         conn.execute(
             text(
@@ -132,7 +155,7 @@ def run_emergency_prune(engine: Engine) -> None:
                   AND created_at < :cutoff
                 """
             ),
-            {"cutoff": now - timedelta(hours=48)},
+            {"cutoff": error_cutoff},
         )
     logger.error("substrate_receipt_emergency_prune_completed")
 
@@ -151,7 +174,7 @@ def maybe_run_emergency_prune(engine: Engine, settings: Settings) -> bool:
     if now_mono - _last_emergency_prune_monotonic < cooldown:
         return False
 
-    run_emergency_prune(engine)
+    run_emergency_prune(engine, settings)
     _last_emergency_prune_monotonic = now_mono
     return True
 

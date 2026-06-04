@@ -12,20 +12,38 @@ from orion.schemas.reduction_receipt import ReductionReceiptV1
 
 @dataclass(frozen=True)
 class ReceiptRetentionSettings:
-    success_hours: int = 48
-    error_days: int = 7
+    success_minutes: int = 30
+    error_hours: int = 6
     full_payload_success: bool = False
-    full_payload_sample_rate: float = 0.01
+    full_payload_sample_rate: float = 0.0
 
     @classmethod
     def from_env(cls) -> ReceiptRetentionSettings:
+        minutes_env = os.getenv("ORION_RECEIPT_RETENTION_SUCCESS_MINUTES")
+        hours_env = os.getenv("ORION_RECEIPT_RETENTION_SUCCESS_HOURS")
+        if minutes_env is not None:
+            success_minutes = int(minutes_env)
+        elif hours_env is not None:
+            success_minutes = max(1, int(float(hours_env) * 60))
+        else:
+            success_minutes = 30
+
+        error_hours_env = os.getenv("ORION_RECEIPT_RETENTION_ERROR_HOURS")
+        error_days_env = os.getenv("ORION_RECEIPT_RETENTION_ERROR_DAYS")
+        if error_hours_env is not None:
+            error_hours = int(error_hours_env)
+        elif error_days_env is not None:
+            error_hours = max(1, int(float(error_days_env) * 24))
+        else:
+            error_hours = 6
+
         return cls(
-            success_hours=int(os.getenv("ORION_RECEIPT_RETENTION_SUCCESS_HOURS", "48")),
-            error_days=int(os.getenv("ORION_RECEIPT_RETENTION_ERROR_DAYS", "7")),
+            success_minutes=success_minutes,
+            error_hours=error_hours,
             full_payload_success=os.getenv("ORION_RECEIPT_FULL_PAYLOAD_SUCCESS", "false").lower()
             in ("1", "true", "yes"),
             full_payload_sample_rate=float(
-                os.getenv("ORION_RECEIPT_FULL_PAYLOAD_SAMPLE_RATE", "0.01")
+                os.getenv("ORION_RECEIPT_FULL_PAYLOAD_SAMPLE_RATE", "0")
             ),
         )
 
@@ -119,9 +137,9 @@ def retention_expires_at(
 ) -> datetime | None:
     clock = _utc(now)
     if classification.receipt_kind == "error":
-        return clock + timedelta(days=settings.error_days)
+        return clock + timedelta(hours=settings.error_hours)
     if classification.receipt_kind == "debug_sample":
-        return clock + timedelta(days=settings.error_days)
+        return clock + timedelta(minutes=settings.success_minutes)
     if classification.receipt_kind == "success":
-        return clock + timedelta(hours=settings.success_hours)
+        return clock + timedelta(minutes=settings.success_minutes)
     return None

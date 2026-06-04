@@ -9,6 +9,11 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request
 
 from .session import ensure_session
 
+try:
+    from asyncpg.exceptions import UndefinedTableError as _AsyncpgUndefinedTableError
+except ImportError:  # pragma: no cover - optional in minimal dev envs
+    _AsyncpgUndefinedTableError = None  # type: ignore[misc, assignment]
+
 logger = logging.getLogger("orion-hub.mind")
 
 router = APIRouter(tags=["mind"])
@@ -41,6 +46,17 @@ def _mind_run_row_dict(row: Any, *, current_session_id: str) -> dict[str, Any]:
     return out
 
 
+def _raise_mind_store_http(exc: BaseException) -> None:
+    """Map Postgres transport/schema failures to 503 (not unhandled 500)."""
+    if _AsyncpgUndefinedTableError is not None and isinstance(exc, _AsyncpgUndefinedTableError):
+        logger.warning("mind_schema_missing error=%s", exc)
+        raise HTTPException(status_code=503, detail="mind_schema_missing") from exc
+    if isinstance(exc, (TimeoutError, OSError)):
+        logger.warning("mind_store_transport error=%s", exc)
+        raise HTTPException(status_code=503, detail="mind_store_unavailable") from exc
+    raise exc
+
+
 @router.get("/api/mind/runs/recent")
 async def list_recent_mind_runs(
     request: Request,
@@ -55,114 +71,119 @@ async def list_recent_mind_runs(
     session_id = await _need_session(x_orion_session_id)
     pool = _pool(request)
 
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT mind_run_id, correlation_id, created_at_utc, ok, trigger, error_code, router_profile_id
-            FROM mind_runs
-            WHERE session_id = $1
-              AND created_at_utc >= ((NOW() AT TIME ZONE 'UTC') - ($2 * INTERVAL '1 hour'))
-              AND ($3::boolean IS NULL OR ok = $3)
-              AND ($4::text IS NULL OR trigger = $4)
-              AND ($5::text IS NULL OR error_code = $5)
-              AND ($6::text IS NULL OR router_profile_id = $6)
-            ORDER BY created_at_utc DESC, mind_run_id DESC
-            LIMIT $7
-            """,
-            session_id,
-            hours,
-            ok,
-            trigger,
-            error_code,
-            router_profile_id,
-            limit,
-        )
-        summary = await conn.fetchrow(
-            """
-            SELECT
-              COUNT(*)::int AS total_runs,
-              COALESCE(SUM(CASE WHEN ok THEN 1 ELSE 0 END), 0)::int AS ok_count,
-              COALESCE(SUM(CASE WHEN ok THEN 0 ELSE 1 END), 0)::int AS failed_count
-            FROM mind_runs
-            WHERE session_id = $1
-              AND created_at_utc >= ((NOW() AT TIME ZONE 'UTC') - ($2 * INTERVAL '1 hour'))
-              AND ($3::boolean IS NULL OR ok = $3)
-              AND ($4::text IS NULL OR trigger = $4)
-              AND ($5::text IS NULL OR error_code = $5)
-              AND ($6::text IS NULL OR router_profile_id = $6)
-            """,
-            session_id,
-            hours,
-            ok,
-            trigger,
-            error_code,
-            router_profile_id,
-        )
-        top_error_codes = await conn.fetch(
-            """
-            SELECT error_code, COUNT(*)::int AS run_count
-            FROM mind_runs
-            WHERE session_id = $1
-              AND created_at_utc >= ((NOW() AT TIME ZONE 'UTC') - ($2 * INTERVAL '1 hour'))
-              AND ($3::boolean IS NULL OR ok = $3)
-              AND ($4::text IS NULL OR trigger = $4)
-              AND ($5::text IS NULL OR error_code = $5)
-              AND ($6::text IS NULL OR router_profile_id = $6)
-              AND error_code IS NOT NULL
-            GROUP BY error_code
-            ORDER BY run_count DESC, error_code ASC
-            LIMIT 3
-            """,
-            session_id,
-            hours,
-            ok,
-            trigger,
-            error_code,
-            router_profile_id,
-        )
-        top_router_profiles = await conn.fetch(
-            """
-            SELECT router_profile_id, COUNT(*)::int AS run_count
-            FROM mind_runs
-            WHERE session_id = $1
-              AND created_at_utc >= ((NOW() AT TIME ZONE 'UTC') - ($2 * INTERVAL '1 hour'))
-              AND ($3::boolean IS NULL OR ok = $3)
-              AND ($4::text IS NULL OR trigger = $4)
-              AND ($5::text IS NULL OR error_code = $5)
-              AND ($6::text IS NULL OR router_profile_id = $6)
-              AND router_profile_id IS NOT NULL
-            GROUP BY router_profile_id
-            ORDER BY run_count DESC, router_profile_id ASC
-            LIMIT 3
-            """,
-            session_id,
-            hours,
-            ok,
-            trigger,
-            error_code,
-            router_profile_id,
-        )
-        bucket_counts = await conn.fetch(
-            """
-            SELECT date_trunc('hour', created_at_utc) AS bucket_utc, COUNT(*)::int AS run_count
-            FROM mind_runs
-            WHERE session_id = $1
-              AND created_at_utc >= ((NOW() AT TIME ZONE 'UTC') - ($2 * INTERVAL '1 hour'))
-              AND ($3::boolean IS NULL OR ok = $3)
-              AND ($4::text IS NULL OR trigger = $4)
-              AND ($5::text IS NULL OR error_code = $5)
-              AND ($6::text IS NULL OR router_profile_id = $6)
-            GROUP BY 1
-            ORDER BY bucket_utc DESC
-            LIMIT 72
-            """,
-            session_id,
-            hours,
-            ok,
-            trigger,
-            error_code,
-            router_profile_id,
-        )
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT mind_run_id, correlation_id, created_at_utc, ok, trigger, error_code, router_profile_id
+                FROM mind_runs
+                WHERE session_id = $1
+                  AND created_at_utc >= ((NOW() AT TIME ZONE 'UTC') - ($2 * INTERVAL '1 hour'))
+                  AND ($3::boolean IS NULL OR ok = $3)
+                  AND ($4::text IS NULL OR trigger = $4)
+                  AND ($5::text IS NULL OR error_code = $5)
+                  AND ($6::text IS NULL OR router_profile_id = $6)
+                ORDER BY created_at_utc DESC, mind_run_id DESC
+                LIMIT $7
+                """,
+                session_id,
+                hours,
+                ok,
+                trigger,
+                error_code,
+                router_profile_id,
+                limit,
+            )
+            summary = await conn.fetchrow(
+                """
+                SELECT
+                  COUNT(*)::int AS total_runs,
+                  COALESCE(SUM(CASE WHEN ok THEN 1 ELSE 0 END), 0)::int AS ok_count,
+                  COALESCE(SUM(CASE WHEN ok THEN 0 ELSE 1 END), 0)::int AS failed_count
+                FROM mind_runs
+                WHERE session_id = $1
+                  AND created_at_utc >= ((NOW() AT TIME ZONE 'UTC') - ($2 * INTERVAL '1 hour'))
+                  AND ($3::boolean IS NULL OR ok = $3)
+                  AND ($4::text IS NULL OR trigger = $4)
+                  AND ($5::text IS NULL OR error_code = $5)
+                  AND ($6::text IS NULL OR router_profile_id = $6)
+                """,
+                session_id,
+                hours,
+                ok,
+                trigger,
+                error_code,
+                router_profile_id,
+            )
+            top_error_codes = await conn.fetch(
+                """
+                SELECT error_code, COUNT(*)::int AS run_count
+                FROM mind_runs
+                WHERE session_id = $1
+                  AND created_at_utc >= ((NOW() AT TIME ZONE 'UTC') - ($2 * INTERVAL '1 hour'))
+                  AND ($3::boolean IS NULL OR ok = $3)
+                  AND ($4::text IS NULL OR trigger = $4)
+                  AND ($5::text IS NULL OR error_code = $5)
+                  AND ($6::text IS NULL OR router_profile_id = $6)
+                  AND error_code IS NOT NULL
+                GROUP BY error_code
+                ORDER BY run_count DESC, error_code ASC
+                LIMIT 3
+                """,
+                session_id,
+                hours,
+                ok,
+                trigger,
+                error_code,
+                router_profile_id,
+            )
+            top_router_profiles = await conn.fetch(
+                """
+                SELECT router_profile_id, COUNT(*)::int AS run_count
+                FROM mind_runs
+                WHERE session_id = $1
+                  AND created_at_utc >= ((NOW() AT TIME ZONE 'UTC') - ($2 * INTERVAL '1 hour'))
+                  AND ($3::boolean IS NULL OR ok = $3)
+                  AND ($4::text IS NULL OR trigger = $4)
+                  AND ($5::text IS NULL OR error_code = $5)
+                  AND ($6::text IS NULL OR router_profile_id = $6)
+                  AND router_profile_id IS NOT NULL
+                GROUP BY router_profile_id
+                ORDER BY run_count DESC, router_profile_id ASC
+                LIMIT 3
+                """,
+                session_id,
+                hours,
+                ok,
+                trigger,
+                error_code,
+                router_profile_id,
+            )
+            bucket_counts = await conn.fetch(
+                """
+                SELECT date_trunc('hour', created_at_utc) AS bucket_utc, COUNT(*)::int AS run_count
+                FROM mind_runs
+                WHERE session_id = $1
+                  AND created_at_utc >= ((NOW() AT TIME ZONE 'UTC') - ($2 * INTERVAL '1 hour'))
+                  AND ($3::boolean IS NULL OR ok = $3)
+                  AND ($4::text IS NULL OR trigger = $4)
+                  AND ($5::text IS NULL OR error_code = $5)
+                  AND ($6::text IS NULL OR router_profile_id = $6)
+                GROUP BY 1
+                ORDER BY bucket_utc DESC
+                LIMIT 72
+                """,
+                session_id,
+                hours,
+                ok,
+                trigger,
+                error_code,
+                router_profile_id,
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_mind_store_http(exc)
 
     items = [dict(r) for r in rows]
     diagnostics: dict[str, Any] | None = None
@@ -199,24 +220,29 @@ async def get_mind_run(
 ) -> dict[str, Any]:
     session_id = await _need_session(x_orion_session_id)
     pool = _pool(request)
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT mind_run_id, correlation_id, session_id, trigger, ok, error_code,
-                   snapshot_hash, router_profile_id, result_jsonb, request_summary_jsonb,
-                   redaction_profile_id, created_at_utc
-            FROM mind_runs
-            WHERE mind_run_id = $1
-              AND (
-                session_id = $2
-                OR session_id IS NULL
-                OR ($3::text IS NOT NULL AND session_id = $3)
-              )
-            """,
-            mind_run_id,
-            session_id,
-            context_session_id,
-        )
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT mind_run_id, correlation_id, session_id, trigger, ok, error_code,
+                       snapshot_hash, router_profile_id, result_jsonb, request_summary_jsonb,
+                       redaction_profile_id, created_at_utc
+                FROM mind_runs
+                WHERE mind_run_id = $1
+                  AND (
+                    session_id = $2
+                    OR session_id IS NULL
+                    OR ($3::text IS NOT NULL AND session_id = $3)
+                  )
+                """,
+                mind_run_id,
+                session_id,
+                context_session_id,
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_mind_store_http(exc)
     if row is None:
         raise HTTPException(status_code=404, detail="mind_run_not_found")
     return _mind_run_row_dict(row, current_session_id=session_id)
@@ -232,25 +258,30 @@ async def list_mind_runs(
 ) -> list[dict[str, Any]]:
     session_id = await _need_session(x_orion_session_id)
     pool = _pool(request)
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT mind_run_id, correlation_id, session_id, trigger, ok, error_code,
-                   snapshot_hash, router_profile_id, result_jsonb, request_summary_jsonb,
-                   redaction_profile_id, created_at_utc
-            FROM mind_runs
-            WHERE correlation_id = $1
-              AND (
-                session_id = $2
-                OR session_id IS NULL
-                OR ($4::text IS NOT NULL AND session_id = $4)
-              )
-            ORDER BY created_at_utc DESC
-            LIMIT $3
-            """,
-            correlation_id,
-            session_id,
-            limit,
-            context_session_id,
-        )
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT mind_run_id, correlation_id, session_id, trigger, ok, error_code,
+                       snapshot_hash, router_profile_id, result_jsonb, request_summary_jsonb,
+                       redaction_profile_id, created_at_utc
+                FROM mind_runs
+                WHERE correlation_id = $1
+                  AND (
+                    session_id = $2
+                    OR session_id IS NULL
+                    OR ($4::text IS NOT NULL AND session_id = $4)
+                  )
+                ORDER BY created_at_utc DESC
+                LIMIT $3
+                """,
+                correlation_id,
+                session_id,
+                limit,
+                context_session_id,
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _raise_mind_store_http(exc)
     return [_mind_run_row_dict(r, current_session_id=session_id) for r in rows]

@@ -60,6 +60,7 @@ def test_app_js_wires_mind_hash_and_recent_api() -> None:
     assert "refreshMindRuns" in app_js
     assert "openMindRunsModal" in app_js
     assert "mindRunsEmptyDiagnostics" in app_js
+    assert "formatMindRunsApiError" in app_js
     assert "context_session_id" in app_js
     assert "meta.sessionId = orionSessionId" in app_js
     assert "payload.context.metadata.mind_enabled = true" in app_js

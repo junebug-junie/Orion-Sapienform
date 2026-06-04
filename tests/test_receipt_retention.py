@@ -94,15 +94,15 @@ def test_payload_fingerprint_stable():
     assert len(a) == 64
 
 
-def test_retention_expires_at_success_hours():
-    settings = ReceiptRetentionSettings(success_hours=48)
+def test_retention_expires_at_success_minutes():
+    settings = ReceiptRetentionSettings(success_minutes=30)
     c = classify_receipt(_receipt(), settings=settings, rng_value=0.99)
     exp = retention_expires_at(c, settings=settings, now=FIXED)
-    assert exp == FIXED + timedelta(hours=48)
+    assert exp == FIXED + timedelta(minutes=30)
 
 
 def test_build_receipt_insert_params_success_compact():
-    settings = ReceiptRetentionSettings(success_hours=48)
+    settings = ReceiptRetentionSettings(success_minutes=30)
     params = _build_receipt_insert_params(
         _receipt(),
         retention_settings=settings,
@@ -114,7 +114,7 @@ def test_build_receipt_insert_params_success_compact():
     assert params["receipt_kind"] == "success"
     assert "state_deltas" in params["receipt_json"]
     assert len(params["receipt_json"]["state_deltas"]) == 1
-    assert params["expires_at"] == FIXED + timedelta(hours=48)
+    assert params["expires_at"] == FIXED + timedelta(minutes=30)
 
 
 def test_build_receipt_insert_params_warning_full_error():

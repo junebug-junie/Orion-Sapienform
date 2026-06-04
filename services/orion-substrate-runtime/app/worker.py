@@ -76,7 +76,10 @@ class BiometricsSubstrateWorker:
         )
 
         refresh_pressure_cache(self._store._engine, self._settings)
-        run_safe_prune(self._store._engine)
+        run_safe_prune(
+            self._store._engine,
+            batch_size=int(self._settings.receipt_prune_batch_size),
+        )
         maybe_run_emergency_prune(self._store._engine, self._settings)
         log_receipt_pressure(self._store._engine, self._settings)
 

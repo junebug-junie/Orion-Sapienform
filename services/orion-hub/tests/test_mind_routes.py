@@ -278,3 +278,24 @@ def test_list_mind_runs_excludes_other_non_null_session_without_context() -> Non
     fetch_sql = conn.fetch.await_args.args[0]
     assert "session_id IS NULL" in fetch_sql
     assert "session_id = $4" not in fetch_sql or "$4::text IS NOT NULL" in fetch_sql
+
+
+def test_list_mind_runs_returns_503_when_postgres_unreachable() -> None:
+    pool = MagicMock()
+    pool.acquire = MagicMock(side_effect=ConnectionRefusedError(111, "Connection refused"))
+    req = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(memory_pg_pool=pool)))
+
+    with patch.object(mind_routes, "_need_session", new_callable=AsyncMock, return_value="sess-x"):
+        try:
+            asyncio.run(
+                mind_routes.list_mind_runs(
+                    req,
+                    correlation_id="corr-1",
+                    limit=10,
+                    x_orion_session_id=None,
+                )
+            )
+            assert False, "Expected HTTPException"
+        except Exception as exc:
+            assert getattr(exc, "status_code", None) == 503
+            assert getattr(exc, "detail", None) == "mind_store_unavailable"

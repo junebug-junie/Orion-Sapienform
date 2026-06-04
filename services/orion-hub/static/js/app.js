@@ -6748,7 +6748,7 @@ loadDismissedIds();
         opt.textContent = 'chat.general.v1';
       }
     });
-    const laneApi = global.OrionHubGroundedSmallLane;
+    const laneApi = (typeof globalThis !== 'undefined' ? globalThis : window).OrionHubGroundedSmallLane;
     if (laneApi && typeof laneApi.syncRecallProfileForLane === 'function') {
       const lane =
         (typeof document !== 'undefined' && document.body && document.body.dataset.orionChatLane) ||

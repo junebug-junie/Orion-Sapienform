@@ -67,6 +67,13 @@ def test_app_js_wires_mind_hash_and_recent_api() -> None:
     assert "OrionMindProvenance.renderMindProvenanceSections" in app_js
 
 
+def test_app_js_lane_api_uses_global_this_not_node_global() -> None:
+    """Bare `global` is undefined in browsers and aborts DOMContentLoaded before tab wiring."""
+    app_js = APP_JS.read_text(encoding="utf-8")
+    assert "global.OrionHubGroundedSmallLane" not in app_js
+    assert "globalThis" in app_js and "OrionHubGroundedSmallLane" in app_js
+
+
 def test_mind_provenance_js_exports_normalizers_and_renderers() -> None:
     mind_js = MIND_PROVENANCE_JS.read_text(encoding="utf-8")
     index_html = INDEX_HTML.read_text(encoding="utf-8")

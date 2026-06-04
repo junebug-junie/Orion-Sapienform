@@ -6,10 +6,11 @@ export PYTHONPATH=.
 
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}" torchrun --standalone --nproc_per_node="${NPROC_PER_NODE:-2}" \
   orion/substrate/experiments/hyperbolic_gpt/train_v2.py \
-  --dataset tinystories \
-  --out_dir "${OUT_DIR:-./runs/tinystories_hypgpt_v2_12l_768d}" \
-  --max_steps "${MAX_STEPS:-50000}" \
-  --max_docs "${MAX_DOCS:-1000000}" \
+  --dataset fineweb_edu \
+  --fineweb_edu_name "${FINEWEB_EDU_NAME:-sample-10BT}" \
+  --out_dir "${OUT_DIR:-./runs/fineweb_edu_hypgpt_v2_12l_768d_100m}" \
+  --max_steps "${MAX_STEPS:-20000}" \
+  --max_docs "${MAX_DOCS:-250000}" \
   --max_tokens "${MAX_TOKENS:-100000000}" \
   --batch_size "${BATCH_SIZE:-4}" \
   --grad_accum "${GRAD_ACCUM:-8}" \

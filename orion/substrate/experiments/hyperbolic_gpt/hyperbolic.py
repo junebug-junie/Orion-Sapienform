@@ -71,7 +71,7 @@ def poincare_distance_pairs(
 
     q: (B, H, Tq, D), k: (B, H, Tk, D) -> (B, H, Tq, Tk)
 
-    Uses the closed-form Poincare ball distance:
+    Uses the closed-form Poincaré ball distance:
 
         d_c(x, y) = arcosh(
             1 + 2c ||x-y||^2 / ((1 - c||x||^2)(1 - c||y||^2))
@@ -89,9 +89,9 @@ def poincare_distance_pairs(
     q_b = project_to_ball(q, c_t, eps=eps)
     k_b = project_to_ball(k, c_t, eps=eps)
 
-    q2 = (q_b * q_b).sum(dim=-1, keepdim=True)  # B,H,Tq,1
-    k2 = (k_b * k_b).sum(dim=-1, keepdim=True).transpose(-2, -1)  # B,H,1,Tk
-    qk = torch.matmul(q_b, k_b.transpose(-2, -1))  # B,H,Tq,Tk
+    q2 = (q_b * q_b).sum(dim=-1, keepdim=True)
+    k2 = (k_b * k_b).sum(dim=-1, keepdim=True).transpose(-2, -1)
+    qk = torch.matmul(q_b, k_b.transpose(-2, -1))
     dist2 = (q2 + k2 - 2.0 * qk).clamp_min(0.0)
 
     denom_q = (1.0 - c_t * q2).clamp_min(eps)

@@ -230,6 +230,123 @@ profiles:
       - Gateway does not set enable_thinking per request.
       - If OOM: lower ctx_size or use Qwen_Qwen3-8B-Q3_K_M.gguf from the same repo.
 
+
+  qwen36-35b-a3b-udq4km-v100-32gb-balanced:
+    display_name: "Qwen 3.6 35B A3B – UD-Q4_K_M (llama.cpp, 1x V100 32GB, balanced continuity)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "qwen36-35b-a3b-ud-q4_k_m"
+
+    supports_tools: true
+    supports_embeddings: false
+    supports_vision: false
+
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      device_ids: [0]
+      max_model_len: 32768
+      max_batch_tokens: 768
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.90
+
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "unsloth/Qwen3.6-35B-A3B-GGUF"
+      hf_filename: "UD-Q4_K_M"
+      host: "0.0.0.0"
+      port: 8080
+
+      ctx_size: 32768
+      n_gpu_layers: 99
+      threads: 16
+      n_parallel: 1
+      batch_size: 768
+
+      reasoning: "on"
+      reasoning_format: "deepseek"
+      chat_template_kwargs:
+        enable_thinking: true
+
+      no_context_shift: true
+      flash_attn: "on"
+
+      temperature: 0.58
+      top_k: 20
+      top_p: 0.92
+      min_p: 0.0
+      presence_penalty: 0.85
+
+      n_predict: 8192
+
+    notes: |
+      Balanced Qwen 3.6 35B-A3B profile for one V100 32GB.
+      - Target lane: Mind Service / conversational continuity / high-quality daily cognition.
+      - Uses Unsloth dynamic GGUF UD-Q4_K_M for single-GPU VRAM headroom.
+      - 32k context favors useful conversation memory without overcommitting KV cache.
+      - Thinking enabled, but generation budget kept moderate for survivable latency.
+      - If OOM: lower ctx_size to 24576, then lower batch_size to 512.
+
+  qwen36-35b-a3b-udq5km-2xv100-32gb-deep-cognition:
+    display_name: "Qwen 3.6 35B A3B – UD-Q5_K_M (llama.cpp, 2x V100 32GB, deep cognition)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "qwen36-35b-a3b-ud-q5_k_m"
+
+    supports_tools: true
+    supports_embeddings: false
+    supports_vision: false
+
+    gpu:
+      num_gpus: 2
+      tensor_parallel_size: 1
+      device_ids: [0, 1]
+      max_model_len: 65536
+      max_batch_tokens: 1024
+      max_concurrent_requests: 2
+      gpu_memory_fraction: 0.90
+
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "unsloth/Qwen3.6-35B-A3B-GGUF"
+      hf_filename: "UD-Q5_K_M"
+      host: "0.0.0.0"
+      port: 8080
+
+      ctx_size: 65536
+      n_gpu_layers: 99
+      threads: 16
+      n_parallel: 1
+      batch_size: 1024
+
+      reasoning: "on"
+      reasoning_format: "deepseek"
+      chat_template_kwargs:
+        enable_thinking: true
+
+      no_context_shift: true
+      split_mode: "row"
+      tensor_split: "1,1"
+      flash_attn: "on"
+
+      temperature: 0.48
+      top_k: 20
+      top_p: 0.95
+      min_p: 0.0
+      presence_penalty: 1.10
+
+      n_predict: 16384
+
+    notes: |
+      Deep-cognition Qwen 3.6 35B-A3B profile for two V100 32GB GPUs.
+      - Target lane: Cortex / planner / introspection / deep repo reasoning.
+      - Uses Unsloth dynamic GGUF UD-Q5_K_M for better reasoning quality.
+      - 64k context supports long task state, repo state, and conversation memory.
+      - Row split + equal tensor split mirrors existing Atlas dual-V100 profiles.
+      - Single-lane / single-parallel favors depth and stability over throughput.
+      - If OOM: lower ctx_size to 49152 before dropping to UD-Q4_K_M.
+
+
   qwen3-30b-a3b-q4km-atlas-agent-64k-think:
     display_name: "Qwen3 30B A3B – Q4_K_M (llama.cpp, Atlas Agent Lane, 2x V100 32GB, 64k Think)"
     task_type: chat
@@ -243,10 +360,10 @@ profiles:
     gpu:
       num_gpus: 2
       tensor_parallel_size: 1
-      device_ids: [1, 2]
+      device_ids: [0 ,1]
       max_model_len: 65536
       max_batch_tokens: 1024
-      max_concurrent_requests: 1
+      max_concurrent_requests: 2
       gpu_memory_fraction: 0.90
 
     llamacpp:
@@ -259,7 +376,7 @@ profiles:
       ctx_size: 65536
       n_gpu_layers: 99
       threads: 16
-      n_parallel: 1
+      n_parallel: 2
       batch_size: 1024
 
       reasoning: "on"

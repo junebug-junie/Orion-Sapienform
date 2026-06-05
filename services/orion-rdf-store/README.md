@@ -47,3 +47,17 @@ Snapshot `FUSEKI_DATA_DIR` (and optionally `FUSEKI_BACKUP_DIR`) while the contai
 ## Performance note
 
 The writer uses an **async queue** when enabled so bus handlers are not blocked on store HTTP. Tune `RDF_WRITE_*` in `services/orion-rdf-writer/.env_example` rather than only raising bus-side timeouts.
+
+Under heavy write load, Fuseki/TDB2 can return **`Maximum lock count exceeded`** (internal read-lock leak under sustained HTTP traffic; see [apache/jena#2584](https://github.com/apache/jena/issues/2584)). Mitigations in this stack:
+
+1. **Pin** `FUSEKI_IMAGE=stain/jena-fuseki:5.1.0` (or newer 5.x) — do not rely on stale `:latest`.
+2. **Write probe healthcheck** — `scripts/fuseki_health_probe.sh` exercises ping + SPARQL query + graph-store POST; mounted into the container healthcheck.
+3. **Operator recovery** — `make recover` restarts Fuseki when the probe fails (clears locks until the next buildup).
+4. **Cron (recommended on Athena)** — every 15–30 minutes: `cd services/orion-rdf-store && make recover`.
+5. **Lower writer concurrency** toward Fuseki — e.g. `RDF_WRITE_WORKERS=2`, `RDF_WRITE_MAX_IN_FLIGHT=8` in `orion-rdf-writer/.env` if lock errors recur.
+6. **Client retries** — Orion SPARQL/graph-store clients honor `FUSEKI_HTTP_RETRY_*` for transient lock/gateway errors before surfacing `fuseki_lock_exhaustion` / `rdf_graph_unavailable`.
+
+```bash
+make health-probe   # exit 0 = healthy
+make recover        # restart when write probe fails
+```

@@ -158,6 +158,16 @@ async def memory_graph_approve(
         logger.warning("memory_graph_approve_failed postgres error=%s", exc)
         raise HTTPException(status_code=503, detail="memory_store_error") from exc
     except requests.RequestException as exc:
+        from orion.graph.fuseki_http import fuseki_http_error_body, is_fuseki_lock_exhaustion
+
+        resp = getattr(exc, "response", None)
+        body = fuseki_http_error_body(resp) if resp is not None else str(exc)
+        if resp is not None and is_fuseki_lock_exhaustion(resp.status_code, body):
+            logger.warning("memory_graph_approve_failed fuseki_lock_exhaustion error=%s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail="fuseki_lock_exhaustion",
+            ) from exc
         logger.warning("memory_graph_approve_failed rdf_http error=%s", exc)
         raise HTTPException(status_code=503, detail="rdf_graph_unavailable") from exc
 

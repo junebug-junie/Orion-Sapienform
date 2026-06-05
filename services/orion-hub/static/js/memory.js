@@ -68,11 +68,42 @@
     };
   }
 
+  let lastApprovedCardIds = [];
+
+  function styleSubviewButtons(btnReview, btnAll, btnLog, activeKey) {
+    const pairs = [
+      ["review", btnReview],
+      ["all", btnAll],
+      ["log", btnLog],
+    ];
+    pairs.forEach(([key, btn]) => {
+      if (!btn) return;
+      const active = key === activeKey;
+      btn.classList.toggle("border-indigo-500", active);
+      btn.classList.toggle("bg-indigo-900/40", active);
+      btn.classList.toggle("text-indigo-100", active);
+      btn.classList.toggle("border-gray-600", !active);
+      btn.classList.toggle("bg-gray-800", !active);
+      btn.classList.toggle("text-gray-200", !active);
+    });
+  }
+
   function showSubview(review, all, log, key) {
-    [review, all, log].forEach((p) => p && p.classList.add("hidden"));
-    const map = { review, all: all, log };
-    const target = map[key];
-    if (target) target.classList.remove("hidden");
+    const panels = [
+      ["review", review],
+      ["all", all],
+      ["log", log],
+    ];
+    panels.forEach(([panelKey, panel]) => {
+      if (!panel) return;
+      const active = panelKey === key;
+      panel.classList.toggle("hidden", !active);
+      panel.classList.toggle("flex", active);
+    });
+    const target = { review, all, log }[key];
+    if (target && typeof target.scrollIntoView === "function") {
+      target.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
   }
 
   function renderCardRow(card, onOpen) {
@@ -177,9 +208,67 @@
     await reload();
   }
 
-  async function loadLog(logPanel, statusEl) {
+  function formatHistoryWhen(raw) {
+    const text = String(raw || "").trim();
+    if (!text) return "";
+    const d = new Date(text);
+    if (Number.isNaN(d.getTime())) return text;
+    return d.toLocaleString();
+  }
+
+  async function renderHistoryItems(items, out, statusEl, reloadFn) {
+    out.innerHTML = "";
+    if (!items.length) {
+      out.textContent = "No activity yet. Approve a memory graph draft or create a card to populate history.";
+      setStatus(statusEl, "No activity entries.", false);
+      return;
+    }
+    items.forEach((h) => {
+      const line = document.createElement("div");
+      line.className = "border-b border-gray-800 pb-1";
+      const canReverse = ["update", "status_change", "edge_add"].includes(h.op);
+      const cardRef = h.card_id ? String(h.card_id).slice(0, 8) + "…" : "—";
+      const when = formatHistoryWhen(h.created_at);
+      line.innerHTML = `<div class="text-gray-300">${escapeHtml(h.op)} · ${escapeHtml(h.actor)} · card ${escapeHtml(
+        cardRef
+      )} · ${escapeHtml(when)}</div>
+        <div class="text-[10px] text-gray-500">${escapeHtml(h.history_id)}</div>`;
+      if (canReverse) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "text-[10px] text-amber-300 mt-1";
+        b.textContent = "Reverse this";
+        b.addEventListener("click", async () => {
+          try {
+            await apiFetch(`/api/memory/history/${encodeURIComponent(h.history_id)}/reverse`, {
+              method: "POST",
+              body: JSON.stringify({}),
+            });
+            if (typeof reloadFn === "function") await reloadFn();
+          } catch (err) {
+            setStatus(statusEl, formatMemoryApiError(err), true);
+          }
+        });
+        line.appendChild(b);
+      }
+      out.appendChild(line);
+    });
+    setStatus(statusEl, `${items.length} history entr${items.length === 1 ? "y" : "ies"}.`, false);
+  }
+
+  async function loadLog(logPanel, statusEl, options) {
+    const opts = options && typeof options === "object" ? options : {};
+    const prefilledIds = Array.isArray(opts.cardIds)
+      ? opts.cardIds.map((id) => String(id || "").trim()).filter(Boolean)
+      : [];
     logPanel.innerHTML = "";
-    setStatus(statusEl, "Select a card in Review or All, then use API for filtered history — or paste card_id:", false);
+    setStatus(
+      statusEl,
+      prefilledIds.length
+        ? `Loaded ${prefilledIds.length} approved card id(s). History shown below — paste another card UUID to switch.`
+        : "Paste a card UUID below, or approve a memory graph draft to auto-load history here.",
+      false
+    );
     const row = document.createElement("div");
     row.className = "flex gap-2 items-center";
     row.innerHTML = `<input id="memHistCardId" type="text" class="flex-1 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs" placeholder="card UUID" />
@@ -188,44 +277,78 @@
     const out = document.createElement("div");
     out.className = "mt-2 space-y-1 text-[11px]";
     logPanel.appendChild(out);
-    row.querySelector("#memHistLoad").addEventListener("click", async () => {
-      const cid = row.querySelector("#memHistCardId").value.trim();
-      if (!cid) return;
+
+    async function loadRecentHistory() {
       out.innerHTML = "";
+      setStatus(statusEl, "Loading recent activity…", false);
       try {
-        const data = await apiFetch(`/api/memory/history?card_id=${encodeURIComponent(cid)}&limit=100`);
-        const items = data.items || [];
-        items.forEach((h) => {
-          const line = document.createElement("div");
-          line.className = "border-b border-gray-800 pb-1";
-          const canReverse = ["update", "status_change", "edge_add"].includes(h.op);
-          line.innerHTML = `<div class="text-gray-300">${escapeHtml(h.op)} · ${escapeHtml(h.actor)} · ${escapeHtml(
-            h.history_id
-          )}</div>`;
-          if (canReverse) {
-            const b = document.createElement("button");
-            b.type = "button";
-            b.className = "text-[10px] text-amber-300 mt-1";
-            b.textContent = "Reverse this";
-            b.addEventListener("click", async () => {
-              try {
-                await apiFetch(`/api/memory/history/${encodeURIComponent(h.history_id)}/reverse`, {
-                  method: "POST",
-                  body: JSON.stringify({}),
-                });
-                row.querySelector("#memHistLoad").click();
-              } catch (err) {
-                setStatus(statusEl, formatMemoryApiError(err), true);
-              }
-            });
-            line.appendChild(b);
-          }
-          out.appendChild(line);
-        });
+        const data = await apiFetch("/api/memory/history?limit=100");
+        await renderHistoryItems(data.items || [], out, statusEl, loadRecentHistory);
       } catch (e) {
         setStatus(statusEl, formatMemoryApiError(e), true);
       }
+    }
+
+    async function loadHistoryForCard(cid) {
+      const cardId = String(cid || "").trim();
+      if (!cardId) {
+        await loadRecentHistory();
+        return;
+      }
+      out.innerHTML = "";
+      setStatus(statusEl, "Loading history…", false);
+      try {
+        const data = await apiFetch(`/api/memory/history?card_id=${encodeURIComponent(cardId)}&limit=100`);
+        await renderHistoryItems(data.items || [], out, statusEl, () => loadHistoryForCard(cardId));
+      } catch (e) {
+        setStatus(statusEl, formatMemoryApiError(e), true);
+      }
+    }
+
+    row.querySelector("#memHistLoad").addEventListener("click", () => {
+      loadHistoryForCard(row.querySelector("#memHistCardId").value);
     });
+    row.querySelector("#memHistCardId").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        loadHistoryForCard(row.querySelector("#memHistCardId").value);
+      }
+    });
+
+    const input = row.querySelector("#memHistCardId");
+    const reloadAllBtn = document.createElement("button");
+    reloadAllBtn.type = "button";
+    reloadAllBtn.className = "px-2 py-1 bg-gray-800 rounded border border-gray-600 text-xs text-gray-300";
+    reloadAllBtn.textContent = "Recent all";
+    reloadAllBtn.addEventListener("click", () => {
+      input.value = "";
+      loadRecentHistory();
+    });
+    row.appendChild(reloadAllBtn);
+
+    if (prefilledIds.length) {
+      input.value = prefilledIds[0];
+      await loadHistoryForCard(prefilledIds[0]);
+      if (prefilledIds.length > 1) {
+        const chips = document.createElement("div");
+        chips.className = "mt-2 flex flex-wrap gap-1";
+        prefilledIds.forEach((cid) => {
+          const chip = document.createElement("button");
+          chip.type = "button";
+          chip.className = "px-2 py-0.5 rounded border border-gray-700 bg-gray-900 text-[10px] text-indigo-200 hover:bg-gray-800";
+          chip.textContent = cid.slice(0, 8) + "…";
+          chip.title = cid;
+          chip.addEventListener("click", () => {
+            input.value = cid;
+            loadHistoryForCard(cid);
+          });
+          chips.appendChild(chip);
+        });
+        logPanel.insertBefore(chips, out);
+      }
+    } else {
+      await loadRecentHistory();
+    }
   }
 
   async function loadNeighborhood(cardId, cyHost) {
@@ -278,18 +401,18 @@
     const btnL = document.getElementById("memorySubviewLog");
     if (!review || !all || !log) return;
 
-    btnR.addEventListener("click", () => {
-      showSubview(review, all, log, "review");
-      loadReview(review, statusEl, detail, cyHost);
-    });
-    btnA.addEventListener("click", () => {
-      showSubview(review, all, log, "all");
-      loadAll(all, statusEl, detail, cyHost);
-    });
-    btnL.addEventListener("click", () => {
-      showSubview(review, all, log, "log");
-      loadLog(log, statusEl);
-    });
+    function activateSubview(key) {
+      showSubview(review, all, log, key);
+      styleSubviewButtons(btnR, btnA, btnL, key);
+      if (key === "review") loadReview(review, statusEl, detail, cyHost);
+      else if (key === "all") loadAll(all, statusEl, detail, cyHost);
+      else if (key === "log") loadLog(log, statusEl, { cardIds: lastApprovedCardIds });
+    }
+
+    if (btnR) btnR.addEventListener("click", () => activateSubview("review"));
+    if (btnA) btnA.addEventListener("click", () => activateSubview("all"));
+    if (btnL) btnL.addEventListener("click", () => activateSubview("log"));
+    styleSubviewButtons(btnR, btnA, btnL, "review");
 
     const draftTa = document.getElementById("memoryGraphDraftJson");
     const graphOut = document.getElementById("memoryGraphAnnotatorOut");
@@ -337,6 +460,9 @@
           const body = JSON.parse(raw);
           const data = await apiFetch("/api/memory/graph/approve", { method: "POST", body: JSON.stringify(body) });
           graphSetOut(data, !data.ok);
+          if (data && data.ok && Array.isArray(data.card_ids) && data.card_ids.length) {
+            lastApprovedCardIds = data.card_ids.map((id) => String(id));
+          }
         } catch (e) {
           graphSetOut(e.body || e.message || String(e), true);
         }
@@ -486,11 +612,11 @@
 
     function refreshVisibleMemorySubview() {
       if (review && !review.classList.contains("hidden")) {
-        loadReview(review, statusEl, detail, cyHost);
+        activateSubview("review");
       } else if (all && !all.classList.contains("hidden")) {
-        loadAll(all, statusEl, detail, cyHost);
+        activateSubview("all");
       } else if (log && !log.classList.contains("hidden")) {
-        loadLog(log, statusEl);
+        activateSubview("log");
       }
     }
     window.addEventListener("orion-hub-memory-tab-activated", refreshVisibleMemorySubview);

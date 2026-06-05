@@ -8,6 +8,8 @@ from urllib.parse import quote, urlparse, urlunparse
 
 import requests
 
+from orion.graph.fuseki_http import call_with_fuseki_retry
+
 
 def redact_http_url_for_log(url: str) -> str:
     """Host + path + query + fragment only (strips userinfo from URL)."""
@@ -76,31 +78,37 @@ class SparqlHttpClient:
         return redact_http_url_for_log(self._query_url)
 
     def select(self, sparql: str) -> list[dict[str, Any]]:
-        auth = _basic_auth_tuple(self._user, self._password)
-        r = self._session.post(
-            self._query_url,
-            data=sparql.encode("utf-8"),
-            headers={
-                "Content-Type": "application/sparql-query",
-                "Accept": "application/sparql-results+json",
-            },
-            auth=auth,
-            timeout=self._timeout_sec,
-        )
-        r.raise_for_status()
-        payload = r.json()
-        return list(payload.get("results", {}).get("bindings", []))
+        def _do() -> list[dict[str, Any]]:
+            auth = _basic_auth_tuple(self._user, self._password)
+            r = self._session.post(
+                self._query_url,
+                data=sparql.encode("utf-8"),
+                headers={
+                    "Content-Type": "application/sparql-query",
+                    "Accept": "application/sparql-results+json",
+                },
+                auth=auth,
+                timeout=self._timeout_sec,
+            )
+            r.raise_for_status()
+            payload = r.json()
+            return list(payload.get("results", {}).get("bindings", []))
+
+        return call_with_fuseki_retry(_do)
 
     def update(self, sparql: str) -> None:
-        auth = _basic_auth_tuple(self._user, self._password)
-        r = self._session.post(
-            self._update_url,
-            data=sparql.encode("utf-8"),
-            headers={"Content-Type": "application/sparql-update"},
-            auth=auth,
-            timeout=self._timeout_sec,
-        )
-        r.raise_for_status()
+        def _do() -> None:
+            auth = _basic_auth_tuple(self._user, self._password)
+            r = self._session.post(
+                self._update_url,
+                data=sparql.encode("utf-8"),
+                headers={"Content-Type": "application/sparql-update"},
+                auth=auth,
+                timeout=self._timeout_sec,
+            )
+            r.raise_for_status()
+
+        call_with_fuseki_retry(_do)
 
 
 class SparqlQueryClient:
@@ -166,15 +174,18 @@ class GraphStoreClient:
         self._session = session or requests.Session()
 
     def post_graph(self, content: str, *, graph_uri: str | None = None, content_type: str = "application/n-triples") -> None:
-        auth = _basic_auth_tuple(self._user, self._password)
-        url = self._graph_store_url
-        if graph_uri:
-            url = f"{url}?graph={quote(graph_uri, safe='')}"
-        r = self._session.post(
-            url,
-            data=content.encode("utf-8") if isinstance(content, str) else content,
-            headers={"Content-Type": content_type},
-            auth=auth,
-            timeout=self._timeout_sec,
-        )
-        r.raise_for_status()
+        def _do() -> None:
+            auth = _basic_auth_tuple(self._user, self._password)
+            url = self._graph_store_url
+            if graph_uri:
+                url = f"{url}?graph={quote(graph_uri, safe='')}"
+            r = self._session.post(
+                url,
+                data=content.encode("utf-8") if isinstance(content, str) else content,
+                headers={"Content-Type": content_type},
+                auth=auth,
+                timeout=self._timeout_sec,
+            )
+            r.raise_for_status()
+
+        call_with_fuseki_retry(_do)

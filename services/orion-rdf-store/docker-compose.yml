@@ -1,5 +1,5 @@
 # ───────────────────────────────────────────────────────────────
-# Orion RDF Store — operator stack (Fuseki). Not the Python writer.
+# Orion RDF Store — Fuseki backend stack
 # ───────────────────────────────────────────────────────────────
 
 networks:
@@ -9,7 +9,7 @@ networks:
 
 services:
   orion-athena-fuseki:
-    image: stain/jena-fuseki:latest
+    image: ${FUSEKI_IMAGE:-stain/jena-fuseki:5.1.0}
     container_name: orion-athena-fuseki
     restart: unless-stopped
     networks:
@@ -18,13 +18,18 @@ services:
       - "${FUSEKI_PORT:-3030}:3030"
     environment:
       ADMIN_PASSWORD: ${FUSEKI_ADMIN_PASSWORD:-orion}
+      FUSEKI_DATASET: ${RDF_STORE_DATASET:-orion}
+      RDF_STORE_DATASET: ${RDF_STORE_DATASET:-orion}
+      FUSEKI_USER: admin
+      FUSEKI_ADMIN_PASSWORD: ${FUSEKI_ADMIN_PASSWORD:-orion}
       # stain/jena-fuseki documents JVM_ARGS (see Docker Hub / jena-docker Dockerfile).
       JVM_ARGS: ${FUSEKI_JVM_ARGS:-}
     volumes:
       - ${FUSEKI_DATA_DIR:-/mnt/storage-lukewarm/rdf-store/fuseki}:/fuseki
+      - ./scripts/fuseki_health_probe.sh:/usr/local/bin/fuseki_health_probe.sh:ro
     healthcheck:
-      test: ["CMD", "curl", "-fs", "http://127.0.0.1:3030/$$/ping"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-      start_period: 60s
+      test: ["CMD", "sh", "/usr/local/bin/fuseki_health_probe.sh"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 90s

@@ -41,12 +41,15 @@ def test_memory_cards_returns_503_when_pool_unconfigured() -> None:
     assert resp.json().get("detail") == "memory_store_unavailable"
 
 
-def test_memory_history_requires_filter() -> None:
+def test_memory_history_allows_recent_without_filter() -> None:
     import scripts.main as hub_main
 
     with TestClient(hub_main.app) as client:
         resp = client.get("/api/memory/history", headers={"X-Orion-Session-Id": "test-session"})
-    assert resp.status_code == 400
+    if resp.status_code == 503:
+        pytest.skip("memory store unavailable in test env")
+    assert resp.status_code == 200
+    assert "items" in resp.json()
 
 
 def test_memory_history_rejects_invalid_edge_id_uuid() -> None:

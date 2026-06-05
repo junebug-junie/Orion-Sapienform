@@ -267,8 +267,6 @@ async def memory_list_history(
     limit: int = Query(default=200, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> Dict[str, Any]:
-    if not card_id and not edge_id:
-        raise HTTPException(status_code=400, detail="card_id_or_edge_id_required")
     if edge_id:
         _require_uuid(edge_id, param="edge_id")
     await _need_session(x_orion_session_id)

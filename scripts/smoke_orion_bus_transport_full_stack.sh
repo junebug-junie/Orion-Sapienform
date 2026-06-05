@@ -62,17 +62,14 @@ case "$MODE" in
 
   m4)
     echo "== m4: capability:transport in substrate_field_state =="
-    psql_run "
-      SELECT
-        generated_at,
-        c ->> 'id'       AS capability_id,
-        c -> 'channels'  AS channels
-      FROM substrate_field_state
-      CROSS JOIN LATERAL jsonb_array_elements(field_json::jsonb -> 'capabilities') AS c
-      WHERE c ->> 'id' = 'capability:transport'
-      ORDER BY generated_at DESC
-      LIMIT 3;"
+    docker exec -i "$DB" psql -U postgres -d conjourney -c "
+      select generated_at,
+             field_json::jsonb -> 'capability_vectors' -> 'capability:transport' as transport_vector
+      from substrate_field_state
+      where field_json::jsonb -> 'capability_vectors' ? 'capability:transport'
+      order by generated_at desc limit 5;"
     ;;
+
 
   m5)
     echo "== m5: capability:transport in attention frame buckets =="

@@ -365,7 +365,23 @@ class Settings(BaseSettings):
     MEMORY_GRAPH_SUGGEST_QUICK_TIMEOUT_SEC: float = Field(
         default=0.0,
         alias="MEMORY_GRAPH_SUGGEST_QUICK_TIMEOUT_SEC",
-        description="Per Quick-route hub wait; 0 = ~40% of verb timeout (72s when verb is 180s).",
+        description=(
+            "Per Quick-route hub wait; 0 = ~35% of verb budget when escalation is on "
+            "(Quick+Brain share one verb budget), else ~40% of verb."
+        ),
+    )
+    MEMORY_GRAPH_SUGGEST_CLIENT_FETCH_TIMEOUT_MS: int = Field(
+        default=0,
+        alias="MEMORY_GRAPH_SUGGEST_CLIENT_FETCH_TIMEOUT_MS",
+        description=(
+            "Hub UI fetch AbortController for POST /api/memory/graph/suggest; "
+            "0 = auto (server budget + buffer, typically ~205s when verb=180s and escalation on)."
+        ),
+    )
+    MEMORY_GRAPH_SUGGEST_CLIENT_FETCH_BUFFER_SEC: float = Field(
+        default=25.0,
+        alias="MEMORY_GRAPH_SUGGEST_CLIENT_FETCH_BUFFER_SEC",
+        description="Added to computed server budget for browser fetch timeout when client ms is 0.",
     )
     MEMORY_GRAPH_SUGGEST_STRUCTURED_OUTPUT_METHOD: str = Field(
         default="json_object_schema",

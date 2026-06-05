@@ -171,21 +171,33 @@ def preview_validate_only(
     supplemental_utterance_text: Optional[Mapping[str, str]] = None,
 ) -> tuple[bool, List[str], Dict[str, Any]]:
     """Validate RDF + SHACL without persistence; return preview card shells."""
+    from orion.memory_graph.suggest_validate import collect_topical_spine_warnings
+
     try:
         draft = ensure_draft_utterance_text(draft, supplemental=supplemental_utterance_text)
     except ValueError as exc:
         if str(exc).startswith("utterance_text_missing:"):
-            return (False, [str(exc)], {"card_count": 0, "edge_count": 0, "titles": []})
+            return (False, [str(exc)], {"card_count": 0, "edge_count": 0, "titles": [], "warnings": []})
         raise
     try:
         g = draft_to_graph(draft)
     except ValueError as exc:
-        return (False, [str(exc)], {"card_count": 0, "edge_count": 0, "titles": []})
+        return (False, [str(exc)], {"card_count": 0, "edge_count": 0, "titles": [], "warnings": []})
     violations = validate_graph(g)
     pack = project_graph_to_cards(g, draft)
+    corpus_parts: List[str] = []
+    if supplemental_utterance_text:
+        corpus_parts.extend(str(v) for v in supplemental_utterance_text.values() if str(v).strip())
+    if draft.utterance_text_by_id:
+        corpus_parts.extend(str(v) for v in draft.utterance_text_by_id.values() if str(v).strip())
+    warnings = collect_topical_spine_warnings(
+        draft.model_dump(mode="json"),
+        utterance_text=" ".join(corpus_parts),
+    )
     preview = {
         "card_count": len(pack.creates),
         "edge_count": len(pack.edge_indices),
         "titles": [c.title for c in pack.creates],
+        "warnings": warnings,
     }
     return (len(violations) == 0, violations, preview)

@@ -121,6 +121,15 @@
   }
 
   const SUGGEST_DRAFT_ONTOLOGY_VERSION = "orionmem-2026-05";
+  const DEFAULT_MEMORY_GRAPH_SUGGEST_FETCH_TIMEOUT_MS = 205000;
+
+  /** Hub UI fetch budget; must exceed server Quick+Brain budget (see memory_graph_suggest_timeout.py). */
+  function resolveMemoryGraphSuggestFetchTimeoutMs() {
+    const cfg = typeof window !== "undefined" && window.__HUB_CFG__ ? window.__HUB_CFG__ : {};
+    const raw = Number(cfg.memoryGraphSuggestFetchTimeoutMs);
+    if (Number.isFinite(raw) && raw > 0) return raw;
+    return DEFAULT_MEMORY_GRAPH_SUGGEST_FETCH_TIMEOUT_MS;
+  }
 
   function looksLikeMemoryGraphDraftObject(obj) {
     if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;
@@ -828,6 +837,7 @@
   }
 
   window.OrionMemoryGraphDraftUI = {
+    resolveMemoryGraphSuggestFetchTimeoutMs,
     parseMemoryGraphDraftJson,
     looksLikeMemoryGraphDraftObject,
     looksLikeEvidenceEnvelopeOnly,

@@ -339,11 +339,17 @@ async def startup_event():
             "{{HUB_UI_ASSET_VERSION}}",
             ui_asset_version,
         )
+        from scripts.memory_graph_suggest_timeout import hub_client_fetch_timeout_ms
+
+        mg_escalation = bool(getattr(settings, "MEMORY_GRAPH_SUGGEST_ENABLE_ESCALATION", True))
         hub_cfg = {
             "apiBaseOverride": settings.HUB_API_BASE_OVERRIDE or "",
             "wsBaseOverride": settings.HUB_WS_BASE_OVERRIDE or "",
             "autoDefaultEnabled": bool(settings.HUB_AUTO_DEFAULT_ENABLED),
             "worldPulseFixtureRunEnabled": bool(settings.WORLD_PULSE_UI_FIXTURE_RUN_ENABLED),
+            "memoryGraphSuggestFetchTimeoutMs": hub_client_fetch_timeout_ms(
+                settings, escalation_enabled=mg_escalation
+            ),
         }
         html_content = html_content.replace(
             "{{HUB_CFG}}",

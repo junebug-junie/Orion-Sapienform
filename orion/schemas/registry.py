@@ -59,12 +59,12 @@ from orion.schemas.execution_projection import (
     ExecutionRunStateV1,
     ExecutionTrajectoryProjectionV1,
 )
-from orion.schemas.transport_projection import TransportBusProjectionV1, TransportBusStateV1
 from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.organ_emission import OrganEmissionV1
 from orion.schemas.reduction_receipt import ProjectionUpdateV1, ReductionReceiptV1
 from orion.schemas.state_delta import StateDeltaV1
 from orion.schemas.substrate_telemetry import SubstrateTierOutcomesPayloadV1
+from orion.schemas.transport_projection import TransportBusProjectionV1, TransportBusStateV1
 from orion.schemas.agents.bound_capability import (
     BoundCapabilityExecutionFailureV1,
     BoundCapabilityExecutionRequestV1,

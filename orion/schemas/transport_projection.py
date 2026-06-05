@@ -47,6 +47,6 @@ class TransportBusProjectionV1(BaseModel):
 
     schema_version: Literal["transport_bus.projection.v1"] = "transport_bus.projection.v1"
 
-    projection_id: str = "active_transport_bus_projection"
     updated_at: datetime
+    projection_id: str = "active_transport_bus_projection"
     buses: dict[str, TransportBusStateV1] = Field(default_factory=dict)

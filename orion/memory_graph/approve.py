@@ -9,6 +9,7 @@ import requests
 
 from orion.core.storage.memory_cards import insert_cards_and_edges_batch
 from orion.memory_graph.dto import SuggestDraftV1
+from orion.memory_graph.draft_sanitize import sanitize_suggest_draft_dict
 from orion.memory_graph.graphdb import compensate_batch, insert_batch
 from orion.memory_graph.json_to_rdf import draft_to_graph
 from orion.memory_graph.utterance_text import ensure_draft_utterance_text
@@ -98,6 +99,9 @@ async def approve_memory_graph_draft(
     implicitly select GraphDB from stale ``GRAPHDB_URL`` while ``MEMORY_GRAPH_APPROVAL_BACKEND=auto``.
     """
     batch_id = str(uuid4())
+    draft = SuggestDraftV1.model_validate(
+        sanitize_suggest_draft_dict(draft.model_dump(mode="json"))
+    )
     draft = ensure_draft_utterance_text(draft)
     g2 = draft_to_graph(draft, revision_batch=batch_id)
     violations = validate_graph(g2)
@@ -174,6 +178,9 @@ def preview_validate_only(
     from orion.memory_graph.suggest_validate import collect_topical_spine_warnings
 
     try:
+        draft = SuggestDraftV1.model_validate(
+            sanitize_suggest_draft_dict(draft.model_dump(mode="json"))
+        )
         draft = ensure_draft_utterance_text(draft, supplemental=supplemental_utterance_text)
     except ValueError as exc:
         if str(exc).startswith("utterance_text_missing:"):

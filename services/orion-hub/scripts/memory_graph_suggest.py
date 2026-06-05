@@ -170,6 +170,10 @@ def _parse_suggest_draft_from_text(
     if role_grounded_extraction_expected(utterance_text):
         data = repair_role_grounded_suggest_draft(data, utterance_text=utterance_text)
 
+    from orion.memory_graph.draft_sanitize import sanitize_suggest_draft_dict
+
+    data = sanitize_suggest_draft_dict(data)
+
     should_escalate, validation_errors = validate_for_escalation(data, utterance_text=utterance_text)
     if should_escalate:
         return None, True, validation_errors, None

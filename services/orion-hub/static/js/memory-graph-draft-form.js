@@ -42,6 +42,12 @@
     return `urn:uuid:${Date.now()}-draft`;
   }
 
+  function normalizeRef(value) {
+    const s = String(value == null ? "" : value).trim();
+    if (!s || s.toLowerCase() === "null" || s.toLowerCase() === "none") return null;
+    return s;
+  }
+
   function splitCsv(s) {
     return String(s || "")
       .split(",")
@@ -217,7 +223,7 @@
           label: card.querySelector("[data-ent=label]")?.value?.trim() || "",
           entityKind: card.querySelector("[data-ent=entityKind]")?.value || "abstract",
           surfaceForms: splitCsv(card.querySelector("[data-ent=surfaceForms]")?.value),
-          generalizes_to: card.querySelector("[data-ent=generalizes_to]")?.value?.trim() || null,
+          generalizes_to: normalizeRef(card.querySelector("[data-ent=generalizes_to]")?.value),
         });
       });
 
@@ -228,12 +234,12 @@
           id: card.querySelector("[data-sit=id]")?.value?.trim() || newEntityId(),
           utterance_ids: splitCsv(card.querySelector("[data-sit=utterance_ids]")?.value),
           label: card.querySelector("[data-sit=label]")?.value?.trim() || "",
-          stimulus_entity_id: card.querySelector("[data-sit=stimulus_entity_id]")?.value?.trim() || null,
+          stimulus_entity_id: normalizeRef(card.querySelector("[data-sit=stimulus_entity_id]")?.value),
           about_entity_ids: splitCsv(card.querySelector("[data-sit=about_entity_ids]")?.value),
           target_entity_ids: splitCsv(card.querySelector("[data-sit=target_entity_ids]")?.value),
           affectLabel: card.querySelector("[data-sit=affectLabel]")?.value || "neutral",
           timeQualitative: card.querySelector("[data-sit=timeQualitative]")?.value || "unknown",
-          occurredAt: occurred || null,
+          occurredAt: normalizeRef(occurred),
           participants: participantsFromText(card.querySelector("[data-sit=participants]")?.value),
         });
       });

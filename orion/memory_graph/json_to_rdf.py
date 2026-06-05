@@ -8,6 +8,7 @@ from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import RDF, RDFS, XSD
 
 from orion.memory_graph.dto import SuggestDraftV1
+from orion.memory_graph.draft_sanitize import is_blank_ref, is_resolvable_entity_ref
 from orion.memory_graph.utterance_text import ensure_draft_utterance_text
 
 ORIONMEM = Namespace("https://orion.local/ns/mem/v2026-05#")
@@ -82,7 +83,16 @@ def draft_to_graph(
     g.bind("schema", SCHEMA)
 
     def eb(ref: str) -> URIRef:
-        return entity_uri(ref, entity_base=entity_base)
+        if is_blank_ref(ref):
+            raise ValueError(f"unsupported entity ref {ref!r}")
+        return entity_uri(str(ref).strip(), entity_base=entity_base)
+
+    def eb_opt(ref: Optional[str]) -> Optional[URIRef]:
+        if is_blank_ref(ref):
+            return None
+        if not is_resolvable_entity_ref(ref, entity_base=entity_base):
+            return None
+        return entity_uri(str(ref).strip(), entity_base=entity_base)
 
     for uid in draft.utterance_ids:
         u = utterance_uri(uid, prefix=utterance_prefix)
@@ -103,8 +113,9 @@ def draft_to_graph(
         for sf in ent.surfaceForms or []:
             if sf:
                 g.add((node, ORIONMEM.surfaceForm, Literal(sf)))
-        if ent.generalizes_to:
-            g.add((node, ORIONMEM.generalizationOf, eb(ent.generalizes_to)))
+        gen = eb_opt(ent.generalizes_to)
+        if gen is not None:
+            g.add((node, ORIONMEM.generalizationOf, gen))
         if revision_batch:
             g.add((node, ORIONMEM.revisionBatch, Literal(revision_batch)))
 
@@ -115,12 +126,17 @@ def draft_to_graph(
             g.add((snode, RDFS.label, Literal(sit.label)))
         for uid in sit.utterance_ids:
             g.add((snode, PROV.wasDerivedFrom, utterance_uri(uid, prefix=utterance_prefix)))
-        if sit.stimulus_entity_id:
-            g.add((snode, ORIONMEM.stimulusEntity, eb(sit.stimulus_entity_id)))
+        stim = eb_opt(sit.stimulus_entity_id)
+        if stim is not None:
+            g.add((snode, ORIONMEM.stimulusEntity, stim))
         for ae in sit.about_entity_ids:
-            g.add((snode, ORIONMEM.aboutEntity, eb(ae)))
+            about = eb_opt(ae)
+            if about is not None:
+                g.add((snode, ORIONMEM.aboutEntity, about))
         for ta in sit.target_entity_ids:
-            g.add((snode, ORIONMEM.targetOfNegativeAffect, eb(ta)))
+            target = eb_opt(ta)
+            if target is not None:
+                g.add((snode, ORIONMEM.targetOfNegativeAffect, target))
         if sit.affectLabel:
             g.add((snode, ORIONMEM.affectLabel, Literal(sit.affectLabel)))
         if sit.timeQualitative:
@@ -128,29 +144,42 @@ def draft_to_graph(
         if sit.occurredAt:
             g.add((snode, ORIONMEM.occurredAt, Literal(sit.occurredAt, datatype=XSD.date)))
         for part in sit.participants:
-            en = eb(part.entity_id)
+            en = eb_opt(part.entity_id)
+            if en is None:
+                continue
             g.add((en, ORIONMEM.inSituation, snode))
             g.add((en, ORIONMEM.participantRole, Literal(part.role)))
         if revision_batch:
             g.add((snode, ORIONMEM.revisionBatch, Literal(revision_batch)))
 
     for disp in draft.dispositions:
-        disp_id = (disp.id or "").strip() or f"urn:uuid:{uuid4()}"
+        disp_id = (disp.id or "").strip()
+        if is_blank_ref(disp_id) or not is_resolvable_entity_ref(disp_id):
+            disp_id = f"urn:uuid:{uuid4()}"
         dnode = eb(disp_id)
         g.add((dnode, RDF.type, ORIONMEM.AffectiveDisposition))
         g.add((dnode, ORIONMEM.trustPolarity, Literal(disp.trustPolarity)))
-        g.add((dnode, ORIONMEM.dispositionTarget, eb(disp.target_id)))
+        target = eb_opt(disp.target_id)
+        if target is None:
+            continue
+        g.add((dnode, ORIONMEM.dispositionTarget, target))
         if draft.utterance_ids:
             g.add((dnode, PROV.wasDerivedFrom, utterance_uri(draft.utterance_ids[0], prefix=utterance_prefix)))
         if disp.description:
             g.add((dnode, SCHEMA.description, Literal(disp.description)))
-        g.add((eb(disp.holder_id), ORIONMEM.dispositionToward, dnode))
+        holder = eb_opt(disp.holder_id)
+        if holder is None:
+            continue
+        g.add((holder, ORIONMEM.dispositionToward, dnode))
         if revision_batch:
             g.add((dnode, ORIONMEM.revisionBatch, Literal(revision_batch)))
 
     for e in draft.edges:
+        snode = eb_opt(e.s)
+        onode = eb_opt(e.o)
+        if snode is None or onode is None:
+            continue
         pred = expand_curie(e.p)
-        snode, onode = eb(e.s), eb(e.o)
         g.add((snode, URIRef(pred), onode))
         if revision_batch:
             g.add((snode, ORIONMEM.revisionBatch, Literal(revision_batch)))

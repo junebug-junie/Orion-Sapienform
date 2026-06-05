@@ -59,6 +59,25 @@ class AttentionRuntimeWorker:
             policy=self._policy,
             previous_frame=previous,
         )
+        if not self._settings.enable_transport_attention_visibility:
+            frame = frame.model_copy(
+                update={
+                    "dominant_targets": [
+                        t
+                        for t in frame.dominant_targets
+                        if t.target_id != "capability:transport"
+                    ],
+                    "capability_targets": [
+                        t
+                        for t in frame.capability_targets
+                        if t.target_id != "capability:transport"
+                    ],
+                    "node_targets": frame.node_targets,
+                    "system_targets": frame.system_targets,
+                    "suppressed_targets": frame.suppressed_targets
+                    + [t for t in frame.dominant_targets if t.target_id == "capability:transport"],
+                }
+            )
         self._store.save_attention_frame(frame)
         logger.info(
             "attention_frame_saved frame_id=%s tick_id=%s salience=%.3f",

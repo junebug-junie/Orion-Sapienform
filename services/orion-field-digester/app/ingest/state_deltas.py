@@ -103,4 +103,44 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                         label=delta.delta_id,
                     )
                 )
+
+    if delta.target_kind == "transport_bus":
+        hints = dict((delta.after or {}).get("pressure_hints") or {})
+        node_key = _node_key(str((delta.after or {}).get("node_id") or delta.target_id.replace("bus:", "")))
+        for channel, key in (
+            ("bus_health", "bus_health"),
+            ("delivery_confidence", "delivery_confidence"),
+            ("transport_pressure", "transport_pressure"),
+            ("catalog_drift_pressure", "contract_pressure"),
+            ("observer_failure_pressure", "observer_failure_pressure"),
+            ("reliability_pressure", "reliability_pressure"),
+            ("contract_pressure", "contract_pressure"),
+        ):
+            if key in hints:
+                out.append(
+                    Perturbation(
+                        node_id=node_key,
+                        channel=channel,
+                        intensity=float(hints[key]),
+                        label=delta.delta_id,
+                    )
+                )
+        if "stream_depth_pressure" in hints:
+            out.append(
+                Perturbation(
+                    node_id=node_key,
+                    channel="transport_pressure",
+                    intensity=float(hints["stream_depth_pressure"]),
+                    label=delta.delta_id,
+                )
+            )
+        if "backpressure" in hints:
+            out.append(
+                Perturbation(
+                    node_id=node_key,
+                    channel="transport_pressure",
+                    intensity=float(hints["backpressure"]),
+                    label=delta.delta_id,
+                )
+            )
     return out

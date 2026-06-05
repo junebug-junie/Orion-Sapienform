@@ -68,6 +68,7 @@ class SelfStateRuntimeWorker:
             attention=attention,
             policy=self._policy,
             previous_self_state=previous,
+            enable_transport_influence=self._settings.enable_transport_self_state_influence,
         )
         self._store.save_self_state(state)
         logger.info(

@@ -4,6 +4,11 @@ from datetime import datetime, timezone
 from typing import Literal, cast
 
 from orion.self_state.policy import SelfStatePolicyV1
+from orion.self_state.transport import (
+    transport_channel_hints,
+    transport_integrity_score,
+    transport_summary_labels,
+)
 from orion.self_state.scoring import (
     agency_readiness_score,
     clamp01,
@@ -109,6 +114,7 @@ def build_self_state(
     policy: SelfStatePolicyV1,
     previous_self_state: SelfStateV1 | None = None,
     now: datetime | None = None,
+    enable_transport_influence: bool = False,
 ) -> SelfStateV1:
     del previous_self_state  # reserved for continuity deltas in a later revision
     generated_at = now or datetime.now(timezone.utc)
@@ -222,6 +228,24 @@ def build_self_state(
         overall_condition=overall_condition,
         overall_salience=attention.overall_salience,
     )
+
+    if enable_transport_influence:
+        hints = transport_channel_hints(field)
+        integrity = transport_integrity_score(hints)
+        dimension_scores["transport_integrity"] = integrity
+        dimensions["transport_integrity"] = SelfStateDimensionV1(
+            dimension_id="transport_integrity",
+            score=integrity,
+            confidence=overall_confidence,
+            dominant_evidence=[
+                f"bus_health={hints.get('bus_health', 0):.2f}",
+                f"contract_pressure={hints.get('contract_pressure', 0):.2f}",
+            ],
+            reasons=["transport substrate synthesis from field capability:transport"],
+        )
+        summary_labels = sorted(
+            set(summary_labels) | set(transport_summary_labels(hints, integrity))
+        )
 
     return SelfStateV1(
         self_state_id=stable_self_state_id(

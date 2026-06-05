@@ -22,6 +22,11 @@ from orion.substrate.biometrics_loop.pipeline import (
 from orion.substrate.execution_loop.constants import EXECUTION_TRAJECTORY_PROJECTION_ID
 from orion.substrate.execution_loop.pipeline import process_execution_grammar_events
 from orion.substrate.execution_loop.projection import empty_execution_projection
+from orion.substrate.transport_loop.constants import TRANSPORT_BUS_PROJECTION_ID
+from orion.substrate.transport_loop.pipeline import (
+    empty_transport_projection,
+    process_transport_grammar_events,
+)
 
 from .publish import publish_accepted_events
 from .settings import get_settings
@@ -111,6 +116,19 @@ class BiometricsSubstrateWorker:
                             )
                 except Exception:
                     logger.exception("execution_substrate_tick_failed")
+
+            if self._settings.enable_transport_bus_reducer:
+                try:
+                    last_transport_id = await asyncio.to_thread(self._transport_tick)
+                    if last_transport_id:
+                        created_at = self._store.grammar_event_created_at(last_transport_id)
+                        if created_at:
+                            self._store.advance_transport_cursor(
+                                event_id=last_transport_id,
+                                created_at=created_at,
+                            )
+                except Exception:
+                    logger.exception("transport_substrate_tick_failed")
             try:
                 await asyncio.wait_for(
                     self._stop.wait(),
@@ -177,6 +195,28 @@ class BiometricsSubstrateWorker:
             save_projection=self._store.save_execution_trajectory,
             save_receipt=self._store.save_receipt,
             now=now,
+        )
+
+        return events[-1].event_id
+
+    def _transport_tick(self) -> str | None:
+        events = self._store.fetch_transport_grammar_events(limit=50)
+        if not events:
+            return None
+
+        now = datetime.now(timezone.utc)
+
+        def load_projection():
+            loaded = self._store.load_transport_bus_projection(TRANSPORT_BUS_PROJECTION_ID)
+            return loaded or empty_transport_projection(now=now)
+
+        process_transport_grammar_events(
+            events=events,
+            load_projection=load_projection,
+            save_projection=self._store.save_transport_bus_projection,
+            save_receipt=self._store.save_receipt,
+            now=now,
+            stream_depth_critical=self._settings.bus_stream_depth_critical,
         )
 
         return events[-1].event_id

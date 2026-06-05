@@ -70,6 +70,11 @@ class FieldDigesterWorker:
             for delta in receipt.state_deltas:
                 if self._store.is_delta_applied(delta.delta_id):
                     continue
+                if (
+                    delta.target_kind == "transport_bus"
+                    and not self._settings.enable_transport_field_digestion
+                ):
+                    continue
                 perturbations.extend(delta_to_perturbations(delta))
                 pending_deltas.append(
                     PendingDelta(delta_id=delta.delta_id, receipt_id=receipt.receipt_id)

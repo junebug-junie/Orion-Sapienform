@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     )
     proposal_poll_interval_sec: float = Field(2.0, alias="PROPOSAL_POLL_INTERVAL_SEC")
     enable_proposal_runtime: bool = Field(True, alias="ENABLE_PROPOSAL_RUNTIME")
+    enable_transport_proposals: bool = Field(False, alias="ENABLE_TRANSPORT_PROPOSALS")
+    transport_proposal_mode: str = Field("read_only", alias="TRANSPORT_PROPOSAL_MODE")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
 

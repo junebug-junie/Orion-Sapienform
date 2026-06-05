@@ -66,7 +66,46 @@ _TEMPLATE_COPY: dict[str, tuple[str, str, list[str]]] = {
         "Uncertainty or reliability pressure suggests deferring possible action until policy can evaluate later.",
         ["defer_stability", "low_readiness"],
     ),
+    "inspect_transport_status": (
+        "Inspect transport capability status",
+        "Transport contract or reliability pressure is elevated; inspect capability:transport evidence.",
+        ["transport_inspect", "read_only"],
+    ),
+    "inspect_bus_channel_catalog": (
+        "Inspect bus channel catalog alignment",
+        "Configured observer streams may be uncataloged; inspect orion/bus/channels.yaml read-only.",
+        ["transport_catalog_inspect", "read_only"],
+    ),
+    "summarize_transport_contract_drift": (
+        "Summarize transport contract drift",
+        "Catalog drift pressure on capability:transport warrants a bounded summary for review.",
+        ["transport_contract_drift", "read_only"],
+    ),
+    "watch_transport_backpressure": (
+        "Watch transport backpressure",
+        "Transport pressure signals warrant observation without bus mutation.",
+        ["transport_backpressure_watch", "read_only"],
+    ),
 }
+
+TRANSPORT_PROPOSAL_TEMPLATE_KEYS = frozenset(
+    {
+        "inspect_transport_status",
+        "inspect_bus_channel_catalog",
+        "summarize_transport_contract_drift",
+        "watch_transport_backpressure",
+    }
+)
+
+FORBIDDEN_TRANSPORT_PROPOSAL_KEYS = frozenset(
+    {
+        "restart_bus",
+        "purge_stream",
+        "replay_stream",
+        "change_catalog",
+        "change_bus_config",
+    }
+)
 
 
 def template_title_description(

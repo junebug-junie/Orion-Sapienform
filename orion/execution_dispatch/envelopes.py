@@ -29,9 +29,13 @@ def build_cortex_request_envelope(
         },
         "constraints": {
             "read_only": True,
+            "dry_run": dry_run,
             "no_external_side_effects": True,
             "no_file_writes": True,
             "no_service_restarts": True,
             "no_operator_notifications": True,
+            "no_stream_replay": True,
+            "no_stream_purge": True,
+            "no_catalog_write": True,
         },
     }

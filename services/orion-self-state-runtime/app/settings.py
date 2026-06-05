@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     )
     self_state_poll_interval_sec: float = Field(2.0, alias="SELF_STATE_POLL_INTERVAL_SEC")
     enable_self_state_runtime: bool = Field(True, alias="ENABLE_SELF_STATE_RUNTIME")
+    enable_transport_self_state_influence: bool = Field(
+        False,
+        alias="ENABLE_TRANSPORT_SELF_STATE_INFLUENCE",
+    )
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
 

@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     )
     attention_poll_interval_sec: float = Field(2.0, alias="ATTENTION_POLL_INTERVAL_SEC")
     enable_attention_runtime: bool = Field(True, alias="ENABLE_ATTENTION_RUNTIME")
+    enable_transport_attention_visibility: bool = Field(
+        False,
+        alias="ENABLE_TRANSPORT_ATTENTION_VISIBILITY",
+    )
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
 

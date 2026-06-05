@@ -11,6 +11,8 @@ _MOTIF_TO_EXPECTATION: dict[str, str] = {
     "dry_run_feedback_loop": "dry_run_feedback",
     "blocked_review_loop": "policy_review_required",
     "stable_after_dry_run": "dry_run_feedback",
+    "transport_contract_drift_loop": "contract_drift_persists",
+    "transport_healthy_idle": "transport_stable",
 }
 
 

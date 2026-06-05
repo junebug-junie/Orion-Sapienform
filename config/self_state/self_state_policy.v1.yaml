@@ -25,6 +25,10 @@ attention_target_weights:
   capability: 0.35
 
 channel_dimension_map:
+  transport_pressure: resource_pressure
+  contract_pressure: reliability_pressure
+  bus_health: coherence
+  delivery_confidence: coherence
   execution_load: execution_pressure
   execution_friction: reliability_pressure
   failure_pressure: reliability_pressure

@@ -9,6 +9,10 @@ grammar_events (orion-biometrics) → node biometrics projection
 grammar_events (orion-cortex-exec, cortex.exec:*) → execution trajectory projection
   → execution_trajectory_reducer → StateDeltaV1(target_kind=execution_run)
   → substrate_reduction_receipts → orion-field-digester
+
+grammar_events (orion-bus, bus.transport:*) → transport bus projection
+  → transport_bus_reducer → StateDeltaV1(target_kind=transport_bus)
+  → substrate_reduction_receipts → orion-field-digester (when ENABLE_TRANSPORT_FIELD_DIGESTION=true)
 ```
 
 ## Setup
@@ -16,10 +20,13 @@ grammar_events (orion-cortex-exec, cortex.exec:*) → execution trajectory proje
 ```bash
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_biometrics_substrate_loop.sql
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_execution_substrate_loop.sql
+psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_transport_substrate_loop.sql
 cp services/orion-substrate-runtime/.env_example services/orion-substrate-runtime/.env
 ```
 
 Set `ENABLE_EXECUTION_TRAJECTORY_REDUCER=true` after cortex-exec grammar publish is enabled (`PUBLISH_CORTEX_EXEC_GRAMMAR=true` on orion-cortex-exec). Default is `false` for safe rollout.
+
+Set `ENABLE_TRANSPORT_BUS_REDUCER=true` after orion-bus transport traces are publishing (`PUBLISH_ORION_BUS_GRAMMAR=true`). Default is `false`.
 
 ## Run
 

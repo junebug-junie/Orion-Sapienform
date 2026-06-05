@@ -52,11 +52,41 @@ def test_resolve_timeouts_derives_from_verb_when_route_secs_zero() -> None:
         MEMORY_GRAPH_SUGGEST_QUICK_TIMEOUT_SEC=0.0,
         MEMORY_GRAPH_SUGGEST_BRAIN_TIMEOUT_SEC=0.0,
     )
-    verb_sec, quick, brain, verb_ms = resolve_memory_graph_suggest_timeouts(settings)
+    verb_sec, quick, brain, verb_ms = resolve_memory_graph_suggest_timeouts(
+        settings, escalation_enabled=True
+    )
     assert verb_ms == 180_000
     assert verb_sec == 180.0
+    assert quick == 63.0
+    assert brain == 117.0
+    assert quick + brain == verb_sec
+
+
+def test_resolve_timeouts_single_route_when_escalation_disabled() -> None:
+    from scripts.memory_graph_suggest_timeout import resolve_memory_graph_suggest_timeouts
+
+    settings = SimpleNamespace(
+        MEMORY_GRAPH_SUGGEST_VERB_TIMEOUT_MS=180_000,
+        MEMORY_GRAPH_SUGGEST_QUICK_TIMEOUT_SEC=0.0,
+        MEMORY_GRAPH_SUGGEST_BRAIN_TIMEOUT_SEC=0.0,
+    )
+    _, quick, brain, _ = resolve_memory_graph_suggest_timeouts(settings, escalation_enabled=False)
     assert quick == 72.0
     assert brain == 180.0
+
+
+def test_hub_client_fetch_timeout_covers_escalation_budget() -> None:
+    from scripts.memory_graph_suggest_timeout import hub_client_fetch_timeout_ms
+
+    settings = SimpleNamespace(
+        MEMORY_GRAPH_SUGGEST_VERB_TIMEOUT_MS=180_000,
+        MEMORY_GRAPH_SUGGEST_QUICK_TIMEOUT_SEC=0.0,
+        MEMORY_GRAPH_SUGGEST_BRAIN_TIMEOUT_SEC=0.0,
+        MEMORY_GRAPH_SUGGEST_CLIENT_FETCH_TIMEOUT_MS=0,
+        MEMORY_GRAPH_SUGGEST_CLIENT_FETCH_BUFFER_SEC=25.0,
+    )
+    ms = hub_client_fetch_timeout_ms(settings, escalation_enabled=True)
+    assert ms == 205_000
 
 
 def test_resolve_timeouts_honors_explicit_route_overrides() -> None:
@@ -67,9 +97,10 @@ def test_resolve_timeouts_honors_explicit_route_overrides() -> None:
         MEMORY_GRAPH_SUGGEST_QUICK_TIMEOUT_SEC=90.0,
         MEMORY_GRAPH_SUGGEST_BRAIN_TIMEOUT_SEC=120.0,
     )
-    _, quick, brain, _ = resolve_memory_graph_suggest_timeouts(settings)
+    _, quick, brain, _ = resolve_memory_graph_suggest_timeouts(settings, escalation_enabled=True)
     assert quick == 90.0
-    assert brain == 120.0
+    assert brain == 90.0
+    assert quick + brain == 180.0
 
 
 def test_suggest_attempt_includes_timeout_diagnostics_on_hub_wait(monkeypatch) -> None:

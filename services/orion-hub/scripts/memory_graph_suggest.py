@@ -31,6 +31,8 @@ from scripts.cortex_request_builder import (
 )
 from scripts.memory_graph_suggest_timeout import (
     cortex_rpc_timeout_sec,
+    hub_client_fetch_timeout_ms,
+    memory_graph_suggest_server_budget_sec,
     resolve_memory_graph_suggest_timeouts,
 )
 from scripts.memory_graph_structured_output import (
@@ -168,6 +170,10 @@ def _parse_suggest_draft_from_text(
     if role_grounded_extraction_expected(utterance_text):
         data = repair_role_grounded_suggest_draft(data, utterance_text=utterance_text)
 
+    from orion.memory_graph.draft_sanitize import sanitize_suggest_draft_dict
+
+    data = sanitize_suggest_draft_dict(data)
+
     should_escalate, validation_errors = validate_for_escalation(data, utterance_text=utterance_text)
     if should_escalate:
         return None, True, validation_errors, None
@@ -224,7 +230,9 @@ async def suggest_with_escalation(
     include_grounding = bool(
         getattr(settings, "MEMORY_GRAPH_SUGGEST_INCLUDE_GROUNDING", True)
     )
-    verb_timeout_sec, t_quick, t_brain, verb_timeout_ms = resolve_memory_graph_suggest_timeouts(settings)
+    verb_timeout_sec, t_quick, t_brain, verb_timeout_ms = resolve_memory_graph_suggest_timeouts(
+        settings, escalation_enabled=enable_escalation
+    )
 
     def timeout_for(route: RouteName) -> float:
         return t_brain if route == "brain" else t_quick
@@ -278,6 +286,13 @@ async def suggest_with_escalation(
         "verb_timeout_sec": verb_timeout_sec,
         "quick_timeout_sec": t_quick,
         "brain_timeout_sec": t_brain,
+        "escalation_enabled": enable_escalation,
+        "max_server_sec": memory_graph_suggest_server_budget_sec(
+            settings, escalation_enabled=enable_escalation
+        ),
+        "client_fetch_timeout_ms": hub_client_fetch_timeout_ms(
+            settings, escalation_enabled=enable_escalation
+        ),
         "source": "orion/cognition/verbs/memory_graph_suggest.yaml",
     }
 

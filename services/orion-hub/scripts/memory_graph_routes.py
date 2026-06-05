@@ -69,7 +69,8 @@ async def memory_graph_validate(
         draft,
         supplemental_utterance_text=supplemental,
     )
-    return {"ok": ok, "violations": violations, "preview": preview}
+    warnings = preview.get("warnings") if isinstance(preview, dict) else []
+    return {"ok": ok, "violations": violations, "warnings": warnings or [], "preview": preview}
 
 
 @router.post("/api/memory/graph/suggest")

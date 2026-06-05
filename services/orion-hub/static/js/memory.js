@@ -4,8 +4,14 @@
   const pathSegments = window.location.pathname.split("/").filter((p) => p.length > 0);
   const URL_PREFIX = pathSegments.length > 0 ? `/${pathSegments[0]}` : "";
   const API_BASE = window.location.origin + URL_PREFIX;
-  // Match `orion/cognition/verbs/memory_graph_suggest.yaml` timeout_ms (hub fetch must not abort first).
-  const MEMORY_GRAPH_SUGGEST_TIMEOUT_MS = 180000;
+  function memoryGraphSuggestFetchTimeoutMs() {
+    const ui = window.OrionMemoryGraphDraftUI || {};
+    if (typeof ui.resolveMemoryGraphSuggestFetchTimeoutMs === "function") {
+      return ui.resolveMemoryGraphSuggestFetchTimeoutMs();
+    }
+    const raw = Number((window.__HUB_CFG__ || {}).memoryGraphSuggestFetchTimeoutMs);
+    return Number.isFinite(raw) && raw > 0 ? raw : 205000;
+  }
   const MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS = 12000;
 
   function sessionHeader() {
@@ -420,17 +426,40 @@
     const aBtn = document.getElementById("memoryGraphApproveBtn");
     const sBtn = document.getElementById("memoryGraphSuggestBtn");
     let memoryDraftViz = null;
+    let memoryDraftForm = null;
     if (window.OrionMemoryGraphDraftUI && draftTa) {
       const cyH = document.getElementById("memoryGraphDraftCyHost");
       const det = document.getElementById("memoryGraphDraftDetail");
       const ban = document.getElementById("memoryGraphDraftParseBanner");
+      const formHost = document.getElementById("memoryGraphDraftFormHost");
       if (cyH && det) {
         memoryDraftViz = window.OrionMemoryGraphDraftUI.attach({
           draftTextarea: draftTa,
           cyHost: cyH,
           detailHost: det,
           bannerEl: ban,
+          onDraftJsonChange: () => {
+            if (memoryDraftForm && typeof memoryDraftForm.refresh === "function") {
+              memoryDraftForm.refresh();
+            }
+          },
         });
+      }
+      if (formHost && window.OrionMemoryGraphDraftForm) {
+        memoryDraftForm = window.OrionMemoryGraphDraftForm.attachFormEditor({
+          draftTextarea: draftTa,
+          formHost,
+          onDraftChange: () => {
+            if (memoryDraftViz && typeof memoryDraftViz.refresh === "function") {
+              memoryDraftViz.refresh();
+            }
+          },
+        });
+      }
+    }
+    function flushDraftEditorToJson() {
+      if (memoryDraftForm && typeof memoryDraftForm.flushToTextarea === "function") {
+        memoryDraftForm.flushToTextarea();
       }
     }
     function graphSetOut(obj, isErr) {
@@ -443,10 +472,15 @@
       vBtn.addEventListener("click", async () => {
         graphSetOut("…", false);
         try {
+          flushDraftEditorToJson();
           const raw = draftTa.value.trim();
           const body = JSON.parse(raw);
           const data = await apiFetch("/api/memory/graph/validate", { method: "POST", body: JSON.stringify(body) });
-          graphSetOut(data, !data.ok);
+          const out = { ...data };
+          if (Array.isArray(data.warnings) && data.warnings.length) {
+            out.topical_warnings = data.warnings;
+          }
+          graphSetOut(out, !data.ok);
         } catch (e) {
           graphSetOut(e.body || e.message || String(e), true);
         }
@@ -456,6 +490,7 @@
       aBtn.addEventListener("click", async () => {
         graphSetOut("…", false);
         try {
+          flushDraftEditorToJson();
           const raw = draftTa.value.trim();
           const body = JSON.parse(raw);
           const data = await apiFetch("/api/memory/graph/approve", { method: "POST", body: JSON.stringify(body) });
@@ -494,7 +529,7 @@
                   } catch (_) {
                     /* ignore */
                   }
-                }, MEMORY_GRAPH_SUGGEST_TIMEOUT_MS)
+                }, memoryGraphSuggestFetchTimeoutMs())
               : null;
           let data = null;
           try {
@@ -555,6 +590,7 @@
                 );
           draftTa.value = draftText;
           if (memoryDraftViz && memoryDraftViz.refresh) memoryDraftViz.refresh();
+          if (memoryDraftForm && memoryDraftForm.refresh) memoryDraftForm.refresh();
           const statusFn =
             typeof ui.formatSuggestCoalesceUserStatus === "function"
               ? ui.formatSuggestCoalesceUserStatus
@@ -598,8 +634,8 @@
               {
                 ok: false,
                 error: `Suggest timed out after ${Math.round(
-                  MEMORY_GRAPH_SUGGEST_TIMEOUT_MS / 1000
-                )}s (browser fetch limit). Retry when the model gateway is responsive; reduce selected bridge turns only if the compiled prompt is very large.`,
+                  memoryGraphSuggestFetchTimeoutMs() / 1000
+                )}s (browser fetch limit; server budget is typically ~180s with Quick+Brain escalation). Retry when the model gateway is responsive; reduce selected turns only if the prompt was clipped.`,
               },
               true
             );
@@ -643,6 +679,7 @@
       if (isDraft && !isEvidence) {
         draftTa.value = JSON.stringify(obj, null, 2);
         if (memoryDraftViz && memoryDraftViz.refresh) memoryDraftViz.refresh();
+        if (memoryDraftForm && memoryDraftForm.refresh) memoryDraftForm.refresh();
         graphSetOut(
           { ok: true, note: "Loaded validated role-grounded SuggestDraftV1 JSON." },
           false,
@@ -673,6 +710,7 @@
         2,
       );
       if (memoryDraftViz && memoryDraftViz.refresh) memoryDraftViz.refresh();
+      if (memoryDraftForm && memoryDraftForm.refresh) memoryDraftForm.refresh();
       graphSetOut(
         {
           ok: false,

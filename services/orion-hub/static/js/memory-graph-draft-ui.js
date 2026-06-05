@@ -121,6 +121,15 @@
   }
 
   const SUGGEST_DRAFT_ONTOLOGY_VERSION = "orionmem-2026-05";
+  const DEFAULT_MEMORY_GRAPH_SUGGEST_FETCH_TIMEOUT_MS = 205000;
+
+  /** Hub UI fetch budget; must exceed server Quick+Brain budget (see memory_graph_suggest_timeout.py). */
+  function resolveMemoryGraphSuggestFetchTimeoutMs() {
+    const cfg = typeof window !== "undefined" && window.__HUB_CFG__ ? window.__HUB_CFG__ : {};
+    const raw = Number(cfg.memoryGraphSuggestFetchTimeoutMs);
+    if (Number.isFinite(raw) && raw > 0) return raw;
+    return DEFAULT_MEMORY_GRAPH_SUGGEST_FETCH_TIMEOUT_MS;
+  }
 
   function looksLikeMemoryGraphDraftObject(obj) {
     if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;
@@ -466,28 +475,91 @@
     return out;
   }
 
+  function isBlankRef(v) {
+    const s = String(v == null ? "" : v).trim();
+    return !s || s.toLowerCase() === "null" || s.toLowerCase() === "none";
+  }
+
   function draftToCyElements(obj) {
     const nodes = [];
     const edges = [];
     const seen = new Set();
+    const entityIds = new Set();
+    const situationIds = new Set();
+    const utteranceIds = new Set();
+
     function addNode(id, label, kind) {
       const sid = String(id);
-      if (seen.has(sid)) return;
+      if (isBlankRef(sid) || seen.has(sid)) return;
       seen.add(sid);
-      nodes.push({ data: { id: sid, label: String(label || sid), kind } });
+      nodes.push({ data: { id: sid, label: String(label || sid).slice(0, 48), kind } });
     }
+
+    function addEdge(source, target, label, extra) {
+      if (isBlankRef(source) || isBlankRef(target)) return;
+      const sid = String(source);
+      const oid = String(target);
+      if (utteranceIds.has(sid) || utteranceIds.has(oid)) return;
+      edges.push({
+        data: Object.assign(
+          {
+            id: `cy-edge-${edges.length}`,
+            source: sid,
+            target: oid,
+            label: String(label || ""),
+          },
+          extra || {},
+        ),
+      });
+    }
+
+    (Array.isArray(obj.utterance_ids) ? obj.utterance_ids : []).forEach((uid) => {
+      const u = String(uid || "").trim();
+      if (u) utteranceIds.add(u);
+    });
 
     const ents = Array.isArray(obj.entities) ? obj.entities : [];
     ents.forEach((e) => {
-      if (e && e.id) addNode(e.id, e.label || e.id, "entity");
+      if (e && e.id) {
+        entityIds.add(String(e.id));
+        addNode(e.id, e.label || e.id, "entity");
+      }
     });
     const sits = Array.isArray(obj.situations) ? obj.situations : [];
     sits.forEach((s) => {
-      if (s && s.id) addNode(s.id, s.label || s.id, "situation");
+      if (s && s.id) {
+        situationIds.add(String(s.id));
+        addNode(s.id, s.label || s.id, "situation");
+      }
     });
+    const graphNodes = new Set([...entityIds, ...situationIds]);
+
+    sits.forEach((sit) => {
+      if (!sit || !sit.id) return;
+      const sid = String(sit.id);
+      if (!situationIds.has(sid)) return;
+      const stim = sit.stimulus_entity_id;
+      if (!isBlankRef(stim) && entityIds.has(String(stim))) {
+        addEdge(sid, stim, "stimulus", { structural: true });
+      }
+      (Array.isArray(sit.about_entity_ids) ? sit.about_entity_ids : []).forEach((ae) => {
+        if (!isBlankRef(ae) && entityIds.has(String(ae))) {
+          addEdge(sid, ae, "about", { structural: true });
+        }
+      });
+      (Array.isArray(sit.participants) ? sit.participants : []).forEach((p) => {
+        const eid = p && (p.entity_id || p.entityId);
+        if (!isBlankRef(eid) && entityIds.has(String(eid))) {
+          addEdge(eid, sid, "inSituation", { structural: true });
+        }
+      });
+    });
+
     const disps = Array.isArray(obj.dispositions) ? obj.dispositions : [];
     disps.forEach((d) => {
-      if (d && d.id) addNode(d.id, (d.description && String(d.description).slice(0, 40)) || String(d.id), "disposition");
+      if (d && d.id && !isBlankRef(d.id)) {
+        addNode(d.id, (d.description && String(d.description).slice(0, 40)) || String(d.id), "disposition");
+      }
     });
 
     const edgs = Array.isArray(obj.edges) ? obj.edges : [];
@@ -495,17 +567,9 @@
       if (!e || e.s == null || e.o == null) return;
       const sid = String(e.s);
       const oid = String(e.o);
-      if (!seen.has(sid)) addNode(sid, sid, "ref");
-      if (!seen.has(oid)) addNode(oid, oid, "ref");
-      edges.push({
-        data: {
-          id: `draft-edge-${i}`,
-          source: sid,
-          target: oid,
-          label: String(e.p || ""),
-          edgeIndex: i,
-        },
-      });
+      if (!graphNodes.has(sid) || !graphNodes.has(oid)) return;
+      if (utteranceIds.has(sid) || utteranceIds.has(oid)) return;
+      addEdge(sid, oid, e.p || "", { edgeIndex: i, structural: false });
     });
 
     return { nodes, edges };
@@ -792,6 +856,14 @@
               color: "#94a3b8",
             },
           },
+          {
+            selector: "edge[structural = true]",
+            style: {
+              "line-color": "#34d399",
+              "target-arrow-color": "#34d399",
+              "line-style": "solid",
+            },
+          },
         ],
         layout: { name: "cose", animate: false },
         wheelSensitivity: 0.35,
@@ -828,6 +900,7 @@
   }
 
   window.OrionMemoryGraphDraftUI = {
+    resolveMemoryGraphSuggestFetchTimeoutMs,
     parseMemoryGraphDraftJson,
     looksLikeMemoryGraphDraftObject,
     looksLikeEvidenceEnvelopeOnly,

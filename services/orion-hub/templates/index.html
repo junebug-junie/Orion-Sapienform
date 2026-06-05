@@ -945,13 +945,17 @@
         </div>
         <div id="memoryGraphAnnotator" class="border border-gray-700 rounded-lg p-3 space-y-3 text-xs">
           <div class="font-semibold text-gray-200">Memory graph (optional)</div>
-          <p class="text-[10px] text-gray-500"><span class="text-gray-400">Suggest</span> — type plain language or paste a chat snippet (or leave empty). The model drafts JSON here; trim any prose around it, then Validate.</p>
-          <p class="text-[10px] text-gray-500"><span class="text-gray-400">Validate / Approve</span> — need structured JSON the API accepts. Approve needs GraphDB on this Hub.</p>
+          <p class="text-[10px] text-gray-500"><span class="text-gray-400">Editor</span> — structured fields for entities, situations, edges (relational + topical). <span class="text-gray-400">Suggest</span> uses plain language in Advanced JSON when empty.</p>
+          <p class="text-[10px] text-gray-500"><span class="text-gray-400">Validate / Approve</span> — syncs the editor to JSON first. Approve needs GraphDB on this Hub.</p>
           <div id="memoryGraphDraftParseBanner" class="hidden text-[11px] rounded border px-2 py-1 whitespace-pre-wrap border-gray-700 text-gray-400 bg-gray-950/60" role="status"></div>
           <div class="grid grid-cols-1 xl:grid-cols-2 gap-3 items-start">
             <div class="space-y-2 min-w-0">
-              <div class="text-[10px] uppercase tracking-wide text-gray-500">Draft</div>
-              <textarea id="memoryGraphDraftJson" class="w-full min-h-[11rem] bg-gray-950 border border-gray-700 rounded p-2 font-mono text-xs leading-relaxed" placeholder="Plain text for Suggest, or JSON for Validate / Approve…"></textarea>
+              <div class="text-[10px] uppercase tracking-wide text-gray-500">Draft editor</div>
+              <div id="memoryGraphDraftFormHost" class="max-h-[28rem] overflow-y-auto border border-gray-800 rounded-lg p-2 bg-gray-950/30 space-y-1"></div>
+              <details class="border border-gray-800 rounded-lg bg-gray-950/20">
+                <summary class="text-[10px] text-gray-500 cursor-pointer px-2 py-1">Advanced JSON &amp; suggest prompt</summary>
+                <textarea id="memoryGraphDraftJson" class="w-full min-h-[9rem] bg-gray-950 border-0 border-t border-gray-800 rounded-b p-2 font-mono text-xs leading-relaxed" placeholder="Plain text for Suggest, or JSON for Validate / Approve…"></textarea>
+              </details>
               <div class="flex flex-wrap gap-2">
                 <button type="button" id="memoryGraphValidateBtn" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200">Validate</button>
                 <button type="button" id="memoryGraphApproveBtn" class="px-2 py-1 rounded border border-emerald-800 bg-emerald-900/40 text-emerald-100">Approve</button>
@@ -3276,8 +3280,12 @@
         <div id="memoryGraphBridgeParseBanner" class="hidden text-[11px] rounded border px-2 py-1 whitespace-pre-wrap border-gray-700 text-gray-400 bg-gray-950/60" role="status"></div>
         <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
           <div class="space-y-2 min-w-0">
-            <div class="text-[10px] uppercase tracking-wide text-gray-500">Draft JSON</div>
-            <textarea id="memoryGraphBridgeDraft" class="w-full min-h-[11rem] bg-gray-950 border border-gray-700 rounded p-2 font-mono text-xs leading-relaxed" placeholder="Draft JSON appears here after Suggest…"></textarea>
+            <div class="text-[10px] uppercase tracking-wide text-gray-500">Draft editor</div>
+            <div id="memoryGraphBridgeFormHost" class="max-h-[26rem] overflow-y-auto border border-gray-800 rounded-lg p-2 bg-gray-950/30 space-y-1"></div>
+            <details class="border border-gray-800 rounded-lg bg-gray-950/20">
+              <summary class="text-[10px] text-gray-500 cursor-pointer px-2 py-1">Advanced JSON</summary>
+              <textarea id="memoryGraphBridgeDraft" class="w-full min-h-[9rem] bg-gray-950 border-0 border-t border-gray-800 rounded-b p-2 font-mono text-xs leading-relaxed" placeholder="Draft JSON appears here after Suggest…"></textarea>
+            </details>
           </div>
           <div class="space-y-2 min-w-0">
             <div class="text-[10px] uppercase tracking-wide text-gray-500">Preview graph &amp; selection</div>
@@ -3312,6 +3320,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
   <script src="/static/js/organ-signals-graph-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/memory-graph-draft-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/memory-graph-draft-form.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/memory.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/mind_provenance.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/substrate-effect-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from orion.memory_graph.suggest_validate import (
+    collect_topical_spine_warnings,
     extract_selected_role_evidence,
     repair_role_grounded_suggest_draft,
     role_grounded_extraction_expected,
@@ -265,3 +266,75 @@ def test_assistant_role_detected_via_assistant_turn_situation_without_orion_labe
     should, errors = validate_for_escalation(draft, utterance_text=SHOWER_UTTERANCE_TEXT)
     assert should is False
     assert "missing_assistant_role_entity" not in errors
+
+
+PRAGMATIC_UTTERANCE_TEXT = """Structured transcript evidence for memory graph extraction (do not invent turns).
+
+--- turn 1 id=u-prag role=user ---
+thanks for sharing. Certainly a POV. You didn't undersell the pragmatic take.
+
+--- turn 2 id=a-prag role=assistant ---
+Appreciate that. The whole point was to keep it usable, not decorative.
+
+Emit utterance_ids matching the ids above; fill utterance_text_by_id with excerpts."""
+
+
+def test_pragmatic_take_fixture_does_not_escalate() -> None:
+    path = Path("tests/fixtures/memory_graph/pragmatic_take_draft.json")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    should, errors = validate_for_escalation(data, utterance_text=PRAGMATIC_UTTERANCE_TEXT)
+    assert should is False
+    assert errors == []
+
+
+def test_pragmatic_take_fixture_has_no_topical_warnings() -> None:
+    path = Path("tests/fixtures/memory_graph/pragmatic_take_draft.json")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    warnings = collect_topical_spine_warnings(data, utterance_text=PRAGMATIC_UTTERANCE_TEXT)
+    assert warnings == []
+
+
+def test_dyad_only_pragmatic_emits_topical_warnings() -> None:
+    dyad_only = {
+        "ontology_version": "orionmem-2026-05",
+        "utterance_ids": ["u-prag", "a-prag"],
+        "entities": [
+            {
+                "id": "urn:uuid:12345678-1234-1234-1234-1234567890ab",
+                "label": "User",
+                "entityKind": "person",
+                "surfaceForms": ["User"],
+                "generalizes_to": None,
+            },
+            {
+                "id": "urn:uuid:12345678-1234-1234-1234-1234567890ac",
+                "label": "Orion",
+                "entityKind": "person",
+                "surfaceForms": ["Orion"],
+                "generalizes_to": None,
+            },
+        ],
+        "situations": [
+            {
+                "id": "urn:uuid:12345678-1234-1234-1234-1234567890ad",
+                "utterance_ids": ["u-prag"],
+                "label": "User acknowledges Orion's pragmatic approach",
+                "stimulus_entity_id": "urn:uuid:12345678-1234-1234-1234-1234567890ac",
+                "about_entity_ids": ["urn:uuid:12345678-1234-1234-1234-1234567890ab"],
+                "target_entity_ids": [],
+                "affectLabel": "affection",
+                "timeQualitative": "recent",
+                "occurredAt": None,
+                "participants": [],
+            }
+        ],
+        "edges": [],
+        "dispositions": [],
+        "utterance_text_by_id": {
+            "u-prag": "You didn't undersell the pragmatic take.",
+            "a-prag": "keep it usable, not decorative.",
+        },
+    }
+    warnings = collect_topical_spine_warnings(dyad_only, utterance_text=PRAGMATIC_UTTERANCE_TEXT)
+    assert any("topical_spine_missing" in w for w in warnings)
+    assert any("pragmatic take" in w for w in warnings)

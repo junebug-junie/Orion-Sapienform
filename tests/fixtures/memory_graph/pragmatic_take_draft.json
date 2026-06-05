@@ -1,0 +1,121 @@
+{
+  "ontology_version": "orionmem-2026-05",
+  "utterance_ids": [
+    "hub-utterance:71b025d1-420a-4fcc-9aa4-2761ede53b25",
+    "81478614-56c1-4592-8505-a48d28bc70fa"
+  ],
+  "entities": [
+    {
+      "id": "urn:uuid:a1000001-0000-4000-8000-000000000001",
+      "label": "User",
+      "entityKind": "person",
+      "surfaceForms": ["I", "you"],
+      "generalizes_to": null
+    },
+    {
+      "id": "urn:uuid:a1000002-0000-4000-8000-000000000002",
+      "label": "Orion",
+      "entityKind": "person",
+      "surfaceForms": ["I", "Orion"],
+      "generalizes_to": null
+    },
+    {
+      "id": "urn:uuid:a1000003-0000-4000-8000-000000000003",
+      "label": "pragmatic take",
+      "entityKind": "abstract",
+      "surfaceForms": ["pragmatic take", "pragmatic"],
+      "generalizes_to": null
+    },
+    {
+      "id": "urn:uuid:a1000004-0000-4000-8000-000000000004",
+      "label": "usable design stance",
+      "entityKind": "abstract",
+      "surfaceForms": ["usable", "not decorative", "keep it usable"],
+      "generalizes_to": "urn:uuid:a1000003-0000-4000-8000-000000000003"
+    }
+  ],
+  "situations": [
+    {
+      "id": "urn:uuid:b1000001-0000-4000-8000-000000000001",
+      "utterance_ids": ["hub-utterance:71b025d1-420a-4fcc-9aa4-2761ede53b25"],
+      "label": "User acknowledges Orion's pragmatic take without underselling it",
+      "stimulus_entity_id": "urn:uuid:a1000001-0000-4000-8000-000000000001",
+      "about_entity_ids": [
+        "urn:uuid:a1000003-0000-4000-8000-000000000003",
+        "urn:uuid:a1000002-0000-4000-8000-000000000002"
+      ],
+      "target_entity_ids": [],
+      "affectLabel": "affection",
+      "timeQualitative": "recent",
+      "occurredAt": null,
+      "participants": [
+        {"entity_id": "urn:uuid:a1000001-0000-4000-8000-000000000001", "role": "agent"},
+        {"entity_id": "urn:uuid:a1000003-0000-4000-8000-000000000003", "role": "topic"}
+      ]
+    },
+    {
+      "id": "urn:uuid:b1000002-0000-4000-8000-000000000002",
+      "utterance_ids": ["81478614-56c1-4592-8505-a48d28bc70fa"],
+      "label": "Orion affirms usable stance and offers support for next steps",
+      "stimulus_entity_id": "urn:uuid:a1000002-0000-4000-8000-000000000002",
+      "about_entity_ids": [
+        "urn:uuid:a1000004-0000-4000-8000-000000000004",
+        "urn:uuid:a1000001-0000-4000-8000-000000000001"
+      ],
+      "target_entity_ids": [],
+      "affectLabel": "trust",
+      "timeQualitative": "recent",
+      "occurredAt": null,
+      "participants": [
+        {"entity_id": "urn:uuid:a1000002-0000-4000-8000-000000000002", "role": "agent"},
+        {"entity_id": "urn:uuid:a1000004-0000-4000-8000-000000000004", "role": "topic"},
+        {"entity_id": "urn:uuid:a1000001-0000-4000-8000-000000000001", "role": "recipient"}
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "s": "urn:uuid:a1000001-0000-4000-8000-000000000001",
+      "p": "orionmem:inSituation",
+      "o": "urn:uuid:b1000001-0000-4000-8000-000000000001",
+      "confidence": 0.9
+    },
+    {
+      "s": "urn:uuid:a1000002-0000-4000-8000-000000000002",
+      "p": "orionmem:inSituation",
+      "o": "urn:uuid:b1000002-0000-4000-8000-000000000002",
+      "confidence": 0.9
+    },
+    {
+      "s": "urn:uuid:b1000001-0000-4000-8000-000000000001",
+      "p": "schema:about",
+      "o": "urn:uuid:a1000003-0000-4000-8000-000000000003",
+      "confidence": 0.92
+    },
+    {
+      "s": "urn:uuid:b1000002-0000-4000-8000-000000000002",
+      "p": "schema:about",
+      "o": "urn:uuid:a1000004-0000-4000-8000-000000000004",
+      "confidence": 0.9
+    },
+    {
+      "s": "urn:uuid:a1000004-0000-4000-8000-000000000004",
+      "p": "orionmem:generalizationOf",
+      "o": "urn:uuid:a1000003-0000-4000-8000-000000000003",
+      "confidence": 0.75
+    }
+  ],
+  "dispositions": [
+    {
+      "id": "urn:uuid:c1000001-0000-4000-8000-000000000001",
+      "holder_id": "urn:uuid:a1000002-0000-4000-8000-000000000002",
+      "target_id": "urn:uuid:a1000001-0000-4000-8000-000000000001",
+      "trustPolarity": "trust",
+      "description": "Orion trusts the user to pivot when ready; no pressure to keep typing."
+    }
+  ],
+  "utterance_text_by_id": {
+    "hub-utterance:71b025d1-420a-4fcc-9aa4-2761ede53b25": "thanks for sharing. Certainly a POV. You didn't undersell the pragmatic take.",
+    "81478614-56c1-4592-8505-a48d28bc70fa": "Appreciate that. The whole point was to keep it usable, not decorative. I'm glad it landed right."
+  }
+}

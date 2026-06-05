@@ -59,9 +59,16 @@ Role-grounded extraction rules:
 - Ordinary/routine turns should still produce a minimal semantic graph when they contain actions, states, promises, availability, movement, return expectations, emotions, preferences, or relational posture.
 - Salience/durability is not your job in this draft. Extract the faithful structure first.
 
-Minimal example (match real turn ids; keep output compact — prefer 2 entities + 2 situations for two turns):
-- User turn → person entity + situation about user state/action.
-- Assistant turn → abstract Orion entity + situation about assistant posture.
+Dual spine (relational + topical — both required when the text supports them):
+- Relational spine: User and Orion entities, situations for interpersonal moves (affect, availability, trust), orionmem:inSituation / stimulus / about / target edges as appropriate.
+- Topical spine: when utterances name a stance, artifact, evaluative object, plan fork, or other discourse center, add entityKind "abstract" entities with verbatim surfaceForms from the text (e.g. "pragmatic take", "model training"). Link each relevant situation with schema:about (situation → topic entity) and/or participants with role "topic". Reuse the same topic entity id across turns when a later turn continues the same thread.
+- Do not fold topical content only into situation.label strings; labels summarize, entities carry recallable subjects.
+- generalizes_to may connect a specific topical entity to a broader one (e.g. usable stance → pragmatic take).
+- At minimum User + Orion when both roles appear; add topical abstract entities whenever salient noun phrases carry the conversational center (not only when names are capitalized).
+
+Minimal example (match real turn ids; keep output compact):
+- Two-turn feedback on a "pragmatic take": User + Orion + abstract "pragmatic take"; situations for user acknowledgment and assistant affirmation; schema:about from situation to topic; shared topic id if both turns discuss it.
+- Shower example: User + Orion + abstract "shower"; situations for departure and availability.
 - Include orionmem:inSituation edges; fill utterance_text_by_id; dispositions only when trust/distrust is explicit.
 
 Rules:

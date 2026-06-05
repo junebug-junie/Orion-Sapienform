@@ -501,12 +501,19 @@ loadDismissedIds();
   let memoryGraphBridgeAnchorDiv = null;
   const MEMORY_GRAPH_BRIDGE_MAX_TURNS_CAP = 80;
   const MEMORY_GRAPH_BRIDGE_MAX_TURNS_DEFAULT = 40;
-  // Match `orion/cognition/verbs/memory_graph_suggest.yaml` timeout_ms (hub fetch must not abort first).
-  const MEMORY_GRAPH_SUGGEST_TIMEOUT_MS = 180000;
+  function memoryGraphSuggestFetchTimeoutMs() {
+    const ui = window.OrionMemoryGraphDraftUI || {};
+    if (typeof ui.resolveMemoryGraphSuggestFetchTimeoutMs === 'function') {
+      return ui.resolveMemoryGraphSuggestFetchTimeoutMs();
+    }
+    const raw = Number((window.__HUB_CFG__ || {}).memoryGraphSuggestFetchTimeoutMs);
+    return Number.isFinite(raw) && raw > 0 ? raw : 205000;
+  }
   const MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS = 12000;
   const MEMORY_GRAPH_SUGGEST_INPUT_PER_TURN_CHARS = 1800;
   const LS_MEMORY_GRAPH_BRIDGE_MAX_TURNS = 'orion_memory_graph_bridge_max_turns';
   let memoryGraphBridgeDraftViz = null;
+  let memoryGraphBridgeDraftForm = null;
   let organSignalsGraphCtl = null;
   const RECALL_CANARY_PROFILE_STORAGE_KEY = 'orion_recall_canary_profile_v1';
 
@@ -7499,14 +7506,36 @@ loadDismissedIds();
     const cy = document.getElementById('memoryGraphBridgeCyHost');
     const det = document.getElementById('memoryGraphBridgeDetail');
     const ban = document.getElementById('memoryGraphBridgeParseBanner');
+    const formHost = document.getElementById('memoryGraphBridgeFormHost');
     if (!ta || !cy || !det) return null;
     memoryGraphBridgeDraftViz = window.OrionMemoryGraphDraftUI.attach({
       draftTextarea: ta,
       cyHost: cy,
       detailHost: det,
       bannerEl: ban,
+      onDraftJsonChange: () => {
+        if (memoryGraphBridgeDraftForm && typeof memoryGraphBridgeDraftForm.refresh === 'function') {
+          memoryGraphBridgeDraftForm.refresh();
+        }
+      },
     });
+    if (formHost && window.OrionMemoryGraphDraftForm && !memoryGraphBridgeDraftForm) {
+      memoryGraphBridgeDraftForm = window.OrionMemoryGraphDraftForm.attachFormEditor({
+        draftTextarea: ta,
+        formHost,
+        onDraftChange: () => {
+          const viz = memoryGraphBridgeDraftViz || ensureMemoryGraphBridgeDraftViz();
+          if (viz && typeof viz.refresh === 'function') viz.refresh();
+        },
+      });
+    }
     return memoryGraphBridgeDraftViz;
+  }
+
+  function flushMemoryGraphBridgeDraftForm() {
+    if (memoryGraphBridgeDraftForm && typeof memoryGraphBridgeDraftForm.flushToTextarea === 'function') {
+      memoryGraphBridgeDraftForm.flushToTextarea();
+    }
   }
 
   function ensureOrganSignalsGraph() {
@@ -7833,7 +7862,7 @@ loadDismissedIds();
               } catch (_) {
                 /* ignore */
               }
-            }, MEMORY_GRAPH_SUGGEST_TIMEOUT_MS)
+            }, memoryGraphSuggestFetchTimeoutMs())
             : null;
           let res;
           try {
@@ -7907,6 +7936,9 @@ loadDismissedIds();
           draftTa.value = out;
           const vDraft = ensureMemoryGraphBridgeDraftViz();
           if (vDraft && vDraft.refresh) vDraft.refresh();
+          if (memoryGraphBridgeDraftForm && memoryGraphBridgeDraftForm.refresh) {
+            memoryGraphBridgeDraftForm.refresh();
+          }
           renderMemoryGraphBridgeDiagnostics(coalesce, data);
           if (statusEl) {
             const statusFn =
@@ -7935,7 +7967,8 @@ loadDismissedIds();
         } catch (err) {
           if (statusEl) {
             if (err && err.name === 'AbortError') {
-              statusEl.textContent = `Suggest timed out after ${Math.round(MEMORY_GRAPH_SUGGEST_TIMEOUT_MS / 1000)}s (browser fetch limit). Retry when the model gateway is responsive; reduce selected bridge turns only if the compiled prompt is very large.`;
+              const fetchSec = Math.round(memoryGraphSuggestFetchTimeoutMs() / 1000);
+              statusEl.textContent = `Suggest timed out after ${fetchSec}s (browser fetch limit; Hub may still be running Quick then Brain). Retry when the gateway is responsive, or set MEMORY_GRAPH_SUGGEST_CLIENT_FETCH_TIMEOUT_MS higher. Reduce selected turns only if the prompt was clipped.`;
             } else {
               statusEl.textContent = String(err.message || err);
             }
@@ -7948,6 +7981,7 @@ loadDismissedIds();
     }
     if (toMemBtn) {
       toMemBtn.addEventListener('click', () => {
+        flushMemoryGraphBridgeDraftForm();
         const raw = document.getElementById('memoryGraphBridgeDraft')?.value || '';
         if (!String(raw).trim()) {
           showToast('Add or generate a draft first (run Suggest draft), then continue.');

@@ -64,6 +64,18 @@ _ASSISTANT_ENTITY_HINTS = frozenset(
 
 _ROLE_ENTITY_NAMESPACE = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c0")
 
+_ROLE_ENTITY_LABELS = frozenset({"user", "orion", "juniper", "assistant", "here"})
+
+_TOPICAL_CUE_RE = re.compile(
+    r"\b(?:take|stance|approach|rollout|training|design|usable|decorative|pragmatic|pov|plan)\b",
+    re.I,
+)
+_QUOTED_PHRASE_RE = re.compile(r'["\']([^"\']{3,80})["\']')
+_TOPICAL_BIGRAM_RE = re.compile(
+    r"\b(pragmatic\s+take|point\s+of\s+view|model\s+training|cert\s+rollout)\b",
+    re.I,
+)
+
 
 def extract_selected_role_evidence(utterance_text: str) -> Dict[str, bool]:
     """Parse bridge-style transcript evidence for selected user/assistant turns."""
@@ -115,6 +127,109 @@ def role_grounded_extraction_expected(utterance_text: str) -> bool:
     if not ev.get("has_nonempty_text"):
         return False
     return bool(ev.get("has_extractable_relation"))
+
+
+def _draft_utterance_corpus(data: Dict[str, Any], utterance_text: str = "") -> str:
+    parts: List[str] = []
+    if utterance_text and str(utterance_text).strip():
+        parts.append(str(utterance_text))
+    text_map = data.get("utterance_text_by_id")
+    if isinstance(text_map, dict):
+        for val in text_map.values():
+            s = str(val or "").strip()
+            if s:
+                parts.append(s)
+    return " ".join(parts)
+
+
+def _entity_surface_forms_lower(entities: List[Any]) -> set[str]:
+    out: set[str] = set()
+    for ent in entities:
+        if not isinstance(ent, dict):
+            continue
+        label = str(ent.get("label") or "").strip().lower()
+        if label:
+            out.add(label)
+        sf = ent.get("surfaceForms")
+        if isinstance(sf, list):
+            for item in sf:
+                s = str(item or "").strip().lower()
+                if s:
+                    out.add(s)
+    return out
+
+
+def _has_topical_entity(entities: List[Any]) -> bool:
+    for ent in entities:
+        if not isinstance(ent, dict):
+            continue
+        kind = str(ent.get("entityKind") or "").strip().lower()
+        label = str(ent.get("label") or "").strip().lower()
+        if kind == "abstract" and label not in _ROLE_ENTITY_LABELS:
+            return True
+        if kind not in ("person", "abstract"):
+            return True
+        if kind == "person" and label not in _ROLE_ENTITY_LABELS:
+            return True
+    return False
+
+
+def _salient_phrases_in_corpus(corpus: str) -> List[str]:
+    phrases: List[str] = []
+    for match in _QUOTED_PHRASE_RE.finditer(corpus):
+        phrases.append(match.group(1).strip())
+    for match in _TOPICAL_BIGRAM_RE.finditer(corpus):
+        phrases.append(match.group(0).strip())
+    seen: set[str] = set()
+    out: List[str] = []
+    for phrase in phrases:
+        key = phrase.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(phrase)
+    return out
+
+
+def _phrase_covered_by_surfaces(phrase: str, surfaces: set[str]) -> bool:
+    norm = phrase.strip().lower()
+    if not norm:
+        return True
+    for surface in surfaces:
+        if norm in surface or surface in norm:
+            return True
+    return False
+
+
+def collect_topical_spine_warnings(
+    data: Dict[str, Any],
+    *,
+    utterance_text: str = "",
+) -> List[str]:
+    """Non-blocking hints when relational spine exists but topical subjects are thin."""
+    if not isinstance(data, dict):
+        return []
+    corpus = _draft_utterance_corpus(data, utterance_text)
+    if not corpus.strip() or not _TOPICAL_CUE_RE.search(corpus):
+        return []
+
+    entities = data.get("entities")
+    if not isinstance(entities, list):
+        entities = []
+
+    warnings: List[str] = []
+    surfaces = _entity_surface_forms_lower(entities)
+
+    if role_grounded_extraction_expected(utterance_text or corpus) and entities and not _has_topical_entity(
+        entities
+    ):
+        warnings.append("topical_spine_missing:consider_abstract_topic_entities")
+
+    for phrase in _salient_phrases_in_corpus(corpus):
+        if not _phrase_covered_by_surfaces(phrase, surfaces):
+            warnings.append(f"topical_phrase_not_extracted:{phrase[:72]}")
+
+    return warnings[:10]
 
 
 def _entity_tokens(entities: List[Any]) -> Tuple[set[str], set[str]]:

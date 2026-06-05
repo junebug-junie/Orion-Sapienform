@@ -33,6 +33,11 @@ SYNC_PREFIXES = (
     "AUTONOMY_GOAL_RETENTION_",
     "AUTONOMY_GOAL_MAX_ACTIVE_",
     "ACTIONS_DAILY_GOAL_ARCHIVE_",
+    # Transport substrate stack (PR #648 / M3–M7)
+    "ENABLE_TRANSPORT_",
+    "TRANSPORT_PROPOSAL_",
+    "TRANSPORT_SUBSTRATE_",
+    "BUS_STREAM_DEPTH_",
 )
 
 SYNC_EXACT = frozenset(
@@ -50,6 +55,12 @@ DEFAULT_SERVICES = (
     "orion-cortex-exec",
     "orion-actions",
     "orion-spark-concept-induction",
+    # Transport substrate stack (M3–M7)
+    "orion-substrate-runtime",
+    "orion-field-digester",
+    "orion-attention-runtime",
+    "orion-self-state-runtime",
+    "orion-proposal-runtime",
 )
 
 

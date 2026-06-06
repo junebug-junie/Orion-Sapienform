@@ -17,6 +17,60 @@ def test_episodic_federator_builds_sparql_for_all_graphs():
         for graph_uri in EPISODIC_GRAPHS:
             assert graph_uri in query, f"Missing graph: {graph_uri}"
         assert "SELECT" in query
+        # Graphs must be combined with UNION, not conjoined — a triple may live
+        # in ANY one episodic graph. Conjunction would require it in ALL graphs.
+        assert "UNION" in query
+        # one UNION between each pair of graph clauses, in both the subquery and
+        # the outer pattern => 2 * (len(graphs) - 1) UNION keywords.
+        assert query.count("UNION") == 2 * (len(EPISODIC_GRAPHS) - 1)
+
+
+def test_episodic_federator_uses_non_orion_autonomy_graphs():
+    """Autonomy data is written under graph/autonomy/*, not graph/orion/autonomy/*."""
+    from app.federators.episodic import EPISODIC_GRAPHS
+
+    assert "http://conjourney.net/graph/autonomy/identity" in EPISODIC_GRAPHS
+    assert "http://conjourney.net/graph/orion/autonomy/identity" not in EPISODIC_GRAPHS
+
+
+def test_episodic_federator_drops_literal_objects():
+    """Literal objects are not graph nodes and must be filtered out."""
+    sparql_response = {
+        "results": {
+            "bindings": [
+                {
+                    "s": {"type": "uri", "value": "http://example.org/A"},
+                    "p": {"type": "uri", "value": "http://example.org/rel"},
+                    "o": {"type": "uri", "value": "http://example.org/B"},
+                },
+                {
+                    "s": {"type": "uri", "value": "http://example.org/A"},
+                    "p": {"type": "uri", "value": "http://example.org/label"},
+                    "o": {"type": "literal", "value": "Hello world"},
+                },
+            ]
+        }
+    }
+    with patch("httpx.Client") as mock_client_cls:
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = sparql_response
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_client)
+        mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+        from app.federators.episodic import EpisodicFederator
+        f = EpisodicFederator(
+            query_url="http://fuseki/query",
+            user="admin",
+            password="orion",
+            timeout_sec=5.0,
+        )
+        triples = f.fetch(max_nodes=100)
+        assert triples == [
+            ("http://example.org/A", "http://example.org/rel", "http://example.org/B")
+        ]
 
 
 def test_episodic_federator_returns_empty_on_http_error():

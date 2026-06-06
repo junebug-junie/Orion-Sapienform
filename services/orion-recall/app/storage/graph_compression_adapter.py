@@ -5,13 +5,29 @@ import re
 from typing import Any, Dict, List, Literal, Optional
 
 import httpx
-from sqlalchemy import create_engine, text
+from sqlalchemy import bindparam, create_engine, text
 
 logger = logging.getLogger("orion-recall.graph_compression_adapter")
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]{3,}")
 _COMPRESSIONS_GRAPH_URI = "http://conjourney.net/graph/orion/compressions"
 _ORN_NS = "http://orion.conjourney.net/ns/compression#"
+
+# One pooled engine per DSN, reused across recalls (avoids leaking a fresh
+# connection pool on every query). Cleared by tests via _reset_engine_cache().
+_ENGINE_CACHE: Dict[str, Any] = {}
+
+
+def _get_engine(pg_dsn: str) -> Any:
+    engine = _ENGINE_CACHE.get(pg_dsn)
+    if engine is None:
+        engine = create_engine(pg_dsn, pool_pre_ping=True)
+        _ENGINE_CACHE[pg_dsn] = engine
+    return engine
+
+
+def _reset_engine_cache() -> None:
+    _ENGINE_CACHE.clear()
 
 
 def _extract_keywords(query_text: str, max_keywords: int = 6) -> list[str]:
@@ -87,22 +103,24 @@ def fetch_graph_compression_fragments(
     Returns [] on any error (never raises).
     """
     try:
-        engine = create_engine(pg_dsn, pool_pre_ping=True)
-        scope_filter = ", ".join(f"'{s}'" for s in scopes)
+        engine = _get_engine(pg_dsn)
+        scope_list = list(scopes) or ["episodic", "substrate", "self_study"]
         limit = max(max_global, max_local) * 2  # over-fetch then rank
+
+        stmt = text(
+            "SELECT region_id, scope, kind, summary_kind, salience, trust_tier,"
+            " compression_version, generated_at, stale"
+            " FROM compression_artifacts"
+            " WHERE scope IN :scopes"
+            " AND stale = false"
+            " ORDER BY salience DESC NULLS LAST"
+            " LIMIT :limit"
+        ).bindparams(bindparam("scopes", expanding=True))
 
         with engine.connect() as conn:
             rows = conn.execute(
-                text(
-                    f"SELECT region_id, scope, kind, summary_kind, salience, trust_tier,"
-                    f" compression_version, generated_at, stale"
-                    f" FROM compression_artifacts"
-                    f" WHERE scope IN ({scope_filter})"
-                    f" AND stale = false"
-                    f" ORDER BY salience DESC NULLS LAST"
-                    f" LIMIT :limit"
-                ),
-                {"limit": limit},
+                stmt,
+                {"scopes": scope_list, "limit": limit},
             ).mappings().fetchall()
 
         rows = [dict(r) for r in rows]

@@ -53,7 +53,13 @@ class CompressionWriter:
         self._channel_pressure = channel_pressure
 
     def _escape_literal(self, value: str) -> str:
-        return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+        return (
+            value.replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+        )
 
     def _build_sparql_update(self, region: CompressionRegionV1) -> str:
         rid = region.region_id

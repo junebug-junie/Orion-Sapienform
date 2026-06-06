@@ -881,7 +881,10 @@ async def _query_backends(
     )
     if compression_enabled:
         try:
-            compression_frags = fetch_graph_compression_fragments(
+            # Run the blocking Postgres + Fuseki I/O off the event loop so it does
+            # not stall the recall hot path (mirrors the memory_graph_sparql path).
+            compression_frags = await asyncio.to_thread(
+                fetch_graph_compression_fragments,
                 query_text=fragment,
                 mode=str(profile.get("compression_mode") or "unified"),
                 max_global=int(profile.get("compression_global_top_k") or 5),

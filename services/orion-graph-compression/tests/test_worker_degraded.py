@@ -81,3 +81,31 @@ def test_worker_budget_gate_halts_mid_batch():
         worker._tick()
         # Should have processed without calling LLM (structural fallback used)
         store.upsert_artifact.assert_called()
+
+
+def test_substrate_scope_labels_clusters_hotspot_not_contradiction():
+    """Substrate clusters must default to 'hotspot' so we don't spuriously flood
+    substrate mutation pressure (which only fires for 'contradiction')."""
+    worker, store, bus = _make_worker(enable=True)
+    store.drain_stale_queue.return_value = [
+        {"id": 1, "region_id": None, "scope": "substrate", "reason": "test", "priority": 0}
+    ]
+    triangle = [
+        ("http://A", "http://rel", "http://B"),
+        ("http://B", "http://rel", "http://C"),
+        ("http://C", "http://rel", "http://A"),
+    ]
+    with patch("app.worker.EpisodicFederator") as mock_ep, \
+         patch("app.worker.SubstrateFederator") as mock_sub, \
+         patch("app.worker.SelfStudyFederator") as mock_ss, \
+         patch("app.writer.CompressionWriter") as mock_writer:
+        mock_ep.return_value.fetch.return_value = []
+        mock_sub.return_value.fetch.return_value = triangle
+        mock_ss.return_value.fetch.return_value = []
+        mock_writer.return_value.write.return_value = True
+
+        worker._tick()
+
+        store.upsert_artifact.assert_called()
+        kinds = {c.kwargs["kind"] for c in store.upsert_artifact.call_args_list}
+        assert kinds == {"hotspot"}

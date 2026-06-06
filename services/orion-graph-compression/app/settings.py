@@ -27,9 +27,13 @@ class Settings(BaseSettings):
     channel_graph_compression_events: str = Field(
         "orion:graph:compression:events", alias="CHANNEL_GRAPH_COMPRESSION_EVENTS"
     )
+    channel_substrate_mutation_pressure: str = Field(
+        "orion:substrate:mutation:pressure", alias="CHANNEL_SUBSTRATE_MUTATION_PRESSURE"
+    )
     llm_gateway_bus_channel: str = Field(
         "orion:exec:request:LLMGatewayService", alias="LLM_GATEWAY_BUS_CHANNEL"
     )
+    enable_llm_summaries: bool = Field(True, alias="ENABLE_LLM_SUMMARIES")
 
     # Postgres
     postgres_uri: str = Field(

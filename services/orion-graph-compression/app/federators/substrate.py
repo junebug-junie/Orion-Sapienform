@@ -63,4 +63,5 @@ SELECT ?s ?p ?o WHERE {{
             (b["s"]["value"], b["p"]["value"], b["o"]["value"])
             for b in bindings
             if "s" in b and "p" in b and "o" in b
+            and b["o"].get("type") in ("uri", "bnode")
         ]

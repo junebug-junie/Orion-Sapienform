@@ -2,6 +2,16 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 
+@pytest.fixture(autouse=True)
+def _clear_engine_cache():
+    """The adapter caches one engine per DSN; clear it so each test's patched
+    create_engine / mock connection is used instead of a prior test's cached mock."""
+    from app.storage import graph_compression_adapter
+    graph_compression_adapter._reset_engine_cache()
+    yield
+    graph_compression_adapter._reset_engine_cache()
+
+
 def _mock_pg_rows(rows):
     """Helper: mock SQLAlchemy execute().mappings().fetchall() returning rows."""
     mock_conn = MagicMock()

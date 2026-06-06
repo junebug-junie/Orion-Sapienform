@@ -39,6 +39,8 @@ class CompressionWorker:
         # emits back onto the running event loop. None outside the running app
         # (e.g. unit tests calling _tick directly), in which case emits are skipped.
         self._loop: asyncio.AbstractEventLoop | None = None
+        # Shared LLM token budget for the current tick (reset each tick).
+        self._llm_budget_remaining: int = 0
 
     def _load_policy(self) -> dict[str, Any]:
         try:
@@ -78,9 +80,8 @@ class CompressionWorker:
         if not items:
             return
 
-        processed_ids = []
-        llm_tokens_used = 0
-        budget = self._settings.compression_llm_budget_per_tick
+        # LLM token budget is shared across every scope processed this tick.
+        self._llm_budget_remaining = int(self._settings.compression_llm_budget_per_tick)
 
         scopes_to_process = list({item.get("scope") for item in items if item.get("scope")})
         if not scopes_to_process:
@@ -88,7 +89,7 @@ class CompressionWorker:
 
         for scope in scopes_to_process:
             try:
-                self._process_scope(scope=scope, llm_tokens_used=llm_tokens_used, budget=budget)
+                self._process_scope(scope=scope)
             except Exception:
                 logger.exception("scope_process_failed scope=%s", scope)
 
@@ -96,7 +97,7 @@ class CompressionWorker:
         self._store.delete_stale_queue_items(queue_ids)
         logger.info("compression_tick_complete scopes=%s queue_items_drained=%d", scopes_to_process, len(queue_ids))
 
-    def _process_scope(self, *, scope: str, llm_tokens_used: int, budget: int) -> None:
+    def _process_scope(self, *, scope: str) -> None:
         cluster_cfg = (self._policy or {}).get("clustering", {})
         resolution = float(cluster_cfg.get("resolution", 1.0))
         n_iter = int(cluster_cfg.get("n_iterations", 10))
@@ -117,7 +118,11 @@ class CompressionWorker:
             kind = "community"
         elif scope == "substrate":
             triples = SubstrateFederator(**federator_kwargs).fetch()
-            kind = "contradiction"
+            # Default substrate clusters to "hotspot". We do not (yet) detect
+            # genuine contradictions, so we must not blanket-label every cluster
+            # "contradiction" — that would spuriously flood substrate mutation
+            # pressure. Contradiction detection is a future enhancement.
+            kind = "hotspot"
         elif scope == "self_study":
             triples = SelfStudyFederator(**federator_kwargs).fetch()
             kind = "self_study_cluster"
@@ -146,12 +151,14 @@ class CompressionWorker:
             service_name=s.service_name,
             service_version=s.service_version,
             channel_events=s.channel_graph_compression_events,
-            channel_pressure="orion:substrate:mutation:pressure",
+            channel_pressure=s.channel_substrate_mutation_pressure,
         )
 
+        summarizer = self._build_summarizer(s)
+
         for community in communities:
-            summary = (
-                f"[structural] {scope} {kind} cluster: {len(community)} nodes."
+            summary, summary_kind = self._summarize_community(
+                summarizer=summarizer, scope=scope, kind=kind, community=community
             )
             salience = min(1.0, len(community) / max(1, G.number_of_nodes()))
             region = build_region(
@@ -159,7 +166,7 @@ class CompressionWorker:
                 scope=scope,
                 kind=kind,
                 summary=summary,
-                summary_kind="structural",
+                summary_kind=summary_kind,
                 salience=salience,
                 trust_tier="unverified",
                 compression_version="1.0.0",
@@ -185,6 +192,55 @@ class CompressionWorker:
                 "region_written region_id=%s scope=%s kind=%s nodes=%d fuseki_ok=%s",
                 region.region_id, scope, kind, len(community), write_ok,
             )
+
+    def _build_summarizer(self, s: Any):
+        """Construct a RegionSummarizer when LLM summarization is viable, else None."""
+        if not self._can_use_llm():
+            return None
+        from app.summarizer import RegionSummarizer
+
+        return RegionSummarizer(
+            bus=self._bus,
+            llm_channel=s.llm_gateway_bus_channel,
+            service_name=s.service_name,
+            service_version=s.service_version,
+            max_tokens=s.compression_max_tokens_per_summary,
+        )
+
+    def _can_use_llm(self) -> bool:
+        """LLM summaries require the feature flag, a bus, a running loop, and budget."""
+        return (
+            bool(self._settings.enable_llm_summaries)
+            and self._bus is not None
+            and self._loop is not None
+            and self._llm_budget_remaining >= int(self._settings.compression_max_tokens_per_summary)
+        )
+
+    def _summarize_community(
+        self, *, summarizer: Any, scope: str, kind: str, community: Any
+    ) -> tuple[str, str]:
+        """Return (summary_text, summary_kind). Uses the LLM gateway when budget
+        allows, otherwise a deterministic structural summary. Always falls back to
+        structural on any error so the tick never fails on summarization."""
+        structural = f"[structural] {scope} {kind} cluster: {len(community)} nodes."
+        if summarizer is None or not self._can_use_llm():
+            return structural, "structural"
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                summarizer.summarize(scope=scope, kind=kind, nodes=community),
+                self._loop,
+            )
+            text, summary_kind = fut.result(
+                timeout=float(self._settings.rdf_store_timeout_sec) + 15.0
+            )
+            if summary_kind == "llm":
+                self._llm_budget_remaining -= int(
+                    self._settings.compression_max_tokens_per_summary
+                )
+            return text, summary_kind
+        except Exception:
+            logger.warning("community_summarize_failed scope=%s kind=%s", scope, kind)
+            return structural, "structural"
 
     def _emit_events(self, writer: "CompressionWriter", region: Any) -> None:
         """Bridge the async post-write bus emit from the sync tick thread to the

@@ -30,18 +30,19 @@ class SelfStudyFederator:
         self._timeout = timeout_sec
 
     def fetch(self, *, max_nodes: int = 500) -> List[Triple]:
-        graph_clauses = "\n  ".join(
-            f"GRAPH <{g}> {{ ?s ?p ?o }}" for g in SELF_STUDY_GRAPHS
+        # UNION across the self-study graphs (see EpisodicFederator for rationale).
+        union_block = "\n      UNION\n      ".join(
+            f"{{ GRAPH <{g}> {{ ?s ?p ?o }} }}" for g in SELF_STUDY_GRAPHS
         )
         query = f"""
 SELECT ?s ?p ?o WHERE {{
   {{
     SELECT DISTINCT ?s WHERE {{
-      {{ {graph_clauses} }}
+      {union_block}
     }}
     LIMIT {max_nodes}
   }}
-  {{ {graph_clauses} }}
+  {union_block}
 }}
 """
         try:
@@ -61,4 +62,5 @@ SELECT ?s ?p ?o WHERE {{
             (b["s"]["value"], b["p"]["value"], b["o"]["value"])
             for b in bindings
             if "s" in b and "p" in b and "o" in b
+            and b["o"].get("type") in ("uri", "bnode")
         ]

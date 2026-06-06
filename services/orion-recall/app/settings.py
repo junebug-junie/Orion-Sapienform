@@ -244,6 +244,26 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("RECALL_TENSOR_RANKER_MODEL_PATH"),
     )
 
+    # ── Graph Compression backend ─────────────────────────────────────
+    RECALL_COMPRESSION_ENABLED: bool = Field(
+        default=False, validation_alias=AliasChoices("RECALL_COMPRESSION_ENABLED")
+    )
+    RECALL_COMPRESSION_PG_DSN: Optional[str] = Field(
+        default=None, validation_alias=AliasChoices("RECALL_COMPRESSION_PG_DSN")
+    )
+    RECALL_COMPRESSION_RDF_QUERY_URL: Optional[str] = Field(
+        default=None, validation_alias=AliasChoices("RECALL_COMPRESSION_RDF_QUERY_URL")
+    )
+    RECALL_COMPRESSION_RDF_USER: str = Field(
+        default="admin", validation_alias=AliasChoices("RECALL_COMPRESSION_RDF_USER")
+    )
+    RECALL_COMPRESSION_RDF_PASS: str = Field(
+        default="orion", validation_alias=AliasChoices("RECALL_COMPRESSION_RDF_PASS")
+    )
+    RECALL_COMPRESSION_TIMEOUT_SEC: float = Field(
+        default=3.0, validation_alias=AliasChoices("RECALL_COMPRESSION_TIMEOUT_SEC")
+    )
+
     # ── Helpers ───────────────────────────────────────────────────────
     @field_validator(
         "RECALL_VECTOR_BASE_URL",
@@ -252,6 +272,8 @@ class Settings(BaseSettings):
         "RECALL_CARDS_EMBEDDING_URL",
         "RECALL_RDF_ENDPOINT_URL",
         "RECALL_RDF_QUERY_URL",
+        "RECALL_COMPRESSION_PG_DSN",
+        "RECALL_COMPRESSION_RDF_QUERY_URL",
         mode="before",
     )
     @classmethod

@@ -486,6 +486,11 @@ from orion.schemas.evidence_index import (
     ParsedDocumentIngestV1,
     ParsedDocumentSectionV1,
 )
+from orion.schemas.graph_compression import (
+    CompressionRegionV1,
+    CompressionStalenessMarkV1,
+    GraphCompressionRegionMaterializedV1,
+)
 from orion.schemas.topic_foundry import (
     KgEdgeIngestV1,
     TopicFoundryDriftAlertV1,
@@ -1008,6 +1013,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GraphDeltaPlanV1": GraphDeltaPlanV1,
     "HubWorldPulseMessageV1": HubWorldPulseMessageV1,
     "EmailWorldPulseRenderV1": EmailWorldPulseRenderV1,
+    "CompressionRegionV1": CompressionRegionV1,
+    "CompressionStalenessMarkV1": CompressionStalenessMarkV1,
+    "GraphCompressionRegionMaterializedV1": GraphCompressionRegionMaterializedV1,
 
 }
 

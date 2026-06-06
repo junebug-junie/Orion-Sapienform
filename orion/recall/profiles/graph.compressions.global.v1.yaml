@@ -1,0 +1,13 @@
+profile: graph.compressions.global.v1
+enable_rdf: false
+enable_sql_timeline: false
+enable_graph_compression: true
+compression_mode: global
+compression_global_top_k: 8
+compression_local_top_k: 3
+compression_scopes:
+  - episodic
+  - substrate
+  - self_study
+render_budget_tokens: 512
+max_total_items: 11

@@ -1,0 +1,13 @@
+profile: graph.compressions.local.v1
+enable_rdf: true
+rdf_top_k: 6
+enable_graph_compression: true
+compression_mode: local
+compression_global_top_k: 2
+compression_local_top_k: 8
+compression_scopes:
+  - episodic
+  - substrate
+  - self_study
+render_budget_tokens: 480
+max_total_items: 16

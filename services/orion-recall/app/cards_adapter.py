@@ -11,7 +11,6 @@ from orion.core.contracts.memory_cards import visibility_allows_card
 
 logger = logging.getLogger("orion-recall.cards")
 
-_EXCLUDED_STATUS = frozenset({"rejected", "archived", "deprecated"})
 _NEIGHBOR_TYPES = frozenset({"relates_to", "child_of", "supports"})
 
 
@@ -133,11 +132,10 @@ async def fetch_card_fragments(
                 WHERE (e.from_card_id = $1 OR e.to_card_id = $1)
                   AND e.edge_type = ANY($2::text[])
                   AND c.card_id <> $1
-                  AND NOT (c.status = ANY($3::text[]))
+                  AND c.status = 'active'
                 """,
                 cid,
                 list(_NEIGHBOR_TYPES),
-                list(_EXCLUDED_STATUS),
             )
 
             n_added = 0

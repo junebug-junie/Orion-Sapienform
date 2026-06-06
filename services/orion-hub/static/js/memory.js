@@ -336,8 +336,16 @@
               showReviewActions: true,
               statusEl,
               cyHost,
-              onApprove: () => loadReview(reviewPanel, statusEl, detailEl, cyHost),
-              onReject: () => loadReview(reviewPanel, statusEl, detailEl, cyHost),
+              onApprove: () => {
+                detailEl.classList.add("hidden");
+                detailEl.innerHTML = "";
+                loadReview(reviewPanel, statusEl, detailEl, cyHost);
+              },
+              onReject: () => {
+                detailEl.classList.add("hidden");
+                detailEl.innerHTML = "";
+                loadReview(reviewPanel, statusEl, detailEl, cyHost);
+              },
             });
           })
         );

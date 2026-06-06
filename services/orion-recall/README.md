@@ -107,6 +107,8 @@ Provenance: `.env_example` → `docker-compose.yml` → `services/orion-recall/a
 
 Profile knobs: `cards_top_k` (fetch cap) and `backend_weights.cards` (fusion weight). Scoring is **lexical token overlap** (regex tokenizer, not LLM). Only **`status=active`** cards are admitted.
 
+To preserve pre-2026-06 behavior on an existing install, set `RECALL_ENABLE_CARDS=false` in orion-recall `.env`.
+
 Cards-primary profiles: `biographical.v1`, `self.factual.v1`. All shipped YAML profiles now declare `cards_top_k` + `cards` weight for supplemental curated facts.
 
 ---

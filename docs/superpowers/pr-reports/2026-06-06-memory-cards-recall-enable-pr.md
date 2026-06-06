@@ -4,7 +4,7 @@
 
 - Turn on the memory cards Postgres recall backend (`RECALL_ENABLE_CARDS=true`) in orion-recall env, settings default, and docker-compose wiring.
 - Add `cards_top_k` and `backend_weights.cards` to every shipped recall profile so the cards rail can activate under any profile (weights tuned by profile intent).
-- Restrict cards recall scoring to **`status=active`** rows only (pending_review no longer leaks into fusion).
+- Restrict cards recall to **`status=active`** rows only — primary query and 1-hop neighbors (code review caught pending_review leak via edges; fixed in commit 4aa8415b).
 - Hub Memory tab: review/all card detail panels now expose editable metadata (confidence, sensitivity, visibility, priority, provenance, evidence, still_true, time_horizon) with **Save metadata** (`PATCH`) and **Approve/Reject** that save first.
 - Hub chat dropdown: add `biographical.v1` and `self.factual.v1` recall profiles.
 

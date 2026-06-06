@@ -550,6 +550,7 @@ Memory services:
 orion-recall
 orion-sql-writer
 orion-rdf-writer
+orion-graph-compression
 orion-vector-host
 orion-vector-writer
 orion-vector-db
@@ -833,6 +834,7 @@ Memory / stores / writers:
   orion-chat-memory
   orion-sql-writer
   orion-rdf-writer
+  orion-graph-compression
   orion-vector-db
   orion-vector-host
   orion-vector-writer

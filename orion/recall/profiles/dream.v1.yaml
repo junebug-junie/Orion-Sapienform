@@ -6,6 +6,7 @@ max_per_source: 5
 max_total_items: 32
 time_decay_half_life_hours: 96
 render_budget_tokens: 384
+cards_top_k: 6
 enable_query_expansion: true
 enable_sql_timeline: true
 sql_since_minutes: 10080
@@ -18,6 +19,7 @@ relevance:
     sql_chat: 0.55
     rdf_chat: 0.6
     rdf: 0.45
+    cards: 0.4
   score_weight: 0.72
   text_similarity_weight: 0.14
   recency_weight: 0.06

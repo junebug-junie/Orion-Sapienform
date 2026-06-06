@@ -97,6 +97,24 @@ Provenance: `.env_example` → `docker-compose.yml` → `services/orion-recall/a
 | `RECALL_ENABLE_SQL_TIMELINE` | `true` | profile can enable/disable |
 | `RECALL_SQL_TIMELINE_TABLE` | `collapse_mirror` | timeline source |
 
+### Memory cards (Postgres, operator-curated)
+
+| Variable | Default | Notes |
+| :--- | :--- | :--- |
+| `RECALL_ENABLE_CARDS` | `true` | When `true` and `RECALL_PG_DSN` is set, recall scores `memory_cards` rows as `source=cards`. |
+| `RECALL_CARDS_TIMEOUT_SEC` | `2.5` | Per-query cards rail budget (embedding + Postgres). |
+| `RECALL_CARDS_MAX_NEIGHBORS` | `6` | 1-hop graph neighbor fan-out cap. |
+| `RECALL_CARDS_EMBEDDING_URL` | derived | Defaults to `RECALL_VECTOR_EMBEDDING_URL` or `http://orion-athena-vector-host:8320/embedding`. |
+| `RECALL_CARDS_EMBED_TIMEOUT_SEC` | `5.0` | HTTP timeout per embed call to vector-host. |
+| `RECALL_CARDS_MIN_SIMILARITY` | `0.32` | Minimum cosine similarity vs query embedding. |
+| `RECALL_CARDS_EMBED_CONCURRENCY` | `4` | Parallel embed requests when warming card caches. |
+
+Profile knobs: `cards_top_k` (fetch cap), `backend_weights.cards` (fusion weight), and optional `cards_min_similarity` (cosine threshold, default from `RECALL_CARDS_MIN_SIMILARITY`). Scoring uses **vector-host embeddings + cosine similarity** (cached in `subschema.recall_embedding`), not lexical regex overlap. Only **`status=active`** cards are admitted.
+
+To preserve pre-2026-06 behavior on an existing install, set `RECALL_ENABLE_CARDS=false` in orion-recall `.env`.
+
+Cards-primary profiles: `biographical.v1`, `self.factual.v1`. All shipped YAML profiles now declare `cards_top_k` + `cards` weight for supplemental curated facts.
+
 ---
 
 ## 3) Recall Profiles (what changes when you switch profile)
@@ -107,7 +125,7 @@ Profiles live here:
 
 They control:
 
-- how many items to request per backend (`vector_top_k`, `rdf_top_k`, `sql_top_k`)
+- how many items to request per backend (`vector_top_k`, `rdf_top_k`, `sql_top_k`, `cards_top_k`)
 - caps (`max_per_source`, `max_total_items`)
 - render budget (`render_budget_tokens`)
 - SQL timeline time windows (`sql_since_minutes`)

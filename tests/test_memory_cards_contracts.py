@@ -28,9 +28,9 @@ def test_anchor_requires_anchor_class() -> None:
 
 
 def test_visibility_social_excludes_intimate() -> None:
-    assert visibility_allows_card(["chat"], "chat")
-    assert not visibility_allows_card(["intimate"], "social")
-    assert visibility_allows_card(["all"], "social")
+    assert visibility_allows_card(lane="chat", visibility_scope=["chat"])
+    assert not visibility_allows_card(lane="social", visibility_scope=["intimate"])
+    assert visibility_allows_card(lane="social", visibility_scope=["all"])
 
 
 def test_memory_card_minimal() -> None:

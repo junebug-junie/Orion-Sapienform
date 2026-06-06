@@ -10,11 +10,15 @@ enable_sql_timeline: true
 # retrieval knobs
 sql_chat_top_k: 50
 sql_timeline_top_k: 50
+cards_top_k: 4
 sql_since_minutes: 60*24*14    # last 14 days (adjustable)
 
 # fusion knobs
 max_total_items: 40
 max_per_source: 40
+
+backend_weights:
+  cards: 0.4
 
 # rendering
 render_mode: timeline

@@ -2,21 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from typing import Any, Dict, List, Optional
 
 import asyncpg
 
 from orion.core.contracts.memory_cards import visibility_allows_card
 
+from .cards_embedding import score_cards_by_embedding
+
 logger = logging.getLogger("orion-recall.cards")
 
-_EXCLUDED_STATUS = frozenset({"rejected", "archived", "deprecated"})
 _NEIGHBOR_TYPES = frozenset({"relates_to", "child_of", "supports"})
-
-
-def _tokens(text: str) -> set[str]:
-    return {t for t in re.findall(r"[a-z0-9]{2,}", (text or "").lower()) if t}
 
 
 def _neighbor_confidence_ok(meta: Dict[str, Any]) -> bool:
@@ -38,61 +34,45 @@ async def fetch_card_fragments(
     lane: Optional[str],
     max_neighbors: int,
 ) -> List[Dict[str, Any]]:
-    """Score memory cards for fusion; returns candidate dicts (source=cards)."""
+    """Score memory cards for fusion via embedding cosine similarity (source=cards)."""
     top_k = int(profile.get("cards_top_k", 0) or 0)
     if top_k <= 0:
         return []
 
-    q_tokens = _tokens(fragment)
-    if not q_tokens:
+    query_text = (fragment or "").strip()
+    if not query_text:
         return []
+
+    min_sim = float(profile.get("cards_min_similarity", 0) or 0)
+    if min_sim <= 0.0:
+        try:
+            from app.settings import settings
+        except ImportError:  # pragma: no cover
+            from settings import settings  # type: ignore
+        min_sim = float(getattr(settings, "RECALL_CARDS_MIN_SIMILARITY", 0.32) or 0.32)
 
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT card_id, slug, types, anchor_class, status, title, summary, tags, anchors,
-                   visibility_scope, evidence, updated_at
+                   visibility_scope, evidence, subschema, updated_at
             FROM memory_cards
-            WHERE NOT (status = ANY($1::text[]))
+            WHERE status = 'active'
             """,
-            list(_EXCLUDED_STATUS),
         )
 
-    scored: List[tuple[float, asyncpg.Record]] = []
-    for row in rows:
-        scopes = list(row["visibility_scope"] or [])
-        if not visibility_allows_card(scopes, lane):
-            continue
-        title = str(row["title"] or "")
-        summary = str(row["summary"] or "")
-        tags = [str(t).lower() for t in (row["tags"] or []) if t]
-        anchors = [str(a).lower() for a in (row["anchors"] or []) if a]
-        ac = str(row["anchor_class"] or "").lower()
-        types = [str(t).lower() for t in (row["types"] or [])]
+    visible = [
+        row
+        for row in rows
+        if visibility_allows_card(lane=lane, visibility_scope=list(row["visibility_scope"] or []))
+    ]
 
-        score = 0.0
-        for tok in anchors:
-            if tok in q_tokens:
-                score += 2.0
-        for tok in _tokens(title):
-            if tok in q_tokens:
-                score += 1.0
-        for tok in _tokens(summary):
-            if tok in q_tokens:
-                score += 0.5
-        for tag in tags:
-            if tag in q_tokens:
-                score += 0.3
-        if ac and ac in q_tokens:
-            score += 2.0
-        for t in types:
-            if t in q_tokens:
-                score += 0.5
-
-        if score > 0:
-            scored.append((score, row))
-
-    scored.sort(key=lambda x: (-x[0], str(x[1]["updated_at"] or "")))
+    scored = await score_cards_by_embedding(
+        pool,
+        visible,
+        query_text=query_text,
+        min_similarity=min_sim,
+    )
     top = scored[:top_k]
 
     out: List[Dict[str, Any]] = []
@@ -117,8 +97,8 @@ async def fetch_card_fragments(
                     "snippet": text,
                     "ts": row["updated_at"].timestamp() if row["updated_at"] else None,
                     "tags": ["memory_card", f"slug:{row['slug']}"],
-                    "score": min(1.0, base_score / 8.0),
-                    "meta": {"card_id": cid_str},
+                    "score": min(1.0, float(base_score)),
+                    "meta": {"card_id": cid_str, "similarity": float(base_score)},
                 }
             )
 
@@ -134,11 +114,10 @@ async def fetch_card_fragments(
                 WHERE (e.from_card_id = $1 OR e.to_card_id = $1)
                   AND e.edge_type = ANY($2::text[])
                   AND c.card_id <> $1
-                  AND NOT (c.status = ANY($3::text[]))
+                  AND c.status = 'active'
                 """,
                 cid,
                 list(_NEIGHBOR_TYPES),
-                list(_EXCLUDED_STATUS),
             )
 
             n_added = 0
@@ -149,7 +128,7 @@ async def fetch_card_fragments(
                 if not _neighbor_confidence_ok(meta):
                     continue
                 scopes = list(nr["visibility_scope"] or [])
-                if not visibility_allows_card(scopes, lane):
+                if not visibility_allows_card(lane=lane, visibility_scope=scopes):
                     continue
                 nid = str(nr["card_id"])
                 if nid in seen_ids:
@@ -158,6 +137,7 @@ async def fetch_card_fragments(
                 type0n = (nr["types"] or ["fact"])[0]
                 anchor_label_n = nr["anchor_class"] or type0n
                 ntext = f"[card:{anchor_label_n}] {nr['title']} — {nr['summary']}"
+                neighbor_sim = float(base_score) * 0.5
                 out.append(
                     {
                         "id": f"card:{nid}",
@@ -167,8 +147,8 @@ async def fetch_card_fragments(
                         "snippet": ntext,
                         "ts": nr["updated_at"].timestamp() if nr["updated_at"] else None,
                         "tags": ["memory_card", "neighbor", f"edge:{nr['edge_type']}"],
-                        "score": min(1.0, (base_score * 0.5) / 8.0),
-                        "meta": {"card_id": nid, "neighbor_of": cid_str},
+                        "score": min(1.0, neighbor_sim),
+                        "meta": {"card_id": nid, "neighbor_of": cid_str, "similarity": neighbor_sim},
                     }
                 )
                 n_added += 1

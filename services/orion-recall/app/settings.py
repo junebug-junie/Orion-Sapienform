@@ -169,8 +169,24 @@ class Settings(BaseSettings):
 
     # ── Memory cards (Postgres) ───────────────────────────────────────
     RECALL_ENABLE_CARDS: bool = Field(default=True, validation_alias=AliasChoices("RECALL_ENABLE_CARDS"))
-    RECALL_CARDS_TIMEOUT_SEC: float = Field(default=0.25, validation_alias=AliasChoices("RECALL_CARDS_TIMEOUT_SEC"))
+    RECALL_CARDS_TIMEOUT_SEC: float = Field(default=2.5, validation_alias=AliasChoices("RECALL_CARDS_TIMEOUT_SEC"))
     RECALL_CARDS_MAX_NEIGHBORS: int = Field(default=6, validation_alias=AliasChoices("RECALL_CARDS_MAX_NEIGHBORS"))
+    RECALL_CARDS_EMBEDDING_URL: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("RECALL_CARDS_EMBEDDING_URL"),
+    )
+    RECALL_CARDS_EMBED_TIMEOUT_SEC: float = Field(
+        default=5.0,
+        validation_alias=AliasChoices("RECALL_CARDS_EMBED_TIMEOUT_SEC"),
+    )
+    RECALL_CARDS_MIN_SIMILARITY: float = Field(
+        default=0.32,
+        validation_alias=AliasChoices("RECALL_CARDS_MIN_SIMILARITY"),
+    )
+    RECALL_CARDS_EMBED_CONCURRENCY: int = Field(
+        default=4,
+        validation_alias=AliasChoices("RECALL_CARDS_EMBED_CONCURRENCY"),
+    )
     RECALL_INTENT_ROUTING_ENABLED: bool = Field(default=True, validation_alias=AliasChoices("RECALL_INTENT_ROUTING_ENABLED"))
     RECALL_VECTOR_EXCLUDE_COLLECTIONS: str = Field(
         default="",
@@ -233,6 +249,7 @@ class Settings(BaseSettings):
         "RECALL_VECTOR_BASE_URL",
         "RECALL_VECTOR_COLLECTIONS",
         "RECALL_VECTOR_EMBEDDING_URL",
+        "RECALL_CARDS_EMBEDDING_URL",
         "RECALL_RDF_ENDPOINT_URL",
         "RECALL_RDF_QUERY_URL",
         mode="before",
@@ -275,6 +292,9 @@ class Settings(BaseSettings):
             elif (os.getenv("GRAPH_BACKEND") or "").strip().lower() == "graphdb" and (self.GRAPHDB_URL or "").strip():
                 base = self.GRAPHDB_URL.rstrip("/")
                 self.RECALL_RDF_ENDPOINT_URL = f"{base}/repositories/{self.GRAPHDB_REPO}"
+
+        if not self.RECALL_CARDS_EMBEDDING_URL and self.RECALL_VECTOR_EMBEDDING_URL:
+            self.RECALL_CARDS_EMBEDDING_URL = str(self.RECALL_VECTOR_EMBEDDING_URL).strip()
 
         return self
 

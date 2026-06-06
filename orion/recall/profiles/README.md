@@ -38,7 +38,7 @@ cards_top_k: 6
 ```
 Higher = more recall surface, slower, higher noise.
 
-`cards_top_k` gates the operator-curated **memory cards** Postgres rail (requires `RECALL_ENABLE_CARDS=true` on orion-recall). Only `active` cards are scored via lexical token overlap.
+`cards_top_k` gates the operator-curated **memory cards** Postgres rail (requires `RECALL_ENABLE_CARDS=true` on orion-recall). Only `active` cards are scored via vector-host embeddings + cosine similarity (cached in card subschema).
 
 ### 2. Backend Enable/Disable
 ```

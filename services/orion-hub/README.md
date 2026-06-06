@@ -412,7 +412,7 @@ Then open the Hub Memory tab → **Review queue**, or `GET /api/memory/cards?sta
 
 **Review queue metadata:** Opening a card exposes editable confidence, sensitivity, visibility scope, priority, provenance, evidence, still-true lines, and time horizon. **Save metadata** calls `PATCH /api/memory/cards/{id}`; **Approve** saves then sets `status=active`. Cards with `priority=always_inject` and `status=active` are injected by cortex-orch on every chat turn (requires `RECALL_PG_DSN` on cortex-orch).
 
-**Recall cards rail:** Set `RECALL_ENABLE_CARDS=true` on orion-recall (see `services/orion-recall/.env_example`). Use a profile with `cards_top_k` and `backend_weights.cards` — e.g. `biographical.v1`, `self.factual.v1`, or the chat dropdown options added in Hub. Only **`active`** cards participate in recall scoring (lexical token overlap, not LLM).
+**Recall cards rail:** Set `RECALL_ENABLE_CARDS=true` on orion-recall (see `services/orion-recall/.env_example`). Use a profile with `cards_top_k` and `backend_weights.cards` — e.g. `biographical.v1`, `self.factual.v1`, or the chat dropdown options added in Hub. Only **`active`** cards participate; scoring uses vector-host cosine similarity (embeddings cached in `subschema.recall_embedding`).
 
 **Memory graph approve → Fuseki:** When `RDF_STORE_GRAPH_STORE_URL` and `RDF_STORE_UPDATE_URL` are set (`MEMORY_GRAPH_APPROVAL_BACKEND=auto`, default), approve writes RDF to Fuseki then projects Postgres `memory_cards` rows. Legacy GraphDB is used only when `MEMORY_GRAPH_APPROVAL_BACKEND=graphdb`.
 

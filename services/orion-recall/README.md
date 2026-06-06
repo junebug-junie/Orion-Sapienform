@@ -102,10 +102,14 @@ Provenance: `.env_example` → `docker-compose.yml` → `services/orion-recall/a
 | Variable | Default | Notes |
 | :--- | :--- | :--- |
 | `RECALL_ENABLE_CARDS` | `true` | When `true` and `RECALL_PG_DSN` is set, recall scores `memory_cards` rows as `source=cards`. |
-| `RECALL_CARDS_TIMEOUT_SEC` | `0.25` | Per-query cards fetch budget. |
+| `RECALL_CARDS_TIMEOUT_SEC` | `2.5` | Per-query cards rail budget (embedding + Postgres). |
 | `RECALL_CARDS_MAX_NEIGHBORS` | `6` | 1-hop graph neighbor fan-out cap. |
+| `RECALL_CARDS_EMBEDDING_URL` | derived | Defaults to `RECALL_VECTOR_EMBEDDING_URL` or `http://orion-athena-vector-host:8320/embedding`. |
+| `RECALL_CARDS_EMBED_TIMEOUT_SEC` | `5.0` | HTTP timeout per embed call to vector-host. |
+| `RECALL_CARDS_MIN_SIMILARITY` | `0.32` | Minimum cosine similarity vs query embedding. |
+| `RECALL_CARDS_EMBED_CONCURRENCY` | `4` | Parallel embed requests when warming card caches. |
 
-Profile knobs: `cards_top_k` (fetch cap) and `backend_weights.cards` (fusion weight). Scoring is **lexical token overlap** (regex tokenizer, not LLM). Only **`status=active`** cards are admitted.
+Profile knobs: `cards_top_k` (fetch cap), `backend_weights.cards` (fusion weight), and optional `cards_min_similarity` (cosine threshold, default from `RECALL_CARDS_MIN_SIMILARITY`). Scoring uses **vector-host embeddings + cosine similarity** (cached in `subschema.recall_embedding`), not lexical regex overlap. Only **`status=active`** cards are admitted.
 
 To preserve pre-2026-06 behavior on an existing install, set `RECALL_ENABLE_CARDS=false` in orion-recall `.env`.
 

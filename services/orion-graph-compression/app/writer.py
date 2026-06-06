@@ -20,14 +20,13 @@ logger = logging.getLogger("orion.graph-compression.writer")
 _COMPRESSIONS_GRAPH_URI = "http://conjourney.net/graph/orion/compressions"
 _ORN_NS = "http://orion.conjourney.net/ns/compression#"
 
-# The substrate mutation contract (MutationPressureEvidenceV1) enumerates
-# pressure_category via MutationPressureCategoryV1, which has no
-# contradiction-specific value. The closest valid enum for a contradiction
-# surfaced from compressed memory is "unsupported_memory_claim"; we validate
-# against that to keep the rest of the payload schema-correct, then surface the
-# contradiction nature explicitly in the emitted category for the grammar hook.
-_VALID_PRESSURE_CATEGORY = "unsupported_memory_claim"
-_CONTRADICTION_PRESSURE_CATEGORY = "memory_contradiction"
+# MutationPressureEvidenceV1.pressure_category is a strict MutationPressureCategoryV1
+# enum with extra="forbid"; it has no contradiction-specific member. The semantically
+# correct enum for a contradiction surfaced from compressed memory is
+# "unsupported_memory_claim". We emit that valid value so strict downstream substrate
+# consumers accept the payload, and carry the contradiction provenance in metadata
+# (which permits free-form keys).
+_CONTRADICTION_PRESSURE_CATEGORY = "unsupported_memory_claim"
 
 
 class CompressionWriter:
@@ -143,16 +142,15 @@ class CompressionWriter:
         pressure = MutationPressureEvidenceV1(
             source_service=self._service_name,
             source_event_id=region.region_id,
-            pressure_category=_VALID_PRESSURE_CATEGORY,
+            pressure_category=_CONTRADICTION_PRESSURE_CATEGORY,
             confidence=region.salience,
             evidence_refs=[region.region_id] + region.derived_from[:4],
+            metadata={
+                "compression_kind": region.kind,
+                "compression_scope": region.scope,
+            },
         )
         payload = pressure.model_dump(mode="json")
-        payload["pressure_category"] = _CONTRADICTION_PRESSURE_CATEGORY
-        metadata = dict(payload.get("metadata") or {})
-        metadata["schema_pressure_category"] = _VALID_PRESSURE_CATEGORY
-        metadata["compression_kind"] = region.kind
-        payload["metadata"] = metadata
 
         await self._bus.publish(
             self._channel_pressure,

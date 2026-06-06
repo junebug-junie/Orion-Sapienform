@@ -54,7 +54,13 @@ def test_contradiction_region_emits_mutation_pressure():
     envelope = call_args[0][1]
     pressure = envelope.payload
     assert pressure.get("source_service") == "orion-graph-compression"
-    assert "contradiction" in str(pressure.get("pressure_category", ""))
+    # pressure_category must be a schema-valid MutationPressureCategoryV1 member so
+    # strict downstream substrate consumers accept it; the contradiction provenance
+    # is carried in metadata (the enum has no contradiction-specific member).
+    from orion.core.schemas.substrate_mutation import MutationPressureEvidenceV1
+    MutationPressureEvidenceV1.model_validate(pressure)
+    assert pressure.get("pressure_category") == "unsupported_memory_claim"
+    assert pressure.get("metadata", {}).get("compression_kind") == "contradiction"
 
 
 def test_non_contradiction_region_does_not_emit_pressure():

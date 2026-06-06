@@ -35,6 +35,10 @@ class CompressionWorker:
         self._bus = bus
         self._stop = asyncio.Event()
         self._policy = self._load_policy()
+        # Captured in start() so the sync _tick thread can schedule async bus
+        # emits back onto the running event loop. None outside the running app
+        # (e.g. unit tests calling _tick directly), in which case emits are skipped.
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def _load_policy(self) -> dict[str, Any]:
         try:
@@ -44,6 +48,7 @@ class CompressionWorker:
             return {"clustering": {"resolution": 1.0, "n_iterations": 10, "min_community_size": 3, "max_communities_per_scope": 20}}
 
     async def start(self) -> None:
+        self._loop = asyncio.get_running_loop()
         asyncio.create_task(self._poll_loop(), name="graph-compression-poll")
 
     async def stop(self) -> None:
@@ -174,7 +179,22 @@ class CompressionWorker:
                 generated_at=region.generated_at,
                 stale=not write_ok,
             )
+            if write_ok:
+                self._emit_events(writer, region)
             logger.info(
                 "region_written region_id=%s scope=%s kind=%s nodes=%d fuseki_ok=%s",
                 region.region_id, scope, kind, len(community), write_ok,
             )
+
+    def _emit_events(self, writer: "CompressionWriter", region: Any) -> None:
+        """Bridge the async post-write bus emit from the sync tick thread to the
+        event loop. No-op when there is no bus or no running loop (unit tests)."""
+        if self._bus is None or self._loop is None:
+            return
+        try:
+            fut = asyncio.run_coroutine_threadsafe(
+                writer.emit_post_write(region), self._loop
+            )
+            fut.result(timeout=float(self._settings.rdf_store_timeout_sec) + 5.0)
+        except Exception:
+            logger.warning("compression_emit_events_failed region_id=%s", region.region_id)

@@ -1,0 +1,11 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+pydantic>=2.6.0
+pydantic-settings>=2.2.0
+httpx>=0.27.0
+networkx>=3.2.0
+leidenalg>=0.10.2
+igraph>=0.11.4
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.9
+pyyaml>=6.0.1

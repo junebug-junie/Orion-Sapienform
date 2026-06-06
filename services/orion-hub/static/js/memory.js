@@ -116,7 +116,7 @@
     const row = document.createElement("div");
     row.className = "flex justify-between gap-2 border border-gray-800 rounded px-2 py-1 bg-gray-900/60";
     row.innerHTML = `<div><div class="font-medium text-gray-100">${escapeHtml(card.title || "")}</div>
-      <div class="text-[10px] text-gray-500">${escapeHtml(card.slug || "")} · ${escapeHtml(card.status || "")}</div></div>`;
+      <div class="text-[10px] text-gray-500">${escapeHtml(card.slug || "")} · ${escapeHtml(card.status || "")} · ${escapeHtml(card.priority || "episodic_detail")}</div></div>`;
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "text-[10px] text-indigo-300 hover:text-indigo-200";
@@ -134,6 +134,192 @@
       .replace(/"/g, "&quot;");
   }
 
+  const MEMORY_CONFIDENCE = ["certain", "likely", "possible", "uncertain"];
+  const MEMORY_SENSITIVITY = ["public", "private", "intimate"];
+  const MEMORY_PRIORITY = ["always_inject", "high_recall", "episodic_detail", "archival"];
+  const MEMORY_PROVENANCE = ["operator_highlight", "operator_distiller", "auto_extractor", "imported"];
+  const MEMORY_VISIBILITY = ["chat", "social", "intimate", "all"];
+  const MEMORY_TIME_KIND = ["timeless", "era_bound", "current", "expiring"];
+
+  function selectField(label, id, options, value) {
+    const opts = options
+      .map((o) => `<option value="${escapeHtml(o)}"${o === value ? " selected" : ""}>${escapeHtml(o)}</option>`)
+      .join("");
+    return `<label class="block text-[10px] text-gray-500">${escapeHtml(label)}
+      <select data-field="${escapeHtml(id)}" class="mt-0.5 w-full bg-gray-900 border border-gray-700 rounded px-1 py-0.5 text-[11px] text-gray-200">${opts}</select></label>`;
+  }
+
+  function textField(label, id, value, placeholder) {
+    return `<label class="block text-[10px] text-gray-500">${escapeHtml(label)}
+      <input data-field="${escapeHtml(id)}" type="text" value="${escapeHtml(value || "")}" placeholder="${escapeHtml(placeholder || "")}"
+        class="mt-0.5 w-full bg-gray-900 border border-gray-700 rounded px-1 py-0.5 text-[11px] text-gray-200" /></label>`;
+  }
+
+  function textareaField(label, id, value, rows, placeholder) {
+    return `<label class="block text-[10px] text-gray-500">${escapeHtml(label)}
+      <textarea data-field="${escapeHtml(id)}" rows="${rows || 2}" placeholder="${escapeHtml(placeholder || "")}"
+        class="mt-0.5 w-full bg-gray-900 border border-gray-700 rounded px-1 py-0.5 text-[11px] text-gray-200 font-mono">${escapeHtml(value || "")}</textarea></label>`;
+  }
+
+  function visibilityField(scopes) {
+    const selected = new Set(Array.isArray(scopes) ? scopes : ["chat"]);
+    const chips = MEMORY_VISIBILITY.map(
+      (v) =>
+        `<label class="inline-flex items-center gap-1 mr-2 text-[10px] text-gray-300"><input type="checkbox" data-vis="${escapeHtml(v)}"${
+          selected.has(v) ? " checked" : ""
+        } /> ${escapeHtml(v)}</label>`
+    ).join("");
+    return `<div class="block text-[10px] text-gray-500">Visibility scope<div class="mt-1 flex flex-wrap gap-1">${chips}</div></div>`;
+  }
+
+  function timeHorizonFields(th) {
+    const obj = th && typeof th === "object" ? th : {};
+    return `<div class="grid grid-cols-2 gap-2 border border-gray-800 rounded p-2">
+      ${selectField("Time kind", "time_horizon.kind", MEMORY_TIME_KIND, obj.kind || "timeless")}
+      ${textField("Start", "time_horizon.start", obj.start || "", "YYYY-MM-DD")}
+      ${textField("End", "time_horizon.end", obj.end || "", "YYYY-MM-DD")}
+      ${textField("As of", "time_horizon.as_of", obj.as_of || "", "YYYY-MM-DD")}
+    </div>`;
+  }
+
+  function renderCardDetailShell(card, { showActions }) {
+    const stillTrue = Array.isArray(card.still_true) ? card.still_true.join("\n") : "";
+    const evidenceJson = JSON.stringify(Array.isArray(card.evidence) ? card.evidence : [], null, 2);
+    const actions = showActions
+      ? `<div class="flex flex-wrap gap-2 pt-1">
+          <button type="button" data-act="save" class="px-2 py-1 bg-indigo-800 rounded text-[10px]">Save metadata</button>
+          <button type="button" data-act="approve" class="px-2 py-1 bg-emerald-700 rounded text-[10px]">Approve</button>
+          <button type="button" data-act="reject" class="px-2 py-1 bg-red-800 rounded text-[10px]">Reject</button>
+        </div>`
+      : `<div class="flex flex-wrap gap-2 pt-1">
+          <button type="button" data-act="save" class="px-2 py-1 bg-indigo-800 rounded text-[10px]">Save metadata</button>
+        </div>`;
+    return `<div class="space-y-2" data-card-id="${escapeHtml(card.card_id)}">
+      <div class="font-semibold text-gray-100">${escapeHtml(card.title || "")}</div>
+      <div class="text-[10px] text-gray-500">${escapeHtml(card.slug || "")} · ${escapeHtml(card.status || "")} · ${escapeHtml(card.priority || "")}</div>
+      <div class="grid grid-cols-2 gap-2">
+        ${selectField("Confidence", "confidence", MEMORY_CONFIDENCE, card.confidence || "likely")}
+        ${selectField("Sensitivity", "sensitivity", MEMORY_SENSITIVITY, card.sensitivity || "private")}
+        ${selectField("Priority", "priority", MEMORY_PRIORITY, card.priority || "episodic_detail")}
+        ${selectField("Provenance", "provenance", MEMORY_PROVENANCE, card.provenance || "operator_highlight")}
+      </div>
+      ${visibilityField(card.visibility_scope)}
+      ${textareaField("Summary", "summary", card.summary || "", 3, "Card summary")}
+      ${textareaField("Still true (one per line)", "still_true", stillTrue, 2, "bullet facts that remain true")}
+      ${textareaField("Evidence (JSON array)", "evidence", evidenceJson, 4, '[{"source":"…","excerpt":"…"}]')}
+      <div class="text-[10px] text-gray-500">Time horizon</div>
+      ${timeHorizonFields(card.time_horizon)}
+      ${actions}
+    </div>`;
+  }
+
+  function readVisibilityScope(root) {
+    const out = [];
+    root.querySelectorAll("input[data-vis]").forEach((el) => {
+      if (el.checked) out.push(el.getAttribute("data-vis"));
+    });
+    return out.length ? out : ["chat"];
+  }
+
+  function readPatchPayload(root) {
+    const get = (name) => {
+      const el = root.querySelector(`[data-field="${name}"]`);
+      return el ? String(el.value || "").trim() : "";
+    };
+    let evidence = [];
+    const evidenceRaw = get("evidence");
+    if (evidenceRaw) {
+      try {
+        const parsed = JSON.parse(evidenceRaw);
+        if (Array.isArray(parsed)) evidence = parsed;
+      } catch (_) {
+        throw new Error("Evidence must be valid JSON array");
+      }
+    }
+    const stillLines = get("still_true")
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const thKind = get("time_horizon.kind") || "timeless";
+    const timeHorizon = {
+      kind: thKind,
+      start: get("time_horizon.start") || null,
+      end: get("time_horizon.end") || null,
+      as_of: get("time_horizon.as_of") || null,
+    };
+    return {
+      confidence: get("confidence") || undefined,
+      sensitivity: get("sensitivity") || undefined,
+      priority: get("priority") || undefined,
+      provenance: get("provenance") || undefined,
+      visibility_scope: readVisibilityScope(root),
+      summary: get("summary") || undefined,
+      still_true: stillLines.length ? stillLines : [],
+      evidence,
+      time_horizon: timeHorizon,
+    };
+  }
+
+  async function wireCardDetailPanel(detailEl, card, handlers) {
+    detailEl.classList.remove("hidden");
+    detailEl.innerHTML = renderCardDetailShell(card, { showActions: !!handlers.showReviewActions });
+    const root = detailEl.firstElementChild;
+    if (!root) return;
+
+    async function saveMetadata() {
+      const patch = readPatchPayload(root);
+      const updated = await apiFetch(`/api/memory/cards/${encodeURIComponent(card.card_id)}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      });
+      Object.assign(card, updated);
+      if (handlers.onSaved) await handlers.onSaved(updated);
+      return updated;
+    }
+
+    const saveBtn = root.querySelector('[data-act="save"]');
+    if (saveBtn) {
+      saveBtn.addEventListener("click", async () => {
+        try {
+          await saveMetadata();
+          if (handlers.statusEl) setStatus(handlers.statusEl, "Saved card metadata.", false);
+        } catch (e) {
+          if (handlers.statusEl) setStatus(handlers.statusEl, e.message || formatMemoryApiError(e), true);
+        }
+      });
+    }
+    const approveBtn = root.querySelector('[data-act="approve"]');
+    if (approveBtn) {
+      approveBtn.addEventListener("click", async () => {
+        try {
+          await saveMetadata();
+          await apiFetch(`/api/memory/cards/${encodeURIComponent(card.card_id)}/status`, {
+            method: "POST",
+            body: JSON.stringify({ status: "active" }),
+          });
+          if (handlers.onApprove) await handlers.onApprove();
+        } catch (e) {
+          if (handlers.statusEl) setStatus(handlers.statusEl, formatMemoryApiError(e), true);
+        }
+      });
+    }
+    const rejectBtn = root.querySelector('[data-act="reject"]');
+    if (rejectBtn) {
+      rejectBtn.addEventListener("click", async () => {
+        try {
+          await apiFetch(`/api/memory/cards/${encodeURIComponent(card.card_id)}/status`, {
+            method: "POST",
+            body: JSON.stringify({ status: "rejected" }),
+          });
+          if (handlers.onReject) await handlers.onReject();
+        } catch (e) {
+          if (handlers.statusEl) setStatus(handlers.statusEl, formatMemoryApiError(e), true);
+        }
+      });
+    }
+    if (handlers.cyHost) await loadNeighborhood(card.card_id, handlers.cyHost);
+  }
+
   async function loadReview(reviewPanel, statusEl, detailEl, cyHost) {
     reviewPanel.innerHTML = "";
     setStatus(statusEl, "Loading review queue…", false);
@@ -146,28 +332,13 @@
       items.forEach((c) => {
         reviewPanel.appendChild(
           renderCardRow(c, async (card) => {
-            detailEl.classList.remove("hidden");
-            detailEl.innerHTML = `<div class="space-y-2"><div class="font-semibold">${escapeHtml(card.title)}</div>
-              <pre class="whitespace-pre-wrap text-[10px]">${escapeHtml(JSON.stringify(card, null, 2))}</pre>
-              <div class="flex gap-2"><button type="button" data-act="approve" class="px-2 py-1 bg-emerald-700 rounded text-[10px]">Approve</button>
-              <button type="button" data-act="reject" class="px-2 py-1 bg-red-800 rounded text-[10px]">Reject</button></div></div>`;
-            const approve = detailEl.querySelector('[data-act="approve"]');
-            const reject = detailEl.querySelector('[data-act="reject"]');
-            approve.addEventListener("click", async () => {
-              await apiFetch(`/api/memory/cards/${encodeURIComponent(card.card_id)}/status`, {
-                method: "POST",
-                body: JSON.stringify({ status: "active" }),
-              });
-              loadReview(reviewPanel, statusEl, detailEl, cyHost);
+            await wireCardDetailPanel(detailEl, card, {
+              showReviewActions: true,
+              statusEl,
+              cyHost,
+              onApprove: () => loadReview(reviewPanel, statusEl, detailEl, cyHost),
+              onReject: () => loadReview(reviewPanel, statusEl, detailEl, cyHost),
             });
-            reject.addEventListener("click", async () => {
-              await apiFetch(`/api/memory/cards/${encodeURIComponent(card.card_id)}/status`, {
-                method: "POST",
-                body: JSON.stringify({ status: "rejected" }),
-              });
-              loadReview(reviewPanel, statusEl, detailEl, cyHost);
-            });
-            await loadNeighborhood(card.card_id, cyHost);
           })
         );
       });
@@ -201,9 +372,11 @@
         const data = await apiFetch(`/api/memory/cards?${qs.toString()}`);
         const items = data.items || [];
         items.forEach((c) => list.appendChild(renderCardRow(c, async (card) => {
-          detailEl.classList.remove("hidden");
-          detailEl.innerHTML = `<pre class="whitespace-pre-wrap text-[10px]">${escapeHtml(JSON.stringify(card, null, 2))}</pre>`;
-          await loadNeighborhood(card.card_id, cyHost);
+          await wireCardDetailPanel(detailEl, card, {
+            showReviewActions: false,
+            statusEl,
+            cyHost,
+          });
         })));
         setStatus(statusEl, `${items.length} card(s)`, false);
       } catch (e) {

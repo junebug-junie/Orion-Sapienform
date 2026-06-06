@@ -24,6 +24,7 @@ sql_top_k: 16
 max_per_source: 4
 max_total_items: 16
 render_budget_tokens: 320
+cards_top_k: 6
 time_decay_half_life_hours: 72
 
 relevance:

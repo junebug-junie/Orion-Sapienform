@@ -97,6 +97,18 @@ Provenance: `.env_example` → `docker-compose.yml` → `services/orion-recall/a
 | `RECALL_ENABLE_SQL_TIMELINE` | `true` | profile can enable/disable |
 | `RECALL_SQL_TIMELINE_TABLE` | `collapse_mirror` | timeline source |
 
+### Memory cards (Postgres, operator-curated)
+
+| Variable | Default | Notes |
+| :--- | :--- | :--- |
+| `RECALL_ENABLE_CARDS` | `true` | When `true` and `RECALL_PG_DSN` is set, recall scores `memory_cards` rows as `source=cards`. |
+| `RECALL_CARDS_TIMEOUT_SEC` | `0.25` | Per-query cards fetch budget. |
+| `RECALL_CARDS_MAX_NEIGHBORS` | `6` | 1-hop graph neighbor fan-out cap. |
+
+Profile knobs: `cards_top_k` (fetch cap) and `backend_weights.cards` (fusion weight). Scoring is **lexical token overlap** (regex tokenizer, not LLM). Only **`status=active`** cards are admitted.
+
+Cards-primary profiles: `biographical.v1`, `self.factual.v1`. All shipped YAML profiles now declare `cards_top_k` + `cards` weight for supplemental curated facts.
+
 ---
 
 ## 3) Recall Profiles (what changes when you switch profile)
@@ -107,7 +119,7 @@ Profiles live here:
 
 They control:
 
-- how many items to request per backend (`vector_top_k`, `rdf_top_k`, `sql_top_k`)
+- how many items to request per backend (`vector_top_k`, `rdf_top_k`, `sql_top_k`, `cards_top_k`)
 - caps (`max_per_source`, `max_total_items`)
 - render budget (`render_budget_tokens`)
 - SQL timeline time windows (`sql_since_minutes`)

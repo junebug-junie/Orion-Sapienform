@@ -168,7 +168,7 @@ class Settings(BaseSettings):
     )
 
     # ── Memory cards (Postgres) ───────────────────────────────────────
-    RECALL_ENABLE_CARDS: bool = Field(default=False, validation_alias=AliasChoices("RECALL_ENABLE_CARDS"))
+    RECALL_ENABLE_CARDS: bool = Field(default=True, validation_alias=AliasChoices("RECALL_ENABLE_CARDS"))
     RECALL_CARDS_TIMEOUT_SEC: float = Field(default=0.25, validation_alias=AliasChoices("RECALL_CARDS_TIMEOUT_SEC"))
     RECALL_CARDS_MAX_NEIGHBORS: int = Field(default=6, validation_alias=AliasChoices("RECALL_CARDS_MAX_NEIGHBORS"))
     RECALL_INTENT_ROUTING_ENABLED: bool = Field(default=True, validation_alias=AliasChoices("RECALL_INTENT_ROUTING_ENABLED"))

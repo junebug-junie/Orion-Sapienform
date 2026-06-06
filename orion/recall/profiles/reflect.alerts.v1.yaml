@@ -4,6 +4,7 @@ enable_vector: false
 vector_top_k: 0
 rdf_top_k: 6
 sql_top_k: 250
+cards_top_k: 4
 sql_since_minutes: 10080
 
 relevance:
@@ -12,6 +13,7 @@ relevance:
     sql_timeline: 1.0
     sql_chat: 0.8
     rdf_chat: 0.6
+    cards: 0.35
   enable_sql_timeline: true
   enable_recency: true
   recency_half_life_hours: 48

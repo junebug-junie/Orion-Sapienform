@@ -53,9 +53,8 @@ async def fetch_card_fragments(
             SELECT card_id, slug, types, anchor_class, status, title, summary, tags, anchors,
                    visibility_scope, evidence, updated_at
             FROM memory_cards
-            WHERE NOT (status = ANY($1::text[]))
+            WHERE status = 'active'
             """,
-            list(_EXCLUDED_STATUS),
         )
 
     scored: List[tuple[float, asyncpg.Record]] = []

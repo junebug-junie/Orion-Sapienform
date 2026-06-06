@@ -34,8 +34,11 @@ Controls fan-in quantity before scoring & fusion:
 vector_top_k: 12
 rdf_top_k: 8
 sql_top_k: 200
+cards_top_k: 6
 ```
 Higher = more recall surface, slower, higher noise.
+
+`cards_top_k` gates the operator-curated **memory cards** Postgres rail (requires `RECALL_ENABLE_CARDS=true` on orion-recall). Only `active` cards are scored via vector-host embeddings + cosine similarity (cached in card subschema).
 
 ### 2. Backend Enable/Disable
 ```
@@ -69,8 +72,9 @@ backend_weights:
   sql_chat: 0.6
   rdf_chat: 0.55
   rdf:  0.4
+  cards: 0.45
 ```
-Weights define **what kinds of memory matter for this cognitive mode**.
+Weights define **what kinds of memory matter for this cognitive mode**. Set `cards` > 0 when the profile should admit operator-curated memory cards (with `cards_top_k` > 0).
 
 ### 7. Scoring Mix
 ```yaml

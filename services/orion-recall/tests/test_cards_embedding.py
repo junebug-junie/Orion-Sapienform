@@ -39,6 +39,13 @@ def test_cards_adapter_uses_embedding_scorer_not_regex_tokens() -> None:
     assert "cards_embedding" in text
 
 
-def test_cards_embedding_module_present() -> None:
-    repo = Path(__file__).resolve().parents[1]
-    assert (repo / "app" / "cards_embedding.py").is_file()
+def test_parse_subschema_parses_json_string() -> None:
+    from app.cards_embedding import parse_subschema
+
+    assert parse_subschema('{"memory_graph": {"x": 1}}') == {"memory_graph": {"x": 1}}
+
+
+def test_parse_subschema_empty_on_invalid() -> None:
+    from app.cards_embedding import parse_subschema
+
+    assert parse_subschema("not-json") == {}

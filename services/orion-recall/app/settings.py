@@ -169,7 +169,7 @@ class Settings(BaseSettings):
 
     # ── Memory cards (Postgres) ───────────────────────────────────────
     RECALL_ENABLE_CARDS: bool = Field(default=True, validation_alias=AliasChoices("RECALL_ENABLE_CARDS"))
-    RECALL_CARDS_TIMEOUT_SEC: float = Field(default=2.5, validation_alias=AliasChoices("RECALL_CARDS_TIMEOUT_SEC"))
+    RECALL_CARDS_TIMEOUT_SEC: float = Field(default=8.0, validation_alias=AliasChoices("RECALL_CARDS_TIMEOUT_SEC"))
     RECALL_CARDS_MAX_NEIGHBORS: int = Field(default=6, validation_alias=AliasChoices("RECALL_CARDS_MAX_NEIGHBORS"))
     RECALL_CARDS_EMBEDDING_URL: Optional[str] = Field(
         default=None,

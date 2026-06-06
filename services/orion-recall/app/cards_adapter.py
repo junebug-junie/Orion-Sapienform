@@ -64,7 +64,7 @@ async def fetch_card_fragments(
     visible = [
         row
         for row in rows
-        if visibility_allows_card(list(row["visibility_scope"] or []), lane)
+        if visibility_allows_card(lane=lane, visibility_scope=list(row["visibility_scope"] or []))
     ]
 
     scored = await score_cards_by_embedding(
@@ -128,7 +128,7 @@ async def fetch_card_fragments(
                 if not _neighbor_confidence_ok(meta):
                     continue
                 scopes = list(nr["visibility_scope"] or [])
-                if not visibility_allows_card(scopes, lane):
+                if not visibility_allows_card(lane=lane, visibility_scope=scopes):
                     continue
                 nid = str(nr["card_id"])
                 if nid in seen_ids:

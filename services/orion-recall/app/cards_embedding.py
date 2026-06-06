@@ -82,17 +82,20 @@ def cosine_similarity(a: List[float], b: List[float]) -> float:
     return dot / (math.sqrt(na) * math.sqrt(nb))
 
 
-def read_cached_embedding(subschema_raw: Any, *, text_fp: str) -> Optional[List[float]]:
-    sub: Dict[str, Any]
+def parse_subschema(subschema_raw: Any) -> Dict[str, Any]:
     if isinstance(subschema_raw, str):
         try:
-            sub = json.loads(subschema_raw)
+            parsed = json.loads(subschema_raw)
+            return dict(parsed) if isinstance(parsed, dict) else {}
         except Exception:
-            return None
-    elif isinstance(subschema_raw, dict):
-        sub = subschema_raw
-    else:
-        return None
+            return {}
+    if isinstance(subschema_raw, dict):
+        return dict(subschema_raw)
+    return {}
+
+
+def read_cached_embedding(subschema_raw: Any, *, text_fp: str) -> Optional[List[float]]:
+    sub = parse_subschema(subschema_raw)
     block = sub.get(_EMBED_SUBKEY)
     if not isinstance(block, dict):
         return None
@@ -133,25 +136,32 @@ async def embed_texts(
     url: Optional[str] = None,
     timeout_sec: float = 5.0,
     max_concurrency: int = 4,
-) -> Dict[str, List[float]]:
-    """Embed unique non-empty texts; returns mapping text -> vector."""
+) -> Tuple[Dict[str, List[float]], Optional[str], Optional[int]]:
+    """Embed unique non-empty texts; returns (text -> vector, model, dim)."""
     endpoint = (url or resolve_cards_embedding_url() or "").strip()
     unique = [t for t in dict.fromkeys(t.strip() for t in texts if (t or "").strip())]
     if not endpoint or not unique:
-        return {}
+        return {}, None, None
     out: Dict[str, List[float]] = {}
+    model_name: Optional[str] = None
+    dim: Optional[int] = None
     sem = asyncio.Semaphore(max(1, int(max_concurrency)))
     timeout = httpx.Timeout(timeout_sec)
 
     async with httpx.AsyncClient(timeout=timeout) as client:
 
         async def _one(text: str) -> None:
+            nonlocal model_name, dim
             async with sem:
-                vec, _, _ = await _embed_one(client, url=endpoint, text=text)
+                vec, model, d = await _embed_one(client, url=endpoint, text=text)
                 out[text] = vec
+                if model_name is None and model:
+                    model_name = model
+                if dim is None and d:
+                    dim = d
 
         await asyncio.gather(*(_one(t) for t in unique))
-    return out
+    return out, model_name, dim
 
 
 async def persist_card_embeddings(
@@ -204,33 +214,21 @@ async def score_cards_by_embedding(
     card_texts: Dict[str, str] = {}
     cached: Dict[str, List[float]] = {}
     pending_texts: List[str] = []
-    pending_meta: List[Tuple[str, str, asyncpg.Record, Dict[str, Any], str]] = []
 
     for row in rows:
         text = card_recall_text(row)
         fp = text_fingerprint(text)
         cid = str(row["card_id"])
         card_texts[cid] = text
-        sub_raw = row["subschema"] if "subschema" in row.keys() else {}
-        sub: Dict[str, Any]
-        if isinstance(sub_raw, str):
-            try:
-                sub = json.loads(sub_raw)
-            except Exception:
-                sub = {}
-        elif isinstance(sub_raw, dict):
-            sub = dict(sub_raw)
-        else:
-            sub = {}
+        sub = parse_subschema(row["subschema"] if "subschema" in row.keys() else {})
         hit = read_cached_embedding(sub, text_fp=fp)
         if hit:
             cached[cid] = hit
         else:
             pending_texts.append(text)
-            pending_meta.append((cid, text, row, sub, fp))
 
     try:
-        q_vecs = await embed_texts([q], url=endpoint, timeout_sec=timeout, max_concurrency=concurrency)
+        q_vecs, _, _ = await embed_texts([q], url=endpoint, timeout_sec=timeout, max_concurrency=concurrency)
     except Exception as exc:
         logger.warning("cards query embed failed: %s", exc)
         return []
@@ -239,9 +237,11 @@ async def score_cards_by_embedding(
         return []
 
     new_vectors: Dict[str, List[float]] = {}
+    embed_model: Optional[str] = None
+    embed_dim: Optional[int] = None
     if pending_texts:
         try:
-            new_vectors = await embed_texts(
+            new_vectors, embed_model, embed_dim = await embed_texts(
                 pending_texts, url=endpoint, timeout_sec=timeout, max_concurrency=concurrency
             )
         except Exception as exc:
@@ -261,9 +261,10 @@ async def score_cards_by_embedding(
             continue
         scored.append((sim, row))
         if cid not in cached and text in new_vectors:
-            sub_raw = row["subschema"] if "subschema" in row.keys() else {}
-            sub = dict(sub_raw) if isinstance(sub_raw, dict) else {}
-            persist_batch.append((row["card_id"], sub, vec, text_fingerprint(text), None, len(vec), text))
+            sub = parse_subschema(row["subschema"] if "subschema" in row.keys() else {})
+            persist_batch.append(
+                (row["card_id"], sub, new_vectors[text], text_fingerprint(text), embed_model, embed_dim, text)
+            )
 
     if persist_batch:
         try:

@@ -1,0 +1,43 @@
+services:
+  graph-compression:
+    build:
+      context: ../..
+      dockerfile: services/orion-graph-compression/Dockerfile
+    container_name: ${PROJECT}-graph-compression
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      - "${GRAPH_COMPRESSION_PORT:-8270}:8270"
+    env_file:
+      - .env
+    environment:
+      - PROJECT=${PROJECT}
+      - SERVICE_NAME=${SERVICE_NAME:-orion-graph-compression}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - NODE_NAME=${NODE_NAME}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED:-true}
+      - ORION_HEALTH_CHANNEL=${ORION_HEALTH_CHANNEL:-orion:system:health}
+      - HEARTBEAT_INTERVAL_SEC=${HEARTBEAT_INTERVAL_SEC:-30}
+      - POSTGRES_URI=${POSTGRES_URI}
+      - RDF_STORE_QUERY_URL=${RDF_STORE_QUERY_URL}
+      - RDF_STORE_UPDATE_URL=${RDF_STORE_UPDATE_URL}
+      - RDF_STORE_USER=${RDF_STORE_USER:-admin}
+      - RDF_STORE_PASS=${RDF_STORE_PASS:-orion}
+      - RDF_STORE_TIMEOUT_SEC=${RDF_STORE_TIMEOUT_SEC:-10.0}
+      - LLM_GATEWAY_BUS_CHANNEL=${LLM_GATEWAY_BUS_CHANNEL}
+      - COMPRESSION_POLL_INTERVAL_SEC=${COMPRESSION_POLL_INTERVAL_SEC:-300}
+      - COMPRESSION_BATCH_SIZE=${COMPRESSION_BATCH_SIZE:-10}
+      - COMPRESSION_MAX_TOKENS_PER_SUMMARY=${COMPRESSION_MAX_TOKENS_PER_SUMMARY:-200}
+      - COMPRESSION_LLM_BUDGET_PER_TICK=${COMPRESSION_LLM_BUDGET_PER_TICK:-5000}
+      - COMPRESSION_MAX_AGE_SEC=${COMPRESSION_MAX_AGE_SEC:-86400}
+      - ENABLE_COMPRESSION_RUNTIME=${ENABLE_COMPRESSION_RUNTIME:-true}
+      - CHANNEL_RDF_ENQUEUE=${CHANNEL_RDF_ENQUEUE:-orion:rdf:enqueue}
+      - CHANNEL_GRAPH_COMPRESSION_STALE=${CHANNEL_GRAPH_COMPRESSION_STALE:-orion:graph:compression:stale}
+      - CHANNEL_GRAPH_COMPRESSION_EVENTS=${CHANNEL_GRAPH_COMPRESSION_EVENTS:-orion:graph:compression:events}
+      - COMPRESSION_POLICY_PATH=${COMPRESSION_POLICY_PATH:-/app/config/compression_policy.v1.yaml}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+networks:
+  app-net:
+    external: true

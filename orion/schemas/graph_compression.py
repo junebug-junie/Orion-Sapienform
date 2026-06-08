@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CompressionRegionV1(BaseModel):
@@ -16,8 +16,8 @@ class CompressionRegionV1(BaseModel):
     summary_kind: Literal["llm", "structural"]
     salience: float
     trust_tier: str
-    exemplar_ids: list[str]
-    derived_from: list[str]
+    exemplar_ids: Annotated[list[str], Field(min_length=1)]
+    derived_from: Annotated[list[str], Field(min_length=1)]
     generated_at: datetime
     compression_version: str
     stale: bool = False

@@ -47,21 +47,20 @@ def test_contradiction_region_emits_mutation_pressure():
 
     asyncio.run(run())
 
-    mock_bus.publish.assert_called()
-    # Find the call to the pressure channel
-    pressure_call = None
-    for call in mock_bus.publish.call_args_list:
-        if call[0][0] == "orion:substrate:mutation:pressure":
-            pressure_call = call
-            break
-    assert pressure_call is not None, "No publish call to pressure channel"
-    channel = pressure_call[0][0]
+    mock_bus.publish.assert_called_once()
+    call_args = mock_bus.publish.call_args
+    channel = call_args[0][0]
     assert channel == "orion:substrate:mutation:pressure"
-    envelope = pressure_call[0][1]
+    envelope = call_args[0][1]
     pressure = envelope.payload
     assert pressure.get("source_service") == "orion-graph-compression"
+    # pressure_category must be a schema-valid MutationPressureCategoryV1 member so
+    # strict downstream substrate consumers accept it; the contradiction provenance
+    # is carried in metadata (the enum has no contradiction-specific member).
+    from orion.core.schemas.substrate_mutation import MutationPressureEvidenceV1
+    MutationPressureEvidenceV1.model_validate(pressure)
     assert pressure.get("pressure_category") == "unsupported_memory_claim"
-    assert "contradiction" in str(pressure.get("metadata", {}).get("compression_kind", ""))
+    assert pressure.get("metadata", {}).get("compression_kind") == "contradiction"
 
 
 def test_non_contradiction_region_does_not_emit_pressure():
@@ -86,7 +85,7 @@ def test_non_contradiction_region_does_not_emit_pressure():
     region = CompressionRegionV1(
         region_id="urn:orion:compression:region:community1",
         scope="episodic",
-        kind="community",
+        kind="community",  # not contradiction
         summary="Normal community.",
         summary_kind="structural",
         salience=0.5,
@@ -101,6 +100,4 @@ def test_non_contradiction_region_does_not_emit_pressure():
         await w._emit_grammar_hook(region)
 
     asyncio.run(run())
-    # Only the materialization event should be published, not the pressure channel
-    for call in mock_bus.publish.call_args_list:
-        assert call[0][0] != "orion:substrate:mutation:pressure", "Should not emit pressure for non-contradiction"
+    mock_bus.publish.assert_not_called()

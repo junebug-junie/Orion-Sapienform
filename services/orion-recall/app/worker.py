@@ -39,6 +39,10 @@ try:
     from .sql_timeline import fetch_recent_fragments, fetch_related_by_entities, fetch_exact_fragments
     from .sql_chat import fetch_chat_history_pairs, fetch_chat_messages
     from .cards_adapter import fetch_card_fragments_guarded
+    try:
+        from .storage.graph_compression_adapter import fetch_graph_compression_fragments
+    except ImportError:
+        fetch_graph_compression_fragments = None  # type: ignore
 
 except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
     _IMPORT_ERROR = _e
@@ -61,6 +65,10 @@ except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
         from app.sql_timeline import fetch_recent_fragments, fetch_related_by_entities, fetch_exact_fragments  # type: ignore
         from app.sql_chat import fetch_chat_history_pairs, fetch_chat_messages  # type: ignore
         from app.cards_adapter import fetch_card_fragments_guarded  # type: ignore
+        try:
+            from app.storage.graph_compression_adapter import fetch_graph_compression_fragments  # type: ignore
+        except ImportError:
+            fetch_graph_compression_fragments = None  # type: ignore
     except ImportError:
         # IMPORTANT: raise the real root cause, not the fallback failure
         raise _IMPORT_ERROR
@@ -863,6 +871,38 @@ async def _query_backends(
                 logger.warning("cards fetch skipped: %s", exc)
         elif diagnostic:
             logger.info("recall cards skipped pool_asyncpg_available=%s", pool is not None)
+
+    # ── Graph Compression backend ─────────────────────────────────────────────
+    compression_enabled = (
+        bool(profile.get("enable_graph_compression"))
+        and bool(getattr(settings, "RECALL_COMPRESSION_ENABLED", False))
+        and bool(getattr(settings, "RECALL_COMPRESSION_PG_DSN", None))
+        and fetch_graph_compression_fragments is not None
+    )
+    if compression_enabled:
+        try:
+            # Run the blocking Postgres + Fuseki I/O off the event loop so it does
+            # not stall the recall hot path (mirrors the memory_graph_sparql path).
+            compression_frags = await asyncio.to_thread(
+                fetch_graph_compression_fragments,
+                query_text=fragment,
+                mode=str(profile.get("compression_mode") or "unified"),
+                max_global=int(profile.get("compression_global_top_k") or 5),
+                max_local=int(profile.get("compression_local_top_k") or 5),
+                scopes=list(profile.get("compression_scopes") or ["episodic", "substrate", "self_study"]),
+                pg_dsn=settings.RECALL_COMPRESSION_PG_DSN,
+                rdf_query_url=getattr(settings, "RECALL_COMPRESSION_RDF_QUERY_URL", None),
+                rdf_user=getattr(settings, "RECALL_COMPRESSION_RDF_USER", "admin"),
+                rdf_pass=getattr(settings, "RECALL_COMPRESSION_RDF_PASS", "orion"),
+                timeout_sec=float(getattr(settings, "RECALL_COMPRESSION_TIMEOUT_SEC", 3.0)),
+            )
+            backend_counts["graph_compression"] = len(compression_frags)
+            candidates.extend(compression_frags)
+        except Exception as exc:
+            logger.debug("graph_compression_backend_skipped reason=%s", exc)
+            backend_counts["graph_compression"] = 0
+    else:
+        backend_counts["graph_compression"] = 0
 
     return candidates, backend_counts
 

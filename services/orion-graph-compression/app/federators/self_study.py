@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import List, Tuple
 
 import httpx
 
@@ -12,7 +13,7 @@ SELF_STUDY_GRAPHS = [
     "http://conjourney.net/graph/orion/self/reflective",
 ]
 
-Triple = tuple[str, str, str]
+Triple = Tuple[str, str, str]
 
 
 class SelfStudyFederator:
@@ -28,23 +29,20 @@ class SelfStudyFederator:
         self._auth = (user, password)
         self._timeout = timeout_sec
 
-    def fetch(self, *, max_nodes: int = 500) -> list[Triple]:
-        # Inner subquery uses ?p0 ?o0 to only bind ?s, avoiding AND semantics
-        inner_clauses = "\n  ".join(
-            f"GRAPH <{g}> {{ ?s ?p0 ?o0 }}" for g in SELF_STUDY_GRAPHS
-        )
-        outer_clauses = "\n  ".join(
-            f"GRAPH <{g}> {{ ?s ?p ?o }}" for g in SELF_STUDY_GRAPHS
+    def fetch(self, *, max_nodes: int = 500) -> List[Triple]:
+        # UNION across the self-study graphs (see EpisodicFederator for rationale).
+        union_block = "\n      UNION\n      ".join(
+            f"{{ GRAPH <{g}> {{ ?s ?p ?o }} }}" for g in SELF_STUDY_GRAPHS
         )
         query = f"""
 SELECT ?s ?p ?o WHERE {{
   {{
     SELECT DISTINCT ?s WHERE {{
-      {{ {inner_clauses} }}
+      {union_block}
     }}
     LIMIT {max_nodes}
   }}
-  {{ {outer_clauses} }}
+  {union_block}
 }}
 """
         try:
@@ -64,4 +62,5 @@ SELECT ?s ?p ?o WHERE {{
             (b["s"]["value"], b["p"]["value"], b["o"]["value"])
             for b in bindings
             if "s" in b and "p" in b and "o" in b
+            and b["o"].get("type") in ("uri", "bnode")
         ]

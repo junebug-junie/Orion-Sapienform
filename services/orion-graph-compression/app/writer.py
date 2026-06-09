@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from typing import TYPE_CHECKING, Any, Optional
 
 import httpx
@@ -18,6 +19,14 @@ logger = logging.getLogger("orion.graph-compression.writer")
 
 _COMPRESSIONS_GRAPH_URI = "http://conjourney.net/graph/orion/compressions"
 _ORN_NS = "http://orion.conjourney.net/ns/compression#"
+
+# MutationPressureEvidenceV1.pressure_category is a strict MutationPressureCategoryV1
+# enum with extra="forbid"; it has no contradiction-specific member. The semantically
+# correct enum for a contradiction surfaced from compressed memory is
+# "unsupported_memory_claim". We emit that valid value so strict downstream substrate
+# consumers accept the payload, and carry the contradiction provenance in metadata
+# (which permits free-form keys).
+_CONTRADICTION_PRESSURE_CATEGORY = "unsupported_memory_claim"
 
 
 class CompressionWriter:
@@ -44,7 +53,13 @@ class CompressionWriter:
         self._channel_pressure = channel_pressure
 
     def _escape_literal(self, value: str) -> str:
-        return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+        return (
+            value.replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+        )
 
     def _build_sparql_update(self, region: CompressionRegionV1) -> str:
         rid = region.region_id
@@ -94,8 +109,8 @@ class CompressionWriter:
             )
             return False
 
-    async def _emit_grammar_hook(self, region: CompressionRegionV1) -> None:
-        """Emit bus events after successful write."""
+    async def _emit_materialized(self, region: CompressionRegionV1) -> None:
+        """Emit a passive materialization event for any region kind."""
         if self._bus is None:
             return
 
@@ -120,22 +135,39 @@ class CompressionWriter:
             ),
         )
 
-        if region.kind == "contradiction":
-            from orion.core.schemas.substrate_mutation import MutationPressureEvidenceV1
+    async def _emit_grammar_hook(self, region: CompressionRegionV1) -> None:
+        """Emit substrate mutation pressure for contradiction regions only."""
+        if self._bus is None:
+            return
+        if region.kind != "contradiction":
+            return
 
-            pressure = MutationPressureEvidenceV1(
-                source_service=self._service_name,
-                source_event_id=region.region_id,
-                pressure_category="unsupported_memory_claim",
-                confidence=region.salience,
-                evidence_refs=[region.region_id] + region.derived_from[:4],
-                metadata={"compression_kind": "contradiction", "scope": region.scope},
-            )
-            await self._bus.publish(
-                self._channel_pressure,
-                BaseEnvelope(
-                    kind="substrate.mutation.pressure.v1",
-                    source=ServiceRef(name=self._service_name, version=self._service_version),
-                    payload=pressure.model_dump(mode="json"),
-                ),
-            )
+        from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+        from orion.core.schemas.substrate_mutation import MutationPressureEvidenceV1
+
+        pressure = MutationPressureEvidenceV1(
+            source_service=self._service_name,
+            source_event_id=region.region_id,
+            pressure_category=_CONTRADICTION_PRESSURE_CATEGORY,
+            confidence=region.salience,
+            evidence_refs=[region.region_id] + region.derived_from[:4],
+            metadata={
+                "compression_kind": region.kind,
+                "compression_scope": region.scope,
+            },
+        )
+        payload = pressure.model_dump(mode="json")
+
+        await self._bus.publish(
+            self._channel_pressure,
+            BaseEnvelope(
+                kind="substrate.mutation.pressure.v1",
+                source=ServiceRef(name=self._service_name, version=self._service_version),
+                payload=payload,
+            ),
+        )
+
+    async def emit_post_write(self, region: CompressionRegionV1) -> None:
+        """Emit all post-write bus events: materialization + grammar hook."""
+        await self._emit_materialized(region)
+        await self._emit_grammar_hook(region)

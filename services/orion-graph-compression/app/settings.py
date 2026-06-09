@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     llm_gateway_bus_channel: str = Field(
         "orion:exec:request:LLMGatewayService", alias="LLM_GATEWAY_BUS_CHANNEL"
     )
+    enable_llm_summaries: bool = Field(True, alias="ENABLE_LLM_SUMMARIES")
 
     # Postgres
     postgres_uri: str = Field(
@@ -62,8 +63,6 @@ class Settings(BaseSettings):
         "/app/config/compression_policy.v1.yaml", alias="COMPRESSION_POLICY_PATH"
     )
     log_level: str = Field("INFO", alias="LOG_LEVEL")
-
-    model_config = {"populate_by_name": True}
 
 
 _settings: Settings | None = None

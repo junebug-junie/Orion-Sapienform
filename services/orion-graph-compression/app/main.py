@@ -14,12 +14,12 @@ from app.store import CompressionStore
 from app.worker import CompressionWorker
 from app.stale_listener import run_stale_listener
 
-_settings = get_settings()
-
-logging.basicConfig(level=getattr(logging, _settings.log_level.upper(), logging.INFO))
+logging.basicConfig(level=getattr(logging, get_settings().log_level.upper(), logging.INFO))
 logger = logging.getLogger("orion.graph-compression")
 
 BOOT_ID = str(uuid.uuid4())
+
+_settings = get_settings()
 
 bus = None
 worker: Optional[CompressionWorker] = None
@@ -30,32 +30,19 @@ stale_task: Optional[asyncio.Task] = None
 
 async def heartbeat_loop(bus_instance: Any) -> None:
     from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-    try:
-        from orion.schemas.telemetry.system_health import SystemHealthV1
-    except ImportError:
-        SystemHealthV1 = None  # type: ignore
+    from orion.schemas.telemetry.system_health import SystemHealthV1
 
     logger.info("heartbeat_loop_started boot_id=%s", BOOT_ID)
     while True:
         try:
-            if SystemHealthV1 is not None:
-                payload = SystemHealthV1(
-                    service=_settings.service_name,
-                    version=_settings.service_version,
-                    node=_settings.node_name,
-                    status="ok",
-                    boot_id=BOOT_ID,
-                    last_seen_ts=time.time(),
-                ).model_dump(mode="json")
-            else:
-                payload = {
-                    "service": _settings.service_name,
-                    "version": _settings.service_version,
-                    "node": _settings.node_name,
-                    "status": "ok",
-                    "boot_id": BOOT_ID,
-                    "last_seen_ts": time.time(),
-                }
+            payload = SystemHealthV1(
+                service=_settings.service_name,
+                version=_settings.service_version,
+                node=_settings.node_name,
+                status="ok",
+                boot_id=BOOT_ID,
+                last_seen_ts=time.time(),
+            ).model_dump(mode="json")
             await bus_instance.publish(
                 _settings.health_channel,
                 BaseEnvelope(

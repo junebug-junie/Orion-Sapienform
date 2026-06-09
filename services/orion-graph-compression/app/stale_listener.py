@@ -42,6 +42,7 @@ async def run_stale_listener(
     async def _handle(envelope: Any) -> None:
         try:
             payload = envelope.payload or {}
+            # From orion:rdf:enqueue: look for graph_name field
             graph_name = (
                 payload.get("graph_name")
                 or payload.get("named_graph")
@@ -53,6 +54,7 @@ async def run_stale_listener(
                 store.enqueue_stale(scope=scope, reason=f"rdf_enqueue:{graph_name}")
                 logger.debug("stale_marked scope=%s graph=%s", scope, graph_name)
             else:
+                # Mark all scopes stale on unknown graph writes
                 for s in ("episodic", "substrate", "self_study"):
                     store.enqueue_stale(scope=s, reason="rdf_enqueue:unknown_graph")
         except Exception as exc:

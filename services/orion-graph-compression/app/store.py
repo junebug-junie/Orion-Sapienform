@@ -60,11 +60,22 @@ class CompressionStore:
         reason: str,
         priority: int = 0,
     ) -> None:
+        # Coalesce: skip the insert when an equivalent pending mark already exists
+        # for the same (scope, region_id) target. Under normal RDF write traffic the
+        # listener would otherwise enqueue a row per write, growing the queue without
+        # bound (the worker re-clusters the whole scope regardless of row count).
+        # IS NOT DISTINCT FROM gives NULL-safe equality (scope-wide marks have NULL
+        # region_id; region marks have NULL scope).
         with self._engine.begin() as conn:
             conn.execute(
                 text(
                     "INSERT INTO stale_queue (region_id, scope, reason, queued_at, priority)"
-                    " VALUES (:region_id, :scope, :reason, :queued_at, :priority)"
+                    " SELECT :region_id, :scope, :reason, :queued_at, :priority"
+                    " WHERE NOT EXISTS ("
+                    "   SELECT 1 FROM stale_queue sq"
+                    "   WHERE sq.scope IS NOT DISTINCT FROM :scope"
+                    "     AND sq.region_id IS NOT DISTINCT FROM :region_id"
+                    " )"
                 ),
                 {
                     "region_id": region_id,

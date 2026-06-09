@@ -961,7 +961,7 @@
         <div id="memoryGraphAnnotator" class="border border-gray-700 rounded-lg p-3 space-y-3 text-xs">
           <div class="font-semibold text-gray-200">Memory graph (optional)</div>
           <p class="text-[10px] text-gray-500"><span class="text-gray-400">Editor</span> — structured fields for entities, situations, edges (relational + topical). <span class="text-gray-400">Suggest</span> uses plain language in Advanced JSON when empty.</p>
-          <p class="text-[10px] text-gray-500"><span class="text-gray-400">Validate / Approve</span> — syncs the editor to JSON first. Approve needs GraphDB on this Hub.</p>
+          <p class="text-[10px] text-gray-500"><span class="text-gray-400">Validate / Approve</span> — syncs the editor to JSON first, then persists RDF and creates <strong class="text-gray-400">active situation cards</strong> (summary, evidence, anchors pre-filled). Review Queue is only for manual cards.</p>
           <div id="memoryGraphDraftParseBanner" class="hidden text-[11px] rounded border px-2 py-1 whitespace-pre-wrap border-gray-700 text-gray-400 bg-gray-950/60" role="status"></div>
           <div class="grid grid-cols-1 xl:grid-cols-2 gap-3 items-start">
             <div class="space-y-2 min-w-0">

@@ -1,5 +1,11 @@
 # RDF → Memory Cards v1 — §4.9–4.10 defaults (editable without code).
 
+# situation_centric: one card per situation (+ dispositions); entities → anchors/tags on situation cards.
+# entity_per_card: legacy one-card-per-entity projection (orphan anchor stubs).
+projection_mode: situation_centric
+# Graph approve is the operator persistence decision — cards land active, not pending_review.
+graph_approve_card_status: active
+
 entity_iri_base: https://orion.example/ns/mem/entity/
 utterance_prefix: https://orion.local/ns/mem/utterance/
 

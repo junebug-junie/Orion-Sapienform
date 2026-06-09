@@ -317,7 +317,7 @@
         }
       });
     }
-    if (handlers.cyHost) await loadNeighborhood(card.card_id, handlers.cyHost);
+    if (handlers.cyHost) await loadNeighborhood(card.card_id, handlers.cyHost, card.title);
   }
 
   async function loadReview(reviewPanel, statusEl, detailEl, cyHost) {
@@ -327,7 +327,8 @@
       const data = await apiFetch("/api/memory/cards?status=pending_review&limit=100");
       const items = data.items || [];
       if (!items.length) {
-        reviewPanel.textContent = "No cards in pending_review.";
+        reviewPanel.textContent =
+          "No cards awaiting manual review. Graph approve creates active situation cards directly — use All Cards to browse them.";
       }
       items.forEach((c) => {
         reviewPanel.appendChild(
@@ -361,7 +362,7 @@
     const controls = document.createElement("div");
     controls.className = "flex flex-wrap gap-2 items-center text-[11px]";
     controls.innerHTML = `<label class="text-gray-400">Status <select id="memFilterStatus" class="bg-gray-800 border border-gray-600 rounded px-1">
-        <option value="">any</option><option value="pending_review">pending_review</option><option value="active">active</option>
+        <option value="">any</option><option value="pending_review">pending_review</option><option value="active" selected>active</option>
         <option value="rejected">rejected</option></select></label>
         <button type="button" id="memReloadAll" class="px-2 py-1 bg-gray-700 rounded border border-gray-600">Reload</button>`;
     allPanel.appendChild(controls);
@@ -538,7 +539,7 @@
     }
   }
 
-  async function loadNeighborhood(cardId, cyHost) {
+  async function loadNeighborhood(cardId, cyHost, centerLabel) {
     if (!window.cytoscape || !cyHost) return;
     try {
       const nb = await apiFetch(`/api/memory/cards/${encodeURIComponent(cardId)}/neighborhood?hops=1`);
@@ -552,7 +553,8 @@
         memoryCyInstance = null;
       }
       cyHost.innerHTML = "";
-      const nodes = [{ data: { id: String(cardId), label: "self" } }];
+      const selfLabel = String(centerLabel || "this card").slice(0, 80);
+      const nodes = [{ data: { id: String(cardId), label: selfLabel } }];
       const edges = [];
       const by = nb.by_edge_type || {};
       Object.keys(by).forEach((et) => {
@@ -599,7 +601,8 @@
     if (btnR) btnR.addEventListener("click", () => activateSubview("review"));
     if (btnA) btnA.addEventListener("click", () => activateSubview("all"));
     if (btnL) btnL.addEventListener("click", () => activateSubview("log"));
-    styleSubviewButtons(btnR, btnA, btnL, "review");
+    styleSubviewButtons(btnR, btnA, btnL, "all");
+    activateSubview("all");
 
     const draftTa = document.getElementById("memoryGraphDraftJson");
     const graphOut = document.getElementById("memoryGraphAnnotatorOut");
@@ -675,10 +678,37 @@
           const raw = draftTa.value.trim();
           const body = JSON.parse(raw);
           const data = await apiFetch("/api/memory/graph/approve", { method: "POST", body: JSON.stringify(body) });
-          graphSetOut(data, !data.ok);
-          if (data && data.ok && Array.isArray(data.card_ids) && data.card_ids.length) {
-            lastApprovedCardIds = data.card_ids.map((id) => String(id));
+          if (!data.ok) {
+            graphSetOut(data, true);
+            return;
           }
+          const created = [];
+          if (Array.isArray(data.card_ids) && data.card_ids.length) {
+            lastApprovedCardIds = data.card_ids.map((id) => String(id));
+            for (const cid of lastApprovedCardIds) {
+              try {
+                const card = await apiFetch(`/api/memory/cards/${encodeURIComponent(cid)}`);
+                created.push({
+                  card_id: cid,
+                  title: card.title,
+                  status: card.status,
+                  types: card.types,
+                });
+              } catch {
+                created.push({ card_id: cid, title: cid });
+              }
+            }
+          }
+          graphSetOut({ ok: true, created, card_ids: data.card_ids || [] }, false);
+          const titles = created.map((c) => c.title).filter(Boolean);
+          setStatus(
+            statusEl,
+            titles.length
+              ? `Approved ${titles.length} active card(s): ${titles.slice(0, 2).join(" · ")}${titles.length > 2 ? " …" : ""}`
+              : "Graph approved.",
+            false
+          );
+          activateSubview("all");
         } catch (e) {
           graphSetOut(e.body || e.message || String(e), true);
         }

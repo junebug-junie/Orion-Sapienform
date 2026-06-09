@@ -15,9 +15,14 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
 
+from .service_logs import resolve_repo_root_details
+
 router = APIRouter(prefix="/api/substrate-lattice", tags=["substrate-lattice"])
 
-_CONFIG_DIR = Path(__file__).resolve().parents[3] / "config" / "substrate-lattice"
+
+def _config_dir() -> Path:
+    """Resolve config/substrate-lattice for dev, Docker (/app), and compose (/repo mount)."""
+    return resolve_repo_root_details().repo_root / "config" / "substrate-lattice"
 
 _LANES: list[dict[str, Any]] = [
     {
@@ -60,7 +65,7 @@ def _engine():
 
 # Used by gate and simulate endpoints added in later tasks.
 def _load_yaml(filename: str) -> dict[str, Any]:
-    path = _CONFIG_DIR / filename
+    path = _config_dir() / filename
     if not path.exists():
         return {}
     with open(path, encoding="utf-8") as f:
@@ -494,7 +499,7 @@ async def transport_draft_policy_patch(req: DraftPatchRequest) -> dict[str, Any]
     Generate a unified YAML diff of what would change in transport_lattice_policy.v1.yaml.
     Does not write any files. Returns diff text only.
     """
-    policy_path = _CONFIG_DIR / "transport_lattice_policy.v1.yaml"
+    policy_path = _config_dir() / "transport_lattice_policy.v1.yaml"
     if not policy_path.exists():
         raise HTTPException(status_code=503, detail="transport_lattice_policy_not_found")
 

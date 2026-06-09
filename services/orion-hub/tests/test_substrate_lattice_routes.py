@@ -601,11 +601,8 @@ def test_draft_patch_503_when_config_not_found(monkeypatch, client) -> None:
     import pathlib
     import tempfile
 
-    monkeypatch.setattr(
-        substrate_lattice_routes,
-        "_CONFIG_DIR",
-        pathlib.Path(tempfile.gettempdir()) / "nonexistent_substrate_lattice_xyz",
-    )
+    missing = pathlib.Path(tempfile.gettempdir()) / "nonexistent_substrate_lattice_xyz"
+    monkeypatch.setattr(substrate_lattice_routes, "_config_dir", lambda: missing)
     resp = client.post(
         "/api/substrate-lattice/transport/draft-policy-patch",
         json={"lane_id": "transport", "thresholds": {}},

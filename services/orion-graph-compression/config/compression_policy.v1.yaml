@@ -1,0 +1,31 @@
+policy_id: compression_policy.v1
+version: "1.0.0"
+
+scopes:
+  - name: episodic
+    enabled: true
+    max_nodes_per_federation: 2000
+    kinds: [community, hotspot]
+  - name: substrate
+    enabled: true
+    max_nodes_per_federation: 500
+    kinds: [hotspot, contradiction]
+  - name: self_study
+    enabled: true
+    max_nodes_per_federation: 500
+    kinds: [self_study_cluster]
+
+clustering:
+  resolution: 1.0
+  n_iterations: 10
+  min_community_size: 3
+  max_communities_per_scope: 20
+
+summarization:
+  model_hint: "fast"
+  max_tokens: 200
+  fallback_to_structural: true
+
+exemplar_selection:
+  max_exemplars_per_region: 5
+  prefer_high_salience: true

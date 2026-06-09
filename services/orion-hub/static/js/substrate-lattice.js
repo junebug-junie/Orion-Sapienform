@@ -64,6 +64,7 @@ function _gateColor(state) {
   if (state === "watch") return "text-amber-400";
   if (state === "blocked") return "text-red-400";
   if (state === "dry_run") return "text-indigo-300";
+  if (state === "unknown") return "text-yellow-500";
   return "text-gray-500";
 }
 
@@ -280,7 +281,11 @@ function _renderProofChain(chain) {
               : "";
           const recurrence = m.recurrence_count ? ` ×${m.recurrence_count}` : "";
           const ts = m.timestamp ? ` (${_ts(m.timestamp)})` : "";
-          return `<span class="bg-gray-800 rounded px-1">${_esc(m.label || m.motif_id)}</span>${strength}${recurrence}${ts}`;
+          const evid =
+            m.evidence && m.evidence.length
+              ? ` [${m.evidence.map(_esc).join(", ")}]`
+              : "";
+          return `<span class="bg-gray-800 rounded px-1">${_esc(m.label || m.motif_id)}</span>${strength}${recurrence}${ts}${evid}`;
         })
         .join(" ")
     );

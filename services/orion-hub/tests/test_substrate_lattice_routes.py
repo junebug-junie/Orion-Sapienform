@@ -559,13 +559,19 @@ def test_simulate_404_when_no_chain(client) -> None:
 
 
 def test_simulate_no_db_writes(client) -> None:
-    """Simulate POST route must not produce any write routes on the /lanes path."""
-    write_routes_on_lanes = [
-        r for r in substrate_lattice_routes.router.routes
-        if "POST" in getattr(r, "methods", set())
-        and "/lanes" in getattr(r, "path", "")
-    ]
-    assert write_routes_on_lanes == []
+    """Simulate endpoint must not access the DB engine beyond loading the proof chain."""
+    chain = _sample_proof_chain_for_gates(contract_pressure=1.0)
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ), patch.object(
+        substrate_lattice_routes, "_load_yaml", return_value={}
+    ), patch.object(substrate_lattice_routes, "_engine") as mock_engine:
+        resp = client.post(
+            "/api/substrate-lattice/transport/simulate",
+            json={"lane_id": "transport", "thresholds": {}},
+        )
+    assert resp.status_code == 200
+    mock_engine.assert_not_called()  # no direct engine access — load was fully mocked
 
 
 # ── /transport/draft-policy-patch ───────────────────────────────

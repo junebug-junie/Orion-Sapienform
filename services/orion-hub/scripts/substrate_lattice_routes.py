@@ -365,8 +365,11 @@ def _compute_verdict(chain: dict[str, Any]) -> str:
 
     if m3.get("status") == "stale":
         age_sec = m3.get("age_sec") or 0
-        age_h = age_sec / 3600
-        return f"Transport lane stale: latest M3 projection is {age_h:.0f}h old."
+        if age_sec < 3600:
+            age_str = f"{int(age_sec)}s"
+        else:
+            age_str = f"{age_sec / 3600:.1f}h"
+        return f"Transport lane stale: latest M3 projection is {age_str} old."
 
     # Collect layer statuses
     layer_order = ["m3", "m3_receipts", "m4", "m5", "l6", "l7", "l8", "l9", "l10", "l11"]
@@ -597,16 +600,19 @@ async def lattice_lanes() -> list[dict[str, Any]]:
 
 @router.get("/transport/latest")
 async def transport_latest() -> dict[str, Any]:
-    freshness_sec = int(os.getenv("SUBSTRATE_LATTICE_FRESHNESS_THRESHOLD_SEC", "60"))
-    chain = _load_transport_proof_chain(freshness_threshold_sec=freshness_sec)
+    chain = _load_transport_proof_chain(freshness_threshold_sec=_freshness_threshold())
     if chain is None:
         raise HTTPException(status_code=404, detail="transport_projection_not_found")
     return chain
 
 
+def _freshness_threshold() -> int:
+    return int(os.getenv("SUBSTRATE_LATTICE_FRESHNESS_THRESHOLD_SEC", "60"))
+
+
 @router.get("/transport/gates")
 async def transport_gates() -> dict[str, Any]:
-    chain = _load_transport_proof_chain()
+    chain = _load_transport_proof_chain(freshness_threshold_sec=_freshness_threshold())
     if chain is None:
         raise HTTPException(status_code=404, detail="transport_projection_not_found")
     return {
@@ -622,7 +628,7 @@ class SimulateRequest(BaseModel):
 
 @router.post("/transport/simulate")
 async def transport_simulate(req: SimulateRequest) -> dict[str, Any]:
-    chain = _load_transport_proof_chain()
+    chain = _load_transport_proof_chain(freshness_threshold_sec=_freshness_threshold())
     if chain is None:
         raise HTTPException(status_code=404, detail="transport_projection_not_found")
 

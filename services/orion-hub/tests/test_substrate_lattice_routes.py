@@ -555,9 +555,18 @@ def test_draft_patch_diff_contains_changed_value(client) -> None:
             "thresholds": {"contract_pressure_watch_at": 0.75},
         },
     )
+    assert resp.status_code == 200
     body = resp.json()
-    # The diff should mention the affected field
-    assert "contract_pressure" in body["diff"] or "watch_at" in body["diff"]
+    diff = body["diff"]
+    # Should contain a line showing the removed old value and added new value
+    assert any(
+        line.startswith("-") and "watch_at" in line
+        for line in diff.splitlines()
+    ), "diff missing removal line for watch_at"
+    assert any(
+        line.startswith("+") and "watch_at" in line and "0.75" in line
+        for line in diff.splitlines()
+    ), "diff missing addition line for 0.75"
 
 
 def test_draft_patch_empty_thresholds_returns_no_changes(client) -> None:
@@ -578,9 +587,27 @@ def test_draft_patch_does_not_write_files(client) -> None:
         / "config" / "substrate-lattice" / "transport_lattice_policy.v1.yaml"
     )
     before_mtime = policy_path.stat().st_mtime if policy_path.exists() else None
-    client.post(
+    resp = client.post(
         "/api/substrate-lattice/transport/draft-policy-patch",
         json={"lane_id": "transport", "thresholds": {"contract_pressure_watch_at": 0.99}},
     )
+    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
     after_mtime = policy_path.stat().st_mtime if policy_path.exists() else None
     assert before_mtime == after_mtime, "Policy YAML was modified — must not happen"
+
+
+def test_draft_patch_503_when_config_not_found(monkeypatch, client) -> None:
+    """Returns 503 when the policy YAML file doesn't exist."""
+    import pathlib
+    import tempfile
+
+    monkeypatch.setattr(
+        substrate_lattice_routes,
+        "_CONFIG_DIR",
+        pathlib.Path(tempfile.gettempdir()) / "nonexistent_substrate_lattice_xyz",
+    )
+    resp = client.post(
+        "/api/substrate-lattice/transport/draft-policy-patch",
+        json={"lane_id": "transport", "thresholds": {}},
+    )
+    assert resp.status_code == 503

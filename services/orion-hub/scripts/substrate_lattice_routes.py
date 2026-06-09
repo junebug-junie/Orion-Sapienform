@@ -493,13 +493,17 @@ async def transport_draft_policy_patch(req: DraftPatchRequest) -> dict[str, Any]
     proposed_doc = copy.deepcopy(current_doc)
     channels = proposed_doc.setdefault("channels", {})
 
+    applied: dict[str, float] = {}
     for key, value in req.thresholds.items():
+        # Key convention: "{channel_id}{_watch_at|_summarize_at|_propose_at}"
+        # Assumes channel IDs don't end with these suffixes (safe for current "_pressure" naming).
         for suffix in ("_watch_at", "_summarize_at", "_propose_at"):
             if key.endswith(suffix):
                 ch_id = key[: -len(suffix)]
                 field = suffix.lstrip("_")
                 if ch_id in channels:
                     channels[ch_id][field] = value
+                    applied[key] = value
                 break
 
     # Normalize both docs through the same serializer so the diff reflects only
@@ -507,6 +511,8 @@ async def transport_draft_policy_patch(req: DraftPatchRequest) -> dict[str, Any]
     current_normalized = yaml.dump(current_doc, default_flow_style=False, sort_keys=False)
     proposed_text = yaml.dump(proposed_doc, default_flow_style=False, sort_keys=False)
 
+    # splitlines(keepends=True) preserves the \n from yaml.dump;
+    # lineterm="" tells unified_diff not to append an extra newline per line.
     diff_lines = list(
         difflib.unified_diff(
             current_normalized.splitlines(keepends=True),
@@ -521,6 +527,7 @@ async def transport_draft_policy_patch(req: DraftPatchRequest) -> dict[str, Any]
     return {
         "lane_id": req.lane_id,
         "diff": diff_text,
-        "applied_thresholds": req.thresholds,
+        "applied_thresholds": applied,
+        "ignored_thresholds": [k for k in req.thresholds if k not in applied],
         "note": "Read-only. This diff has not been applied. Apply manually after review.",
     }

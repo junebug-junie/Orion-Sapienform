@@ -1,0 +1,42 @@
+schema_version: action_ceiling_policy.v1
+
+ceilings:
+  ignore:
+    may_emit_attention: false
+    may_emit_proposal: false
+    may_dispatch: false
+
+  watch:
+    may_emit_attention: true
+    may_emit_proposal: false
+    may_dispatch: false
+
+  summarize:
+    may_emit_attention: true
+    may_emit_proposal: true
+    proposal_mode: read_only
+    may_dispatch: false
+
+  read_only:
+    may_emit_attention: true
+    may_emit_proposal: true
+    proposal_mode: read_only
+    may_dispatch: dry_run_only
+
+  propose_read_only:
+    may_emit_attention: true
+    may_emit_proposal: true
+    proposal_mode: read_only
+    may_dispatch: dry_run_only
+
+  request_operator:
+    may_emit_attention: true
+    may_emit_proposal: true
+    proposal_mode: operator_required
+    may_dispatch: dry_run_only
+
+  dry_run:
+    may_emit_attention: true
+    may_emit_proposal: true
+    proposal_mode: read_only
+    may_dispatch: dry_run_only

@@ -1,0 +1,30 @@
+schema_version: grammar_producer_registry.v1
+
+producers:
+  - producer_id: orion-bus
+    lane_id: transport
+    source_service: orion-bus
+    trace_prefixes:
+      - "bus.transport:"
+    field_capability_id: "capability:transport"
+    attention_target_id: "capability:transport"
+    self_state_dimension_id: transport_integrity
+    trusted_channels:
+      - bus_health
+      - transport_pressure
+      - contract_pressure
+      - catalog_drift_pressure
+      - observer_failure_pressure
+      - delivery_confidence
+    action_ceiling_default: dry_run
+    status: live
+
+  - producer_id: orion-biometrics
+    lane_id: biometrics
+    source_service: orion-biometrics
+    status: planned
+
+  - producer_id: orion-cortex-exec
+    lane_id: execution
+    source_service: orion-cortex-exec
+    status: planned

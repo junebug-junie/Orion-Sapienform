@@ -671,6 +671,9 @@ loadDismissedIds();
   const collapseMirrorPanel = document.getElementById("collapse-mirror");
   const pressureAnalyticsFrame = document.getElementById("pressureAnalyticsFrame");
   const pressureAnalyticsRefresh = document.getElementById("pressureAnalyticsRefresh");
+  const substrateLatticeTabButton = document.getElementById("substrateLatticeTabButton");
+  const substrateLatticePanelEl = document.getElementById("substrate-lattice");
+  const substrateLatticeFrame = document.getElementById("substrateLatticeFrame");
   const topicFoundryBaseLabel = document.getElementById("topicFoundryBaseLabel");
   const tsDatasetSelect = document.getElementById("tsDatasetSelect");
   const tsDatasetName = document.getElementById("tsDatasetName");
@@ -944,6 +947,9 @@ loadDismissedIds();
     if (tabKey === "substrate-atlas" && !substrateAtlasPanel) {
       effectiveTab = "hub";
     }
+    if (tabKey === "substrate-lattice" && !substrateLatticePanelEl) {
+      effectiveTab = "hub";
+    }
     if (tabKey === "collapse-mirror" && !collapseMirrorPanel) {
       effectiveTab = "hub";
     }
@@ -954,6 +960,7 @@ loadDismissedIds();
     const isSubstrateAtlas = effectiveTab === "substrate-atlas";
     const isMemory = effectiveTab === "memory";
     const isPressure = effectiveTab === "pressure";
+    const isSubstrateLattice = effectiveTab === "substrate-lattice";
     const isMind = effectiveTab === "mind";
     const isSignals = effectiveTab === "signals";
     const isForge = effectiveTab === "forge";
@@ -1002,6 +1009,13 @@ loadDismissedIds();
     if (pressurePanel) {
       pressurePanel.classList.toggle("hidden", !isPressure);
     }
+    if (substrateLatticePanelEl) {
+      substrateLatticePanelEl.classList.toggle("hidden", !isSubstrateLattice);
+    }
+    if (substrateLatticeFrame && isSubstrateLattice) {
+      const currentSrc = substrateLatticeFrame.getAttribute("src");
+      substrateLatticeFrame.setAttribute("src", currentSrc);
+    }
     if (forgePanel) {
       forgePanel.classList.toggle("hidden", !isForge);
       if (isForge) {
@@ -1029,6 +1043,9 @@ loadDismissedIds();
     }
     if (pressureAnalyticsTabButton) {
       styleTabButton(pressureAnalyticsTabButton, isPressure);
+    }
+    if (substrateLatticeTabButton) {
+      styleTabButton(substrateLatticeTabButton, isSubstrateLattice);
     }
     if (forgeTabButton) {
       styleTabButton(forgeTabButton, isForge);
@@ -1600,6 +1617,8 @@ loadDismissedIds();
       setActiveTab("substrate-atlas");
     } else if (h === "#pressure" && pressurePanel && pressureAnalyticsTabButton) {
       setActiveTab("pressure");
+    } else if (h === "#substrate-lattice" && substrateLatticePanelEl && substrateLatticeTabButton) {
+      setActiveTab("substrate-lattice");
     } else if (h === "#memory" && memoryPanel && memoryTabButton) {
       setActiveTab("memory");
     } else if (h === "#mind" && mindPanel && mindTabButton) {
@@ -1613,6 +1632,7 @@ loadDismissedIds();
     } else {
       if (
         h === "#pressure"
+        || h === "#substrate-lattice"
         || h === "#memory"
         || h === "#mind"
         || h === "#signals"
@@ -11461,6 +11481,13 @@ loadDismissedIds();
         event.preventDefault();
         setActiveTab("pressure");
         history.replaceState(null, "", "#pressure");
+      });
+    }
+    if (substrateLatticeTabButton && substrateLatticePanelEl) {
+      substrateLatticeTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("substrate-lattice");
+        history.replaceState(null, "", "#substrate-lattice");
       });
     }
     if (forgeTabButton && forgePanel) {

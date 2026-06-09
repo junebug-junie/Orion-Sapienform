@@ -1,0 +1,47 @@
+schema_version: transport_lattice_policy.v1
+
+lane_id: transport
+
+# channel_id → dimension mapping for salience weighting
+dimension_weights:
+  delivery_integrity: 0.35
+  contract_integrity: 0.30
+  observability_integrity: 0.20
+  topology_integrity: 0.15
+
+# channel → dimension, thresholds, action ceiling
+channels:
+  transport_pressure:
+    dimension: delivery_integrity
+    watch_at: 0.25
+    summarize_at: 0.50
+    propose_at: 0.75
+    action_ceiling: read_only
+
+  contract_pressure:
+    dimension: contract_integrity
+    watch_at: 0.50
+    summarize_at: 0.75
+    propose_at: null
+    required_windows: 2
+    action_ceiling: summarize
+
+  catalog_drift_pressure:
+    dimension: topology_integrity
+    watch_at: 0.50
+    summarize_at: null
+    propose_at: null
+    required_windows: 3
+    action_ceiling: watch
+
+  observer_failure_pressure:
+    dimension: observability_integrity
+    watch_at: 0.25
+    summarize_at: 0.50
+    propose_at: null
+    action_ceiling: summarize
+
+healthy_idle:
+  bus_health_min: 0.90
+  transport_pressure_max: 0.10
+  action: no_op_motif

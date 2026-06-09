@@ -1,0 +1,19 @@
+schema_version: gate_policy.v1
+
+gates:
+  freshness:
+    max_age_sec: 30
+
+  evidence:
+    min_events: 1
+
+  confidence:
+    min_confidence: 0.60
+
+  lineage:
+    require_source_event: true
+    require_projection: true
+
+  action_ceiling:
+    default: dry_run
+    allow_mutation: false

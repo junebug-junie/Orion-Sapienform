@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -234,6 +235,95 @@ def _load_transport_proof_chain() -> dict[str, Any] | None:
     }
 
 
+def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
+    """Evaluate transport gate overlay from current proof chain."""
+    gate_policy = _load_yaml("gate_policy.v1.yaml")
+    lattice_policy = _load_yaml("transport_lattice_policy.v1.yaml")
+
+    bus = chain.get("bus_summary", {})
+    dispatch = chain.get("dispatch", {})
+    receipts = chain.get("receipts", [])
+    proj = chain.get("projection", {})
+
+    # --- freshness gate ---
+    freshness_max_age = (
+        gate_policy.get("gates", {}).get("freshness", {}).get("max_age_sec", 30)
+    )
+    observed_at_str = bus.get("observed_at") or proj.get("updated_at")
+    freshness_state = "unknown"
+    freshness_reason = "no observed_at available"
+    if observed_at_str:
+        try:
+            observed_dt = datetime.fromisoformat(observed_at_str)
+            if observed_dt.tzinfo is None:
+                observed_dt = observed_dt.replace(tzinfo=timezone.utc)
+            age_sec = (datetime.now(timezone.utc) - observed_dt).total_seconds()
+            if age_sec <= freshness_max_age:
+                freshness_state = "pass"
+                freshness_reason = f"projection {age_sec:.1f}s old (max {freshness_max_age}s)"
+            else:
+                freshness_state = "blocked"
+                freshness_reason = f"projection {age_sec:.1f}s old — exceeds {freshness_max_age}s"
+        except Exception:
+            freshness_reason = "could not parse observed_at"
+
+    # --- evidence gate ---
+    evidence_min = (
+        gate_policy.get("gates", {}).get("evidence", {}).get("min_events", 1)
+    )
+    evidence_count = len(receipts)
+    evidence_state = "pass" if evidence_count >= evidence_min else "blocked"
+    evidence_reason = f"{evidence_count} reducer receipt(s) found (min {evidence_min})"
+
+    # --- lineage gate ---
+    buses = (proj or {}).get("buses", {})
+    first_bus = next(iter(buses.values()), {}) if buses else {}
+    has_trace = bool(first_bus.get("source_trace_id"))
+    lineage_state = "pass" if has_trace else "blocked"
+    lineage_reason = (
+        f"source_trace_id={first_bus.get('source_trace_id')!r}"
+        if has_trace
+        else "no source_trace_id on bus state"
+    )
+
+    # --- pressure gate ---
+    transport_p = float(bus.get("transport_pressure") or 0.0)
+    observer_p = float(bus.get("observer_failure_pressure") or 0.0)
+    pressure_state = "quiet" if (transport_p + observer_p) == 0.0 else "watch"
+    pressure_reason = (
+        f"transport_pressure={transport_p:.2f} "
+        f"observer_failure_pressure={observer_p:.2f}"
+    )
+
+    # --- contract gate ---
+    channels = lattice_policy.get("channels", {})
+    contract_watch_at = float(
+        (channels.get("contract_pressure") or {}).get("watch_at", 0.50)
+    )
+    contract_p = float(bus.get("contract_pressure") or 0.0)
+    if contract_p == 0.0:
+        contract_state = "quiet"
+    elif contract_p >= contract_watch_at:
+        contract_state = "watch"
+    else:
+        contract_state = "pass"
+    contract_reason = f"contract_pressure={contract_p:.2f} (watch_at={contract_watch_at})"
+
+    # --- action_ceiling gate ---
+    dispatch_mode = dispatch.get("dispatch_mode") or "dry_run"
+    action_ceiling_state = dispatch_mode
+    action_ceiling_reason = f"dispatch_mode={dispatch_mode}"
+
+    return [
+        {"gate_id": "freshness", "state": freshness_state, "reason": freshness_reason},
+        {"gate_id": "evidence", "state": evidence_state, "reason": evidence_reason},
+        {"gate_id": "lineage", "state": lineage_state, "reason": lineage_reason},
+        {"gate_id": "pressure", "state": pressure_state, "reason": pressure_reason},
+        {"gate_id": "contract", "state": contract_state, "reason": contract_reason},
+        {"gate_id": "action_ceiling", "state": action_ceiling_state, "reason": action_ceiling_reason},
+    ]
+
+
 @router.get("/lanes")
 async def lattice_lanes() -> list[dict[str, Any]]:
     return _LANES
@@ -245,3 +335,14 @@ async def transport_latest() -> dict[str, Any]:
     if chain is None:
         raise HTTPException(status_code=404, detail="transport_projection_not_found")
     return chain
+
+
+@router.get("/transport/gates")
+async def transport_gates() -> dict[str, Any]:
+    chain = _load_transport_proof_chain()
+    if chain is None:
+        raise HTTPException(status_code=404, detail="transport_projection_not_found")
+    return {
+        "lane_id": "transport",
+        "gates": _compute_gates(chain),
+    }

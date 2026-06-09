@@ -223,6 +223,137 @@ def test_load_transport_proof_chain_empty_buses_yields_empty_bus_summary(monkeyp
     assert result["motifs"] == []
 
 
+# ── /transport/gates ─────────────────────────────────────────────
+
+
+def _sample_proof_chain_for_gates(
+    bus_age_sec: float = 5.0,
+    contract_pressure: float = 1.0,
+    transport_pressure: float = 0.0,
+    dispatch_mode: str = "dry_run",
+    receipts: list | None = None,
+    source_trace_id: str = "bus.transport:abc",
+) -> dict:
+    from datetime import datetime, timedelta, timezone
+
+    observed_at = (
+        datetime.now(timezone.utc) - timedelta(seconds=bus_age_sec)
+    ).isoformat()
+    return {
+        "projection": {
+            "updated_at": (
+                datetime.now(timezone.utc) - timedelta(seconds=bus_age_sec)
+            ).isoformat(),
+            "buses": {
+                "bus:athena": {
+                    "source_trace_id": source_trace_id,
+                }
+            },
+        },
+        "bus_summary": {
+            "bus_health": 1.0,
+            "transport_pressure": transport_pressure,
+            "contract_pressure": contract_pressure,
+            "catalog_drift_pressure": 0.0,
+            "observer_failure_pressure": 0.0,
+            "delivery_confidence": 1.0,
+            "observed_at": observed_at,
+        },
+        "receipts": receipts if receipts is not None else [{"receipt_id": "r1"}],
+        "field_vector": {"pressure": 0.5},
+        "attention": {"capability_targets": ["capability:transport"]},
+        "self_state": {"transport_integrity": {"score": 0.8}},
+        "proposals": {"count": 1, "transport_count": 1, "candidates": []},
+        "policy": {"approved_count": 1},
+        "dispatch": {"dispatch_mode": dispatch_mode, "dispatch_count": 0},
+        "feedback": {"outcome_status": "dry_run_only"},
+        "motifs": [],
+    }
+
+
+def test_gates_freshness_pass(client) -> None:
+    chain = _sample_proof_chain_for_gates(bus_age_sec=5.0)
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    assert resp.status_code == 200
+    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
+    assert gates["freshness"]["state"] == "pass"
+
+
+def test_gates_freshness_blocked_when_stale(client) -> None:
+    chain = _sample_proof_chain_for_gates(bus_age_sec=60.0)
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    assert resp.status_code == 200
+    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
+    assert gates["freshness"]["state"] == "blocked"
+
+
+def test_gates_contract_watch_when_high(client) -> None:
+    chain = _sample_proof_chain_for_gates(contract_pressure=1.0)
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
+    assert gates["contract"]["state"] == "watch"
+
+
+def test_gates_pressure_quiet_when_zero(client) -> None:
+    chain = _sample_proof_chain_for_gates(transport_pressure=0.0)
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
+    assert gates["pressure"]["state"] == "quiet"
+
+
+def test_gates_action_ceiling_reflects_dispatch_mode(client) -> None:
+    chain = _sample_proof_chain_for_gates(dispatch_mode="dry_run")
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
+    assert gates["action_ceiling"]["state"] == "dry_run"
+
+
+def test_gates_evidence_blocked_when_no_receipts(client) -> None:
+    chain = _sample_proof_chain_for_gates(receipts=[])
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
+    assert gates["evidence"]["state"] == "blocked"
+
+
+def test_gates_lineage_blocked_when_no_trace_id(client) -> None:
+    chain = _sample_proof_chain_for_gates(source_trace_id="")
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
+    assert gates["lineage"]["state"] == "blocked"
+
+
+def test_gates_404_when_no_chain(client) -> None:
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=None
+    ):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    assert resp.status_code == 404
+
+
+# ── _load_transport_proof_chain internals ────────────────────────
+
+
 def test_load_transport_proof_chain_with_projection_returns_full_structure(monkeypatch) -> None:
     monkeypatch.setenv("POSTGRES_URI", "postgresql://test:test@localhost/test")
     import json as _json

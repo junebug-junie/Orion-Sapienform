@@ -32,7 +32,12 @@ class CompressionWorker:
         self._store = store
         self._bus = bus
         self._stop = asyncio.Event()
+        self._poll_task: asyncio.Task | None = None
         self._policy = self._load_policy()
+        try:
+            self._loop: asyncio.AbstractEventLoop | None = asyncio.get_event_loop()
+        except RuntimeError:
+            self._loop = None
 
     def _load_policy(self) -> dict[str, Any]:
         try:
@@ -49,10 +54,16 @@ class CompressionWorker:
             }
 
     async def start(self) -> None:
-        asyncio.create_task(self._poll_loop(), name="graph-compression-poll")
+        self._poll_task = asyncio.create_task(self._poll_loop(), name="graph-compression-poll")
 
     async def stop(self) -> None:
         self._stop.set()
+        if self._poll_task and not self._poll_task.done():
+            self._poll_task.cancel()
+            try:
+                await self._poll_task
+            except asyncio.CancelledError:
+                pass
 
     async def _poll_loop(self) -> None:
         while not self._stop.is_set():
@@ -150,7 +161,7 @@ class CompressionWorker:
             service_name=s.service_name,
             service_version=s.service_version,
             channel_events=s.channel_graph_compression_events,
-            channel_pressure="orion:substrate:mutation:pressure",
+            channel_pressure=s.channel_substrate_mutation_pressure,
         )
 
         for community in communities:
@@ -177,6 +188,10 @@ class CompressionWorker:
                     compression_version=region.compression_version,
                     generated_at=region.generated_at,
                 )
+                if self._loop and self._loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        writer._emit_grammar_hook(region), self._loop
+                    )
                 logger.info(
                     "region_written region_id=%s scope=%s kind=%s nodes=%d",
                     region.region_id,

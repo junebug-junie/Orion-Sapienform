@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import logging
-from typing import List, Tuple
 
 import httpx
 
 logger = logging.getLogger("orion.graph-compression.federator.substrate")
 
 SUBSTRATE_GRAPH = "http://conjourney.net/graph/orion/substrate"
-Triple = Tuple[str, str, str]
+Triple = tuple[str, str, str]
 
 
 class SubstrateFederator:
@@ -29,7 +28,7 @@ class SubstrateFederator:
         self._auth = (user, password)
         self._timeout = timeout_sec
 
-    def fetch(self, *, max_nodes: int = 500) -> List[Triple]:
+    def fetch(self, *, max_nodes: int = 500) -> list[Triple]:
         query = f"""
 SELECT ?s ?p ?o WHERE {{
   {{

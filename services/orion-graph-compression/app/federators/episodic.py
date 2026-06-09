@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from typing import List, Tuple
 
 import httpx
 
@@ -19,7 +18,7 @@ EPISODIC_GRAPHS = [
     "http://conjourney.net/graph/orion/autonomy/goals",
 ]
 
-Triple = Tuple[str, str, str]
+Triple = tuple[str, str, str]
 
 
 class EpisodicFederator:
@@ -36,22 +35,26 @@ class EpisodicFederator:
         self._timeout = timeout_sec
 
     def _build_sparql(self, max_nodes: int = 2000) -> str:
-        graph_clauses = "\n  ".join(
+        # Inner subquery uses ?p0 ?o0 to only bind ?s, avoiding AND semantics
+        inner_clauses = "\n  ".join(
+            f"GRAPH <{g}> {{ ?s ?p0 ?o0 }}" for g in EPISODIC_GRAPHS
+        )
+        outer_clauses = "\n  ".join(
             f"GRAPH <{g}> {{ ?s ?p ?o }}" for g in EPISODIC_GRAPHS
         )
         return f"""
 SELECT ?s ?p ?o WHERE {{
   {{
     SELECT DISTINCT ?s WHERE {{
-      {{ {graph_clauses} }}
+      {{ {inner_clauses} }}
     }}
     LIMIT {max_nodes}
   }}
-  {{ {graph_clauses} }}
+  {{ {outer_clauses} }}
 }}
 """
 
-    def fetch(self, *, max_nodes: int = 2000) -> List[Triple]:
+    def fetch(self, *, max_nodes: int = 2000) -> list[Triple]:
         query = self._build_sparql(max_nodes)
         try:
             with httpx.Client(timeout=self._timeout) as client:

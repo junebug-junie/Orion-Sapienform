@@ -49,6 +49,9 @@ def normalize_graph_name(graph_name: str | None) -> str | None:
         "orion:self": "http://conjourney.net/graph/orion/self",
         "orion:self:induced": "http://conjourney.net/graph/orion/self/induced",
         "orion:self:reflective": "http://conjourney.net/graph/orion/self/reflective",
+        "orion:autonomy:identity": "http://conjourney.net/graph/orion/autonomy/identity",
+        "orion:autonomy:drives": "http://conjourney.net/graph/orion/autonomy/drives",
+        "orion:autonomy:goals": "http://conjourney.net/graph/orion/autonomy/goals",
     }
     if raw in mapping:
         return mapping[raw]

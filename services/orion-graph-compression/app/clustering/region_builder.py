@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timezone
-from typing import Set
 
 from orion.schemas.graph_compression import CompressionRegionV1
 
@@ -16,7 +15,7 @@ def stable_region_id(scope: str, kind: str, nodes: frozenset) -> str:
 
 def build_region(
     *,
-    nodes: Set[str],
+    nodes: set[str],
     scope: str,
     kind: str,
     summary: str,

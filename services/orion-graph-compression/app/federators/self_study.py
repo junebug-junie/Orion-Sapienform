@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from typing import List, Tuple
 
 import httpx
 
@@ -13,7 +12,7 @@ SELF_STUDY_GRAPHS = [
     "http://conjourney.net/graph/orion/self/reflective",
 ]
 
-Triple = Tuple[str, str, str]
+Triple = tuple[str, str, str]
 
 
 class SelfStudyFederator:
@@ -29,19 +28,23 @@ class SelfStudyFederator:
         self._auth = (user, password)
         self._timeout = timeout_sec
 
-    def fetch(self, *, max_nodes: int = 500) -> List[Triple]:
-        graph_clauses = "\n  ".join(
+    def fetch(self, *, max_nodes: int = 500) -> list[Triple]:
+        # Inner subquery uses ?p0 ?o0 to only bind ?s, avoiding AND semantics
+        inner_clauses = "\n  ".join(
+            f"GRAPH <{g}> {{ ?s ?p0 ?o0 }}" for g in SELF_STUDY_GRAPHS
+        )
+        outer_clauses = "\n  ".join(
             f"GRAPH <{g}> {{ ?s ?p ?o }}" for g in SELF_STUDY_GRAPHS
         )
         query = f"""
 SELECT ?s ?p ?o WHERE {{
   {{
     SELECT DISTINCT ?s WHERE {{
-      {{ {graph_clauses} }}
+      {{ {inner_clauses} }}
     }}
     LIMIT {max_nodes}
   }}
-  {{ {graph_clauses} }}
+  {{ {outer_clauses} }}
 }}
 """
         try:

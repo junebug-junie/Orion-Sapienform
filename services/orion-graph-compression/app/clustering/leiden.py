@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import logging
-from typing import List, Set, Tuple
 
 import networkx as nx
 
 logger = logging.getLogger("orion.graph-compression.clustering.leiden")
 
-Triple = Tuple[str, str, str]
+Triple = tuple[str, str, str]
 
 
-def build_graph_from_triples(triples: List[Triple]) -> nx.Graph:
+def build_graph_from_triples(triples: list[Triple]) -> nx.Graph:
     G = nx.Graph()
     for s, _p, o in triples:
         if s and o and s != o:
@@ -23,7 +22,7 @@ def leiden_cluster(
     *,
     resolution: float = 1.0,
     n_iterations: int = 10,
-) -> List[Set[str]]:
+) -> list[set[str]]:
     if G.number_of_nodes() == 0:
         return []
     if G.number_of_nodes() == 1:

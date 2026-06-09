@@ -30,7 +30,8 @@ def test_compression_region_v1_round_trip():
 
 
 def test_compression_region_v1_requires_exemplar_ids():
-    with pytest.raises(Exception):
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
         CompressionRegionV1(
             region_id="urn:orion:compression:region:abc",
             scope="episodic",

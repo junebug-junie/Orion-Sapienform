@@ -38,7 +38,7 @@ stale_listener.py   ──► stale_queue (Postgres)
 
 ## Service Port
 
-`8270` (configurable via `GRAPH_COMPRESSION_PORT`)
+`8271` (configurable via `PORT`; do not use `8270` — reserved by `orion-state-service`)
 
 ## HTTP Endpoints
 

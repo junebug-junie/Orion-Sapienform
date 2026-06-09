@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     service_name: str = Field("orion-graph-compression", alias="SERVICE_NAME")
     service_version: str = Field("0.1.0", alias="SERVICE_VERSION")
     node_name: str = Field("unknown", alias="NODE_NAME")
-    port: int = Field(8270, alias="PORT")
+    port: int = Field(8271, alias="PORT")
 
     # Bus
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")

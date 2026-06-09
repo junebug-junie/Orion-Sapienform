@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import difflib
 import json
 import os
 from datetime import datetime, timezone
@@ -467,4 +469,58 @@ async def transport_simulate(req: SimulateRequest) -> dict[str, Any]:
         "simulated": simulated_result,
         "changed": changed,
         "applied_thresholds": simulated_thresholds,
+    }
+
+
+class DraftPatchRequest(BaseModel):
+    lane_id: str
+    thresholds: dict[str, float] = Field(default_factory=dict)
+
+
+@router.post("/transport/draft-policy-patch")
+async def transport_draft_policy_patch(req: DraftPatchRequest) -> dict[str, Any]:
+    """
+    Generate a unified YAML diff of what would change in transport_lattice_policy.v1.yaml.
+    Does not write any files. Returns diff text only.
+    """
+    policy_path = _CONFIG_DIR / "transport_lattice_policy.v1.yaml"
+    if not policy_path.exists():
+        raise HTTPException(status_code=503, detail="transport_lattice_policy_not_found")
+
+    original_text = policy_path.read_text(encoding="utf-8")
+    current_doc: dict[str, Any] = yaml.safe_load(original_text) or {}
+
+    proposed_doc = copy.deepcopy(current_doc)
+    channels = proposed_doc.setdefault("channels", {})
+
+    for key, value in req.thresholds.items():
+        for suffix in ("_watch_at", "_summarize_at", "_propose_at"):
+            if key.endswith(suffix):
+                ch_id = key[: -len(suffix)]
+                field = suffix.lstrip("_")
+                if ch_id in channels:
+                    channels[ch_id][field] = value
+                break
+
+    # Normalize both docs through the same serializer so the diff reflects only
+    # data changes (not YAML formatting / comment differences).
+    current_normalized = yaml.dump(current_doc, default_flow_style=False, sort_keys=False)
+    proposed_text = yaml.dump(proposed_doc, default_flow_style=False, sort_keys=False)
+
+    diff_lines = list(
+        difflib.unified_diff(
+            current_normalized.splitlines(keepends=True),
+            proposed_text.splitlines(keepends=True),
+            fromfile="transport_lattice_policy.v1.yaml (current)",
+            tofile="transport_lattice_policy.v1.yaml (proposed)",
+            lineterm="",
+        )
+    )
+    diff_text = "".join(diff_lines) if diff_lines else "(no changes)"
+
+    return {
+        "lane_id": req.lane_id,
+        "diff": diff_text,
+        "applied_thresholds": req.thresholds,
+        "note": "Read-only. This diff has not been applied. Apply manually after review.",
     }

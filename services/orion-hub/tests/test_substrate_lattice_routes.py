@@ -525,3 +525,62 @@ def test_simulate_no_db_writes(client) -> None:
         and "/lanes" in getattr(r, "path", "")
     ]
     assert write_routes_on_lanes == []
+
+
+# ── /transport/draft-policy-patch ───────────────────────────────
+
+
+def test_draft_patch_returns_diff_text(client) -> None:
+    resp = client.post(
+        "/api/substrate-lattice/transport/draft-policy-patch",
+        json={
+            "lane_id": "transport",
+            "thresholds": {"contract_pressure_watch_at": 0.75},
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "diff" in body
+    assert isinstance(body["diff"], str)
+    assert "lane_id" in body
+    assert "applied_thresholds" in body
+    assert "note" in body
+
+
+def test_draft_patch_diff_contains_changed_value(client) -> None:
+    resp = client.post(
+        "/api/substrate-lattice/transport/draft-policy-patch",
+        json={
+            "lane_id": "transport",
+            "thresholds": {"contract_pressure_watch_at": 0.75},
+        },
+    )
+    body = resp.json()
+    # The diff should mention the affected field
+    assert "contract_pressure" in body["diff"] or "watch_at" in body["diff"]
+
+
+def test_draft_patch_empty_thresholds_returns_no_changes(client) -> None:
+    resp = client.post(
+        "/api/substrate-lattice/transport/draft-policy-patch",
+        json={"lane_id": "transport", "thresholds": {}},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["diff"] == "(no changes)"
+
+
+def test_draft_patch_does_not_write_files(client) -> None:
+    """Endpoint must not modify the policy YAML file."""
+    from pathlib import Path
+    policy_path = (
+        Path(__file__).resolve().parents[3]
+        / "config" / "substrate-lattice" / "transport_lattice_policy.v1.yaml"
+    )
+    before_mtime = policy_path.stat().st_mtime if policy_path.exists() else None
+    client.post(
+        "/api/substrate-lattice/transport/draft-policy-patch",
+        json={"lane_id": "transport", "thresholds": {"contract_pressure_watch_at": 0.99}},
+    )
+    after_mtime = policy_path.stat().st_mtime if policy_path.exists() else None
+    assert before_mtime == after_mtime, "Policy YAML was modified — must not happen"

@@ -45,11 +45,17 @@ _LANES: list[dict[str, Any]] = [
 ]
 
 
+_engine_instance: Any = None
+
+
 def _engine():
-    uri = os.getenv("POSTGRES_URI", "").strip()
-    if not uri:
-        raise HTTPException(status_code=503, detail="postgres_uri_not_configured")
-    return create_engine(uri, pool_pre_ping=True)
+    global _engine_instance
+    if _engine_instance is None:
+        uri = os.getenv("POSTGRES_URI", "").strip()
+        if not uri:
+            raise HTTPException(status_code=503, detail="postgres_uri_not_configured")
+        _engine_instance = create_engine(uri, pool_pre_ping=True)
+    return _engine_instance
 
 
 # Used by gate and simulate endpoints added in later tasks.
@@ -269,7 +275,8 @@ _TRANSPORT_CHANNELS: dict[str, dict] = {
 }
 
 _CEILING_RANK = [
-    "ignore", "no_op_motif", "watch", "summarize", "read_only", "dry_run", "request_operator"
+    "ignore", "no_op_motif", "watch", "summarize",
+    "read_only", "propose_read_only", "dry_run", "request_operator"
 ]
 
 
@@ -394,7 +401,11 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
 
     # --- action_ceiling gate ---
     dispatch_mode = dispatch.get("dispatch_mode") or "dry_run"
-    _KNOWN_CEILING_STATES = {"dry_run", "prepare_only", "dispatch_read_only", "ignore", "watch", "summarize"}
+    _KNOWN_CEILING_STATES = {
+        "dry_run", "read_only", "propose_read_only", "request_operator",
+        "summarize", "watch", "ignore",
+        "prepare_only", "dispatch_read_only",  # legacy runtime modes
+    }
     action_ceiling_state = dispatch_mode if dispatch_mode in _KNOWN_CEILING_STATES else "unknown"
     action_ceiling_reason = f"dispatch_mode={dispatch_mode}"
 

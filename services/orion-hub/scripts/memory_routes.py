@@ -184,7 +184,11 @@ async def memory_patch_card(
         updated = await mc_dal.update_card(pool, id_or_slug, patch, actor="operator")
     except Exception as exc:
         _http_if_missing_memory_schema(exc)
-        raise
+        if isinstance(exc, (TimeoutError, OSError)):
+            logger.warning("memory_patch_card transport error=%s", exc)
+            raise HTTPException(status_code=503, detail="memory_store_error") from exc
+        logger.warning("memory_patch_card_failed error=%s", exc)
+        raise HTTPException(status_code=500, detail="patch_failed") from exc
     if not updated:
         raise HTTPException(status_code=404, detail="card_not_found")
     return updated.model_dump(mode="json")

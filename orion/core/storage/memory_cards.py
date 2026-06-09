@@ -62,13 +62,26 @@ def _slugify(title: str) -> str:
     return f"{base}-{uuid4().hex[:8]}"
 
 
+def _parse_jsonb_field(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
 def _row_to_card(row: asyncpg.Record) -> MemoryCardV1:
-    th = row["time_horizon"]
-    time_horizon = TimeHorizonV1.model_validate(th) if isinstance(th, dict) else None
-    ev = row["evidence"] or []
-    evidence = [EvidenceItemV1.model_validate(x) for x in ev] if isinstance(ev, list) else []
-    sub = row["subschema"]
-    subschema = dict(sub) if isinstance(sub, dict) else {}
+    th_raw = _parse_jsonb_field(row["time_horizon"])
+    time_horizon = TimeHorizonV1.model_validate(th_raw) if isinstance(th_raw, dict) else None
+    ev_raw = _parse_jsonb_field(row["evidence"]) or []
+    evidence = [EvidenceItemV1.model_validate(x) for x in ev_raw] if isinstance(ev_raw, list) else []
+    sub_raw = _parse_jsonb_field(row["subschema"])
+    subschema = dict(sub_raw) if isinstance(sub_raw, dict) else {}
     return MemoryCardV1(
         card_id=row["card_id"],
         slug=row["slug"],
@@ -358,7 +371,7 @@ async def update_card(
         for key, val in cols.items():
             cast = "::jsonb" if key in jsonb_cols else ""
             set_parts.append(f"{key} = ${idx}{cast}")
-            args.append(val)
+            args.append(_jsonb_param(val) if key in jsonb_cols else val)
             idx += 1
         set_parts.append("updated_at = now()")
         args.append(cid)

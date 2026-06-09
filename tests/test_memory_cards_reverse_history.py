@@ -111,3 +111,59 @@ def test_reverse_history_edge_remove_restores_edge() -> None:
             await pool.close()
 
     asyncio.run(_body())
+
+
+@pytest.mark.skipif(not os.environ.get("RECALL_PG_DSN"), reason="RECALL_PG_DSN not set")
+def test_update_card_patch_jsonb_fields() -> None:
+    """Hub Save metadata sends time_horizon/evidence/subschema — must json.dumps for asyncpg."""
+    pytest.importorskip("asyncpg")
+    pytest.importorskip("psycopg2")
+    import asyncpg
+
+    from orion.core.contracts.memory_cards import MemoryCardCreateV1, MemoryCardPatchV1
+    from orion.core.storage.memory_cards import apply_memory_cards_schema, get_card, insert_card, update_card
+
+    dsn = os.environ["RECALL_PG_DSN"]
+    apply_memory_cards_schema(dsn)
+
+    async def _body() -> None:
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=1)
+        slug = f"patch-jsonb-{uuid4().hex[:8]}"
+        try:
+            cid = await insert_card(
+                pool,
+                MemoryCardCreateV1(
+                    types=["fact"],
+                    title=slug,
+                    summary="summary",
+                    provenance="operator_highlight",
+                    time_horizon={"kind": "era_bound", "start": "2026-04-25"},
+                    evidence=[{"source": "turn-1", "excerpt": "hello", "ts": None}],
+                ),
+                actor="pytest",
+            )
+            card = await get_card(pool, str(cid))
+            assert card is not None
+            patch = MemoryCardPatchV1.model_validate(
+                {
+                    "confidence": "likely",
+                    "sensitivity": "private",
+                    "priority": "episodic_detail",
+                    "provenance": "operator_highlight",
+                    "visibility_scope": ["chat"],
+                    "summary": card.summary,
+                    "still_true": [],
+                    "evidence": [e.model_dump(mode="json") for e in card.evidence],
+                    "time_horizon": {"kind": "timeless"},
+                }
+            )
+            updated = await update_card(pool, str(cid), patch, actor="pytest")
+            assert updated is not None
+            assert updated.time_horizon is not None
+            assert updated.time_horizon.kind == "timeless"
+            assert len(updated.evidence) == 1
+        finally:
+            await pool.execute("DELETE FROM memory_cards WHERE slug = $1", slug)
+            await pool.close()
+
+    asyncio.run(_body())

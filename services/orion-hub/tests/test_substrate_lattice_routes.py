@@ -426,13 +426,15 @@ def test_simulate_returns_comparison_when_thresholds_change(client) -> None:
     chain = _sample_proof_chain_for_gates(contract_pressure=1.0, transport_pressure=0.0)
     with patch.object(
         substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ), patch.object(
+        substrate_lattice_routes, "_load_yaml", return_value={}
     ):
         resp = client.post(
             "/api/substrate-lattice/transport/simulate",
             json={
                 "lane_id": "transport",
                 "thresholds": {
-                    "contract_pressure_watch_at": 0.99,  # raise above 1.0 → suppress
+                    "contract_pressure_watch_at": 1.1,  # above 1.0 → suppresses channel
                 },
             },
         )
@@ -441,7 +443,11 @@ def test_simulate_returns_comparison_when_thresholds_change(client) -> None:
     assert "current" in body
     assert "simulated" in body
     assert "changed" in body
-    assert body["simulated"]["bucket"] in ("capability_targets", "suppressed_targets")
+    # With all pressures at 0.0 except contract_pressure=1.0, current should promote
+    assert body["current"]["bucket"] == "capability_targets"
+    # With watch_at raised to 1.1, contract channel no longer promotes → suppressed
+    assert body["simulated"]["bucket"] == "suppressed_targets"
+    assert body["changed"] is True
 
 
 def test_simulate_contract_suppressed_when_threshold_above_value(client) -> None:
@@ -452,6 +458,8 @@ def test_simulate_contract_suppressed_when_threshold_above_value(client) -> None
     )
     with patch.object(
         substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ), patch.object(
+        substrate_lattice_routes, "_load_yaml", return_value={}
     ):
         resp = client.post(
             "/api/substrate-lattice/transport/simulate",
@@ -480,6 +488,8 @@ def test_simulate_no_change_when_same_thresholds(client) -> None:
     )
     with patch.object(
         substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ), patch.object(
+        substrate_lattice_routes, "_load_yaml", return_value={}
     ):
         resp = client.post(
             "/api/substrate-lattice/transport/simulate",
@@ -505,3 +515,13 @@ def test_simulate_404_when_no_chain(client) -> None:
             json={"lane_id": "transport", "thresholds": {}},
         )
     assert resp.status_code == 404
+
+
+def test_simulate_no_db_writes(client) -> None:
+    """Simulate POST route must not produce any write routes on the /lanes path."""
+    write_routes_on_lanes = [
+        r for r in substrate_lattice_routes.router.routes
+        if "POST" in getattr(r, "methods", set())
+        and "/lanes" in getattr(r, "path", "")
+    ]
+    assert write_routes_on_lanes == []

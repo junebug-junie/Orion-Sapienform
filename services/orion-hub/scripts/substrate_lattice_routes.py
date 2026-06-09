@@ -236,6 +236,9 @@ def _load_transport_proof_chain() -> dict[str, Any] | None:
     }
 
 
+# Channel definitions for in-memory salience computation.
+# IMPORTANT: These values MIRROR config/substrate-lattice/transport_lattice_policy.v1.yaml.
+# If you edit dimension_weights or watch_at in the YAML, update this dict to match.
 _TRANSPORT_CHANNELS: dict[str, dict] = {
     "transport_pressure": {
         "dimension": "delivery_integrity",
@@ -291,7 +294,7 @@ def _compute_salience(
     if promoted_ceilings:
         action_ceiling = max(
             promoted_ceilings,
-            key=lambda c: _CEILING_RANK.index(c) if c in _CEILING_RANK else 0,
+            key=lambda c: _CEILING_RANK.index(c) if c in _CEILING_RANK else -1,
         )
         bucket = "capability_targets"
     else:

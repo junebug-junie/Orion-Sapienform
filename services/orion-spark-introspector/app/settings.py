@@ -21,10 +21,18 @@ class Settings(BaseSettings):
     # Chassis
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
-    # Consume candidates (legacy dict payloads and/or envelopes)
+    # Subscribe pattern for incoming candidates (wildcard matches candidate + candidate:log).
     channel_spark_candidate: str = Field(
         "orion:spark:introspect:candidate*",
         validation_alias=AliasChoices("CHANNEL_SPARK_INTROSPECT_CANDIDATE", "SPARK_CANDIDATE_CHANNEL"),
+    )
+    # Concrete publish channel for completed introspection (must not contain wildcards).
+    channel_spark_candidate_publish: str = Field(
+        "orion:spark:introspect:candidate",
+        validation_alias=AliasChoices(
+            "CHANNEL_SPARK_INTROSPECT_CANDIDATE_PUBLISH",
+            "SPARK_CANDIDATE_PUBLISH_CHANNEL",
+        ),
     )
 
     # Cognition Trace Intake

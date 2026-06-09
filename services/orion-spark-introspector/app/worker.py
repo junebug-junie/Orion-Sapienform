@@ -1621,12 +1621,18 @@ async def run_heavy_spark_introspection(
                     causality_chain=source_env.causality_chain,
                     payload=final_payload,
                 )
-                if _is_publishable_channel(settings.channel_spark_candidate):
-                    await publish_target.publish(settings.channel_spark_candidate, completed)
+                publish_channel = settings.channel_spark_candidate_publish
+                if _is_publishable_channel(publish_channel):
+                    await publish_target.publish(publish_channel, completed)
+                    logger.info(
+                        "[%s] Spark introspection published channel=%s",
+                        candidate.trace_id,
+                        publish_channel,
+                    )
                 else:
                     logger.warning(
                         "Skipping spark candidate publish for non-concrete channel=%s",
-                        settings.channel_spark_candidate,
+                        publish_channel,
                     )
 
                 try:
@@ -1640,8 +1646,6 @@ async def run_heavy_spark_introspection(
                     await manager.broadcast(ws_introspection)
                 except Exception as ex:
                     logger.warning("Failed to broadcast introspection: %s", ex)
-
-                logger.info("[%s] Spark introspection published", candidate.trace_id)
                 await ig.mark_done(redis, settings=settings, trace_id=trace_id)
                 _LAST_HEAVY_INTRO_MONO = time.monotonic()
 

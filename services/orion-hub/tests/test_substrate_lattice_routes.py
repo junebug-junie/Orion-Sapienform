@@ -142,6 +142,9 @@ def test_transport_latest_returns_proof_chain(client) -> None:
     assert "dispatch" in body
     assert "feedback" in body
     assert "motifs" in body
+    assert "receipts" in body
+    assert "field_vector" in body
+    assert "policy" in body
 
 
 def test_transport_latest_404_when_no_projection(client) -> None:

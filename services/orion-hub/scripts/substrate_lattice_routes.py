@@ -48,6 +48,7 @@ def _engine():
     return create_engine(uri, pool_pre_ping=True)
 
 
+# Used by gate and simulate endpoints added in later tasks.
 def _load_yaml(filename: str) -> dict[str, Any]:
     path = _CONFIG_DIR / filename
     if not path.exists():
@@ -56,19 +57,21 @@ def _load_yaml(filename: str) -> dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 
+def _first_json(engine, table: str, col: str, order_col: str = "generated_at") -> dict | None:
+    """Load the latest JSON payload from a substrate table. Table/col names are module-level constants."""
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(f"SELECT {col} FROM {table} ORDER BY {order_col} DESC LIMIT 1")
+        ).mappings().first()
+    if not row:
+        return None
+    payload = row[col]
+    return json.loads(payload) if isinstance(payload, str) else payload
+
+
 def _load_transport_proof_chain() -> dict[str, Any] | None:
     """Aggregate M3-L11 tables into a single proof chain dict. Returns None if no projection exists."""
     engine = _engine()
-
-    def _first_json(table: str, col: str, order_col: str = "generated_at") -> dict | None:
-        with engine.connect() as conn:
-            row = conn.execute(
-                text(f"SELECT {col} FROM {table} ORDER BY {order_col} DESC LIMIT 1")
-            ).mappings().first()
-        if not row:
-            return None
-        payload = row[col]
-        return json.loads(payload) if isinstance(payload, str) else payload
 
     # M3 transport projection
     proj_row = None
@@ -110,14 +113,14 @@ def _load_transport_proof_chain() -> dict[str, Any] | None:
         receipts.append(payload)
 
     # M4 field: capability:transport vector
-    field_raw = _first_json("substrate_field_state", "field_json")
+    field_raw = _first_json(engine, "substrate_field_state", "field_json")
     field_vector: dict[str, Any] = {}
     if field_raw:
         cap_vectors = field_raw.get("capability_vectors", {})
         field_vector = cap_vectors.get("capability:transport", {})
 
     # M5 attention
-    attn_raw = _first_json("substrate_attention_frames", "frame_json")
+    attn_raw = _first_json(engine, "substrate_attention_frames", "frame_json")
     attention: dict[str, Any] = {}
     if attn_raw:
         attention = {
@@ -129,7 +132,7 @@ def _load_transport_proof_chain() -> dict[str, Any] | None:
         }
 
     # L6 self-state: transport_integrity dimension
-    ss_raw = _first_json("substrate_self_state", "self_state_json")
+    ss_raw = _first_json(engine, "substrate_self_state", "self_state_json")
     self_state: dict[str, Any] = {}
     if ss_raw:
         dims = ss_raw.get("dimensions", {})
@@ -142,7 +145,7 @@ def _load_transport_proof_chain() -> dict[str, Any] | None:
         }
 
     # L7 proposals
-    prop_raw = _first_json("substrate_proposal_frames", "proposal_frame_json")
+    prop_raw = _first_json(engine, "substrate_proposal_frames", "proposal_frame_json")
     proposals: dict[str, Any] = {}
     if prop_raw:
         candidates = prop_raw.get("candidates", [])
@@ -158,7 +161,7 @@ def _load_transport_proof_chain() -> dict[str, Any] | None:
         }
 
     # L8 policy decisions
-    pol_raw = _first_json("substrate_policy_decision_frames", "policy_decision_frame_json")
+    pol_raw = _first_json(engine, "substrate_policy_decision_frames", "policy_decision_frame_json")
     policy: dict[str, Any] = {}
     if pol_raw:
         policy = {
@@ -170,7 +173,7 @@ def _load_transport_proof_chain() -> dict[str, Any] | None:
         }
 
     # L9 execution dispatch
-    disp_raw = _first_json("substrate_execution_dispatch_frames", "dispatch_frame_json")
+    disp_raw = _first_json(engine, "substrate_execution_dispatch_frames", "dispatch_frame_json")
     dispatch: dict[str, Any] = {}
     if disp_raw:
         dispatch = {
@@ -182,7 +185,7 @@ def _load_transport_proof_chain() -> dict[str, Any] | None:
         }
 
     # L10 feedback
-    fb_raw = _first_json("substrate_feedback_frames", "feedback_frame_json")
+    fb_raw = _first_json(engine, "substrate_feedback_frames", "feedback_frame_json")
     feedback: dict[str, Any] = {}
     if fb_raw:
         feedback = {
@@ -193,7 +196,7 @@ def _load_transport_proof_chain() -> dict[str, Any] | None:
         }
 
     # L11 consolidation motifs
-    consol_raw = _first_json("substrate_consolidation_frames", "consolidation_frame_json")
+    consol_raw = _first_json(engine, "substrate_consolidation_frames", "consolidation_frame_json")
     motifs: list[dict[str, Any]] = []
     if consol_raw:
         obs = consol_raw.get("motif_observations", [])
@@ -208,6 +211,7 @@ def _load_transport_proof_chain() -> dict[str, Any] | None:
 
     return {
         "projection": proj_row,
+        # flattened subset of projection['buses'] for quick dashboard reads
         "bus_summary": {
             "bus_id": next(iter(buses.keys()), None) if buses else None,
             "bus_health": first_bus.get("bus_health"),

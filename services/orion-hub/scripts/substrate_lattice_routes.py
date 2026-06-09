@@ -72,48 +72,119 @@ def _load_yaml(filename: str) -> dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 
-def _first_json(engine, table: str, col: str, order_col: str = "generated_at") -> dict | None:
-    """Load the latest JSON payload from a substrate table. Table/col names are module-level constants."""
+def _first_json_with_ts(engine, table: str, json_col: str, ts_col: str = "generated_at") -> tuple[dict | None, str | None]:
+    """Load the latest JSON payload and timestamp from a substrate table."""
     with engine.connect() as conn:
         row = conn.execute(
-            text(f"SELECT {col} FROM {table} ORDER BY {order_col} DESC LIMIT 1")
+            text(f"SELECT {json_col}, {ts_col} FROM {table} ORDER BY {ts_col} DESC LIMIT 1")
         ).mappings().first()
     if not row:
-        return None
-    payload = row[col]
-    return json.loads(payload) if isinstance(payload, str) else payload
+        return None, None
+    payload = row[json_col]
+    ts = row[ts_col]
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    if hasattr(ts, 'isoformat'):
+        ts = ts.isoformat()
+    elif ts is not None:
+        ts = str(ts)
+    return payload, ts
 
 
-def _load_transport_proof_chain() -> dict[str, Any] | None:
-    """Aggregate M3-L11 tables into a single proof chain dict. Returns None if no projection exists."""
+def _first_json(engine, table: str, col: str, order_col: str = "generated_at") -> dict | None:
+    """Load the latest JSON payload from a substrate table. Table/col names are module-level constants."""
+    payload, _ = _first_json_with_ts(engine, table, col, order_col)
+    return payload
+
+
+def _layer_meta(payload: dict | None, source_table: str, timestamp_str: str | None, freshness_sec: int) -> dict:
+    """Return the standard layer wrapper with status/source_table/timestamp/age_sec/values."""
+    if payload is None:
+        return {
+            "status": "missing",
+            "source_table": source_table,
+            "timestamp": None,
+            "age_sec": None,
+            "values": {}
+        }
+    age_sec = None
+    status = "missing"
+    if timestamp_str:
+        try:
+            ts = datetime.fromisoformat(timestamp_str)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age_sec = (datetime.now(timezone.utc) - ts).total_seconds()
+            status = "fresh" if age_sec <= freshness_sec else "stale"
+        except Exception:
+            status = "missing"
+    return {
+        "status": status,
+        "source_table": source_table,
+        "timestamp": timestamp_str,
+        "age_sec": round(age_sec, 1) if age_sec is not None else None,
+        "values": payload
+    }
+
+
+def _normalize_targets(targets_raw: list, bucket_name: str) -> list[dict]:
+    """Normalize a list of attention targets — strings or dicts — to a consistent object shape."""
+    result = []
+    for t in targets_raw:
+        if isinstance(t, str):
+            result.append({
+                "target_id": t,
+                "bucket": bucket_name,
+                "salience_score": None,
+                "suggested_observation_mode": None,
+                "dominant_channels": [],
+                "reasons": [],
+            })
+        elif isinstance(t, dict):
+            result.append({
+                "target_id": t.get("target_id") or t.get("id") or "",
+                "bucket": bucket_name,
+                "salience_score": t.get("salience_score"),
+                "suggested_observation_mode": t.get("suggested_observation_mode"),
+                "dominant_channels": t.get("dominant_channels") or [],
+                "reasons": t.get("reasons") or [],
+            })
+    return result
+
+
+def _load_transport_proof_chain(freshness_threshold_sec: int = 60) -> dict[str, Any] | None:
+    """Aggregate M3-L11 tables into a normalized proof chain dict. Returns None if no projection exists."""
     engine = _engine()
 
     # M3 transport projection
-    proj_row = None
+    proj_payload = None
+    proj_ts = None
     with engine.connect() as conn:
         row = conn.execute(
             text(
-                "SELECT projection_json FROM substrate_transport_bus_projection"
+                "SELECT projection_json, updated_at FROM substrate_transport_bus_projection"
                 " ORDER BY updated_at DESC LIMIT 1"
             )
         ).mappings().first()
     if row:
-        proj_row = row["projection_json"]
-        if isinstance(proj_row, str):
-            proj_row = json.loads(proj_row)
+        proj_payload = row["projection_json"]
+        if isinstance(proj_payload, str):
+            proj_payload = json.loads(proj_payload)
+        ts = row["updated_at"]
+        proj_ts = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts) if ts else None
 
-    if proj_row is None:
+    if proj_payload is None:
         return None
 
-    buses = proj_row.get("buses", {})
-    first_bus: dict[str, Any] = next(iter(buses.values()), {}) if buses else {}
+    m3_values = dict(proj_payload)
+    m3 = _layer_meta(m3_values, "substrate_transport_bus_projection", proj_ts, freshness_threshold_sec)
 
     # M3 latest reducer receipts (transport only)
     with engine.connect() as conn:
         receipt_rows = conn.execute(
             text(
                 """
-                SELECT receipt_json FROM substrate_reduction_receipts
+                SELECT receipt_json, created_at FROM substrate_reduction_receipts
                 WHERE reducer_name LIKE '%transport%'
                 ORDER BY created_at DESC
                 LIMIT 5
@@ -121,132 +192,209 @@ def _load_transport_proof_chain() -> dict[str, Any] | None:
             )
         ).mappings().all()
     receipts = []
+    latest_receipt_ts = None
     for r in receipt_rows:
+        if latest_receipt_ts is None:
+            ts = r["created_at"]
+            latest_receipt_ts = ts.isoformat() if hasattr(ts, 'isoformat') else str(ts) if ts else None
         payload = r["receipt_json"]
         if isinstance(payload, str):
             payload = json.loads(payload)
         receipts.append(payload)
 
+    m3_receipts_values = {"count": len(receipts), "receipts": receipts}
+    m3_receipts = _layer_meta(m3_receipts_values, "substrate_reduction_receipts", latest_receipt_ts, freshness_threshold_sec)
+
     # M4 field: capability:transport vector
-    field_raw = _first_json(engine, "substrate_field_state", "field_json")
-    field_vector: dict[str, Any] = {}
+    field_raw, field_ts = _first_json_with_ts(engine, "substrate_field_state", "field_json", "generated_at")
+    m4_values = None
     if field_raw:
         cap_vectors = field_raw.get("capability_vectors", {})
         field_vector = cap_vectors.get("capability:transport", {})
+        m4_values = {
+            "field_vector": field_vector,
+            "has_transport_vector": bool(field_vector),
+        }
+    m4 = _layer_meta(m4_values, "substrate_field_state", field_ts, freshness_threshold_sec)
 
     # M5 attention
-    attn_raw = _first_json(engine, "substrate_attention_frames", "frame_json")
-    attention: dict[str, Any] = {}
+    attn_raw, attn_ts = _first_json_with_ts(engine, "substrate_attention_frames", "frame_json", "generated_at")
+    m5_values = None
     if attn_raw:
-        attention = {
+        dominant_targets = _normalize_targets(attn_raw.get("dominant_targets", []), "dominant_targets")
+        capability_targets = _normalize_targets(attn_raw.get("capability_targets", []), "capability_targets")
+        suppressed_targets = _normalize_targets(attn_raw.get("suppressed_targets", []), "suppressed_targets")
+
+        capability_transport_bucket = None
+        for bucket_name, targets in [
+            ("dominant_targets", dominant_targets),
+            ("capability_targets", capability_targets),
+            ("suppressed_targets", suppressed_targets),
+        ]:
+            for t in targets:
+                if t.get("target_id") == "capability:transport":
+                    capability_transport_bucket = bucket_name
+                    break
+            if capability_transport_bucket is not None:
+                break
+
+        m5_values = {
             "frame_id": attn_raw.get("frame_id"),
-            "generated_at": attn_raw.get("generated_at"),
-            "dominant_targets": attn_raw.get("dominant_targets", []),
-            "capability_targets": attn_raw.get("capability_targets", []),
-            "suppressed_targets": attn_raw.get("suppressed_targets", []),
+            "dominant_targets": dominant_targets,
+            "capability_targets": capability_targets,
+            "suppressed_targets": suppressed_targets,
+            "capability_transport_bucket": capability_transport_bucket,
         }
+    m5 = _layer_meta(m5_values, "substrate_attention_frames", attn_ts, freshness_threshold_sec)
 
     # L6 self-state: transport_integrity dimension
-    ss_raw = _first_json(engine, "substrate_self_state", "self_state_json")
-    self_state: dict[str, Any] = {}
+    ss_raw, ss_ts = _first_json_with_ts(engine, "substrate_self_state", "self_state_json", "generated_at")
+    l6_values = None
     if ss_raw:
         dims = ss_raw.get("dimensions", {})
-        self_state = {
+        l6_values = {
             "self_state_id": ss_raw.get("self_state_id"),
-            "generated_at": ss_raw.get("generated_at"),
             "overall_condition": ss_raw.get("overall_condition"),
             "overall_intensity": ss_raw.get("overall_intensity"),
             "transport_integrity": dims.get("transport_integrity"),
         }
+    l6 = _layer_meta(l6_values, "substrate_self_state", ss_ts, freshness_threshold_sec)
 
     # L7 proposals
-    prop_raw = _first_json(engine, "substrate_proposal_frames", "proposal_frame_json")
-    proposals: dict[str, Any] = {}
+    prop_raw, prop_ts = _first_json_with_ts(engine, "substrate_proposal_frames", "proposal_frame_json", "generated_at")
+    l7_values = None
     if prop_raw:
         candidates = prop_raw.get("candidates", [])
         transport_candidates = [
             c for c in candidates if "transport" in c.get("target_id", "")
         ]
-        proposals = {
+        l7_values = {
             "frame_id": prop_raw.get("frame_id"),
-            "generated_at": prop_raw.get("generated_at"),
             "count": len(candidates),
             "transport_count": len(transport_candidates),
             "candidates": transport_candidates,
         }
+    l7 = _layer_meta(l7_values, "substrate_proposal_frames", prop_ts, freshness_threshold_sec)
 
     # L8 policy decisions
-    pol_raw = _first_json(engine, "substrate_policy_decision_frames", "policy_decision_frame_json")
-    policy: dict[str, Any] = {}
+    pol_raw, pol_ts = _first_json_with_ts(engine, "substrate_policy_decision_frames", "policy_decision_frame_json", "generated_at")
+    l8_values = None
     if pol_raw:
-        policy = {
+        l8_values = {
             "frame_id": pol_raw.get("frame_id"),
-            "generated_at": pol_raw.get("generated_at"),
             "approved_count": pol_raw.get("approved_count", 0),
             "rejected_count": pol_raw.get("rejected_count", 0),
             "policy_mode": pol_raw.get("policy_mode"),
         }
+    l8 = _layer_meta(l8_values, "substrate_policy_decision_frames", pol_ts, freshness_threshold_sec)
 
     # L9 execution dispatch
-    disp_raw = _first_json(engine, "substrate_execution_dispatch_frames", "dispatch_frame_json")
-    dispatch: dict[str, Any] = {}
+    disp_raw, disp_ts = _first_json_with_ts(engine, "substrate_execution_dispatch_frames", "dispatch_frame_json", "generated_at")
+    l9_values = None
     if disp_raw:
-        dispatch = {
+        l9_values = {
             "frame_id": disp_raw.get("frame_id"),
-            "generated_at": disp_raw.get("generated_at"),
             "dispatch_mode": disp_raw.get("dispatch_mode"),
             "dispatch_count": disp_raw.get("dispatch_count", 0),
             "blocked_count": disp_raw.get("blocked_count", 0),
         }
+    l9 = _layer_meta(l9_values, "substrate_execution_dispatch_frames", disp_ts, freshness_threshold_sec)
 
     # L10 feedback
-    fb_raw = _first_json(engine, "substrate_feedback_frames", "feedback_frame_json")
-    feedback: dict[str, Any] = {}
+    fb_raw, fb_ts = _first_json_with_ts(engine, "substrate_feedback_frames", "feedback_frame_json", "generated_at")
+    l10_values = None
     if fb_raw:
-        feedback = {
+        l10_values = {
             "frame_id": fb_raw.get("frame_id"),
-            "generated_at": fb_raw.get("generated_at"),
             "outcome_status": fb_raw.get("outcome_status"),
             "feedback_kind": fb_raw.get("feedback_kind"),
         }
+    l10 = _layer_meta(l10_values, "substrate_feedback_frames", fb_ts, freshness_threshold_sec)
 
     # L11 consolidation motifs
-    consol_raw = _first_json(engine, "substrate_consolidation_frames", "consolidation_frame_json")
-    motifs: list[dict[str, Any]] = []
+    consol_raw, consol_ts = _first_json_with_ts(engine, "substrate_consolidation_frames", "consolidation_frame_json", "generated_at")
+    l11_values = None
     if consol_raw:
         obs = consol_raw.get("motif_observations", [])
         motifs = [
             {
                 "motif_id": m.get("motif_id"),
-                "label": m.get("label"),
+                "label": m.get("label") or m.get("motif_label") or m.get("motif_id"),
+                "strength": m.get("strength"),
                 "recurrence_count": m.get("recurrence_count", 0),
+                "timestamp": consol_ts,
+                "reasons": m.get("reasons") or [],
+                "evidence": m.get("evidence") or [],
             }
             for m in obs
         ]
+        l11_values = {
+            "frame_id": consol_raw.get("frame_id"),
+            "motifs": motifs,
+        }
+    l11 = _layer_meta(l11_values, "substrate_consolidation_frames", consol_ts, freshness_threshold_sec)
 
-    return {
-        "projection": proj_row,
-        # flattened subset of projection['buses'] for quick dashboard reads
-        "bus_summary": {
-            "bus_id": next(iter(buses.keys()), None) if buses else None,
-            "bus_health": first_bus.get("bus_health"),
-            "transport_pressure": first_bus.get("transport_pressure"),
-            "contract_pressure": first_bus.get("contract_pressure"),
-            "catalog_drift_pressure": first_bus.get("catalog_drift_pressure"),
-            "observer_failure_pressure": first_bus.get("observer_failure_pressure"),
-            "delivery_confidence": first_bus.get("delivery_confidence"),
-            "observed_at": first_bus.get("observed_at"),
-        },
-        "receipts": receipts,
-        "field_vector": field_vector,
-        "attention": attention,
-        "self_state": self_state,
-        "proposals": proposals,
-        "policy": policy,
-        "dispatch": dispatch,
-        "feedback": feedback,
-        "motifs": motifs,
+    transport = {
+        "m3": m3,
+        "m3_receipts": m3_receipts,
+        "m4": m4,
+        "m5": m5,
+        "l6": l6,
+        "l7": l7,
+        "l8": l8,
+        "l9": l9,
+        "l10": l10,
+        "l11": l11,
     }
+
+    chain: dict[str, Any] = {
+        "transport": transport,
+        "freshness_threshold_sec": freshness_threshold_sec,
+    }
+    chain["verdict"] = _compute_verdict(chain)
+    return chain
+
+
+def _compute_verdict(chain: dict[str, Any]) -> str:
+    """Return a human-readable summary of the transport lane's freshness state."""
+    transport = chain.get("transport", {})
+    m3 = transport.get("m3", {})
+
+    if not m3 or m3.get("status") == "missing":
+        return "Transport lane: no projection data found."
+
+    if m3.get("status") == "stale":
+        age_sec = m3.get("age_sec") or 0
+        if age_sec < 3600:
+            age_str = f"{int(age_sec)}s"
+        else:
+            age_str = f"{age_sec / 3600:.1f}h"
+        return f"Transport lane stale: latest M3 projection is {age_str} old."
+
+    # Collect layer statuses
+    layer_order = ["m3", "m3_receipts", "m4", "m5", "l6", "l7", "l8", "l9", "l10", "l11"]
+    layer_labels = {
+        "m3": "M3", "m3_receipts": "M3 receipts", "m4": "M4", "m5": "M5",
+        "l6": "L6", "l7": "L7", "l8": "L8", "l9": "L9", "l10": "L10", "l11": "L11",
+    }
+
+    stale_layers = []
+    highest_fresh_layer = None
+    for key in layer_order:
+        layer = transport.get(key, {})
+        status = layer.get("status")
+        if status == "fresh":
+            highest_fresh_layer = layer_labels[key]
+        elif status == "stale":
+            stale_layers.append(layer_labels[key])
+
+    if not stale_layers:
+        return "Transport lane live and fresh through all layers."
+
+    stale_str = ", ".join(stale_layers)
+    if highest_fresh_layer:
+        return f"Transport lane live and fresh through {highest_fresh_layer}; {stale_str} stale."
+    return f"Transport lane partially stale: {stale_str} stale."
 
 
 # Channel definitions for in-memory salience computation.
@@ -327,43 +475,41 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
     gate_policy = _load_yaml("gate_policy.v1.yaml")
     lattice_policy = _load_yaml("transport_lattice_policy.v1.yaml")
 
-    bus = chain.get("bus_summary", {})
-    dispatch = chain.get("dispatch", {})
-    receipts = chain.get("receipts", [])
-    proj = chain.get("projection", {})
+    transport = chain.get("transport", {})
+    m3 = transport.get("m3", {})
+    m3_receipts = transport.get("m3_receipts", {})
+    m5 = transport.get("m5", {})
+    l9 = transport.get("l9", {})
+
+    m3_status = m3.get("status", "missing")
+    m3_values = m3.get("values", {}) if m3_status != "missing" else {}
+    buses = m3_values.get("buses", {})
 
     # --- freshness gate ---
     freshness_max_age = (
         gate_policy.get("gates", {}).get("freshness", {}).get("max_age_sec", 30)
     )
-    observed_at_str = bus.get("observed_at") or proj.get("updated_at")
-    freshness_state = "unknown"
-    freshness_reason = "no observed_at available"
-    if observed_at_str:
-        try:
-            observed_dt = datetime.fromisoformat(observed_at_str)
-            if observed_dt.tzinfo is None:
-                observed_dt = observed_dt.replace(tzinfo=timezone.utc)
-            age_sec = (datetime.now(timezone.utc) - observed_dt).total_seconds()
-            if age_sec <= freshness_max_age:
-                freshness_state = "pass"
-                freshness_reason = f"projection {age_sec:.1f}s old (max {freshness_max_age}s)"
-            else:
-                freshness_state = "blocked"
-                freshness_reason = f"projection {age_sec:.1f}s old — exceeds {freshness_max_age}s"
-        except Exception:
-            freshness_reason = "could not parse observed_at"
+    if m3_status == "fresh":
+        age_sec = m3.get("age_sec") or 0
+        freshness_state = "pass"
+        freshness_reason = f"projection {age_sec:.1f}s old (max {freshness_max_age}s)"
+    elif m3_status == "stale":
+        age_sec = m3.get("age_sec") or 0
+        freshness_state = "blocked"
+        freshness_reason = f"projection {age_sec:.1f}s old — exceeds {freshness_max_age}s"
+    else:
+        freshness_state = "unknown"
+        freshness_reason = "no projection data available"
 
     # --- evidence gate ---
     evidence_min = (
         gate_policy.get("gates", {}).get("evidence", {}).get("min_events", 1)
     )
-    evidence_count = len(receipts)
+    evidence_count = (m3_receipts.get("values") or {}).get("count", 0)
     evidence_state = "pass" if evidence_count >= evidence_min else "blocked"
     evidence_reason = f"{evidence_count} reducer receipt(s) found (min {evidence_min})"
 
     # --- lineage gate ---
-    buses = (proj or {}).get("buses", {})
     first_bus = next(iter(buses.values()), {}) if buses else {}
     has_trace = bool(first_bus.get("source_trace_id"))
     lineage_state = "pass" if has_trace else "blocked"
@@ -375,8 +521,8 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
 
     # --- pressure gate ---
     channels = lattice_policy.get("channels", {})
-    transport_p = float(bus.get("transport_pressure") or 0.0)
-    observer_p = float(bus.get("observer_failure_pressure") or 0.0)
+    transport_p = float(m3_values.get("transport_pressure") or 0.0)
+    observer_p = float(m3_values.get("observer_failure_pressure") or 0.0)
     transport_watch_at = float(
         (channels.get("transport_pressure") or {}).get("watch_at", 0.25)
     )
@@ -395,17 +541,39 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
     contract_watch_at = float(
         (channels.get("contract_pressure") or {}).get("watch_at", 0.50)
     )
-    contract_p = float(bus.get("contract_pressure") or 0.0)
-    if contract_p == 0.0:
-        contract_state = "quiet"
-    elif contract_p >= contract_watch_at:
-        contract_state = "watch"
+    if m3_status in ("stale", "missing"):
+        contract_state = "unknown"
+        contract_reason = f"contract state unknown: M3 projection is {m3_status}"
     else:
-        contract_state = "pass"
-    contract_reason = f"contract_pressure={contract_p:.2f} (watch_at={contract_watch_at})"
+        contract_p = float(m3_values.get("contract_pressure") or 0.0)
+        if contract_p == 0.0:
+            contract_state = "quiet"
+        elif contract_p >= contract_watch_at:
+            contract_state = "watch"
+        else:
+            contract_state = "pass"
+        contract_reason = f"contract_pressure={contract_p:.2f} (watch_at={contract_watch_at})"
+
+    # --- attention gate ---
+    m5_status = m5.get("status", "missing")
+    if m5_status == "missing":
+        attention_state = "unknown"
+        attention_reason = "no attention frame data available"
+    else:
+        cap_bucket = (m5.get("values") or {}).get("capability_transport_bucket")
+        if cap_bucket is not None:
+            attention_state = "pass"
+            attention_reason = f"capability:transport in {cap_bucket}"
+        else:
+            attention_state = "blocked"
+            attention_reason = "capability:transport not found in any attention bucket"
 
     # --- action_ceiling gate ---
-    dispatch_mode = dispatch.get("dispatch_mode") or "dry_run"
+    l9_status = l9.get("status", "missing")
+    if l9_status == "missing":
+        dispatch_mode = "unknown"
+    else:
+        dispatch_mode = (l9.get("values") or {}).get("dispatch_mode") or "dry_run"
     _KNOWN_CEILING_STATES = {
         "dry_run", "read_only", "propose_read_only", "request_operator",
         "summarize", "watch", "ignore",
@@ -420,6 +588,7 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
         {"gate_id": "lineage", "state": lineage_state, "reason": lineage_reason},
         {"gate_id": "pressure", "state": pressure_state, "reason": pressure_reason},
         {"gate_id": "contract", "state": contract_state, "reason": contract_reason},
+        {"gate_id": "attention", "state": attention_state, "reason": attention_reason},
         {"gate_id": "action_ceiling", "state": action_ceiling_state, "reason": action_ceiling_reason},
     ]
 
@@ -431,15 +600,19 @@ async def lattice_lanes() -> list[dict[str, Any]]:
 
 @router.get("/transport/latest")
 async def transport_latest() -> dict[str, Any]:
-    chain = _load_transport_proof_chain()
+    chain = _load_transport_proof_chain(freshness_threshold_sec=_freshness_threshold())
     if chain is None:
         raise HTTPException(status_code=404, detail="transport_projection_not_found")
     return chain
 
 
+def _freshness_threshold() -> int:
+    return int(os.getenv("SUBSTRATE_LATTICE_FRESHNESS_THRESHOLD_SEC", "60"))
+
+
 @router.get("/transport/gates")
 async def transport_gates() -> dict[str, Any]:
-    chain = _load_transport_proof_chain()
+    chain = _load_transport_proof_chain(freshness_threshold_sec=_freshness_threshold())
     if chain is None:
         raise HTTPException(status_code=404, detail="transport_projection_not_found")
     return {
@@ -455,11 +628,13 @@ class SimulateRequest(BaseModel):
 
 @router.post("/transport/simulate")
 async def transport_simulate(req: SimulateRequest) -> dict[str, Any]:
-    chain = _load_transport_proof_chain()
+    chain = _load_transport_proof_chain(freshness_threshold_sec=_freshness_threshold())
     if chain is None:
         raise HTTPException(status_code=404, detail="transport_projection_not_found")
 
-    bus = chain.get("bus_summary", {})
+    # Extract bus values for salience computation
+    m3 = chain.get("transport", {}).get("m3", {})
+    bus = m3.get("values", {}) if m3.get("status") != "missing" else {}
 
     lattice_policy = _load_yaml("transport_lattice_policy.v1.yaml")
     policy_channels = lattice_policy.get("channels", {})

@@ -332,6 +332,13 @@ class Settings(BaseSettings):
         description="Optional Postgres DSN for grammar_* tables; falls back to DATABASE_URL.",
     )
 
+    # --- Substrate Lattice tuning console ---
+    SUBSTRATE_LATTICE_FRESHNESS_THRESHOLD_SEC: int = Field(
+        default=60,
+        alias="SUBSTRATE_LATTICE_FRESHNESS_THRESHOLD_SEC",
+        description="Age in seconds before a substrate layer reading is marked stale (default 60s).",
+    )
+
     MEMORY_GRAPH_APPROVAL_BACKEND: str = Field(default="auto", alias="MEMORY_GRAPH_APPROVAL_BACKEND")
     RDF_STORE_GRAPH_STORE_URL: str = Field(default="", alias="RDF_STORE_GRAPH_STORE_URL")
     RDF_STORE_UPDATE_URL: str = Field(default="", alias="RDF_STORE_UPDATE_URL")

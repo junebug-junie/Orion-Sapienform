@@ -1618,6 +1618,7 @@ loadDismissedIds();
         || h === "#signals"
         || h === "#forge"
         || h === "#substrate-atlas"
+        || h === "#collapse-mirror"
       ) {
         history.replaceState(null, "", "#hub");
       }

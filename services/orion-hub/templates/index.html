@@ -90,6 +90,13 @@
             class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
             role="button"
           >Pressure</a>
+          <a
+            id="collapseMirrorTabButton"
+            href="#collapse-mirror"
+            data-hash-target="#collapse-mirror"
+            class="px-3 py-1.5 text-xs font-semibold rounded-full bg-gray-800 text-gray-200 border border-gray-700 hover:bg-gray-700"
+            role="button"
+          >Collapse Mirror</a>
         </div>
       </div>
       <div class="flex items-center gap-3">
@@ -836,8 +843,15 @@
         </div>
       </div>
 
-      <!-- ✅ UPDATED: Collapse Mirror (keeps placement; adds required DOM + fields) -->
-      <div class="w-full lg:w-1/2 bg-gray-900 rounded-2xl shadow-lg p-6 space-y-4">
+    </div>
+
+    
+
+        </div>
+      </section>
+
+      <section id="collapse-mirror" data-panel="collapse-mirror" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-6 space-y-4 min-h-[56rem]">
+        <!-- ✅ Collapse Mirror — lifted out of hub into its own tab section -->
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-2">
             <h2 class="text-xl font-bold text-white">Collapse Mirror</h2>
@@ -922,12 +936,6 @@
         </div>
 
         <div id="collapseStatus" class="text-xs text-gray-400"></div>
-      </div>
-    </div>
-
-    
-
-        </div>
       </section>
 
       <section id="memory" data-panel="memory" class="hidden w-full bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col gap-4 min-h-[56rem]">
@@ -3326,6 +3334,7 @@
   <script src="/static/js/memory.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/mind_provenance.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/substrate-effect-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/collapse-mirror.js"></script>
   <script src="/static/js/app.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
 </body>
 </html>

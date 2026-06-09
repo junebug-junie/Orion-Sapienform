@@ -287,16 +287,24 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
     )
 
     # --- pressure gate ---
+    channels = lattice_policy.get("channels", {})
     transport_p = float(bus.get("transport_pressure") or 0.0)
     observer_p = float(bus.get("observer_failure_pressure") or 0.0)
-    pressure_state = "quiet" if (transport_p + observer_p) == 0.0 else "watch"
+    transport_watch_at = float(
+        (channels.get("transport_pressure") or {}).get("watch_at", 0.25)
+    )
+    observer_watch_at = float(
+        (channels.get("observer_failure_pressure") or {}).get("watch_at", 0.25)
+    )
+    pressure_active = transport_p >= transport_watch_at or observer_p >= observer_watch_at
+    pressure_state = "watch" if pressure_active else "quiet"
     pressure_reason = (
         f"transport_pressure={transport_p:.2f} "
-        f"observer_failure_pressure={observer_p:.2f}"
+        f"observer_failure_pressure={observer_p:.2f} "
+        f"(thresholds: transport={transport_watch_at}, observer={observer_watch_at})"
     )
 
     # --- contract gate ---
-    channels = lattice_policy.get("channels", {})
     contract_watch_at = float(
         (channels.get("contract_pressure") or {}).get("watch_at", 0.50)
     )
@@ -311,7 +319,8 @@ def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
 
     # --- action_ceiling gate ---
     dispatch_mode = dispatch.get("dispatch_mode") or "dry_run"
-    action_ceiling_state = dispatch_mode
+    _KNOWN_CEILING_STATES = {"dry_run", "prepare_only", "dispatch_read_only", "ignore", "watch", "summarize"}
+    action_ceiling_state = dispatch_mode if dispatch_mode in _KNOWN_CEILING_STATES else "unknown"
     action_ceiling_reason = f"dispatch_mode={dispatch_mode}"
 
     return [

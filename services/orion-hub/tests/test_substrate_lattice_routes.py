@@ -236,14 +236,12 @@ def _sample_proof_chain_for_gates(
 ) -> dict:
     from datetime import datetime, timedelta, timezone
 
-    observed_at = (
-        datetime.now(timezone.utc) - timedelta(seconds=bus_age_sec)
-    ).isoformat()
+    now = datetime.now(timezone.utc)
+    observed_at = (now - timedelta(seconds=bus_age_sec)).isoformat()
+    updated_at = (now - timedelta(seconds=bus_age_sec)).isoformat()
     return {
         "projection": {
-            "updated_at": (
-                datetime.now(timezone.utc) - timedelta(seconds=bus_age_sec)
-            ).isoformat(),
+            "updated_at": updated_at,
             "buses": {
                 "bus:athena": {
                     "source_trace_id": source_trace_id,
@@ -349,6 +347,27 @@ def test_gates_404_when_no_chain(client) -> None:
     ):
         resp = client.get("/api/substrate-lattice/transport/gates")
     assert resp.status_code == 404
+
+
+def test_gates_contract_pass_when_below_threshold(client) -> None:
+    chain = _sample_proof_chain_for_gates(contract_pressure=0.3)
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
+    # 0.3 is between 0.0 and watch_at=0.50 → "pass"
+    assert gates["contract"]["state"] == "pass"
+
+
+def test_gates_pressure_watch_when_nonzero(client) -> None:
+    chain = _sample_proof_chain_for_gates(transport_pressure=0.5)
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.get("/api/substrate-lattice/transport/gates")
+    gates = {g["gate_id"]: g for g in resp.json()["gates"]}
+    assert gates["pressure"]["state"] == "watch"
 
 
 # ── _load_transport_proof_chain internals ────────────────────────

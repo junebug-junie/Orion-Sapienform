@@ -417,3 +417,91 @@ def test_load_transport_proof_chain_with_projection_returns_full_structure(monke
     assert result["bus_summary"]["bus_health"] == 1.0
     assert result["bus_summary"]["contract_pressure"] == 1.0
     assert result["projection"]["buses"]["bus:athena"]["source_trace_id"] == "bus.transport:abc"
+
+
+# ── /transport/simulate ──────────────────────────────────────────
+
+
+def test_simulate_returns_comparison_when_thresholds_change(client) -> None:
+    chain = _sample_proof_chain_for_gates(contract_pressure=1.0, transport_pressure=0.0)
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.post(
+            "/api/substrate-lattice/transport/simulate",
+            json={
+                "lane_id": "transport",
+                "thresholds": {
+                    "contract_pressure_watch_at": 0.99,  # raise above 1.0 → suppress
+                },
+            },
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "current" in body
+    assert "simulated" in body
+    assert "changed" in body
+    assert body["simulated"]["bucket"] in ("capability_targets", "suppressed_targets")
+
+
+def test_simulate_contract_suppressed_when_threshold_above_value(client) -> None:
+    # contract_pressure=1.0, raise watch_at to 1.1 → no channels promote → suppressed
+    chain = _sample_proof_chain_for_gates(
+        contract_pressure=1.0,
+        transport_pressure=0.0,
+    )
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.post(
+            "/api/substrate-lattice/transport/simulate",
+            json={
+                "lane_id": "transport",
+                "thresholds": {
+                    "contract_pressure_watch_at": 1.1,
+                    "transport_pressure_watch_at": 1.1,
+                    "catalog_drift_pressure_watch_at": 1.1,
+                    "observer_failure_pressure_watch_at": 1.1,
+                },
+            },
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["simulated"]["bucket"] == "suppressed_targets"
+    assert body["simulated"]["action_ceiling"] == "ignore"
+    assert body["changed"] is True
+
+
+def test_simulate_no_change_when_same_thresholds(client) -> None:
+    # Use current policy defaults — changed should be False
+    chain = _sample_proof_chain_for_gates(
+        contract_pressure=0.3,  # below default watch_at=0.50 → no channels promote
+        transport_pressure=0.1,  # below default watch_at=0.25 → no channels promote
+    )
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=chain
+    ):
+        resp = client.post(
+            "/api/substrate-lattice/transport/simulate",
+            json={
+                "lane_id": "transport",
+                "thresholds": {},  # use current policy defaults
+            },
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    # Both current and simulated should have no channels promoted
+    assert body["current"]["bucket"] == "suppressed_targets"
+    assert body["simulated"]["bucket"] == "suppressed_targets"
+    assert body["changed"] is False
+
+
+def test_simulate_404_when_no_chain(client) -> None:
+    with patch.object(
+        substrate_lattice_routes, "_load_transport_proof_chain", return_value=None
+    ):
+        resp = client.post(
+            "/api/substrate-lattice/transport/simulate",
+            json={"lane_id": "transport", "thresholds": {}},
+        )
+    assert resp.status_code == 404

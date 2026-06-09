@@ -10,6 +10,7 @@ from typing import Any
 
 import yaml
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
 
 router = APIRouter(prefix="/api/substrate-lattice", tags=["substrate-lattice"])
@@ -235,6 +236,75 @@ def _load_transport_proof_chain() -> dict[str, Any] | None:
     }
 
 
+_TRANSPORT_CHANNELS: dict[str, dict] = {
+    "transport_pressure": {
+        "dimension": "delivery_integrity",
+        "dimension_weight": 0.35,
+        "watch_at": 0.25,
+        "action_ceiling": "read_only",
+    },
+    "contract_pressure": {
+        "dimension": "contract_integrity",
+        "dimension_weight": 0.30,
+        "watch_at": 0.50,
+        "action_ceiling": "summarize",
+    },
+    "catalog_drift_pressure": {
+        "dimension": "topology_integrity",
+        "dimension_weight": 0.15,
+        "watch_at": 0.50,
+        "action_ceiling": "watch",
+    },
+    "observer_failure_pressure": {
+        "dimension": "observability_integrity",
+        "dimension_weight": 0.20,
+        "watch_at": 0.25,
+        "action_ceiling": "summarize",
+    },
+}
+
+_CEILING_RANK = [
+    "ignore", "no_op_motif", "watch", "summarize", "read_only", "dry_run", "request_operator"
+]
+
+
+def _compute_salience(
+    bus_summary: dict[str, Any],
+    threshold_overrides: dict[str, float],
+) -> dict[str, Any]:
+    """Compute attention bucket, salience, and action ceiling from bus values and thresholds.
+
+    No DB access. Pure computation on already-loaded data.
+    """
+    total_salience = 0.0
+    promoted_ceilings: list[str] = []
+
+    for ch_id, ch_def in _TRANSPORT_CHANNELS.items():
+        value = float(bus_summary.get(ch_id) or 0.0)
+        watch_at_key = f"{ch_id}_watch_at"
+        watch_at = threshold_overrides.get(watch_at_key, ch_def["watch_at"])
+
+        if value >= watch_at:
+            total_salience += value * ch_def["dimension_weight"]
+            promoted_ceilings.append(ch_def["action_ceiling"])
+
+    if promoted_ceilings:
+        action_ceiling = max(
+            promoted_ceilings,
+            key=lambda c: _CEILING_RANK.index(c) if c in _CEILING_RANK else 0,
+        )
+        bucket = "capability_targets"
+    else:
+        action_ceiling = "ignore"
+        bucket = "suppressed_targets"
+
+    return {
+        "bucket": bucket,
+        "salience": round(total_salience, 4),
+        "action_ceiling": action_ceiling,
+    }
+
+
 def _compute_gates(chain: dict[str, Any]) -> list[dict[str, Any]]:
     """Evaluate transport gate overlay from current proof chain."""
     gate_policy = _load_yaml("gate_policy.v1.yaml")
@@ -354,4 +424,44 @@ async def transport_gates() -> dict[str, Any]:
     return {
         "lane_id": "transport",
         "gates": _compute_gates(chain),
+    }
+
+
+class SimulateRequest(BaseModel):
+    lane_id: str
+    thresholds: dict[str, float] = Field(default_factory=dict)
+
+
+@router.post("/transport/simulate")
+async def transport_simulate(req: SimulateRequest) -> dict[str, Any]:
+    chain = _load_transport_proof_chain()
+    if chain is None:
+        raise HTTPException(status_code=404, detail="transport_projection_not_found")
+
+    bus = chain.get("bus_summary", {})
+
+    lattice_policy = _load_yaml("transport_lattice_policy.v1.yaml")
+    policy_channels = lattice_policy.get("channels", {})
+    current_thresholds: dict[str, float] = {}
+    for ch_id, ch_def in _TRANSPORT_CHANNELS.items():
+        yaml_watch = (policy_channels.get(ch_id) or {}).get("watch_at", ch_def["watch_at"])
+        current_thresholds[f"{ch_id}_watch_at"] = float(yaml_watch)
+
+    simulated_thresholds = {**current_thresholds, **req.thresholds}
+
+    current_result = _compute_salience(bus, current_thresholds)
+    simulated_result = _compute_salience(bus, simulated_thresholds)
+
+    changed = (
+        current_result["bucket"] != simulated_result["bucket"]
+        or current_result["salience"] != simulated_result["salience"]
+        or current_result["action_ceiling"] != simulated_result["action_ceiling"]
+    )
+
+    return {
+        "lane_id": req.lane_id,
+        "current": current_result,
+        "simulated": simulated_result,
+        "changed": changed,
+        "applied_thresholds": simulated_thresholds,
     }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Dict, List, Tuple
 
@@ -9,6 +10,60 @@ from app.settings import settings
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]{3,}")
+
+_ORION_GRAPH_IRIS: Dict[str, str] = {
+    "orion:chat": "http://conjourney.net/graph/orion/chat",
+    "orion:collapse": "http://conjourney.net/graph/orion/collapse",
+    "orion:enrichment": "http://conjourney.net/graph/orion/enrichment",
+    "orion:cognition": "http://conjourney.net/graph/orion/cognition",
+    "orion:metacog": "http://conjourney.net/graph/orion/metacog",
+    "orion:chat:social": "http://conjourney.net/graph/orion/chat/social",
+    "orion:default": "http://conjourney.net/graph/orion/default",
+    "orion:self": "http://conjourney.net/graph/orion/self",
+    "orion:self:induced": "http://conjourney.net/graph/orion/self/induced",
+    "orion:self:reflective": "http://conjourney.net/graph/orion/self/reflective",
+    "orion:compressions": "http://conjourney.net/graph/orion/compressions",
+}
+
+
+def _infer_rdf_store_backend() -> str:
+    explicit = (os.getenv("GRAPH_BACKEND") or os.getenv("RDF_STORE_BACKEND") or "").strip().lower()
+    if explicit:
+        return explicit
+    endpoint = (settings.RECALL_RDF_ENDPOINT_URL or "").lower()
+    if "/repositories/" in endpoint or ":7200" in endpoint:
+        return "graphdb"
+    return "fuseki"
+
+
+def graph_iri_for_sparql(graph_name: str) -> str:
+    """Map compact Orion graph names to SPARQL GRAPH IRIs for the active RDF backend."""
+    raw = str(graph_name or "").strip()
+    if not raw:
+        return raw
+    if _infer_rdf_store_backend() == "graphdb":
+        normalize = os.getenv("RDF_STORE_NORMALIZE_GRAPHDB_CONTEXT", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if not normalize:
+            return raw
+    lower = raw.lower()
+    if lower.startswith(("http://", "https://", "urn:")):
+        return raw
+    if raw in _ORION_GRAPH_IRIS:
+        return _ORION_GRAPH_IRIS[raw]
+    safe = re.sub(r"[^A-Za-z0-9._:/-]+", "_", raw)
+    safe = safe.replace(":", "/").strip("/")
+    if not safe:
+        safe = "unknown"
+    return f"http://conjourney.net/graph/{safe}"
+
+
+def _sparql_graph(graph_name: str) -> str:
+    return f"GRAPH <{graph_iri_for_sparql(graph_name)}>"
 
 
 def _extract_keywords(query_text: str, *, max_keywords: int = 6) -> List[str]:
@@ -102,13 +157,15 @@ def _build_graphtri_anchor_sparql(
 ) -> str:
     filter_clause = _build_chatturn_keyword_filter(keywords) if filtered and keywords else ""
 
+    chat_graph = _sparql_graph("orion:chat")
+    enrichment_graph = _sparql_graph("orion:enrichment")
     return f"""
     SELECT DISTINCT ?term
     WHERE {{
       {{
         SELECT DISTINCT ?turn ?prompt ?response
         WHERE {{
-          GRAPH <orion:chat> {{
+          {chat_graph} {{
             ?turn a <http://conjourney.net/orion#ChatTurn> ;
                   <http://conjourney.net/orion#prompt> ?prompt ;
                   <http://conjourney.net/orion#response> ?response .
@@ -118,7 +175,7 @@ def _build_graphtri_anchor_sparql(
         ORDER BY DESC(STR(?turn))
         LIMIT {max_turns}
       }}
-      GRAPH <orion:enrichment> {{
+      {enrichment_graph} {{
         {{ ?turn <http://orion.ai/collapse#hasTag> ?term . }}
         UNION {{ ?turn <http://orion.ai/collapse#hasEntity> ?term . }}
         UNION {{
@@ -142,13 +199,15 @@ def _build_graphtri_anchor_kind_sparql(
 ) -> str:
     filter_clause = _build_chatturn_keyword_filter(query_terms) if filtered and query_terms else ""
 
+    chat_graph = _sparql_graph("orion:chat")
+    enrichment_graph = _sparql_graph("orion:enrichment")
     return f"""
     SELECT ?kind ?term
     WHERE {{
       {{
         SELECT DISTINCT ?turn ?prompt ?response
         WHERE {{
-          GRAPH <orion:chat> {{
+          {chat_graph} {{
             ?turn a <http://conjourney.net/orion#ChatTurn> ;
                   <http://conjourney.net/orion#prompt> ?prompt ;
                   <http://conjourney.net/orion#response> ?response .
@@ -158,7 +217,7 @@ def _build_graphtri_anchor_kind_sparql(
         ORDER BY DESC(STR(?turn))
         LIMIT {max_terms}
       }}
-      GRAPH <orion:enrichment> {{
+      {enrichment_graph} {{
         {{ ?turn <http://orion.ai/collapse#hasTag> ?term .
            BIND("tag" AS ?kind) }}
         UNION {{ ?turn <http://orion.ai/collapse#hasEntity> ?term .
@@ -358,13 +417,15 @@ def fetch_rdf_graphtri_fragments(
     max_turns = max(1, min(max_items, 12))
     filter_clause = _build_chatturn_keyword_filter(keywords) if keywords else ""
 
+    chat_graph = _sparql_graph("orion:chat")
+    enrichment_graph = _sparql_graph("orion:enrichment")
     sparql = f"""
     SELECT ?turn ?claim ?pred ?obj ?conf ?sal
     WHERE {{
       {{
         SELECT DISTINCT ?turn ?prompt ?response
         WHERE {{
-          GRAPH <orion:chat> {{
+          {chat_graph} {{
             ?turn a <http://conjourney.net/orion#ChatTurn> ;
                   <http://conjourney.net/orion#prompt> ?prompt ;
                   <http://conjourney.net/orion#response> ?response .
@@ -374,7 +435,7 @@ def fetch_rdf_graphtri_fragments(
         ORDER BY DESC(STR(?turn))
         LIMIT {max_turns}
       }}
-      GRAPH <orion:enrichment> {{
+      {enrichment_graph} {{
         ?claim a <http://conjourney.net/orion#Claim> ;
                <http://conjourney.net/orion#subject> ?turn ;
                <http://conjourney.net/orion#predicate> ?pred ;
@@ -478,7 +539,7 @@ def fetch_rdf_chatturn_fragments(
     max_items: int = 20,
 ) -> List[Dict[str, Any]]:
     """
-    Pull recent ChatTurns from GRAPH <orion:chat> for the session.
+    Pull recent ChatTurns from the Orion chat graph for the session.
     NO keyword filtering at SPARQL layer (sustainable).
     Ranking happens later (vector / lexical) in fusion.
     """
@@ -491,10 +552,11 @@ def fetch_rdf_chatturn_fragments(
 
     # If you have a timestamp predicate, add it here and ORDER BY DESC(?ts).
     # If not, we order by the turn URI string as a stable proxy.
+    chat_graph = _sparql_graph("orion:chat")
     sparql = f"""
     SELECT ?turn ?prompt ?response
     WHERE {{
-      GRAPH <orion:chat> {{
+      {chat_graph} {{
         ?turn a <http://conjourney.net/orion#ChatTurn> ;
               <http://conjourney.net/orion#prompt> ?prompt ;
               <http://conjourney.net/orion#response> ?response .
@@ -575,10 +637,11 @@ def fetch_rdf_chatturn_exact_matches(
         filters.append(f'CONTAINS(LCASE(STR(?response)), "{escaped}")')
     filter_clause = " || ".join(filters) if filters else "TRUE"
 
+    chat_graph = _sparql_graph("orion:chat")
     sparql = f"""
     SELECT ?turn ?prompt ?response
     WHERE {{
-      GRAPH <orion:chat> {{
+      {chat_graph} {{
         ?turn a <http://conjourney.net/orion#ChatTurn> ;
               <http://conjourney.net/orion#prompt> ?prompt ;
               <http://conjourney.net/orion#response> ?response .
@@ -659,10 +722,12 @@ def fetch_rdf_connected_chatturns(
     )
     filter_clause = f"FILTER({filters})" if filters else ""
 
+    chat_graph = _sparql_graph("orion:chat")
+    enrichment_graph = _sparql_graph("orion:enrichment")
     sparql = f"""
     SELECT DISTINCT ?turn ?prompt ?response ?term
     WHERE {{
-      GRAPH <orion:enrichment> {{
+      {enrichment_graph} {{
         {{ ?turn <http://orion.ai/collapse#hasTag> ?term . }}
         UNION {{ ?turn <http://orion.ai/collapse#hasEntity> ?term . }}
         UNION {{
@@ -672,7 +737,7 @@ def fetch_rdf_connected_chatturns(
         }}
         {filter_clause}
       }}
-      GRAPH <orion:chat> {{
+      {chat_graph} {{
         ?turn a <http://conjourney.net/orion#ChatTurn> ;
               <http://conjourney.net/orion#prompt> ?prompt ;
               <http://conjourney.net/orion#response> ?response .

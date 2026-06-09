@@ -19,6 +19,12 @@
     </div>
   </div>
 
+  <!-- Verdict banner -->
+  <div id="verdictBanner" class="hidden border rounded p-3 text-xs"></div>
+
+  <!-- Judgment feedback -->
+  <div id="judgmentFeedback" class="hidden bg-indigo-950/40 border border-indigo-700 text-indigo-200 text-xs rounded p-2"></div>
+
   <!-- Error banner -->
   <div id="latticeError" class="hidden bg-red-950/40 border border-red-700 text-red-200 text-xs rounded p-3"></div>
 
@@ -143,6 +149,12 @@
             class="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-2 py-1 w-full" />
           <label class="text-[10px] text-gray-500">transport_pressure watch_at</label>
           <input id="simTransportWatchAt" type="number" min="0" max="1" step="0.05" value="0.25"
+            class="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-2 py-1 w-full" />
+          <label class="text-[10px] text-gray-500">catalog_drift_pressure watch_at</label>
+          <input id="simCatalogWatchAt" type="number" min="0" max="1" step="0.05" value="0.50"
+            class="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-2 py-1 w-full" />
+          <label class="text-[10px] text-gray-500">observer_failure_pressure watch_at</label>
+          <input id="simObserverWatchAt" type="number" min="0" max="1" step="0.05" value="0.25"
             class="bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-2 py-1 w-full" />
           <button id="simRunBtn" type="button"
             class="text-xs bg-indigo-700 hover:bg-indigo-600 text-white rounded px-3 py-1 border border-indigo-600 mt-1">

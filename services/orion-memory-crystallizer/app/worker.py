@@ -80,20 +80,22 @@ class ProposalIngestWorker:
             )
             return
 
-        existing = await asyncio.to_thread(self._repo.get, proposal.crystallization_id)
-        if existing is not None and existing.status != "proposed":
+        validated, entry = governor.validate(proposal, source or "bus")
+        # Guarded transactional write: an existing row is only updated while
+        # still 'proposed', so this can never revert governed state.
+        written = await asyncio.to_thread(
+            self._repo.apply_transition,
+            validated,
+            entry,
+            after=validated.model_dump(mode="json"),
+            expected_statuses=["proposed"],
+        )
+        if not written:
             logger.warning(
-                "proposal_conflict cid=%s existing_status=%s — refusing to overwrite governed state",
+                "proposal_conflict cid=%s — row already governed; refusing to overwrite",
                 proposal.crystallization_id,
-                existing.status,
             )
             return
-
-        validated, entry = governor.validate(proposal, source or "bus")
-        await asyncio.to_thread(self._repo.upsert, validated)
-        await asyncio.to_thread(
-            self._repo.record_history, entry, before=None, after=validated.model_dump(mode="json")
-        )
         logger.info(
             "proposal_ingested cid=%s kind=%s validation=%s",
             validated.crystallization_id,

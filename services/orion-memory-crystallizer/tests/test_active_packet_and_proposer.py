@@ -52,11 +52,21 @@ def test_packet_groups_by_kind_and_records_refs() -> None:
 def test_packet_excludes_non_active_and_traces_it() -> None:
     stance = _active()
     proposal = make_proposal(subject="Not yet governed")
-    packet = build_active_packet(query="q", crystallizations=[stance, proposal])
-    assert packet.crystallization_refs == [stance.crystallization_id]
-    excluded = packet.retrieval_trace["excluded"]
-    assert excluded[0]["crystallization_id"] == proposal.crystallization_id
-    assert excluded[0]["reason"] == "status:proposed"
+    quarantined, _ = governor.quarantine(make_proposal(subject="Quarantined"), "governor")
+    old = _active(subject="Old stance")
+    new = _active(subject="New stance")
+    superseded, _, _ = governor.supersede(old, new, "operator:juniper")
+
+    packet = build_active_packet(
+        query="q", crystallizations=[stance, proposal, quarantined, superseded, new]
+    )
+    assert set(packet.crystallization_refs) == {stance.crystallization_id, new.crystallization_id}
+    excluded_reasons = {
+        e["crystallization_id"]: e["reason"] for e in packet.retrieval_trace["excluded"]
+    }
+    assert excluded_reasons[proposal.crystallization_id] == "status:proposed"
+    assert excluded_reasons[quarantined.crystallization_id] == "status:quarantined"
+    assert excluded_reasons[superseded.crystallization_id] == "status:superseded"
 
 
 def test_proposer_builds_valid_card_sourced_proposal() -> None:

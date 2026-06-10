@@ -74,6 +74,15 @@ def test_chroma_projection_blocked_for_non_active(proposal) -> None:
         projection_chroma.crystallization_to_vector_upsert(proposal)
 
 
+def test_chroma_projection_blocked_for_superseded() -> None:
+    # Cards intentionally allow superseded (with a marker); Chroma does not.
+    old = _active()
+    new = _active(make_proposal(subject="Updated stance"))
+    superseded_old, _, _ = governor.supersede(old, new, "operator:juniper")
+    with pytest.raises(projection_chroma.ProjectionNotAllowed):
+        projection_chroma.crystallization_to_vector_upsert(superseded_old)
+
+
 # --- Graphiti projection -------------------------------------------------------
 
 

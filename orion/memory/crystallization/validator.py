@@ -69,7 +69,14 @@ def validate_proposal(proposal: MemoryCrystallizationV1) -> list[str]:
 
     # Proposals must not claim canonical projections before governance.
     refs = proposal.projection_refs
-    if refs.memory_card_ids or refs.chroma_doc_ids or refs.graphiti_episode_ids or refs.rdf_named_graphs:
+    if (
+        refs.memory_card_ids
+        or refs.chroma_doc_ids
+        or refs.rdf_named_graphs
+        or refs.graphiti_episode_ids
+        or refs.graphiti_entity_ids
+        or refs.graphiti_edge_ids
+    ):
         errors.append("projection_refs must be empty on a pre-canonical proposal")
 
     return errors

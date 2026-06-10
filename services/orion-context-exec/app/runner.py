@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 import uuid
-from typing import Any, Callable
+from typing import Any
 
 from orion.schemas.context_exec import (
     ContextExecRequestV1,
@@ -19,6 +19,7 @@ from .artifact_builder import (
     validate_artifact,
 )
 from .callable_namespace import ContextNamespace
+from .events import ContextExecEventEmitter
 from .rlm_engine import RLMEngine, build_engine
 from .security import PolicyBlockedError, enforce_no_write_settings
 from .settings import settings
@@ -27,7 +28,7 @@ logger = logging.getLogger("orion-context-exec.runner")
 
 
 class FakeOrgans:
-    """Test hooks for deterministic fake evidence."""
+    """Test hooks for deterministic fake evidence (pytest only)."""
 
     memory_hits: list[dict[str, Any]] | None = None
     trace_hits: list[dict[str, Any]] | None = None
@@ -39,6 +40,8 @@ FAKE_ORGANS = FakeOrgans()
 def _default_memory_search(query: str, limit: int = 20) -> list[dict[str, Any]]:
     if FAKE_ORGANS.memory_hits is not None:
         return FAKE_ORGANS.memory_hits[:limit]
+    if not settings.context_exec_fake_organs_enabled:
+        return []
     if "denver" in query.lower():
         return [
             {
@@ -54,12 +57,20 @@ def _default_memory_search(query: str, limit: int = 20) -> list[dict[str, Any]]:
 def _default_trace_search(**_kwargs: Any) -> list[dict[str, Any]]:
     if FAKE_ORGANS.trace_hits is not None:
         return FAKE_ORGANS.trace_hits
+    if not settings.context_exec_fake_organs_enabled:
+        return []
     return [{"handle": "trace:denver:1", "snippet": "Denver claim in trace", "corr_id": "abc"}]
 
 
 class ContextExecRunner:
-    def __init__(self, engine: RLMEngine | None = None) -> None:
+    def __init__(
+        self,
+        engine: RLMEngine | None = None,
+        *,
+        events: ContextExecEventEmitter | None = None,
+    ) -> None:
         self.engine = engine or build_engine(settings.rlm_engine)
+        self.events = events or ContextExecEventEmitter(None)
 
     async def run(self, request: ContextExecRequestV1) -> ContextExecRunV1:
         run_id = f"ctxrun_{uuid.uuid4().hex[:12]}"
@@ -68,6 +79,8 @@ class ContextExecRunner:
         verb_trace: list[ContextExecVerbStepV1] = []
         failure_modes: list[str] = []
         status: str = "ok"
+
+        await self.events.started(run_id=run_id, mode=request.mode, text=request.text)
 
         namespace = ContextNamespace(
             permissions=request.permissions,
@@ -82,16 +95,16 @@ class ContextExecRunner:
                 self.engine.run(request, namespace),
                 timeout=budget_sec,
             )
-            verb_trace.append(
-                ContextExecVerbStepV1(
-                    step_index=0,
-                    verb="synthesize",
-                    callable="rlm_engine.run",
-                    status="ok",
-                    duration_ms=int((time.perf_counter() - started) * 1000),
-                    output_summary="rlm episode complete",
-                )
+            step = ContextExecVerbStepV1(
+                step_index=0,
+                verb="synthesize",
+                callable="rlm_engine.run",
+                status="ok",
+                duration_ms=int((time.perf_counter() - started) * 1000),
+                output_summary="rlm episode complete",
             )
+            verb_trace.append(step)
+            await self.events.verb_step(run_id=run_id, mode=request.mode, step=step)
         except asyncio.TimeoutError:
             status = "timeout"
             failure_modes.append("timeout")
@@ -114,10 +127,20 @@ class ContextExecRunner:
             if not schema_valid:
                 status = "schema_invalid" if status == "ok" else status
                 failure_modes.append("schema_invalid")
+                await self.events.schema_invalid(run_id=run_id, mode=request.mode, artifact_type=artifact_type)
 
         fb = synthesize_findings_bundle(request, artifact, schema_valid=schema_valid)
         final_text = build_final_text(request.mode, artifact, status=status)
         ac_dump = request.answer_contract.model_dump(mode="json") if request.answer_contract else None
+
+        await self.events.finished(
+            run_id=run_id,
+            mode=request.mode,
+            status=status,
+            artifact_type=artifact_type,
+            schema_valid=schema_valid,
+            failure_modes=failure_modes,
+        )
 
         return ContextExecRunV1(
             run_id=run_id,
@@ -136,6 +159,7 @@ class ContextExecRunner:
                 "subcalls": 0,
                 "schema_valid": schema_valid,
                 "sandbox_mode": settings.context_exec_sandbox_mode,
+                "fake_organs_enabled": settings.context_exec_fake_organs_enabled,
             },
             failure_modes=failure_modes,
         )

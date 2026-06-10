@@ -13,8 +13,10 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.telemetry.system_health import SystemHealthV1
 
-from .api import router
+from .api import router, set_runner
 from .bus_listener import run_bus_worker
+from .events import ContextExecEventEmitter
+from .runner import ContextExecRunner
 from .settings import settings
 
 logging.basicConfig(
@@ -69,6 +71,12 @@ async def lifespan(app: FastAPI):
         settings.port,
     )
     app.state.bus_stop_event = asyncio.Event()
+    bus = OrionBusAsync(url=settings.orion_bus_url, enabled=settings.orion_bus_enabled)
+    if bus.enabled:
+        await bus.connect()
+    app.state.bus = bus
+    runner = ContextExecRunner(bus=bus if bus.enabled else None, events=ContextExecEventEmitter(bus if bus.enabled else None))
+    set_runner(runner)
     app.state.bus_task = asyncio.create_task(run_bus_worker(app.state.bus_stop_event))
     app.state.heartbeat_task = asyncio.create_task(heartbeat_loop())
     yield
@@ -77,6 +85,10 @@ async def lifespan(app: FastAPI):
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
+    bus = getattr(app.state, "bus", None)
+    if bus is not None and bus.enabled:
+        with suppress(Exception):
+            await bus.close()
 
 
 app = FastAPI(title="Orion Context Exec", lifespan=lifespan)

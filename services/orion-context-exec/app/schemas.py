@@ -40,3 +40,27 @@ class SubcallResult(BaseModel):
     result: dict[str, Any] = Field(default_factory=dict)
     usage: dict[str, Any] = Field(default_factory=dict)
     summary: str = ""
+
+
+class TraceHit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    handle: str
+    source: str
+    corr_id: str | None = None
+    run_id: str | None = None
+    kind: str
+    timestamp: str
+    snippet: str = ""
+    payload_ref: str | None = None
+
+
+class RecallResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    hits: list[dict[str, Any]] = Field(default_factory=list)
+    profile: str = "assist.light.v1"
+    query: str = ""
+    latency_ms: int = 0
+    rendered_head: str = ""
+    error: str | None = None

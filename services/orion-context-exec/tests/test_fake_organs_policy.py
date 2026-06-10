@@ -9,7 +9,9 @@ from orion.schemas.context_exec import ContextExecRequestV1
 @pytest.mark.asyncio
 async def test_fake_organs_disabled_returns_no_default_evidence(monkeypatch):
     from app import settings as settings_mod
+    from app import trace_tools
 
+    trace_tools.clear_trace_store()
     monkeypatch.setattr(settings_mod.settings, "context_exec_fake_organs_enabled", False)
     FAKE_ORGANS.memory_hits = None
     FAKE_ORGANS.trace_hits = None

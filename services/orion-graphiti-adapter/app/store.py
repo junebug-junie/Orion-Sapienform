@@ -13,12 +13,25 @@ logger = logging.getLogger(__name__)
 
 
 def _sql_path() -> Path:
-    here = Path(__file__).resolve().parents[3] / "orion" / "core" / "storage" / "sql" / "graphiti_projection.sql"
-    return here
+    bundled = (
+        Path(__file__).resolve().parents[1]
+        / "orion"
+        / "core"
+        / "storage"
+        / "sql"
+        / "graphiti_projection.sql"
+    )
+    if bundled.is_file():
+        return bundled
+    repo_root = Path(__file__).resolve().parents[3]
+    return repo_root / "orion" / "core" / "storage" / "sql" / "graphiti_projection.sql"
 
 
 def apply_graphiti_schema(dsn: str) -> None:
-    sql = _sql_path().read_text(encoding="utf-8")
+    sql_path = _sql_path()
+    if not sql_path.is_file():
+        raise FileNotFoundError(f"graphiti_projection DDL not found at {sql_path}")
+    sql = sql_path.read_text(encoding="utf-8")
     with psycopg2.connect(dsn) as conn:
         conn.autocommit = True
         with conn.cursor() as cur:

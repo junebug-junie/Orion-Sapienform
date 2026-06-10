@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from orion.memory_graph.dto import SuggestDraftV1
-from orion.memory_graph.draft_sanitize import sanitize_suggest_draft_dict
+from orion.memory_graph.draft_sanitize import is_resolvable_entity_ref, sanitize_suggest_draft_dict
 from orion.memory_graph.json_to_rdf import draft_to_graph
 
 
@@ -99,3 +99,84 @@ def test_sanitize_rebuilds_structural_edges_from_situation() -> None:
     preds = {e["p"] for e in cleaned["edges"]}
     assert "orionmem:stimulusEntity" in preds
     assert "schema:about" in preds
+
+
+def test_sanitize_repairs_malformed_sequential_urn_uuid_suffixes() -> None:
+    """LLMs often copy test-style ids (…90ab, …90ac) and roll past hex f into …90ag."""
+    bad_situation_id = "urn:uuid:12345678-1234-1234-1234-1234567890ag"
+    data = {
+        "ontology_version": "orionmem-2026-05",
+        "utterance_ids": ["u1", "a1"],
+        "entities": [
+            {
+                "id": "urn:uuid:12345678-1234-1234-1234-1234567890ab",
+                "label": "Juniper",
+                "entityKind": "person",
+                "surfaceForms": ["Juniper", "I"],
+            },
+            {
+                "id": "urn:uuid:12345678-1234-1234-1234-1234567890ac",
+                "label": "Orion",
+                "entityKind": "person",
+                "surfaceForms": ["Orion"],
+            },
+            {
+                "id": "urn:uuid:12345678-1234-1234-1234-1234567890ad",
+                "label": "Mom",
+                "entityKind": "person",
+                "surfaceForms": ["mom", "my mom"],
+            },
+            {
+                "id": "urn:uuid:12345678-1234-1234-1234-1234567890ae",
+                "label": "Naturalization Ceremony",
+                "entityKind": "abstract",
+                "surfaceForms": ["naturalization ceremony"],
+            },
+            {
+                "id": "urn:uuid:12345678-1234-1234-1234-1234567890af",
+                "label": "US Citizen",
+                "entityKind": "abstract",
+                "surfaceForms": ["US citizen"],
+            },
+        ],
+        "situations": [
+            {
+                "id": bad_situation_id,
+                "utterance_ids": ["u1"],
+                "label": "User shares news about mom's naturalization ceremony",
+                "stimulus_entity_id": "urn:uuid:12345678-1234-1234-1234-1234567890ae",
+                "about_entity_ids": [
+                    "urn:uuid:12345678-1234-1234-1234-1234567890ad",
+                    "urn:uuid:12345678-1234-1234-1234-1234567890ae",
+                ],
+                "target_entity_ids": [],
+                "affectLabel": "affection",
+                "timeQualitative": "recent",
+                "participants": [],
+            },
+            {
+                "id": "urn:uuid:12345678-1234-1234-1234-1234567890ah",
+                "utterance_ids": ["a1"],
+                "label": "Orion acknowledges the ceremony and asks about next steps",
+                "stimulus_entity_id": "urn:uuid:12345678-1234-1234-1234-1234567890ab",
+                "about_entity_ids": ["urn:uuid:12345678-1234-1234-1234-1234567890ae"],
+                "target_entity_ids": [],
+                "affectLabel": "neutral",
+                "timeQualitative": "recent",
+                "participants": [],
+            },
+        ],
+        "edges": [],
+        "dispositions": [],
+        "utterance_text_by_id": {
+            "u1": "My mom had her naturalization ceremony today!",
+            "a1": "That's wonderful — what happens next for her as a new US citizen?",
+        },
+    }
+    cleaned = sanitize_suggest_draft_dict(data)
+    assert bad_situation_id not in json.dumps(cleaned)
+    for sit in cleaned["situations"]:
+        assert is_resolvable_entity_ref(sit["id"])
+    draft = SuggestDraftV1.model_validate(cleaned)
+    g = draft_to_graph(draft)
+    assert len(g) > 10

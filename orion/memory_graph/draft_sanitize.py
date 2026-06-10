@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional, Set, Tuple
+import uuid
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 _UUID_TAIL = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
@@ -27,6 +28,127 @@ def is_resolvable_entity_ref(ref: Any, *, entity_base: str = "https://orion.exam
     if s.startswith("urn:uuid:"):
         return bool(_UUID_TAIL.match(s.removeprefix("urn:uuid:")))
     return False
+
+
+def is_malformed_urn_uuid(ref: Any) -> bool:
+    """True when ref looks like urn:uuid:… but fails RFC-4122 hex tail validation."""
+    if is_blank_ref(ref):
+        return False
+    s = str(ref).strip()
+    if not s.startswith("urn:uuid:"):
+        return False
+    return not bool(_UUID_TAIL.match(s.removeprefix("urn:uuid:")))
+
+
+_REPAIR_URN_UUID_NAMESPACE = uuid.UUID("6ba7b811-9dad-11d1-80b4-00c04fd430c0")
+
+
+def _stable_repaired_urn_uuid(ref: str) -> str:
+    return f"urn:uuid:{uuid.uuid5(_REPAIR_URN_UUID_NAMESPACE, str(ref).strip())}"
+
+
+def _collect_refs(value: Any, out: Set[str]) -> None:
+    if is_blank_ref(value):
+        return
+    if isinstance(value, str):
+        out.add(str(value).strip())
+        return
+    if isinstance(value, list):
+        for item in value:
+            _collect_refs(item, out)
+        return
+    if isinstance(value, dict):
+        for item in value.values():
+            _collect_refs(item, out)
+
+
+def _build_malformed_urn_uuid_remap(data: Dict[str, Any]) -> Dict[str, str]:
+    """Map invalid urn:uuid refs (e.g. LLM sequential …90ag suffixes) to stable valid ids."""
+    refs: Set[str] = set()
+    for ent in data.get("entities") or []:
+        if isinstance(ent, dict):
+            _collect_refs(ent.get("id"), refs)
+            _collect_refs(ent.get("generalizes_to"), refs)
+    for sit in data.get("situations") or []:
+        if isinstance(sit, dict):
+            _collect_refs(sit.get("id"), refs)
+            _collect_refs(sit.get("stimulus_entity_id"), refs)
+            _collect_refs(sit.get("about_entity_ids"), refs)
+            _collect_refs(sit.get("target_entity_ids"), refs)
+            _collect_refs(sit.get("participants"), refs)
+    for disp in data.get("dispositions") or []:
+        if isinstance(disp, dict):
+            _collect_refs(disp.get("id"), refs)
+            _collect_refs(disp.get("holder_id"), refs)
+            _collect_refs(disp.get("target_id"), refs)
+    for edge in data.get("edges") or []:
+        if isinstance(edge, dict):
+            _collect_refs(edge.get("s"), refs)
+            _collect_refs(edge.get("o"), refs)
+
+    remap: Dict[str, str] = {}
+    for ref in sorted(refs):
+        if is_malformed_urn_uuid(ref):
+            remap[ref] = _stable_repaired_urn_uuid(ref)
+    return remap
+
+
+def _apply_urn_uuid_remap(value: Any, remap: Dict[str, str], apply_fn: Callable[[Any], Any]) -> Any:
+    if is_blank_ref(value):
+        return value
+    if isinstance(value, str):
+        s = str(value).strip()
+        return remap.get(s, s)
+    if isinstance(value, list):
+        return [apply_fn(item) for item in value]
+    if isinstance(value, dict):
+        out = dict(value)
+        for key, item in out.items():
+            if key in ("entity_id", "entityId"):
+                out[key] = apply_fn(item)
+            elif key in (
+                "id",
+                "generalizes_to",
+                "stimulus_entity_id",
+                "holder_id",
+                "target_id",
+                "s",
+                "o",
+            ):
+                out[key] = apply_fn(item)
+            elif key in ("about_entity_ids", "target_entity_ids"):
+                out[key] = apply_fn(item)
+            elif key == "participants":
+                out[key] = apply_fn(item)
+        return out
+    return value
+
+
+def repair_malformed_urn_uuid_refs(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Rewrite invalid urn:uuid ids/refs so RDF conversion and preview do not fail."""
+    if not isinstance(data, dict):
+        return data
+    remap = _build_malformed_urn_uuid_remap(data)
+    if not remap:
+        return data
+
+    def apply_ref(value: Any) -> Any:
+        return _apply_urn_uuid_remap(value, remap, apply_ref)
+
+    out = dict(data)
+    out["entities"] = [
+        apply_ref(ent) for ent in (out.get("entities") or []) if isinstance(ent, dict)
+    ]
+    out["situations"] = [
+        apply_ref(sit) for sit in (out.get("situations") or []) if isinstance(sit, dict)
+    ]
+    out["dispositions"] = [
+        apply_ref(disp) for disp in (out.get("dispositions") or []) if isinstance(disp, dict)
+    ]
+    out["edges"] = [
+        apply_ref(edge) for edge in (out.get("edges") or []) if isinstance(edge, dict)
+    ]
+    return out
 
 
 def _known_node_ids(data: Dict[str, Any]) -> Tuple[Set[str], Set[str], Set[str]]:
@@ -102,7 +224,7 @@ def sanitize_suggest_draft_dict(
     if not isinstance(data, dict):
         return data
 
-    out = dict(data)
+    out = repair_malformed_urn_uuid_refs(dict(data))
     entity_ids, situation_ids, utterance_ids = _known_node_ids(out)
     graph_nodes = entity_ids | situation_ids
 

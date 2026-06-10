@@ -112,38 +112,27 @@
     }
   }
 
-  document.addEventListener("DOMContentLoaded", () => {
-    const btn = document.getElementById("memorySubviewCrystallizations");
-    const panel = document.getElementById("memoryCrystallizationPanel");
+  async function activate() {
     const listEl = document.getElementById("memoryCrystallizationList");
     const statusEl = document.getElementById("memoryCrystallizationStatus");
     const detailEl = document.getElementById("memoryCrystallizationDetail");
     const healthEl = document.getElementById("memoryCrystallizationHealth");
-    if (!btn || !panel) return;
-
-    btn.addEventListener("click", () => {
-      window.dispatchEvent(new CustomEvent("orion-hub-memory-crystallization-activated"));
-    });
-
-    window.addEventListener("orion-hub-memory-crystallization-activated", async () => {
-      panel.classList.remove("hidden");
-      panel.classList.add("flex");
-      ["memoryReviewPanel", "memoryAllPanel", "memoryLogPanel"].forEach((id) => {
-        const el = document.getElementById(id);
-        if (el) {
-          el.classList.add("hidden");
-          el.classList.remove("flex");
-        }
-      });
-      await loadInbox(listEl, statusEl, detailEl);
-      if (healthEl) {
-        try {
-          const h = await apiFetch("/api/memory/crystallizations/projection/health");
-          healthEl.textContent = `Chroma: ${h.chroma_collection || "—"} · Graphiti: ${h.graphiti_enabled ? "enabled" : "disabled"} · RDF: ${h.rdf_memory_graph || "unchanged"}`;
-        } catch (e) {
-          healthEl.textContent = e.message || "health unavailable";
-        }
+    const panel = document.getElementById("memoryCrystallizationPanel");
+    if (!listEl || !statusEl || !detailEl) return;
+    if (detailEl) detailEl.classList.add("hidden");
+    await loadInbox(listEl, statusEl, detailEl);
+    if (healthEl) {
+      try {
+        const h = await apiFetch("/api/memory/crystallizations/projection/health");
+        healthEl.textContent = `Chroma: ${h.chroma_collection || "—"} · Graphiti: ${h.graphiti_enabled ? "enabled" : "disabled"} · RDF: ${h.rdf_memory_graph || "unchanged"}`;
+      } catch (e) {
+        healthEl.textContent = e.message || "health unavailable";
       }
-    });
-  });
+    }
+    if (panel && typeof panel.scrollIntoView === "function") {
+      panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }
+
+  window.OrionMemoryCrystallizationUI = { activate };
 })();

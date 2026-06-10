@@ -75,7 +75,7 @@ Rules:
 - Return JSON only. No markdown. No prose before or after the JSON.
 - Use only the selected utterance text and provided grounding.
 - Do not invent new facts beyond what roles and language reasonably imply.
-- Every entity must have id, label, entityKind, and surfaceForms. Prefer urn:uuid:… ids for entities and situations (RDF-compatible).
+- Every entity must have id, label, entityKind, and surfaceForms. Prefer urn:uuid:… ids for entities and situations (RDF-compatible). Each urn:uuid must be a valid RFC-4122 UUID (hex digits 0-9 and a-f only); do not invent sequential suffixes like …90ag.
 - Every situation must reference at least one utterance_id.
 - Every edge predicate must be one of the listed predicates.
 - Use null instead of omitting optional scalar fields.

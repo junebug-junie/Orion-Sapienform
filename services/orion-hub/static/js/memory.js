@@ -76,11 +76,12 @@
 
   let lastApprovedCardIds = [];
 
-  function styleSubviewButtons(btnReview, btnAll, btnLog, activeKey) {
+  function styleSubviewButtons(btnReview, btnAll, btnLog, btnCrystallizations, activeKey) {
     const pairs = [
       ["review", btnReview],
       ["all", btnAll],
       ["log", btnLog],
+      ["crystallizations", btnCrystallizations],
     ];
     pairs.forEach(([key, btn]) => {
       if (!btn) return;
@@ -94,11 +95,12 @@
     });
   }
 
-  function showSubview(review, all, log, key) {
+  function showSubview(review, all, log, crystallizations, key) {
     const panels = [
       ["review", review],
       ["all", all],
       ["log", log],
+      ["crystallizations", crystallizations],
     ];
     panels.forEach(([panelKey, panel]) => {
       if (!panel) return;
@@ -106,7 +108,7 @@
       panel.classList.toggle("hidden", !active);
       panel.classList.toggle("flex", active);
     });
-    const target = { review, all, log }[key];
+    const target = { review, all, log, crystallizations }[key];
     if (target && typeof target.scrollIntoView === "function") {
       target.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
@@ -583,25 +585,40 @@
     const review = document.getElementById("memoryReviewPanel");
     const all = document.getElementById("memoryAllPanel");
     const log = document.getElementById("memoryLogPanel");
+    const crystallizations = document.getElementById("memoryCrystallizationPanel");
+    const graphAnnotator = document.getElementById("memoryGraphAnnotator");
     const detail = document.getElementById("memoryDetail");
     const cyHost = document.getElementById("memoryCytoscapeHost");
     const btnR = document.getElementById("memorySubviewReview");
     const btnA = document.getElementById("memorySubviewAll");
     const btnL = document.getElementById("memorySubviewLog");
+    const btnC = document.getElementById("memorySubviewCrystallizations");
     if (!review || !all || !log) return;
 
     function activateSubview(key) {
-      showSubview(review, all, log, key);
-      styleSubviewButtons(btnR, btnA, btnL, key);
+      if (graphAnnotator) {
+        graphAnnotator.classList.toggle("hidden", key === "crystallizations");
+      }
+      if (key === "crystallizations") {
+        if (detail) detail.classList.add("hidden");
+        if (cyHost) cyHost.classList.add("hidden");
+        setStatus(statusEl, "", false);
+      }
+      showSubview(review, all, log, crystallizations, key);
+      styleSubviewButtons(btnR, btnA, btnL, btnC, key);
       if (key === "review") loadReview(review, statusEl, detail, cyHost);
       else if (key === "all") loadAll(all, statusEl, detail, cyHost);
       else if (key === "log") loadLog(log, statusEl, { cardIds: lastApprovedCardIds });
+      else if (key === "crystallizations" && window.OrionMemoryCrystallizationUI) {
+        window.OrionMemoryCrystallizationUI.activate();
+      }
     }
 
     if (btnR) btnR.addEventListener("click", () => activateSubview("review"));
     if (btnA) btnA.addEventListener("click", () => activateSubview("all"));
     if (btnL) btnL.addEventListener("click", () => activateSubview("log"));
-    styleSubviewButtons(btnR, btnA, btnL, "all");
+    if (btnC) btnC.addEventListener("click", () => activateSubview("crystallizations"));
+    styleSubviewButtons(btnR, btnA, btnL, btnC, "all");
     activateSubview("all");
 
     const draftTa = document.getElementById("memoryGraphDraftJson");
@@ -858,7 +875,9 @@
     }
 
     function refreshVisibleMemorySubview() {
-      if (review && !review.classList.contains("hidden")) {
+      if (crystallizations && !crystallizations.classList.contains("hidden")) {
+        activateSubview("crystallizations");
+      } else if (review && !review.classList.contains("hidden")) {
         activateSubview("review");
       } else if (all && !all.classList.contains("hidden")) {
         activateSubview("all");

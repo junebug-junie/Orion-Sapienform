@@ -558,6 +558,7 @@ graphdb
 orion-chat-memory
 orion-rag
 orion-gdb-client
+orion-memory-crystallizer
 ```
 
 Memory path:
@@ -839,6 +840,7 @@ Memory / stores / writers:
   orion-vector-host
   orion-vector-writer
   orion-gdb-client
+  orion-memory-crystallizer
 
 Reflection / state / sensemaking:
   orion-spark-introspector

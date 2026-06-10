@@ -38,6 +38,10 @@ SYNC_PREFIXES = (
     "TRANSPORT_PROPOSAL_",
     "TRANSPORT_SUBSTRATE_",
     "BUS_STREAM_DEPTH_",
+    # Memory crystallization (orion-memory-crystallizer)
+    "CRYSTALLIZER_",
+    "GRAPHITI_",
+    "FALKORDB_",
 )
 
 SYNC_EXACT = frozenset(
@@ -61,6 +65,7 @@ DEFAULT_SERVICES = (
     "orion-attention-runtime",
     "orion-self-state-runtime",
     "orion-proposal-runtime",
+    "orion-memory-crystallizer",
 )
 
 

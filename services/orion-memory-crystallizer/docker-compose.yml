@@ -1,0 +1,34 @@
+services:
+  memory-crystallizer:
+    build:
+      context: ../..
+      dockerfile: services/orion-memory-crystallizer/Dockerfile
+    container_name: ${PROJECT}-memory-crystallizer
+    restart: unless-stopped
+    networks:
+      - app-net
+    ports:
+      - "${PORT:-8634}:${PORT:-8634}"
+    env_file:
+      - .env
+    environment:
+      - PROJECT=${PROJECT}
+      - SERVICE_NAME=${SERVICE_NAME:-orion-memory-crystallizer}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - NODE_NAME=${NODE_NAME}
+      - PORT=${PORT:-8634}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED:-true}
+      - POSTGRES_URI=${POSTGRES_URI}
+      - CRYSTALLIZER_AUTO_APPLY_SCHEMA=${CRYSTALLIZER_AUTO_APPLY_SCHEMA:-true}
+      - CRYSTALLIZER_VECTOR_COLLECTION=${CRYSTALLIZER_VECTOR_COLLECTION:-orion_memory_crystallizations}
+      - CRYSTALLIZER_EMBED_HOST_URL=${CRYSTALLIZER_EMBED_HOST_URL:-}
+      - GRAPHITI_ENABLED=${GRAPHITI_ENABLED:-false}
+      - GRAPHITI_URL=${GRAPHITI_URL:-}
+      - FALKORDB_URI=${FALKORDB_URI:-}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    command: ["/bin/sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8634}"]
+
+networks:
+  app-net:
+    external: true

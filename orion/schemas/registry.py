@@ -60,6 +60,7 @@ from orion.schemas.execution_projection import (
     ExecutionTrajectoryProjectionV1,
 )
 from orion.schemas.grammar import GrammarEventV1
+from orion.schemas.memory_crystallization import ActiveMemoryPacketV1, MemoryCrystallizationV1
 from orion.schemas.organ_emission import OrganEmissionV1
 from orion.schemas.reduction_receipt import ProjectionUpdateV1, ReductionReceiptV1
 from orion.schemas.state_delta import StateDeltaV1
@@ -558,6 +559,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "MindRunArtifactV1": MindRunArtifactV1,
     "SubstrateTierOutcomesPayloadV1": SubstrateTierOutcomesPayloadV1,
     "GrammarEventV1": GrammarEventV1,
+    "MemoryCrystallizationV1": MemoryCrystallizationV1,
+    "ActiveMemoryPacketV1": ActiveMemoryPacketV1,
     "OrganEmissionV1": OrganEmissionV1,
     "ReductionReceiptV1": ReductionReceiptV1,
     "StateDeltaV1": StateDeltaV1,

@@ -1514,6 +1514,73 @@ channels:
     stability: "experimental"
     since: "2026-03-19"
 
+  # --- Memory crystallization (governed cognitive memory) ---
+  # MemoryCrystallizationV1 lifecycle events. Proposals may come from any
+  # service/local model; only orion-memory-crystallizer (governor) emits
+  # approved/rejected/quarantined transitions.
+  - name: "orion:memory:crystallization:proposed"
+    kind: "event"
+    schema_id: "MemoryCrystallizationV1"
+    message_kind: "memory.crystallization.proposed.v1"
+    producer_services: ["*"]
+    consumer_services: ["orion-memory-crystallizer"]
+    stability: "experimental"
+    since: "2026-06-10"
+
+  - name: "orion:memory:crystallization:validated"
+    kind: "event"
+    schema_id: "MemoryCrystallizationV1"
+    message_kind: "memory.crystallization.validated.v1"
+    producer_services: ["orion-memory-crystallizer"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-06-10"
+
+  - name: "orion:memory:crystallization:approved"
+    kind: "event"
+    schema_id: "MemoryCrystallizationV1"
+    message_kind: "memory.crystallization.approved.v1"
+    producer_services: ["orion-memory-crystallizer"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-06-10"
+
+  - name: "orion:memory:crystallization:rejected"
+    kind: "event"
+    schema_id: "MemoryCrystallizationV1"
+    message_kind: "memory.crystallization.rejected.v1"
+    producer_services: ["orion-memory-crystallizer"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-06-10"
+
+  - name: "orion:memory:crystallization:quarantined"
+    kind: "event"
+    schema_id: "MemoryCrystallizationV1"
+    message_kind: "memory.crystallization.quarantined.v1"
+    producer_services: ["orion-memory-crystallizer"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-06-10"
+
+  - name: "orion:memory:crystallization:project"
+    kind: "event"
+    schema_id: "MemoryCrystallizationV1"
+    message_kind: "memory.crystallization.project.v1"
+    producer_services: ["orion-memory-crystallizer"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-06-10"
+
+  - name: "orion:memory:crystallization:retrieved"
+    kind: "event"
+    schema_id: "ActiveMemoryPacketV1"
+    message_kind: "memory.crystallization.retrieved.v1"
+    producer_services: ["orion-memory-crystallizer"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-06-10"
+
   - name: "orion:autonomy:goal:planned"
     kind: "event"
     schema_id: "AutonomyGoalPlannedV1"

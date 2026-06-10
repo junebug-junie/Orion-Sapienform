@@ -43,7 +43,7 @@ class OrganRuntime:
         hits = trace_tools.traces_search(
             query=query,
             corr_id=effective_corr,
-            run_id=run_id or self.run_id,
+            run_id=run_id,
             limit=limit,
         )
         out: list[dict[str, Any]] = []

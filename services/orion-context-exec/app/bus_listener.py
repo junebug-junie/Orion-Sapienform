@@ -11,7 +11,6 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.agents.schemas import AgentChainRequest
 
 from .agent_compat import agent_chain_request_to_context_exec, context_exec_run_to_agent_chain_result
-from .events import ContextExecEventEmitter
 from .runner import ContextExecRunner
 from .settings import settings
 
@@ -40,7 +39,7 @@ async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
 
     await bus.connect()
     logger.info("subscribed channels=%s compat_alias=%s", channels, settings.context_exec_compat_agent_chain_enabled)
-    runner = ContextExecRunner(bus=bus, events=ContextExecEventEmitter(bus))
+    runner = ContextExecRunner(bus=bus)
 
     try:
         async with bus.subscribe(*channels) as pubsub:

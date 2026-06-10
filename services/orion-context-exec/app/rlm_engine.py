@@ -84,7 +84,7 @@ class FakeRLMEngine(RLMEngine):
             ]
             report = {
                 "claim": "User is from Denver",
-                "status": "contradicted" if memory_hits else "unknown",
+                "status": "supported" if (memory_hits or trace_hits) else "unknown",
                 "likely_origin": "memory/recall cross-check",
                 "confidence": 0.72 if memory_hits else 0.2,
                 "recommended_action": "mark_uncertain",

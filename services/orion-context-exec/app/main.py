@@ -15,7 +15,6 @@ from orion.schemas.telemetry.system_health import SystemHealthV1
 
 from .api import router, set_runner
 from .bus_listener import run_bus_worker
-from .events import ContextExecEventEmitter
 from .runner import ContextExecRunner
 from .settings import settings
 
@@ -75,7 +74,7 @@ async def lifespan(app: FastAPI):
     if bus.enabled:
         await bus.connect()
     app.state.bus = bus
-    runner = ContextExecRunner(bus=bus if bus.enabled else None, events=ContextExecEventEmitter(bus if bus.enabled else None))
+    runner = ContextExecRunner(bus=bus if bus.enabled else None)
     set_runner(runner)
     app.state.bus_task = asyncio.create_task(run_bus_worker(app.state.bus_stop_event))
     app.state.heartbeat_task = asyncio.create_task(heartbeat_loop())

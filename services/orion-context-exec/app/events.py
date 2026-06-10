@@ -45,17 +45,6 @@ class ContextExecEventEmitter:
         self._correlation_id = correlation_id
         self._causality_chain = list(causality_chain or [])
 
-    def bind_request(
-        self,
-        *,
-        correlation_id: str | None,
-        causality_chain: list[str] | None = None,
-    ) -> None:
-        if correlation_id:
-            self._correlation_id = correlation_id
-        if causality_chain is not None:
-            self._causality_chain = list(causality_chain)
-
     async def publish(
         self,
         kind: str,

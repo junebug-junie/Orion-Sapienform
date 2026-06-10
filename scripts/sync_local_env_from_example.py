@@ -44,6 +44,7 @@ SYNC_PREFIXES = (
     "TRANSPORT_SUBSTRATE_",
     "CONTEXT_EXEC_",
     "CHANNEL_CONTEXT_EXEC_",
+)
 
 SYNC_EXACT = frozenset(
     {

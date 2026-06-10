@@ -70,11 +70,9 @@ class ContextExecRunner:
         engine: RLMEngine | None = None,
         *,
         bus: OrionBusAsync | None = None,
-        events: ContextExecEventEmitter | None = None,
     ) -> None:
         self.engine = engine or build_engine(settings.rlm_engine)
         self.bus = bus
-        self._default_events = events
 
     def _build_events(
         self,
@@ -82,13 +80,6 @@ class ContextExecRunner:
         *,
         causality_chain: list[str] | None = None,
     ) -> ContextExecEventEmitter:
-        if self._default_events is not None:
-            emitter = self._default_events
-            emitter.bind_request(
-                correlation_id=request.correlation_id,
-                causality_chain=causality_chain,
-            )
-            return emitter
         return ContextExecEventEmitter(
             self.bus,
             correlation_id=request.correlation_id,

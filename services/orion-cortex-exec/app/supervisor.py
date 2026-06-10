@@ -39,7 +39,11 @@ from orion.schemas.agents.bound_capability import (
 )
 
 from orion.schemas.cognition.answer_contract import AnswerContract
-from orion.schemas.context_exec import ContextExecRequestV1
+from orion.schemas.context_exec import (
+    ContextExecBudgetV1,
+    ContextExecPermissionV1,
+    ContextExecRequestV1,
+)
 
 from .clients import AgentChainClient, ContextExecClient, CouncilClient, LLMGatewayClient, PlannerReactClient
 from .executor import _last_user_message, call_step_services, run_recall_step
@@ -961,6 +965,96 @@ def _ensure_agent_chain_tool(toolset: List[ToolDef]) -> List[ToolDef]:
     ]
 
 
+_CONTEXT_EXEC_ARTIFACT_BY_MODE = {
+    "belief_provenance": "BeliefProvenanceReportV1",
+    "trace_autopsy": "TraceAutopsyReportV1",
+    "repo_impact_analysis": "RepoImpactAnalysisReportV1",
+}
+
+
+def _context_exec_options(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    options = ctx.get("options")
+    return options if isinstance(options, dict) else {}
+
+
+def _should_use_context_exec(ctx: Dict[str, Any], *, bound_execution: Any = None) -> bool:
+    if not settings.context_exec_enabled:
+        return False
+    if bound_execution is not None and isinstance(bound_execution, dict):
+        return False
+    if isinstance(ctx.get("__bound_execution"), dict):
+        return False
+    options = _context_exec_options(ctx)
+    return (
+        str(options.get("agent_runtime_engine") or "") == "context_exec"
+        or bool(options.get("context_exec_mode"))
+    )
+
+
+def _context_exec_mode_from_options(options: Dict[str, Any]) -> str:
+    explicit = str(options.get("context_exec_mode") or "").strip()
+    if explicit:
+        return explicit
+    return "general_investigation"
+
+
+def _build_context_exec_request(
+    *,
+    agent_req: Dict[str, Any],
+    ctx: Dict[str, Any],
+    options: Dict[str, Any],
+    correlation_id: str,
+    packs: List[str],
+    ctx_mode: str,
+) -> ContextExecRequestV1:
+    ac = agent_req.get("answer_contract")
+    if ac is None:
+        ac_raw = ctx.get("answer_contract")
+        ac = ac_raw if isinstance(ac_raw, dict) else None
+    allowed_raw = options.get("allowed_verbs") or ctx.get("allowed_verbs") or []
+    allowed_verbs = [str(v).strip() for v in allowed_raw if str(v).strip()]
+    scopes_raw = options.get("scopes") or ctx.get("scopes")
+    scopes = scopes_raw if isinstance(scopes_raw, dict) else {}
+    budget_raw = options.get("budget") or ctx.get("budget")
+    if isinstance(budget_raw, dict):
+        budget = ContextExecBudgetV1.model_validate(budget_raw)
+    else:
+        budget = ContextExecBudgetV1(max_seconds=float(settings.context_exec_timeout_sec))
+    return ContextExecRequestV1(
+        text=str(agent_req["text"]),
+        mode=ctx_mode,  # type: ignore[arg-type]
+        correlation_id=correlation_id,
+        session_id=agent_req.get("session_id"),
+        user_id=agent_req.get("user_id"),
+        messages=[
+            LLMMessage.model_validate(m) if isinstance(m, dict) else m
+            for m in (agent_req.get("messages") or [])
+        ],
+        packs=list(packs or []),
+        answer_contract=AnswerContract.model_validate(ac) if isinstance(ac, dict) else None,
+        expected_artifact_type=_CONTEXT_EXEC_ARTIFACT_BY_MODE.get(ctx_mode),
+        allowed_verbs=allowed_verbs,
+        scopes=scopes,
+        permissions=ContextExecPermissionV1(),
+        budget=budget,
+    )
+
+
+def _extract_agent_escalation_payload(step: StepExecutionResult) -> Dict[str, Any]:
+    result = step.result if isinstance(step.result, dict) else {}
+    for key in ("ContextExecService", "AgentChainService"):
+        payload = result.get(key)
+        if isinstance(payload, dict):
+            return payload
+    return {}
+
+
+def _extract_agent_escalation_text(step: StepExecutionResult) -> Optional[str]:
+    payload = _extract_agent_escalation_payload(step)
+    if not payload:
+        return None
+    text = payload.get("final_text") or payload.get("text")
+    return str(text) if text else None
 
 
 class Supervisor:
@@ -1357,28 +1451,18 @@ class Supervisor:
             agent_req["goal_description"] = "execute_selected_capability"
             agent_req["bound_capability_execution"] = contract.model_dump(mode="json")
 
-        options = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
-        use_context_exec = (
-            settings.context_exec_enabled
-            and str(options.get("agent_runtime_engine") or "") == "context_exec"
-            and not isinstance(bound_execution, dict)
-        )
+        options = _context_exec_options(ctx)
+        use_context_exec = _should_use_context_exec(ctx, bound_execution=bound_execution)
+        context_exec_fallback_debug: Dict[str, Any] | None = None
         if use_context_exec:
-            ctx_mode = str(options.get("context_exec_mode") or "general_investigation")
-            ce_req = ContextExecRequestV1(
-                text=str(agent_req["text"]),
-                mode=ctx_mode,  # type: ignore[arg-type]
-                session_id=agent_req.get("session_id"),
-                user_id=agent_req.get("user_id"),
-                messages=[LLMMessage.model_validate(m) if isinstance(m, dict) else m for m in (agent_req.get("messages") or [])],
-                packs=list(packs or []),
-                answer_contract=AnswerContract.model_validate(ac) if isinstance(ac, dict) else None,
-                expected_artifact_type={
-                    "belief_provenance": "BeliefProvenanceReportV1",
-                    "trace_autopsy": "TraceAutopsyReportV1",
-                    "runtime_debug": "TraceAutopsyReportV1",
-                    "repo_impact_analysis": "RepoImpactAnalysisReportV1",
-                }.get(ctx_mode),
+            ctx_mode = _context_exec_mode_from_options(options)
+            ce_req = _build_context_exec_request(
+                agent_req=agent_req,
+                ctx=ctx,
+                options=options,
+                correlation_id=correlation_id,
+                packs=packs,
+                ctx_mode=ctx_mode,
             )
             reply_channel = f"{settings.channel_context_exec_reply_prefix}:{correlation_id}"
             t0 = time.time()
@@ -1392,6 +1476,10 @@ class Supervisor:
                     timeout_sec=float(settings.context_exec_timeout_sec),
                 )
                 logs.append("ok <- ContextExecService")
+                runtime_debug = dict(ce_run.runtime_debug or {})
+                runtime_debug.setdefault("engine", "context_exec")
+                runtime_debug["context_exec_attempted"] = True
+                runtime_debug["context_exec_status"] = ce_run.status
                 agent_payload = {
                     "final_text": ce_run.final_text,
                     "text": ce_run.final_text,
@@ -1409,17 +1497,17 @@ class Supervisor:
                         if ce_run.findings_bundle
                         else None,
                     },
-                    "runtime_debug": {
-                        **(ce_run.runtime_debug or {}),
-                        "context_exec_attempted": True,
-                        "context_exec_status": ce_run.status,
-                    },
+                    "runtime_debug": runtime_debug,
                     "mode": agent_req.get("mode"),
                 }
                 if ce_run.status not in {"ok"} and settings.context_exec_legacy_fallback:
                     logs.append(f"context_exec_status={ce_run.status} fallback=legacy_agent_chain")
-                    agent_payload["runtime_debug"]["context_exec_fallback"] = "legacy_agent_chain"
-                    agent_payload["runtime_debug"]["context_exec_failure_modes"] = ce_run.failure_modes
+                    context_exec_fallback_debug = {
+                        "context_exec_attempted": True,
+                        "context_exec_status": ce_run.status,
+                        "context_exec_fallback": "legacy_agent_chain",
+                        "context_exec_failure_modes": ce_run.failure_modes,
+                    }
                     raise RuntimeError(f"context_exec_{ce_run.status}")
                 return StepExecutionResult(
                     status="success" if ce_run.status == "ok" else "fail",
@@ -1454,6 +1542,14 @@ class Supervisor:
                         node=settings.node_name,
                         logs=logs,
                     )
+                if context_exec_fallback_debug is None:
+                    status_label = "timeout" if isinstance(exc, TimeoutError) else "error"
+                    context_exec_fallback_debug = {
+                        "context_exec_attempted": True,
+                        "context_exec_status": status_label,
+                        "context_exec_fallback": "legacy_agent_chain",
+                        "error": str(exc),
+                    }
                 logs.append(f"context_exec_fallback agent_chain err={exc}")
 
         reply_channel = f"{settings.exec_result_prefix}:AgentChainService:{correlation_id}"
@@ -1477,12 +1573,18 @@ class Supervisor:
             bool(ctx.get("memory_digest")),
             _detect_scaffolding_markers(agent_res.text),
         )
+        agent_payload = agent_res.model_dump(mode="json")
+        if context_exec_fallback_debug:
+            existing_rd = agent_payload.get("runtime_debug")
+            runtime_debug = dict(existing_rd) if isinstance(existing_rd, dict) else {}
+            runtime_debug.update(context_exec_fallback_debug)
+            agent_payload["runtime_debug"] = runtime_debug
         return StepExecutionResult(
             status="success",
             verb_name="agent_chain",
             step_name="agent_chain",
             order=100,
-            result={"AgentChainService": agent_res.model_dump(mode="json")},
+            result={"AgentChainService": agent_payload},
             latency_ms=int((time.time() - t0) * 1000),
             node=settings.node_name,
             logs=logs,
@@ -1609,6 +1711,37 @@ class Supervisor:
             [t.tool_id for t in tools[:30]],
         )
         mode = ctx.get("mode") or req.metadata.get("mode") or "agent"
+        if _should_use_context_exec(ctx):
+            logger.info(
+                "context_exec_early_dispatch corr_id=%s mode=%s verb=%s ctx_mode=%s",
+                correlation_id,
+                mode,
+                req.verb_name,
+                _context_exec_mode_from_options(_context_exec_options(ctx)),
+            )
+            agent_step = await self._agent_chain_escalation(
+                source=source,
+                correlation_id=correlation_id,
+                ctx=ctx,
+                packs=packs,
+            )
+            step_results.append(agent_step)
+            agent_payload = _extract_agent_escalation_payload(agent_step)
+            if agent_payload:
+                _merge_agent_findings_into_ctx(ctx, agent_payload)
+            return PlanExecutionResult(
+                verb_name=req.verb_name,
+                request_id=correlation_id,
+                status="success" if agent_step.status == "success" else "fail",
+                blocked=False,
+                blocked_reason=None,
+                steps=step_results,
+                mode=mode,
+                final_text=_extract_agent_escalation_text(agent_step),
+                memory_used=memory_used,
+                recall_debug=recall_debug,
+                error=agent_step.error,
+            )
         if mode in {"agent", "council"}:
             tools = _ensure_agent_chain_tool(tools)
         if mode == "auto":
@@ -2035,10 +2168,14 @@ class Supervisor:
             )
             step_results.append(agent_step)
             try:
-                agent_payload = agent_step.result.get("AgentChainService", {})
-                _merge_agent_findings_into_ctx(ctx, agent_payload)
-                if isinstance(agent_payload, dict):
-                    final_text = agent_payload.get("text") or final_text
+                agent_payload = _extract_agent_escalation_payload(agent_step)
+                if agent_payload:
+                    _merge_agent_findings_into_ctx(ctx, agent_payload)
+                    final_text = (
+                        agent_payload.get("final_text")
+                        or agent_payload.get("text")
+                        or final_text
+                    )
             except Exception:
                 pass
 

@@ -18,6 +18,10 @@ Bounded depth-2 investigation organ replacing planner-react/agent-chain for grou
 
 Read-only; no network/shell/repo writes. RLM runs via `FakeRLMEngine` unless `CONTEXT_EXEC_RLM_ENGINE` is changed.
 
+**Bus alias safety:** `CONTEXT_EXEC_COMPAT_AGENT_CHAIN_ENABLED` defaults to **false**. Keep it false while `orion-agent-chain` is running — use native `ContextExecService` intake only. HTTP `/agent/chain/run` remains for local harness tests.
+
+**Fake evidence:** `CONTEXT_EXEC_FAKE_ORGANS_ENABLED=false` (default) means FakeRLM runs but memory/trace stubs return empty until real organs are wired (#662).
+
 ## Local run
 
 ```bash

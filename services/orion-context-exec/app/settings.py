@@ -65,8 +65,12 @@ class ContextExecSettings(BaseSettings):
     context_exec_network_enabled: bool = Field(False, alias="CONTEXT_EXEC_NETWORK_ENABLED")
     context_exec_repl_output_chars: int = Field(8192, alias="CONTEXT_EXEC_REPL_OUTPUT_CHARS")
     context_exec_compat_agent_chain_enabled: bool = Field(
-        True,
+        False,
         alias="CONTEXT_EXEC_COMPAT_AGENT_CHAIN_ENABLED",
+    )
+    context_exec_fake_organs_enabled: bool = Field(
+        False,
+        alias="CONTEXT_EXEC_FAKE_ORGANS_ENABLED",
     )
     context_exec_agent_chain_intake_alias: str = Field(
         "orion:exec:request:AgentChainService",

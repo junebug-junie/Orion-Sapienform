@@ -100,6 +100,19 @@ class RoutedRequest:
     output_mode_decision: OutputModeDecisionV1
 
 
+_TRACE_AUTOPSY_MARKERS = frozenset({"trace", "corr", "correlation", "run id", "fail open"})
+_RUNTIME_FAILURE_HINTS = frozenset({"run", "corr", "trace", "orion", "cortex", "agent-chain", "agent chain"})
+
+
+def _trace_autopsy_mode_for_text(text: str) -> bool:
+    tl = text.lower()
+    if any(marker in tl for marker in _TRACE_AUTOPSY_MARKERS):
+        return True
+    if "failed" in tl and any(hint in tl for hint in _RUNTIME_FAILURE_HINTS):
+        return True
+    return False
+
+
 class DecisionRouter:
     def __init__(self, bus: OrionBusAsync):
         self.bus = bus
@@ -119,7 +132,7 @@ class DecisionRouter:
         if "where did" in text and ("claim" in text or "belief" in text or "come from" in text):
             return "belief_provenance"
 
-        if any(t in text for t in ["trace", "corr", "correlation", "run id", "fail open", "failed"]):
+        if _trace_autopsy_mode_for_text(text):
             return "trace_autopsy"
 
         if "what breaks" in text or "impact" in text or "replace" in text:

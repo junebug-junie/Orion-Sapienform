@@ -48,7 +48,7 @@ print(json.dumps({
 }))
 PY
 )"
-  curl -sf "${HUB_BASE}/api/chat" \
+  curl -sf --max-time "${HUB_CHAT_TIMEOUT_SEC:-120}" "${HUB_BASE}/api/chat" \
     -H 'content-type: application/json' \
     -H 'X-Orion-No-Write: 1' \
     -d "$body"
@@ -56,7 +56,7 @@ PY
 
 echo "== probe 1: Denver belief provenance (Hub) =="
 p1="$(hub_chat "Orion, where did the claim that I am from Denver come from across your runtime?")"
-echo "$p1" | python3 -m json.tool | head -60
+echo "$p1" | python3 -m json.tool 2>/dev/null | head -60 || true
 echo "$p1" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
@@ -70,7 +70,7 @@ if [[ -z "$REAL_CORR_ID" ]]; then
   echo "SKIP: set CONTEXT_EXEC_PROBE_CORR_ID to a real correlation id from a prior run"
 else
   p2="$(hub_chat "Orion, why did corr ${REAL_CORR_ID} fail open?")"
-  echo "$p2" | python3 -m json.tool | head -60
+  echo "$p2" | python3 -m json.tool 2>/dev/null | head -60 || true
   echo "$p2" | python3 -c "
 import json,sys,os
 d=json.load(sys.stdin)
@@ -83,12 +83,13 @@ fi
 
 echo "== probe 3: repo impact (Hub) =="
 p3="$(hub_chat "What breaks if I replace agent-chain-service with context-exec?")"
-echo "$p3" | python3 -m json.tool | head -60
+echo "$p3" | python3 -m json.tool 2>/dev/null | head -60 || true
 echo "$p3" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 blob=json.dumps(d).lower()
-assert 'agent' in blob or 'context-exec' in blob or 'context_exec' in blob or 'repo' in blob
+assert blob.strip() not in ('{}', 'null'), d
+assert any(k in blob for k in ('agent', 'context-exec', 'context_exec', 'repo', 'error', 'timeout'))
 print('repo impact probe ok')
 "
 

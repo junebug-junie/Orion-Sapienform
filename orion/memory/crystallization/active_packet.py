@@ -28,29 +28,48 @@ def _entry(crystallization: MemoryCrystallizationV1) -> dict[str, Any]:
     }
 
 
+def _task_boost(kind: str, task_type: str | None) -> float:
+    if not task_type:
+        return 0.0
+    planning_kinds = {"stance", "procedure", "decision", "open_loop", "contradiction", "attractor"}
+    if task_type in ("planning", "architecture") and kind in planning_kinds:
+        return 0.1
+    return 0.0
+
+
 def build_active_packet(
     *,
     query: str,
     crystallizations: list[MemoryCrystallizationV1],
     card_refs: list[str] | None = None,
+    active_cards: list[dict[str, Any]] | None = None,
     task_type: str | None = None,
     project_id: str | None = None,
     session_id: str | None = None,
 ) -> ActiveMemoryPacketV1:
     active = [c for c in crystallizations if c.status == "active"]
-    active.sort(key=lambda c: c.salience, reverse=True)
+    if project_id:
+        active = [c for c in active if project_id in c.scope or c.scope == []]
+    active.sort(key=lambda c: c.salience + _task_boost(c.kind, task_type), reverse=True)
+
+    cards = list(active_cards or [])
+    card_ref_ids = list(card_refs or [])
+    if not card_ref_ids and cards:
+        card_ref_ids = [str(c.get("card_id")) for c in cards if c.get("card_id")]
 
     packet = ActiveMemoryPacketV1(
         query=query,
         task_type=task_type,
         project_id=project_id,
         session_id=session_id,
-        card_refs=list(card_refs or []),
+        card_refs=card_ref_ids,
         crystallization_refs=[c.crystallization_id for c in active],
         retrieval_trace={
-            "strategy": "salience_ranked_active_crystallizations",
-            "count": len(active),
+            "strategy": "multi_rail_salience_ranked",
+            "crystallization_count": len(active),
+            "card_count": len(card_ref_ids),
             "task_type": task_type,
+            "rails": ["postgres_crystallizations", "postgres_memory_cards"],
         },
     )
 

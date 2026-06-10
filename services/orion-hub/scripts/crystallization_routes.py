@@ -7,13 +7,20 @@ from uuid import UUID
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import ValidationError
 
+from datetime import datetime, timezone
+
 from orion.core.storage import memory_cards as mc_dal
 from orion.memory.crystallization.active_packet import build_active_packet
+from orion.memory.crystallization.bus_emit import emit_active_packet_retrieved, emit_crystallization_lifecycle
+from orion.memory.crystallization.chroma_publish import publish_crystallization_to_chroma
 from orion.memory.crystallization.governor import GovernorError, approve, quarantine, reject, supersede
+from orion.memory.crystallization.links import insert_link, list_links, neighborhood as link_neighborhood
 from orion.memory.crystallization.projection_cards import build_memory_card_projection
-from orion.memory.crystallization.projection_chroma import build_chroma_upsert
 from orion.memory.crystallization.projection_graphiti import GraphitiAdapter
+from orion.memory.crystallization.projection_rdf import build_rdf_projection_hint
+from orion.memory.crystallization.projector import ProjectionConfig, project_crystallization
 from orion.memory.crystallization.proposer import propose
+from orion.memory.crystallization.sources import resolve_crystallization_sources
 from orion.memory.crystallization.repository import (
     get_crystallization,
     insert_crystallization,
@@ -22,8 +29,8 @@ from orion.memory.crystallization.repository import (
     list_crystallizations,
     update_crystallization,
 )
-from orion.memory.crystallization.schemas import MemoryCrystallizationProposeRequestV1
-from orion.memory.crystallization.validator import validate_proposal
+from orion.memory.crystallization.schemas import CrystallizationLinkV1, MemoryCrystallizationProposeRequestV1, MemoryCrystallizationV1
+from orion.memory.crystallization.validator import ValidationResult, apply_validation_to_governance, validate_proposal
 
 from .session import ensure_session
 
@@ -55,14 +62,41 @@ async def _need_session(x_orion_session_id: Optional[str]) -> str:
     return await ensure_session(x_orion_session_id, bus)
 
 
-def _graphiti(request: Request) -> GraphitiAdapter:
+def _settings():
     from scripts.settings import settings
 
+    return settings
+
+
+def _graphiti(request: Request) -> GraphitiAdapter:
+    settings = _settings()
     return GraphitiAdapter(
         enabled=bool(getattr(settings, "GRAPHITI_ENABLED", False)),
         url=getattr(settings, "GRAPHITI_URL", None),
         falkordb_uri=getattr(settings, "FALKORDB_URI", None),
     )
+
+
+def _projection_config() -> ProjectionConfig:
+    s = _settings()
+    return ProjectionConfig(
+        collection=getattr(s, "CRYSTALLIZER_VECTOR_COLLECTION", "orion_memory_crystallizations"),
+        embed_host_url=getattr(s, "CRYSTALLIZER_EMBED_HOST_URL", "") or "",
+        embed_mode=getattr(s, "CRYSTALLIZER_EMBED_MODE", "http") or "http",
+        embed_timeout_ms=int(getattr(s, "CRYSTALLIZER_EMBED_TIMEOUT_MS", 8000) or 8000),
+        graphiti_enabled=bool(getattr(s, "GRAPHITI_ENABLED", False)),
+        graphiti_url=getattr(s, "GRAPHITI_URL", "") or "",
+        falkordb_uri=getattr(s, "FALKORDB_URI", "") or "",
+        service_name=getattr(s, "SERVICE_NAME", "orion-hub"),
+        service_version=getattr(s, "SERVICE_VERSION", "0.1.0"),
+        node_name=getattr(s, "NODE_NAME", "hub"),
+    )
+
+
+async def _bus():
+    from .main import bus
+
+    return bus
 
 
 @router.post("/api/memory/crystallizations/propose")
@@ -97,6 +131,8 @@ async def crystallization_propose(
     row = await get_crystallization(pool, stored_id)
     if not row:
         raise HTTPException(status_code=500, detail="propose_missing_row")
+
+    await emit_crystallization_lifecycle(await _bus(), lifecycle="proposed", crystallization=row, service_name=_settings().SERVICE_NAME, node_name=_settings().NODE_NAME)
     return row.model_dump(mode="json")
 
 
@@ -152,16 +188,26 @@ async def crystallization_validate_proposal(
         raise HTTPException(status_code=404, detail="proposal_not_found")
 
     result = validate_proposal(row)
+    source_result = await resolve_crystallization_sources(pool, row)
+    all_errors = list(result.errors) + list(source_result.errors)
+    valid = result.valid and source_result.valid
+
     updated = row.model_copy(deep=True)
-    if result.valid:
+    if valid:
         updated.governance.validation_status = "valid"
         updated.governance.validation_errors = []
+    elif source_result.unresolved:
+        updated = apply_validation_to_governance(
+            updated, ValidationResult(valid=False, errors=all_errors, quarantine=True)
+        )
     else:
         updated.governance.validation_status = "invalid"
-        updated.governance.validation_errors = list(result.errors)
+        updated.governance.validation_errors = all_errors
 
     await update_crystallization(pool, updated)
-    return {"valid": result.valid, "errors": result.errors, "crystallization": updated.model_dump(mode="json")}
+    lifecycle = "validated" if valid else ("quarantined" if updated.status == "quarantined" else "validated")
+    await emit_crystallization_lifecycle(await _bus(), lifecycle=lifecycle, crystallization=updated, service_name=_settings().SERVICE_NAME, node_name=_settings().NODE_NAME)
+    return {"valid": valid, "errors": all_errors, "crystallization": updated.model_dump(mode="json")}
 
 
 @router.post("/api/memory/crystallizations/proposals/{crystallization_id}/approve")
@@ -195,7 +241,29 @@ async def crystallization_approve_proposal(
         after=history.get("after"),
         reason=reason,
     )
-    return updated.model_dump(mode="json")
+    await emit_crystallization_lifecycle(
+        await _bus(), lifecycle="approved", crystallization=updated,
+        service_name=_settings().SERVICE_NAME, node_name=_settings().NODE_NAME,
+    )
+
+    projection_summary = None
+    if bool(getattr(_settings(), "CRYSTALLIZER_AUTO_PROJECT_ON_APPROVE", True)):
+        updated, proj = await project_crystallization(
+            pool, await _bus(), updated, actor=session, config=_projection_config(),
+        )
+        await update_crystallization(pool, updated)
+        projection_summary = {
+            "card_id": proj.card_id,
+            "chroma": proj.chroma,
+            "graphiti": proj.graphiti,
+            "bus_project_emitted": proj.bus_project_emitted,
+            "errors": proj.errors,
+        }
+
+    out = updated.model_dump(mode="json")
+    if projection_summary:
+        out["projection"] = projection_summary
+    return out
 
 
 @router.post("/api/memory/crystallizations/proposals/{crystallization_id}/reject")
@@ -219,6 +287,7 @@ async def crystallization_reject_proposal(
 
     await update_crystallization(pool, updated)
     await insert_history(pool, crystallization_id=crystallization_id, op=history["op"], actor=session, before=history.get("before"), after=history.get("after"), reason=reason)
+    await emit_crystallization_lifecycle(await _bus(), lifecycle="rejected", crystallization=updated, service_name=_settings().SERVICE_NAME, node_name=_settings().NODE_NAME)
     return updated.model_dump(mode="json")
 
 
@@ -240,6 +309,7 @@ async def crystallization_quarantine_proposal(
     updated, history = quarantine(row, actor=session, errors=errors, reason=reason)
     await update_crystallization(pool, updated)
     await insert_history(pool, crystallization_id=crystallization_id, op=history["op"], actor=session, before=history.get("before"), after=history.get("after"), reason=reason)
+    await emit_crystallization_lifecycle(await _bus(), lifecycle="quarantined", crystallization=updated, service_name=_settings().SERVICE_NAME, node_name=_settings().NODE_NAME)
     return updated.model_dump(mode="json")
 
 
@@ -311,14 +381,22 @@ async def crystallization_project_chroma(
     if not row:
         raise HTTPException(status_code=404, detail="not_found")
 
-    upsert = build_chroma_upsert(row)
-    if upsert is None:
-        raise HTTPException(status_code=400, detail="chroma_projection_not_allowed")
-
+    cfg = _projection_config()
+    updated, chroma_result = await publish_crystallization_to_chroma(
+        row, await _bus(),
+        collection=cfg.collection,
+        vector_channel=cfg.vector_channel,
+        embed_host_url=cfg.embed_host_url,
+        embed_mode=cfg.embed_mode,
+        embed_timeout_ms=cfg.embed_timeout_ms,
+        service_name=cfg.service_name,
+    )
+    await update_crystallization(pool, updated)
     return {
-        "channel": "orion:memory:vector:upsert",
+        "channel": cfg.vector_channel,
         "kind": "memory.vector.upsert.v1",
-        "payload": upsert.model_dump(mode="json"),
+        "result": chroma_result,
+        "crystallization_id": crystallization_id,
     }
 
 
@@ -378,9 +456,13 @@ async def memory_active_packet(
 
     try:
         active_items = await list_crystallizations(pool, status="active", limit=100)
+        active_cards = await mc_dal.list_cards(pool, status="active", limit=50)
     except Exception as exc:
         _http_if_missing_schema(exc)
         raise HTTPException(status_code=503, detail="retrieval_failed") from exc
+
+    if not card_refs and active_cards:
+        card_refs = [str(c.card_id) for c in active_cards[:20]]
 
     packet = build_active_packet(
         query=query,
@@ -389,6 +471,7 @@ async def memory_active_packet(
         task_type=task_type,
         project_id=project_id,
         session_id=session_id,
+        active_cards=[c.model_dump(mode="json") for c in active_cards[:20]],
     )
 
     event_id = await insert_retrieval_event(
@@ -400,6 +483,9 @@ async def memory_active_packet(
         crystallization_ids=packet.crystallization_refs,
         card_refs=card_refs,
         trace=packet.retrieval_trace,
+    )
+    await emit_active_packet_retrieved(
+        await _bus(), packet, service_name=_settings().SERVICE_NAME, node_name=_settings().NODE_NAME,
     )
     out = packet.model_dump(mode="json")
     out["retrieval_event_id"] = event_id
@@ -447,3 +533,175 @@ async def graphiti_neighborhood(
 ) -> Dict[str, Any]:
     await _need_session(x_orion_session_id)
     return _graphiti(request).neighborhood(crystallization_id)
+
+
+@router.patch("/api/memory/crystallizations/{crystallization_id}")
+async def crystallization_patch(
+    request: Request,
+    crystallization_id: str,
+    body: Dict[str, Any],
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+) -> Dict[str, Any]:
+    session = await _need_session(x_orion_session_id)
+    pool = _pool(request)
+    row = await get_crystallization(pool, crystallization_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="not_found")
+
+    updated = row.model_copy(deep=True)
+    for field in ("subject", "summary", "confidence", "tags", "planning_effects", "retrieval_affordances"):
+        if field in body:
+            setattr(updated, field, body[field])
+    if "salience" in body:
+        updated.salience = float(body["salience"])
+    updated.updated_at = datetime.now(timezone.utc)
+    await update_crystallization(pool, updated)
+    await insert_history(pool, crystallization_id=crystallization_id, op="update", actor=session, before=row.model_dump(mode="json"), after=updated.model_dump(mode="json"))
+    return updated.model_dump(mode="json")
+
+
+@router.post("/api/memory/crystallizations/{crystallization_id}/status")
+async def crystallization_status(
+    request: Request,
+    crystallization_id: str,
+    body: Dict[str, Any],
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+) -> Dict[str, Any]:
+    session = await _need_session(x_orion_session_id)
+    pool = _pool(request)
+    row = await get_crystallization(pool, crystallization_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="not_found")
+
+    new_status = str(body.get("status") or "").strip()
+    if new_status not in ("active", "rejected", "superseded", "deprecated", "archived", "quarantined"):
+        raise HTTPException(status_code=400, detail="invalid_status")
+
+    before = {"status": row.status}
+    updated = row.model_copy(deep=True)
+    updated.status = new_status  # type: ignore[assignment]
+    updated.updated_at = datetime.now(timezone.utc)
+    await update_crystallization(pool, updated)
+    await insert_history(pool, crystallization_id=crystallization_id, op="status_change", actor=session, before=before, after={"status": new_status}, reason=body.get("reason"))
+    return updated.model_dump(mode="json")
+
+
+@router.post("/api/memory/crystallizations/{crystallization_id}/suppress")
+async def crystallization_suppress(
+    request: Request,
+    crystallization_id: str,
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+) -> Dict[str, Any]:
+    return await crystallization_status(
+        request, crystallization_id,
+        {"status": "archived", "reason": "suppress_from_retrieval"},
+        x_orion_session_id,
+    )
+
+
+@router.post("/api/memory/crystallizations/{crystallization_id}/deprecate")
+async def crystallization_deprecate(
+    request: Request,
+    crystallization_id: str,
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+) -> Dict[str, Any]:
+    return await crystallization_status(
+        request, crystallization_id, {"status": "deprecated", "reason": "operator_deprecate"}, x_orion_session_id,
+    )
+
+
+@router.post("/api/memory/crystallizations/{crystallization_id}/links")
+async def crystallization_add_link(
+    request: Request,
+    crystallization_id: str,
+    body: Dict[str, Any],
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+) -> Dict[str, Any]:
+    await _need_session(x_orion_session_id)
+    pool = _pool(request)
+    try:
+        link = CrystallizationLinkV1.model_validate(body)
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=e.errors()) from e
+    await insert_link(pool, from_crystallization_id=crystallization_id, link=link)
+    return {"ok": True, "from": crystallization_id, "link": link.model_dump(mode="json")}
+
+
+@router.get("/api/memory/crystallizations/{crystallization_id}/links")
+async def crystallization_list_links(
+    request: Request,
+    crystallization_id: str,
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+) -> Dict[str, Any]:
+    await _need_session(x_orion_session_id)
+    pool = _pool(request)
+    links = await list_links(pool, crystallization_id)
+    return {"items": links, "count": len(links)}
+
+
+@router.get("/api/memory/crystallizations/{crystallization_id}/neighborhood")
+async def crystallization_neighborhood(
+    request: Request,
+    crystallization_id: str,
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+) -> Dict[str, Any]:
+    await _need_session(x_orion_session_id)
+    pool = _pool(request)
+    return await link_neighborhood(pool, crystallization_id)
+
+
+@router.post("/api/memory/crystallizations/{crystallization_id}/project/rdf")
+async def crystallization_project_rdf(
+    request: Request,
+    crystallization_id: str,
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+) -> Dict[str, Any]:
+    await _need_session(x_orion_session_id)
+    pool = _pool(request)
+    row = await get_crystallization(pool, crystallization_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="not_found")
+    hint = build_rdf_projection_hint(row)
+    if hint.skipped:
+        raise HTTPException(status_code=400, detail=hint.reason)
+    updated = row.model_copy(deep=True)
+    if hint.named_graph and hint.named_graph not in updated.projection_refs.rdf_named_graphs:
+        updated.projection_refs.rdf_named_graphs = list(updated.projection_refs.rdf_named_graphs) + [hint.named_graph]
+        await update_crystallization(pool, updated)
+    return {"named_graph": hint.named_graph, "note": "use_existing_memory_graph_approve_flow", "crystallization_id": crystallization_id}
+
+
+@router.post("/api/memory/crystallizations/projection/rebuild")
+async def crystallization_projection_rebuild(
+    request: Request,
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> Dict[str, Any]:
+    session = await _need_session(x_orion_session_id)
+    pool = _pool(request)
+    items = await list_crystallizations(pool, status="active", limit=limit)
+    results = []
+    for item in items:
+        updated, proj = await project_crystallization(pool, await _bus(), item, actor=session, config=_projection_config())
+        await update_crystallization(pool, updated)
+        results.append({"crystallization_id": item.crystallization_id, "card_id": proj.card_id, "chroma": proj.chroma, "errors": proj.errors})
+    return {"rebuilt": len(results), "items": results}
+
+
+@router.post("/api/memory/graphiti/sync/{crystallization_id}")
+async def graphiti_sync(
+    request: Request,
+    crystallization_id: str,
+    x_orion_session_id: Optional[str] = Header(None, alias="X-Orion-Session-Id"),
+) -> Dict[str, Any]:
+    session = await _need_session(x_orion_session_id)
+    pool = _pool(request)
+    row = await get_crystallization(pool, crystallization_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="not_found")
+    updated, proj = await project_crystallization(
+        pool, await _bus(), row, actor=session, config=_projection_config(),
+        project_card=False, project_chroma=False, project_graphiti=True,
+    )
+    await update_crystallization(pool, updated)
+    return {"crystallization_id": crystallization_id, "graphiti": proj.graphiti, "canonical_mutated": False}

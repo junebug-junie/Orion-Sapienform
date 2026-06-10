@@ -1,0 +1,18 @@
+name: context_exec_trace_autopsy
+label: "Context Exec: Trace Autopsy"
+description: Explain why a correlation, run, or trace failed or degraded.
+category: cognition
+version: "0.1.0"
+timeout_ms: 60000
+services:
+  - ContextExecService
+steps:
+  - name: inspect
+  - name: compare
+  - name: verify
+  - name: synthesize
+  - name: decide
+tags:
+  - context_exec
+  - trace
+  - runtime_debug

@@ -21,6 +21,7 @@ from orion.schemas.agents.schemas import (
     DeliberationRequest,
     CouncilResult,
 )
+from orion.schemas.context_exec import ContextExecRequestV1, ContextExecRunV1
 from .settings import settings
 
 logger = logging.getLogger("orion.cortex.exec.clients")
@@ -333,6 +334,73 @@ class AgentChainClient:
         if not decoded.ok:
             raise RuntimeError(f"Decode failed: {decoded.error}")
         return AgentChainResult.model_validate(decoded.envelope.payload)
+
+
+class ContextExecClient:
+    """Typed RPC client for ContextExecService."""
+
+    def __init__(self, bus: OrionBusAsync):
+        self.bus = bus
+        self.channel = settings.channel_context_exec_intake
+        self.timeout = float(settings.context_exec_timeout_sec)
+
+    async def run(
+        self,
+        source: ServiceRef,
+        req: ContextExecRequestV1,
+        correlation_id: str,
+        reply_to: str,
+        timeout_sec: Optional[float] = None,
+    ) -> ContextExecRunV1:
+        env = BaseEnvelope(
+            kind="context.exec.request.v1",
+            source=source,
+            correlation_id=correlation_id,
+            reply_to=reply_to,
+            payload=req.model_dump(mode="json"),
+        )
+        rpc_timeout = timeout_sec or self.timeout
+        logger.info(
+            "RPC emit -> %s kind=%s corr=%s reply=%s timeout=%.2fs",
+            self.channel,
+            env.kind,
+            correlation_id,
+            reply_to,
+            rpc_timeout,
+        )
+        started = time.perf_counter()
+        try:
+            msg = await self.bus.rpc_request(
+                self.channel,
+                env,
+                reply_channel=reply_to,
+                timeout_sec=rpc_timeout,
+            )
+        except Exception as exc:
+            elapsed = time.perf_counter() - started
+            logger.warning(
+                "RPC error <- %s kind=%s corr=%s reply=%s elapsed=%.2fs error=%s",
+                self.channel,
+                env.kind,
+                correlation_id,
+                reply_to,
+                elapsed,
+                exc,
+            )
+            raise
+        elapsed = time.perf_counter() - started
+        logger.info(
+            "RPC ok <- %s kind=%s corr=%s reply=%s elapsed=%.2fs",
+            self.channel,
+            env.kind,
+            correlation_id,
+            reply_to,
+            elapsed,
+        )
+        decoded = self.bus.codec.decode(msg.get("data"))
+        if not decoded.ok:
+            raise RuntimeError(f"ContextExecService decode failed: {decoded.error}")
+        return ContextExecRunV1.model_validate(decoded.envelope.payload)
 
 
 class CouncilClient:

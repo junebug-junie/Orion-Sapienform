@@ -1,0 +1,44 @@
+services:
+  context-exec:
+    container_name: ${PROJECT}-context-exec
+    build:
+      context: ../..
+      dockerfile: services/orion-context-exec/Dockerfile
+    env_file:
+      - .env
+    restart: unless-stopped
+    networks:
+      - ${NET}
+    ports:
+      - "${CONTEXT_EXEC_PORT:-8096}:8096"
+    environment:
+      SERVICE_NAME: context-exec
+      SERVICE_VERSION: ${SERVICE_VERSION:-0.1.0}
+      NODE_NAME: ${NODE_NAME}
+
+      ORION_BUS_URL: ${ORION_BUS_URL}
+      ORION_BUS_ENABLED: ${ORION_BUS_ENABLED}
+      ORION_BUS_ENFORCE_CATALOG: ${ORION_BUS_ENFORCE_CATALOG}
+
+      CHANNEL_CONTEXT_EXEC_INTAKE: ${CHANNEL_CONTEXT_EXEC_INTAKE:-orion:exec:request:ContextExecService}
+      CHANNEL_CONTEXT_EXEC_REPLY_PREFIX: ${CHANNEL_CONTEXT_EXEC_REPLY_PREFIX:-orion:exec:result:ContextExecService}
+      CHANNEL_CONTEXT_EXEC_EVENT: ${CHANNEL_CONTEXT_EXEC_EVENT:-orion:context_exec:event}
+
+      CHANNEL_LLM_INTAKE: ${CHANNEL_LLM_INTAKE}
+      CHANNEL_RECALL_INTAKE: ${CHANNEL_RECALL_INTAKE}
+      CHANNEL_RECALL_REPLY_PREFIX: ${CHANNEL_RECALL_REPLY_PREFIX:-orion:recall:reply}
+
+      CONTEXT_EXEC_ENABLED: ${CONTEXT_EXEC_ENABLED:-true}
+      CONTEXT_EXEC_SANDBOX_MODE: ${CONTEXT_EXEC_SANDBOX_MODE:-docker}
+      CONTEXT_EXEC_MAX_DEPTH: ${CONTEXT_EXEC_MAX_DEPTH:-1}
+      CONTEXT_EXEC_MAX_SUBCALLS: ${CONTEXT_EXEC_MAX_SUBCALLS:-6}
+      CONTEXT_EXEC_MAX_SECONDS: ${CONTEXT_EXEC_MAX_SECONDS:-45}
+      CONTEXT_EXEC_WRITE_ENABLED: ${CONTEXT_EXEC_WRITE_ENABLED:-false}
+      CONTEXT_EXEC_NETWORK_ENABLED: ${CONTEXT_EXEC_NETWORK_ENABLED:-false}
+      CONTEXT_EXEC_REPL_OUTPUT_CHARS: ${CONTEXT_EXEC_REPL_OUTPUT_CHARS:-8192}
+      CONTEXT_EXEC_RLM_ENGINE: ${CONTEXT_EXEC_RLM_ENGINE:-fake}
+      ORION_REPO_ROOT: /app
+
+networks:
+  app-net:
+    external: true

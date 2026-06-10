@@ -38,7 +38,10 @@ from orion.schemas.agents.bound_capability import (
     CapabilityRecoveryReasonV1,
 )
 
-from .clients import AgentChainClient, CouncilClient, LLMGatewayClient, PlannerReactClient
+from orion.schemas.cognition.answer_contract import AnswerContract
+from orion.schemas.context_exec import ContextExecRequestV1
+
+from .clients import AgentChainClient, ContextExecClient, CouncilClient, LLMGatewayClient, PlannerReactClient
 from .executor import _last_user_message, call_step_services, run_recall_step
 from .recall_utils import delivery_safe_recall_decision, has_inline_recall, hub_chat_lane_from_ctx
 from .settings import settings
@@ -973,6 +976,7 @@ class Supervisor:
         self.llm_client = LLMGatewayClient(bus)
         self.planner_client = PlannerReactClient(bus)
         self.agent_client = AgentChainClient(bus)
+        self.context_exec_client = ContextExecClient(bus)
         self.council_client = CouncilClient(bus)
 
     def _toolset(self, packs: List[str] | None = None, tags: List[str] | None = None) -> List[ToolDef]:
@@ -1352,6 +1356,106 @@ class Supervisor:
             )
             agent_req["goal_description"] = "execute_selected_capability"
             agent_req["bound_capability_execution"] = contract.model_dump(mode="json")
+
+        options = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
+        use_context_exec = (
+            settings.context_exec_enabled
+            and str(options.get("agent_runtime_engine") or "") == "context_exec"
+            and not isinstance(bound_execution, dict)
+        )
+        if use_context_exec:
+            ctx_mode = str(options.get("context_exec_mode") or "general_investigation")
+            ce_req = ContextExecRequestV1(
+                text=str(agent_req["text"]),
+                mode=ctx_mode,  # type: ignore[arg-type]
+                session_id=agent_req.get("session_id"),
+                user_id=agent_req.get("user_id"),
+                messages=[LLMMessage.model_validate(m) if isinstance(m, dict) else m for m in (agent_req.get("messages") or [])],
+                packs=list(packs or []),
+                answer_contract=AnswerContract.model_validate(ac) if isinstance(ac, dict) else None,
+                expected_artifact_type={
+                    "belief_provenance": "BeliefProvenanceReportV1",
+                    "trace_autopsy": "TraceAutopsyReportV1",
+                    "runtime_debug": "TraceAutopsyReportV1",
+                    "repo_impact_analysis": "RepoImpactAnalysisReportV1",
+                }.get(ctx_mode),
+            )
+            reply_channel = f"{settings.channel_context_exec_reply_prefix}:{correlation_id}"
+            t0 = time.time()
+            logs = [f"rpc -> ContextExecService reply={reply_channel}"]
+            try:
+                ce_run = await self.context_exec_client.run(
+                    source=source,
+                    req=ce_req,
+                    correlation_id=correlation_id,
+                    reply_to=reply_channel,
+                    timeout_sec=float(settings.context_exec_timeout_sec),
+                )
+                logs.append("ok <- ContextExecService")
+                agent_payload = {
+                    "final_text": ce_run.final_text,
+                    "text": ce_run.final_text,
+                    "structured": {
+                        "context_exec": {
+                            "run_id": ce_run.run_id,
+                            "mode": ce_run.mode,
+                            "artifact_type": ce_run.artifact_type,
+                            "artifact": ce_run.artifact,
+                            "findings_bundle": ce_run.findings_bundle.model_dump(mode="json")
+                            if ce_run.findings_bundle
+                            else None,
+                        },
+                        "findings_bundle": ce_run.findings_bundle.model_dump(mode="json")
+                        if ce_run.findings_bundle
+                        else None,
+                    },
+                    "runtime_debug": {
+                        **(ce_run.runtime_debug or {}),
+                        "context_exec_attempted": True,
+                        "context_exec_status": ce_run.status,
+                    },
+                    "mode": agent_req.get("mode"),
+                }
+                if ce_run.status not in {"ok"} and settings.context_exec_legacy_fallback:
+                    logs.append(f"context_exec_status={ce_run.status} fallback=legacy_agent_chain")
+                    agent_payload["runtime_debug"]["context_exec_fallback"] = "legacy_agent_chain"
+                    agent_payload["runtime_debug"]["context_exec_failure_modes"] = ce_run.failure_modes
+                    raise RuntimeError(f"context_exec_{ce_run.status}")
+                return StepExecutionResult(
+                    status="success" if ce_run.status == "ok" else "fail",
+                    verb_name="context_exec",
+                    step_name="context_exec",
+                    order=100,
+                    result={"ContextExecService": agent_payload},
+                    latency_ms=int((time.time() - t0) * 1000),
+                    node=settings.node_name,
+                    logs=logs,
+                )
+            except Exception as exc:
+                if not settings.context_exec_legacy_fallback:
+                    logs.append(f"fail <- ContextExecService: {exc}")
+                    return StepExecutionResult(
+                        status="fail",
+                        verb_name="context_exec",
+                        step_name="context_exec",
+                        order=100,
+                        result={
+                            "ContextExecService": {
+                                "final_text": "Insufficient grounding: context-exec failed before acquiring evidence.",
+                                "text": "Insufficient grounding: context-exec failed before acquiring evidence.",
+                                "runtime_debug": {
+                                    "context_exec_attempted": True,
+                                    "context_exec_status": "error",
+                                    "error": str(exc),
+                                },
+                            }
+                        },
+                        latency_ms=int((time.time() - t0) * 1000),
+                        node=settings.node_name,
+                        logs=logs,
+                    )
+                logs.append(f"context_exec_fallback agent_chain err={exc}")
+
         reply_channel = f"{settings.exec_result_prefix}:AgentChainService:{correlation_id}"
         t0 = time.time()
         logs = [f"rpc -> AgentChainService reply={reply_channel}"]

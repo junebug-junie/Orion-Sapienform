@@ -1,0 +1,20 @@
+name: context_exec_belief_provenance
+label: "Context Exec: Belief Provenance"
+description: Investigate where a belief, claim, or memory assertion entered Orion's runtime.
+category: cognition
+version: "0.1.0"
+timeout_ms: 60000
+services:
+  - ContextExecService
+steps:
+  - name: retrieve
+  - name: resolve
+  - name: inspect
+  - name: compare
+  - name: infer
+  - name: verify
+  - name: synthesize
+tags:
+  - context_exec
+  - provenance
+  - memory

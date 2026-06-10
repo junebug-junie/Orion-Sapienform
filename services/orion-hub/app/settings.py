@@ -227,6 +227,11 @@ class Settings(BaseSettings):
     # --- Memory cards (Postgres, same DSN as recall conjourney DB) ---
     RECALL_PG_DSN: str = Field(default="", alias="RECALL_PG_DSN")
 
+    # --- Memory crystallization Graphiti/FalkorDB (additive temporal projection) ---
+    GRAPHITI_ENABLED: bool = Field(default=False, alias="GRAPHITI_ENABLED")
+    GRAPHITI_URL: str = Field(default="", alias="GRAPHITI_URL")
+    FALKORDB_URI: str = Field(default="", alias="FALKORDB_URI")
+
     # --- Runtimes ----
     TIMEOUT_SEC: int = Field(
         default=400,

@@ -15,7 +15,9 @@ from fastapi.staticfiles import StaticFiles
 from scripts.settings import settings
 from scripts.api_routes import router as api_router
 from orion.core.storage.memory_cards import apply_memory_cards_schema
+from orion.memory.crystallization.repository import apply_memory_crystallizations_schema
 from scripts.memory_routes import router as memory_router
+from scripts.crystallization_routes import router as crystallization_router
 from scripts.mind_routes import router as mind_router
 from scripts.memory_graph_routes import router as memory_graph_router
 import scripts.api_routes as api_routes_runtime
@@ -379,6 +381,11 @@ async def startup_event():
                 try:
                     apply_memory_cards_schema(dsn)
                     logger.info("memory_cards_schema_applied ok=true")
+                    try:
+                        apply_memory_crystallizations_schema(dsn)
+                        logger.info("memory_crystallizations_schema_applied ok=true")
+                    except Exception as crys_exc:
+                        logger.error("memory_crystallizations_schema_apply_failed error=%s", crys_exc, exc_info=True)
                 except Exception as schema_exc:
                     logger.error("memory_cards_schema_apply_failed error=%s", schema_exc, exc_info=True)
             except Exception as exc:
@@ -456,6 +463,7 @@ async def shutdown_event() -> None:
 
 app.include_router(api_router)
 app.include_router(memory_router)
+app.include_router(crystallization_router)
 app.include_router(mind_router)
 app.include_router(memory_graph_router)
 

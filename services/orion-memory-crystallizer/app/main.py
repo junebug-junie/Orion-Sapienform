@@ -5,10 +5,12 @@ from typing import Optional
 import asyncpg
 from fastapi import FastAPI
 
+from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.memory.crystallization.repository import apply_memory_crystallizations_schema
 
 from app.settings import settings
+from app.worker import handle_memory_card_envelope
 
 logger = logging.getLogger(settings.SERVICE_NAME)
 
@@ -32,17 +34,21 @@ def _cfg() -> ChassisConfig:
 async def lifespan(app: FastAPI):
     global bus_hunter, pg_pool
 
-    if settings.ORION_BUS_ENABLED:
-        bus_hunter = Hunter(_cfg())
-        await bus_hunter.start()
-        logger.info("bus_hunter_started")
-
     dsn = (settings.POSTGRES_URI or "").strip()
     if dsn:
         pg_pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=4)
         if settings.CRYSTALLIZER_AUTO_APPLY_SCHEMA:
             apply_memory_crystallizations_schema(dsn)
             logger.info("memory_crystallizations_schema_applied")
+
+    async def _handler(env: BaseEnvelope) -> None:
+        if pg_pool is not None and bus_hunter is not None:
+            await handle_memory_card_envelope(env, pg_pool, bus_hunter)
+
+    if settings.ORION_BUS_ENABLED:
+        bus_hunter = Hunter(_cfg(), patterns=["orion:memory:cards:*"], handler=_handler)
+        await bus_hunter.start_background()
+        logger.info("bus_hunter_started")
 
     app.state.pg_pool = pg_pool
     app.state.bus_hunter = bus_hunter

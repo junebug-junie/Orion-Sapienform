@@ -10,7 +10,11 @@ from orion.memory.crystallization.governor import GovernorError, approve, reject
 from orion.memory.crystallization.projection_cards import build_memory_card_projection, can_project_to_card
 from orion.memory.crystallization.projection_chroma import build_chroma_upsert, chroma_bus_envelope_kind
 from orion.memory.crystallization.projection_graphiti import GraphitiAdapter
+from orion.memory.crystallization.projection_rdf import build_rdf_projection_hint
 from orion.memory.crystallization.proposer import propose
+from orion.memory.crystallization.salience import score_salience, apply_salience
+from orion.memory.crystallization.bus_emit import LIFECYCLE_KINDS, CHANNEL_DEFAULTS
+from orion.memory.crystallization.detection import detect_contradictions, detect_duplicates, merge_detection
 from orion.memory.crystallization.schemas import (
     CrystallizationEvidenceRefV1,
     CrystallizationGovernanceV1,
@@ -175,3 +179,53 @@ class TestMemoryCardBackwardCompat:
         """MemoryCardV1 remains HTTP contract; crystallization is separate schema."""
         with pytest.raises(ValueError):
             resolve("MemoryCardV1")
+
+
+class TestSalienceAndBus:
+    def test_stance_scores_higher_salience(self):
+        req = _base_request(kind="stance", planning_effects=["prefer local"], retrieval_affordances=["retrieve_when:test"])
+        crys = apply_salience(propose(req))
+        assert score_salience(crys) >= 0.8
+
+    def test_bus_lifecycle_kinds_registered(self):
+        assert "approved" in LIFECYCLE_KINDS
+        assert CHANNEL_DEFAULTS["project"] == "orion:memory:crystallization:project"
+
+
+class TestRdfProjection:
+    def test_rdf_hint_conservative(self):
+        crys = _active_crystallization()
+        hint = build_rdf_projection_hint(crys)
+        assert hint.named_graph is not None
+        assert "crystallization" in hint.named_graph
+
+
+class TestGovernorDetection:
+    def test_detect_duplicates(self):
+        a = _active_crystallization(kind="stance", planning_effects=["x"], retrieval_affordances=["y"])
+        b = a.model_copy(deep=True)
+        b.crystallization_id = "crys_other"
+        b.summary = a.summary
+        result = detect_duplicates(b, [a])
+        assert result.duplicates
+
+    def test_detect_contradictions_negation(self):
+        pos = _active_crystallization(summary="Use local-first memory governance for canonical loops")
+        neg = pos.model_copy(deep=True)
+        neg.crystallization_id = "crys_neg"
+        neg.summary = "Do not use local-first memory governance for canonical loops"
+        result = detect_contradictions(neg, [pos])
+        assert result.contradictions or result.warnings
+
+
+class TestActivePacketFusion:
+    def test_active_packet_includes_card_rail(self):
+        crys = _active_crystallization()
+        packet = build_active_packet(
+            query="test",
+            crystallizations=[crys],
+            active_cards=[{"card_id": "card-1", "summary": "card fact"}],
+            task_type="architecture",
+        )
+        assert "card-1" in packet.card_refs
+        assert packet.retrieval_trace.get("rails") == ["postgres_crystallizations", "postgres_memory_cards"]

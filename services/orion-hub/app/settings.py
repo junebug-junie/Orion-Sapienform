@@ -232,6 +232,19 @@ class Settings(BaseSettings):
     GRAPHITI_URL: str = Field(default="", alias="GRAPHITI_URL")
     FALKORDB_URI: str = Field(default="", alias="FALKORDB_URI")
 
+    # --- Memory crystallization projections (Chroma via vector bus) ---
+    CRYSTALLIZER_VECTOR_COLLECTION: str = Field(
+        default="orion_memory_crystallizations", alias="CRYSTALLIZER_VECTOR_COLLECTION"
+    )
+    CRYSTALLIZER_EMBED_HOST_URL: str = Field(default="", alias="CRYSTALLIZER_EMBED_HOST_URL")
+    CRYSTALLIZER_EMBED_MODE: str = Field(default="http", alias="CRYSTALLIZER_EMBED_MODE")
+    CRYSTALLIZER_EMBED_TIMEOUT_MS: int = Field(default=8000, alias="CRYSTALLIZER_EMBED_TIMEOUT_MS")
+    CRYSTALLIZER_AUTO_PROJECT_ON_APPROVE: bool = Field(default=True, alias="CRYSTALLIZER_AUTO_PROJECT_ON_APPROVE")
+
+    CHROMA_HOST: str = Field(default="", alias="CHROMA_HOST")
+    CHROMA_PORT: int = Field(default=8000, alias="CHROMA_PORT")
+    GRAPHITI_ADAPTER_URL: str = Field(default="", alias="GRAPHITI_ADAPTER_URL")
+
     # --- Runtimes ----
     TIMEOUT_SEC: int = Field(
         default=400,

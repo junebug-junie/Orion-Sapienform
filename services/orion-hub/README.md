@@ -418,7 +418,7 @@ Then open the Hub Memory tab → **Review queue**, or `GET /api/memory/cards?sta
 
 **Automated smoke:** `scripts/smoke_memory_cards_e2e.sh` (requires `ORION_HUB_URL`, `ORION_HUB_SESSION_ID`, and `RECALL_PG_DSN` set to the same memory-store contract as Hub).
 
-**Memory crystallizations (governed cognitive memory):** `MemoryCrystallizationV1` is separate from `MemoryCardV1` (not MemoryCardV2). Turn-facing recall remains cards; crystallizations are durable governed memory in Postgres with optional projections to cards, Chroma (`orion:memory:vector:upsert`), and Graphiti/FalkorDB. RDF `/api/memory/graph/*` is unchanged. Hub routes: `POST /api/memory/crystallizations/propose`, `POST /api/memory/crystallizations/proposals/{id}/approve`, `POST /api/memory/active-packet`. Worker: `services/orion-memory-crystallizer/`.
+**Memory crystallizations (governed cognitive memory):** `MemoryCrystallizationV1` is separate from `MemoryCardV1` (not MemoryCardV2). Turn-facing recall remains cards; crystallizations are durable governed memory in Postgres with optional projections to cards, Chroma (`orion:memory:vector:upsert`), and Graphiti/FalkorDB via `services/orion-graphiti-adapter/`. RDF `/api/memory/graph/*` is unchanged. Hub Memory tab → **Crystallizations** subview (inbox, approve/reject, projection health). Smoke: `scripts/smoke_memory_crystallization_e2e.sh` (requires Hub restart with this branch).
 
 ---
 

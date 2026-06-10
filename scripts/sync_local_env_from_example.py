@@ -25,6 +25,9 @@ NEVER_SYNC_KEYS = frozenset(
 
 # Prefixes / exact keys synced after .env_example edits (default mode).
 SYNC_PREFIXES = (
+    "CRYSTALLIZER_",
+    "GRAPHITI_",
+    "FALKORDB_",
     "MEMORY_GRAPH_SUGGEST_",
     "LLM_MEMORY_GRAPH_SUGGEST_",
     "AUTONOMY_CHAT_STANCE_",
@@ -51,6 +54,7 @@ SYNC_EXACT = frozenset(
 )
 
 DEFAULT_SERVICES = (
+    "orion-memory-crystallizer",
     "orion-hub",
     "orion-cortex-exec",
     "orion-actions",

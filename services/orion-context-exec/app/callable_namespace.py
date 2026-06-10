@@ -108,13 +108,22 @@ class _RepoProxy:
         self._ns._guard("repo.grep")
         if not self._ns.permissions.read_repo:
             return []
+        from .settings import settings
+
+        if not settings.context_exec_real_repo_enabled:
+            return []
         return [h.model_dump(mode="json") for h in repo_tools.repo_grep(pattern, path=path, limit=limit)]
 
     def read(self, path: str, max_chars: int = 12000) -> dict[str, Any] | None:
         self._ns._guard("repo.read")
         if not self._ns.permissions.read_repo:
             return None
-        rf = repo_tools.repo_read(path, max_chars=max_chars)
+        from .settings import settings
+
+        if not settings.context_exec_real_repo_enabled:
+            return None
+        cap = max_chars if max_chars else settings.context_exec_repo_max_file_chars
+        rf = repo_tools.repo_read(path, max_chars=cap)
         return rf.model_dump(mode="json") if rf else None
 
     def write(self, *_a: object, **_k: object) -> None:

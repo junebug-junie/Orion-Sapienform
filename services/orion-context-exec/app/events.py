@@ -2,15 +2,25 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, NAMESPACE_DNS, uuid4, uuid5
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.context_exec import ContextExecMode, ContextExecVerbStepV1
 
 from .settings import settings
+from .trace_tools import register_trace_hit
 
 logger = logging.getLogger("orion-context-exec.events")
+
+
+def _corr_uuid(value: str | None) -> UUID:
+    if not value:
+        return uuid4()
+    try:
+        return UUID(str(value))
+    except ValueError:
+        return uuid5(NAMESPACE_DNS, str(value))
 
 
 def _source() -> ServiceRef:
@@ -24,20 +34,67 @@ def _source() -> ServiceRef:
 class ContextExecEventEmitter:
     """Publishes lifecycle events to orion:context_exec:event."""
 
-    def __init__(self, bus: OrionBusAsync | None) -> None:
+    def __init__(
+        self,
+        bus: OrionBusAsync | None,
+        *,
+        correlation_id: str | None = None,
+        causality_chain: list[str] | None = None,
+    ) -> None:
         self._bus = bus
+        self._correlation_id = correlation_id
+        self._causality_chain = list(causality_chain or [])
 
-    async def publish(self, kind: str, *, run_id: str, mode: ContextExecMode, payload: dict[str, Any]) -> None:
+    def bind_request(
+        self,
+        *,
+        correlation_id: str | None,
+        causality_chain: list[str] | None = None,
+    ) -> None:
+        if correlation_id:
+            self._correlation_id = correlation_id
+        if causality_chain is not None:
+            self._causality_chain = list(causality_chain)
+
+    async def publish(
+        self,
+        kind: str,
+        *,
+        run_id: str,
+        mode: ContextExecMode,
+        payload: dict[str, Any],
+    ) -> None:
+        corr = self._correlation_id
+        body = {
+            "run_id": run_id,
+            "context_exec_run_id": run_id,
+            "mode": mode,
+            **payload,
+        }
+        if corr:
+            body["correlation_id"] = corr
+        if self._causality_chain:
+            body["causality_chain"] = self._causality_chain
+
+        register_trace_hit(
+            source="context_exec",
+            kind=kind,
+            corr_id=corr,
+            run_id=run_id,
+            snippet=str(body.get("text_head") or body.get("status") or kind),
+            payload=body,
+        )
+
         if self._bus is None or not settings.orion_bus_enabled:
             return
-        body = {"run_id": run_id, "mode": mode, **payload}
         try:
             await self._bus.publish(
                 settings.channel_context_exec_event,
                 BaseEnvelope(
                     kind=kind,
                     source=_source(),
-                    correlation_id=str(uuid4()),
+                    correlation_id=_corr_uuid(corr),
+                    causality_chain=self._causality_chain,
                     payload=body,
                 ),
             )

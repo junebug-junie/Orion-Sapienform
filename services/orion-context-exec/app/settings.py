@@ -77,6 +77,15 @@ class ContextExecSettings(BaseSettings):
         alias="CONTEXT_EXEC_AGENT_CHAIN_INTAKE_ALIAS",
     )
 
+    context_exec_real_trace_enabled: bool = Field(True, alias="CONTEXT_EXEC_REAL_TRACE_ENABLED")
+    context_exec_real_recall_enabled: bool = Field(True, alias="CONTEXT_EXEC_REAL_RECALL_ENABLED")
+    context_exec_real_repo_enabled: bool = Field(True, alias="CONTEXT_EXEC_REAL_REPO_ENABLED")
+    context_exec_repo_root: str = Field("/app", alias="CONTEXT_EXEC_REPO_ROOT")
+    context_exec_repo_max_file_chars: int = Field(12000, alias="CONTEXT_EXEC_REPO_MAX_FILE_CHARS")
+    context_exec_trace_limit: int = Field(40, alias="CONTEXT_EXEC_TRACE_LIMIT")
+    context_exec_recall_limit: int = Field(12, alias="CONTEXT_EXEC_RECALL_LIMIT")
+    context_exec_recall_timeout_sec: float = Field(25.0, alias="CONTEXT_EXEC_RECALL_TIMEOUT_SEC")
+
     orion_repo_root: str = Field("/app", alias="ORION_REPO_ROOT")
     rlm_engine: str = Field("fake", alias="CONTEXT_EXEC_RLM_ENGINE")
 

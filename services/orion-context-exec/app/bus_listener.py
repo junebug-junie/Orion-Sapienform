@@ -40,7 +40,7 @@ async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
 
     await bus.connect()
     logger.info("subscribed channels=%s compat_alias=%s", channels, settings.context_exec_compat_agent_chain_enabled)
-    runner = ContextExecRunner(events=ContextExecEventEmitter(bus))
+    runner = ContextExecRunner(bus=bus, events=ContextExecEventEmitter(bus))
 
     try:
         async with bus.subscribe(*channels) as pubsub:
@@ -86,12 +86,15 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any], runner: C
 
     corr = str(env.correlation_id or uuid4())
     payload = env.payload or {}
+    causality = list(env.causality_chain or [])
 
     try:
         if compat:
             body = AgentChainRequest(**payload)
             req = agent_chain_request_to_context_exec(body)
-            run = await runner.run(req)
+            if not req.correlation_id:
+                req = req.model_copy(update={"correlation_id": corr})
+            run = await runner.run(req, causality_chain=causality)
             result = context_exec_run_to_agent_chain_result(run, mode=body.mode or "agent")
             resp_kind = "agent.chain.result"
             resp_payload = result.model_dump(mode="json")
@@ -99,7 +102,9 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any], runner: C
             from orion.schemas.context_exec import ContextExecRequestV1
 
             req = ContextExecRequestV1.model_validate(payload)
-            run = await runner.run(req)
+            if not req.correlation_id:
+                req = req.model_copy(update={"correlation_id": corr})
+            run = await runner.run(req, causality_chain=causality)
             resp_kind = "context.exec.result.v1"
             resp_payload = run.model_dump(mode="json")
 
@@ -107,7 +112,7 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any], runner: C
             kind=resp_kind,
             source=_source(),
             correlation_id=corr,
-            causality_chain=env.causality_chain,
+            causality_chain=causality or None,
             payload=resp_payload,
         )
         await bus.publish(reply_channel, resp)
@@ -126,6 +131,7 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any], runner: C
                 kind="agent.chain.result" if compat else "context.exec.result.v1",
                 source=_source(),
                 correlation_id=corr,
+                causality_chain=causality or None,
                 payload=err_payload,
             ),
         )

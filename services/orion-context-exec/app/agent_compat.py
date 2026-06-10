@@ -4,7 +4,7 @@ from typing import Any
 
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.agents.schemas import AgentChainRequest, AgentChainResult
-from orion.schemas.context_exec import ContextExecRequestV1, ContextExecRunV1
+from orion.schemas.context_exec import ContextExecPermissionV1, ContextExecRequestV1, ContextExecRunV1
 
 
 def agent_chain_request_to_context_exec(body: AgentChainRequest) -> ContextExecRequestV1:
@@ -23,6 +23,9 @@ def agent_chain_request_to_context_exec(body: AgentChainRequest) -> ContextExecR
             ac = AnswerContract.model_validate(body.answer_contract)
         except Exception:
             ac = None
+    permissions = ContextExecPermissionV1()
+    if mode == "repo_impact_analysis":
+        permissions = permissions.model_copy(update={"read_repo": True})
     return ContextExecRequestV1(
         text=text,
         mode=mode,  # type: ignore[arg-type]
@@ -31,6 +34,7 @@ def agent_chain_request_to_context_exec(body: AgentChainRequest) -> ContextExecR
         messages=list(body.messages or []),
         answer_contract=ac,
         packs=list(body.packs or []),
+        permissions=permissions,
         expected_artifact_type={
             "belief_provenance": "BeliefProvenanceReportV1",
             "trace_autopsy": "TraceAutopsyReportV1",

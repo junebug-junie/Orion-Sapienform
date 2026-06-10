@@ -1,0 +1,108 @@
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from orion.core.bus.async_service import OrionBusAsync
+from orion.schemas.context_exec import ContextExecRequestV1
+
+from . import recall_tools, repo_tools, trace_tools
+from .settings import settings
+
+logger = logging.getLogger("orion-context-exec.organ_runtime")
+
+
+class OrganRuntime:
+    """Read-only organ broker for a single context-exec run."""
+
+    def __init__(
+        self,
+        *,
+        bus: OrionBusAsync | None,
+        request: ContextExecRequestV1,
+        run_id: str,
+    ) -> None:
+        self.bus = bus
+        self.request = request
+        self.run_id = run_id
+        self._trace_reads: dict[str, dict[str, Any]] = {}
+
+    async def traces_search(
+        self,
+        *,
+        query: str | None = None,
+        corr_id: str | None = None,
+        run_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        if not settings.context_exec_real_trace_enabled:
+            return []
+        if not self.request.permissions.read_redis_traces:
+            return []
+        effective_corr = corr_id or self.request.correlation_id
+        hits = trace_tools.traces_search(
+            query=query,
+            corr_id=effective_corr,
+            run_id=run_id or self.run_id,
+            limit=limit,
+        )
+        out: list[dict[str, Any]] = []
+        for hit in hits:
+            dumped = hit.model_dump(mode="json")
+            out.append(dumped)
+            if hit.handle:
+                self._trace_reads[hit.handle] = trace_tools.traces_read(hit.handle)
+        return out
+
+    async def traces_read(self, handle: str) -> dict[str, Any]:
+        if handle in self._trace_reads:
+            return self._trace_reads[handle]
+        body = trace_tools.traces_read(handle)
+        self._trace_reads[handle] = body
+        return body
+
+    async def recall_query(
+        self,
+        query: str,
+        *,
+        profile: str = "assist.light.v1",
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        if not settings.context_exec_real_recall_enabled:
+            return {"hits": []}
+        if not self.request.permissions.read_recall:
+            return {"hits": []}
+        result = await recall_tools.recall_query(
+            self.bus,
+            query=query,
+            profile=profile,
+            limit=limit,
+            correlation_id=self.request.correlation_id,
+            session_id=self.request.session_id,
+        )
+        return result.model_dump(mode="json")
+
+    def repo_grep(
+        self,
+        pattern: str,
+        *,
+        path: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        if not settings.context_exec_real_repo_enabled:
+            return []
+        if not self.request.permissions.read_repo:
+            return []
+        return [
+            h.model_dump(mode="json")
+            for h in repo_tools.repo_grep(pattern, path=path, limit=limit)
+        ]
+
+    def repo_read(self, path: str, *, max_chars: int | None = None) -> dict[str, Any] | None:
+        if not settings.context_exec_real_repo_enabled:
+            return None
+        if not self.request.permissions.read_repo:
+            return None
+        cap = max_chars if max_chars is not None else settings.context_exec_repo_max_file_chars
+        rf = repo_tools.repo_read(path, max_chars=cap)
+        return rf.model_dump(mode="json") if rf else None

@@ -12,7 +12,18 @@ from .runner import ContextExecRunner
 
 logger = logging.getLogger("orion-context-exec.api")
 router = APIRouter()
-_runner = ContextExecRunner()
+_runner: ContextExecRunner | None = None
+
+
+def set_runner(runner: ContextExecRunner) -> None:
+    global _runner
+    _runner = runner
+
+
+def _get_runner() -> ContextExecRunner:
+    if _runner is None:
+        return ContextExecRunner()
+    return _runner
 
 
 @router.get("/health")
@@ -34,7 +45,7 @@ async def health() -> dict:
 async def run_context_exec(body: ContextExecRequestV1) -> ContextExecRunV1:
     if not body.text.strip():
         raise HTTPException(400, "text required")
-    return await _runner.run(body)
+    return await _get_runner().run(body)
 
 
 @router.post("/agent/chain/run", response_model=AgentChainResult)
@@ -42,5 +53,5 @@ async def run_agent_chain_compat(body: AgentChainRequest) -> AgentChainResult:
     if not body.text.strip():
         raise HTTPException(400, "text required")
     req = agent_chain_request_to_context_exec(body)
-    run = await _runner.run(req)
+    run = await _get_runner().run(req)
     return context_exec_run_to_agent_chain_result(run, mode=body.mode or "agent")

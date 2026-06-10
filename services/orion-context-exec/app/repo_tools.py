@@ -15,13 +15,15 @@ DENY_PATTERNS = (
     r"node_modules/",
     r"\.venv/",
     r"__pycache__/",
+    r"\.git/",
 )
 
 ALLOW_PREFIXES = ("orion/", "services/", "docs/", "tests/", "scripts/")
 
 
 def _repo_root() -> Path:
-    return Path(settings.orion_repo_root).resolve()
+    root = settings.context_exec_repo_root or settings.orion_repo_root
+    return Path(root).resolve()
 
 
 def _is_denied(rel: str) -> bool:
@@ -49,7 +51,9 @@ def repo_grep(pattern: str, path: str | None = None, limit: int = 50) -> list[Re
     except re.error:
         return hits
     for fp in base.rglob("*"):
-        if not fp.is_file() or len(hits) >= limit:
+        if not fp.is_file():
+            continue
+        if len(hits) >= limit:
             break
         rel = str(fp.relative_to(root)).replace("\\", "/")
         if not _is_allowed(rel):
@@ -74,8 +78,9 @@ def repo_grep(pattern: str, path: str | None = None, limit: int = 50) -> list[Re
     return hits
 
 
-def repo_read(path: str, max_chars: int = 12000) -> RepoFile | None:
+def repo_read(path: str, max_chars: int | None = None) -> RepoFile | None:
     root = _repo_root()
+    cap = max_chars if max_chars is not None else settings.context_exec_repo_max_file_chars
     rel = path.lstrip("/")
     if not _is_allowed(rel):
         return None
@@ -86,9 +91,9 @@ def repo_read(path: str, max_chars: int = 12000) -> RepoFile | None:
         content = fp.read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return None
-    truncated = len(content) > max_chars
+    truncated = len(content) > cap
     if truncated:
-        content = content[:max_chars]
+        content = content[:cap]
     return RepoFile(path=rel, content=content, truncated=truncated, source_ref=f"repo:{rel}")
 
 

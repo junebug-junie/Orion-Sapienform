@@ -1,49 +1,58 @@
 #!/usr/bin/env bash
-# Smoke: memory crystallization propose → validate → approve (Hub API)
+# Live-stack smoke: memory crystallization propose → validate → approve → active-packet
 set -euo pipefail
 
-HUB_BASE_URL="${ORION_HUB_URL:-http://localhost:8080}"
-SESSION_ID="${ORION_HUB_SESSION_ID:?Set ORION_HUB_SESSION_ID}"
+: "${ORION_HUB_URL:?set ORION_HUB_URL (e.g. http://127.0.0.1:8080)}"
+: "${ORION_HUB_SESSION_ID:?set ORION_HUB_SESSION_ID}"
+: "${RECALL_PG_DSN:?set RECALL_PG_DSN (same contract as Hub RECALL_PG_DSN)}"
 
-HDR=(-H "Content-Type: application/json" -H "X-Orion-Session-Id: ${SESSION_ID}")
+if ! command -v curl >/dev/null 2>&1; then echo "FAIL: curl missing"; exit 1; fi
+if ! command -v jq >/dev/null 2>&1; then echo "FAIL: jq missing"; exit 1; fi
+
+BASE="${ORION_HUB_URL%/}"
+HDR=(-H "Content-Type: application/json" -H "X-Orion-Session-Id: ${ORION_HUB_SESSION_ID}")
+STAMP="$(date -u +%Y%m%d%H%M%S)"
+
+echo "== health: projection =="
+curl -sS "${HDR[@]}" "${BASE}/api/memory/crystallizations/projection/health" | jq -c .
 
 echo "== propose =="
-PROPOSE=$(curl -sS -X POST "${HUB_BASE_URL}/api/memory/crystallizations/propose" "${HDR[@]}" -d '{
-  "kind": "stance",
-  "subject": "Smoke crystallization",
-  "summary": "Local-first memory governance smoke test",
-  "scope": ["project:orion"],
-  "planning_effects": ["require governor approval"],
-  "retrieval_affordances": ["retrieve_when:smoke"],
-  "evidence": [{"source_kind": "operator_note", "source_id": "smoke-1", "excerpt": "smoke"}],
-  "proposed_by": "smoke"
-}')
-echo "${PROPOSE}" | head -c 400
-echo ""
-
-CID=$(echo "${PROPOSE}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('crystallization_id',''))")
-if [[ -z "${CID}" ]]; then
-  echo "FAIL: no crystallization_id in propose response"
-  exit 1
-fi
+PROPOSE=$(curl -sS -w "\n%{http_code}" -X POST "${BASE}/api/memory/crystallizations/propose" "${HDR[@]}" -d "$(jq -n --arg s "Smoke ${STAMP}" '{
+  kind: "stance",
+  subject: "Smoke crystallization",
+  summary: $s,
+  scope: ["project:orion"],
+  planning_effects: ["require governor approval"],
+  retrieval_affordances: ["retrieve_when:smoke"],
+  evidence: [{source_kind: "operator_note", source_id: "smoke-1", excerpt: "smoke"}],
+  proposed_by: "smoke"
+}')")
+BODY="$(echo "$PROPOSE" | head -n -1)"
+CODE="$(echo "$PROPOSE" | tail -n 1)"
+[[ "$CODE" == "200" ]] || { echo "FAIL propose HTTP $CODE body=$BODY"; exit 1; }
+CID="$(echo "$BODY" | jq -r '.crystallization_id // empty')"
+[[ -n "$CID" ]] || { echo "FAIL no crystallization_id"; exit 1; }
 
 echo "== validate =="
-curl -sS -X POST "${HUB_BASE_URL}/api/memory/crystallizations/proposals/${CID}/validate" "${HDR[@]}" | head -c 300
-echo ""
+VAL=$(curl -sS -w "\n%{http_code}" -X POST "${BASE}/api/memory/crystallizations/proposals/${CID}/validate" "${HDR[@]}")
+VAL_BODY="$(echo "$VAL" | head -n -1)"
+VAL_CODE="$(echo "$VAL" | tail -n 1)"
+[[ "$VAL_CODE" == "200" ]] || { echo "FAIL validate HTTP $VAL_CODE"; exit 1; }
+echo "$VAL_BODY" | jq -c '{valid, errors, detection}'
 
 echo "== approve =="
-APPROVE=$(curl -sS -X POST "${HUB_BASE_URL}/api/memory/crystallizations/proposals/${CID}/approve" "${HDR[@]}" -d '{}')
-echo "${APPROVE}" | head -c 500
-echo ""
-
-STATUS=$(echo "${APPROVE}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))")
-if [[ "${STATUS}" != "active" ]]; then
-  echo "FAIL: expected status=active got ${STATUS}"
-  exit 1
-fi
+APP=$(curl -sS -w "\n%{http_code}" -X POST "${BASE}/api/memory/crystallizations/proposals/${CID}/approve" "${HDR[@]}" -d '{}')
+APP_BODY="$(echo "$APP" | head -n -1)"
+APP_CODE="$(echo "$APP" | tail -n 1)"
+[[ "$APP_CODE" == "200" ]] || { echo "FAIL approve HTTP $APP_CODE body=$APP_BODY"; exit 1; }
+STATUS="$(echo "$APP_BODY" | jq -r '.status')"
+[[ "$STATUS" == "active" ]] || { echo "FAIL status=$STATUS"; exit 1; }
 
 echo "== active-packet =="
-curl -sS -X POST "${HUB_BASE_URL}/api/memory/active-packet" "${HDR[@]}" -d '{"query":"memory governance smoke","task_type":"architecture"}' | head -c 400
-echo ""
+PKT=$(curl -sS -w "\n%{http_code}" -X POST "${BASE}/api/memory/active-packet" "${HDR[@]}" -d "{\"query\":\"memory smoke ${STAMP}\",\"task_type\":\"architecture\",\"seed_crystallization_id\":\"${CID}\"}")
+PKT_BODY="$(echo "$PKT" | head -n -1)"
+PKT_CODE="$(echo "$PKT" | tail -n 1)"
+[[ "$PKT_CODE" == "200" ]] || { echo "FAIL active-packet HTTP $PKT_CODE"; exit 1; }
+echo "$PKT_BODY" | jq -c '{crystallization_refs, card_refs, chroma_refs, retrieval_trace}'
 
 echo "PASS smoke_memory_crystallization_e2e crystallization_id=${CID}"

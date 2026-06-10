@@ -14,6 +14,7 @@ from orion.memory.crystallization.projection_rdf import build_rdf_projection_hin
 from orion.memory.crystallization.proposer import propose
 from orion.memory.crystallization.salience import score_salience, apply_salience
 from orion.memory.crystallization.bus_emit import LIFECYCLE_KINDS, CHANNEL_DEFAULTS
+from orion.memory.crystallization.detection import detect_contradictions, detect_duplicates, merge_detection
 from orion.memory.crystallization.schemas import (
     CrystallizationEvidenceRefV1,
     CrystallizationGovernanceV1,
@@ -197,6 +198,24 @@ class TestRdfProjection:
         hint = build_rdf_projection_hint(crys)
         assert hint.named_graph is not None
         assert "crystallization" in hint.named_graph
+
+
+class TestGovernorDetection:
+    def test_detect_duplicates(self):
+        a = _active_crystallization(kind="stance", planning_effects=["x"], retrieval_affordances=["y"])
+        b = a.model_copy(deep=True)
+        b.crystallization_id = "crys_other"
+        b.summary = a.summary
+        result = detect_duplicates(b, [a])
+        assert result.duplicates
+
+    def test_detect_contradictions_negation(self):
+        pos = _active_crystallization(summary="Use local-first memory governance for canonical loops")
+        neg = pos.model_copy(deep=True)
+        neg.crystallization_id = "crys_neg"
+        neg.summary = "Do not use local-first memory governance for canonical loops"
+        result = detect_contradictions(neg, [pos])
+        assert result.contradictions or result.warnings
 
 
 class TestActivePacketFusion:

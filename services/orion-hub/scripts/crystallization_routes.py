@@ -10,7 +10,8 @@ from pydantic import ValidationError
 from datetime import datetime, timezone
 
 from orion.core.storage import memory_cards as mc_dal
-from orion.memory.crystallization.active_packet import build_active_packet
+from orion.memory.crystallization.detection import detect_contradictions, detect_duplicates, merge_detection
+from orion.memory.crystallization.retriever import retrieve_active_packet
 from orion.memory.crystallization.bus_emit import emit_active_packet_retrieved, emit_crystallization_lifecycle
 from orion.memory.crystallization.chroma_publish import publish_crystallization_to_chroma
 from orion.memory.crystallization.governor import GovernorError, approve, quarantine, reject, supersede
@@ -70,9 +71,10 @@ def _settings():
 
 def _graphiti(request: Request) -> GraphitiAdapter:
     settings = _settings()
+    adapter_url = (getattr(settings, "GRAPHITI_ADAPTER_URL", "") or getattr(settings, "GRAPHITI_URL", "") or "").strip()
     return GraphitiAdapter(
-        enabled=bool(getattr(settings, "GRAPHITI_ENABLED", False)),
-        url=getattr(settings, "GRAPHITI_URL", None),
+        enabled=bool(getattr(settings, "GRAPHITI_ENABLED", False)) or bool(adapter_url),
+        url=adapter_url or None,
         falkordb_uri=getattr(settings, "FALKORDB_URI", None),
     )
 
@@ -189,8 +191,17 @@ async def crystallization_validate_proposal(
 
     result = validate_proposal(row)
     source_result = await resolve_crystallization_sources(pool, row)
+    existing = await list_crystallizations(pool, limit=500)
+    detection = merge_detection(
+        detect_duplicates(row, existing),
+        detect_contradictions(row, existing),
+    )
     all_errors = list(result.errors) + list(source_result.errors)
-    valid = result.valid and source_result.valid
+    if detection.duplicates:
+        all_errors.append(f"duplicate_candidates:{','.join(detection.duplicates)}")
+    if detection.contradictions:
+        all_errors.append(f"contradiction_candidates:{','.join(detection.contradictions)}")
+    valid = result.valid and source_result.valid and not detection.duplicates
 
     updated = row.model_copy(deep=True)
     if valid:
@@ -207,7 +218,16 @@ async def crystallization_validate_proposal(
     await update_crystallization(pool, updated)
     lifecycle = "validated" if valid else ("quarantined" if updated.status == "quarantined" else "validated")
     await emit_crystallization_lifecycle(await _bus(), lifecycle=lifecycle, crystallization=updated, service_name=_settings().SERVICE_NAME, node_name=_settings().NODE_NAME)
-    return {"valid": valid, "errors": all_errors, "crystallization": updated.model_dump(mode="json")}
+    return {
+        "valid": valid,
+        "errors": all_errors,
+        "detection": {
+            "duplicates": detection.duplicates,
+            "contradictions": detection.contradictions,
+            "warnings": detection.warnings,
+        },
+        "crystallization": updated.model_dump(mode="json"),
+    }
 
 
 @router.post("/api/memory/crystallizations/proposals/{crystallization_id}/approve")
@@ -464,14 +484,22 @@ async def memory_active_packet(
     if not card_refs and active_cards:
         card_refs = [str(c.card_id) for c in active_cards[:20]]
 
-    packet = build_active_packet(
+    s = _settings()
+    seed_id = str(body.get("seed_crystallization_id") or "") or (active_items[0].crystallization_id if active_items else "")
+    packet = await retrieve_active_packet(
         query=query,
         crystallizations=active_items,
         card_refs=card_refs,
+        active_cards=[c.model_dump(mode="json") for c in active_cards[:20]],
         task_type=task_type,
         project_id=project_id,
         session_id=session_id,
-        active_cards=[c.model_dump(mode="json") for c in active_cards[:20]],
+        chroma_host=getattr(s, "CHROMA_HOST", "") or "",
+        chroma_port=int(getattr(s, "CHROMA_PORT", 8000) or 8000),
+        chroma_collection=getattr(s, "CRYSTALLIZER_VECTOR_COLLECTION", "orion_memory_crystallizations"),
+        embed_host_url=getattr(s, "CRYSTALLIZER_EMBED_HOST_URL", "") or "",
+        graphiti_adapter=_graphiti(request) if seed_id else None,
+        seed_crystallization_id=seed_id or None,
     )
 
     event_id = await insert_retrieval_event(

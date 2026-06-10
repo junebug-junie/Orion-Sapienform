@@ -241,6 +241,10 @@ class Settings(BaseSettings):
     CRYSTALLIZER_EMBED_TIMEOUT_MS: int = Field(default=8000, alias="CRYSTALLIZER_EMBED_TIMEOUT_MS")
     CRYSTALLIZER_AUTO_PROJECT_ON_APPROVE: bool = Field(default=True, alias="CRYSTALLIZER_AUTO_PROJECT_ON_APPROVE")
 
+    CHROMA_HOST: str = Field(default="", alias="CHROMA_HOST")
+    CHROMA_PORT: int = Field(default=8000, alias="CHROMA_PORT")
+    GRAPHITI_ADAPTER_URL: str = Field(default="", alias="GRAPHITI_ADAPTER_URL")
+
     # --- Runtimes ----
     TIMEOUT_SEC: int = Field(
         default=400,

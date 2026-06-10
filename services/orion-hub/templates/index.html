@@ -957,6 +957,7 @@
           <button type="button" id="memorySubviewReview" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200">Review Queue</button>
           <button type="button" id="memorySubviewAll" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200">All Cards</button>
           <button type="button" id="memorySubviewLog" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200">Activity Log</button>
+          <button type="button" id="memorySubviewCrystallizations" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200">Crystallizations</button>
         </div>
         <div id="memoryGraphAnnotator" class="border border-gray-700 rounded-lg p-3 space-y-3 text-xs">
           <div class="font-semibold text-gray-200">Memory graph (optional)</div>
@@ -989,6 +990,12 @@
         <div id="memoryReviewPanel" class="memory-subview flex flex-col gap-2 text-sm"></div>
         <div id="memoryAllPanel" class="memory-subview hidden flex-col gap-2 text-sm"></div>
         <div id="memoryLogPanel" class="memory-subview hidden flex-col gap-2 text-sm"></div>
+        <div id="memoryCrystallizationPanel" class="memory-subview hidden flex-col gap-2 text-sm">
+          <div id="memoryCrystallizationHealth" class="text-[11px] text-gray-500 border border-gray-800 rounded px-2 py-1"></div>
+          <div id="memoryCrystallizationStatus" class="text-xs text-gray-400 min-h-[1rem]"></div>
+          <div id="memoryCrystallizationList" class="flex flex-col gap-1 max-h-64 overflow-y-auto"></div>
+          <div id="memoryCrystallizationDetail" class="hidden border border-gray-700 rounded-lg p-3 text-xs text-gray-200 max-h-72 overflow-auto"></div>
+        </div>
         <div id="memoryDetail" class="hidden border border-gray-700 rounded-lg p-3 text-xs text-gray-200 max-h-64 overflow-auto"></div>
         <div id="memoryCytoscapeHost" class="hidden h-72 w-full border border-gray-800 rounded-lg bg-black/40"></div>
       </section>
@@ -3355,6 +3362,7 @@
   <script src="/static/js/memory-graph-draft-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/memory-graph-draft-form.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/memory.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/memory-crystallization-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/mind_provenance.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/substrate-effect-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/collapse-mirror.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>

@@ -28,6 +28,8 @@ SYNC_PREFIXES = (
     "CRYSTALLIZER_",
     "GRAPHITI_",
     "FALKORDB_",
+    "CHROMA_",
+    "GRAPHITI_ADAPTER_",
     "MEMORY_GRAPH_SUGGEST_",
     "LLM_MEMORY_GRAPH_SUGGEST_",
     "AUTONOMY_CHAT_STANCE_",
@@ -55,6 +57,7 @@ SYNC_EXACT = frozenset(
 
 DEFAULT_SERVICES = (
     "orion-memory-crystallizer",
+    "orion-graphiti-adapter",
     "orion-hub",
     "orion-cortex-exec",
     "orion-actions",

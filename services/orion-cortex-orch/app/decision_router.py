@@ -110,6 +110,32 @@ class DecisionRouter:
             part for part in [req.context.raw_user_text or "", req.context.user_message or ""] if part
         ).strip()
 
+    def _context_exec_mode_for_request(
+        self, req: CortexClientRequest, output_mode: str | None
+    ) -> str | None:
+        text = self._user_text(req).lower()
+        ac_raw = (req.options or {}).get("answer_contract")
+
+        if "where did" in text and ("claim" in text or "belief" in text or "come from" in text):
+            return "belief_provenance"
+
+        if any(t in text for t in ["trace", "corr", "correlation", "run id", "fail open", "failed"]):
+            return "trace_autopsy"
+
+        if "what breaks" in text or "impact" in text or "replace" in text:
+            return "repo_impact_analysis"
+
+        if isinstance(ac_raw, dict):
+            if ac_raw.get("requires_runtime_grounding"):
+                return "runtime_debug"
+            if ac_raw.get("requires_repo_grounding"):
+                return "repo_impact_analysis"
+
+        if output_mode in {"debug_diagnosis", "project_planning", "comparative_analysis"}:
+            return "general_investigation"
+
+        return None
+
     def build_shortlist(self, req: CortexClientRequest, *, k: int = 10) -> list[VerbInfo]:
         catalog = load_verb_catalog()
         catalog = filter_allowed(catalog, allow_categories={"cognition"}, denylist_names=ORCH_INTERNAL_DENY)
@@ -306,8 +332,20 @@ class DecisionRouter:
                     "reason": f"{clamped.reason}+output_mode_tool_lane",
                 }
             )
+        ctx_mode_pre = self._context_exec_mode_for_request(rewritten, output_mode_decision.output_mode)
+        if ctx_mode_pre and int(clamped.execution_depth) < 2:
+            clamped = clamped.model_copy(
+                update={
+                    "execution_depth": 2,
+                    "reason": f"{clamped.reason}+context_exec_investigation",
+                }
+            )
         routing_threshold = get_chat_reflective_lane_threshold()
-        if int(clamped.execution_depth) >= 2 and float(clamped.confidence) < float(routing_threshold):
+        if (
+            int(clamped.execution_depth) >= 2
+            and float(clamped.confidence) < float(routing_threshold)
+            and not ctx_mode_pre
+        ):
             clamped = clamped.model_copy(
                 update={
                     "execution_depth": 0,
@@ -334,6 +372,12 @@ class DecisionRouter:
         else:
             rewritten.mode = "brain"
             rewritten.verb = "chat_general"
+
+        ctx_mode = ctx_mode_pre or self._context_exec_mode_for_request(rewritten, output_mode_decision.output_mode)
+        if int(clamped.execution_depth) == 2 and ctx_mode:
+            rewritten.options["agent_runtime_engine"] = "context_exec"
+            rewritten.options["context_exec_mode"] = ctx_mode
+
         return RoutedRequest(request=rewritten, decision=clamped, output_mode_decision=output_mode_decision)
 
     def _clamp_decision(self, decision: AutoDepthDecisionV1, *, shortlist: list[VerbInfo]) -> AutoDepthDecisionV1:

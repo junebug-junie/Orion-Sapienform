@@ -61,6 +61,17 @@ from orion.schemas.execution_projection import (
 )
 from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.memory_crystallization import ActiveMemoryPacketV1, MemoryCrystallizationV1
+from orion.schemas.context_exec import (
+    BeliefProvenanceReportV1,
+    ContextExecBudgetV1,
+    ContextExecFindingV1,
+    ContextExecPermissionV1,
+    ContextExecRequestV1,
+    ContextExecRunV1,
+    ContextExecVerbStepV1,
+    RepoImpactAnalysisReportV1,
+    TraceAutopsyReportV1,
+)
 from orion.schemas.organ_emission import OrganEmissionV1
 from orion.schemas.reduction_receipt import ProjectionUpdateV1, ReductionReceiptV1
 from orion.schemas.state_delta import StateDeltaV1
@@ -1019,6 +1030,15 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GraphCompressionRegionMaterializedV1": GraphCompressionRegionMaterializedV1,
     "MemoryCrystallizationV1": MemoryCrystallizationV1,
     "ActiveMemoryPacketV1": ActiveMemoryPacketV1,
+    "ContextExecRequestV1": ContextExecRequestV1,
+    "ContextExecRunV1": ContextExecRunV1,
+    "ContextExecPermissionV1": ContextExecPermissionV1,
+    "ContextExecBudgetV1": ContextExecBudgetV1,
+    "ContextExecFindingV1": ContextExecFindingV1,
+    "ContextExecVerbStepV1": ContextExecVerbStepV1,
+    "BeliefProvenanceReportV1": BeliefProvenanceReportV1,
+    "TraceAutopsyReportV1": TraceAutopsyReportV1,
+    "RepoImpactAnalysisReportV1": RepoImpactAnalysisReportV1,
 
 }
 

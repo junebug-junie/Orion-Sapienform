@@ -42,8 +42,8 @@ SYNC_PREFIXES = (
     "ENABLE_TRANSPORT_",
     "TRANSPORT_PROPOSAL_",
     "TRANSPORT_SUBSTRATE_",
-    "BUS_STREAM_DEPTH_",
-)
+    "CONTEXT_EXEC_",
+    "CHANNEL_CONTEXT_EXEC_",
 
 SYNC_EXACT = frozenset(
     {
@@ -60,6 +60,7 @@ DEFAULT_SERVICES = (
     "orion-graphiti-adapter",
     "orion-hub",
     "orion-cortex-exec",
+    "orion-context-exec",
     "orion-actions",
     "orion-spark-concept-induction",
     # Transport substrate stack (M3–M7)

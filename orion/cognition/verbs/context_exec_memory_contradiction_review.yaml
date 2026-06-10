@@ -1,0 +1,19 @@
+name: context_exec_memory_contradiction_review
+label: "Context Exec: Memory Contradiction Review"
+description: Find conflicting memory claims about a topic or entity.
+category: cognition
+version: "0.1.0"
+timeout_ms: 60000
+services:
+  - ContextExecService
+steps:
+  - name: retrieve
+  - name: resolve
+  - name: compare
+  - name: infer
+  - name: verify
+  - name: decide
+tags:
+  - context_exec
+  - memory
+  - contradiction

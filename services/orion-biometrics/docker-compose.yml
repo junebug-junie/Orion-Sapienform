@@ -50,7 +50,7 @@ services:
     volumes:
       - ../../config/biometrics:/app/config/biometrics:ro
       - /mnt/scripts/Orion-Sapienform/orion/sensors:/orion/sensors # access host gpus
-      - /mnt/storage-lukewarm/logs/biometrics/logs:/app/logs
+      - ${ORION_DATA_ROOT:-/mnt/graphdb}/logs/biometrics/logs:/app/logs
 
     deploy:
       resources:

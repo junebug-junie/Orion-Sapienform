@@ -10,7 +10,7 @@ services:
     ports:
       - "${PORT}:${PORT}"
     volumes:
-      - /mnt/storage-lukewarm/vector_logs:/app/logs
+      - ${ORION_DATA_ROOT:-/mnt/graphdb}/vector_logs:/app/logs
       - ${HOST_RAG_FILES_DIR}:/data
     environment:
       - SERVICE_NAME=${SERVICE_NAME}

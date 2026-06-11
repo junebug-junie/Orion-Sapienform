@@ -79,7 +79,7 @@ class OrionTissue:
             clean_path = env_path.strip().rstrip("}")
             self.snapshot_path = Path(clean_path)
         else:
-            self.snapshot_path = Path("/mnt/storage-lukewarm/orion/spark/tissue-brain.npy")
+            self.snapshot_path = Path("/mnt/graphdb/orion/spark/tissue-brain.npy")
 
         self.H = H
         self.W = W

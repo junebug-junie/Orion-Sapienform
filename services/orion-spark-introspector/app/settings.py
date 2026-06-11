@@ -101,7 +101,7 @@ class Settings(BaseSettings):
 
     # Tissue
     orion_tissue_snapshot_path: str = Field(
-        "/mnt/storage-lukewarm/orion/spark/tissue-brain.npy",
+        "/mnt/graphdb/orion/spark/tissue-brain.npy",
         alias="ORION_TISSUE_SNAPSHOT_PATH",
     )
 

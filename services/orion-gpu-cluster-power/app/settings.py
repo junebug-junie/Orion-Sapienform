@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     service_name: str = Field("gpu-cluster-power", alias="SERVICE_NAME")
 
     # Storage
-    storage_root: str = Field("/mnt/storage-lukewarm", alias="STORAGE_ROOT")
+    storage_root: str = Field("/mnt/graphdb", alias="STORAGE_ROOT")
     telemetry_root: str = Field("/mnt/telemetry", alias="TELEMETRY_ROOT")
 
     # PSU board config

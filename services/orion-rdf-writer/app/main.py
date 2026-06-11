@@ -5,6 +5,7 @@ from fastapi import FastAPI
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 
+from app.rdf_retention import retention_health_snapshot, start_retention_scheduler, stop_retention_scheduler
 from app.router import router as rdf_router
 from app.service import (
     handle_envelope,
@@ -61,10 +62,12 @@ async def lifespan(app: FastAPI):
         await hunter.bus.publish(channel, payload)
 
     register_rdf_write_publisher(_pub)
+    await start_retention_scheduler()
 
     yield
 
     logger.info("Stopping service...")
+    await stop_retention_scheduler()
     await shutdown_rdf_write_pipeline(drain_timeout_sec=8.0)
     register_rdf_write_publisher(None)
     if hunter:
@@ -89,4 +92,5 @@ def health():
         "bus_connected": hunter.bus.is_connected if hunter and hunter.bus else False,
     }
     body.update(rdf_write_health_snapshot())
+    body.update(retention_health_snapshot())
     return body

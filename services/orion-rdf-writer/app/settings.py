@@ -71,6 +71,13 @@ class Settings(BaseSettings):
     RDF_SKIP_KINDS: str = Field(default="", env="RDF_SKIP_KINDS")
     RDF_SKIP_REJECTED: bool = Field(default=True, env="RDF_SKIP_REJECTED")
     RDF_DURABLE_ONLY: bool = Field(default=False, env="RDF_DURABLE_ONLY")
+
+    RDF_RETENTION_ENABLED: bool = Field(default=False, env="RDF_RETENTION_ENABLED")
+    RDF_RETENTION_DRY_RUN: bool = Field(default=False, env="RDF_RETENTION_DRY_RUN")
+    RDF_RETENTION_INTERVAL_HOURS: int = Field(default=168, env="RDF_RETENTION_INTERVAL_HOURS")
+    RDF_RETENTION_TIMEOUT_SEC: float = Field(default=3600.0, env="RDF_RETENTION_TIMEOUT_SEC")
+    RDF_RETENTION_POLICIES: str | None = Field(default=None, env="RDF_RETENTION_POLICIES")
+
     WORLD_PULSE_GRAPH_ENABLED: bool = Field(default=False, env="WORLD_PULSE_GRAPH_ENABLED")
     WORLD_PULSE_GRAPH_DRY_RUN: bool = Field(default=True, env="WORLD_PULSE_GRAPH_DRY_RUN")
     WORLD_PULSE_GRAPH_REQUIRE_POLICY_STAMP: bool = Field(default=True, env="WORLD_PULSE_GRAPH_REQUIRE_POLICY_STAMP")

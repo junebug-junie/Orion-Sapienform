@@ -58,7 +58,7 @@ services:
       - "${PORT}:${PORT}"
     volumes:
       - ./sql:/app/sql
-      - /mnt/storage-lukewarm/logs/dream/logs:/app/logs
+      - ${ORION_DATA_ROOT:-/mnt/graphdb}/logs/dream/logs:/app/logs
     env_file:
       - .env
 

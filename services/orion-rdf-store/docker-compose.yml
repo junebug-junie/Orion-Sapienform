@@ -25,7 +25,7 @@ services:
       # stain/jena-fuseki documents JVM_ARGS (see Docker Hub / jena-docker Dockerfile).
       JVM_ARGS: ${FUSEKI_JVM_ARGS:-}
     volumes:
-      - ${FUSEKI_DATA_DIR:-/mnt/storage-lukewarm/rdf-store/fuseki}:/fuseki
+      - ${FUSEKI_DATA_DIR:-/mnt/graphdb/rdf-store/fuseki}:/fuseki
       - ./scripts/fuseki_health_probe.sh:/usr/local/bin/fuseki_health_probe.sh:ro
     healthcheck:
       test: ["CMD", "sh", "/usr/local/bin/fuseki_health_probe.sh"]

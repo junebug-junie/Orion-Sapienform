@@ -74,7 +74,7 @@ services:
       - AUTONOMY_GRAPH_UPDATE_URL=${AUTONOMY_GRAPH_UPDATE_URL:-}
       - AUTONOMY_GRAPH_TIMEOUT_SEC=${AUTONOMY_GRAPH_TIMEOUT_SEC:-30}
     volumes:
-      - /mnt/storage-lukewarm/orion/concepts:/data
+      - ${ORION_DATA_ROOT:-/mnt/graphdb}/orion/concepts:/data
     env_file:
       - .env
     ports:

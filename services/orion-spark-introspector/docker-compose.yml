@@ -54,7 +54,7 @@ services:
       SPARK_STATE_VALID_FOR_MS: ${SPARK_STATE_VALID_FOR_MS:-15000}
 
       # Tissue
-      ORION_TISSUE_SNAPSHOT_PATH: ${ORION_TISSUE_SNAPSHOT_PATH:-/mnt/storage-lukewarm/orion/spark/tissue-brain.npy}
+      ORION_TISSUE_SNAPSHOT_PATH: ${ORION_TISSUE_SNAPSHOT_PATH:-/mnt/graphdb/orion/spark/tissue-brain.npy}
 
       # Cortex timeouts
       CORTEX_TIMEOUT_SEC: ${CORTEX_TIMEOUT_SEC:-120}
@@ -93,7 +93,7 @@ services:
       - "${PORT:-8444}:${PORT:-8444}"
 
     volumes:
-      - /mnt/storage-lukewarm/orion/spark:/mnt/storage-lukewarm/orion/spark
+      - ${ORION_DATA_ROOT:-/mnt/graphdb}/orion/spark:/mnt/graphdb/orion/spark
 
 networks:
   app-net:

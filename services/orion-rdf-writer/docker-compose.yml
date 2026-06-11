@@ -16,7 +16,7 @@ services:
       - "${PORT}:${PORT}"
     volumes:
       # Persistent host path for logs + dead-letter NDJSON (see RDF_WRITE_DEAD_LETTER_PATH).
-      - /mnt/storage-lukewarm/rdf_logs:/app/logs
+      - ${ORION_DATA_ROOT:-/mnt/graphdb}/rdf_logs:/app/logs
     environment:
       # --- Service Identity ---
       - SERVICE_NAME=${SERVICE_NAME}
@@ -90,6 +90,11 @@ services:
       - RDF_SKIP_KINDS=${RDF_SKIP_KINDS}
       - RDF_SKIP_REJECTED=${RDF_SKIP_REJECTED}
       - RDF_DURABLE_ONLY=${RDF_DURABLE_ONLY}
+      - RDF_RETENTION_ENABLED=${RDF_RETENTION_ENABLED:-false}
+      - RDF_RETENTION_DRY_RUN=${RDF_RETENTION_DRY_RUN:-false}
+      - RDF_RETENTION_INTERVAL_HOURS=${RDF_RETENTION_INTERVAL_HOURS:-168}
+      - RDF_RETENTION_TIMEOUT_SEC=${RDF_RETENTION_TIMEOUT_SEC:-300}
+      - RDF_RETENTION_POLICIES=${RDF_RETENTION_POLICIES:-}
       - WORLD_PULSE_GRAPH_ENABLED=${WORLD_PULSE_GRAPH_ENABLED}
       - WORLD_PULSE_GRAPH_DRY_RUN=${WORLD_PULSE_GRAPH_DRY_RUN}
       - WORLD_PULSE_GRAPH_REQUIRE_POLICY_STAMP=${WORLD_PULSE_GRAPH_REQUIRE_POLICY_STAMP}

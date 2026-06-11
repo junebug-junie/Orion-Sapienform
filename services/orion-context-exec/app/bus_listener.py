@@ -111,7 +111,7 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any], runner: C
             kind=resp_kind,
             source=_source(),
             correlation_id=corr,
-            causality_chain=causality or None,
+            causality_chain=causality,
             payload=resp_payload,
         )
         await bus.publish(reply_channel, resp)
@@ -130,7 +130,7 @@ async def _handle_request(bus: OrionBusAsync, raw_msg: Dict[str, Any], runner: C
                 kind="agent.chain.result" if compat else "context.exec.result.v1",
                 source=_source(),
                 correlation_id=corr,
-                causality_chain=causality or None,
+                causality_chain=causality,
                 payload=err_payload,
             ),
         )

@@ -173,6 +173,10 @@ class Settings(BaseSettings):
     )
     metacog_trace_retention_days: int = Field(14, alias="METACOG_TRACE_RETENTION_DAYS")
 
+    # Guardrails: prevent hung grammar INSERTs from blocking the sequential bus consumer.
+    sql_writer_db_statement_timeout_ms: int = Field(30_000, alias="SQL_WRITER_DB_STATEMENT_TIMEOUT_MS")
+    sql_writer_grammar_persist_timeout_sec: float = Field(30.0, alias="SQL_WRITER_GRAMMAR_PERSIST_TIMEOUT_SEC")
+
     @property
     def route_map(self) -> dict[str, str]:
         try:

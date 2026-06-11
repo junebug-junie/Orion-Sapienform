@@ -1131,6 +1131,34 @@ def _normalize_endogenous_runtime_audit_payload(payload: Any) -> Dict[str, Any]:
     }
 
 
+def map_world_pulse_situation_brief_row(data: Dict[str, Any]) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    return {
+        "topic_id": data.get("topic_id"),
+        "run_id": data.get("run_id") or "unknown",
+        "title": data.get("title") or "unknown",
+        "status": data.get("status") or "developing",
+        "tracking_status": data.get("tracking_status") or "candidate",
+        "current_assessment": data.get("current_assessment") or "",
+        "payload_json": data,
+        "schema_version": "v1",
+        "created_at": data.get("created_at") or now,
+        "updated_at": data.get("updated_at") or now,
+    }
+
+
+def map_world_pulse_situation_change_row(data: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "change_id": data.get("change_id"),
+        "topic_id": data.get("topic_id"),
+        "run_id": data.get("run_id") or "unknown",
+        "change_type": data.get("change_type") or "new_development",
+        "payload_json": data,
+        "schema_version": "v1",
+        "created_at": data.get("created_at") or datetime.now(timezone.utc),
+    }
+
+
 def _normalize_calibration_profile_audit_payload(payload: Any) -> Dict[str, Any]:
     event = CalibrationProfileAuditV1.model_validate(payload)
     return {
@@ -1214,7 +1242,35 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
 
         payload = env.payload if isinstance(env.payload, dict) else {}
         event = GrammarEventV1.model_validate(payload)
-        await asyncio.to_thread(persist_grammar_event, event)
+        corr_id = str(env.correlation_id or payload.get("correlation_id") or "")
+        timeout_sec = float(settings.sql_writer_grammar_persist_timeout_sec)
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(persist_grammar_event, event),
+                timeout=timeout_sec,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "sql_writer_grammar_persist_timeout event_id=%s trace_id=%s timeout_sec=%s",
+                event.event_id,
+                event.trace_id,
+                timeout_sec,
+            )
+            await asyncio.to_thread(
+                _write_fallback,
+                env.kind,
+                corr_id,
+                payload,
+                f"grammar persist timeout after {timeout_sec}s",
+            )
+        except Exception as exc:
+            logger.exception(
+                "sql_writer_grammar_persist_failed event_id=%s trace_id=%s error=%s",
+                event.event_id,
+                event.trace_id,
+                exc,
+            )
+            await asyncio.to_thread(_write_fallback, env.kind, corr_id, payload, str(exc))
         return
 
     route_key = settings.route_map.get(env.kind)
@@ -1502,29 +1558,10 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
                 }
                 schema_model = None
             elif sql_model is WorldPulseSituationBriefSQL and isinstance(data_to_process, dict):
-                data_to_process = {
-                    "topic_id": data_to_process.get("topic_id"),
-                    "run_id": data_to_process.get("run_id"),
-                    "title": data_to_process.get("title") or "unknown",
-                    "status": data_to_process.get("status") or "developing",
-                    "tracking_status": data_to_process.get("tracking_status") or "candidate",
-                    "current_assessment": data_to_process.get("current_assessment") or "",
-                    "payload_json": data_to_process,
-                    "schema_version": "v1",
-                    "created_at": data_to_process.get("created_at") or datetime.now(timezone.utc),
-                    "updated_at": data_to_process.get("updated_at") or datetime.now(timezone.utc),
-                }
+                data_to_process = map_world_pulse_situation_brief_row(data_to_process)
                 schema_model = None
             elif sql_model is WorldPulseSituationChangeSQL and isinstance(data_to_process, dict):
-                data_to_process = {
-                    "change_id": data_to_process.get("change_id"),
-                    "topic_id": data_to_process.get("topic_id"),
-                    "run_id": data_to_process.get("run_id"),
-                    "change_type": data_to_process.get("change_type") or "new_development",
-                    "payload_json": data_to_process,
-                    "schema_version": "v1",
-                    "created_at": data_to_process.get("created_at") or datetime.now(timezone.utc),
-                }
+                data_to_process = map_world_pulse_situation_change_row(data_to_process)
                 schema_model = None
             elif sql_model is WorldPulseLearningDeltaSQL and isinstance(data_to_process, dict):
                 data_to_process = {

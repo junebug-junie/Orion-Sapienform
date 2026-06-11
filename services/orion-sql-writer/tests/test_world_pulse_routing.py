@@ -12,7 +12,7 @@ sys.path.insert(0, str(SQL_WRITER_ROOT))
 sys.modules.pop("app", None)
 
 from app.settings import DEFAULT_ROUTE_MAP
-from app.worker import MODEL_MAP
+from app.worker import MODEL_MAP, map_world_pulse_situation_brief_row, map_world_pulse_situation_change_row
 
 
 def test_hub_message_route_maps_to_world_pulse_hub_table() -> None:
@@ -54,3 +54,17 @@ def test_hub_message_payload_shape_matches_hub_message_table_fields() -> None:
     assert mapped["message_id"] == "msg-1"
     assert mapped["run_id"] == "run-1"
     assert mapped["executive_summary"] == "summary"
+
+
+def test_situation_brief_row_never_leaves_run_id_null() -> None:
+    row = map_world_pulse_situation_brief_row({"topic_id": "topic-1", "title": "Brief"})
+    assert row["run_id"] == "unknown"
+    assert row["topic_id"] == "topic-1"
+
+
+def test_situation_change_row_never_leaves_run_id_null() -> None:
+    row = map_world_pulse_situation_change_row(
+        {"change_id": "chg-1", "topic_id": "topic-1", "change_type": "new_development"}
+    )
+    assert row["run_id"] == "unknown"
+    assert row["change_id"] == "chg-1"

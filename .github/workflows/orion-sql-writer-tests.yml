@@ -1,0 +1,48 @@
+# Workflow: sql-writer consumer resilience + route coverage regression tests.
+#
+# Guards against bus consumer stall (hung grammar_events INSERT blocking all tables)
+# and missing route-map / NOT NULL adapter coverage.
+
+name: orion-sql-writer-tests
+
+on:
+  pull_request:
+    paths:
+      - "orion/bus/channels.yaml"
+      - "orion/core/bus/**"
+      - "orion/schemas/**"
+      - "services/orion-sql-writer/**"
+      - "tests/test_sql_writer_*.py"
+      - ".github/workflows/orion-sql-writer-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/bus/channels.yaml"
+      - "orion/core/bus/**"
+      - "orion/schemas/**"
+      - "services/orion-sql-writer/**"
+      - "tests/test_sql_writer_*.py"
+      - ".github/workflows/orion-sql-writer-tests.yml"
+
+jobs:
+  sql-writer-resilience:
+    name: SQL writer — consumer resilience + routes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-sql-writer/requirements.txt
+          python -m pip install -r requirements-dev.txt
+          python -m pip install pytest-asyncio
+      - name: Run sql-writer regression tests
+        run: |
+          PYTHONPATH=.:services/orion-sql-writer python -m pytest -q \
+            services/orion-sql-writer/tests/test_consumer_resilience.py \
+            services/orion-sql-writer/tests/test_route_map_completeness.py \
+            services/orion-sql-writer/tests/test_world_pulse_routing.py \
+            services/orion-sql-writer/tests/test_grammar_event_routing.py

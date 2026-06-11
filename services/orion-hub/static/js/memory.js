@@ -693,8 +693,15 @@
         try {
           flushDraftEditorToJson();
           const raw = draftTa.value.trim();
-          const body = JSON.parse(raw);
-          const data = await apiFetch("/api/memory/graph/approve", { method: "POST", body: JSON.stringify(body) });
+          const draftBody = JSON.parse(raw);
+          const approvePayload = { draft: draftBody };
+          if (memoryDraftForm && typeof memoryDraftForm.buildCardProjectionPayload === "function") {
+            approvePayload.card_projection_defaults = memoryDraftForm.buildCardProjectionPayload();
+          }
+          const data = await apiFetch("/api/memory/graph/approve", {
+            method: "POST",
+            body: JSON.stringify(approvePayload),
+          });
           if (!data.ok) {
             graphSetOut(data, true);
             return;
@@ -910,6 +917,16 @@
         draftTa.value = JSON.stringify(obj, null, 2);
         if (memoryDraftViz && memoryDraftViz.refresh) memoryDraftViz.refresh();
         if (memoryDraftForm && memoryDraftForm.refresh) memoryDraftForm.refresh();
+        const cardDefaultsRaw = sessionStorage.getItem("orion_memory_graph_card_defaults_import");
+        sessionStorage.removeItem("orion_memory_graph_card_defaults_import");
+        if (cardDefaultsRaw && memoryDraftForm && memoryDraftForm.setCardDefaults) {
+          try {
+            memoryDraftForm.setCardDefaults(JSON.parse(cardDefaultsRaw));
+            memoryDraftForm.refresh();
+          } catch (_) {
+            /* ignore */
+          }
+        }
         graphSetOut(
           { ok: true, note: "Loaded validated role-grounded SuggestDraftV1 JSON." },
           false,

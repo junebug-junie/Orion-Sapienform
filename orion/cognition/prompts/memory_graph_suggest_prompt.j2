@@ -48,14 +48,15 @@ Return exactly one JSON object with this shape (no other keys required beyond th
 
 Role-grounded extraction rules:
 - Treat each selected turn role as evidence.
-- A user turn's speaker is the user / Juniper.
+- A user turn's speaker is Juniper (the operator).
 - An assistant turn's speaker is Orion / assistant.
 - First-person references in user turns usually refer to the user.
 - First-person references in assistant turns usually refer to Orion.
 - "you" in assistant text usually refers to the user.
 - "you" in user text usually refers to Orion.
 - Do not require explicit names to create user/orion entities.
-- Use entity labels exactly "User" (user turns) and "Orion" (assistant turns) for the two speakers.
+- Use entity labels exactly "Juniper" (user turns) and "Orion" (assistant turns) for the two speakers.
+- Set occurredAt to today's date (YYYY-MM-DD in the operator's local calendar sense) when timeQualitative is today/recent and the utterance has no explicit past date; do not invent historical years.
 - Ordinary/routine turns should still produce a minimal semantic graph when they contain actions, states, promises, availability, movement, return expectations, emotions, preferences, or relational posture.
 - Salience/durability is not your job in this draft. Extract the faithful structure first.
 
@@ -64,11 +65,11 @@ Dual spine (relational + topical — both required when the text supports them):
 - Topical spine: when utterances name a stance, artifact, evaluative object, plan fork, or other discourse center, add entityKind "abstract" entities with verbatim surfaceForms from the text (e.g. "pragmatic take", "model training"). Link each relevant situation with schema:about (situation → topic entity) and/or participants with role "topic". Reuse the same topic entity id across turns when a later turn continues the same thread.
 - Do not fold topical content only into situation.label strings; labels summarize, entities carry recallable subjects.
 - generalizes_to may connect a specific topical entity to a broader one (e.g. usable stance → pragmatic take).
-- At minimum User + Orion when both roles appear; add topical abstract entities whenever salient noun phrases carry the conversational center (not only when names are capitalized).
+- At minimum Juniper + Orion when both roles appear; add topical abstract entities whenever salient noun phrases carry the conversational center (not only when names are capitalized).
 
 Minimal example (match real turn ids; keep output compact):
-- Two-turn feedback on a "pragmatic take": User + Orion + abstract "pragmatic take"; situations for user acknowledgment and assistant affirmation; schema:about from situation to topic; shared topic id if both turns discuss it.
-- Shower example: User + Orion + abstract "shower"; situations for departure and availability.
+- Two-turn feedback on a "pragmatic take": Juniper + Orion + abstract "pragmatic take"; situations for user acknowledgment and assistant affirmation; schema:about from situation to topic; shared topic id if both turns discuss it.
+- Shower example: Juniper + Orion + abstract "shower"; situations for departure and availability.
 - Include orionmem:inSituation edges; fill utterance_text_by_id; dispositions only when trust/distrust is explicit.
 
 Rules:

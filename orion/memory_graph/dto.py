@@ -5,6 +5,32 @@ from typing import Any, Dict, List, Optional
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
+from orion.core.contracts.memory_cards import (
+    EvidenceItemV1,
+    MemoryConfidence,
+    MemoryPriority,
+    MemoryProvenance,
+    MemorySensitivity,
+    TimeHorizonV1,
+)
+
+
+class CardProjectionDefaultsV1(BaseModel):
+    """Optional operator overrides applied to every card projected from a graph approve."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    confidence: Optional[MemoryConfidence] = None
+    sensitivity: Optional[MemorySensitivity] = None
+    priority: Optional[MemoryPriority] = None
+    provenance: Optional[MemoryProvenance] = None
+    visibility_scope: Optional[List[str]] = None
+    summary: Optional[str] = None
+    still_true: Optional[List[str]] = None
+    evidence: Optional[List[EvidenceItemV1]] = None
+    time_horizon: Optional[TimeHorizonV1] = None
+
+
 class EdgeDraft(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 

@@ -9,7 +9,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import ValidationError
 
 from orion.memory_graph.approve import approve_memory_graph_draft, preview_validate_only
-from orion.memory_graph.dto import SuggestDraftV1
+from orion.memory_graph.dto import CardProjectionDefaultsV1, SuggestDraftV1
 from orion.memory_graph.utterance_text import ensure_draft_utterance_text
 
 from .mutation_cognition_context import build_mutation_cognition_context
@@ -34,6 +34,13 @@ def _supplemental_utterance_text(body: Dict[str, Any], draft_payload: Dict[str, 
             if k and v:
                 out[k] = v
     return out
+
+
+def _parse_card_projection_defaults(body: Dict[str, Any]) -> Optional[CardProjectionDefaultsV1]:
+    raw = body.get("card_projection_defaults")
+    if not isinstance(raw, dict) or not raw:
+        return None
+    return CardProjectionDefaultsV1.model_validate(raw)
 
 
 def _parse_draft_body(body: Dict[str, Any]) -> tuple[SuggestDraftV1, Dict[str, str]]:
@@ -138,6 +145,7 @@ async def memory_graph_approve(
         raise HTTPException(status_code=400, detail="named_graph_iri_required")
 
     pool = _pool(request)
+    card_defaults = _parse_card_projection_defaults(body if isinstance(body, dict) else {})
     try:
         result = await approve_memory_graph_draft(
             draft,
@@ -147,6 +155,7 @@ async def memory_graph_approve(
             graphdb_user=str(settings.GRAPHDB_USER or ""),
             graphdb_pass=str(settings.GRAPHDB_PASS or ""),
             named_graph_iri=named,
+            card_defaults=card_defaults,
         )
     except ValueError as exc:
         if str(exc) == "graph_backend_unconfigured":

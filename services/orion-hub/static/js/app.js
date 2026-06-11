@@ -8023,6 +8023,12 @@ loadDismissedIds();
           return;
         }
         sessionStorage.setItem('orion_memory_graph_draft_import', raw);
+        if (memoryGraphBridgeDraftForm && typeof memoryGraphBridgeDraftForm.buildCardProjectionPayload === 'function') {
+          sessionStorage.setItem(
+            'orion_memory_graph_card_defaults_import',
+            JSON.stringify(memoryGraphBridgeDraftForm.buildCardProjectionPayload()),
+          );
+        }
         if (memoryTabButton) {
           memoryTabButton.click();
         } else {

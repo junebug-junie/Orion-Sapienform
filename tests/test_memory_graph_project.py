@@ -4,9 +4,9 @@ import json
 from pathlib import Path
 
 from orion.core.contracts.memory_cards import MemoryCardCreateV1
-from orion.memory_graph.dto import SuggestDraftV1
+from orion.memory_graph.dto import CardProjectionDefaultsV1, SuggestDraftV1
 from orion.memory_graph.json_to_rdf import draft_to_graph
-from orion.memory_graph.project import project_graph_to_cards
+from orion.memory_graph.project import apply_card_projection_defaults, project_graph_to_cards
 
 
 def test_project_situation_centric_yields_rich_active_cards() -> None:
@@ -69,3 +69,15 @@ def test_project_entity_per_card_legacy_mode() -> None:
     pack = project_graph_to_cards(g, draft, mapping=mapping)
     assert any("anchor" in c.types for c in pack.creates)
     assert any(c.status == "pending_review" for c in pack.creates)
+
+
+def test_apply_card_projection_defaults_overrides_confidence() -> None:
+    raw = json.loads(Path("tests/fixtures/memory_graph/joey_cats_draft.json").read_text(encoding="utf-8"))
+    draft = SuggestDraftV1.model_validate(raw)
+    g = draft_to_graph(draft)
+    pack = project_graph_to_cards(g, draft)
+    defaults = CardProjectionDefaultsV1(confidence="certain", priority="always_inject")
+    merged = apply_card_projection_defaults(pack.creates, defaults)
+    assert merged
+    assert all(c.confidence == "certain" for c in merged)
+    assert all(c.priority == "always_inject" for c in merged)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from datetime import date
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 _UUID_TAIL = re.compile(
@@ -215,6 +216,60 @@ def _structural_edges(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
+def _normalize_user_entity_label(label: Any) -> str:
+    s = str(label or "").strip()
+    if s.lower() in ("user", "the user", "operator"):
+        return "Juniper"
+    return s
+
+
+def _local_today_iso() -> str:
+    return date.today().isoformat()
+
+
+def _occurred_at_needs_today(value: Any) -> bool:
+    s = str(value or "").strip()
+    if not s or s.lower() in ("null", "none"):
+        return True
+    m = re.match(r"^(\d{4})-\d{2}-\d{2}$", s)
+    if not m:
+        return True
+    try:
+        year = int(m.group(1))
+    except ValueError:
+        return True
+    return year < date.today().year - 1
+
+
+def normalize_role_grounded_draft_dict(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Operator-facing fixes: user speaker label and stale occurredAt dates."""
+    if not isinstance(data, dict):
+        return data
+    out = dict(data)
+    entities = []
+    for ent in out.get("entities") or []:
+        if not isinstance(ent, dict):
+            continue
+        row = dict(ent)
+        row["label"] = _normalize_user_entity_label(row.get("label"))
+        entities.append(row)
+    out["entities"] = entities
+    today = _local_today_iso()
+    situations = []
+    for sit in out.get("situations") or []:
+        if not isinstance(sit, dict):
+            continue
+        row = dict(sit)
+        if _occurred_at_needs_today(row.get("occurredAt")):
+            row["occurredAt"] = today
+            tq = str(row.get("timeQualitative") or "").strip().lower()
+            if not tq or tq == "unknown":
+                row["timeQualitative"] = "today"
+        situations.append(row)
+    out["situations"] = situations
+    return out
+
+
 def sanitize_suggest_draft_dict(
     data: Dict[str, Any],
     *,
@@ -224,7 +279,8 @@ def sanitize_suggest_draft_dict(
     if not isinstance(data, dict):
         return data
 
-    out = repair_malformed_urn_uuid_refs(dict(data))
+    out = normalize_role_grounded_draft_dict(dict(data))
+    out = repair_malformed_urn_uuid_refs(out)
     entity_ids, situation_ids, utterance_ids = _known_node_ids(out)
     graph_nodes = entity_ids | situation_ids
 

@@ -10,7 +10,13 @@ from rdflib import Graph, URIRef
 from rdflib.namespace import RDF, RDFS
 
 from orion.core.contracts.memory_cards import EDGE_TYPES, MemoryCardCreateV1, MemoryCardStatus, TimeHorizonV1
-from orion.memory_graph.dto import DispositionDraft, MemoryGraphSubschemaV1, SituationDraft, SuggestDraftV1
+from orion.memory_graph.dto import (
+    CardProjectionDefaultsV1,
+    DispositionDraft,
+    MemoryGraphSubschemaV1,
+    SituationDraft,
+    SuggestDraftV1,
+)
 
 from .json_to_rdf import ORIONMEM, SCHEMA
 
@@ -171,6 +177,38 @@ def _situation_tags(sit: SituationDraft, draft: SuggestDraftV1) -> List[str]:
         if ek:
             tags.append(f"entity:{ek}")
     return tags
+
+
+def apply_card_projection_defaults(
+    creates: List[MemoryCardCreateV1],
+    defaults: Optional[CardProjectionDefaultsV1],
+) -> List[MemoryCardCreateV1]:
+    """Merge operator-provided card metadata onto projected creates."""
+    if not defaults:
+        return creates
+    out: List[MemoryCardCreateV1] = []
+    for card in creates:
+        row = card.model_dump(mode="json")
+        if defaults.confidence is not None:
+            row["confidence"] = defaults.confidence
+        if defaults.sensitivity is not None:
+            row["sensitivity"] = defaults.sensitivity
+        if defaults.priority is not None:
+            row["priority"] = defaults.priority
+        if defaults.provenance is not None:
+            row["provenance"] = defaults.provenance
+        if defaults.visibility_scope is not None:
+            row["visibility_scope"] = defaults.visibility_scope
+        if defaults.time_horizon is not None:
+            row["time_horizon"] = defaults.time_horizon.model_dump(mode="json")
+        if defaults.summary and str(defaults.summary).strip():
+            row["summary"] = str(defaults.summary).strip()
+        if defaults.still_true:
+            row["still_true"] = list(defaults.still_true)
+        if defaults.evidence:
+            row["evidence"] = [e.model_dump(mode="json") for e in defaults.evidence]
+        out.append(MemoryCardCreateV1.model_validate(row))
+    return out
 
 
 def build_memory_graph_subschema(
@@ -622,11 +660,19 @@ def project_graph_to_cards(
     *,
     mapping: Optional[Dict[str, Any]] = None,
     named_graphs: Optional[Sequence[str]] = None,
+    card_defaults: Optional[CardProjectionDefaultsV1] = None,
 ) -> ProjectionPack:
     """Map RDF graph + original draft to MemoryCardCreateV1 list + edge index tuples."""
     mapping = mapping or load_mapping()
     ng = list(named_graphs or ["https://orion.example/ns/memory/ng/session/local"])
     mode = str(mapping.get("projection_mode") or "situation_centric").strip()
     if mode == "entity_per_card":
-        return _project_entity_per_card(g, draft, mapping=mapping, named_graphs=ng)
-    return _project_situation_centric(g, draft, mapping=mapping, named_graphs=ng)
+        pack = _project_entity_per_card(g, draft, mapping=mapping, named_graphs=ng)
+    else:
+        pack = _project_situation_centric(g, draft, mapping=mapping, named_graphs=ng)
+    if card_defaults:
+        pack = ProjectionPack(
+            creates=apply_card_projection_defaults(pack.creates, card_defaults),
+            edge_indices=pack.edge_indices,
+        )
+    return pack

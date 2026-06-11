@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 import requests
 
 from orion.core.storage.memory_cards import insert_cards_and_edges_batch
-from orion.memory_graph.dto import SuggestDraftV1
+from orion.memory_graph.dto import CardProjectionDefaultsV1, SuggestDraftV1
 from orion.memory_graph.draft_sanitize import sanitize_suggest_draft_dict
 from orion.memory_graph.graphdb import compensate_batch, insert_batch
 from orion.memory_graph.json_to_rdf import draft_to_graph
@@ -90,6 +90,7 @@ async def approve_memory_graph_draft(
     graphdb_user: str = "",
     graphdb_pass: str = "",
     named_graph_iri: str,
+    card_defaults: Optional[CardProjectionDefaultsV1] = None,
 ) -> ApproveOutcome:
     """validate → RDF graph store (Fuseki graph-store HTTP + SPARQL update, or legacy GraphDB) → Postgres.
 
@@ -133,7 +134,7 @@ async def approve_memory_graph_draft(
             session=sess,
         )
 
-    pack = project_graph_to_cards(g2, draft, named_graphs=[named_graph_iri])
+    pack = project_graph_to_cards(g2, draft, named_graphs=[named_graph_iri], card_defaults=card_defaults)
     card_ids: List[UUID] = []
     try:
         card_ids = await insert_cards_and_edges_batch(

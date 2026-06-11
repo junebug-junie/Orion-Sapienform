@@ -56,6 +56,7 @@ def test_sanitize_strips_null_string_refs_and_approve_graph_builds() -> None:
     assert cleaned["entities"][0]["generalizes_to"] is None
     assert cleaned["situations"][0]["stimulus_entity_id"] is None
     assert any(e["p"] == "orionmem:inSituation" for e in cleaned["edges"])
+    assert cleaned["entities"][0]["label"] == "Juniper"
     draft = SuggestDraftV1.model_validate(cleaned)
     g = draft_to_graph(draft)
     assert len(g) > 10
@@ -180,3 +181,27 @@ def test_sanitize_repairs_malformed_sequential_urn_uuid_suffixes() -> None:
     draft = SuggestDraftV1.model_validate(cleaned)
     g = draft_to_graph(draft)
     assert len(g) > 10
+
+
+def test_sanitize_replaces_stale_occurred_at_with_today() -> None:
+    from datetime import date
+
+    data = {
+        "ontology_version": "orionmem-2026-05",
+        "utterance_ids": ["t1"],
+        "entities": [],
+        "situations": [
+            {
+                "id": "urn:uuid:b0000001-0000-4000-8000-000000000001",
+                "utterance_ids": ["t1"],
+                "label": "old date",
+                "occurredAt": "2023-01-15",
+                "timeQualitative": "unknown",
+            }
+        ],
+        "edges": [],
+        "dispositions": [],
+    }
+    cleaned = sanitize_suggest_draft_dict(data)
+    assert cleaned["situations"][0]["occurredAt"] == date.today().isoformat()
+    assert cleaned["situations"][0]["timeQualitative"] == "today"

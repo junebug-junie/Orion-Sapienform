@@ -6,3 +6,4 @@ pydantic==2.11.5
 pydantic-settings==2.5.2
 redis[hiredis]==5.0.7
 loguru>=0.7
+requests==2.34.2

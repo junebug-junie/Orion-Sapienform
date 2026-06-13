@@ -48,10 +48,30 @@ class Settings(BaseSettings):
     VECTOR_DB_PORT: int = Field(default=8000)
     VECTOR_DB_COLLECTION: str = Field(default="orion_main_store")
 
+    RDF_STORE_QUERY_URL: str = Field(default="")
+    RDF_STORE_USER: str = Field(default="admin")
+    RDF_STORE_PASS: str = Field(default="orion")
     GRAPHDB_URL: str = Field(default="http://graphdb:7200")
     GRAPHDB_REPO: str = Field(default="collapse")
     GRAPHDB_USER: str = Field(default="admin")
     GRAPHDB_PASS: str = Field(default="admin")
+
+    @property
+    def rdf_sparql_endpoint(self) -> str:
+        q = (self.RDF_STORE_QUERY_URL or "").strip()
+        if q:
+            return q
+        base = (self.GRAPHDB_URL or "").strip().rstrip("/")
+        if not base:
+            return ""
+        repo = (self.GRAPHDB_REPO or "collapse").strip() or "collapse"
+        return f"{base}/repositories/{repo}"
+
+    @property
+    def rdf_sparql_auth(self) -> tuple[str, str]:
+        if (self.RDF_STORE_QUERY_URL or "").strip():
+            return (self.RDF_STORE_USER or "admin", self.RDF_STORE_PASS or "orion")
+        return (self.GRAPHDB_USER, self.GRAPHDB_PASS)
 
     # --- Brain ---
     BRAIN_URL: str = Field(default="http://brain:8088")

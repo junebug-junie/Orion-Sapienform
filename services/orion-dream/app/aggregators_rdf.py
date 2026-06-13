@@ -15,14 +15,17 @@ def enrich_from_graphdb_ids(fragments):
                 OPTIONAL {{ ?s cm:hasEntity ?entity. }}
             }}
             """
+            endpoint = settings.rdf_sparql_endpoint
+            if not endpoint:
+                continue
             r = requests.post(
-                f"{settings.GRAPHDB_URL}/repositories/{settings.GRAPHDB_REPO}",
+                endpoint,
                 data=q,
                 headers={
                     "Content-Type": "application/sparql-query",
                     "Accept": "application/sparql-results+json",
                 },
-                auth=(settings.GRAPHDB_USER, settings.GRAPHDB_PASS),
+                auth=settings.rdf_sparql_auth,
                 timeout=5,
             )
             if r.status_code == 200 and "application/json" in r.headers.get("Content-Type", ""):

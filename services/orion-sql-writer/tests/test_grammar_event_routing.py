@@ -7,3 +7,7 @@ def test_route_map_includes_grammar_event() -> None:
 
 def test_subscribe_channels_include_grammar() -> None:
     assert "orion:grammar:event" in settings.sql_writer_subscribe_channels
+
+
+def test_subscribe_channels_exclude_accepted_pressure() -> None:
+    assert "orion:grammar:accepted-pressure" not in settings.effective_subscribe_channels

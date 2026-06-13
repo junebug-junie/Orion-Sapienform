@@ -38,9 +38,22 @@ class Settings(BaseSettings):
     )
     grammar_poll_interval_sec: float = Field(5.0, alias="GRAMMAR_POLL_INTERVAL_SEC")
     grammar_event_channel: str = Field("orion:grammar:event", alias="GRAMMAR_EVENT_CHANNEL")
+    accepted_pressure_grammar_channel: str = Field(
+        "orion:grammar:accepted-pressure",
+        alias="ACCEPTED_PRESSURE_GRAMMAR_CHANNEL",
+    )
     publish_accepted_pressure_grammar: bool = Field(
         True,
         alias="PUBLISH_ACCEPTED_PRESSURE_GRAMMAR",
+    )
+    substrate_cursor_tail_seed_on_lag: bool = Field(
+        False,
+        alias="SUBSTRATE_CURSOR_TAIL_SEED_ON_LAG",
+    )
+    substrate_cursor_lag_resync_hours: float = Field(6.0, alias="SUBSTRATE_CURSOR_LAG_RESYNC_HOURS")
+    substrate_cursor_reset_operator_token: str = Field(
+        "",
+        alias="SUBSTRATE_CURSOR_RESET_OPERATOR_TOKEN",
     )
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 

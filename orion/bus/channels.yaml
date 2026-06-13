@@ -1861,18 +1861,28 @@ channels:
     kind: "event"
     schema_id: "GrammarEventV1"
     message_kind: "grammar.event.v1"
+    description: "Canonical grammar ingress channel for sql-writer ledger persistence"
     producer_services:
       - orion-vision-retina
       - orion-hub
       - orion-vision-edge
       - orion-vision-window
       - orion-biometrics
-      - orion-substrate-runtime
       - orion-cortex-exec
       - orion-bus
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-05-23"
+
+  - name: "orion:grammar:accepted-pressure"
+    kind: "event"
+    schema_id: "GrammarEventV1"
+    message_kind: "grammar.event.v1"
+    description: "Substrate reducer accepted-pressure output; not canonical sql-writer ingestion"
+    producer_services: ["orion-substrate-runtime"]
+    consumer_services: []
+    stability: "experimental"
+    since: "2026-06-13"
 
   # --- Graph Compression ---
   - name: "orion:graph:compression:stale"

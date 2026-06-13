@@ -47,3 +47,37 @@ Hub debug (node-scoped lineage):
 
 - `GET /api/substrate/biometrics-node/{node_id}/latest`
 - `GET /api/substrate/receipts/{receipt_id}`
+
+## Grammar production observe
+
+Truth: `GET http://localhost:8115/grammar/truth`
+
+Post-deploy smoke (from repo root):
+
+```bash
+./scripts/grammar_production_truth.sh
+```
+
+### Cursor recovery (internal operator endpoint)
+
+**Not exposed via hub/Caddy.** Requires `SUBSTRATE_CURSOR_RESET_OPERATOR_TOKEN` and header `X-Orion-Operator-Token`.
+
+See also: [docs/grammar_production_observe_deploy.md](../../docs/grammar_production_observe_deploy.md)
+
+```bash
+# Replay from earliest matching grammar event
+curl -X POST -H "X-Orion-Operator-Token: $SUBSTRATE_CURSOR_RESET_OPERATOR_TOKEN" \
+  'http://127.0.0.1:8115/grammar/cursor/reset?cursor_name=biometrics_grammar_consumer&mode=earliest'
+
+# Jump to newest row (operator acknowledges skip; marks /grammar/truth degraded)
+curl -X POST -H "X-Orion-Operator-Token: $SUBSTRATE_CURSOR_RESET_OPERATOR_TOKEN" \
+  'http://127.0.0.1:8115/grammar/cursor/reset?cursor_name=biometrics_grammar_consumer&mode=tail'
+
+# Set cursor to last event at/before a timestamp (timezone-aware ISO required)
+curl -X POST -H "X-Orion-Operator-Token: $SUBSTRATE_CURSOR_RESET_OPERATOR_TOKEN" \
+  'http://127.0.0.1:8115/grammar/cursor/reset?cursor_name=biometrics_grammar_consumer&mode=timestamp&at=2026-06-01T00:00:00Z'
+```
+
+Known cursors: `biometrics_grammar_consumer`, `execution_grammar_reducer`, `transport_grammar_reducer`.
+
+Accepted-pressure reducer output publishes to `orion:grammar:accepted-pressure` (not canonical `orion:grammar:event`).

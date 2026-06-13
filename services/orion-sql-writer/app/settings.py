@@ -185,12 +185,25 @@ class Settings(BaseSettings):
     sql_writer_db_statement_timeout_ms: int = Field(30_000, alias="SQL_WRITER_DB_STATEMENT_TIMEOUT_MS")
     sql_writer_db_lock_timeout_ms: int = Field(10_000, alias="SQL_WRITER_DB_LOCK_TIMEOUT_MS")
     sql_writer_grammar_persist_timeout_sec: float = Field(15.0, alias="SQL_WRITER_GRAMMAR_PERSIST_TIMEOUT_SEC")
-    sql_writer_grammar_workers: int = Field(1, alias="SQL_WRITER_GRAMMAR_WORKERS")
+    sql_writer_grammar_workers: int = Field(4, alias="SQL_WRITER_GRAMMAR_WORKERS")
     sql_writer_grammar_pool_size: int = Field(4, alias="SQL_WRITER_GRAMMAR_POOL_SIZE")
     sql_writer_grammar_pool_max_overflow: int = Field(4, alias="SQL_WRITER_GRAMMAR_POOL_MAX_OVERFLOW")
     sql_writer_grammar_statement_timeout_ms: int = Field(10_000, alias="SQL_WRITER_GRAMMAR_STATEMENT_TIMEOUT_MS")
     sql_writer_grammar_lock_timeout_ms: int = Field(3_000, alias="SQL_WRITER_GRAMMAR_LOCK_TIMEOUT_MS")
     grammar_events_retention_days: int = Field(30, alias="GRAMMAR_EVENTS_RETENTION_DAYS")
+    grammar_events_retention_batch_size: int = Field(5000, alias="GRAMMAR_EVENTS_RETENTION_BATCH_SIZE")
+    grammar_events_retention_max_batches_per_startup: int = Field(
+        20,
+        alias="GRAMMAR_EVENTS_RETENTION_MAX_BATCHES_PER_STARTUP",
+    )
+    grammar_events_retention_max_elapsed_sec: float = Field(
+        120.0,
+        alias="GRAMMAR_EVENTS_RETENTION_MAX_ELAPSED_SEC",
+    )
+    sql_writer_allow_accepted_pressure_ingest: bool = Field(
+        False,
+        alias="SQL_WRITER_ALLOW_ACCEPTED_PRESSURE_INGEST",
+    )
     sql_writer_grammar_trace_batch_max: int = Field(64, alias="SQL_WRITER_GRAMMAR_TRACE_BATCH_MAX")
     sql_writer_grammar_trace_batch_timeout_sec: float = Field(45.0, alias="SQL_WRITER_GRAMMAR_TRACE_BATCH_TIMEOUT_SEC")
 

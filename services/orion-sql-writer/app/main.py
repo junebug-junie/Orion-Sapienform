@@ -617,6 +617,47 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
+            conn.exec_driver_sql(
+                "ALTER TABLE bus_fallback_log ADD COLUMN IF NOT EXISTS created_at_ts TIMESTAMPTZ;"
+            )
+            conn.exec_driver_sql(
+                """
+                UPDATE bus_fallback_log
+                SET created_at_ts = CASE
+                  WHEN created_at IS NULL OR btrim(created_at) = '' THEN NULL
+                  WHEN created_at ~ '^\\d{4}-' THEN created_at::timestamptz
+                  WHEN created_at ~ '^\\d+(\\.\\d+)?$' THEN to_timestamp(created_at::double precision)
+                  ELSE NULL
+                END
+                WHERE created_at_ts IS NULL;
+                """
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_bus_fallback_log_created_at_ts ON bus_fallback_log (created_at_ts);"
+            )
+            conn.exec_driver_sql(
+                """
+                CREATE INDEX IF NOT EXISTS idx_bus_fallback_log_kind_created_at_ts
+                ON bus_fallback_log (kind, created_at_ts);
+                """
+            )
+            conn.exec_driver_sql(
+                """
+                DELETE FROM spark_telemetry st
+                WHERE telemetry_id NOT IN (
+                  SELECT DISTINCT ON (correlation_id) telemetry_id
+                  FROM spark_telemetry
+                  WHERE correlation_id IS NOT NULL AND btrim(correlation_id) <> ''
+                  ORDER BY correlation_id, timestamp DESC NULLS LAST, telemetry_id ASC
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_spark_telemetry_correlation_id
+                ON spark_telemetry (correlation_id);
+                """
+            )
         logger.info("🧬 chat_message correlation/trace columns ensured")
         retention_days = int(getattr(settings, "metacog_trace_retention_days", 0) or 0)
         if retention_days > 0:
@@ -632,6 +673,25 @@ async def lifespan(app: FastAPI):
         )
     except Exception as e:
         logger.warning("chat_message migration warning: %s", e)
+
+    grammar_retention_days = int(getattr(settings, "grammar_events_retention_days", 0) or 0)
+    if grammar_retention_days > 0:
+        try:
+            from app.grammar_truth import apply_grammar_events_retention
+
+            retention_result = apply_grammar_events_retention(grammar_retention_days)
+            logger.info(
+                "🧹 grammar_events retention cutoff=%s rows_pruned=%s batches=%s "
+                "remaining_debt=%s elapsed_sec=%.2f failure=%s",
+                retention_result.cutoff_at.isoformat() if retention_result.cutoff_at else None,
+                retention_result.rows_pruned_last_run,
+                retention_result.batches_attempted,
+                retention_result.remaining_debt,
+                retention_result.elapsed_sec,
+                retention_result.failure_reason,
+            )
+        except Exception as exc:
+            logger.exception("grammar_events retention startup failed (continuing boot): %s", exc)
 
     task: asyncio.Task | None = None
     if settings.orion_bus_enabled:
@@ -661,4 +721,19 @@ app.include_router(notify_router, prefix="/api/notify-read", tags=["notify-read"
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": settings.service_name, "version": settings.service_version}
+    from app.grammar_truth import build_grammar_truth_snapshot
+
+    snap = build_grammar_truth_snapshot()
+    return {
+        "ok": snap["ok"],
+        "degraded": snap["degraded"],
+        "service": settings.service_name,
+        "version": settings.service_version,
+    }
+
+
+@app.get("/grammar/truth")
+def grammar_truth():
+    from app.grammar_truth import build_grammar_truth_snapshot
+
+    return build_grammar_truth_snapshot()

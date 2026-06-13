@@ -93,10 +93,8 @@ def _build_receipt_insert_params(
     }
 
 
-def _trace_id_prefix_upper(prefix: str) -> str:
-    if prefix.endswith(":"):
-        return prefix[:-1] + ";"
-    return prefix + "\uffff"
+def _trace_id_like_pattern(trace_prefix: str) -> str:
+    return f"{trace_prefix}%"
 
 
 def _cursor_lag_seconds(last_created_at: datetime | None) -> float:
@@ -125,23 +123,21 @@ class BiometricsSubstrateStore:
         source_service: str,
         trace_prefix: str,
     ) -> None:
-        trace_hi = _trace_id_prefix_upper(trace_prefix)
+        trace_like = _trace_id_like_pattern(trace_prefix)
         tail = conn.execute(
             text(
                 """
                 SELECT created_at, event_id
                 FROM grammar_events
                 WHERE source_service = :source_service
-                  AND trace_id >= :trace_lo
-                  AND trace_id < :trace_hi
+                  AND trace_id LIKE :trace_like
                 ORDER BY created_at DESC, event_id DESC
                 LIMIT 1
                 """
             ),
             {
                 "source_service": source_service,
-                "trace_lo": trace_prefix,
-                "trace_hi": trace_hi,
+                "trace_like": trace_like,
             },
         ).mappings().first()
 
@@ -212,7 +208,7 @@ class BiometricsSubstrateStore:
         trace_prefix: str,
         limit: int,
     ) -> list[GrammarEventV1]:
-        trace_hi = _trace_id_prefix_upper(trace_prefix)
+        trace_like = _trace_id_like_pattern(trace_prefix)
         with self._engine.begin() as conn:
             self._ensure_grammar_cursor_at_tail(
                 conn,
@@ -239,8 +235,7 @@ class BiometricsSubstrateStore:
                     SELECT event_id, event_json, created_at
                     FROM grammar_events
                     WHERE source_service = :source_service
-                      AND trace_id >= :trace_lo
-                      AND trace_id < :trace_hi
+                      AND trace_id LIKE :trace_like
                       AND (
                         created_at > :cursor_ts
                         OR (created_at = :cursor_ts AND event_id > :cursor_id)
@@ -251,8 +246,7 @@ class BiometricsSubstrateStore:
                 ),
                 {
                     "source_service": source_service,
-                    "trace_lo": trace_prefix,
-                    "trace_hi": trace_hi,
+                    "trace_like": trace_like,
                     "cursor_ts": row["last_event_created_at"],
                     "cursor_id": row["last_event_id"] or "",
                     "limit": limit,

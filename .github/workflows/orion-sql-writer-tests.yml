@@ -1,7 +1,7 @@
-# Workflow: sql-writer consumer resilience + route coverage regression tests.
+# Workflow: sql-writer grammar persistence + consumer resilience regression tests.
 #
-# Guards against bus consumer stall (hung grammar_events INSERT blocking all tables)
-# and missing route-map / NOT NULL adapter coverage.
+# Unit tests run on every PR/push touching grammar or sql-writer paths.
+# Integration tests run against Postgres on GitHub Actions (same gate as main deploy).
 
 name: orion-sql-writer-tests
 
@@ -10,8 +10,12 @@ on:
     paths:
       - "orion/bus/channels.yaml"
       - "orion/core/bus/**"
+      - "orion/grammar/**"
       - "orion/schemas/**"
+      - "orion/substrate/**"
+      - "services/orion-sql-db/**"
       - "services/orion-sql-writer/**"
+      - "services/orion-substrate-runtime/**"
       - "tests/test_sql_writer_*.py"
       - ".github/workflows/orion-sql-writer-tests.yml"
   push:
@@ -19,14 +23,18 @@ on:
     paths:
       - "orion/bus/channels.yaml"
       - "orion/core/bus/**"
+      - "orion/grammar/**"
       - "orion/schemas/**"
+      - "orion/substrate/**"
+      - "services/orion-sql-db/**"
       - "services/orion-sql-writer/**"
+      - "services/orion-substrate-runtime/**"
       - "tests/test_sql_writer_*.py"
       - ".github/workflows/orion-sql-writer-tests.yml"
 
 jobs:
-  sql-writer-resilience:
-    name: SQL writer — consumer resilience + routes
+  sql-writer-unit:
+    name: SQL writer — unit + SQL shape
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,10 +47,50 @@ jobs:
           python -m pip install -r services/orion-sql-writer/requirements.txt
           python -m pip install -r requirements-dev.txt
           python -m pip install pytest-asyncio
-      - name: Run sql-writer regression tests
+      - name: Run sql-writer unit tests
         run: |
           PYTHONPATH=.:services/orion-sql-writer python -m pytest -q \
+            orion/grammar/tests/test_ledger.py \
             services/orion-sql-writer/tests/test_consumer_resilience.py \
             services/orion-sql-writer/tests/test_route_map_completeness.py \
             services/orion-sql-writer/tests/test_world_pulse_routing.py \
-            services/orion-sql-writer/tests/test_grammar_event_routing.py
+            services/orion-sql-writer/tests/test_grammar_event_routing.py \
+            services/orion-sql-writer/tests/test_grammar_ledger_sql_shape.py
+
+  sql-writer-integration:
+    name: SQL writer — Postgres grammar integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: conjourney
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      POSTGRES_URI: postgresql://postgres:postgres@localhost:5432/conjourney
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-sql-writer/requirements.txt
+          python -m pip install -r services/orion-substrate-runtime/requirements.txt
+          python -m pip install -r requirements-dev.txt
+          python -m pip install pytest-asyncio
+      - name: Run grammar Postgres integration tests
+        run: |
+          PYTHONPATH=.:services/orion-sql-writer:services/orion-sql-writer/tests python -m pytest -q -m integration \
+            services/orion-sql-writer/tests/test_grammar_ledger_integration.py
+          PYTHONPATH=.:services/orion-substrate-runtime:services/orion-sql-writer/tests python -m pytest -q -m integration \
+            services/orion-substrate-runtime/tests/test_grammar_consumer_integration.py

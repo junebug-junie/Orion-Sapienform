@@ -25,7 +25,13 @@ Configured via `SQL_WRITER_SUBSCRIBE_CHANNELS` (JSON list).
 | `orion:spark:telemetry` | `spark.telemetry` | `SparkTelemetrySQL` |
 
 ### Environment Variables
-Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
+Provenance: repo root `.env` (mesh globals: `ORION_BUS_URL`, `PROJECT`, `NET`, …) → service `.env_example` → `docker-compose.yml` → `settings.py`
+
+**Compose (from repo root):**
+```bash
+docker compose --env-file .env --env-file services/orion-sql-writer/.env \
+  -f services/orion-sql-writer/docker-compose.yml up -d --build
+```
 
 | Variable | Default (Settings) | Description |
 | :--- | :--- | :--- |

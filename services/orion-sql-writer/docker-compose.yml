@@ -26,6 +26,11 @@ services:
       # Include notify persistence + ChatGPT turn log channels when overriding defaults.
       - SQL_WRITER_SUBSCRIBE_CHANNELS=${SQL_WRITER_SUBSCRIBE_CHANNELS:-["orion:tags:enriched","orion:collapse:sql-write","orion:chat:history:log","orion:chat:history:turn","orion:chat:social:turn","orion:chat:response:feedback","orion:bridge:social:room:intake","orion:bridge:social:room:delivery","orion:bridge:social:room:skipped","orion:bridge:social:participant","orion:chat:gpt:log","orion:chat:gpt:turn","orion:chat:gpt:message:log","orion:chat:gpt:import:run","orion:chat:gpt:conversation","orion:chat:gpt:example","orion:dream:log","orion:telemetry:biometrics","orion:biometrics:summary","orion:biometrics:induction","orion:spark:telemetry","orion:cognition:trace","orion:metacognition:tick","orion:metacog:trace","orion:equilibrium:metacog:trigger","orion:notify:persistence:request","orion:notify:persistence:receipt","orion:journal:write","orion:journal:index","orion:evidence:index:upsert","orion:evidence:markdown:ingest","orion:evidence:parsed:ingest","orion:endogenous:runtime:record","orion:endogenous:runtime:audit","orion:calibration:profile:audit","orion:world_pulse:run:result","orion:world_pulse:digest:created","orion:world_pulse:digest:item","orion:world_pulse:article:emit","orion:world_pulse:cluster:emit","orion:world_pulse:claim:emit","orion:world_pulse:event:emit","orion:world_pulse:entity:emit","orion:world_pulse:situation:brief:upsert","orion:world_pulse:situation:change:emit","orion:world_pulse:learning:emit","orion:world_pulse:worth:reading","orion:world_pulse:worth:watching","orion:world_context:daily_capsule","orion:world_pulse:publish:status","orion:hub:messages:create","orion:mind:artifact","orion:grammar:event"]}
       - SQL_WRITER_ENABLE_SPARK_SNAPSHOT_CHANNEL=${SQL_WRITER_ENABLE_SPARK_SNAPSHOT_CHANNEL}
+      - SQL_WRITER_ENABLE_GRAMMAR_CHANNEL=${SQL_WRITER_ENABLE_GRAMMAR_CHANNEL:-true}
+      - SQL_WRITER_CONCURRENT_HANDLERS=${SQL_WRITER_CONCURRENT_HANDLERS:-true}
+      - SQL_WRITER_MAX_INFLIGHT=${SQL_WRITER_MAX_INFLIGHT:-12}
+      - SQL_WRITER_DB_POOL_SIZE=${SQL_WRITER_DB_POOL_SIZE:-10}
+      - SQL_WRITER_DB_MAX_OVERFLOW=${SQL_WRITER_DB_MAX_OVERFLOW:-20}
       - SQL_WRITER_ROUTE_MAP_JSON=${SQL_WRITER_ROUTE_MAP_JSON}
       - SQL_WRITER_EMIT_JOURNAL_CREATED=${SQL_WRITER_EMIT_JOURNAL_CREATED}
       - SQL_WRITER_JOURNAL_CREATED_CHANNEL=${SQL_WRITER_JOURNAL_CREATED_CHANNEL}
@@ -34,7 +39,15 @@ services:
       - SPARK_LEGACY_MODE=${SPARK_LEGACY_MODE}
       - METACOG_TRACE_RETENTION_DAYS=${METACOG_TRACE_RETENTION_DAYS:-14}
       - SQL_WRITER_DB_STATEMENT_TIMEOUT_MS=${SQL_WRITER_DB_STATEMENT_TIMEOUT_MS:-30000}
-      - SQL_WRITER_GRAMMAR_PERSIST_TIMEOUT_SEC=${SQL_WRITER_GRAMMAR_PERSIST_TIMEOUT_SEC:-30}
+      - SQL_WRITER_DB_LOCK_TIMEOUT_MS=${SQL_WRITER_DB_LOCK_TIMEOUT_MS:-10000}
+      - SQL_WRITER_GRAMMAR_PERSIST_TIMEOUT_SEC=${SQL_WRITER_GRAMMAR_PERSIST_TIMEOUT_SEC:-15}
+      - SQL_WRITER_GRAMMAR_WORKERS=${SQL_WRITER_GRAMMAR_WORKERS:-4}
+      - SQL_WRITER_GRAMMAR_POOL_SIZE=${SQL_WRITER_GRAMMAR_POOL_SIZE:-4}
+      - SQL_WRITER_GRAMMAR_POOL_MAX_OVERFLOW=${SQL_WRITER_GRAMMAR_POOL_MAX_OVERFLOW:-4}
+      - SQL_WRITER_GRAMMAR_STATEMENT_TIMEOUT_MS=${SQL_WRITER_GRAMMAR_STATEMENT_TIMEOUT_MS:-10000}
+      - SQL_WRITER_GRAMMAR_LOCK_TIMEOUT_MS=${SQL_WRITER_GRAMMAR_LOCK_TIMEOUT_MS:-3000}
+      - GRAMMAR_EVENTS_RETENTION_DAYS=${GRAMMAR_EVENTS_RETENTION_DAYS:-30}
+      - SQL_WRITER_GRAMMAR_TRACE_BATCH_MAX=${SQL_WRITER_GRAMMAR_TRACE_BATCH_MAX:-64}
 
       - DATABASE_URL=${DATABASE_URL}
       # POSTGRES_URI removed as redundant/conflict

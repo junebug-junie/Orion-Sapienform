@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
-from orion.grammar.ledger import apply_grammar_event
+from orion.grammar.ledger import apply_grammar_event, apply_grammar_trace_batch
 from orion.schemas.grammar import GrammarAtomV1, GrammarEventV1, GrammarProvenanceV1
 
 
@@ -27,21 +27,36 @@ def _atom_event(*, event_id: str = "evt:1") -> GrammarEventV1:
     )
 
 
-def test_atom_emitted_calls_session_add() -> None:
+def test_atom_emitted_uses_set_based_insert() -> None:
     session = MagicMock()
-    session.query.return_value.filter.return_value.first.return_value = None
+    session.execute.return_value.fetchall.return_value = [("evt:1",)]
 
     assert apply_grammar_event(session, _atom_event()) is True
-    assert session.add.called
+    assert session.execute.call_count >= 2
+    session.flush.assert_called_once()
 
 
-def test_dedupe_returns_false_on_second_call() -> None:
+def test_trace_batch_applies_multiple_events() -> None:
     session = MagicMock()
+    session.execute.return_value.fetchall.return_value = [
+        ("evt:0",),
+        ("evt:1",),
+        ("evt:2",),
+    ]
+    events = [_atom_event(event_id=f"evt:{idx}") for idx in range(3)]
+
+    applied = apply_grammar_trace_batch(session, events)
+
+    assert applied == 3
+    session.flush.assert_called_once()
+
+
+def test_trace_batch_dedupes_existing_event_ids() -> None:
+    session = MagicMock()
+    session.execute.return_value.fetchall.return_value = []
     event = _atom_event()
-    with patch(
-        "orion.grammar.ledger._event_exists",
-        side_effect=[False, True],
-    ) as event_exists:
-        assert apply_grammar_event(session, event) is True
-        assert apply_grammar_event(session, event) is False
-        assert event_exists.call_count == 2
+
+    assert apply_grammar_event(session, event) is False
+
+    session.execute.return_value.fetchall.return_value = [("evt:1",)]
+    assert apply_grammar_event(session, event) is True

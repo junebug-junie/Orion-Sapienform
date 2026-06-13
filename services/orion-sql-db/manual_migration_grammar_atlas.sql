@@ -119,6 +119,17 @@ create table if not exists grammar_projections (
 
 create index if not exists idx_grammar_events_trace_id on grammar_events(trace_id);
 create index if not exists idx_grammar_events_session_turn on grammar_events(session_id, turn_id);
+create index if not exists idx_grammar_events_source_created on grammar_events(source_service, created_at, event_id);
+-- Substrate consumer cursors (prefix-scoped, monotonic created_at + event_id)
+create index if not exists idx_grammar_events_biometrics_consume
+  on grammar_events (created_at, event_id)
+  where source_service = 'orion-biometrics' and trace_id like 'biometrics.node:%';
+create index if not exists idx_grammar_events_cortex_exec_consume
+  on grammar_events (created_at, event_id)
+  where source_service = 'orion-cortex-exec' and trace_id like 'cortex.exec:%';
+create index if not exists idx_grammar_events_bus_transport_consume
+  on grammar_events (created_at, event_id)
+  where source_service = 'orion-bus' and trace_id like 'bus.transport:%';
 create index if not exists idx_grammar_atoms_trace_id on grammar_atoms(trace_id);
 create index if not exists idx_grammar_atoms_layer on grammar_atoms(layer);
 create index if not exists idx_grammar_atoms_dimensions on grammar_atoms using gin(dimensions);

@@ -156,6 +156,10 @@ class Settings(BaseSettings):
         False,
         alias="SQL_WRITER_ENABLE_SPARK_SNAPSHOT_CHANNEL",
     )
+    sql_writer_enable_grammar_channel: bool = Field(
+        True,
+        alias="SQL_WRITER_ENABLE_GRAMMAR_CHANNEL",
+    )
 
     spark_legacy_mode: str = Field("accept", alias="SPARK_LEGACY_MODE")
 
@@ -173,9 +177,22 @@ class Settings(BaseSettings):
     )
     metacog_trace_retention_days: int = Field(14, alias="METACOG_TRACE_RETENTION_DAYS")
 
-    # Guardrails: prevent hung grammar INSERTs from blocking the sequential bus consumer.
+    # Guardrails: grammar lane is async-isolated; operational writes use concurrent Hunter + pool limits.
+    sql_writer_concurrent_handlers: bool = Field(True, alias="SQL_WRITER_CONCURRENT_HANDLERS")
+    sql_writer_max_inflight: int = Field(12, alias="SQL_WRITER_MAX_INFLIGHT")
+    sql_writer_db_pool_size: int = Field(10, alias="SQL_WRITER_DB_POOL_SIZE")
+    sql_writer_db_max_overflow: int = Field(20, alias="SQL_WRITER_DB_MAX_OVERFLOW")
     sql_writer_db_statement_timeout_ms: int = Field(30_000, alias="SQL_WRITER_DB_STATEMENT_TIMEOUT_MS")
-    sql_writer_grammar_persist_timeout_sec: float = Field(30.0, alias="SQL_WRITER_GRAMMAR_PERSIST_TIMEOUT_SEC")
+    sql_writer_db_lock_timeout_ms: int = Field(10_000, alias="SQL_WRITER_DB_LOCK_TIMEOUT_MS")
+    sql_writer_grammar_persist_timeout_sec: float = Field(15.0, alias="SQL_WRITER_GRAMMAR_PERSIST_TIMEOUT_SEC")
+    sql_writer_grammar_workers: int = Field(1, alias="SQL_WRITER_GRAMMAR_WORKERS")
+    sql_writer_grammar_pool_size: int = Field(4, alias="SQL_WRITER_GRAMMAR_POOL_SIZE")
+    sql_writer_grammar_pool_max_overflow: int = Field(4, alias="SQL_WRITER_GRAMMAR_POOL_MAX_OVERFLOW")
+    sql_writer_grammar_statement_timeout_ms: int = Field(10_000, alias="SQL_WRITER_GRAMMAR_STATEMENT_TIMEOUT_MS")
+    sql_writer_grammar_lock_timeout_ms: int = Field(3_000, alias="SQL_WRITER_GRAMMAR_LOCK_TIMEOUT_MS")
+    grammar_events_retention_days: int = Field(30, alias="GRAMMAR_EVENTS_RETENTION_DAYS")
+    sql_writer_grammar_trace_batch_max: int = Field(64, alias="SQL_WRITER_GRAMMAR_TRACE_BATCH_MAX")
+    sql_writer_grammar_trace_batch_timeout_sec: float = Field(45.0, alias="SQL_WRITER_GRAMMAR_TRACE_BATCH_TIMEOUT_SEC")
 
     @property
     def route_map(self) -> dict[str, str]:
@@ -193,6 +210,8 @@ class Settings(BaseSettings):
         We keep env as source of truth and simply expose the configured list.
         """
         channels = list(self.sql_writer_subscribe_channels)
+        if not self.sql_writer_enable_grammar_channel:
+            channels = [c for c in channels if c != "orion:grammar:event"]
         if self.sql_writer_enable_spark_snapshot_channel and "orion:spark:state:snapshot" not in channels:
             channels.append("orion:spark:state:snapshot")
         return channels

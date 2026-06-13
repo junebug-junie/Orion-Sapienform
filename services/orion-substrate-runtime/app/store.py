@@ -93,6 +93,19 @@ def _build_receipt_insert_params(
     }
 
 
+def _trace_id_like_pattern(trace_prefix: str) -> str:
+    return f"{trace_prefix}%"
+
+
+def _cursor_lag_seconds(last_created_at: datetime | None) -> float:
+    if last_created_at is None:
+        return float("inf")
+    ts = last_created_at
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - ts).total_seconds())
+
+
 class BiometricsSubstrateStore:
     def __init__(self, postgres_uri: str) -> None:
         self._engine: Engine = create_engine(
@@ -102,8 +115,107 @@ class BiometricsSubstrateStore:
             json_deserializer=json.loads,
         )
 
-    def fetch_biometrics_grammar_events(self, *, limit: int = 50) -> list[GrammarEventV1]:
-        with self._engine.connect() as conn:
+    def _seed_grammar_cursor_at_tail(
+        self,
+        conn: Any,
+        *,
+        cursor_name: str,
+        source_service: str,
+        trace_prefix: str,
+    ) -> None:
+        trace_like = _trace_id_like_pattern(trace_prefix)
+        tail = conn.execute(
+            text(
+                """
+                SELECT created_at, event_id
+                FROM grammar_events
+                WHERE source_service = :source_service
+                  AND trace_id LIKE :trace_like
+                ORDER BY created_at DESC, event_id DESC
+                LIMIT 1
+                """
+            ),
+            {
+                "source_service": source_service,
+                "trace_like": trace_like,
+            },
+        ).mappings().first()
+
+        now = datetime.now(timezone.utc)
+        conn.execute(
+            text(
+                """
+                INSERT INTO substrate_reduction_cursor (
+                    cursor_name, last_event_created_at, last_event_id, updated_at
+                ) VALUES (
+                    :cursor_name, :created_at, :event_id, :updated_at
+                )
+                ON CONFLICT (cursor_name) DO UPDATE SET
+                    last_event_created_at = EXCLUDED.last_event_created_at,
+                    last_event_id = EXCLUDED.last_event_id,
+                    updated_at = EXCLUDED.updated_at
+                """
+            ),
+            {
+                "cursor_name": cursor_name,
+                "created_at": tail["created_at"] if tail else now,
+                "event_id": tail["event_id"] if tail else "",
+                "updated_at": now,
+            },
+        )
+
+    def _ensure_grammar_cursor_at_tail(
+        self,
+        conn: Any,
+        *,
+        cursor_name: str,
+        source_service: str,
+        trace_prefix: str,
+        max_lag_sec: float = 6 * 3600,
+    ) -> None:
+        row = conn.execute(
+            text(
+                """
+                SELECT last_event_created_at, last_event_id
+                FROM substrate_reduction_cursor
+                WHERE cursor_name = :cursor_name
+                """
+            ),
+            {"cursor_name": cursor_name},
+        ).mappings().first()
+        if not row or not row["last_event_created_at"]:
+            self._seed_grammar_cursor_at_tail(
+                conn,
+                cursor_name=cursor_name,
+                source_service=source_service,
+                trace_prefix=trace_prefix,
+            )
+            return
+
+        if _cursor_lag_seconds(row["last_event_created_at"]) > max_lag_sec:
+            self._seed_grammar_cursor_at_tail(
+                conn,
+                cursor_name=cursor_name,
+                source_service=source_service,
+                trace_prefix=trace_prefix,
+            )
+
+    def _fetch_grammar_events(
+        self,
+        *,
+        cursor_name: str,
+        source_service: str,
+        trace_prefix: str,
+        limit: int,
+    ) -> list[GrammarEventV1]:
+        trace_like = _trace_id_like_pattern(trace_prefix)
+        with self._engine.begin() as conn:
+            self._ensure_grammar_cursor_at_tail(
+                conn,
+                cursor_name=cursor_name,
+                source_service=source_service,
+                trace_prefix=trace_prefix,
+            )
             row = conn.execute(
                 text(
                     """
@@ -112,36 +224,34 @@ class BiometricsSubstrateStore:
                     WHERE cursor_name = :cursor_name
                     """
                 ),
-                {"cursor_name": GRAMMAR_CURSOR_NAME},
+                {"cursor_name": cursor_name},
             ).mappings().first()
+            if not row or not row["last_event_created_at"]:
+                return []
 
-            params: dict[str, Any] = {"limit": limit}
-            if row and row["last_event_created_at"]:
-                params["cursor_ts"] = row["last_event_created_at"]
-                params["cursor_id"] = row["last_event_id"] or ""
-                query = """
+            rows = conn.execute(
+                text(
+                    """
                     SELECT event_id, event_json, created_at
                     FROM grammar_events
-                    WHERE source_service = 'orion-biometrics'
-                      AND trace_id LIKE 'biometrics.node:%'
+                    WHERE source_service = :source_service
+                      AND trace_id LIKE :trace_like
                       AND (
                         created_at > :cursor_ts
                         OR (created_at = :cursor_ts AND event_id > :cursor_id)
                       )
                     ORDER BY created_at ASC, event_id ASC
                     LIMIT :limit
-                """
-            else:
-                query = """
-                    SELECT event_id, event_json, created_at
-                    FROM grammar_events
-                    WHERE source_service = 'orion-biometrics'
-                      AND trace_id LIKE 'biometrics.node:%'
-                    ORDER BY created_at ASC, event_id ASC
-                    LIMIT :limit
-                """
-
-            rows = conn.execute(text(query), params).mappings().all()
+                    """
+                ),
+                {
+                    "source_service": source_service,
+                    "trace_like": trace_like,
+                    "cursor_ts": row["last_event_created_at"],
+                    "cursor_id": row["last_event_id"] or "",
+                    "limit": limit,
+                },
+            ).mappings().all()
 
         events: list[GrammarEventV1] = []
         for r in rows:
@@ -150,104 +260,30 @@ class BiometricsSubstrateStore:
                 payload = json.loads(payload)
             events.append(GrammarEventV1.model_validate(payload))
         return events
+
+    def fetch_biometrics_grammar_events(self, *, limit: int = 50) -> list[GrammarEventV1]:
+        return self._fetch_grammar_events(
+            cursor_name=GRAMMAR_CURSOR_NAME,
+            source_service="orion-biometrics",
+            trace_prefix="biometrics.node:",
+            limit=limit,
+        )
 
     def fetch_execution_grammar_events(self, *, limit: int = 50) -> list[GrammarEventV1]:
-        with self._engine.connect() as conn:
-            row = conn.execute(
-                text(
-                    """
-                    SELECT last_event_created_at, last_event_id
-                    FROM substrate_reduction_cursor
-                    WHERE cursor_name = :cursor_name
-                    """
-                ),
-                {"cursor_name": EXECUTION_GRAMMAR_CURSOR_NAME},
-            ).mappings().first()
-
-            params: dict[str, Any] = {"limit": limit}
-            if row and row["last_event_created_at"]:
-                params["cursor_ts"] = row["last_event_created_at"]
-                params["cursor_id"] = row["last_event_id"] or ""
-                query = """
-                    SELECT event_id, event_json, created_at
-                    FROM grammar_events
-                    WHERE source_service = 'orion-cortex-exec'
-                      AND trace_id LIKE 'cortex.exec:%'
-                      AND (
-                        created_at > :cursor_ts
-                        OR (created_at = :cursor_ts AND event_id > :cursor_id)
-                      )
-                    ORDER BY created_at ASC, event_id ASC
-                    LIMIT :limit
-                """
-            else:
-                query = """
-                    SELECT event_id, event_json, created_at
-                    FROM grammar_events
-                    WHERE source_service = 'orion-cortex-exec'
-                      AND trace_id LIKE 'cortex.exec:%'
-                    ORDER BY created_at ASC, event_id ASC
-                    LIMIT :limit
-                """
-
-            rows = conn.execute(text(query), params).mappings().all()
-
-        events: list[GrammarEventV1] = []
-        for r in rows:
-            payload = r["event_json"]
-            if isinstance(payload, str):
-                payload = json.loads(payload)
-            events.append(GrammarEventV1.model_validate(payload))
-        return events
+        return self._fetch_grammar_events(
+            cursor_name=EXECUTION_GRAMMAR_CURSOR_NAME,
+            source_service="orion-cortex-exec",
+            trace_prefix="cortex.exec:",
+            limit=limit,
+        )
 
     def fetch_transport_grammar_events(self, *, limit: int = 50) -> list[GrammarEventV1]:
-        with self._engine.connect() as conn:
-            row = conn.execute(
-                text(
-                    """
-                    SELECT last_event_created_at, last_event_id
-                    FROM substrate_reduction_cursor
-                    WHERE cursor_name = :cursor_name
-                    """
-                ),
-                {"cursor_name": TRANSPORT_GRAMMAR_CURSOR_NAME},
-            ).mappings().first()
-
-            params: dict[str, Any] = {"limit": limit}
-            if row and row["last_event_created_at"]:
-                params["cursor_ts"] = row["last_event_created_at"]
-                params["cursor_id"] = row["last_event_id"] or ""
-                query = """
-                    SELECT event_id, event_json, created_at
-                    FROM grammar_events
-                    WHERE source_service = 'orion-bus'
-                      AND trace_id LIKE 'bus.transport:%'
-                      AND (
-                        created_at > :cursor_ts
-                        OR (created_at = :cursor_ts AND event_id > :cursor_id)
-                      )
-                    ORDER BY created_at ASC, event_id ASC
-                    LIMIT :limit
-                """
-            else:
-                query = """
-                    SELECT event_id, event_json, created_at
-                    FROM grammar_events
-                    WHERE source_service = 'orion-bus'
-                      AND trace_id LIKE 'bus.transport:%'
-                    ORDER BY created_at ASC, event_id ASC
-                    LIMIT :limit
-                """
-
-            rows = conn.execute(text(query), params).mappings().all()
-
-        events: list[GrammarEventV1] = []
-        for r in rows:
-            payload = r["event_json"]
-            if isinstance(payload, str):
-                payload = json.loads(payload)
-            events.append(GrammarEventV1.model_validate(payload))
-        return events
+        return self._fetch_grammar_events(
+            cursor_name=TRANSPORT_GRAMMAR_CURSOR_NAME,
+            source_service="orion-bus",
+            trace_prefix="bus.transport:",
+            limit=limit,
+        )
 
     def advance_cursor(self, *, event_id: str, created_at: datetime) -> None:
         now = datetime.now(timezone.utc)

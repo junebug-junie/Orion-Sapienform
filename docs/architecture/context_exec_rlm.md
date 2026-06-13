@@ -10,7 +10,7 @@ cortex-orch (DecisionRouter)
 cortex-exec (Supervisor)
   → ContextExecClient RPC
 orion-context-exec
-  → FakeRLMEngine (default) / future AlexZhangRLMEngine
+  → FakeRLMEngine (default) / AlexZhangRLMEngine (opt-in via CONTEXT_EXEC_RLM_ENGINE=alexzhang)
   → AgentChainResult-compatible payload
 ```
 

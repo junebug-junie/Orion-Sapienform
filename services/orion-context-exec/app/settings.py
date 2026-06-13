@@ -88,6 +88,7 @@ class ContextExecSettings(BaseSettings):
 
     orion_repo_root: str = Field("/app", alias="ORION_REPO_ROOT")
     rlm_engine: str = Field("fake", alias="CONTEXT_EXEC_RLM_ENGINE")
+    context_exec_rlm_fallback_enabled: bool = Field(True, alias="CONTEXT_EXEC_RLM_FALLBACK_ENABLED")
 
 
 settings = ContextExecSettings()

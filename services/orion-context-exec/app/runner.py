@@ -22,7 +22,12 @@ from .artifact_builder import (
 from .callable_namespace import ContextNamespace
 from .events import ContextExecEventEmitter
 from .organ_runtime import OrganRuntime
-from .rlm_engine import RLMEngine, build_engine
+from .rlm_engine import FakeRLMEngine, RLMEngine, build_engine
+from .alexzhang_rlm_engine import (
+    AlexZhangInitError,
+    AlexZhangRLMEngine,
+    UnsupportedModeError,
+)
 from .security import PolicyBlockedError, enforce_no_write_settings
 from .settings import settings
 
@@ -71,8 +76,126 @@ class ContextExecRunner:
         *,
         bus: OrionBusAsync | None = None,
     ) -> None:
+        self.engine_selected = (settings.rlm_engine or "fake").strip().lower()
         self.engine = engine or build_engine(settings.rlm_engine)
         self.bus = bus
+
+    def _engine_runtime_debug(
+        self,
+        *,
+        engine_used: str,
+        fallback_engine: str | None = None,
+        fallback_reason: str | None = None,
+        subcalls: int = 0,
+        schema_valid: bool = False,
+        mode: str,
+        extra_steps: list[str] | None = None,
+    ) -> dict[str, Any]:
+        debug: dict[str, Any] = {
+            "engine": engine_used,
+            "engine_selected": self.engine_selected,
+            "fallback_engine": fallback_engine,
+            "rlm_depth": settings.context_exec_max_depth,
+            "subcalls": subcalls,
+            "schema_valid": schema_valid,
+            "sandbox_mode": settings.context_exec_sandbox_mode,
+            "write_enabled": settings.context_exec_write_enabled,
+            "network_enabled": settings.context_exec_network_enabled,
+            "shell_enabled": False,
+            "mode": mode,
+            "fake_organs_enabled": settings.context_exec_fake_organs_enabled,
+            "real_trace_enabled": settings.context_exec_real_trace_enabled,
+            "real_recall_enabled": settings.context_exec_real_recall_enabled,
+            "real_repo_enabled": settings.context_exec_real_repo_enabled,
+        }
+        if fallback_reason:
+            debug["fallback_reason"] = fallback_reason
+        if extra_steps:
+            debug["rlm_steps"] = extra_steps
+        return debug
+
+    async def _execute_rlm(
+        self,
+        request: ContextExecRequestV1,
+        namespace: ContextNamespace,
+        organ_runtime: OrganRuntime,
+        *,
+        started: float,
+        events: ContextExecEventEmitter,
+        run_id: str,
+        verb_trace: list[ContextExecVerbStepV1],
+    ) -> tuple[Any, str, int, list[str], list[str]]:
+        """Run RLM engine with optional fallback to fake. Returns raw_final, engine_used, subcalls, steps, failure_modes."""
+        failure_modes: list[str] = []
+        engine_used = getattr(self.engine, "engine_name", "fake")
+        subcalls = 0
+        extra_steps: list[str] = []
+        raw_final: Any = None
+
+        async def _run_one(engine: RLMEngine) -> Any:
+            nonlocal subcalls, extra_steps
+            if isinstance(engine, AlexZhangRLMEngine) and not engine.is_ready:
+                raise AlexZhangInitError(engine.init_error or "alexzhang_init_failed")
+            result = await engine.run(request, namespace, organ_runtime=organ_runtime)
+            subcalls = getattr(engine, "subcall_count", 0)
+            extra_steps = getattr(engine, "debug_steps", [])
+            return result
+
+        try:
+            budget_sec = min(request.budget.max_seconds, settings.context_exec_max_seconds)
+            raw_final = await asyncio.wait_for(
+                _run_one(self.engine),
+                timeout=budget_sec,
+            )
+            engine_used = getattr(self.engine, "engine_name", engine_used)
+        except UnsupportedModeError as exc:
+            failure_modes.append(f"unsupported_mode:{exc.mode}")
+            return None, engine_used, subcalls, extra_steps, failure_modes
+        except PolicyBlockedError as exc:
+            failure_modes.append(str(exc))
+            return None, engine_used, subcalls, extra_steps, failure_modes + ["policy_blocked"]
+        except asyncio.TimeoutError:
+            failure_modes.append("timeout")
+            if (
+                self.engine_selected == "alexzhang"
+                and settings.context_exec_rlm_fallback_enabled
+                and not isinstance(self.engine, FakeRLMEngine)
+            ):
+                failure_modes.append("alexzhang_execution_failed")
+                fake = FakeRLMEngine()
+                raw_final = await fake.run(request, namespace, organ_runtime=organ_runtime)
+                return raw_final, "fake", 0, ["fallback"], failure_modes + ["fallback_engine:fake"]
+            return None, engine_used, subcalls, extra_steps, failure_modes
+        except (AlexZhangInitError, Exception) as exc:
+            failure_modes.append(str(exc))
+            if (
+                self.engine_selected == "alexzhang"
+                and settings.context_exec_rlm_fallback_enabled
+                and not isinstance(self.engine, FakeRLMEngine)
+            ):
+                reason = (
+                    "alexzhang_init_failed"
+                    if isinstance(exc, AlexZhangInitError)
+                    else "alexzhang_execution_failed"
+                )
+                logger.warning("alexzhang engine failed (%s); falling back to fake", reason)
+                fake = FakeRLMEngine()
+                raw_final = await fake.run(request, namespace, organ_runtime=organ_runtime)
+                return raw_final, "fake", 0, ["fallback"], failure_modes + [f"fallback_engine:fake:{reason}"]
+            logger.exception("context-exec rlm error run_id=%s", run_id)
+            return None, engine_used, subcalls, extra_steps, failure_modes
+
+        step = ContextExecVerbStepV1(
+            step_index=len(verb_trace),
+            verb="synthesize",
+            callable="rlm_engine.run",
+            status="ok",
+            duration_ms=int((time.perf_counter() - started) * 1000),
+            output_summary="rlm episode complete",
+        )
+        verb_trace.append(step)
+        await events.verb_step(run_id=run_id, mode=request.mode, step=step)
+        return raw_final, engine_used, subcalls, extra_steps, failure_modes
 
     def _build_events(
         self,
@@ -108,35 +231,36 @@ class ContextExecRunner:
         namespace = self._build_namespace(organ_runtime)
         await namespace._prefetch_organs()  # type: ignore[attr-defined]
 
-        try:
-            budget_sec = min(request.budget.max_seconds, settings.context_exec_max_seconds)
-            raw_final = await asyncio.wait_for(
-                self.engine.run(request, namespace, organ_runtime=organ_runtime),
-                timeout=budget_sec,
-            )
-            step = ContextExecVerbStepV1(
-                step_index=0,
-                verb="synthesize",
-                callable="rlm_engine.run",
-                status="ok",
-                duration_ms=int((time.perf_counter() - started) * 1000),
-                output_summary="rlm episode complete",
-            )
-            verb_trace.append(step)
-            await events.verb_step(run_id=run_id, mode=request.mode, step=step)
-        except asyncio.TimeoutError:
-            status = "timeout"
-            failure_modes.append("timeout")
-            raw_final = None
-        except PolicyBlockedError as exc:
+        raw_final, engine_used, subcalls, rlm_steps, rlm_failures = await self._execute_rlm(
+            request,
+            namespace,
+            organ_runtime,
+            started=started,
+            events=events,
+            run_id=run_id,
+            verb_trace=verb_trace,
+        )
+        failure_modes.extend(rlm_failures)
+        fallback_engine: str | None = None
+        fallback_reason: str | None = None
+        if engine_used == "fake" and self.engine_selected == "alexzhang":
+            fallback_engine = "fake"
+            for fm in failure_modes:
+                if fm.startswith("fallback_engine:fake:"):
+                    fallback_reason = fm.split(":", 2)[-1]
+                elif fm == "fallback_engine:fake":
+                    fallback_reason = "alexzhang_execution_failed"
+
+        if raw_final is None and "policy_blocked" in failure_modes:
             status = "policy_blocked"
-            failure_modes.append(str(exc))
-            raw_final = None
-        except Exception as exc:
+        elif raw_final is None and "unsupported_mode:" in " ".join(failure_modes):
             status = "error"
-            failure_modes.append(str(exc))
-            logger.exception("context-exec rlm error run_id=%s", run_id)
-            raw_final = None
+        elif raw_final is None and "timeout" in failure_modes:
+            status = "timeout"
+        elif raw_final is None and failure_modes:
+            status = "error"
+        elif raw_final is None:
+            status = "error"
 
         artifact: dict[str, Any] = {}
         artifact_type: str | None = request.expected_artifact_type or artifact_type_for_mode(request.mode)
@@ -144,9 +268,21 @@ class ContextExecRunner:
         if isinstance(raw_final, dict):
             artifact, artifact_type, schema_valid = validate_artifact(request.mode, raw_final)
             if not schema_valid:
-                status = "schema_invalid" if status == "ok" else status
-                failure_modes.append("schema_invalid")
-                await events.schema_invalid(run_id=run_id, mode=request.mode, artifact_type=artifact_type)
+                if (
+                    self.engine_selected == "alexzhang"
+                    and settings.context_exec_rlm_fallback_enabled
+                    and engine_used != "fake"
+                ):
+                    fake = FakeRLMEngine()
+                    raw_final = await fake.run(request, namespace, organ_runtime=organ_runtime)
+                    engine_used = "fake"
+                    fallback_engine = "fake"
+                    fallback_reason = "schema_invalid"
+                    artifact, artifact_type, schema_valid = validate_artifact(request.mode, raw_final)
+                if not schema_valid:
+                    status = "schema_invalid" if status == "ok" else status
+                    failure_modes.append("schema_invalid")
+                    await events.schema_invalid(run_id=run_id, mode=request.mode, artifact_type=artifact_type)
 
         fb = synthesize_findings_bundle(request, artifact, schema_valid=schema_valid)
         final_text = build_final_text(request.mode, artifact, status=status)
@@ -173,15 +309,15 @@ class ContextExecRunner:
             final_text=final_text,
             verb_trace=verb_trace,
             runtime_debug={
-                "engine": "context_exec",
-                "rlm_depth": settings.context_exec_max_depth,
-                "subcalls": 0,
-                "schema_valid": schema_valid,
-                "sandbox_mode": settings.context_exec_sandbox_mode,
-                "fake_organs_enabled": settings.context_exec_fake_organs_enabled,
-                "real_trace_enabled": settings.context_exec_real_trace_enabled,
-                "real_recall_enabled": settings.context_exec_real_recall_enabled,
-                "real_repo_enabled": settings.context_exec_real_repo_enabled,
+                **self._engine_runtime_debug(
+                    engine_used=engine_used,
+                    fallback_engine=fallback_engine,
+                    fallback_reason=fallback_reason,
+                    subcalls=subcalls,
+                    schema_valid=schema_valid,
+                    mode=request.mode,
+                    extra_steps=rlm_steps or None,
+                ),
                 "correlation_id": request.correlation_id,
             },
             failure_modes=failure_modes,

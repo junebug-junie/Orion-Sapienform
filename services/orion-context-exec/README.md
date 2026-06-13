@@ -16,7 +16,7 @@ Bounded depth-2 investigation organ replacing planner-react/agent-chain for grou
 
 ## Safety defaults
 
-Read-only; no network/shell/repo writes. RLM runs via `FakeRLMEngine` unless `CONTEXT_EXEC_RLM_ENGINE` is changed.
+Read-only; no network/shell/repo writes. RLM runs via `FakeRLMEngine` by default (`CONTEXT_EXEC_RLM_ENGINE=fake`). Opt in to `AlexZhangRLMEngine` with `CONTEXT_EXEC_RLM_ENGINE=alexzhang` (falls back to fake when `CONTEXT_EXEC_RLM_FALLBACK_ENABLED=true`).
 
 **Bus alias safety:** `CONTEXT_EXEC_COMPAT_AGENT_CHAIN_ENABLED` defaults to **false**. Keep it false while `orion-agent-chain` is running — use native `ContextExecService` intake only. HTTP `/agent/chain/run` remains for local harness tests.
 

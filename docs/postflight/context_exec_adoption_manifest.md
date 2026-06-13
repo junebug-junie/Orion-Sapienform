@@ -35,4 +35,4 @@ Verify in cortex-exec logs: `ContextExecService` RPC, not `AgentChainService`.
 
 - **#662** — read-only real organs (recall, traces, repo)
 - **#663** — golden-path evaluation vs agent-chain
-- **#664** — AlexZhangRLMEngine (not default)
+- **#667** — AlexZhangRLMEngine (opt-in, not default)

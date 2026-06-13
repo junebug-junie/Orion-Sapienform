@@ -15,6 +15,8 @@ logger = logging.getLogger("orion-context-exec.rlm_engine")
 
 
 class RLMEngine:
+    engine_name: str = "unknown"
+
     async def run(
         self,
         request: ContextExecRequestV1,
@@ -39,6 +41,8 @@ def _extract_corr_id(text: str) -> str | None:
 
 class FakeRLMEngine(RLMEngine):
     """Deterministic engine for tests — no model dependency."""
+
+    engine_name = "fake"
 
     async def run(
         self,
@@ -216,6 +220,8 @@ class FakeRLMEngine(RLMEngine):
 
 
 class TimeoutRLMEngine(RLMEngine):
+    engine_name = "timeout"
+
     async def run(
         self,
         request: ContextExecRequestV1,
@@ -228,6 +234,14 @@ class TimeoutRLMEngine(RLMEngine):
 
 
 def build_engine(name: str) -> RLMEngine:
-    if name == "timeout":
+    from .alexzhang_rlm_engine import AlexZhangRLMEngine
+
+    selected = (name or "fake").strip().lower()
+    if selected == "timeout":
         return TimeoutRLMEngine()
+    if selected == "alexzhang":
+        return AlexZhangRLMEngine()
+    if selected == "fake":
+        return FakeRLMEngine()
+    logger.warning("unknown CONTEXT_EXEC_RLM_ENGINE=%s; falling back to fake", name)
     return FakeRLMEngine()

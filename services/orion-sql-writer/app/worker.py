@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import os
 import uuid
+from collections import deque
 from copy import deepcopy
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Optional, Tuple, Type
@@ -143,10 +145,167 @@ except ImportError:
     normalize_spark_telemetry = None
 
 logger = logging.getLogger("sql-writer")
+GrammarWorkItem = tuple[BaseEnvelope, GrammarEventV1, dict[str, Any], str]
+_GRAMMAR_EXECUTORS: list[concurrent.futures.ThreadPoolExecutor] | None = None
+_GRAMMAR_QUEUES: list[asyncio.Queue[GrammarWorkItem]] | None = None
+_GRAMMAR_DEFERRED: list[deque[GrammarWorkItem]] | None = None
+_GRAMMAR_WORKER_TASKS: list[asyncio.Task] = []
+_GRAMMAR_BACKGROUND_TASKS: set[asyncio.Task] = set()
+_WRITE_SEMAPHORE: asyncio.Semaphore | None = None
 _SPARK_CONTRACT_METRICS = SparkContractMetrics()
 COLLAPSE_STORED_KIND = "collapse.mirror.stored.v1"
 SOCIAL_TURN_STORED_KIND = "social.turn.stored.v1"
 INSERT_ONLY_MODELS = {JournalEntrySQL, SocialRoomTurnSQL, ChatResponseFeedbackSQL, MindRunSQL}
+
+
+def _get_write_semaphore() -> asyncio.Semaphore:
+    global _WRITE_SEMAPHORE
+    if _WRITE_SEMAPHORE is None:
+        limit = max(1, int(settings.sql_writer_max_inflight))
+        _WRITE_SEMAPHORE = asyncio.Semaphore(limit)
+    return _WRITE_SEMAPHORE
+
+
+def _grammar_shard_count() -> int:
+    return max(1, int(settings.sql_writer_grammar_workers))
+
+
+def _grammar_shard_index(trace_id: str) -> int:
+    return hash(trace_id) % _grammar_shard_count()
+
+
+def _get_grammar_executors() -> list[concurrent.futures.ThreadPoolExecutor]:
+    global _GRAMMAR_EXECUTORS
+    if _GRAMMAR_EXECUTORS is None:
+        _GRAMMAR_EXECUTORS = [
+            concurrent.futures.ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix=f"sql-writer-grammar-{idx}",
+            )
+            for idx in range(_grammar_shard_count())
+        ]
+    return _GRAMMAR_EXECUTORS
+
+
+def _ensure_grammar_workers() -> None:
+    global _GRAMMAR_QUEUES, _GRAMMAR_WORKER_TASKS
+    shard_count = _grammar_shard_count()
+    _get_grammar_executors()
+    if _GRAMMAR_QUEUES is None:
+        _GRAMMAR_QUEUES = [asyncio.Queue(maxsize=512) for _ in range(shard_count)]
+    while len(_GRAMMAR_WORKER_TASKS) < shard_count:
+        shard = len(_GRAMMAR_WORKER_TASKS)
+        task = asyncio.create_task(_grammar_worker_loop(shard))
+        _GRAMMAR_WORKER_TASKS.append(task)
+        _GRAMMAR_BACKGROUND_TASKS.add(task)
+
+        def _done(done_task: asyncio.Task) -> None:
+            _GRAMMAR_BACKGROUND_TASKS.discard(done_task)
+            if done_task.cancelled():
+                return
+            exc = done_task.exception()
+            if exc is not None:
+                logger.error("grammar_worker_crashed error=%s", exc)
+
+        task.add_done_callback(_done)
+
+
+def _grammar_deferred(shard: int) -> deque[GrammarWorkItem]:
+    global _GRAMMAR_DEFERRED
+    if _GRAMMAR_DEFERRED is None:
+        _GRAMMAR_DEFERRED = [deque() for _ in range(_grammar_shard_count())]
+    return _GRAMMAR_DEFERRED[shard]
+
+
+async def _grammar_worker_loop(shard: int) -> None:
+    queues = _GRAMMAR_QUEUES
+    if queues is None:
+        return
+    queue = queues[shard]
+    deferred = _grammar_deferred(shard)
+    batch_max = max(1, int(settings.sql_writer_grammar_trace_batch_max))
+
+    while True:
+        tasks_from_queue = 0
+
+        if deferred:
+            seed = deferred.popleft()
+        else:
+            seed = await queue.get()
+            tasks_from_queue += 1
+
+        items: list[GrammarWorkItem] = [seed]
+        trace_id = seed[1].trace_id
+
+        while len(items) < batch_max and items[-1][1].event_kind != "trace_ended":
+            if deferred and deferred[0][1].trace_id == trace_id:
+                items.append(deferred.popleft())
+                continue
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=0.15)
+                tasks_from_queue += 1
+                if item[1].trace_id == trace_id:
+                    items.append(item)
+                else:
+                    deferred.append(item)
+            except asyncio.TimeoutError:
+                break
+
+        try:
+            if len(items) == 1:
+                env, event, payload, corr_id = items[0]
+                await _persist_grammar_event_envelope(
+                    env,
+                    event=event,
+                    payload=payload,
+                    corr_id=corr_id,
+                    shard=shard,
+                )
+            else:
+                await _persist_grammar_trace_batch_envelope(items, shard=shard)
+        except Exception:
+            logger.exception(
+                "grammar_worker_unhandled shard=%s trace_id=%s batch_size=%s",
+                shard,
+                trace_id,
+                len(items),
+            )
+        finally:
+            for _ in range(tasks_from_queue):
+                queue.task_done()
+
+
+def _spawn_grammar_persist(
+    env: BaseEnvelope,
+    *,
+    event: GrammarEventV1,
+    payload: dict[str, Any],
+    corr_id: str,
+) -> None:
+    _ensure_grammar_workers()
+    queues = _GRAMMAR_QUEUES
+    if queues is None:
+        return
+    shard = _grammar_shard_index(event.trace_id)
+    queue = queues[shard]
+    try:
+        queue.put_nowait((env, event, payload, corr_id))
+    except asyncio.QueueFull:
+        logger.warning(
+            "grammar_queue_full shard=%s event_id=%s trace_id=%s",
+            shard,
+            event.event_id,
+            event.trace_id,
+        )
+        asyncio.create_task(
+            asyncio.to_thread(
+                _write_fallback,
+                env.kind,
+                corr_id,
+                payload,
+                "grammar queue full",
+            )
+        )
 
 
 def _thought_debug_enabled() -> bool:
@@ -1236,26 +1395,94 @@ async def _write(
         raise
 
 
-async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
-    if env.kind == "grammar.event.v1":
-        from app.grammar_ledger_handler import persist_grammar_event
+async def _persist_grammar_trace_batch_envelope(
+    items: list[GrammarWorkItem],
+    *,
+    shard: int = 0,
+) -> None:
+    from app.grammar_ledger_handler import cancel_active_grammar_persist, persist_grammar_trace_batch
 
-        payload = env.payload if isinstance(env.payload, dict) else {}
-        event = GrammarEventV1.model_validate(payload)
-        corr_id = str(env.correlation_id or payload.get("correlation_id") or "")
-        timeout_sec = float(settings.sql_writer_grammar_persist_timeout_sec)
+    events = [item[1] for item in items]
+    trace_id = events[0].trace_id if events else "unknown"
+    timeout_sec = max(
+        float(settings.sql_writer_grammar_persist_timeout_sec),
+        float(settings.sql_writer_grammar_trace_batch_timeout_sec),
+    )
+    loop = asyncio.get_running_loop()
+    executor = _get_grammar_executors()[shard]
+    fut = loop.run_in_executor(executor, persist_grammar_trace_batch, events, shard)
+    try:
+        await asyncio.wait_for(fut, timeout=timeout_sec)
+    except asyncio.TimeoutError:
+        canceled = cancel_active_grammar_persist(shard)
+        logger.error(
+            "sql_writer_grammar_trace_batch_timeout shard=%s trace_id=%s events=%s timeout_sec=%s canceled=%s",
+            shard,
+            trace_id,
+            len(events),
+            timeout_sec,
+            canceled,
+        )
+        for env, _event, payload, corr_id in items:
+            try:
+                await asyncio.to_thread(
+                    _write_fallback,
+                    env.kind,
+                    corr_id,
+                    payload,
+                    f"grammar trace batch timeout after {timeout_sec}s",
+                )
+            except Exception as exc:
+                logger.error(
+                    "sql_writer_grammar_fallback_failed trace_id=%s error=%s",
+                    trace_id,
+                    exc,
+                )
+    except Exception as exc:
+        logger.exception(
+            "sql_writer_grammar_trace_batch_failed trace_id=%s events=%s error=%s",
+            trace_id,
+            len(events),
+            exc,
+        )
+        for env, _event, payload, corr_id in items:
+            try:
+                await asyncio.to_thread(_write_fallback, env.kind, corr_id, payload, str(exc))
+            except Exception as fallback_exc:
+                logger.error(
+                    "sql_writer_grammar_fallback_failed trace_id=%s error=%s",
+                    trace_id,
+                    fallback_exc,
+                )
+
+
+async def _persist_grammar_event_envelope(
+    env: BaseEnvelope,
+    *,
+    event: GrammarEventV1,
+    payload: dict[str, Any],
+    corr_id: str,
+    shard: int = 0,
+) -> None:
+    from app.grammar_ledger_handler import cancel_active_grammar_persist, persist_grammar_event
+
+    timeout_sec = float(settings.sql_writer_grammar_persist_timeout_sec)
+    loop = asyncio.get_running_loop()
+    executor = _get_grammar_executors()[shard]
+    fut = loop.run_in_executor(executor, persist_grammar_event, event, shard)
+    try:
+        await asyncio.wait_for(fut, timeout=timeout_sec)
+    except asyncio.TimeoutError:
+        canceled = cancel_active_grammar_persist(shard)
+        logger.error(
+            "sql_writer_grammar_persist_timeout shard=%s event_id=%s trace_id=%s timeout_sec=%s canceled=%s",
+            shard,
+            event.event_id,
+            event.trace_id,
+            timeout_sec,
+            canceled,
+        )
         try:
-            await asyncio.wait_for(
-                asyncio.to_thread(persist_grammar_event, event),
-                timeout=timeout_sec,
-            )
-        except asyncio.TimeoutError:
-            logger.error(
-                "sql_writer_grammar_persist_timeout event_id=%s trace_id=%s timeout_sec=%s",
-                event.event_id,
-                event.trace_id,
-                timeout_sec,
-            )
             await asyncio.to_thread(
                 _write_fallback,
                 env.kind,
@@ -1264,15 +1491,43 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
                 f"grammar persist timeout after {timeout_sec}s",
             )
         except Exception as exc:
-            logger.exception(
-                "sql_writer_grammar_persist_failed event_id=%s trace_id=%s error=%s",
+            logger.error(
+                "sql_writer_grammar_fallback_failed event_id=%s trace_id=%s error=%s",
                 event.event_id,
                 event.trace_id,
                 exc,
             )
+    except Exception as exc:
+        logger.exception(
+            "sql_writer_grammar_persist_failed event_id=%s trace_id=%s error=%s",
+            event.event_id,
+            event.trace_id,
+            exc,
+        )
+        try:
             await asyncio.to_thread(_write_fallback, env.kind, corr_id, payload, str(exc))
+        except Exception as fallback_exc:
+            logger.error(
+                "sql_writer_grammar_fallback_failed event_id=%s trace_id=%s error=%s",
+                event.event_id,
+                event.trace_id,
+                fallback_exc,
+            )
+
+
+async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
+    if env.kind == "grammar.event.v1":
+        payload = env.payload if isinstance(env.payload, dict) else {}
+        event = GrammarEventV1.model_validate(payload)
+        corr_id = str(env.correlation_id or payload.get("correlation_id") or "")
+        _spawn_grammar_persist(env, event=event, payload=payload, corr_id=corr_id)
         return
 
+    async with _get_write_semaphore():
+        await _handle_envelope_body(env, bus=bus)
+
+
+async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) -> None:
     route_key = settings.route_map.get(env.kind)
 
     async def _persist_evidence_units() -> bool:
@@ -1780,6 +2035,11 @@ def build_hunter() -> Hunter:
     async def _handler(env: BaseEnvelope) -> None:
         await handle_envelope(env, bus=holder.get("bus"))
 
-    hunter = Hunter(_cfg(), patterns=patterns, handler=_handler)
+    hunter = Hunter(
+        _cfg(),
+        patterns=patterns,
+        handler=_handler,
+        concurrent_handlers=settings.sql_writer_concurrent_handlers,
+    )
     holder["bus"] = hunter.bus
     return hunter

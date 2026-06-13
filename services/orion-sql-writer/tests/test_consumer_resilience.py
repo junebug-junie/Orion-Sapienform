@@ -59,15 +59,32 @@ def _metacog_payload() -> dict:
     }
 
 
+async def _drain_grammar_tasks() -> None:
+    queues = worker._GRAMMAR_QUEUES
+    if queues is not None:
+        for queue in queues:
+            await queue.join()
+
+
 @pytest.mark.asyncio
-async def test_grammar_persist_timeout_records_fallback_and_allows_next_envelope(monkeypatch) -> None:
-    def _slow_persist(_event) -> bool:
+async def test_grammar_persist_is_non_blocking_and_allows_next_envelope(monkeypatch) -> None:
+    cancel_calls: list[bool] = []
+
+    def _slow_persist(_event, _shard: int = 0) -> bool:
         time.sleep(2.0)
+        return True
+
+    def _fake_cancel(_shard: int = 0) -> bool:
+        cancel_calls.append(True)
         return True
 
     monkeypatch.setattr(
         "app.grammar_ledger_handler.persist_grammar_event",
         _slow_persist,
+    )
+    monkeypatch.setattr(
+        "app.grammar_ledger_handler.cancel_active_grammar_persist",
+        _fake_cancel,
     )
     monkeypatch.setattr(worker.settings, "sql_writer_grammar_persist_timeout_sec", 0.05)
 
@@ -93,12 +110,9 @@ async def test_grammar_persist_timeout_records_fallback_and_allows_next_envelope
         source=ServiceRef(name="test", version="0.0.1", node="local"),
         payload=_grammar_payload(),
     )
+    started = time.monotonic()
     await worker.handle_envelope(grammar_env, bus=None)
-
-    assert fallback_calls
-    assert fallback_calls[0][0] == "grammar.event.v1"
-    assert fallback_calls[0][1] is not None
-    assert "timeout" in fallback_calls[0][1].lower()
+    assert time.monotonic() - started < 0.5
 
     tick_env = BaseEnvelope(
         kind="metacognition.tick.v1",
@@ -107,15 +121,27 @@ async def test_grammar_persist_timeout_records_fallback_and_allows_next_envelope
         payload=_metacog_payload(),
     )
     await worker.handle_envelope(tick_env, bus=None)
-
     assert "metacognition.tick.v1" in write_calls
+
+    await _drain_grammar_tasks()
+    assert cancel_calls
+    assert fallback_calls
+    assert fallback_calls[0][0] == "grammar.event.v1"
+    assert "timeout" in (fallback_calls[0][1] or "").lower()
+
+
+def test_build_hunter_enables_concurrent_handlers() -> None:
+    assert worker.settings.sql_writer_concurrent_handlers is True
+    hunter = worker.build_hunter()
+    assert hunter.concurrent_handlers is True
 
 
 def test_db_connect_args_include_statement_timeout_when_configured() -> None:
-    args = db_module.build_engine_connect_args(30_000)
+    args = db_module.build_engine_connect_args(30_000, lock_timeout_ms=10_000)
     assert "options" in args
     assert "statement_timeout=30000" in args["options"]
+    assert "lock_timeout=10000" in args["options"]
 
 
 def test_db_connect_args_omit_statement_timeout_when_disabled() -> None:
-    assert db_module.build_engine_connect_args(0) == {}
+    assert db_module.build_engine_connect_args(0, lock_timeout_ms=0) == {}

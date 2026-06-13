@@ -36,7 +36,7 @@ class Settings(BaseSettings):
         "config/biometrics/node_catalog.yaml",
         alias="NODE_CATALOG_PATH",
     )
-    grammar_poll_interval_sec: float = Field(2.0, alias="GRAMMAR_POLL_INTERVAL_SEC")
+    grammar_poll_interval_sec: float = Field(5.0, alias="GRAMMAR_POLL_INTERVAL_SEC")
     grammar_event_channel: str = Field("orion:grammar:event", alias="GRAMMAR_EVENT_CHANNEL")
     publish_accepted_pressure_grammar: bool = Field(
         True,

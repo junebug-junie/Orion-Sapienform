@@ -626,6 +626,10 @@ async def lifespan(app: FastAPI):
                     (str(retention_days),),
                 )
             logger.info("🧹 Applied metacog trace retention window=%s days", retention_days)
+        logger.info(
+            "ℹ️ grammar index idx_grammar_events_source_created: apply via "
+            "services/orion-sql-db/manual_migration_grammar_atlas.sql (CONCURRENTLY if table is large)"
+        )
     except Exception as e:
         logger.warning("chat_message migration warning: %s", e)
 

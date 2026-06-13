@@ -44,6 +44,7 @@ class GrammarEventSQL(Base):
     __table_args__ = (
         Index("idx_grammar_events_trace_id", "trace_id"),
         Index("idx_grammar_events_session_turn", "session_id", "turn_id"),
+        Index("idx_grammar_events_source_created", "source_service", "created_at", "event_id"),
     )
 
 

@@ -30,14 +30,23 @@ for key, value in {
 def _reload_hub_modules(monkeypatch: pytest.MonkeyPatch, *, enabled: bool, api_url: str = "http://proposal-review.test") -> None:
     monkeypatch.setenv("HUB_PROPOSAL_REVIEW_ENABLED", "true" if enabled else "false")
     monkeypatch.setenv("HUB_PROPOSAL_REVIEW_API_URL", api_url)
+    for mod in list(sys.modules):
+        if mod == "app" or mod.startswith("app."):
+            sys.modules.pop(mod, None)
     for mod in (
-        "app.settings",
         "scripts.settings",
         "scripts.proposal_review_client",
         "scripts.proposal_review_routes",
         "scripts.main",
     ):
         sys.modules.pop(mod, None)
+    context_exec_dir = str(REPO_ROOT / "services" / "orion-context-exec")
+    while context_exec_dir in sys.path:
+        sys.path.remove(context_exec_dir)
+    hub_root = str(HUB_ROOT)
+    if hub_root in sys.path:
+        sys.path.remove(hub_root)
+    sys.path.insert(0, hub_root)
     app_settings = importlib.import_module("app.settings")
     app_settings.get_settings.cache_clear()
     importlib.import_module("scripts.settings")
@@ -192,3 +201,96 @@ def test_hub_proposal_review_does_not_call_post_review_or_triage(monkeypatch: py
     routes_source = (HUB_ROOT / "scripts" / "proposal_review_routes.py").read_text(encoding="utf-8")
     assert "@router.post" not in routes_source
     assert "POST" not in routes_source
+
+
+def test_hub_pending_decisions_shows_denver_memory_correction(monkeypatch: pytest.MonkeyPatch) -> None:
+    _reload_hub_modules(monkeypatch, enabled=True)
+    import scripts.proposal_review_routes as routes
+
+    denver_detail = {
+        "proposal_id": "prop_denver_vertical",
+        "status": "pending_review",
+        "attention_required": True,
+        "attention_reason": "memory correction involving identity",
+        "risk": "medium",
+        "envelope": {
+            "title": "Memory correction: Denver identity claim",
+            "proposal_type": "memory_correction_proposal",
+            "summary": "Mark Denver location belief uncertain",
+            "mutation_allowed": False,
+            "requires_human_approval": True,
+            "risk": "medium",
+        },
+        "inner_artifact_summary": {
+            "artifact_type": "MemoryCorrectionProposalV1",
+            "current_belief": "User is from Denver",
+            "correction_type": "mark_uncertain",
+            "rationale": "Unsupported Denver identity claim",
+            "confidence": 0.5,
+            "risk": "medium",
+            "supporting_evidence": ["user mentioned Colorado once"],
+            "contradicting_evidence": [],
+            "missing_evidence": ["verified Denver residency evidence"],
+            "mutation_allowed": False,
+            "requires_human_approval": True,
+        },
+        "execution_eligibility": {"eligible": False, "reason": "pending human review"},
+    }
+
+    async def fake_list(*, status: str | None = "pending_review") -> dict:
+        assert status == "pending_review"
+        return {
+            "proposals": [
+                {
+                    "proposal_id": "prop_denver_vertical",
+                    "proposal_type": "memory_correction_proposal",
+                    "title": "Memory correction: Denver identity claim",
+                    "risk": "medium",
+                    "status": "pending_review",
+                    "attention_required": True,
+                }
+            ],
+            "count": 1,
+        }
+
+    async def fake_get(proposal_id: str) -> dict:
+        assert proposal_id == "prop_denver_vertical"
+        return denver_detail
+
+    monkeypatch.setattr(routes.client, "list_proposals", fake_list)
+    monkeypatch.setattr(routes.client, "get_proposal", fake_get)
+    import scripts.main as hub_main
+
+    with TestClient(hub_main.app) as client:
+        pending = client.get("/api/proposal-review/pending")
+        detail = client.get("/api/proposal-review/proposals/prop_denver_vertical")
+
+    assert pending.status_code == 200
+    body = pending.json()
+    assert body["count"] == 1
+    row = body["proposals"][0]
+    assert row["proposal_type"] == "memory_correction_proposal"
+    assert row["status"] == "pending_review"
+    assert "Denver" in row["title"] or row["proposal_id"] == "prop_denver_vertical"
+
+    assert detail.status_code == 200
+    detail_body = detail.json()
+    assert detail_body["status"] == "pending_review"
+    assert "identity" in detail_body["attention_reason"].lower()
+    inner = detail_body["inner_artifact_summary"]
+    assert "denver" in inner["current_belief"].lower()
+    assert inner["correction_type"] == "mark_uncertain"
+    assert inner["mutation_allowed"] is False
+    assert inner["requires_human_approval"] is True
+
+    template = (HUB_ROOT / "templates" / "index.html").read_text(encoding="utf-8")
+    ui = (HUB_ROOT / "static" / "js" / "proposal-review-ui.js").read_text(encoding="utf-8")
+    assert "Pending Decisions" in template
+    assert 'id="proposalReviewPanel"' in template
+    for token in ("Current belief:", "Proposed correction:", "Rationale:", "mutation_allowed="):
+        assert token in ui
+    assert 'method="post"' not in ui.lower()
+    assert "/review" not in ui
+    assert "/triage" not in ui
+    routes_source = (HUB_ROOT / "scripts" / "proposal_review_routes.py").read_text(encoding="utf-8")
+    assert "@router.post" not in routes_source

@@ -108,6 +108,13 @@ def _inner_artifact_summary(envelope: ProposalEnvelopeV1) -> dict[str, Any]:
             "rationale": correction.rationale,
             "target_memory_domains": correction.target_memory_domains,
             "rollback_plan": correction.rollback_plan,
+            "confidence": correction.confidence,
+            "risk": correction.risk,
+            "supporting_evidence": correction.supporting_evidence,
+            "contradicting_evidence": correction.contradicting_evidence,
+            "missing_evidence": correction.missing_evidence,
+            "mutation_allowed": envelope.mutation_allowed,
+            "requires_human_approval": envelope.requires_human_approval,
         }
     return {
         "artifact_type": envelope.artifact_type,

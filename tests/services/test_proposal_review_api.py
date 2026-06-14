@@ -454,3 +454,41 @@ async def test_eligibility_endpoint(app_client, store_path: Path) -> None:
     payload = resp.json()
     assert payload["eligible"] is True
     assert payload["execution_requested"] is False
+
+
+
+@pytest.mark.asyncio
+async def test_proposal_review_api_lists_denver_pending_review(
+    app_client, store_path: Path
+) -> None:
+    from tests.fixtures.denver_vertical_slice import run_denver_vertical_slice_async
+
+    result = await run_denver_vertical_slice_async(store_path)
+    proposal_id = result["record"].proposal_id
+
+    transport = ASGITransport(app=app_client)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        listed = await client.get("/proposals")
+        filtered = await client.get("/proposals", params={"status": "pending_review"})
+        detail = await client.get(f"/proposals/{proposal_id}")
+        eligibility = await client.get(f"/proposals/{proposal_id}/eligibility")
+
+    assert listed.status_code == 200
+    assert filtered.status_code == 200
+    assert filtered.json()["count"] == 1
+    assert filtered.json()["proposals"][0]["proposal_id"] == proposal_id
+    assert any(row["proposal_id"] == proposal_id for row in listed.json()["proposals"])
+
+    assert detail.status_code == 200
+    detail_payload = detail.json()
+    assert detail_payload["proposal_id"] == proposal_id
+    assert detail_payload["status"] == "pending_review"
+    assert detail_payload["envelope"]["proposal_type"] == "memory_correction_proposal"
+    assert detail_payload["inner_artifact_summary"]["artifact_type"] == "MemoryCorrectionProposalV1"
+    assert "denver" in detail_payload["inner_artifact_summary"]["current_belief"].lower()
+    assert detail_payload["inner_artifact_summary"]["mutation_allowed"] is False
+    assert detail_payload["inner_artifact_summary"]["requires_human_approval"] is True
+
+    assert eligibility.status_code == 200
+    assert eligibility.json()["eligible"] is False
+    assert eligibility.json()["execution_requested"] is False

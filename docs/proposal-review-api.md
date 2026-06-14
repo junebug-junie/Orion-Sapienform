@@ -106,6 +106,17 @@ curl -s "http://127.0.0.1:8096/proposals/{id}/eligibility"
 
 ```bash
 bash scripts/proposal_review_api_smoke.sh
+ORION_PY=orion_dev/bin/python bash scripts/denver_memory_correction_vertical_smoke.sh
+```
+
+### Denver memory correction vertical slice
+
+Proves `memory_correction_proposal` → ledger intake → auto-triage `pending_review` → proposal review API → Hub Pending Decisions (read-only).
+
+This smoke does **not** approve, reject, execute, or mutate memory.
+
+```bash
+ORION_PY=orion_dev/bin/python bash scripts/denver_memory_correction_vertical_smoke.sh
 ```
 
 Or manually:

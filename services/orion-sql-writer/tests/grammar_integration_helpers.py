@@ -136,20 +136,36 @@ def load_apply_grammar_trace_batch():
     return apply_grammar_trace_batch
 
 
+def _clear_app_namespace() -> None:
+    """Drop cached app.* modules so a service-specific app package can load."""
+    for name in list(sys.modules):
+        if name == "app" or name.startswith("app."):
+            del sys.modules[name]
+
+
+def _register_service_app_package(service_root: Path) -> None:
+    import types
+
+    service_root_str = str(service_root)
+    if service_root_str not in sys.path:
+        sys.path.insert(0, service_root_str)
+    app_dir = service_root / "app"
+    app_pkg = types.ModuleType("app")
+    app_pkg.__path__ = [str(app_dir)]  # type: ignore[attr-defined]
+    app_pkg.__package__ = "app"
+    sys.modules["app"] = app_pkg
+
+
 def load_biometrics_substrate_store_class():
     """Import substrate store without colliding with sql-writer's app package."""
-    import importlib.util
-
     substrate_root = REPO_ROOT / "services/orion-substrate-runtime"
-    store_path = substrate_root / "app" / "store.py"
-    for path in (str(substrate_root), str(REPO_ROOT)):
-        if path not in sys.path:
-            sys.path.insert(0, path)
-    spec = importlib.util.spec_from_file_location("substrate_store_it", store_path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.BiometricsSubstrateStore
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    _clear_app_namespace()
+    _register_service_app_package(substrate_root)
+    from app.store import BiometricsSubstrateStore
+
+    return BiometricsSubstrateStore
 
 
 def assert_grammar_event_indexes_valid(engine: Engine) -> None:

@@ -36,6 +36,14 @@ Context-exec is in **beta** for three investigative modes. Full runbook: [docs/c
 
 **Operator CLI:** `scripts/orion_proposal_cli.py` is the first operator review surface. It lists/shows ledger records, applies triage/review via lifecycle validators, and prints execution eligibility. It does not execute proposals or mutate memory/repo/runtime state. Use an explicit `--store /path/to/proposals.json` path (never repo files). Only `pending_review` records require active human attention by default; stored/blocked/discarded/expired/superseded proposals stay out of the default review queue.
 
+**Proposal ledger intake (opt-in):** Context-exec can persist `ProposalEnvelopeV1` outputs as `ProposalLedgerRecordV1` when explicitly enabled. Disabled by default (`CONTEXT_EXEC_PROPOSAL_LEDGER_ENABLED=false`). When enabled, `CONTEXT_EXEC_PROPOSAL_LEDGER_STORE_PATH` must be set to an explicit JSON path (e.g. `/tmp/orion-proposals.json`) — no repo-local defaults. Ledger persistence is not execution. Context-exec still cannot approve or execute. Optional `CONTEXT_EXEC_PROPOSAL_LEDGER_AUTO_TRIAGE` applies conservative deterministic triage (no LLM). Runtime debug includes `proposal_id` and `ledger_status` when persisted.
+
+```bash
+export CONTEXT_EXEC_PROPOSAL_LEDGER_ENABLED=true
+export CONTEXT_EXEC_PROPOSAL_LEDGER_STORE_PATH=/tmp/orion-proposals.json
+PYTHONPATH=. orion_dev/bin/python scripts/orion_proposal_cli.py list --status stored --store /tmp/orion-proposals.json
+```
+
 **Engine selection:** `fake` (default) | `alexzhang` (opt-in). Fallback must be explicit (`CONTEXT_EXEC_RLM_FALLBACK_ENABLED=true`) and visible in `runtime_debug`.
 
 **Safety defaults:** read-only, `CONTEXT_EXEC_MAX_DEPTH=1`, write/network off, compat AgentChain bus alias off.

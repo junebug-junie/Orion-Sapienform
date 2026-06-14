@@ -90,6 +90,19 @@ class ContextExecSettings(BaseSettings):
     rlm_engine: str = Field("fake", alias="CONTEXT_EXEC_RLM_ENGINE")
     context_exec_rlm_fallback_enabled: bool = Field(True, alias="CONTEXT_EXEC_RLM_FALLBACK_ENABLED")
 
+    context_exec_proposal_ledger_enabled: bool = Field(
+        False,
+        alias="CONTEXT_EXEC_PROPOSAL_LEDGER_ENABLED",
+    )
+    context_exec_proposal_ledger_store_path: str = Field(
+        "",
+        alias="CONTEXT_EXEC_PROPOSAL_LEDGER_STORE_PATH",
+    )
+    context_exec_proposal_ledger_auto_triage: bool = Field(
+        False,
+        alias="CONTEXT_EXEC_PROPOSAL_LEDGER_AUTO_TRIAGE",
+    )
+
 
 settings = ContextExecSettings()
 logger.info(

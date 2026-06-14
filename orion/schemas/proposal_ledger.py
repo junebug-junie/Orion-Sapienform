@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -195,18 +196,37 @@ class InMemoryProposalLedgerRepository:
         return list(self._records.values())
 
 
+class ProposalLedgerStoreError(Exception):
+    """Raised when the JSON proposal ledger store cannot be read or written safely."""
+
+
 class JsonFileProposalLedgerRepository:
     """JSON file-backed ledger for operator CLI and local testing."""
 
-    def __init__(self, path: Path) -> None:
-        self._path = path
+    def __init__(self, path: str | Path) -> None:
+        if isinstance(path, Path) and not path.parts:
+            raise ProposalLedgerStoreError("proposal ledger store path is required")
+        path_str = str(path).strip()
+        if not path_str or path_str == ".":
+            raise ProposalLedgerStoreError("proposal ledger store path is required")
+        self._path = Path(path_str)
         self._inner = InMemoryProposalLedgerRepository()
         self._review_decisions: dict[str, list[ProposalReviewDecisionV1]] = {}
         if path.exists():
             self._load()
 
     def _load(self) -> None:
-        raw = json.loads(self._path.read_text(encoding="utf-8"))
+        try:
+            raw_text = self._path.read_text(encoding="utf-8")
+            raw = json.loads(raw_text)
+        except json.JSONDecodeError as exc:
+            raise ProposalLedgerStoreError(
+                f"invalid or malformed JSON in proposal ledger store: {self._path}"
+            ) from exc
+        if not isinstance(raw, dict):
+            raise ProposalLedgerStoreError(
+                f"invalid or malformed JSON in proposal ledger store: {self._path}"
+            )
         for record_data in raw.get("records", []):
             record = ProposalLedgerRecordV1.model_validate(record_data)
             self._inner.store(record)
@@ -216,7 +236,6 @@ class JsonFileProposalLedgerRepository:
             ]
 
     def save(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "records": [
                 record.model_dump(mode="json") for record in self._inner.list_all()
@@ -226,7 +245,14 @@ class JsonFileProposalLedgerRepository:
                 for proposal_id, decisions in self._review_decisions.items()
             },
         }
-        self._path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        data = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self._path.with_suffix(self._path.suffix + ".tmp")
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp_path.replace(self._path)
 
     def store(self, record: ProposalLedgerRecordV1) -> ProposalLedgerRecordV1:
         stored = self._inner.store(record)

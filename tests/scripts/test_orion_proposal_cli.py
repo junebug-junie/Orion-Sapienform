@@ -283,3 +283,64 @@ def test_proposal_cli_rejects_context_exec_as_reviewer_for_approval(store_path: 
     )
     assert result.returncode != 0
     assert "context-exec" in (result.stderr + result.stdout).lower()
+
+
+def test_proposal_cli_requires_explicit_store_path() -> None:
+    result = subprocess.run(
+        [
+            str(PYTHON if PYTHON.exists() else sys.executable),
+            str(CLI),
+            "list",
+        ],
+        cwd=ROOT,
+        env={"PYTHONPATH": str(ROOT)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "--store" in (result.stderr + result.stdout).lower()
+
+
+def test_proposal_cli_show_missing_id_fails_cleanly(store_path: Path) -> None:
+    result = _run_cli("show", "prop_does_not_exist", store=store_path)
+    assert result.returncode != 0
+    assert "proposal not found" in (result.stderr + result.stdout).lower()
+
+
+def test_proposal_cli_review_missing_id_fails_cleanly(store_path: Path) -> None:
+    result = _run_cli(
+        "review",
+        "prop_does_not_exist",
+        "--decision",
+        "approve",
+        "--reason",
+        "missing",
+        store=store_path,
+    )
+    assert result.returncode != 0
+    assert "proposal not found" in (result.stderr + result.stdout).lower()
+
+
+def test_json_ledger_malformed_store_fails_cleanly_without_overwrite(tmp_path: Path) -> None:
+    store = tmp_path / "proposals.json"
+    corrupt = '{"records": ['
+    store.write_text(corrupt, encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            str(PYTHON if PYTHON.exists() else sys.executable),
+            str(CLI),
+            "list",
+            "--store",
+            str(store),
+        ],
+        cwd=ROOT,
+        env={"PYTHONPATH": str(ROOT)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "malformed json" in (result.stderr + result.stdout).lower()
+    assert store.read_text(encoding="utf-8") == corrupt

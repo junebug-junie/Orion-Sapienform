@@ -11,6 +11,7 @@ from orion.schemas.context_exec import (
     ContextExecRequestV1,
     ContextExecRunV1,
     ContextExecVerbStepV1,
+    ProposalEnvelopeV1,
 )
 
 from .artifact_builder import (
@@ -27,6 +28,11 @@ from .alexzhang_rlm_engine import (
     AlexZhangInitError,
     AlexZhangRLMEngine,
     UnsupportedModeError,
+)
+from .proposal_ledger_intake import (
+    intake_final_text_line,
+    intake_runtime_debug,
+    maybe_persist_proposal_envelope,
 )
 from .security import PolicyBlockedError, enforce_no_write_settings
 from .settings import settings
@@ -303,6 +309,22 @@ class ContextExecRunner:
             runtime_debug["proposal_type"] = artifact.get("proposal_type")
             runtime_debug["requires_human_approval"] = artifact.get("requires_human_approval", True)
             runtime_debug["mutation_allowed"] = artifact.get("mutation_allowed", False)
+
+            envelope = ProposalEnvelopeV1.model_validate(artifact)
+            intake_result = maybe_persist_proposal_envelope(
+                envelope,
+                settings,
+                source_run_id=run_id,
+            )
+            runtime_debug.update(
+                intake_runtime_debug(
+                    intake_result,
+                    enabled=settings.context_exec_proposal_ledger_enabled,
+                )
+            )
+            ledger_line = intake_final_text_line(intake_result)
+            if ledger_line:
+                final_text = f"{final_text} {ledger_line}"
 
         await events.finished(
             run_id=run_id,

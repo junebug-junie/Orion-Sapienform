@@ -222,3 +222,52 @@ def test_in_memory_repository_triage_and_review() -> None:
 
     listed = repo.list_by_status("approved")
     assert len(listed) == 1
+
+
+def test_eligibility_does_not_create_execution_receipt() -> None:
+    record = _stored_record()
+    promote = ProposalTriageDecisionV1(
+        proposal_id=record.proposal_id,
+        action="promote_to_review",
+        rationale="review needed",
+    )
+    pending = apply_triage_decision(record, promote)
+    review = ProposalReviewDecisionV1(
+        decision_id="dec_elig",
+        proposal_id=pending.proposal_id,
+        decision="approve",
+        reviewer_type="human",
+        reviewer_id="operator",
+        rationale="bounded and reversible",
+    )
+    approved = apply_review_decision(pending, review)
+    eligibility = derive_execution_eligibility(approved, review)
+
+    assert eligibility.eligible is True
+    assert eligibility.execution_requested is False
+    assert approved.status == "approved"
+    assert approved.status not in {"executed", "execution_requested"}
+
+
+def test_review_reject_does_not_execute() -> None:
+    record = _stored_record()
+    promote = ProposalTriageDecisionV1(
+        proposal_id=record.proposal_id,
+        action="promote_to_review",
+        rationale="review needed",
+    )
+    pending = apply_triage_decision(record, promote)
+    review = ProposalReviewDecisionV1(
+        decision_id="dec_reject",
+        proposal_id=pending.proposal_id,
+        decision="reject",
+        reviewer_type="human",
+        reviewer_id="operator",
+        rationale="unsupported evidence",
+    )
+    rejected = apply_review_decision(pending, review)
+    eligibility = derive_execution_eligibility(rejected, review)
+
+    assert rejected.status == "rejected"
+    assert eligibility.eligible is False
+    assert eligibility.execution_requested is False

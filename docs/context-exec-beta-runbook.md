@@ -373,6 +373,27 @@ Triage actions:
 - A separate executor performs the action.
 - Result is traced.
 
+### Operator proposal review CLI
+
+The proposal ledger is the system of record. Hub is an attention router. The operator CLI is the first inspectable review surface for proposal ledger records.
+
+Not every proposal becomes a human chore. Only `pending_review` records require active attention. Stored, blocked, discarded, expired, or superseded proposals are hidden by default when filtering for operator review queues.
+
+The CLI can list, show, triage, and review proposals. It cannot execute proposals, write memory, mutate repo files, or call Hub/Cortex/context-exec to generate new proposals (except `seed-demo`, which writes fixture records only to an explicit `--store` path).
+
+Approval creates future execution eligibility only; it does not execute anything.
+
+Example commands:
+
+```bash
+PYTHONPATH=. orion_dev/bin/python scripts/orion_proposal_cli.py seed-demo --store /tmp/orion-proposals.json
+PYTHONPATH=. orion_dev/bin/python scripts/orion_proposal_cli.py list --status pending_review --store /tmp/orion-proposals.json
+PYTHONPATH=. orion_dev/bin/python scripts/orion_proposal_cli.py show <proposal_id> --store /tmp/orion-proposals.json
+PYTHONPATH=. orion_dev/bin/python scripts/orion_proposal_cli.py triage <proposal_id> --action promote_to_review --reason "identity memory correction" --store /tmp/orion-proposals.json
+PYTHONPATH=. orion_dev/bin/python scripts/orion_proposal_cli.py review <proposal_id> --decision reject --reason "unsupported evidence" --reviewer human:june --store /tmp/orion-proposals.json
+PYTHONPATH=. orion_dev/bin/python scripts/orion_proposal_cli.py eligibility <proposal_id> --store /tmp/orion-proposals.json
+```
+
 ## 14. Deprecation path for legacy planner / AgentChain
 
 ### AgentChain retirement milestones

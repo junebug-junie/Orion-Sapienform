@@ -91,7 +91,24 @@ async def test_fake_engine_memory_correction_proposal_returns_safe_envelope() ->
     _assert_memory_correction_envelope_contract(envelope)
     inner = MemoryCorrectionProposalV1.model_validate(envelope.artifact)
     assert inner.correction_type == "mark_uncertain"
-    assert inner.risk == "unknown"
+    assert "denver" in inner.current_belief.lower()
+    assert inner.confidence >= 0.25
+    assert inner.supporting_evidence
+    assert inner.risk == "medium"
+
+
+@pytest.mark.asyncio
+async def test_fake_engine_memory_correction_non_denver_stays_ungrounded() -> None:
+    engine = FakeRLMEngine()
+    ns = ContextNamespace(permissions=ContextExecPermissionV1())
+    req = ContextExecRequestV1(
+        text="Propose a memory correction for the claim that I prefer tea.",
+        mode="memory_correction_proposal",
+    )
+    raw = await engine.run(req, ns)
+    artifact, artifact_type, valid = validate_artifact("memory_correction_proposal", raw)
+    assert valid is True
+    inner = MemoryCorrectionProposalV1.model_validate(artifact["artifact"])
     assert inner.confidence == 0.0
     assert "fake engine has no grounded memory evidence" in inner.missing_evidence
 

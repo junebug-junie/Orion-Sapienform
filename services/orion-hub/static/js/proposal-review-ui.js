@@ -60,24 +60,45 @@
     return row;
   }
 
+  function evidenceSummary(inner, envelope, detail) {
+    const supporting = (inner && inner.supporting_evidence) || [];
+    const contradicting = (inner && inner.contradicting_evidence) || [];
+    const missing = (inner && inner.missing_evidence) || [];
+    const parts = [];
+    if (supporting.length) parts.push(`supporting (${supporting.length}): ${supporting.slice(0, 3).join("; ")}`);
+    if (contradicting.length) parts.push(`contradicting (${contradicting.length}): ${contradicting.slice(0, 3).join("; ")}`);
+    if (missing.length) parts.push(`missing (${missing.length}): ${missing.slice(0, 3).join("; ")}`);
+    if (!parts.length) {
+      const ev = (detail && detail.evidence) || (envelope && envelope.evidence) || [];
+      if (ev.length) return `${ev.length} envelope evidence item(s)`;
+      return "—";
+    }
+    return parts.join(" · ");
+  }
+
   function renderDetail(detail, eligibility) {
     const envelope = (detail && detail.envelope) || {};
     const inner = (detail && detail.inner_artifact_summary) || {};
     const execElig = eligibility || (detail && detail.execution_eligibility) || {};
     const reviewHistory = (detail && detail.review_history) || [];
     const latestReview = reviewHistory.length ? reviewHistory[reviewHistory.length - 1] : null;
+    const confidence = inner.confidence ?? envelope.confidence;
+    const risk = detail.risk || inner.risk || envelope.risk || "—";
+    const mutationAllowed = inner.mutation_allowed ?? envelope.mutation_allowed;
+    const requiresHuman = inner.requires_human_approval ?? envelope.requires_human_approval;
 
     return `<div class="space-y-2">
       <div class="text-sm font-semibold text-white">${escapeHtml(envelope.title || detail.proposal_id || "")}</div>
       <div class="text-[10px] text-gray-500">${escapeHtml(detail.proposal_id || "")} · ${escapeHtml(envelope.proposal_type || "")}</div>
-      <div><span class="text-gray-500">Summary:</span> ${escapeHtml(envelope.summary || "—")}</div>
-      <div><span class="text-gray-500">Risk:</span> ${escapeHtml(detail.risk || envelope.risk || "—")}</div>
+      <div><span class="text-gray-500">Current belief:</span> ${escapeHtml(inner.current_belief || "—")}</div>
+      <div><span class="text-gray-500">Proposed correction:</span> ${escapeHtml(inner.correction_type || inner.proposed_belief || "—")}</div>
+      <div><span class="text-gray-500">Rationale:</span> ${escapeHtml(inner.rationale || envelope.summary || "—")}</div>
+      <div><span class="text-gray-500">Evidence:</span> ${escapeHtml(evidenceSummary(inner, envelope, detail))}</div>
+      <div><span class="text-gray-500">Risk:</span> ${escapeHtml(risk)} · <span class="text-gray-500">Confidence:</span> ${escapeHtml(confidence ?? "—")}</div>
       <div><span class="text-gray-500">Attention:</span> ${escapeHtml(detail.attention_reason || "—")}</div>
       <div><span class="text-gray-500">Review status:</span> ${escapeHtml(detail.status || "—")}${latestReview ? ` (${escapeHtml(latestReview.decision || "")})` : ""}</div>
       <div><span class="text-gray-500">Execution eligibility:</span> ${escapeHtml(execElig.eligible === true ? "eligible" : execElig.eligible === false ? "not eligible" : "—")}${execElig.reason ? ` — ${escapeHtml(execElig.reason)}` : ""}</div>
-      <div><span class="text-gray-500">Inner artifact:</span> ${escapeHtml(inner.artifact_type || envelope.artifact_type || "—")}</div>
-      <div class="whitespace-pre-wrap"><span class="text-gray-500">Evidence:</span> ${escapeHtml(JSON.stringify(detail.evidence || envelope.evidence || [], null, 0))}</div>
-      <div><span class="text-gray-500">Safety notes:</span> ${escapeHtml((envelope.safety_notes || []).join("; ") || "—")}</div>
+      <div><span class="text-gray-500">Safety:</span> mutation_allowed=${escapeHtml(String(mutationAllowed))}, requires_human_approval=${escapeHtml(String(requiresHuman))}</div>
       <div><span class="text-gray-500">Open questions:</span> ${escapeHtml((envelope.open_questions || []).join("; ") || "—")}</div>
     </div>`;
   }

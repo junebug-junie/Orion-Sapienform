@@ -69,23 +69,48 @@ class FakeRLMEngine(RLMEngine):
 
         if mode == "memory_correction_proposal":
             current_belief = _extract_memory_correction_belief(request.text)
-            report = {
-                "current_belief": current_belief,
-                "proposed_belief": None,
-                "correction_type": "mark_uncertain",
-                "rationale": "Fake engine does not inspect memory evidence.",
-                "supporting_evidence": [],
-                "contradicting_evidence": [],
-                "missing_evidence": ["fake engine has no grounded memory evidence"],
-                "target_memory_domains": ["unknown"],
-                "affected_ids": [],
-                "confidence": 0.0,
-                "risk": "unknown",
-                "tests_to_run": [],
-                "rollback_plan": "No mutation proposed; no rollback required.",
-                "open_questions": [],
-                "mutation_allowed": False,
-            }
+            belief_lower = current_belief.lower()
+            text_lower = request.text.lower()
+            if "denver" in text_lower or "denver" in belief_lower:
+                # Deterministic Denver vertical-slice fixture — grounded enough for auto-triage pending_review.
+                report = {
+                    "current_belief": current_belief if "denver" in belief_lower else "User is from Denver",
+                    "proposed_belief": None,
+                    "correction_type": "mark_uncertain",
+                    "rationale": (
+                        "Unsupported Denver identity claim; weak Colorado mention "
+                        "requires human review before any core belief change."
+                    ),
+                    "supporting_evidence": ["user mentioned Colorado once"],
+                    "contradicting_evidence": [],
+                    "missing_evidence": ["verified Denver residency evidence"],
+                    "target_memory_domains": ["unknown"],
+                    "affected_ids": [],
+                    "confidence": 0.5,
+                    "risk": "medium",
+                    "tests_to_run": [],
+                    "rollback_plan": "No mutation proposed; no rollback required.",
+                    "open_questions": ["Should Denver remain uncertain until stronger recall?"],
+                    "mutation_allowed": False,
+                }
+            else:
+                report = {
+                    "current_belief": current_belief,
+                    "proposed_belief": None,
+                    "correction_type": "mark_uncertain",
+                    "rationale": "Fake engine does not inspect memory evidence.",
+                    "supporting_evidence": [],
+                    "contradicting_evidence": [],
+                    "missing_evidence": ["fake engine has no grounded memory evidence"],
+                    "target_memory_domains": ["unknown"],
+                    "affected_ids": [],
+                    "confidence": 0.0,
+                    "risk": "unknown",
+                    "tests_to_run": [],
+                    "rollback_plan": "No mutation proposed; no rollback required.",
+                    "open_questions": [],
+                    "mutation_allowed": False,
+                }
             namespace.set_local("report", report)
             namespace.FINAL_VAR("report")
             return namespace.get_final()

@@ -647,3 +647,30 @@ def test_cli_can_list_auto_triaged_context_exec_proposal(tmp_path: Path) -> None
     assert payload["review_status"] in {"draft", "pending_review"}
     assert payload["execution_eligibility"]["execution_requested"] is False
 
+
+@pytest.mark.asyncio
+async def test_denver_memory_correction_vertical_slice_persists_pending_review(
+    tmp_path: Path,
+) -> None:
+    store = tmp_path / "denver-proposals.json"
+    from tests.fixtures.denver_vertical_slice import (  # noqa: WPS433
+        assert_denver_vertical_slice_safety,
+        run_denver_vertical_slice_async,
+    )
+
+    result = await run_denver_vertical_slice_async(store)
+    run = result["run"]
+    record = result["record"]
+    envelope = ProposalEnvelopeV1.model_validate(run.artifact)
+    inner = MemoryCorrectionProposalV1.model_validate(envelope.artifact)
+
+    assert run.status == "ok"
+    assert envelope.proposal_type == "memory_correction_proposal"
+    assert envelope.artifact_type == "MemoryCorrectionProposalV1"
+    assert run.runtime_debug.get("ledger_status") == "pending_review"
+    assert run.runtime_debug.get("proposal_id") == envelope.proposal_id
+    assert_denver_vertical_slice_safety(run, record, envelope)
+    assert "denver" in inner.current_belief.lower()
+    assert inner.correction_type in {"mark_uncertain", "mark_contradicted", "replace_belief"}
+    assert len(result["repo"].list_by_status("pending_review")) == 1
+

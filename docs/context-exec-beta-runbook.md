@@ -426,7 +426,51 @@ Default filter is `pending_review` only. Optional secondary filters (blocked, st
 
 When disabled or upstream unavailable, Hub shows a quiet empty/unavailable state — no error spam. Hub does not POST triage/review and does not execute proposals.
 
-Manual smoke with Hub:
+### Denver memory correction vertical slice
+
+End-to-end usefulness smoke for the proposal control plane (read-only in Hub; no approval or execution):
+
+```text
+memory_correction_proposal
+  → proposal ledger intake
+  → auto-triage pending_review
+  → proposal review API
+  → Hub Pending Decisions
+```
+
+This smoke does **not** approve, reject, execute, or mutate memory. It only proves a decision-worthy proposal can surface read-only in Hub.
+
+```bash
+ORION_PY=orion_dev/bin/python bash scripts/denver_memory_correction_vertical_smoke.sh
+```
+
+Optional env:
+
+```bash
+PROPOSAL_STORE=/tmp/orion-denver-proposals.json
+PROPOSAL_REVIEW_API_ENABLED=true
+PROPOSAL_LEDGER_STORE_PATH=/tmp/orion-denver-proposals.json
+HUB_SMOKE=true HUB_BASE_URL=http://127.0.0.1:8080  # optional live Hub GET
+```
+
+Manual smoke with running services:
+
+```bash
+rm -f /tmp/orion-denver-proposals.json
+
+export CONTEXT_EXEC_PROPOSAL_LEDGER_ENABLED=true
+export CONTEXT_EXEC_PROPOSAL_LEDGER_STORE_PATH=/tmp/orion-denver-proposals.json
+export CONTEXT_EXEC_PROPOSAL_LEDGER_AUTO_TRIAGE=true
+export PROPOSAL_REVIEW_API_ENABLED=true
+export PROPOSAL_LEDGER_STORE_PATH=/tmp/orion-denver-proposals.json
+export HUB_PROPOSAL_REVIEW_ENABLED=true
+export HUB_PROPOSAL_REVIEW_API_URL=http://127.0.0.1:8096
+
+# Run Denver memory correction proposal via context-exec; open Hub Pending Decisions.
+ORION_PY=orion_dev/bin/python bash scripts/denver_memory_correction_vertical_smoke.sh
+```
+
+Manual smoke with Hub seed-demo (legacy):
 
 ```bash
 rm -f /tmp/orion-proposals.json

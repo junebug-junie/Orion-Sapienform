@@ -16,4 +16,8 @@ def test_proposal_review_ui_wired() -> None:
     assert "/api/proposal-review/proposals/" in ui
     assert "No pending decisions." in ui
     assert "Proposal review API unavailable." in ui
+    assert "Current belief:" in ui
+    assert "Proposed correction:" in ui
+    assert "mutation_allowed=" in ui
+    assert "requires_human_approval=" in ui
     assert "approve" not in ui.lower() or "approval inbox" not in ui.lower()

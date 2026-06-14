@@ -14,10 +14,15 @@ def test_proposal_review_ui_wired() -> None:
     assert "Pending Decisions" in template
     assert "/api/proposal-review/pending" in ui
     assert "/api/proposal-review/proposals/" in ui
+    assert "/api/proposal-review/proposals/" in ui and "/review" in ui
     assert "No pending decisions." in ui
     assert "Proposal review API unavailable." in ui
     assert "Current belief:" in ui
     assert "Proposed correction:" in ui
     assert "mutation_allowed=" in ui
     assert "requires_human_approval=" in ui
-    assert "approve" not in ui.lower() or "approval inbox" not in ui.lower()
+    for label in ("Approve", "Reject", "Request changes"):
+        assert label in ui
+    assert "Rationale is required" in ui
+    assert "/triage" not in ui
+    assert "execute" not in ui.lower()

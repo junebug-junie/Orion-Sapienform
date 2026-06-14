@@ -404,31 +404,32 @@ bash scripts/proposal_review_api_smoke.sh
 
 See [docs/proposal-review-api.md](proposal-review-api.md).
 
-### Hub read-only proposal review surface
+### Hub proposal review surface
 
-Hub exposes a read-only **Pending Decisions** panel on the main Hub tab. It calls the proposal review API only — never JSON ledger files.
+Hub exposes a **Pending Decisions** panel on the main Hub tab. It calls the proposal review API only — never JSON ledger files. Hub can record review decisions (`approve`, `reject`, `request_changes`) via `POST /proposals/{proposal_id}/review`. Hub cannot triage or execute.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `HUB_PROPOSAL_REVIEW_ENABLED` | `false` | When true, Hub fetches pending-review proposals from context-exec. |
 | `HUB_PROPOSAL_REVIEW_API_URL` | `http://orion-context-exec:8096` | Base URL for proposal review API (host dev: `http://127.0.0.1:8096`). |
 
-Hub routes (read-only):
+Hub routes:
 
 ```text
 GET /api/proposal-review/health
 GET /api/proposal-review/pending?status=pending_review
 GET /api/proposal-review/proposals/{proposal_id}
 GET /api/proposal-review/proposals/{proposal_id}/eligibility
+POST /api/proposal-review/proposals/{proposal_id}/review
 ```
 
 Default filter is `pending_review` only. Optional secondary filters (blocked, stored, approved/rejected history) are hidden in the UI until the operator reveals the filter control.
 
-When disabled or upstream unavailable, Hub shows a quiet empty/unavailable state — no error spam. Hub does not POST triage/review and does not execute proposals.
+When disabled or upstream unavailable, Hub shows a quiet empty/unavailable state — no error spam. Hub does not POST triage and does not execute proposals. Approval creates future execution eligibility only.
 
 ### Denver memory correction vertical slice
 
-End-to-end usefulness smoke for the proposal control plane (read-only in Hub; no approval or execution):
+End-to-end usefulness smoke for the proposal control plane (read-only listing in smoke; Hub review actions tested separately):
 
 ```text
 memory_correction_proposal
@@ -438,7 +439,7 @@ memory_correction_proposal
   → Hub Pending Decisions
 ```
 
-This smoke does **not** approve, reject, execute, or mutate memory. It only proves a decision-worthy proposal can surface read-only in Hub.
+Denver smoke verifies read-only surfacing only. Hub review actions do not execute or mutate memory/repo/runtime.
 
 ```bash
 ORION_PY=orion_dev/bin/python bash scripts/denver_memory_correction_vertical_smoke.sh

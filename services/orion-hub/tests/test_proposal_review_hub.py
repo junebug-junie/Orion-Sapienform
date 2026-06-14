@@ -1,4 +1,4 @@
-"""Hub read-only proposal review client and routes."""
+"""Hub proposal review client, routes, and review actions."""
 
 from __future__ import annotations
 
@@ -52,6 +52,18 @@ def _reload_hub_modules(monkeypatch: pytest.MonkeyPatch, *, enabled: bool, api_u
     importlib.import_module("scripts.settings")
     importlib.import_module("scripts.proposal_review_client")
     importlib.import_module("scripts.proposal_review_routes")
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_hub_path_pollution() -> None:
+    """Prevent hub reload from shadowing orion-context-exec `app` in later tests."""
+    yield
+    hub_root = str(HUB_ROOT)
+    while hub_root in sys.path:
+        sys.path.remove(hub_root)
+    for mod in list(sys.modules):
+        if mod == "app" or mod.startswith("app."):
+            sys.modules.pop(mod, None)
 
 
 @pytest.fixture
@@ -153,22 +165,21 @@ def test_hub_proposal_review_unavailable_is_nonfatal(monkeypatch: pytest.MonkeyP
     assert body["proposals"] == []
 
 
-def test_hub_proposal_review_does_not_call_post_review_or_triage(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_hub_review_does_not_call_triage_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     _reload_hub_modules(monkeypatch, enabled=True)
     import scripts.proposal_review_client as client_mod
 
+    assert hasattr(client_mod, "post_review")
     assert not hasattr(client_mod, "post_triage")
-    assert not hasattr(client_mod, "post_review")
     assert not hasattr(client_mod, "triage_proposal")
-    assert not hasattr(client_mod, "review_proposal")
 
-    captured_methods: list[str] = []
+    captured: list[tuple[str, str]] = []
 
     class FakeResponse:
         status = 200
 
         async def text(self) -> str:
-            return '{"proposals":[],"count":0}'
+            return '{"status":"rejected","execution_eligibility":{"eligible":false,"execution_requested":false}}'
 
         async def __aenter__(self):
             return self
@@ -177,8 +188,8 @@ def test_hub_proposal_review_does_not_call_post_review_or_triage(monkeypatch: py
             return None
 
     class FakeSession:
-        def get(self, url: str, params: dict | None = None):
-            captured_methods.append("GET")
+        def request(self, method: str, url: str, **kwargs: object):
+            captured.append((method.upper(), url))
             return FakeResponse()
 
         async def __aenter__(self):
@@ -189,18 +200,198 @@ def test_hub_proposal_review_does_not_call_post_review_or_triage(monkeypatch: py
 
     monkeypatch.setattr(client_mod.aiohttp, "ClientSession", lambda **kwargs: FakeSession())
 
-    asyncio.run(client_mod.list_proposals(status="pending_review"))
-    assert captured_methods == ["GET"]
+    asyncio.run(
+        client_mod.post_review(
+            "prop_1",
+            {"decision": "reject", "rationale": "no", "reviewer_type": "human", "reviewer_id": "hub"},
+        )
+    )
+    assert captured == [("POST", "http://proposal-review.test/proposals/prop_1/review")]
 
     with pytest.raises(client_mod.ProposalReviewClientError):
-        asyncio.run(client_mod._get_json("/proposals/prop_1/triage"))  # noqa: SLF001
+        asyncio.run(client_mod._post_json("/proposals/prop_1/triage", body={"action": "store_only"}))  # noqa: SLF001
 
     with pytest.raises(client_mod.ProposalReviewClientError):
-        asyncio.run(client_mod._get_json("/proposals/prop_1/review"))  # noqa: SLF001
+        asyncio.run(client_mod._post_json("/proposals/prop_1/execute", body={}))  # noqa: SLF001
 
     routes_source = (HUB_ROOT / "scripts" / "proposal_review_routes.py").read_text(encoding="utf-8")
-    assert "@router.post" not in routes_source
-    assert "POST" not in routes_source
+    assert routes_source.count("@router.post") == 1
+    assert "/proposals/{proposal_id}/review" in routes_source
+    assert "/triage" not in routes_source
+
+
+def test_hub_review_does_not_call_executor(monkeypatch: pytest.MonkeyPatch) -> None:
+    _reload_hub_modules(monkeypatch, enabled=True)
+    import scripts.proposal_review_routes as routes
+
+    async def fake_post(proposal_id: str, body: dict) -> dict:
+        assert proposal_id == "prop_demo_1"
+        assert body["decision"] == "approve"
+        return {
+            "proposal_id": proposal_id,
+            "status": "approved",
+            "execution_eligibility": {
+                "eligible": True,
+                "execution_requested": False,
+            },
+        }
+
+    monkeypatch.setattr(routes.client, "post_review", fake_post)
+    import scripts.main as hub_main
+
+    client_source = (HUB_ROOT / "scripts" / "proposal_review_client.py").read_text(encoding="utf-8")
+    assert "execute" not in client_source.lower().split("_ALLOWED")[0]
+    assert "/execute" not in client_source
+
+    with TestClient(hub_main.app) as client:
+        response = client.post(
+            "/api/proposal-review/proposals/prop_demo_1/review",
+            json={
+                "decision": "approve",
+                "rationale": "bounded and reversible",
+            },
+        )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "approved"
+    assert payload["execution_eligibility"]["eligible"] is True
+    assert payload["execution_eligibility"]["execution_requested"] is False
+    assert "execution_receipt" not in payload
+    assert "receipt" not in payload
+    assert "changed_targets" not in payload
+
+
+def test_hub_review_reject_posts_review_decision_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    _reload_hub_modules(monkeypatch, enabled=True)
+    import scripts.proposal_review_routes as routes
+
+    captured: dict[str, object] = {}
+
+    async def fake_post(proposal_id: str, body: dict) -> dict:
+        captured["proposal_id"] = proposal_id
+        captured["body"] = body
+        return {
+            "proposal_id": proposal_id,
+            "status": "rejected",
+            "execution_eligibility": {"eligible": False, "execution_requested": False},
+        }
+
+    monkeypatch.setattr(routes.client, "post_review", fake_post)
+    import scripts.main as hub_main
+
+    with TestClient(hub_main.app) as client:
+        response = client.post(
+            "/api/proposal-review/proposals/prop_demo_1/review",
+            json={"decision": "reject", "rationale": "unsupported evidence"},
+        )
+
+    assert response.status_code == 200
+    assert captured["proposal_id"] == "prop_demo_1"
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["decision"] == "reject"
+    assert body["rationale"] == "unsupported evidence"
+    assert response.json()["status"] == "rejected"
+    assert response.json()["execution_eligibility"]["eligible"] is False
+
+
+def test_hub_review_request_changes_posts_review_decision_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    _reload_hub_modules(monkeypatch, enabled=True)
+    import scripts.proposal_review_routes as routes
+
+    captured: dict[str, object] = {}
+
+    async def fake_post(proposal_id: str, body: dict) -> dict:
+        captured["body"] = body
+        return {
+            "proposal_id": proposal_id,
+            "status": "request_changes",
+            "execution_eligibility": {"eligible": False, "execution_requested": False},
+        }
+
+    monkeypatch.setattr(routes.client, "post_review", fake_post)
+    import scripts.main as hub_main
+
+    with TestClient(hub_main.app) as client:
+        response = client.post(
+            "/api/proposal-review/proposals/prop_demo_1/review",
+            json={"decision": "request_changes", "rationale": "needs more evidence"},
+        )
+
+    assert response.status_code == 200
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert body["decision"] == "request_changes"
+    assert response.json()["status"] == "request_changes"
+    assert response.json()["execution_eligibility"]["eligible"] is False
+
+
+def test_hub_review_approve_creates_eligibility_not_execution(monkeypatch: pytest.MonkeyPatch) -> None:
+    _reload_hub_modules(monkeypatch, enabled=True)
+    import scripts.proposal_review_routes as routes
+
+    async def fake_post(proposal_id: str, body: dict) -> dict:
+        assert body["decision"] == "approve"
+        return {
+            "proposal_id": proposal_id,
+            "status": "approved",
+            "review_decision": {"decision": "approve", "rationale": body["rationale"]},
+            "execution_eligibility": {
+                "eligible": True,
+                "execution_requested": False,
+                "reason": "approved by review decision",
+            },
+        }
+
+    monkeypatch.setattr(routes.client, "post_review", fake_post)
+    import scripts.main as hub_main
+
+    with TestClient(hub_main.app) as client:
+        response = client.post(
+            "/api/proposal-review/proposals/prop_demo_1/review",
+            json={
+                "decision": "approve",
+                "rationale": "bounded and reversible",
+                "constraints": {"note": "scope limited"},
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "approved"
+    assert payload["execution_eligibility"]["eligible"] is True
+    assert payload["execution_eligibility"]["execution_requested"] is False
+
+
+def test_hub_review_requires_rationale(monkeypatch: pytest.MonkeyPatch) -> None:
+    _reload_hub_modules(monkeypatch, enabled=True)
+    import scripts.proposal_review_routes as routes
+
+    called = {"value": False}
+
+    async def fake_post(proposal_id: str, body: dict) -> dict:
+        called["value"] = True
+        return {}
+
+    monkeypatch.setattr(routes.client, "post_review", fake_post)
+    import scripts.main as hub_main
+
+    with TestClient(hub_main.app) as client:
+        empty = client.post(
+            "/api/proposal-review/proposals/prop_demo_1/review",
+            json={"decision": "reject", "rationale": "   "},
+        )
+        missing = client.post(
+            "/api/proposal-review/proposals/prop_demo_1/review",
+            json={"decision": "reject"},
+        )
+
+    assert empty.status_code == 422
+    assert missing.status_code == 422
+    assert called["value"] is False
+
+    ui = (HUB_ROOT / "static" / "js" / "proposal-review-ui.js").read_text(encoding="utf-8")
+    assert "Rationale is required" in ui
 
 
 def test_hub_pending_decisions_shows_denver_memory_correction(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -289,8 +480,11 @@ def test_hub_pending_decisions_shows_denver_memory_correction(monkeypatch: pytes
     assert 'id="proposalReviewPanel"' in template
     for token in ("Current belief:", "Proposed correction:", "Rationale:", "mutation_allowed="):
         assert token in ui
-    assert 'method="post"' not in ui.lower()
-    assert "/review" not in ui
+    for label in ("Approve", "Reject", "Request changes"):
+        assert label in ui
+    assert "/api/proposal-review/proposals/" in ui
+    assert "/review" in ui
     assert "/triage" not in ui
+    assert "execute" not in ui.lower()
     routes_source = (HUB_ROOT / "scripts" / "proposal_review_routes.py").read_text(encoding="utf-8")
-    assert "@router.post" not in routes_source
+    assert "/proposals/{proposal_id}/review" in routes_source

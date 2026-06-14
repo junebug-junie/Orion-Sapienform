@@ -420,9 +420,9 @@ Then open the Hub Memory tab → **Review queue**, or `GET /api/memory/cards?sta
 
 **Memory crystallizations (governed cognitive memory):** `MemoryCrystallizationV1` is separate from `MemoryCardV1` (not MemoryCardV2). Turn-facing recall remains cards; crystallizations are durable governed memory in Postgres with optional projections to cards, Chroma (`orion:memory:vector:upsert`), and Graphiti/FalkorDB via `services/orion-graphiti-adapter/`. RDF `/api/memory/graph/*` is unchanged. Hub Memory tab → **Crystallizations** subview (inbox, approve/reject, projection health). Smoke: `scripts/smoke_memory_crystallization_e2e.sh` (requires Hub restart with this branch).
 
-**Proposal review (read-only attention surface):** Hub main tab → **Pending Decisions** lists decision-worthy `pending_review` proposals from the context-exec proposal review API. Disabled by default (`HUB_PROPOSAL_REVIEW_ENABLED=false`). Hub calls `GET /health`, `GET /proposals`, detail, and eligibility only — it does not read JSON ledger files, does not POST triage/review, and does not approve/reject/execute. See [docs/proposal-review-api.md](../../docs/proposal-review-api.md).
+**Proposal review (attention + review decisions):** Hub main tab → **Pending Decisions** lists decision-worthy `pending_review` proposals from the context-exec proposal review API. Disabled by default (`HUB_PROPOSAL_REVIEW_ENABLED=false`). Hub calls `GET /health`, `GET /proposals`, detail, eligibility, and `POST /proposals/{id}/review` only — it does not read JSON ledger files, does not POST triage, and does not execute. Approval creates future execution eligibility only. See [docs/proposal-review-api.md](../../docs/proposal-review-api.md).
 
-**Denver memory correction vertical slice:** `ORION_PY=orion_dev/bin/python bash scripts/denver_memory_correction_vertical_smoke.sh` proves a Denver `memory_correction_proposal` reaches Pending Decisions read-only. No approval, execution, or memory mutation.
+**Denver memory correction vertical slice:** `ORION_PY=orion_dev/bin/python bash scripts/denver_memory_correction_vertical_smoke.sh` proves a Denver `memory_correction_proposal` reaches Pending Decisions. Smoke is read-only; Hub review actions are tested separately and still do not execute or mutate memory.
 
 ---
 

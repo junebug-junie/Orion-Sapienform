@@ -28,6 +28,7 @@ def _get_runner() -> ContextExecRunner:
 
 @router.get("/health")
 async def health() -> dict:
+    from .proposal_review_api import proposal_review_health_block
     from .settings import settings
 
     return {
@@ -38,6 +39,7 @@ async def health() -> dict:
         "sandbox_mode": settings.context_exec_sandbox_mode,
         "write_enabled": settings.context_exec_write_enabled,
         "max_depth": settings.context_exec_max_depth,
+        "proposal_review_api": proposal_review_health_block(),
     }
 
 

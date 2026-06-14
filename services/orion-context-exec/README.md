@@ -8,6 +8,25 @@ Bounded depth-2 investigation organ replacing planner-react/agent-chain for grou
 - `POST /context-exec/run` — native `ContextExecRequestV1` → `ContextExecRunV1`
 - `POST /agent/chain/run` — `AgentChainRequest` compatibility shim
 
+## Proposal review API (Hub-facing seam)
+
+Control-plane HTTP surface over the proposal ledger. Does not execute proposals, write memory, or mutate repo/runtime state. Hub will eventually call this instead of reading JSON ledger files directly.
+
+Requires explicit `PROPOSAL_LEDGER_STORE_PATH` (JSON file path; no repo default).
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/health` | Service health + proposal review API store status |
+| GET | `/proposals` | List ledger records (`?status=` optional) |
+| GET | `/proposals/{proposal_id}` | Proposal detail + review history + eligibility |
+| POST | `/proposals/{proposal_id}/triage` | Apply `ProposalTriageDecisionV1` |
+| POST | `/proposals/{proposal_id}/review` | Apply `ProposalReviewDecisionV1` |
+| GET | `/proposals/{proposal_id}/eligibility` | Inspect `ProposalExecutionEligibilityV1` |
+
+Approval creates execution eligibility only — no executor, no receipts, no auto-approval. Context-exec cannot approve or execute via this API.
+
+See [docs/proposal-review-api.md](../../docs/proposal-review-api.md).
+
 ## Bus
 
 - Intake: `orion:exec:request:ContextExecService` (`context.exec.request.v1`)

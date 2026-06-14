@@ -90,6 +90,9 @@ class ContextExecSettings(BaseSettings):
     rlm_engine: str = Field("fake", alias="CONTEXT_EXEC_RLM_ENGINE")
     context_exec_rlm_fallback_enabled: bool = Field(True, alias="CONTEXT_EXEC_RLM_FALLBACK_ENABLED")
 
+    proposal_review_api_enabled: bool = Field(True, alias="PROPOSAL_REVIEW_API_ENABLED")
+    proposal_ledger_store_path: str = Field("", alias="PROPOSAL_LEDGER_STORE_PATH")
+
 
 settings = ContextExecSettings()
 logger.info(

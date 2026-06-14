@@ -10,20 +10,26 @@ Bounded depth-2 investigation organ replacing planner-react/agent-chain for grou
 
 ## Proposal review API (Hub-facing seam)
 
-Control-plane HTTP surface over the proposal ledger. Does not execute proposals, write memory, or mutate repo/runtime state. Hub will eventually call this instead of reading JSON ledger files directly.
-
-Requires explicit `PROPOSAL_LEDGER_STORE_PATH` (JSON file path; no repo default).
+Control-plane HTTP surface over the proposal ledger. **Disabled by default** (`PROPOSAL_REVIEW_API_ENABLED=false`). Enable only with an explicit `PROPOSAL_LEDGER_STORE_PATH` (JSON file path; no repo default).
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/health` | Service health + proposal review API store status |
+| GET | `/health` | Service health + `proposal_review_api` store status block |
 | GET | `/proposals` | List ledger records (`?status=` optional) |
 | GET | `/proposals/{proposal_id}` | Proposal detail + review history + eligibility |
 | POST | `/proposals/{proposal_id}/triage` | Apply `ProposalTriageDecisionV1` |
 | POST | `/proposals/{proposal_id}/review` | Apply `ProposalReviewDecisionV1` |
 | GET | `/proposals/{proposal_id}/eligibility` | Inspect `ProposalExecutionEligibilityV1` |
 
-Approval creates execution eligibility only — no executor, no receipts, no auto-approval. Context-exec cannot approve or execute via this API.
+Routes mount only when `PROPOSAL_REVIEW_API_ENABLED=true`. `/health` always reports `proposal_review_api.enabled`, `store_configured`, `store_path_present`, `ok`, and `error`.
+
+Approval creates execution eligibility only — no executor, no receipts, no auto-approval. Context-exec cannot approve (`reviewer_id=context-exec` → 403). Hub must call this API, not read JSON ledger files.
+
+```bash
+export PROPOSAL_REVIEW_API_ENABLED=true
+export PROPOSAL_LEDGER_STORE_PATH=/tmp/orion-proposals.json
+bash scripts/proposal_review_api_smoke.sh
+```
 
 See [docs/proposal-review-api.md](../../docs/proposal-review-api.md).
 

@@ -41,7 +41,13 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _require_api_enabled() -> None:
+    if not settings.proposal_review_api_enabled:
+        raise ProposalReviewApiError("proposal review API is disabled")
+
+
 def _require_store_path() -> Path:
+    _require_api_enabled()
     raw = (settings.proposal_ledger_store_path or "").strip()
     if not raw:
         raise ProposalReviewApiError(
@@ -111,7 +117,12 @@ def _inner_artifact_summary(envelope: ProposalEnvelopeV1) -> dict[str, Any]:
 
 def _api_error(exc: ProposalReviewApiError) -> HTTPException:
     message = str(exc)
-    if "required" in message.lower() or "malformed" in message.lower() or "invalid" in message.lower():
+    if (
+        "required" in message.lower()
+        or "malformed" in message.lower()
+        or "invalid" in message.lower()
+        or "disabled" in message.lower()
+    ):
         return HTTPException(status_code=503, detail=message)
     if "context-exec" in message.lower():
         return HTTPException(status_code=403, detail=message)
@@ -261,20 +272,27 @@ async def proposal_eligibility(proposal_id: str) -> dict[str, Any]:
 
 
 def proposal_review_health_block() -> dict[str, Any]:
+    enabled = settings.proposal_review_api_enabled
     store = (settings.proposal_ledger_store_path or "").strip()
     configured = bool(store)
+    store_path_present = configured and Path(store).exists()
     store_ok = False
-    store_error: str | None = None
-    if configured:
+    error: str | None = None
+    if not enabled:
+        error = "proposal review API is disabled"
+    elif not configured:
+        error = "PROPOSAL_LEDGER_STORE_PATH is required (explicit JSON ledger path; no repo default)"
+    elif configured:
         try:
             _open_repo(Path(store))
             store_ok = True
         except ProposalReviewApiError as exc:
-            store_error = str(exc)
+            error = str(exc)
+    ok = enabled and configured and store_ok
     return {
-        "enabled": settings.proposal_review_api_enabled,
+        "enabled": enabled,
         "store_configured": configured,
-        "store_path": store or None,
-        "store_ok": store_ok,
-        "store_error": store_error,
+        "store_path_present": store_path_present,
+        "ok": ok,
+        "error": error,
     }

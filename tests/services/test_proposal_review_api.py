@@ -34,15 +34,18 @@ def _seed_store(store_path: Path) -> dict:
     return json.loads(result.stdout)
 
 
-@pytest.fixture
-def store_path(tmp_path: Path) -> Path:
-    return tmp_path / "proposals.json"
+def _load_app(monkeypatch: pytest.MonkeyPatch, *, enabled: bool, store_path: str | None) -> object:
+    if enabled:
+        monkeypatch.setenv("PROPOSAL_REVIEW_API_ENABLED", "true")
+    else:
+        monkeypatch.delenv("PROPOSAL_REVIEW_API_ENABLED", raising=False)
+        monkeypatch.setenv("PROPOSAL_REVIEW_API_ENABLED", "false")
 
-
-@pytest.fixture
-def app_client(store_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("PROPOSAL_LEDGER_STORE_PATH", str(store_path))
-    monkeypatch.setenv("PROPOSAL_REVIEW_API_ENABLED", "true")
+    if store_path is None:
+        monkeypatch.delenv("PROPOSAL_LEDGER_STORE_PATH", raising=False)
+        monkeypatch.setenv("PROPOSAL_LEDGER_STORE_PATH", "")
+    else:
+        monkeypatch.setenv("PROPOSAL_LEDGER_STORE_PATH", store_path)
 
     if str(SERVICE_DIR) not in sys.path:
         sys.path.insert(0, str(SERVICE_DIR))
@@ -57,39 +60,130 @@ def app_client(store_path: Path, monkeypatch: pytest.MonkeyPatch):
     return app
 
 
+@pytest.fixture
+def store_path(tmp_path: Path) -> Path:
+    return tmp_path / "proposals.json"
+
+
+@pytest.fixture
+def app_client(store_path: Path, monkeypatch: pytest.MonkeyPatch):
+    return _load_app(monkeypatch, enabled=True, store_path=str(store_path))
+
+
 @pytest.mark.asyncio
-async def test_health_includes_proposal_review_block(app_client, store_path: Path) -> None:
+async def test_context_exec_app_mounts_proposal_review_routes_when_enabled(
+    app_client, store_path: Path
+) -> None:
+    seeded = _seed_store(store_path)
+    proposal_id = seeded["records"]["pending_review_memory"]
+
+    transport = ASGITransport(app=app_client)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        health = await client.get("/health")
+        proposals = await client.get("/proposals")
+        eligibility = await client.get(f"/proposals/{proposal_id}/eligibility")
+
+    assert health.status_code == 200
+    assert proposals.status_code == 200
+    assert eligibility.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_proposal_review_api_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _load_app(monkeypatch, enabled=False, store_path=None)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        health = await client.get("/health")
+        proposals = await client.get("/proposals")
+
+    assert health.status_code == 200
+    block = health.json()["proposal_review_api"]
+    assert block["enabled"] is False
+    assert block["ok"] is False
+    assert block["error"]
+    assert proposals.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_proposal_review_api_enabled_without_store_path_fails_safely(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _load_app(monkeypatch, enabled=True, store_path=None)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        health = await client.get("/health")
+        proposals = await client.get("/proposals")
+
+    assert health.status_code == 200
+    block = health.json()["proposal_review_api"]
+    assert block["enabled"] is True
+    assert block["store_configured"] is False
+    assert block["ok"] is False
+    assert "PROPOSAL_LEDGER_STORE_PATH" in (block["error"] or "")
+
+    assert proposals.status_code == 503
+    assert "PROPOSAL_LEDGER_STORE_PATH" in proposals.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_health_proposal_review_block_store_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = _load_app(monkeypatch, enabled=True, store_path=None)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/health")
+
+    block = resp.json()["proposal_review_api"]
+    assert block["enabled"] is True
+    assert block["store_configured"] is False
+    assert block["store_path_present"] is False
+    assert block["ok"] is False
+    assert block["error"]
+
+
+@pytest.mark.asyncio
+async def test_health_proposal_review_block_store_configured(
+    app_client, store_path: Path
+) -> None:
     _seed_store(store_path)
     transport = ASGITransport(app=app_client)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/health")
-    assert resp.status_code == 200
-    data = resp.json()
-    block = data["proposal_review_api"]
+
+    block = resp.json()["proposal_review_api"]
     assert block["enabled"] is True
     assert block["store_configured"] is True
-    assert block["store_ok"] is True
+    assert block["store_path_present"] is True
+    assert block["ok"] is True
+    assert block["error"] is None
 
 
 @pytest.mark.asyncio
-async def test_list_proposals_requires_store_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("PROPOSAL_LEDGER_STORE_PATH", raising=False)
-    monkeypatch.setenv("PROPOSAL_LEDGER_STORE_PATH", "")
-
-    if str(SERVICE_DIR) not in sys.path:
-        sys.path.insert(0, str(SERVICE_DIR))
-    if str(ROOT) not in sys.path:
-        sys.path.insert(0, str(ROOT))
-    for mod in ("app.settings", "app.main", "app.api", "app.proposal_review_api"):
-        sys.modules.pop(mod, None)
-
-    from app.main import app  # noqa: WPS433
-
-    transport = ASGITransport(app=app)
+async def test_proposal_review_api_malformed_store_returns_controlled_error(
+    app_client, store_path: Path
+) -> None:
+    store_path.write_text("{not-json", encoding="utf-8")
+    transport = ASGITransport(app=app_client)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/proposals")
     assert resp.status_code == 503
-    assert "PROPOSAL_LEDGER_STORE_PATH" in resp.json()["detail"]
+    assert "malformed" in resp.json()["detail"].lower()
+    assert store_path.read_text(encoding="utf-8") == "{not-json"
+
+
+@pytest.mark.asyncio
+async def test_proposal_review_api_invalid_ledger_schema_returns_controlled_error(
+    app_client, store_path: Path
+) -> None:
+    store_path.write_text('{"records": [{"proposal_id": "x"}]}', encoding="utf-8")
+    transport = ASGITransport(app=app_client)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/proposals")
+    assert resp.status_code == 503
+    assert "invalid" in resp.json()["detail"].lower()
+    assert store_path.read_text(encoding="utf-8") == '{"records": [{"proposal_id": "x"}]}'
 
 
 @pytest.mark.asyncio
@@ -122,7 +216,7 @@ async def test_get_proposal_detail(app_client, store_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_proposal_not_found(app_client, store_path: Path) -> None:
+async def test_proposal_review_detail_missing_returns_404(app_client, store_path: Path) -> None:
     _seed_store(store_path)
     transport = ASGITransport(app=app_client)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -131,23 +225,41 @@ async def test_get_proposal_not_found(app_client, store_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_malformed_store_returns_503(app_client, store_path: Path) -> None:
-    store_path.write_text("{not-json", encoding="utf-8")
+async def test_proposal_review_triage_missing_returns_404(app_client, store_path: Path) -> None:
+    _seed_store(store_path)
     transport = ASGITransport(app=app_client)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/proposals")
-    assert resp.status_code == 503
-    assert "malformed" in resp.json()["detail"].lower()
+        resp = await client.post(
+            "/proposals/missing-proposal-id/triage",
+            json={"action": "store_only", "rationale": "missing"},
+        )
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
-async def test_invalid_store_schema_returns_503(app_client, store_path: Path) -> None:
-    store_path.write_text('{"records": [{"proposal_id": "x"}]}', encoding="utf-8")
+async def test_proposal_review_review_missing_returns_404(app_client, store_path: Path) -> None:
+    _seed_store(store_path)
     transport = ASGITransport(app=app_client)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get("/proposals")
-    assert resp.status_code == 503
-    assert "invalid" in resp.json()["detail"].lower()
+        resp = await client.post(
+            "/proposals/missing-proposal-id/review",
+            json={
+                "decision": "approve",
+                "rationale": "missing",
+                "reviewer_type": "human",
+                "reviewer_id": "june",
+            },
+        )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_proposal_review_eligibility_missing_returns_404(app_client, store_path: Path) -> None:
+    _seed_store(store_path)
+    transport = ASGITransport(app=app_client)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/proposals/missing-proposal-id/eligibility")
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -208,7 +320,9 @@ async def test_review_reject_does_not_execute(app_client, store_path: Path) -> N
 
 
 @pytest.mark.asyncio
-async def test_review_approve_creates_eligibility_not_execution(app_client, store_path: Path) -> None:
+async def test_proposal_review_approve_creates_eligibility_not_execution(
+    app_client, store_path: Path
+) -> None:
     seeded = _seed_store(store_path)
     proposal_id = seeded["records"]["pending_review_memory"]
 
@@ -231,7 +345,9 @@ async def test_review_approve_creates_eligibility_not_execution(app_client, stor
 
 
 @pytest.mark.asyncio
-async def test_review_rejects_context_exec_reviewer(app_client, store_path: Path) -> None:
+async def test_proposal_review_approve_does_not_create_receipt(
+    app_client, store_path: Path
+) -> None:
     seeded = _seed_store(store_path)
     proposal_id = seeded["records"]["pending_review_memory"]
 
@@ -241,13 +357,78 @@ async def test_review_rejects_context_exec_reviewer(app_client, store_path: Path
             f"/proposals/{proposal_id}/review",
             json={
                 "decision": "approve",
-                "rationale": "bad actor",
+                "rationale": "bounded and reversible",
                 "reviewer_type": "human",
-                "reviewer_id": "context-exec",
+                "reviewer_id": "june",
             },
         )
-    assert resp.status_code == 403
-    assert "context-exec" in resp.json()["detail"].lower()
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert "execution_receipt" not in payload
+    assert "receipt" not in payload
+    assert payload["execution_eligibility"].get("execution_receipt") is None
+
+
+@pytest.mark.asyncio
+async def test_proposal_review_approve_does_not_call_executor(
+    app_client, store_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seeded = _seed_store(store_path)
+    proposal_id = seeded["records"]["pending_review_memory"]
+
+    calls: list[object] = []
+
+    def _track_run(self, *_args, **_kwargs):
+        calls.append(True)
+        raise AssertionError("executor must not be called from review API")
+
+    monkeypatch.setattr("app.runner.ContextExecRunner.run", _track_run)
+
+    transport = ASGITransport(app=app_client)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            f"/proposals/{proposal_id}/review",
+            json={
+                "decision": "approve",
+                "rationale": "bounded and reversible",
+                "reviewer_type": "human",
+                "reviewer_id": "june",
+            },
+        )
+    assert resp.status_code == 200
+    assert calls == []
+    payload = resp.json()
+    assert payload["status"] == "approved"
+    assert "changed_targets" not in payload
+    assert payload["execution_eligibility"]["execution_requested"] is False
+
+
+@pytest.mark.asyncio
+async def test_proposal_review_rejects_context_exec_approval(
+    app_client, store_path: Path
+) -> None:
+    seeded = _seed_store(store_path)
+    proposal_id = seeded["records"]["pending_review_memory"]
+
+    transport = ASGITransport(app=app_client)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            f"/proposals/{proposal_id}/review",
+            json={
+                "decision": "approve",
+                "reviewer_type": "human",
+                "reviewer_id": "context-exec",
+                "rationale": "self approval",
+            },
+        )
+        assert resp.status_code == 403
+        assert "context-exec" in resp.json()["detail"].lower()
+
+        detail = await client.get(f"/proposals/{proposal_id}")
+        eligibility = await client.get(f"/proposals/{proposal_id}/eligibility")
+
+    assert detail.json()["status"] != "approved"
+    assert eligibility.json()["eligible"] is False
 
 
 @pytest.mark.asyncio

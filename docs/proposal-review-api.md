@@ -19,14 +19,32 @@ Mounted on **orion-context-exec** (same port as context-exec HTTP, default `8096
 
 ## Configuration
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `PROPOSAL_REVIEW_API_ENABLED` | No (default `true`) | Feature flag for the review API block in `/health` |
-| `PROPOSAL_LEDGER_STORE_PATH` | **Yes** for proposal routes | Explicit JSON ledger file path. No repo default. |
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `PROPOSAL_REVIEW_API_ENABLED` | No | **`false`** | When false, proposal routes are not mounted and `/health` reports `enabled=false`. |
+| `PROPOSAL_LEDGER_STORE_PATH` | **Yes** when enabled | empty | Explicit JSON ledger file path. No repo default. |
 
-Proposal routes return **503** when `PROPOSAL_LEDGER_STORE_PATH` is unset or the store file is malformed.
+**Default-safe posture:** The API is disabled unless `PROPOSAL_REVIEW_API_ENABLED=true` **and** `PROPOSAL_LEDGER_STORE_PATH` points at an explicit JSON file. Missing store path must not look healthy.
+
+Proposal routes return **503** when the API is disabled, `PROPOSAL_LEDGER_STORE_PATH` is unset, or the store file is malformed/invalid.
+
+## Health semantics
+
+`/health` includes a `proposal_review_api` block:
+
+| Field | Meaning |
+|-------|---------|
+| `enabled` | `PROPOSAL_REVIEW_API_ENABLED` |
+| `store_configured` | non-empty `PROPOSAL_LEDGER_STORE_PATH` |
+| `store_path_present` | configured path exists on disk |
+| `ok` | enabled, configured, and store opens cleanly |
+| `error` | human-readable reason when not `ok` |
+
+Hub must call this API — not read JSON ledger files directly.
 
 ## Endpoints
+
+Mounted only when `PROPOSAL_REVIEW_API_ENABLED=true`:
 
 ```text
 GET  /health
@@ -74,16 +92,32 @@ curl -s "http://127.0.0.1:8096/proposals/{id}/eligibility"
 - No memory writes
 - No repo writes
 - No runtime mutation
-- Approval creates future execution eligibility only
-- Context-exec cannot approve or execute proposals
+- Approval creates future execution eligibility only — does **not** execute
+- Context-exec cannot approve proposals (`reviewer_id=context-exec` → 403)
 
 ## Operator CLI
 
 `scripts/orion_proposal_cli.py` remains the first operator surface. The API mirrors its list/show/triage/review/eligibility behavior for future Hub integration.
 
+## Smoke
+
+```bash
+bash scripts/proposal_review_api_smoke.sh
+```
+
+Or manually:
+
+```bash
+rm -f /tmp/orion-proposals.json
+PYTHONPATH=. orion_dev/bin/python scripts/orion_proposal_cli.py seed-demo --store /tmp/orion-proposals.json
+PROPOSAL_REVIEW_API_ENABLED=true PROPOSAL_LEDGER_STORE_PATH=/tmp/orion-proposals.json \
+  PYTHONPATH=. orion_dev/bin/python -m pytest tests/services/test_proposal_review_api.py -q
+```
+
 ## Verification
 
 ```bash
 PYTHONPATH=. orion_dev/bin/python -m pytest tests/services/test_proposal_review_api.py -q
-PYTHONPATH=. orion_dev/bin/python -m pytest services/orion-context-exec/tests/ -q
+PYTHONPATH=. orion_dev/bin/python -m pytest services/orion-context-exec/tests/test_health.py -q
+PYTHONPATH=. orion_dev/bin/python -m pytest tests/scripts/test_orion_proposal_cli.py -q
 ```

@@ -165,6 +165,75 @@ def test_hub_proposal_review_unavailable_is_nonfatal(monkeypatch: pytest.MonkeyP
     assert body["proposals"] == []
 
 
+def test_hub_proposal_review_client_get_allowlist_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    _reload_hub_modules(monkeypatch, enabled=True)
+    import scripts.proposal_review_client as client_mod
+
+    allowed = (
+        "/health",
+        "/proposals",
+        "/proposals/prop_1",
+        "/proposals/prop_1/eligibility",
+    )
+    for path in allowed:
+        client_mod._assert_get_path(path)  # noqa: SLF001
+
+    forbidden = (
+        "/proposals/prop_1/triage",
+        "/proposals/prop_1/review",
+        "/triage",
+        "/review",
+    )
+    for path in forbidden:
+        with pytest.raises(client_mod.ProposalReviewClientError):
+            client_mod._assert_get_path(path)  # noqa: SLF001
+
+
+def test_hub_proposal_review_client_post_allowlist_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    _reload_hub_modules(monkeypatch, enabled=True)
+    import scripts.proposal_review_client as client_mod
+
+    client_mod._assert_post_path("/proposals/prop_1/review")  # noqa: SLF001
+
+    for path in (
+        "/proposals/prop_1/triage",
+        "/proposals/prop_1/execute",
+        "/triage",
+        "/review",
+    ):
+        with pytest.raises(client_mod.ProposalReviewClientError):
+            client_mod._assert_post_path(path)  # noqa: SLF001
+
+
+def test_hub_proposal_review_client_rejects_non_get_http_methods(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _reload_hub_modules(monkeypatch, enabled=True)
+    import scripts.proposal_review_client as client_mod
+
+    class _NoopSession:
+        def get(self, *args: object, **kwargs: object) -> object:
+            return None
+
+        def post(self, *args: object, **kwargs: object) -> object:
+            return None
+
+        async def __aenter__(self) -> _NoopSession:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    monkeypatch.setattr(client_mod.aiohttp, "ClientSession", lambda **kwargs: _NoopSession())
+    session = client_mod._RestrictedClientSession()  # noqa: SLF001
+    base = "http://proposal-review.test"
+    for method in ("put", "patch", "delete"):
+        with pytest.raises(client_mod.ProposalReviewClientError, match="forbidden HTTP method"):
+            asyncio.run(getattr(session, method)())
+    with pytest.raises(client_mod.ProposalReviewClientError, match="forbidden proposal review path"):
+        session.post(f"{base}/proposals/prop_1/triage", json={})
+
+
 def test_hub_review_does_not_call_triage_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     _reload_hub_modules(monkeypatch, enabled=True)
     import scripts.proposal_review_client as client_mod
@@ -188,8 +257,12 @@ def test_hub_review_does_not_call_triage_endpoint(monkeypatch: pytest.MonkeyPatc
             return None
 
     class FakeSession:
-        def request(self, method: str, url: str, **kwargs: object):
-            captured.append((method.upper(), url))
+        def get(self, url: str, params: dict | None = None):
+            captured.append(("GET", url))
+            return FakeResponse()
+
+        def post(self, url: str, **kwargs: object):
+            captured.append(("POST", url))
             return FakeResponse()
 
         async def __aenter__(self):
@@ -473,18 +546,35 @@ def test_hub_pending_decisions_shows_denver_memory_correction(monkeypatch: pytes
     assert inner["correction_type"] == "mark_uncertain"
     assert inner["mutation_allowed"] is False
     assert inner["requires_human_approval"] is True
+    assert inner.get("rationale")
+    assert inner.get("risk") in {"low", "medium", "high", "unknown"}
+    assert inner.get("confidence") is not None
+    assert inner.get("supporting_evidence") or inner.get("missing_evidence")
 
     template = (HUB_ROOT / "templates" / "index.html").read_text(encoding="utf-8")
     ui = (HUB_ROOT / "static" / "js" / "proposal-review-ui.js").read_text(encoding="utf-8")
     assert "Pending Decisions" in template
     assert 'id="proposalReviewPanel"' in template
-    for token in ("Current belief:", "Proposed correction:", "Rationale:", "mutation_allowed="):
+    for token in (
+        "Current belief:",
+        "Proposed correction:",
+        "Rationale:",
+        "Evidence:",
+        "Risk:",
+        "Confidence:",
+        "mutation_allowed=",
+        "requires_human_approval=",
+    ):
         assert token in ui
     for label in ("Approve", "Reject", "Request changes"):
         assert label in ui
     assert "/api/proposal-review/proposals/" in ui
     assert "/review" in ui
-    assert "/triage" not in ui
+    assert "/triage" not in ui.lower()
     assert "execute" not in ui.lower()
+    assert "fetch(" in ui
+    ui_lower = ui.lower()
+    for token in ('type="submit"',):
+        assert token not in ui_lower
     routes_source = (HUB_ROOT / "scripts" / "proposal_review_routes.py").read_text(encoding="utf-8")
     assert "/proposals/{proposal_id}/review" in routes_source

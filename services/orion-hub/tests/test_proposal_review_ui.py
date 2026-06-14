@@ -19,10 +19,18 @@ def test_proposal_review_ui_wired() -> None:
     assert "Proposal review API unavailable." in ui
     assert "Current belief:" in ui
     assert "Proposed correction:" in ui
+    assert "Rationale:" in ui
+    assert "Evidence:" in ui
+    assert "Risk:" in ui
+    assert "Confidence:" in ui
     assert "mutation_allowed=" in ui
     assert "requires_human_approval=" in ui
     for label in ("Approve", "Reject", "Request changes"):
         assert label in ui
     assert "Rationale is required" in ui
-    assert "/triage" not in ui
+    assert "fetch(" in ui
+    assert "/triage" not in ui.lower()
     assert "execute" not in ui.lower()
+    ui_lower = ui.lower()
+    for token in ('type="submit"',):
+        assert token not in ui_lower

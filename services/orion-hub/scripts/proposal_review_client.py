@@ -6,6 +6,7 @@ import json
 import logging
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -59,31 +60,85 @@ def _assert_post_path(path: str) -> None:
     raise ProposalReviewClientError(f"forbidden proposal review path: {path}")
 
 
-async def _request_json(
-    method: str,
-    path: str,
-    *,
-    params: dict[str, str] | None = None,
-    body: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    if method == "GET":
-        _assert_get_path(path)
-    elif method == "POST":
-        _assert_post_path(path)
-    else:
-        raise ProposalReviewClientError(f"forbidden proposal review method: {method}")
+def _path_from_url(url: str) -> str:
+    base = _base_url()
+    if base and url.startswith(base):
+        return url[len(base) :]
+    return urlparse(url).path
 
+
+class _RestrictedClientSession:
+    """Wrap aiohttp.ClientSession: GET allowlist + POST /proposals/{id}/review only."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        self._session = aiohttp.ClientSession(**kwargs)
+
+    def get(self, url: str, **kwargs: Any) -> Any:
+        _assert_get_path(_path_from_url(url))
+        return self._session.get(url, **kwargs)
+
+    def post(self, url: str, **kwargs: Any) -> Any:
+        _assert_post_path(_path_from_url(url))
+        return self._session.post(url, **kwargs)
+
+    async def put(self, *args: Any, **kwargs: Any) -> Any:
+        raise ProposalReviewClientError("forbidden HTTP method for proposal review client: PUT")
+
+    async def patch(self, *args: Any, **kwargs: Any) -> Any:
+        raise ProposalReviewClientError("forbidden HTTP method for proposal review client: PATCH")
+
+    async def delete(self, *args: Any, **kwargs: Any) -> Any:
+        raise ProposalReviewClientError("forbidden HTTP method for proposal review client: DELETE")
+
+    async def __aenter__(self) -> _RestrictedClientSession:
+        await self._session.__aenter__()
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        await self._session.__aexit__(*args)
+
+
+async def _get_json(path: str, *, params: dict[str, str] | None = None) -> dict[str, Any]:
+    _assert_get_path(path)
     base = _base_url()
     if not base:
         raise ProposalReviewUnavailable("HUB_PROPOSAL_REVIEW_API_URL is not configured")
 
     url = f"{base}{path}"
     try:
-        async with aiohttp.ClientSession(timeout=_timeout()) as session:
-            kwargs: dict[str, Any] = {"params": params}
-            if body is not None:
-                kwargs["json"] = body
-            async with session.request(method, url, **kwargs) as response:
+        async with _RestrictedClientSession(timeout=_timeout()) as session:
+            async with session.get(url, params=params) as response:
+                text = await response.text()
+                try:
+                    body: dict[str, Any] = {} if not text else json.loads(text)
+                except ValueError:
+                    body = {"raw": text}
+                if response.status >= 500:
+                    raise ProposalReviewUnavailable(
+                        f"proposal review API error {response.status}: {body.get('detail', text)}"
+                    )
+                if response.status >= 400:
+                    raise ProposalReviewClientError(
+                        f"proposal review API error {response.status}: {body.get('detail', text)}"
+                    )
+                if not isinstance(body, dict):
+                    return {"data": body}
+                return body
+    except aiohttp.ClientError as exc:
+        logger.warning("proposal_review_client_transport_error path=%s err=%s", path, exc)
+        raise ProposalReviewUnavailable("proposal review API unavailable") from exc
+
+
+async def _post_json(path: str, *, body: dict[str, Any]) -> dict[str, Any]:
+    _assert_post_path(path)
+    base = _base_url()
+    if not base:
+        raise ProposalReviewUnavailable("HUB_PROPOSAL_REVIEW_API_URL is not configured")
+
+    url = f"{base}{path}"
+    try:
+        async with _RestrictedClientSession(timeout=_timeout()) as session:
+            async with session.post(url, json=body) as response:
                 text = await response.text()
                 try:
                     payload: dict[str, Any] = {} if not text else json.loads(text)
@@ -103,14 +158,6 @@ async def _request_json(
     except aiohttp.ClientError as exc:
         logger.warning("proposal_review_client_transport_error path=%s err=%s", path, exc)
         raise ProposalReviewUnavailable("proposal review API unavailable") from exc
-
-
-async def _get_json(path: str, *, params: dict[str, str] | None = None) -> dict[str, Any]:
-    return await _request_json("GET", path, params=params)
-
-
-async def _post_json(path: str, *, body: dict[str, Any]) -> dict[str, Any]:
-    return await _request_json("POST", path, body=body)
 
 
 async def fetch_health() -> dict[str, Any]:

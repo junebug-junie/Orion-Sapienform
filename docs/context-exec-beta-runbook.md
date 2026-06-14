@@ -445,6 +445,26 @@ Denver smoke verifies read-only surfacing only. Hub review actions do not execut
 ORION_PY=orion_dev/bin/python bash scripts/denver_memory_correction_vertical_smoke.sh
 ```
 
+Expected output (abbreviated):
+
+```text
+== Denver vertical slice (context-exec + ledger + auto-triage) ==
+VERTICAL_SLICE proposal_id=prop_... status=pending_review type=memory_correction_proposal envelope=ProposalEnvelopeV1 inner=MemoryCorrectionProposalV1 mutation_allowed=False requires_human_approval=True
+== proposal review API (pytest harness) ==
+1 passed
+== proposal review API inline GET check ==
+API GET PASS eligible=false mutation_allowed=false requires_human_approval=true
+== Hub live check skipped (set HUB_SMOKE=true and HUB_BASE_URL to enable) ==
+denver_memory_correction_vertical_smoke PASS
+```
+
+Assertions verified by the smoke:
+
+- exactly one Denver `pending_review` proposal in the temp ledger
+- proposal type `memory_correction_proposal`, envelope `ProposalEnvelopeV1`, inner `MemoryCorrectionProposalV1`
+- `mutation_allowed=false`, `requires_human_approval=true`
+- eligibility `eligible=false` before approval (no execution requested)
+
 Optional env:
 
 ```bash

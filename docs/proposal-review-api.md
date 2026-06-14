@@ -120,6 +120,8 @@ Denver smoke verifies read-only listing/detail. Hub review actions are tested se
 ORION_PY=orion_dev/bin/python bash scripts/denver_memory_correction_vertical_smoke.sh
 ```
 
+Expected: `denver_memory_correction_vertical_smoke PASS` with one `pending_review` Denver proposal, API GET checks showing `eligible=false`, `mutation_allowed=false`, `requires_human_approval=true`. Hub live GET is optional (`HUB_SMOKE=true HUB_BASE_URL=...`).
+
 Or manually:
 
 ```bash

@@ -39,6 +39,17 @@ def _extract_corr_id(text: str) -> str | None:
     return None
 
 
+def _extract_memory_correction_belief(text: str) -> str:
+    lowered = text.lower()
+    for marker in ("claim that ", "claim: ", "belief that "):
+        idx = lowered.find(marker)
+        if idx >= 0:
+            tail = text[idx + len(marker) :].strip(" ?.,;")
+            if tail:
+                return tail[:500]
+    return "unknown"
+
+
 class FakeRLMEngine(RLMEngine):
     """Deterministic engine for tests — no model dependency."""
 
@@ -55,6 +66,29 @@ class FakeRLMEngine(RLMEngine):
         text = request.text.lower()
         organ_cache = getattr(namespace, "_organ_cache", None)
         runtime = organ_runtime or getattr(namespace, "_organ_runtime", None)
+
+        if mode == "memory_correction_proposal":
+            current_belief = _extract_memory_correction_belief(request.text)
+            report = {
+                "current_belief": current_belief,
+                "proposed_belief": None,
+                "correction_type": "mark_uncertain",
+                "rationale": "Fake engine does not inspect memory evidence.",
+                "supporting_evidence": [],
+                "contradicting_evidence": [],
+                "missing_evidence": ["fake engine has no grounded memory evidence"],
+                "target_memory_domains": ["unknown"],
+                "affected_ids": [],
+                "confidence": 0.0,
+                "risk": "unknown",
+                "tests_to_run": [],
+                "rollback_plan": "No mutation proposed; no rollback required.",
+                "open_questions": [],
+                "mutation_allowed": False,
+            }
+            namespace.set_local("report", report)
+            namespace.FINAL_VAR("report")
+            return namespace.get_final()
 
         if mode == "belief_provenance" or "denver" in text:
             recall_result: dict[str, Any] = {"hits": []}

@@ -7,6 +7,7 @@ import pytest
 from orion.schemas.context_exec import (
     BeliefProvenanceReportV1,
     ContextExecPermissionV1,
+    MemoryCorrectionProposalV1,
     ProposalEnvelopeV1,
     PatchProposalV1,
     RepoImpactAnalysisReportV1,
@@ -21,6 +22,7 @@ from app.rlm_eval_harness import (
     DENVER_CLAIM_FORBIDDEN,
     ENGINES,
     KNOWN_CORR,
+    MEMORY_CORRECTION_DENVER,
     PATCH_PROPOSAL_LIKELY_FILES,
     PATCH_PROPOSAL_TRACE_AUTOPSY,
     REPO_AGENT_CHAIN,
@@ -37,6 +39,7 @@ from app.rlm_eval_harness import (
     blob_text,
     reset_fake_organs,
     run_eval_case,
+    seed_case_organs,
 )
 
 REPO_SETTINGS = {
@@ -211,7 +214,7 @@ async def test_rlm_eval_safety_posture_read_only(engine: str) -> None:
 
 
 def test_all_eval_cases_registered() -> None:
-    assert len(ALL_EVAL_CASES) == 7
+    assert len(ALL_EVAL_CASES) == 8
     assert {c.name for c in ALL_EVAL_CASES} == {
         "belief_provenance_denver",
         "belief_provenance_ogden",
@@ -220,6 +223,7 @@ def test_all_eval_cases_registered() -> None:
         "repo_impact_agent_chain",
         "repo_impact_engine_files",
         "patch_proposal_trace_autopsy_quality",
+        "memory_correction_denver_uncertain",
     }
 
 
@@ -255,3 +259,25 @@ async def test_rlm_eval_patch_proposal_trace_autopsy_quality(
     if engine == "alexzhang" and not model.files_to_change:
         open_q = " ".join(model.open_questions).lower()
         assert "insufficient repo grounding" in open_q
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("engine", ENGINES)
+async def test_rlm_eval_memory_correction_denver_uncertain(engine: str) -> None:
+    seed_case_organs("memory_correction_denver_uncertain")
+    run = await run_eval_case(engine, MEMORY_CORRECTION_DENVER)
+    assert run.status == "ok"
+    envelope = ProposalEnvelopeV1.model_validate(run.artifact)
+    assert envelope.proposal_type == "memory_correction_proposal"
+    assert envelope.artifact_type == "MemoryCorrectionProposalV1"
+    assert envelope.mutation_allowed is False
+    assert envelope.requires_human_approval is True
+    assert envelope.review_status in {"draft", "pending_review"}
+    model = MemoryCorrectionProposalV1.model_validate(envelope.artifact)
+    assert model.mutation_allowed is False
+    assert "denver" in model.current_belief.lower()
+    assert model.correction_type in {"mark_uncertain", "mark_contradicted", "replace_belief"}
+    assert model.confidence <= 0.7 or any("ogden" in e.lower() for e in model.contradicting_evidence)
+    assert run.runtime_debug.get("mutation_allowed") is False
+    assert run.runtime_debug.get("proposal_enveloped") is True
+    assert run.runtime_debug.get("proposal_type") == "memory_correction_proposal"

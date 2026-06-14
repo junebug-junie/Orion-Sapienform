@@ -42,6 +42,17 @@ Other modes exist in schema (`runtime_debug`, `grammar_collision_audit`, etc.) b
 - **Boundary:** Proposal artifacts are not actions. Proposal envelopes are review objects. Executors are separate. Cortex/human approval is required before mutation. Context-exec may draft proposals, but it may not approve or execute them.
 - **Not beta-certified:** Eval fixtures exist; Hub/Cortex auto-routing is not wired in this release.
 
+### memory_correction_proposal (proposal-mode scaffold)
+
+- **Purpose:** Emit a read-only memory correction blueprint wrapped in `ProposalEnvelopeV1`. Inner payload is `MemoryCorrectionProposalV1`. Context-exec may **propose** a memory correction; it may **not perform** mutation or write to any memory backend.
+- **Input shape:** Natural-language request to draft a correction for an unsupported or contradicted belief (e.g. unsupported Denver location claim).
+- **Artifact type:** `ProposalEnvelopeV1` — review envelope with `proposal_type=memory_correction_proposal`, `requires_human_approval` (always `true`), `mutation_allowed` (always `false`), `review_status` (`draft` or `pending_review` only from context-exec), inner `artifact_type=MemoryCorrectionProposalV1`, and nested `artifact` payload.
+- **Inner payload:** `MemoryCorrectionProposalV1` — `current_belief`, `proposed_belief`, `correction_type`, `rationale`, `supporting_evidence`, `contradicting_evidence`, `missing_evidence`, `target_memory_domains`, `risk`, `tests_to_run`, `rollback_plan`, `open_questions`, `mutation_allowed` (always `false`).
+- **Review lifecycle:** Same as `patch_proposal` — context-exec never emits `approved` or `executed`; a separate executor applies corrections after Cortex/human approval.
+- **Expected behavior:** Read-only recall/memory/trace grounding; schema-valid envelope; no cards/RDF/Graphiti/Chroma/SQL writes.
+- **Boundary:** Memory correction proposals are not memory writes. Context-exec may draft a correction proposal, but it may not update cards, RDF, Graphiti, Chroma, SQL timeline, or any other memory backend. Cortex/human approval is required before a separate executor can apply a correction.
+- **Not beta-certified:** Eval fixtures exist; Hub/Cortex auto-routing is not wired in this release.
+
 ### belief_provenance
 
 - **Purpose:** Investigate origin and support status of a user/runtime claim.
@@ -228,7 +239,7 @@ bash scripts/context_exec_beta_gate.sh --live
 
 - Only three modes are beta-certified; other schema modes are not eval/golden gated.
 - Legacy AgentChain fallback still active on cortex-exec when `CONTEXT_EXEC_LEGACY_FALLBACK=true`.
-- Proposal envelope scaffold (`ProposalEnvelopeV1` wrapping `PatchProposalV1`) is implemented for `patch_proposal`; other proposal types remain documented only.
+- Proposal envelope scaffold (`ProposalEnvelopeV1`) is implemented for `patch_proposal` (wrapping `PatchProposalV1`) and `memory_correction_proposal` (wrapping `MemoryCorrectionProposalV1`); other proposal types remain documented only.
 - AlexZhang engine requires opt-in; fake remains default.
 - Repo impact quality differs between fake (pattern grep) and alexzhang (engine-file grounding).
 - No write/network/shell; mutation is out of scope for beta.
@@ -292,7 +303,7 @@ Proposal-mode scaffold ( **partially implemented** ):
 |-------------------|--------|---------|
 | `ProposalEnvelopeV1` | Scaffold | Shared review wrapper for all proposal artifacts |
 | `PatchProposalV1` | Scaffold (inner payload) | Propose code/doc patch — read-only blueprint only |
-| `MemoryCorrectionProposalV1` | Schema stub | Propose memory correction — read-only blueprint only |
+| `MemoryCorrectionProposalV1` | Scaffold (inner payload) | Propose memory correction — read-only blueprint only |
 | `ProposalLedgerRecordV1` | Contract | Durable ledger row — system of record for proposals |
 | `ProposalTriageDecisionV1` | Contract | Policy triage — prevents approval-queue spam |
 | `ProposalReviewDecisionV1` | Contract | Human/policy review — does not execute |
@@ -300,7 +311,7 @@ Proposal-mode scaffold ( **partially implemented** ):
 | `RuntimeConfigProposalV1` | Not implemented | Propose runtime config change |
 | `TestPlanProposalV1` | Not implemented | Propose test additions |
 
-`patch_proposal` emits `ProposalEnvelopeV1` wrapping `PatchProposalV1`. It may not execute changes.
+`patch_proposal` emits `ProposalEnvelopeV1` wrapping `PatchProposalV1`. `memory_correction_proposal` emits `ProposalEnvelopeV1` wrapping `MemoryCorrectionProposalV1`. Neither mode may execute changes or write to memory backends.
 
 ### Proposal ledger and Hub attention model
 

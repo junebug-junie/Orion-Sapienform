@@ -103,7 +103,7 @@ class ContextExecSettings(BaseSettings):
         alias="CONTEXT_EXEC_PROPOSAL_LEDGER_AUTO_TRIAGE",
     )
 
-    proposal_review_api_enabled: bool = Field(True, alias="PROPOSAL_REVIEW_API_ENABLED")
+    proposal_review_api_enabled: bool = Field(False, alias="PROPOSAL_REVIEW_API_ENABLED")
     proposal_ledger_store_path: str = Field("", alias="PROPOSAL_LEDGER_STORE_PATH")
 
 

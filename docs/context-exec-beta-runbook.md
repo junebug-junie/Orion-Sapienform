@@ -383,6 +383,27 @@ The CLI can list, show, triage, and review proposals. It cannot execute proposal
 
 Approval creates future execution eligibility only; it does not execute anything.
 
+### Proposal review API (Hub-facing seam)
+
+HTTP control-plane over the proposal ledger on orion-context-exec. **Disabled by default** (`PROPOSAL_REVIEW_API_ENABLED=false`). Hub must call this API — not read JSON ledger files directly.
+
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| `PROPOSAL_REVIEW_API_ENABLED` | `false` | Mount proposal review routes when `true` |
+| `PROPOSAL_LEDGER_STORE_PATH` | unset | Explicit JSON store path (required when enabled) |
+
+`/health` reports `proposal_review_api` with `enabled`, `store_configured`, `store_path_present`, `ok`, and `error`. Missing store path must not look healthy.
+
+Approval creates execution eligibility only — no executor, no receipts, no memory/repo/runtime mutation. Context-exec cannot approve (`reviewer_id=context-exec` → 403).
+
+```bash
+export PROPOSAL_REVIEW_API_ENABLED=true
+export PROPOSAL_LEDGER_STORE_PATH=/tmp/orion-proposals.json
+bash scripts/proposal_review_api_smoke.sh
+```
+
+See [docs/proposal-review-api.md](proposal-review-api.md).
+
 ### Proposal ledger intake (opt-in)
 
 Context-exec can persist real `ProposalEnvelopeV1` outputs into the proposal ledger when explicitly configured. Ledger intake is **disabled by default**. Persistence is not execution — context-exec still cannot approve, execute, write memory, or mutate repo files.

@@ -93,7 +93,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Orion Context Exec", lifespan=lifespan)
 app.include_router(router)
-app.include_router(proposal_review_router)
+if settings.proposal_review_api_enabled:
+    app.include_router(proposal_review_router)
 
 
 @app.get("/")

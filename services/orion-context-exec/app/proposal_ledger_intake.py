@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from orion.schemas.context_exec import (
     MemoryCorrectionProposalV1,
+    PatchProposalV1,
     ProposalEnvelopeV1,
 )
 from orion.schemas.proposal_ledger import (
@@ -21,6 +22,24 @@ from orion.schemas.proposal_ledger import (
 
 if TYPE_CHECKING:
     from .settings import ContextExecSettings
+
+# Deterministic auto-triage thresholds — conservative, no LLM.
+_LOW_CONFIDENCE_THRESHOLD = 0.25
+_IDENTITY_BELIEF_MARKERS = (
+    "denver",
+    "identity",
+    "user is from",
+    "i am from",
+    "core belief",
+    "who i am",
+)
+_SAFETY_REVIEW_MARKERS = (
+    "human review",
+    "requires review",
+    "safety concern",
+    "safety note",
+    "review before",
+)
 
 
 @dataclass(frozen=True)
@@ -37,37 +56,101 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _deterministic_auto_triage(
-    envelope: ProposalEnvelopeV1,
-) -> ProposalTriageDecisionV1 | None:
-    """Conservative deterministic triage — no LLM, no auto-approve."""
-    if envelope.risk in {"high", "unknown"}:
-        return ProposalTriageDecisionV1(
-            proposal_id=envelope.proposal_id,
-            action="promote_to_review",
-            rationale="high or unknown risk envelope",
-            attention_required=True,
-            attention_reason="high or unknown risk",
-        )
+def _envelope_is_obviously_empty(envelope: ProposalEnvelopeV1) -> bool:
+    return not (envelope.title or "").strip() and not (envelope.summary or "").strip()
 
+
+def _text_indicates_insufficient_grounding(*texts: str | None) -> bool:
+    for text in texts:
+        if not text:
+            continue
+        lowered = text.lower()
+        if "insufficient" in lowered or "not enough evidence" in lowered:
+            return True
+    return False
+
+
+def _memory_is_identity_correction(correction: MemoryCorrectionProposalV1) -> bool:
+    belief = correction.current_belief.lower()
+    return any(marker in belief for marker in _IDENTITY_BELIEF_MARKERS)
+
+
+def _safety_notes_warrant_review(envelope: ProposalEnvelopeV1) -> str | None:
+    for note in envelope.safety_notes:
+        lowered = note.lower()
+        if any(marker in lowered for marker in _SAFETY_REVIEW_MARKERS):
+            return note
+    return None
+
+
+def triage_proposal_envelope(envelope: ProposalEnvelopeV1) -> ProposalTriageDecisionV1 | None:
+    """Deterministic auto-triage policy — store, block, or promote; never approve or execute."""
+    memory: MemoryCorrectionProposalV1 | None = None
+    patch: PatchProposalV1 | None = None
     if envelope.artifact_type == "MemoryCorrectionProposalV1":
-        correction = MemoryCorrectionProposalV1.model_validate(envelope.artifact)
-        domains = {d.lower() for d in correction.target_memory_domains}
-        if domains & {"identity", "core"}:
-            return ProposalTriageDecisionV1(
-                proposal_id=envelope.proposal_id,
-                action="promote_to_review",
-                rationale="identity or core memory correction",
-                attention_required=True,
-                attention_reason="identity or core memory correction",
-            )
-        if correction.confidence < 0.3:
+        memory = MemoryCorrectionProposalV1.model_validate(envelope.artifact)
+    elif envelope.artifact_type == "PatchProposalV1":
+        patch = PatchProposalV1.model_validate(envelope.artifact)
+
+    # Block for evidence — checked before promotion so garbage never reaches Juniper.
+    if memory is not None:
+        if memory.confidence < _LOW_CONFIDENCE_THRESHOLD:
             return ProposalTriageDecisionV1(
                 proposal_id=envelope.proposal_id,
                 action="block_for_evidence",
-                rationale="low confidence memory correction",
+                rationale="inner artifact confidence below threshold",
                 attention_required=True,
                 attention_reason="low confidence",
+            )
+        if memory.missing_evidence and not memory.supporting_evidence:
+            return ProposalTriageDecisionV1(
+                proposal_id=envelope.proposal_id,
+                action="block_for_evidence",
+                rationale="missing evidence without supporting evidence",
+                attention_required=True,
+                attention_reason="missing evidence without support",
+            )
+
+    if _text_indicates_insufficient_grounding(
+        envelope.summary,
+        memory.rationale if memory else None,
+        patch.proposed_change_summary if patch else None,
+    ):
+        return ProposalTriageDecisionV1(
+            proposal_id=envelope.proposal_id,
+            action="block_for_evidence",
+            rationale="proposal indicates insufficient grounding",
+            attention_required=True,
+            attention_reason="insufficient grounding",
+        )
+
+    safety_reason = _safety_notes_warrant_review(envelope)
+    if safety_reason:
+        return ProposalTriageDecisionV1(
+            proposal_id=envelope.proposal_id,
+            action="promote_to_review",
+            rationale=f"safety note warrants human review: {safety_reason}",
+            attention_required=True,
+            attention_reason=safety_reason,
+        )
+
+    if envelope.risk in {"high", "unknown"} and not _envelope_is_obviously_empty(envelope):
+        return ProposalTriageDecisionV1(
+            proposal_id=envelope.proposal_id,
+            action="promote_to_review",
+            rationale=f"{envelope.risk} risk envelope with grounded content",
+            attention_required=True,
+            attention_reason=f"{envelope.risk} risk",
+        )
+
+    if memory is not None and _memory_is_identity_correction(memory):
+        if memory.confidence >= _LOW_CONFIDENCE_THRESHOLD:
+            return ProposalTriageDecisionV1(
+                proposal_id=envelope.proposal_id,
+                action="promote_to_review",
+                rationale="identity or core user belief memory correction",
+                attention_required=True,
+                attention_reason="memory correction involving identity",
             )
 
     return None
@@ -117,7 +200,7 @@ def maybe_persist_proposal_envelope(
         repo.store(record)
 
         if settings.context_exec_proposal_ledger_auto_triage:
-            triage = _deterministic_auto_triage(envelope)
+            triage = triage_proposal_envelope(envelope)
             if triage is not None:
                 record = repo.apply_triage(triage)
 

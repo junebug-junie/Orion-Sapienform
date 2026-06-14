@@ -791,9 +791,13 @@ async def dispatch_metacog_trigger(
     # 2. Build the Request
     # We pass the trigger details in the context so the first step (ContextService) can read them
     recall_override: Dict[str, Any] = {}
-    if trigger.recall_enabled is False:
-        recall_override = {"recall": {"enabled": False}}
-        logger.info("Metacog recall disabled for trigger %s", trigger.trigger_kind)
+    if trigger.recall_enabled is not None:
+        recall_override = {"recall": {"enabled": bool(trigger.recall_enabled)}}
+        logger.info(
+            "Metacog recall override for trigger %s enabled=%s",
+            trigger.trigger_kind,
+            bool(trigger.recall_enabled),
+        )
 
     req = PlanExecutionRequest(
         plan=plan,

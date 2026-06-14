@@ -92,6 +92,21 @@ class Settings(BaseSettings):
         alias="CORTEX_METACOG_LOGPROB_PROBE_MODE",
         description="When CORTEX_METACOG_RETURN_LOGPROBS: empty=OpenAI chat logprobs; native_completion=aligned llama.cpp /completion.",
     )
+    daily_metacog_prompt_max_chars: int = Field(
+        8192,
+        alias="CORTEX_DAILY_METACOG_PROMPT_MAX_CHARS",
+        description="Fail daily_metacog_v1 LLM step before call when rendered prompt exceeds this char budget.",
+    )
+    cortex_metacog_draft_prompt_max_chars: int = Field(
+        16384,
+        alias="CORTEX_METACOG_DRAFT_PROMPT_MAX_CHARS",
+        description="Lane A log_orion_metacognition: skip MetacogDraftService LLM when rendered prompt exceeds this char budget.",
+    )
+    cortex_metacog_enrich_prompt_max_chars: int = Field(
+        20480,
+        alias="CORTEX_METACOG_ENRICH_PROMPT_MAX_CHARS",
+        description="Lane A log_orion_metacognition: skip MetacogEnrichService LLM when rendered prompt exceeds this char budget.",
+    )
 
     publish_cortex_exec_grammar: bool = Field(False, alias="PUBLISH_CORTEX_EXEC_GRAMMAR")
     grammar_event_channel: str = Field("orion:grammar:event", alias="GRAMMAR_EVENT_CHANNEL")

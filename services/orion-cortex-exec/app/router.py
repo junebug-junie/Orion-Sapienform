@@ -868,6 +868,13 @@ class PlanRunner:
         )
         mode = extra.get("mode") or ctx.get("mode") or "brain"
         recall_cfg = extra.get("recall") or ctx.get("recall") or {}
+        if (
+            isinstance(plan.metadata, dict)
+            and str(plan.metadata.get("recall_enabled_default") or "").lower() == "false"
+            and "enabled" not in recall_cfg
+        ):
+            recall_cfg = dict(recall_cfg)
+            recall_cfg["enabled"] = False
         raw_enabled = recall_cfg.get("enabled", True)
         ctx.setdefault("recall", recall_cfg)
         recall_enabled = recall_enabled_value(recall_cfg)

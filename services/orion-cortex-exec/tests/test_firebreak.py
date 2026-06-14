@@ -56,7 +56,10 @@ class TestFirebreak(unittest.TestCase):
         self.assertEqual(result.status, "success")
         self.assertTrue(result.result["MetacogPublishService"]["skipped"])
         self.assertEqual(result.result["MetacogPublishService"]["reason"], "firebreak_baseline_fallback")
-        mock_bus.publish.assert_not_called()
+        self.assertEqual(result.result["MetacogPublishService"]["trigger_kind"], "baseline")
+        self.assertEqual(result.result["MetacogPublishService"]["draft_mode"], "fallback")
+        self.assertIn("fallback_reason", result.result["MetacogPublishService"])
+        mock_bus.publish.assert_called_once()
 
     def test_firebreak_allows_baseline_llm(self):
         # Mock bus

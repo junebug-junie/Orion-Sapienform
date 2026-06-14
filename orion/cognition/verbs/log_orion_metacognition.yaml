@@ -1,7 +1,11 @@
 # orion/cognition/verbs/log_orion_metacognition.yaml
+# Lane A — collapse mirror publish (SQL via MetacogPublishService).
+# Draft/enrich templates do not use memory_digest; optional plan-level pre-recall is telemetry-only.
 name: log_orion_metacognition
 kind: task
 timeout_ms: 1280000
+# Disable plan-level pre-recall unless equilibrium/trigger explicitly sets recall.enabled=true.
+recall_enabled: false
 steps:
   - name: collect_metacog_context
     services:

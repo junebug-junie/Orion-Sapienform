@@ -52,6 +52,7 @@ from orion.schemas.telemetry.turn_effect_explanations import (
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 from orion.schemas.chat_stance import ChatStanceBrief
 from orion.schemas.metacog_patches import MetacogDraftTextPatchV1, MetacogEnrichScorePatchV1
+from orion.schemas.platform import CoreEventV1
 
 from orion.cognition.personality.identity_context import build_identity_context, load_identity_file
 from .settings import settings
@@ -103,8 +104,26 @@ _SYSTEM_TELEMETRY_KEYS = {
     "metacog_draft_rejected_keys",
     "metacog_draft_error",
     "metacog_draft_raw_trigger_null",
+    "metacog_draft_fallback_reason",
+    "metacog_enrich_fallback_reason",
+    "metacog_prompt_chars",
+    "metacog_prompt_limit_chars",
+    "metacog_prompt_section_sizes",
     "metacog_what_changed_summary_source",
 }
+
+
+_METACOG_DRAFT_CTX_LEN_KEYS: tuple[str, ...] = (
+    "context_summary",
+    "spark_state_json",
+    "turn_effect_json",
+    "recent_turn_effect_alerts_json",
+    "turn_effect_policy_json",
+    "turn_effect_explanations_json",
+    "biometrics_json",
+)
+
+_METACOG_ENRICH_CTX_LEN_KEYS: tuple[str, ...] = _METACOG_DRAFT_CTX_LEN_KEYS + ("collapse_json",)
 
 
 def _filter_world_context_capsule(
@@ -478,6 +497,10 @@ def _set_metacog_draft_telemetry(
     rejected_keys: list[str] | None = None,
     error: str | None = None,
     raw_trigger_null: bool = False,
+    fallback_reason: str | None = None,
+    prompt_chars: int | None = None,
+    prompt_limit_chars: int | None = None,
+    section_sizes: Dict[str, int] | None = None,
 ) -> None:
     state_snapshot = entry_dict.get("state_snapshot")
     if not isinstance(state_snapshot, dict):
@@ -487,6 +510,38 @@ def _set_metacog_draft_telemetry(
     telemetry["metacog_draft_rejected_keys"] = rejected_keys or []
     telemetry["metacog_draft_error"] = error
     telemetry["metacog_draft_raw_trigger_null"] = bool(raw_trigger_null)
+    if fallback_reason:
+        telemetry["metacog_draft_fallback_reason"] = fallback_reason
+    if prompt_chars is not None:
+        telemetry["metacog_prompt_chars"] = int(prompt_chars)
+    if prompt_limit_chars is not None:
+        telemetry["metacog_prompt_limit_chars"] = int(prompt_limit_chars)
+    if section_sizes:
+        telemetry["metacog_prompt_section_sizes"] = dict(section_sizes)
+    state_snapshot["telemetry"] = telemetry
+    entry_dict["state_snapshot"] = state_snapshot
+
+
+def _set_metacog_enrich_telemetry(
+    entry_dict: Dict[str, Any],
+    *,
+    fallback_reason: str | None = None,
+    prompt_chars: int | None = None,
+    prompt_limit_chars: int | None = None,
+    section_sizes: Dict[str, int] | None = None,
+) -> None:
+    state_snapshot = entry_dict.get("state_snapshot")
+    if not isinstance(state_snapshot, dict):
+        state_snapshot = {}
+    telemetry = _merge_telemetry_system_owned(state_snapshot.get("telemetry"), None)
+    if fallback_reason:
+        telemetry["metacog_enrich_fallback_reason"] = fallback_reason
+    if prompt_chars is not None:
+        telemetry["metacog_enrich_prompt_chars"] = int(prompt_chars)
+    if prompt_limit_chars is not None:
+        telemetry["metacog_enrich_prompt_limit_chars"] = int(prompt_limit_chars)
+    if section_sizes:
+        telemetry["metacog_enrich_prompt_section_sizes"] = dict(section_sizes)
     state_snapshot["telemetry"] = telemetry
     entry_dict["state_snapshot"] = state_snapshot
 
@@ -893,11 +948,261 @@ def _format_message_history_for_chat_prompt(messages: Any) -> str:
     return "\n".join(lines)
 
 
+def _estimate_prompt_tokens(text: str) -> int:
+    stripped = (text or "").strip()
+    if not stripped:
+        return 0
+    return max(len(stripped.split()), (len(stripped) + 3) // 4, 1)
+
+
+_PROMPT_BLOAT_CTX_KEYS = frozenset(
+    {
+        "recall_memory_bundle_debug",
+        "recall_fragments",
+    }
+)
+
+
+def _prompt_render_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """Strip debug-only recall blobs for prompt-safe metacog lanes only."""
+    render_ctx = ctx.copy()
+    if not bool(ctx.get("recall_prompt_safe_ctx")):
+        return render_ctx
+    for key in _PROMPT_BLOAT_CTX_KEYS:
+        render_ctx.pop(key, None)
+    bundle = render_ctx.get("memory_bundle")
+    if isinstance(bundle, dict) and set(bundle.keys()) - {"rendered"}:
+        render_ctx["memory_bundle"] = {"rendered": str(bundle.get("rendered") or "")}
+    return render_ctx
+
+
+def _metacog_ctx_section_sizes(ctx: Dict[str, Any], keys: tuple[str, ...]) -> Dict[str, int]:
+    sizes: Dict[str, int] = {}
+    for key in keys:
+        value = ctx.get(key)
+        if isinstance(value, str):
+            sizes[key] = len(value)
+    return sizes
+
+
+def _metacog_largest_sections(section_sizes: Dict[str, int], *, limit: int = 3) -> Dict[str, int]:
+    ranked = sorted(section_sizes.items(), key=lambda item: item[1], reverse=True)
+    return dict(ranked[:limit])
+
+
+def _log_metacog_publish_prompt_diagnostics(
+    *,
+    service: str,
+    phase: str,
+    correlation_id: str,
+    prompt: str,
+    ctx: Dict[str, Any],
+    section_keys: tuple[str, ...],
+) -> Dict[str, int]:
+    section_sizes = _metacog_ctx_section_sizes(ctx, section_keys)
+    prompt_chars = len(prompt or "")
+    largest = _metacog_largest_sections(section_sizes)
+    logger.info(
+        "metacog_publish_prompt_diagnostics corr_id=%s service=%s phase=%s prompt_chars=%s section_sizes=%s largest_sections=%s",
+        correlation_id,
+        service,
+        phase,
+        prompt_chars,
+        section_sizes,
+        largest,
+    )
+    for key, size in section_sizes.items():
+        logger.info("[CTX_LEN] %s=%s", key, size)
+    logger.info("[PROMPT] service=%s chars=%s", service, prompt_chars)
+    return section_sizes
+
+
+def _enforce_metacog_publish_prompt_budget(
+    *,
+    service: str,
+    phase: str,
+    prompt: str,
+    ctx: Dict[str, Any],
+    correlation_id: str,
+    section_keys: tuple[str, ...],
+) -> tuple[bool, Dict[str, int], int, int]:
+    section_sizes = _metacog_ctx_section_sizes(ctx, section_keys)
+    prompt_chars = len(prompt or "")
+    if phase == "draft":
+        char_limit = int(settings.cortex_metacog_draft_prompt_max_chars)
+    else:
+        char_limit = int(settings.cortex_metacog_enrich_prompt_max_chars)
+    largest = _metacog_largest_sections(section_sizes)
+    logger.info(
+        "metacog_publish_prompt_preflight corr_id=%s service=%s phase=%s prompt_chars=%s limit_chars=%s section_sizes=%s largest_sections=%s",
+        correlation_id,
+        service,
+        phase,
+        prompt_chars,
+        char_limit,
+        section_sizes,
+        largest,
+    )
+    if prompt_chars > char_limit:
+        logger.warning(
+            "metacog_publish_prompt_budget_exceeded corr_id=%s service=%s phase=%s prompt_chars=%s limit_chars=%s largest_sections=%s",
+            correlation_id,
+            service,
+            phase,
+            prompt_chars,
+            char_limit,
+            largest,
+        )
+        return False, section_sizes, prompt_chars, char_limit
+    return True, section_sizes, prompt_chars, char_limit
+
+
+def _resolve_metacog_draft_fallback_reason(
+    *,
+    draft_error: str | None,
+    patch_error: str | None,
+    finish_reason: str | None,
+    raw_content: str,
+) -> str | None:
+    if draft_error == "prompt_budget_exceeded":
+        return "prompt_budget_exceeded"
+    if finish_reason == "length":
+        return "llm_finish_reason_length"
+    if draft_error == "no_json":
+        return "json_parse_failed"
+    if patch_error:
+        return "schema_validation_failed"
+    if not str(raw_content or "").strip():
+        return "empty_response"
+    return None
+
+
+def _extract_llm_finish_reason(llm_res: Any) -> str | None:
+    if llm_res is None:
+        return None
+    if isinstance(llm_res, dict):
+        choices = llm_res.get("choices")
+        if isinstance(choices, list) and choices:
+            first = choices[0]
+            if isinstance(first, dict):
+                return str(first.get("finish_reason") or "") or None
+    if hasattr(llm_res, "choices") and llm_res.choices:
+        try:
+            choice = llm_res.choices[0]
+            if hasattr(choice, "finish_reason"):
+                return str(choice.finish_reason or "") or None
+            if isinstance(choice, dict):
+                return str(choice.get("finish_reason") or "") or None
+        except (AttributeError, IndexError, TypeError):
+            return None
+    if hasattr(llm_res, "model_dump"):
+        try:
+            dumped = llm_res.model_dump(mode="json")
+            choices = dumped.get("choices")
+            if isinstance(choices, list) and choices:
+                first = choices[0]
+                if isinstance(first, dict):
+                    return str(first.get("finish_reason") or "") or None
+        except Exception:
+            return None
+    return None
+
+
+async def _publish_metacog_firebreak_diagnostic(
+    bus: OrionBusAsync,
+    *,
+    source: ServiceRef,
+    correlation_id: str,
+    trigger_kind: str,
+    draft_mode: str,
+    fallback_reason: str,
+    prompt_chars: int | None,
+    section_sizes: Dict[str, int] | None,
+) -> None:
+    largest = _metacog_largest_sections(section_sizes or {})
+    logger.error(
+        "metacog_publish_firebreak_skip corr_id=%s trigger_kind=%s draft_mode=%s fallback_reason=%s prompt_chars=%s largest_sections=%s",
+        correlation_id,
+        trigger_kind,
+        draft_mode,
+        fallback_reason,
+        prompt_chars,
+        largest,
+    )
+    try:
+        event = CoreEventV1(
+            event="metacog.publish.firebreak_skip",
+            payload={
+                "correlation_id": correlation_id,
+                "trigger_kind": trigger_kind,
+                "draft_mode": draft_mode,
+                "fallback_reason": fallback_reason,
+                "prompt_chars": prompt_chars,
+                "largest_sections": largest,
+                "section_sizes": section_sizes or {},
+            },
+        )
+        env = BaseEnvelope(
+            kind="orion.event",
+            source=source,
+            correlation_id=correlation_id,
+            payload=event.model_dump(mode="json"),
+        )
+        await bus.publish(settings.channel_core_events, env)
+    except Exception as exc:
+        logger.warning(
+            "metacog_publish_firebreak_diagnostic_publish_failed corr_id=%s error=%s",
+            correlation_id,
+            exc,
+        )
+
+
+def _enforce_daily_metacog_prompt_budget(
+    *,
+    prompt: str,
+    ctx: Dict[str, Any],
+    correlation_id: str,
+    verb_name: str,
+    step_name: str,
+) -> None:
+    if verb_name != "daily_metacog_v1":
+        return
+    section_keys = (
+        "memory_digest",
+        "skills_catalog_compact",
+        "context_summary",
+        "spark_state_json",
+        "collapse_json",
+    )
+    section_sizes = {
+        key: len(value)
+        for key in section_keys
+        if isinstance((value := ctx.get(key)), str)
+    }
+    total_chars = len(prompt or "")
+    est_tokens = _estimate_prompt_tokens(prompt)
+    logger.info(
+        "daily_metacog_prompt_preflight corr_id=%s step=%s section_sizes=%s total_prompt_chars=%s estimated_prompt_tokens=%s limit_chars=%s",
+        correlation_id,
+        step_name,
+        section_sizes,
+        total_chars,
+        est_tokens,
+        settings.daily_metacog_prompt_max_chars,
+    )
+    if total_chars > int(settings.daily_metacog_prompt_max_chars):
+        raise RuntimeError(
+            "daily_metacog_prompt_over_limit "
+            f"chars={total_chars} limit={settings.daily_metacog_prompt_max_chars} "
+            f"section_sizes={section_sizes} estimated_prompt_tokens={est_tokens}"
+        )
+
+
 def _render_prompt(template_str: str, ctx: Dict[str, Any]) -> str:
     env = Environment(autoescape=False)
 
     # [FIX] Defensive coding: Prevent Jinja crash on missing globals
-    render_ctx = ctx.copy()
+    render_ctx = _prompt_render_ctx(ctx)
     defaults = {
         "prompt_templates": {},
         "collapse_entry": {"event_id": "unknown_missing_draft"},
@@ -1610,12 +1915,16 @@ async def run_recall_step(
                     for hoist_key in ("compare_summary", "anchor_plan_summary", "selected_evidence_cards"):
                         if recall_dbg.get(hoist_key) is not None:
                             debug[hoist_key] = recall_dbg.get(hoist_key)
-        from orion.cognition.recall_query import recall_ctx_merge_from_reply
+        from orion.cognition.recall_query import recall_ctx_merge_from_reply, recall_profile_prompt_flags
 
         memory_digest = bundle.rendered if hasattr(bundle, "rendered") else ""
         debug["memory_digest"] = memory_digest
         debug["memory_digest_chars"] = len(memory_digest or "")
-        recall_merge = recall_ctx_merge_from_reply(res)
+        profile_flags = recall_profile_prompt_flags(req.profile)
+        recall_merge = recall_ctx_merge_from_reply(
+            res,
+            prompt_safe_ctx=bool(profile_flags.get("prompt_safe_ctx")),
+        )
         ctx.update(recall_merge)
         ctx["recall_fragments"] = [i.model_dump(mode="json") for i in bundle.items]
         ctx["memory_used"] = True
@@ -2256,20 +2565,46 @@ async def call_step_services(
         if shortcut is not None:
             return shortcut
 
-        # ---- DEBUG BY EYE ----
-        if service in {"MetacogDraftService", "MetacogEnrichService"}:
-            logger.info(f"[PROMPT] service={service} chars={len(prompt)}")
-            logger.info(f"[PROMPT_HEAD] {prompt[:500]!r}")
-            logger.info(f"[PROMPT_TAIL] {prompt[-500:]!r}")
-            # also useful: show which ctx keys exist
-            logger.info(f"[CTX_KEYS] {sorted(list(ctx.keys()))}")
-            # show lengths of the likely “balloon” fields
-            for k in ("context_summary", "spark_state_json", "collapse_json", "memory_digest"):
-                v = ctx.get(k)
-                if isinstance(v, str):
-                    logger.info(f"[CTX_LEN] {k}={len(v)}")
-         # ----------------------
+        # ---- Lane A metacog publish prompt diagnostics + preflight ----
+        metacog_phase: str | None = None
+        metacog_section_keys: tuple[str, ...] = ()
+        if service == "MetacogDraftService":
+            metacog_phase = "draft"
+            metacog_section_keys = _METACOG_DRAFT_CTX_LEN_KEYS
+        elif service == "MetacogEnrichService":
+            metacog_phase = "enrich"
+            metacog_section_keys = _METACOG_ENRICH_CTX_LEN_KEYS
 
+        metacog_budget_ok = True
+        metacog_section_sizes: Dict[str, int] = {}
+        metacog_prompt_chars = len(prompt or "")
+        metacog_prompt_limit = 0
+        if metacog_phase:
+            metacog_section_sizes = _log_metacog_publish_prompt_diagnostics(
+                service=service,
+                phase=metacog_phase,
+                correlation_id=correlation_id,
+                prompt=prompt,
+                ctx=ctx,
+                section_keys=metacog_section_keys,
+            )
+            metacog_budget_ok, metacog_section_sizes, metacog_prompt_chars, metacog_prompt_limit = (
+                _enforce_metacog_publish_prompt_budget(
+                    service=service,
+                    phase=metacog_phase,
+                    prompt=prompt,
+                    ctx=ctx,
+                    correlation_id=correlation_id,
+                    section_keys=metacog_section_keys,
+                )
+            )
+            if metacog_phase == "draft":
+                ctx["metacog_draft_prompt_chars"] = metacog_prompt_chars
+                ctx["metacog_draft_section_sizes"] = metacog_section_sizes
+            else:
+                ctx["metacog_enrich_prompt_chars"] = metacog_prompt_chars
+                ctx["metacog_enrich_section_sizes"] = metacog_section_sizes
+        # ----------------------------------------------------------------
 
         if service in {"MetacogDraftService", "MetacogEnrichService"}:
             debug_prompt = (prompt[:200] + "...") if len(prompt) > 200 else prompt
@@ -2315,51 +2650,67 @@ async def call_step_services(
                     if probe_mode:
                         md_options["logprob_probe_mode"] = probe_mode
 
-                request_object = ChatRequestPayload(
-                    model=req_model,
-                    profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
-                    messages=messages_payload,
-                    raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
-                    route="metacog",
-                    options=md_options,
-                )
+                llm_res: Any = None
+                if not metacog_budget_ok:
+                    logs.append("skip <- MetacogDraftService LLM (prompt_budget_exceeded)")
+                    raw_content = ""
+                    parsed: Dict[str, Any] = {}
+                    draft_error = "prompt_budget_exceeded"
+                    patch_error = None
+                    filtered: Dict[str, Any] = {}
+                    stripped: list[str] = []
+                    patch_model = MetacogDraftTextPatchV1()
+                    finish_reason = None
+                else:
+                    request_object = ChatRequestPayload(
+                        model=req_model,
+                        profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
+                        messages=messages_payload,
+                        raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
+                        route="metacog",
+                        options=md_options,
+                    )
 
-                llm_res = await llm_client.chat(
-                    source=source,
-                    req=request_object,
-                    correlation_id=correlation_id,
-                    reply_to=reply_channel,
-                    timeout_sec=effective_timeout,
-                )
+                    llm_res = await llm_client.chat(
+                        source=source,
+                        req=request_object,
+                        correlation_id=correlation_id,
+                        reply_to=reply_channel,
+                        timeout_sec=effective_timeout,
+                    )
 
                 try:
-                    raw_content = _extract_llm_text(llm_res)
-                    raw_content = _clean_raw_llm_content(raw_content)
+                    if metacog_budget_ok:
+                        raw_content = _extract_llm_text(llm_res)
+                        raw_content = _clean_raw_llm_content(raw_content)
 
-                    # 1) Try strict find
-                    parsed = find_collapse_entry(raw_content)
+                        # 1) Try strict find
+                        parsed = find_collapse_entry(raw_content)
 
-                    # 2) Fallback: loose extraction
-                    if not parsed:
-                        parsed = _loose_json_extract(raw_content)
+                        # 2) Fallback: loose extraction
+                        if not parsed:
+                            parsed = _loose_json_extract(raw_content)
 
-                    draft_error = None
-                    if not parsed:
-                        logger.error(f"MetacogDraftService: No JSON found. Raw Content: {raw_content!r}")
-                        draft_error = "no_json"
-                        parsed = {}
+                        draft_error = None
+                        if not parsed:
+                            logger.error(f"MetacogDraftService: No JSON found. Raw Content: {raw_content!r}")
+                            draft_error = "no_json"
+                            parsed = {}
 
-                    filtered, stripped = _sanitize_patch_payload(parsed, model=MetacogDraftTextPatchV1)
-                    if stripped:
-                        logger.warning("Draft patch stripped keys: %s", stripped)
+                        filtered, stripped = _sanitize_patch_payload(parsed, model=MetacogDraftTextPatchV1)
+                        if stripped:
+                            logger.warning("Draft patch stripped keys: %s", stripped)
 
-                    patch_error = None
-                    try:
-                        patch_model = MetacogDraftTextPatchV1.model_validate(filtered)
-                    except Exception as exc:
-                        logger.warning("MetacogDraftService patch rejected: %s", exc)
-                        patch_error = str(exc)
-                        patch_model = MetacogDraftTextPatchV1()
+                        patch_error = None
+                        try:
+                            patch_model = MetacogDraftTextPatchV1.model_validate(filtered)
+                        except Exception as exc:
+                            logger.warning("MetacogDraftService patch rejected: %s", exc)
+                            patch_error = str(exc)
+                            patch_model = MetacogDraftTextPatchV1()
+                        finish_reason = _extract_llm_finish_reason(llm_res)
+                    else:
+                        finish_reason = None
 
                     base_entry = _fallback_metacog_draft(ctx).model_dump(mode="json")
                     base_entry = _apply_metacog_system_fields(base_entry, ctx)
@@ -2367,18 +2718,28 @@ async def call_step_services(
                     md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
                     if isinstance(md.get("llm_uncertainty"), dict):
                         unc = md["llm_uncertainty"]
-                    elif hasattr(llm_res, "meta") and isinstance(llm_res.meta, dict):
+                    elif llm_res is not None and hasattr(llm_res, "meta") and isinstance(llm_res.meta, dict):
                         unc = llm_res.meta.get("llm_uncertainty")
                     if isinstance(unc, dict):
                         attach_llm_uncertainty_to_collapse_payload(base_entry, unc)
                     raw_trigger_null = not isinstance(ctx.get("trigger"), dict)
                     draft_mode = "fallback" if draft_error or patch_error else "llm"
+                    fallback_reason = _resolve_metacog_draft_fallback_reason(
+                        draft_error=draft_error,
+                        patch_error=patch_error,
+                        finish_reason=finish_reason,
+                        raw_content=raw_content if metacog_budget_ok else "",
+                    )
                     _set_metacog_draft_telemetry(
                         base_entry,
                         mode=draft_mode,
                         rejected_keys=stripped,
                         error=draft_error or patch_error,
                         raw_trigger_null=raw_trigger_null,
+                        fallback_reason=fallback_reason,
+                        prompt_chars=metacog_prompt_chars,
+                        prompt_limit_chars=metacog_prompt_limit,
+                        section_sizes=metacog_section_sizes,
                     )
                     if ctx.get("turn_effect"):
                         turn_summary = summarize_turn_effect(ctx["turn_effect"])
@@ -2481,14 +2842,28 @@ async def call_step_services(
                     ctx["collapse_entry"] = entry_dict
                     ctx["collapse_json"] = json.dumps(entry_dict, ensure_ascii=False)
 
-                    merged_result[service] = {"ok": True, "event_id": entry.event_id}
+                    merged_result[service] = {
+                        "ok": True,
+                        "event_id": entry.event_id,
+                        "fallback_reason": fallback_reason,
+                        "prompt_chars": metacog_prompt_chars,
+                        "section_sizes": metacog_section_sizes,
+                    }
                     logs.append("ok <- MetacogDraftService")
 
                 except Exception as e:
                     logger.error(f"MetacogDraftService FAILED: {e}")
                     logs.append(f"error <- MetacogDraftService parsing: {e}")
-                    merged_result[service] = {"ok": False, "error": str(e)}
-                    ctx.setdefault("prior_step_results", {})[service] = {"ok": False, "error": str(e)}
+                    merged_result[service] = {
+                        "ok": False,
+                        "error": str(e),
+                        "fallback_reason": "llm_exception",
+                    }
+                    by_service = ctx.get("prior_step_results_by_service")
+                    if not isinstance(by_service, dict):
+                        by_service = {}
+                        ctx["prior_step_results_by_service"] = by_service
+                    by_service[service] = merged_result[service]
                     step_failed = True
                     step_error = f"{service}: {e}"
                     break
@@ -2509,46 +2884,59 @@ async def call_step_services(
                 _me_step = SimpleNamespace(verb_name="log_orion_metacognition", step_name="metacog_enrich")
                 _me_lane = resolve_llm_lane_for_step(step=_me_step, ctx=ctx, settings=settings)
 
-                request_object = ChatRequestPayload(
-                    model=req_model,
-                    profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
-                    messages=messages_payload,
-                    raw_user_text="metacog_enrich",
-                    route="metacog",
-                    options={
-                        "temperature": 0.5,
-                        "max_tokens": 1024,
-                        "stream": False,
-                        "response_format": {"type": "json_object"},
-                        **_me_lane,
-                    },
-                )
+                enrich_fallback_reason: str | None = None
+                if not metacog_budget_ok:
+                    logs.append("skip <- MetacogEnrichService LLM (prompt_budget_exceeded)")
+                    enrich_fallback_reason = "prompt_budget_exceeded"
+                    patch: Dict[str, Any] = {}
+                else:
+                    request_object = ChatRequestPayload(
+                        model=req_model,
+                        profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
+                        messages=messages_payload,
+                        raw_user_text="metacog_enrich",
+                        route="metacog",
+                        options={
+                            "temperature": 0.5,
+                            "max_tokens": 1024,
+                            "stream": False,
+                            "response_format": {"type": "json_object"},
+                            **_me_lane,
+                        },
+                    )
 
-                llm_res = await llm_client.chat(
-                    source=source,
-                    req=request_object,
-                    correlation_id=correlation_id,
-                    reply_to=reply_channel,
-                    timeout_sec=effective_timeout,
-                )
+                    llm_res = await llm_client.chat(
+                        source=source,
+                        req=request_object,
+                        correlation_id=correlation_id,
+                        reply_to=reply_channel,
+                        timeout_sec=effective_timeout,
+                    )
 
                 try:
-                    raw_content = _extract_llm_text(llm_res)
-                    raw_content = _clean_raw_llm_content(raw_content)
+                    if metacog_budget_ok:
+                        raw_content = _extract_llm_text(llm_res)
+                        raw_content = _clean_raw_llm_content(raw_content)
 
-                    # 1) strict find
-                    patch = find_collapse_entry(raw_content)
+                        # 1) strict find
+                        patch = find_collapse_entry(raw_content)
 
-                    # 2) fallback loose extract
-                    if not patch:
-                        patch = _loose_json_extract(raw_content)
+                        # 2) fallback loose extract
+                        if not patch:
+                            patch = _loose_json_extract(raw_content)
 
-                    if isinstance(patch, dict) and isinstance(patch.get("draft"), dict):
-                        patch = patch["draft"]
+                        if isinstance(patch, dict) and isinstance(patch.get("draft"), dict):
+                            patch = patch["draft"]
 
-                    if not patch:
-                        logger.warning(f"MetacogEnrichService: No JSON found. Raw: {raw_content!r}")
-                        patch = {}
+                        if not patch:
+                            logger.warning(f"MetacogEnrichService: No JSON found. Raw: {raw_content!r}")
+                            enrich_fallback_reason = "json_parse_failed"
+                            patch = {}
+                        finish_reason = _extract_llm_finish_reason(llm_res)
+                        if finish_reason == "length":
+                            enrich_fallback_reason = enrich_fallback_reason or "llm_finish_reason_length"
+                        elif not str(raw_content or "").strip():
+                            enrich_fallback_reason = enrich_fallback_reason or "empty_response"
 
                     draft_data = ctx.get("collapse_entry")
                     if not draft_data:
@@ -2565,6 +2953,7 @@ async def call_step_services(
                         enrich_patch = MetacogEnrichScorePatchV1.model_validate(filtered)
                     except Exception as exc:
                         logger.warning("MetacogEnrichService patch rejected: %s", exc)
+                        enrich_fallback_reason = enrich_fallback_reason or "schema_validation_failed"
                         enrich_patch = MetacogEnrichScorePatchV1()
                     _apply_enrich_patch(final_dict, enrich_patch)
 
@@ -2631,18 +3020,39 @@ async def call_step_services(
                     final_dict = _apply_metacog_system_fields(final_dict, ctx)
                     final_dict.setdefault("source_service", "metacog")
                     final_dict.setdefault("observer", "orion")
+                    _set_metacog_enrich_telemetry(
+                        final_dict,
+                        fallback_reason=enrich_fallback_reason,
+                        prompt_chars=metacog_prompt_chars,
+                        prompt_limit_chars=metacog_prompt_limit,
+                        section_sizes=metacog_section_sizes,
+                    )
 
                     final_entry = normalize_collapse_entry(final_dict)
 
                     ctx["final_entry"] = final_entry.model_dump(mode="json")
-                    merged_result[service] = {"ok": True, "event_id": final_entry.event_id}
+                    merged_result[service] = {
+                        "ok": True,
+                        "event_id": final_entry.event_id,
+                        "fallback_reason": enrich_fallback_reason,
+                        "prompt_chars": metacog_prompt_chars,
+                        "section_sizes": metacog_section_sizes,
+                    }
                     logs.append("ok <- MetacogEnrichService")
 
                 except Exception as e:
                     logger.error(f"MetacogEnrichService FAILED: {e}")
                     logs.append(f"error <- MetacogEnrichService: {e}")
-                    merged_result[service] = {"ok": False, "error": str(e)}
-                    ctx.setdefault("prior_step_results", {})[service] = {"ok": False, "error": str(e)}
+                    merged_result[service] = {
+                        "ok": False,
+                        "error": str(e),
+                        "fallback_reason": "llm_exception",
+                    }
+                    by_service = ctx.get("prior_step_results_by_service")
+                    if not isinstance(by_service, dict):
+                        by_service = {}
+                        ctx["prior_step_results_by_service"] = by_service
+                    by_service[service] = merged_result[service]
                     step_failed = True
                     step_error = f"{service}: {e}"
                     break
@@ -2665,9 +3075,46 @@ async def call_step_services(
                 draft_mode = telemetry.get("metacog_draft_mode")
 
                 if trigger_kind == "baseline" and draft_mode == "fallback":
-                    logger.warning("Firebreak: Skipping baseline fallback publish. draft_mode=fallback trigger=baseline")
-                    logs.append("skip <- MetacogPublishService (firebreak: baseline fallback)")
-                    merged_result[service] = {"ok": True, "skipped": True, "reason": "firebreak_baseline_fallback"}
+                    fallback_reason = (
+                        telemetry.get("metacog_draft_fallback_reason")
+                        or telemetry.get("metacog_draft_error")
+                        or "fallback"
+                    )
+                    prompt_chars = (
+                        telemetry.get("metacog_prompt_chars")
+                        or ctx.get("metacog_draft_prompt_chars")
+                    )
+                    section_sizes = (
+                        telemetry.get("metacog_prompt_section_sizes")
+                        or ctx.get("metacog_draft_section_sizes")
+                    )
+                    if not isinstance(section_sizes, dict):
+                        section_sizes = {}
+                    logs.append(
+                        "skip <- MetacogPublishService "
+                        f"(firebreak: baseline fallback reason={fallback_reason} prompt_chars={prompt_chars})"
+                    )
+                    merged_result[service] = {
+                        "ok": True,
+                        "skipped": True,
+                        "reason": "firebreak_baseline_fallback",
+                        "trigger_kind": trigger_kind,
+                        "draft_mode": draft_mode,
+                        "fallback_reason": fallback_reason,
+                        "prompt_chars": prompt_chars,
+                        "section_sizes": section_sizes,
+                        "largest_sections": _metacog_largest_sections(section_sizes),
+                    }
+                    await _publish_metacog_firebreak_diagnostic(
+                        bus,
+                        source=source,
+                        correlation_id=correlation_id,
+                        trigger_kind=trigger_kind,
+                        draft_mode=str(draft_mode),
+                        fallback_reason=str(fallback_reason),
+                        prompt_chars=int(prompt_chars) if prompt_chars is not None else None,
+                        section_sizes=section_sizes,
+                    )
                     continue
 
                 try:
@@ -2738,7 +3185,11 @@ async def call_step_services(
                     logger.error(f"MetacogPublishService FAILED: {e}")
                     logs.append(f"error <- MetacogPublishService: {e}")
                     merged_result[service] = {"ok": False, "error": str(e)}
-                    ctx.setdefault("prior_step_results", {})[service] = {"ok": False, "error": str(e)}
+                    by_service = ctx.get("prior_step_results_by_service")
+                    if not isinstance(by_service, dict):
+                        by_service = {}
+                        ctx["prior_step_results_by_service"] = by_service
+                    by_service[service] = merged_result[service]
                     step_failed = True
                     step_error = f"{service}: {e}"
                     break
@@ -3081,6 +3532,13 @@ async def call_step_services(
                 req_model = ctx.get("model") or ctx.get("llm_model") or None
                 memory_digest = (ctx.get("memory_digest") or "").strip()
                 prompt = _append_memory_digest(prompt, memory_digest)
+                _enforce_daily_metacog_prompt_budget(
+                    prompt=prompt,
+                    ctx=ctx,
+                    correlation_id=correlation_id,
+                    verb_name=str(step.verb_name or ""),
+                    step_name=str(step.step_name or ""),
+                )
                 effective_max_tokens, max_tokens_source, requested_max_tokens = _resolve_llm_max_tokens(ctx=ctx, step=step)
                 if diagnostic:
                     logger.info(

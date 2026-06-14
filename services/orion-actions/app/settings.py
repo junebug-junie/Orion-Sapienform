@@ -75,7 +75,7 @@ class Settings(BaseSettings):
         alias="ACTIONS_JOURNAL_SCHEDULER_RECALL_PROFILE",
     )
     actions_journal_metacog_recall_profile: str = Field(
-        "journal.daily.grounded.v1",
+        "journal.daily.metacog.grounded.v1",
         alias="ACTIONS_JOURNAL_METACOG_RECALL_PROFILE",
     )
     actions_journal_notify_recall_profile: str = Field(

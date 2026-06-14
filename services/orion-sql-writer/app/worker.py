@@ -170,6 +170,23 @@ def _grammar_shard_count() -> int:
     return max(1, int(settings.sql_writer_grammar_workers))
 
 
+def grammar_queue_snapshot() -> dict[str, Any]:
+    """Expose grammar worker queue depths for runtime truth endpoints."""
+    shard_count = _grammar_shard_count()
+    queues = _GRAMMAR_QUEUES
+    if queues is None:
+        return {"workers": shard_count, "total_depth": 0, "shards": []}
+    shards = [
+        {"shard": idx, "depth": queues[idx].qsize(), "maxsize": queues[idx].maxsize}
+        for idx in range(len(queues))
+    ]
+    return {
+        "workers": len(queues),
+        "total_depth": sum(item["depth"] for item in shards),
+        "shards": shards,
+    }
+
+
 def _grammar_shard_index(trace_id: str) -> int:
     return hash(trace_id) % _grammar_shard_count()
 
@@ -1061,45 +1078,12 @@ def _write_row(sql_model_cls, data: dict) -> bool:
                     raw_meta = {"raw_metadata": str(raw_meta)}
                 filtered_data["metadata_"] = _json_sanitize(deepcopy(raw_meta))
 
+            from app.spark_telemetry_persist import upsert_spark_telemetry
+
+            upsert_spark_telemetry(sess, filtered_data)
+
             corr_id = filtered_data.get("correlation_id")
             if corr_id:
-                existing = (
-                    sess.query(SparkTelemetrySQL)
-                    .filter(SparkTelemetrySQL.correlation_id == corr_id)
-                    .first()
-                )
-
-                if existing:
-                    for k in (
-                        "phi",
-                        "novelty",
-                        "trace_mode",
-                        "trace_verb",
-                        "stimulus_summary",
-                        "timestamp",
-                        "source_service",
-                        "source_node",
-                        "node",
-                    ):
-                        if k in filtered_data and filtered_data.get(k) is not None:
-                            setattr(existing, k, filtered_data.get(k))
-
-                    try:
-                        ex_meta = getattr(existing, "metadata_", None)
-                    except Exception:
-                        ex_meta = None
-                    new_meta = filtered_data.get("metadata_")
-                    if isinstance(ex_meta, dict) and isinstance(new_meta, dict):
-                        ex_meta.update(new_meta)
-                        existing.metadata_ = _json_sanitize(ex_meta)
-                    elif isinstance(new_meta, dict):
-                        existing.metadata_ = _json_sanitize(new_meta)
-
-                    sess.commit()
-                else:
-                    sess.add(SparkTelemetrySQL(**filtered_data))
-                    sess.commit()
-
                 try:
                     meta_for_chat = _spark_meta_minimal(filtered_data)
                     existing_chat = (
@@ -1118,7 +1102,7 @@ def _write_row(sql_model_cls, data: dict) -> bool:
                         sess.commit()
                 except Exception as ex:
                     logger.warning(f"Could not back-populate chat log spark_meta: {ex}")
-                return True
+            return True
 
         if sql_model_cls is ChatMessageSQL:
             client_meta = data.get("client_meta")
@@ -1347,6 +1331,7 @@ def _write_fallback(kind: str, correlation_id: str, payload: Any, error: str = N
                 correlation_id=correlation_id,
                 payload=safe_payload,
                 error=error,
+                created_at_ts=datetime.now(timezone.utc),
             )
         )
         sess.commit()
@@ -1919,7 +1904,6 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                     )
                     return
                 write_ok = await _write(sql_model, None, mapped, {}, kind=env.kind)
-                await _write(sql_model, None, mapped, {}, kind=env.kind)
             elif sql_model is Dream:
                 normalized = _normalize_dream_envelope_payload(
                     env.kind, data_to_process, extra_sql_fields

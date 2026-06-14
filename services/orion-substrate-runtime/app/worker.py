@@ -93,7 +93,11 @@ class BiometricsSubstrateWorker:
             try:
                 last_event_id, to_publish = await asyncio.to_thread(self._tick)
                 if self._bus and to_publish:
-                    await publish_accepted_events(self._bus, to_publish)
+                    await publish_accepted_events(
+                        self._bus,
+                        to_publish,
+                        channel=self._settings.accepted_pressure_grammar_channel,
+                    )
                 if last_event_id:
                     created_at = self._store.grammar_event_created_at(last_event_id)
                     if created_at:

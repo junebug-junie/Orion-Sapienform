@@ -1,12 +1,15 @@
 import uuid
 
-from sqlalchemy import Column, DateTime, Float, JSON, String
+from sqlalchemy import Column, DateTime, Float, JSON, String, UniqueConstraint
 
 from app.db import Base
 
 
 class SparkTelemetrySQL(Base):
     __tablename__ = "spark_telemetry"
+    __table_args__ = (
+        UniqueConstraint("correlation_id", name="uq_spark_telemetry_correlation_id"),
+    )
 
     # NOTE: We want each telemetry row to be uniquely addressable. We keep
     # correlation_id as an indexed foreign key / join key back to the trace.

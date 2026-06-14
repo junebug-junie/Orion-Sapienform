@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
 from datetime import datetime, timezone
 from typing import Any
+
+logger = logging.getLogger("orion.substrate.store")
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from psycopg2.extras import Json
 
 from app.settings import Settings, get_settings
+from app.cursor_gaps import TailSeedRecord, record_tail_seed
 from orion.schemas.biometrics_projection import (
     ActiveNodePressureProjectionV1,
     NodeBiometricsProjectionV1,
@@ -26,6 +30,12 @@ from orion.substrate.transport_loop.constants import (
     TRANSPORT_BUS_PROJECTION_ID,
     TRANSPORT_GRAMMAR_CURSOR_NAME,
 )
+
+GRAMMAR_CURSOR_REGISTRY: dict[str, tuple[str, str]] = {
+    GRAMMAR_CURSOR_NAME: ("orion-biometrics", "biometrics.node:"),
+    EXECUTION_GRAMMAR_CURSOR_NAME: ("orion-cortex-exec", "cortex.exec:"),
+    TRANSPORT_GRAMMAR_CURSOR_NAME: ("orion-bus", "bus.transport:"),
+}
 from orion.substrate.biometrics_loop.lineage import emission_touches_node, receipt_touches_node
 from orion.substrate.receipts.retention import (
     ReceiptRetentionSettings,
@@ -122,6 +132,10 @@ class BiometricsSubstrateStore:
         cursor_name: str,
         source_service: str,
         trace_prefix: str,
+        reason: str,
+        prior_created_at: datetime | None = None,
+        prior_event_id: str | None = None,
+        operator_initiated: bool = False,
     ) -> None:
         trace_like = _trace_id_like_pattern(trace_prefix)
         tail = conn.execute(
@@ -142,6 +156,36 @@ class BiometricsSubstrateStore:
         ).mappings().first()
 
         now = datetime.now(timezone.utc)
+        seeded_created_at = tail["created_at"] if tail else now
+        seeded_event_id = tail["event_id"] if tail else ""
+        self._write_grammar_cursor(
+            conn,
+            cursor_name=cursor_name,
+            created_at=seeded_created_at,
+            event_id=seeded_event_id,
+        )
+        if not operator_initiated:
+            record_tail_seed(
+                TailSeedRecord(
+                    cursor_name=cursor_name,
+                    reason=reason,
+                    at=now,
+                    prior_created_at=prior_created_at,
+                    prior_event_id=prior_event_id,
+                    seeded_created_at=seeded_created_at,
+                    seeded_event_id=seeded_event_id,
+                )
+            )
+
+    def _write_grammar_cursor(
+        self,
+        conn: Any,
+        *,
+        cursor_name: str,
+        created_at: datetime,
+        event_id: str,
+    ) -> None:
+        now = datetime.now(timezone.utc)
         conn.execute(
             text(
                 """
@@ -158,8 +202,8 @@ class BiometricsSubstrateStore:
             ),
             {
                 "cursor_name": cursor_name,
-                "created_at": tail["created_at"] if tail else now,
-                "event_id": tail["event_id"] if tail else "",
+                "created_at": created_at,
+                "event_id": event_id,
                 "updated_at": now,
             },
         )
@@ -171,7 +215,8 @@ class BiometricsSubstrateStore:
         cursor_name: str,
         source_service: str,
         trace_prefix: str,
-        max_lag_sec: float = 6 * 3600,
+        max_lag_sec: float,
+        tail_seed_on_lag: bool,
     ) -> None:
         row = conn.execute(
             text(
@@ -189,15 +234,28 @@ class BiometricsSubstrateStore:
                 cursor_name=cursor_name,
                 source_service=source_service,
                 trace_prefix=trace_prefix,
+                reason="cold_start",
             )
             return
 
-        if _cursor_lag_seconds(row["last_event_created_at"]) > max_lag_sec:
+        lag_sec = _cursor_lag_seconds(row["last_event_created_at"])
+        if tail_seed_on_lag and lag_sec > max_lag_sec:
             self._seed_grammar_cursor_at_tail(
                 conn,
                 cursor_name=cursor_name,
                 source_service=source_service,
                 trace_prefix=trace_prefix,
+                reason="lag_exceeded",
+                prior_created_at=row["last_event_created_at"],
+                prior_event_id=row["last_event_id"],
+            )
+        elif lag_sec > max_lag_sec:
+            logger.warning(
+                "substrate_cursor_lag cursor=%s lag_sec=%.0f max_lag_sec=%.0f "
+                "tail_seed_on_lag=false continuing_from_stored_cursor",
+                cursor_name,
+                lag_sec,
+                max_lag_sec,
             )
 
     def _fetch_grammar_events(
@@ -209,12 +267,16 @@ class BiometricsSubstrateStore:
         limit: int,
     ) -> list[GrammarEventV1]:
         trace_like = _trace_id_like_pattern(trace_prefix)
+        app_settings = get_settings()
+        max_lag_sec = float(app_settings.substrate_cursor_lag_resync_hours) * 3600.0
         with self._engine.begin() as conn:
             self._ensure_grammar_cursor_at_tail(
                 conn,
                 cursor_name=cursor_name,
                 source_service=source_service,
                 trace_prefix=trace_prefix,
+                max_lag_sec=max_lag_sec,
+                tail_seed_on_lag=app_settings.substrate_cursor_tail_seed_on_lag,
             )
             row = conn.execute(
                 text(
@@ -597,6 +659,194 @@ class BiometricsSubstrateStore:
         if isinstance(payload, str):
             payload = json.loads(payload)
         return ReductionReceiptV1.model_validate(payload)
+
+    def cursor_positions(self) -> list[dict[str, Any]]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT cursor_name, last_event_created_at, last_event_id, updated_at
+                    FROM substrate_reduction_cursor
+                    ORDER BY cursor_name
+                    """
+                ),
+            ).mappings().all()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            last_at = row["last_event_created_at"]
+            lag_sec = _cursor_lag_seconds(last_at) if last_at else None
+            out.append(
+                {
+                    "cursor_name": row["cursor_name"],
+                    "last_event_created_at": last_at.isoformat() if last_at else None,
+                    "last_event_id": row["last_event_id"],
+                    "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+                    "lag_sec": None if lag_sec == float("inf") else lag_sec,
+                }
+            )
+        return out
+
+    def reset_grammar_cursor(
+        self,
+        *,
+        cursor_name: str,
+        mode: str,
+        at_timestamp: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Operator recovery: reset reducer cursor. Caller must validate auth/mode/name."""
+        spec = GRAMMAR_CURSOR_REGISTRY.get(cursor_name)
+        if spec is None:
+            raise ValueError(f"unknown cursor_name: {cursor_name}")
+        source_service, trace_prefix = spec
+        trace_like = _trace_id_like_pattern(trace_prefix)
+        mode_norm = mode.strip().lower()
+
+        def _finish(
+            *,
+            prior_created_at: str | None,
+            prior_event_id: str | None,
+            new_created_at: datetime,
+            new_event_id: str,
+            history_may_be_skipped: bool,
+            extra: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            out: dict[str, Any] = {
+                "cursor_name": cursor_name,
+                "mode": mode_norm,
+                "prior_created_at": prior_created_at,
+                "prior_event_id": prior_event_id,
+                "new_created_at": new_created_at.isoformat(),
+                "new_event_id": new_event_id,
+                "history_may_be_skipped": history_may_be_skipped,
+            }
+            if extra:
+                out.update(extra)
+            return out
+
+        with self._engine.begin() as conn:
+            prior_row = conn.execute(
+                text(
+                    """
+                    SELECT last_event_created_at, last_event_id
+                    FROM substrate_reduction_cursor
+                    WHERE cursor_name = :cursor_name
+                    """
+                ),
+                {"cursor_name": cursor_name},
+            ).mappings().first()
+            prior_created_at = (
+                prior_row["last_event_created_at"].isoformat()
+                if prior_row and prior_row["last_event_created_at"]
+                else None
+            )
+            prior_event_id = prior_row["last_event_id"] if prior_row else None
+
+            if mode_norm == "earliest":
+                row = conn.execute(
+                    text(
+                        """
+                        SELECT created_at, event_id
+                        FROM grammar_events
+                        WHERE source_service = :source_service
+                          AND trace_id LIKE :trace_like
+                        ORDER BY created_at ASC, event_id ASC
+                        LIMIT 1
+                        """
+                    ),
+                    {"source_service": source_service, "trace_like": trace_like},
+                ).mappings().first()
+                created_at = datetime(1970, 1, 1, tzinfo=timezone.utc)
+                event_id = ""
+                self._write_grammar_cursor(
+                    conn,
+                    cursor_name=cursor_name,
+                    created_at=created_at,
+                    event_id=event_id,
+                )
+                return _finish(
+                    prior_created_at=prior_created_at,
+                    prior_event_id=prior_event_id,
+                    new_created_at=created_at,
+                    new_event_id=event_id,
+                    history_may_be_skipped=False,
+                    extra={
+                        "first_event_created_at": row["created_at"].isoformat() if row else None,
+                        "first_event_id": row["event_id"] if row else None,
+                    },
+                )
+
+            if mode_norm == "tail":
+                self._seed_grammar_cursor_at_tail(
+                    conn,
+                    cursor_name=cursor_name,
+                    source_service=source_service,
+                    trace_prefix=trace_prefix,
+                    reason="operator_tail_reset",
+                    operator_initiated=True,
+                )
+                row = conn.execute(
+                    text(
+                        """
+                        SELECT last_event_created_at, last_event_id
+                        FROM substrate_reduction_cursor
+                        WHERE cursor_name = :cursor_name
+                        """
+                    ),
+                    {"cursor_name": cursor_name},
+                ).mappings().one()
+                return _finish(
+                    prior_created_at=prior_created_at,
+                    prior_event_id=prior_event_id,
+                    new_created_at=row["last_event_created_at"],
+                    new_event_id=row["last_event_id"] or "",
+                    history_may_be_skipped=True,
+                )
+
+            if mode_norm == "timestamp":
+                if at_timestamp is None:
+                    raise ValueError("timestamp mode requires at_timestamp")
+                if at_timestamp.tzinfo is None:
+                    raise ValueError("timestamp must be timezone-aware")
+                row = conn.execute(
+                    text(
+                        """
+                        SELECT created_at, event_id
+                        FROM grammar_events
+                        WHERE source_service = :source_service
+                          AND trace_id LIKE :trace_like
+                          AND created_at <= :at_ts
+                        ORDER BY created_at DESC, event_id DESC
+                        LIMIT 1
+                        """
+                    ),
+                    {
+                        "source_service": source_service,
+                        "trace_like": trace_like,
+                        "at_ts": at_timestamp,
+                    },
+                ).mappings().first()
+                if not row:
+                    created_at = datetime(1970, 1, 1, tzinfo=timezone.utc)
+                    event_id = ""
+                else:
+                    created_at = row["created_at"]
+                    event_id = row["event_id"]
+                self._write_grammar_cursor(
+                    conn,
+                    cursor_name=cursor_name,
+                    created_at=created_at,
+                    event_id=event_id,
+                )
+                return _finish(
+                    prior_created_at=prior_created_at,
+                    prior_event_id=prior_event_id,
+                    new_created_at=created_at,
+                    new_event_id=event_id,
+                    history_may_be_skipped=True,
+                    extra={"at_timestamp": at_timestamp.isoformat()},
+                )
+
+        raise ValueError(f"unsupported cursor reset mode: {mode}")
 
     def grammar_event_created_at(self, event_id: str) -> datetime | None:
         with self._engine.connect() as conn:

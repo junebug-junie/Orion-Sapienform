@@ -25,6 +25,14 @@ BELIEF_STATUSES = frozenset(
 TRACE_STATUSES = frozenset({"explained", "partial", "unknown"})
 REPO_STATUSES = frozenset({"analyzed", "partial", "insufficient_grounding"})
 REPO_RISKS = frozenset({"low", "medium", "high", "unknown"})
+PATCH_PROPOSAL_RISKS = frozenset({"low", "medium", "high", "unknown"})
+
+PATCH_PROPOSAL_LIKELY_FILES = (
+    "alexzhang_rlm_engine.py",
+    "test_alexzhang_rlm_engine.py",
+    "test_rlm_eval_fixtures.py",
+    "rlm_eval_harness.py",
+)
 
 TRACE_REQUIRED_TERMS = (
     "fail open",
@@ -112,6 +120,14 @@ REPO_ENGINE_FILES_CASE = RlmEvalCase(
     expected_statuses=set(REPO_STATUSES),
 )
 
+PATCH_PROPOSAL_TRACE_AUTOPSY = RlmEvalCase(
+    name="patch_proposal_trace_autopsy_quality",
+    mode="patch_proposal",
+    text="Propose a patch for weak trace-autopsy root cause synthesis in context-exec.",
+    expected_artifact_type="PatchProposalV1",
+    expected_statuses=set(PATCH_PROPOSAL_RISKS),
+)
+
 ALL_EVAL_CASES = (
     BELIEF_DENVER,
     BELIEF_OGDEN,
@@ -119,6 +135,7 @@ ALL_EVAL_CASES = (
     TRACE_MISSING_CORR,
     REPO_AGENT_CHAIN,
     REPO_ENGINE_FILES_CASE,
+    PATCH_PROPOSAL_TRACE_AUTOPSY,
 )
 
 
@@ -150,6 +167,10 @@ def assert_safety_posture(run: ContextExecRunV1) -> None:
         assert rd["write_enabled"] is False
     if "network_enabled" in rd:
         assert rd["network_enabled"] is False
+    if "mutation_allowed" in rd:
+        assert rd["mutation_allowed"] is False
+    if run.artifact_type == "PatchProposalV1":
+        assert run.artifact.get("mutation_allowed") is False
     if "sandbox_mode" in rd:
         assert rd["sandbox_mode"] == "docker"
     if "rlm_depth" in rd:

@@ -102,6 +102,7 @@ class ContextExecRunner:
             "write_enabled": settings.context_exec_write_enabled,
             "network_enabled": settings.context_exec_network_enabled,
             "shell_enabled": False,
+            "mutation_allowed": False,
             "mode": mode,
             "fake_organs_enabled": settings.context_exec_fake_organs_enabled,
             "real_trace_enabled": settings.context_exec_real_trace_enabled,

@@ -39,7 +39,7 @@ _TRACE_SIGNAL_ORDER: tuple[tuple[tuple[str, ...], str], ...] = (
 
 logger = logging.getLogger("orion-context-exec.alexzhang_rlm_engine")
 
-SUPPORTED_MODES = frozenset({"belief_provenance", "trace_autopsy", "repo_impact_analysis"})
+SUPPORTED_MODES = frozenset({"belief_provenance", "trace_autopsy", "repo_impact_analysis", "patch_proposal"})
 
 
 class UnsupportedModeError(Exception):
@@ -211,6 +211,80 @@ _ENGINE_SELECTION_PATHS: tuple[str, ...] = (
     "rlm_eval_harness.py",
 )
 
+_TRACE_AUTOPSY_PATCH_ANCHORS: tuple[str, ...] = (
+    "_synthesize_trace_root_cause",
+    "_usable_trace_snippets",
+    "insufficient_trace_evidence",
+    "trace_autopsy",
+    "root_cause",
+)
+
+_PATCH_PROPOSAL_LIKELY_FILES: tuple[str, ...] = (
+    "alexzhang_rlm_engine.py",
+    "test_alexzhang_rlm_engine.py",
+    "test_rlm_eval_fixtures.py",
+    "rlm_eval_harness.py",
+)
+
+def _is_trace_autopsy_patch_query(text: str) -> bool:
+    lowered = text.lower()
+    if "trace autopsy" in lowered or "trace_autopsy" in lowered:
+        return True
+    if "trace-autopsy" in lowered:
+        return True
+    if "root cause" in lowered and ("trace" in lowered or "autopsy" in lowered):
+        return True
+    if "weak" in lowered and "trace" in lowered:
+        return True
+    return False
+
+
+def _is_repo_impact_patch_query(text: str) -> bool:
+    lowered = text.lower()
+    return "repo-impact" in lowered or "repo impact" in lowered or (
+        "repo" in lowered and "ground" in lowered and "patch" in lowered
+    )
+
+
+def _patch_proposal_search_terms(text: str) -> list[str]:
+    if _is_trace_autopsy_patch_query(text):
+        return list(_TRACE_AUTOPSY_PATCH_ANCHORS)
+    if _is_repo_impact_patch_query(text):
+        return list(_ENGINE_REPO_ANCHORS)
+    terms: list[str] = []
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", text):
+        if token.lower() in {"propose", "patch", "weak", "diagnose", "context", "exec"}:
+            continue
+        terms.append(token)
+    return terms[:6] or list(_TRACE_AUTOPSY_PATCH_ANCHORS[:3])
+
+
+def _patch_proposal_risk(files: list[str]) -> str:
+    if not files:
+        return "unknown"
+    names = {path.rsplit("/", 1)[-1].lower() for path in files}
+    likely = frozenset(_PATCH_PROPOSAL_LIKELY_FILES)
+    if names & likely:
+        return "medium"
+    if len(files) > 3:
+        return "medium"
+    return "low"
+
+
+def _prioritize_patch_proposal_hits(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def rank(h: dict[str, Any]) -> tuple[int, str]:
+        path = str(h.get("path") or "")
+        name = path.rsplit("/", 1)[-1].lower()
+        if name in _PATCH_PROPOSAL_LIKELY_FILES:
+            return (_PATCH_PROPOSAL_LIKELY_FILES.index(name), path)
+        for prefix in _CONTEXT_EXEC_APP_PREFIXES:
+            if path.lower().startswith(prefix):
+                return (len(_PATCH_PROPOSAL_LIKELY_FILES), path)
+        return (len(_PATCH_PROPOSAL_LIKELY_FILES) + 1, path)
+
+    return sorted(hits, key=rank)
+
+
 _CONTEXT_EXEC_APP_PREFIXES: tuple[str, ...] = (
     "services/orion-context-exec/app/",
     "app/",
@@ -374,6 +448,8 @@ class AlexZhangRLMEngine(RLMEngine):
             report = await self._belief_provenance(request, namespace, runtime, organ_cache)
         elif mode == "trace_autopsy":
             report = await self._trace_autopsy(request, namespace, runtime, organ_cache)
+        elif mode == "patch_proposal":
+            report = await self._patch_proposal(request, namespace, runtime, organ_cache)
         else:
             report = await self._repo_impact(request, namespace, runtime, organ_cache)
 
@@ -648,4 +724,105 @@ class AlexZhangRLMEngine(RLMEngine):
                 for h in hits
                 if isinstance(h, dict)
             ],
+        }
+
+    async def _patch_proposal(
+        self,
+        request: ContextExecRequestV1,
+        namespace: ContextNamespace,
+        runtime: OrganRuntime | None,
+        organ_cache: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        self._debug_steps.append("retrieve")
+        terms = _patch_proposal_search_terms(request.text)
+        hits: list[dict[str, Any]] = []
+        seen_paths: set[str] = set()
+        scoped_path = _engine_selection_grep_path()
+
+        for term in terms:
+            batch = await self._repo_grep_batch(
+                term,
+                request,
+                namespace,
+                runtime,
+                path=scoped_path,
+                limit=30,
+            )
+            _merge_repo_hits(hits, batch, seen_paths)
+
+        if not hits:
+            for term in terms[:4]:
+                batch = await self._repo_grep_batch(
+                    term,
+                    request,
+                    namespace,
+                    runtime,
+                    limit=30,
+                )
+                _merge_repo_hits(hits, batch, seen_paths)
+
+        hits = _prioritize_patch_proposal_hits(hits)
+        self._debug_steps.append("synthesize")
+
+        if not hits:
+            return {
+                "problem": request.text[:500],
+                "evidence": [],
+                "files_to_change": [],
+                "proposed_change_summary": "Insufficient repo evidence to propose a grounded patch.",
+                "risk": "unknown",
+                "tests_to_run": [],
+                "rollback_plan": "No changes proposed; no rollback required.",
+                "open_questions": ["insufficient repo grounding"],
+                "mutation_allowed": False,
+            }
+
+        files = [h.get("path") for h in hits if isinstance(h, dict) and h.get("path")][:12]
+        evidence = [
+            f"{h.get('path')}:{h.get('line_start')} {str(h.get('snippet', ''))[:120]}"
+            for h in hits
+            if isinstance(h, dict)
+        ][:8]
+        risk = _patch_proposal_risk(files)
+        tests = [
+            name
+            for name in _PATCH_PROPOSAL_LIKELY_FILES
+            if name.startswith("test_") and any(name in str(p) for p in files)
+        ]
+        if not tests:
+            tests = [
+                name
+                for name in ("test_alexzhang_rlm_engine.py", "test_rlm_eval_fixtures.py")
+                if any(name in str(p) for p in files)
+            ]
+        if not tests and any("alexzhang_rlm_engine.py" in str(p) for p in files):
+            tests = ["test_alexzhang_rlm_engine.py"]
+        if not tests:
+            tests = []
+            open_questions = ["tests_to_run unclear without grounded test file hits"]
+        else:
+            open_questions = []
+
+        summary_parts = []
+        if _is_trace_autopsy_patch_query(request.text):
+            summary_parts.append(
+                "Improve trace-autopsy root cause synthesis using grounded repo evidence"
+            )
+        elif _is_repo_impact_patch_query(request.text):
+            summary_parts.append("Strengthen repo-impact grounding for patch proposals")
+        else:
+            summary_parts.append("Apply targeted fixes based on grounded repo findings")
+        file_names = [str(p).rsplit("/", 1)[-1] for p in files[:4]]
+        summary_parts.append(f"Likely files: {', '.join(file_names)}")
+
+        return {
+            "problem": request.text[:500],
+            "evidence": evidence,
+            "files_to_change": files,
+            "proposed_change_summary": ". ".join(summary_parts),
+            "risk": risk,
+            "tests_to_run": tests,
+            "rollback_plan": "Revert proposed file changes via version control; no runtime mutation performed.",
+            "open_questions": open_questions,
+            "mutation_allowed": False,
         }

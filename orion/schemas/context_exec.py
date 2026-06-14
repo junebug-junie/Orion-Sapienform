@@ -13,6 +13,7 @@ ContextExecMode = Literal[
     "belief_provenance",
     "trace_autopsy",
     "repo_impact_analysis",
+    "patch_proposal",
     "runtime_debug",
     "grammar_collision_audit",
     "memory_contradiction_review",
@@ -156,6 +157,20 @@ class RepoImpactAnalysisReportV1(BaseModel):
     migration_steps: list[str] = Field(default_factory=list)
     risk: Literal["low", "medium", "high", "unknown"] = "unknown"
     findings: list[ContextExecFindingV1] = Field(default_factory=list)
+
+
+class PatchProposalV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    problem: str
+    evidence: list[str] = Field(default_factory=list)
+    files_to_change: list[str] = Field(default_factory=list)
+    proposed_change_summary: str
+    risk: Literal["low", "medium", "high", "unknown"] = "unknown"
+    tests_to_run: list[str] = Field(default_factory=list)
+    rollback_plan: str
+    open_questions: list[str] = Field(default_factory=list)
+    mutation_allowed: bool = False
 
 
 class ContextExecRunV1(BaseModel):

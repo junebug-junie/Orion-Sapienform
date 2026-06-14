@@ -210,6 +210,24 @@ class FakeRLMEngine(RLMEngine):
             namespace.FINAL_VAR("report")
             return namespace.get_final()
 
+        if mode == "patch_proposal":
+            report = {
+                "problem": "No grounded patch evidence available in fake engine",
+                "evidence": [],
+                "files_to_change": [],
+                "proposed_change_summary": (
+                    "Fake engine placeholder; use AlexZhang with read_repo for grounded patch proposals."
+                ),
+                "risk": "unknown",
+                "tests_to_run": [],
+                "rollback_plan": "No changes proposed; no rollback required.",
+                "open_questions": [],
+                "mutation_allowed": False,
+            }
+            namespace.set_local("report", report)
+            namespace.FINAL_VAR("report")
+            return namespace.get_final()
+
         report = {
             "summary": f"Investigation complete for: {request.text[:200]}",
             "mode": mode,

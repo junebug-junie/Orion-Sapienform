@@ -41,11 +41,13 @@ inner = MemoryCorrectionProposalV1.model_validate(envelope.artifact)
 
 assert run.artifact_type == "ProposalEnvelopeV1", run.artifact_type
 assert envelope.proposal_type == "memory_correction_proposal", envelope.proposal_type
-assert envelope.artifact_type == "MemoryCorrectionProposalV1"
+assert envelope.artifact_type == "MemoryCorrectionProposalV1", envelope.artifact_type
 assert envelope.proposal_id
+assert envelope.mutation_allowed is False
+assert envelope.requires_human_approval is True
 assert run.runtime_debug.get("ledger_status") in {"pending_review", "blocked"}
 assert run.runtime_debug.get("ledger_status") == "pending_review", run.runtime_debug
-assert_denver_vertical_slice_safety(run, record, envelope)
+assert_denver_vertical_slice_safety(run, record, envelope, inner=inner)
 
 pending = result["repo"].list_by_status("pending_review")
 denver_rows = [
@@ -53,7 +55,17 @@ denver_rows = [
     if "denver" in json.dumps(row.envelope.model_dump(mode="json")).lower()
 ]
 assert len(denver_rows) == 1, f"expected one Denver pending_review row, got {len(denver_rows)}"
-print(f"VERTICAL_SLICE proposal_id={envelope.proposal_id} status={record.status}")
+assert denver_rows[0].envelope.proposal_type == "memory_correction_proposal"
+assert denver_rows[0].envelope.artifact_type == "MemoryCorrectionProposalV1"
+print(
+    f"VERTICAL_SLICE proposal_id={envelope.proposal_id} "
+    f"status={record.status} "
+    f"type={envelope.proposal_type} "
+    f"envelope={run.artifact_type} "
+    f"inner={envelope.artifact_type} "
+    f"mutation_allowed={envelope.mutation_allowed} "
+    f"requires_human_approval={envelope.requires_human_approval}"
+)
 PY
 
 echo "== proposal review API (pytest harness) =="
@@ -88,10 +100,21 @@ with TestClient(app) as client:
     eligibility = client.get(f"/proposals/{pid}/eligibility")
     assert detail.status_code == 200, detail.text
     assert eligibility.status_code == 200, eligibility.text
-    assert eligibility.json()["eligible"] is False
+    elig_body = eligibility.json()
+    assert elig_body["eligible"] is False, elig_body
+    assert elig_body.get("execution_requested") is False
     inner = detail.json()["inner_artifact_summary"]
+    detail_env = detail.json()["envelope"]
+    assert detail_env["proposal_type"] == "memory_correction_proposal"
+    assert detail_env["artifact_type"] == "MemoryCorrectionProposalV1"
+    assert inner["artifact_type"] == "MemoryCorrectionProposalV1"
     assert "denver" in inner["current_belief"].lower()
-print("API GET PASS")
+    assert inner["correction_type"] in {"mark_uncertain", "mark_contradicted", "replace_belief"}
+    assert inner["mutation_allowed"] is False
+    assert inner["requires_human_approval"] is True
+    assert inner.get("rationale")
+    assert inner.get("risk") in {"low", "medium", "high"}
+print("API GET PASS eligible=false mutation_allowed=false requires_human_approval=true")
 PY
 
 if [[ "${HUB_SMOKE:-false}" == "true" ]] && [[ -n "${HUB_BASE_URL:-}" ]]; then

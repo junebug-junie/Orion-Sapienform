@@ -18,6 +18,14 @@ def test_proposal_review_ui_wired() -> None:
     assert "Proposal review API unavailable." in ui
     assert "Current belief:" in ui
     assert "Proposed correction:" in ui
+    assert "Rationale:" in ui
+    assert "Evidence:" in ui
+    assert "Risk:" in ui
+    assert "Confidence:" in ui
     assert "mutation_allowed=" in ui
     assert "requires_human_approval=" in ui
-    assert "approve" not in ui.lower() or "approval inbox" not in ui.lower()
+    ui_lower = ui.lower()
+    for forbidden in ("/triage", "/review", 'method="post"', "request-changes"):
+        assert forbidden not in ui_lower
+    for forbidden_button in ('id="approve', 'id="reject', ">approve<", ">reject<", "approve proposal", "reject proposal"):
+        assert forbidden_button not in ui_lower

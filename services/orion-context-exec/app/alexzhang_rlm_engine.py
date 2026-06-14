@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from pathlib import Path
 from typing import Any
 
 from orion.schemas.context_exec import ContextExecRequestV1
@@ -180,7 +181,67 @@ def _synthesize_trace_root_cause(snippets: list[str], request_text: str) -> str 
     return usable[0]
 
 
+_ENGINE_SELECTION_MARKERS = frozenset(
+    {
+        "alexzhang",
+        "fakerlmengine",
+        "context_exec_rlm_engine",
+        "engine selection",
+        "rlm engine",
+    }
+)
+
+_ENGINE_REPO_ANCHORS: tuple[str, ...] = (
+    "AlexZhangRLMEngine",
+    "FakeRLMEngine",
+    "CONTEXT_EXEC_RLM_ENGINE",
+    "engine_selected",
+    "fallback_engine",
+    "build_engine",
+    "ContextExecRunner",
+    "repo_impact_analysis",
+    "rlm_engine",
+)
+
+_ENGINE_SELECTION_PATHS: tuple[str, ...] = (
+    "rlm_engine.py",
+    "alexzhang_rlm_engine.py",
+    "runner.py",
+    "settings.py",
+    "rlm_eval_harness.py",
+)
+
+_CONTEXT_EXEC_APP_PREFIXES: tuple[str, ...] = (
+    "services/orion-context-exec/app/",
+    "app/",
+)
+
+
+def _engine_selection_grep_path() -> str | None:
+    root = Path(settings.context_exec_repo_root or settings.orion_repo_root)
+    for rel in ("services/orion-context-exec/app", "app"):
+        if (root / rel).is_dir():
+            return rel
+    return None
+
+
+def _is_engine_selection_query(text: str) -> bool:
+    lowered = text.lower()
+    if any(marker in lowered for marker in _ENGINE_SELECTION_MARKERS):
+        return True
+    if ("context-exec" in lowered or "context exec" in lowered) and "engine" in lowered:
+        return True
+    if "rlm" in lowered and "engine" in lowered:
+        return True
+    if "engine" in lowered and "selection" in lowered:
+        return True
+    return False
+
+
 def _repo_search_terms(text: str) -> list[str]:
+    if _is_engine_selection_query(text):
+        return list(_ENGINE_REPO_ANCHORS)
+
     terms: list[str] = []
     for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", text):
         if token.lower() in {"what", "breaks", "replace", "with", "context", "exec", "agent", "chain"}:
@@ -198,6 +259,58 @@ def _repo_search_terms(text: str) -> list[str]:
             seen.add(key)
             out.append(t)
     return out[:6] or ["agent.chain"]
+
+
+def _merge_repo_hits(
+    hits: list[dict[str, Any]],
+    batch: list[dict[str, Any]],
+    seen_paths: set[str],
+) -> None:
+    for h in batch:
+        path = str(h.get("path") or "")
+        if path and path not in seen_paths:
+            seen_paths.add(path)
+            hits.append(h)
+
+
+def _prioritize_engine_selection_hits(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def rank(h: dict[str, Any]) -> tuple[int, str]:
+        path = str(h.get("path") or "")
+        lowered = path.lower()
+        for prefix in _CONTEXT_EXEC_APP_PREFIXES:
+            if lowered.startswith(prefix):
+                for idx, name in enumerate(_ENGINE_SELECTION_PATHS):
+                    if lowered.endswith(name):
+                        return (idx, path)
+                return (len(_ENGINE_SELECTION_PATHS), path)
+        return (len(_ENGINE_SELECTION_PATHS) + 1, path)
+
+    return sorted(hits, key=rank)
+
+
+def _engine_selection_risk(affected_paths: list[str]) -> str:
+    if not affected_paths:
+        return "unknown"
+    runtime_markers = frozenset(_ENGINE_SELECTION_PATHS[:4])
+    for path in affected_paths:
+        name = path.rsplit("/", 1)[-1].lower()
+        if name in runtime_markers:
+            return "medium"
+    if any(
+        path.lower().startswith(prefix)
+        for path in affected_paths
+        for prefix in _CONTEXT_EXEC_APP_PREFIXES
+    ):
+        return "low"
+    return "unknown"
+
+
+def _agent_chain_risk(affected_paths: list[str]) -> str:
+    if len(affected_paths) > 3:
+        return "medium"
+    if affected_paths:
+        return "low"
+    return "unknown"
 
 
 class AlexZhangRLMEngine(RLMEngine):
@@ -430,6 +543,23 @@ class AlexZhangRLMEngine(RLMEngine):
             "recommended_patch": None,
         }
 
+    async def _repo_grep_batch(
+        self,
+        pattern: str,
+        request: ContextExecRequestV1,
+        namespace: ContextNamespace,
+        runtime: OrganRuntime | None,
+        *,
+        path: str | None = None,
+        limit: int = 30,
+    ) -> list[dict[str, Any]]:
+        if runtime is not None and request.permissions.read_repo:
+            self._subcalls += 1
+            return runtime.repo_grep(pattern, path=path, limit=limit)
+        if request.permissions.read_repo:
+            return namespace.repo.grep(pattern, path=path, limit=limit)
+        return []
+
     async def _repo_impact(
         self,
         request: ContextExecRequestV1,
@@ -438,23 +568,36 @@ class AlexZhangRLMEngine(RLMEngine):
         organ_cache: dict[str, Any] | None,
     ) -> dict[str, Any]:
         self._debug_steps.append("retrieve")
+        engine_selection = _is_engine_selection_query(request.text)
         terms = _repo_search_terms(request.text)
         hits: list[dict[str, Any]] = []
         seen_paths: set[str] = set()
+        scoped_path = _engine_selection_grep_path() if engine_selection else None
+
         for term in terms:
-            batch: list[dict[str, Any]]
-            if runtime is not None and request.permissions.read_repo:
-                batch = runtime.repo_grep(term, limit=30)
-                self._subcalls += 1
-            elif request.permissions.read_repo:
-                batch = namespace.repo.grep(term, limit=30)
-            else:
-                batch = []
-            for h in batch:
-                path = str(h.get("path") or "")
-                if path and path not in seen_paths:
-                    seen_paths.add(path)
-                    hits.append(h)
+            batch = await self._repo_grep_batch(
+                term,
+                request,
+                namespace,
+                runtime,
+                path=scoped_path,
+                limit=30,
+            )
+            _merge_repo_hits(hits, batch, seen_paths)
+
+        if engine_selection and not hits:
+            for term in terms[:4]:
+                batch = await self._repo_grep_batch(
+                    term,
+                    request,
+                    namespace,
+                    runtime,
+                    limit=30,
+                )
+                _merge_repo_hits(hits, batch, seen_paths)
+
+        if engine_selection:
+            hits = _prioritize_engine_selection_hits(hits)
 
         self._debug_steps.append("synthesize")
         if not hits:
@@ -471,15 +614,28 @@ class AlexZhangRLMEngine(RLMEngine):
             }
 
         affected = [h.get("path") for h in hits if isinstance(h, dict) and h.get("path")][:20]
+        if engine_selection:
+            risk = _engine_selection_risk(affected)
+            breaking_surfaces: list[str] = []
+            compatibility_shims: list[str] = []
+            tests_to_add: list[str] = []
+            migration_steps: list[str] = []
+        else:
+            risk = _agent_chain_risk(affected)
+            breaking_surfaces = ["cortex-exec AgentChainClient hop"]
+            compatibility_shims = ["AgentChainResult-compatible context-exec reply"]
+            tests_to_add = ["test_context_exec_depth2_routing"]
+            migration_steps = ["feature flag CONTEXT_EXEC_ENABLED"]
+
         return {
             "proposed_change": request.text[:500],
             "status": "analyzed" if len(affected) >= 2 else "partial",
             "affected_paths": affected,
-            "breaking_surfaces": ["cortex-exec AgentChainClient hop"] if hits else [],
-            "compatibility_shims": ["AgentChainResult-compatible context-exec reply"],
-            "tests_to_add_or_update": ["test_context_exec_depth2_routing"],
-            "migration_steps": ["feature flag CONTEXT_EXEC_ENABLED"],
-            "risk": "medium" if len(affected) > 3 else "low",
+            "breaking_surfaces": breaking_surfaces,
+            "compatibility_shims": compatibility_shims,
+            "tests_to_add_or_update": tests_to_add,
+            "migration_steps": migration_steps,
+            "risk": risk,
             "findings": [
                 {
                     "claim": f"{h.get('path')}:{h.get('line_start')} {str(h.get('snippet', ''))[:120]}",

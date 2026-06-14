@@ -14,6 +14,7 @@ from app.rlm_engine import FakeRLMEngine, build_engine
 from app.runner import ContextExecRunner, FAKE_ORGANS
 from orion.schemas.context_exec import (
     BeliefProvenanceReportV1,
+    ContextExecPermissionV1,
     ContextExecRequestV1,
     RepoImpactAnalysisReportV1,
     TraceAutopsyReportV1,
@@ -324,11 +325,168 @@ async def test_alexzhang_trace_autopsy_insufficient_evidence():
 
 
 @pytest.mark.asyncio
+async def test_repo_impact_engine_selection_identifies_context_exec_files(monkeypatch):
+    """AlexZhang repo-impact should ground engine-selection prompts to context-exec app files."""
+    monkeypatch.setattr("app.alexzhang_rlm_engine.settings.context_exec_real_repo_enabled", True)
+    engine = AlexZhangRLMEngine()
+    from app.callable_namespace import ContextNamespace
+    from app.schemas import RepoHit
+
+    fake_hits = [
+        {
+            "path": "services/orion-context-exec/app/rlm_engine.py",
+            "line_start": 236,
+            "snippet": "def build_engine(name: str) -> RLMEngine:",
+            "source_ref": "repo:rlm_engine.py:236",
+        },
+        {
+            "path": "services/orion-context-exec/app/alexzhang_rlm_engine.py",
+            "line_start": 123,
+            "snippet": "class AlexZhangRLMEngine(RLMEngine):",
+            "source_ref": "repo:alexzhang_rlm_engine.py:123",
+        },
+        {
+            "path": "services/orion-context-exec/app/runner.py",
+            "line_start": 79,
+            "snippet": "self.engine_selected = (settings.rlm_engine or fake)",
+            "source_ref": "repo:runner.py:79",
+        },
+        {
+            "path": "services/orion-context-exec/app/settings.py",
+            "line_start": 12,
+            "snippet": "CONTEXT_EXEC_RLM_ENGINE",
+            "source_ref": "repo:settings.py:12",
+        },
+    ]
+
+    def _stub_grep(pattern: str, path: str | None = None, limit: int = 50) -> list[RepoHit]:
+        return [RepoHit.model_validate(h) for h in fake_hits]
+
+    monkeypatch.setattr("app.repo_tools.repo_grep", _stub_grep)
+
+    ns = ContextNamespace(permissions=ContextExecPermissionV1(read_repo=True))
+    req = ContextExecRequestV1(
+        text="What files are involved in context-exec RLM engine selection?",
+        mode="repo_impact_analysis",
+        permissions=ContextExecPermissionV1(read_repo=True),
+    )
+    raw = await engine.run(req, ns)
+    model = RepoImpactAnalysisReportV1.model_validate(raw)
+    blob = " ".join(model.affected_paths).lower()
+    assert model.status in {"analyzed", "partial"}
+    for name in ("rlm_engine.py", "alexzhang_rlm_engine.py", "runner.py", "settings.py"):
+        assert name in blob
+
+
+@pytest.mark.asyncio
+async def test_repo_impact_does_not_invent_unseen_paths(monkeypatch):
+    """Repo-impact paths must come from grep findings, not invention."""
+    monkeypatch.setattr("app.alexzhang_rlm_engine.settings.context_exec_real_repo_enabled", True)
+    engine = AlexZhangRLMEngine()
+    from app.callable_namespace import ContextNamespace
+    from app.schemas import RepoHit
+
+    stub_hits = [
+        {
+            "path": "services/orion-cortex-exec/app/clients.py",
+            "line_start": 10,
+            "snippet": "AgentChainClient",
+            "source_ref": "repo:clients.py:10",
+        }
+    ]
+
+    def _stub_grep(pattern: str, path: str | None = None, limit: int = 50) -> list[RepoHit]:
+        return [RepoHit.model_validate(h) for h in stub_hits]
+
+    monkeypatch.setattr("app.repo_tools.repo_grep", _stub_grep)
+
+    ns = ContextNamespace(permissions=ContextExecPermissionV1(read_repo=True))
+    req = ContextExecRequestV1(
+        text="What breaks if I replace agent-chain-service with context-exec?",
+        mode="repo_impact_analysis",
+        permissions=ContextExecPermissionV1(read_repo=True),
+    )
+    raw = await engine.run(req, ns)
+    model = RepoImpactAnalysisReportV1.model_validate(raw)
+    allowed = {h["path"] for h in stub_hits}
+    for path in model.affected_paths:
+        assert path in allowed
+
+
+@pytest.mark.asyncio
+async def test_repo_impact_missing_evidence_reports_insufficient_grounding(monkeypatch):
+    """When repo organ returns no hits, report insufficient grounding honestly."""
+    monkeypatch.setattr("app.alexzhang_rlm_engine.settings.context_exec_real_repo_enabled", True)
+    engine = AlexZhangRLMEngine()
+    from app.callable_namespace import ContextNamespace
+
+    monkeypatch.setattr("app.repo_tools.repo_grep", lambda *a, **k: [])
+
+    ns = ContextNamespace(permissions=ContextExecPermissionV1(read_repo=True))
+    req = ContextExecRequestV1(
+        text="What files are involved in context-exec RLM engine selection?",
+        mode="repo_impact_analysis",
+        permissions=ContextExecPermissionV1(read_repo=True),
+    )
+    raw = await engine.run(req, ns)
+    model = RepoImpactAnalysisReportV1.model_validate(raw)
+    assert model.status == "insufficient_grounding"
+    assert model.risk == "unknown"
+    assert not model.affected_paths
+    assert not model.findings
+
+
+@pytest.mark.asyncio
+async def test_alexzhang_repo_impact_runtime_debug_and_safety(monkeypatch):
+    """Runtime debug and safety posture remain intact for repo-impact runs."""
+    monkeypatch.setattr("app.runner.settings.rlm_engine", "alexzhang")
+    monkeypatch.setattr("app.alexzhang_rlm_engine.settings.context_exec_real_repo_enabled", True)
+
+    fake_hits = [
+        {
+            "path": "services/orion-context-exec/app/rlm_engine.py",
+            "line_start": 1,
+            "snippet": "build_engine",
+            "source_ref": "repo:rlm_engine.py:1",
+        },
+        {
+            "path": "services/orion-context-exec/app/runner.py",
+            "line_start": 1,
+            "snippet": "ContextExecRunner",
+            "source_ref": "repo:runner.py:1",
+        },
+    ]
+
+    from app.schemas import RepoHit
+
+    def _stub_grep(pattern: str, path: str | None = None, limit: int = 50) -> list[RepoHit]:
+        return [RepoHit.model_validate(h) for h in fake_hits]
+
+    monkeypatch.setattr("app.repo_tools.repo_grep", _stub_grep)
+
+    runner = ContextExecRunner()
+    req = ContextExecRequestV1(
+        text="What files are involved in context-exec RLM engine selection?",
+        mode="repo_impact_analysis",
+        permissions=ContextExecPermissionV1(read_repo=True),
+    )
+    run = await runner.run(req)
+
+    assert run.runtime_debug["engine"] == "alexzhang"
+    assert run.runtime_debug["engine_selected"] == "alexzhang"
+    assert run.runtime_debug["schema_valid"] is True
+    assert run.runtime_debug["rlm_depth"] <= 1
+    assert run.runtime_debug.get("write_enabled") is False
+    assert run.runtime_debug.get("network_enabled") is False
+    assert "rlm_engine.py" in run.final_text or "runner.py" in run.final_text
+
+
+@pytest.mark.asyncio
 async def test_alexzhang_repo_impact_schema_valid(monkeypatch):
     monkeypatch.setattr("app.alexzhang_rlm_engine.settings.context_exec_real_repo_enabled", True)
     engine = AlexZhangRLMEngine()
     from app.callable_namespace import ContextNamespace
-    from orion.schemas.context_exec import ContextExecPermissionV1
+    from app.schemas import RepoHit
 
     fake_hits = [
         {
@@ -339,16 +497,20 @@ async def test_alexzhang_repo_impact_schema_valid(monkeypatch):
         }
     ]
 
+    def _stub_grep(pattern: str, path: str | None = None, limit: int = 50) -> list[RepoHit]:
+        return [RepoHit.model_validate(h) for h in fake_hits]
+
+    monkeypatch.setattr("app.repo_tools.repo_grep", _stub_grep)
+
     ns = ContextNamespace(
         permissions=ContextExecPermissionV1(read_repo=True),
     )
-    with patch.object(ns.repo, "grep", return_value=fake_hits):
-        req = ContextExecRequestV1(
-            text="What breaks if I replace agent-chain-service with context-exec?",
-            mode="repo_impact_analysis",
-            permissions=ContextExecPermissionV1(read_repo=True),
-        )
-        raw = await engine.run(req, ns)
+    req = ContextExecRequestV1(
+        text="What breaks if I replace agent-chain-service with context-exec?",
+        mode="repo_impact_analysis",
+        permissions=ContextExecPermissionV1(read_repo=True),
+    )
+    raw = await engine.run(req, ns)
     model = RepoImpactAnalysisReportV1.model_validate(raw)
     assert model.status in {"analyzed", "partial", "insufficient_grounding"}
 

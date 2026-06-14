@@ -96,5 +96,12 @@ def build_final_text(mode: ContextExecMode, artifact: dict[str, Any], *, status:
         rc = artifact.get("root_cause") or "unknown"
         return f"Trace autopsy: {artifact.get('status', 'unknown')}. Root cause: {rc}."
     if mode == "repo_impact_analysis":
-        return f"Repo impact: {artifact.get('status', 'unknown')}. Risk={artifact.get('risk', 'unknown')}."
+        st = artifact.get("status", "unknown")
+        risk = artifact.get("risk", "unknown")
+        if st == "insufficient_grounding":
+            return "Repo impact: insufficient_grounding. Risk=unknown."
+        paths = artifact.get("affected_paths") or []
+        path_names = [str(p).rsplit("/", 1)[-1] for p in paths[:4] if p]
+        path_hint = f" Grounded files: {', '.join(path_names)}." if path_names else ""
+        return f"Repo impact: {st}. Risk={risk}.{path_hint}"
     return str(artifact.get("summary") or artifact.get("target") or "Investigation complete.")

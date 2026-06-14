@@ -1,7 +1,8 @@
 # PR: Add Denver memory-correction vertical slice smoke
 
 **Branch:** `feat/denver-vertical-smoke`  
-**Title:** Add Denver memory-correction vertical slice smoke
+**Title:** Add Denver memory-correction vertical slice smoke  
+**Create PR:** https://github.com/junebug-junie/Orion-Sapienform/compare/main...feat/denver-vertical-smoke?expand=1
 
 > **Note:** Branch includes prerequisite Hub read-only proposal review surface commits (`720ff5db`..`5ae729aa`) not yet on `main`. Merge or rebase base as appropriate.
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -159,6 +160,30 @@ class RepoImpactAnalysisReportV1(BaseModel):
     findings: list[ContextExecFindingV1] = Field(default_factory=list)
 
 
+ProposalRiskLevel = Literal["low", "medium", "high", "unknown"]
+
+ProposalReviewState = Literal[
+    "draft",
+    "pending_review",
+    "approved",
+    "rejected",
+    "superseded",
+    "executed",
+]
+
+ContextExecCreatableReviewState = Literal["draft", "pending_review"]
+
+ProposalArtifactType = Literal[
+    "patch_proposal",
+    "memory_correction_proposal",
+    "runtime_config_proposal",
+    "test_plan_proposal",
+]
+
+# Context-exec may only create draft or pending_review envelopes.
+CONTEXT_EXEC_CREATABLE_REVIEW_STATES: frozenset[str] = frozenset({"draft", "pending_review"})
+
+
 class PatchProposalV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -166,11 +191,89 @@ class PatchProposalV1(BaseModel):
     evidence: list[str] = Field(default_factory=list)
     files_to_change: list[str] = Field(default_factory=list)
     proposed_change_summary: str
-    risk: Literal["low", "medium", "high", "unknown"] = "unknown"
+    risk: ProposalRiskLevel = "unknown"
     tests_to_run: list[str] = Field(default_factory=list)
     rollback_plan: str
     open_questions: list[str] = Field(default_factory=list)
     mutation_allowed: bool = False
+
+
+class ProposalEnvelopeV1(BaseModel):
+    """Shared review wrapper for context-exec proposal artifacts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    proposal_id: str
+    proposal_type: ProposalArtifactType
+    source_mode: str
+    source_run_id: str | None = None
+    created_by: Literal["context-exec"] = "context-exec"
+    created_at: str | None = None
+
+    title: str
+    summary: str
+    evidence: list[str] = Field(default_factory=list)
+    risk: ProposalRiskLevel = "unknown"
+
+    requires_human_approval: bool = True
+    mutation_allowed: bool = False
+    review_status: ProposalReviewState = "draft"
+
+    artifact_type: str
+    artifact: dict[str, Any]
+
+    open_questions: list[str] = Field(default_factory=list)
+    safety_notes: list[str] = Field(default_factory=list)
+
+
+def assert_context_exec_proposal_safe(envelope: ProposalEnvelopeV1) -> None:
+    """Context-exec may only emit draft/pending_review envelopes with mutation disallowed."""
+    if envelope.review_status not in CONTEXT_EXEC_CREATABLE_REVIEW_STATES:
+        raise ValueError(
+            f"context-exec may only emit review_status in "
+            f"{sorted(CONTEXT_EXEC_CREATABLE_REVIEW_STATES)}; got {envelope.review_status!r}"
+        )
+    if envelope.mutation_allowed:
+        raise ValueError("context-exec proposals must set mutation_allowed=false")
+    if not envelope.requires_human_approval:
+        raise ValueError("context-exec proposals must set requires_human_approval=true")
+
+
+def build_patch_proposal_envelope(
+    patch: PatchProposalV1,
+    *,
+    source_mode: str,
+    source_run_id: str | None = None,
+    review_status: ContextExecCreatableReviewState = "draft",
+) -> ProposalEnvelopeV1:
+    """Wrap a PatchProposalV1 in a context-exec proposal envelope."""
+    inner = patch.model_dump(mode="json")
+    title = (patch.problem[:120] if patch.problem else "Patch proposal").strip()
+    envelope = ProposalEnvelopeV1(
+        proposal_id=f"prop_{uuid.uuid4().hex[:12]}",
+        proposal_type="patch_proposal",
+        source_mode=source_mode,
+        source_run_id=source_run_id,
+        title=title,
+        summary=patch.proposed_change_summary,
+        evidence=list(patch.evidence),
+        risk=patch.risk,
+        requires_human_approval=True,
+        mutation_allowed=False,
+        review_status=review_status,
+        artifact_type="PatchProposalV1",
+        artifact=inner,
+        open_questions=list(patch.open_questions),
+        safety_notes=[
+            "Proposal artifacts are not actions.",
+            "Proposal envelopes are review objects.",
+            "Executors are separate.",
+            "Cortex/human approval is required before mutation.",
+            "Context-exec may draft proposals, but it may not approve or execute them.",
+        ],
+    )
+    assert_context_exec_proposal_safe(envelope)
+    return envelope
 
 
 class ContextExecRunV1(BaseModel):

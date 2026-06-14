@@ -31,6 +31,16 @@ from app.rlm_eval_harness import (  # noqa: E402
 )
 
 
+def _inner_patch_artifact(artifact: dict) -> dict:
+    if artifact.get("artifact_type") == "PatchProposalV1":
+        return artifact
+    if artifact.get("artifact_type") == "PatchProposalV1" or artifact.get("proposal_type") == "patch_proposal":
+        inner = artifact.get("artifact") or {}
+        if isinstance(inner, dict):
+            return inner
+    return artifact
+
+
 def _quality_pass(case_name: str, engine: str, run) -> bool:
     if run.status != "ok":
         return False
@@ -46,13 +56,24 @@ def _quality_pass(case_name: str, engine: str, run) -> bool:
             return False
     if case_name == "patch_proposal_trace_autopsy_quality":
         artifact = run.artifact or {}
+        if run.artifact_type != "ProposalEnvelopeV1":
+            return False
+        if artifact.get("proposal_type") != "patch_proposal":
+            return False
+        if artifact.get("artifact_type") != "PatchProposalV1":
+            return False
         if artifact.get("mutation_allowed") is not False:
             return False
-        risk = str(artifact.get("risk") or "unknown")
+        if artifact.get("requires_human_approval") is not True:
+            return False
+        if artifact.get("review_status") not in {"draft", "pending_review"}:
+            return False
+        inner = _inner_patch_artifact(artifact)
+        risk = str(inner.get("risk") or artifact.get("risk") or "unknown")
         if risk not in {"low", "medium", "unknown"}:
             return False
-        if engine == "alexzhang" and artifact.get("files_to_change"):
-            blob = " ".join(str(p) for p in artifact.get("files_to_change") or []).lower()
+        if engine == "alexzhang" and inner.get("files_to_change"):
+            blob = " ".join(str(p) for p in inner.get("files_to_change") or []).lower()
             if not any(name.lower() in blob for name in (
                 "alexzhang_rlm_engine.py",
                 "test_alexzhang_rlm_engine.py",
@@ -60,15 +81,15 @@ def _quality_pass(case_name: str, engine: str, run) -> bool:
                 "rlm_eval_harness.py",
             )):
                 return False
-        if engine == "alexzhang" and not artifact.get("files_to_change"):
-            open_q = " ".join(str(q) for q in artifact.get("open_questions") or []).lower()
+        if engine == "alexzhang" and not inner.get("files_to_change"):
+            open_q = " ".join(str(q) for q in inner.get("open_questions") or []).lower()
             if "insufficient repo grounding" not in open_q:
                 return False
     return True
 
 
-async def _run(engine: str) -> list[tuple[str, str, str, str, str, bool, str]]:
-    rows: list[tuple[str, str, str, str, str, bool, str]] = []
+async def _run(engine: str) -> list[tuple]:
+    rows: list[tuple] = []
     repo_settings = {
         "context_exec_repo_root": REPO_ROOT,
         "orion_repo_root": REPO_ROOT,
@@ -90,25 +111,54 @@ async def _run(engine: str) -> list[tuple[str, str, str, str, str, bool, str]]:
                 permissions=perms,
                 settings_overrides=overrides,
             )
-            artifact_status = str((run.artifact or {}).get("status", run.status))
+            artifact = run.artifact or {}
+            inner = _inner_patch_artifact(artifact)
+            artifact_status = str(inner.get("status", artifact.get("status", run.status)))
             quality = _quality_pass(case.name, engine, run)
+            proposal_type = str(artifact.get("proposal_type") or "")
+            inner_artifact_type = str(artifact.get("artifact_type") or "")
+            review_status = str(artifact.get("review_status") or "")
+            mutation_allowed = artifact.get("mutation_allowed")
+            requires_human_approval = artifact.get("requires_human_approval")
         except Exception as exc:
             artifact_status = "error"
             quality = False
             notes = str(exc)
             run = None
+            proposal_type = ""
+            inner_artifact_type = ""
+            review_status = ""
+            mutation_allowed = ""
+            requires_human_approval = ""
         if run is not None:
-            rows.append(
-                (
-                    case.name,
-                    engine,
-                    case.mode,
-                    artifact_status,
-                    str(run.artifact_type or ""),
-                    quality,
-                    notes,
+            if case.mode == "patch_proposal":
+                rows.append(
+                    (
+                        case.name,
+                        engine,
+                        case.mode,
+                        quality,
+                        str(run.artifact_type or ""),
+                        proposal_type,
+                        inner_artifact_type,
+                        review_status,
+                        mutation_allowed,
+                        requires_human_approval,
+                        notes,
+                    )
                 )
-            )
+            else:
+                rows.append(
+                    (
+                        case.name,
+                        engine,
+                        case.mode,
+                        artifact_status,
+                        str(run.artifact_type or ""),
+                        quality,
+                        notes,
+                    )
+                )
     return rows
 
 
@@ -118,7 +168,23 @@ def main() -> int:
     args = parser.parse_args()
 
     rows = asyncio.run(_run(args.engine))
-    header = ("case", "engine", "mode", "status", "artifact_type", "quality_pass", "notes")
+    has_proposal = any(c.mode == "patch_proposal" for c in ALL_EVAL_CASES)
+    if has_proposal:
+        header = (
+            "case",
+            "engine",
+            "mode",
+            "quality_pass",
+            "artifact_type",
+            "proposal_type",
+            "inner_artifact_type",
+            "review_status",
+            "mutation_allowed",
+            "requires_human_approval",
+            "notes",
+        )
+    else:
+        header = ("case", "engine", "mode", "status", "artifact_type", "quality_pass", "notes")
     print(" | ".join(header))
     for row in rows:
         print(" | ".join(str(c) for c in row))

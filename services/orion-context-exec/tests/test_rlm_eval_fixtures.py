@@ -7,6 +7,7 @@ import pytest
 from orion.schemas.context_exec import (
     BeliefProvenanceReportV1,
     ContextExecPermissionV1,
+    ProposalEnvelopeV1,
     PatchProposalV1,
     RepoImpactAnalysisReportV1,
     TraceAutopsyReportV1,
@@ -236,10 +237,17 @@ async def test_rlm_eval_patch_proposal_trace_autopsy_quality(
         settings_overrides=repo_settings,
     )
     assert run.status == "ok"
-    model = PatchProposalV1.model_validate(run.artifact)
+    envelope = ProposalEnvelopeV1.model_validate(run.artifact)
+    assert envelope.proposal_type == "patch_proposal"
+    assert envelope.artifact_type == "PatchProposalV1"
+    assert envelope.mutation_allowed is False
+    assert envelope.requires_human_approval is True
+    assert envelope.review_status in {"draft", "pending_review"}
+    model = PatchProposalV1.model_validate(envelope.artifact)
     assert model.mutation_allowed is False
     assert model.risk in {"low", "medium", "unknown"}
     assert run.runtime_debug.get("mutation_allowed") is False
+    assert run.runtime_debug.get("proposal_enveloped") is True
 
     if engine == "alexzhang" and model.files_to_change:
         blob = blob_text(run)

@@ -33,11 +33,13 @@ Other modes exist in schema (`runtime_debug`, `grammar_collision_audit`, etc.) b
 
 ### patch_proposal (proposal-mode scaffold)
 
-- **Purpose:** Emit a read-only patch blueprint (`PatchProposalV1`). Context-exec may **propose** mutation; it may **not perform** mutation.
+- **Purpose:** Emit a read-only patch blueprint wrapped in `ProposalEnvelopeV1`. Inner payload is `PatchProposalV1`. Context-exec may **propose** mutation; it may **not perform** mutation.
 - **Input shape:** Natural-language request to diagnose a weakness and propose a patch (e.g. weak trace-autopsy synthesis).
-- **Artifact type:** `PatchProposalV1` — fields include `problem`, `evidence`, `files_to_change`, `proposed_change_summary`, `risk`, `tests_to_run`, `rollback_plan`, `open_questions`, `mutation_allowed` (always `false` for context-exec output).
-- **Expected behavior:** Read-only repo grounding via existing organ hooks; schema-valid proposal; `mutation_allowed=false` in artifact and `runtime_debug`.
-- **Boundary:** Proposal artifacts are not actions. Executors are separate. Cortex/human approval is required before mutation.
+- **Artifact type:** `ProposalEnvelopeV1` — review envelope with `proposal_type`, `title`, `summary`, `evidence`, `risk`, `requires_human_approval` (always `true`), `mutation_allowed` (always `false`), `review_status` (`draft` or `pending_review` only from context-exec), inner `artifact_type=PatchProposalV1`, and nested `artifact` payload.
+- **Inner payload:** `PatchProposalV1` — `problem`, `evidence`, `files_to_change`, `proposed_change_summary`, `risk`, `tests_to_run`, `rollback_plan`, `open_questions`, `mutation_allowed` (always `false`).
+- **Review lifecycle:** `draft` → `pending_review` → (`approved` | `rejected` | `superseded`) → `executed` (by Cortex/human + separate executor only; context-exec never emits `approved` or `executed`).
+- **Expected behavior:** Read-only repo grounding via existing organ hooks; schema-valid envelope; `mutation_allowed=false` and `requires_human_approval=true` in artifact and `runtime_debug`; `proposal_enveloped=true` in `runtime_debug`.
+- **Boundary:** Proposal artifacts are not actions. Proposal envelopes are review objects. Executors are separate. Cortex/human approval is required before mutation. Context-exec may draft proposals, but it may not approve or execute them.
 - **Not beta-certified:** Eval fixtures exist; Hub/Cortex auto-routing is not wired in this release.
 
 ### belief_provenance
@@ -226,7 +228,7 @@ bash scripts/context_exec_beta_gate.sh --live
 
 - Only three modes are beta-certified; other schema modes are not eval/golden gated.
 - Legacy AgentChain fallback still active on cortex-exec when `CONTEXT_EXEC_LEGACY_FALLBACK=true`.
-- Proposal artifacts (`PatchProposalV1`, etc.) are documented but not implemented.
+- Proposal envelope scaffold (`ProposalEnvelopeV1` wrapping `PatchProposalV1`) is implemented for `patch_proposal`; other proposal types remain documented only.
 - AlexZhang engine requires opt-in; fake remains default.
 - Repo impact quality differs between fake (pattern grep) and alexzhang (engine-file grounding).
 - No write/network/shell; mutation is out of scope for beta.
@@ -288,15 +290,21 @@ Proposal-mode scaffold ( **partially implemented** ):
 
 | Proposal artifact | Status | Purpose |
 |-------------------|--------|---------|
-| `PatchProposalV1` | Scaffold (`patch_proposal` mode) | Propose code/doc patch — read-only blueprint only |
+| `ProposalEnvelopeV1` | Scaffold | Shared review wrapper for all proposal artifacts |
+| `PatchProposalV1` | Scaffold (inner payload) | Propose code/doc patch — read-only blueprint only |
 | `MemoryCorrectionProposalV1` | Not implemented | Propose memory correction |
 | `RuntimeConfigProposalV1` | Not implemented | Propose runtime config change |
 | `TestPlanProposalV1` | Not implemented | Propose test additions |
 
-`patch_proposal` is proposal-mode scaffold. It may emit `PatchProposalV1`. It may not execute changes.
+`patch_proposal` emits `ProposalEnvelopeV1` wrapping `PatchProposalV1`. It may not execute changes.
 
 **Rule:**
 
+- Proposal artifacts are not actions.
+- Proposal envelopes are review objects.
+- Executors are separate.
+- Cortex/human approval is required before mutation.
+- Context-exec may draft proposals, but it may not approve or execute them.
 - Context-exec may **propose** mutation.
 - Context-exec may **not perform** mutation.
 - Cortex/human gate approves.

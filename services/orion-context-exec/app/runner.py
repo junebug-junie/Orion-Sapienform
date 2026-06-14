@@ -289,6 +289,20 @@ class ContextExecRunner:
         final_text = build_final_text(request.mode, artifact, status=status)
         ac_dump = request.answer_contract.model_dump(mode="json") if request.answer_contract else None
 
+        runtime_debug = self._engine_runtime_debug(
+            engine_used=engine_used,
+            fallback_engine=fallback_engine,
+            fallback_reason=fallback_reason,
+            subcalls=subcalls,
+            schema_valid=schema_valid,
+            mode=request.mode,
+            extra_steps=rlm_steps or None,
+        )
+        if request.mode == "patch_proposal" and schema_valid and artifact_type == "ProposalEnvelopeV1":
+            runtime_debug["proposal_enveloped"] = True
+            runtime_debug["requires_human_approval"] = artifact.get("requires_human_approval", True)
+            runtime_debug["mutation_allowed"] = artifact.get("mutation_allowed", False)
+
         await events.finished(
             run_id=run_id,
             mode=request.mode,
@@ -310,15 +324,7 @@ class ContextExecRunner:
             final_text=final_text,
             verb_trace=verb_trace,
             runtime_debug={
-                **self._engine_runtime_debug(
-                    engine_used=engine_used,
-                    fallback_engine=fallback_engine,
-                    fallback_reason=fallback_reason,
-                    subcalls=subcalls,
-                    schema_valid=schema_valid,
-                    mode=request.mode,
-                    extra_steps=rlm_steps or None,
-                ),
+                **runtime_debug,
                 "correlation_id": request.correlation_id,
             },
             failure_modes=failure_modes,

@@ -100,10 +100,6 @@ async def test_rlm_eval_trace_autopsy_does_not_echo_question_as_root_cause(
     assert any(term.lower() in blob for term in TRACE_REQUIRED_TERMS)
 
     root_cause = (model.root_cause or "").lower()
-    question_echo_terms = ("why did", "orion")
-    if engine == "alexzhang" and any(t in root_cause for t in question_echo_terms):
-        pytest.xfail("AlexZhang trace autopsy root_cause echoes question text")
-
     assert "why did" not in root_cause
     assert "orion" not in root_cause
 

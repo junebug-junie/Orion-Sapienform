@@ -11,6 +11,31 @@ from .organ_runtime import OrganRuntime
 from .rlm_engine import RLMEngine, _extract_corr_id
 from .settings import ContextExecSettings, settings
 
+_UUID_RE = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+
+_PROMPT_ECHO_MARKERS = (
+    "why did",
+    "orion,",
+    "orion ",
+    "fail open?",
+    "trace autopsy",
+    "root cause:",
+)
+
+_TRACE_SIGNAL_ORDER: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("contextexecservice", "timeout"), "ContextExecService timed out"),
+    (("context.exec.result", "missing"), "context.exec.result missing"),
+    (("fallback", "true"), "fallback=True"),
+    (("agentchainservice", "fallback"), "AgentChainService fallback"),
+    (("baseenvelope", "validationerror"), "BaseEnvelope ValidationError"),
+    (("causality_chain", "list_type"), "causality_chain list_type"),
+    (("recall", "timeout"), "recall timeout"),
+    (("contextexecservice",), "ContextExecService"),
+    (("agentchainservice",), "AgentChainService"),
+    (("fallback",), "fallback"),
+    (("timeout",), "timeout"),
+)
+
 logger = logging.getLogger("orion-context-exec.alexzhang_rlm_engine")
 
 SUPPORTED_MODES = frozenset({"belief_provenance", "trace_autopsy", "repo_impact_analysis"})
@@ -98,6 +123,61 @@ def _extract_claim_from_text(text: str) -> str:
     if len(cleaned) <= 500:
         return cleaned.strip()
     return cleaned[:500].strip()
+
+
+def _extract_corr_id_from_text(text: str) -> str | None:
+    corr_eq = re.search(rf"correlation_id\s*=\s*({_UUID_RE})", text, flags=re.IGNORECASE)
+    if corr_eq:
+        return corr_eq.group(1)
+    corr_sp = re.search(rf"\bcorr[:\s#]+({_UUID_RE})\b", text, flags=re.IGNORECASE)
+    if corr_sp:
+        return corr_sp.group(1)
+    bare = re.search(rf"\b({_UUID_RE})\b", text, flags=re.IGNORECASE)
+    if bare:
+        return bare.group(1)
+    return _extract_corr_id(text)
+
+
+def _normalize_evidence_blob(text: str) -> str:
+    return re.sub(r"[\s_\-]+", "", text.lower())
+
+
+def _snippet_echoes_prompt(snippet: str, request_text: str) -> bool:
+    snippet_clean = snippet.strip()
+    request_clean = request_text.strip()
+    if not snippet_clean:
+        return True
+    sl = snippet_clean.lower()
+    rl = request_clean.lower()
+    if sl == rl or sl in rl or rl in sl:
+        return True
+    return any(marker in sl for marker in _PROMPT_ECHO_MARKERS)
+
+
+def _usable_trace_snippets(snippets: list[str], request_text: str) -> list[str]:
+    return [snippet for snippet in snippets if not _snippet_echoes_prompt(snippet, request_text)]
+
+
+def _synthesize_trace_root_cause(snippets: list[str], request_text: str) -> str | None:
+    usable = _usable_trace_snippets(snippets, request_text)
+    if not usable:
+        return None
+
+    blob = _normalize_evidence_blob(" ".join(usable))
+    matched: list[str] = []
+    for needles, label in _TRACE_SIGNAL_ORDER:
+        if all(_normalize_evidence_blob(needle) in blob for needle in needles):
+            if label not in matched:
+                matched.append(label)
+
+    if matched:
+        if "ContextExecService timed out" in matched and "AgentChainService fallback" in matched:
+            return "ContextExecService timed out and Cortex-Exec fell back to AgentChainService"
+        if "ContextExecService timed out" in matched and "fallback" in matched:
+            return "ContextExecService timed out and Cortex-Exec fell back to AgentChainService"
+        return matched[0]
+
+    return usable[0]
 
 
 def _repo_search_terms(text: str) -> list[str]:
@@ -295,7 +375,7 @@ class AlexZhangRLMEngine(RLMEngine):
         runtime: OrganRuntime | None,
         organ_cache: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        corr = _extract_corr_id(request.text)
+        corr = _extract_corr_id_from_text(request.text)
         self._debug_steps.append("retrieve")
         trace_hits: list[dict[str, Any]] = []
         if runtime is not None and corr:
@@ -307,11 +387,13 @@ class AlexZhangRLMEngine(RLMEngine):
             trace_hits = namespace.traces.search(corr_id=corr, limit=self._settings.context_exec_trace_limit)
 
         self._debug_steps.append("synthesize")
+        raw_snippets: list[str] = []
         evidence: list[dict[str, Any]] = []
-        failure_chain: list[str] = []
         for th in trace_hits:
             snippet = str(th.get("snippet") or th.get("kind") or "trace hit")
-            failure_chain.append(snippet)
+            raw_snippets.append(snippet)
+            if _snippet_echoes_prompt(snippet, request.text):
+                continue
             evidence.append(
                 {
                     "claim": snippet,
@@ -323,7 +405,10 @@ class AlexZhangRLMEngine(RLMEngine):
                 }
             )
 
-        if not trace_hits:
+        usable_snippets = _usable_trace_snippets(raw_snippets, request.text)
+        root_cause = _synthesize_trace_root_cause(raw_snippets, request.text)
+
+        if not trace_hits or not usable_snippets or root_cause is None:
             return {
                 "target": corr or request.text[:80],
                 "status": "unknown",
@@ -334,11 +419,12 @@ class AlexZhangRLMEngine(RLMEngine):
                 "recommended_patch": "Collect Redis/Cortex trace evidence for the correlation id",
             }
 
+        failure_chain = usable_snippets
         return {
             "target": corr or request.text[:80],
-            "status": "explained" if len(trace_hits) >= 2 else "partial",
+            "status": "explained" if len(failure_chain) >= 2 else "partial",
             "failure_chain": failure_chain,
-            "root_cause": failure_chain[0],
+            "root_cause": root_cause,
             "contributing_factors": failure_chain[1:4],
             "evidence": evidence,
             "recommended_patch": None,

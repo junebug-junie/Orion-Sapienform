@@ -4,7 +4,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.alexzhang_rlm_engine import AlexZhangRLMEngine, UnsupportedModeError, _extract_claim_from_text
+from app.alexzhang_rlm_engine import (
+    AlexZhangRLMEngine,
+    UnsupportedModeError,
+    _extract_claim_from_text,
+    _extract_corr_id_from_text,
+)
 from app.rlm_engine import FakeRLMEngine, build_engine
 from app.runner import ContextExecRunner, FAKE_ORGANS
 from orion.schemas.context_exec import (
@@ -30,6 +35,142 @@ _FORBIDDEN_CLAIM_TERMS = (
     "claim that",
     "Orion",
 )
+
+
+_KNOWN_CORR = "5506f854-2606-42b5-a2ee-89775b3a8ed5"
+
+_TRACE_ECHO_FORBIDDEN = (
+    "Orion, why did corr",
+    "why did corr",
+    "fail open?",
+    "Root cause: Orion",
+)
+
+
+@pytest.mark.parametrize(
+    ("prompt", "expected"),
+    [
+        (
+            f"Orion, why did corr {_KNOWN_CORR} fail open?",
+            _KNOWN_CORR,
+        ),
+        (
+            f"why did correlation_id={_KNOWN_CORR} fail?",
+            _KNOWN_CORR,
+        ),
+        (
+            f"trace autopsy for {_KNOWN_CORR}",
+            _KNOWN_CORR,
+        ),
+    ],
+)
+def test_extract_corr_id_from_trace_autopsy_prompt(prompt: str, expected: str) -> None:
+    assert _extract_corr_id_from_text(prompt) == expected
+
+
+@pytest.mark.asyncio
+async def test_trace_autopsy_root_cause_does_not_echo_prompt():
+    prompt = f"Orion, why did corr {_KNOWN_CORR} fail open?"
+    FAKE_ORGANS.trace_hits = [
+        {
+            "handle": "t:echo",
+            "snippet": prompt,
+            "corr_id": _KNOWN_CORR,
+            "kind": "request",
+            "source": "hub",
+        },
+        {
+            "handle": "t:5506",
+            "snippet": "context_exec_early_dispatch RPC timeout waiting for ContextExecService",
+            "corr_id": _KNOWN_CORR,
+            "kind": "error",
+            "source": "cortex",
+        },
+        {
+            "handle": "t:5507",
+            "snippet": "fallback to AgentChainService",
+            "corr_id": _KNOWN_CORR,
+            "kind": "error",
+            "source": "cortex",
+        },
+    ]
+    engine = AlexZhangRLMEngine()
+    from app.callable_namespace import ContextNamespace
+    from orion.schemas.context_exec import ContextExecPermissionV1
+
+    ns = ContextNamespace(
+        permissions=ContextExecPermissionV1(),
+        traces_fn={
+            "search": lambda **kw: FAKE_ORGANS.trace_hits or [],
+            "read": lambda h: {"handle": h},
+        },
+    )
+    req = ContextExecRequestV1(text=prompt, mode="trace_autopsy")
+    raw = await engine.run(req, ns)
+    model = TraceAutopsyReportV1.model_validate(raw)
+    root_cause = (model.root_cause or "").lower()
+    final_text = f"Trace autopsy: {model.status}. Root cause: {model.root_cause}."
+    for forbidden in _TRACE_ECHO_FORBIDDEN:
+        assert forbidden.lower() not in root_cause
+        assert forbidden.lower() not in final_text.lower()
+    assert any(term in root_cause for term in ("contextexecservice", "timeout", "fallback", "agentchainservice"))
+
+
+@pytest.mark.asyncio
+async def test_trace_autopsy_evidence_backed_fallback_summary():
+    prompt = f"Orion, why did corr {_KNOWN_CORR} fail open?"
+    FAKE_ORGANS.trace_hits = [
+        {
+            "handle": "t:5506",
+            "snippet": "context_exec_early_dispatch RPC timeout waiting for ContextExecService",
+            "corr_id": _KNOWN_CORR,
+            "kind": "error",
+            "source": "cortex",
+        },
+        {
+            "handle": "t:5507",
+            "snippet": "fallback to AgentChainService",
+            "corr_id": _KNOWN_CORR,
+            "kind": "error",
+            "source": "cortex",
+        },
+    ]
+    engine = AlexZhangRLMEngine()
+    from app.callable_namespace import ContextNamespace
+    from orion.schemas.context_exec import ContextExecPermissionV1
+
+    ns = ContextNamespace(
+        permissions=ContextExecPermissionV1(),
+        traces_fn={
+            "search": lambda **kw: FAKE_ORGANS.trace_hits or [],
+            "read": lambda h: {"handle": h},
+        },
+    )
+    req = ContextExecRequestV1(text=prompt, mode="trace_autopsy")
+    raw = await engine.run(req, ns)
+    model = TraceAutopsyReportV1.model_validate(raw)
+    blob = f"{model.root_cause or ''} {model.failure_chain}".lower()
+    assert any(term in blob for term in ("contextexecservice", "timeout", "fallback", "agentchainservice"))
+
+
+@pytest.mark.asyncio
+async def test_trace_autopsy_missing_corr_is_controlled():
+    engine = AlexZhangRLMEngine()
+    from app.callable_namespace import ContextNamespace
+    from orion.schemas.context_exec import ContextExecPermissionV1
+
+    ns = ContextNamespace(
+        permissions=ContextExecPermissionV1(),
+        traces_fn={"search": lambda **kw: [], "read": lambda h: {}},
+    )
+    req = ContextExecRequestV1(text="Why did corr does-not-exist fail open?", mode="trace_autopsy")
+    raw = await engine.run(req, ns)
+    model = TraceAutopsyReportV1.model_validate(raw)
+    assert model.status in {"unknown", "partial"}
+    assert model.root_cause == "insufficient_trace_evidence"
+    root_cause = (model.root_cause or "").lower()
+    assert "agentchainservice" not in root_cause
+    assert "contextexecservice" not in root_cause
 
 
 @pytest.mark.parametrize(

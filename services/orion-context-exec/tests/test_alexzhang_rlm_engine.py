@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.alexzhang_rlm_engine import AlexZhangRLMEngine, UnsupportedModeError
+from app.alexzhang_rlm_engine import AlexZhangRLMEngine, UnsupportedModeError, _extract_claim_from_text
 from app.rlm_engine import FakeRLMEngine, build_engine
 from app.runner import ContextExecRunner, FAKE_ORGANS
 from orion.schemas.context_exec import (
@@ -22,6 +22,43 @@ def _reset_fake_organs():
     yield
     FAKE_ORGANS.memory_hits = None
     FAKE_ORGANS.trace_hits = None
+
+
+_FORBIDDEN_CLAIM_TERMS = (
+    "come from across your runtime",
+    "where did",
+    "claim that",
+    "Orion",
+)
+
+
+@pytest.mark.parametrize(
+    ("prompt", "expected"),
+    [
+        (
+            "Orion, where did the claim that I am from Denver come from across your runtime?",
+            "I am from Denver",
+        ),
+        (
+            "Where did Orion get the claim that Juniper lives in Denver?",
+            "Juniper lives in Denver",
+        ),
+        (
+            "Why does Orion think I live in Ogden?",
+            "I live in Ogden",
+        ),
+        (
+            "Is it true that I am from Denver?",
+            "I am from Denver",
+        ),
+    ],
+)
+def test_extract_claim_from_text(prompt: str, expected: str) -> None:
+    claim = _extract_claim_from_text(prompt)
+    assert claim == expected
+    lowered = claim.lower()
+    for term in _FORBIDDEN_CLAIM_TERMS:
+        assert term.lower() not in lowered, f"claim contains forbidden term {term!r}: {claim!r}"
 
 
 def test_build_engine_defaults_to_fake():

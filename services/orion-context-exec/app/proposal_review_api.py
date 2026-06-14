@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import json
-import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from orion.schemas.context_exec import (
     MemoryCorrectionProposalV1,
@@ -31,7 +30,6 @@ from orion.schemas.proposal_lifecycle import derive_execution_eligibility
 
 from .settings import settings
 
-logger = logging.getLogger("orion-context-exec.proposal_review_api")
 router = APIRouter(tags=["proposal-review"])
 
 
@@ -65,6 +63,8 @@ def _open_repo(store_path: Path) -> JsonFileProposalLedgerRepository:
         return JsonFileProposalLedgerRepository(store_path)
     except json.JSONDecodeError as exc:
         raise ProposalReviewApiError(f"malformed proposal ledger store: {exc}") from exc
+    except ValidationError as exc:
+        raise ProposalReviewApiError(f"invalid proposal ledger store: {exc}") from exc
     except ValueError as exc:
         raise ProposalReviewApiError(f"invalid proposal ledger store: {exc}") from exc
 

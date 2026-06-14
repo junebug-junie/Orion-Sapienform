@@ -141,6 +141,16 @@ async def test_malformed_store_returns_503(app_client, store_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_invalid_store_schema_returns_503(app_client, store_path: Path) -> None:
+    store_path.write_text('{"records": [{"proposal_id": "x"}]}', encoding="utf-8")
+    transport = ASGITransport(app=app_client)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/proposals")
+    assert resp.status_code == 503
+    assert "invalid" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
 async def test_triage_promote_sets_pending_review(app_client, store_path: Path) -> None:
     seeded = _seed_store(store_path)
     proposal_id = seeded["records"]["stored_patch"]

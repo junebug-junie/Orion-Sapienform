@@ -30,7 +30,8 @@ def upsert_spark_telemetry(sess: Session, data: dict[str, Any]) -> bool:
         "stimulus_summary": stmt.excluded.stimulus_summary,
         "timestamp": stmt.excluded.timestamp,
         "metadata_": text(
-            "COALESCE(spark_telemetry.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb)"
+            "(COALESCE(spark_telemetry.metadata::jsonb, '{}'::jsonb) "
+            "|| COALESCE(EXCLUDED.metadata::jsonb, '{}'::jsonb))::json"
         ),
     }
     stmt = stmt.on_conflict_do_update(

@@ -18,7 +18,7 @@ DENY_PATTERNS = (
     r"\.git/",
 )
 
-ALLOW_PREFIXES = ("orion/", "services/", "docs/", "tests/", "scripts/")
+ALLOW_PREFIXES = ("orion/", "services/", "app/", "docs/", "tests/", "scripts/")
 
 
 def _repo_root() -> Path:

@@ -374,10 +374,8 @@ async def test_repo_impact_engine_selection_identifies_context_exec_files(monkey
     model = RepoImpactAnalysisReportV1.model_validate(raw)
     blob = " ".join(model.affected_paths).lower()
     assert model.status in {"analyzed", "partial"}
-    matched = sum(
-        1 for name in ("rlm_engine.py", "alexzhang_rlm_engine.py", "runner.py", "settings.py") if name in blob
-    )
-    assert matched >= 2
+    for name in ("rlm_engine.py", "alexzhang_rlm_engine.py", "runner.py", "settings.py"):
+        assert name in blob
 
 
 @pytest.mark.asyncio

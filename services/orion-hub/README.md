@@ -422,7 +422,7 @@ Then open the Hub Memory tab → **Review queue**, or `GET /api/memory/cards?sta
 
 **Proposal review (read-only attention surface):** Hub main tab → **Pending Decisions** lists decision-worthy `pending_review` proposals from the context-exec proposal review API. Disabled by default (`HUB_PROPOSAL_REVIEW_ENABLED=false`). Hub calls `GET /health`, `GET /proposals`, detail, and eligibility only — it does not read JSON ledger files, does not POST triage/review, and does not approve/reject/execute. See [docs/proposal-review-api.md](../../docs/proposal-review-api.md).
 
-**Denver memory correction vertical slice:** `ORION_PY=orion_dev/bin/python bash scripts/denver_memory_correction_vertical_smoke.sh` proves a Denver `memory_correction_proposal` reaches Pending Decisions read-only. No approval, execution, or memory mutation.
+**Denver memory correction vertical slice:** `ORION_PY=orion_dev/bin/python bash scripts/denver_memory_correction_vertical_smoke.sh` proves a Denver `memory_correction_proposal` reaches Pending Decisions read-only. Expected final line: `denver_memory_correction_vertical_smoke PASS`. Hub card shows current belief, proposed correction, rationale, evidence summary, risk/confidence, and safety flags — no approve/reject buttons. No approval, execution, or memory mutation.
 
 ---
 

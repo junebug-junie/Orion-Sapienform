@@ -50,6 +50,35 @@ def _assert_get_path(path: str) -> None:
     raise ProposalReviewClientError(f"forbidden proposal review path: {path}")
 
 
+class _GetOnlyClientSession:
+    """Wrap aiohttp.ClientSession so only GET requests reach the proposal review API."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        self._session = aiohttp.ClientSession(**kwargs)
+
+    def get(self, url: str, **kwargs: Any) -> Any:
+        return self._session.get(url, **kwargs)
+
+    async def post(self, *args: Any, **kwargs: Any) -> Any:
+        raise ProposalReviewClientError("forbidden HTTP method for proposal review client: POST")
+
+    async def put(self, *args: Any, **kwargs: Any) -> Any:
+        raise ProposalReviewClientError("forbidden HTTP method for proposal review client: PUT")
+
+    async def patch(self, *args: Any, **kwargs: Any) -> Any:
+        raise ProposalReviewClientError("forbidden HTTP method for proposal review client: PATCH")
+
+    async def delete(self, *args: Any, **kwargs: Any) -> Any:
+        raise ProposalReviewClientError("forbidden HTTP method for proposal review client: DELETE")
+
+    async def __aenter__(self) -> _GetOnlyClientSession:
+        await self._session.__aenter__()
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        await self._session.__aexit__(*args)
+
+
 async def _get_json(path: str, *, params: dict[str, str] | None = None) -> dict[str, Any]:
     _assert_get_path(path)
     base = _base_url()
@@ -58,7 +87,7 @@ async def _get_json(path: str, *, params: dict[str, str] | None = None) -> dict[
 
     url = f"{base}{path}"
     try:
-        async with aiohttp.ClientSession(timeout=_timeout()) as session:
+        async with _GetOnlyClientSession(timeout=_timeout()) as session:
             async with session.get(url, params=params) as response:
                 text = await response.text()
                 try:

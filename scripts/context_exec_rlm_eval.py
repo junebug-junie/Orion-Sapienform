@@ -44,6 +44,26 @@ def _quality_pass(case_name: str, engine: str, run) -> bool:
         root_cause = str((run.artifact or {}).get("root_cause") or "").lower()
         if any(term in root_cause for term in ("why did", "orion")):
             return False
+    if case_name == "patch_proposal_trace_autopsy_quality":
+        artifact = run.artifact or {}
+        if artifact.get("mutation_allowed") is not False:
+            return False
+        risk = str(artifact.get("risk") or "unknown")
+        if risk not in {"low", "medium", "unknown"}:
+            return False
+        if engine == "alexzhang" and artifact.get("files_to_change"):
+            blob = " ".join(str(p) for p in artifact.get("files_to_change") or []).lower()
+            if not any(name.lower() in blob for name in (
+                "alexzhang_rlm_engine.py",
+                "test_alexzhang_rlm_engine.py",
+                "test_rlm_eval_fixtures.py",
+                "rlm_eval_harness.py",
+            )):
+                return False
+        if engine == "alexzhang" and not artifact.get("files_to_change"):
+            open_q = " ".join(str(q) for q in artifact.get("open_questions") or []).lower()
+            if "insufficient repo grounding" not in open_q:
+                return False
     return True
 
 
@@ -59,10 +79,10 @@ async def _run(engine: str) -> list[tuple[str, str, str, str, str, bool, str]]:
         notes = ""
         perms = (
             ContextExecPermissionV1(read_repo=True)
-            if case.mode == "repo_impact_analysis"
+            if case.mode in {"repo_impact_analysis", "patch_proposal"}
             else None
         )
-        overrides = repo_settings if case.mode == "repo_impact_analysis" else None
+        overrides = repo_settings if case.mode in {"repo_impact_analysis", "patch_proposal"} else None
         try:
             run = await run_eval_case(
                 engine,

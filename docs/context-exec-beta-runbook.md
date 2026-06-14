@@ -31,6 +31,15 @@ Beta-safe modes (schema-valid artifacts, eval fixtures, golden probes):
 
 Other modes exist in schema (`runtime_debug`, `grammar_collision_audit`, etc.) but are **not** beta-certified in this release.
 
+### patch_proposal (proposal-mode scaffold)
+
+- **Purpose:** Emit a read-only patch blueprint (`PatchProposalV1`). Context-exec may **propose** mutation; it may **not perform** mutation.
+- **Input shape:** Natural-language request to diagnose a weakness and propose a patch (e.g. weak trace-autopsy synthesis).
+- **Artifact type:** `PatchProposalV1` — fields include `problem`, `evidence`, `files_to_change`, `proposed_change_summary`, `risk`, `tests_to_run`, `rollback_plan`, `open_questions`, `mutation_allowed` (always `false` for context-exec output).
+- **Expected behavior:** Read-only repo grounding via existing organ hooks; schema-valid proposal; `mutation_allowed=false` in artifact and `runtime_debug`.
+- **Boundary:** Proposal artifacts are not actions. Executors are separate. Cortex/human approval is required before mutation.
+- **Not beta-certified:** Eval fixtures exist; Hub/Cortex auto-routing is not wired in this release.
+
 ### belief_provenance
 
 - **Purpose:** Investigate origin and support status of a user/runtime claim.
@@ -275,14 +284,16 @@ Checklist:
 
 ## 13. Future proposal-artifact path
 
-Next architecture step ( **not implemented in beta** ):
+Proposal-mode scaffold ( **partially implemented** ):
 
-| Proposal artifact | Purpose |
-|-------------------|---------|
-| `PatchProposalV1` | Propose code/doc patch |
-| `MemoryCorrectionProposalV1` | Propose memory correction |
-| `RuntimeConfigProposalV1` | Propose runtime config change |
-| `TestPlanProposalV1` | Propose test additions |
+| Proposal artifact | Status | Purpose |
+|-------------------|--------|---------|
+| `PatchProposalV1` | Scaffold (`patch_proposal` mode) | Propose code/doc patch — read-only blueprint only |
+| `MemoryCorrectionProposalV1` | Not implemented | Propose memory correction |
+| `RuntimeConfigProposalV1` | Not implemented | Propose runtime config change |
+| `TestPlanProposalV1` | Not implemented | Propose test additions |
+
+`patch_proposal` is proposal-mode scaffold. It may emit `PatchProposalV1`. It may not execute changes.
 
 **Rule:**
 

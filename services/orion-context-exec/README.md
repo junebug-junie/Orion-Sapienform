@@ -28,6 +28,8 @@ Context-exec is in **beta** for three investigative modes. Full runbook: [docs/c
 
 **Supported beta modes:** `belief_provenance`, `trace_autopsy`, `repo_impact_analysis` → artifacts `BeliefProvenanceReportV1`, `TraceAutopsyReportV1`, `RepoImpactAnalysisReportV1`.
 
+**Proposal-mode scaffold (not beta-certified):** `patch_proposal` → `PatchProposalV1`. It may emit structured patch blueprints; it may not execute changes, write files, or mutate runtime state. Proposal artifacts are not actions — Cortex/human approval and a separate executor are required before mutation.
+
 **Engine selection:** `fake` (default) | `alexzhang` (opt-in). Fallback must be explicit (`CONTEXT_EXEC_RLM_FALLBACK_ENABLED=true`) and visible in `runtime_debug`.
 
 **Safety defaults:** read-only, `CONTEXT_EXEC_MAX_DEPTH=1`, write/network off, compat AgentChain bus alias off.

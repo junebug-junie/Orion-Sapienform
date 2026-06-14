@@ -7,6 +7,7 @@ import pytest
 from orion.schemas.context_exec import (
     BeliefProvenanceReportV1,
     ContextExecPermissionV1,
+    PatchProposalV1,
     RepoImpactAnalysisReportV1,
     TraceAutopsyReportV1,
 )
@@ -19,6 +20,8 @@ from app.rlm_eval_harness import (
     DENVER_CLAIM_FORBIDDEN,
     ENGINES,
     KNOWN_CORR,
+    PATCH_PROPOSAL_LIKELY_FILES,
+    PATCH_PROPOSAL_TRACE_AUTOPSY,
     REPO_AGENT_CHAIN,
     REPO_ENGINE_FILES,
     REPO_ENGINE_FILES_CASE,
@@ -207,7 +210,7 @@ async def test_rlm_eval_safety_posture_read_only(engine: str) -> None:
 
 
 def test_all_eval_cases_registered() -> None:
-    assert len(ALL_EVAL_CASES) == 6
+    assert len(ALL_EVAL_CASES) == 7
     assert {c.name for c in ALL_EVAL_CASES} == {
         "belief_provenance_denver",
         "belief_provenance_ogden",
@@ -215,4 +218,32 @@ def test_all_eval_cases_registered() -> None:
         "trace_autopsy_missing_corr",
         "repo_impact_agent_chain",
         "repo_impact_engine_files",
+        "patch_proposal_trace_autopsy_quality",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("engine", ENGINES)
+async def test_rlm_eval_patch_proposal_trace_autopsy_quality(
+    engine: str,
+    repo_settings: dict[str, object],
+) -> None:
+    perms = ContextExecPermissionV1(read_repo=True)
+    run = await run_eval_case(
+        engine,
+        PATCH_PROPOSAL_TRACE_AUTOPSY,
+        permissions=perms,
+        settings_overrides=repo_settings,
+    )
+    assert run.status == "ok"
+    model = PatchProposalV1.model_validate(run.artifact)
+    assert model.mutation_allowed is False
+    assert model.risk in {"low", "medium", "unknown"}
+    assert run.runtime_debug.get("mutation_allowed") is False
+
+    if engine == "alexzhang" and model.files_to_change:
+        blob = blob_text(run)
+        assert any(name.lower() in blob for name in PATCH_PROPOSAL_LIKELY_FILES)
+    if engine == "alexzhang" and not model.files_to_change:
+        open_q = " ".join(model.open_questions).lower()
+        assert "insufficient repo grounding" in open_q

@@ -402,3 +402,136 @@ def test_proposal_cli_show_shows_triage_reason(store_path: Path) -> None:
     assert payload["review_status"]
     assert payload["execution_eligibility"]["execution_requested"] is False
     assert payload["execution_eligibility"]["eligible"] is False
+
+
+def _seed_and_approve(store_path: Path) -> str:
+    seed = subprocess.run(
+        [
+            str(PYTHON if PYTHON.exists() else sys.executable),
+            str(CLI),
+            "seed-demo",
+            "--store",
+            str(store_path),
+        ],
+        cwd=ROOT,
+        env={"PYTHONPATH": str(ROOT)},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    proposal_id = json.loads(seed.stdout)["records"]["pending_review_memory"]
+    approve = _run_cli(
+        "review",
+        proposal_id,
+        "--decision",
+        "approve",
+        "--reason",
+        "dry run test",
+        "--reviewer",
+        "human:june",
+        store=store_path,
+    )
+    assert approve.returncode == 0, approve.stderr
+    return proposal_id
+
+
+def test_dry_run_execute_requires_approved_proposal(store_path: Path) -> None:
+    seed = subprocess.run(
+        [
+            str(PYTHON if PYTHON.exists() else sys.executable),
+            str(CLI),
+            "seed-demo",
+            "--store",
+            str(store_path),
+        ],
+        cwd=ROOT,
+        env={"PYTHONPATH": str(ROOT)},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    stored_id = json.loads(seed.stdout)["records"]["stored_patch"]
+
+    result = _run_cli("dry-run-execute", stored_id, "--executor", "dry-run", store=store_path)
+    assert result.returncode != 0
+    assert "approved" in (result.stderr + result.stdout).lower()
+
+
+def test_dry_run_execute_rejects_pending_review(store_path: Path) -> None:
+    seed = subprocess.run(
+        [
+            str(PYTHON if PYTHON.exists() else sys.executable),
+            str(CLI),
+            "seed-demo",
+            "--store",
+            str(store_path),
+        ],
+        cwd=ROOT,
+        env={"PYTHONPATH": str(ROOT)},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    pending_id = json.loads(seed.stdout)["records"]["pending_review_memory"]
+
+    result = _run_cli("dry-run-execute", pending_id, "--executor", "dry-run", store=store_path)
+    assert result.returncode != 0
+    assert "approved" in (result.stderr + result.stdout).lower()
+
+
+def test_dry_run_execute_creates_receipt_without_mutation(store_path: Path) -> None:
+    proposal_id = _seed_and_approve(store_path)
+    before = store_path.read_text(encoding="utf-8")
+
+    result = _run_cli("dry-run-execute", proposal_id, "--executor", "dry-run", store=store_path)
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(result.stdout)
+
+    assert receipt["status"] == "simulated"
+    assert receipt["dry_run"] is True
+    assert receipt["mutation_performed"] is False
+    assert receipt["proposal_id"] == proposal_id
+    assert receipt["executor_name"] == "dry-run"
+    assert receipt["receipt_id"].startswith("rec_")
+    assert receipt["planned_actions"]
+    assert "changed_targets" not in receipt
+
+    after = store_path.read_text(encoding="utf-8")
+    assert after == before
+
+
+def test_dry_run_execute_does_not_change_memory(store_path: Path, tmp_path: Path) -> None:
+    proposal_id = _seed_and_approve(store_path)
+    memory_probe = tmp_path / "memory_probe.txt"
+    memory_probe.write_text("unchanged", encoding="utf-8")
+    before_probe = memory_probe.read_text(encoding="utf-8")
+
+    result = _run_cli("dry-run-execute", proposal_id, "--executor", "dry-run", store=store_path)
+    assert result.returncode == 0, result.stderr
+
+    assert memory_probe.read_text(encoding="utf-8") == before_probe
+
+
+def test_dry_run_execute_does_not_change_repo(store_path: Path) -> None:
+    proposal_id = _seed_and_approve(store_path)
+    readme = ROOT / "README.md"
+    before_mtime = readme.stat().st_mtime_ns
+
+    result = _run_cli("dry-run-execute", proposal_id, "--executor", "dry-run", store=store_path)
+    assert result.returncode == 0, result.stderr
+
+    assert readme.stat().st_mtime_ns == before_mtime
+
+
+def test_dry_run_execute_does_not_mark_executed_success(store_path: Path) -> None:
+    proposal_id = _seed_and_approve(store_path)
+
+    dry_run = _run_cli("dry-run-execute", proposal_id, "--executor", "dry-run", store=store_path)
+    assert dry_run.returncode == 0, dry_run.stderr
+
+    show = _run_cli("show", proposal_id, store=store_path)
+    assert show.returncode == 0, show.stderr
+    payload = json.loads(show.stdout)
+    assert payload["status"] == "approved"
+    assert payload["execution_eligibility"]["eligible"] is True
+    assert payload["execution_eligibility"]["execution_requested"] is False

@@ -34,6 +34,8 @@ Context-exec is in **beta** for three investigative modes. Full runbook: [docs/c
 
 **Lifecycle:** context-exec proposal → `ProposalEnvelopeV1` → `ProposalLedgerRecordV1(status=stored)` → `ProposalTriageDecisionV1` → `pending_review` (only if attention-worthy) → `ProposalReviewDecisionV1` → `ProposalExecutionEligibilityV1` → future executor → future receipt.
 
+**Operator CLI:** `scripts/orion_proposal_cli.py` is the first operator review surface. It lists/shows ledger records, applies triage/review via lifecycle validators, and prints execution eligibility. It does not execute proposals or mutate memory/repo/runtime state. Use an explicit `--store /path/to/proposals.json` path (never repo files). Only `pending_review` records require active human attention by default; stored/blocked/discarded/expired/superseded proposals stay out of the default review queue.
+
 **Engine selection:** `fake` (default) | `alexzhang` (opt-in). Fallback must be explicit (`CONTEXT_EXEC_RLM_FALLBACK_ENABLED=true`) and visible in `runtime_debug`.
 
 **Safety defaults:** read-only, `CONTEXT_EXEC_MAX_DEPTH=1`, write/network off, compat AgentChain bus alias off.

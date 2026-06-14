@@ -23,7 +23,9 @@ from orion.schemas.context_exec import ContextExecPermissionV1  # noqa: E402
 
 from app.rlm_eval_harness import (  # noqa: E402
     ALL_EVAL_CASES,
+    DENVER_CLAIM_FORBIDDEN,
     REPO_ROOT,
+    assert_claim_clean,
     run_eval_case,
     seed_case_organs,
 )
@@ -33,7 +35,11 @@ def _quality_pass(case_name: str, engine: str, run) -> bool:
     if run.status != "ok":
         return False
     if case_name == "belief_provenance_denver" and engine == "alexzhang":
-        return False
+        claim = str((run.artifact or {}).get("claim") or "")
+        try:
+            assert_claim_clean(claim, DENVER_CLAIM_FORBIDDEN)
+        except AssertionError:
+            return False
     return True
 
 

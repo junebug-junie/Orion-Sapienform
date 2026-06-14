@@ -66,10 +66,6 @@ async def test_rlm_eval_belief_provenance_denver_claim_clean(
     assert run.status == "ok"
     model = BeliefProvenanceReportV1.model_validate(run.artifact)
     assert model.status in BELIEF_DENVER.expected_statuses
-
-    if engine == "alexzhang":
-        pytest.xfail("AlexZhang _extract_claim_from_text tail extraction includes prompt noise")
-
     assert_claim_clean(model.claim, DENVER_CLAIM_FORBIDDEN)
 
 

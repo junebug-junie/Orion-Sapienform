@@ -26,17 +26,78 @@ class AlexZhangInitError(Exception):
     pass
 
 
+_VOCATIVE_PREFIX = re.compile(r"^(?:hey\s+)?orion[\s,]+", re.IGNORECASE)
+
+_SCAFFOLD_TERMINATOR = (
+    r"(?:\s+come\s+from\s+(?:across\s+(?:your\s+)?runtime|(?:your\s+)?runtime)"
+    r"|\s+across\s+(?:your\s+)?runtime|\?|$)"
+)
+
+_CLAIM_TAIL_STOP = re.compile(
+    r"\s+(?:come\s+from\s+(?:across\s+(?:your\s+)?runtime|(?:your\s+)?runtime)"
+    r"|across\s+your\s+runtime|across\s+the\s+runtime|"
+    r"from\s+across\s+your\s+runtime|in\s+your\s+runtime)\b",
+    re.IGNORECASE,
+)
+
+_CLAIM_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"where\s+did\s+(?:the\s+claim\s+that|orion\s+get\s+the\s+claim\s+that)\s+"
+        rf"(?P<claim>.+?){_SCAFFOLD_TERMINATOR}",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"claim\s+that\s+(?P<claim>.+?){_SCAFFOLD_TERMINATOR}",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"why\s+does\s+orion\s+think\s+(?P<claim>.+?)(?:\?|$)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"what\s+evidence\s+(?:says|supports)\s+(?P<claim>.+?)(?:\?|$)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"is\s+it\s+true\s+that\s+(?P<claim>.+?)(?:\?|$)",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _normalize_claim(claim: str) -> str:
+    normalized = re.sub(r"\s+", " ", claim.strip(" ?.,;"))
+    return normalized[:500]
+
+
+def _strip_claim_tail(claim: str) -> str:
+    match = _CLAIM_TAIL_STOP.search(claim)
+    if match:
+        return claim[: match.start()]
+    return claim
+
+
 def _extract_claim_from_text(text: str) -> str:
-    lowered = text.lower()
+    cleaned = _VOCATIVE_PREFIX.sub("", text.strip())
+
+    for pattern in _CLAIM_PATTERNS:
+        match = pattern.search(cleaned)
+        if match:
+            claim = _normalize_claim(match.group("claim"))
+            if claim:
+                return claim
+
+    lowered = cleaned.lower()
     for marker in ("claim that ", "claim: ", "belief that "):
         idx = lowered.find(marker)
         if idx >= 0:
-            tail = text[idx + len(marker) :].strip(" ?.")
+            tail = _normalize_claim(_strip_claim_tail(cleaned[idx + len(marker) :]))
             if tail:
-                return tail[:500]
-    if len(text) <= 500:
-        return text.strip()
-    return text[:500].strip()
+                return tail
+
+    if len(cleaned) <= 500:
+        return cleaned.strip()
+    return cleaned[:500].strip()
 
 
 def _repo_search_terms(text: str) -> list[str]:

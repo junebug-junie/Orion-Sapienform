@@ -39,7 +39,10 @@ from orion.schemas.proposal_ledger import (  # noqa: E402
     ProposalReviewDecisionV1,
     ProposalTriageDecisionV1,
 )
-from orion.schemas.proposal_lifecycle import derive_execution_eligibility  # noqa: E402
+from orion.schemas.proposal_lifecycle import (  # noqa: E402
+    build_dry_run_execution_receipt,
+    derive_execution_eligibility,
+)
 
 
 def _utc_now() -> str:
@@ -346,6 +349,32 @@ def cmd_eligibility(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_dry_run_execute(args: argparse.Namespace) -> int:
+    """Simulate executor handoff — receipt only, no ledger/memory/repo mutation."""
+    store_path = _require_store(args.store)
+    repo = _open_repo(store_path)
+    record = repo.get(args.proposal_id)
+    if record is None:
+        raise SystemExit(f"proposal not found: {args.proposal_id}")
+
+    latest_review = repo.latest_review_decision(args.proposal_id)
+    eligibility = derive_execution_eligibility(record, latest_review)
+    try:
+        receipt = build_dry_run_execution_receipt(
+            record,
+            eligibility,
+            executor_name=args.executor,
+            receipt_id=f"rec_{uuid.uuid4().hex[:12]}",
+            created_at=_utc_now(),
+            trace_id=args.trace_id,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    print(json.dumps(receipt.model_dump(mode="json"), indent=2, sort_keys=True))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Orion proposal ledger operator CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -395,6 +424,20 @@ def build_parser() -> argparse.ArgumentParser:
     eligibility.add_argument("proposal_id")
     eligibility.add_argument("--store", required=True, help="JSON ledger file path")
     eligibility.set_defaults(func=cmd_eligibility)
+
+    dry_run = sub.add_parser(
+        "dry-run-execute",
+        help="Simulate executor handoff (receipt only; no mutation)",
+    )
+    dry_run.add_argument("proposal_id")
+    dry_run.add_argument("--store", required=True, help="JSON ledger file path")
+    dry_run.add_argument(
+        "--executor",
+        default="dry-run",
+        help="Executor name recorded on the receipt (default: dry-run)",
+    )
+    dry_run.add_argument("--trace-id", default=None, help="Optional trace id for receipt")
+    dry_run.set_defaults(func=cmd_dry_run_execute)
 
     return parser
 

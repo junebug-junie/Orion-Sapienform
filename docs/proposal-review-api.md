@@ -13,6 +13,7 @@ context-exec emits ProposalEnvelopeV1
   → review API exposes pending_review and detail surfaces
   → operator or future Hub records review decisions
   → future executor may consume approved proposals only later
+  → dry-run executor produces ProposalExecutionReceiptV1 (simulated; no mutation)
 ```
 
 ## Service
@@ -90,18 +91,38 @@ curl -s "http://127.0.0.1:8096/proposals/{id}/eligibility"
 - Hub records review decisions only via `POST /proposals/{proposal_id}/review`
 - Hub cannot triage (`POST /triage` is not exposed from Hub)
 - Hub cannot execute proposals
-- No executor
-- No execution receipts
+- No real executor (dry-run receipt scaffold only)
+- Dry-run execution is not real execution — it proves handoff shape only
+- Dry-run receipts use `dry_run=true`, `status=simulated`, `mutation_performed=false`
 - No approval automation or auto-approval
 - No memory writes
 - No repo writes
 - No runtime mutation
 - Approval creates future execution eligibility only — does **not** execute
+- Dry-run does not transition proposals to `executed` or `execution_requested`
 - Context-exec cannot approve proposals (`reviewer_id=context-exec` → 403)
+
+## Dry-run execution (CLI only)
+
+Dry-run execution produces a `ProposalExecutionReceiptV1` without mutating memory, repo, or runtime. Real executor integration remains future work.
+
+Requirements:
+
+- `status=approved`
+- `eligibility.eligible=true`
+- `execution_requested=false`
+
+```bash
+PYTHONPATH=. orion_dev/bin/python scripts/orion_proposal_cli.py dry-run-execute <proposal_id> \
+  --store /tmp/orion-proposals.json \
+  --executor dry-run
+```
+
+Receipt fields: `dry_run=true`, `status=simulated`, `mutation_performed=false`. Proposal status stays `approved`.
 
 ## Operator CLI
 
-`scripts/orion_proposal_cli.py` remains the first operator surface. The API mirrors its list/show/triage/review/eligibility behavior for future Hub integration.
+`scripts/orion_proposal_cli.py` remains the first operator surface. The API mirrors its list/show/triage/review/eligibility behavior for future Hub integration. Dry-run execution is CLI-only for now.
 
 ## Smoke
 

@@ -9,6 +9,7 @@ from orion.schemas.context_exec import (
 )
 from orion.schemas.proposal_ledger import (
     ProposalExecutionEligibilityV1,
+    ProposalExecutionReceiptV1,
     ProposalLedgerRecordV1,
     ProposalReviewDecisionV1,
     ProposalTriageDecisionV1,
@@ -23,6 +24,7 @@ PROPOSAL_CONTROL_PLANE_SCHEMAS = (
     "ProposalTriageDecisionV1",
     "ProposalReviewDecisionV1",
     "ProposalExecutionEligibilityV1",
+    "ProposalExecutionReceiptV1",
 )
 
 
@@ -66,3 +68,24 @@ def test_memory_correction_proposal_registered_schema_is_full_version() -> None:
 
     assert _REGISTRY["MemoryCorrectionProposalV1"] is MemoryCorrectionProposalV1
     assert _REGISTRY["MemoryCorrectionProposalV1"] is not PatchProposalV1
+
+
+def test_proposal_execution_receipt_registered_schema_round_trip() -> None:
+    registered = resolve("ProposalExecutionReceiptV1")
+    assert registered is ProposalExecutionReceiptV1
+
+    sample = ProposalExecutionReceiptV1(
+        receipt_id="rec_sample",
+        proposal_id="prop_sample",
+        executor_name="dry-run",
+        status="simulated",
+        dry_run=True,
+        mutation_performed=False,
+        summary="Dry-run scaffold receipt",
+        planned_actions=["simulate_memory_correction"],
+        created_at="2026-06-14T00:00:00+00:00",
+    )
+    validated = registered.model_validate(sample.model_dump(mode="json"))
+    assert validated.receipt_id == sample.receipt_id
+    assert validated.dry_run is True
+    assert validated.mutation_performed is False

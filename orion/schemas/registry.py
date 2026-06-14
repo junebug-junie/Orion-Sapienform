@@ -69,6 +69,7 @@ from orion.schemas.context_exec import (
     ContextExecRequestV1,
     ContextExecRunV1,
     ContextExecVerbStepV1,
+    PatchProposalV1,
     RepoImpactAnalysisReportV1,
     TraceAutopsyReportV1,
 )
@@ -1039,6 +1040,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "BeliefProvenanceReportV1": BeliefProvenanceReportV1,
     "TraceAutopsyReportV1": TraceAutopsyReportV1,
     "RepoImpactAnalysisReportV1": RepoImpactAnalysisReportV1,
+    "PatchProposalV1": PatchProposalV1,
 
 }
 

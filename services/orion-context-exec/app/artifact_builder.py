@@ -9,6 +9,7 @@ from orion.schemas.context_exec import (
     ContextExecMode,
     ContextExecRequestV1,
     ContextExecRunV1,
+    PatchProposalV1,
     RepoImpactAnalysisReportV1,
     TraceAutopsyReportV1,
 )
@@ -19,6 +20,7 @@ def artifact_type_for_mode(mode: ContextExecMode) -> str | None:
         "belief_provenance": "BeliefProvenanceReportV1",
         "trace_autopsy": "TraceAutopsyReportV1",
         "repo_impact_analysis": "RepoImpactAnalysisReportV1",
+        "patch_proposal": "PatchProposalV1",
         "runtime_debug": "TraceAutopsyReportV1",
     }
     return mapping.get(mode)
@@ -34,6 +36,8 @@ def validate_artifact(mode: ContextExecMode, raw: Any) -> tuple[dict[str, Any], 
             model = TraceAutopsyReportV1.model_validate(raw)
         elif mode == "repo_impact_analysis":
             model = RepoImpactAnalysisReportV1.model_validate(raw)
+        elif mode == "patch_proposal":
+            model = PatchProposalV1.model_validate(raw)
         else:
             return raw, "GenericInvestigationV1", True
         return model.model_dump(mode="json"), model.__class__.__name__, True
@@ -104,4 +108,18 @@ def build_final_text(mode: ContextExecMode, artifact: dict[str, Any], *, status:
         path_names = [str(p).rsplit("/", 1)[-1] for p in paths[:4] if p]
         path_hint = f" Grounded files: {', '.join(path_names)}." if path_names else ""
         return f"Repo impact: {st}. Risk={risk}.{path_hint}"
+    if mode == "patch_proposal":
+        risk = artifact.get("risk", "unknown")
+        files = artifact.get("files_to_change") or []
+        if not files:
+            return (
+                "Patch proposal generated. Mutation is not allowed by context-exec. "
+                "Insufficient repo grounding; no files proposed."
+            )
+        path_names = [str(p).rsplit("/", 1)[-1] for p in files[:4] if p]
+        file_hint = ", ".join(path_names)
+        return (
+            f"Patch proposal generated. Mutation is not allowed by context-exec. "
+            f"Patch proposal: update {file_hint}. Risk={risk}. Mutation allowed=false."
+        )
     return str(artifact.get("summary") or artifact.get("target") or "Investigation complete.")

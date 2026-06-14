@@ -1,4 +1,4 @@
-/* Orion Hub — read-only proposal review attention surface (Pending Decisions) */
+/* Orion Hub — proposal review attention surface (Pending Decisions + review actions) */
 (function () {
   const pathSegments = window.location.pathname.split("/").filter((p) => p.length > 0);
   const URL_PREFIX = pathSegments.length > 0 ? `/${pathSegments[0]}` : "";
@@ -9,12 +9,13 @@
     return sid ? { "X-Orion-Session-Id": sid } : {};
   }
 
-  async function apiFetch(path) {
+  async function apiFetch(path, options) {
     const res = await fetch(`${API_BASE}${path}`, {
       headers: {
         "Content-Type": "application/json",
         ...sessionHeader(),
       },
+      ...options,
     });
     const text = await res.text();
     let body = null;
@@ -44,6 +45,7 @@
     el.textContent = msg || "";
     el.classList.toggle("text-red-400", !!isErr);
     el.classList.toggle("text-gray-500", !isErr);
+    el.classList.toggle("text-emerald-400", !isErr && !!msg);
   }
 
   function renderListRow(item, onSelect) {
@@ -76,6 +78,26 @@
     return parts.join(" · ");
   }
 
+  function renderReviewActions(proposalId, status) {
+    const pending = status === "pending_review" || status === "request_changes";
+    if (!pending) {
+      return `<div class="text-[10px] text-gray-500 pt-2 border-t border-gray-800">Review closed (${escapeHtml(status || "—")}).</div>`;
+    }
+    return `<div class="pt-2 border-t border-gray-800 space-y-2" data-proposal-id="${escapeHtml(proposalId)}">
+      <div class="text-[10px] uppercase tracking-wide text-gray-500">Review decision</div>
+      <label class="block text-[10px] text-gray-500">Rationale (required)</label>
+      <textarea id="proposalReviewRationale" rows="2" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-[11px]" placeholder="Why this decision?"></textarea>
+      <label class="block text-[10px] text-gray-500">Constraints (optional, approve only)</label>
+      <input id="proposalReviewConstraints" type="text" class="w-full bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-[11px]" placeholder="e.g. bounded scope" />
+      <div class="flex flex-wrap gap-2">
+        <button type="button" data-review-decision="approve" class="proposalReviewActionBtn text-[10px] bg-emerald-900/60 hover:bg-emerald-800/70 text-emerald-100 rounded px-2 py-1 border border-emerald-800">Approve</button>
+        <button type="button" data-review-decision="reject" class="proposalReviewActionBtn text-[10px] bg-red-900/50 hover:bg-red-800/60 text-red-100 rounded px-2 py-1 border border-red-900">Reject</button>
+        <button type="button" data-review-decision="request_changes" class="proposalReviewActionBtn text-[10px] bg-amber-900/50 hover:bg-amber-800/60 text-amber-100 rounded px-2 py-1 border border-amber-900">Request changes</button>
+      </div>
+      <div id="proposalReviewActionStatus" class="text-[10px] text-gray-500"></div>
+    </div>`;
+  }
+
   function renderDetail(detail, eligibility) {
     const envelope = (detail && detail.envelope) || {};
     const inner = (detail && detail.inner_artifact_summary) || {};
@@ -100,7 +122,99 @@
       <div><span class="text-gray-500">Execution eligibility:</span> ${escapeHtml(execElig.eligible === true ? "eligible" : execElig.eligible === false ? "not eligible" : "—")}${execElig.reason ? ` — ${escapeHtml(execElig.reason)}` : ""}</div>
       <div><span class="text-gray-500">Safety:</span> mutation_allowed=${escapeHtml(String(mutationAllowed))}, requires_human_approval=${escapeHtml(String(requiresHuman))}</div>
       <div><span class="text-gray-500">Open questions:</span> ${escapeHtml((envelope.open_questions || []).join("; ") || "—")}</div>
+      ${renderReviewActions(detail.proposal_id, detail.status)}
     </div>`;
+  }
+
+  async function submitReviewDecision(proposalId, decision, rationale, constraintsText, actionStatusEl, reload) {
+    const rationaleTrimmed = (rationale || "").trim();
+    if (!rationaleTrimmed) {
+      setStatus(actionStatusEl, "Rationale is required.", true);
+      return;
+    }
+
+    const body = {
+      decision,
+      rationale: rationaleTrimmed,
+      reviewer_type: "human",
+      reviewer_id: "hub-operator",
+    };
+    if (decision === "approve" && constraintsText && constraintsText.trim()) {
+      body.constraints = { note: constraintsText.trim() };
+    }
+
+    setStatus(actionStatusEl, "Submitting review…", false);
+    try {
+      const result = await apiFetch(
+        `/api/proposal-review/proposals/${encodeURIComponent(proposalId)}/review`,
+        { method: "POST", body: JSON.stringify(body) },
+      );
+      const status = result && result.status ? result.status : decision;
+      const eligible =
+        result && result.execution_eligibility && result.execution_eligibility.eligible === true;
+      const msg =
+        decision === "approve"
+          ? `Approved (${status}). Eligible for future execution: ${eligible ? "yes" : "no"}.`
+          : `Recorded ${decision.replace("_", " ")} (${status}).`;
+      setStatus(actionStatusEl, msg, false);
+      if (typeof reload === "function") {
+        await reload(proposalId);
+      }
+    } catch (e) {
+      const detail =
+        (e.body && (e.body.detail || e.body.message)) || e.message || String(e);
+      setStatus(actionStatusEl, `Review failed: ${detail}`, true);
+    }
+  }
+
+  function wireReviewActions(detailEl, reload) {
+    if (!detailEl) return;
+    const proposalId = detailEl.querySelector("[data-proposal-id]");
+    if (!proposalId) return;
+    const id = proposalId.getAttribute("data-proposal-id");
+    const rationaleEl = detailEl.querySelector("#proposalReviewRationale");
+    const constraintsEl = detailEl.querySelector("#proposalReviewConstraints");
+    const actionStatusEl = detailEl.querySelector("#proposalReviewActionStatus");
+    detailEl.querySelectorAll(".proposalReviewActionBtn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const decision = btn.getAttribute("data-review-decision");
+        if (!decision) return;
+        submitReviewDecision(
+          id,
+          decision,
+          rationaleEl ? rationaleEl.value : "",
+          constraintsEl ? constraintsEl.value : "",
+          actionStatusEl,
+          reload,
+        );
+      });
+    });
+  }
+
+  async function loadProposalDetail(proposalId, detailEl, reloadList) {
+    if (!detailEl) return;
+    detailEl.classList.remove("hidden");
+    detailEl.innerHTML = "<div class='text-gray-500'>Loading detail…</div>";
+    try {
+      const detail = await apiFetch(`/api/proposal-review/proposals/${encodeURIComponent(proposalId)}`);
+      let eligibility = null;
+      try {
+        eligibility = await apiFetch(
+          `/api/proposal-review/proposals/${encodeURIComponent(proposalId)}/eligibility`,
+        );
+      } catch {
+        eligibility = detail.execution_eligibility || null;
+      }
+      detailEl.innerHTML = renderDetail(detail, eligibility);
+      wireReviewActions(detailEl, async (refreshedId) => {
+        await loadProposalDetail(refreshedId, detailEl, reloadList);
+        if (typeof reloadList === "function") {
+          await reloadList();
+        }
+      });
+    } catch (e) {
+      detailEl.innerHTML = `<div class="text-red-400">${escapeHtml(e.message || String(e))}</div>`;
+    }
   }
 
   async function loadPendingDecisions(listEl, statusEl, detailEl, filterEl) {
@@ -137,27 +251,10 @@
       }
 
       setStatus(statusEl, `${items.length} decision-worthy proposal(s)`, false);
+      const reloadList = () => loadPendingDecisions(listEl, statusEl, detailEl, filterEl);
       items.forEach((item) => {
         listEl.appendChild(
-          renderListRow(item, async (row) => {
-            if (!detailEl) return;
-            detailEl.classList.remove("hidden");
-            detailEl.innerHTML = "<div class='text-gray-500'>Loading detail…</div>";
-            try {
-              const detail = await apiFetch(`/api/proposal-review/proposals/${encodeURIComponent(row.proposal_id)}`);
-              let eligibility = null;
-              try {
-                eligibility = await apiFetch(
-                  `/api/proposal-review/proposals/${encodeURIComponent(row.proposal_id)}/eligibility`,
-                );
-              } catch {
-                eligibility = detail.execution_eligibility || null;
-              }
-              detailEl.innerHTML = renderDetail(detail, eligibility);
-            } catch (e) {
-              detailEl.innerHTML = `<div class="text-red-400">${escapeHtml(e.message || String(e))}</div>`;
-            }
-          }),
+          renderListRow(item, (row) => loadProposalDetail(row.proposal_id, detailEl, reloadList)),
         );
       });
     } catch (e) {

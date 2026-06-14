@@ -14,6 +14,7 @@ def test_proposal_review_ui_wired() -> None:
     assert "Pending Decisions" in template
     assert "/api/proposal-review/pending" in ui
     assert "/api/proposal-review/proposals/" in ui
+    assert "/api/proposal-review/proposals/" in ui and "/review" in ui
     assert "No pending decisions." in ui
     assert "Proposal review API unavailable." in ui
     assert "Current belief:" in ui
@@ -24,8 +25,12 @@ def test_proposal_review_ui_wired() -> None:
     assert "Confidence:" in ui
     assert "mutation_allowed=" in ui
     assert "requires_human_approval=" in ui
+    for label in ("Approve", "Reject", "Request changes"):
+        assert label in ui
+    assert "Rationale is required" in ui
+    assert "fetch(" in ui
+    assert "/triage" not in ui.lower()
+    assert "execute" not in ui.lower()
     ui_lower = ui.lower()
-    for forbidden in ("/triage", "/review", 'method="post"', "request-changes"):
-        assert forbidden not in ui_lower
-    for forbidden_button in ('id="approve', 'id="reject', ">approve<", ">reject<", "approve proposal", "reject proposal"):
-        assert forbidden_button not in ui_lower
+    for token in ('type="submit"',):
+        assert token not in ui_lower

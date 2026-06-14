@@ -18,6 +18,7 @@ orion-context-exec
 
 - `CONTEXT_EXEC_ENABLED` on cortex-exec (default false)
 - Legacy fallback via `CONTEXT_EXEC_LEGACY_FALLBACK=true`
+- Beta runbook: [context-exec-beta-runbook.md](../context-exec-beta-runbook.md)
 
 ## Safety
 

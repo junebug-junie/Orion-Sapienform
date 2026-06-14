@@ -6,6 +6,32 @@ import json
 from typing import Any
 
 
+def assert_context_exec_engine_identity(
+    runtime_debug: dict[str, Any],
+    *,
+    expected_engine: str | None = None,
+) -> None:
+    """Assert context-exec runtime_debug identifies the RLM engine."""
+    assert isinstance(runtime_debug, dict)
+    assert runtime_debug.get("engine")
+    assert runtime_debug.get("engine_selected")
+    if expected_engine is not None:
+        assert runtime_debug.get("engine") == expected_engine
+        assert runtime_debug.get("engine_selected") == expected_engine
+
+
+def assert_context_exec_safety_posture(runtime_debug: dict[str, Any]) -> None:
+    """Assert read-only safety flags on context-exec runtime_debug."""
+    if "write_enabled" in runtime_debug:
+        assert runtime_debug["write_enabled"] is False
+    if "network_enabled" in runtime_debug:
+        assert runtime_debug["network_enabled"] is False
+    if "sandbox_mode" in runtime_debug:
+        assert runtime_debug["sandbox_mode"] == "docker"
+    if "rlm_depth" in runtime_debug:
+        assert runtime_debug["rlm_depth"] <= 1
+
+
 def _walk(obj: Any):
     if isinstance(obj, dict):
         yield obj

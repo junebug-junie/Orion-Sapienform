@@ -98,6 +98,33 @@ def test_triage_store_only_does_not_create_human_chore() -> None:
     assert updated.attention_required is False
 
 
+@pytest.mark.parametrize(
+    "action",
+    ["store_only", "discard", "expire", "supersede"],
+)
+def test_triage_non_promote_actions_do_not_require_attention(action: str) -> None:
+    record = _stored_record()
+    decision = ProposalTriageDecisionV1(
+        proposal_id=record.proposal_id,
+        action=action,
+        rationale="test",
+    )
+    updated = apply_triage_decision(record, decision)
+    assert updated.attention_required is False
+
+
+def test_triage_supersede_sets_superseded_status() -> None:
+    record = _stored_record()
+    decision = ProposalTriageDecisionV1(
+        proposal_id=record.proposal_id,
+        action="supersede",
+        rationale="replaced by newer proposal",
+    )
+    updated = apply_triage_decision(record, decision)
+    assert updated.status == "superseded"
+    assert updated.attention_required is False
+
+
 def test_review_approval_does_not_execute() -> None:
     record = _stored_record()
     promote = ProposalTriageDecisionV1(

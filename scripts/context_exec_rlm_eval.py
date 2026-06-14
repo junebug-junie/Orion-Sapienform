@@ -40,6 +40,10 @@ def _quality_pass(case_name: str, engine: str, run) -> bool:
             assert_claim_clean(claim, DENVER_CLAIM_FORBIDDEN)
         except AssertionError:
             return False
+    if case_name == "trace_autopsy_known_corr" and engine == "alexzhang":
+        root_cause = str((run.artifact or {}).get("root_cause") or "").lower()
+        if any(term in root_cause for term in ("why did", "orion")):
+            return False
     return True
 
 

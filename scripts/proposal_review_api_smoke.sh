@@ -8,6 +8,10 @@ cd "$ROOT"
 
 STORE="${PROPOSAL_LEDGER_STORE_PATH:-/tmp/orion-proposals.json}"
 PY="${ORION_PY:-orion_dev/bin/python}"
+# Resolve venv from repo root when run from a worktree without a local orion_dev.
+if [[ ! -x "$PY" ]] && [[ -x "$ROOT/orion_dev/bin/python" ]]; then
+  PY="$ROOT/orion_dev/bin/python"
+fi
 
 rm -f "$STORE"
 

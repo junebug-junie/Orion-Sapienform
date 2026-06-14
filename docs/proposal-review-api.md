@@ -26,7 +26,7 @@ Mounted on **orion-context-exec** (same port as context-exec HTTP, default `8096
 
 **Default-safe posture:** The API is disabled unless `PROPOSAL_REVIEW_API_ENABLED=true` **and** `PROPOSAL_LEDGER_STORE_PATH` points at an explicit JSON file. Missing store path must not look healthy.
 
-Proposal routes return **503** when the API is disabled, `PROPOSAL_LEDGER_STORE_PATH` is unset, or the store file is malformed/invalid.
+Proposal routes return **503** when enabled but `PROPOSAL_LEDGER_STORE_PATH` is unset or the store file is malformed/invalid. When the API is disabled, routes are not mounted and return **404**.
 
 ## Health semantics
 

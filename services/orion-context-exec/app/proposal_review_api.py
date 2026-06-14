@@ -288,7 +288,7 @@ def proposal_review_health_block() -> dict[str, Any]:
             store_ok = True
         except ProposalReviewApiError as exc:
             error = str(exc)
-    ok = enabled and configured and store_ok
+    ok = enabled and configured and store_path_present and store_ok
     return {
         "enabled": enabled,
         "store_configured": configured,

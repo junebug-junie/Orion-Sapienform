@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +18,7 @@ from orion.schemas.context_exec import (
 from orion.schemas.proposal_ledger import (
     JsonFileProposalLedgerRepository,
     ProposalLedgerRecordV1,
+    ProposalLedgerStoreError,
     ProposalReviewDecisionKind,
     ProposalReviewDecisionV1,
     ProposalReviewerType,
@@ -61,11 +61,12 @@ def _parse_reviewer(reviewer_type: ProposalReviewerType, reviewer_id: str) -> tu
 def _open_repo(store_path: Path) -> JsonFileProposalLedgerRepository:
     try:
         return JsonFileProposalLedgerRepository(store_path)
-    except json.JSONDecodeError as exc:
-        raise ProposalReviewApiError(f"malformed proposal ledger store: {exc}") from exc
-    except ValidationError as exc:
+    except ProposalLedgerStoreError as exc:
+        message = str(exc)
+        if "malformed JSON" in message or "invalid or malformed JSON" in message:
+            raise ProposalReviewApiError(f"malformed proposal ledger store: {exc}") from exc
         raise ProposalReviewApiError(f"invalid proposal ledger store: {exc}") from exc
-    except ValueError as exc:
+    except ValidationError as exc:
         raise ProposalReviewApiError(f"invalid proposal ledger store: {exc}") from exc
 
 

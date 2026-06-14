@@ -10,8 +10,10 @@ from orion.schemas.context_exec import (
     ContextExecRequestV1,
     ContextExecRunV1,
     PatchProposalV1,
+    ProposalEnvelopeV1,
     RepoImpactAnalysisReportV1,
     TraceAutopsyReportV1,
+    build_patch_proposal_envelope,
 )
 
 
@@ -20,10 +22,19 @@ def artifact_type_for_mode(mode: ContextExecMode) -> str | None:
         "belief_provenance": "BeliefProvenanceReportV1",
         "trace_autopsy": "TraceAutopsyReportV1",
         "repo_impact_analysis": "RepoImpactAnalysisReportV1",
-        "patch_proposal": "PatchProposalV1",
+        "patch_proposal": "ProposalEnvelopeV1",
         "runtime_debug": "TraceAutopsyReportV1",
     }
     return mapping.get(mode)
+
+
+def _wrap_patch_proposal(raw: dict[str, Any], mode: ContextExecMode) -> tuple[dict[str, Any], str, bool]:
+    try:
+        patch = PatchProposalV1.model_validate(raw)
+        envelope = build_patch_proposal_envelope(patch, source_mode=mode)
+        return envelope.model_dump(mode="json"), "ProposalEnvelopeV1", True
+    except Exception:
+        return raw, "PatchProposalV1", False
 
 
 def validate_artifact(mode: ContextExecMode, raw: Any) -> tuple[dict[str, Any], str | None, bool]:
@@ -37,7 +48,7 @@ def validate_artifact(mode: ContextExecMode, raw: Any) -> tuple[dict[str, Any], 
         elif mode == "repo_impact_analysis":
             model = RepoImpactAnalysisReportV1.model_validate(raw)
         elif mode == "patch_proposal":
-            model = PatchProposalV1.model_validate(raw)
+            return _wrap_patch_proposal(raw, mode)
         else:
             return raw, "GenericInvestigationV1", True
         return model.model_dump(mode="json"), model.__class__.__name__, True
@@ -52,9 +63,17 @@ def synthesize_findings_bundle(
     schema_valid: bool,
 ) -> FindingsBundle | None:
     ac = request.answer_contract
-    if ac is None and not (artifact.get("findings") or artifact.get("evidence")):
+    findings_source = artifact
+    if request.mode == "patch_proposal" and artifact.get("artifact_type") == "PatchProposalV1":
+        findings_source = artifact.get("artifact") or {}
+    if ac is None and not (findings_source.get("findings") or findings_source.get("evidence") or artifact.get("evidence")):
         return None
-    raw_findings: list[Any] = list(artifact.get("findings") or artifact.get("evidence") or [])
+    raw_findings: list[Any] = list(
+        findings_source.get("findings")
+        or findings_source.get("evidence")
+        or artifact.get("evidence")
+        or []
+    )
     findings: list[Finding] = []
     verified_count = 0
     for item in raw_findings:
@@ -109,8 +128,9 @@ def build_final_text(mode: ContextExecMode, artifact: dict[str, Any], *, status:
         path_hint = f" Grounded files: {', '.join(path_names)}." if path_names else ""
         return f"Repo impact: {st}. Risk={risk}.{path_hint}"
     if mode == "patch_proposal":
-        risk = artifact.get("risk", "unknown")
-        files = artifact.get("files_to_change") or []
+        inner = artifact.get("artifact") if artifact.get("artifact_type") == "PatchProposalV1" else artifact
+        risk = artifact.get("risk", inner.get("risk", "unknown"))
+        files = inner.get("files_to_change") or []
         if not files:
             return (
                 "Patch proposal generated. Mutation is not allowed by context-exec. "

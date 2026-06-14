@@ -10,9 +10,12 @@ from orion.schemas.context_exec import (
     ContextExecPermissionV1,
     ContextExecRequestV1,
     PatchProposalV1,
+    ProposalEnvelopeV1,
+    build_patch_proposal_envelope,
 )
 
 from app.alexzhang_rlm_engine import AlexZhangRLMEngine
+from app.artifact_builder import validate_artifact
 from app.callable_namespace import ContextNamespace
 from app.repo_tools import RepoHit
 from app.rlm_engine import FakeRLMEngine
@@ -34,6 +37,16 @@ EXECUTION_FORBIDDEN_ARTIFACT_KEYS = frozenset(
 )
 
 
+def _assert_proposal_envelope_contract(envelope: ProposalEnvelopeV1) -> None:
+    assert envelope.proposal_type == "patch_proposal"
+    assert envelope.artifact_type == "PatchProposalV1"
+    assert envelope.mutation_allowed is False
+    assert envelope.requires_human_approval is True
+    assert envelope.review_status in {"draft", "pending_review"}
+    inner = PatchProposalV1.model_validate(envelope.artifact)
+    assert inner.mutation_allowed is False
+
+
 def test_patch_proposal_schema_defaults_to_no_mutation() -> None:
     model = PatchProposalV1(
         problem="weak synthesis",
@@ -49,20 +62,24 @@ def test_patch_proposal_schema_defaults_to_no_mutation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fake_engine_patch_proposal_is_schema_valid_and_read_only() -> None:
+async def test_fake_engine_patch_proposal_returns_proposal_envelope() -> None:
     engine = FakeRLMEngine()
     ns = ContextNamespace(permissions=ContextExecPermissionV1())
     req = ContextExecRequestV1(text=PATCH_PROMPT, mode="patch_proposal")
     raw = await engine.run(req, ns)
-    model = PatchProposalV1.model_validate(raw)
-    assert model.mutation_allowed is False
-    assert model.risk == "unknown"
-    assert model.files_to_change == []
-    assert model.rollback_plan == "No changes proposed; no rollback required."
+    artifact, artifact_type, valid = validate_artifact("patch_proposal", raw)
+    assert valid is True
+    assert artifact_type == "ProposalEnvelopeV1"
+    envelope = ProposalEnvelopeV1.model_validate(artifact)
+    _assert_proposal_envelope_contract(envelope)
+    inner = PatchProposalV1.model_validate(envelope.artifact)
+    assert inner.risk == "unknown"
+    assert inner.files_to_change == []
+    assert inner.rollback_plan == "No changes proposed; no rollback required."
 
 
 @pytest.mark.asyncio
-async def test_alexzhang_patch_proposal_is_read_only_blueprint(monkeypatch) -> None:
+async def test_alexzhang_patch_proposal_returns_proposal_envelope(monkeypatch) -> None:
     fake_hits = [
         {
             "path": "services/orion-context-exec/app/alexzhang_rlm_engine.py",
@@ -91,13 +108,17 @@ async def test_alexzhang_patch_proposal_is_read_only_blueprint(monkeypatch) -> N
         permissions=ContextExecPermissionV1(read_repo=True),
     )
     raw = await engine.run(req, ns)
-    model = PatchProposalV1.model_validate(raw)
-    assert model.mutation_allowed is False
+    artifact, artifact_type, valid = validate_artifact("patch_proposal", raw)
+    assert valid is True
+    assert artifact_type == "ProposalEnvelopeV1"
+    envelope = ProposalEnvelopeV1.model_validate(artifact)
+    _assert_proposal_envelope_contract(envelope)
+    inner = PatchProposalV1.model_validate(envelope.artifact)
     grounded_refs = {str(h.get("path") or "") for h in fake_hits}
-    for path in model.files_to_change:
+    for path in inner.files_to_change:
         assert path in grounded_refs
-    assert model.tests_to_run or any(
-        "tests_to_run" in q.lower() or "ground" in q.lower() for q in model.open_questions
+    assert inner.tests_to_run or any(
+        "tests_to_run" in q.lower() or "ground" in q.lower() for q in inner.open_questions
     )
 
 
@@ -119,13 +140,16 @@ async def test_patch_proposal_does_not_execute_or_request_mutation(monkeypatch) 
     )
     run = await runner.run(req)
     assert run.status == "ok"
-    assert run.artifact_type == "PatchProposalV1"
-    assert run.artifact.get("mutation_allowed") is False
+    assert run.artifact_type == "ProposalEnvelopeV1"
+    envelope = ProposalEnvelopeV1.model_validate(run.artifact)
+    _assert_proposal_envelope_contract(envelope)
     rd = run.runtime_debug
     assert rd.get("schema_valid") is True
+    assert rd.get("proposal_enveloped") is True
     assert rd.get("write_enabled") is False
     assert rd.get("network_enabled") is False
     assert rd.get("mutation_allowed") is False
+    assert rd.get("requires_human_approval") is True
     assert rd.get("rlm_depth", 99) <= 1
 
     for key in EXECUTION_FORBIDDEN_ARTIFACT_KEYS:
@@ -149,4 +173,15 @@ async def test_runner_patch_proposal_final_text_boundary(monkeypatch) -> None:
     req = ContextExecRequestV1(text=PATCH_PROMPT, mode="patch_proposal")
     run = await runner.run(req)
     assert "Mutation is not allowed by context-exec" in run.final_text
-    assert run.artifact.get("mutation_allowed") is False
+    envelope = ProposalEnvelopeV1.model_validate(run.artifact)
+    assert envelope.mutation_allowed is False
+
+
+def test_build_patch_proposal_envelope_rejects_self_approval() -> None:
+    patch = PatchProposalV1(
+        problem="p",
+        proposed_change_summary="s",
+        rollback_plan="r",
+    )
+    envelope = build_patch_proposal_envelope(patch, source_mode="patch_proposal")
+    assert envelope.review_status == "draft"

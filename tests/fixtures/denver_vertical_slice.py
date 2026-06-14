@@ -57,9 +57,18 @@ def run_denver_vertical_slice(
     return asyncio.run(run_denver_vertical_slice_async(store_path, auto_triage=auto_triage))
 
 
-def assert_denver_vertical_slice_safety(run: Any, record: Any, envelope: ProposalEnvelopeV1) -> None:
+def assert_denver_vertical_slice_safety(
+    run: Any,
+    record: Any,
+    envelope: ProposalEnvelopeV1,
+    *,
+    inner: Any | None = None,
+) -> None:
+    from orion.schemas.context_exec import MemoryCorrectionProposalV1
+
     assert run.artifact_type == "ProposalEnvelopeV1"
     assert envelope.proposal_type == "memory_correction_proposal"
+    assert envelope.artifact_type == "MemoryCorrectionProposalV1"
     assert envelope.mutation_allowed is False
     assert envelope.requires_human_approval is True
     assert envelope.review_status in {"draft", "pending_review"}
@@ -69,3 +78,11 @@ def assert_denver_vertical_slice_safety(run: Any, record: Any, envelope: Proposa
     assert record.attention_required is True
     reason = (record.attention_reason or "").lower()
     assert any(token in reason for token in ("memory", "identity", "denver", "core"))
+
+    parsed_inner = inner or MemoryCorrectionProposalV1.model_validate(envelope.artifact)
+    assert parsed_inner.mutation_allowed is False
+    assert "denver" in parsed_inner.current_belief.lower()
+    assert parsed_inner.correction_type in {"mark_uncertain", "mark_contradicted", "replace_belief"}
+    assert parsed_inner.rationale
+    assert parsed_inner.risk in {"low", "medium", "high", "unknown"}
+    assert parsed_inner.confidence is not None

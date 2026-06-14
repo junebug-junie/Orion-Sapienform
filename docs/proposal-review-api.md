@@ -2,7 +2,7 @@
 
 Future Hub-facing control-plane seam over the proposal ledger. Exposes safe review operations without execution, memory writes, or repo mutation.
 
-Hub now includes a **read-only** proposal review surface (`Pending Decisions`) that calls this API. Hub does not read JSON ledger files, does not own lifecycle logic, and does not approve/reject/triage yet.
+Hub now includes a proposal review surface (`Pending Decisions`) that calls this API. Hub can record review decisions (`approve`, `reject`, `request_changes`) through `POST /proposals/{proposal_id}/review`. Hub does not read JSON ledger files, does not own lifecycle logic, and does not triage or execute.
 
 ## Flow
 
@@ -88,8 +88,9 @@ curl -s "http://127.0.0.1:8096/proposals/{id}/eligibility"
 
 ## Safety
 
-- Hub read-only surface (list/detail/eligibility only; no POST from Hub)
-- No approve/reject/triage buttons in Hub yet
+- Hub records review decisions only via `POST /proposals/{proposal_id}/review`
+- Hub cannot triage (`POST /triage` is not exposed from Hub)
+- Hub cannot execute proposals
 - No real executor (dry-run receipt scaffold only)
 - Dry-run execution is not real execution — it proves handoff shape only
 - Dry-run receipts use `dry_run=true`, `status=simulated`, `mutation_performed=false`
@@ -132,13 +133,15 @@ ORION_PY=orion_dev/bin/python bash scripts/denver_memory_correction_vertical_smo
 
 ### Denver memory correction vertical slice
 
-Proves `memory_correction_proposal` → ledger intake → auto-triage `pending_review` → proposal review API → Hub Pending Decisions (read-only).
+Proves `memory_correction_proposal` → ledger intake → auto-triage `pending_review` → proposal review API → Hub Pending Decisions.
 
-This smoke does **not** approve, reject, execute, or mutate memory.
+Denver smoke verifies read-only listing/detail. Hub review actions are tested separately and still do not execute or mutate memory during smoke.
 
 ```bash
 ORION_PY=orion_dev/bin/python bash scripts/denver_memory_correction_vertical_smoke.sh
 ```
+
+Expected: `denver_memory_correction_vertical_smoke PASS` with one `pending_review` Denver proposal, API GET checks showing `eligible=false`, `mutation_allowed=false`, `requires_human_approval=true`. Hub live GET is optional (`HUB_SMOKE=true HUB_BASE_URL=...`).
 
 Or manually:
 

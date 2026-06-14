@@ -1,4 +1,4 @@
-"""Read-only Hub routes proxying the context-exec proposal review API."""
+"""Hub routes proxying the context-exec proposal review API."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import logging
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field
 
 from scripts import proposal_review_client as client
 
@@ -19,7 +20,21 @@ ProposalListFilter = Literal[
     "stored",
     "approved",
     "rejected",
+    "request_changes",
 ]
+
+ProposalReviewDecision = Literal["approve", "reject", "request_changes"]
+
+
+class ProposalReviewActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: ProposalReviewDecision
+    rationale: str
+    reviewer_type: Literal["human"] = "human"
+    reviewer_id: str = "hub-operator"
+    approved_actions: list[str] = Field(default_factory=list)
+    constraints: dict[str, Any] = Field(default_factory=dict)
 
 
 def _disabled_payload(*, state: str = "disabled") -> dict[str, Any]:
@@ -112,6 +127,26 @@ async def proposal_review_eligibility(proposal_id: str) -> dict[str, Any]:
 
     try:
         return await client.get_eligibility(proposal_id)
+    except client.ProposalReviewUnavailable as exc:
+        raise HTTPException(status_code=503, detail="proposal_review_unavailable") from exc
+    except client.ProposalReviewClientError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/proposals/{proposal_id}/review")
+async def proposal_review_action(proposal_id: str, body: ProposalReviewActionRequest) -> dict[str, Any]:
+    if not client.is_enabled():
+        raise HTTPException(status_code=503, detail="proposal_review_disabled")
+
+    rationale = body.rationale.strip()
+    if not rationale:
+        raise HTTPException(status_code=422, detail="rationale is required")
+
+    payload = body.model_dump(mode="json")
+    payload["rationale"] = rationale
+
+    try:
+        return await client.post_review(proposal_id, payload)
     except client.ProposalReviewUnavailable as exc:
         raise HTTPException(status_code=503, detail="proposal_review_unavailable") from exc
     except client.ProposalReviewClientError as exc:

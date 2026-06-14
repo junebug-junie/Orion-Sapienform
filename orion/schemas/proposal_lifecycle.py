@@ -7,6 +7,7 @@ from typing import Literal
 
 from orion.schemas.proposal_ledger import (
     ProposalExecutionEligibilityV1,
+    ProposalExecutionReceiptV1,
     ProposalLedgerRecordV1,
     ProposalReviewDecisionV1,
     ProposalStatus,
@@ -200,4 +201,67 @@ def derive_execution_eligibility(
         reason=f"proposal status is {record.status!r}, not approved",
         executor_required=True,
         execution_requested=False,
+    )
+
+
+def validate_dry_run_execution_eligibility(
+    record: ProposalLedgerRecordV1,
+    eligibility: ProposalExecutionEligibilityV1,
+) -> None:
+    """Raise ValueError when a proposal is not eligible for dry-run execution."""
+    if record.status != "approved":
+        raise ValueError(
+            f"dry-run execution requires status='approved', got {record.status!r}"
+        )
+    if not eligibility.eligible:
+        raise ValueError(
+            f"dry-run execution requires eligible=true: {eligibility.reason}"
+        )
+    if eligibility.execution_requested:
+        raise ValueError(
+            "dry-run execution requires execution_requested=false"
+        )
+
+
+def _planned_actions_for_record(record: ProposalLedgerRecordV1) -> list[str]:
+    artifact_type = record.envelope.artifact_type
+    if artifact_type == "PatchProposalV1":
+        return ["simulate_patch_apply"]
+    if artifact_type == "MemoryCorrectionProposalV1":
+        return ["simulate_memory_correction"]
+    return ["simulate_proposal_execution"]
+
+
+def build_dry_run_execution_receipt(
+    record: ProposalLedgerRecordV1,
+    eligibility: ProposalExecutionEligibilityV1,
+    *,
+    executor_name: str,
+    receipt_id: str,
+    created_at: str,
+    execution_request_id: str | None = None,
+    trace_id: str | None = None,
+) -> ProposalExecutionReceiptV1:
+    """Build a simulated execution receipt without mutating ledger, memory, or repo."""
+    validate_dry_run_execution_eligibility(record, eligibility)
+
+    planned_actions = _planned_actions_for_record(record)
+    if eligibility.allowed_actions:
+        planned_actions = list(eligibility.allowed_actions)
+
+    return ProposalExecutionReceiptV1(
+        receipt_id=receipt_id,
+        proposal_id=record.proposal_id,
+        execution_request_id=execution_request_id,
+        executor_name=executor_name,
+        status="simulated",
+        dry_run=True,
+        mutation_performed=False,
+        summary=(
+            f"Dry-run simulated execution for {record.envelope.proposal_type} "
+            f"via {executor_name}; no mutation performed"
+        ),
+        planned_actions=planned_actions,
+        created_at=created_at,
+        trace_id=trace_id,
     )

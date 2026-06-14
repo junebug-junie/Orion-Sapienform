@@ -142,6 +142,40 @@ class ProposalExecutionEligibilityV1(BaseModel):
         return self
 
 
+ProposalExecutionReceiptStatus = Literal["simulated", "succeeded", "failed", "blocked"]
+
+
+class ProposalExecutionReceiptV1(BaseModel):
+    """Executor handoff receipt — dry-run receipts prove shape without mutation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    receipt_id: str
+    proposal_id: str
+    execution_request_id: str | None = None
+
+    executor_name: str
+    status: ProposalExecutionReceiptStatus
+    dry_run: bool
+    mutation_performed: bool
+
+    summary: str
+    planned_actions: list[str] = Field(default_factory=list)
+    blocked_reason: str | None = None
+
+    created_at: str | None = None
+    trace_id: str | None = None
+
+    @model_validator(mode="after")
+    def _dry_run_invariants(self) -> ProposalExecutionReceiptV1:
+        if self.dry_run:
+            if self.status != "simulated":
+                raise ValueError("dry_run=true requires status='simulated'")
+            if self.mutation_performed:
+                raise ValueError("dry_run=true requires mutation_performed=false")
+        return self
+
+
 class ProposalLedgerRepository(Protocol):
     """Contract for durable proposal ledger persistence (implementation deferred)."""
 

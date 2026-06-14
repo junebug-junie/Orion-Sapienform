@@ -9,6 +9,7 @@ from orion.schemas.context_exec import (
 )
 from orion.schemas.proposal_ledger import (
     ProposalExecutionEligibilityV1,
+    ProposalExecutionReceiptV1,
     ProposalLedgerRecordV1,
     ProposalReviewDecisionV1,
     ProposalTriageDecisionV1,
@@ -23,6 +24,7 @@ PROPOSAL_CONTROL_PLANE_SCHEMAS = (
     "ProposalTriageDecisionV1",
     "ProposalReviewDecisionV1",
     "ProposalExecutionEligibilityV1",
+    "ProposalExecutionReceiptV1",
 )
 
 

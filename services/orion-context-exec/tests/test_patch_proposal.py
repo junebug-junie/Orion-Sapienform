@@ -16,11 +16,7 @@ from app.alexzhang_rlm_engine import AlexZhangRLMEngine
 from app.callable_namespace import ContextNamespace
 from app.repo_tools import RepoHit
 from app.rlm_engine import FakeRLMEngine
-from app.runner import ContextExecRunner, FAKE_ORGANS
-
-REPO_ROOT = __import__("os").path.abspath(
-    __import__("os").path.join(__import__("os").path.dirname(__file__), "..", "..", "..")
-)
+from app.runner import ContextExecRunner
 
 PATCH_PROMPT = (
     "Propose a patch for weak trace-autopsy root cause synthesis in context-exec."

@@ -35,6 +35,7 @@ from orion.schemas.context_exec import (  # noqa: E402
 from orion.schemas.proposal_ledger import (  # noqa: E402
     JsonFileProposalLedgerRepository,
     ProposalLedgerRecordV1,
+    ProposalLedgerStoreError,
     ProposalReviewDecisionV1,
     ProposalTriageDecisionV1,
 )
@@ -52,7 +53,10 @@ def _require_store(path: str | None) -> Path:
 
 
 def _open_repo(store_path: Path) -> JsonFileProposalLedgerRepository:
-    return JsonFileProposalLedgerRepository(store_path)
+    try:
+        return JsonFileProposalLedgerRepository(store_path)
+    except ProposalLedgerStoreError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def _parse_reviewer(reviewer: str) -> tuple[str, str]:
@@ -67,13 +71,22 @@ def _parse_reviewer(reviewer: str) -> tuple[str, str]:
     return "human", reviewer
 
 
+def _compact_attention_reason(reason: str | None) -> str:
+    if not reason:
+        return ""
+    compact = " ".join(reason.split())
+    return compact if len(compact) <= 80 else compact[:77] + "..."
+
+
 def _record_row(record: ProposalLedgerRecordV1) -> dict[str, Any]:
     return {
         "proposal_id": record.proposal_id,
         "proposal_type": record.envelope.proposal_type,
         "status": record.status,
         "risk": record.envelope.risk,
+        "triage_action": record.triage_action,
         "attention_required": record.attention_required,
+        "attention_reason": _compact_attention_reason(record.attention_reason),
         "title": record.envelope.title,
     }
 
@@ -217,7 +230,9 @@ def cmd_list(args: argparse.Namespace) -> int:
                         row["proposal_type"],
                         row["status"],
                         row["risk"],
+                        row["triage_action"],
                         str(row["attention_required"]).lower(),
+                        row["attention_reason"],
                         row["title"],
                     ]
                 )
@@ -241,8 +256,10 @@ def cmd_show(args: argparse.Namespace) -> int:
     payload = {
         "proposal_id": record.proposal_id,
         "status": record.status,
+        "triage_action": record.triage_action,
         "attention_required": record.attention_required,
         "attention_reason": record.attention_reason,
+        "review_status": record.envelope.review_status,
         "envelope": record.envelope.model_dump(mode="json"),
         "inner_artifact_summary": _inner_artifact_summary(record.envelope),
         "evidence": record.envelope.evidence,

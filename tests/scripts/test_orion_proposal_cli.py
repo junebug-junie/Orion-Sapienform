@@ -283,3 +283,122 @@ def test_proposal_cli_rejects_context_exec_as_reviewer_for_approval(store_path: 
     )
     assert result.returncode != 0
     assert "context-exec" in (result.stderr + result.stdout).lower()
+
+
+def test_proposal_cli_requires_explicit_store_path() -> None:
+    result = subprocess.run(
+        [
+            str(PYTHON if PYTHON.exists() else sys.executable),
+            str(CLI),
+            "list",
+        ],
+        cwd=ROOT,
+        env={"PYTHONPATH": str(ROOT)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "--store" in (result.stderr + result.stdout).lower()
+
+
+def test_proposal_cli_show_missing_id_fails_cleanly(store_path: Path) -> None:
+    result = _run_cli("show", "prop_does_not_exist", store=store_path)
+    assert result.returncode != 0
+    assert "proposal not found" in (result.stderr + result.stdout).lower()
+
+
+def test_proposal_cli_review_missing_id_fails_cleanly(store_path: Path) -> None:
+    result = _run_cli(
+        "review",
+        "prop_does_not_exist",
+        "--decision",
+        "approve",
+        "--reason",
+        "missing",
+        store=store_path,
+    )
+    assert result.returncode != 0
+    assert "proposal not found" in (result.stderr + result.stdout).lower()
+
+
+def test_json_ledger_malformed_store_fails_cleanly_without_overwrite(tmp_path: Path) -> None:
+    store = tmp_path / "proposals.json"
+    corrupt = '{"records": ['
+    store.write_text(corrupt, encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            str(PYTHON if PYTHON.exists() else sys.executable),
+            str(CLI),
+            "list",
+            "--store",
+            str(store),
+        ],
+        cwd=ROOT,
+        env={"PYTHONPATH": str(ROOT)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "malformed json" in (result.stderr + result.stdout).lower()
+    assert store.read_text(encoding="utf-8") == corrupt
+
+
+def test_proposal_cli_list_shows_triage_and_attention_fields(store_path: Path) -> None:
+    seed = subprocess.run(
+        [
+            str(PYTHON if PYTHON.exists() else sys.executable),
+            str(CLI),
+            "seed-demo",
+            "--store",
+            str(store_path),
+        ],
+        cwd=ROOT,
+        env={"PYTHONPATH": str(ROOT)},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    seed_payload = json.loads(seed.stdout)
+    pending_id = seed_payload["records"]["pending_review_memory"]
+
+    result = _run_cli("list", "--json", store=store_path)
+    assert result.returncode == 0, result.stderr
+    rows = [json.loads(line) for line in result.stdout.strip().splitlines() if line.strip()]
+    pending_row = next(row for row in rows if row["proposal_id"] == pending_id)
+    assert pending_row["triage_action"] == "promote_to_review"
+    assert pending_row["attention_required"] is True
+    assert pending_row["attention_reason"]
+    assert pending_row["proposal_type"] == "memory_correction_proposal"
+    assert pending_row["risk"]
+    assert pending_row["title"]
+
+
+def test_proposal_cli_show_shows_triage_reason(store_path: Path) -> None:
+    seed = subprocess.run(
+        [
+            str(PYTHON if PYTHON.exists() else sys.executable),
+            str(CLI),
+            "seed-demo",
+            "--store",
+            str(store_path),
+        ],
+        cwd=ROOT,
+        env={"PYTHONPATH": str(ROOT)},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    proposal_id = json.loads(seed.stdout)["records"]["pending_review_memory"]
+
+    result = _run_cli("show", proposal_id, store=store_path)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["triage_action"] == "promote_to_review"
+    assert payload["attention_required"] is True
+    assert payload["attention_reason"]
+    assert payload["review_status"]
+    assert payload["execution_eligibility"]["execution_requested"] is False
+    assert payload["execution_eligibility"]["eligible"] is False

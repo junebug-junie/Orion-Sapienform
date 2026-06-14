@@ -1,0 +1,44 @@
+# Daily metacog grounded recall: true 24h window, tight fusion/render budgets.
+# Scheduler daily journal keeps journal.daily.grounded.v1 (7d); metacog uses this profile.
+profile: journal.daily.metacog.grounded.v1
+enable_vector: false
+
+vector_top_k: 0
+rdf_top_k: 6
+max_per_source: 3
+max_total_items: 10
+time_decay_half_life_hours: 24
+render_budget_tokens: 256
+strict_prompt_budget: true
+render_char_budget: 1280
+max_render_snippet_chars: 280
+prompt_safe_ctx: true
+cards_top_k: 3
+enable_query_expansion: true
+enable_sql_timeline: true
+sql_since_minutes: 1440
+sql_top_k: 50
+
+filters:
+  exclude_sources:
+    - pageindex_lexical
+  exclude_snippet_prefixes:
+    - "## Orion — Daily Journal"
+  exclude_snippet_substrings:
+    - "the day unfolded with the usual rhythm"
+    - "usual rhythm of troubleshooting"
+    - "familiar rhythm of denver"
+
+relevance:
+  backend_weights:
+    vector: 0.0
+    sql_timeline: 0.9
+    sql_chat: 0.6
+    rdf_chat: 0.55
+    rdf: 0.4
+    cards: 0.3
+  score_weight: 0.7
+  text_similarity_weight: 0.15
+  recency_weight: 0.15
+  enable_recency: true
+  recency_half_life_hours: 24

@@ -327,4 +327,4 @@ def test_fail_fast_skips_enrich_when_draft_fails(monkeypatch):
 
     assert result.status == "fail"
     assert calls == ["test"]
-    assert ctx["prior_step_results"]["MetacogDraftService"]["ok"] is False
+    assert result.result["MetacogDraftService"]["ok"] is False

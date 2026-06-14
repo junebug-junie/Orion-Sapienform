@@ -133,6 +133,11 @@ def test_recall_normalization_matches_exec_shape() -> None:
     frag = bundle["fragments"][0]
     assert frag["source"] == "journal"
     assert frag["snippet"]
+    assert "items" in orch_merge["memory_bundle"]
+
+    safe_merge = recall_ctx_merge_from_reply(reply, prompt_safe_ctx=True)
+    assert safe_merge["memory_bundle"] == {"rendered": "digest text"}
+    assert safe_merge["recall_memory_bundle_debug"]["items"]
 
 
 def test_projection_producer_emits_recall_derived_items() -> None:

@@ -621,6 +621,9 @@ def fuse_candidates(
             )
 
     profile_name = profile.get("profile")
+    strict_prompt_budget = bool(profile.get("strict_prompt_budget"))
+    render_char_budget = int(profile.get("render_char_budget") or 0) or None
+    snippet_cap = int(profile.get("max_render_snippet_chars") or 0) or None
     try:
         from .settings import settings as _recall_settings
 
@@ -634,6 +637,9 @@ def fuse_candidates(
         diagnostic=diagnostic,
         budget_indicator=_budget_ind,
         render_transcript_user_only=bool(profile.get("render_transcript_user_only")),
+        strict_prompt_budget=strict_prompt_budget,
+        render_char_budget=render_char_budget if strict_prompt_budget else None,
+        max_snippet_chars=snippet_cap if strict_prompt_budget else None,
     )
     is_graphtri = bool(profile_name) and (
         str(profile_name) == "graphtri.v1" or str(profile_name).startswith("graphtri")

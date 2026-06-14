@@ -1,0 +1,306 @@
+from __future__ import annotations
+
+import asyncio
+import importlib.util
+import sys
+import types
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[3]
+EXEC_ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
+if str(EXEC_ROOT) not in sys.path:
+    sys.path.append(str(EXEC_ROOT))
+
+from orion.core.bus.bus_schemas import ServiceRef
+from orion.schemas.collapse_mirror import CollapseMirrorEntryV2
+from orion.schemas.cortex.schemas import ExecutionStep
+
+
+def _load_executor_module():
+    app_dir = EXEC_ROOT / "app"
+    executor_path = app_dir / "executor.py"
+    package_name = "orion_cortex_exec_lane"
+    app_package_name = f"{package_name}.app"
+    if package_name not in sys.modules:
+        pkg = types.ModuleType(package_name)
+        pkg.__path__ = [str(app_dir.parent)]
+        sys.modules[package_name] = pkg
+    if app_package_name not in sys.modules:
+        pkg = types.ModuleType(app_package_name)
+        pkg.__path__ = [str(app_dir)]
+        sys.modules[app_package_name] = pkg
+    spec = importlib.util.spec_from_file_location(f"{app_package_name}.executor", executor_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_template(name: str) -> str:
+    return (ROOT / "orion" / "cognition" / "prompts" / name).read_text(encoding="utf-8")
+
+
+def _draft_ctx(*, spark_blob: str = "{}") -> dict:
+    return {
+        "trigger": {"trigger_kind": "baseline", "reason": "test", "pressure": 0.1, "zen_state": "zen"},
+        "trigger_kind": "baseline",
+        "context_summary": "unit test context",
+        "spark_state_json": spark_blob,
+        "turn_effect_json": "{}",
+        "recent_turn_effect_alerts_json": "[]",
+        "turn_effect_policy_json": "{}",
+        "turn_effect_explanations_json": "{}",
+        "biometrics_json": "{}",
+        "spark_phi_narrative": "",
+    }
+
+
+def test_metacog_draft_section_keys_cover_template_fields():
+    executor_module = _load_executor_module()
+    template = _load_template("log_orion_metacognition_draft.j2")
+    for key in executor_module._METACOG_DRAFT_CTX_LEN_KEYS:
+        assert f"{{{{ {key} }}}}" in template or f"{{{{ {key}|" in template
+
+
+def test_metacog_enrich_section_keys_cover_template_fields():
+    executor_module = _load_executor_module()
+    template = _load_template("log_orion_metacognition_enrich.j2")
+    for key in executor_module._METACOG_ENRICH_CTX_LEN_KEYS:
+        assert f"{{{{ {key} }}}}" in template or f"{{{{ {key}|" in template
+
+
+def test_oversized_draft_prompt_skips_llm_with_budget_fallback(monkeypatch):
+    executor_module = _load_executor_module()
+    calls: list[str] = []
+
+    class FakeLLMClient:
+        def __init__(self, bus):
+            self.bus = bus
+
+        async def chat(self, **kwargs):
+            req = kwargs.get("req")
+            calls.append(getattr(req, "raw_user_text", "draft"))
+            return {}
+
+    monkeypatch.setattr(executor_module, "LLMGatewayClient", FakeLLMClient)
+    monkeypatch.setattr(executor_module.settings, "cortex_metacog_draft_prompt_max_chars", 200)
+
+    template = _load_template("log_orion_metacognition_draft.j2")
+    ctx = _draft_ctx(spark_blob="X" * 5000)
+    step = ExecutionStep(
+        verb_name="log_orion_metacognition",
+        step_name="draft_entry",
+        order=0,
+        services=["MetacogDraftService"],
+        prompt_template=template,
+    )
+    source = ServiceRef(name="test", node="test", version="1.0")
+
+    result = asyncio.run(
+        executor_module.call_step_services(
+            bus=object(),
+            source=source,
+            step=step,
+            ctx=ctx,
+            correlation_id="corr-draft-budget",
+        )
+    )
+
+    assert result.status == "success"
+    assert calls == []
+    draft_result = result.result["MetacogDraftService"]
+    assert draft_result["ok"] is True
+    assert draft_result["fallback_reason"] == "prompt_budget_exceeded"
+    telemetry = ctx["collapse_entry"]["state_snapshot"]["telemetry"]
+    assert telemetry["metacog_draft_mode"] == "fallback"
+    assert telemetry["metacog_draft_fallback_reason"] == "prompt_budget_exceeded"
+    assert telemetry["metacog_prompt_chars"] > 200
+
+
+def test_oversized_enrich_prompt_skips_llm_with_budget_fallback(monkeypatch):
+    executor_module = _load_executor_module()
+    calls: list[str] = []
+
+    class FakeLLMClient:
+        def __init__(self, bus):
+            self.bus = bus
+
+        async def chat(self, **kwargs):
+            calls.append("enrich")
+            return {}
+
+    monkeypatch.setattr(executor_module, "LLMGatewayClient", FakeLLMClient)
+    monkeypatch.setattr(executor_module.settings, "cortex_metacog_enrich_prompt_max_chars", 200)
+
+    draft_entry = CollapseMirrorEntryV2(
+        event_id="evt-1",
+        id="evt-1",
+        trigger="dense",
+        observer="orion",
+        observer_state=["zen"],
+        type="flow",
+        emergent_entity="Test",
+        summary="Test summary",
+        mantra="Test mantra",
+        field_resonance="Test resonance",
+        resonance_signature="Test sig",
+        source_service="metacog",
+    ).model_dump(mode="json")
+    draft_entry["state_snapshot"] = {"telemetry": {"metacog_draft_mode": "llm"}}
+
+    template = _load_template("log_orion_metacognition_enrich.j2")
+    ctx = _draft_ctx(spark_blob="Y" * 5000)
+    ctx["collapse_entry"] = draft_entry
+    ctx["collapse_json"] = __import__("json").dumps(draft_entry)
+
+    step = ExecutionStep(
+        verb_name="log_orion_metacognition",
+        step_name="enrich_entry",
+        order=1,
+        services=["MetacogEnrichService"],
+        prompt_template=template,
+    )
+    source = ServiceRef(name="test", node="test", version="1.0")
+
+    result = asyncio.run(
+        executor_module.call_step_services(
+            bus=object(),
+            source=source,
+            step=step,
+            ctx=ctx,
+            correlation_id="corr-enrich-budget",
+        )
+    )
+
+    assert result.status == "success"
+    assert calls == []
+    enrich_result = result.result["MetacogEnrichService"]
+    assert enrich_result["ok"] is True
+    assert enrich_result["fallback_reason"] == "prompt_budget_exceeded"
+    telemetry = ctx["final_entry"]["state_snapshot"]["telemetry"]
+    assert telemetry["metacog_enrich_fallback_reason"] == "prompt_budget_exceeded"
+
+
+def test_firebreak_skip_includes_fallback_reason_and_diagnostics():
+    executor_module = _load_executor_module()
+    mock_bus = MagicMock()
+    mock_bus.publish = AsyncMock()
+
+    corr_id = str(uuid4())
+    ctx = {
+        "trigger": {"trigger_kind": "baseline"},
+        "metacog_draft_prompt_chars": 9000,
+        "metacog_draft_section_sizes": {"spark_state_json": 7000, "context_summary": 120},
+        "final_entry": {
+            "id": "123",
+            "state_snapshot": {
+                "telemetry": {
+                    "metacog_draft_mode": "fallback",
+                    "metacog_draft_fallback_reason": "prompt_budget_exceeded",
+                    "metacog_prompt_chars": 9000,
+                    "metacog_prompt_section_sizes": {"spark_state_json": 7000},
+                }
+            },
+        },
+    }
+
+    step = ExecutionStep(
+        step_name="publish",
+        verb_name="log_orion_metacognition",
+        services=["MetacogPublishService"],
+        order=1,
+    )
+    source = ServiceRef(name="test", node="test", version="1.0")
+
+    result = asyncio.run(
+        executor_module.call_step_services(
+            bus=mock_bus,
+            source=source,
+            step=step,
+            ctx=ctx,
+            correlation_id=corr_id,
+        )
+    )
+
+    publish = result.result["MetacogPublishService"]
+    assert publish["skipped"] is True
+    assert publish["reason"] == "firebreak_baseline_fallback"
+    assert publish["fallback_reason"] == "prompt_budget_exceeded"
+    assert publish["prompt_chars"] == 9000
+    assert publish["largest_sections"]["spark_state_json"] == 7000
+    mock_bus.publish.assert_called_once()
+
+
+def test_manual_dense_fallback_still_publishes():
+    executor_module = _load_executor_module()
+    mock_bus = MagicMock()
+    mock_bus.publish = AsyncMock()
+
+    valid_entry = CollapseMirrorEntryV2(
+        event_id="evt-dense",
+        id="evt-dense",
+        trigger="dense",
+        observer="orion",
+        observer_state=["zen"],
+        type="flow",
+        emergent_entity="Test",
+        summary="Test summary",
+        mantra="Test mantra",
+        field_resonance="Test resonance",
+        resonance_signature="Test sig",
+        source_service="metacog",
+    ).model_dump(mode="json")
+    valid_entry["state_snapshot"] = {
+        "telemetry": {
+            "metacog_draft_mode": "fallback",
+            "metacog_draft_fallback_reason": "json_parse_failed",
+        }
+    }
+
+    ctx = {
+        "trigger": {"trigger_kind": "dense"},
+        "final_entry": valid_entry,
+    }
+
+    step = ExecutionStep(
+        step_name="publish",
+        verb_name="log_orion_metacognition",
+        services=["MetacogPublishService"],
+        order=1,
+    )
+    source = ServiceRef(name="test", node="test", version="1.0")
+
+    result = asyncio.run(
+        executor_module.call_step_services(
+            bus=mock_bus,
+            source=source,
+            step=step,
+            ctx=ctx,
+            correlation_id=str(uuid4()),
+        )
+    )
+
+    assert result.status == "success"
+    publish = result.result["MetacogPublishService"]
+    assert "skipped" not in publish
+    mock_bus.publish.assert_called()
+
+
+def test_log_orion_metacognition_recall_disabled_by_verb_default():
+    from orion.cognition.plan_loader import build_plan_for_verb
+    from app.recall_utils import delivery_safe_recall_decision
+
+    plan = build_plan_for_verb("log_orion_metacognition", mode="brain")
+    recall_cfg: dict = {}
+    if str(plan.metadata.get("recall_enabled_default") or "").lower() == "false":
+        recall_cfg["enabled"] = False
+    decision = delivery_safe_recall_decision(recall_cfg, plan.steps, plan_verb_name=plan.verb_name)
+    assert str(plan.metadata.get("recall_enabled_default") or "").lower() == "false"
+    assert decision["run_recall"] is False

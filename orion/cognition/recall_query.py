@@ -3,12 +3,38 @@
 from __future__ import annotations
 
 import time
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from orion.core.contracts.recall import RecallQueryV1, RecallReplyV1
 
 # Catalog-registered reply prefix (orion/bus/channels.yaml); Exec and Orch Mind preflight share this.
 DEFAULT_RECALL_REPLY_PREFIX = "orion:exec:result:RecallService"
+
+_PROFILES_DIR = Path(__file__).resolve().parents[1] / "recall" / "profiles"
+
+
+@lru_cache(maxsize=32)
+def recall_profile_prompt_flags(profile_name: str | None) -> dict[str, Any]:
+    """Load opt-in render/prompt flags from recall profile YAML."""
+    if not profile_name:
+        return {}
+    path = _PROFILES_DIR / f"{profile_name}.yaml"
+    if not path.exists():
+        return {}
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        "strict_prompt_budget": bool(data.get("strict_prompt_budget")),
+        "render_char_budget": int(data.get("render_char_budget") or 0),
+        "max_render_snippet_chars": int(data.get("max_render_snippet_chars") or 0),
+        "prompt_safe_ctx": bool(data.get("prompt_safe_ctx")),
+    }
+
 
 
 def last_user_message_from_ctx(ctx: dict[str, Any]) -> str:
@@ -85,7 +111,11 @@ def build_recall_query_v1(
     )
 
 
-def recall_ctx_merge_from_reply(reply: RecallReplyV1) -> dict[str, Any]:
+def recall_ctx_merge_from_reply(
+    reply: RecallReplyV1,
+    *,
+    prompt_safe_ctx: bool = False,
+) -> dict[str, Any]:
     """Normalize RecallReplyV1 into ctx keys expected by projection recall producer."""
     recall_fragments: list[dict[str, Any]] = []
     recall_citations: list[dict[str, Any]] = []
@@ -119,8 +149,13 @@ def recall_ctx_merge_from_reply(reply: RecallReplyV1) -> dict[str, Any]:
         "memory_digest": memory_digest,
         "recall_fragments": recall_fragments,
         "memory_used": bool(recall_fragments),
-        "memory_bundle": reply.bundle.model_dump(mode="json"),
     }
+    if prompt_safe_ctx:
+        merge["memory_bundle"] = {"rendered": memory_digest}
+        merge["recall_memory_bundle_debug"] = reply.bundle.model_dump(mode="json")
+        merge["recall_prompt_safe_ctx"] = True
+    else:
+        merge["memory_bundle"] = reply.bundle.model_dump(mode="json")
     return merge
 
 

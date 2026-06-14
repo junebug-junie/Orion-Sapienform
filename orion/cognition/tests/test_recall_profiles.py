@@ -110,3 +110,26 @@ def test_collapse_mirror_profile_is_lighter_than_reflect():
     assert collapse["enable_query_expansion"] is False
     assert int(collapse.get("sql_top_k") or 0) < int(reflect.get("sql_top_k") or 0)
     assert int(collapse.get("sql_since_minutes") or 0) < int(reflect.get("sql_since_minutes") or 0)
+
+
+def test_daily_metacog_profile_is_true_daily_window_not_weekly():
+    load_profiles.cache_clear()
+    prof = get_profile("journal.daily.metacog.grounded.v1")
+    assert prof["profile"] == "journal.daily.metacog.grounded.v1"
+    assert int(prof.get("sql_since_minutes") or 0) == 1440
+    assert int(prof.get("sql_since_minutes") or 0) != 10080
+    assert 8 <= int(prof.get("max_total_items") or 0) <= 12
+    assert 40 <= int(prof.get("sql_top_k") or 0) <= 60
+    assert int(prof.get("render_budget_tokens") or 0) == 256
+    assert int(prof.get("max_render_snippet_chars") or 0) == 280
+    assert prof.get("strict_prompt_budget") is True
+    assert int(prof.get("render_char_budget") or 0) == 1280
+    assert prof.get("prompt_safe_ctx") is True
+
+
+def test_journal_daily_grounded_profile_keeps_legacy_render_semantics() -> None:
+    load_profiles.cache_clear()
+    prof = get_profile("journal.daily.grounded.v1")
+    assert prof.get("strict_prompt_budget") is not True
+    assert not int(prof.get("render_char_budget") or 0)
+    assert prof.get("prompt_safe_ctx") is not True

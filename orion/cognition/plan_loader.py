@@ -106,5 +106,8 @@ def build_plan_for_verb(verb_name: str, *, mode: str = "brain") -> ExecutionPlan
             "mode": mode,
             "recall_profile": str(verb_recall_profile) if verb_recall_profile else "",
             "personality_file": personality_file,
+            "recall_enabled_default": (
+                "false" if data.get("recall_enabled") is False else ""
+            ),
         },
     )

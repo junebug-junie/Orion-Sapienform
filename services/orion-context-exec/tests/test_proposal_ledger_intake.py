@@ -148,6 +148,25 @@ async def test_investigative_artifacts_do_not_enter_proposal_ledger(
 
 
 @pytest.mark.asyncio
+async def test_runner_ledger_enabled_without_store_path_skips_persist(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store = tmp_path / "proposals.json"
+    monkeypatch.setattr("app.runner.settings.rlm_engine", "fake")
+    monkeypatch.setattr("app.runner.settings.context_exec_proposal_ledger_enabled", True)
+    monkeypatch.setattr("app.runner.settings.context_exec_proposal_ledger_store_path", "")
+    runner = ContextExecRunner()
+    run = await runner.run(
+        ContextExecRequestV1(text=PATCH_PROMPT, mode="patch_proposal"),
+    )
+    assert run.runtime_debug["proposal_ledger_enabled"] is True
+    assert run.runtime_debug["proposal_ledger_persisted"] is False
+    assert run.runtime_debug["proposal_ledger_error"] == "store_path_required"
+    assert not store.exists()
+
+
+@pytest.mark.asyncio
 async def test_runner_persists_patch_proposal_when_ledger_enabled(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -391,7 +391,9 @@ Context-exec can persist real `ProposalEnvelopeV1` outputs into the proposal led
 |---------|---------|---------|
 | `CONTEXT_EXEC_PROPOSAL_LEDGER_ENABLED` | `false` | Opt in to ledger persistence |
 | `CONTEXT_EXEC_PROPOSAL_LEDGER_STORE_PATH` | unset | Explicit JSON store path (required when enabled) |
-| `CONTEXT_EXEC_PROPOSAL_LEDGER_AUTO_TRIAGE` | `false` | Conservative deterministic triage after store |
+| `CONTEXT_EXEC_PROPOSAL_LEDGER_AUTO_TRIAGE` | `false` | Conservative deterministic triage after store (no LLM; never approves or executes) |
+
+`AUTO_TRIAGE=true` is deterministic policy only. It never approves, never executes, and only selects `stored`, `blocked`, or `pending_review` after the initial quiet store. Hub attention should only turn on for `pending_review` records (`attention_required=true`).
 
 When ledger intake is enabled without a store path, persistence is skipped and `runtime_debug` reports `proposal_ledger_error=store_path_required`. When disabled, `proposal_ledger_persisted=false` — not a failure.
 

@@ -198,6 +198,21 @@ class PatchProposalV1(BaseModel):
     mutation_allowed: bool = False
 
 
+class MemoryCorrectionProposalV1(BaseModel):
+    """Read-only memory correction blueprint — proposal only, no mutation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    claim_to_correct: str
+    evidence: list[str] = Field(default_factory=list)
+    proposed_correction: str
+    target_memory_ref: str | None = None
+    risk: ProposalRiskLevel = "unknown"
+    rollback_plan: str
+    open_questions: list[str] = Field(default_factory=list)
+    mutation_allowed: bool = False
+
+
 class ProposalEnvelopeV1(BaseModel):
     """Shared review wrapper for context-exec proposal artifacts."""
 

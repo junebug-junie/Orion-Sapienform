@@ -69,10 +69,17 @@ from orion.schemas.context_exec import (
     ContextExecRequestV1,
     ContextExecRunV1,
     ContextExecVerbStepV1,
+    MemoryCorrectionProposalV1,
     PatchProposalV1,
     ProposalEnvelopeV1,
     RepoImpactAnalysisReportV1,
     TraceAutopsyReportV1,
+)
+from orion.schemas.proposal_ledger import (
+    ProposalExecutionEligibilityV1,
+    ProposalLedgerRecordV1,
+    ProposalReviewDecisionV1,
+    ProposalTriageDecisionV1,
 )
 from orion.schemas.organ_emission import OrganEmissionV1
 from orion.schemas.reduction_receipt import ProjectionUpdateV1, ReductionReceiptV1
@@ -1042,7 +1049,12 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "TraceAutopsyReportV1": TraceAutopsyReportV1,
     "RepoImpactAnalysisReportV1": RepoImpactAnalysisReportV1,
     "PatchProposalV1": PatchProposalV1,
+    "MemoryCorrectionProposalV1": MemoryCorrectionProposalV1,
     "ProposalEnvelopeV1": ProposalEnvelopeV1,
+    "ProposalLedgerRecordV1": ProposalLedgerRecordV1,
+    "ProposalTriageDecisionV1": ProposalTriageDecisionV1,
+    "ProposalReviewDecisionV1": ProposalReviewDecisionV1,
+    "ProposalExecutionEligibilityV1": ProposalExecutionEligibilityV1,
 
 }
 

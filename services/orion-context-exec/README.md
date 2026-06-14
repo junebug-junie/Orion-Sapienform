@@ -30,6 +30,10 @@ Context-exec is in **beta** for three investigative modes. Full runbook: [docs/c
 
 **Proposal-mode scaffold (not beta-certified):** `patch_proposal` → `ProposalEnvelopeV1` wrapping `PatchProposalV1`. It may emit structured patch blueprints inside a review envelope; it may not execute changes, write files, or mutate runtime state. Proposal artifacts are not actions. Proposal envelopes are review objects. Executors are separate. Cortex/human approval is required before mutation. Context-exec may draft proposals, but it may not approve or execute them.
 
+**Proposal ledger (system of record):** `ProposalLedgerRecordV1` stores proposals after context-exec drafts them. Triage via `ProposalTriageDecisionV1` prevents approval-queue spam — only `pending_review` proposals require Hub attention. Review via `ProposalReviewDecisionV1` creates execution eligibility (`ProposalExecutionEligibilityV1`) but does not execute. Hub is an attention router, not the system of record or an infinite approval queue.
+
+**Lifecycle:** context-exec proposal → `ProposalEnvelopeV1` → `ProposalLedgerRecordV1(status=stored)` → `ProposalTriageDecisionV1` → `pending_review` (only if attention-worthy) → `ProposalReviewDecisionV1` → `ProposalExecutionEligibilityV1` → future executor → future receipt.
+
 **Engine selection:** `fake` (default) | `alexzhang` (opt-in). Fallback must be explicit (`CONTEXT_EXEC_RLM_FALLBACK_ENABLED=true`) and visible in `runtime_debug`.
 
 **Safety defaults:** read-only, `CONTEXT_EXEC_MAX_DEPTH=1`, write/network off, compat AgentChain bus alias off.

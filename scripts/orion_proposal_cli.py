@@ -35,6 +35,7 @@ from orion.schemas.context_exec import (  # noqa: E402
 from orion.schemas.proposal_ledger import (  # noqa: E402
     JsonFileProposalLedgerRepository,
     ProposalLedgerRecordV1,
+    ProposalLedgerStoreError,
     ProposalReviewDecisionV1,
     ProposalTriageDecisionV1,
 )
@@ -52,7 +53,10 @@ def _require_store(path: str | None) -> Path:
 
 
 def _open_repo(store_path: Path) -> JsonFileProposalLedgerRepository:
-    return JsonFileProposalLedgerRepository(store_path)
+    try:
+        return JsonFileProposalLedgerRepository(store_path)
+    except ProposalLedgerStoreError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def _parse_reviewer(reviewer: str) -> tuple[str, str]:

@@ -304,10 +304,61 @@ Proposal-mode scaffold ( **partially implemented** ):
 | `ProposalEnvelopeV1` | Scaffold | Shared review wrapper for all proposal artifacts |
 | `PatchProposalV1` | Scaffold (inner payload) | Propose code/doc patch — read-only blueprint only |
 | `MemoryCorrectionProposalV1` | Scaffold (inner payload) | Propose memory correction — read-only blueprint only |
+| `ProposalLedgerRecordV1` | Contract | Durable ledger row — system of record for proposals |
+| `ProposalTriageDecisionV1` | Contract | Policy triage — prevents approval-queue spam |
+| `ProposalReviewDecisionV1` | Contract | Human/policy review — does not execute |
+| `ProposalExecutionEligibilityV1` | Contract | Future executor gate — eligibility only |
 | `RuntimeConfigProposalV1` | Not implemented | Propose runtime config change |
 | `TestPlanProposalV1` | Not implemented | Propose test additions |
 
 `patch_proposal` emits `ProposalEnvelopeV1` wrapping `PatchProposalV1`. `memory_correction_proposal` emits `ProposalEnvelopeV1` wrapping `MemoryCorrectionProposalV1`. Neither mode may execute changes or write to memory backends.
+
+### Proposal ledger and Hub attention model
+
+**Hub is an attention router, not the system of record.**
+
+The proposal ledger is the system of record.
+
+Hub should display:
+
+1. Inline proposals caused by the current conversation
+2. A compact pending decisions drawer
+3. Batch review views for maintenance windows
+
+Hub should not display every stored draft. Hub should only actively surface `pending_review` proposals. Weak, duplicate, stale, unsupported, or blocked proposals should not become Juniper chores.
+
+**Status visibility for Hub:**
+
+| Status | Hub visibility |
+|--------|----------------|
+| `pending_review` | Show as decision-worthy |
+| `blocked` | Optionally show in diagnostics, not active queue |
+| `stored` | Hidden by default |
+| `discarded` / `expired` / `superseded` | Hidden by default |
+| `approved` / `rejected` / `executed` | History only |
+
+**Lifecycle:**
+
+```text
+context-exec proposal
+  → ProposalEnvelopeV1
+  → ProposalLedgerRecordV1(status=stored)
+  → ProposalTriageDecisionV1
+  → pending_review only if attention-worthy
+  → ProposalReviewDecisionV1
+  → ProposalExecutionEligibilityV1
+  → future executor
+  → future receipt
+```
+
+Triage actions:
+
+- `store_only`: keep proposal, do not bother human
+- `promote_to_review`: make `pending_review` and show in Hub surfaces
+- `block_for_evidence`: proposal needs more grounding before review
+- `discard`: weak/duplicate/unsafe/noisy proposal should not be reviewed
+- `supersede`: replace with newer/better proposal
+- `expire`: proposal is stale
 
 **Rule:**
 

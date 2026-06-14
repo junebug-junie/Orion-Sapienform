@@ -238,7 +238,6 @@ class MemoryCorrectionProposalV1(BaseModel):
     tests_to_run: list[str] = Field(default_factory=list)
     rollback_plan: str
     open_questions: list[str] = Field(default_factory=list)
-
     mutation_allowed: bool = False
 
 

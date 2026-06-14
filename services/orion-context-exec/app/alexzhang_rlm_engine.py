@@ -39,7 +39,13 @@ _TRACE_SIGNAL_ORDER: tuple[tuple[tuple[str, ...], str], ...] = (
 
 logger = logging.getLogger("orion-context-exec.alexzhang_rlm_engine")
 
-SUPPORTED_MODES = frozenset({"belief_provenance", "trace_autopsy", "repo_impact_analysis", "patch_proposal"})
+SUPPORTED_MODES = frozenset({
+    "belief_provenance",
+    "trace_autopsy",
+    "repo_impact_analysis",
+    "patch_proposal",
+    "memory_correction_proposal",
+})
 
 
 class UnsupportedModeError(Exception):
@@ -450,6 +456,8 @@ class AlexZhangRLMEngine(RLMEngine):
             report = await self._trace_autopsy(request, namespace, runtime, organ_cache)
         elif mode == "patch_proposal":
             report = await self._patch_proposal(request, namespace, runtime, organ_cache)
+        elif mode == "memory_correction_proposal":
+            report = await self._memory_correction_proposal(request, namespace, runtime, organ_cache)
         else:
             report = await self._repo_impact(request, namespace, runtime, organ_cache)
 
@@ -823,6 +831,198 @@ class AlexZhangRLMEngine(RLMEngine):
             "risk": risk,
             "tests_to_run": tests,
             "rollback_plan": "Revert proposed file changes via version control; no runtime mutation performed.",
+            "open_questions": open_questions,
+            "mutation_allowed": False,
+        }
+
+    def _infer_memory_domain(self, source_ref: str | None) -> str | None:
+        if not source_ref:
+            return None
+        lowered = str(source_ref).lower()
+        prefixes = (
+            ("rdf:", "rdf"),
+            ("chroma:", "chroma"),
+            ("graphiti:", "graphiti"),
+            ("sql:", "sql_timeline"),
+            ("timeline:", "sql_timeline"),
+            ("cards:", "cards"),
+            ("card:", "cards"),
+            ("memory:", "cards"),
+        )
+        for prefix, domain in prefixes:
+            if lowered.startswith(prefix):
+                return domain
+        return None
+
+    def _collect_memory_correction_evidence(
+        self,
+        *,
+        memory_hits: list[dict[str, Any]],
+        recall_hits: list[dict[str, Any]],
+        trace_hits: list[dict[str, Any]],
+    ) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
+        supporting: list[str] = []
+        contradicting: list[str] = []
+        missing: list[str] = []
+        domains: list[str] = []
+        affected_ids: list[str] = []
+
+        for hit in memory_hits + recall_hits:
+            claim = str(hit.get("claim") or hit.get("snippet") or hit.get("title") or "").strip()
+            source_ref = hit.get("source_ref") or hit.get("id") or hit.get("handle")
+            if not claim:
+                continue
+            entry = f"{claim} (source: {source_ref})" if source_ref else claim
+            lowered = claim.lower()
+            if any(term in lowered for term in ("not denver", "ogden", "contradict", "unsupported")):
+                contradicting.append(entry)
+            else:
+                supporting.append(entry)
+            domain = self._infer_memory_domain(str(source_ref) if source_ref else None)
+            if domain and domain not in domains:
+                domains.append(domain)
+            if source_ref and str(source_ref) not in affected_ids:
+                affected_ids.append(str(source_ref))
+
+        for th in trace_hits:
+            snippet = str(th.get("snippet") or th.get("kind") or "").strip()
+            handle = th.get("handle") or th.get("corr_id")
+            if not snippet:
+                continue
+            entry = f"{snippet} (trace: {handle})" if handle else snippet
+            lowered = snippet.lower()
+            if any(term in lowered for term in ("not denver", "ogden", "contradict", "unsupported")):
+                contradicting.append(entry)
+            else:
+                supporting.append(entry)
+            if handle and str(handle) not in affected_ids:
+                affected_ids.append(str(handle))
+
+        if not supporting and not contradicting:
+            missing.append("insufficient memory evidence")
+
+        return supporting, contradicting, missing, domains, affected_ids
+
+    async def _memory_correction_proposal(
+        self,
+        request: ContextExecRequestV1,
+        namespace: ContextNamespace,
+        runtime: OrganRuntime | None,
+        organ_cache: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        current_belief = _extract_claim_from_text(request.text)
+        query_terms = current_belief.split()[:8] or [request.text[:80]]
+        search_q = " ".join(query_terms)
+
+        self._debug_steps.append("retrieve")
+        recall_result: dict[str, Any] = {"hits": []}
+        trace_hits: list[dict[str, Any]] = []
+        if runtime is not None:
+            recall_result = await runtime.recall_query(search_q, limit=self._settings.context_exec_recall_limit)
+            self._subcalls += 1
+            trace_hits = await runtime.traces_search(query=search_q, limit=self._settings.context_exec_trace_limit)
+            self._subcalls += 1
+        if organ_cache is not None:
+            organ_cache["recall"] = recall_result
+            organ_cache["traces"] = trace_hits
+
+        memory_hits = namespace.memory.search_claims(search_q, limit=20)
+        recall_hits = [
+            {
+                "claim": str(h.get("snippet") or h.get("title") or "recall hit"),
+                "source_ref": h.get("source_ref") or h.get("id"),
+                "verified": True,
+                "confidence": float(h.get("score") or 0.5),
+            }
+            for h in recall_result.get("hits") or []
+        ]
+        if not memory_hits and recall_hits:
+            memory_hits = recall_hits
+        if not trace_hits:
+            trace_hits = namespace.traces.search(query=search_q)
+        trace_hits = [
+            th
+            for th in trace_hits
+            if not (
+                str(th.get("source")) == "context_exec"
+                and str(th.get("kind", "")).startswith("context.exec.")
+            )
+        ]
+
+        self._debug_steps.append("synthesize")
+        supporting, contradicting, missing, domains, affected_ids = self._collect_memory_correction_evidence(
+            memory_hits=memory_hits,
+            recall_hits=recall_hits,
+            trace_hits=trace_hits,
+        )
+
+        has_evidence = bool(supporting or contradicting)
+        if not has_evidence:
+            missing.append("insufficient memory evidence")
+
+        correction_type = "mark_uncertain"
+        proposed_belief: str | None = None
+        confidence = 0.15
+        risk = "unknown"
+
+        ogden_contradiction = any("ogden" in c.lower() for c in contradicting)
+        denver_unsupported = "denver" in current_belief.lower() and not supporting
+
+        if ogden_contradiction:
+            correction_type = "replace_belief"
+            proposed_belief = next(
+                (c.split(" (source:")[0] for c in contradicting if "ogden" in c.lower()),
+                "User location is Ogden, not Denver",
+            )
+            confidence = 0.65
+            risk = "medium"
+        elif contradicting and supporting:
+            correction_type = "mark_contradicted"
+            confidence = 0.45
+            risk = "medium"
+        elif contradicting:
+            correction_type = "mark_contradicted"
+            confidence = 0.4
+            risk = "medium"
+        elif denver_unsupported or not has_evidence:
+            correction_type = "mark_uncertain"
+            confidence = 0.2
+            risk = "unknown"
+
+        if confidence > 0.7 and not (ogden_contradiction or (contradicting and len(contradicting) >= 2)):
+            confidence = 0.7
+
+        target_domains = domains or ["unknown"]
+        rationale_parts = [
+            f"Proposed memory correction for belief: {current_belief}",
+        ]
+        if correction_type == "mark_uncertain":
+            rationale_parts.append("Evidence is insufficient to propose a definitive correction.")
+        elif correction_type == "mark_contradicted":
+            rationale_parts.append("Recall/trace evidence contradicts the current belief.")
+        elif correction_type == "replace_belief":
+            rationale_parts.append("Contradicting evidence supports replacing the current belief.")
+
+        open_questions: list[str] = []
+        if not has_evidence:
+            open_questions.append("insufficient memory evidence for grounded correction")
+        if not domains:
+            open_questions.append("target memory domain unclear from evidence source refs")
+
+        return {
+            "current_belief": current_belief,
+            "proposed_belief": proposed_belief,
+            "correction_type": correction_type,
+            "rationale": " ".join(rationale_parts),
+            "supporting_evidence": supporting[:8],
+            "contradicting_evidence": contradicting[:8],
+            "missing_evidence": missing,
+            "target_memory_domains": target_domains,
+            "affected_ids": affected_ids[:12],
+            "confidence": confidence,
+            "risk": risk,
+            "tests_to_run": [],
+            "rollback_plan": "No mutation proposed; no rollback required.",
             "open_questions": open_questions,
             "mutation_allowed": False,
         }

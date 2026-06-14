@@ -28,7 +28,7 @@ Context-exec is in **beta** for three investigative modes. Full runbook: [docs/c
 
 **Supported beta modes:** `belief_provenance`, `trace_autopsy`, `repo_impact_analysis` → artifacts `BeliefProvenanceReportV1`, `TraceAutopsyReportV1`, `RepoImpactAnalysisReportV1`.
 
-**Proposal-mode scaffold (not beta-certified):** `patch_proposal` → `ProposalEnvelopeV1` wrapping `PatchProposalV1`. It may emit structured patch blueprints inside a review envelope; it may not execute changes, write files, or mutate runtime state. Proposal artifacts are not actions. Proposal envelopes are review objects. Executors are separate. Cortex/human approval is required before mutation. Context-exec may draft proposals, but it may not approve or execute them.
+**Proposal-mode scaffold (not beta-certified):** `patch_proposal` → `ProposalEnvelopeV1` wrapping `PatchProposalV1`; `memory_correction_proposal` → `ProposalEnvelopeV1` wrapping `MemoryCorrectionProposalV1`. These modes may emit structured proposals inside a review envelope; they may not execute changes, write files, update memory backends, or mutate runtime state. Memory correction proposals are not memory writes. Context-exec may draft a correction proposal, but it may not update cards, RDF, Graphiti, Chroma, SQL timeline, or any other memory backend. Cortex/human approval is required before a separate executor can apply a correction. Proposal artifacts are not actions. Proposal envelopes are review objects. Executors are separate. Cortex/human approval is required before mutation. Context-exec may draft proposals, but it may not approve or execute them.
 
 **Engine selection:** `fake` (default) | `alexzhang` (opt-in). Fallback must be explicit (`CONTEXT_EXEC_RLM_FALLBACK_ENABLED=true`) and visible in `runtime_debug`.
 

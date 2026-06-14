@@ -298,8 +298,9 @@ class ContextExecRunner:
             mode=request.mode,
             extra_steps=rlm_steps or None,
         )
-        if request.mode == "patch_proposal" and schema_valid and artifact_type == "ProposalEnvelopeV1":
+        if request.mode in {"patch_proposal", "memory_correction_proposal"} and schema_valid and artifact_type == "ProposalEnvelopeV1":
             runtime_debug["proposal_enveloped"] = True
+            runtime_debug["proposal_type"] = artifact.get("proposal_type")
             runtime_debug["requires_human_approval"] = artifact.get("requires_human_approval", True)
             runtime_debug["mutation_allowed"] = artifact.get("mutation_allowed", False)
 

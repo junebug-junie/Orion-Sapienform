@@ -9,10 +9,12 @@ from orion.schemas.context_exec import (
     ContextExecMode,
     ContextExecRequestV1,
     ContextExecRunV1,
+    MemoryCorrectionProposalV1,
     PatchProposalV1,
     ProposalEnvelopeV1,
     RepoImpactAnalysisReportV1,
     TraceAutopsyReportV1,
+    build_memory_correction_proposal_envelope,
     build_patch_proposal_envelope,
 )
 
@@ -23,6 +25,7 @@ def artifact_type_for_mode(mode: ContextExecMode) -> str | None:
         "trace_autopsy": "TraceAutopsyReportV1",
         "repo_impact_analysis": "RepoImpactAnalysisReportV1",
         "patch_proposal": "ProposalEnvelopeV1",
+        "memory_correction_proposal": "ProposalEnvelopeV1",
         "runtime_debug": "TraceAutopsyReportV1",
     }
     return mapping.get(mode)
@@ -37,6 +40,17 @@ def _wrap_patch_proposal(raw: dict[str, Any], mode: ContextExecMode) -> tuple[di
         return raw, "PatchProposalV1", False
 
 
+def _wrap_memory_correction_proposal(
+    raw: dict[str, Any], mode: ContextExecMode
+) -> tuple[dict[str, Any], str, bool]:
+    try:
+        correction = MemoryCorrectionProposalV1.model_validate(raw)
+        envelope = build_memory_correction_proposal_envelope(correction, source_mode=mode)
+        return envelope.model_dump(mode="json"), "ProposalEnvelopeV1", True
+    except Exception:
+        return raw, "MemoryCorrectionProposalV1", False
+
+
 def validate_artifact(mode: ContextExecMode, raw: Any) -> tuple[dict[str, Any], str | None, bool]:
     if not isinstance(raw, dict):
         return {}, None, False
@@ -49,6 +63,8 @@ def validate_artifact(mode: ContextExecMode, raw: Any) -> tuple[dict[str, Any], 
             model = RepoImpactAnalysisReportV1.model_validate(raw)
         elif mode == "patch_proposal":
             return _wrap_patch_proposal(raw, mode)
+        elif mode == "memory_correction_proposal":
+            return _wrap_memory_correction_proposal(raw, mode)
         else:
             return raw, "GenericInvestigationV1", True
         return model.model_dump(mode="json"), model.__class__.__name__, True
@@ -66,11 +82,21 @@ def synthesize_findings_bundle(
     findings_source = artifact
     if request.mode == "patch_proposal" and artifact.get("artifact_type") == "PatchProposalV1":
         findings_source = artifact.get("artifact") or {}
-    if ac is None and not (findings_source.get("findings") or findings_source.get("evidence") or artifact.get("evidence")):
+    if request.mode == "memory_correction_proposal" and artifact.get("artifact_type") == "MemoryCorrectionProposalV1":
+        findings_source = artifact.get("artifact") or {}
+    if ac is None and not (
+        findings_source.get("findings")
+        or findings_source.get("evidence")
+        or findings_source.get("supporting_evidence")
+        or findings_source.get("contradicting_evidence")
+        or artifact.get("evidence")
+    ):
         return None
     raw_findings: list[Any] = list(
         findings_source.get("findings")
         or findings_source.get("evidence")
+        or findings_source.get("supporting_evidence")
+        or findings_source.get("contradicting_evidence")
         or artifact.get("evidence")
         or []
     )
@@ -141,5 +167,19 @@ def build_final_text(mode: ContextExecMode, artifact: dict[str, Any], *, status:
         return (
             f"Patch proposal generated. Mutation is not allowed by context-exec. "
             f"Patch proposal: update {file_hint}. Risk={risk}. Mutation allowed=false."
+        )
+    if mode == "memory_correction_proposal":
+        inner = (
+            artifact.get("artifact")
+            if artifact.get("artifact_type") == "MemoryCorrectionProposalV1"
+            else artifact
+        )
+        current = inner.get("current_belief") or "unknown belief"
+        correction_type = inner.get("correction_type") or "mark_uncertain"
+        risk = artifact.get("risk", inner.get("risk", "unknown"))
+        return (
+            f"Memory correction proposal generated. Mutation is not allowed by context-exec. "
+            f"Current belief: {current[:120]}. Proposed correction: {correction_type}. "
+            f"Risk={risk}. Mutation allowed=false."
         )
     return str(artifact.get("summary") or artifact.get("target") or "Investigation complete.")

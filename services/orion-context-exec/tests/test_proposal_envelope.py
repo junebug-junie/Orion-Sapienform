@@ -6,6 +6,7 @@ import pytest
 
 from orion.schemas.context_exec import (
     CONTEXT_EXEC_CREATABLE_REVIEW_STATES,
+    MemoryCorrectionProposalV1,
     PatchProposalV1,
     ProposalEnvelopeV1,
     assert_context_exec_proposal_safe,
@@ -37,6 +38,7 @@ def test_proposal_envelope_defaults_require_review_and_disallow_mutation() -> No
 def test_proposal_envelope_registered_with_context_exec_schemas() -> None:
     assert _REGISTRY["ProposalEnvelopeV1"] is ProposalEnvelopeV1
     assert _REGISTRY["PatchProposalV1"] is PatchProposalV1
+    assert _REGISTRY["MemoryCorrectionProposalV1"] is MemoryCorrectionProposalV1
     assert _REGISTRY["BeliefProvenanceReportV1"] is not None
     assert _REGISTRY["TraceAutopsyReportV1"] is not None
     assert _REGISTRY["RepoImpactAnalysisReportV1"] is not None

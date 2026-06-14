@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 
@@ -31,11 +32,12 @@ from app.rlm_eval_harness import (  # noqa: E402
 )
 
 
-def _inner_patch_artifact(artifact: dict) -> dict:
-    if artifact.get("proposal_type") == "patch_proposal":
+def _inner_proposal_artifact(artifact: dict) -> dict:
+    proposal_type = artifact.get("proposal_type")
+    if proposal_type in {"patch_proposal", "memory_correction_proposal"}:
         inner = artifact.get("artifact") or {}
         return inner if isinstance(inner, dict) else artifact
-    if artifact.get("artifact_type") == "PatchProposalV1" and "proposal_id" not in artifact:
+    if artifact.get("artifact_type") in {"PatchProposalV1", "MemoryCorrectionProposalV1"} and "proposal_id" not in artifact:
         return artifact
     return artifact
 
@@ -67,7 +69,7 @@ def _quality_pass(case_name: str, engine: str, run) -> bool:
             return False
         if artifact.get("review_status") not in {"draft", "pending_review"}:
             return False
-        inner = _inner_patch_artifact(artifact)
+        inner = _inner_proposal_artifact(artifact)
         risk = str(inner.get("risk") or artifact.get("risk") or "unknown")
         if risk not in {"low", "medium", "unknown"}:
             return False
@@ -84,6 +86,38 @@ def _quality_pass(case_name: str, engine: str, run) -> bool:
             open_q = " ".join(str(q) for q in inner.get("open_questions") or []).lower()
             if "insufficient repo grounding" not in open_q:
                 return False
+    if case_name == "memory_correction_denver_uncertain":
+        artifact = run.artifact or {}
+        if run.artifact_type != "ProposalEnvelopeV1":
+            return False
+        if artifact.get("proposal_type") != "memory_correction_proposal":
+            return False
+        if artifact.get("artifact_type") != "MemoryCorrectionProposalV1":
+            return False
+        if artifact.get("mutation_allowed") is not False:
+            return False
+        if artifact.get("requires_human_approval") is not True:
+            return False
+        if artifact.get("review_status") not in {"draft", "pending_review"}:
+            return False
+        inner = _inner_proposal_artifact(artifact)
+        current_belief = str(inner.get("current_belief") or "").lower()
+        if "denver" not in current_belief:
+            return False
+        correction_type = str(inner.get("correction_type") or "")
+        if correction_type not in {"mark_uncertain", "mark_contradicted", "replace_belief"}:
+            return False
+        confidence = float(inner.get("confidence") or 0.0)
+        if confidence > 0.7:
+            ogden_evidence = any(
+                "ogden" in str(e).lower()
+                for e in (inner.get("contradicting_evidence") or [])
+            )
+            if not ogden_evidence:
+                return False
+        blob = json.dumps(inner, default=str).lower()
+        if any(term in blob for term in ("applied=true", "memory_written=true", "graph_written=true")):
+            return False
     return True
 
 
@@ -111,7 +145,7 @@ async def _run(engine: str) -> list[tuple]:
                 settings_overrides=overrides,
             )
             artifact = run.artifact or {}
-            inner = _inner_patch_artifact(artifact)
+            inner = _inner_proposal_artifact(artifact)
             artifact_status = str(inner.get("status", artifact.get("status", run.status)))
             quality = _quality_pass(case.name, engine, run)
             proposal_type = str(artifact.get("proposal_type") or "")
@@ -130,7 +164,7 @@ async def _run(engine: str) -> list[tuple]:
             mutation_allowed = ""
             requires_human_approval = ""
         if run is not None:
-            if case.mode == "patch_proposal":
+            if case.mode in {"patch_proposal", "memory_correction_proposal"}:
                 rows.append(
                     (
                         case.name,
@@ -167,7 +201,7 @@ def main() -> int:
     args = parser.parse_args()
 
     rows = asyncio.run(_run(args.engine))
-    has_proposal = any(c.mode == "patch_proposal" for c in ALL_EVAL_CASES)
+    has_proposal = any(c.mode in {"patch_proposal", "memory_correction_proposal"} for c in ALL_EVAL_CASES)
     if has_proposal:
         header = (
             "case",

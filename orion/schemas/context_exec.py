@@ -15,6 +15,7 @@ ContextExecMode = Literal[
     "trace_autopsy",
     "repo_impact_analysis",
     "patch_proposal",
+    "memory_correction_proposal",
     "runtime_debug",
     "grammar_collision_audit",
     "memory_contradiction_review",
@@ -198,6 +199,49 @@ class PatchProposalV1(BaseModel):
     mutation_allowed: bool = False
 
 
+MemoryCorrectionType = Literal[
+    "mark_uncertain",
+    "mark_contradicted",
+    "replace_belief",
+    "add_disambiguation",
+    "delete_candidate",
+    "merge_duplicate",
+]
+
+MemoryTargetDomain = Literal[
+    "cards",
+    "rdf",
+    "graphiti",
+    "chroma",
+    "sql_timeline",
+    "unknown",
+]
+
+
+class MemoryCorrectionProposalV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    current_belief: str
+    proposed_belief: str | None = None
+    correction_type: MemoryCorrectionType = "mark_uncertain"
+
+    rationale: str
+    supporting_evidence: list[str] = Field(default_factory=list)
+    contradicting_evidence: list[str] = Field(default_factory=list)
+    missing_evidence: list[str] = Field(default_factory=list)
+
+    target_memory_domains: list[MemoryTargetDomain] = Field(default_factory=list)
+    affected_ids: list[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    risk: ProposalRiskLevel = "unknown"
+
+    tests_to_run: list[str] = Field(default_factory=list)
+    rollback_plan: str
+    open_questions: list[str] = Field(default_factory=list)
+
+    mutation_allowed: bool = False
+
+
 class ProposalEnvelopeV1(BaseModel):
     """Shared review wrapper for context-exec proposal artifacts."""
 
@@ -273,6 +317,48 @@ def build_patch_proposal_envelope(
             "Proposal envelopes are review objects.",
             "Executors are separate.",
             "Cortex/human approval is required before mutation.",
+            "Context-exec may draft proposals, but it may not approve or execute them.",
+        ],
+    )
+    assert_context_exec_proposal_safe(envelope)
+    return envelope
+
+
+def build_memory_correction_proposal_envelope(
+    correction: MemoryCorrectionProposalV1,
+    *,
+    source_mode: str,
+    source_run_id: str | None = None,
+    review_status: ContextExecCreatableReviewState = "draft",
+) -> ProposalEnvelopeV1:
+    """Wrap a MemoryCorrectionProposalV1 in a context-exec proposal envelope."""
+    inner = correction.model_dump(mode="json")
+    inner["mutation_allowed"] = False
+    title = (
+        f"Memory correction: {(correction.current_belief[:100] if correction.current_belief else 'unknown belief')}"
+    ).strip()
+    envelope = ProposalEnvelopeV1(
+        proposal_id=f"prop_{uuid.uuid4().hex[:12]}",
+        proposal_type="memory_correction_proposal",
+        source_mode=source_mode,
+        source_run_id=source_run_id,
+        title=title,
+        summary=correction.rationale,
+        evidence=list(correction.supporting_evidence) + list(correction.contradicting_evidence),
+        risk=correction.risk,
+        requires_human_approval=True,
+        mutation_allowed=False,
+        review_status=review_status,
+        artifact_type="MemoryCorrectionProposalV1",
+        artifact=inner,
+        open_questions=list(correction.open_questions),
+        safety_notes=[
+            "Memory correction proposals are not memory writes.",
+            "Context-exec may draft a correction proposal, but it may not update cards, RDF, Graphiti, Chroma, SQL timeline, or any other memory backend.",
+            "Proposal artifacts are not actions.",
+            "Proposal envelopes are review objects.",
+            "Executors are separate.",
+            "Cortex/human approval is required before a separate executor can apply a correction.",
             "Context-exec may draft proposals, but it may not approve or execute them.",
         ],
     )

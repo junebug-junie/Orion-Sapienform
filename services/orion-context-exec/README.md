@@ -22,6 +22,25 @@ Read-only; no network/shell/repo writes. RLM runs via `FakeRLMEngine` by default
 
 **Fake evidence:** `CONTEXT_EXEC_FAKE_ORGANS_ENABLED=false` (default) means FakeRLM runs but memory/trace stubs return empty until real organs are wired (#662).
 
+## Beta runtime
+
+Context-exec is in **beta** for three investigative modes. Full runbook: [docs/context-exec-beta-runbook.md](../../docs/context-exec-beta-runbook.md).
+
+**Supported beta modes:** `belief_provenance`, `trace_autopsy`, `repo_impact_analysis` → artifacts `BeliefProvenanceReportV1`, `TraceAutopsyReportV1`, `RepoImpactAnalysisReportV1`.
+
+**Engine selection:** `fake` (default) | `alexzhang` (opt-in). Fallback must be explicit (`CONTEXT_EXEC_RLM_FALLBACK_ENABLED=true`) and visible in `runtime_debug`.
+
+**Safety defaults:** read-only, `CONTEXT_EXEC_MAX_DEPTH=1`, write/network off, compat AgentChain bus alias off.
+
+**Verification:**
+
+```bash
+bash scripts/context_exec_beta_gate.sh
+bash scripts/context_exec_golden_probes.sh   # live Hub stack required
+```
+
+**AgentChain replacement goal:** Context-exec is the bounded recursive workbench intended to replace the legacy ReAct planner / AgentChain runtime. Cortex remains sovereign; artifacts are the contract. AgentChain is legacy compatibility only during beta (`CONTEXT_EXEC_LEGACY_FALLBACK` on cortex-exec).
+
 ## Local run
 
 ```bash

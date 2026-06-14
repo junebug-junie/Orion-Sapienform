@@ -51,6 +51,18 @@ _FORBIDDEN_CLAIM_TERMS = (
             "Is it true that I am from Denver?",
             "I am from Denver",
         ),
+        (
+            "What evidence says my location is not Denver?",
+            "my location is not Denver",
+        ),
+        (
+            "Where did Orion get the claim that users come from Denver?",
+            "users come from Denver",
+        ),
+        (
+            "Why does Orion think people come from Denver?",
+            "people come from Denver",
+        ),
     ],
 )
 def test_extract_claim_from_text(prompt: str, expected: str) -> None:

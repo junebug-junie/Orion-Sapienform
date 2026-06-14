@@ -28,8 +28,14 @@ class AlexZhangInitError(Exception):
 
 _VOCATIVE_PREFIX = re.compile(r"^(?:hey\s+)?orion[\s,]+", re.IGNORECASE)
 
+_SCAFFOLD_TERMINATOR = (
+    r"(?:\s+come\s+from\s+(?:across\s+(?:your\s+)?runtime|(?:your\s+)?runtime)"
+    r"|\s+across\s+(?:your\s+)?runtime|\?|$)"
+)
+
 _CLAIM_TAIL_STOP = re.compile(
-    r"\s+(?:come\s+from|comes\s+from|across\s+your\s+runtime|across\s+the\s+runtime|"
+    r"\s+(?:come\s+from\s+(?:across\s+(?:your\s+)?runtime|(?:your\s+)?runtime)"
+    r"|across\s+your\s+runtime|across\s+the\s+runtime|"
     r"from\s+across\s+your\s+runtime|in\s+your\s+runtime)\b",
     re.IGNORECASE,
 )
@@ -37,12 +43,11 @@ _CLAIM_TAIL_STOP = re.compile(
 _CLAIM_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"where\s+did\s+(?:the\s+claim\s+that|orion\s+get\s+the\s+claim\s+that)\s+"
-        r"(?P<claim>.+?)(?:\s+come\s+from|\s+comes\s+from|\s+across\s+your\s+runtime|\?|$)",
+        rf"(?P<claim>.+?){_SCAFFOLD_TERMINATOR}",
         re.IGNORECASE,
     ),
     re.compile(
-        r"claim\s+that\s+(?P<claim>.+?)(?:\s+come\s+from|\s+comes\s+from|"
-        r"\s+across\s+your\s+runtime|\?|$)",
+        rf"claim\s+that\s+(?P<claim>.+?){_SCAFFOLD_TERMINATOR}",
         re.IGNORECASE,
     ),
     re.compile(
@@ -78,7 +83,7 @@ def _extract_claim_from_text(text: str) -> str:
     for pattern in _CLAIM_PATTERNS:
         match = pattern.search(cleaned)
         if match:
-            claim = _normalize_claim(_strip_claim_tail(match.group("claim")))
+            claim = _normalize_claim(match.group("claim"))
             if claim:
                 return claim
 

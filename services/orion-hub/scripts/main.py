@@ -20,6 +20,7 @@ from scripts.memory_routes import router as memory_router
 from scripts.crystallization_routes import router as crystallization_router
 from scripts.mind_routes import router as mind_router
 from scripts.memory_graph_routes import router as memory_graph_router
+from scripts.proposal_review_routes import router as proposal_review_router
 import scripts.api_routes as api_routes_runtime
 from scripts.websocket_handler import websocket_endpoint
 from scripts.service_logs_ws import service_logs_websocket_endpoint
@@ -466,6 +467,7 @@ app.include_router(memory_router)
 app.include_router(crystallization_router)
 app.include_router(mind_router)
 app.include_router(memory_graph_router)
+app.include_router(proposal_review_router)
 
 # Real-time WS endpoint (also /hub/ws for path-prefixed reverse proxies where the browser path includes /hub)
 app.add_websocket_route("/ws", websocket_endpoint)

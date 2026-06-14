@@ -404,6 +404,39 @@ bash scripts/proposal_review_api_smoke.sh
 
 See [docs/proposal-review-api.md](proposal-review-api.md).
 
+### Hub read-only proposal review surface
+
+Hub exposes a read-only **Pending Decisions** panel on the main Hub tab. It calls the proposal review API only — never JSON ledger files.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HUB_PROPOSAL_REVIEW_ENABLED` | `false` | When true, Hub fetches pending-review proposals from context-exec. |
+| `HUB_PROPOSAL_REVIEW_API_URL` | `http://orion-context-exec:8096` | Base URL for proposal review API (host dev: `http://127.0.0.1:8096`). |
+
+Hub routes (read-only):
+
+```text
+GET /api/proposal-review/health
+GET /api/proposal-review/pending?status=pending_review
+GET /api/proposal-review/proposals/{proposal_id}
+GET /api/proposal-review/proposals/{proposal_id}/eligibility
+```
+
+Default filter is `pending_review` only. Optional secondary filters (blocked, stored, approved/rejected history) are hidden in the UI until the operator reveals the filter control.
+
+When disabled or upstream unavailable, Hub shows a quiet empty/unavailable state — no error spam. Hub does not POST triage/review and does not execute proposals.
+
+Manual smoke with Hub:
+
+```bash
+rm -f /tmp/orion-proposals.json
+PYTHONPATH=. orion_dev/bin/python scripts/orion_proposal_cli.py seed-demo --store /tmp/orion-proposals.json
+PROPOSAL_REVIEW_API_ENABLED=true PROPOSAL_LEDGER_STORE_PATH=/tmp/orion-proposals.json \
+  # start context-exec on :8096
+HUB_PROPOSAL_REVIEW_ENABLED=true HUB_PROPOSAL_REVIEW_API_URL=http://127.0.0.1:8096 \
+  # start Hub on :8080 — Pending Decisions shows pending_review demo proposal
+```
+
 ### Proposal ledger intake (opt-in)
 
 Context-exec can persist real `ProposalEnvelopeV1` outputs into the proposal ledger when explicitly configured. Ledger intake is **disabled by default**. Persistence is not execution — context-exec still cannot approve, execute, write memory, or mutate repo files.

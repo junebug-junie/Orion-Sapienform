@@ -67,6 +67,17 @@ class Settings(BaseSettings):
         default=15.0,
         alias="KNOWLEDGE_FORGE_PROXY_TIMEOUT_SEC",
     )
+
+    # --- Proposal review API (read-only Hub attention surface) ---
+    HUB_PROPOSAL_REVIEW_ENABLED: bool = Field(default=False, alias="HUB_PROPOSAL_REVIEW_ENABLED")
+    HUB_PROPOSAL_REVIEW_API_URL: str = Field(
+        default="http://orion-context-exec:8096",
+        alias="HUB_PROPOSAL_REVIEW_API_URL",
+    )
+    HUB_PROPOSAL_REVIEW_TIMEOUT_SEC: float = Field(
+        default=10.0,
+        alias="HUB_PROPOSAL_REVIEW_TIMEOUT_SEC",
+    )
     WORLD_PULSE_UI_FIXTURE_RUN_ENABLED: bool = Field(
         default=False,
         alias="WORLD_PULSE_UI_FIXTURE_RUN_ENABLED",

@@ -2,6 +2,8 @@
 
 Future Hub-facing control-plane seam over the proposal ledger. Exposes safe review operations without execution, memory writes, or repo mutation.
 
+Hub now includes a **read-only** proposal review surface (`Pending Decisions`) that calls this API. Hub does not read JSON ledger files, does not own lifecycle logic, and does not approve/reject/triage yet.
+
 ## Flow
 
 ```text
@@ -85,7 +87,8 @@ curl -s "http://127.0.0.1:8096/proposals/{id}/eligibility"
 
 ## Safety
 
-- No Hub UI (API only)
+- Hub read-only surface (list/detail/eligibility only; no POST from Hub)
+- No approve/reject/triage buttons in Hub yet
 - No executor
 - No execution receipts
 - No approval automation or auto-approval

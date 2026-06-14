@@ -794,6 +794,28 @@
         </div>
       </div>
 
+      <div class="w-full bg-gray-900 rounded-2xl shadow-lg p-5 space-y-3" id="proposalReviewPanel">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 class="text-lg font-semibold text-white">Pending Decisions</h3>
+            <div class="text-[11px] text-gray-400">Decision-worthy proposals needing attention (read-only).</div>
+          </div>
+          <div class="flex items-center gap-2">
+            <select id="proposalReviewFilter" class="hidden bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+              <option value="pending_review" selected>Pending review</option>
+              <option value="blocked">Blocked</option>
+              <option value="stored">Stored</option>
+              <option value="approved">Approved history</option>
+              <option value="rejected">Rejected history</option>
+            </select>
+            <button id="proposalReviewRefreshButton" type="button" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Refresh</button>
+          </div>
+        </div>
+        <div id="proposalReviewStatus" class="text-xs text-gray-500">Loading…</div>
+        <div id="proposalReviewList" class="space-y-2 max-h-56 overflow-y-auto text-xs"></div>
+        <div id="proposalReviewDetail" class="hidden rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-2 text-gray-300"></div>
+      </div>
+
       <div class="w-full bg-gray-900 rounded-2xl shadow-lg p-5 space-y-3">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -3363,6 +3385,7 @@
   <script src="/static/js/memory-graph-draft-form.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/memory.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/memory-crystallization-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/proposal-review-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/mind_provenance.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/substrate-effect-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/collapse-mirror.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>

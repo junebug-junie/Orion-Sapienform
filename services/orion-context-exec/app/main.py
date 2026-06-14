@@ -14,6 +14,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.telemetry.system_health import SystemHealthV1
 
 from .api import router, set_runner
+from .proposal_review_api import router as proposal_review_router
 from .bus_listener import run_bus_worker
 from .runner import ContextExecRunner
 from .settings import settings
@@ -92,6 +93,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Orion Context Exec", lifespan=lifespan)
 app.include_router(router)
+app.include_router(proposal_review_router)
 
 
 @app.get("/")

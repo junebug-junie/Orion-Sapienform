@@ -57,6 +57,17 @@ def test_build_patch_proposal_envelope_wraps_inner_payload() -> None:
     assert envelope.review_status in {"draft", "pending_review"}
 
 
+def test_build_patch_proposal_envelope_sanitizes_inner_mutation_allowed() -> None:
+    patch = PatchProposalV1(
+        problem="p",
+        proposed_change_summary="s",
+        rollback_plan="r",
+        mutation_allowed=True,
+    )
+    envelope = build_patch_proposal_envelope(patch, source_mode="patch_proposal")
+    assert envelope.artifact["mutation_allowed"] is False
+
+
 def test_context_exec_proposal_cannot_self_approve_or_execute() -> None:
     patch = PatchProposalV1(
         problem="p",
@@ -74,3 +85,13 @@ def test_context_exec_proposal_cannot_self_approve_or_execute() -> None:
     bad_mutation = envelope.model_copy(update={"mutation_allowed": True})
     with pytest.raises(ValueError, match="mutation_allowed"):
         assert_context_exec_proposal_safe(bad_mutation)
+
+    bad_approval = envelope.model_copy(update={"requires_human_approval": False})
+    with pytest.raises(ValueError, match="requires_human_approval"):
+        assert_context_exec_proposal_safe(bad_approval)
+
+    bad_inner = envelope.model_copy(
+        update={"artifact": {**envelope.artifact, "mutation_allowed": True}}
+    )
+    with pytest.raises(ValueError, match="inner proposal artifact"):
+        assert_context_exec_proposal_safe(bad_inner)

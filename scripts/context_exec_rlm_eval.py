@@ -32,12 +32,11 @@ from app.rlm_eval_harness import (  # noqa: E402
 
 
 def _inner_patch_artifact(artifact: dict) -> dict:
-    if artifact.get("artifact_type") == "PatchProposalV1":
-        return artifact
-    if artifact.get("artifact_type") == "PatchProposalV1" or artifact.get("proposal_type") == "patch_proposal":
+    if artifact.get("proposal_type") == "patch_proposal":
         inner = artifact.get("artifact") or {}
-        if isinstance(inner, dict):
-            return inner
+        return inner if isinstance(inner, dict) else artifact
+    if artifact.get("artifact_type") == "PatchProposalV1" and "proposal_id" not in artifact:
+        return artifact
     return artifact
 
 

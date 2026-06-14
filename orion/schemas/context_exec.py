@@ -237,6 +237,9 @@ def assert_context_exec_proposal_safe(envelope: ProposalEnvelopeV1) -> None:
         raise ValueError("context-exec proposals must set mutation_allowed=false")
     if not envelope.requires_human_approval:
         raise ValueError("context-exec proposals must set requires_human_approval=true")
+    inner = envelope.artifact
+    if isinstance(inner, dict) and inner.get("mutation_allowed"):
+        raise ValueError("inner proposal artifact must set mutation_allowed=false")
 
 
 def build_patch_proposal_envelope(
@@ -248,6 +251,7 @@ def build_patch_proposal_envelope(
 ) -> ProposalEnvelopeV1:
     """Wrap a PatchProposalV1 in a context-exec proposal envelope."""
     inner = patch.model_dump(mode="json")
+    inner["mutation_allowed"] = False
     title = (patch.problem[:120] if patch.problem else "Patch proposal").strip()
     envelope = ProposalEnvelopeV1(
         proposal_id=f"prop_{uuid.uuid4().hex[:12]}",

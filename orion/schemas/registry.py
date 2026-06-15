@@ -71,10 +71,13 @@ from orion.schemas.context_exec import (
     ContextExecRunV1,
     ContextExecSafetySummaryV1,
     ContextExecVerbStepV1,
+    EvidenceBundle,
+    InvestigationReportV2,
     MemoryCorrectionProposalV1,
     PatchProposalV1,
     ProposalEnvelopeV1,
     RepoImpactAnalysisReportV1,
+    SourceResult,
     TraceAutopsyReportV1,
 )
 from orion.schemas.proposal_ledger import (
@@ -1053,6 +1056,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "BeliefProvenanceReportV1": BeliefProvenanceReportV1,
     "TraceAutopsyReportV1": TraceAutopsyReportV1,
     "RepoImpactAnalysisReportV1": RepoImpactAnalysisReportV1,
+    "InvestigationReportV2": InvestigationReportV2,
+    "EvidenceBundle": EvidenceBundle,
+    "SourceResult": SourceResult,
     "PatchProposalV1": PatchProposalV1,
     "MemoryCorrectionProposalV1": MemoryCorrectionProposalV1,
     "ProposalEnvelopeV1": ProposalEnvelopeV1,

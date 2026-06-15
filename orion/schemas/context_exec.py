@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -406,6 +407,61 @@ def build_memory_correction_proposal_envelope(
     )
     assert_context_exec_proposal_safe(envelope)
     return envelope
+
+
+class SourceStatus(str, Enum):
+    hit = "hit"
+    no_hit = "no_hit"
+    unavailable = "unavailable"
+    blocked = "blocked"
+    error = "error"
+    skipped = "skipped"
+
+
+class SourceResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str
+    status: SourceStatus
+    summary: str | None = None
+    findings: list[dict[str, Any]] = Field(default_factory=list)
+    error: str | None = None
+    elapsed_ms: int | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class EvidenceBundle(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repo: SourceResult | None = None
+    traces: SourceResult | None = None
+    recall: SourceResult | None = None
+    memory: SourceResult | None = None
+    runtime: SourceResult | None = None
+    health: SourceResult | None = None
+
+
+InvestigationV2AnswerStatus = Literal[
+    "partial_grounding",
+    "answered_grounded",
+    "dependency_unavailable",
+    "no_reliable_evidence",
+    "blocked",
+]
+
+
+class InvestigationReportV2(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["investigation_v2"] = "investigation_v2"
+    artifact_type: Literal["InvestigationReportV2"] = "InvestigationReportV2"
+    answer_status: InvestigationV2AnswerStatus
+    summary: str
+    sources: dict[str, str] = Field(default_factory=dict)
+    failed_sources: list[str] = Field(default_factory=list)
+    blocked_sources: list[str] = Field(default_factory=list)
+    evidence: EvidenceBundle
+    text_received: str | None = None
 
 
 class ContextExecSafetySummaryV1(BaseModel):

@@ -9,6 +9,7 @@ from orion.schemas.context_exec import (
     ContextExecMode,
     ContextExecRequestV1,
     ContextExecRunV1,
+    InvestigationReportV2,
     MemoryCorrectionProposalV1,
     PatchProposalV1,
     ProposalEnvelopeV1,
@@ -27,7 +28,7 @@ def artifact_type_for_mode(mode: ContextExecMode) -> str | None:
         "patch_proposal": "ProposalEnvelopeV1",
         "memory_correction_proposal": "ProposalEnvelopeV1",
         "runtime_debug": "TraceAutopsyReportV1",
-        "investigation_v2": "InvestigationV2SkeletonV1",
+        "investigation_v2": "InvestigationReportV2",
     }
     return mapping.get(mode)
 
@@ -67,9 +68,8 @@ def validate_artifact(mode: ContextExecMode, raw: Any) -> tuple[dict[str, Any], 
         elif mode == "memory_correction_proposal":
             return _wrap_memory_correction_proposal(raw, mode)
         elif mode == "investigation_v2":
-            if raw.get("mode") == "investigation_v2":
-                return raw, "InvestigationV2SkeletonV1", True
-            return raw, "InvestigationV2SkeletonV1", False
+            model = InvestigationReportV2.model_validate(raw)
+            return model.model_dump(mode="json"), "InvestigationReportV2", True
         else:
             return raw, "GenericInvestigationV1", True
         return model.model_dump(mode="json"), model.__class__.__name__, True
@@ -89,8 +89,17 @@ def synthesize_findings_bundle(
         findings_source = artifact.get("artifact") or {}
     if request.mode == "memory_correction_proposal" and artifact.get("artifact_type") == "MemoryCorrectionProposalV1":
         findings_source = artifact.get("artifact") or {}
+
+    v2_findings: list[Any] = []
+    if request.mode == "investigation_v2":
+        evidence = artifact.get("evidence") or {}
+        for section in evidence.values():
+            if isinstance(section, dict) and section.get("findings"):
+                v2_findings.extend(section["findings"])
+
     if ac is None and not (
-        findings_source.get("findings")
+        v2_findings
+        or findings_source.get("findings")
         or findings_source.get("evidence")
         or findings_source.get("supporting_evidence")
         or findings_source.get("contradicting_evidence")
@@ -98,7 +107,8 @@ def synthesize_findings_bundle(
     ):
         return None
     raw_findings: list[Any] = list(
-        findings_source.get("findings")
+        v2_findings
+        or findings_source.get("findings")
         or findings_source.get("evidence")
         or findings_source.get("supporting_evidence")
         or findings_source.get("contradicting_evidence")
@@ -188,5 +198,5 @@ def build_final_text(mode: ContextExecMode, artifact: dict[str, Any], *, status:
             f"Risk={risk}. Mutation allowed=false."
         )
     if mode == "investigation_v2":
-        return str(artifact.get("message") or "investigation_v2 skeleton active")
+        return str(artifact.get("summary") or "investigation_v2 evidence sweep complete")
     return str(artifact.get("summary") or artifact.get("target") or "Investigation complete.")

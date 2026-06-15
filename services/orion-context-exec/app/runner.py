@@ -20,8 +20,7 @@ from .agent_synthesis import run_agent_synthesis
 from .grounding_eval import evaluate_investigation_outcome, is_placeholder_investigation_summary
 from .investigation_v2 import (
     INVESTIGATION_V2_ARTIFACT_TYPE,
-    INVESTIGATION_V2_SKELETON_MESSAGE,
-    build_investigation_v2_skeleton_artifact,
+    run_investigation_v2,
 )
 from .artifact_builder import (
     artifact_type_for_mode,
@@ -254,7 +253,7 @@ class ContextExecRunner:
         await events.started(run_id=run_id, mode=request.mode, text=request.text)
 
         if request.mode == "investigation_v2":
-            return await self._run_investigation_v2_skeleton(
+            return await self._run_investigation_v2(
                 request=request,
                 run_id=run_id,
                 started=started,
@@ -498,7 +497,7 @@ class ContextExecRunner:
             failure_modes=failure_modes,
         )
 
-    async def _run_investigation_v2_skeleton(
+    async def _run_investigation_v2(
         self,
         *,
         request: ContextExecRequestV1,
@@ -508,31 +507,58 @@ class ContextExecRunner:
         verb_trace: list[ContextExecVerbStepV1],
         failure_modes: list[str],
     ) -> ContextExecRunV1:
-        artifact = build_investigation_v2_skeleton_artifact(request)
+        organ_runtime = OrganRuntime(
+            bus=self.bus,
+            request=request,
+            run_id=run_id,
+            llm_route=str(request.llm_profile or settings.context_exec_default_llm_profile),
+        )
+        namespace = self._build_namespace(organ_runtime)
+        organ_cache = getattr(namespace, "_organ_cache", {}) or {}
+        organ_status = getattr(namespace, "_organ_status", {}) or {}
+
+        artifact = await run_investigation_v2(request, namespace, organ_runtime, organ_cache)
         artifact_type = INVESTIGATION_V2_ARTIFACT_TYPE
-        schema_valid = True
+        validated, artifact_type, schema_valid = validate_artifact(request.mode, artifact)
+        artifact = validated
         status = "ok"
-        final_text = INVESTIGATION_V2_SKELETON_MESSAGE
+        if not schema_valid:
+            status = "schema_invalid"
+            failure_modes.append("schema_invalid")
+
+        final_text = build_final_text(request.mode, artifact, status=status)
+        fb = synthesize_findings_bundle(request, artifact, schema_valid=schema_valid)
         ac_dump = request.answer_contract.model_dump(mode="json") if request.answer_contract else None
+
         runtime_debug = {
             **self._engine_runtime_debug(
-                engine_used="skeleton",
+                engine_used="investigation_v2",
                 mode=request.mode,
                 schema_valid=schema_valid,
             ),
             "correlation_id": request.correlation_id,
-            "investigation_v2_skeleton": True,
+            "investigation_v2": True,
+            "answer_status": artifact.get("answer_status"),
             "permissions_received": request.permissions.model_dump(mode="json"),
             "read_repo": request.permissions.read_repo,
+            "grounding_attempts": {
+                "recall": organ_cache.get("recall") is not None,
+                "trace": organ_cache.get("traces") is not None,
+                "repo": bool(organ_cache.get("repo_hits")) or organ_cache.get("repo_probe_attempted"),
+            },
+            "organ_status": organ_status,
+            "evidence_sources": artifact.get("sources") or {},
         }
+
         operator_summary = ContextExecOperatorSummaryV1(
-            title="Investigation v2 skeleton",
+            title="Investigation v2 evidence sweep",
             summary=final_text,
             agent_mode="investigation_v2",
             route_used=str(request.llm_profile or settings.context_exec_default_llm_profile),
             model_synthesis_used=False,
             safety=ContextExecSafetySummaryV1(),
         )
+
         await events.finished(
             run_id=run_id,
             mode=request.mode,
@@ -543,11 +569,11 @@ class ContextExecRunner:
         )
         return ContextExecRunV1(
             run_id=run_id,
-            status=status,
+            status=status,  # type: ignore[arg-type]
             mode=request.mode,
             text=request.text,
             answer_contract=ac_dump,
-            findings_bundle=None,
+            findings_bundle=fb,
             artifact_type=artifact_type,
             artifact=artifact,
             final_text=final_text,

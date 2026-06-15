@@ -74,7 +74,7 @@ def test_grounded_path_with_evidence() -> None:
     ]
     runtime_debug = {
         "engine_selected": "alexzhang",
-        "model_synthesis_used": True,
+        "model_synthesis_used": False,
         "grounding_attempts": {"recall": True, "trace": False, "repo": False},
     }
     artifact = {
@@ -95,12 +95,12 @@ def test_grounded_path_with_evidence() -> None:
         artifact=artifact,
         runtime_debug=runtime_debug,
         verb_trace=verb_trace,
-        model_synthesis_used=True,
+        model_synthesis_used=False,
         current_summary="Mom lives in Denver based on prior session memory.",
     )
     assert outcome["answer_status"] == "answered_grounded"
     assert outcome["grounding_status"] == "attempted"
-    assert outcome["synthesis_status"] == "completed"
+    assert outcome["synthesis_status"] == "skipped"
     assert outcome["evidence_count"] == 1
 
 

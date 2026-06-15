@@ -260,6 +260,7 @@ def build_context_exec_chat_response(
         "llm_response": inline,
         "raw": {
             "ok": run.status == "ok",
+            "answer_ok": answer_eval.get("answer_status") == "answered_grounded",
             "mode": "agent",
             "status": run.status,
             "final_text": run.final_text,

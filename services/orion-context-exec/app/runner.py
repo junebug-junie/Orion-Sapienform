@@ -15,7 +15,7 @@ from orion.schemas.context_exec import (
 )
 
 from .agent_synthesis import run_agent_synthesis
-from .grounding_eval import evaluate_investigation_outcome
+from .grounding_eval import evaluate_investigation_outcome, is_placeholder_investigation_summary
 from .artifact_builder import (
     artifact_type_for_mode,
     build_final_text,
@@ -439,10 +439,11 @@ class ContextExecRunner:
         runtime_debug["answer_evaluation"] = answer_eval
         if answer_eval.get("summary_text"):
             final_text = str(answer_eval["summary_text"])
-        if operator_summary is not None and answer_eval.get("answer_status") not in {
-            "answered_grounded",
-            "partial_or_weak_evidence",
-        }:
+        if operator_summary is not None and (
+            answer_eval.get("answer_status")
+            not in {"answered_grounded", "partial_or_weak_evidence"}
+            or is_placeholder_investigation_summary(operator_summary.summary)
+        ):
             operator_summary = operator_summary.model_copy(
                 update={
                     "title": "Runtime completed (not grounded)",

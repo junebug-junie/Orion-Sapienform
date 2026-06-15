@@ -225,11 +225,11 @@ def evaluate_investigation_outcome(
             "summary_text": summary,
         }
 
-    if evidence_count > 0 and model_synthesis_used:
-        answer_status = "answered_grounded"
-        grounding_status = "attempted"
-    elif evidence_count > 0:
-        answer_status = "partial_or_weak_evidence"
+    if evidence_count > 0 and grounding_attempted:
+        if model_synthesis_used or mode == "general_investigation":
+            answer_status = "answered_grounded"
+        else:
+            answer_status = "partial_or_weak_evidence"
         grounding_status = "attempted"
     elif model_synthesis_used:
         answer_status = "partial_or_weak_evidence"

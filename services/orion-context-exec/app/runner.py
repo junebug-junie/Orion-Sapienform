@@ -13,6 +13,7 @@ from orion.schemas.context_exec import (
     ContextExecRunV1,
     ContextExecSafetySummaryV1,
     ContextExecVerbStepV1,
+    InvestigationReportV2,
     ProposalEnvelopeV1,
 )
 
@@ -22,6 +23,7 @@ from .investigation_v2 import (
     INVESTIGATION_V2_ARTIFACT_TYPE,
     run_investigation_v2,
 )
+from .investigation_v2_reducers import apply_synthesis_to_report
 from .artifact_builder import (
     artifact_type_for_mode,
     build_final_text,
@@ -526,11 +528,8 @@ class ContextExecRunner:
             status = "schema_invalid"
             failure_modes.append("schema_invalid")
 
-        final_text = build_final_text(request.mode, artifact, status=status)
-        fb = synthesize_findings_bundle(request, artifact, schema_valid=schema_valid)
-        ac_dump = request.answer_contract.model_dump(mode="json") if request.answer_contract else None
-
-        runtime_debug = {
+        profile_selection = await resolve_llm_profile(request.llm_profile)
+        runtime_debug_base = {
             **self._engine_runtime_debug(
                 engine_used="investigation_v2",
                 mode=request.mode,
@@ -549,15 +548,55 @@ class ContextExecRunner:
             "organ_status": organ_status,
             "evidence_sources": artifact.get("sources") or {},
         }
+        runtime_debug_base.update(selection_runtime_debug(profile_selection))
 
-        operator_summary = ContextExecOperatorSummaryV1(
-            title="Investigation v2 evidence sweep",
-            summary=final_text,
-            agent_mode="investigation_v2",
-            route_used=str(request.llm_profile or settings.context_exec_default_llm_profile),
-            model_synthesis_used=False,
-            safety=ContextExecSafetySummaryV1(),
+        synthesis_result = await run_agent_synthesis(
+            request=request,
+            artifact=artifact,
+            profile_selection=profile_selection,
+            runtime_debug=runtime_debug_base,
+            bus=self.bus,
         )
+        runtime_debug = dict(runtime_debug_base)
+        runtime_debug["model_synthesis_used"] = synthesis_result.model_synthesis_used
+        if synthesis_result.fallback_reason:
+            runtime_debug["synthesis_fallback_reason"] = synthesis_result.fallback_reason
+        if synthesis_result.fallback_used:
+            runtime_debug["synthesis_fallback_used"] = True
+
+        synthesis_failed = synthesis_result.fallback_used and not synthesis_result.model_synthesis_used
+        if synthesis_result.model_synthesis_used or synthesis_failed:
+            report = InvestigationReportV2.model_validate(artifact)
+            updated = apply_synthesis_to_report(
+                report,
+                synthesis_summary=synthesis_result.synthesis_summary,
+                synthesis_failed=synthesis_failed,
+            )
+            artifact = updated.model_dump(mode="json")
+
+        final_text = build_final_text(request.mode, artifact, status=status)
+        fb = synthesize_findings_bundle(request, artifact, schema_valid=schema_valid)
+        ac_dump = request.answer_contract.model_dump(mode="json") if request.answer_contract else None
+
+        operator_summary = synthesis_result.operator_summary
+        if operator_summary is None:
+            operator_summary = ContextExecOperatorSummaryV1(
+                title="Investigation v2 report",
+                summary=final_text,
+                agent_mode="investigation_v2",
+                route_used=profile_selection.route_used,
+                model_synthesis_used=False,
+                safety=ContextExecSafetySummaryV1(),
+            )
+        elif status == "ok":
+            if synthesis_result.model_synthesis_used and synthesis_result.synthesis_summary:
+                final_text = synthesis_result.synthesis_summary
+            elif operator_summary.summary:
+                final_text = operator_summary.summary
+        if synthesis_result.model_synthesis_used:
+            operator_summary = operator_summary.model_copy(
+                update={"model_synthesis_used": True, "summary": final_text}
+            )
 
         await events.finished(
             run_id=run_id,

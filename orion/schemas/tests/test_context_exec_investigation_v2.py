@@ -6,6 +6,7 @@ from orion.schemas.context_exec import (
     ContextExecRequestV1,
     EvidenceBundle,
     InvestigationReportV2,
+    InvestigationSectionV2,
     SourceResult,
     SourceStatus,
     context_exec_permissions_for_llm_profile,
@@ -31,6 +32,14 @@ def test_evidence_bundle_and_source_result_schema() -> None:
         answer_status="partial_grounding",
         summary="test",
         sources={"repo": "hit", "recall": "unavailable"},
+        sections={
+            "repo": InvestigationSectionV2(
+                source="repo",
+                status="hit",
+                title="Repository impact",
+                summary="1 hit",
+            )
+        },
         evidence=bundle,
     )
     data = report.model_dump(mode="json")

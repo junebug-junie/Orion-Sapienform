@@ -36,6 +36,10 @@ FAKE_ENGINE_BLOCKED_SUMMARY = (
 def agent_answer_headline(answer_status: str) -> str:
     if answer_status == "answered_grounded":
         return "Agent investigation complete"
+    if answer_status == "partial_grounding":
+        return "Partially grounded investigation"
+    if answer_status == "dependency_unavailable":
+        return "Investigation blocked by unavailable dependencies"
     if answer_status == "failed_fake_engine_selected":
         return "Blocked: fake engine selected"
     if answer_status == "failed_grounding_preflight":
@@ -45,6 +49,43 @@ def agent_answer_headline(answer_status: str) -> str:
     if answer_status in FAILED_ANSWER_STATUSES:
         return "Runtime complete"
     return "Runtime complete"
+
+
+def format_investigation_v2_report(artifact: dict[str, Any]) -> str:
+    """Render InvestigationReportV2 sections for Hub inline display."""
+    if not isinstance(artifact, dict):
+        return ""
+    answer_status = str(artifact.get("answer_status") or "unknown")
+    lines = [
+        agent_answer_headline(answer_status),
+        f"Answer status: {answer_status}",
+        f"Summary: {artifact.get('summary') or 'No summary.'}",
+    ]
+    sections = artifact.get("sections") or {}
+    if isinstance(sections, dict) and sections:
+        lines.append("Sections:")
+        for name in ("repo", "traces", "recall", "memory", "runtime", "health"):
+            sec = sections.get(name)
+            if not isinstance(sec, dict):
+                continue
+            title = sec.get("title") or name
+            status = sec.get("status") or "unknown"
+            summary = sec.get("summary") or ""
+            lines.append(f"  - {title} [{status}]: {summary}")
+    for label, key in (
+        ("Unavailable", "unavailable_sources"),
+        ("Failed", "failed_sources"),
+        ("Blocked", "blocked_sources"),
+    ):
+        items = artifact.get(key) or []
+        if items:
+            lines.append(f"{label} sources: {', '.join(str(i) for i in items)}")
+    limitations = artifact.get("limitations") or []
+    if limitations:
+        lines.append("Limitations:")
+        for item in limitations[:6]:
+            lines.append(f"  - {item}")
+    return "\n".join(lines)
 
 
 def _recall_failure_line(organ_status: dict[str, Any] | None) -> str | None:
@@ -250,6 +291,9 @@ def format_agent_operator_inline(
     llm_profile: str | None = None,
 ) -> str:
     """Build Hub inline Agent operator response."""
+    if run.mode == "investigation_v2" and isinstance(run.artifact, dict):
+        return format_investigation_v2_report(run.artifact)
+
     dbg = run.runtime_debug or {}
     answer_eval = _answer_evaluation(run)
     answer_status = str(answer_eval.get("answer_status") or "")

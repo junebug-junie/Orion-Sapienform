@@ -103,3 +103,33 @@ def test_v2_enabled_quick_profile_does_not_grant_mutation_permissions() -> None:
     assert body.permissions.read_repo is False
     assert body.permissions.write_repo is False
     assert body.permissions.mutate_runtime is False
+
+
+def test_hub_format_investigation_v2_report_sections() -> None:
+    _hub_imports()
+    from scripts.context_exec_agent_bridge import format_investigation_v2_report
+
+    artifact = {
+        "answer_status": "partial_grounding",
+        "summary": "Repo grounded summary.",
+        "sections": {
+            "repo": {
+                "title": "Repository impact",
+                "status": "hit",
+                "summary": "2 affected path(s).",
+            },
+            "recall": {
+                "title": "Recall",
+                "status": "unavailable",
+                "summary": "Recall dependency failure: timeout",
+            },
+        },
+        "unavailable_sources": ["recall"],
+        "limitations": ["recall unavailable: timeout"],
+    }
+    text = format_investigation_v2_report(artifact)
+    assert "Partially grounded investigation" in text
+    assert "Summary: Repo grounded summary." in text
+    assert "Repository impact [hit]" in text
+    assert "Unavailable sources: recall" in text
+    assert "Limitations:" in text

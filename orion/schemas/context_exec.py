@@ -447,7 +447,22 @@ InvestigationV2AnswerStatus = Literal[
     "dependency_unavailable",
     "no_reliable_evidence",
     "blocked",
+    "error",
 ]
+
+
+class InvestigationSectionV2(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str
+    status: str
+    title: str
+    summary: str | None = None
+    findings: list[dict[str, Any]] = Field(default_factory=list)
+    evidence_refs: list[dict[str, Any]] = Field(default_factory=list)
+    error: str | None = None
+    elapsed_ms: int | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class InvestigationReportV2(BaseModel):
@@ -457,10 +472,16 @@ class InvestigationReportV2(BaseModel):
     artifact_type: Literal["InvestigationReportV2"] = "InvestigationReportV2"
     answer_status: InvestigationV2AnswerStatus
     summary: str
+    sections: dict[str, InvestigationSectionV2] = Field(default_factory=dict)
     sources: dict[str, str] = Field(default_factory=dict)
     failed_sources: list[str] = Field(default_factory=list)
     blocked_sources: list[str] = Field(default_factory=list)
+    unavailable_sources: list[str] = Field(default_factory=list)
+    grounded_sources: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    next_actions: list[str] = Field(default_factory=list)
     evidence: EvidenceBundle
+    raw_evidence: dict[str, Any] | None = None
     text_received: str | None = None
 
 

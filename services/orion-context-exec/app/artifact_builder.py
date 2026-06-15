@@ -92,10 +92,15 @@ def synthesize_findings_bundle(
 
     v2_findings: list[Any] = []
     if request.mode == "investigation_v2":
-        evidence = artifact.get("evidence") or {}
-        for section in evidence.values():
+        sections = artifact.get("sections") or {}
+        for section in sections.values():
             if isinstance(section, dict) and section.get("findings"):
                 v2_findings.extend(section["findings"])
+        if not v2_findings:
+            evidence = artifact.get("evidence") or {}
+            for section in evidence.values():
+                if isinstance(section, dict) and section.get("findings"):
+                    v2_findings.extend(section["findings"])
 
     if ac is None and not (
         v2_findings
@@ -198,5 +203,9 @@ def build_final_text(mode: ContextExecMode, artifact: dict[str, Any], *, status:
             f"Risk={risk}. Mutation allowed=false."
         )
     if mode == "investigation_v2":
-        return str(artifact.get("summary") or "investigation_v2 evidence sweep complete")
+        summary = str(artifact.get("summary") or "investigation_v2 report complete")
+        status_label = artifact.get("answer_status")
+        if status_label:
+            return f"{summary}"
+        return summary
     return str(artifact.get("summary") or artifact.get("target") or "Investigation complete.")

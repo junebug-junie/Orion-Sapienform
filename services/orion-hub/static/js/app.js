@@ -10265,6 +10265,8 @@ loadDismissedIds();
   function agentAnswerHeadline(answerStatus) {
     const status = String(answerStatus || '').trim();
     if (status === 'answered_grounded') return 'Agent investigation complete';
+    if (status === 'partial_grounding') return 'Partially grounded investigation';
+    if (status === 'dependency_unavailable') return 'Investigation blocked by unavailable dependencies';
     if (status === 'failed_fake_engine_selected') return 'Blocked: fake engine selected';
     if (status === 'failed_grounding_preflight') return 'Runtime completed, but no real investigation occurred';
     if (status === 'no_reliable_evidence') return 'No reliable grounded answer found';
@@ -10272,6 +10274,47 @@ loadDismissedIds();
       return 'Runtime complete';
     }
     return 'Runtime complete';
+  }
+
+  function formatInvestigationV2Report(artifact) {
+    if (!artifact || typeof artifact !== 'object') return '';
+    const answerStatus = String(artifact.answer_status || 'unknown');
+    const lines = [
+      agentAnswerHeadline(answerStatus),
+      `Answer status: ${answerStatus}`,
+      `Summary: ${artifact.summary || 'No summary.'}`,
+    ];
+    const sections = artifact.sections && typeof artifact.sections === 'object' ? artifact.sections : {};
+    const order = ['repo', 'traces', 'recall', 'memory', 'runtime', 'health'];
+    const sectionLines = [];
+    order.forEach((name) => {
+      const sec = sections[name];
+      if (!sec || typeof sec !== 'object') return;
+      const title = sec.title || name;
+      const status = sec.status || 'unknown';
+      const summary = sec.summary || '';
+      sectionLines.push(`  - ${title} [${status}]: ${summary}`);
+    });
+    if (sectionLines.length) {
+      lines.push('Sections:');
+      lines.push(...sectionLines);
+    }
+    [
+      ['Unavailable', 'unavailable_sources'],
+      ['Failed', 'failed_sources'],
+      ['Blocked', 'blocked_sources'],
+    ].forEach(([label, key]) => {
+      const items = artifact[key];
+      if (Array.isArray(items) && items.length) {
+        lines.push(`${label} sources: ${items.join(', ')}`);
+      }
+    });
+    const limitations = artifact.limitations;
+    if (Array.isArray(limitations) && limitations.length) {
+      lines.push('Limitations:');
+      limitations.slice(0, 6).forEach((item) => lines.push(`  - ${item}`));
+    }
+    return lines.join('\n');
   }
 
   function recallFailureLine(organStatus) {
@@ -10295,6 +10338,15 @@ loadDismissedIds();
         || (d.agent_trace && d.agent_trace.raw && d.agent_trace.raw.organ_status)
         || (d.context_exec_run && d.context_exec_run.runtime_debug && d.context_exec_run.runtime_debug.organ_status)
         || null;
+      const ctxRun = d.context_exec_run && typeof d.context_exec_run === 'object' ? d.context_exec_run : null;
+      const v2Artifact = ctxRun && ctxRun.mode === 'investigation_v2' && ctxRun.artifact
+        ? ctxRun.artifact
+        : (op.agent_mode === 'investigation_v2' && d.raw && d.raw.metadata && d.raw.metadata.context_exec
+          ? d.raw.metadata.context_exec.artifact
+          : null);
+      if (v2Artifact && typeof v2Artifact === 'object') {
+        return formatInvestigationV2Report(v2Artifact);
+      }
       const headline = agentAnswerHeadline(answerStatus);
       const lines = [
         headline,

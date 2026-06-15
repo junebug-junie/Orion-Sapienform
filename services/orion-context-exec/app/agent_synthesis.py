@@ -32,6 +32,7 @@ SYNTHESIS_MODES: frozenset[str] = frozenset(
         "repo_impact_analysis",
         "patch_proposal",
         "memory_correction_proposal",
+        "investigation_v2",
     }
 )
 
@@ -133,6 +134,7 @@ def _default_title(mode: ContextExecMode) -> str:
         "repo_impact_analysis": "Repo impact analysis complete",
         "patch_proposal": "Patch proposal drafted",
         "memory_correction_proposal": "Memory correction proposal drafted",
+        "investigation_v2": "Investigation v2 report",
     }
     return titles.get(mode, "Agent investigation complete")
 
@@ -159,6 +161,8 @@ def _deterministic_summary(mode: ContextExecMode, artifact: dict[str, Any]) -> s
         return f"Repo impact: {st}. Risk={risk}.{path_hint}"
     if mode in {"patch_proposal", "memory_correction_proposal"}:
         return str(artifact.get("summary") or artifact.get("title") or "Proposal drafted for review.")
+    if mode == "investigation_v2":
+        return str(artifact.get("summary") or "Investigation v2 report complete.")
     return str(artifact.get("summary") or "Investigation complete.")
 
 

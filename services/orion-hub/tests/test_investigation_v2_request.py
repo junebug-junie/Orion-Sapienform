@@ -120,13 +120,16 @@ def test_v2_disabled_preserves_keyword_mode_inference() -> None:
     assert body.permissions.read_repo is True
 
 
-def test_v2_enabled_quick_profile_does_not_grant_mutation_permissions() -> None:
+def test_v2_enabled_quick_profile_grants_read_broad_agent_permissions() -> None:
     build_context_exec_request, _, CortexChatRequest = _hub_imports()
     with patch("scripts.context_exec_agent_bridge.investigation_v2_enabled", return_value=True):
         req = CortexChatRequest(prompt=CORTEX_CHANGE_PROMPT, mode="agent", trace_id="corr-quick")
         body = build_context_exec_request(req=req, prompt=req.prompt, llm_profile="quick")
     assert body.mode == "investigation_v2"
-    assert body.permissions.read_repo is False
+    assert body.llm_profile == "quick"
+    assert body.permissions.read_repo is True
+    assert body.permissions.read_recall is True
+    assert body.permissions.read_runtime_logs is True
     assert body.permissions.write_repo is False
     assert body.permissions.mutate_runtime is False
 

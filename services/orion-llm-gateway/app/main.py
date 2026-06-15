@@ -15,7 +15,7 @@ from pydantic import ValidationError
 # [FIX] Added ServiceRef to imports
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ChatResultPayload, Envelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
-from orion.bus.consumer_readiness import check_bus_consumer_readiness
+from orion.bus.consumer_readiness import bus_consumer_readiness_v1, check_bus_consumer_readiness
 from orion.schemas.telemetry.system_health import BusConsumerReadinessV1
 from orion.schemas.vector.schemas import VectorUpsertV1
 
@@ -94,8 +94,9 @@ async def ready() -> JSONResponse:
         intake_channel=settings.channel_llm_intake,
         service_name=settings.service_name,
         heartbeat_ttl_sec=float(settings.heartbeat_interval_sec) * 3.0,
+        check_heartbeat=False,
     )
-    body = BusConsumerReadinessV1(**result.model_dump(), http_alive=True)
+    body = bus_consumer_readiness_v1(result, http_alive=True)
     status_code = 200 if body.ok else 503
     return JSONResponse(body.model_dump(mode="json"), status_code=status_code)
 

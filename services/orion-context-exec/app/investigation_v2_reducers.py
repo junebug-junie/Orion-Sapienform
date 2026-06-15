@@ -406,10 +406,20 @@ def reduce_health_section(result: SourceResult | None) -> InvestigationSectionV2
         )
 
     checks = result.metadata if isinstance(result.metadata, dict) else {}
-    check_lines = [f"{k}={v}" for k, v in sorted(checks.items())]
+    parts: list[str] = []
+    recall_ready = checks.get("recall_bus_ready")
+    llm_ready = checks.get("llm_gateway_bus_ready")
+    if recall_ready:
+        recall_count = checks.get("recall_subscriber_count", "?")
+        parts.append(f"recall={recall_ready} (subscribers={recall_count})")
+    if llm_ready:
+        llm_count = checks.get("llm_gateway_subscriber_count", "?")
+        http_flag = checks.get("llm_gateway_http_alive")
+        http_note = f", http={http_flag}" if http_flag else ""
+        parts.append(f"llm_gateway={llm_ready} (subscribers={llm_count}{http_note})")
     summary = result.summary or "Shallow dependency health snapshot."
-    if check_lines:
-        summary = f"{summary} ({'; '.join(check_lines)})"
+    if parts:
+        summary = f"{summary}: {'; '.join(parts)}."
 
     return InvestigationSectionV2(
         source="health",

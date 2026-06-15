@@ -152,8 +152,14 @@ async def test_llm_gateway_dead_consumer_skips_synthesis_rpc(monkeypatch: pytest
     monkeypatch.setattr(settings, "context_exec_agent_synthesis_enabled", True)
     monkeypatch.setattr("app.agent_synthesis.llm_chat_route", llm_chat)
     monkeypatch.setattr(
-        "app.runner.check_llm_gateway_bus_ready",
-        AsyncMock(return_value=_dead_readiness(intake_channel=settings.channel_llm_intake)),
+        "app.runner.effective_llm_gateway_ready",
+        AsyncMock(
+            return_value=(
+                _dead_readiness(intake_channel=settings.channel_llm_intake),
+                False,
+                False,
+            )
+        ),
     )
 
     bus = MagicMock()
@@ -194,8 +200,14 @@ async def test_synthesis_runs_when_llm_gateway_ready(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(settings, "context_exec_agent_synthesis_enabled", True)
     monkeypatch.setattr("app.agent_synthesis.llm_chat_route", llm_chat)
     monkeypatch.setattr(
-        "app.runner.check_llm_gateway_bus_ready",
-        AsyncMock(return_value=_live_readiness(intake_channel=settings.channel_llm_intake)),
+        "app.runner.effective_llm_gateway_ready",
+        AsyncMock(
+            return_value=(
+                _live_readiness(intake_channel=settings.channel_llm_intake),
+                True,
+                True,
+            )
+        ),
     )
 
     bus = MagicMock()

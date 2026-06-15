@@ -19,6 +19,8 @@ from .alexzhang_rlm_engine import _merge_repo_hits, _repo_search_terms
 from .bus_dependency_preflight import (
     check_llm_gateway_bus_ready,
     check_recall_bus_ready,
+    effective_llm_gateway_ready,
+    llm_gateway_readiness_metadata,
     unavailable_source_result,
 )
 from .callable_namespace import ContextNamespace
@@ -330,13 +332,21 @@ async def health_probe(
     if settings.orion_bus_enabled and runtime.bus is not None:
         readiness_timeout = _readiness_timeout_sec()
         recall_ready = await check_recall_bus_ready(runtime.bus, timeout_sec=readiness_timeout)
-        llm_ready = await check_llm_gateway_bus_ready(runtime.bus, timeout_sec=readiness_timeout)
+        llm_ready, llm_http_ok, llm_effective_ok = await effective_llm_gateway_ready(
+            runtime.bus,
+            timeout_sec=readiness_timeout,
+        )
         checks["recall_bus_ready"] = "yes" if recall_ready.ok else "no"
         checks["recall_subscriber_count"] = recall_ready.subscriber_count
-        checks["llm_gateway_bus_ready"] = "yes" if llm_ready.ok else "no"
+        checks["llm_gateway_bus_ready"] = "yes" if llm_effective_ok else "no"
         checks["llm_gateway_subscriber_count"] = llm_ready.subscriber_count
+        checks["llm_gateway_http_alive"] = "yes" if llm_http_ok else "no"
         checks["recall_readiness"] = recall_ready.model_dump(mode="json")
-        checks["llm_gateway_readiness"] = llm_ready.model_dump(mode="json")
+        checks["llm_gateway_readiness"] = llm_gateway_readiness_metadata(
+            llm_ready,
+            http_ok=llm_http_ok,
+            effective_ok=llm_effective_ok,
+        )
     return SourceResult(
         source="health",
         status=SourceStatus.no_hit,

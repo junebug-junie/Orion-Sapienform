@@ -15,6 +15,19 @@ def _decode_redis_val(x: Any) -> Any:
     return x
 
 
+def bus_consumer_readiness_v1(
+    result: BusConsumerReadinessResult,
+    *,
+    http_alive: bool = True,
+) -> "BusConsumerReadinessV1":
+    """Map internal readiness result to telemetry schema (single http_alive source)."""
+    from orion.schemas.telemetry.system_health import BusConsumerReadinessV1
+
+    payload = result.model_dump(mode="json")
+    payload["http_alive"] = http_alive
+    return BusConsumerReadinessV1(**payload)
+
+
 class BusConsumerReadinessResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

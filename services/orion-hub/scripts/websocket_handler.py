@@ -883,6 +883,8 @@ async def websocket_endpoint(websocket: WebSocket):
             inline_think_content: Optional[str] = None
             thinking_source: str = "none"
             explicit_reasoning_trace: Optional[Dict[str, Any]] = None
+            used_context_exec_lane = False
+            workflow_metadata_only = False
             try:
                 logger.info("voice.chat.start corr=%s session_id=%s", trace_id, session_id)
                 used_context_exec_lane = should_use_context_exec_agent_lane(chat_req)
@@ -1077,18 +1079,27 @@ async def websocket_endpoint(websocket: WebSocket):
                 backend_counts = recall_debug.get("backend_counts")
                 if backend_counts is None and isinstance(recall_debug.get("debug"), dict):
                     backend_counts = recall_debug["debug"].get("backend_counts")
-            memory_used = bool(getattr(resp.cortex_result, "memory_used", False))
+            memory_used = False
+            cortex_res = resp.cortex_result if resp is not None and getattr(resp, "cortex_result", None) else None
+            if cortex_res is not None:
+                memory_used = bool(getattr(cortex_res, "memory_used", False))
             if not memory_used:
                 memory_used = bool(recall_count)
+            ingress_status = (
+                getattr(cortex_res, "status", None)
+                if cortex_res is not None
+                else ("ok" if used_context_exec_lane else None)
+            )
             logger.info(
-                "hub_ingress_result corr=%s sid=%s mode=%s status=%s final_len=%s memory_used=%s recall_count=%s",
+                "hub_ingress_result corr=%s sid=%s mode=%s status=%s final_len=%s memory_used=%s recall_count=%s context_exec_lane=%s",
                 trace_id,
                 session_id,
                 mode,
-                getattr(resp.cortex_result, "status", None),
+                ingress_status,
                 len(orion_response_text or ""),
                 memory_used,
                 recall_count,
+                used_context_exec_lane,
             )
             _rec_tape_rsp(
                 corr_id=trace_id,
@@ -1138,6 +1149,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 "workflow_metadata_only": workflow_metadata_only,
                 "no_write": no_write,
                 "routing_debug": route_debug,
+                "context_exec_lane": used_context_exec_lane,
                 "metacog_traces": metacog_traces,
                 "reasoning_content": reasoning_content,
                 "inline_think_content": inline_think_content,

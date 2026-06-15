@@ -49,5 +49,5 @@ async def test_check_bus_consumer_readiness_no_subscribers() -> None:
     assert result.bus_consumer_ready is False
     assert result.subscriber_count == 0
     assert result.intake_channel == intake
-    assert result.dependency_status == "available"
+    assert result.dependency_status == "unavailable"
     assert result.error == f"no subscribers on intake channel: {intake}"

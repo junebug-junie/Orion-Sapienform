@@ -681,10 +681,19 @@ def apply_synthesis_to_report(
 ) -> InvestigationReportV2:
     limitations = list(report.limitations)
     summary = report.summary
+    metadata_update: dict[str, Any] = {}
     if synthesis_summary:
         summary = synthesis_summary
     elif synthesis_failed:
         msg = "LLM synthesis unavailable; deterministic evidence summary returned."
         if msg not in limitations:
             limitations.append(msg)
-    return report.model_copy(update={"summary": summary, "limitations": limitations})
+        if "synthesis_unavailable" not in limitations:
+            limitations.append("synthesis_unavailable")
+        metadata_update["synthesis_status"] = "synthesis_unavailable"
+    updates: dict[str, Any] = {"summary": summary, "limitations": limitations}
+    if metadata_update:
+        raw_evidence = dict(report.raw_evidence or {})
+        raw_evidence.update(metadata_update)
+        updates["raw_evidence"] = raw_evidence
+    return report.model_copy(update=updates)

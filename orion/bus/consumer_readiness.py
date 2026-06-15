@@ -196,6 +196,7 @@ async def check_bus_consumer_readiness(
     if not bus_consumer_ready and error is None:
         error = f"no subscribers on intake channel: {intake_channel}"
 
+    dependency_status: Literal["available", "unavailable"] = "available" if ok else "unavailable"
     return BusConsumerReadinessResult(
         ok=ok,
         bus_consumer_ready=bus_consumer_ready,
@@ -203,6 +204,6 @@ async def check_bus_consumer_readiness(
         subscriber_count=subscriber_count,
         heartbeat_fresh=heartbeat_fresh,
         rpc_smoke_ok=rpc_smoke_ok,
-        dependency_status="available",
+        dependency_status=dependency_status,
         error=error,
     )

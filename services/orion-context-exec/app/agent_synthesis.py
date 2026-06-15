@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.bus.consumer_readiness import BusConsumerReadinessResult
 from orion.schemas.context_exec import (
     ContextExecMode,
     ContextExecOperatorSummaryV1,
@@ -21,6 +22,10 @@ from .llm_tools import llm_chat_route
 from .settings import ContextExecSettings
 
 logger = logging.getLogger("orion-context-exec.agent_synthesis")
+
+LLM_GATEWAY_SYNTHESIS_UNAVAILABLE = (
+    "LLM synthesis unavailable: LLM gateway bus consumer not ready"
+)
 
 REPO_SYNTHESIS_MODES = frozenset({"repo_impact_analysis", "patch_proposal"})
 
@@ -262,6 +267,37 @@ def build_operator_summary(
             mutation_performed=False,
             requires_human_approval=requires_human,
         ),
+    )
+
+
+def synthesis_unavailable_for_llm_gateway_readiness(
+    *,
+    request: ContextExecRequestV1,
+    artifact: dict[str, Any],
+    profile_selection: LLMProfileSelection,
+    runtime_debug: dict[str, Any],
+    readiness: BusConsumerReadinessResult,
+) -> AgentSynthesisResult:
+    """Skip LLM RPC when gateway bus consumer is not ready."""
+    route_used = profile_selection.route_used
+    deterministic = _deterministic_summary(request.mode, artifact)
+    summary = build_operator_summary(
+        mode=request.mode,
+        route_used=route_used,
+        artifact=artifact,
+        runtime_debug={
+            **runtime_debug,
+            "llm_gateway_readiness": readiness.model_dump(mode="json"),
+        },
+        model_synthesis_used=False,
+        summary_text=deterministic,
+    )
+    return AgentSynthesisResult(
+        operator_summary=summary,
+        model_synthesis_used=False,
+        fallback_used=True,
+        fallback_reason=LLM_GATEWAY_SYNTHESIS_UNAVAILABLE,
+        synthesis_summary=None,
     )
 
 

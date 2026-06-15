@@ -678,6 +678,7 @@ def apply_synthesis_to_report(
     *,
     synthesis_summary: str | None,
     synthesis_failed: bool,
+    synthesis_failure_message: str | None = None,
 ) -> InvestigationReportV2:
     limitations = list(report.limitations)
     summary = report.summary
@@ -685,7 +686,9 @@ def apply_synthesis_to_report(
     if synthesis_summary:
         summary = synthesis_summary
     elif synthesis_failed:
-        msg = "LLM synthesis unavailable; deterministic evidence summary returned."
+        msg = synthesis_failure_message or (
+            "LLM synthesis unavailable; deterministic evidence summary returned."
+        )
         if msg not in limitations:
             limitations.append(msg)
         if "synthesis_unavailable" not in limitations:

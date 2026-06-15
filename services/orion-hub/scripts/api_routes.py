@@ -44,6 +44,7 @@ from .cortex_request_builder import (
     validate_single_verb_override,
 )
 from .mutation_cognition_context import build_mutation_cognition_context
+from .context_exec_agent_bridge import run_hub_agent_via_context_exec, should_use_context_exec_agent_lane
 from .substrate_effect_pipeline import run_substrate_effect_pipeline
 from orion.substrate.appraisal.view_model import build_substrate_effect_view
 from .substrate_effect_cache import substrate_effect_cache
@@ -1045,6 +1046,16 @@ def _situation_time_context(now_local: datetime) -> TimeContextV1:
         time_of_day_label=label,  # type: ignore[arg-type]
         day_phase=phase,  # type: ignore[arg-type]
     )
+
+
+@router.get("/api/llm-routes")
+async def api_llm_routes():
+    from .llm_gateway_client import LlmGatewayClientError, fetch_routes
+
+    try:
+        return await fetch_routes()
+    except LlmGatewayClientError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.get("/api/presence")
@@ -2191,6 +2202,44 @@ async def handle_chat_request(
         user_head=(user_prompt or "")[:80],
         no_write=no_write,
     )
+
+    if should_use_context_exec_agent_lane(req):
+        ctx_result = await run_hub_agent_via_context_exec(
+            req=req,
+            prompt=user_prompt,
+            correlation_id=corr_id,
+            route_debug=route_debug if isinstance(route_debug, dict) else {},
+        )
+        if ctx_result.get("error"):
+            return {
+                "error": ctx_result.get("error"),
+                "error_code": ctx_result.get("error_code"),
+                "mode": "agent",
+                "correlation_id": corr_id,
+                "routing_debug": ctx_result.get("routing_debug") or route_debug,
+            }
+        text = str(ctx_result.get("llm_response") or "")
+        agent_trace = ctx_result.get("agent_trace")
+        raw_result = ctx_result.get("raw") if isinstance(ctx_result.get("raw"), dict) else {}
+        route_debug = ctx_result.get("routing_debug") or route_debug
+        result = {
+            "session_id": session_id,
+            "mode": "agent",
+            "use_recall": use_recall,
+            "text": text,
+            "tokens": len(text.split()),
+            "raw": raw_result,
+            "agent_trace": agent_trace,
+            "correlation_id": corr_id,
+            "routing_debug": route_debug,
+            "no_write": no_write,
+            "context_exec_lane": True,
+            "context_exec_run": ctx_result.get("context_exec_run"),
+        }
+        if substrate_summary is not None:
+            result["substrate_effect_summary"] = substrate_summary
+        return result
+
     try:
         # Call Bus RPC - Hub/Client generates correlation_id internally for RPC
         resp: CortexChatResult = await cortex_client.chat(req, correlation_id=corr_id)

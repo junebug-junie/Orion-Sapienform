@@ -105,7 +105,7 @@ run_step_allow_skip() {
 }
 
 require_repo_root() {
-  if [[ ! -d ".git" ]]; then
+  if [[ ! -d ".git" && ! -f ".git" ]]; then
     echo "ERROR: run from repo root."
     exit 2
   fi

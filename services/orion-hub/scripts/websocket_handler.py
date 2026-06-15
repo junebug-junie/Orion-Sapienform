@@ -30,6 +30,7 @@ from scripts.chat_history import (
 )
 from scripts.social_room import is_social_room_payload, social_room_client_meta
 from scripts.cortex_chat_display import hub_effective_chat_text
+from scripts.context_exec_agent_bridge import run_hub_agent_via_context_exec, should_use_context_exec_agent_lane
 from scripts.trace_payloads import extract_agent_trace_payload
 from scripts.voice_stt_errors import (
     build_audio_debug,
@@ -884,133 +885,164 @@ async def websocket_endpoint(websocket: WebSocket):
             explicit_reasoning_trace: Optional[Dict[str, Any]] = None
             try:
                 logger.info("voice.chat.start corr=%s session_id=%s", trace_id, session_id)
-                resp: CortexChatResult = await cortex_client.chat(chat_req, correlation_id=trace_id)
-                orion_response_text = hub_effective_chat_text(resp)
-                if resp.cortex_result and isinstance(resp.cortex_result.recall_debug, dict):
-                    recall_debug = resp.cortex_result.recall_debug
-                    memory_digest = recall_debug.get("memory_digest")
-                agent_trace = extract_agent_trace_payload(resp.cortex_result)
-                cortex_result_dump = (
-                    resp.cortex_result.model_dump(mode="json")
-                    if getattr(resp, "cortex_result", None) is not None and hasattr(resp.cortex_result, "model_dump")
-                    else {}
-                )
-                raw_traces = getattr(resp.cortex_result, "metacog_traces", None)
-                if isinstance(raw_traces, list):
-                    metacog_traces = [t for t in raw_traces if isinstance(t, dict)]
-                gateway_meta = resp.cortex_result.metadata if resp.cortex_result and isinstance(resp.cortex_result.metadata, dict) else {}
-                explicit_reasoning_trace = (
-                    cortex_result_dump.get("reasoning_trace")
-                    if isinstance(cortex_result_dump, dict) and isinstance(cortex_result_dump.get("reasoning_trace"), dict)
-                    else None
-                )
-                reasoning_content = (
-                    (gateway_meta or {}).get("reasoning_content")
-                    or (cortex_result_dump.get("reasoning_content") if isinstance(cortex_result_dump, dict) else None)
-                    or (((cortex_result_dump.get("raw") or {}).get("reasoning_content")) if isinstance(cortex_result_dump.get("raw"), dict) else None)
-                )
-                inline_think_content = (
-                    (gateway_meta or {}).get("inline_think_content")
-                    or (cortex_result_dump.get("inline_think_content") if isinstance(cortex_result_dump, dict) else None)
-                )
-                raw_thinking_source = (
-                    (gateway_meta or {}).get("thinking_source")
-                    or (cortex_result_dump.get("thinking_source") if isinstance(cortex_result_dump, dict) else None)
-                )
-                if isinstance(raw_thinking_source, str) and raw_thinking_source.strip():
-                    thinking_source = raw_thinking_source.strip()
-                elif isinstance(reasoning_content, str) and reasoning_content.strip():
-                    thinking_source = "provider_reasoning"
-                elif isinstance(inline_think_content, str) and inline_think_content.strip():
-                    thinking_source = "inline_think_full_block"
-                if reasoning_content and not (isinstance(explicit_reasoning_trace, dict) and str(explicit_reasoning_trace.get("content") or "").strip()):
-                    explicit_reasoning_trace = {
-                        "trace_role": "reasoning",
-                        "trace_stage": "post_answer",
-                        "content": str(reasoning_content).strip(),
-                        "metadata": {"source": "hub_reasoning_content_fallback"},
-                    }
-                trace_content = explicit_reasoning_trace.get("content") if isinstance(explicit_reasoning_trace, dict) else None
-                print(
-                    "===THINK_HOP=== hop=hub_in "
-                    f"corr={trace_id} "
-                    f"keys={sorted(cortex_result_dump.keys()) if isinstance(cortex_result_dump, dict) else []} "
-                    f"reasoning_len={len(reasoning_content) if isinstance(reasoning_content, str) else 0} "
-                    f"inline_think_len={len(inline_think_content) if isinstance(inline_think_content, str) else 0} "
-                    f"thinking_source={thinking_source} "
-                    f"trace_len={len(trace_content) if isinstance(trace_content, str) else 0} "
-                    f"provider_reasoning_available={(gateway_meta or {}).get('provider_reasoning_available') if isinstance(gateway_meta, dict) else None} "
-                    f"inline_think_extracted={(gateway_meta or {}).get('inline_think_extracted') if isinstance(gateway_meta, dict) else None} "
-                    f"metacog_count={len(metacog_traces) if metacog_traces else 0} "
-                    f"preview={_preview_text(reasoning_content or trace_content)}",
-                    flush=True,
-                )
-                selected_reasoning_trace, selected_reasoning_source = select_reasoning_trace_for_history(
-                    correlation_id=trace_id,
-                    reasoning_trace=explicit_reasoning_trace,
-                    metacog_traces=metacog_traces,
-                    reasoning_content=reasoning_content,
-                    session_id=publish_session_id,
-                    message_id=f"{trace_id}:assistant",
-                    model=((gateway_meta or {}).get("model") if isinstance(gateway_meta, dict) else None),
-                )
-                explicit_reasoning_trace = selected_reasoning_trace
-                if _thought_debug_enabled():
-                    first_trace = metacog_traces[0] if metacog_traces else {}
-                    logger.info(
-                        "THOUGHT_DEBUG_HUB stage=ws_ingress_shape corr=%s keys=%s shape=%s",
-                        trace_id,
-                        sorted(list(cortex_result_dump.keys())) if isinstance(cortex_result_dump, dict) else [],
-                        {
-                            "reasoning_content_exists": bool(str(reasoning_content or "").strip()),
-                            "reasoning_content_len": _debug_len(reasoning_content),
-                            "inline_think_content_exists": bool(str(inline_think_content or "").strip()),
-                            "inline_think_content_len": _debug_len(inline_think_content),
-                            "thinking_source": thinking_source,
-                            "reasoning_trace_exists": bool(explicit_reasoning_trace),
-                            "reasoning_trace_content_len": _debug_len((explicit_reasoning_trace or {}).get("content") if isinstance(explicit_reasoning_trace, dict) else None),
-                            "metacog_traces_exists": bool(metacog_traces),
-                            "metacog_first_trace_role": first_trace.get("trace_role") if isinstance(first_trace, dict) else None,
-                            "metacog_first_trace_stage": first_trace.get("trace_stage") if isinstance(first_trace, dict) else None,
-                            "metacog_first_trace_content_len": _debug_len(first_trace.get("content") if isinstance(first_trace, dict) else None),
-                            "selected_reasoning_source": selected_reasoning_source,
-                        },
+                used_context_exec_lane = should_use_context_exec_agent_lane(chat_req)
+                if used_context_exec_lane:
+                    ctx_out = await run_hub_agent_via_context_exec(
+                        req=chat_req,
+                        prompt=transcript or prompt_with_ctx,
+                        correlation_id=trace_id,
+                        route_debug=route_debug if isinstance(route_debug, dict) else {},
                     )
-                logger.info(
-                    "hub_metacog_received corr=%s source=ws traces=%s",
-                    trace_id,
-                    len(metacog_traces),
-                )
-                workflow = extract_workflow_payload(resp.cortex_result)
-                autonomy_payload = extract_autonomy_payload(resp.cortex_result)
-                log_autonomy_payload_extraction(
-                    correlation_id=trace_id,
-                    cortex_result=resp.cortex_result,
-                    payload=autonomy_payload if isinstance(autonomy_payload, dict) else {},
-                    source="ws",
-                )
-                workflow_metadata_only = bool(
-                    isinstance(workflow, dict)
-                    and str(
-                        workflow.get("id")
-                        or workflow.get("workflow_id")
-                        or workflow.get("raw_metadata", {}).get("workflow_id")
-                        or ""
-                    ).strip().lower() == "dream_cycle"
-                )
-                if workflow_metadata_only:
-                    # Dream workflow is rendered as card-only metadata in Hub.
-                    orion_response_text = ""
-                if isinstance(workflow, dict):
-                    logger.info(
-                        "hub_workflow_response corr=%s workflow_id=%s status=%s scheduled_count=%s persisted_count=%s rendered_path=%s source=ws",
-                        trace_id,
-                        workflow.get("workflow_id"),
-                        workflow.get("status"),
-                        len(workflow.get("scheduled") or []),
-                        len(workflow.get("persisted") or []),
-                        "scheduled_confirmation" if len(workflow.get("scheduled") or []) else "immediate_or_unscheduled",
+                    if ctx_out.get("error"):
+                        await websocket.send_json(
+                            await _with_biometrics(
+                                {
+                                    "error": ctx_out.get("error"),
+                                    "error_code": ctx_out.get("error_code"),
+                                    "mode": "agent",
+                                    "correlation_id": trace_id,
+                                    "routing_debug": ctx_out.get("routing_debug") or route_debug,
+                                },
+                                cache=biometrics_cache,
+                            )
+                        )
+                        continue
+                    orion_response_text = str(ctx_out.get("llm_response") or "")
+                    agent_trace = ctx_out.get("agent_trace")
+                    cortex_result_dump = ctx_out.get("raw") if isinstance(ctx_out.get("raw"), dict) else {}
+                    route_debug = ctx_out.get("routing_debug") or route_debug
+                    resp = None
+                else:
+                    resp: CortexChatResult = await cortex_client.chat(chat_req, correlation_id=trace_id)
+                    orion_response_text = hub_effective_chat_text(resp)
+                    if resp.cortex_result and isinstance(resp.cortex_result.recall_debug, dict):
+                        recall_debug = resp.cortex_result.recall_debug
+                        memory_digest = recall_debug.get("memory_digest")
+                    agent_trace = extract_agent_trace_payload(resp.cortex_result)
+                    cortex_result_dump = (
+                        resp.cortex_result.model_dump(mode="json")
+                        if getattr(resp, "cortex_result", None) is not None and hasattr(resp.cortex_result, "model_dump")
+                        else {}
                     )
+                if not used_context_exec_lane:
+                    raw_traces = getattr(resp.cortex_result, "metacog_traces", None)
+                    if isinstance(raw_traces, list):
+                        metacog_traces = [t for t in raw_traces if isinstance(t, dict)]
+                    gateway_meta = resp.cortex_result.metadata if resp.cortex_result and isinstance(resp.cortex_result.metadata, dict) else {}
+                    explicit_reasoning_trace = (
+                        cortex_result_dump.get("reasoning_trace")
+                        if isinstance(cortex_result_dump, dict) and isinstance(cortex_result_dump.get("reasoning_trace"), dict)
+                        else None
+                    )
+                    reasoning_content = (
+                        (gateway_meta or {}).get("reasoning_content")
+                        or (cortex_result_dump.get("reasoning_content") if isinstance(cortex_result_dump, dict) else None)
+                        or (((cortex_result_dump.get("raw") or {}).get("reasoning_content")) if isinstance(cortex_result_dump.get("raw"), dict) else None)
+                    )
+                    inline_think_content = (
+                        (gateway_meta or {}).get("inline_think_content")
+                        or (cortex_result_dump.get("inline_think_content") if isinstance(cortex_result_dump, dict) else None)
+                    )
+                    raw_thinking_source = (
+                        (gateway_meta or {}).get("thinking_source")
+                        or (cortex_result_dump.get("thinking_source") if isinstance(cortex_result_dump, dict) else None)
+                    )
+                    if isinstance(raw_thinking_source, str) and raw_thinking_source.strip():
+                        thinking_source = raw_thinking_source.strip()
+                    elif isinstance(reasoning_content, str) and reasoning_content.strip():
+                        thinking_source = "provider_reasoning"
+                    elif isinstance(inline_think_content, str) and inline_think_content.strip():
+                        thinking_source = "inline_think_full_block"
+                    if reasoning_content and not (isinstance(explicit_reasoning_trace, dict) and str(explicit_reasoning_trace.get("content") or "").strip()):
+                        explicit_reasoning_trace = {
+                            "trace_role": "reasoning",
+                            "trace_stage": "post_answer",
+                            "content": str(reasoning_content).strip(),
+                            "metadata": {"source": "hub_reasoning_content_fallback"},
+                        }
+                    trace_content = explicit_reasoning_trace.get("content") if isinstance(explicit_reasoning_trace, dict) else None
+                    print(
+                        "===THINK_HOP=== hop=hub_in "
+                        f"corr={trace_id} "
+                        f"keys={sorted(cortex_result_dump.keys()) if isinstance(cortex_result_dump, dict) else []} "
+                        f"reasoning_len={len(reasoning_content) if isinstance(reasoning_content, str) else 0} "
+                        f"inline_think_len={len(inline_think_content) if isinstance(inline_think_content, str) else 0} "
+                        f"thinking_source={thinking_source} "
+                        f"trace_len={len(trace_content) if isinstance(trace_content, str) else 0} "
+                        f"provider_reasoning_available={(gateway_meta or {}).get('provider_reasoning_available') if isinstance(gateway_meta, dict) else None} "
+                        f"inline_think_extracted={(gateway_meta or {}).get('inline_think_extracted') if isinstance(gateway_meta, dict) else None} "
+                        f"metacog_count={len(metacog_traces) if metacog_traces else 0} "
+                        f"preview={_preview_text(reasoning_content or trace_content)}",
+                        flush=True,
+                    )
+                    selected_reasoning_trace, selected_reasoning_source = select_reasoning_trace_for_history(
+                        correlation_id=trace_id,
+                        reasoning_trace=explicit_reasoning_trace,
+                        metacog_traces=metacog_traces,
+                        reasoning_content=reasoning_content,
+                        session_id=publish_session_id,
+                        message_id=f"{trace_id}:assistant",
+                        model=((gateway_meta or {}).get("model") if isinstance(gateway_meta, dict) else None),
+                    )
+                    explicit_reasoning_trace = selected_reasoning_trace
+                    if _thought_debug_enabled():
+                        first_trace = metacog_traces[0] if metacog_traces else {}
+                        logger.info(
+                            "THOUGHT_DEBUG_HUB stage=ws_ingress_shape corr=%s keys=%s shape=%s",
+                            trace_id,
+                            sorted(list(cortex_result_dump.keys())) if isinstance(cortex_result_dump, dict) else [],
+                            {
+                                "reasoning_content_exists": bool(str(reasoning_content or "").strip()),
+                                "reasoning_content_len": _debug_len(reasoning_content),
+                                "inline_think_content_exists": bool(str(inline_think_content or "").strip()),
+                                "inline_think_content_len": _debug_len(inline_think_content),
+                                "thinking_source": thinking_source,
+                                "reasoning_trace_exists": bool(explicit_reasoning_trace),
+                                "reasoning_trace_content_len": _debug_len((explicit_reasoning_trace or {}).get("content") if isinstance(explicit_reasoning_trace, dict) else None),
+                                "metacog_traces_exists": bool(metacog_traces),
+                                "metacog_first_trace_role": first_trace.get("trace_role") if isinstance(first_trace, dict) else None,
+                                "metacog_first_trace_stage": first_trace.get("trace_stage") if isinstance(first_trace, dict) else None,
+                                "metacog_first_trace_content_len": _debug_len(first_trace.get("content") if isinstance(first_trace, dict) else None),
+                                "selected_reasoning_source": selected_reasoning_source,
+                            },
+                        )
+                    logger.info(
+                        "hub_metacog_received corr=%s source=ws traces=%s",
+                        trace_id,
+                        len(metacog_traces),
+                    )
+                    workflow = extract_workflow_payload(resp.cortex_result)
+                    autonomy_payload = extract_autonomy_payload(resp.cortex_result)
+                    log_autonomy_payload_extraction(
+                        correlation_id=trace_id,
+                        cortex_result=resp.cortex_result,
+                        payload=autonomy_payload if isinstance(autonomy_payload, dict) else {},
+                        source="ws",
+                    )
+                    workflow_metadata_only = bool(
+                        isinstance(workflow, dict)
+                        and str(
+                            workflow.get("id")
+                            or workflow.get("workflow_id")
+                            or workflow.get("raw_metadata", {}).get("workflow_id")
+                            or ""
+                        ).strip().lower() == "dream_cycle"
+                    )
+                    if workflow_metadata_only:
+                        # Dream workflow is rendered as card-only metadata in Hub.
+                        orion_response_text = ""
+                    if isinstance(workflow, dict):
+                        logger.info(
+                            "hub_workflow_response corr=%s workflow_id=%s status=%s scheduled_count=%s persisted_count=%s rendered_path=%s source=ws",
+                            trace_id,
+                            workflow.get("workflow_id"),
+                            workflow.get("status"),
+                            len(workflow.get("scheduled") or []),
+                            len(workflow.get("persisted") or []),
+                            "scheduled_confirmation" if len(workflow.get("scheduled") or []) else "immediate_or_unscheduled",
+                        )
+                else:
+                    workflow_metadata_only = False
                 # If the model echoes "Orion:" due to our prompt format, strip it.
                 s = (orion_response_text or "").lstrip()
                 if s.startswith("Orion:"):
@@ -1021,7 +1053,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     session_id,
                     len(orion_response_text or ""),
                 )
-                if hasattr(resp, "cortex_result") and resp.cortex_result:
+                if resp is not None and hasattr(resp, "cortex_result") and resp.cortex_result:
                     trace_verb = str(
                         ((resp.cortex_result.metadata or {}).get("trace_verb") if isinstance(resp.cortex_result.metadata, dict) else None)
                         or resp.cortex_result.verb
@@ -1077,7 +1109,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
             except Exception as exc:
                 logger.warning("ws_pressure_telemetry_record_failed corr=%s error=%s", trace_id, exc)
-            cortex_corr_id = getattr(resp.cortex_result, "correlation_id", None) if resp.cortex_result else None
+            cortex_corr_id = (
+                getattr(resp.cortex_result, "correlation_id", None)
+                if resp is not None and resp.cortex_result
+                else None
+            )
             raw_meta = cortex_result_dump.get("metadata") if isinstance(cortex_result_dump, dict) else {}
             root_corr = raw_meta.get("root_correlation_id") if isinstance(raw_meta, dict) else None
             from scripts.api_routes import _chat_turn_trace_linkage

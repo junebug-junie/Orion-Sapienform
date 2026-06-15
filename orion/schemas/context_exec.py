@@ -77,6 +77,11 @@ class ContextExecRequestV1(BaseModel):
 
     expected_artifact_type: str | None = None
 
+    llm_profile: str | None = Field(
+        default=None,
+        description="LLM gateway route/profile override (chat, quick, agent, metacog).",
+    )
+
 
 class ContextExecFindingV1(BaseModel):
     model_config = ConfigDict(extra="forbid")

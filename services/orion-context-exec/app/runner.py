@@ -307,6 +307,8 @@ class ContextExecRunner:
             mode=request.mode,
             extra_steps=rlm_steps or None,
         )
+        if request.llm_profile:
+            runtime_debug["llm_profile"] = str(request.llm_profile)
         if request.mode in {"patch_proposal", "memory_correction_proposal"} and schema_valid and artifact_type == "ProposalEnvelopeV1":
             runtime_debug["proposal_enveloped"] = True
             runtime_debug["proposal_type"] = artifact.get("proposal_type")

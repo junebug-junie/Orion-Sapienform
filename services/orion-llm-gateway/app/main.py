@@ -17,6 +17,7 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
 from orion.schemas.vector.schemas import VectorUpsertV1
 
 from .llm_backend import get_route_targets, run_llm_chat
+from .route_catalog import get_routes_payload
 from .embed_publish import publish_assistant_embedding
 from .models import ChatBody
 from .settings import settings
@@ -56,6 +57,11 @@ async def health() -> Dict[str, Any]:
         "node": settings.node_name,
         "routes": routes,
     }
+
+
+@app.get("/routes")
+async def routes_catalog() -> Dict[str, Any]:
+    return await get_routes_payload()
 
 
 def _cfg() -> ChassisConfig:

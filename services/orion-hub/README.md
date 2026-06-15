@@ -422,6 +422,10 @@ Then open the Hub Memory tab → **Review queue**, or `GET /api/memory/cards?sta
 
 **Proposal review (attention + review decisions):** Hub main tab → **Pending Decisions** lists decision-worthy `pending_review` proposals from the context-exec proposal review API. Disabled by default (`HUB_PROPOSAL_REVIEW_ENABLED=false`). Hub calls `GET /health`, `GET /proposals`, detail, eligibility, and `POST /proposals/{id}/review` only — it does not read JSON ledger files, does not POST triage, and does not execute. Approval creates future execution eligibility only. See [docs/proposal-review-api.md](../../docs/proposal-review-api.md).
 
+**LLM route override (compute vs mode):** Hub chat UI exposes a **Route** selector (`chat`, `quick`, `agent`, `metacog`) beside mode buttons. Mode decides behavior; route decides compute. Hub proxies `GET /api/llm-routes` from `HUB_LLM_GATEWAY_URL` (`GET /routes` on orion-llm-gateway). Selected route is sent as `llm_route` on chat payloads (wired into cortex `options.llm_route`). Down routes warn with explicit **Use chat / Try anyway / Cancel** — no silent fallback.
+
+**Agent mode → context-exec:** When `HUB_AGENT_CONTEXT_EXEC_ENABLED=true` (default), Hub **Agent** mode calls `POST /context-exec/run` on `HUB_CONTEXT_EXEC_API_URL` instead of legacy AgentChain/ReAct. Selected route is passed as `llm_profile` on the context-exec request. Proposal review / Pending Decisions remain unchanged.
+
 **Denver memory correction vertical slice:** `ORION_PY=orion_dev/bin/python bash scripts/denver_memory_correction_vertical_smoke.sh` proves a Denver `memory_correction_proposal` reaches Pending Decisions read-only. Expected final line: `denver_memory_correction_vertical_smoke PASS`. Hub card shows current belief, proposed correction, rationale, evidence summary, risk/confidence, and safety flags. Hub review actions (approve/reject/request changes) are on the detail card when enabled — smoke does not exercise them; pytest covers review POST allowlist and no-execution invariants. No execution or memory mutation in smoke.
 
 ---

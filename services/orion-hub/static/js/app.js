@@ -10280,6 +10280,25 @@ loadDismissedIds();
 
   function resolveAssistantDisplayText(d) {
     if (!d || typeof d !== 'object') return '';
+    if (d.mode === 'agent' && d.operator_summary && typeof d.operator_summary === 'object') {
+      const op = d.operator_summary;
+      const dbg = d.routing_debug && typeof d.routing_debug === 'object' ? d.routing_debug : {};
+      const synthesis = dbg.model_synthesis_used ? 'used'
+        : (dbg.synthesis_fallback_used || String(dbg.synthesis_fallback_reason || '').startsWith('synthesis') ? 'fallback' : 'skipped');
+      const lines = [
+        'Agent run complete',
+        `Mode: ${op.agent_mode || dbg.context_exec_mode || 'unknown'}`,
+        `Route: ${op.route_used || dbg.route_used || dbg.llm_profile || 'chat'}`,
+        `Synthesis: ${synthesis}`,
+        `Result: ${op.summary || ''}`,
+      ];
+      if (op.proposal_id) {
+        lines.push(`Proposal: ${op.proposal_id} ${op.proposal_status || 'pending_review'}`);
+        lines.push('Open Pending Decisions to review.');
+      }
+      lines.push('Mutation: none');
+      return lines.join('\n');
+    }
     const top = String(d.llm_response ?? d.text ?? '').trim();
     const raw = d.raw && typeof d.raw === 'object' ? d.raw : {};
     const nested = String(raw.final_text ?? '').trim();

@@ -112,6 +112,51 @@ def build_agent_trace_summary(
     return summary.model_dump(mode="json")
 
 
+def _synthesis_status_label(runtime_debug: dict[str, Any]) -> str:
+    if runtime_debug.get("model_synthesis_used"):
+        return "used"
+    if runtime_debug.get("synthesis_fallback_used") or str(
+        runtime_debug.get("synthesis_fallback_reason") or ""
+    ).startswith("synthesis"):
+        return "fallback"
+    return "skipped"
+
+
+def format_agent_operator_inline(
+    run: ContextExecRunV1,
+    *,
+    llm_profile: str | None = None,
+) -> str:
+    """Build Hub inline Agent operator response."""
+    dbg = run.runtime_debug or {}
+    op = run.operator_summary
+    mode = (op.agent_mode if op else run.mode) or "unknown"
+    route = (
+        (op.route_used if op else None)
+        or dbg.get("route_used")
+        or llm_profile
+        or dbg.get("llm_profile_selected")
+        or "chat"
+    )
+    synthesis = _synthesis_status_label(dbg)
+    result = (op.summary if op else None) or run.final_text or "No summary available."
+    lines = [
+        "Agent run complete",
+        f"Mode: {mode}",
+        f"Route: {route}",
+        f"Synthesis: {synthesis}",
+        f"Result: {result}",
+    ]
+    proposal_id = (op.proposal_id if op else None) or dbg.get("proposal_id")
+    proposal_status = (op.proposal_status if op else None) or dbg.get("ledger_status")
+    if proposal_id:
+        status_label = proposal_status or "pending_review"
+        lines.append(f"Proposal: {proposal_id} {status_label}")
+        lines.append("Open Pending Decisions to review.")
+    lines.append("Mutation: none")
+    return "\n".join(lines)
+
+
 def build_context_exec_chat_response(
     *,
     run: ContextExecRunV1,
@@ -122,9 +167,17 @@ def build_context_exec_chat_response(
     routing = dict(route_debug or {})
     routing["context_exec_lane"] = True
     routing["context_exec_mode"] = run.mode
-    routing["llm_profile"] = (run.runtime_debug or {}).get("llm_profile")
+    dbg = run.runtime_debug or {}
+    routing["llm_profile"] = dbg.get("llm_profile_selected") or dbg.get("route_used")
+    routing["route_used"] = dbg.get("route_used")
+    routing["model_synthesis_used"] = dbg.get("model_synthesis_used")
+    inline = format_agent_operator_inline(
+        run,
+        llm_profile=str(routing.get("llm_profile") or ""),
+    )
+    operator_summary = run.operator_summary.model_dump(mode="json") if run.operator_summary else None
     return {
-        "llm_response": run.final_text or "",
+        "llm_response": inline,
         "raw": {
             "ok": run.status == "ok",
             "mode": "agent",
@@ -136,6 +189,7 @@ def build_context_exec_chat_response(
                     "mode": run.mode,
                     "artifact_type": run.artifact_type,
                     "artifact": run.artifact,
+                    "operator_summary": operator_summary,
                 },
                 "engine": "context_exec",
             },
@@ -145,6 +199,7 @@ def build_context_exec_chat_response(
         "agent_trace": agent_trace,
         "routing_debug": routing,
         "context_exec_run": run.model_dump(mode="json"),
+        "operator_summary": operator_summary,
     }
 
 

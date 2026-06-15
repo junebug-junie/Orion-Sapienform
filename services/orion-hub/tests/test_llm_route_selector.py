@@ -26,10 +26,16 @@ for key, value in {
 
 from scripts.context_exec_agent_bridge import (
     build_context_exec_request,
+    format_agent_operator_inline,
     normalize_llm_profile,
     should_use_context_exec_agent_lane,
 )
 from scripts.cortex_request_builder import build_chat_request
+from orion.schemas.context_exec import (
+    ContextExecOperatorSummaryV1,
+    ContextExecRunV1,
+    ContextExecSafetySummaryV1,
+)
 from orion.schemas.cortex.contracts import CortexChatRequest
 
 
@@ -147,15 +153,26 @@ async def test_fetch_routes_normalizes_catalog() -> None:
 @pytest.mark.asyncio
 async def test_run_hub_agent_via_context_exec_uses_chat_profile() -> None:
     from scripts.context_exec_agent_bridge import run_hub_agent_via_context_exec
-    from orion.schemas.context_exec import ContextExecRunV1
 
     fake_run = ContextExecRunV1(
         run_id="run1",
         status="ok",
         mode="belief_provenance",
         text="Where did the Denver belief come from?",
-        final_text="supported",
-        runtime_debug={"llm_profile": "chat"},
+        final_text="Insufficient evidence for Denver belief.",
+        runtime_debug={
+            "llm_profile_selected": "chat",
+            "route_used": "chat",
+            "model_synthesis_used": False,
+        },
+        operator_summary=ContextExecOperatorSummaryV1(
+            title="Belief provenance complete",
+            summary="Insufficient evidence for Denver belief.",
+            agent_mode="belief_provenance",
+            route_used="chat",
+            model_synthesis_used=False,
+            safety=ContextExecSafetySummaryV1(),
+        ),
     )
 
     with patch(
@@ -172,6 +189,37 @@ async def test_run_hub_agent_via_context_exec_uses_chat_profile() -> None:
             correlation_id="corr-1",
             route_debug={"llm_route": "chat"},
         )
-    assert out.get("llm_response") == "supported"
+    assert "Agent run complete" in out.get("llm_response", "")
+    assert "Route: chat" in out.get("llm_response", "")
+    assert "Synthesis: skipped" in out.get("llm_response", "")
+    assert out.get("operator_summary", {}).get("route_used") == "chat"
     assert out.get("routing_debug", {}).get("context_exec_lane") is True
+    assert out.get("routing_debug", {}).get("route_used") == "chat"
     assert out.get("agent_trace", {}).get("mode") == "agent"
+
+
+def test_format_agent_operator_inline_renders_proposal_link() -> None:
+    run = ContextExecRunV1(
+        run_id="run2",
+        status="ok",
+        mode="memory_correction_proposal",
+        text="correct denver",
+        final_text="proposal",
+        runtime_debug={"route_used": "agent", "model_synthesis_used": True},
+        operator_summary=ContextExecOperatorSummaryV1(
+            title="Memory correction proposal drafted",
+            summary="Denver claim should be marked uncertain.",
+            agent_mode="memory_correction_proposal",
+            route_used="agent",
+            model_synthesis_used=True,
+            proposal_id="prop_denver_1",
+            proposal_status="pending_review",
+            safety=ContextExecSafetySummaryV1(),
+        ),
+    )
+    inline = format_agent_operator_inline(run)
+    assert "Route: agent" in inline
+    assert "Synthesis: used" in inline
+    assert "prop_denver_1" in inline
+    assert "Pending Decisions" in inline
+    assert "Mutation: none" in inline

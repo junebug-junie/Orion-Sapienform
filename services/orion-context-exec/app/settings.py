@@ -68,6 +68,10 @@ class ContextExecSettings(BaseSettings):
         False,
         alias="CONTEXT_EXEC_COMPAT_AGENT_CHAIN_ENABLED",
     )
+    context_exec_investigation_v2_enabled: bool = Field(
+        False,
+        alias="CONTEXT_EXEC_INVESTIGATION_V2_ENABLED",
+    )
     context_exec_fake_organs_enabled: bool = Field(
         False,
         alias="CONTEXT_EXEC_FAKE_ORGANS_ENABLED",

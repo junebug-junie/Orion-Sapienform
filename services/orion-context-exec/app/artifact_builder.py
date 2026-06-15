@@ -27,6 +27,7 @@ def artifact_type_for_mode(mode: ContextExecMode) -> str | None:
         "patch_proposal": "ProposalEnvelopeV1",
         "memory_correction_proposal": "ProposalEnvelopeV1",
         "runtime_debug": "TraceAutopsyReportV1",
+        "investigation_v2": "InvestigationV2SkeletonV1",
     }
     return mapping.get(mode)
 
@@ -65,6 +66,10 @@ def validate_artifact(mode: ContextExecMode, raw: Any) -> tuple[dict[str, Any], 
             return _wrap_patch_proposal(raw, mode)
         elif mode == "memory_correction_proposal":
             return _wrap_memory_correction_proposal(raw, mode)
+        elif mode == "investigation_v2":
+            if raw.get("mode") == "investigation_v2":
+                return raw, "InvestigationV2SkeletonV1", True
+            return raw, "InvestigationV2SkeletonV1", False
         else:
             return raw, "GenericInvestigationV1", True
         return model.model_dump(mode="json"), model.__class__.__name__, True
@@ -182,4 +187,6 @@ def build_final_text(mode: ContextExecMode, artifact: dict[str, Any], *, status:
             f"Current belief: {current[:120]}. Proposed correction: {correction_type}. "
             f"Risk={risk}. Mutation allowed=false."
         )
+    if mode == "investigation_v2":
+        return str(artifact.get("message") or "investigation_v2 skeleton active")
     return str(artifact.get("summary") or artifact.get("target") or "Investigation complete.")

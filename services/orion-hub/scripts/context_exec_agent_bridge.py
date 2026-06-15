@@ -4,10 +4,16 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from orion.schemas.context_exec import ContextExecPermissionV1, ContextExecRequestV1, ContextExecRunV1
+from orion.schemas.context_exec import (
+    ContextExecPermissionV1,
+    ContextExecRequestV1,
+    ContextExecRunV1,
+    context_exec_permissions_for_llm_profile,
+)
 from orion.schemas.cortex.contracts import AgentTraceStepV1, AgentTraceSummaryV1, AgentTraceToolStatV1, CortexChatRequest
 
 from scripts.context_exec_client import ContextExecClientError, agent_lane_enabled, run_context_exec
+from scripts.settings import settings
 
 
 VALID_LLM_PROFILES = frozenset({"chat", "quick", "agent", "metacog"})
@@ -65,6 +71,10 @@ def should_use_context_exec_agent_lane(req: CortexChatRequest) -> bool:
     return agent_lane_enabled() and str(req.mode or "").strip().lower() == "agent"
 
 
+def investigation_v2_enabled() -> bool:
+    return bool(settings.CONTEXT_EXEC_INVESTIGATION_V2_ENABLED)
+
+
 def _infer_context_exec_mode(text: str) -> str:
     tl = (text or "").lower()
     if "where did" in tl and ("claim" in tl or "belief" in tl or "come from" in tl):
@@ -86,6 +96,20 @@ def build_context_exec_request(
     prompt: str,
     llm_profile: str,
 ) -> ContextExecRequestV1:
+    llm_profile_norm = normalize_llm_profile(llm_profile)
+    if investigation_v2_enabled():
+        return ContextExecRequestV1(
+            text=prompt,
+            mode="investigation_v2",
+            session_id=req.session_id,
+            user_id=req.user_id,
+            correlation_id=req.trace_id,
+            messages=list(req.messages or []),
+            packs=list(req.packs or []),
+            permissions=context_exec_permissions_for_llm_profile(llm_profile_norm),
+            llm_profile=llm_profile_norm,
+        )
+
     mode = _infer_context_exec_mode(prompt)
     permissions = ContextExecPermissionV1()
     if mode == "repo_impact_analysis":

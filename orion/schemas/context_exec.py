@@ -22,6 +22,7 @@ ContextExecMode = Literal[
     "grammar_collision_audit",
     "memory_contradiction_review",
     "general_investigation",
+    "investigation_v2",
 ]
 
 
@@ -41,6 +42,27 @@ class ContextExecPermissionV1(BaseModel):
     mutate_runtime: bool = False
     network_enabled: bool = False
     shell_enabled: bool = False
+
+
+def context_exec_permissions_for_llm_profile(profile: str) -> ContextExecPermissionV1:
+    """Map Hub compute lane / LLM profile to a context-exec permission envelope."""
+    norm = str(profile or "quick").strip().lower()
+    if norm == "agent":
+        return ContextExecPermissionV1(
+            read_memory=True,
+            read_graph=True,
+            read_recall=True,
+            read_repo=True,
+            read_runtime_logs=True,
+            read_redis_traces=True,
+            write_memory=False,
+            write_graph=False,
+            write_repo=False,
+            mutate_runtime=False,
+            network_enabled=False,
+            shell_enabled=False,
+        )
+    return ContextExecPermissionV1()
 
 
 class ContextExecBudgetV1(BaseModel):

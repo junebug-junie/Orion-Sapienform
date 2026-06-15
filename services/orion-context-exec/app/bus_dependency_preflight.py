@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from orion.bus.consumer_readiness import BusConsumerReadinessResult, check_bus_consumer_readiness
+from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.async_service import OrionBusAsync
 from orion.schemas.context_exec import SourceResult, SourceStatus
 
@@ -60,6 +62,95 @@ async def check_llm_gateway_bus_ready(bus: OrionBusAsync, *, timeout_sec: float)
         service_name="llm-gateway",
         timeout_sec=timeout_sec,
     )
+
+
+def dependency_health_entry(
+    readiness: BusConsumerReadinessResult,
+    *,
+    redis_ping_ok: bool,
+) -> dict[str, Any]:
+    return {
+        "bus_consumer_ready": readiness.bus_consumer_ready,
+        "intake_channel": readiness.intake_channel,
+        "subscriber_count": readiness.subscriber_count,
+        "redis_ping_ok": redis_ping_ok,
+        "heartbeat_fresh": readiness.heartbeat_fresh,
+        "rpc_smoke_ok": readiness.rpc_smoke_ok,
+        "status": readiness.dependency_status,
+    }
+
+
+def _unavailable_dependency_entry(intake_channel: str, *, redis_ping_ok: bool, error: str) -> dict[str, Any]:
+    return {
+        "bus_consumer_ready": False,
+        "intake_channel": intake_channel,
+        "subscriber_count": 0,
+        "redis_ping_ok": redis_ping_ok,
+        "heartbeat_fresh": None,
+        "rpc_smoke_ok": None,
+        "status": "unavailable",
+        "error": error,
+    }
+
+
+async def _redis_ping_ok(redis) -> bool:
+    try:
+        pong = await redis.ping()
+        return pong is True or pong == b"PONG" or str(pong).upper() == "PONG"
+    except Exception:
+        return False
+
+
+async def collect_bus_dependencies_health(
+    bus: OrionBusAsync | None,
+    *,
+    timeout_sec: float,
+) -> dict[str, Any]:
+    """Structured bus dependency readiness for context-exec /health."""
+    if not settings.orion_bus_enabled:
+        return {
+            "bus_enabled": False,
+            "bus_connected": False,
+            "bus_consumer_ready": None,
+            "dependencies": {},
+        }
+
+    recall_channel = settings.channel_recall_intake
+    llm_channel = settings.channel_llm_intake
+    if bus is None or not getattr(bus, "enabled", False) or getattr(bus, "redis", None) is None:
+        return {
+            "bus_enabled": True,
+            "bus_connected": False,
+            "bus_consumer_ready": False,
+            "dependencies": {
+                "recall": _unavailable_dependency_entry(
+                    recall_channel,
+                    redis_ping_ok=False,
+                    error="bus not connected",
+                ),
+                "llm_gateway": _unavailable_dependency_entry(
+                    llm_channel,
+                    redis_ping_ok=False,
+                    error="bus not connected",
+                ),
+            },
+        }
+
+    ping_ok = await _redis_ping_ok(bus.redis)
+    recall_ready, llm_ready = await asyncio.gather(
+        check_recall_bus_ready(bus, timeout_sec=timeout_sec),
+        check_llm_gateway_bus_ready(bus, timeout_sec=timeout_sec),
+    )
+    dependencies = {
+        "recall": dependency_health_entry(recall_ready, redis_ping_ok=ping_ok),
+        "llm_gateway": dependency_health_entry(llm_ready, redis_ping_ok=ping_ok),
+    }
+    return {
+        "bus_enabled": True,
+        "bus_connected": True,
+        "bus_consumer_ready": recall_ready.ok and llm_ready.ok,
+        "dependencies": dependencies,
+    }
 
 
 def unavailable_source_result(source: str, readiness: BusConsumerReadinessResult) -> SourceResult:

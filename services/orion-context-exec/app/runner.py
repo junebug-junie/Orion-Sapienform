@@ -17,7 +17,12 @@ from orion.schemas.context_exec import (
     ProposalEnvelopeV1,
 )
 
-from .agent_synthesis import run_agent_synthesis
+from .agent_synthesis import (
+    LLM_GATEWAY_SYNTHESIS_UNAVAILABLE,
+    run_agent_synthesis,
+    synthesis_unavailable_for_llm_gateway_readiness,
+)
+from .bus_dependency_preflight import check_llm_gateway_bus_ready
 from .grounding_eval import evaluate_investigation_outcome, is_placeholder_investigation_summary
 from .investigation_v2 import (
     INVESTIGATION_V2_ARTIFACT_TYPE,
@@ -550,13 +555,32 @@ class ContextExecRunner:
         }
         runtime_debug_base.update(selection_runtime_debug(profile_selection))
 
-        synthesis_result = await run_agent_synthesis(
-            request=request,
-            artifact=artifact,
-            profile_selection=profile_selection,
-            runtime_debug=runtime_debug_base,
-            bus=self.bus,
-        )
+        synthesis_result = None
+        if (
+            settings.context_exec_agent_synthesis_enabled
+            and settings.orion_bus_enabled
+            and self.bus is not None
+        ):
+            llm_ready = await check_llm_gateway_bus_ready(
+                self.bus,
+                timeout_sec=float(settings.context_exec_bus_readiness_timeout_sec),
+            )
+            if not llm_ready.ok:
+                synthesis_result = synthesis_unavailable_for_llm_gateway_readiness(
+                    request=request,
+                    artifact=artifact,
+                    profile_selection=profile_selection,
+                    runtime_debug=runtime_debug_base,
+                    readiness=llm_ready,
+                )
+        if synthesis_result is None:
+            synthesis_result = await run_agent_synthesis(
+                request=request,
+                artifact=artifact,
+                profile_selection=profile_selection,
+                runtime_debug=runtime_debug_base,
+                bus=self.bus,
+            )
         runtime_debug = dict(runtime_debug_base)
         runtime_debug["model_synthesis_used"] = synthesis_result.model_synthesis_used
         if synthesis_result.fallback_reason:
@@ -573,10 +597,14 @@ class ContextExecRunner:
             runtime_debug["synthesis_status"] = "skipped"
         if synthesis_result.model_synthesis_used or synthesis_failed:
             report = InvestigationReportV2.model_validate(artifact)
+            failure_message = None
+            if synthesis_failed and synthesis_result.fallback_reason == LLM_GATEWAY_SYNTHESIS_UNAVAILABLE:
+                failure_message = LLM_GATEWAY_SYNTHESIS_UNAVAILABLE
             updated = apply_synthesis_to_report(
                 report,
                 synthesis_summary=synthesis_result.synthesis_summary,
                 synthesis_failed=synthesis_failed,
+                synthesis_failure_message=failure_message,
             )
             artifact = updated.model_dump(mode="json")
 

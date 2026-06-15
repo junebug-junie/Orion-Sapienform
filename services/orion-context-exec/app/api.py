@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from orion.schemas.agents.schemas import AgentChainRequest, AgentChainResult
 from orion.schemas.context_exec import ContextExecRequestV1, ContextExecRunV1
@@ -28,11 +28,17 @@ def _get_runner() -> ContextExecRunner:
 
 
 @router.get("/health")
-async def health() -> dict:
+async def health(request: Request) -> dict:
+    from .bus_dependency_preflight import collect_bus_dependencies_health
     from .proposal_review_api import proposal_review_health_block
     from .settings import settings
 
     lane = agent_lane_health_block()
+    bus = getattr(request.app.state, "bus", None)
+    bus_health = await collect_bus_dependencies_health(
+        bus,
+        timeout_sec=float(settings.context_exec_bus_readiness_timeout_sec),
+    )
     return {
         "ok": True,
         "service": "orion-context-exec",
@@ -43,6 +49,7 @@ async def health() -> dict:
         "max_depth": settings.context_exec_max_depth,
         "proposal_review_api": proposal_review_health_block(),
         **lane,
+        **bus_health,
     }
 
 

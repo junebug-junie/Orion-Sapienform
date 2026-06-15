@@ -43,6 +43,8 @@ async def test_health(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "store_path_present" in block
     assert "ok" in block
     assert "error" in block
+    assert "bus_enabled" in data
+    assert "dependencies" in data
 
 
 @pytest.mark.asyncio

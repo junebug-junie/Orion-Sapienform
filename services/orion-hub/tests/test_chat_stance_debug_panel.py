@@ -171,10 +171,11 @@ def test_thought_process_js_renders_read_only_mind_shadow_evaluation_surface() -
 
 def test_thought_process_js_registers_grounded_small_lane_contract() -> None:
     thought_js = THOUGHT_PROCESS_JS_PATH.read_text(encoding="utf-8")
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
     assert "global.OrionHubGroundedSmallLane" in thought_js
     assert "LANE_GROUNDED_SMALL = 'grounded_small'" in thought_js
-    assert "Grounded Small" in thought_js
-    assert "brainDeepModeBtn" in thought_js
+    assert "Grounded Small" in template
+    assert "hubModeSelect" in thought_js
     assert "options.llm_route = 'quick';" in thought_js
     assert "payload.verbs = [];" in thought_js
     assert "delete options.chat_quick_full_stance;" in thought_js

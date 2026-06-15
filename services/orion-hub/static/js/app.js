@@ -56,8 +56,11 @@ let selectedVerbs = [];
 let modeVerbOverride = null;
 /** Hub quick lane: 'fast' = light prep; 'stance' = full brain/stance prep (slower, richer). */
 let chatQuickVariant = 'fast';
-let selectedLlmRoute = localStorage.getItem('orion_llm_route') || 'chat';
-let llmRouteCatalog = { default_route: 'chat', routes: [] };
+const HUB_COMPUTE_DEFAULT = 'quick';
+const HUB_COMPUTE_ROUTE_IDS = ['chat', 'quick', 'agent', 'metacog'];
+let selectedLlmRoute = localStorage.getItem('orion_llm_route') || HUB_COMPUTE_DEFAULT;
+let llmRouteCatalog = { default_route: HUB_COMPUTE_DEFAULT, routes: [] };
+let llmRoutePollTimer = null;
 let orionSessionId = localStorage.getItem('orion_sid') || null;
 let browserClientId = localStorage.getItem('orion_browser_client_id') || null;
 let presenceContext = null;
@@ -9342,136 +9345,107 @@ loadDismissedIds();
     });
   }
 
-  // Mode Switching
-  const modeButtons = document.querySelectorAll('.mode-btn');
-  function closeQuickModeMenu() {
-    const menu = document.getElementById('quickModeMenu');
-    const chev = document.getElementById('quickModeMenuBtn');
-    if (menu) menu.classList.add('hidden');
-    if (chev) chev.setAttribute('aria-expanded', 'false');
-  }
-  function syncQuickMainButtonLabel() {
-    const b = document.getElementById('quickModeBtn');
-    if (!b) return;
-    if (chatQuickVariant === 'stance') {
-      b.textContent = 'Quick+';
-      b.title = 'Quick + stance (full brain prep)';
-    } else {
-      b.textContent = 'Quick';
-      b.title = 'Quick (fast lane)';
-    }
-  }
-  function applyModeButtonSelection(selectedBtn) {
-    modeButtons.forEach((b) => {
-      b.classList.remove('bg-indigo-600', 'text-white', 'mode-btn-active');
-      if (b.classList.contains('mode-btn-quick')) {
-        b.classList.add('mode-btn-quick');
-      } else {
-        b.classList.add('bg-gray-700', 'text-gray-200');
-      }
-    });
-    const qChevron = document.getElementById('quickModeMenuBtn');
-    if (qChevron) {
-      qChevron.classList.remove('bg-indigo-600', 'text-white');
-      qChevron.classList.add('bg-indigo-500/30', 'text-indigo-100');
-    }
-    closeQuickModeMenu();
-    if (selectedBtn) {
-      selectedBtn.classList.add('mode-btn-active', 'text-white');
-      selectedBtn.classList.remove('bg-gray-700', 'text-gray-200');
-      if (selectedBtn.id === 'quickModeBtn' && qChevron) {
-        qChevron.classList.add('bg-indigo-600', 'text-white');
-        qChevron.classList.remove('bg-indigo-500/30', 'text-indigo-100');
-      }
-    }
-  }
-  modeButtons.forEach((btn) => {
-    btn.addEventListener('click', () => {
-      currentMode = btn.dataset.mode || 'brain';
-      modeVerbOverride = btn.dataset.verbOverride || null;
-      applyModeButtonSelection(btn);
-      const modeLabel = modeVerbOverride ? `${currentMode} (${modeVerbOverride})` : currentMode;
-      updateStatus(`Switched to ${modeLabel} mode.`);
-    });
-  });
-  const quickMenuBtn = document.getElementById('quickModeMenuBtn');
-  const quickModeMenu = document.getElementById('quickModeMenu');
-  if (quickMenuBtn && quickModeMenu) {
-    quickMenuBtn.addEventListener('click', (ev) => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      quickModeMenu.classList.toggle('hidden');
-      quickMenuBtn.setAttribute('aria-expanded', String(!quickModeMenu.classList.contains('hidden')));
-    });
-    document.querySelectorAll('.quick-variant-item').forEach((item) => {
-      item.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        const v = String(item.getAttribute('data-quick-variant') || '').trim();
-        if (v !== 'fast' && v !== 'stance') return;
-        chatQuickVariant = v;
-        currentMode = 'brain';
-        modeVerbOverride = 'chat_quick';
-        syncQuickMainButtonLabel();
-        const qMain = document.getElementById('quickModeBtn');
-        applyModeButtonSelection(qMain);
-        updateStatus(v === 'stance' ? 'Quick + stance (full prep).' : 'Quick (fast lane).');
-      });
-    });
-    document.addEventListener('mousedown', (e) => {
-      const g = document.getElementById('quickModeGroup');
-      if (!g || !quickModeMenu || quickModeMenu.classList.contains('hidden')) return;
-      if (g.contains(e.target)) return;
-      closeQuickModeMenu();
-    });
-  }
-  const defaultModeButton = Array.from(modeButtons).find((btn) =>
-    (btn.dataset.mode || 'brain') === currentMode
-    && (btn.dataset.verbOverride || null) === modeVerbOverride
-  )
-    || Array.from(modeButtons).find((btn) => (btn.dataset.mode || 'brain') === currentMode && !btn.dataset.verbOverride)
-    || modeButtons[0];
-  applyModeButtonSelection(defaultModeButton);
-  syncQuickMainButtonLabel();
+  // Mode + compute dropdowns
+  const hubModeSelect = document.getElementById('hubModeSelect');
+  const hubComputeSelect = document.getElementById('hubComputeSelect');
+  const HUB_MODE_SPECS = {
+    auto: { mode: 'auto', verb: null, lane: null, label: 'Auto' },
+    grounded_small: { mode: 'brain', verb: null, lane: 'grounded_small', label: 'Grounded Small' },
+    brain: { mode: 'brain', verb: null, lane: 'brain', label: 'Brain' },
+    quick: { mode: 'brain', verb: 'chat_quick', lane: 'quick', label: 'Quick' },
+    story: { mode: 'brain', verb: 'chat_kids_story', lane: null, label: 'Story' },
+    agent: { mode: 'agent', verb: null, lane: null, label: 'Agent' },
+    council: { mode: 'council', verb: null, lane: null, label: 'Council' },
+  };
 
-  function applyLlmRouteButtonSelection(routeId) {
-    const rid = String(routeId || 'chat').toLowerCase();
-    document.querySelectorAll('.llm-route-btn').forEach((btn) => {
-      const btnRoute = String(btn.dataset.llmRoute || 'chat').toLowerCase();
-      btn.classList.remove('bg-indigo-600', 'text-white');
-      btn.classList.add('bg-gray-700', 'text-gray-200', 'hover:bg-gray-600');
-      if (btnRoute === rid) {
-        btn.classList.add('bg-indigo-600', 'text-white');
-        btn.classList.remove('bg-gray-700', 'text-gray-200', 'hover:bg-gray-600');
-      }
-    });
-    const entry = (llmRouteCatalog.routes || []).find((r) => String(r.id || '').toLowerCase() === rid);
-    const metaEl = document.getElementById('llmRouteMeta');
-    if (metaEl) {
-      if (!entry) metaEl.textContent = '—';
-      else {
-        metaEl.textContent = `${entry.served_by || '—'} · ${entry.backend || '—'} · ${entry.status || 'unknown'}`;
-        metaEl.title = `served_by=${entry.served_by || '—'} backend=${entry.backend || '—'} status=${entry.status || 'unknown'}`;
-      }
+  function applyHubModeSelection(modeKey, { silent = false } = {}) {
+    const key = String(modeKey || 'grounded_small').trim().toLowerCase();
+    const spec = HUB_MODE_SPECS[key] || HUB_MODE_SPECS.grounded_small;
+    currentMode = spec.mode;
+    modeVerbOverride = spec.verb;
+    if (spec.mode === 'brain' && spec.verb === 'chat_quick') {
+      chatQuickVariant = 'fast';
     }
+    if (hubModeSelect && hubModeSelect.value !== key) {
+      hubModeSelect.value = key;
+    }
+    const laneApi = (typeof globalThis !== 'undefined' ? globalThis : window).OrionHubGroundedSmallLane;
+    if (laneApi && typeof laneApi.setLane === 'function' && spec.lane) {
+      laneApi.setLane(spec.lane);
+    } else if (laneApi && typeof laneApi.setLane === 'function' && key === 'auto') {
+      laneApi.setLane('grounded_small');
+    }
+    if (!silent) {
+      updateStatus(`Mode: ${spec.label}`);
+    }
+  }
+
+  function formatComputeStatusGlyph(status) {
+    const normalized = String(status || 'unknown').toLowerCase();
+    if (normalized === 'up') return '●';
+    return '○';
+  }
+
+  function formatComputeRouteLabel(entry, { selected = false } = {}) {
+    const rid = String((entry && entry.id) || HUB_COMPUTE_DEFAULT).toLowerCase();
+    const status = (entry && entry.status) || 'unknown';
+    const glyph = formatComputeStatusGlyph(status);
+    const statusWord = String(status).toLowerCase() === 'up' ? 'up' : 'down';
+    const servedBy = (entry && entry.served_by) || '—';
+    const backend = (entry && entry.backend) || '—';
+    if (selected) {
+      return `${rid} ${glyph} ${statusWord} — ${servedBy} / ${backend}`;
+    }
+    const padId = rid.padEnd(7, ' ');
+    return `${padId}${glyph} ${statusWord.padEnd(4, ' ')} ${servedBy}  ${backend}`;
+  }
+
+  function renderComputeDropdown() {
+    if (!hubComputeSelect) return;
+    const previous = String(selectedLlmRoute || HUB_COMPUTE_DEFAULT).toLowerCase();
+    const byId = {};
+    (llmRouteCatalog.routes || []).forEach((entry) => {
+      byId[String(entry.id || '').toLowerCase()] = entry;
+    });
+    hubComputeSelect.innerHTML = '';
+    HUB_COMPUTE_ROUTE_IDS.forEach((routeId) => {
+      const entry = byId[routeId] || { id: routeId, status: 'unknown', served_by: null, backend: null };
+      const opt = document.createElement('option');
+      opt.value = routeId;
+      opt.textContent = formatComputeRouteLabel(entry, { selected: routeId === previous });
+      hubComputeSelect.appendChild(opt);
+    });
+    hubComputeSelect.value = HUB_COMPUTE_ROUTE_IDS.includes(previous) ? previous : HUB_COMPUTE_DEFAULT;
+    const selectedEntry = byId[hubComputeSelect.value] || { id: hubComputeSelect.value };
+    const selectedOpt = hubComputeSelect.selectedOptions[0];
+    if (selectedOpt) {
+      selectedOpt.textContent = formatComputeRouteLabel(selectedEntry, { selected: true });
+    }
+  }
+
+  function syncComputeSelection(routeId) {
+    const rid = String(routeId || HUB_COMPUTE_DEFAULT).toLowerCase();
+    selectedLlmRoute = HUB_COMPUTE_ROUTE_IDS.includes(rid) ? rid : HUB_COMPUTE_DEFAULT;
+    localStorage.setItem('orion_llm_route', selectedLlmRoute);
+    renderComputeDropdown();
   }
 
   function routeStatusIsDown(routeId) {
-    const rid = String(routeId || '').toLowerCase();
+    const rid = String(routeId || HUB_COMPUTE_DEFAULT).toLowerCase();
     const entry = (llmRouteCatalog.routes || []).find((r) => String(r.id || '').toLowerCase() === rid);
     if (!entry) return false;
     return entry.status === 'down' || entry.status === 'not_configured';
   }
 
   async function confirmDownRouteOrProceed(routeId) {
-    const rid = String(routeId || 'chat').toLowerCase();
+    const rid = String(routeId || HUB_COMPUTE_DEFAULT).toLowerCase();
     if (!routeStatusIsDown(rid)) return rid;
     const entry = (llmRouteCatalog.routes || []).find((r) => String(r.id || '').toLowerCase() === rid) || { id: rid };
-    const detail = `${entry.served_by || '—'} / ${entry.backend || '—'} / ${entry.status || 'down'}`;
-    const useChat = window.confirm(
-      `Route "${rid}" is unavailable (${detail}).\n\nOK = Use chat\nCancel = more options`
+    const detail = `${entry.served_by || '—'} / ${entry.backend || '—'}`;
+    const useQuick = window.confirm(
+      `Selected compute lane "${rid}" is down (${detail}).\n\nOK = Use quick instead\nCancel = more options`
     );
-    if (useChat) return 'chat';
+    if (useQuick) return HUB_COMPUTE_DEFAULT;
     const tryAnyway = window.confirm(`Try "${rid}" anyway? Cancel aborts the send.`);
     if (tryAnyway) return rid;
     return null;
@@ -9484,24 +9458,33 @@ loadDismissedIds();
       llmRouteCatalog = await res.json();
       const known = new Set((llmRouteCatalog.routes || []).map((r) => String(r.id || '').toLowerCase()));
       if (!known.has(String(selectedLlmRoute || '').toLowerCase())) {
-        selectedLlmRoute = String(llmRouteCatalog.default_route || 'chat').toLowerCase();
+        selectedLlmRoute = HUB_COMPUTE_DEFAULT;
       }
     } catch (err) {
-      console.warn('[LLM routes] catalog load failed', err);
+      console.warn('[Compute lanes] catalog load failed', err);
     }
-    applyLlmRouteButtonSelection(selectedLlmRoute || 'chat');
+    syncComputeSelection(selectedLlmRoute || HUB_COMPUTE_DEFAULT);
   }
 
-  document.querySelectorAll('.llm-route-btn').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const routeId = String(btn.dataset.llmRoute || 'chat').toLowerCase();
-      selectedLlmRoute = routeId;
-      localStorage.setItem('orion_llm_route', routeId);
-      applyLlmRouteButtonSelection(routeId);
-      updateStatus(`LLM route: ${routeId}`);
+  if (hubModeSelect) {
+    hubModeSelect.addEventListener('change', () => {
+      applyHubModeSelection(hubModeSelect.value);
     });
-  });
+    applyHubModeSelection(hubModeSelect.value || 'grounded_small', { silent: true });
+  }
+  if (hubComputeSelect) {
+    hubComputeSelect.addEventListener('change', () => {
+      const routeId = String(hubComputeSelect.value || HUB_COMPUTE_DEFAULT).toLowerCase();
+      syncComputeSelection(routeId);
+      updateStatus(`Compute: ${routeId}`);
+    });
+  }
   loadLlmRouteCatalog();
+  if (!llmRoutePollTimer) {
+    llmRoutePollTimer = window.setInterval(() => {
+      loadLlmRouteCatalog();
+    }, 30000);
+  }
 
   // --- 4. Logic Functions ---
 
@@ -10668,7 +10651,7 @@ loadDismissedIds();
     if (!value) return;
 
     let effectiveRoute = String(
-      (opts && opts.llm_route) || selectedLlmRoute || llmRouteCatalog.default_route || 'chat'
+      (opts && opts.llm_route) || selectedLlmRoute || HUB_COMPUTE_DEFAULT
     ).toLowerCase();
     if (!(opts && opts.skipRouteDownCheck)) {
       const confirmedRoute = await confirmDownRouteOrProceed(effectiveRoute);
@@ -10678,9 +10661,7 @@ loadDismissedIds();
       }
       effectiveRoute = confirmedRoute;
       if (effectiveRoute !== selectedLlmRoute) {
-        selectedLlmRoute = effectiveRoute;
-        localStorage.setItem('orion_llm_route', effectiveRoute);
-        applyLlmRouteButtonSelection(effectiveRoute);
+        syncComputeSelection(effectiveRoute);
       }
     }
 
@@ -11045,16 +11026,14 @@ loadDismissedIds();
       updateStatus('Low mic level, sending anyway...');
     }
     const voiceRoute = await confirmDownRouteOrProceed(
-      selectedLlmRoute || llmRouteCatalog.default_route || 'chat'
+      selectedLlmRoute || HUB_COMPUTE_DEFAULT
     );
     if (voiceRoute === null) {
       updateStatus('Voice send cancelled (route unavailable).');
       return;
     }
     if (voiceRoute !== selectedLlmRoute) {
-      selectedLlmRoute = voiceRoute;
-      localStorage.setItem('orion_llm_route', voiceRoute);
-      applyLlmRouteButtonSelection(voiceRoute);
+      syncComputeSelection(voiceRoute);
     }
     try {
       let wsOpen = socket && socket.readyState === WebSocket.OPEN;

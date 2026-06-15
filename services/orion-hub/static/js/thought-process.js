@@ -1283,75 +1283,24 @@
     global.fetch._orionGroundedSmallPatched = true;
   }
 
-  function ensureBrainButton(group, afterNode) {
-    let brain = document.getElementById('brainDeepModeBtn');
-    if (brain) return brain;
-    brain = document.createElement('button');
-    brain.type = 'button';
-    brain.id = 'brainDeepModeBtn';
-    brain.className = 'mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors';
-    brain.dataset.mode = 'brain';
-    brain.dataset.llmRoute = 'chat';
-    brain.title = 'Brain (stance + deep chat lane)';
-    brain.textContent = 'Brain';
-    if (afterNode && afterNode.parentNode === group) group.insertBefore(brain, afterNode.nextSibling);
-    else group.appendChild(brain);
-    return brain;
-  }
-
   function configureModeRow() {
-    setLane(LANE_GROUNDED_SMALL);
-    const buttons = Array.from(document.querySelectorAll('.mode-btn'));
-    const originalBrain = buttons.find((btn) => {
-      const label = String(btn.textContent || '').trim().toLowerCase();
-      return label === 'brain' && (btn.dataset.mode || '') === 'brain' && !btn.dataset.verbOverride;
-    });
-    if (originalBrain) {
-      originalBrain.id = originalBrain.id || 'groundedSmallModeBtn';
-      originalBrain.dataset.mode = 'brain';
-      originalBrain.dataset.llmRoute = 'quick';
-      originalBrain.textContent = 'Grounded Small';
-      originalBrain.title = 'Grounded Small (stance + small/quick final lane)';
-      ensureBrainButton(originalBrain.parentNode, originalBrain);
+    const modeSelect = document.getElementById('hubModeSelect');
+    if (!modeSelect) {
+      setLane(LANE_GROUNDED_SMALL);
+      return;
     }
 
-    const quick = document.getElementById('quickModeBtn');
-    if (quick) {
-      quick.textContent = 'Quick';
-      quick.title = 'Quick (small single-pass lane; no stance synthesis)';
+    function syncLaneFromModeSelect() {
+      const key = String(modeSelect.value || LANE_GROUNDED_SMALL).trim().toLowerCase();
+      if (key === LANE_GROUNDED_SMALL) setLane(LANE_GROUNDED_SMALL);
+      else if (key === LANE_BRAIN) setLane(LANE_BRAIN);
+      else if (key === LANE_QUICK) setLane(LANE_QUICK);
+      else if (key === 'auto') setLane(LANE_GROUNDED_SMALL);
+      else setLane(key || LANE_GROUNDED_SMALL);
     }
-    document.querySelectorAll('.quick-variant-item').forEach((item) => {
-      const variant = String(item.getAttribute('data-quick-variant') || '').trim();
-      if (variant === 'fast') item.textContent = 'Quick';
-      if (variant === 'stance') item.textContent = 'Grounded Small';
-    });
 
-    document.addEventListener('click', (event) => {
-      const target = event.target && event.target.closest ? event.target.closest('button') : null;
-      if (!target) return;
-      if (target.id === 'brainDeepModeBtn') {
-        setLane(LANE_BRAIN);
-        return;
-      }
-      if (target.id === 'quickModeBtn') {
-        setLane(LANE_QUICK);
-        return;
-      }
-      if (target.classList && target.classList.contains('quick-variant-item')) {
-        const variant = String(target.getAttribute('data-quick-variant') || '').trim();
-        setLane(variant === 'stance' ? LANE_GROUNDED_SMALL : LANE_QUICK);
-        return;
-      }
-      if (target.classList && target.classList.contains('mode-btn')) {
-        const mode = String(target.dataset.mode || '').trim().toLowerCase();
-        const verb = String(target.dataset.verbOverride || '').trim().toLowerCase();
-        const route = String(target.dataset.llmRoute || '').trim().toLowerCase();
-        if (mode === 'brain' && route === 'quick') setLane(LANE_GROUNDED_SMALL);
-        else if (mode === 'brain' && !verb) setLane(LANE_BRAIN);
-        else if (verb === 'chat_quick') setLane(LANE_QUICK);
-        else setLane(mode || LANE_GROUNDED_SMALL);
-      }
-    }, true);
+    syncLaneFromModeSelect();
+    modeSelect.addEventListener('change', syncLaneFromModeSelect);
   }
 
   patchWebSocketSend();
@@ -1364,6 +1313,7 @@
     normalizeOutboundPayload,
     configureModeRow,
     syncRecallProfileForLane,
+    setLane,
     LANE_RECALL_PROFILE,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

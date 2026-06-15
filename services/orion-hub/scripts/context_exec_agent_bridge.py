@@ -13,7 +13,7 @@ from scripts.context_exec_client import ContextExecClientError, agent_lane_enabl
 VALID_LLM_PROFILES = frozenset({"chat", "quick", "agent", "metacog"})
 
 
-def normalize_llm_profile(raw: Any, *, default: str = "chat") -> str:
+def normalize_llm_profile(raw: Any, *, default: str = "quick") -> str:
     route = str(raw or default).strip().lower()
     return route if route in VALID_LLM_PROFILES else default
 
@@ -136,7 +136,7 @@ def format_agent_operator_inline(
         or dbg.get("route_used")
         or llm_profile
         or dbg.get("llm_profile_selected")
-        or "chat"
+        or "quick"
     )
     synthesis = _synthesis_status_label(dbg)
     result = (op.summary if op else None) or run.final_text or "No summary available."
@@ -213,7 +213,7 @@ async def run_hub_agent_via_context_exec(
     llm_profile = normalize_llm_profile(
         (req.options or {}).get("llm_route")
         or (route_debug or {}).get("llm_route")
-        or "chat"
+        or "quick"
     )
     body = build_context_exec_request(req=req, prompt=prompt, llm_profile=llm_profile)
     try:

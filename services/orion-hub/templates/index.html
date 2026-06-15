@@ -228,32 +228,30 @@
 
         <div class="bg-gray-800 p-2 rounded-lg text-xs space-y-2">
           <div class="flex items-center gap-2">
-            <span class="uppercase text-gray-500 font-bold text-[10px]">Mode</span>
-            <div class="flex flex-wrap gap-1">
-              <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="auto">Auto</button>
-              <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="brain">Brain</button>
-              <div class="relative inline-flex rounded border border-indigo-400/60 shadow-[0_0_12px_rgba(99,102,241,0.3)]" id="quickModeGroup">
-                <button type="button" class="mode-btn mode-btn-quick px-2 py-1 rounded-l rounded-r-none bg-indigo-500/30 text-indigo-100 hover:bg-indigo-500/40 transition-colors" data-mode="brain" data-verb-override="chat_quick" id="quickModeBtn" title="Quick (fast lane)">Quick</button>
-                <button type="button" class="mode-btn-quick px-1.5 py-1 rounded-r bg-indigo-500/30 text-indigo-100 border-l border-indigo-400/50 hover:bg-indigo-500/40 transition-colors text-[10px]" id="quickModeMenuBtn" aria-haspopup="menu" aria-expanded="false" aria-label="Quick lane options" title="More quick options">▾</button>
-                <div id="quickModeMenu" class="hidden absolute left-0 top-full z-50 mt-1 min-w-[12.5rem] rounded-md border border-indigo-400/50 bg-gray-900 py-1 text-left shadow-xl" role="menu">
-                  <button type="button" class="quick-variant-item block w-full px-3 py-2 text-left text-[11px] text-indigo-100 hover:bg-indigo-600/35" data-quick-variant="fast" role="menuitem">Quick (fast)</button>
-                  <button type="button" class="quick-variant-item block w-full px-3 py-2 text-left text-[11px] text-indigo-100 hover:bg-indigo-600/35" data-quick-variant="stance" role="menuitem">Quick + stance</button>
-                </div>
-              </div>
-              <button type="button" class="mode-btn px-2 py-1 rounded border border-teal-500/40 bg-teal-500/15 text-teal-100 hover:bg-teal-500/25 transition-colors" data-mode="brain" data-verb-override="chat_kids_story" id="kidsStoryModeBtn" title="Kids story (bounded fast lane)">Story</button>
-              <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="agent">Agent</button>
-              <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="council">Council</button>
-            </div>
+            <label for="hubModeSelect" class="uppercase text-gray-500 font-bold text-[10px] shrink-0">Mode</label>
+            <select
+              id="hubModeSelect"
+              class="flex-1 min-w-0 bg-gray-900/80 text-gray-100 text-xs rounded border border-gray-700 px-2 py-1.5 focus:outline-none focus:border-indigo-500"
+              aria-label="Hub chat mode"
+            >
+              <option value="auto">Auto</option>
+              <option value="grounded_small" selected>Grounded Small</option>
+              <option value="brain">Brain</option>
+              <option value="quick">Quick</option>
+              <option value="story">Story</option>
+              <option value="agent">Agent</option>
+              <option value="council">Council</option>
+            </select>
           </div>
           <div class="flex items-center gap-2 pt-1 border-t border-gray-700/80">
-            <span class="uppercase text-gray-500 font-bold text-[10px]">Route</span>
-            <div class="flex flex-wrap gap-1" id="llmRouteSelector" role="radiogroup" aria-label="LLM route">
-              <button type="button" class="llm-route-btn px-2 py-1 rounded bg-indigo-600 text-white transition-colors" data-llm-route="chat" title="chat compute route">chat</button>
-              <button type="button" class="llm-route-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-llm-route="quick" title="quick compute route">quick</button>
-              <button type="button" class="llm-route-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-llm-route="agent" title="agent compute route">agent</button>
-              <button type="button" class="llm-route-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-llm-route="metacog" title="metacog compute route">metacog</button>
-            </div>
-            <span id="llmRouteMeta" class="text-[10px] text-gray-500 truncate max-w-[14rem]" title="Route metadata">—</span>
+            <label for="hubComputeSelect" class="uppercase text-gray-500 font-bold text-[10px] shrink-0">Compute</label>
+            <select
+              id="hubComputeSelect"
+              class="flex-1 min-w-0 bg-gray-900/80 text-gray-100 text-xs rounded border border-gray-700 px-2 py-1.5 focus:outline-none focus:border-indigo-500 font-mono"
+              aria-label="Compute lane"
+            >
+              <option value="quick">quick — loading…</option>
+            </select>
           </div>
           <div class="flex items-center gap-3 pt-1 border-t border-gray-700/80">
             <label class="flex items-center gap-1.5 text-xs text-gray-400" for="recallToggle">

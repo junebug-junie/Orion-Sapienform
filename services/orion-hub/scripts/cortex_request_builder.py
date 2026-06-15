@@ -415,7 +415,7 @@ def build_cortex_chat_request(
         options["action_execution_policy"] = "none"
         options["no_write_active"] = True
 
-    llm_route_raw = str(payload.get("llm_route") or options.get("llm_route") or "chat").strip().lower()
+    llm_route_raw = str(payload.get("llm_route") or options.get("llm_route") or "quick").strip().lower()
     if llm_route_raw in {"chat", "quick", "agent", "metacog"}:
         options["llm_route"] = llm_route_raw
 
@@ -700,7 +700,7 @@ def build_cortex_chat_request(
         "recall_profile": (req.recall or {}).get("profile"),
         "supervised": _normalize_flag((req.options or {}).get("supervised"), default=False),
         "force_agent_chain": _normalize_flag((req.options or {}).get("force_agent_chain"), default=False),
-        "llm_route": (req.options or {}).get("llm_route") or "chat",
+        "llm_route": (req.options or {}).get("llm_route") or "quick",
         "diagnostic": _normalize_flag(diagnostic_value, default=False),
         "chat_profile": SOCIAL_ROOM_PROFILE if social_room else None,
         "workflow_id": metadata.get("workflow_request", {}).get("workflow_id") if isinstance(metadata.get("workflow_request"), dict) else None,

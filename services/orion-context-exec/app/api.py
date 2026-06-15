@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from orion.schemas.agents.schemas import AgentChainRequest, AgentChainResult
 from orion.schemas.context_exec import ContextExecRequestV1, ContextExecRunV1
 
+from .agent_lane_health import agent_lane_health_block
 from .agent_compat import agent_chain_request_to_context_exec, context_exec_run_to_agent_chain_result
 from .runner import ContextExecRunner
 
@@ -31,6 +32,7 @@ async def health() -> dict:
     from .proposal_review_api import proposal_review_health_block
     from .settings import settings
 
+    lane = agent_lane_health_block()
     return {
         "ok": True,
         "service": "orion-context-exec",
@@ -40,6 +42,7 @@ async def health() -> dict:
         "write_enabled": settings.context_exec_write_enabled,
         "max_depth": settings.context_exec_max_depth,
         "proposal_review_api": proposal_review_health_block(),
+        **lane,
     }
 
 

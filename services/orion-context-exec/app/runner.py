@@ -42,6 +42,7 @@ from .proposal_ledger_intake import (
     intake_runtime_debug,
     maybe_persist_proposal_envelope,
 )
+from .organ_status import initial_organ_status, record_recall, record_repo, record_trace
 from .security import PolicyBlockedError, enforce_no_write_settings
 from .settings import settings
 
@@ -299,6 +300,7 @@ class ContextExecRunner:
         namespace = self._build_namespace(organ_runtime)
         await namespace._prefetch_organs()  # type: ignore[attr-defined]
         organ_cache = getattr(namespace, "_organ_cache", {}) or {}
+        organ_status = getattr(namespace, "_organ_status", {}) or {}
 
         raw_final, engine_used, subcalls, rlm_steps, rlm_failures = await self._execute_rlm(
             request,
@@ -411,14 +413,14 @@ class ContextExecRunner:
             "trace": organ_cache.get("traces") is not None,
             "repo": bool(organ_cache.get("repo_hits")),
         }
+        runtime_debug["organ_status"] = organ_status
         operator_summary = synthesis_result.operator_summary
-        if (
-            operator_summary is not None
-            and status == "ok"
-            and synthesis_result.model_synthesis_used
-        ):
-            if synthesis_result.synthesis_summary:
-                final_text = synthesis_result.synthesis_summary
+        if operator_summary is not None and status == "ok":
+            if synthesis_result.model_synthesis_used:
+                if synthesis_result.synthesis_summary:
+                    final_text = synthesis_result.synthesis_summary
+                elif operator_summary.summary:
+                    final_text = operator_summary.summary
             elif operator_summary.summary:
                 final_text = operator_summary.summary
 
@@ -481,6 +483,8 @@ class ContextExecRunner:
 
     def _build_namespace(self, organ_runtime: OrganRuntime) -> ContextNamespace:
         organ_cache: dict[str, Any] = {"traces": None, "recall": None, "trace_reads": {}}
+        organ_status = initial_organ_status(organ_runtime.request.permissions, settings)
+        organ_runtime.organ_status = organ_status
 
         def traces_search(**kwargs: Any) -> list[dict[str, Any]]:
             if FAKE_ORGANS.trace_hits is not None:
@@ -516,17 +520,23 @@ class ContextExecRunner:
             if settings.context_exec_fake_organs_enabled or FAKE_ORGANS.trace_hits is not None:
                 return
             if settings.context_exec_real_recall_enabled and organ_runtime.request.permissions.read_recall:
-                organ_cache["recall"] = await organ_runtime.recall_query(
+                recall_result = await organ_runtime.recall_query(
                     organ_runtime.request.text,
                     limit=settings.context_exec_recall_limit,
                 )
+                organ_cache["recall"] = recall_result
             if settings.context_exec_real_trace_enabled and organ_runtime.request.permissions.read_redis_traces:
-                hits = await organ_runtime.traces_search(limit=settings.context_exec_trace_limit)
-                organ_cache["traces"] = hits
-                for hit in hits:
-                    handle = hit.get("handle")
-                    if handle:
-                        organ_cache["trace_reads"][handle] = await organ_runtime.traces_read(handle)
+                try:
+                    hits = await organ_runtime.traces_search(limit=settings.context_exec_trace_limit)
+                except Exception as exc:
+                    record_trace(organ_status, [], error=str(exc))
+                    hits = []
+                else:
+                    organ_cache["traces"] = hits
+                    for hit in hits:
+                        handle = hit.get("handle")
+                        if handle:
+                            organ_cache["trace_reads"][handle] = await organ_runtime.traces_read(handle)
 
         route_used = organ_runtime.llm_route
 
@@ -554,6 +564,7 @@ class ContextExecRunner:
             subcall_fn=llm_subcall,
         )
         namespace._organ_cache = organ_cache  # type: ignore[attr-defined]
+        namespace._organ_status = organ_status  # type: ignore[attr-defined]
         namespace._organ_runtime = organ_runtime  # type: ignore[attr-defined]
         namespace._prefetch_organs = _prefetch_organs  # type: ignore[attr-defined]
         return namespace

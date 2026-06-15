@@ -13,6 +13,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.telemetry.system_health import SystemHealthV1
 
+from .agent_lane_health import log_agent_lane_startup_warning
 from .api import router, set_runner
 from .proposal_review_api import router as proposal_review_router
 from .bus_listener import run_bus_worker
@@ -70,6 +71,7 @@ async def lifespan(app: FastAPI):
         settings.service_version,
         settings.port,
     )
+    log_agent_lane_startup_warning()
     app.state.bus_stop_event = asyncio.Event()
     bus = OrionBusAsync(url=settings.orion_bus_url, enabled=settings.orion_bus_enabled)
     if bus.enabled:

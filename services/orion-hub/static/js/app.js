@@ -10262,23 +10262,40 @@ loadDismissedIds();
     }
   }
 
+  function agentAnswerHeadline(answerStatus) {
+    const status = String(answerStatus || '').trim();
+    if (status === 'answered_grounded') return 'Agent investigation complete';
+    if (status === 'failed_fake_engine_selected') return 'Blocked: fake engine selected';
+    if (status === 'failed_grounding_preflight') return 'Runtime completed, but no real investigation occurred';
+    if (status === 'no_reliable_evidence') return 'No reliable grounded answer found';
+    if (['failed_fake_engine_selected', 'failed_grounding_preflight', 'no_reliable_evidence', 'failed'].includes(status)) {
+      return 'Runtime complete';
+    }
+    return 'Runtime complete';
+  }
+
+  function recallFailureLine(organStatus) {
+    if (!organStatus || typeof organStatus !== 'object') return null;
+    const recall = organStatus.recall;
+    if (!recall || typeof recall !== 'object' || !recall.attempted || !recall.error) return null;
+    const errText = String(recall.error);
+    if (/redis|timeout/i.test(errText)) return `Recall failed: Redis timeout (${errText})`;
+    return `Recall failed: ${errText}`;
+  }
+
   function resolveAssistantDisplayText(d) {
     if (!d || typeof d !== 'object') return '';
     if (d.mode === 'agent' && d.operator_summary && typeof d.operator_summary === 'object') {
       const op = d.operator_summary;
       const dbg = d.routing_debug && typeof d.routing_debug === 'object' ? d.routing_debug : {};
       const answerStatus = String(dbg.answer_status || '').trim();
-      const failedAnswerStatuses = new Set([
-        'failed_fake_engine_selected',
-        'failed_grounding_preflight',
-        'no_reliable_evidence',
-        'failed',
-      ]);
       const synthesis = dbg.model_synthesis_used ? 'used'
         : (dbg.synthesis_fallback_used || String(dbg.synthesis_fallback_reason || '').startsWith('synthesis') ? 'fallback' : 'skipped');
-      const headline = failedAnswerStatuses.has(answerStatus)
-        ? 'Runtime completed (not a grounded investigation)'
-        : 'Agent run complete';
+      const organStatus = dbg.organ_status
+        || (d.agent_trace && d.agent_trace.raw && d.agent_trace.raw.organ_status)
+        || (d.context_exec_run && d.context_exec_run.runtime_debug && d.context_exec_run.runtime_debug.organ_status)
+        || null;
+      const headline = agentAnswerHeadline(answerStatus);
       const lines = [
         headline,
         `Mode: ${op.agent_mode || dbg.context_exec_mode || 'unknown'}`,
@@ -10288,6 +10305,10 @@ loadDismissedIds();
       ];
       if (answerStatus) {
         lines.splice(1, 0, `Answer status: ${answerStatus}`);
+      }
+      const recallLine = recallFailureLine(organStatus);
+      if (recallLine) {
+        lines.splice(answerStatus ? 2 : 1, 0, recallLine);
       }
       if (op.proposal_id) {
         lines.push(`Proposal: ${op.proposal_id} ${op.proposal_status || 'pending_review'}`);

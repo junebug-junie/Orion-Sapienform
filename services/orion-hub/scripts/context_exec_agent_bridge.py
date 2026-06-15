@@ -5,12 +5,21 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from orion.schemas.context_exec import ContextExecPermissionV1, ContextExecRequestV1, ContextExecRunV1
-from orion.schemas.cortex.contracts import AgentTraceStepV1, AgentTraceSummaryV1, CortexChatRequest
+from orion.schemas.cortex.contracts import AgentTraceStepV1, AgentTraceSummaryV1, AgentTraceToolStatV1, CortexChatRequest
 
 from scripts.context_exec_client import ContextExecClientError, agent_lane_enabled, run_context_exec
 
 
 VALID_LLM_PROFILES = frozenset({"chat", "quick", "agent", "metacog"})
+RUNTIME_ONLY_CALLABLES = frozenset({"rlm_engine.run"})
+FAILED_ANSWER_STATUSES = frozenset(
+    {
+        "failed_fake_engine_selected",
+        "failed_grounding_preflight",
+        "no_reliable_evidence",
+        "failed",
+    }
+)
 
 
 def normalize_llm_profile(raw: Any, *, default: str = "quick") -> str:
@@ -87,26 +96,80 @@ def _steps_from_verb_trace(run: ContextExecRunV1) -> List[AgentTraceStepV1]:
     return steps
 
 
+def _user_visible_steps(steps: List[AgentTraceStepV1]) -> List[AgentTraceStepV1]:
+    visible: List[AgentTraceStepV1] = []
+    for step in steps:
+        tool_id = (step.tool_id or "").strip()
+        if tool_id in RUNTIME_ONLY_CALLABLES:
+            continue
+        visible.append(step)
+    return visible
+
+
+def _tool_stats_from_steps(steps: List[AgentTraceStepV1]) -> List[AgentTraceToolStatV1]:
+    buckets: dict[str, AgentTraceToolStatV1] = {}
+    for step in steps:
+        tool_id = (step.tool_id or step.event_type or "unknown").strip() or "unknown"
+        if tool_id not in buckets:
+            buckets[tool_id] = AgentTraceToolStatV1(
+                tool_id=tool_id,
+                tool_family=step.tool_family or "unknown",
+                action_kind=step.action_kind or "unknown",
+                effect_kind=step.effect_kind or "unknown",
+                count=0,
+                duration_ms=0,
+            )
+        stat = buckets[tool_id]
+        stat.count += 1
+        stat.duration_ms = int(stat.duration_ms or 0) + int(step.duration_ms or 0)
+    return list(buckets.values())
+
+
+def _answer_evaluation(run: ContextExecRunV1) -> dict[str, Any]:
+    dbg = run.runtime_debug or {}
+    raw = dbg.get("answer_evaluation")
+    return raw if isinstance(raw, dict) else {}
+
+
+def _trace_status_for_run(run: ContextExecRunV1, answer_eval: dict[str, Any]) -> str:
+    answer_status = str(answer_eval.get("answer_status") or "")
+    if answer_status in FAILED_ANSWER_STATUSES:
+        return answer_status
+    return run.status
+
+
 def build_agent_trace_summary(
     *,
     run: ContextExecRunV1,
     correlation_id: Optional[str],
 ) -> Dict[str, Any]:
     steps = _steps_from_verb_trace(run)
+    tool_steps = _user_visible_steps(steps)
+    tool_stats = _tool_stats_from_steps(tool_steps)
+    answer_eval = _answer_evaluation(run)
+    summary_text = str(answer_eval.get("summary_text") or run.final_text or "")
     summary = AgentTraceSummaryV1(
         corr_id=correlation_id,
         mode="agent",
-        status=run.status,
+        status=_trace_status_for_run(run, answer_eval),
         step_count=len(steps),
-        tool_call_count=len(steps),
-        unique_tool_count=len({s.tool_id or s.event_type for s in steps}),
-        summary_text=run.final_text or "",
+        tool_call_count=sum(tool.count for tool in tool_stats),
+        unique_tool_count=len(tool_stats),
+        summary_text=summary_text,
+        tools=tool_stats,
         steps=steps,
         raw={
             "engine": "context_exec",
             "context_exec_mode": run.mode,
             "artifact_type": run.artifact_type,
             "runtime_debug": run.runtime_debug,
+            "runtime_step_count": len(steps),
+            "runtime_status": answer_eval.get("runtime_status") or run.status,
+            "answer_status": answer_eval.get("answer_status"),
+            "grounding_status": answer_eval.get("grounding_status"),
+            "synthesis_status": answer_eval.get("synthesis_status"),
+            "evidence_count": answer_eval.get("evidence_count"),
+            "grounding_required": answer_eval.get("grounding_required"),
         },
     )
     return summary.model_dump(mode="json")
@@ -129,6 +192,8 @@ def format_agent_operator_inline(
 ) -> str:
     """Build Hub inline Agent operator response."""
     dbg = run.runtime_debug or {}
+    answer_eval = _answer_evaluation(run)
+    answer_status = str(answer_eval.get("answer_status") or "")
     op = run.operator_summary
     mode = (op.agent_mode if op else run.mode) or "unknown"
     route = (
@@ -140,13 +205,20 @@ def format_agent_operator_inline(
     )
     synthesis = _synthesis_status_label(dbg)
     result = (op.summary if op else None) or run.final_text or "No summary available."
+    headline = (
+        "Runtime completed (not a grounded investigation)"
+        if answer_status in FAILED_ANSWER_STATUSES
+        else "Agent run complete"
+    )
     lines = [
-        "Agent run complete",
+        headline,
         f"Mode: {mode}",
         f"Route: {route}",
         f"Synthesis: {synthesis}",
         f"Result: {result}",
     ]
+    if answer_status:
+        lines.insert(1, f"Answer status: {answer_status}")
     proposal_id = (op.proposal_id if op else None) or dbg.get("proposal_id")
     proposal_status = (op.proposal_status if op else None) or dbg.get("ledger_status")
     if proposal_id:
@@ -171,6 +243,14 @@ def build_context_exec_chat_response(
     routing["llm_profile"] = dbg.get("llm_profile_selected") or dbg.get("route_used")
     routing["route_used"] = dbg.get("route_used")
     routing["model_synthesis_used"] = dbg.get("model_synthesis_used")
+    answer_eval = dbg.get("answer_evaluation") if isinstance(dbg.get("answer_evaluation"), dict) else {}
+    if answer_eval:
+        routing["answer_status"] = answer_eval.get("answer_status")
+        routing["runtime_status"] = answer_eval.get("runtime_status")
+        routing["grounding_status"] = answer_eval.get("grounding_status")
+        routing["synthesis_status"] = answer_eval.get("synthesis_status")
+        routing["evidence_count"] = answer_eval.get("evidence_count")
+        routing["grounding_required"] = answer_eval.get("grounding_required")
     inline = format_agent_operator_inline(
         run,
         llm_profile=str(routing.get("llm_profile") or ""),
@@ -180,6 +260,7 @@ def build_context_exec_chat_response(
         "llm_response": inline,
         "raw": {
             "ok": run.status == "ok",
+            "answer_ok": answer_eval.get("answer_status") == "answered_grounded",
             "mode": "agent",
             "status": run.status,
             "final_text": run.final_text,

@@ -8061,13 +8061,14 @@ loadDismissedIds();
   function buildAgentTraceOverviewNode(summary) {
     const root = document.createElement('div');
     root.className = 'grid gap-3 md:grid-cols-3 xl:grid-cols-6';
+    const raw = summary && summary.raw && typeof summary.raw === 'object' ? summary.raw : {};
     const cards = [
       ['Status', summary.status || '--'],
+      ['Answer', raw.answer_status || '--'],
       ['Duration', agentTraceApi.formatDuration ? agentTraceApi.formatDuration(summary.duration_ms) : '--'],
-      ['Steps', summary.step_count ?? 0],
+      ['Steps', raw.runtime_step_count ?? summary.step_count ?? 0],
       ['Tool calls', summary.tool_call_count ?? 0],
       ['Unique tools', summary.unique_tool_count ?? 0],
-      ['Families', Array.isArray(summary.unique_tool_families) && summary.unique_tool_families.length ? summary.unique_tool_families.join(', ') : '--'],
     ];
     cards.forEach(([label, value]) => {
       const card = document.createElement('div');
@@ -10266,15 +10267,28 @@ loadDismissedIds();
     if (d.mode === 'agent' && d.operator_summary && typeof d.operator_summary === 'object') {
       const op = d.operator_summary;
       const dbg = d.routing_debug && typeof d.routing_debug === 'object' ? d.routing_debug : {};
+      const answerStatus = String(dbg.answer_status || '').trim();
+      const failedAnswerStatuses = new Set([
+        'failed_fake_engine_selected',
+        'failed_grounding_preflight',
+        'no_reliable_evidence',
+        'failed',
+      ]);
       const synthesis = dbg.model_synthesis_used ? 'used'
         : (dbg.synthesis_fallback_used || String(dbg.synthesis_fallback_reason || '').startsWith('synthesis') ? 'fallback' : 'skipped');
+      const headline = failedAnswerStatuses.has(answerStatus)
+        ? 'Runtime completed (not a grounded investigation)'
+        : 'Agent run complete';
       const lines = [
-        'Agent run complete',
+        headline,
         `Mode: ${op.agent_mode || dbg.context_exec_mode || 'unknown'}`,
         `Route: ${op.route_used || dbg.route_used || dbg.llm_profile || 'chat'}`,
         `Synthesis: ${synthesis}`,
         `Result: ${op.summary || ''}`,
       ];
+      if (answerStatus) {
+        lines.splice(1, 0, `Answer status: ${answerStatus}`);
+      }
       if (op.proposal_id) {
         lines.push(`Proposal: ${op.proposal_id} ${op.proposal_status || 'pending_review'}`);
         lines.push('Open Pending Decisions to review.');

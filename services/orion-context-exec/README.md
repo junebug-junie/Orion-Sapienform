@@ -75,9 +75,19 @@ PYTHONPATH=. orion_dev/bin/python scripts/orion_proposal_cli.py list --status st
 
 **Verification:**
 
+Run from the **repository root** (the smoke ladder requires a `.git` directory; git worktrees with a `.git` file pointer must use the main checkout or run the individual steps below).
+
 ```bash
-bash scripts/context_exec_beta_gate.sh
-bash scripts/context_exec_golden_probes.sh   # live Hub stack required
+# Context-exec beta gate only (pytest + RLM eval fake/alexzhang)
+ORION_PY=orion_dev/bin/python bash scripts/context_exec_beta_gate.sh
+
+# Full proposal-control spine + beta gate (schema → CLI → ledger → review API → Hub → RLM evals → Denver vertical → CLI approve/eligibility/dry-run → beta gate)
+ORION_PY=orion_dev/bin/python \
+STORE=/tmp/orion-proposals.json \
+./scripts/repl/orion_fresh_main_smoke.sh
+
+# Live Hub golden probes (stack required)
+bash scripts/context_exec_golden_probes.sh
 ```
 
 **AgentChain replacement goal:** Context-exec is the bounded recursive workbench intended to replace the legacy ReAct planner / AgentChain runtime. Cortex remains sovereign; artifacts are the contract. AgentChain is legacy compatibility only during beta (`CONTEXT_EXEC_LEGACY_FALLBACK` on cortex-exec).

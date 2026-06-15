@@ -212,6 +212,39 @@ async def test_agent_compat_v2_skips_keyword_mode_inference(monkeypatch: pytest.
     assert req.permissions.read_repo is True
 
 
+@pytest.mark.asyncio
+async def test_runner_with_trace_hits_builds_findings_bundle(monkeypatch: pytest.MonkeyPatch) -> None:
+    _ctx_app_modules()
+    from app import trace_tools
+    from app.runner import ContextExecRunner
+    from app.schemas import TraceHit
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "context_exec_real_repo_enabled", False)
+    monkeypatch.setattr(settings, "context_exec_real_recall_enabled", False)
+    monkeypatch.setattr(settings, "context_exec_real_trace_enabled", True)
+
+    def fake_traces_search(**_kwargs):
+        return [
+            TraceHit(
+                handle="trace:ctx:1",
+                source="test",
+                corr_id="abc",
+                kind="event",
+                timestamp="2026-06-15T00:00:00Z",
+                snippet="cortex-exec runtime change",
+            )
+        ]
+
+    monkeypatch.setattr(trace_tools, "traces_search", fake_traces_search)
+
+    runner = ContextExecRunner()
+    run = await runner.run(_agent_request())
+    assert run.status == "ok"
+    assert run.findings_bundle is not None
+    assert len(run.findings_bundle.findings) >= 1
+
+
 def test_investigation_report_v2_schema_roundtrip() -> None:
     from orion.schemas.context_exec import (
         EvidenceBundle,

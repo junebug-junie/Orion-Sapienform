@@ -28,6 +28,55 @@ INVESTIGATION_V2_ARTIFACT_TYPE = "InvestigationReportV2"
 STRONG_HIT_SOURCES = frozenset({"repo", "traces", "memory"})
 
 
+def _finding(
+    *,
+    claim: str,
+    evidence_type: str,
+    source_ref: str | None = None,
+    verified: bool = False,
+    confidence: float = 0.5,
+    scope: str = "fact",
+) -> dict[str, Any]:
+    return {
+        "claim": claim[:500],
+        "evidence_type": evidence_type,
+        "source_ref": source_ref,
+        "verified": verified,
+        "confidence": confidence,
+        "scope": scope,
+    }
+
+
+def _trace_finding(hit: dict[str, Any]) -> dict[str, Any]:
+    return _finding(
+        claim=str(hit.get("snippet") or hit.get("handle") or "trace hit")[:200],
+        evidence_type="runtime_log",
+        source_ref=hit.get("handle"),
+        verified=False,
+        confidence=0.5,
+    )
+
+
+def _recall_finding(hit: dict[str, Any]) -> dict[str, Any]:
+    return _finding(
+        claim=str(hit.get("snippet") or hit.get("source_ref") or "recall hit")[:200],
+        evidence_type="user_artifact",
+        source_ref=hit.get("source_ref"),
+        verified=False,
+        confidence=float(hit.get("score") or 0.5),
+    )
+
+
+def _memory_finding(hit: dict[str, Any]) -> dict[str, Any]:
+    return _finding(
+        claim=str(hit.get("claim") or hit.get("snippet") or "memory hit")[:200],
+        evidence_type="user_statement",
+        source_ref=hit.get("source_ref"),
+        verified=bool(hit.get("verified")),
+        confidence=float(hit.get("confidence") or 0.5),
+    )
+
+
 def _probe_timeout_sec(request: ContextExecRequestV1) -> float:
     cap = float(settings.context_exec_investigation_v2_probe_timeout_sec)
     budget_cap = max(5.0, float(request.budget.max_seconds) / 6.0)
@@ -111,14 +160,13 @@ async def repo_probe(
         )
 
     findings = [
-        {
-            "claim": f"{h.get('path')}:{h.get('line_start')} {str(h.get('snippet', ''))[:120]}",
-            "evidence_type": "repo_file",
-            "source_ref": h.get("source_ref"),
-            "verified": True,
-            "confidence": 0.85,
-            "scope": "fact",
-        }
+        _finding(
+            claim=f"{h.get('path')}:{h.get('line_start')} {str(h.get('snippet', ''))[:120]}",
+            evidence_type="repo_file",
+            source_ref=h.get("source_ref"),
+            verified=True,
+            confidence=0.85,
+        )
         for h in hits
         if isinstance(h, dict)
     ]
@@ -166,7 +214,7 @@ async def trace_probe(
         source="traces",
         status=SourceStatus.hit,
         summary=f"{len(hits)} trace hit(s)",
-        findings=[h for h in hits if isinstance(h, dict)],
+        findings=[_trace_finding(h) for h in hits if isinstance(h, dict)],
         metadata={"hit_count": len(hits)},
     )
 
@@ -215,7 +263,7 @@ async def recall_probe(
         source="recall",
         status=SourceStatus.hit,
         summary=f"{len(hits)} recall hit(s)",
-        findings=[h for h in hits if isinstance(h, dict)],
+        findings=[_recall_finding(h) for h in hits if isinstance(h, dict)],
         metadata={"hit_count": len(hits)},
     )
 
@@ -238,7 +286,7 @@ async def memory_probe(
         source="memory",
         status=SourceStatus.hit,
         summary=f"{len(hits)} memory hit(s)",
-        findings=[h for h in hits if isinstance(h, dict)],
+        findings=[_memory_finding(h) for h in hits if isinstance(h, dict)],
         metadata={"hit_count": len(hits)},
     )
 

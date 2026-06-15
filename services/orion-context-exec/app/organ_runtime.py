@@ -6,7 +6,7 @@ from typing import Any
 from orion.core.bus.async_service import OrionBusAsync
 from orion.schemas.context_exec import ContextExecRequestV1
 
-from . import recall_tools, repo_tools, trace_tools
+from . import llm_tools, recall_tools, repo_tools, trace_tools
 from .settings import settings
 
 logger = logging.getLogger("orion-context-exec.organ_runtime")
@@ -21,11 +21,70 @@ class OrganRuntime:
         bus: OrionBusAsync | None,
         request: ContextExecRequestV1,
         run_id: str,
+        llm_route: str | None = None,
     ) -> None:
         self.bus = bus
         self.request = request
         self.run_id = run_id
+        self.llm_route = (llm_route or request.llm_profile or "chat").strip().lower()
         self._trace_reads: dict[str, dict[str, Any]] = {}
+        self.pending_llm_subcalls: list[dict[str, Any]] = []
+        self.llm_rpc_calls: list[dict[str, Any]] = []
+
+    def record_llm_subcall(
+        self,
+        *,
+        route: str,
+        prompt: str,
+        context: Any = None,
+        schema: str | None = None,
+    ) -> None:
+        entry = {
+            "route": str(route).strip().lower(),
+            "prompt": prompt,
+            "context": context,
+            "schema": schema,
+            "result": None,
+        }
+        self.pending_llm_subcalls.append(entry)
+        self.llm_rpc_calls.append({"route": entry["route"], "prompt": prompt})
+
+    async def flush_llm_subcalls(self) -> None:
+        for entry in self.pending_llm_subcalls:
+            if entry.get("result") is not None:
+                continue
+            entry["result"] = await llm_tools.llm_chat_route(
+                self.bus,
+                prompt=str(entry["prompt"]),
+                route=str(entry["route"]),
+                correlation_id=self.request.correlation_id,
+                session_id=self.request.session_id,
+                user_id=self.request.user_id,
+                context=entry.get("context"),
+                schema=entry.get("schema"),
+            )
+
+    async def llm_chat(
+        self,
+        prompt: str,
+        *,
+        route: str | None = None,
+        context: Any = None,
+        schema: str | None = None,
+    ) -> dict[str, Any]:
+        route_key = (route or self.llm_route).strip().lower()
+        result = await llm_tools.llm_chat_route(
+            self.bus,
+            prompt=prompt,
+            route=route_key,
+            correlation_id=self.request.correlation_id,
+            session_id=self.request.session_id,
+            user_id=self.request.user_id,
+            context=context,
+            schema=schema,
+        )
+        self.llm_rpc_calls.append({"route": route_key, "prompt": prompt, "result": result})
+        return result
 
     async def traces_search(
         self,

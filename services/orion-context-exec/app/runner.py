@@ -29,6 +29,12 @@ from .alexzhang_rlm_engine import (
     AlexZhangRLMEngine,
     UnsupportedModeError,
 )
+from .llm_profile_resolver import (
+    LLMProfileSelection,
+    LLMProfileUnavailableError,
+    resolve_llm_profile,
+    selection_runtime_debug,
+)
 from .proposal_ledger_intake import (
     intake_final_text_line,
     intake_runtime_debug,
@@ -237,7 +243,57 @@ class ContextExecRunner:
         events = self._build_events(request, causality_chain=causality_chain)
         await events.started(run_id=run_id, mode=request.mode, text=request.text)
 
-        organ_runtime = OrganRuntime(bus=self.bus, request=request, run_id=run_id)
+        try:
+            profile_selection = await resolve_llm_profile(request.llm_profile)
+        except LLMProfileUnavailableError as exc:
+            failure_modes.append(str(exc))
+            runtime_debug = {
+                **selection_runtime_debug(
+                    LLMProfileSelection(
+                        requested=request.llm_profile,
+                        selected=str(request.llm_profile or settings.context_exec_default_llm_profile),
+                        route_used=str(request.llm_profile or settings.context_exec_default_llm_profile),
+                    )
+                ),
+                **self._engine_runtime_debug(
+                    engine_used=self.engine_selected,
+                    mode=request.mode,
+                ),
+                "correlation_id": request.correlation_id,
+            }
+            await events.finished(
+                run_id=run_id,
+                mode=request.mode,
+                status="error",
+                artifact_type=None,
+                schema_valid=False,
+                failure_modes=failure_modes,
+            )
+            return ContextExecRunV1(
+                run_id=run_id,
+                status="error",
+                mode=request.mode,
+                text=request.text,
+                answer_contract=request.answer_contract.model_dump(mode="json")
+                if request.answer_contract
+                else None,
+                findings_bundle=None,
+                artifact_type=None,
+                artifact={},
+                final_text=build_final_text(request.mode, {}, status="error"),
+                verb_trace=verb_trace,
+                runtime_debug=runtime_debug,
+                failure_modes=failure_modes,
+            )
+
+        request = request.model_copy(update={"llm_profile": profile_selection.selected})
+
+        organ_runtime = OrganRuntime(
+            bus=self.bus,
+            request=request,
+            run_id=run_id,
+            llm_route=profile_selection.route_used,
+        )
         namespace = self._build_namespace(organ_runtime)
         await namespace._prefetch_organs()  # type: ignore[attr-defined]
 
@@ -250,6 +306,7 @@ class ContextExecRunner:
             run_id=run_id,
             verb_trace=verb_trace,
         )
+        await organ_runtime.flush_llm_subcalls()
         failure_modes.extend(rlm_failures)
         fallback_engine: str | None = None
         fallback_reason: str | None = None
@@ -307,8 +364,11 @@ class ContextExecRunner:
             mode=request.mode,
             extra_steps=rlm_steps or None,
         )
-        if request.llm_profile:
-            runtime_debug["llm_profile"] = str(request.llm_profile)
+        runtime_debug.update(selection_runtime_debug(profile_selection))
+        if profile_selection.fallback_used:
+            runtime_debug["fallback_used"] = True
+            if profile_selection.fallback_reason:
+                runtime_debug["fallback_reason"] = profile_selection.fallback_reason
         if request.mode in {"patch_proposal", "memory_correction_proposal"} and schema_valid and artifact_type == "ProposalEnvelopeV1":
             runtime_debug["proposal_enveloped"] = True
             runtime_debug["proposal_type"] = artifact.get("proposal_type")
@@ -407,11 +467,30 @@ class ContextExecRunner:
                     if handle:
                         organ_cache["trace_reads"][handle] = await organ_runtime.traces_read(handle)
 
+        route_used = organ_runtime.llm_route
+
+        def llm_subcall(prompt: str, context: Any = None, schema: str | None = None) -> dict[str, Any]:
+            organ_runtime.record_llm_subcall(
+                route=route_used,
+                prompt=prompt,
+                context=context,
+                schema=schema,
+            )
+            pending = organ_runtime.pending_llm_subcalls[-1]
+            if pending.get("result") is not None:
+                return pending["result"]
+            return {
+                "ok": True,
+                "route": route_used,
+                "summary": "llm subcall recorded (async flush via organ_runtime)",
+            }
+
         namespace = ContextNamespace(
             permissions=organ_runtime.request.permissions,
             memory_fn={"search_claims": _default_memory_search, "read": lambda h: {"handle": h}},
             recall_fn=recall_fn,
             traces_fn={"search": traces_search, "read": traces_read},
+            subcall_fn=llm_subcall,
         )
         namespace._organ_cache = organ_cache  # type: ignore[attr-defined]
         namespace._organ_runtime = organ_runtime  # type: ignore[attr-defined]

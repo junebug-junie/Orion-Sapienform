@@ -71,6 +71,8 @@ PYTHONPATH=. orion_dev/bin/python scripts/orion_proposal_cli.py list --status st
 
 **Engine selection:** `fake` (default) | `alexzhang` (opt-in). Fallback must be explicit (`CONTEXT_EXEC_RLM_FALLBACK_ENABLED=true`) and visible in `runtime_debug` (`engine_requested`, `engine_selected`, `fallback_used`, `fallback_reason`).
 
+**LLM profile / route binding:** Hub Agent mode passes `llm_profile` (`chat`, `quick`, `agent`, `metacog`) on `ContextExecRequestV1`. Context-exec resolves the profile to a trusted gateway route id, records `llm_profile_requested`, `llm_profile_selected`, and `route_used` in `runtime_debug`, and binds RLM `llm.subcall` / bus RPC to that route. Invalid profile ids are rejected at schema validation. Route unavailability fails closed unless `CONTEXT_EXEC_LLM_PROFILE_FALLBACK_ENABLED=true` (records `fallback_used` + `fallback_reason`). Profile selection does not change permissions (read-only, proposal-gated).
+
 **Safety defaults:** read-only, `CONTEXT_EXEC_MAX_DEPTH=1`, write/network off, compat AgentChain bus alias off.
 
 **Verification:**

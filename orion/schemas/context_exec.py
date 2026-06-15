@@ -5,9 +5,11 @@ from __future__ import annotations
 import uuid
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from orion.core.bus.bus_schemas import LLMMessage
+
+ALLOWED_CONTEXT_EXEC_LLM_PROFILES = frozenset({"chat", "quick", "agent", "metacog"})
 from orion.schemas.cognition.answer_contract import AnswerContract, FindingsBundle, Finding
 
 ContextExecMode = Literal[
@@ -81,6 +83,20 @@ class ContextExecRequestV1(BaseModel):
         default=None,
         description="LLM gateway route/profile override (chat, quick, agent, metacog).",
     )
+
+    @field_validator("llm_profile")
+    @classmethod
+    def validate_llm_profile(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        norm = str(value).strip().lower()
+        if not norm:
+            raise ValueError("llm_profile must not be empty")
+        if norm not in ALLOWED_CONTEXT_EXEC_LLM_PROFILES:
+            raise ValueError(
+                f"llm_profile must be one of {sorted(ALLOWED_CONTEXT_EXEC_LLM_PROFILES)}; got {value!r}"
+            )
+        return norm
 
 
 class ContextExecFindingV1(BaseModel):

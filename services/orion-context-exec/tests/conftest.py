@@ -21,7 +21,7 @@ def _sync_runner_settings_module() -> None:
             import app.runner as runner_mod
 
             runner_mod.settings = settings
-            for mod_name in ("app.rlm_engine", "app.alexzhang_rlm_engine", "app.organ_runtime"):
+            for mod_name in ("app.rlm_engine", "app.alexzhang_rlm_engine", "app.organ_runtime", "app.llm_profile_resolver"):
                 mod = sys.modules.get(mod_name)
                 if mod is not None and hasattr(mod, "settings"):
                     mod.settings = settings

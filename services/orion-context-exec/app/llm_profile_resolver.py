@@ -127,6 +127,8 @@ async def resolve_llm_profile(
         return base
 
     route_status = status_map.get(base.selected)
+    if base.selected not in status_map:
+        route_status = "not_configured"
     if _route_is_available(route_status):
         return base
 
@@ -137,6 +139,8 @@ async def resolve_llm_profile(
 
     fallback = normalize_llm_profile(cfg.context_exec_default_llm_profile) or "chat"
     fallback_status = status_map.get(fallback)
+    if fallback not in status_map:
+        fallback_status = "not_configured"
     if not _route_is_available(fallback_status):
         raise LLMProfileUnavailableError(
             f"llm_profile route {base.selected!r} unavailable and default "

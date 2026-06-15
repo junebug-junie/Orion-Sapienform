@@ -2,15 +2,34 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import pytest
 
-from orion.schemas.context_exec import ContextExecRequestV1, context_exec_permissions_for_llm_profile
+CTX_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
-from app.investigation_v2 import INVESTIGATION_V2_SKELETON_MESSAGE, build_investigation_v2_skeleton_artifact
-from app.runner import ContextExecRunner
+
+def _ctx_app_modules():
+    for key in list(sys.modules):
+        if key == "app" or key.startswith("app."):
+            del sys.modules[key]
+    for p in (str(REPO_ROOT), str(CTX_ROOT)):
+        try:
+            sys.path.remove(p)
+        except ValueError:
+            pass
+    sys.path.insert(0, str(REPO_ROOT))
+    sys.path.insert(0, str(CTX_ROOT))
 
 
 def test_investigation_v2_skeleton_artifact_shape() -> None:
+    from orion.schemas.context_exec import ContextExecRequestV1, context_exec_permissions_for_llm_profile
+
+    _ctx_app_modules()
+    from app.investigation_v2 import INVESTIGATION_V2_SKELETON_MESSAGE, build_investigation_v2_skeleton_artifact
+
     req = ContextExecRequestV1(
         text="what would happen if we changed the cortex-exec runtime?",
         mode="investigation_v2",
@@ -25,6 +44,12 @@ def test_investigation_v2_skeleton_artifact_shape() -> None:
 
 @pytest.mark.asyncio
 async def test_runner_investigation_v2_returns_skeleton_without_organs() -> None:
+    from orion.schemas.context_exec import ContextExecRequestV1, context_exec_permissions_for_llm_profile
+
+    _ctx_app_modules()
+    from app.investigation_v2 import INVESTIGATION_V2_SKELETON_MESSAGE
+    from app.runner import ContextExecRunner
+
     runner = ContextExecRunner()
     req = ContextExecRequestV1(
         text="what would happen if we changed the cortex-exec runtime?",
@@ -45,6 +70,7 @@ async def test_runner_investigation_v2_returns_skeleton_without_organs() -> None
 async def test_agent_compat_v2_skips_keyword_mode_inference(monkeypatch: pytest.MonkeyPatch) -> None:
     from orion.schemas.agents.schemas import AgentChainRequest
 
+    _ctx_app_modules()
     from app.agent_compat import agent_chain_request_to_context_exec
     from app.settings import settings
 

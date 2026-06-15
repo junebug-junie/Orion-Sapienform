@@ -13,6 +13,8 @@ def pytest_configure() -> None:
     for key in list(sys.modules):
         if key == "scripts" or key.startswith("scripts."):
             del sys.modules[key]
+        if key == "app" or key.startswith("app."):
+            del sys.modules[key]
     # Remove stale entries so we can prepend Hub before cwd (`''`) and duplicate PYTHONPATH entries.
     for p in (str(_REPO_ROOT), str(_HUB_ROOT)):
         try:

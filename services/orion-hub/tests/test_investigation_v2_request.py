@@ -7,13 +7,30 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 HUB_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = Path(__file__).resolve().parents[3]
-for candidate in (str(HUB_ROOT), str(REPO_ROOT)):
-    if candidate not in sys.path:
-        sys.path.insert(0, candidate)
+
+
+def _hub_imports():
+    for key in list(sys.modules):
+        if key == "app" or key.startswith("app."):
+            del sys.modules[key]
+        if key == "scripts" or key.startswith("scripts."):
+            del sys.modules[key]
+    sys.path = [p for p in sys.path if "orion-context-exec" not in p.replace("\\", "/")]
+    for p in (str(REPO_ROOT), str(HUB_ROOT)):
+        try:
+            sys.path.remove(p)
+        except ValueError:
+            pass
+    sys.path.insert(0, str(REPO_ROOT))
+    sys.path.insert(0, str(HUB_ROOT))
+    from scripts.context_exec_agent_bridge import build_context_exec_request
+    from orion.schemas.context_exec import context_exec_permissions_for_llm_profile
+    from orion.schemas.cortex.contracts import CortexChatRequest
+
+    return build_context_exec_request, context_exec_permissions_for_llm_profile, CortexChatRequest
+
 
 for key, value in {
     "CHANNEL_VOICE_TRANSCRIPT": "orion:voice:transcript",
@@ -24,15 +41,12 @@ for key, value in {
 }.items():
     os.environ.setdefault(key, value)
 
-from orion.schemas.context_exec import context_exec_permissions_for_llm_profile
-from orion.schemas.cortex.contracts import CortexChatRequest
-from scripts.context_exec_agent_bridge import build_context_exec_request
-
 
 CORTEX_CHANGE_PROMPT = "what would happen if we changed the cortex-exec runtime?"
 
 
 def test_agent_profile_permissions_read_broad_write_none() -> None:
+    _, context_exec_permissions_for_llm_profile, _ = _hub_imports()
     perms = context_exec_permissions_for_llm_profile("agent")
     assert perms.read_memory is True
     assert perms.read_graph is True
@@ -49,6 +63,7 @@ def test_agent_profile_permissions_read_broad_write_none() -> None:
 
 
 def test_quick_profile_permissions_remain_narrow() -> None:
+    _, context_exec_permissions_for_llm_profile, _ = _hub_imports()
     perms = context_exec_permissions_for_llm_profile("quick")
     assert perms.read_repo is False
     assert perms.write_repo is False
@@ -56,27 +71,34 @@ def test_quick_profile_permissions_remain_narrow() -> None:
     assert perms.write_memory is False
 
 
-@patch("scripts.context_exec_agent_bridge.investigation_v2_enabled", return_value=True)
-def test_v2_enabled_agent_lane_uses_investigation_v2_without_repo_keywords(_mock_v2: object) -> None:
-    req = CortexChatRequest(prompt=CORTEX_CHANGE_PROMPT, mode="agent", trace_id="corr-v2")
-    body = build_context_exec_request(req=req, prompt=req.prompt, llm_profile="agent")
+def test_v2_enabled_agent_lane_uses_investigation_v2_without_repo_keywords() -> None:
+    build_context_exec_request, _, CortexChatRequest = _hub_imports()
+    with patch("scripts.context_exec_agent_bridge.investigation_v2_enabled", return_value=True):
+        req = CortexChatRequest(prompt=CORTEX_CHANGE_PROMPT, mode="agent", trace_id="corr-v2")
+        body = build_context_exec_request(req=req, prompt=req.prompt, llm_profile="agent")
     assert body.mode == "investigation_v2"
     assert body.permissions.read_repo is True
     assert body.text == CORTEX_CHANGE_PROMPT
 
 
-@patch("scripts.context_exec_agent_bridge.investigation_v2_enabled", return_value=False)
-def test_v2_disabled_preserves_keyword_mode_inference(_mock_v2: object) -> None:
-    req = CortexChatRequest(prompt=CORTEX_CHANGE_PROMPT, mode="agent", trace_id="corr-legacy")
-    body = build_context_exec_request(req=req, prompt=req.prompt, llm_profile="agent")
-    assert body.mode == "general_investigation"
-    assert body.permissions.read_repo is False
+def test_v2_disabled_preserves_keyword_mode_inference() -> None:
+    build_context_exec_request, _, CortexChatRequest = _hub_imports()
+    with patch("scripts.context_exec_agent_bridge.investigation_v2_enabled", return_value=False):
+        req = CortexChatRequest(
+            prompt="what breaks if we replace agent-chain-service with context-exec?",
+            mode="agent",
+            trace_id="corr-legacy",
+        )
+        body = build_context_exec_request(req=req, prompt=req.prompt, llm_profile="agent")
+    assert body.mode == "repo_impact_analysis"
+    assert body.permissions.read_repo is True
 
 
-@patch("scripts.context_exec_agent_bridge.investigation_v2_enabled", return_value=True)
-def test_v2_enabled_quick_profile_does_not_grant_mutation_permissions(_mock_v2: object) -> None:
-    req = CortexChatRequest(prompt=CORTEX_CHANGE_PROMPT, mode="agent", trace_id="corr-quick")
-    body = build_context_exec_request(req=req, prompt=req.prompt, llm_profile="quick")
+def test_v2_enabled_quick_profile_does_not_grant_mutation_permissions() -> None:
+    build_context_exec_request, _, CortexChatRequest = _hub_imports()
+    with patch("scripts.context_exec_agent_bridge.investigation_v2_enabled", return_value=True):
+        req = CortexChatRequest(prompt=CORTEX_CHANGE_PROMPT, mode="agent", trace_id="corr-quick")
+        body = build_context_exec_request(req=req, prompt=req.prompt, llm_profile="quick")
     assert body.mode == "investigation_v2"
     assert body.permissions.read_repo is False
     assert body.permissions.write_repo is False

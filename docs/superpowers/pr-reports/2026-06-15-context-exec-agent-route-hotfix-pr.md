@@ -50,4 +50,4 @@ Commits the live hotfixes required after deploying Hub Agent route-bound synthes
 
 ## Env parity
 
-`.env_example` updated for gateway port `8210`. Local `.env` may differ on proposal-review keys (`PROPOSAL_REVIEW_API_ENABLED`, `PROPOSAL_LEDGER_STORE_PATH`) — operator deploy overrides, not committed.
+`.env_example` matches operator `.env` for Agent route, synthesis, gateway port `8210`, and proposal review (`PROPOSAL_REVIEW_API_ENABLED=true`, `PROPOSAL_LEDGER_STORE_PATH=/tmp/orion-proposals.json`). Ledger intake remains disabled by default.

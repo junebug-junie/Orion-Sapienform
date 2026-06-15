@@ -241,9 +241,11 @@ async def test_runner_fake_engine_runtime_debug(monkeypatch):
     ]
     req = ContextExecRequestV1(text="Denver claim?", mode="belief_provenance")
     run = await runner.run(req)
+    assert run.runtime_debug["engine_requested"] == "fake"
     assert run.runtime_debug["engine"] == "fake"
     assert run.runtime_debug["engine_selected"] == "fake"
     assert run.runtime_debug.get("fallback_engine") is None
+    assert run.runtime_debug.get("fallback_used") is not True
 
 
 @pytest.mark.asyncio
@@ -258,6 +260,7 @@ async def test_runner_alexzhang_engine_runtime_debug(monkeypatch):
         mode="belief_provenance",
     )
     run = await runner.run(req)
+    assert run.runtime_debug["engine_requested"] == "alexzhang"
     assert run.runtime_debug["engine"] == "alexzhang"
     assert run.runtime_debug["engine_selected"] == "alexzhang"
     assert run.runtime_debug["schema_valid"] is True
@@ -472,6 +475,7 @@ async def test_alexzhang_repo_impact_runtime_debug_and_safety(monkeypatch):
     )
     run = await runner.run(req)
 
+    assert run.runtime_debug["engine_requested"] == "alexzhang"
     assert run.runtime_debug["engine"] == "alexzhang"
     assert run.runtime_debug["engine_selected"] == "alexzhang"
     assert run.runtime_debug["schema_valid"] is True

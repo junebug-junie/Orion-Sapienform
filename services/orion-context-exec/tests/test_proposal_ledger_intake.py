@@ -129,12 +129,14 @@ async def test_investigative_artifacts_do_not_enter_proposal_ledger(
     tmp_path: Path,
 ) -> None:
     store = tmp_path / "proposals.json"
-    monkeypatch.setattr("app.runner.settings.rlm_engine", "fake")
-    monkeypatch.setattr("app.runner.settings.context_exec_proposal_ledger_enabled", True)
+    monkeypatch.setattr("app.settings.settings.rlm_engine", "fake")
+    monkeypatch.setattr("app.settings.settings.context_exec_proposal_ledger_enabled", True)
     monkeypatch.setattr(
-        "app.runner.settings.context_exec_proposal_ledger_store_path",
+        "app.settings.settings.context_exec_proposal_ledger_store_path",
         str(store),
     )
+    from app.runner import ContextExecRunner
+
     runner = ContextExecRunner()
     for mode, text in [
         ("belief_provenance", "Where did the Denver belief come from?"),
@@ -153,9 +155,11 @@ async def test_runner_ledger_enabled_without_store_path_skips_persist(
     tmp_path: Path,
 ) -> None:
     store = tmp_path / "proposals.json"
-    monkeypatch.setattr("app.runner.settings.rlm_engine", "fake")
-    monkeypatch.setattr("app.runner.settings.context_exec_proposal_ledger_enabled", True)
-    monkeypatch.setattr("app.runner.settings.context_exec_proposal_ledger_store_path", "")
+    monkeypatch.setattr("app.settings.settings.rlm_engine", "fake")
+    monkeypatch.setattr("app.settings.settings.context_exec_proposal_ledger_enabled", True)
+    monkeypatch.setattr("app.settings.settings.context_exec_proposal_ledger_store_path", "")
+    from app.runner import ContextExecRunner
+
     runner = ContextExecRunner()
     run = await runner.run(
         ContextExecRequestV1(text=PATCH_PROMPT, mode="patch_proposal"),
@@ -172,12 +176,14 @@ async def test_runner_persists_patch_proposal_when_ledger_enabled(
     tmp_path: Path,
 ) -> None:
     store = tmp_path / "proposals.json"
-    monkeypatch.setattr("app.runner.settings.rlm_engine", "fake")
-    monkeypatch.setattr("app.runner.settings.context_exec_proposal_ledger_enabled", True)
+    monkeypatch.setattr("app.settings.settings.rlm_engine", "fake")
+    monkeypatch.setattr("app.settings.settings.context_exec_proposal_ledger_enabled", True)
     monkeypatch.setattr(
-        "app.runner.settings.context_exec_proposal_ledger_store_path",
+        "app.settings.settings.context_exec_proposal_ledger_store_path",
         str(store),
     )
+    from app.runner import ContextExecRunner
+
     runner = ContextExecRunner()
     run = await runner.run(
         ContextExecRequestV1(text=PATCH_PROMPT, mode="patch_proposal"),
@@ -199,8 +205,10 @@ async def test_runner_ledger_disabled_does_not_persist(
     tmp_path: Path,
 ) -> None:
     store = tmp_path / "proposals.json"
-    monkeypatch.setattr("app.runner.settings.rlm_engine", "fake")
-    monkeypatch.setattr("app.runner.settings.context_exec_proposal_ledger_enabled", False)
+    monkeypatch.setattr("app.settings.settings.rlm_engine", "fake")
+    monkeypatch.setattr("app.settings.settings.context_exec_proposal_ledger_enabled", False)
+    from app.runner import ContextExecRunner
+
     runner = ContextExecRunner()
     run = await runner.run(
         ContextExecRequestV1(text=PATCH_PROMPT, mode="patch_proposal"),

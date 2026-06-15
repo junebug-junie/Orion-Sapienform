@@ -97,9 +97,12 @@ class ContextExecRunner:
         mode: str,
         extra_steps: list[str] | None = None,
     ) -> dict[str, Any]:
+        fallback_used = fallback_engine is not None
         debug: dict[str, Any] = {
+            "engine_requested": self.engine_selected,
+            "engine_selected": engine_used,
             "engine": engine_used,
-            "engine_selected": self.engine_selected,
+            "fallback_used": fallback_used,
             "fallback_engine": fallback_engine,
             "rlm_depth": settings.context_exec_max_depth,
             "subcalls": subcalls,

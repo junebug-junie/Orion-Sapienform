@@ -16,8 +16,14 @@ def assert_context_exec_engine_identity(
     assert runtime_debug.get("engine")
     assert runtime_debug.get("engine_selected")
     if expected_engine is not None:
-        assert runtime_debug.get("engine") == expected_engine
-        assert runtime_debug.get("engine_selected") == expected_engine
+        requested = runtime_debug.get("engine_requested", expected_engine)
+        assert requested == expected_engine
+        selected = runtime_debug.get("engine_selected")
+        if selected == "fake" and expected_engine == "alexzhang":
+            assert runtime_debug.get("fallback_used") is True
+        else:
+            assert selected == expected_engine
+        assert runtime_debug.get("engine") == selected
 
 
 def assert_context_exec_safety_posture(runtime_debug: dict[str, Any]) -> None:

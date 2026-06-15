@@ -245,6 +245,16 @@
               <button class="mode-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-mode="council">Council</button>
             </div>
           </div>
+          <div class="flex items-center gap-2 pt-1 border-t border-gray-700/80">
+            <span class="uppercase text-gray-500 font-bold text-[10px]">Route</span>
+            <div class="flex flex-wrap gap-1" id="llmRouteSelector" role="radiogroup" aria-label="LLM route">
+              <button type="button" class="llm-route-btn px-2 py-1 rounded bg-indigo-600 text-white transition-colors" data-llm-route="chat" title="chat compute route">chat</button>
+              <button type="button" class="llm-route-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-llm-route="quick" title="quick compute route">quick</button>
+              <button type="button" class="llm-route-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-llm-route="agent" title="agent compute route">agent</button>
+              <button type="button" class="llm-route-btn px-2 py-1 rounded bg-gray-700 text-gray-200 hover:bg-gray-600 transition-colors" data-llm-route="metacog" title="metacog compute route">metacog</button>
+            </div>
+            <span id="llmRouteMeta" class="text-[10px] text-gray-500 truncate max-w-[14rem]" title="Route metadata">—</span>
+          </div>
           <div class="flex items-center gap-3 pt-1 border-t border-gray-700/80">
             <label class="flex items-center gap-1.5 text-xs text-gray-400" for="recallToggle">
               <input type="checkbox" id="recallToggle" class="h-3 w-3 text-indigo-600 rounded bg-gray-700 border-gray-600" checked />

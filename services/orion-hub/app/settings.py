@@ -78,6 +78,31 @@ class Settings(BaseSettings):
         default=10.0,
         alias="HUB_PROPOSAL_REVIEW_TIMEOUT_SEC",
     )
+
+    # --- LLM gateway route catalog (compute override) ---
+    HUB_LLM_GATEWAY_URL: str = Field(
+        default="http://orion-llm-gateway:8210",
+        alias="HUB_LLM_GATEWAY_URL",
+    )
+    HUB_LLM_GATEWAY_TIMEOUT_SEC: float = Field(
+        default=5.0,
+        alias="HUB_LLM_GATEWAY_TIMEOUT_SEC",
+    )
+
+    # --- Context-exec agent lane (Hub Agent mode) ---
+    HUB_AGENT_CONTEXT_EXEC_ENABLED: bool = Field(
+        default=True,
+        alias="HUB_AGENT_CONTEXT_EXEC_ENABLED",
+    )
+    HUB_CONTEXT_EXEC_API_URL: str = Field(
+        default="http://orion-context-exec:8096",
+        alias="HUB_CONTEXT_EXEC_API_URL",
+    )
+    HUB_CONTEXT_EXEC_TIMEOUT_SEC: float = Field(
+        default=120.0,
+        alias="HUB_CONTEXT_EXEC_TIMEOUT_SEC",
+    )
+
     WORLD_PULSE_UI_FIXTURE_RUN_ENABLED: bool = Field(
         default=False,
         alias="WORLD_PULSE_UI_FIXTURE_RUN_ENABLED",

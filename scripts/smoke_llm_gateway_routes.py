@@ -5,6 +5,8 @@ import os
 import uuid
 from typing import Dict
 
+import httpx
+
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
 
@@ -90,6 +92,28 @@ async def _rpc_chat(
     print(f"[ok] route={route} served_by={served_by}")
 
 
+async def _verify_routes_http(gateway_url: str, timeout_sec: float) -> None:
+    url = f"{gateway_url.rstrip('/')}/routes"
+    async with httpx.AsyncClient(timeout=timeout_sec) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        payload = response.json()
+    if payload.get("default_route") != "chat":
+        raise AssertionError(f"default_route={payload.get('default_route')} expected chat")
+    routes = payload.get("routes") or []
+    ids = [str(r.get("id")) for r in routes if isinstance(r, dict)]
+    for route_id in ("chat", "quick", "agent", "metacog"):
+        if route_id not in ids:
+            raise AssertionError(f"GET /routes missing route id={route_id}")
+    for entry in routes:
+        if not isinstance(entry, dict):
+            continue
+        for key in ("id", "served_by", "backend", "status", "latency_ms", "last_checked_at"):
+            if key not in entry:
+                raise AssertionError(f"route entry missing key={key}: {entry}")
+    print(f"[ok] GET /routes default_route=chat routes={ids}")
+
+
 async def _main_async(args: argparse.Namespace) -> None:
     bus = OrionBusAsync(args.redis)
     await bus.connect()
@@ -110,6 +134,9 @@ async def _main_async(args: argparse.Namespace) -> None:
             timeout_sec=args.timeout,
         )
 
+    if args.gateway_url:
+        await _verify_routes_http(args.gateway_url, min(args.timeout, 15.0))
+
     await bus.close()
 
 
@@ -126,6 +153,11 @@ def main() -> None:
         help="LLM gateway request channel.",
     )
     parser.add_argument("--timeout", type=float, default=90.0, help="RPC timeout seconds.")
+    parser.add_argument(
+        "--gateway-url",
+        default=os.getenv("LLM_GATEWAY_URL", os.getenv("HUB_LLM_GATEWAY_URL", "")),
+        help="Optional LLM gateway base URL for GET /routes verification.",
+    )
     args = parser.parse_args()
     asyncio.run(_main_async(args))
 

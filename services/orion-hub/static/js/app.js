@@ -56,6 +56,8 @@ let selectedVerbs = [];
 let modeVerbOverride = null;
 /** Hub quick lane: 'fast' = light prep; 'stance' = full brain/stance prep (slower, richer). */
 let chatQuickVariant = 'fast';
+let selectedLlmRoute = localStorage.getItem('orion_llm_route') || 'chat';
+let llmRouteCatalog = { default_route: 'chat', routes: [] };
 let orionSessionId = localStorage.getItem('orion_sid') || null;
 let browserClientId = localStorage.getItem('orion_browser_client_id') || null;
 let presenceContext = null;
@@ -9432,6 +9434,75 @@ loadDismissedIds();
   applyModeButtonSelection(defaultModeButton);
   syncQuickMainButtonLabel();
 
+  function applyLlmRouteButtonSelection(routeId) {
+    const rid = String(routeId || 'chat').toLowerCase();
+    document.querySelectorAll('.llm-route-btn').forEach((btn) => {
+      const btnRoute = String(btn.dataset.llmRoute || 'chat').toLowerCase();
+      btn.classList.remove('bg-indigo-600', 'text-white');
+      btn.classList.add('bg-gray-700', 'text-gray-200', 'hover:bg-gray-600');
+      if (btnRoute === rid) {
+        btn.classList.add('bg-indigo-600', 'text-white');
+        btn.classList.remove('bg-gray-700', 'text-gray-200', 'hover:bg-gray-600');
+      }
+    });
+    const entry = (llmRouteCatalog.routes || []).find((r) => String(r.id || '').toLowerCase() === rid);
+    const metaEl = document.getElementById('llmRouteMeta');
+    if (metaEl) {
+      if (!entry) metaEl.textContent = '—';
+      else {
+        metaEl.textContent = `${entry.served_by || '—'} · ${entry.backend || '—'} · ${entry.status || 'unknown'}`;
+        metaEl.title = `served_by=${entry.served_by || '—'} backend=${entry.backend || '—'} status=${entry.status || 'unknown'}`;
+      }
+    }
+  }
+
+  function routeStatusIsDown(routeId) {
+    const rid = String(routeId || '').toLowerCase();
+    const entry = (llmRouteCatalog.routes || []).find((r) => String(r.id || '').toLowerCase() === rid);
+    if (!entry) return false;
+    return entry.status === 'down' || entry.status === 'not_configured';
+  }
+
+  async function confirmDownRouteOrProceed(routeId) {
+    const rid = String(routeId || 'chat').toLowerCase();
+    if (!routeStatusIsDown(rid)) return rid;
+    const entry = (llmRouteCatalog.routes || []).find((r) => String(r.id || '').toLowerCase() === rid) || { id: rid };
+    const detail = `${entry.served_by || '—'} / ${entry.backend || '—'} / ${entry.status || 'down'}`;
+    const useChat = window.confirm(
+      `Route "${rid}" is unavailable (${detail}).\n\nOK = Use chat\nCancel = more options`
+    );
+    if (useChat) return 'chat';
+    const tryAnyway = window.confirm(`Try "${rid}" anyway? Cancel aborts the send.`);
+    if (tryAnyway) return rid;
+    return null;
+  }
+
+  async function loadLlmRouteCatalog() {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/llm-routes`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      llmRouteCatalog = await res.json();
+      const known = new Set((llmRouteCatalog.routes || []).map((r) => String(r.id || '').toLowerCase()));
+      if (!known.has(String(selectedLlmRoute || '').toLowerCase())) {
+        selectedLlmRoute = String(llmRouteCatalog.default_route || 'chat').toLowerCase();
+      }
+    } catch (err) {
+      console.warn('[LLM routes] catalog load failed', err);
+    }
+    applyLlmRouteButtonSelection(selectedLlmRoute || 'chat');
+  }
+
+  document.querySelectorAll('.llm-route-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const routeId = String(btn.dataset.llmRoute || 'chat').toLowerCase();
+      selectedLlmRoute = routeId;
+      localStorage.setItem('orion_llm_route', routeId);
+      applyLlmRouteButtonSelection(routeId);
+      updateStatus(`LLM route: ${routeId}`);
+    });
+  });
+  loadLlmRouteCatalog();
+
   // --- 4. Logic Functions ---
 
   async function loadCognitionLibrary() {
@@ -10576,6 +10647,24 @@ loadDismissedIds();
   async function submitExplicitChatText(text, opts = {}) {
     const value = String(text || '').trim();
     if (!value) return;
+
+    let effectiveRoute = String(
+      (opts && opts.llm_route) || selectedLlmRoute || llmRouteCatalog.default_route || 'chat'
+    ).toLowerCase();
+    if (!(opts && opts.skipRouteDownCheck)) {
+      const confirmedRoute = await confirmDownRouteOrProceed(effectiveRoute);
+      if (confirmedRoute === null) {
+        updateStatus('Send cancelled (route unavailable).');
+        return;
+      }
+      effectiveRoute = confirmedRoute;
+      if (effectiveRoute !== selectedLlmRoute) {
+        selectedLlmRoute = effectiveRoute;
+        localStorage.setItem('orion_llm_route', effectiveRoute);
+        applyLlmRouteButtonSelection(effectiveRoute);
+      }
+    }
+
     appendMessage('You', value);
     if (chatInput) chatInput.value = '';
 
@@ -10616,6 +10705,7 @@ loadDismissedIds();
        skill_runner_lane: opts && opts.skillRunnerLane ? String(opts.skillRunnerLane) : null,
        presence_context: presenceContext,
        surface_context: { surface: 'hub_desktop', input_modality: 'typed' },
+       llm_route: effectiveRoute,
     };
     if (!omitChatUiMode) {
       payload.mode = requestMode;
@@ -10959,6 +11049,7 @@ loadDismissedIds();
           recall_required: recallRequiredToggle ? recallRequiredToggle.checked : false,
           presence_context: presenceContext,
           surface_context: { surface: 'hub_desktop', input_modality: 'spoken' },
+          llm_route: selectedLlmRoute || llmRouteCatalog.default_route || 'chat',
         };
         const audioLaneVerbs = modeVerbOverride ? [modeVerbOverride] : selectedVerbs;
         const audioIsChatQuick =

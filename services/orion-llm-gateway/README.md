@@ -36,6 +36,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `LLM_ROUTE_LATENTS_URL` | `None` | Fallback URL for `route=latents` (if JSON not set). |
 | `LLM_ROUTE_SPECIALIST_URL` | `None` | Fallback URL for `route=specialist` (if JSON not set). |
 | `LLM_GATEWAY_HEALTH_PORT` | `8210` | Local HTTP health port. |
+| `LLM_ROUTE_HEALTH_TIMEOUT_SEC` | `1.5` | Upstream `/health` probe timeout for route catalog. |
 | `LLM_LOGPROB_SUMMARY_ENABLED` | `false` | Global gate for summary-only `llm_uncertainty` on chat results. |
 | `LLM_LOGPROB_TOP_K_DEFAULT` | `5` | Default `top_logprobs` / `n_probs` depth when `return_logprobs` is set. |
 | `LLM_LOGPROB_LOW_MARGIN_THRESHOLD` | `0.5` | Low top-1 margin token threshold. |
@@ -43,6 +44,13 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `LLM_LOGPROB_UNSTABLE_SPAN_MIN_LEN` | `3` | Consecutive low-margin run length for unstable spans. |
 | `LLM_LOGPROB_NATIVE_COMPLETION_ENABLED` | `false` | Allow aligned `POST /apply-template` + `POST /completion` path. |
 | `LLM_LOGPROB_NATIVE_COMPLETION_MAX_TOKENS` | `256` | Default `n_predict` when native path omits `max_tokens`. |
+
+### HTTP endpoints
+
+| Path | Description |
+| :--- | :--- |
+| `GET /health` | Service liveness and configured route keys. |
+| `GET /routes` | Route catalog from `LLM_GATEWAY_ROUTE_TABLE_JSON` with `default_route=chat` and per-route `id`, `served_by`, `backend`, `status`, `latency_ms`, `last_checked_at`. |
 
 ### Logprob / `llm_uncertainty` (language surface stability)
 

@@ -38,11 +38,61 @@ from orion.schemas.context_exec import (
 )
 from orion.schemas.cortex.contracts import CortexChatRequest
 
+INDEX_HTML = HUB_ROOT / "templates" / "index.html"
+APP_JS = HUB_ROOT / "static" / "js" / "app.js"
+THOUGHT_JS = HUB_ROOT / "static" / "js" / "thought-process.js"
 
-def test_normalize_llm_profile_defaults_to_chat() -> None:
-    assert normalize_llm_profile(None) == "chat"
+
+def test_hub_renders_mode_dropdown() -> None:
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert 'id="hubModeSelect"' in html
+    assert "<option value=\"agent\">Agent</option>" in html
+    assert 'id="llmRouteSelector"' not in html
+    assert 'class="llm-route-btn"' not in html
+
+
+def test_hub_renders_compute_dropdown_not_chip_row() -> None:
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert 'id="hubComputeSelect"' in html
+    assert 'role="radiogroup" aria-label="LLM route"' not in html
+    assert 'data-llm-route="chat"' not in html
+    assert ">Compute</label>" in html or "for=\"hubComputeSelect\"" in html
+    assert ">Route</span>" not in html
+
+
+def test_app_js_compute_default_is_quick() -> None:
+    src = APP_JS.read_text(encoding="utf-8")
+    assert "HUB_COMPUTE_DEFAULT = 'quick'" in src
+    assert "orion_llm_route') || HUB_COMPUTE_DEFAULT" in src
+    assert "llm-route-btn" not in src
+    assert "applyLlmRouteButtonSelection" not in src
+
+
+def test_app_js_down_route_suggests_quick_fallback() -> None:
+    src = APP_JS.read_text(encoding="utf-8")
+    assert "Use quick instead" in src
+    assert "return HUB_COMPUTE_DEFAULT" in src
+    assert "Use chat" not in src.split("confirmDownRouteOrProceed")[1].split("async function")[0]
+
+
+def test_app_js_polls_llm_routes() -> None:
+    src = APP_JS.read_text(encoding="utf-8")
+    assert "/api/llm-routes" in src
+    assert "setInterval" in src
+    assert "loadLlmRouteCatalog" in src
+
+
+def test_regression_no_route_radiogroup_chip_row() -> None:
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    for route_id in ("chat", "quick", "agent", "metacog"):
+        assert f'data-llm-route="{route_id}"' not in html
+    assert 'role="radiogroup" aria-label="LLM route"' not in html
+
+
+def test_normalize_llm_profile_defaults_to_quick() -> None:
+    assert normalize_llm_profile(None) == "quick"
     assert normalize_llm_profile("AGENT") == "agent"
-    assert normalize_llm_profile("bogus") == "chat"
+    assert normalize_llm_profile("bogus") == "quick"
 
 
 def test_build_chat_request_includes_llm_route_in_options() -> None:
@@ -61,7 +111,7 @@ def test_build_chat_request_includes_llm_route_in_options() -> None:
     assert debug.get("llm_route") == "quick"
 
 
-def test_build_chat_request_defaults_llm_route_to_chat() -> None:
+def test_build_chat_request_defaults_llm_route_to_quick() -> None:
     req, debug, _ = build_chat_request(
         payload={"mode": "brain"},
         session_id="s1",
@@ -73,8 +123,8 @@ def test_build_chat_request_defaults_llm_route_to_chat() -> None:
         prompt="hello",
         messages=[{"role": "user", "content": "hello"}],
     )
-    assert req.options.get("llm_route") == "chat"
-    assert debug.get("llm_route") == "chat"
+    assert req.options.get("llm_route") == "quick"
+    assert debug.get("llm_route") == "quick"
 
 
 def test_should_use_context_exec_agent_lane_when_enabled() -> None:
@@ -151,7 +201,7 @@ async def test_fetch_routes_normalizes_catalog() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_hub_agent_via_context_exec_uses_chat_profile() -> None:
+async def test_run_hub_agent_via_context_exec_uses_quick_profile() -> None:
     from scripts.context_exec_agent_bridge import run_hub_agent_via_context_exec
 
     fake_run = ContextExecRunV1(
@@ -161,15 +211,15 @@ async def test_run_hub_agent_via_context_exec_uses_chat_profile() -> None:
         text="Where did the Denver belief come from?",
         final_text="Insufficient evidence for Denver belief.",
         runtime_debug={
-            "llm_profile_selected": "chat",
-            "route_used": "chat",
+            "llm_profile_selected": "quick",
+            "route_used": "quick",
             "model_synthesis_used": False,
         },
         operator_summary=ContextExecOperatorSummaryV1(
             title="Belief provenance complete",
             summary="Insufficient evidence for Denver belief.",
             agent_mode="belief_provenance",
-            route_used="chat",
+            route_used="quick",
             model_synthesis_used=False,
             safety=ContextExecSafetySummaryV1(),
         ),
@@ -183,19 +233,59 @@ async def test_run_hub_agent_via_context_exec_uses_chat_profile() -> None:
             req=CortexChatRequest(
                 prompt="Where did the Denver belief come from?",
                 mode="agent",
-                options={"llm_route": "chat"},
+                options={"llm_route": "quick"},
             ),
             prompt="Where did the Denver belief come from?",
             correlation_id="corr-1",
-            route_debug={"llm_route": "chat"},
+            route_debug={"llm_route": "quick"},
         )
     assert "Agent run complete" in out.get("llm_response", "")
-    assert "Route: chat" in out.get("llm_response", "")
-    assert "Synthesis: skipped" in out.get("llm_response", "")
-    assert out.get("operator_summary", {}).get("route_used") == "chat"
+    assert "Route: quick" in out.get("llm_response", "")
+    assert out.get("operator_summary", {}).get("route_used") == "quick"
     assert out.get("routing_debug", {}).get("context_exec_lane") is True
-    assert out.get("routing_debug", {}).get("route_used") == "chat"
-    assert out.get("agent_trace", {}).get("mode") == "agent"
+
+
+@pytest.mark.asyncio
+async def test_run_hub_agent_via_context_exec_uses_agent_profile() -> None:
+    from scripts.context_exec_agent_bridge import run_hub_agent_via_context_exec
+
+    fake_run = ContextExecRunV1(
+        run_id="run-agent",
+        status="ok",
+        mode="general_investigation",
+        text="inspect",
+        final_text="done",
+        runtime_debug={
+            "llm_profile_selected": "agent",
+            "route_used": "agent",
+            "model_synthesis_used": True,
+        },
+        operator_summary=ContextExecOperatorSummaryV1(
+            title="Investigation complete",
+            summary="done",
+            agent_mode="general_investigation",
+            route_used="agent",
+            model_synthesis_used=True,
+            safety=ContextExecSafetySummaryV1(),
+        ),
+    )
+
+    with patch(
+        "scripts.context_exec_agent_bridge.run_context_exec",
+        new=AsyncMock(return_value=fake_run),
+    ) as mock_run:
+        await run_hub_agent_via_context_exec(
+            req=CortexChatRequest(
+                prompt="inspect repo",
+                mode="agent",
+                options={"llm_route": "agent"},
+            ),
+            prompt="inspect repo",
+            correlation_id="corr-agent",
+            route_debug={"llm_route": "agent"},
+        )
+    body = mock_run.await_args.args[0]
+    assert body.llm_profile == "agent"
 
 
 def test_format_agent_operator_inline_renders_proposal_link() -> None:
@@ -223,3 +313,12 @@ def test_format_agent_operator_inline_renders_proposal_link() -> None:
     assert "prop_denver_1" in inline
     assert "Pending Decisions" in inline
     assert "Mutation: none" in inline
+
+
+def test_thought_process_syncs_lane_from_mode_dropdown() -> None:
+    src = THOUGHT_JS.read_text(encoding="utf-8")
+    html = INDEX_HTML.read_text(encoding="utf-8")
+    assert "hubModeSelect" in src
+    assert "setLane" in src
+    assert "LANE_GROUNDED_SMALL" in src
+    assert "Grounded Small" in html

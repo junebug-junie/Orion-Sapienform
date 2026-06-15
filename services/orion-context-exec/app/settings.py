@@ -105,6 +105,23 @@ class ContextExecSettings(BaseSettings):
     )
     context_exec_llm_timeout_sec: float = Field(30.0, alias="CONTEXT_EXEC_LLM_TIMEOUT_SEC")
 
+    context_exec_agent_synthesis_enabled: bool = Field(
+        True,
+        alias="CONTEXT_EXEC_AGENT_SYNTHESIS_ENABLED",
+    )
+    context_exec_agent_synthesis_required: bool = Field(
+        False,
+        alias="CONTEXT_EXEC_AGENT_SYNTHESIS_REQUIRED",
+    )
+    context_exec_agent_synthesis_max_chars: int = Field(
+        4000,
+        alias="CONTEXT_EXEC_AGENT_SYNTHESIS_MAX_CHARS",
+    )
+    context_exec_agent_synthesis_timeout_sec: float = Field(
+        30.0,
+        alias="CONTEXT_EXEC_AGENT_SYNTHESIS_TIMEOUT_SEC",
+    )
+
     orion_repo_root: str = Field("/app", alias="ORION_REPO_ROOT")
     rlm_engine: str = Field("fake", alias="CONTEXT_EXEC_RLM_ENGINE")
     context_exec_rlm_fallback_enabled: bool = Field(True, alias="CONTEXT_EXEC_RLM_FALLBACK_ENABLED")

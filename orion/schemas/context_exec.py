@@ -386,6 +386,30 @@ def build_memory_correction_proposal_envelope(
     return envelope
 
 
+class ContextExecSafetySummaryV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mutation_allowed: bool = False
+    mutation_performed: bool = False
+    requires_human_approval: bool = True
+
+
+class ContextExecOperatorSummaryV1(BaseModel):
+    """Operator-facing summary for Hub Agent mode responses."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+    summary: str
+    agent_mode: ContextExecMode
+    route_used: str
+    model_synthesis_used: bool = False
+    proposal_id: str | None = None
+    proposal_status: str | None = None
+    triage_action: str | None = None
+    safety: ContextExecSafetySummaryV1 = Field(default_factory=ContextExecSafetySummaryV1)
+
+
 class ContextExecRunV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -403,6 +427,7 @@ class ContextExecRunV1(BaseModel):
     final_text: str
     verb_trace: list[ContextExecVerbStepV1] = Field(default_factory=list)
 
+    operator_summary: ContextExecOperatorSummaryV1 | None = None
     runtime_debug: dict[str, Any] = Field(default_factory=dict)
     failure_modes: list[str] = Field(default_factory=list)
 

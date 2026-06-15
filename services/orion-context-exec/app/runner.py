@@ -14,6 +14,7 @@ from orion.schemas.context_exec import (
     ProposalEnvelopeV1,
 )
 
+from .agent_synthesis import run_agent_synthesis
 from .artifact_builder import (
     artifact_type_for_mode,
     build_final_text,
@@ -391,6 +392,29 @@ class ContextExecRunner:
             if ledger_line:
                 final_text = f"{final_text} {ledger_line}"
 
+        synthesis_result = await run_agent_synthesis(
+            request=request,
+            artifact=artifact,
+            profile_selection=profile_selection,
+            runtime_debug=runtime_debug,
+            bus=self.bus,
+        )
+        runtime_debug["model_synthesis_used"] = synthesis_result.model_synthesis_used
+        if synthesis_result.fallback_reason:
+            runtime_debug["synthesis_fallback_reason"] = synthesis_result.fallback_reason
+        if synthesis_result.fallback_used:
+            runtime_debug["synthesis_fallback_used"] = True
+        operator_summary = synthesis_result.operator_summary
+        if (
+            operator_summary is not None
+            and status == "ok"
+            and synthesis_result.model_synthesis_used
+        ):
+            if synthesis_result.synthesis_summary:
+                final_text = synthesis_result.synthesis_summary
+            elif operator_summary.summary:
+                final_text = operator_summary.summary
+
         await events.finished(
             run_id=run_id,
             mode=request.mode,
@@ -411,6 +435,7 @@ class ContextExecRunner:
             artifact=artifact,
             final_text=final_text,
             verb_trace=verb_trace,
+            operator_summary=operator_summary,
             runtime_debug={
                 **runtime_debug,
                 "correlation_id": request.correlation_id,

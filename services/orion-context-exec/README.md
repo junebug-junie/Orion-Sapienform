@@ -73,6 +73,8 @@ PYTHONPATH=. orion_dev/bin/python scripts/orion_proposal_cli.py list --status st
 
 **LLM profile / route binding:** Hub Agent mode passes `llm_profile` (`chat`, `quick`, `agent`, `metacog`) on `ContextExecRequestV1`. Context-exec resolves the profile to a trusted gateway route id, records `llm_profile_requested`, `llm_profile_selected`, and `route_used` in `runtime_debug`, and binds RLM `llm.subcall` / bus RPC to that route. Invalid profile ids are rejected at schema validation. Route unavailability fails closed unless `CONTEXT_EXEC_LLM_PROFILE_FALLBACK_ENABLED=true` (records `fallback_used` + `fallback_reason`). Profile selection does not change permissions (read-only, proposal-gated).
 
+**Agent synthesis pass (route-bound):** After deterministic organ collection, supported Agent modes (`belief_provenance`, `trace_autopsy`, `repo_impact_analysis`, `patch_proposal`, `memory_correction_proposal`) may run a read-only synthesis pass via `CONTEXT_EXEC_AGENT_SYNTHESIS_ENABLED` (default `true`). Synthesis consumes the deterministic artifact only — no shell, writes, memory mutation, or proposal execution. It uses the selected `route_used` for LLM RPC. When synthesis is unavailable or ungrounded, deterministic output is preserved and `model_synthesis_used`, `fallback_used`, and `fallback_reason` are recorded explicitly. `operator_summary` on `ContextExecRunV1` exposes mode, route, synthesis status, proposal id/status, and safety posture for Hub.
+
 **Safety defaults:** read-only, `CONTEXT_EXEC_MAX_DEPTH=1`, write/network off, compat AgentChain bus alias off.
 
 **Verification:**
@@ -90,6 +92,11 @@ STORE=/tmp/orion-proposals.json \
 
 # Live Hub golden probes (stack required)
 bash scripts/context_exec_golden_probes.sh
+
+# Hub Agent mode route probe (stack required)
+HUB_BASE_URL=http://127.0.0.1:8080 AGENT_ROUTE=chat \
+  AGENT_TEXT="Where did the Denver belief come from?" \
+  bash scripts/context_exec_agent_route_probe.sh
 ```
 
 **AgentChain replacement goal:** Context-exec is the bounded recursive workbench intended to replace the legacy ReAct planner / AgentChain runtime. Cortex remains sovereign; artifacts are the contract. AgentChain is legacy compatibility only during beta (`CONTEXT_EXEC_LEGACY_FALLBACK` on cortex-exec).

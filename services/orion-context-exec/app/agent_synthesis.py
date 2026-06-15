@@ -22,8 +22,11 @@ from .settings import ContextExecSettings
 
 logger = logging.getLogger("orion-context-exec.agent_synthesis")
 
+REPO_SYNTHESIS_MODES = frozenset({"repo_impact_analysis", "patch_proposal"})
+
 SYNTHESIS_MODES: frozenset[str] = frozenset(
     {
+        "general_investigation",
         "belief_provenance",
         "trace_autopsy",
         "repo_impact_analysis",
@@ -69,7 +72,7 @@ def _flatten_strings(value: Any, out: list[str]) -> None:
 
 
 def _ground_corpus(artifact: dict[str, Any], request_text: str) -> str:
-    parts: list[str] = [request_text]
+    parts: list[str] = []
     _flatten_strings(artifact, parts)
     return "\n".join(parts).lower()
 
@@ -93,6 +96,21 @@ def _synthesis_is_grounded(summary: str, corpus: str) -> bool:
     return True
 
 
+def _repo_synthesis_is_grounded(summary: str, artifact: dict[str, Any]) -> bool:
+    corpus = _ground_corpus(artifact, "")
+    if not _synthesis_is_grounded(summary, corpus):
+        return False
+    paths = artifact.get("affected_paths") or artifact.get("files_to_change") or []
+    if not paths:
+        return True
+    summary_lower = summary.lower()
+    return any(
+        str(path).rsplit("/", 1)[-1].lower() in summary_lower
+        for path in paths[:8]
+        if str(path).strip()
+    )
+
+
 def _permissions_summary(request: ContextExecRequestV1) -> dict[str, bool]:
     p = request.permissions
     return {
@@ -109,6 +127,7 @@ def _permissions_summary(request: ContextExecRequestV1) -> dict[str, bool]:
 
 def _default_title(mode: ContextExecMode) -> str:
     titles = {
+        "general_investigation": "Agent investigation complete",
         "belief_provenance": "Belief provenance complete",
         "trace_autopsy": "Trace autopsy complete",
         "repo_impact_analysis": "Repo impact analysis complete",
@@ -130,8 +149,14 @@ def _deterministic_summary(mode: ContextExecMode, artifact: dict[str, Any]) -> s
             f"root cause {artifact.get('root_cause') or 'unknown'}."
         )
     if mode == "repo_impact_analysis":
+        st = artifact.get("status", "unknown")
+        risk = artifact.get("risk", "unknown")
+        if st == "insufficient_grounding":
+            return "Repo impact: insufficient_grounding. Risk=unknown."
         paths = artifact.get("affected_paths") or []
-        return f"Impact status={artifact.get('status', 'unknown')}. Affected paths: {len(paths)}."
+        path_names = [str(p).rsplit("/", 1)[-1] for p in paths[:4] if p]
+        path_hint = f" Grounded files: {', '.join(path_names)}." if path_names else ""
+        return f"Repo impact: {st}. Risk={risk}.{path_hint}"
     if mode in {"patch_proposal", "memory_correction_proposal"}:
         return str(artifact.get("summary") or artifact.get("title") or "Proposal drafted for review.")
     return str(artifact.get("summary") or "Investigation complete.")
@@ -266,6 +291,26 @@ async def run_agent_synthesis(
             fallback_reason=None,
         )
 
+    if request.mode in REPO_SYNTHESIS_MODES:
+        from .grounding_eval import artifact_repo_evidence_count
+
+        if artifact_repo_evidence_count(artifact) == 0:
+            summary = build_operator_summary(
+                mode=request.mode,
+                route_used=route_used,
+                artifact=artifact,
+                runtime_debug=runtime_debug,
+                model_synthesis_used=False,
+                summary_text=deterministic,
+            )
+            return AgentSynthesisResult(
+                operator_summary=summary,
+                model_synthesis_used=False,
+                fallback_used=True,
+                fallback_reason="synthesis skipped: insufficient_repo_grounding",
+                synthesis_summary=None,
+            )
+
     if not cfg.context_exec_agent_synthesis_enabled:
         summary = build_operator_summary(
             mode=request.mode,
@@ -348,7 +393,12 @@ async def run_agent_synthesis(
         )
 
     corpus = _ground_corpus(artifact, request.text)
-    if not _synthesis_is_grounded(parsed["summary"], corpus):
+    grounded_check = (
+        _repo_synthesis_is_grounded(parsed["summary"], artifact)
+        if request.mode in REPO_SYNTHESIS_MODES
+        else _synthesis_is_grounded(parsed["summary"], corpus)
+    )
+    if not grounded_check:
         reason = "synthesis rejected: ungrounded"
         summary = build_operator_summary(
             mode=request.mode,

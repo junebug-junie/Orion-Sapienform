@@ -40,6 +40,7 @@ _TRACE_SIGNAL_ORDER: tuple[tuple[tuple[str, ...], str], ...] = (
 logger = logging.getLogger("orion-context-exec.alexzhang_rlm_engine")
 
 SUPPORTED_MODES = frozenset({
+    "general_investigation",
     "belief_provenance",
     "trace_autopsy",
     "repo_impact_analysis",
@@ -452,6 +453,8 @@ class AlexZhangRLMEngine(RLMEngine):
 
         if mode == "belief_provenance":
             report = await self._belief_provenance(request, namespace, runtime, organ_cache)
+        elif mode == "general_investigation":
+            report = await self._general_investigation(request, namespace, runtime, organ_cache)
         elif mode == "trace_autopsy":
             report = await self._trace_autopsy(request, namespace, runtime, organ_cache)
         elif mode == "patch_proposal":
@@ -564,6 +567,85 @@ class AlexZhangRLMEngine(RLMEngine):
                 }
             )
         return report
+
+    async def _general_investigation(
+        self,
+        request: ContextExecRequestV1,
+        namespace: ContextNamespace,
+        runtime: OrganRuntime | None,
+        organ_cache: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        search_q = request.text[:200]
+        self._debug_steps.append("retrieve")
+        recall_result: dict[str, Any] = {"hits": []}
+        trace_hits: list[dict[str, Any]] = []
+        if runtime is not None:
+            recall_result = await runtime.recall_query(search_q, limit=self._settings.context_exec_recall_limit)
+            self._subcalls += 1
+            trace_hits = await runtime.traces_search(query=search_q, limit=self._settings.context_exec_trace_limit)
+            self._subcalls += 1
+        if organ_cache is not None:
+            organ_cache["recall"] = recall_result
+            organ_cache["traces"] = trace_hits
+
+        memory_hits = namespace.memory.search_claims(search_q, limit=20)
+        if not memory_hits and recall_result.get("hits"):
+            memory_hits = [
+                {
+                    "claim": str(h.get("snippet") or h.get("title") or "recall hit"),
+                    "source_ref": h.get("source_ref") or h.get("id"),
+                    "verified": True,
+                    "confidence": float(h.get("score") or 0.5),
+                }
+                for h in recall_result.get("hits") or []
+            ]
+        if not trace_hits:
+            trace_hits = namespace.traces.search(query=search_q)
+        trace_hits = [
+            th
+            for th in trace_hits
+            if not (
+                str(th.get("source")) == "context_exec"
+                and str(th.get("kind", "")).startswith("context.exec.")
+            )
+        ]
+
+        self._debug_steps.append("synthesize")
+        findings: list[dict[str, Any]] = []
+        for hit in memory_hits:
+            findings.append(
+                {
+                    "claim": str(hit.get("claim") or "recall hit"),
+                    "evidence_type": "user_statement",
+                    "source_ref": hit.get("source_ref"),
+                    "verified": bool(hit.get("verified")),
+                    "confidence": float(hit.get("confidence") or 0.5),
+                    "scope": "fact",
+                }
+            )
+        for th in trace_hits:
+            findings.append(
+                {
+                    "claim": str(th.get("snippet") or "trace hit"),
+                    "evidence_type": "runtime_log",
+                    "source_ref": th.get("handle"),
+                    "verified": True,
+                    "confidence": 0.75,
+                    "scope": "fact",
+                }
+            )
+
+        if findings:
+            lead = str(findings[0].get("claim") or "related evidence")
+            summary = f"Grounded evidence found ({len(findings)} item(s)). Lead: {lead[:160]}."
+        else:
+            summary = "No recall or trace evidence found for this inquiry."
+
+        return {
+            "summary": summary,
+            "mode": "general_investigation",
+            "findings": findings,
+        }
 
     async def _trace_autopsy(
         self,
@@ -683,6 +765,9 @@ class AlexZhangRLMEngine(RLMEngine):
         if engine_selection:
             hits = _prioritize_engine_selection_hits(hits)
 
+        if organ_cache is not None:
+            organ_cache["repo_hits"] = hits
+
         self._debug_steps.append("synthesize")
         if not hits:
             return {
@@ -770,6 +855,8 @@ class AlexZhangRLMEngine(RLMEngine):
                 _merge_repo_hits(hits, batch, seen_paths)
 
         hits = _prioritize_patch_proposal_hits(hits)
+        if organ_cache is not None:
+            organ_cache["repo_hits"] = hits
         self._debug_steps.append("synthesize")
 
         if not hits:

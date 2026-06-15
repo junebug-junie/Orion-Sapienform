@@ -206,6 +206,88 @@ async def test_runner_includes_operator_summary_and_synthesis_debug(
     assert run.runtime_debug["mutation_allowed"] is False
 
 
+@pytest.mark.asyncio
+async def test_synthesis_skipped_when_repo_impact_has_no_repo_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.settings import settings as cfg
+
+    monkeypatch.setattr(cfg, "context_exec_agent_synthesis_enabled", True)
+
+    async def _should_not_run(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("llm_chat_route should not run without repo grounding")
+
+    monkeypatch.setattr("app.agent_synthesis.llm_chat_route", _should_not_run)
+    artifact = {
+        "status": "insufficient_grounding",
+        "affected_paths": [],
+        "findings": [],
+        "risk": "unknown",
+    }
+    req = ContextExecRequestV1(
+        text="What breaks if we change orion-hub repo entrypoint?",
+        mode="repo_impact_analysis",
+    )
+    result = await run_agent_synthesis(
+        request=req,
+        artifact=artifact,
+        profile_selection=_selection("quick"),
+        runtime_debug={},
+        bus=object(),
+    )
+    assert result.model_synthesis_used is False
+    assert result.fallback_reason == "synthesis skipped: insufficient_repo_grounding"
+    assert "insufficient_grounding" in (result.operator_summary.summary or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_synthesis_rejects_repo_impact_without_path_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.settings import settings as cfg
+
+    monkeypatch.setattr(cfg, "context_exec_agent_synthesis_enabled", True)
+
+    async def _generic_llm(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "content": json.dumps(
+                {
+                    "title": "Repo impact",
+                    "summary": "Changing the entrypoint may break dependencies and workflows.",
+                }
+            ),
+        }
+
+    monkeypatch.setattr("app.agent_synthesis.llm_chat_route", _generic_llm)
+    artifact = {
+        "status": "analyzed",
+        "affected_paths": ["services/orion-hub/Dockerfile"],
+        "breaking_surfaces": ["uvicorn scripts.main:app startup"],
+        "findings": [
+            {
+                "claim": "services/orion-hub/Dockerfile:68 CMD uvicorn",
+                "evidence_type": "repo_file",
+            }
+        ],
+        "risk": "medium",
+    }
+    req = ContextExecRequestV1(
+        text="What breaks if we change orion-hub repo entrypoint?",
+        mode="repo_impact_analysis",
+    )
+    result = await run_agent_synthesis(
+        request=req,
+        artifact=artifact,
+        profile_selection=_selection("quick"),
+        runtime_debug={},
+        bus=object(),
+    )
+    assert result.model_synthesis_used is False
+    assert result.fallback_reason == "synthesis rejected: ungrounded"
+    assert "Dockerfile" in (result.operator_summary.summary or "")
+
+
 @pytest.mark.parametrize("mode", sorted(SYNTHESIS_MODES))
 def test_synthesis_modes_are_supported(mode: str) -> None:
     assert mode in SYNTHESIS_MODES

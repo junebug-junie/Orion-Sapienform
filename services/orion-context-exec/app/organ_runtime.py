@@ -7,6 +7,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.schemas.context_exec import ContextExecRequestV1
 
 from . import llm_tools, recall_tools, repo_tools, trace_tools
+from .organ_status import record_recall, record_repo, record_trace
 from .settings import settings
 
 logger = logging.getLogger("orion-context-exec.organ_runtime")
@@ -30,6 +31,7 @@ class OrganRuntime:
         self._trace_reads: dict[str, dict[str, Any]] = {}
         self.pending_llm_subcalls: list[dict[str, Any]] = []
         self.llm_rpc_calls: list[dict[str, Any]] = []
+        self.organ_status: dict[str, dict[str, Any]] | None = None
 
     def record_llm_subcall(
         self,
@@ -111,6 +113,8 @@ class OrganRuntime:
             out.append(dumped)
             if hit.handle:
                 self._trace_reads[hit.handle] = trace_tools.traces_read(hit.handle)
+        if self.organ_status is not None:
+            record_trace(self.organ_status, out)
         return out
 
     async def traces_read(self, handle: str) -> dict[str, Any]:
@@ -139,7 +143,10 @@ class OrganRuntime:
             correlation_id=self.request.correlation_id,
             session_id=self.request.session_id,
         )
-        return result.model_dump(mode="json")
+        payload = result.model_dump(mode="json")
+        if self.organ_status is not None:
+            record_recall(self.organ_status, payload)
+        return payload
 
     def repo_grep(
         self,
@@ -152,10 +159,13 @@ class OrganRuntime:
             return []
         if not self.request.permissions.read_repo:
             return []
-        return [
+        hits = [
             h.model_dump(mode="json")
             for h in repo_tools.repo_grep(pattern, path=path, limit=limit)
         ]
+        if self.organ_status is not None:
+            record_repo(self.organ_status, hits)
+        return hits
 
     def repo_read(self, path: str, *, max_chars: int | None = None) -> dict[str, Any] | None:
         if not settings.context_exec_real_repo_enabled:

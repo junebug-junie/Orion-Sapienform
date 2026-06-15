@@ -526,16 +526,45 @@ async def test_alexzhang_unsupported_mode_raises():
     from orion.schemas.context_exec import ContextExecPermissionV1
 
     ns = ContextNamespace(permissions=ContextExecPermissionV1())
-    req = ContextExecRequestV1(text="probe", mode="general_investigation")
+    req = ContextExecRequestV1(text="probe", mode="runtime_debug")
     with pytest.raises(UnsupportedModeError):
         await engine.run(req, ns)
+
+
+@pytest.mark.asyncio
+async def test_alexzhang_general_investigation_collects_evidence(monkeypatch):
+    engine = AlexZhangRLMEngine()
+    from app.callable_namespace import ContextNamespace
+    from orion.schemas.context_exec import ContextExecPermissionV1
+
+    trace_hit = {
+        "handle": "t:denver",
+        "snippet": "Mom lives in Denver",
+        "corr_id": "abc",
+        "kind": "memory",
+    }
+    FAKE_ORGANS.trace_hits = [trace_hit]
+    ns = ContextNamespace(
+        permissions=ContextExecPermissionV1(),
+        traces_fn={
+            "search": lambda **_kw: list(FAKE_ORGANS.trace_hits or []),
+            "read": lambda handle: {"handle": handle},
+        },
+    )
+    ns._organ_cache = {"recall": None, "traces": None, "trace_reads": {}}  # type: ignore[attr-defined]
+    req = ContextExecRequestV1(text="do you recall where my mom lives?", mode="general_investigation")
+    raw = await engine.run(req, ns)
+    assert isinstance(raw, dict)
+    assert raw.get("mode") == "general_investigation"
+    assert len(raw.get("findings") or []) >= 1
+    assert "Investigation complete for:" not in str(raw.get("summary") or "")
 
 
 @pytest.mark.asyncio
 async def test_runner_unsupported_mode_fails_closed(monkeypatch):
     monkeypatch.setattr("app.runner.settings.rlm_engine", "alexzhang")
     runner = ContextExecRunner()
-    req = ContextExecRequestV1(text="probe", mode="general_investigation")
+    req = ContextExecRequestV1(text="probe", mode="runtime_debug")
     run = await runner.run(req)
     assert run.status == "error"
     assert any("unsupported_mode" in fm for fm in run.failure_modes)

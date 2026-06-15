@@ -132,7 +132,12 @@ class OrionBusAsync:
         if not self.enabled:
             return
         if self._redis is None:
-            self._redis = aioredis.from_url(self.url, decode_responses=False)
+            self._redis = aioredis.from_url(
+                self.url,
+                decode_responses=False,
+                socket_timeout=60.0,
+                socket_connect_timeout=10.0,
+            )
             await self._redis.ping()
 
     async def close(self) -> None:

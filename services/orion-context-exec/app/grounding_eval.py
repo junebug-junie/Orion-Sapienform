@@ -9,6 +9,7 @@ from orion.schemas.context_exec import ContextExecVerbStepV1
 
 FAKE_ENGINES = frozenset({"fake", "mock", "smoke", "stub"})
 RUNTIME_ONLY_CALLABLES = frozenset({"rlm_engine.run"})
+REPO_ARTIFACT_MODES = frozenset({"repo_impact_analysis", "patch_proposal"})
 
 _GROUNDING_PHRASES = (
     "do you recall",
@@ -80,11 +81,7 @@ def count_evidence(
     findings_bundle: Any = None,
     organ_cache: dict[str, Any] | None = None,
 ) -> int:
-    total = 0
-    for key in ("findings", "evidence", "supporting_evidence", "contradicting_evidence"):
-        items = artifact.get(key)
-        if isinstance(items, list):
-            total += len(items)
+    total = _artifact_evidence_count(artifact)
     if findings_bundle is not None:
         findings = getattr(findings_bundle, "findings", None)
         if isinstance(findings, list) and findings:
@@ -99,6 +96,48 @@ def count_evidence(
     if isinstance(traces, list) and traces:
         total = max(total, len(traces))
     return total
+
+
+def _artifact_evidence_count(artifact: dict[str, Any]) -> int:
+    total = 0
+    for key in ("findings", "evidence", "supporting_evidence", "contradicting_evidence"):
+        items = artifact.get(key)
+        if isinstance(items, list):
+            total += len(items)
+    return total
+
+
+def artifact_repo_evidence_count(artifact: dict[str, Any]) -> int:
+    """Repo-grounded modes require file/path evidence, not recall snippets."""
+    if str(artifact.get("status") or "").lower() == "insufficient_grounding":
+        return 0
+    paths = artifact.get("affected_paths") or artifact.get("files_to_change") or []
+    if isinstance(paths, list) and paths:
+        return len(paths)
+    findings = artifact.get("findings") or []
+    if isinstance(findings, list):
+        repo_findings = [
+            item
+            for item in findings
+            if isinstance(item, dict) and item.get("evidence_type") == "repo_file"
+        ]
+        if repo_findings:
+            return len(repo_findings)
+    evidence = artifact.get("evidence") or []
+    if isinstance(evidence, list) and evidence:
+        return len(evidence)
+    return 0
+
+
+def _repo_grounding_summary(artifact: dict[str, Any], mode: str) -> str:
+    if str(artifact.get("status") or "").lower() == "insufficient_grounding":
+        if mode == "patch_proposal":
+            return (
+                "Patch proposal: insufficient repo grounding. "
+                "No files proposed; mutation not allowed."
+            )
+        return "Repo impact: insufficient_grounding. No repo files matched this inquiry."
+    return _blocked_summary("no_reliable_evidence")
 
 
 def _grounding_sources_attempted(
@@ -130,16 +169,21 @@ def _synthesis_status_label(*, model_synthesis_used: bool, runtime_debug: dict[s
     return "skipped"
 
 
+FAKE_ENGINE_BLOCKED_SUMMARY = (
+    "Blocked: fake engine selected for a real agent request. "
+    "No real investigation was performed."
+)
+
+GROUNDING_PREFLIGHT_BLOCKED_SUMMARY = (
+    "Runtime completed, but no real investigation occurred."
+)
+
+
 def _blocked_summary(answer_status: str) -> str:
     if answer_status == "failed_fake_engine_selected":
-        return (
-            "Runtime completed, but this was not a grounded investigation. "
-            "The selected engine was fake and no real recall or synthesis was performed."
-        )
+        return FAKE_ENGINE_BLOCKED_SUMMARY
     if answer_status == "failed_grounding_preflight":
-        return (
-            "Runtime completed, but grounding failed: no recall, trace, or source evidence was captured."
-        )
+        return GROUNDING_PREFLIGHT_BLOCKED_SUMMARY
     return "No reliable grounded answer found."
 
 
@@ -166,7 +210,14 @@ def evaluate_investigation_outcome(
     runtime_ok = str(runtime_status or "").lower() == "ok"
     runtime_label = "ok" if runtime_ok else "failed"
     grounding_required_flag = grounding_required(text, mode=mode, answer_contract=answer_contract)
-    evidence_count = count_evidence(artifact, findings_bundle=findings_bundle, organ_cache=organ_cache)
+    if mode in REPO_ARTIFACT_MODES:
+        evidence_count = artifact_repo_evidence_count(artifact)
+    else:
+        evidence_count = count_evidence(
+            artifact,
+            findings_bundle=findings_bundle,
+            organ_cache=organ_cache,
+        )
     grounding_attempted = _grounding_sources_attempted(
         verb_trace=verb_trace,
         runtime_debug=runtime_debug,
@@ -194,10 +245,24 @@ def evaluate_investigation_outcome(
             "runtime_status": runtime_label,
             "answer_status": "failed_fake_engine_selected",
             "grounding_status": "skipped",
-            "synthesis_status": "skipped",
+            "synthesis_status": "blocked",
             "evidence_count": evidence_count,
             "grounding_required": True,
             "summary_text": _blocked_summary("failed_fake_engine_selected"),
+        }
+
+    if not runtime_ok:
+        summary = current_summary
+        if not summary or is_placeholder_investigation_summary(summary):
+            summary = GROUNDING_PREFLIGHT_BLOCKED_SUMMARY
+        return {
+            "runtime_status": runtime_label,
+            "answer_status": "failed",
+            "grounding_status": "attempted" if grounding_attempted else "skipped",
+            "synthesis_status": synthesis_status,
+            "evidence_count": evidence_count,
+            "grounding_required": grounding_required_flag,
+            "summary_text": summary,
         }
 
     if not grounding_attempted and evidence_count == 0:
@@ -209,6 +274,17 @@ def evaluate_investigation_outcome(
             "evidence_count": 0,
             "grounding_required": True,
             "summary_text": _blocked_summary("failed_grounding_preflight"),
+        }
+
+    if mode in REPO_ARTIFACT_MODES and evidence_count == 0:
+        return {
+            "runtime_status": runtime_label,
+            "answer_status": "no_reliable_evidence",
+            "grounding_status": "attempted",
+            "synthesis_status": synthesis_status,
+            "evidence_count": 0,
+            "grounding_required": True,
+            "summary_text": _repo_grounding_summary(artifact, mode),
         }
 
     if evidence_count == 0 and not model_synthesis_used:
@@ -226,8 +302,14 @@ def evaluate_investigation_outcome(
         }
 
     if evidence_count > 0 and grounding_attempted:
-        if model_synthesis_used or mode == "general_investigation":
+        if mode in REPO_ARTIFACT_MODES and artifact_repo_evidence_count(artifact) > 0:
             answer_status = "answered_grounded"
+        elif model_synthesis_used and (
+            _artifact_evidence_count(artifact) > 0 or mode != "general_investigation"
+        ):
+            answer_status = "answered_grounded"
+        elif mode == "general_investigation":
+            answer_status = "no_reliable_evidence"
         else:
             answer_status = "partial_or_weak_evidence"
         grounding_status = "attempted"

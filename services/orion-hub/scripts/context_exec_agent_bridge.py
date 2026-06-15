@@ -21,6 +21,40 @@ FAILED_ANSWER_STATUSES = frozenset(
     }
 )
 
+FAKE_ENGINE_BLOCKED_SUMMARY = (
+    "Blocked: fake engine selected for a real agent request. "
+    "No real investigation was performed."
+)
+
+
+def agent_answer_headline(answer_status: str) -> str:
+    if answer_status == "answered_grounded":
+        return "Agent investigation complete"
+    if answer_status == "failed_fake_engine_selected":
+        return "Blocked: fake engine selected"
+    if answer_status == "failed_grounding_preflight":
+        return "Runtime completed, but no real investigation occurred"
+    if answer_status == "no_reliable_evidence":
+        return "No reliable grounded answer found"
+    if answer_status in FAILED_ANSWER_STATUSES:
+        return "Runtime complete"
+    return "Runtime complete"
+
+
+def _recall_failure_line(organ_status: dict[str, Any] | None) -> str | None:
+    if not isinstance(organ_status, dict):
+        return None
+    recall = organ_status.get("recall")
+    if not isinstance(recall, dict) or not recall.get("attempted"):
+        return None
+    error = recall.get("error")
+    if not error:
+        return None
+    err_text = str(error)
+    if "redis" in err_text.lower() or "timeout" in err_text.lower():
+        return f"Recall failed: Redis timeout ({err_text})"
+    return f"Recall failed: {err_text}"
+
 
 def normalize_llm_profile(raw: Any, *, default: str = "quick") -> str:
     route = str(raw or default).strip().lower()
@@ -170,6 +204,7 @@ def build_agent_trace_summary(
             "synthesis_status": answer_eval.get("synthesis_status"),
             "evidence_count": answer_eval.get("evidence_count"),
             "grounding_required": answer_eval.get("grounding_required"),
+            "organ_status": (run.runtime_debug or {}).get("organ_status"),
         },
     )
     return summary.model_dump(mode="json")
@@ -205,11 +240,8 @@ def format_agent_operator_inline(
     )
     synthesis = _synthesis_status_label(dbg)
     result = (op.summary if op else None) or run.final_text or "No summary available."
-    headline = (
-        "Runtime completed (not a grounded investigation)"
-        if answer_status in FAILED_ANSWER_STATUSES
-        else "Agent run complete"
-    )
+    organ_status = dbg.get("organ_status") if isinstance(dbg.get("organ_status"), dict) else {}
+    headline = agent_answer_headline(answer_status)
     lines = [
         headline,
         f"Mode: {mode}",
@@ -219,6 +251,9 @@ def format_agent_operator_inline(
     ]
     if answer_status:
         lines.insert(1, f"Answer status: {answer_status}")
+    recall_line = _recall_failure_line(organ_status)
+    if recall_line:
+        lines.insert(2 if answer_status else 1, recall_line)
     proposal_id = (op.proposal_id if op else None) or dbg.get("proposal_id")
     proposal_status = (op.proposal_status if op else None) or dbg.get("ledger_status")
     if proposal_id:
@@ -251,6 +286,9 @@ def build_context_exec_chat_response(
         routing["synthesis_status"] = answer_eval.get("synthesis_status")
         routing["evidence_count"] = answer_eval.get("evidence_count")
         routing["grounding_required"] = answer_eval.get("grounding_required")
+    organ_status = dbg.get("organ_status")
+    if isinstance(organ_status, dict):
+        routing["organ_status"] = organ_status
     inline = format_agent_operator_inline(
         run,
         llm_profile=str(routing.get("llm_profile") or ""),

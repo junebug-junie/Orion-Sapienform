@@ -52,7 +52,7 @@ class ContextExecSettings(BaseSettings):
         alias="CHANNEL_RECALL_INTAKE",
     )
     channel_recall_reply_prefix: str = Field(
-        "orion:recall:reply",
+        "orion:exec:result:RecallService",
         alias="CHANNEL_RECALL_REPLY_PREFIX",
     )
 
@@ -84,7 +84,7 @@ class ContextExecSettings(BaseSettings):
     context_exec_repo_max_file_chars: int = Field(12000, alias="CONTEXT_EXEC_REPO_MAX_FILE_CHARS")
     context_exec_trace_limit: int = Field(40, alias="CONTEXT_EXEC_TRACE_LIMIT")
     context_exec_recall_limit: int = Field(12, alias="CONTEXT_EXEC_RECALL_LIMIT")
-    context_exec_recall_timeout_sec: float = Field(25.0, alias="CONTEXT_EXEC_RECALL_TIMEOUT_SEC")
+    context_exec_recall_timeout_sec: float = Field(35.0, alias="CONTEXT_EXEC_RECALL_TIMEOUT_SEC")
 
     context_exec_allowed_llm_profiles: str = Field(
         "chat,quick,agent,metacog",
@@ -100,7 +100,7 @@ class ContextExecSettings(BaseSettings):
         alias="CONTEXT_EXEC_LLM_GATEWAY_URL",
     )
     context_exec_llm_gateway_timeout_sec: float = Field(
-        1.5,
+        5.0,
         alias="CONTEXT_EXEC_LLM_GATEWAY_TIMEOUT_SEC",
     )
     context_exec_llm_timeout_sec: float = Field(30.0, alias="CONTEXT_EXEC_LLM_TIMEOUT_SEC")
@@ -123,7 +123,7 @@ class ContextExecSettings(BaseSettings):
     )
 
     orion_repo_root: str = Field("/app", alias="ORION_REPO_ROOT")
-    rlm_engine: str = Field("fake", alias="CONTEXT_EXEC_RLM_ENGINE")
+    rlm_engine: str = Field("alexzhang", alias="CONTEXT_EXEC_RLM_ENGINE")
     context_exec_rlm_fallback_enabled: bool = Field(True, alias="CONTEXT_EXEC_RLM_FALLBACK_ENABLED")
 
     context_exec_proposal_ledger_enabled: bool = Field(

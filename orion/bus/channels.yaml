@@ -224,7 +224,7 @@ channels:
   - name: "orion:exec:request:RecallService"
     kind: "request"
     schema_id: "RecallQueryV1"
-    producer_services: ["orion-cortex-exec", "orion-cortex-orch", "orion-hub"]
+    producer_services: ["orion-cortex-exec", "orion-cortex-orch", "orion-hub", "orion-context-exec"]
     consumer_services: ["orion-recall"]
     stability: "experimental"
     since: "2026-01-08"

@@ -83,3 +83,21 @@ class EquilibriumSnapshotV1(BaseModel):
         if v.tzinfo is None:
             return v.replace(tzinfo=timezone.utc)
         return v
+
+
+class BusConsumerReadinessV1(BaseModel):
+    """
+    Structured readiness snapshot for bus-backed service consumers.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    ok: bool
+    http_alive: Optional[bool] = None
+    bus_consumer_ready: bool
+    intake_channel: str
+    subscriber_count: int
+    heartbeat_fresh: Optional[bool] = None
+    rpc_smoke_ok: Optional[bool] = None
+    dependency_status: Literal["available", "unavailable"]
+    error: Optional[str] = None

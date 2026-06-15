@@ -565,6 +565,12 @@ class ContextExecRunner:
             runtime_debug["synthesis_fallback_used"] = True
 
         synthesis_failed = synthesis_result.fallback_used and not synthesis_result.model_synthesis_used
+        if synthesis_result.model_synthesis_used:
+            runtime_debug["synthesis_status"] = "completed"
+        elif synthesis_failed:
+            runtime_debug["synthesis_status"] = "synthesis_unavailable"
+        else:
+            runtime_debug["synthesis_status"] = "skipped"
         if synthesis_result.model_synthesis_used or synthesis_failed:
             report = InvestigationReportV2.model_validate(artifact)
             updated = apply_synthesis_to_report(
@@ -597,6 +603,23 @@ class ContextExecRunner:
             operator_summary = operator_summary.model_copy(
                 update={"model_synthesis_used": True, "summary": final_text}
             )
+
+        grounded = artifact.get("grounded_sources") or []
+        limitations = artifact.get("limitations") or []
+        grounding_attempts = runtime_debug_base.get("grounding_attempts") or {}
+        answer_eval = {
+            "runtime_status": "ok" if status == "ok" else "failed",
+            "answer_status": str(artifact.get("answer_status") or "no_reliable_evidence"),
+            "grounding_status": "attempted"
+            if isinstance(grounding_attempts, dict) and any(grounding_attempts.values())
+            else "skipped",
+            "synthesis_status": runtime_debug.get("synthesis_status"),
+            "evidence_count": len(grounded) if isinstance(grounded, list) else 0,
+            "grounding_required": True,
+            "summary_text": final_text,
+            "limitations": limitations if isinstance(limitations, list) else [],
+        }
+        runtime_debug["answer_evaluation"] = answer_eval
 
         await events.finished(
             run_id=run_id,

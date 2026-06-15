@@ -16,6 +16,11 @@ from orion.schemas.context_exec import (
 )
 
 from .alexzhang_rlm_engine import _merge_repo_hits, _repo_search_terms
+from .bus_dependency_preflight import (
+    check_llm_gateway_bus_ready,
+    check_recall_bus_ready,
+    unavailable_source_result,
+)
 from .callable_namespace import ContextNamespace
 from .investigation_v2_reducers import compose_investigation_report
 from .organ_runtime import OrganRuntime
@@ -306,18 +311,32 @@ async def runtime_probe(
     )
 
 
+def _readiness_timeout_sec() -> float:
+    return float(settings.context_exec_bus_readiness_timeout_sec)
+
+
 async def health_probe(
     *,
     request: ContextExecRequestV1,
     runtime: OrganRuntime,
 ) -> SourceResult:
-    checks: dict[str, str] = {
+    checks: dict[str, str | int | dict[str, Any]] = {
         "bus_enabled": "yes" if settings.orion_bus_enabled else "no",
         "bus_connected": "yes" if runtime.bus is not None else "no",
         "repo_enabled": "yes" if settings.context_exec_real_repo_enabled else "no",
         "recall_enabled": "yes" if settings.context_exec_real_recall_enabled else "no",
         "trace_enabled": "yes" if settings.context_exec_real_trace_enabled else "no",
     }
+    if settings.orion_bus_enabled and runtime.bus is not None:
+        readiness_timeout = _readiness_timeout_sec()
+        recall_ready = await check_recall_bus_ready(runtime.bus, timeout_sec=readiness_timeout)
+        llm_ready = await check_llm_gateway_bus_ready(runtime.bus, timeout_sec=readiness_timeout)
+        checks["recall_bus_ready"] = "yes" if recall_ready.ok else "no"
+        checks["recall_subscriber_count"] = recall_ready.subscriber_count
+        checks["llm_gateway_bus_ready"] = "yes" if llm_ready.ok else "no"
+        checks["llm_gateway_subscriber_count"] = llm_ready.subscriber_count
+        checks["recall_readiness"] = recall_ready.model_dump(mode="json")
+        checks["llm_gateway_readiness"] = llm_ready.model_dump(mode="json")
     return SourceResult(
         source="health",
         status=SourceStatus.no_hit,
@@ -375,15 +394,29 @@ async def run_investigation_v2(
         bundle.traces = await safe_probe("traces", trace_probe, permitted=False, timeout_sec=timeout_sec)
 
     if request.permissions.read_recall:
-        bundle.recall = await safe_probe(
-            "recall",
-            recall_probe,
-            permitted=True,
-            timeout_sec=recall_timeout,
-            request=request,
-            runtime=runtime,
-            organ_cache=organ_cache,
-        )
+        recall_preflight_failed = False
+        if (
+            settings.orion_bus_enabled
+            and settings.context_exec_real_recall_enabled
+            and runtime.bus is not None
+        ):
+            recall_ready = await check_recall_bus_ready(
+                runtime.bus,
+                timeout_sec=_readiness_timeout_sec(),
+            )
+            if not recall_ready.ok:
+                bundle.recall = unavailable_source_result("recall", recall_ready)
+                recall_preflight_failed = True
+        if not recall_preflight_failed:
+            bundle.recall = await safe_probe(
+                "recall",
+                recall_probe,
+                permitted=True,
+                timeout_sec=recall_timeout,
+                request=request,
+                runtime=runtime,
+                organ_cache=organ_cache,
+            )
     else:
         bundle.recall = await safe_probe("recall", recall_probe, permitted=False, timeout_sec=recall_timeout)
 

@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 import uvicorn
 
 from pydantic import ValidationError
@@ -14,6 +15,8 @@ from pydantic import ValidationError
 # [FIX] Added ServiceRef to imports
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ChatResultPayload, Envelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, Rabbit
+from orion.bus.consumer_readiness import check_bus_consumer_readiness
+from orion.schemas.telemetry.system_health import BusConsumerReadinessV1
 from orion.schemas.vector.schemas import VectorUpsertV1
 
 from .llm_backend import get_route_targets, run_llm_chat
@@ -57,6 +60,44 @@ async def health() -> Dict[str, Any]:
         "node": settings.node_name,
         "routes": routes,
     }
+
+
+@app.get("/ready")
+async def ready() -> JSONResponse:
+    if bus_handle is None or not getattr(bus_handle, "enabled", False):
+        body = BusConsumerReadinessV1(
+            ok=False,
+            http_alive=True,
+            bus_consumer_ready=False,
+            intake_channel=settings.channel_llm_intake,
+            subscriber_count=0,
+            dependency_status="unavailable",
+            error="bus not connected",
+        )
+        return JSONResponse(body.model_dump(mode="json"), status_code=503)
+
+    redis = getattr(bus_handle, "redis", None)
+    if redis is None:
+        body = BusConsumerReadinessV1(
+            ok=False,
+            http_alive=True,
+            bus_consumer_ready=False,
+            intake_channel=settings.channel_llm_intake,
+            subscriber_count=0,
+            dependency_status="unavailable",
+            error="redis unavailable",
+        )
+        return JSONResponse(body.model_dump(mode="json"), status_code=503)
+
+    result = await check_bus_consumer_readiness(
+        redis,
+        intake_channel=settings.channel_llm_intake,
+        service_name=settings.service_name,
+        heartbeat_ttl_sec=float(settings.heartbeat_interval_sec) * 3.0,
+    )
+    body = BusConsumerReadinessV1(**result.model_dump(), http_alive=True)
+    status_code = 200 if body.ok else 503
+    return JSONResponse(body.model_dump(mode="json"), status_code=status_code)
 
 
 @app.get("/routes")

@@ -27,6 +27,18 @@
 - Removed `#llmRouteSelector` radiogroup and all `.llm-route-btn` elements.
 - Added 30s polling for `/api/llm-routes` catalog refresh.
 - Down-lane dialog now suggests **Use quick** (not chat).
+- **WebSocket fix:** Agent mode via WS no longer crashes after context-exec returns (`resp=None` → guarded `cortex_result` access).
+
+## Live bug fixed (WebSocket Agent lane)
+
+Hub logs showed `emitted_options.llm_route: quick` with `mode=agent`, then:
+
+```text
+voice.chat.done response_len=163
+AttributeError: 'NoneType' object has no attribute 'cortex_result'
+```
+
+Context-exec completed; the reply never reached the browser because `websocket_handler.py` assumed a cortex `resp` object. Fixed in this PR.
 
 ## Conceptual model implemented
 
@@ -51,6 +63,7 @@ Agent + agent  → context-exec llm_profile=agent (only when explicitly selected
 | `services/orion-hub/static/js/thought-process.js` |
 | `services/orion-hub/scripts/cortex_request_builder.py` |
 | `services/orion-hub/scripts/context_exec_agent_bridge.py` |
+| `services/orion-hub/scripts/websocket_handler.py` |
 | `services/orion-hub/tests/test_llm_route_selector.py` |
 | `services/orion-hub/tests/test_chat_stance_debug_panel.py` |
 | `services/orion-hub/README.md` |

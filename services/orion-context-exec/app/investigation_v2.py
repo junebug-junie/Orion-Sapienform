@@ -11,21 +11,19 @@ from typing import Any
 from orion.schemas.context_exec import (
     ContextExecRequestV1,
     EvidenceBundle,
-    InvestigationReportV2,
-    InvestigationV2AnswerStatus,
     SourceResult,
     SourceStatus,
 )
 
 from .alexzhang_rlm_engine import _merge_repo_hits, _repo_search_terms
 from .callable_namespace import ContextNamespace
+from .investigation_v2_reducers import compose_investigation_report
 from .organ_runtime import OrganRuntime
 from .settings import settings
 
 logger = logging.getLogger("orion-context-exec.investigation_v2")
 
 INVESTIGATION_V2_ARTIFACT_TYPE = "InvestigationReportV2"
-STRONG_HIT_SOURCES = frozenset({"repo", "traces", "memory"})
 
 
 def _finding(
@@ -328,111 +326,11 @@ async def health_probe(
     )
 
 
-def _bundle_entries(bundle: EvidenceBundle) -> list[tuple[str, SourceResult | None]]:
-    return [
-        ("repo", bundle.repo),
-        ("traces", bundle.traces),
-        ("recall", bundle.recall),
-        ("memory", bundle.memory),
-        ("runtime", bundle.runtime),
-        ("health", bundle.health),
-    ]
-
-
-def _compose_answer_status(
-    bundle: EvidenceBundle,
-    request: ContextExecRequestV1,
-) -> tuple[InvestigationV2AnswerStatus, str, list[str], list[str], dict[str, str]]:
-    sources: dict[str, str] = {}
-    hit_sources: list[str] = []
-    unavailable_sources: list[str] = []
-    blocked_sources: list[str] = []
-    failed_sources: list[str] = []
-    ran_sources: list[str] = []
-
-    for name, result in _bundle_entries(bundle):
-        if result is None:
-            continue
-        status_key = result.status.value
-        sources[name] = status_key
-        if result.status == SourceStatus.hit:
-            hit_sources.append(name)
-            ran_sources.append(name)
-        elif result.status == SourceStatus.no_hit:
-            ran_sources.append(name)
-        elif result.status == SourceStatus.unavailable:
-            unavailable_sources.append(name)
-            ran_sources.append(name)
-        elif result.status == SourceStatus.blocked:
-            blocked_sources.append(name)
-        elif result.status == SourceStatus.error:
-            failed_sources.append(name)
-            ran_sources.append(name)
-        elif result.status == SourceStatus.skipped:
-            ran_sources.append(name)
-
-    perms = request.permissions
-    allowed_count = sum(
-        1
-        for flag in (
-            perms.read_repo,
-            perms.read_redis_traces,
-            perms.read_recall,
-            perms.read_memory,
-            perms.read_runtime_logs,
-        )
-        if flag
-    )
-    allowed_count += 1  # health always attempted
-
-    if blocked_sources and not ran_sources:
-        answer_status: InvestigationV2AnswerStatus = "blocked"
-    elif len(hit_sources) >= 2 and any(s in STRONG_HIT_SOURCES for s in hit_sources):
-        answer_status = "answered_grounded"
-    elif hit_sources:
-        answer_status = "partial_grounding"
-    elif unavailable_sources and not hit_sources:
-        answer_status = "dependency_unavailable"
-    elif ran_sources and not hit_sources:
-        answer_status = "no_reliable_evidence"
-    elif allowed_count == len(blocked_sources) and blocked_sources:
-        answer_status = "blocked"
-    else:
-        answer_status = "no_reliable_evidence"
-
-    parts: list[str] = []
-    if hit_sources:
-        parts.append(f"Evidence from: {', '.join(hit_sources)}")
-    if unavailable_sources:
-        parts.append(f"Unavailable: {', '.join(unavailable_sources)}")
-    if failed_sources:
-        parts.append(f"Errors: {', '.join(failed_sources)}")
-    if blocked_sources:
-        parts.append(f"Blocked: {', '.join(blocked_sources)}")
-    if not parts:
-        parts.append("No evidence sources produced hits")
-    summary = "; ".join(parts)
-
-    return answer_status, summary, failed_sources, blocked_sources, sources
-
-
 def basic_investigation_v2_result(
     bundle: EvidenceBundle,
     request: ContextExecRequestV1,
 ) -> dict[str, Any]:
-    answer_status, summary, failed_sources, blocked_sources, sources = _compose_answer_status(
-        bundle,
-        request,
-    )
-    report = InvestigationReportV2(
-        answer_status=answer_status,
-        summary=summary,
-        sources=sources,
-        failed_sources=failed_sources,
-        blocked_sources=blocked_sources,
-        evidence=bundle,
-        text_received=request.text,
-    )
+    report = compose_investigation_report(bundle, request)
     return report.model_dump(mode="json")
 
 

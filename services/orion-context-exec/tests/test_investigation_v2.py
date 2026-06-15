@@ -134,6 +134,8 @@ async def test_per_source_statuses_preserved(monkeypatch: pytest.MonkeyPatch) ->
     assert artifact["sources"]["traces"] == "no_hit"
     assert artifact["sources"]["recall"] == "unavailable"
     assert artifact["answer_status"] == "partial_grounding"
+    assert artifact["sections"]["repo"]["status"] == "hit"
+    assert "recall" in artifact["unavailable_sources"]
 
 
 @pytest.mark.asyncio
@@ -249,6 +251,7 @@ def test_investigation_report_v2_schema_roundtrip() -> None:
     from orion.schemas.context_exec import (
         EvidenceBundle,
         InvestigationReportV2,
+        InvestigationSectionV2,
         SourceResult,
         SourceStatus,
     )
@@ -257,9 +260,19 @@ def test_investigation_report_v2_schema_roundtrip() -> None:
         answer_status="partial_grounding",
         summary="Evidence from: repo",
         sources={"repo": "hit"},
+        sections={
+            "repo": InvestigationSectionV2(
+                source="repo",
+                status="hit",
+                title="Repository impact",
+                summary="1 hit",
+            )
+        },
+        grounded_sources=["repo"],
         evidence=EvidenceBundle(
             repo=SourceResult(source="repo", status=SourceStatus.hit, summary="1 hit"),
         ),
     )
     dumped = report.model_dump(mode="json")
     assert InvestigationReportV2.model_validate(dumped).answer_status == "partial_grounding"
+    assert "repo" in dumped["sections"]

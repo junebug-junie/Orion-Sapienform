@@ -133,3 +133,6 @@ runs/
 **/runs/**/*.pt
 **/runs/**/*.pth
 TAbort-
+
+# Orion smoke/test logs
+.orion-smoke-logs/

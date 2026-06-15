@@ -15,6 +15,7 @@ from orion.schemas.context_exec import (
 )
 
 from .agent_synthesis import run_agent_synthesis
+from .grounding_eval import evaluate_investigation_outcome
 from .artifact_builder import (
     artifact_type_for_mode,
     build_final_text,
@@ -297,6 +298,7 @@ class ContextExecRunner:
         )
         namespace = self._build_namespace(organ_runtime)
         await namespace._prefetch_organs()  # type: ignore[attr-defined]
+        organ_cache = getattr(namespace, "_organ_cache", {}) or {}
 
         raw_final, engine_used, subcalls, rlm_steps, rlm_failures = await self._execute_rlm(
             request,
@@ -404,6 +406,11 @@ class ContextExecRunner:
             runtime_debug["synthesis_fallback_reason"] = synthesis_result.fallback_reason
         if synthesis_result.fallback_used:
             runtime_debug["synthesis_fallback_used"] = True
+        runtime_debug["grounding_attempts"] = {
+            "recall": organ_cache.get("recall") is not None,
+            "trace": organ_cache.get("traces") is not None,
+            "repo": bool(organ_cache.get("repo_hits")),
+        }
         operator_summary = synthesis_result.operator_summary
         if (
             operator_summary is not None
@@ -414,6 +421,34 @@ class ContextExecRunner:
                 final_text = synthesis_result.synthesis_summary
             elif operator_summary.summary:
                 final_text = operator_summary.summary
+
+        answer_eval = evaluate_investigation_outcome(
+            runtime_status=status,
+            text=request.text,
+            mode=request.mode,
+            artifact=artifact,
+            runtime_debug=runtime_debug,
+            verb_trace=verb_trace,
+            findings_bundle=fb,
+            organ_cache=organ_cache,
+            answer_contract=ac_dump,
+            scopes=request.scopes,
+            model_synthesis_used=synthesis_result.model_synthesis_used,
+            current_summary=final_text,
+        )
+        runtime_debug["answer_evaluation"] = answer_eval
+        if answer_eval.get("summary_text"):
+            final_text = str(answer_eval["summary_text"])
+        if operator_summary is not None and answer_eval.get("answer_status") not in {
+            "answered_grounded",
+            "partial_or_weak_evidence",
+        }:
+            operator_summary = operator_summary.model_copy(
+                update={
+                    "title": "Runtime completed (not grounded)",
+                    "summary": final_text,
+                }
+            )
 
         await events.finished(
             run_id=run_id,

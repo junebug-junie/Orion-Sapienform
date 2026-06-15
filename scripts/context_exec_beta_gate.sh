@@ -83,8 +83,13 @@ check_beta_key "$CTX_ENV" "CONTEXT_EXEC_REAL_RECALL_ENABLED" "true"
 check_beta_key "$CTX_ENV" "CONTEXT_EXEC_REAL_REPO_ENABLED" "true"
 
 echo ""
-echo "== pytest (orion-context-exec) =="
-"$PY" -m pytest services/orion-context-exec/tests/ -q
+echo "== pytest (orion-context-exec — proposal-control + repo tooling) =="
+"$PY" -m pytest services/orion-context-exec/tests/ -q \
+  --ignore=services/orion-context-exec/tests/test_rlm_eval_fixtures.py
+
+echo ""
+echo "== pytest (orion-context-exec — RLM eval quality fixtures) =="
+"$PY" -m pytest services/orion-context-exec/tests/test_rlm_eval_fixtures.py -q
 
 echo ""
 echo "== RLM eval: fake engine =="

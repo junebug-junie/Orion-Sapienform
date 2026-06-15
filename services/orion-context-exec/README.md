@@ -69,7 +69,7 @@ export CONTEXT_EXEC_PROPOSAL_LEDGER_STORE_PATH=/tmp/orion-proposals.json
 PYTHONPATH=. orion_dev/bin/python scripts/orion_proposal_cli.py list --status stored --store /tmp/orion-proposals.json
 ```
 
-**Engine selection:** `fake` (default) | `alexzhang` (opt-in). Fallback must be explicit (`CONTEXT_EXEC_RLM_FALLBACK_ENABLED=true`) and visible in `runtime_debug`.
+**Engine selection:** `fake` (default) | `alexzhang` (opt-in). Fallback must be explicit (`CONTEXT_EXEC_RLM_FALLBACK_ENABLED=true`) and visible in `runtime_debug` (`engine_requested`, `engine_selected`, `fallback_used`, `fallback_reason`).
 
 **Safety defaults:** read-only, `CONTEXT_EXEC_MAX_DEPTH=1`, write/network off, compat AgentChain bus alias off.
 

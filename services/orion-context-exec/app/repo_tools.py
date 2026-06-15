@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 from .schemas import RepoFile, RepoHit
-from .settings import settings
+
 
 DENY_PATTERNS = (
     r"\.env$",
@@ -22,6 +22,8 @@ ALLOW_PREFIXES = ("orion/", "services/", "app/", "docs/", "tests/", "scripts/")
 
 
 def _repo_root() -> Path:
+    from .settings import settings
+
     root = settings.context_exec_repo_root or settings.orion_repo_root
     return Path(root).resolve()
 
@@ -79,6 +81,8 @@ def repo_grep(pattern: str, path: str | None = None, limit: int = 50) -> list[Re
 
 
 def repo_read(path: str, max_chars: int | None = None) -> RepoFile | None:
+    from .settings import settings
+
     root = _repo_root()
     cap = max_chars if max_chars is not None else settings.context_exec_repo_max_file_chars
     rel = path.lstrip("/")

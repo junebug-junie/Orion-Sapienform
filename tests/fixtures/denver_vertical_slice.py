@@ -27,26 +27,39 @@ async def run_denver_vertical_slice_async(
     auto_triage: bool = True,
 ) -> dict[str, Any]:
     """Run context-exec fake engine + ledger intake; return run and ledger record."""
-    import app.runner as runner_mod
     from app.rlm_engine import FakeRLMEngine
     from app.runner import ContextExecRunner
+    from app.settings import settings
 
-    runner_mod.settings.rlm_engine = "fake"
-    runner_mod.settings.context_exec_proposal_ledger_enabled = True
-    runner_mod.settings.context_exec_proposal_ledger_store_path = str(store_path)
-    runner_mod.settings.context_exec_proposal_ledger_auto_triage = auto_triage
+    originals = {
+        "rlm_engine": settings.rlm_engine,
+        "context_exec_proposal_ledger_enabled": settings.context_exec_proposal_ledger_enabled,
+        "context_exec_proposal_ledger_store_path": settings.context_exec_proposal_ledger_store_path,
+        "context_exec_proposal_ledger_auto_triage": settings.context_exec_proposal_ledger_auto_triage,
+    }
+    settings.rlm_engine = "fake"
+    settings.context_exec_proposal_ledger_enabled = True
+    settings.context_exec_proposal_ledger_store_path = str(store_path)
+    settings.context_exec_proposal_ledger_auto_triage = auto_triage
+    import app.runner as runner_mod
 
-    runner = ContextExecRunner(engine=FakeRLMEngine())
-    run = await runner.run(
-        ContextExecRequestV1(text=DENVER_MEMORY_CORRECTION_PROMPT, mode="memory_correction_proposal"),
-    )
-    repo = JsonFileProposalLedgerRepository(store_path)
-    records = repo.list_all()
-    record = records[0] if records else None
-    for mod in list(sys.modules):
-        if mod == "app" or mod.startswith("app."):
-            sys.modules.pop(mod, None)
-    return {"run": run, "record": record, "repo": repo}
+    runner_mod.settings = settings
+
+    try:
+        runner = ContextExecRunner(engine=FakeRLMEngine())
+        run = await runner.run(
+            ContextExecRequestV1(
+                text=DENVER_MEMORY_CORRECTION_PROMPT,
+                mode="memory_correction_proposal",
+            ),
+        )
+        repo = JsonFileProposalLedgerRepository(store_path)
+        records = repo.list_all()
+        record = records[0] if records else None
+        return {"run": run, "record": record, "repo": repo}
+    finally:
+        for key, value in originals.items():
+            setattr(settings, key, value)
 
 
 def run_denver_vertical_slice(

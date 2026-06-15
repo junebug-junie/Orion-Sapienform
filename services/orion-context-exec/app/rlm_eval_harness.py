@@ -8,7 +8,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Iterator
 
-from app.runner import ContextExecRunner, FAKE_ORGANS
 from orion.schemas.context_exec import (
     ContextExecPermissionV1,
     ContextExecRequestV1,
@@ -161,11 +160,19 @@ def assert_claim_clean(artifact_claim: str, forbidden: tuple[str, ...]) -> None:
 
 def assert_engine_runtime_debug(run: ContextExecRunV1, engine: str) -> None:
     rd = run.runtime_debug
-    assert "engine" in rd
+    assert rd.get("engine_requested") == engine
     assert "engine_selected" in rd
-    assert rd.get("engine") == engine
-    assert rd.get("engine_selected") == engine
-    assert rd.get("fallback_engine") is None
+    assert "engine" in rd
+    selected = rd.get("engine_selected")
+    assert rd.get("engine") == selected
+    if selected == "fake" and engine == "alexzhang":
+        assert rd.get("fallback_used") is True
+        assert rd.get("fallback_engine") == "fake"
+        assert rd.get("fallback_reason")
+    else:
+        assert selected == engine
+        assert rd.get("fallback_used") is not True
+        assert rd.get("fallback_engine") is None
     if run.status == "ok":
         assert rd.get("schema_valid") is True
 
@@ -199,15 +206,16 @@ def assert_safety_posture(run: ContextExecRunV1) -> None:
 def patched_settings(**overrides: Any) -> Iterator[None]:
     from app import settings as settings_mod
 
+    settings = settings_mod.settings
     originals: dict[str, Any] = {}
     for key, value in overrides.items():
-        originals[key] = getattr(settings_mod.settings, key)
-        setattr(settings_mod.settings, key, value)
+        originals[key] = getattr(settings, key)
+        setattr(settings, key, value)
     try:
         yield
     finally:
         for key, value in originals.items():
-            setattr(settings_mod.settings, key, value)
+            setattr(settings, key, value)
 
 
 async def run_eval_case(
@@ -232,6 +240,11 @@ async def run_eval_case(
         expected_artifact_type=case.expected_artifact_type,
     )
     with patched_settings(**base_overrides):
+        from app.settings import settings as live_settings
+        import app.runner as runner_mod
+        from app.runner import ContextExecRunner
+
+        runner_mod.settings = live_settings
         runner = ContextExecRunner()
         run = await runner.run(req)
     assert_engine_runtime_debug(run, engine)
@@ -242,11 +255,15 @@ async def run_eval_case(
 
 
 def reset_fake_organs() -> None:
+    from app.runner import FAKE_ORGANS
+
     FAKE_ORGANS.memory_hits = None
     FAKE_ORGANS.trace_hits = None
 
 
 def seed_case_organs(case_name: str) -> None:
+    from app.runner import FAKE_ORGANS
+
     reset_fake_organs()
     if case_name == "belief_provenance_denver":
         FAKE_ORGANS.memory_hits = [

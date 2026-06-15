@@ -196,8 +196,9 @@ async def test_rlm_eval_runtime_debug_identifies_engine(engine: str) -> None:
     seed_case_organs("belief_provenance_denver")
     run = await run_eval_case(engine, BELIEF_DENVER)
     rd = run.runtime_debug
-    assert rd.get("engine") == engine
+    assert rd.get("engine_requested") == engine
     assert rd.get("engine_selected") == engine
+    assert rd.get("engine") == engine
     assert_engine_runtime_debug(run, engine)
 
 

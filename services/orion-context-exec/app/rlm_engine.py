@@ -115,16 +115,17 @@ class FakeRLMEngine(RLMEngine):
             namespace.FINAL_VAR("report")
             return namespace.get_final()
 
-        if mode == "belief_provenance" or "denver" in text:
+        if mode == "belief_provenance":
             recall_result: dict[str, Any] = {"hits": []}
             trace_hits: list[dict[str, Any]] = []
+            search_q = "ogden" if "ogden" in text else ("denver" if "denver" in text else request.text[:120])
             if runtime is not None:
                 recall_result = await runtime.recall_query(request.text, limit=12)
-                trace_hits = await runtime.traces_search(query="Denver", limit=20)
+                trace_hits = await runtime.traces_search(query=search_q, limit=20)
             if organ_cache is not None:
                 organ_cache["recall"] = recall_result
                 organ_cache["traces"] = trace_hits
-            memory_hits = namespace.memory.search_claims("Denver", limit=20)
+            memory_hits = namespace.memory.search_claims(search_q, limit=20)
             if not memory_hits and recall_result.get("hits"):
                 memory_hits = [
                     {
@@ -136,7 +137,7 @@ class FakeRLMEngine(RLMEngine):
                     for h in recall_result.get("hits") or []
                 ]
             if not trace_hits:
-                trace_hits = namespace.traces.search(query="Denver")
+                trace_hits = namespace.traces.search(query=search_q)
             trace_hits = [
                 th
                 for th in trace_hits
@@ -145,8 +146,13 @@ class FakeRLMEngine(RLMEngine):
                     and str(th.get("kind", "")).startswith("context.exec.")
                 )
             ]
+            primary_claim = (
+                str(memory_hits[0].get("claim") or "unknown")
+                if memory_hits
+                else ("User location is not Denver" if "ogden" in text else "User is from Denver")
+            )
             report = {
-                "claim": "User is from Denver",
+                "claim": primary_claim,
                 "status": "supported" if (memory_hits or trace_hits) else "unknown",
                 "likely_origin": "memory/recall cross-check",
                 "confidence": 0.72 if memory_hits else 0.2,
@@ -222,6 +228,10 @@ class FakeRLMEngine(RLMEngine):
             root_cause = failure_chain[0] if failure_chain else None
             if not trace_hits:
                 root_cause = "no trace evidence found for correlation id"
+            elif root_cause:
+                lowered = root_cause.lower()
+                if any(marker in lowered for marker in ("why did", "orion,", "orion ", "fail open?")):
+                    root_cause = "insufficient_trace_evidence"
             report = {
                 "target": corr or request.text[:80],
                 "status": status,

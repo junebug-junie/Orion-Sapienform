@@ -12,12 +12,15 @@ ROOT = SERVICE_DIR.parents[1]
 PYTHON = ROOT / "orion_dev" / "bin" / "python"
 
 
-def _load_app(monkeypatch: pytest.MonkeyPatch) -> object:
+def _load_app(monkeypatch: pytest.MonkeyPatch, *, reload_settings: bool = False) -> object:
     if str(SERVICE_DIR) not in sys.path:
         sys.path.insert(0, str(SERVICE_DIR))
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
-    for mod in ("app.settings", "app.main", "app.api", "app.proposal_review_api"):
+    modules = ["app.main", "app.api", "app.proposal_review_api"]
+    if reload_settings:
+        modules.insert(0, "app.settings")
+    for mod in modules:
         sys.modules.pop(mod, None)
     from app.main import app  # noqa: WPS433
 
@@ -46,7 +49,7 @@ async def test_health(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_health_proposal_review_block_store_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PROPOSAL_REVIEW_API_ENABLED", "true")
     monkeypatch.setenv("PROPOSAL_LEDGER_STORE_PATH", "")
-    app = _load_app(monkeypatch)
+    app = _load_app(monkeypatch, reload_settings=True)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/health")
@@ -77,7 +80,7 @@ async def test_health_proposal_review_block_store_configured(
     )
     monkeypatch.setenv("PROPOSAL_REVIEW_API_ENABLED", "true")
     monkeypatch.setenv("PROPOSAL_LEDGER_STORE_PATH", str(store))
-    app = _load_app(monkeypatch)
+    app = _load_app(monkeypatch, reload_settings=True)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/health")

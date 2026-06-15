@@ -11025,6 +11025,18 @@ loadDismissedIds();
     if (audioMeta.client_gate === 'low_peak_warn') {
       updateStatus('Low mic level, sending anyway...');
     }
+    const voiceRoute = await confirmDownRouteOrProceed(
+      selectedLlmRoute || llmRouteCatalog.default_route || 'chat'
+    );
+    if (voiceRoute === null) {
+      updateStatus('Voice send cancelled (route unavailable).');
+      return;
+    }
+    if (voiceRoute !== selectedLlmRoute) {
+      selectedLlmRoute = voiceRoute;
+      localStorage.setItem('orion_llm_route', voiceRoute);
+      applyLlmRouteButtonSelection(voiceRoute);
+    }
     try {
       let wsOpen = socket && socket.readyState === WebSocket.OPEN;
       if (!wsOpen) {
@@ -11049,7 +11061,7 @@ loadDismissedIds();
           recall_required: recallRequiredToggle ? recallRequiredToggle.checked : false,
           presence_context: presenceContext,
           surface_context: { surface: 'hub_desktop', input_modality: 'spoken' },
-          llm_route: selectedLlmRoute || llmRouteCatalog.default_route || 'chat',
+          llm_route: voiceRoute,
         };
         const audioLaneVerbs = modeVerbOverride ? [modeVerbOverride] : selectedVerbs;
         const audioIsChatQuick =

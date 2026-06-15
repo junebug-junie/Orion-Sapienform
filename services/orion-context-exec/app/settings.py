@@ -76,6 +76,14 @@ class ContextExecSettings(BaseSettings):
         15.0,
         alias="CONTEXT_EXEC_INVESTIGATION_V2_PROBE_TIMEOUT_SEC",
     )
+    context_exec_bus_readiness_heartbeat_ttl_sec: float = Field(
+        30.0,
+        alias="CONTEXT_EXEC_BUS_READINESS_HEARTBEAT_TTL_SEC",
+    )
+    context_exec_bus_readiness_timeout_sec: float = Field(
+        2.0,
+        alias="CONTEXT_EXEC_BUS_READINESS_TIMEOUT_SEC",
+    )
     context_exec_fake_organs_enabled: bool = Field(
         False,
         alias="CONTEXT_EXEC_FAKE_ORGANS_ENABLED",

@@ -413,7 +413,7 @@ from orion.schemas.telemetry.spark_ack import SparkStateSnapshotAckV1
 from orion.schemas.telemetry.spark_candidate import SparkCandidateV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from orion.signals.models import OrionSignalV1
-from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1, SystemHealthV1
+from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1, SystemHealthV1, BusConsumerReadinessV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
@@ -619,6 +619,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SparkStateSnapshotV1": SparkStateSnapshotV1,
     "SparkTelemetryPayload": SparkTelemetryPayload,
     "SystemHealthV1": SystemHealthV1,
+    "BusConsumerReadinessV1": BusConsumerReadinessV1,
     "EquilibriumSnapshotV1": EquilibriumSnapshotV1,
     "RdfWriteRequest": RdfWriteRequest,
     "RdfWriteResult": RdfWriteResult,

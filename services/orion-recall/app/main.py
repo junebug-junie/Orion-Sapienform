@@ -10,6 +10,8 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from orion.core.bus.bus_service_chassis import Rabbit
+from orion.bus.consumer_readiness import check_bus_consumer_readiness
+from orion.schemas.telemetry.system_health import BusConsumerReadinessV1
 
 from .http_models import RecallCompareRequestBody, RecallCompareResponseBody, RecallRequestBody, RecallResponseBody
 from .recall_eval import run_recall_eval_case, run_recall_eval_suite
@@ -116,10 +118,43 @@ def health():
 
 
 @app.get("/ready")
-def ready():
-    # readiness: minimally confirm the bus worker started
+async def ready():
     rabbit = getattr(app.state, "rabbit", None)
-    return {"ok": rabbit is not None}
+    if rabbit is None:
+        body = BusConsumerReadinessV1(
+            ok=False,
+            http_alive=True,
+            bus_consumer_ready=False,
+            intake_channel=settings.RECALL_BUS_INTAKE,
+            subscriber_count=0,
+            dependency_status="unavailable",
+            error="rabbit not started",
+        )
+        return JSONResponse(body.model_dump(mode="json"), status_code=503)
+
+    redis = getattr(getattr(rabbit, "bus", None), "redis", None)
+    if redis is None:
+        body = BusConsumerReadinessV1(
+            ok=False,
+            http_alive=True,
+            bus_consumer_ready=False,
+            intake_channel=settings.RECALL_BUS_INTAKE,
+            subscriber_count=0,
+            dependency_status="unavailable",
+            error="redis unavailable",
+        )
+        return JSONResponse(body.model_dump(mode="json"), status_code=503)
+
+    result = await check_bus_consumer_readiness(
+        redis,
+        intake_channel=settings.RECALL_BUS_INTAKE,
+        service_name=settings.SERVICE_NAME,
+        health_channel=settings.ORION_HEALTH_CHANNEL,
+        heartbeat_ttl_sec=float(settings.HEARTBEAT_INTERVAL_SEC) * 3.0,
+    )
+    body = BusConsumerReadinessV1(**result.model_dump(), http_alive=True)
+    status_code = 200 if body.ok else 503
+    return JSONResponse(body.model_dump(mode="json"), status_code=status_code)
 
 
 @app.post("/recall", response_model=RecallResponseBody)

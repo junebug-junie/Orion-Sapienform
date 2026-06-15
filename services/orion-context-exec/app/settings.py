@@ -86,6 +86,25 @@ class ContextExecSettings(BaseSettings):
     context_exec_recall_limit: int = Field(12, alias="CONTEXT_EXEC_RECALL_LIMIT")
     context_exec_recall_timeout_sec: float = Field(25.0, alias="CONTEXT_EXEC_RECALL_TIMEOUT_SEC")
 
+    context_exec_allowed_llm_profiles: str = Field(
+        "chat,quick,agent,metacog",
+        alias="CONTEXT_EXEC_ALLOWED_LLM_PROFILES",
+    )
+    context_exec_default_llm_profile: str = Field("chat", alias="CONTEXT_EXEC_DEFAULT_LLM_PROFILE")
+    context_exec_llm_profile_fallback_enabled: bool = Field(
+        False,
+        alias="CONTEXT_EXEC_LLM_PROFILE_FALLBACK_ENABLED",
+    )
+    context_exec_llm_gateway_url: str = Field(
+        "http://orion-llm-gateway:8098",
+        alias="CONTEXT_EXEC_LLM_GATEWAY_URL",
+    )
+    context_exec_llm_gateway_timeout_sec: float = Field(
+        1.5,
+        alias="CONTEXT_EXEC_LLM_GATEWAY_TIMEOUT_SEC",
+    )
+    context_exec_llm_timeout_sec: float = Field(30.0, alias="CONTEXT_EXEC_LLM_TIMEOUT_SEC")
+
     orion_repo_root: str = Field("/app", alias="ORION_REPO_ROOT")
     rlm_engine: str = Field("fake", alias="CONTEXT_EXEC_RLM_ENGINE")
     context_exec_rlm_fallback_enabled: bool = Field(True, alias="CONTEXT_EXEC_RLM_FALLBACK_ENABLED")

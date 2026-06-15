@@ -22,7 +22,7 @@ from .agent_synthesis import (
     run_agent_synthesis,
     synthesis_unavailable_for_llm_gateway_readiness,
 )
-from .bus_dependency_preflight import check_llm_gateway_bus_ready
+from .bus_dependency_preflight import check_llm_gateway_bus_ready, effective_llm_gateway_ready, llm_gateway_http_alive
 from .grounding_eval import evaluate_investigation_outcome, is_placeholder_investigation_summary
 from .investigation_v2 import (
     INVESTIGATION_V2_ARTIFACT_TYPE,
@@ -561,11 +561,11 @@ class ContextExecRunner:
             and settings.orion_bus_enabled
             and self.bus is not None
         ):
-            llm_ready = await check_llm_gateway_bus_ready(
+            llm_ready, llm_http_ok, llm_effective_ok = await effective_llm_gateway_ready(
                 self.bus,
                 timeout_sec=float(settings.context_exec_bus_readiness_timeout_sec),
             )
-            if not llm_ready.ok:
+            if not llm_effective_ok:
                 synthesis_result = synthesis_unavailable_for_llm_gateway_readiness(
                     request=request,
                     artifact=artifact,

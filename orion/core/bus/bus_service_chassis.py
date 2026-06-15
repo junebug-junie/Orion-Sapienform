@@ -284,58 +284,78 @@ class Rabbit(BaseChassis):
                 )
 
     async def _run(self) -> None:
-        logger.info(f"Rabbit listening channel={self.request_channel} bus={self.cfg.bus_url}")
-
-        async with self.bus.subscribe(self.request_channel) as pubsub:
+        backoff_sec = 1.0
+        while not self._stop.is_set():
+            logger.info(f"Rabbit listening channel={self.request_channel} bus={self.cfg.bus_url}")
             try:
-                async for msg in self.bus.iter_messages(pubsub):
-                    if self._stop.is_set():
-                        break
-                    if not isinstance(msg, dict):
-                        continue
-                    data = msg.get("data")
-                    if data is None:
-                        continue
-
-                    channel = msg.get("channel")
-                    if hasattr(channel, "decode"):
-                        channel = channel.decode("utf-8")
-
-                    decoded = self.bus.codec.decode(data)
-                    if not decoded.ok or decoded.envelope is None:
-                        logger.warning(
-                            f"Rabbit decode failed channel={channel} error={decoded.error}"
-                        )
-                        await self._publish_error(
-                            RuntimeError(decoded.error or "decode_failed"),
-                            when="rabbit.decode",
-                            env=None,
-                        )
-                        continue
-
-                    env = decoded.envelope
-                    if self.concurrent_handlers:
-                        async def _run_handler(envelope: BaseEnvelope, channel_name: str) -> None:
-                            try:
-                                await self._handle_decoded_envelope(channel=channel_name, env=envelope)
-                            except Exception as e:
-                                await self._publish_error(e, when="rabbit.handle", env=envelope)
-
-                        task = asyncio.create_task(_run_handler(env, str(channel)))
-                        self._inflight_tasks.add(task)
-                        task.add_done_callback(lambda t: self._inflight_tasks.discard(t))
-                        continue
-
+                if not self.bus.enabled:
+                    break
+                if self.bus.redis is None:
+                    await self.bus.connect()
+                async with self.bus.subscribe(self.request_channel) as pubsub:
+                    backoff_sec = 1.0
                     try:
-                        await self._handle_decoded_envelope(channel=str(channel), env=env)
-                    except Exception as e:
-                        await self._publish_error(e, when="rabbit.handle", env=env)
-            finally:
-                if self._inflight_tasks:
-                    for task in list(self._inflight_tasks):
-                        if not task.done():
-                            task.cancel()
-                    await asyncio.gather(*self._inflight_tasks, return_exceptions=True)
+                        async for msg in self.bus.iter_messages(pubsub):
+                            if self._stop.is_set():
+                                break
+                            if not isinstance(msg, dict):
+                                continue
+                            data = msg.get("data")
+                            if data is None:
+                                continue
+
+                            channel = msg.get("channel")
+                            if hasattr(channel, "decode"):
+                                channel = channel.decode("utf-8")
+
+                            decoded = self.bus.codec.decode(data)
+                            if not decoded.ok or decoded.envelope is None:
+                                logger.warning(
+                                    f"Rabbit decode failed channel={channel} error={decoded.error}"
+                                )
+                                await self._publish_error(
+                                    RuntimeError(decoded.error or "decode_failed"),
+                                    when="rabbit.decode",
+                                    env=None,
+                                )
+                                continue
+
+                            env = decoded.envelope
+                            if self.concurrent_handlers:
+                                async def _run_handler(envelope: BaseEnvelope, channel_name: str) -> None:
+                                    try:
+                                        await self._handle_decoded_envelope(channel=channel_name, env=envelope)
+                                    except Exception as e:
+                                        await self._publish_error(e, when="rabbit.handle", env=envelope)
+
+                                task = asyncio.create_task(_run_handler(env, str(channel)))
+                                self._inflight_tasks.add(task)
+                                task.add_done_callback(lambda t: self._inflight_tasks.discard(t))
+                                continue
+
+                            try:
+                                await self._handle_decoded_envelope(channel=str(channel), env=env)
+                            except Exception as e:
+                                await self._publish_error(e, when="rabbit.handle", env=env)
+                    finally:
+                        if self._inflight_tasks:
+                            for task in list(self._inflight_tasks):
+                                if not task.done():
+                                    task.cancel()
+                            await asyncio.gather(*self._inflight_tasks, return_exceptions=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Rabbit subscriber loop failed channel=%s err=%s; reconnecting in %.1fs",
+                    self.request_channel,
+                    exc,
+                    backoff_sec,
+                )
+            if self._stop.is_set():
+                break
+            await asyncio.sleep(backoff_sec)
+            backoff_sec = min(backoff_sec * 2.0, 30.0)
 
 
 class Hunter(BaseChassis):

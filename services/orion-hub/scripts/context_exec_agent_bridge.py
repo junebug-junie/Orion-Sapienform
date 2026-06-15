@@ -139,6 +139,8 @@ def build_context_exec_request(
 ) -> ContextExecRequestV1:
     llm_profile_norm = normalize_llm_profile(llm_profile)
     if investigation_v2_enabled():
+        # Agent lane investigation: broad read permissions; compute lane selects LLM route only.
+        permissions = context_exec_permissions_for_llm_profile("agent")
         return ContextExecRequestV1(
             text=prompt,
             mode="investigation_v2",
@@ -147,7 +149,7 @@ def build_context_exec_request(
             correlation_id=req.trace_id,
             messages=list(req.messages or []),
             packs=list(req.packs or []),
-            permissions=context_exec_permissions_for_llm_profile(llm_profile_norm),
+            permissions=permissions,
             llm_profile=llm_profile_norm,
         )
 

@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import httpx
+
 from orion.bus.consumer_readiness import BusConsumerReadinessResult, check_bus_consumer_readiness
-from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.async_service import OrionBusAsync
 from orion.schemas.context_exec import SourceResult, SourceStatus
 
@@ -62,6 +63,44 @@ async def check_llm_gateway_bus_ready(bus: OrionBusAsync, *, timeout_sec: float)
         service_name="llm-gateway",
         timeout_sec=timeout_sec,
     )
+
+
+async def llm_gateway_http_alive(*, timeout_sec: float) -> bool:
+    gateway_url = str(settings.context_exec_llm_gateway_url or "").strip().rstrip("/")
+    if not gateway_url:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=min(float(timeout_sec), float(settings.context_exec_llm_gateway_timeout_sec))) as client:
+            resp = await client.get(f"{gateway_url}/health")
+        return resp.status_code < 400
+    except Exception:
+        return False
+
+
+async def effective_llm_gateway_ready(
+    bus: OrionBusAsync,
+    *,
+    timeout_sec: float,
+) -> tuple[BusConsumerReadinessResult, bool, bool]:
+    """Return (numsub readiness, http alive, effective ok for operator surfaces)."""
+    bus_ready = await check_llm_gateway_bus_ready(bus, timeout_sec=timeout_sec)
+    http_ok = await llm_gateway_http_alive(timeout_sec=timeout_sec)
+    effective_ok = bus_ready.ok or http_ok
+    return bus_ready, http_ok, effective_ok
+
+
+def llm_gateway_readiness_metadata(
+    bus_ready: BusConsumerReadinessResult,
+    *,
+    http_ok: bool,
+    effective_ok: bool,
+) -> dict[str, Any]:
+    payload = bus_ready.model_dump(mode="json")
+    payload["http_alive_ok"] = http_ok
+    payload["effective_ready"] = effective_ok
+    if http_ok and not bus_ready.ok:
+        payload["note"] = "NUMSUB=0 but LLM gateway HTTP health ok"
+    return payload
 
 
 def dependency_health_entry(
@@ -141,14 +180,20 @@ async def collect_bus_dependencies_health(
         check_recall_bus_ready(bus, timeout_sec=timeout_sec),
         check_llm_gateway_bus_ready(bus, timeout_sec=timeout_sec),
     )
+    llm_http_ok = await llm_gateway_http_alive(timeout_sec=timeout_sec)
+    llm_effective_ok = llm_ready.ok or llm_http_ok
     dependencies = {
         "recall": dependency_health_entry(recall_ready, redis_ping_ok=ping_ok),
-        "llm_gateway": dependency_health_entry(llm_ready, redis_ping_ok=ping_ok),
+        "llm_gateway": {
+            **dependency_health_entry(llm_ready, redis_ping_ok=ping_ok),
+            "http_alive_ok": llm_http_ok,
+            "effective_ready": llm_effective_ok,
+        },
     }
     return {
         "bus_enabled": True,
         "bus_connected": True,
-        "bus_consumer_ready": recall_ready.ok and llm_ready.ok,
+        "bus_consumer_ready": recall_ready.ok and llm_effective_ok,
         "dependencies": dependencies,
     }
 

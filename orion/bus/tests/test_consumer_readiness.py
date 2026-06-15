@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from orion.bus.consumer_readiness import (
+    BusConsumerReadinessResult,
+    bus_consumer_readiness_v1,
     check_bus_consumer_readiness,
     redis_pubsub_numsub,
 )
@@ -51,3 +53,18 @@ async def test_check_bus_consumer_readiness_no_subscribers() -> None:
     assert result.intake_channel == intake
     assert result.dependency_status == "unavailable"
     assert result.error == f"no subscribers on intake channel: {intake}"
+
+
+def test_bus_consumer_readiness_v1_sets_http_alive_without_duplicate_kwarg() -> None:
+    result = BusConsumerReadinessResult(
+        ok=True,
+        bus_consumer_ready=True,
+        intake_channel="orion:exec:request:LLMGatewayService",
+        subscriber_count=1,
+        dependency_status="available",
+        http_alive=None,
+    )
+    body = bus_consumer_readiness_v1(result, http_alive=True)
+    assert body.http_alive is True
+    assert body.ok is True
+    assert body.subscriber_count == 1

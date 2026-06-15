@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from orion.core.bus.bus_service_chassis import Rabbit
-from orion.bus.consumer_readiness import check_bus_consumer_readiness
+from orion.bus.consumer_readiness import bus_consumer_readiness_v1, check_bus_consumer_readiness
 from orion.schemas.telemetry.system_health import BusConsumerReadinessV1
 
 from .http_models import RecallCompareRequestBody, RecallCompareResponseBody, RecallRequestBody, RecallResponseBody
@@ -151,8 +151,9 @@ async def ready():
         service_name=settings.SERVICE_NAME,
         health_channel=settings.ORION_HEALTH_CHANNEL,
         heartbeat_ttl_sec=float(settings.HEARTBEAT_INTERVAL_SEC) * 3.0,
+        check_heartbeat=False,
     )
-    body = BusConsumerReadinessV1(**result.model_dump(), http_alive=True)
+    body = bus_consumer_readiness_v1(result, http_alive=True)
     status_code = 200 if body.ok else 503
     return JSONResponse(body.model_dump(mode="json"), status_code=status_code)
 

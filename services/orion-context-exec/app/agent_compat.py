@@ -18,7 +18,7 @@ def agent_chain_request_to_context_exec(body: AgentChainRequest) -> ContextExecR
     text = body.text or ""
     if settings.context_exec_investigation_v2_enabled:
         profile = str(body.response_profile or "agent").strip().lower()
-        permissions = context_exec_permissions_for_llm_profile(profile)
+        permissions = context_exec_permissions_for_llm_profile("agent")
         return ContextExecRequestV1(
             text=text,
             mode="investigation_v2",
@@ -28,6 +28,7 @@ def agent_chain_request_to_context_exec(body: AgentChainRequest) -> ContextExecR
             answer_contract=_parse_answer_contract(body.answer_contract),
             packs=list(body.packs or []),
             permissions=permissions,
+            llm_profile=profile,
         )
 
     mode = "general_investigation"

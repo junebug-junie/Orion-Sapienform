@@ -179,7 +179,7 @@ def _parse_synthesis_json(content: str) -> dict[str, str] | None:
         return None
     try:
         parsed = json.loads(text)
-    except json.JSONParseError:
+    except json.JSONDecodeError:
         start = text.find("{")
         end = text.rfind("}")
         if start < 0 or end <= start:

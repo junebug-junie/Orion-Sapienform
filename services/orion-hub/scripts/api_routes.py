@@ -2227,6 +2227,7 @@ async def handle_chat_request(
             "mode": "agent",
             "use_recall": use_recall,
             "text": text,
+            "llm_response": text,
             "tokens": len(text.split()),
             "raw": raw_result,
             "agent_trace": agent_trace,
@@ -2235,6 +2236,7 @@ async def handle_chat_request(
             "no_write": no_write,
             "context_exec_lane": True,
             "context_exec_run": ctx_result.get("context_exec_run"),
+            "operator_summary": ctx_result.get("operator_summary"),
         }
         if substrate_summary is not None:
             result["substrate_effect_summary"] = substrate_summary

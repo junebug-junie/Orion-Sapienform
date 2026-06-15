@@ -78,7 +78,7 @@ def _steps_from_verb_trace(run: ContextExecRunV1) -> List[AgentTraceStepV1]:
                 tool_id=item.callable,
                 tool_family="runtime",
                 action_kind="inspect",
-                effect_kind="read",
+                effect_kind="read_only",
                 status=item.status,
                 summary=item.output_summary or item.input_summary or item.verb,
                 duration_ms=item.duration_ms,

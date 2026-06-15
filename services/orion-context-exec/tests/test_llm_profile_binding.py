@@ -97,3 +97,35 @@ async def test_llm_chat_route_uses_route_key(monkeypatch: pytest.MonkeyPatch) ->
     assert captured["route"] == "metacog"
     assert result["route"] == "metacog"
     assert result["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_llm_chat_route_accepts_ctxcorr_correlation_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class _FakeBus:
+        class codec:
+            @staticmethod
+            def decode(data: bytes) -> Any:
+                class _Decoded:
+                    ok = True
+
+                    class envelope:
+                        payload = {"content": "ok", "role": "assistant"}
+
+                return _Decoded()
+
+        async def rpc_request(self, channel: str, env: Any, **kwargs: Any) -> dict[str, Any]:
+            captured["correlation_id"] = str(env.correlation_id)
+            return {"data": b"{}"}
+
+    result = await llm_chat_route(
+        _FakeBus(),
+        prompt="hi",
+        route="quick",
+        correlation_id="ctxcorr_04d96364e01c",
+    )
+    assert result["ok"] is True
+    import uuid
+
+    uuid.UUID(captured["correlation_id"])

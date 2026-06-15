@@ -20,8 +20,12 @@ def _source() -> ServiceRef:
 
 
 def _corr_uuid(correlation_id: str | None) -> str:
-    if correlation_id and str(correlation_id).strip():
-        return str(correlation_id).strip()
+    raw = str(correlation_id or "").strip()
+    if raw:
+        try:
+            return str(uuid.UUID(raw))
+        except ValueError:
+            return str(uuid.uuid5(uuid.NAMESPACE_URL, raw))
     return str(uuid.uuid4())
 
 

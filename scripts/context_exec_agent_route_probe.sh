@@ -68,7 +68,7 @@ runtime = ctx.get('runtime_debug') or dbg
 route_used = runtime.get('route_used') or dbg.get('route_used') or dbg.get('llm_profile')
 if route_used != route and not runtime.get('fallback_used'):
     raise SystemExit(f'route mismatch: expected {route}, got {route_used!r} dbg={runtime!r}')
-text = d.get('llm_response') or ''
+text = d.get('llm_response') or d.get('text') or ''
 if 'Agent run complete' not in text:
     raise SystemExit(f'missing operator inline response: {text[:200]!r}')
 if 'Route:' not in text:

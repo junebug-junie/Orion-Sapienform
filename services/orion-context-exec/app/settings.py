@@ -96,7 +96,7 @@ class ContextExecSettings(BaseSettings):
         alias="CONTEXT_EXEC_LLM_PROFILE_FALLBACK_ENABLED",
     )
     context_exec_llm_gateway_url: str = Field(
-        "http://orion-llm-gateway:8098",
+        "http://orion-llm-gateway:8210",
         alias="CONTEXT_EXEC_LLM_GATEWAY_URL",
     )
     context_exec_llm_gateway_timeout_sec: float = Field(

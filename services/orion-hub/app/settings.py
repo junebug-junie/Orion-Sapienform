@@ -102,6 +102,10 @@ class Settings(BaseSettings):
         default=120.0,
         alias="HUB_CONTEXT_EXEC_TIMEOUT_SEC",
     )
+    CONTEXT_EXEC_INVESTIGATION_V2_ENABLED: bool = Field(
+        default=False,
+        alias="CONTEXT_EXEC_INVESTIGATION_V2_ENABLED",
+    )
 
     WORLD_PULSE_UI_FIXTURE_RUN_ENABLED: bool = Field(
         default=False,

@@ -4,12 +4,33 @@ from typing import Any
 
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.agents.schemas import AgentChainRequest, AgentChainResult
-from orion.schemas.context_exec import ContextExecPermissionV1, ContextExecRequestV1, ContextExecRunV1
+from orion.schemas.context_exec import (
+    ContextExecPermissionV1,
+    ContextExecRequestV1,
+    ContextExecRunV1,
+    context_exec_permissions_for_llm_profile,
+)
+
+from .settings import settings
 
 
 def agent_chain_request_to_context_exec(body: AgentChainRequest) -> ContextExecRequestV1:
-    mode = "general_investigation"
     text = body.text or ""
+    if settings.context_exec_investigation_v2_enabled:
+        profile = str(body.response_profile or "agent").strip().lower()
+        permissions = context_exec_permissions_for_llm_profile(profile)
+        return ContextExecRequestV1(
+            text=text,
+            mode="investigation_v2",
+            session_id=body.session_id,
+            user_id=body.user_id,
+            messages=list(body.messages or []),
+            answer_contract=_parse_answer_contract(body.answer_contract),
+            packs=list(body.packs or []),
+            permissions=permissions,
+        )
+
+    mode = "general_investigation"
     tl = text.lower()
     if "where did" in tl and ("claim" in tl or "belief" in tl or "come from" in tl):
         mode = "belief_provenance"
@@ -17,12 +38,6 @@ def agent_chain_request_to_context_exec(body: AgentChainRequest) -> ContextExecR
         mode = "trace_autopsy"
     elif "what breaks" in tl or "impact" in tl:
         mode = "repo_impact_analysis"
-    ac = None
-    if isinstance(body.answer_contract, dict):
-        try:
-            ac = AnswerContract.model_validate(body.answer_contract)
-        except Exception:
-            ac = None
     permissions = ContextExecPermissionV1()
     if mode == "repo_impact_analysis":
         permissions = permissions.model_copy(update={"read_repo": True})
@@ -32,7 +47,7 @@ def agent_chain_request_to_context_exec(body: AgentChainRequest) -> ContextExecR
         session_id=body.session_id,
         user_id=body.user_id,
         messages=list(body.messages or []),
-        answer_contract=ac,
+        answer_contract=_parse_answer_contract(body.answer_contract),
         packs=list(body.packs or []),
         permissions=permissions,
         expected_artifact_type={
@@ -41,6 +56,15 @@ def agent_chain_request_to_context_exec(body: AgentChainRequest) -> ContextExecR
             "repo_impact_analysis": "RepoImpactAnalysisReportV1",
         }.get(mode),
     )
+
+
+def _parse_answer_contract(raw: dict[str, Any] | None) -> AnswerContract | None:
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return AnswerContract.model_validate(raw)
+    except Exception:
+        return None
 
 
 def context_exec_run_to_agent_chain_result(run: ContextExecRunV1, *, mode: str = "agent") -> AgentChainResult:

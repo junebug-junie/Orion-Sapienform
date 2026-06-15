@@ -8,14 +8,21 @@ from typing import Any
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.schemas.context_exec import (
+    ContextExecOperatorSummaryV1,
     ContextExecRequestV1,
     ContextExecRunV1,
+    ContextExecSafetySummaryV1,
     ContextExecVerbStepV1,
     ProposalEnvelopeV1,
 )
 
 from .agent_synthesis import run_agent_synthesis
 from .grounding_eval import evaluate_investigation_outcome, is_placeholder_investigation_summary
+from .investigation_v2 import (
+    INVESTIGATION_V2_ARTIFACT_TYPE,
+    INVESTIGATION_V2_SKELETON_MESSAGE,
+    build_investigation_v2_skeleton_artifact,
+)
 from .artifact_builder import (
     artifact_type_for_mode,
     build_final_text,
@@ -245,6 +252,16 @@ class ContextExecRunner:
 
         events = self._build_events(request, causality_chain=causality_chain)
         await events.started(run_id=run_id, mode=request.mode, text=request.text)
+
+        if request.mode == "investigation_v2":
+            return await self._run_investigation_v2_skeleton(
+                request=request,
+                run_id=run_id,
+                started=started,
+                events=events,
+                verb_trace=verb_trace,
+                failure_modes=failure_modes,
+            )
 
         try:
             profile_selection = await resolve_llm_profile(request.llm_profile)
@@ -478,6 +495,65 @@ class ContextExecRunner:
                 **runtime_debug,
                 "correlation_id": request.correlation_id,
             },
+            failure_modes=failure_modes,
+        )
+
+    async def _run_investigation_v2_skeleton(
+        self,
+        *,
+        request: ContextExecRequestV1,
+        run_id: str,
+        started: float,
+        events: ContextExecEventEmitter,
+        verb_trace: list[ContextExecVerbStepV1],
+        failure_modes: list[str],
+    ) -> ContextExecRunV1:
+        artifact = build_investigation_v2_skeleton_artifact(request)
+        artifact_type = INVESTIGATION_V2_ARTIFACT_TYPE
+        schema_valid = True
+        status = "ok"
+        final_text = INVESTIGATION_V2_SKELETON_MESSAGE
+        ac_dump = request.answer_contract.model_dump(mode="json") if request.answer_contract else None
+        runtime_debug = {
+            **self._engine_runtime_debug(
+                engine_used="skeleton",
+                mode=request.mode,
+                schema_valid=schema_valid,
+            ),
+            "correlation_id": request.correlation_id,
+            "investigation_v2_skeleton": True,
+            "permissions_received": request.permissions.model_dump(mode="json"),
+            "read_repo": request.permissions.read_repo,
+        }
+        operator_summary = ContextExecOperatorSummaryV1(
+            title="Investigation v2 skeleton",
+            summary=final_text,
+            agent_mode="investigation_v2",
+            route_used=str(request.llm_profile or settings.context_exec_default_llm_profile),
+            model_synthesis_used=False,
+            safety=ContextExecSafetySummaryV1(),
+        )
+        await events.finished(
+            run_id=run_id,
+            mode=request.mode,
+            status=status,
+            artifact_type=artifact_type,
+            schema_valid=schema_valid,
+            failure_modes=failure_modes,
+        )
+        return ContextExecRunV1(
+            run_id=run_id,
+            status=status,
+            mode=request.mode,
+            text=request.text,
+            answer_contract=ac_dump,
+            findings_bundle=None,
+            artifact_type=artifact_type,
+            artifact=artifact,
+            final_text=final_text,
+            verb_trace=verb_trace,
+            operator_summary=operator_summary,
+            runtime_debug=runtime_debug,
             failure_modes=failure_modes,
         )
 

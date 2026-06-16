@@ -47,7 +47,7 @@ async def main() -> int:
         print("POSTGRES_URI required", file=sys.stderr)
         return 2
 
-    corr = f"smoke-{uuid4()}"
+    corr = str(uuid4())
     bus = OrionBusAsync(url=bus_url, enabled=True)
     await bus.connect()
     pool = await asyncpg.create_pool(postgres_uri, min_size=1, max_size=2)

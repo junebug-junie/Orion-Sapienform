@@ -1,71 +1,140 @@
-# PR: Memory Consolidation Pipeline
+# PR #709: Memory Consolidation Pipeline
 
-**Branch:** `feat/memory-consolidation-pipeline`  
-**Base:** `main`  
-**Worktree:** `.worktrees/feat/memory-consolidation-pipeline`
+**Branch:** `feat/memory-consolidation-pipeline` → `main`  
+**PR:** https://github.com/junebug-junie/Orion-Sapienform/pull/709  
+**Spec:** `docs/superpowers/specs/2026-06-16-memory-consolidation-design.md`  
+**Plan:** `docs/superpowers/plans/2026-06-16-memory-consolidation-pipeline.md`
+
+---
 
 ## Summary
 
-Implements durable per-turn memory consolidation: every `chat_history_log` write triggers a post-commit outbox event, a new `orion-memory-consolidation` service classifies the turn (LLM gateway quick lane + logprobs), patches `spark_meta` back through sql-writer, tracks conversation windows, closes on situational phase + boundary scores, runs `memory_graph_suggest`, and persists drafts for operator review.
+Durable per-turn memory consolidation on **every** `chat_history_log` write:
+
+1. **sql-writer** commits the turn, then emits `orion:memory:turn:persisted` (post-commit outbox).
+2. **orion-memory-consolidation** classifies via LLM gateway quick lane (logprobs), patches `spark_meta` back through sql-writer, tracks open windows in Postgres, closes on situational phase + boundary scores, runs `memory_graph_suggest`, and persists drafts for operator review.
+
+Spark introspector is **not** on this path. No coverage backfill sweeps.
+
+---
 
 ## Architecture
 
 ```
 Hub (trace_id = correlation_id)
-  → orion:chat:history:turn → sql-writer → chat_history_log
-  → orion:memory:turn:persisted (post-commit outbox, same correlation_id)
-  → orion-memory-consolidation
-       ├─ classify (logprobs)
-       ├─ orion:chat:history:spark_meta:patch → sql-writer merge
-       ├─ window state (Postgres)
-       └─ on boundary → cortex memory_graph_suggest → memory_graph_suggest_drafts
+  └─► orion:chat:history:turn
+        └─► sql-writer → chat_history_log (correlation_id = trace_id)
+              └─► orion:memory:turn:persisted (SAME correlation_id)
+                    └─► orion-memory-consolidation
+                          ├─ classify (gateway quick, logprobs; RPC uses new UUID for reply only)
+                          ├─ orion:chat:history:spark_meta:patch (SAME correlation_id)
+                          ├─ window state (Postgres)
+                          └─ on boundary → cortex suggest → memory_graph_suggest_drafts
+                                └─► sql-writer MERGE spark_meta (by correlation_id)
 ```
 
-**Sacred invariant:** `correlation_id` is the hub `trace_id` end-to-end; LLM/cortex RPCs use separate UUIDs only for reply routing.
+---
 
-## Commits
+## correlation_id contract (non-negotiable)
+
+| Step | ID | Rule |
+|------|-----|------|
+| Hub turn envelope | `trace_id` | Set once at hub (`build_chat_turn_envelope`) |
+| `chat_history_log` row | same | sql-writer copies `env.correlation_id` |
+| Outbox `memory.turn.persisted` | same | **`env.correlation_id` preferred** over payload fields; `derive_child()` inherits parent |
+| Classify patch | same | `ChatHistorySparkMetaPatchV1.correlation_id = turn.correlation_id` |
+| spark_meta merge | same | `WHERE correlation_id = patch.correlation_id` — never INSERT |
+| LLM classify RPC | new UUID | Reply routing only (`orion:exec:result:LLMGatewayService:{uuid}`) |
+| Cortex suggest RPC | new UUID | Orch reply routing only |
+| `spark_meta.cortex_correlation_id` | different | Carried in meta; **not** used as turn key |
+
+**Guards:** consolidation handler `assert env.correlation_id == turn.correlation_id`; outbox logs `memory_turn_persisted_corr_mismatch` if envelope/payload diverge; unit test proves outbox ignores nested `cortex_correlation_id` in spark_meta.
+
+---
+
+## What's new
+
+### Bus + schemas
+- `MemoryTurnPersistedV1`, `ChatHistorySparkMetaPatchV1`, window/draft DTOs
+- Channels: `orion:memory:turn:persisted`, `orion:chat:history:spark_meta:patch`
+- Catalog test: `tests/test_memory_consolidation_bus_catalog.py`
+
+### sql-writer
+- Post-commit emit after successful `chat.history` write
+- Subscribe + handler for `chat.history.spark_meta.patch.v1` (merge into existing row)
+- Settings: `SQL_WRITER_EMIT_MEMORY_TURN_PERSISTED`, channel vars
+
+### orion-memory-consolidation (new service)
+- Classify worker (logprobs → `memory_significance_score`, `conversation_boundary_score`)
+- Window store + boundary rules (0.70 / 0.85 / 0.92 thresholds)
+- 90-min gap fallback when `phase_change` absent on turn
+- Suggest runner → `memory_graph_suggest_drafts` (`pending_review`)
+- Failed-window retry loop (30 min default)
+- Dockerfile, docker-compose, `.env_example`, README
+
+### Postgres
+- Migration: `services/orion-sql-db/manual_migration_memory_consolidation_v1.sql`
+  - `memory_consolidation_windows`
+  - `memory_graph_suggest_drafts`
+
+---
+
+## Commits (7)
 
 | SHA | Message |
 |-----|---------|
-| `6a0262a0` | Add memory consolidation schemas, bus channels, and classify helper |
-| `c88e9c6e` | Add sql-writer outbox, patch handler, and memory consolidation service |
-| `1bd87e7e` | Extend env sync for memory consolidation pipeline keys |
-| (latest) | Add consolidation plan/spec docs and fix smoke script correlation IDs |
+| `6a0262a0` | Schemas, bus channels, classify helper |
+| `c88e9c6e` | sql-writer outbox + patch; consolidation service |
+| `1bd87e7e` | Env sync script updates |
+| `16606a8f` | Plan docs; smoke script UUID fix |
+| `5634bd3c` | PR report |
+| `f9b50fcf` | Review fixes: draft upsert, 90-min fallback, gateway reply channel |
+| `b6b78669` | Prefer envelope correlation_id; hub trace_id test |
 
-## Files changed (high level)
-
-| Area | Files |
-|------|-------|
-| Schemas / bus | `orion/schemas/memory_consolidation.py`, `orion/schemas/registry.py`, `orion/bus/channels.yaml` |
-| Classify helper | `orion/memory/consolidation_classify.py` |
-| sql-writer | `app/settings.py`, `app/worker.py`, tests |
-| Postgres | `services/orion-sql-db/manual_migration_memory_consolidation_v1.sql` |
-| Draft store | `orion/memory_graph/draft_repository.py`, `orion/memory_graph/suggest_runner.py` |
-| New service | `services/orion-memory-consolidation/**` |
-| Env | `.env_example`, `services/orion-sql-writer/.env_example`, `services/orion-memory-consolidation/.env_example`, `scripts/sync_local_env_from_example.py` |
-| Smoke | `scripts/smoke_memory_consolidation_pipeline.py` |
-| Docs | `docs/superpowers/plans/`, `docs/superpowers/specs/` |
-
-## New bus channels
-
-- `orion:memory:turn:persisted` → `MemoryTurnPersistedV1` (producer: sql-writer, consumer: consolidation)
-- `orion:chat:history:spark_meta:patch` → `ChatHistorySparkMetaPatchV1` (producer: consolidation, consumer: sql-writer)
+---
 
 ## Operator setup
 
-1. Apply migration: `services/orion-sql-db/manual_migration_memory_consolidation_v1.sql`
-2. Local env synced (`.env` + service `.env` updated on host for consolidation keys)
-3. Build/start consolidation service:
-   ```bash
-   docker compose --env-file .env --env-file services/orion-bus/.env \
-     -f services/orion-memory-consolidation/docker-compose.yml up -d --build
-   ```
-
-## Verification
+### 1. Apply migration (required)
 
 ```bash
-cd .worktrees/feat/memory-consolidation-pipeline
-PYTHONPATH=. ../../orion_dev/bin/python -m pytest \
+psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_memory_consolidation_v1.sql
+```
+
+Creates `memory_consolidation_windows` and `memory_graph_suggest_drafts`.
+
+**Note:** Applied on dev host `localhost:55432/conjourney` during PR work. **Not** verified on docker `orion-sql-db` in this session — run on whichever Postgres your stack uses.
+
+### 2. Env (root + services)
+
+Root `.env_example` keys added; sync via:
+
+```bash
+python3 scripts/sync_local_env_from_example.py orion-sql-writer orion-memory-consolidation
+```
+
+Key vars:
+- `CHANNEL_MEMORY_TURN_PERSISTED`
+- `CHANNEL_CHAT_HISTORY_SPARK_META_PATCH`
+- `SQL_WRITER_EMIT_MEMORY_TURN_PERSISTED=true`
+- `MEMORY_CONSOLIDATION_ENABLED=true`
+- `LLM_LOGPROB_SUMMARY_ENABLED=true`
+
+### 3. Restart sql-writer + start consolidation
+
+```bash
+# sql-writer must subscribe to orion:chat:history:spark_meta:patch
+docker compose --env-file .env --env-file services/orion-bus/.env \
+  -f services/orion-memory-consolidation/docker-compose.yml up -d --build
+```
+
+---
+
+## Verification (automated)
+
+```bash
+cd .worktrees/feat/memory-consolidation-pipeline  # or checkout branch
+PYTHONPATH=. ./orion_dev/bin/python -m pytest \
   tests/test_memory_consolidation_bus_catalog.py \
   tests/test_consolidation_classify.py \
   tests/test_memory_graph_draft_repository.py \
@@ -74,7 +143,7 @@ PYTHONPATH=. ../../orion_dev/bin/python -m pytest \
   services/orion-memory-consolidation/tests/ -q
 ```
 
-**Result:** 22 passed, exit 0
+**Result:** 25 passed, exit 0
 
 ```bash
 python -m compileall services/orion-memory-consolidation -q
@@ -82,23 +151,32 @@ python -m compileall services/orion-memory-consolidation -q
 
 **Result:** exit 0
 
-## Test plan
+---
 
-- [ ] Apply Postgres migration on staging DB
-- [ ] Restart sql-writer with new subscribe channel + emit flag
-- [ ] Start `orion-memory-consolidation` container
-- [ ] Send hub turn; confirm `spark_meta.memory_significance_score` or `memory_classify_status=degraded`
-- [ ] Force boundary (`phase_change=long_gap`, high boundary score); confirm draft row in `memory_graph_suggest_drafts`
-- [ ] Run `scripts/smoke_memory_consolidation_pipeline.py` against live stack
+## Test plan (staging / live)
 
-## Known gaps / follow-ups
+- [ ] Apply migration on stack Postgres (`orion-sql-db` or equivalent)
+- [ ] Restart sql-writer (new subscribe channel + emit flag)
+- [ ] Start `orion-memory-consolidation`
+- [ ] Send one hub turn → confirm same `correlation_id` on:
+  - `chat_history_log.correlation_id`
+  - outbox envelope (bus tap or log)
+  - `chat_history_log.spark_meta.memory_significance_score` or `memory_classify_status=degraded`
+- [ ] Force boundary (`phase_change=long_gap`, high boundary score) → draft row in `memory_graph_suggest_drafts` with `status=pending_review`
+- [ ] `PYTHONPATH=. python scripts/smoke_memory_consolidation_pipeline.py` (requires live stack)
 
-- **90-min window fallback:** `window_fetch.should_close_by_time_gap` exists but is not yet wired into the worker close path (spec lists as fallback when phase missing).
-- **Live smoke:** script requires running bus/sql-writer/postgres/gateway/cortex stack (not run in CI here).
-- **Code review subagent:** API limit prevented automated review subagent; manual self-review + 22 unit tests green.
+---
 
-## Non-goals (unchanged)
+## Non-goals
 
-- No auto-promotion of drafts to RDF/cards
-- No spark introspector dependency
-- No coverage backfill sweeps
+- Auto-promotion of drafts to RDF / memory cards
+- Changes to spark introspector or recall
+- Recovery sweeps for missing classification coverage
+
+---
+
+## Remaining risks
+
+- **Live E2E not run** in PR session — unit tests + local migration only
+- **Consolidation service** not deployed/restarted on live stack yet
+- **Minor:** service starts without Postgres pool and skips work silently if `POSTGRES_URI` unset (health still returns 200)

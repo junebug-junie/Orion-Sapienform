@@ -2040,7 +2040,7 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                 and settings.sql_writer_emit_memory_turn_persisted
             ):
                 try:
-                    corr = str(extra_sql_fields.get("correlation_id") or env.correlation_id or "")
+                    corr = str(env.correlation_id or extra_sql_fields.get("correlation_id") or "")
                     if corr:
                         spark_meta = data_to_process.get("spark_meta") if isinstance(data_to_process.get("spark_meta"), dict) else {}
                         persisted = MemoryTurnPersistedV1(

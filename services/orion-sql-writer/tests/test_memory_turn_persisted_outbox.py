@@ -73,3 +73,49 @@ async def test_chat_history_emits_memory_turn_persisted(monkeypatch):
     assert out_env.payload["correlation_id"] == corr
     assert out_env.payload["prompt"] == "hello"
     assert out_env.payload["response"] == "hi there"
+
+
+@pytest.mark.asyncio
+async def test_outbox_preserves_hub_trace_id_not_cortex_or_spark_ids(monkeypatch):
+    """Hub sets envelope.correlation_id = trace_id; spark/cortex may carry other IDs in meta."""
+    trace_id = str(uuid4())
+    cortex_corr = str(uuid4())
+    published: list[tuple[str, BaseEnvelope]] = []
+
+    def _fake_write_row(sql_model_cls, data: dict) -> bool:
+        assert data.get("correlation_id") == trace_id
+        assert data.get("id") == trace_id
+        return True
+
+    bus = AsyncMock()
+
+    async def _capture_publish(channel: str, env: BaseEnvelope) -> None:
+        published.append((channel, env))
+
+    bus.publish = _capture_publish
+    monkeypatch.setattr(worker, "_write_row", _fake_write_row)
+    monkeypatch.setattr(worker.settings, "sql_writer_emit_memory_turn_persisted", True)
+
+    env = BaseEnvelope(
+        kind="chat.history",
+        correlation_id=trace_id,
+        source=_source(),
+        payload={
+            "id": trace_id,
+            "correlation_id": trace_id,
+            "prompt": "user said hi",
+            "response": "orion replied",
+            "spark_meta": {
+                "cortex_correlation_id": cortex_corr,
+                "conversation_phase": {"phase_change": "same_breath"},
+            },
+        },
+    )
+
+    await worker.handle_envelope(env, bus=bus)
+
+    assert len(published) == 1
+    _, out_env = published[0]
+    assert str(out_env.correlation_id) == trace_id
+    assert out_env.payload["correlation_id"] == trace_id
+    assert out_env.payload["spark_meta"].get("cortex_correlation_id") == cortex_corr

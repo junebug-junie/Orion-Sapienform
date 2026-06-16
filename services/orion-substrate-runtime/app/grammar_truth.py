@@ -6,8 +6,21 @@ from typing import Any
 
 from app.cursor_gaps import has_cold_start_tail_seed, has_recent_tail_seed, tail_seed_snapshot
 from app.cursor_reset import cursor_reset_snapshot, last_reset_skipped_history
+from app.reducer_health import health_snapshots, update_backlog_metrics
 from app.settings import get_settings
 from app.store import BiometricsSubstrateStore, GRAMMAR_CURSOR_REGISTRY
+
+REDUCER_KEY_BY_CURSOR: dict[str, str] = {
+    "biometrics_grammar_consumer": "biometrics",
+    "execution_grammar_reducer": "execution_trajectory",
+    "transport_grammar_reducer": "transport_bus",
+}
+
+ENABLED_BY_REDUCER_KEY: dict[str, Any] = {
+    "biometrics": lambda s: True,
+    "execution_trajectory": lambda s: s.enable_execution_trajectory_reducer,
+    "transport_bus": lambda s: s.enable_transport_bus_reducer,
+}
 
 
 def build_substrate_grammar_truth(store: BiometricsSubstrateStore) -> dict[str, Any]:
@@ -24,13 +37,76 @@ def build_substrate_grammar_truth(store: BiometricsSubstrateStore) -> dict[str, 
         degraded_reasons.append("operator_cursor_reset_skipped_history")
 
     cursors = store.cursor_positions()
+    cursor_by_name = {row["cursor_name"]: row for row in cursors}
     lag_by_reducer: dict[str, float | None] = {}
+    stream_lag_by_reducer: dict[str, float | None] = {}
+    backlog_by_reducer: dict[str, int] = {}
     max_lag_sec = settings.substrate_cursor_lag_resync_hours * 3600
-    for cursor in cursors:
+    heartbeat_stale_sec = settings.reducer_heartbeat_stale_sec
+    reducer_health: dict[str, dict[str, Any]] = {}
+
+    for cursor_name in sorted(GRAMMAR_CURSOR_REGISTRY):
+        cursor = cursor_by_name.get(cursor_name, {})
         lag = cursor.get("lag_sec")
-        lag_by_reducer[cursor["cursor_name"]] = lag
+        lag_by_reducer[cursor_name] = lag
         if lag is not None and lag > max_lag_sec:
-            degraded_reasons.append(f"cursor_lag:{cursor['cursor_name']}")
+            degraded_reasons.append(f"cursor_lag:{cursor_name}")
+
+        metrics = store.grammar_cursor_metrics(cursor_name)
+        stream_lag = metrics.get("stream_lag_sec")
+        pending = int(metrics.get("pending_backlog") or 0)
+        stream_lag_by_reducer[cursor_name] = stream_lag
+        backlog_by_reducer[cursor_name] = pending
+
+        reducer_key = REDUCER_KEY_BY_CURSOR.get(cursor_name, cursor_name)
+        enabled_fn = ENABLED_BY_REDUCER_KEY.get(reducer_key, lambda _s: True)
+        enabled = bool(enabled_fn(settings))
+        update_backlog_metrics(
+            reducer_key,
+            cursor_name=cursor_name,
+            enabled=enabled,
+            pending_backlog=pending,
+            stream_lag_sec=stream_lag,
+            cursor_wall_lag_sec=metrics.get("cursor_wall_lag_sec"),
+        )
+
+    snapshots = health_snapshots()
+    for cursor_name in sorted(GRAMMAR_CURSOR_REGISTRY):
+        reducer_key = REDUCER_KEY_BY_CURSOR.get(cursor_name, cursor_name)
+        enabled_fn = ENABLED_BY_REDUCER_KEY.get(reducer_key, lambda _s: True)
+        enabled = bool(enabled_fn(settings))
+        snap = snapshots.get(reducer_key)
+        if snap is None:
+            from app.reducer_health import ReducerHealthSnapshot
+
+            snap = ReducerHealthSnapshot(
+                reducer_key=reducer_key,
+                cursor_name=cursor_name,
+                enabled=enabled,
+                pending_backlog=backlog_by_reducer.get(cursor_name),
+                stream_lag_sec=stream_lag_by_reducer.get(cursor_name),
+                cursor_wall_lag_sec=lag_by_reducer.get(cursor_name),
+            )
+        health_dict = snap.to_dict(
+            heartbeat_stale_sec=heartbeat_stale_sec,
+            stream_lag_degraded_sec=max_lag_sec,
+        )
+        reducer_health[reducer_key] = health_dict
+
+        if not enabled:
+            continue
+
+        classification = health_dict["classification"]
+        pending = backlog_by_reducer.get(cursor_name, 0)
+        stream_lag = stream_lag_by_reducer.get(cursor_name)
+        if classification == "dead_no_heartbeat":
+            degraded_reasons.append(f"reducer_heartbeat_stale:{cursor_name}")
+        elif classification == "blocked_on_event":
+            degraded_reasons.append(f"reducer_blocked:{cursor_name}")
+        elif classification == "cursor_commit_failing":
+            degraded_reasons.append(f"reducer_cursor_commit_failing:{cursor_name}")
+        elif pending > 0 and stream_lag is not None and stream_lag > max_lag_sec:
+            degraded_reasons.append(f"reducer_stream_lag:{cursor_name}")
 
     tail = tail_seed_snapshot()
     reset_snap = cursor_reset_snapshot()
@@ -64,9 +140,16 @@ def build_substrate_grammar_truth(store: BiometricsSubstrateStore) -> dict[str, 
             "cursor_reset_auth_configured": bool(
                 str(settings.substrate_cursor_reset_operator_token or "").strip()
             ),
+            "reducer_heartbeat_stale_sec": settings.reducer_heartbeat_stale_sec,
+            "biometrics_grammar_batch_limit": settings.biometrics_grammar_batch_limit,
+            "execution_grammar_batch_limit": settings.execution_grammar_batch_limit,
+            "transport_grammar_batch_limit": settings.transport_grammar_batch_limit,
         },
         "cursor_positions": cursors,
         "cursor_lag_by_reducer": lag_by_reducer,
+        "stream_lag_by_reducer": stream_lag_by_reducer,
+        "pending_backlog_by_reducer": backlog_by_reducer,
+        "reducer_health_by_name": reducer_health,
         "last_data_gap": last_gap,
         "tail_seed": tail,
         "operator_cursor_reset": reset_snap,

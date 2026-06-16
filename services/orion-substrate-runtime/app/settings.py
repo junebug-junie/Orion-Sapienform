@@ -37,6 +37,11 @@ class Settings(BaseSettings):
         alias="NODE_CATALOG_PATH",
     )
     grammar_poll_interval_sec: float = Field(5.0, alias="GRAMMAR_POLL_INTERVAL_SEC")
+    biometrics_grammar_batch_limit: int = Field(50, alias="BIOMETRICS_GRAMMAR_BATCH_LIMIT")
+    execution_grammar_batch_limit: int = Field(100, alias="EXECUTION_GRAMMAR_BATCH_LIMIT")
+    transport_grammar_batch_limit: int = Field(500, alias="TRANSPORT_GRAMMAR_BATCH_LIMIT")
+    reducer_heartbeat_stale_sec: float = Field(120.0, alias="REDUCER_HEARTBEAT_STALE_SEC")
+    reducer_poison_max_retries: int = Field(3, alias="REDUCER_POISON_MAX_RETRIES")
     grammar_event_channel: str = Field("orion:grammar:event", alias="GRAMMAR_EVENT_CHANNEL")
     accepted_pressure_grammar_channel: str = Field(
         "orion:grammar:accepted-pressure",

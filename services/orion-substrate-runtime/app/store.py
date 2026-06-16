@@ -660,6 +660,89 @@ class BiometricsSubstrateStore:
             payload = json.loads(payload)
         return ReductionReceiptV1.model_validate(payload)
 
+    def grammar_cursor_metrics(self, cursor_name: str) -> dict[str, Any]:
+        """Pending backlog and stream lag for a grammar reducer cursor."""
+        spec = GRAMMAR_CURSOR_REGISTRY.get(cursor_name)
+        if spec is None:
+            raise ValueError(f"unknown cursor_name: {cursor_name}")
+        source_service, trace_prefix = spec
+        trace_like = _trace_id_like_pattern(trace_prefix)
+
+        with self._engine.connect() as conn:
+            cursor_row = conn.execute(
+                text(
+                    """
+                    SELECT last_event_created_at, last_event_id
+                    FROM substrate_reduction_cursor
+                    WHERE cursor_name = :cursor_name
+                    """
+                ),
+                {"cursor_name": cursor_name},
+            ).mappings().first()
+            head_row = conn.execute(
+                text(
+                    """
+                    SELECT created_at, event_id
+                    FROM grammar_events
+                    WHERE source_service = :source_service
+                      AND trace_id LIKE :trace_like
+                    ORDER BY created_at DESC, event_id DESC
+                    LIMIT 1
+                    """
+                ),
+                {"source_service": source_service, "trace_like": trace_like},
+            ).mappings().first()
+
+            pending = 0
+            if cursor_row and cursor_row["last_event_created_at"]:
+                pending = int(
+                    conn.execute(
+                        text(
+                            """
+                            SELECT COUNT(*)
+                            FROM grammar_events
+                            WHERE source_service = :source_service
+                              AND trace_id LIKE :trace_like
+                              AND (
+                                created_at > :cursor_ts
+                                OR (
+                                  created_at = :cursor_ts
+                                  AND event_id > :cursor_id
+                                )
+                              )
+                            """
+                        ),
+                        {
+                            "source_service": source_service,
+                            "trace_like": trace_like,
+                            "cursor_ts": cursor_row["last_event_created_at"],
+                            "cursor_id": cursor_row["last_event_id"] or "",
+                        },
+                    ).scalar()
+                    or 0
+                )
+
+        cursor_ts = cursor_row["last_event_created_at"] if cursor_row else None
+        cursor_wall_lag = _cursor_lag_seconds(cursor_ts) if cursor_ts else None
+        stream_lag: float | None = None
+        if cursor_ts and head_row and head_row["created_at"]:
+            head_ts = head_row["created_at"]
+            if head_ts.tzinfo is None:
+                head_ts = head_ts.replace(tzinfo=timezone.utc)
+            cts = cursor_ts if cursor_ts.tzinfo else cursor_ts.replace(tzinfo=timezone.utc)
+            stream_lag = max(0.0, (head_ts - cts).total_seconds())
+
+        return {
+            "cursor_name": cursor_name,
+            "pending_backlog": pending,
+            "stream_lag_sec": None if stream_lag == float("inf") else stream_lag,
+            "cursor_wall_lag_sec": None if cursor_wall_lag == float("inf") else cursor_wall_lag,
+            "head_event_created_at": (
+                head_row["created_at"].isoformat() if head_row and head_row["created_at"] else None
+            ),
+            "head_event_id": head_row["event_id"] if head_row else None,
+        }
+
     def cursor_positions(self) -> list[dict[str, Any]]:
         with self._engine.connect() as conn:
             rows = conn.execute(

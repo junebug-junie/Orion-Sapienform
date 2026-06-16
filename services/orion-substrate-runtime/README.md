@@ -52,6 +52,10 @@ Hub debug (node-scoped lineage):
 
 Truth: `GET http://localhost:8115/grammar/truth`
 
+Includes per-reducer health (`reducer_health_by_name`), pending backlog, and stream lag
+(cursor vs latest grammar event). Execution and transport reducers run on independent poll
+loops with configurable batch limits so transport catch-up is not starved by biometrics.
+
 Post-deploy smoke (from repo root):
 
 ```bash

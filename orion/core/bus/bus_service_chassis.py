@@ -79,7 +79,7 @@ class BaseChassis:
         await asyncio.wait_for(self.bus.connect(), timeout=timeout)
 
         self._tasks.append(asyncio.create_task(self._heartbeat_loop(), name="orion-heartbeat"))
-        self._tasks.append(asyncio.create_task(self._run(), name=f"{self.cfg.service_name}-run"))
+        self._tasks.append(asyncio.create_task(self._supervise_run(), name=f"{self.cfg.service_name}-run"))
 
         await self._stop.wait()
         await self._shutdown()
@@ -95,7 +95,7 @@ class BaseChassis:
         await asyncio.wait_for(self.bus.connect(), timeout=timeout)
 
         self._tasks.append(asyncio.create_task(self._heartbeat_loop(), name="orion-heartbeat"))
-        self._tasks.append(asyncio.create_task(self._run(), name=f"{self.cfg.service_name}-run"))
+        self._tasks.append(asyncio.create_task(self._supervise_run(), name=f"{self.cfg.service_name}-run"))
 
     async def stop(self) -> None:
         self._stop.set()
@@ -182,6 +182,38 @@ class BaseChassis:
 
     async def _run(self) -> None:
         raise NotImplementedError
+
+    async def _supervise_run(self) -> None:
+        """Restart subscriber loops if they exit without an explicit stop signal."""
+        backoff_sec = 1.0
+        while not self._stop.is_set():
+            try:
+                await self._run()
+                if self._stop.is_set():
+                    break
+                logger.warning(
+                    "subscriber run loop exited without stop service={} bus={}; restarting in {:.1f}s",
+                    self.cfg.service_name,
+                    self.cfg.bus_url,
+                    backoff_sec,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error(
+                    "subscriber run loop crashed service={} err={}; restarting in {:.1f}s",
+                    self.cfg.service_name,
+                    exc,
+                    backoff_sec,
+                )
+            if self._stop.is_set():
+                break
+            try:
+                await self.bus.reconnect()
+            except Exception:
+                logger.exception("bus reconnect failed after subscriber crash service=%s", self.cfg.service_name)
+            await asyncio.sleep(backoff_sec)
+            backoff_sec = min(backoff_sec * 2.0, 30.0)
 
 
 class Rabbit(BaseChassis):
@@ -347,11 +379,18 @@ class Rabbit(BaseChassis):
                 raise
             except Exception as exc:
                 logger.warning(
-                    "Rabbit subscriber loop failed channel=%s err=%s; reconnecting in %.1fs",
+                    "Rabbit subscriber loop failed channel={} err={}; reconnecting in {:.1f}s",
                     self.request_channel,
                     exc,
                     backoff_sec,
                 )
+                try:
+                    await self.bus.reconnect()
+                except Exception:
+                    logger.exception(
+                        "bus reconnect failed after Rabbit subscriber error channel=%s",
+                        self.request_channel,
+                    )
             if self._stop.is_set():
                 break
             await asyncio.sleep(backoff_sec)
@@ -403,71 +442,98 @@ class Hunter(BaseChassis):
 
     async def _run(self) -> None:
         uses_glob = any(any(ch in pattern for ch in "*?[") for pattern in self.patterns)
-        logger.info(
-            "Hunter subscribing patterns=%s use_patterns=%s bus=%s",
-            self.patterns,
-            uses_glob,
-            self.cfg.bus_url,
-        )
-
-        async with self.bus.subscribe(*self.patterns, patterns=uses_glob) as pubsub:
+        backoff_sec = 1.0
+        while not self._stop.is_set():
+            logger.info(
+                "Hunter subscribing patterns={} use_patterns={} bus={}",
+                self.patterns,
+                uses_glob,
+                self.cfg.bus_url,
+            )
             try:
-                async for msg in self.bus.iter_messages(pubsub):
-                    if self._stop.is_set():
-                        break
-                    if not isinstance(msg, dict):
-                        continue
-                    data = msg.get("data")
-                    if data is None:
-                        continue
-
-                    channel = msg.get("channel")
-                    if hasattr(channel, "decode"):
-                        channel = channel.decode("utf-8")
-                    pattern = msg.get("pattern")
-                    if hasattr(pattern, "decode"):
-                        pattern = pattern.decode("utf-8")
-
-                    decoded = self.bus.codec.decode(data)
-                    if not decoded.ok or decoded.envelope is None:
-                        logger.warning(
-                            f"Hunter decode failed channel={channel} pattern={pattern} error={decoded.error}"
-                        )
-                        await self._publish_error(
-                            RuntimeError(decoded.error or "decode_failed"),
-                            when="hunter.decode",
-                            env=None,
-                        )
-                        continue
-
-                    env = decoded.envelope
-                    trace_id = (env.trace or {}).get("trace_id") or str(env.correlation_id)
-                    logger.info(
-                        f"Hunter intake channel={channel} pattern={pattern} kind={env.kind} "
-                        f"schema_id={env.schema_id} trace_id={trace_id} source={env.source}"
-                    )
-                    if self.concurrent_handlers:
-                        async def _run_handler(envelope: BaseEnvelope) -> None:
-                            try:
-                                await self.handler(envelope)
-                            except Exception as e:
-                                await self._publish_error(e, when="hunter.handle", env=envelope)
-
-                        task = asyncio.create_task(_run_handler(env))
-                        self._inflight_tasks.add(task)
-                        task.add_done_callback(lambda t: self._inflight_tasks.discard(t))
-                        continue
-
+                if not self.bus.enabled:
+                    break
+                if self.bus.redis is None:
+                    await self.bus.connect()
+                async with self.bus.subscribe(*self.patterns, patterns=uses_glob) as pubsub:
+                    backoff_sec = 1.0
                     try:
-                        await self.handler(env)
-                    except Exception as e:
-                        await self._publish_error(e, when="hunter.handle", env=env)
-            finally:
-                if self._inflight_tasks:
-                    for task in list(self._inflight_tasks):
-                        if not task.done():
-                            task.cancel()
-                    await asyncio.gather(*self._inflight_tasks, return_exceptions=True)
+                        async for msg in self.bus.iter_messages(pubsub):
+                            if self._stop.is_set():
+                                break
+                            if not isinstance(msg, dict):
+                                continue
+                            data = msg.get("data")
+                            if data is None:
+                                continue
+
+                            channel = msg.get("channel")
+                            if hasattr(channel, "decode"):
+                                channel = channel.decode("utf-8")
+                            pattern = msg.get("pattern")
+                            if hasattr(pattern, "decode"):
+                                pattern = pattern.decode("utf-8")
+
+                            decoded = self.bus.codec.decode(data)
+                            if not decoded.ok or decoded.envelope is None:
+                                logger.warning(
+                                    f"Hunter decode failed channel={channel} pattern={pattern} error={decoded.error}"
+                                )
+                                await self._publish_error(
+                                    RuntimeError(decoded.error or "decode_failed"),
+                                    when="hunter.decode",
+                                    env=None,
+                                )
+                                continue
+
+                            env = decoded.envelope
+                            trace_id = (env.trace or {}).get("trace_id") or str(env.correlation_id)
+                            logger.info(
+                                f"Hunter intake channel={channel} pattern={pattern} kind={env.kind} "
+                                f"schema_id={env.schema_id} trace_id={trace_id} source={env.source}"
+                            )
+                            if self.concurrent_handlers:
+                                async def _run_handler(envelope: BaseEnvelope) -> None:
+                                    try:
+                                        await self.handler(envelope)
+                                    except Exception as e:
+                                        await self._publish_error(e, when="hunter.handle", env=envelope)
+
+                                task = asyncio.create_task(_run_handler(env))
+                                self._inflight_tasks.add(task)
+                                task.add_done_callback(lambda t: self._inflight_tasks.discard(t))
+                                continue
+
+                            try:
+                                await self.handler(env)
+                            except Exception as e:
+                                await self._publish_error(e, when="hunter.handle", env=env)
+                    finally:
+                        if self._inflight_tasks:
+                            for task in list(self._inflight_tasks):
+                                if not task.done():
+                                    task.cancel()
+                            await asyncio.gather(*self._inflight_tasks, return_exceptions=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Hunter subscriber loop failed patterns={} err={}; reconnecting in {:.1f}s",
+                    self.patterns,
+                    exc,
+                    backoff_sec,
+                )
+                try:
+                    await self.bus.reconnect()
+                except Exception:
+                    logger.exception(
+                        "bus reconnect failed after Hunter subscriber error patterns=%s",
+                        self.patterns,
+                    )
+            if self._stop.is_set():
+                break
+            await asyncio.sleep(backoff_sec)
+            backoff_sec = min(backoff_sec * 2.0, 30.0)
 
 
 class Clock(BaseChassis):

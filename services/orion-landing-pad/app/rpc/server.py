@@ -42,24 +42,45 @@ class PadRpcServer:
                 pass
 
     async def _run(self) -> None:
-        async with self.bus.subscribe(self.settings.pad_rpc_request_channel) as pubsub:
-            async for msg in self.bus.iter_messages(pubsub):
-                if self._stop.is_set():
-                    break
-                data = msg.get("data")
-                if data is None:
-                    continue
-                decoded = self.bus.codec.decode(data)
-                if not decoded.ok or decoded.envelope is None:
-                    self.stats.increment_rpc_errors()
-                    if decoded.error:
-                        logger.warning(f"RPC decode failed error={decoded.error}")
-                    continue
-                env = decoded.envelope
-                if env.kind != KIND_PAD_RPC_REQUEST_V1:
-                    logger.debug(f"Ignoring RPC message kind={env.kind}")
-                    continue
-                await self._handle_request(env)
+        backoff_sec = 1.0
+        while not self._stop.is_set():
+            try:
+                async with self.bus.subscribe(self.settings.pad_rpc_request_channel) as pubsub:
+                    backoff_sec = 1.0
+                    async for msg in self.bus.iter_messages(pubsub):
+                        if self._stop.is_set():
+                            break
+                        data = msg.get("data")
+                        if data is None:
+                            continue
+                        decoded = self.bus.codec.decode(data)
+                        if not decoded.ok or decoded.envelope is None:
+                            self.stats.increment_rpc_errors()
+                            if decoded.error:
+                                logger.warning(f"RPC decode failed error={decoded.error}")
+                            continue
+                        env = decoded.envelope
+                        if env.kind != KIND_PAD_RPC_REQUEST_V1:
+                            logger.debug(f"Ignoring RPC message kind={env.kind}")
+                            continue
+                        await self._handle_request(env)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "pad RPC subscriber loop failed channel={} err={}; reconnecting in {:.1f}s",
+                    self.settings.pad_rpc_request_channel,
+                    exc,
+                    backoff_sec,
+                )
+                try:
+                    await self.bus.reconnect()
+                except Exception:
+                    logger.exception("bus reconnect failed after pad RPC subscriber error")
+            if self._stop.is_set():
+                break
+            await asyncio.sleep(backoff_sec)
+            backoff_sec = min(backoff_sec * 2.0, 30.0)
 
     async def _handle_request(self, env: BaseEnvelope) -> None:
         payload = env.payload if isinstance(env.payload, dict) else {}

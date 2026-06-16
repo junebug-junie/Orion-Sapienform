@@ -47,6 +47,34 @@ class OrionBusAsync:
         self.enforce_catalog = bool(enforce_catalog)
         enforcer.enforce = enforce_catalog
 
+    def _pubsub_redis_kwargs(self) -> dict[str, Any]:
+        """Pub/sub listen() blocks indefinitely; socket_timeout must be disabled."""
+        return {
+            "decode_responses": False,
+            "socket_timeout": None,
+            "socket_connect_timeout": 10.0,
+        }
+
+    def _command_redis_kwargs(self) -> dict[str, Any]:
+        return {
+            "decode_responses": False,
+            "socket_timeout": 60.0,
+            "socket_connect_timeout": 10.0,
+            "retry_on_timeout": True,
+            "health_check_interval": 30,
+        }
+
+    def _create_pubsub_redis(self) -> aioredis.Redis:
+        return aioredis.from_url(self.url, **self._pubsub_redis_kwargs())
+
+    async def reconnect(self) -> None:
+        """Drop and re-open the command Redis connection after transport errors."""
+        if self._redis is not None:
+            with suppress(Exception):
+                await self._redis.close()
+            self._redis = None
+        await self.connect()
+
     async def fork(self, *, start_rpc_worker: bool = False) -> "OrionBusAsync":
         """
         Create an independent bus client sharing config/codec with a fresh Redis connection.
@@ -77,8 +105,8 @@ class OrionBusAsync:
     async def _run_rpc_only(self) -> None:
         if not self.enabled:
             return
-        await self.connect()
-        self._rpc_pubsub = self.redis.pubsub()
+        rpc_redis = self._create_pubsub_redis()
+        self._rpc_pubsub = rpc_redis.pubsub()
         try:
             while self._rpc_worker_running:
                 msg = await self._rpc_pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
@@ -95,6 +123,8 @@ class OrionBusAsync:
                 with suppress(Exception):
                     await self._rpc_pubsub.close()
                 self._rpc_pubsub = None
+            with suppress(Exception):
+                await rpc_redis.close()
             self._rpc_worker_running = False
 
     async def _handle_rpc_result(self, msg: dict) -> None:
@@ -132,12 +162,7 @@ class OrionBusAsync:
         if not self.enabled:
             return
         if self._redis is None:
-            self._redis = aioredis.from_url(
-                self.url,
-                decode_responses=False,
-                socket_timeout=60.0,
-                socket_connect_timeout=10.0,
-            )
+            self._redis = aioredis.from_url(self.url, **self._command_redis_kwargs())
             await self._redis.ping()
 
     async def close(self) -> None:
@@ -204,7 +229,8 @@ class OrionBusAsync:
     async def subscribe(self, *channels: str, patterns: bool = False) -> AsyncIterator[aioredis.client.PubSub]:
         if not self.enabled:
             raise RuntimeError("Bus disabled")
-        pubsub = self.redis.pubsub()
+        pubsub_redis = self._create_pubsub_redis()
+        pubsub = pubsub_redis.pubsub()
         if patterns:
             await pubsub.psubscribe(*channels)
         else:
@@ -218,7 +244,10 @@ class OrionBusAsync:
                 else:
                     await pubsub.unsubscribe(*channels)
             finally:
-                await pubsub.close()
+                with suppress(Exception):
+                    await pubsub.close()
+                with suppress(Exception):
+                    await pubsub_redis.close()
 
     async def iter_messages(self, pubsub: aioredis.client.PubSub) -> AsyncIterator[dict]:
         """

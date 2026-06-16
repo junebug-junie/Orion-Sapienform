@@ -60,6 +60,12 @@ from orion.schemas.execution_projection import (
     ExecutionTrajectoryProjectionV1,
 )
 from orion.schemas.grammar import GrammarEventV1
+from orion.schemas.memory_consolidation import (
+    ChatHistorySparkMetaPatchV1,
+    MemoryConsolidationWindowV1,
+    MemoryGraphSuggestDraftRecordV1,
+    MemoryTurnPersistedV1,
+)
 from orion.schemas.memory_crystallization import ActiveMemoryPacketV1, MemoryCrystallizationV1
 from orion.schemas.context_exec import (
     BeliefProvenanceReportV1,
@@ -1047,6 +1053,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GraphCompressionRegionMaterializedV1": GraphCompressionRegionMaterializedV1,
     "MemoryCrystallizationV1": MemoryCrystallizationV1,
     "ActiveMemoryPacketV1": ActiveMemoryPacketV1,
+    "MemoryTurnPersistedV1": MemoryTurnPersistedV1,
+    "ChatHistorySparkMetaPatchV1": ChatHistorySparkMetaPatchV1,
+    "MemoryConsolidationWindowV1": MemoryConsolidationWindowV1,
+    "MemoryGraphSuggestDraftRecordV1": MemoryGraphSuggestDraftRecordV1,
     "ContextExecRequestV1": ContextExecRequestV1,
     "ContextExecRunV1": ContextExecRunV1,
     "ContextExecOperatorSummaryV1": ContextExecOperatorSummaryV1,

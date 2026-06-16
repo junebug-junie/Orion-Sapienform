@@ -32,6 +32,7 @@ async def health(request: Request) -> dict:
     from .bus_dependency_preflight import collect_bus_dependencies_health
     from .proposal_review_api import proposal_review_health_block
     from .settings import settings
+    from .storage import storage_health_block
 
     lane = agent_lane_health_block()
     bus = getattr(request.app.state, "bus", None)
@@ -47,6 +48,7 @@ async def health(request: Request) -> dict:
         "sandbox_mode": settings.context_exec_sandbox_mode,
         "write_enabled": settings.context_exec_write_enabled,
         "max_depth": settings.context_exec_max_depth,
+        "storage": storage_health_block(),
         "proposal_review_api": proposal_review_health_block(),
         **lane,
         **bus_health,

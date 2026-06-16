@@ -64,6 +64,38 @@ class ContextExecSettings(BaseSettings):
     context_exec_write_enabled: bool = Field(False, alias="CONTEXT_EXEC_WRITE_ENABLED")
     context_exec_network_enabled: bool = Field(False, alias="CONTEXT_EXEC_NETWORK_ENABLED")
     context_exec_repl_output_chars: int = Field(8192, alias="CONTEXT_EXEC_REPL_OUTPUT_CHARS")
+    context_exec_storage_root: str = Field(
+        "/var/lib/orion/context-exec",
+        alias="CONTEXT_EXEC_STORAGE_ROOT",
+    )
+    context_exec_run_root: str = Field(
+        "/var/lib/orion/context-exec/runs",
+        alias="CONTEXT_EXEC_RUN_ROOT",
+    )
+    context_exec_artifact_root: str = Field(
+        "/var/lib/orion/context-exec/artifacts",
+        alias="CONTEXT_EXEC_ARTIFACT_ROOT",
+    )
+    context_exec_ledger_root: str = Field(
+        "/var/lib/orion/context-exec/ledger",
+        alias="CONTEXT_EXEC_LEDGER_ROOT",
+    )
+    context_exec_workspace_root: str = Field(
+        "/var/lib/orion/context-exec/workspaces",
+        alias="CONTEXT_EXEC_WORKSPACE_ROOT",
+    )
+    context_exec_cache_root: str = Field(
+        "/var/lib/orion/context-exec/cache",
+        alias="CONTEXT_EXEC_CACHE_ROOT",
+    )
+    context_exec_tmp_root: str = Field(
+        "/var/lib/orion/context-exec/tmp",
+        alias="CONTEXT_EXEC_TMP_ROOT",
+    )
+    context_exec_run_ledger_enabled: bool = Field(
+        True,
+        alias="CONTEXT_EXEC_RUN_LEDGER_ENABLED",
+    )
     context_exec_compat_agent_chain_enabled: bool = Field(
         False,
         alias="CONTEXT_EXEC_COMPAT_AGENT_CHAIN_ENABLED",

@@ -70,6 +70,14 @@ def test_format_mode_summary_includes_retention_and_channels() -> None:
     assert "backlog=" in text
 
 
+def test_format_degraded_reason_groups_classifies_quarantine() -> None:
+    grouped = format_degraded_reason_groups(
+        ["reducer_quarantine_present:transport_grammar_reducer"]
+    )
+    assert "reducer_quarantine" in grouped
+    assert "transport_grammar_reducer" in grouped
+
+
 def test_format_degraded_reason_groups_classifies_cursor_lag() -> None:
     grouped = format_degraded_reason_groups(
         ["cursor_lag:transport_grammar_reducer", "reducer_heartbeat_stale:execution_grammar_reducer"]
@@ -88,11 +96,15 @@ def test_validate_substrate_requires_reducer_health_fields() -> None:
         "cursor_settings": {},
         "cursor_positions": [],
         "cursor_lag_by_reducer": {},
+        "stream_lag_by_reducer": {},
+        "pending_backlog_by_reducer": {},
+        "reducer_health_by_name": {},
+        "quarantine_by_reducer": {},
+        "unacknowledged_quarantine_count_by_reducer": {},
         "tail_seed": {},
         "operator_cursor_reset": {},
         "accepted_pressure_output_channel": "x",
         "canonical_grammar_input_channel": "y",
     }
     errors = validate_truth_payload("substrate-runtime", payload)
-    assert any("missing fields" in e for e in errors)
-    assert "reducer_health_by_name" in errors[0]
+    assert errors == []

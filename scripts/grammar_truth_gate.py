@@ -31,6 +31,8 @@ SUBSTRATE_REQUIRED = {
     "stream_lag_by_reducer",
     "pending_backlog_by_reducer",
     "reducer_health_by_name",
+    "quarantine_by_reducer",
+    "unacknowledged_quarantine_count_by_reducer",
     "tail_seed",
     "operator_cursor_reset",
     "accepted_pressure_output_channel",
@@ -74,6 +76,8 @@ def _classify_degraded_reason(reason: str) -> str:
         return "cursor_commit_failure"
     if reason.startswith("reducer_stream_lag:"):
         return "redis_stream_lag"
+    if reason.startswith("reducer_quarantine_present:"):
+        return "reducer_quarantine"
     if "tail_seed" in reason:
         return "stale_producer_cursor"
     return "other"
@@ -107,7 +111,8 @@ def format_reducer_health_summary(substrate: dict[str, Any] | None) -> str:
             f"backlog={backlog.get(row.get('cursor_name'))} "
             f"stream_lag_sec={row.get('stream_lag_sec')} "
             f"heartbeat={row.get('last_tick_at')} "
-            f"blocked={row.get('blocked_event_id')}"
+            f"blocked={row.get('blocked_event_id')} "
+            f"unack_quarantine={row.get('unacknowledged_quarantine_count', 0)}"
         )
     return "\n".join(lines)
 

@@ -961,3 +961,160 @@ class BiometricsSubstrateStore:
         if isinstance(payload, str):
             payload = json.loads(payload)
         return ReductionReceiptV1.model_validate(payload)
+
+    def save_quarantine(
+        self,
+        *,
+        reducer_key: str,
+        cursor_name: str,
+        event_id: str,
+        trace_id: str | None,
+        reason: str,
+    ) -> str:
+        quarantine_id = f"quarantine:{reducer_key}:{event_id}"
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_reducer_quarantine (
+                        quarantine_id, reducer_key, cursor_name, event_id,
+                        trace_id, reason, quarantined_at
+                    ) VALUES (
+                        :quarantine_id, :reducer_key, :cursor_name, :event_id,
+                        :trace_id, :reason, :quarantined_at
+                    )
+                    ON CONFLICT (quarantine_id) DO UPDATE SET
+                        reason = EXCLUDED.reason,
+                        trace_id = COALESCE(EXCLUDED.trace_id, substrate_reducer_quarantine.trace_id)
+                    """
+                ),
+                {
+                    "quarantine_id": quarantine_id,
+                    "reducer_key": reducer_key,
+                    "cursor_name": cursor_name,
+                    "event_id": event_id,
+                    "trace_id": trace_id,
+                    "reason": reason,
+                    "quarantined_at": now,
+                },
+            )
+        return quarantine_id
+
+    def quarantine_summary(
+        self,
+        *,
+        examples_per_reducer: int = 10,
+    ) -> dict[str, Any]:
+        with self._engine.connect() as conn:
+            count_rows = conn.execute(
+                text(
+                    """
+                    SELECT cursor_name, COUNT(*) AS unacked_count
+                    FROM substrate_reducer_quarantine
+                    WHERE acknowledged_at IS NULL
+                    GROUP BY cursor_name
+                    """
+                ),
+            ).mappings().all()
+            example_rows = conn.execute(
+                text(
+                    """
+                    SELECT reducer_key, cursor_name, event_id, trace_id, reason,
+                           quarantined_at, acknowledged_at
+                    FROM substrate_reducer_quarantine
+                    WHERE acknowledged_at IS NULL
+                    ORDER BY quarantined_at DESC
+                    """
+                ),
+            ).mappings().all()
+
+        unack_by_cursor: dict[str, int] = {
+            row["cursor_name"]: int(row["unacked_count"]) for row in count_rows
+        }
+        unack_by_reducer: dict[str, int] = {}
+        examples_by_reducer: dict[str, list[dict[str, Any]]] = {}
+        for row in example_rows:
+            reducer_key = row["reducer_key"]
+            unack_by_reducer[reducer_key] = unack_by_reducer.get(reducer_key, 0) + 1
+            bucket = examples_by_reducer.setdefault(reducer_key, [])
+            if len(bucket) >= examples_per_reducer:
+                continue
+            bucket.append(
+                {
+                    "event_id": row["event_id"],
+                    "trace_id": row["trace_id"],
+                    "reason": row["reason"],
+                    "quarantined_at": (
+                        row["quarantined_at"].isoformat() if row["quarantined_at"] else None
+                    ),
+                }
+            )
+
+        quarantine_by_reducer: dict[str, dict[str, Any]] = {}
+        for reducer_key, examples in examples_by_reducer.items():
+            quarantine_by_reducer[reducer_key] = {
+                "unacknowledged_count": unack_by_reducer.get(reducer_key, 0),
+                "recent_examples": examples,
+            }
+        for reducer_key, count in unack_by_reducer.items():
+            if reducer_key not in quarantine_by_reducer:
+                quarantine_by_reducer[reducer_key] = {
+                    "unacknowledged_count": count,
+                    "recent_examples": [],
+                }
+
+        return {
+            "unacknowledged_quarantine_count_by_reducer": unack_by_reducer,
+            "unacknowledged_quarantine_count_by_cursor": unack_by_cursor,
+            "quarantine_by_reducer": quarantine_by_reducer,
+        }
+
+    def acknowledge_quarantine(
+        self,
+        *,
+        cursor_name: str,
+        event_id: str | None,
+        ack_all: bool,
+        actor: str,
+    ) -> int:
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            if ack_all:
+                result = conn.execute(
+                    text(
+                        """
+                        UPDATE substrate_reducer_quarantine
+                        SET acknowledged_at = :now, acknowledged_by = :actor
+                        WHERE cursor_name = :cursor_name
+                          AND acknowledged_at IS NULL
+                        """
+                    ),
+                    {
+                        "now": now,
+                        "actor": actor,
+                        "cursor_name": cursor_name,
+                    },
+                )
+                return int(result.rowcount or 0)
+
+            if not event_id:
+                raise ValueError("event_id required unless ack_all=true")
+            result = conn.execute(
+                text(
+                    """
+                    UPDATE substrate_reducer_quarantine
+                    SET acknowledged_at = :now, acknowledged_by = :actor
+                    WHERE cursor_name = :cursor_name
+                      AND event_id = :event_id
+                      AND acknowledged_at IS NULL
+                    """
+                ),
+                {
+                    "now": now,
+                    "actor": actor,
+                    "cursor_name": cursor_name,
+                    "event_id": event_id,
+                },
+            )
+            return int(result.rowcount or 0)

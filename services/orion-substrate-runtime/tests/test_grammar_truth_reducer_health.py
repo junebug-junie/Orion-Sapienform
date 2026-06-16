@@ -48,6 +48,11 @@ def test_truth_includes_reducer_health_and_backlog(monkeypatch) -> None:
         "head_event_created_at": "2026-06-16T00:00:00+00:00",
         "head_event_id": "gev_new",
     }
+    store.quarantine_summary.return_value = {
+        "unacknowledged_quarantine_count_by_reducer": {},
+        "unacknowledged_quarantine_count_by_cursor": {},
+        "quarantine_by_reducer": {},
+    }
 
     monkeypatch.setattr(
         "app.grammar_truth.get_settings",

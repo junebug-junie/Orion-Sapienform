@@ -21,6 +21,7 @@ grammar_events (orion-bus, bus.transport:*) → transport bus projection
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_biometrics_substrate_loop.sql
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_execution_substrate_loop.sql
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_transport_substrate_loop.sql
+psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_substrate_reducer_quarantine_v1.sql
 cp services/orion-substrate-runtime/.env_example services/orion-substrate-runtime/.env
 ```
 
@@ -83,5 +84,22 @@ curl -X POST -H "X-Orion-Operator-Token: $SUBSTRATE_CURSOR_RESET_OPERATOR_TOKEN"
 ```
 
 Known cursors: `biometrics_grammar_consumer`, `execution_grammar_reducer`, `transport_grammar_reducer`.
+
+### Poison quarantine acknowledgement (internal operator endpoint)
+
+When a reducer quarantines a poison event, `/grammar/truth` stays **degraded** with
+`reducer_quarantine_present:<cursor_name>` until an operator acknowledges the quarantine.
+Quarantine state is durable in Postgres (`substrate_reducer_quarantine`); acknowledgement
+sets `acknowledged_at` but preserves the audit row.
+
+```bash
+# Acknowledge a single quarantined event
+curl -X POST -H "X-Orion-Operator-Token: $SUBSTRATE_CURSOR_RESET_OPERATOR_TOKEN" \
+  'http://127.0.0.1:8115/grammar/quarantine/ack?cursor_name=transport_grammar_reducer&event_id=gev_x'
+
+# Acknowledge all unacked quarantine for a cursor
+curl -X POST -H "X-Orion-Operator-Token: $SUBSTRATE_CURSOR_RESET_OPERATOR_TOKEN" \
+  'http://127.0.0.1:8115/grammar/quarantine/ack?cursor_name=transport_grammar_reducer&ack_all=true'
+```
 
 Accepted-pressure reducer output publishes to `orion:grammar:accepted-pressure` (not canonical `orion:grammar:event`).

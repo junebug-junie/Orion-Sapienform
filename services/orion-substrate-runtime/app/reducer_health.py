@@ -39,6 +39,7 @@ class ReducerHealthSnapshot:
     blocked_event_id: str | None = None
     blocked_failures: int = 0
     quarantined_event_ids: list[str] = field(default_factory=list)
+    unacknowledged_quarantine_count: int = 0
     pending_backlog: int | None = None
     stream_lag_sec: float | None = None
     cursor_wall_lag_sec: float | None = None
@@ -97,6 +98,7 @@ class ReducerHealthSnapshot:
             "blocked_event_id": self.blocked_event_id,
             "blocked_failures": self.blocked_failures,
             "quarantined_event_ids": list(self.quarantined_event_ids[-20:]),
+            "unacknowledged_quarantine_count": self.unacknowledged_quarantine_count,
             "pending_backlog": self.pending_backlog,
             "stream_lag_sec": self.stream_lag_sec,
             "cursor_wall_lag_sec": self.cursor_wall_lag_sec,
@@ -182,6 +184,18 @@ def record_quarantine(
             snap.quarantined_event_ids.append(event_id)
         snap.blocked_event_id = None
         snap.blocked_failures = 0
+
+
+def update_quarantine_metrics(
+    reducer_key: str,
+    *,
+    cursor_name: str,
+    enabled: bool,
+    unacknowledged_quarantine_count: int,
+) -> None:
+    snap = _get(reducer_key, cursor_name=cursor_name, enabled=enabled)
+    with _LOCK:
+        snap.unacknowledged_quarantine_count = unacknowledged_quarantine_count
 
 
 def update_backlog_metrics(

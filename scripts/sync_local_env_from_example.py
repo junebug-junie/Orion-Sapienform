@@ -48,8 +48,16 @@ SYNC_PREFIXES = (
     "HUB_CONTEXT_EXEC_",
     "CONTEXT_EXEC_",
     "CHANNEL_CONTEXT_EXEC_",
+    "CHANNEL_MEMORY_",
     "CORTEX_METACOG_",
     "CORTEX_DAILY_METACOG_",
+    "MEMORY_CONSOLIDATION_",
+    "MEMORY_BOUNDARY_",
+    "MEMORY_CLASSIFY_",
+    "MEMORY_SUGGEST_",
+    "MEMORY_FAILED_",
+    "MEMORY_WINDOW_",
+    "SQL_WRITER_EMIT_MEMORY_",
 )
 
 SYNC_EXACT = frozenset(
@@ -59,11 +67,18 @@ SYNC_EXACT = frozenset(
         "AUTONOMY_GRAPH_QUERY_URL",
         "AUTONOMY_GRAPH_UPDATE_URL",
         "AUTONOMY_GRAPH_TIMEOUT_SEC",
+        "CHANNEL_MEMORY_TURN_PERSISTED",
+        "CHANNEL_CHAT_HISTORY_SPARK_META_PATCH",
+        "SQL_WRITER_EMIT_MEMORY_TURN_PERSISTED",
+        "MEMORY_CONSOLIDATION_ENABLED",
+        "LLM_LOGPROB_SUMMARY_ENABLED",
     }
 )
 
 DEFAULT_SERVICES = (
     "orion-memory-crystallizer",
+    "orion-memory-consolidation",
+    "orion-sql-writer",
     "orion-graphiti-adapter",
     "orion-hub",
     "orion-cortex-exec",

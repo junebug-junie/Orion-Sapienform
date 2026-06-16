@@ -102,6 +102,11 @@ from orion.schemas.chat_gpt_log import (
     ChatGptMessageV1,
 )
 from orion.schemas.chat_response_feedback import ChatResponseFeedbackV1
+from orion.schemas.memory_consolidation import (
+    MEMORY_TURN_PERSISTED_KIND,
+    ChatHistorySparkMetaPatchV1,
+    MemoryTurnPersistedV1,
+)
 from orion.schemas.social_chat import SocialRoomTurnStoredV1, SocialRoomTurnV1
 from orion.schemas.social_bridge import (
     ExternalRoomMessageV1,
@@ -654,6 +659,32 @@ def _merge_spark_meta(existing: Any, updates: Dict[str, Any]) -> Dict[str, Any]:
         base[k] = v
 
     return _json_sanitize(base)
+
+
+def _apply_spark_meta_patch(payload: dict) -> bool:
+    patch = ChatHistorySparkMetaPatchV1.model_validate(payload)
+    corr = str(patch.correlation_id)
+    sess = get_session()
+    try:
+        existing = (
+            sess.query(ChatHistoryLogSQL)
+            .filter(ChatHistoryLogSQL.correlation_id == corr)
+            .first()
+        )
+        if existing is None:
+            logger.error("spark_meta_patch_missing_row correlation_id=%s", corr)
+            return False
+        merged = _merge_spark_meta(getattr(existing, "spark_meta", None), patch.spark_meta)
+        sess.execute(
+            update(ChatHistoryLogSQL)
+            .where(ChatHistoryLogSQL.correlation_id == corr)
+            .values(spark_meta=merged)
+        )
+        sess.commit()
+        return True
+    finally:
+        sess.close()
+        remove_session()
 
 
 def _coerce_sql_timestamp(value: Any) -> Optional[datetime]:
@@ -1514,6 +1545,11 @@ async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
 
 async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) -> None:
     route_key = settings.route_map.get(env.kind)
+    payload = env.payload if isinstance(env.payload, dict) else {}
+
+    if env.kind == "chat.history.spark_meta.patch.v1":
+        await asyncio.to_thread(_apply_spark_meta_patch, payload)
+        return
 
     async def _persist_evidence_units() -> bool:
         try:
@@ -1556,7 +1592,8 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
     extra_sql_fields: Dict[str, Any] = {}
     if getattr(env, "correlation_id", None):
         extra_sql_fields["correlation_id"] = str(env.correlation_id)
-    payload = env.payload if isinstance(env.payload, dict) else {}
+    if env.kind != "chat.history.spark_meta.patch.v1":
+        payload = env.payload if isinstance(env.payload, dict) else {}
     if env.kind == "chat.history":
         rt = payload.get("reasoning_trace")
         if isinstance(rt, dict):
@@ -1996,6 +2033,46 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                     await bus.publish(settings.sql_writer_social_turn_stored_channel, stored_env)
                 except Exception:
                     logger.exception("Failed to emit social turn stored event corr=%s", getattr(env, "correlation_id", None))
+            if (
+                env.kind == "chat.history"
+                and write_ok
+                and bus is not None
+                and settings.sql_writer_emit_memory_turn_persisted
+            ):
+                try:
+                    corr = str(env.correlation_id or extra_sql_fields.get("correlation_id") or "")
+                    if corr:
+                        spark_meta = data_to_process.get("spark_meta") if isinstance(data_to_process.get("spark_meta"), dict) else {}
+                        persisted = MemoryTurnPersistedV1(
+                            correlation_id=corr,
+                            prompt=str(data_to_process.get("prompt") or ""),
+                            response=str(data_to_process.get("response") or ""),
+                            spark_meta=spark_meta,
+                            session_id=data_to_process.get("session_id"),
+                        )
+                        out_env = env.derive_child(
+                            kind=MEMORY_TURN_PERSISTED_KIND,
+                            source=ServiceRef(
+                                name=settings.service_name,
+                                version=settings.service_version,
+                                node=settings.node_name,
+                            ),
+                            payload=persisted.model_dump(mode="json"),
+                            reply_to=None,
+                        )
+                        if str(out_env.correlation_id) != corr or str(out_env.payload.get("correlation_id")) != corr:
+                            logger.error(
+                                "memory_turn_persisted_corr_mismatch env=%s payload=%s expected=%s",
+                                out_env.correlation_id,
+                                out_env.payload.get("correlation_id"),
+                                corr,
+                            )
+                        await bus.publish(settings.channel_memory_turn_persisted, out_env)
+                except Exception:
+                    logger.exception(
+                        "Failed to emit memory turn persisted event corr=%s",
+                        getattr(env, "correlation_id", None),
+                    )
             written_label = env.kind
             if schema_model is ChatGptLogTurnV1:
                 written_label = "ChatGptLogTurnV1"

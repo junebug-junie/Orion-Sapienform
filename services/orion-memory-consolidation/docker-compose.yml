@@ -1,0 +1,38 @@
+services:
+  memory-consolidation:
+    build:
+      context: ../..
+      dockerfile: services/orion-memory-consolidation/Dockerfile
+    container_name: orion-${NODE_NAME}-memory-consolidation
+    restart: unless-stopped
+    environment:
+      - SERVICE_NAME=${SERVICE_NAME:-orion-memory-consolidation}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - NODE_NAME=${NODE_NAME}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED:-true}
+      - ORION_HEALTH_CHANNEL=${ORION_HEALTH_CHANNEL}
+      - ERROR_CHANNEL=${ERROR_CHANNEL}
+      - POSTGRES_URI=${POSTGRES_URI}
+      - CHANNEL_MEMORY_TURN_PERSISTED=${CHANNEL_MEMORY_TURN_PERSISTED}
+      - CHANNEL_CHAT_HISTORY_SPARK_META_PATCH=${CHANNEL_CHAT_HISTORY_SPARK_META_PATCH}
+      - CHANNEL_LLM_INTAKE=${CHANNEL_LLM_INTAKE:-orion:exec:request:LLMGatewayService}
+      - CHANNEL_CORTEX_REQUEST=${CHANNEL_CORTEX_REQUEST:-orion:exec:request:CortexOrchService}
+      - CHANNEL_CORTEX_RESULT_PREFIX=${CHANNEL_CORTEX_RESULT_PREFIX:-orion:exec:result:CortexOrchService}
+      - MEMORY_CONSOLIDATION_ENABLED=${MEMORY_CONSOLIDATION_ENABLED:-true}
+      - MEMORY_CLASSIFY_TIMEOUT_SEC=${MEMORY_CLASSIFY_TIMEOUT_SEC:-8.0}
+      - MEMORY_BOUNDARY_SCORE_THRESHOLD=${MEMORY_BOUNDARY_SCORE_THRESHOLD:-0.70}
+      - MEMORY_BOUNDARY_LLM_ONLY_THRESHOLD=${MEMORY_BOUNDARY_LLM_ONLY_THRESHOLD:-0.85}
+      - MEMORY_BOUNDARY_OVERRIDE_THRESHOLD=${MEMORY_BOUNDARY_OVERRIDE_THRESHOLD:-0.92}
+      - MEMORY_SUGGEST_TIMEOUT_SEC=${MEMORY_SUGGEST_TIMEOUT_SEC:-120.0}
+      - MEMORY_FAILED_RETRY_INTERVAL_SEC=${MEMORY_FAILED_RETRY_INTERVAL_SEC:-1800}
+    ports:
+      - "${PORT:-8635}:8000"
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true
+    name: ${NET:-app-net}

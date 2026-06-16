@@ -69,6 +69,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "hub.messages.create.v1": "WorldPulseHubMessageSQL",
     "mind.run.artifact.v1": "MindRunSQL",
     "grammar.event.v1": "GrammarEventSQL",
+    "chat.history.spark_meta.patch.v1": "__patch_chat_history__",
 }
 
 
@@ -149,6 +150,7 @@ class Settings(BaseSettings):
             "orion:hub:messages:create",
             "orion:mind:artifact",
             "orion:grammar:event",
+            "orion:chat:history:spark_meta:patch",
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )
@@ -174,6 +176,13 @@ class Settings(BaseSettings):
     sql_writer_social_turn_stored_channel: str = Field(
         "orion:chat:social:stored",
         alias="SQL_WRITER_SOCIAL_TURN_STORED_CHANNEL",
+    )
+    sql_writer_emit_memory_turn_persisted: bool = Field(True, alias="SQL_WRITER_EMIT_MEMORY_TURN_PERSISTED")
+    channel_memory_turn_persisted: str = Field(
+        "orion:memory:turn:persisted", alias="CHANNEL_MEMORY_TURN_PERSISTED"
+    )
+    channel_chat_history_spark_meta_patch: str = Field(
+        "orion:chat:history:spark_meta:patch", alias="CHANNEL_CHAT_HISTORY_SPARK_META_PATCH"
     )
     metacog_trace_retention_days: int = Field(14, alias="METACOG_TRACE_RETENTION_DAYS")
 

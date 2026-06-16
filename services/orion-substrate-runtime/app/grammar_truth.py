@@ -97,6 +97,8 @@ def build_substrate_grammar_truth(store: BiometricsSubstrateStore) -> dict[str, 
             continue
 
         classification = health_dict["classification"]
+        pending = backlog_by_reducer.get(cursor_name, 0)
+        stream_lag = stream_lag_by_reducer.get(cursor_name)
         if classification == "dead_no_heartbeat":
             degraded_reasons.append(f"reducer_heartbeat_stale:{cursor_name}")
         elif classification == "blocked_on_event":

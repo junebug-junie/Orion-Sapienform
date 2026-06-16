@@ -45,6 +45,17 @@ async def test_health(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "error" in block
     assert "bus_enabled" in data
     assert "dependencies" in data
+    storage = data["storage"]
+    assert storage["configured"] is True
+    assert storage["root"]
+    assert "dirs" in storage
+    assert "runs" in storage["dirs"]
+    assert "artifacts" in storage["dirs"]
+    assert "ledger" in storage["dirs"]
+    assert "workspaces" in storage["dirs"]
+    assert "cache" in storage["dirs"]
+    assert "tmp" in storage["dirs"]
+    assert "run_ledger_enabled" in storage
 
 
 @pytest.mark.asyncio

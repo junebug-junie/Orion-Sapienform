@@ -21,13 +21,13 @@ Control-plane HTTP surface over the proposal ledger. **Disabled by default** (`P
 | POST | `/proposals/{proposal_id}/review` | Apply `ProposalReviewDecisionV1` |
 | GET | `/proposals/{proposal_id}/eligibility` | Inspect `ProposalExecutionEligibilityV1` |
 
-Routes mount only when `PROPOSAL_REVIEW_API_ENABLED=true`. `/health` always reports `proposal_review_api.enabled`, `store_configured`, `store_path_present`, `ok`, and `error`.
+Routes mount only when `PROPOSAL_REVIEW_API_ENABLED=true`. `/health` always reports `proposal_review_api.enabled`, `store_configured`, `store_path_present`, `ok`, and `error`, plus a `storage` block for mounted arena paths.
 
 Approval creates execution eligibility only — no executor, no receipts, no auto-approval. Context-exec cannot approve (`reviewer_id=context-exec` → 403). Hub must call this API, not read JSON ledger files.
 
 ```bash
 export PROPOSAL_REVIEW_API_ENABLED=true
-export PROPOSAL_LEDGER_STORE_PATH=/tmp/orion-proposals.json
+export PROPOSAL_LEDGER_STORE_PATH=/var/lib/orion/context-exec/ledger/orion-proposals.json
 bash scripts/proposal_review_api_smoke.sh
 ```
 
@@ -61,12 +61,12 @@ Context-exec is in **beta** for three investigative modes. Full runbook: [docs/c
 
 **Operator CLI:** `scripts/orion_proposal_cli.py` is the first operator review surface. It lists/shows ledger records, applies triage/review via lifecycle validators, prints execution eligibility, and supports dry-run execution receipts (`dry-run-execute`). Dry-run is not real execution — it produces a simulated `ProposalExecutionReceiptV1` with `mutation_performed=false` and does not mutate memory/repo/runtime. It does not execute proposals or change proposal status to `executed`. Use an explicit `--store /path/to/proposals.json` path (never repo files). Only `pending_review` records require active human attention by default; stored/blocked/discarded/expired/superseded proposals stay out of the default review queue.
 
-**Proposal ledger intake (opt-in):** Context-exec can persist `ProposalEnvelopeV1` outputs as `ProposalLedgerRecordV1` when explicitly enabled. Disabled by default (`CONTEXT_EXEC_PROPOSAL_LEDGER_ENABLED=false`). When enabled, `CONTEXT_EXEC_PROPOSAL_LEDGER_STORE_PATH` must be set to an explicit JSON path (e.g. `/tmp/orion-proposals.json`) — no repo-local defaults. Ledger persistence is not execution. Context-exec still cannot approve or execute. Optional `CONTEXT_EXEC_PROPOSAL_LEDGER_AUTO_TRIAGE` applies conservative deterministic triage (no LLM): it may leave proposals quietly stored, block for evidence, or promote to `pending_review` — it never approves, requests execution, or mutates anything. Runtime debug includes `proposal_id`, `ledger_status`, and `triage_action` when persisted.
+**Proposal ledger intake (opt-in):** Context-exec can persist `ProposalEnvelopeV1` outputs as `ProposalLedgerRecordV1` when explicitly enabled. Disabled by default (`CONTEXT_EXEC_PROPOSAL_LEDGER_ENABLED=false`). When enabled, `CONTEXT_EXEC_PROPOSAL_LEDGER_STORE_PATH` must point at a JSON file under the mounted storage arena (default `/var/lib/orion/context-exec/ledger/orion-proposals.json` inside the container). Ledger persistence is not execution. Context-exec still cannot approve or execute. Optional `CONTEXT_EXEC_PROPOSAL_LEDGER_AUTO_TRIAGE` applies conservative deterministic triage (no LLM): it may leave proposals quietly stored, block for evidence, or promote to `pending_review` — it never approves, requests execution, or mutates anything. Runtime debug includes `proposal_id`, `ledger_status`, and `triage_action` when persisted.
 
 ```bash
 export CONTEXT_EXEC_PROPOSAL_LEDGER_ENABLED=true
-export CONTEXT_EXEC_PROPOSAL_LEDGER_STORE_PATH=/tmp/orion-proposals.json
-PYTHONPATH=. orion_dev/bin/python scripts/orion_proposal_cli.py list --status stored --store /tmp/orion-proposals.json
+export CONTEXT_EXEC_PROPOSAL_LEDGER_STORE_PATH=/var/lib/orion/context-exec/ledger/orion-proposals.json
+PYTHONPATH=. orion_dev/bin/python scripts/orion_proposal_cli.py list --status stored --store /var/lib/orion/context-exec/ledger/orion-proposals.json
 ```
 
 **Engine selection:** `fake` (default) | `alexzhang` (opt-in). Fallback must be explicit (`CONTEXT_EXEC_RLM_FALLBACK_ENABLED=true`) and visible in `runtime_debug` (`engine_requested`, `engine_selected`, `fallback_used`, `fallback_reason`).
@@ -79,6 +79,10 @@ PYTHONPATH=. orion_dev/bin/python scripts/orion_proposal_cli.py list --status st
 
 **Safety defaults:** read-only, `CONTEXT_EXEC_MAX_DEPTH=1`, write/network off, compat AgentChain bus alias off.
 
+## Storage arena
+
+Durable state lives on a host-mounted NVMe path mapped into the container at `/var/lib/orion/context-exec`. The app never references host device paths — only container paths (`CONTEXT_EXEC_STORAGE_ROOT`, sub-roots, and proposal ledger JSON). Docker compose binds `${CONTEXT_EXEC_HOST_STORAGE_ROOT:-/mnt/rlm-nvme/context-exec}` → `/var/lib/orion/context-exec`. `GET /health` includes a `storage` block (`configured`, `ok`, `dirs`, `run_ledger_enabled`). Startup calls `ensure_storage_dirs()` to create the sub-directory skeleton when the mount is writable.
+
 **Verification:**
 
 Run from the **repository root** (the smoke ladder requires a `.git` directory; git worktrees with a `.git` file pointer must use the main checkout or run the individual steps below).
@@ -89,7 +93,7 @@ ORION_PY=orion_dev/bin/python bash scripts/context_exec_beta_gate.sh
 
 # Full proposal-control spine + beta gate (schema → CLI → ledger → review API → Hub → RLM evals → Denver vertical → CLI approve/eligibility/dry-run → beta gate)
 ORION_PY=orion_dev/bin/python \
-STORE=/tmp/orion-proposals.json \
+STORE=/var/lib/orion/context-exec/ledger/orion-proposals.json \
 ./scripts/repl/orion_fresh_main_smoke.sh
 
 # Live Hub golden probes (stack required)

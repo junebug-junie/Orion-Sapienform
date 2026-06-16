@@ -38,6 +38,7 @@ def test_poison_event_quarantine_advances_cursor_past_bad_event() -> None:
     worker._settings.reducer_poison_max_retries = 1
     worker._store = MagicMock()
     worker._store.save_receipt = MagicMock()
+    worker._store.save_quarantine = MagicMock()
 
     trace = bus_transport_trace_batch(trace_suffix="poison01", event_count=3)
     bad = trace[1]
@@ -61,6 +62,14 @@ def test_poison_event_quarantine_advances_cursor_past_bad_event() -> None:
     )
     assert last_id == bad.event_id
     worker._store.save_receipt.assert_called()
+    worker._store.save_quarantine.assert_called_once()
+    worker._store.save_quarantine.assert_called_with(
+        reducer_key=spec.reducer_key,
+        cursor_name=spec.cursor_name,
+        event_id=bad.event_id,
+        trace_id=bad.trace_id,
+        reason="poison payload",
+    )
 
 
 def test_advance_cursor_records_commit_failure_when_created_at_missing() -> None:

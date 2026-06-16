@@ -6,7 +6,7 @@ from typing import Any
 
 from app.cursor_gaps import has_cold_start_tail_seed, has_recent_tail_seed, tail_seed_snapshot
 from app.cursor_reset import cursor_reset_snapshot, last_reset_skipped_history
-from app.reducer_health import health_snapshots, update_backlog_metrics
+from app.reducer_health import health_snapshots, update_backlog_metrics, update_quarantine_metrics
 from app.settings import get_settings
 from app.store import BiometricsSubstrateStore, GRAMMAR_CURSOR_REGISTRY
 
@@ -35,6 +35,14 @@ def build_substrate_grammar_truth(store: BiometricsSubstrateStore) -> dict[str, 
         degraded_reasons.append("cold_start_tail_seed_occurred")
     if last_reset_skipped_history():
         degraded_reasons.append("operator_cursor_reset_skipped_history")
+
+    quarantine_summary = store.quarantine_summary(examples_per_reducer=10)
+    unack_by_reducer = quarantine_summary["unacknowledged_quarantine_count_by_reducer"]
+    unack_by_cursor = quarantine_summary["unacknowledged_quarantine_count_by_cursor"]
+    quarantine_by_reducer = quarantine_summary["quarantine_by_reducer"]
+    for cursor_name, count in sorted(unack_by_cursor.items()):
+        if count > 0:
+            degraded_reasons.append(f"reducer_quarantine_present:{cursor_name}")
 
     cursors = store.cursor_positions()
     cursor_by_name = {row["cursor_name"]: row for row in cursors}
@@ -68,6 +76,12 @@ def build_substrate_grammar_truth(store: BiometricsSubstrateStore) -> dict[str, 
             pending_backlog=pending,
             stream_lag_sec=stream_lag,
             cursor_wall_lag_sec=metrics.get("cursor_wall_lag_sec"),
+        )
+        update_quarantine_metrics(
+            reducer_key,
+            cursor_name=cursor_name,
+            enabled=enabled,
+            unacknowledged_quarantine_count=int(unack_by_reducer.get(reducer_key, 0)),
         )
 
     snapshots = health_snapshots()
@@ -150,6 +164,8 @@ def build_substrate_grammar_truth(store: BiometricsSubstrateStore) -> dict[str, 
         "stream_lag_by_reducer": stream_lag_by_reducer,
         "pending_backlog_by_reducer": backlog_by_reducer,
         "reducer_health_by_name": reducer_health,
+        "quarantine_by_reducer": quarantine_by_reducer,
+        "unacknowledged_quarantine_count_by_reducer": unack_by_reducer,
         "last_data_gap": last_gap,
         "tail_seed": tail,
         "operator_cursor_reset": reset_snap,
@@ -172,6 +188,17 @@ def build_substrate_grammar_truth(store: BiometricsSubstrateStore) -> dict[str, 
                 "curl -X POST -H 'X-Orion-Operator-Token: $SUBSTRATE_CURSOR_RESET_OPERATOR_TOKEN' "
                 "'http://127.0.0.1:8115/grammar/cursor/reset?"
                 "cursor_name=biometrics_grammar_consumer&mode=earliest'"
+            ),
+        },
+        "quarantine_recovery": {
+            "endpoint": "POST /grammar/quarantine/ack",
+            "auth_header": "X-Orion-Operator-Token",
+            "internal_only": True,
+            "modes": ["single_event", "ack_all_for_cursor"],
+            "example_single": (
+                "curl -X POST -H 'X-Orion-Operator-Token: $SUBSTRATE_CURSOR_RESET_OPERATOR_TOKEN' "
+                "'http://127.0.0.1:8115/grammar/quarantine/ack?"
+                "cursor_name=transport_grammar_reducer&event_id=gev_x'"
             ),
         },
     }

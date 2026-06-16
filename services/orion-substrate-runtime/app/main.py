@@ -14,6 +14,12 @@ from .cursor_reset import (
     validate_mode,
 )
 from .grammar_truth import build_substrate_grammar_truth
+from .quarantine_ack import (
+    record_quarantine_ack,
+    reducer_key_for_cursor,
+    validate_cursor_name as validate_quarantine_cursor_name,
+    require_operator_token as require_quarantine_operator_token,
+)
 from .settings import get_settings
 from .store import GRAMMAR_CURSOR_REGISTRY
 from .worker import BiometricsSubstrateWorker
@@ -96,3 +102,47 @@ async def reset_grammar_cursor(
         history_may_be_skipped=bool(result.get("history_may_be_skipped")),
     )
     return result
+
+
+@app.post("/grammar/quarantine/ack")
+async def acknowledge_quarantine(
+    cursor_name: str = Query(...),
+    event_id: str | None = Query(None),
+    ack_all: bool = Query(False, description="Acknowledge all unacked quarantine for cursor"),
+    actor: Annotated[str, Depends(require_quarantine_operator_token)] = "",
+) -> dict:
+    """Internal operator endpoint. Acknowledges durable poison quarantine without erasing audit trail."""
+    try:
+        valid_name = validate_quarantine_cursor_name(cursor_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if ack_all and event_id:
+        raise HTTPException(status_code=400, detail="ack_all cannot be combined with event_id")
+    if not ack_all and not event_id:
+        raise HTTPException(status_code=400, detail="event_id required unless ack_all=true")
+
+    try:
+        acknowledged_count = worker._store.acknowledge_quarantine(
+            cursor_name=valid_name,
+            event_id=event_id,
+            ack_all=ack_all,
+            actor=actor or "operator",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    record_quarantine_ack(
+        cursor_name=valid_name,
+        reducer_key=reducer_key_for_cursor(valid_name),
+        event_id=event_id,
+        ack_all=ack_all,
+        actor=actor or "operator",
+        acknowledged_count=acknowledged_count,
+    )
+    return {
+        "cursor_name": valid_name,
+        "event_id": event_id,
+        "ack_all": ack_all,
+        "acknowledged_count": acknowledged_count,
+    }

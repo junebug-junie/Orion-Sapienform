@@ -403,6 +403,13 @@ class BiometricsSubstrateWorker:
             enabled=spec.enabled(self._settings),
             event_id=event.event_id,
         )
+        self._store.save_quarantine(
+            reducer_key=spec.reducer_key,
+            cursor_name=spec.cursor_name,
+            event_id=event.event_id,
+            trace_id=event.trace_id,
+            reason=reason,
+        )
         self._store.save_receipt(
             ReductionReceiptV1(
                 receipt_id=f"quarantine:{spec.reducer_key}:{event.event_id}",

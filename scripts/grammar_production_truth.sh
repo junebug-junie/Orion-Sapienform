@@ -55,12 +55,14 @@ check_truth() {
     return
   fi
 
-  local degraded reasons
+  local degraded reasons reason_groups
   degraded="$(TRUTH_VALIDATE_BODY="${body}" python3 -c 'import json,os; print(json.loads(os.environ["TRUTH_VALIDATE_BODY"]).get("degraded", False))')"
   reasons="$(TRUTH_VALIDATE_BODY="${body}" python3 -c 'import json,os; r=json.loads(os.environ["TRUTH_VALIDATE_BODY"]).get("degraded_reasons",[]); print(", ".join(r) if r else "none")')"
+  reason_groups="$(TRUTH_VALIDATE_BODY="${body}" PYTHONPATH="${REPO_ROOT}:${REPO_ROOT}/scripts" python3 -c 'import json,os; from grammar_truth_gate import format_degraded_reason_groups; r=json.loads(os.environ["TRUTH_VALIDATE_BODY"]).get("degraded_reasons",[]); print(format_degraded_reason_groups(r))')"
 
   if [[ "${degraded}" == "True" ]]; then
     echo "DEGRADED: ${name} reasons=${reasons}"
+    echo "DEGRADED_GROUPS: ${name} ${reason_groups}"
     summary_lines+=("${name}: degraded (${reasons})")
     fail=1
   else

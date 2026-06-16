@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from orion.biometrics.node_catalog import NodeCatalog
 from orion.schemas.biometrics_projection import (
@@ -10,8 +13,10 @@ from orion.schemas.biometrics_projection import (
     NodeBiometricsProjectionV1,
 )
 from orion.schemas.grammar import GrammarEventV1
+from orion.schemas.reduction_receipt import ReductionReceiptV1
 from orion.substrate.biometrics_loop.constants import (
     ACTIVE_NODE_PRESSURE_PROJECTION_ID,
+    GRAMMAR_CURSOR_NAME,
     NODE_BIOMETRICS_PROJECTION_ID,
 )
 from orion.substrate.biometrics_loop.pipeline import (
@@ -19,20 +24,67 @@ from orion.substrate.biometrics_loop.pipeline import (
     _empty_pressure,
     process_biometrics_grammar_events,
 )
-from orion.substrate.execution_loop.constants import EXECUTION_TRAJECTORY_PROJECTION_ID
+from orion.substrate.execution_loop.constants import (
+    EXECUTION_GRAMMAR_CURSOR_NAME,
+    EXECUTION_TRAJECTORY_PROJECTION_ID,
+)
 from orion.substrate.execution_loop.pipeline import process_execution_grammar_events
 from orion.substrate.execution_loop.projection import empty_execution_projection
-from orion.substrate.transport_loop.constants import TRANSPORT_BUS_PROJECTION_ID
+from orion.substrate.transport_loop.constants import (
+    TRANSPORT_BUS_PROJECTION_ID,
+    TRANSPORT_GRAMMAR_CURSOR_NAME,
+)
 from orion.substrate.transport_loop.pipeline import (
     empty_transport_projection,
     process_transport_grammar_events,
 )
 
 from .publish import publish_accepted_events
-from .settings import get_settings
+from .reducer_health import (
+    record_cursor_advance,
+    record_error,
+    record_quarantine,
+    record_success,
+    record_tick,
+)
+from .settings import Settings, get_settings
 from .store import BiometricsSubstrateStore
 
 logger = logging.getLogger("orion.substrate.runtime")
+
+
+@dataclass(frozen=True)
+class ReducerSpec:
+    reducer_key: str
+    cursor_name: str
+    source_service: str
+    enabled: Callable[[Settings], bool]
+    batch_limit: Callable[[Settings], int]
+
+
+REDUCER_SPECS: tuple[ReducerSpec, ...] = (
+    ReducerSpec(
+        reducer_key="biometrics",
+        cursor_name=GRAMMAR_CURSOR_NAME,
+        source_service="orion-biometrics",
+        enabled=lambda s: True,
+        batch_limit=lambda s: s.biometrics_grammar_batch_limit,
+    ),
+    ReducerSpec(
+        reducer_key="execution_trajectory",
+        cursor_name=EXECUTION_GRAMMAR_CURSOR_NAME,
+        source_service="orion-cortex-exec",
+        enabled=lambda s: s.enable_execution_trajectory_reducer,
+        batch_limit=lambda s: s.execution_grammar_batch_limit,
+    ),
+    ReducerSpec(
+        reducer_key="transport_bus",
+        cursor_name=TRANSPORT_GRAMMAR_CURSOR_NAME,
+        source_service="orion-bus",
+        enabled=lambda s: s.enable_transport_bus_reducer,
+        batch_limit=lambda s: s.transport_grammar_batch_limit,
+    ),
+)
 
 
 class BiometricsSubstrateWorker:
@@ -42,6 +94,7 @@ class BiometricsSubstrateWorker:
         self._catalog = NodeCatalog.load(self._settings.node_catalog_path)
         self._stop = asyncio.Event()
         self._bus = None
+        self._tasks: list[asyncio.Task[None]] = []
 
     async def start(self) -> None:
         s = self._settings
@@ -50,11 +103,19 @@ class BiometricsSubstrateWorker:
 
             self._bus = OrionBusAsync(url=s.orion_bus_url)
             await self._bus.connect()
-        asyncio.create_task(self._poll_loop(), name="biometrics-substrate-poll")
-        asyncio.create_task(self._prune_loop(), name="substrate-receipt-pruner")
+        self._tasks = [
+            asyncio.create_task(self._biometrics_poll_loop(), name="biometrics-substrate-poll"),
+            asyncio.create_task(self._execution_poll_loop(), name="execution-substrate-poll"),
+            asyncio.create_task(self._transport_poll_loop(), name="transport-substrate-poll"),
+            asyncio.create_task(self._prune_loop(), name="substrate-receipt-pruner"),
+        ]
 
     async def stop(self) -> None:
         self._stop.set()
+        for task in self._tasks:
+            task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
         if self._bus is not None:
             await self._bus.close()
 
@@ -88,8 +149,12 @@ class BiometricsSubstrateWorker:
         maybe_run_emergency_prune(self._store._engine, self._settings)
         log_receipt_pressure(self._store._engine, self._settings)
 
-    async def _poll_loop(self) -> None:
+    async def _biometrics_poll_loop(self) -> None:
+        spec = REDUCER_SPECS[0]
+        interval = float(self._settings.grammar_poll_interval_sec)
         while not self._stop.is_set():
+            enabled = spec.enabled(self._settings)
+            record_tick(spec.reducer_key, cursor_name=spec.cursor_name, enabled=enabled)
             try:
                 last_event_id, to_publish = await asyncio.to_thread(self._tick)
                 if self._bus and to_publish:
@@ -99,52 +164,232 @@ class BiometricsSubstrateWorker:
                         channel=self._settings.accepted_pressure_grammar_channel,
                     )
                 if last_event_id:
-                    created_at = self._store.grammar_event_created_at(last_event_id)
-                    if created_at:
-                        self._store.advance_cursor(
-                            event_id=last_event_id,
-                            created_at=created_at,
-                        )
+                    await asyncio.to_thread(
+                        self._advance_cursor,
+                        spec,
+                        last_event_id,
+                        self._store.advance_cursor,
+                    )
             except Exception:
                 logger.exception("biometrics_substrate_tick_failed")
-
-            if self._settings.enable_execution_trajectory_reducer:
-                try:
-                    last_exec_id = await asyncio.to_thread(self._execution_tick)
-                    if last_exec_id:
-                        created_at = self._store.grammar_event_created_at(last_exec_id)
-                        if created_at:
-                            self._store.advance_execution_cursor(
-                                event_id=last_exec_id,
-                                created_at=created_at,
-                            )
-                except Exception:
-                    logger.exception("execution_substrate_tick_failed")
-
-            if self._settings.enable_transport_bus_reducer:
-                try:
-                    last_transport_id = await asyncio.to_thread(self._transport_tick)
-                    if last_transport_id:
-                        created_at = self._store.grammar_event_created_at(last_transport_id)
-                        if created_at:
-                            self._store.advance_transport_cursor(
-                                event_id=last_transport_id,
-                                created_at=created_at,
-                            )
-                except Exception:
-                    logger.exception("transport_substrate_tick_failed")
-            try:
-                await asyncio.wait_for(
-                    self._stop.wait(),
-                    timeout=float(self._settings.grammar_poll_interval_sec),
+                record_error(
+                    spec.reducer_key,
+                    cursor_name=spec.cursor_name,
+                    enabled=enabled,
+                    event_id=None,
+                    reason="biometrics_substrate_tick_failed",
                 )
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
                 break
 
+    async def _execution_poll_loop(self) -> None:
+        await self._grammar_reducer_poll_loop(REDUCER_SPECS[1], self._execution_tick)
+
+    async def _transport_poll_loop(self) -> None:
+        await self._grammar_reducer_poll_loop(REDUCER_SPECS[2], self._transport_tick)
+
+    async def _grammar_reducer_poll_loop(
+        self,
+        spec: ReducerSpec,
+        tick_fn: Callable[[], str | None],
+    ) -> None:
+        interval = float(self._settings.grammar_poll_interval_sec)
+        while not self._stop.is_set():
+            enabled = spec.enabled(self._settings)
+            if not enabled:
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=interval)
+                except asyncio.TimeoutError:
+                    continue
+                except asyncio.CancelledError:
+                    break
+                continue
+
+            record_tick(spec.reducer_key, cursor_name=spec.cursor_name, enabled=True)
+            try:
+                last_event_id = await asyncio.to_thread(tick_fn)
+                if last_event_id:
+                    advance_fn = (
+                        self._store.advance_execution_cursor
+                        if spec.cursor_name == EXECUTION_GRAMMAR_CURSOR_NAME
+                        else self._store.advance_transport_cursor
+                    )
+                    await asyncio.to_thread(
+                        self._advance_cursor,
+                        spec,
+                        last_event_id,
+                        advance_fn,
+                    )
+            except Exception:
+                logger.exception("%s_substrate_tick_failed", spec.reducer_key)
+                record_error(
+                    spec.reducer_key,
+                    cursor_name=spec.cursor_name,
+                    enabled=True,
+                    event_id=None,
+                    reason=f"{spec.reducer_key}_substrate_tick_failed",
+                )
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+    def _advance_cursor(
+        self,
+        spec: ReducerSpec,
+        event_id: str,
+        advance_fn: Callable[..., None],
+    ) -> None:
+        created_at = self._store.grammar_event_created_at(event_id)
+        if not created_at:
+            reason = "grammar_event_created_at_missing"
+            logger.error(
+                "substrate_cursor_commit_failed reducer=%s cursor=%s event_id=%s reason=%s",
+                spec.reducer_key,
+                spec.cursor_name,
+                event_id,
+                reason,
+            )
+            record_error(
+                spec.reducer_key,
+                cursor_name=spec.cursor_name,
+                enabled=spec.enabled(self._settings),
+                event_id=event_id,
+                reason=reason,
+            )
+            return
+        try:
+            advance_fn(event_id=event_id, created_at=created_at)
+            record_cursor_advance(
+                spec.reducer_key,
+                cursor_name=spec.cursor_name,
+                enabled=spec.enabled(self._settings),
+            )
+        except Exception as exc:
+            reason = f"cursor_advance_failed:{exc}"
+            logger.exception(
+                "substrate_cursor_commit_failed reducer=%s cursor=%s event_id=%s reason=%s",
+                spec.reducer_key,
+                spec.cursor_name,
+                event_id,
+                reason,
+            )
+            record_error(
+                spec.reducer_key,
+                cursor_name=spec.cursor_name,
+                enabled=spec.enabled(self._settings),
+                event_id=event_id,
+                reason=reason,
+            )
+            raise
+
+    def _process_events_with_poison_isolation(
+        self,
+        *,
+        spec: ReducerSpec,
+        events: list[GrammarEventV1],
+        process_batch: Callable[[list[GrammarEventV1]], None],
+    ) -> str | None:
+        if not events:
+            return None
+
+        try:
+            process_batch(events)
+            record_success(
+                spec.reducer_key,
+                cursor_name=spec.cursor_name,
+                enabled=spec.enabled(self._settings),
+                batch_events=len(events),
+            )
+            return events[-1].event_id
+        except Exception as batch_exc:
+            if len(events) == 1:
+                event = events[0]
+                return self._quarantine_poison_event(
+                    spec=spec,
+                    event=event,
+                    reason=str(batch_exc),
+                )
+
+            logger.warning(
+                "substrate_batch_failed_isolating_poison reducer=%s cursor=%s "
+                "batch_size=%d reason=%s",
+                spec.reducer_key,
+                spec.cursor_name,
+                len(events),
+                batch_exc,
+            )
+            last_good: str | None = None
+            for event in events:
+                try:
+                    process_batch([event])
+                    last_good = event.event_id
+                except Exception as exc:
+                    last_good = self._quarantine_poison_event(
+                        spec=spec,
+                        event=event,
+                        reason=str(exc),
+                    )
+            if last_good:
+                record_success(
+                    spec.reducer_key,
+                    cursor_name=spec.cursor_name,
+                    enabled=spec.enabled(self._settings),
+                    batch_events=1,
+                )
+            return last_good
+
+    def _quarantine_poison_event(
+        self,
+        *,
+        spec: ReducerSpec,
+        event: GrammarEventV1,
+        reason: str,
+    ) -> str:
+        logger.error(
+            "substrate_poison_event_quarantined reducer=%s cursor=%s stream=%s "
+            "event_id=%s trace_id=%s reason=%s",
+            spec.reducer_key,
+            spec.cursor_name,
+            spec.source_service,
+            event.event_id,
+            event.trace_id,
+            reason,
+        )
+        record_error(
+            spec.reducer_key,
+            cursor_name=spec.cursor_name,
+            enabled=spec.enabled(self._settings),
+            event_id=event.event_id,
+            reason=reason,
+        )
+        record_quarantine(
+            spec.reducer_key,
+            cursor_name=spec.cursor_name,
+            enabled=spec.enabled(self._settings),
+            event_id=event.event_id,
+        )
+        self._store.save_receipt(
+            ReductionReceiptV1(
+                receipt_id=f"quarantine:{spec.reducer_key}:{event.event_id}",
+                rejected_event_ids=[event.event_id],
+                warnings=[f"quarantined:{reason}"],
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        return event.event_id
+
     def _tick(self) -> tuple[str | None, list[GrammarEventV1]]:
-        events = self._store.fetch_biometrics_grammar_events(limit=50)
+        spec = REDUCER_SPECS[0]
+        events = self._store.fetch_biometrics_grammar_events(
+            limit=spec.batch_limit(self._settings),
+        )
         if not events:
             return None, []
 
@@ -162,28 +407,37 @@ class BiometricsSubstrateWorker:
         def publish_hook(accepted: list[GrammarEventV1]) -> None:
             published.extend(accepted)
 
-        process_biometrics_grammar_events(
-            events=events,
-            catalog=self._catalog,
-            load_node_bio=load_node_bio,
-            save_node_bio=self._store.save_node_biometrics,
-            load_pressure=load_pressure,
-            save_pressure=self._store.save_active_pressure,
-            save_receipt=self._store.save_receipt,
-            save_emission=self._store.save_emission,
-            publish_accepted=publish_hook,
-            enable_node_reducer=self._settings.enable_biometrics_node_reducer,
-            enable_organ=self._settings.enable_biometrics_pressure_organ,
-            enable_pressure_reducer=self._settings.enable_node_pressure_reducer,
-            stale_after_sec=self._settings.biometrics_node_stale_after_sec,
-            min_confidence=self._settings.biometrics_pressure_min_confidence,
-            now=now,
-        )
+        def process_batch(batch: list[GrammarEventV1]) -> None:
+            process_biometrics_grammar_events(
+                events=batch,
+                catalog=self._catalog,
+                load_node_bio=load_node_bio,
+                save_node_bio=self._store.save_node_biometrics,
+                load_pressure=load_pressure,
+                save_pressure=self._store.save_active_pressure,
+                save_receipt=self._store.save_receipt,
+                save_emission=self._store.save_emission,
+                publish_accepted=publish_hook,
+                enable_node_reducer=self._settings.enable_biometrics_node_reducer,
+                enable_organ=self._settings.enable_biometrics_pressure_organ,
+                enable_pressure_reducer=self._settings.enable_node_pressure_reducer,
+                stale_after_sec=self._settings.biometrics_node_stale_after_sec,
+                min_confidence=self._settings.biometrics_pressure_min_confidence,
+                now=now,
+            )
 
-        return events[-1].event_id, published
+        last_id = self._process_events_with_poison_isolation(
+            spec=spec,
+            events=events,
+            process_batch=process_batch,
+        )
+        return last_id, published
 
     def _execution_tick(self) -> str | None:
-        events = self._store.fetch_execution_grammar_events(limit=50)
+        spec = REDUCER_SPECS[1]
+        events = self._store.fetch_execution_grammar_events(
+            limit=spec.batch_limit(self._settings),
+        )
         if not events:
             return None
 
@@ -193,18 +447,26 @@ class BiometricsSubstrateWorker:
             loaded = self._store.load_execution_trajectory(EXECUTION_TRAJECTORY_PROJECTION_ID)
             return loaded or empty_execution_projection(now=now)
 
-        process_execution_grammar_events(
+        def process_batch(batch: list[GrammarEventV1]) -> None:
+            process_execution_grammar_events(
+                events=batch,
+                load_projection=load_projection,
+                save_projection=self._store.save_execution_trajectory,
+                save_receipt=self._store.save_receipt,
+                now=now,
+            )
+
+        return self._process_events_with_poison_isolation(
+            spec=spec,
             events=events,
-            load_projection=load_projection,
-            save_projection=self._store.save_execution_trajectory,
-            save_receipt=self._store.save_receipt,
-            now=now,
+            process_batch=process_batch,
         )
 
-        return events[-1].event_id
-
     def _transport_tick(self) -> str | None:
-        events = self._store.fetch_transport_grammar_events(limit=50)
+        spec = REDUCER_SPECS[2]
+        events = self._store.fetch_transport_grammar_events(
+            limit=spec.batch_limit(self._settings),
+        )
         if not events:
             return None
 
@@ -214,13 +476,18 @@ class BiometricsSubstrateWorker:
             loaded = self._store.load_transport_bus_projection(TRANSPORT_BUS_PROJECTION_ID)
             return loaded or empty_transport_projection(now=now)
 
-        process_transport_grammar_events(
-            events=events,
-            load_projection=load_projection,
-            save_projection=self._store.save_transport_bus_projection,
-            save_receipt=self._store.save_receipt,
-            now=now,
-            stream_depth_critical=self._settings.bus_stream_depth_critical,
-        )
+        def process_batch(batch: list[GrammarEventV1]) -> None:
+            process_transport_grammar_events(
+                events=batch,
+                load_projection=load_projection,
+                save_projection=self._store.save_transport_bus_projection,
+                save_receipt=self._store.save_receipt,
+                now=now,
+                stream_depth_critical=self._settings.bus_stream_depth_critical,
+            )
 
-        return events[-1].event_id
+        return self._process_events_with_poison_isolation(
+            spec=spec,
+            events=events,
+            process_batch=process_batch,
+        )

@@ -28,6 +28,9 @@ SUBSTRATE_REQUIRED = {
     "cursor_settings",
     "cursor_positions",
     "cursor_lag_by_reducer",
+    "stream_lag_by_reducer",
+    "pending_backlog_by_reducer",
+    "reducer_health_by_name",
     "tail_seed",
     "operator_cursor_reset",
     "accepted_pressure_output_channel",
@@ -60,6 +63,55 @@ def validate_truth_payload(name: str, payload: dict[str, Any]) -> list[str]:
     return errors
 
 
+def _classify_degraded_reason(reason: str) -> str:
+    if reason.startswith("cursor_lag:"):
+        return "stale_reducer_cursor"
+    if reason.startswith("reducer_heartbeat_stale:"):
+        return "missing_reducer_heartbeat"
+    if reason.startswith("reducer_blocked:"):
+        return "reducer_blocked_on_event"
+    if reason.startswith("reducer_cursor_commit_failing:"):
+        return "cursor_commit_failure"
+    if reason.startswith("reducer_stream_lag:"):
+        return "redis_stream_lag"
+    if "tail_seed" in reason:
+        return "stale_producer_cursor"
+    return "other"
+
+
+def format_degraded_reason_groups(reasons: list[str]) -> str:
+    if not reasons:
+        return "none"
+    groups: dict[str, list[str]] = {}
+    for reason in reasons:
+        bucket = _classify_degraded_reason(reason)
+        groups.setdefault(bucket, []).append(reason)
+    parts = []
+    for bucket in sorted(groups):
+        parts.append(f"{bucket}=[{', '.join(groups[bucket])}]")
+    return "; ".join(parts)
+
+
+def format_reducer_health_summary(substrate: dict[str, Any] | None) -> str:
+    if not substrate:
+        return "substrate reducer health: (none)"
+    health = substrate.get("reducer_health_by_name") or {}
+    backlog = substrate.get("pending_backlog_by_reducer") or {}
+    if not health:
+        return "substrate reducer health: (empty)"
+    lines = ["=== reducer health ==="]
+    for name in sorted(health):
+        row = health[name]
+        lines.append(
+            f"  {name}: class={row.get('classification')} "
+            f"backlog={backlog.get(row.get('cursor_name'))} "
+            f"stream_lag_sec={row.get('stream_lag_sec')} "
+            f"heartbeat={row.get('last_tick_at')} "
+            f"blocked={row.get('blocked_event_id')}"
+        )
+    return "\n".join(lines)
+
+
 def format_mode_summary(sql_writer: dict[str, Any] | None, substrate: dict[str, Any] | None) -> str:
     lines: list[str] = ["=== effective grammar mode ==="]
     if sql_writer:
@@ -88,9 +140,17 @@ def format_mode_summary(sql_writer: dict[str, Any] | None, substrate: dict[str, 
             f"reducers={substrate.get('enabled_reducers')}"
         )
         lines.append(
-            f"substrate cursors: lag={substrate.get('cursor_lag_by_reducer')} "
+            f"substrate cursors: wall_lag={substrate.get('cursor_lag_by_reducer')} "
+            f"stream_lag={substrate.get('stream_lag_by_reducer')} "
+            f"backlog={substrate.get('pending_backlog_by_reducer')} "
             f"tail_seed_count={(substrate.get('tail_seed') or {}).get('count')}"
         )
+        if substrate.get("degraded_reasons"):
+            lines.append(
+                "substrate degraded groups: "
+                f"{format_degraded_reason_groups(substrate.get('degraded_reasons') or [])}"
+            )
+        lines.append(format_reducer_health_summary(substrate))
         lines.append(
             f"substrate accepted_pressure_channel={substrate.get('accepted_pressure_output_channel')}"
         )

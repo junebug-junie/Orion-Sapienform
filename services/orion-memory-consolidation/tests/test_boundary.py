@@ -26,6 +26,9 @@ def _load(rel_path: str, name: str):
 boundary = _load("app/boundary.py", "memory_consolidation_boundary")
 should_close_window = boundary.should_close_window
 scores_from_llm_result = boundary.scores_from_llm_result
+window_fetch = _load("app/window_fetch.py", "memory_consolidation_window_fetch")
+should_close_turn = window_fetch.should_close_turn
+should_close_by_time_gap = window_fetch.should_close_by_time_gap
 
 from orion.schemas.memory_consolidation import MemoryTurnPersistedV1
 
@@ -82,3 +85,21 @@ def test_scores_from_llm_result_uses_logprobs():
     assert bnd is not None
     assert mem > 0.5
     assert bnd < 0.5
+
+
+def test_should_close_by_time_gap_when_phase_missing():
+    turns = [
+        {"memory_classify_ts": "2026-06-16T10:00:00+00:00"},
+        {"memory_classify_ts": "2026-06-16T11:31:00+00:00"},
+    ]
+    assert should_close_by_time_gap(turns, gap_sec=5400) is True
+
+
+def test_should_close_turn_uses_time_gap_fallback():
+    turn = MemoryTurnPersistedV1(correlation_id="c1", prompt="p", response="r", spark_meta={})
+    scores = {"conversation_boundary_score": 0.1}
+    window_turns = [
+        {"memory_classify_ts": "2026-06-16T10:00:00+00:00"},
+        {"memory_classify_ts": "2026-06-16T11:31:00+00:00"},
+    ]
+    assert should_close_turn(turn, scores, window_turns=window_turns) is True

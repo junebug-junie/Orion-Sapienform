@@ -17,12 +17,16 @@ async def insert_pending_draft(
     turn_correlation_ids: list[str],
 ) -> str:
     draft_id = str(uuid4())
-    await pool.execute(
+    row = await pool.fetchrow(
         """
         INSERT INTO memory_graph_suggest_drafts
           (draft_id, memory_window_id, status, draft, turn_correlation_ids, created_at)
         VALUES ($1, $2, 'pending_review', $3::jsonb, $4::jsonb, $5)
-        ON CONFLICT (memory_window_id) DO NOTHING
+        ON CONFLICT (memory_window_id) DO UPDATE SET
+          draft = EXCLUDED.draft,
+          turn_correlation_ids = EXCLUDED.turn_correlation_ids,
+          status = 'pending_review'
+        RETURNING draft_id
         """,
         draft_id,
         memory_window_id,
@@ -30,4 +34,4 @@ async def insert_pending_draft(
         json.dumps(turn_correlation_ids),
         datetime.now(timezone.utc),
     )
-    return draft_id
+    return str(row["draft_id"])

@@ -21,7 +21,7 @@ async def classify_turn(bus: OrionBusAsync, *, turn: MemoryTurnPersistedV1, sett
     for attempt in range(2):
         try:
             rpc_corr = str(uuid4())
-            reply_channel = f"orion:memory:consolidation:llm:reply:{rpc_corr}"
+            reply_channel = f"orion:exec:result:LLMGatewayService:{rpc_corr}"
             payload = ChatRequestPayload(
                 messages=[LLMMessage(role="user", content=prompt)],
                 route="quick",

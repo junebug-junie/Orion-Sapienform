@@ -12,7 +12,7 @@ from orion.memory_graph.dto import SuggestDraftV1
 from orion.memory_graph.draft_sanitize import sanitize_suggest_draft_dict
 from orion.memory_graph.suggest_runner import suggest_once
 
-from app.boundary import should_close_window
+from app.window_fetch import should_close_turn
 from app.classify import classify_turn
 from app.settings import settings
 from app.window_state import WindowStore
@@ -135,7 +135,13 @@ async def handle_memory_turn_persisted(
     patch_fields = await classify_turn(bus, turn=turn, settings=settings)
     await publish_spark_meta_patch(bus, turn.correlation_id, patch_fields)
     await window_store.append_turn(turn, scores=patch_fields)
-    if should_close_window(turn, patch_fields, settings):
+    open_row = await window_store._get_open_window()
+    window_turns = (
+        await window_store.get_window_turns(open_row["memory_window_id"])
+        if open_row is not None
+        else []
+    )
+    if should_close_turn(turn, patch_fields, window_turns=window_turns):
         closed = await window_store.close_current_window(turn.correlation_id)
         if closed.get("turn_correlation_ids"):
             await suggest_runner.consolidate_window(closed, bus=bus)

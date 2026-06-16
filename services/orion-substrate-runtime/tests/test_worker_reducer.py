@@ -35,11 +35,11 @@ def test_poison_event_quarantine_advances_cursor_past_bad_event() -> None:
     worker = BiometricsSubstrateWorker.__new__(BiometricsSubstrateWorker)
     worker._settings = MagicMock()
     worker._settings.enable_transport_bus_reducer = True
+    worker._settings.reducer_poison_max_retries = 1
     worker._store = MagicMock()
     worker._store.save_receipt = MagicMock()
 
     trace = bus_transport_trace_batch(trace_suffix="poison01", event_count=3)
-    good = trace[0]
     bad = trace[1]
     spec = REDUCER_SPECS[2]
 
@@ -47,9 +47,16 @@ def test_poison_event_quarantine_advances_cursor_past_bad_event() -> None:
         if any(e.event_id == bad.event_id for e in batch):
             raise ValueError("poison payload")
 
+    with pytest.raises(ValueError):
+        worker._process_events_with_poison_isolation(
+            spec=spec,
+            events=[bad],
+            process_batch=process_batch,
+        )
+
     last_id = worker._process_events_with_poison_isolation(
         spec=spec,
-        events=[good, bad],
+        events=[bad],
         process_batch=process_batch,
     )
     assert last_id == bad.event_id

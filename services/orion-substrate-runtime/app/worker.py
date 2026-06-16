@@ -41,6 +41,7 @@ from orion.substrate.transport_loop.pipeline import (
 
 from .publish import publish_accepted_events
 from .reducer_health import (
+    health_snapshots,
     record_cursor_advance,
     record_error,
     record_quarantine,
@@ -311,11 +312,20 @@ class BiometricsSubstrateWorker:
         except Exception as batch_exc:
             if len(events) == 1:
                 event = events[0]
-                return self._quarantine_poison_event(
-                    spec=spec,
-                    event=event,
+                if self._should_quarantine_poison(spec, event.event_id):
+                    return self._quarantine_poison_event(
+                        spec=spec,
+                        event=event,
+                        reason=str(batch_exc),
+                    )
+                record_error(
+                    spec.reducer_key,
+                    cursor_name=spec.cursor_name,
+                    enabled=spec.enabled(self._settings),
+                    event_id=event.event_id,
                     reason=str(batch_exc),
                 )
+                raise
 
             logger.warning(
                 "substrate_batch_failed_isolating_poison reducer=%s cursor=%s "
@@ -331,11 +341,21 @@ class BiometricsSubstrateWorker:
                     process_batch([event])
                     last_good = event.event_id
                 except Exception as exc:
-                    last_good = self._quarantine_poison_event(
-                        spec=spec,
-                        event=event,
-                        reason=str(exc),
-                    )
+                    if self._should_quarantine_poison(spec, event.event_id):
+                        last_good = self._quarantine_poison_event(
+                            spec=spec,
+                            event=event,
+                            reason=str(exc),
+                        )
+                    else:
+                        record_error(
+                            spec.reducer_key,
+                            cursor_name=spec.cursor_name,
+                            enabled=spec.enabled(self._settings),
+                            event_id=event.event_id,
+                            reason=str(exc),
+                        )
+                        raise
             if last_good:
                 record_success(
                     spec.reducer_key,
@@ -344,6 +364,14 @@ class BiometricsSubstrateWorker:
                     batch_events=1,
                 )
             return last_good
+
+    def _should_quarantine_poison(self, spec: ReducerSpec, event_id: str) -> bool:
+        snap = health_snapshots().get(spec.reducer_key)
+        if snap is None:
+            return False
+        if snap.blocked_event_id != event_id:
+            return False
+        return snap.blocked_failures >= int(self._settings.reducer_poison_max_retries)
 
     def _quarantine_poison_event(
         self,

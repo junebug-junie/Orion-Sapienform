@@ -10,7 +10,15 @@ from orion.schemas.context_exec import (
     ContextExecRunV1,
     context_exec_permissions_for_llm_profile,
 )
+from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.cortex.contracts import AgentTraceStepV1, AgentTraceSummaryV1, AgentTraceToolStatV1, CortexChatRequest
+
+from orion.cognition.answer_contract_normalize import (
+    build_answer_contract_draft_for_hub,
+    heuristic_answer_contract,
+    merge_draft,
+)
+from orion.schemas.cognition.answer_contract import AnswerContractDraft
 
 from scripts.context_exec_client import ContextExecClientError, agent_lane_enabled, run_context_exec
 from scripts.settings import settings
@@ -116,6 +124,21 @@ def investigation_v2_enabled() -> bool:
     return bool(settings.CONTEXT_EXEC_INVESTIGATION_V2_ENABLED)
 
 
+def _answer_contract_for_hub_request(req: CortexChatRequest, prompt: str) -> AnswerContract:
+    """Normalize hub answer_contract_draft + options into a bus-safe AnswerContract."""
+    meta = req.metadata if isinstance(req.metadata, dict) else {}
+    raw_draft = meta.get("answer_contract_draft")
+    if not isinstance(raw_draft, dict):
+        raw_draft = build_answer_contract_draft_for_hub(prompt)
+    opts = req.options if isinstance(req.options, dict) else {}
+    opt_ac = opts.get("answer_contract")
+    base = heuristic_answer_contract(prompt)
+    contract = merge_draft(base, AnswerContractDraft.model_validate(raw_draft))
+    if isinstance(opt_ac, dict):
+        contract = merge_draft(contract, AnswerContractDraft.model_validate(opt_ac))
+    return contract
+
+
 def _infer_context_exec_mode(text: str) -> str:
     tl = (text or "").lower()
     if "where did" in tl and ("claim" in tl or "belief" in tl or "come from" in tl):
@@ -138,8 +161,9 @@ def build_context_exec_request(
     llm_profile: str,
 ) -> ContextExecRequestV1:
     llm_profile_norm = normalize_llm_profile(llm_profile)
+    answer_contract = _answer_contract_for_hub_request(req, prompt)
     if investigation_v2_enabled():
-        # Agent lane investigation: broad read permissions; compute lane selects LLM route only.
+        # Agent lane: permissions are ceiling; answer_contract gates warranted probes.
         permissions = context_exec_permissions_for_llm_profile("agent")
         return ContextExecRequestV1(
             text=prompt,
@@ -150,6 +174,7 @@ def build_context_exec_request(
             messages=list(req.messages or []),
             packs=list(req.packs or []),
             permissions=permissions,
+            answer_contract=answer_contract,
             llm_profile=llm_profile_norm,
         )
 
@@ -292,7 +317,7 @@ def format_agent_operator_inline(
     *,
     llm_profile: str | None = None,
 ) -> str:
-    """Build Hub inline Agent operator response."""
+    """Build Hub inline Agent operator response (inspectable sidecar, not user voice)."""
     if run.mode == "investigation_v2" and isinstance(run.artifact, dict):
         return format_investigation_v2_report(run.artifact)
 
@@ -348,6 +373,9 @@ def build_context_exec_chat_response(
     routing["llm_profile"] = dbg.get("llm_profile_selected") or dbg.get("route_used")
     routing["route_used"] = dbg.get("route_used")
     routing["model_synthesis_used"] = dbg.get("model_synthesis_used")
+    routing["model_finalize_used"] = dbg.get("model_finalize_used")
+    if dbg.get("probe_plan"):
+        routing["probe_plan"] = dbg.get("probe_plan")
     answer_eval = dbg.get("answer_evaluation") if isinstance(dbg.get("answer_evaluation"), dict) else {}
     if answer_eval:
         routing["answer_status"] = answer_eval.get("answer_status")
@@ -359,7 +387,8 @@ def build_context_exec_chat_response(
     organ_status = dbg.get("organ_status")
     if isinstance(organ_status, dict):
         routing["organ_status"] = organ_status
-    inline = format_agent_operator_inline(
+    inline = str(run.final_text or "").strip()
+    operator_inline = format_agent_operator_inline(
         run,
         llm_profile=str(routing.get("llm_profile") or ""),
     )
@@ -379,6 +408,7 @@ def build_context_exec_chat_response(
                     "artifact_type": run.artifact_type,
                     "artifact": run.artifact,
                     "operator_summary": operator_summary,
+                    "operator_report_text": operator_inline,
                 },
                 "engine": "context_exec",
             },

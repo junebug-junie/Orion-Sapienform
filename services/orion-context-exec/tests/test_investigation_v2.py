@@ -27,6 +27,7 @@ def _ctx_app_modules():
 
 
 def _agent_request(**overrides):
+    from orion.schemas.cognition.answer_contract import AnswerContract
     from orion.schemas.context_exec import ContextExecRequestV1, context_exec_permissions_for_llm_profile
 
     base = {
@@ -34,6 +35,12 @@ def _agent_request(**overrides):
         "mode": "investigation_v2",
         "permissions": context_exec_permissions_for_llm_profile("agent"),
         "llm_profile": "agent",
+        "answer_contract": AnswerContract(
+            request_kind="repo_technical",
+            asks_for_explanation=True,
+            requires_repo_grounding=True,
+            preferred_render_style="steps",
+        ),
     }
     base.update(overrides)
     return ContextExecRequestV1(**base)
@@ -240,8 +247,17 @@ async def test_runner_with_trace_hits_builds_findings_bundle(monkeypatch: pytest
 
     monkeypatch.setattr(trace_tools, "traces_search", fake_traces_search)
 
+    from orion.schemas.cognition.answer_contract import AnswerContract
+
+    runtime_contract = AnswerContract(
+        request_kind="runtime_debug",
+        asks_for_explanation=True,
+        requires_runtime_grounding=True,
+        preferred_render_style="steps",
+    )
+
     runner = ContextExecRunner()
-    run = await runner.run(_agent_request())
+    run = await runner.run(_agent_request(answer_contract=runtime_contract))
     assert run.status == "ok"
     assert run.findings_bundle is not None
     assert len(run.findings_bundle.findings) >= 1

@@ -10328,6 +10328,8 @@ loadDismissedIds();
 
   function resolveAssistantDisplayText(d) {
     if (!d || typeof d !== 'object') return '';
+    const userFacing = String(d.llm_response ?? d.text ?? '').trim();
+    if (userFacing) return userFacing;
     if (d.mode === 'agent' && d.operator_summary && typeof d.operator_summary === 'object') {
       const op = d.operator_summary;
       const dbg = d.routing_debug && typeof d.routing_debug === 'object' ? d.routing_debug : {};

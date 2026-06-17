@@ -24,6 +24,7 @@ from .bus_dependency_preflight import (
     unavailable_source_result,
 )
 from .callable_namespace import ContextNamespace
+from .investigation_probe_plan import probe_plan_for_request
 from .investigation_v2_reducers import compose_investigation_report
 from .organ_runtime import OrganRuntime
 from .settings import settings
@@ -370,6 +371,15 @@ async def run_investigation_v2(
     organ_cache: dict[str, Any],
 ) -> dict[str, Any]:
     bundle = EvidenceBundle()
+    plan = probe_plan_for_request(request)
+    organ_cache["investigation_probe_plan"] = {
+        "investigation_status": plan.investigation_status,
+        "run_repo": plan.run_repo,
+        "run_traces": plan.run_traces,
+        "run_recall": plan.run_recall,
+        "run_memory": plan.run_memory,
+        "run_runtime": plan.run_runtime,
+    }
     timeout_sec = _probe_timeout_sec(request)
     recall_timeout = min(timeout_sec, float(settings.context_exec_recall_timeout_sec))
     common = {
@@ -379,7 +389,7 @@ async def run_investigation_v2(
         "organ_cache": organ_cache,
     }
 
-    if request.permissions.read_repo:
+    if plan.run_repo:
         bundle.repo = await safe_probe(
             "repo",
             repo_probe,
@@ -387,10 +397,16 @@ async def run_investigation_v2(
             timeout_sec=timeout_sec,
             **common,
         )
-    else:
+    elif not request.permissions.read_repo:
         bundle.repo = await safe_probe("repo", repo_probe, permitted=False, timeout_sec=timeout_sec)
+    else:
+        bundle.repo = SourceResult(
+            source="repo",
+            status=SourceStatus.skipped,
+            summary=plan.skip_repo_reason or "repo probe not warranted",
+        )
 
-    if request.permissions.read_redis_traces:
+    if plan.run_traces:
         bundle.traces = await safe_probe(
             "traces",
             trace_probe,
@@ -400,10 +416,16 @@ async def run_investigation_v2(
             runtime=runtime,
             organ_cache=organ_cache,
         )
-    else:
+    elif not request.permissions.read_redis_traces:
         bundle.traces = await safe_probe("traces", trace_probe, permitted=False, timeout_sec=timeout_sec)
+    else:
+        bundle.traces = SourceResult(
+            source="traces",
+            status=SourceStatus.skipped,
+            summary=plan.skip_traces_reason or "trace probe not warranted",
+        )
 
-    if request.permissions.read_recall:
+    if plan.run_recall:
         recall_preflight_failed = False
         if (
             settings.orion_bus_enabled
@@ -427,10 +449,16 @@ async def run_investigation_v2(
                 runtime=runtime,
                 organ_cache=organ_cache,
             )
-    else:
+    elif not request.permissions.read_recall:
         bundle.recall = await safe_probe("recall", recall_probe, permitted=False, timeout_sec=recall_timeout)
+    else:
+        bundle.recall = SourceResult(
+            source="recall",
+            status=SourceStatus.skipped,
+            summary="recall probe not warranted by answer contract",
+        )
 
-    if request.permissions.read_memory:
+    if plan.run_memory:
         bundle.memory = await safe_probe(
             "memory",
             memory_probe,
@@ -443,7 +471,7 @@ async def run_investigation_v2(
     else:
         bundle.memory = await safe_probe("memory", memory_probe, permitted=False, timeout_sec=timeout_sec)
 
-    if request.permissions.read_runtime_logs:
+    if plan.run_runtime:
         bundle.runtime = await safe_probe(
             "runtime",
             runtime_probe,
@@ -451,16 +479,23 @@ async def run_investigation_v2(
             timeout_sec=timeout_sec,
             request=request,
         )
-    else:
+    elif not request.permissions.read_runtime_logs:
         bundle.runtime = await safe_probe("runtime", runtime_probe, permitted=False, timeout_sec=timeout_sec)
+    else:
+        bundle.runtime = SourceResult(
+            source="runtime",
+            status=SourceStatus.skipped,
+            summary=plan.skip_runtime_reason or "runtime probe not warranted",
+        )
 
-    bundle.health = await safe_probe(
-        "health",
-        health_probe,
-        permitted=True,
-        timeout_sec=timeout_sec,
-        request=request,
-        runtime=runtime,
-    )
+    if plan.run_health:
+        bundle.health = await safe_probe(
+            "health",
+            health_probe,
+            permitted=True,
+            timeout_sec=timeout_sec,
+            request=request,
+            runtime=runtime,
+        )
 
     return basic_investigation_v2_result(bundle, request)

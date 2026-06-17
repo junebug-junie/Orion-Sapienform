@@ -579,6 +579,16 @@ def _bus_for_rpc():
     return _rpc_bus if _rpc_bus is not None else svc.bus
 
 
+async def _close_rpc_bus() -> None:
+    global _rpc_bus
+    if _rpc_bus is not None:
+        from contextlib import suppress
+
+        with suppress(Exception):
+            await _rpc_bus.close()
+        _rpc_bus = None
+
+
 equilibrium_hunter: Hunter
 dream_hunter: Hunter
 
@@ -654,12 +664,15 @@ async def main() -> None:
 
     _rpc_bus = await fork_rpc_client(svc.bus)
     logger.info("orch_rpc_bus_fork_ready")
-    await asyncio.gather(
-        svc.start(),
-        equilibrium_hunter.start(),
-        dream_hunter.start(),
-        memory_cards_hunter.start(),
-    )
+    try:
+        await asyncio.gather(
+            svc.start(),
+            equilibrium_hunter.start(),
+            dream_hunter.start(),
+            memory_cards_hunter.start(),
+        )
+    finally:
+        await _close_rpc_bus()
 
 
 if __name__ == "__main__":

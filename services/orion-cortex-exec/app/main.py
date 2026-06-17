@@ -794,6 +794,16 @@ def _bus_for_rpc():
     return _rpc_bus if _rpc_bus is not None else svc.bus
 
 
+async def _close_rpc_bus() -> None:
+    global _rpc_bus
+    if _rpc_bus is not None:
+        from contextlib import suppress
+
+        with suppress(Exception):
+            await _rpc_bus.close()
+        _rpc_bus = None
+
+
 verb_runtime = VerbRuntime(
     service_name=settings.service_name,
     instance_id=settings.node_name,
@@ -842,11 +852,14 @@ async def main() -> None:
     logger.info("exec_rpc_bus_fork_ready")
     assert trace_listener is not None, "Trace listener not initialized"
     assert core_event_listener is not None, "Core event listener not initialized"
-    if verb_listener is not None:
-        await verb_listener.start_background()
-    await trace_listener.start_background()
-    await core_event_listener.start_background()
-    await svc.start()
+    try:
+        if verb_listener is not None:
+            await verb_listener.start_background()
+        await trace_listener.start_background()
+        await core_event_listener.start_background()
+        await svc.start()
+    finally:
+        await _close_rpc_bus()
 
 
 if __name__ == "__main__":

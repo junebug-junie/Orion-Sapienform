@@ -223,6 +223,10 @@ class CouncilService:
             payload=chat_request
         )
 
+        if self._rpc_bus is None:
+            logger.error("[COUNCIL] RPC bus not initialized; cannot call LLM gateway")
+            return []
+
         try:
             reply = await self._rpc_bus.rpc_request(
                 settings.CHANNEL_LLM_REQUEST,

@@ -94,6 +94,15 @@ from orion.schemas.proposal_ledger import (
     ProposalReviewDecisionV1,
     ProposalTriageDecisionV1,
 )
+from orion.schemas.self_experiments import (
+    SelfExperimentCreateRequestV1,
+    SelfExperimentCreateResponseV1,
+    SelfExperimentDispatchRequestV1,
+    SelfExperimentDispatchResponseV1,
+    SelfExperimentListResponseV1,
+    SelfExperimentRecordV1,
+    SelfExperimentSpecV1,
+)
 from orion.schemas.organ_emission import OrganEmissionV1
 from orion.schemas.reduction_receipt import ProjectionUpdateV1, ReductionReceiptV1
 from orion.schemas.state_delta import StateDeltaV1
@@ -1080,6 +1089,13 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ProposalReviewDecisionV1": ProposalReviewDecisionV1,
     "ProposalExecutionEligibilityV1": ProposalExecutionEligibilityV1,
     "ProposalExecutionReceiptV1": ProposalExecutionReceiptV1,
+    "SelfExperimentSpecV1": SelfExperimentSpecV1,
+    "SelfExperimentCreateRequestV1": SelfExperimentCreateRequestV1,
+    "SelfExperimentCreateResponseV1": SelfExperimentCreateResponseV1,
+    "SelfExperimentRecordV1": SelfExperimentRecordV1,
+    "SelfExperimentDispatchRequestV1": SelfExperimentDispatchRequestV1,
+    "SelfExperimentDispatchResponseV1": SelfExperimentDispatchResponseV1,
+    "SelfExperimentListResponseV1": SelfExperimentListResponseV1,
 
 }
 

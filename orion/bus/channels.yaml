@@ -273,7 +273,7 @@ channels:
   - name: "orion:exec:request:ContextExecService"
     kind: "request"
     schema_id: "ContextExecRequestV1"
-    producer_services: ["orion-cortex-exec"]
+    producer_services: ["orion-cortex-exec", "orion-self-experiments"]
     consumer_services: ["orion-context-exec"]
     stability: "experimental"
     since: "2026-06-10"

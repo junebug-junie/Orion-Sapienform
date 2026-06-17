@@ -301,26 +301,52 @@ def _normalize_daily_skill_selection(parsed: dict[str, Any], *, action_name: str
     return normalized, []
 
 
-def _enqueue_self_experiment(*, skill_id: str, action_name: str, parent: BaseEnvelope, request_date: str) -> None:
+def _enqueue_self_experiment_candidate(
+    *,
+    body: dict[str, Any],
+    action_name: str,
+    parent: BaseEnvelope,
+    request_date: str,
+) -> None:
     if not settings.actions_self_experiments_enabled or not settings.actions_self_experiments_url:
         return
-    body = {
-        "skill_id": skill_id,
-        "provenance": {
+    provenance = dict(body.get("provenance") or {})
+    provenance.update(
+        {
             "source": action_name,
             "correlation_id": str(parent.correlation_id),
             "date": request_date,
             "node": settings.node_name,
-        },
-    }
+        }
+    )
+    payload = {**body, "provenance": provenance}
+    if action_name == ACTION_DAILY_METACOG_V1:
+        payload.setdefault("source", "daily_metacog_v1")
+    elif action_name == ACTION_DAILY_PULSE_V1:
+        payload.setdefault("source", "daily_pulse_v1")
+    payload.setdefault("source_ref", request_date)
+    payload.setdefault("correlation_id", str(parent.correlation_id))
     try:
         requests.post(
             f"{settings.actions_self_experiments_url.rstrip('/')}/v1/experiments",
-            json=body,
+            json=payload,
             timeout=float(settings.actions_self_experiments_timeout_seconds),
         ).raise_for_status()
     except Exception:
-        logger.exception("self_experiment_enqueue_failed action=%s skill_id=%s", action_name, skill_id)
+        logger.exception(
+            "self_experiment_enqueue_failed action=%s experiment_type=%s",
+            action_name,
+            payload.get("experiment_type"),
+        )
+
+
+def _enqueue_self_experiment(*, skill_id: str, action_name: str, parent: BaseEnvelope, request_date: str) -> None:
+    _enqueue_self_experiment_candidate(
+        body={"skill_id": skill_id},
+        action_name=action_name,
+        parent=parent,
+        request_date=request_date,
+    )
 
 
 def _extract_daily_llm_diagnostics(plan_result_payload: dict[str, Any] | None) -> dict[str, Any]:
@@ -1325,6 +1351,21 @@ async def lifespan(app: FastAPI):
             if action_name == ACTION_DAILY_METACOG_V1 and model.tomorrow_experiment_skill_id:
                 _enqueue_self_experiment(
                     skill_id=model.tomorrow_experiment_skill_id,
+                    action_name=action_name,
+                    parent=parent,
+                    request_date=window.request_date,
+                )
+            elif action_name == ACTION_DAILY_METACOG_V1 and model.tomorrow_experiment:
+                explicit_type = parsed.get("experiment_type") if isinstance(parsed, dict) else None
+                explicit_question = parsed.get("experiment_question") if isinstance(parsed, dict) else None
+                candidate_body: dict[str, Any] = {
+                    "experiment_type": explicit_type or "manual_review_candidate",
+                    "question": explicit_question or model.tomorrow_experiment,
+                }
+                if isinstance(parsed, dict) and parsed.get("experiment_priority"):
+                    candidate_body["priority"] = parsed.get("experiment_priority")
+                _enqueue_self_experiment_candidate(
+                    body=candidate_body,
                     action_name=action_name,
                     parent=parent,
                     request_date=window.request_date,

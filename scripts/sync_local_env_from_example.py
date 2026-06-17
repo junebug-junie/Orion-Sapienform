@@ -48,6 +48,8 @@ SYNC_PREFIXES = (
     "HUB_CONTEXT_EXEC_",
     "CONTEXT_EXEC_",
     "CHANNEL_CONTEXT_EXEC_",
+    "SELF_EXPERIMENTS_",
+    "ACTIONS_SELF_EXPERIMENTS_",
     "CHANNEL_MEMORY_",
     "CORTEX_METACOG_",
     "CORTEX_DAILY_METACOG_",
@@ -83,6 +85,7 @@ DEFAULT_SERVICES = (
     "orion-hub",
     "orion-cortex-exec",
     "orion-context-exec",
+    "orion-self-experiments",
     "orion-actions",
     "orion-spark-concept-induction",
     # Transport substrate stack (M3–M7)

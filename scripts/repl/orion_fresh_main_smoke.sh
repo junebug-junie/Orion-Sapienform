@@ -8,19 +8,22 @@
 #
 # Usage:
 #   chmod +x scripts/repl/orion_fresh_main_smoke.sh
-#   ORION_PY=orion_dev/bin/python STORE=/tmp/orion-proposals.json \
+#   ORION_PY=orion_dev/bin/python \
+#     CONTEXT_EXEC_STORAGE_ROOT=/mnt/rlm-nvme/context-exec \
 #     ./scripts/repl/orion_fresh_main_smoke.sh
 
 set -u
 set -o pipefail
 
 ORION_PY="${ORION_PY:-orion_dev/bin/python}"
-STORE="${STORE:-/tmp/orion-proposals.json}"
-REJECT_STORE="${REJECT_STORE:-/tmp/orion-proposals.json.reject}"
-LOG_ROOT="${LOG_ROOT:-./.orion-smoke-logs}"
+CONTEXT_EXEC_STORAGE_ROOT="${CONTEXT_EXEC_STORAGE_ROOT:-/mnt/rlm-nvme/context-exec}"
+STORE="${STORE:-${CONTEXT_EXEC_STORAGE_ROOT}/ledger/orion-proposals.json}"
+REJECT_STORE="${REJECT_STORE:-${CONTEXT_EXEC_STORAGE_ROOT}/ledger/orion-proposals.reject.json}"
+LOG_ROOT="${LOG_ROOT:-${CONTEXT_EXEC_STORAGE_ROOT}/smoke-logs}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 LOG_DIR="${LOG_ROOT}/${STAMP}"
 
+mkdir -p "$(dirname "$STORE")" "$(dirname "$REJECT_STORE")" "$LOG_ROOT"
 mkdir -p "$LOG_DIR"
 
 PASS_COUNT=0

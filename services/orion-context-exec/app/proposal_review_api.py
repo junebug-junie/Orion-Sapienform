@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -278,28 +279,47 @@ async def proposal_eligibility(proposal_id: str) -> dict[str, Any]:
     return eligibility.model_dump(mode="json")
 
 
+def _reject_store_path(store: str) -> str:
+    return str(Path(store).parent / "orion-proposals.reject.json")
+
+
 def proposal_review_health_block() -> dict[str, Any]:
     enabled = settings.proposal_review_api_enabled
     store = (settings.proposal_ledger_store_path or "").strip()
     configured = bool(store)
-    store_path_present = configured and Path(store).exists()
+    store_path_obj = Path(store) if configured else None
+    store_path_present = bool(store_path_obj and store_path_obj.exists())
+    store_parent_present = False
+    store_parent_writable = False
     store_ok = False
     error: str | None = None
     if not enabled:
         error = "proposal review API is disabled"
     elif not configured:
         error = "PROPOSAL_LEDGER_STORE_PATH is required (explicit JSON ledger path; no repo default)"
-    elif configured:
-        try:
-            _open_repo(Path(store))
-            store_ok = True
-        except ProposalReviewApiError as exc:
-            error = str(exc)
-    ok = enabled and configured and store_path_present and store_ok
+    elif store_path_obj is not None:
+        parent = store_path_obj.parent
+        store_parent_present = parent.exists()
+        store_parent_writable = store_parent_present and os.access(parent, os.W_OK)
+        if not store_parent_present:
+            error = f"proposal ledger store parent does not exist: {parent}"
+        elif not store_parent_writable:
+            error = f"proposal ledger store parent is not writable: {parent}"
+        else:
+            try:
+                _open_repo(store_path_obj)
+                store_ok = True
+            except ProposalReviewApiError as exc:
+                error = str(exc)
+    ok = enabled and configured and store_parent_writable and store_ok and error is None
     return {
         "enabled": enabled,
         "store_configured": configured,
+        "store_path": store if configured else None,
         "store_path_present": store_path_present,
+        "store_parent_present": store_parent_present,
+        "store_parent_writable": store_parent_writable,
+        "reject_store_path": _reject_store_path(store) if configured else None,
         "ok": ok,
         "error": error,
     }

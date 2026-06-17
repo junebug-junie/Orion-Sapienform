@@ -100,6 +100,32 @@ def test_request_redaction(storage_roots: Path) -> None:
     assert "request.json" in manifest["persisted_files"]
 
 
+def test_run_payloads_redacted_uniformly(storage_roots: Path) -> None:
+    """Secret-named keys must be redacted in run.json/runtime_debug.json too,
+    not just request.json."""
+    run = _FakeRun(
+        run_id="ctxrun_runredact",
+        runtime_debug={"api_key": "sk-leak", "route_used": "chat"},
+        artifact={"password": "hunter2", "summary": "ok"},
+    )
+    persist_context_exec_run(run)
+    base = storage_roots / "ctxrun_runredact"
+
+    run_json = json.loads((base / "run.json").read_text())
+    assert run_json["runtime_debug"]["api_key"] == "[REDACTED]"
+    assert run_json["runtime_debug"]["route_used"] == "chat"
+    assert run_json["artifact"]["password"] == "[REDACTED]"
+    assert run_json["artifact"]["summary"] == "ok"
+
+    rt = json.loads((base / "runtime_debug.json").read_text())
+    assert rt["api_key"] == "[REDACTED]"
+    assert rt["route_used"] == "chat"
+
+    art = json.loads((base / "artifact.json").read_text())
+    assert art["password"] == "[REDACTED]"
+    assert art["summary"] == "ok"
+
+
 def test_atomic_writers_leave_no_tmp(tmp_path: Path) -> None:
     jpath = tmp_path / "sub" / "data.json"
     write_json_atomic(jpath, {"a": 1, "b": [2, 3]})

@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -172,13 +173,19 @@ def persist_context_exec_run(run: Any, *, request: Any | None = None) -> dict[st
     """
     run_id = getattr(run, "run_id", None)
     if not run_id:
-        run_id = f"ctxrun_unknown_{int(time.time())}"
+        # Collision-safe fallback: real runs always carry a run_id, but never
+        # let two id-less runs silently merge into the same directory.
+        run_id = f"ctxrun_unknown_{int(time.time())}_{uuid.uuid4().hex[:8]}"
     run_id = str(run_id)
 
     target = run_dir(run_id)
     target.mkdir(parents=True, exist_ok=True)
 
-    run_data = _to_jsonable(run)
+    # Serialize once, then redact secret-named keys uniformly across every
+    # persisted payload (not just request.json). Key-based redaction is
+    # best-effort and harmless to the service's own structured output, which
+    # carries no legitimately secret-named keys.
+    run_data = _redact(_to_jsonable(run))
     if not isinstance(run_data, dict):
         run_data = {}
 
@@ -188,7 +195,7 @@ def persist_context_exec_run(run: Any, *, request: Any | None = None) -> dict[st
     write_json_atomic(target / "run.json", run_data)
     persisted.append("run.json")
 
-    # final.md — best-available final text.
+    # final.md — best-available final text (free text; not key-redactable).
     final_text = getattr(run, "final_text", None)
     if not final_text:
         final_text = run_data.get("final_text")

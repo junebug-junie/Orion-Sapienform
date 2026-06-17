@@ -241,6 +241,25 @@ class ContextExecRunner:
             causality_chain=causality_chain,
         )
 
+    def _persist_run_ledger(
+        self,
+        run: ContextExecRunV1,
+        request: ContextExecRequestV1,
+    ) -> None:
+        """Persist the run ledger bundle. Fail-open: never fails the run."""
+        if not settings.context_exec_run_ledger_enabled:
+            return
+        try:
+            from .storage import persist_context_exec_run
+
+            persist_context_exec_run(run, request=request)
+        except Exception as exc:  # fail-open: never fail the run on ledger errors
+            logger.warning(
+                "failed to persist context-exec run ledger run_id=%s error=%s",
+                getattr(run, "run_id", None),
+                exc,
+            )
+
     async def run(
         self,
         request: ContextExecRequestV1,
@@ -311,16 +330,7 @@ class ContextExecRunner:
                 runtime_debug=runtime_debug,
                 failure_modes=failure_modes,
             )
-            if settings.context_exec_run_ledger_enabled:
-                try:
-                    from .storage import persist_context_exec_run
-                    persist_context_exec_run(run, request=request)
-                except Exception as exc:  # fail-open: never fail the run on ledger errors
-                    logger.warning(
-                        "failed to persist context-exec run ledger run_id=%s error=%s",
-                        run_id,
-                        exc,
-                    )
+            self._persist_run_ledger(run, request)
             return run
 
         request = request.model_copy(update={"llm_profile": profile_selection.selected})
@@ -514,16 +524,7 @@ class ContextExecRunner:
             },
             failure_modes=failure_modes,
         )
-        if settings.context_exec_run_ledger_enabled:
-            try:
-                from .storage import persist_context_exec_run
-                persist_context_exec_run(run, request=request)
-            except Exception as exc:  # fail-open: never fail the run on ledger errors
-                logger.warning(
-                    "failed to persist context-exec run ledger run_id=%s error=%s",
-                    run_id,
-                    exc,
-                )
+        self._persist_run_ledger(run, request)
         return run
 
     async def _run_investigation_v2(
@@ -694,16 +695,7 @@ class ContextExecRunner:
             runtime_debug=runtime_debug,
             failure_modes=failure_modes,
         )
-        if settings.context_exec_run_ledger_enabled:
-            try:
-                from .storage import persist_context_exec_run
-                persist_context_exec_run(run, request=request)
-            except Exception as exc:  # fail-open: never fail the run on ledger errors
-                logger.warning(
-                    "failed to persist context-exec run ledger run_id=%s error=%s",
-                    run_id,
-                    exc,
-                )
+        self._persist_run_ledger(run, request)
         return run
 
     def _build_namespace(self, organ_runtime: OrganRuntime) -> ContextNamespace:

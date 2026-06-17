@@ -28,7 +28,7 @@ from .experiment_registry import (
     registry_config_for_type,
 )
 from .settings import settings
-from .store import find_by_dedupe_key, get_record, init_db, insert_record, list_records, update_record
+from .store import get_record, init_db, insert_record_dedupe_safe, list_records, update_record
 
 logger = logging.getLogger("orion-self-experiments")
 
@@ -113,34 +113,31 @@ def create_experiment(body: dict[str, Any]) -> SelfExperimentCreateResponseV1:
             message=exc.reason,
         )
 
-    dedupe_key = compute_dedupe_key(
-        experiment_type=spec.experiment_type,
-        question=spec.question,
-        source=spec.source,
-        source_ref=spec.source_ref,
-    )
-    existing = find_by_dedupe_key(dedupe_key)
-    if existing is not None and existing.status not in ("rejected", "discarded", "expired"):
-        logger.info("self_experiment_dedupe_hit experiment_id=%s dedupe=%s", existing.experiment_id, dedupe_key)
+    record = _build_record_from_spec(spec, status="validated", reason=None)
+    stored, outcome = insert_record_dedupe_safe(record)
+    if outcome == "dedupe_hit":
+        logger.info(
+            "self_experiment_dedupe_hit experiment_id=%s dedupe=%s",
+            stored.experiment_id,
+            stored.dedupe_key,
+        )
         return SelfExperimentCreateResponseV1(
             ok=True,
-            experiment_id=existing.experiment_id,
-            status=existing.status,
+            experiment_id=stored.experiment_id,
+            status=stored.status,
             message="dedupe_hit",
         )
 
-    record = _build_record_from_spec(spec, status="validated", reason=None)
-    insert_record(record)
     logger.info(
         "self_experiment_created experiment_id=%s type=%s source=%s",
-        record.experiment_id,
+        stored.experiment_id,
         spec.experiment_type,
         spec.source,
     )
     return SelfExperimentCreateResponseV1(
         ok=True,
-        experiment_id=record.experiment_id,
-        status=record.status,
+        experiment_id=stored.experiment_id,
+        status=stored.status,
         message=None,
     )
 

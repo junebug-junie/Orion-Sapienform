@@ -3,11 +3,75 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from orion.schemas.self_experiments import SelfExperimentRecordV1, SelfExperimentSpecV1
 
 from .settings import settings
+
+_TERMINAL_DEDUPE_STATUSES = ("rejected", "discarded", "expired")
+_DEDUPE_UNIQUE_INDEX = "idx_experiments_dedupe_key_active_unique"
+_DEDUPE_LOOKUP_INDEX = "idx_experiments_dedupe_key"
+
+InsertOutcome = Literal["created", "dedupe_hit"]
+
+
+def _dedupe_index_sql() -> str:
+    terminal = ", ".join(f"'{s}'" for s in _TERMINAL_DEDUPE_STATUSES)
+    return f"""
+        CREATE UNIQUE INDEX IF NOT EXISTS {_DEDUPE_UNIQUE_INDEX}
+        ON experiments(dedupe_key)
+        WHERE dedupe_key IS NOT NULL
+          AND dedupe_key != ''
+          AND status NOT IN ({terminal})
+    """
+
+
+def _dedupe_active_row(conn: sqlite3.Connection, dedupe_key: str) -> sqlite3.Row | None:
+    terminal = ", ".join("?" for _ in _TERMINAL_DEDUPE_STATUSES)
+    return conn.execute(
+        f"""
+        SELECT * FROM experiments
+        WHERE dedupe_key = ?
+          AND status NOT IN ({terminal})
+        ORDER BY created_at_utc DESC
+        LIMIT 1
+        """,
+        (dedupe_key, *_TERMINAL_DEDUPE_STATUSES),
+    ).fetchone()
+
+
+def _collapse_duplicate_active_dedupe_keys(conn: sqlite3.Connection) -> None:
+    """Keep newest active row per dedupe_key before adding the unique index."""
+    rows = conn.execute(
+        """
+        SELECT id, dedupe_key, status, created_at_utc
+        FROM experiments
+        WHERE dedupe_key IS NOT NULL AND dedupe_key != ''
+        ORDER BY dedupe_key, created_at_utc DESC
+        """
+    ).fetchall()
+    seen_active: set[str] = set()
+    to_delete: list[str] = []
+    for row in rows:
+        dedupe_key = str(row["dedupe_key"])
+        status = str(row["status"])
+        if status in _TERMINAL_DEDUPE_STATUSES:
+            continue
+        if dedupe_key in seen_active:
+            to_delete.append(str(row["id"]))
+        else:
+            seen_active.add(dedupe_key)
+    for experiment_id in to_delete:
+        conn.execute("DELETE FROM experiments WHERE id = ?", (experiment_id,))
+
+
+def _ensure_dedupe_constraints(conn: sqlite3.Connection) -> None:
+    _collapse_duplicate_active_dedupe_keys(conn)
+    conn.execute(_dedupe_index_sql())
+    conn.execute(
+        f"CREATE INDEX IF NOT EXISTS {_DEDUPE_LOOKUP_INDEX} ON experiments(dedupe_key)"
+    )
 
 
 def connect() -> sqlite3.Connection:
@@ -77,64 +141,93 @@ def init_db() -> None:
         for col, sql in migrations:
             if col not in existing:
                 conn.execute(sql)
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_experiments_dedupe_key ON experiments(dedupe_key)"
-        )
+        _ensure_dedupe_constraints(conn)
         conn.commit()
 
 
 def find_by_dedupe_key(dedupe_key: str) -> SelfExperimentRecordV1 | None:
     with connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM experiments WHERE dedupe_key = ? ORDER BY created_at_utc DESC LIMIT 1",
-            (dedupe_key,),
-        ).fetchone()
+        row = _dedupe_active_row(conn, dedupe_key)
     if row is None:
         return None
     return row_to_record(row)
 
 
-def insert_record(record: SelfExperimentRecordV1) -> None:
+def _insert_record_conn(conn: sqlite3.Connection, record: SelfExperimentRecordV1) -> None:
     spec = record.spec
+    conn.execute(
+        """
+        INSERT INTO experiments (
+            id, skill_id, experiment_type, question, status, reason,
+            provenance_json, args_json, spec_json, dedupe_key, dispatch_attempts,
+            context_exec_request_json, context_exec_result_json, context_exec_run_id,
+            context_exec_status, artifact_type, artifact_summary, proposal_id,
+            proposal_status, attention_required, created_at_utc, updated_at_utc,
+            completed_at_utc
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            record.experiment_id,
+            spec.requested_skill_id,
+            spec.experiment_type,
+            spec.question,
+            record.status,
+            record.reason,
+            json.dumps(spec.provenance, sort_keys=True),
+            json.dumps(spec.args, sort_keys=True),
+            spec.model_dump_json(),
+            record.dedupe_key,
+            record.dispatch_attempts,
+            json.dumps(record.context_exec_request) if record.context_exec_request else None,
+            json.dumps(record.artifact_payload) if record.artifact_payload else None,
+            record.context_exec_run_id,
+            record.context_exec_status,
+            record.artifact_type,
+            record.artifact_summary,
+            record.proposal_id,
+            record.proposal_status,
+            1 if record.attention_required else 0,
+            record.created_at_utc,
+            record.updated_at_utc,
+            record.completed_at_utc,
+        ),
+    )
+
+
+def insert_record_dedupe_safe(record: SelfExperimentRecordV1) -> tuple[SelfExperimentRecordV1, InsertOutcome]:
+    """Atomically insert or return existing active row for the same dedupe_key."""
+    if not record.dedupe_key:
+        with connect() as conn:
+            _insert_record_conn(conn, record)
+            conn.commit()
+        return record, "created"
+
     with connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO experiments (
-                id, skill_id, experiment_type, question, status, reason,
-                provenance_json, args_json, spec_json, dedupe_key, dispatch_attempts,
-                context_exec_request_json, context_exec_result_json, context_exec_run_id,
-                context_exec_status, artifact_type, artifact_summary, proposal_id,
-                proposal_status, attention_required, created_at_utc, updated_at_utc,
-                completed_at_utc
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record.experiment_id,
-                spec.requested_skill_id,
-                spec.experiment_type,
-                spec.question,
-                record.status,
-                record.reason,
-                json.dumps(spec.provenance, sort_keys=True),
-                json.dumps(spec.args, sort_keys=True),
-                spec.model_dump_json(),
-                record.dedupe_key,
-                record.dispatch_attempts,
-                json.dumps(record.context_exec_request) if record.context_exec_request else None,
-                json.dumps(record.artifact_payload) if record.artifact_payload else None,
-                record.context_exec_run_id,
-                record.context_exec_status,
-                record.artifact_type,
-                record.artifact_summary,
-                record.proposal_id,
-                record.proposal_status,
-                1 if record.attention_required else 0,
-                record.created_at_utc,
-                record.updated_at_utc,
-                record.completed_at_utc,
-            ),
-        )
-        conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = _dedupe_active_row(conn, record.dedupe_key)
+            if existing is not None:
+                conn.commit()
+                return row_to_record(existing), "dedupe_hit"
+            try:
+                _insert_record_conn(conn, record)
+                conn.commit()
+                return record, "created"
+            except sqlite3.IntegrityError:
+                conn.rollback()
+                conn.execute("BEGIN IMMEDIATE")
+                existing = _dedupe_active_row(conn, record.dedupe_key)
+                if existing is None:
+                    raise
+                conn.commit()
+                return row_to_record(existing), "dedupe_hit"
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def insert_record(record: SelfExperimentRecordV1) -> None:
+    insert_record_dedupe_safe(record)
 
 
 def update_record(record: SelfExperimentRecordV1) -> None:

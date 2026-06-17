@@ -287,3 +287,75 @@ def test_non_read_only_skill_legacy_rejected(client, monkeypatch) -> None:
     )
     assert resp.json()["status"] == "rejected"
     assert resp.json()["message"] == "non_read_only_skill_rejected"
+
+
+def test_api_dedupe_hit_returns_same_experiment_id(client) -> None:
+    payload = {
+        "experiment_type": "runtime_drift_check",
+        "question": "Check transport reducer lag.",
+        "source": "daily_metacog_v1",
+        "source_ref": "2026-06-17",
+    }
+    first = client.post("/v1/experiments", json=payload)
+    second = client.post("/v1/experiments", json=payload)
+    assert first.json()["experiment_id"] == second.json()["experiment_id"]
+    assert second.json()["message"] == "dedupe_hit"
+
+
+def test_dedupe_allows_recreate_after_discard(client) -> None:
+    payload = {
+        "experiment_type": "manual_review_candidate",
+        "question": "Review this hypothesis.",
+    }
+    created = client.post("/v1/experiments", json=payload).json()
+    exp_id = created["experiment_id"]
+    discard = client.post(f"/v1/experiments/{exp_id}/discard")
+    assert discard.json()["status"] == "discarded"
+
+    recreated = client.post("/v1/experiments", json=payload).json()
+    assert recreated["experiment_id"] != exp_id
+    assert recreated["status"] == "validated"
+    assert recreated.get("message") != "dedupe_hit"
+
+
+def test_insert_record_dedupe_safe_is_atomic(tmp_path, monkeypatch) -> None:
+    from uuid import uuid4
+
+    from orion.schemas.self_experiments import SelfExperimentSpecV1
+
+    from app.store import init_db, insert_record_dedupe_safe
+
+    db_path = tmp_path / "dedupe.sqlite3"
+    monkeypatch.setattr(settings, "experiments_store_path", str(db_path))
+    init_db()
+
+    now = "2026-06-17T00:00:00Z"
+    dedupe_key = compute_dedupe_key(
+        experiment_type="runtime_drift_check",
+        question="Check lag.",
+        source="daily_metacog_v1",
+        source_ref="2026-06-17",
+    )
+    record_a = SelfExperimentRecordV1(
+        experiment_id=str(uuid4()),
+        spec=SelfExperimentSpecV1(
+            experiment_id=str(uuid4()),
+            experiment_type="runtime_drift_check",
+            question="Check lag.",
+            source="daily_metacog_v1",
+            source_ref="2026-06-17",
+            created_at_utc=now,
+        ),
+        status="validated",
+        dedupe_key=dedupe_key,
+        created_at_utc=now,
+        updated_at_utc=now,
+    )
+    record_b = record_a.model_copy(update={"experiment_id": str(uuid4())})
+
+    stored_a, outcome_a = insert_record_dedupe_safe(record_a)
+    stored_b, outcome_b = insert_record_dedupe_safe(record_b)
+
+    assert outcome_a == "created"
+    assert outcome_b == "dedupe_hit"
+    assert stored_a.experiment_id == stored_b.experiment_id

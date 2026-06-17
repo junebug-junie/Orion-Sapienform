@@ -22,6 +22,7 @@ from .agent_synthesis import (
     run_agent_synthesis,
     synthesis_unavailable_for_llm_gateway_readiness,
 )
+from .finalize_pass import run_finalize_pass
 from .bus_dependency_preflight import check_llm_gateway_bus_ready, effective_llm_gateway_ready, llm_gateway_http_alive
 from .grounding_eval import evaluate_investigation_outcome, is_placeholder_investigation_summary
 from .investigation_v2 import (
@@ -636,6 +637,7 @@ class ContextExecRunner:
             },
             "organ_status": organ_status,
             "evidence_sources": artifact.get("sources") or {},
+            "probe_plan": organ_cache.get("investigation_probe_plan"),
         }
         runtime_debug_base.update(selection_runtime_debug(profile_selection))
         self._apply_workspace_debug(runtime_debug_base, workspace_info)
@@ -680,41 +682,57 @@ class ContextExecRunner:
             runtime_debug["synthesis_status"] = "synthesis_unavailable"
         else:
             runtime_debug["synthesis_status"] = "skipped"
-        if synthesis_result.model_synthesis_used or synthesis_failed:
+        # Operator artifact keeps deterministic summary; synthesis is operator-side only.
+        if synthesis_failed:
             report = InvestigationReportV2.model_validate(artifact)
             failure_message = None
-            if synthesis_failed and synthesis_result.fallback_reason == LLM_GATEWAY_SYNTHESIS_UNAVAILABLE:
+            if synthesis_result.fallback_reason == LLM_GATEWAY_SYNTHESIS_UNAVAILABLE:
                 failure_message = LLM_GATEWAY_SYNTHESIS_UNAVAILABLE
             updated = apply_synthesis_to_report(
                 report,
-                synthesis_summary=synthesis_result.synthesis_summary,
+                synthesis_summary=None,
                 synthesis_failed=synthesis_failed,
                 synthesis_failure_message=failure_message,
             )
             artifact = updated.model_dump(mode="json")
 
-        final_text = build_final_text(request.mode, artifact, status=status)
+        operator_report_text = str(artifact.get("summary") or "")
         fb = synthesize_findings_bundle(request, artifact, schema_valid=schema_valid)
         ac_dump = request.answer_contract.model_dump(mode="json") if request.answer_contract else None
 
+        finalize_result = await run_finalize_pass(
+            request=request,
+            artifact=artifact,
+            findings_bundle=fb,
+            operator_report_text=operator_report_text,
+            bus=self.rpc_bus,
+            route_used=profile_selection.route_used,
+        )
+        runtime_debug["model_finalize_used"] = finalize_result.model_finalize_used
+        if finalize_result.fallback_reason:
+            runtime_debug["finalize_fallback_reason"] = finalize_result.fallback_reason
+        if finalize_result.fallback_used:
+            runtime_debug["finalize_fallback_used"] = True
+        if finalize_result.rendered is not None:
+            runtime_debug["rendered_answer"] = finalize_result.rendered.model_dump(mode="json")
+
+        final_text = finalize_result.text
         operator_summary = synthesis_result.operator_summary
         if operator_summary is None:
             operator_summary = ContextExecOperatorSummaryV1(
                 title="Investigation v2 report",
-                summary=final_text,
+                summary=operator_report_text,
                 agent_mode="investigation_v2",
                 route_used=profile_selection.route_used,
                 model_synthesis_used=False,
                 safety=ContextExecSafetySummaryV1(),
             )
-        elif status == "ok":
-            if synthesis_result.model_synthesis_used and synthesis_result.synthesis_summary:
-                final_text = synthesis_result.synthesis_summary
-            elif operator_summary.summary:
-                final_text = operator_summary.summary
-        if synthesis_result.model_synthesis_used:
+        else:
             operator_summary = operator_summary.model_copy(
-                update={"model_synthesis_used": True, "summary": final_text}
+                update={
+                    "summary": operator_report_text or operator_summary.summary,
+                    "agent_mode": "investigation_v2",
+                }
             )
 
         grounded = artifact.get("grounded_sources") or []

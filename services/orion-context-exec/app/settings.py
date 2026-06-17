@@ -182,6 +182,15 @@ class ContextExecSettings(BaseSettings):
         alias="CONTEXT_EXEC_AGENT_SYNTHESIS_TIMEOUT_SEC",
     )
 
+    context_exec_finalize_enabled: bool = Field(
+        True,
+        alias="CONTEXT_EXEC_FINALIZE_ENABLED",
+    )
+    context_exec_finalize_timeout_sec: float = Field(
+        45.0,
+        alias="CONTEXT_EXEC_FINALIZE_TIMEOUT_SEC",
+    )
+
     orion_repo_root: str = Field("/app", alias="ORION_REPO_ROOT")
     rlm_engine: str = Field("alexzhang", alias="CONTEXT_EXEC_RLM_ENGINE")
     context_exec_rlm_fallback_enabled: bool = Field(True, alias="CONTEXT_EXEC_RLM_FALLBACK_ENABLED")

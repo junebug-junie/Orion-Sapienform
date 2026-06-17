@@ -16,6 +16,7 @@ from orion.schemas.context_exec import (
 )
 
 from .alexzhang_rlm_engine import _agent_chain_risk
+from .investigation_probe_plan import probe_plan_for_request
 
 _PATH_FROM_CLAIM = re.compile(r"^([^:]+):\d+")
 _ENV_CONFIG_MARKERS = (".env", "settings.py", "docker-compose", "config", "requirements.txt")
@@ -446,6 +447,22 @@ STRONG_HIT_SOURCES = frozenset({"repo", "traces", "memory"})
 IMPORTANT_SOURCES = frozenset({"repo", "traces", "recall", "memory"})
 
 
+def _warranted_source_names(request: ContextExecRequestV1) -> frozenset[str]:
+    plan = probe_plan_for_request(request)
+    warranted: set[str] = set()
+    if plan.run_repo:
+        warranted.add("repo")
+    if plan.run_traces:
+        warranted.add("traces")
+    if plan.run_recall:
+        warranted.add("recall")
+    if plan.run_memory:
+        warranted.add("memory")
+    if plan.run_runtime:
+        warranted.add("runtime")
+    return frozenset(warranted)
+
+
 def reduce_sections(
     bundle: EvidenceBundle,
     *,
@@ -505,17 +522,22 @@ def _compose_answer_status(
         elif result.status == SourceStatus.skipped:
             ran_sources.append(name)
 
+    warranted = _warranted_source_names(request)
     perms = request.permissions
     allowed_important = [
         name
         for name, flag in (
-            ("repo", perms.read_repo),
-            ("traces", perms.read_redis_traces),
-            ("recall", perms.read_recall),
-            ("memory", perms.read_memory),
+            ("repo", perms.read_repo and "repo" in warranted),
+            ("traces", perms.read_redis_traces and "traces" in warranted),
+            ("recall", perms.read_recall and "recall" in warranted),
+            ("memory", perms.read_memory and "memory" in warranted),
         )
         if flag
     ]
+
+    # Only count hits from contract-warranted sources toward grounding verdict.
+    hit_sources = [s for s in hit_sources if s in warranted]
+    grounded_sources = [s for s in grounded_sources if s in warranted]
 
     if failed_sources and not hit_sources and not ran_sources:
         answer_status: InvestigationV2AnswerStatus = "error"

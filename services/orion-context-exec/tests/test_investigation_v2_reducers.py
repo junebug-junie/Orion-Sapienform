@@ -27,6 +27,7 @@ def _ctx_app_modules():
 
 
 def _agent_request(**overrides):
+    from orion.schemas.cognition.answer_contract import AnswerContract
     from orion.schemas.context_exec import ContextExecRequestV1, context_exec_permissions_for_llm_profile
 
     base = {
@@ -34,6 +35,12 @@ def _agent_request(**overrides):
         "mode": "investigation_v2",
         "permissions": context_exec_permissions_for_llm_profile("agent"),
         "llm_profile": "agent",
+        "answer_contract": AnswerContract(
+            request_kind="repo_technical",
+            asks_for_explanation=True,
+            requires_repo_grounding=True,
+            preferred_render_style="steps",
+        ),
     }
     base.update(overrides)
     return ContextExecRequestV1(**base)

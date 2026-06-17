@@ -57,9 +57,8 @@ def test_resolve_timeouts_derives_from_verb_when_route_secs_zero() -> None:
     )
     assert verb_ms == 180_000
     assert verb_sec == 180.0
-    assert quick == 63.0
-    assert brain == 117.0
-    assert quick + brain == verb_sec
+    assert quick == 180.0
+    assert brain == 45.0
 
 
 def test_resolve_timeouts_single_route_when_escalation_disabled() -> None:
@@ -99,8 +98,7 @@ def test_resolve_timeouts_honors_explicit_route_overrides() -> None:
     )
     _, quick, brain, _ = resolve_memory_graph_suggest_timeouts(settings, escalation_enabled=True)
     assert quick == 90.0
-    assert brain == 90.0
-    assert quick + brain == 180.0
+    assert brain == 120.0
 
 
 def test_suggest_attempt_includes_timeout_diagnostics_on_hub_wait(monkeypatch) -> None:
@@ -131,6 +129,7 @@ def test_suggest_attempt_includes_timeout_diagnostics_on_hub_wait(monkeypatch) -
         suggest_with_escalation(
             cortex_client=client,
             payload={
+                "mode": "brain",
                 "verbs": ["memory_graph_suggest"],
                 "messages": [{"role": "user", "content": "x"}],
                 "use_recall": False,

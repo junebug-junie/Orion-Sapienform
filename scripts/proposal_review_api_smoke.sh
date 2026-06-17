@@ -6,14 +6,18 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-STORE="${PROPOSAL_LEDGER_STORE_PATH:-/tmp/orion-proposals.json}"
+# Host-run default; set CONTEXT_EXEC_STORAGE_ROOT=/var/lib/orion/context-exec for container-side smoke.
+CONTEXT_EXEC_STORAGE_ROOT="${CONTEXT_EXEC_STORAGE_ROOT:-/mnt/rlm-nvme/context-exec}"
+STORE="${PROPOSAL_LEDGER_STORE_PATH:-${CONTEXT_EXEC_STORAGE_ROOT}/ledger/orion-proposals.json}"
+REJECT_STORE="${PROPOSAL_LEDGER_REJECT_STORE_PATH:-${CONTEXT_EXEC_STORAGE_ROOT}/ledger/orion-proposals.reject.json}"
 PY="${ORION_PY:-orion_dev/bin/python}"
 # Resolve venv from repo root when run from a worktree without a local orion_dev.
 if [[ ! -x "$PY" ]] && [[ -x "$ROOT/orion_dev/bin/python" ]]; then
   PY="$ROOT/orion_dev/bin/python"
 fi
 
-rm -f "$STORE"
+mkdir -p "$(dirname "$STORE")" "$(dirname "$REJECT_STORE")"
+rm -f "$STORE" "$REJECT_STORE"
 
 echo "== seed demo ledger =="
 PYTHONPATH=. "$PY" scripts/orion_proposal_cli.py seed-demo --store "$STORE"

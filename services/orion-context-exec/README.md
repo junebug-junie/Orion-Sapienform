@@ -21,7 +21,7 @@ Control-plane HTTP surface over the proposal ledger. **Disabled by default** (`P
 | POST | `/proposals/{proposal_id}/review` | Apply `ProposalReviewDecisionV1` |
 | GET | `/proposals/{proposal_id}/eligibility` | Inspect `ProposalExecutionEligibilityV1` |
 
-Routes mount only when `PROPOSAL_REVIEW_API_ENABLED=true`. `/health` always reports `proposal_review_api.enabled`, `store_configured`, `store_path_present`, `ok`, and `error`, plus a `storage` block for mounted arena paths.
+Routes mount only when `PROPOSAL_REVIEW_API_ENABLED=true`. `/health` always reports `proposal_review_api.enabled`, `store_configured`, `store_path`, `store_path_present`, `store_parent_present`, `store_parent_writable`, `reject_store_path`, `ok`, and `error`, plus a `storage` block for mounted arena paths.
 
 Approval creates execution eligibility only — no executor, no receipts, no auto-approval. Context-exec cannot approve (`reviewer_id=context-exec` → 403). Hub must call this API, not read JSON ledger files.
 

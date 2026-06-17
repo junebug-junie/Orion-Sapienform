@@ -39,8 +39,12 @@ Proposal routes return **503** when enabled but `PROPOSAL_LEDGER_STORE_PATH` is 
 |-------|---------|
 | `enabled` | `PROPOSAL_REVIEW_API_ENABLED` |
 | `store_configured` | non-empty `PROPOSAL_LEDGER_STORE_PATH` |
+| `store_path` | configured ledger JSON path |
 | `store_path_present` | configured path exists on disk |
-| `ok` | enabled, configured, and store opens cleanly |
+| `store_parent_present` | parent directory of ledger file exists |
+| `store_parent_writable` | parent directory is writable (readiness signal before first write) |
+| `reject_store_path` | sibling reject ledger path (`orion-proposals.reject.json`) |
+| `ok` | enabled, configured, parent writable, and store opens cleanly |
 | `error` | human-readable reason when not `ok` |
 
 Hub must call this API — not read JSON ledger files directly.
@@ -114,7 +118,7 @@ Requirements:
 
 ```bash
 PYTHONPATH=. orion_dev/bin/python scripts/orion_proposal_cli.py dry-run-execute <proposal_id> \
-  --store /tmp/orion-proposals.json \
+  --store /var/lib/orion/context-exec/ledger/orion-proposals.json \
   --executor dry-run
 ```
 
@@ -143,13 +147,26 @@ ORION_PY=orion_dev/bin/python bash scripts/denver_memory_correction_vertical_smo
 
 Expected: `denver_memory_correction_vertical_smoke PASS` with one `pending_review` Denver proposal, API GET checks showing `eligible=false`, `mutation_allowed=false`, `requires_human_approval=true`. Hub live GET is optional (`HUB_SMOKE=true HUB_BASE_URL=...`).
 
-Or manually:
+Or manually (host-run smoke paths):
 
 ```bash
-rm -f /tmp/orion-proposals.json
-PYTHONPATH=. orion_dev/bin/python scripts/orion_proposal_cli.py seed-demo --store /tmp/orion-proposals.json
-PROPOSAL_REVIEW_API_ENABLED=true PROPOSAL_LEDGER_STORE_PATH=/tmp/orion-proposals.json \
+rm -f /mnt/rlm-nvme/context-exec/ledger/orion-proposals.json
+PYTHONPATH=. orion_dev/bin/python scripts/orion_proposal_cli.py seed-demo \
+  --store /mnt/rlm-nvme/context-exec/ledger/orion-proposals.json
+PROPOSAL_REVIEW_API_ENABLED=true \
+PROPOSAL_LEDGER_STORE_PATH=/mnt/rlm-nvme/context-exec/ledger/orion-proposals.json \
   PYTHONPATH=. orion_dev/bin/python -m pytest tests/services/test_proposal_review_api.py -q
+```
+
+Container-side ledger default: `/var/lib/orion/context-exec/ledger/orion-proposals.json`.
+
+### Migration from `/tmp`
+
+Legacy deployments that used `/tmp/orion-proposals.json` can migrate with:
+
+```bash
+sudo mkdir -p /mnt/rlm-nvme/context-exec/ledger
+sudo cp -av /tmp/orion-proposals.json /mnt/rlm-nvme/context-exec/ledger/orion-proposals.json 2>/dev/null || true
 ```
 
 ## Verification

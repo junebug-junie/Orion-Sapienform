@@ -40,7 +40,11 @@ async def test_health(monkeypatch: pytest.MonkeyPatch) -> None:
     block = data["proposal_review_api"]
     assert "enabled" in block
     assert "store_configured" in block
+    assert "store_path" in block
     assert "store_path_present" in block
+    assert "store_parent_present" in block
+    assert "store_parent_writable" in block
+    assert "reject_store_path" in block
     assert "ok" in block
     assert "error" in block
     assert "bus_enabled" in data
@@ -100,5 +104,30 @@ async def test_health_proposal_review_block_store_configured(
     block = resp.json()["proposal_review_api"]
     assert block["store_configured"] is True
     assert block["store_path_present"] is True
+    assert block["store_parent_present"] is True
+    assert block["store_parent_writable"] is True
+    assert block["ok"] is True
+    assert block["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_health_proposal_review_block_parent_writable_before_first_write(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    store = tmp_path / "ledger" / "orion-proposals.json"
+    store.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("PROPOSAL_REVIEW_API_ENABLED", "true")
+    monkeypatch.setenv("PROPOSAL_LEDGER_STORE_PATH", str(store))
+    app = _load_app(monkeypatch, reload_settings=True)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/health")
+    block = resp.json()["proposal_review_api"]
+    assert block["store_configured"] is True
+    assert block["store_path"] == str(store)
+    assert block["store_path_present"] is False
+    assert block["store_parent_present"] is True
+    assert block["store_parent_writable"] is True
+    assert block["reject_store_path"] == str(tmp_path / "ledger" / "orion-proposals.reject.json")
     assert block["ok"] is True
     assert block["error"] is None

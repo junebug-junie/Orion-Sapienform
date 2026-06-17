@@ -1356,16 +1356,11 @@ async def lifespan(app: FastAPI):
                     request_date=window.request_date,
                 )
             elif action_name == ACTION_DAILY_METACOG_V1 and model.tomorrow_experiment:
-                explicit_type = parsed.get("experiment_type") if isinstance(parsed, dict) else None
-                explicit_question = parsed.get("experiment_question") if isinstance(parsed, dict) else None
-                candidate_body: dict[str, Any] = {
-                    "experiment_type": explicit_type or "manual_review_candidate",
-                    "question": explicit_question or model.tomorrow_experiment,
-                }
-                if isinstance(parsed, dict) and parsed.get("experiment_priority"):
-                    candidate_body["priority"] = parsed.get("experiment_priority")
                 _enqueue_self_experiment_candidate(
-                    body=candidate_body,
+                    body={
+                        "experiment_type": "manual_review_candidate",
+                        "question": model.tomorrow_experiment,
+                    },
                     action_name=action_name,
                     parent=parent,
                     request_date=window.request_date,

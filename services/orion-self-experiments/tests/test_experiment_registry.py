@@ -127,6 +127,22 @@ def test_daily_mutation_policy_widen_rejected() -> None:
         )
 
 
+def test_daily_proposal_type_forbidden() -> None:
+    from orion.schemas.self_experiments import SelfExperimentCreateRequestV1
+
+    with pytest.raises(ExperimentValidationError, match="daily_proposal_type_forbidden"):
+        normalize_create_request(
+            SelfExperimentCreateRequestV1(
+                experiment_type="memory_correction_candidate",
+                question="Propose correction.",
+                source="daily_metacog_v1",
+            ),
+            experiment_id="exp-5b",
+            created_at_utc=_now(),
+            allow_non_read_only=False,
+        )
+
+
 def test_memory_correction_compiles_proposal_envelope() -> None:
     record = SelfExperimentRecordV1(
         experiment_id="exp-6",
@@ -246,3 +262,28 @@ def test_unknown_skill_legacy_rejected(client) -> None:
     )
     assert resp.json()["status"] == "rejected"
     assert resp.json()["message"] == "unknown_skill_id"
+
+
+def test_non_read_only_skill_legacy_rejected(client, monkeypatch) -> None:
+    from orion.cognition.skills_manifest import SkillManifestEntry
+
+    monkeypatch.setattr(
+        "app.experiment_registry.load_skill_manifest",
+        lambda: [
+            SkillManifestEntry(
+                skill_id="mutating.skill.v1",
+                label="Mutating",
+                description="Not read only",
+                family="test",
+                read_only=False,
+                idempotent=False,
+                risk_class="high_impact",
+            )
+        ],
+    )
+    resp = client.post(
+        "/v1/experiments",
+        json={"skill_id": "mutating.skill.v1", "provenance": {}, "args": {}},
+    )
+    assert resp.json()["status"] == "rejected"
+    assert resp.json()["message"] == "non_read_only_skill_rejected"

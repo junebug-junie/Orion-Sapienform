@@ -304,13 +304,15 @@ def normalize_create_request(
     if not question:
         raise ExperimentValidationError("question_required")
 
-    registry_policy = EXPERIMENT_REGISTRY[experiment_type]["mutation_policy"]
-    requested_policy = req.mutation_policy or registry_policy
-
     source = _resolve_source(req)
+    registry_policy = EXPERIMENT_REGISTRY[experiment_type]["mutation_policy"]
     if source in _DAILY_SOURCES:
+        if registry_policy != "forbidden":
+            raise ExperimentValidationError("daily_proposal_type_forbidden")
         if req.mutation_policy and req.mutation_policy != "forbidden":
             raise ExperimentValidationError("daily_mutation_forbidden")
+
+    requested_policy = req.mutation_policy or registry_policy
 
     if _MUTATION_RANK[requested_policy] > _MUTATION_RANK[registry_policy]:
         raise ExperimentValidationError("mutation_policy_widen_rejected")

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import orion.cognition
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from orion.cognition.finalize_payload import build_finalize_tool_input
@@ -19,7 +20,7 @@ from .settings import ContextExecSettings
 
 logger = logging.getLogger("orion-context-exec.finalize_pass")
 
-_COGNITION_ROOT = Path(__file__).resolve().parents[3] / "orion" / "cognition"
+_COGNITION_ROOT = Path(orion.cognition.__file__).resolve().parent
 _PROMPTS_DIR = _COGNITION_ROOT / "prompts"
 
 

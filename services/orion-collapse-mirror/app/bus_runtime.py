@@ -141,10 +141,10 @@ async def handle_intake(env: BaseEnvelope) -> None:
         correlation_id=env.correlation_id,
         causality_chain=env.causality_chain
     )
-    await intake_hunter.bus.publish("orion:collapse:sql-write", write_envelope)
+    await intake_hunter.bus.publish(settings.CHANNEL_COLLAPSE_SQL_WRITE, write_envelope)
     logger.info(
         "[collapse-mirror] published sql-write channel=%s corr_id=%s",
-        "orion:collapse:sql-write",
+        settings.CHANNEL_COLLAPSE_SQL_WRITE,
         env.correlation_id,
     )
 

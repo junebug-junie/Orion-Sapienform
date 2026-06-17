@@ -29,6 +29,16 @@ Expected output:
 PASS triage=ok sql-write=ok
 ```
 
+## Collapse Mirror Live Path Truth (upstream + substrate)
+Unlike the Juniper fanout smoke (intake organ only), this gate checks equilibrium metacog trigger and cortex exec subscribers plus substrate grammar truth.
+```bash
+./scripts/collapse_mirror_live_path_truth.sh
+```
+Expected output when live generation prerequisites are healthy:
+```
+collapse_mirror_live_path_truth: PASS
+```
+
 ## ChatGPT Export Import (Bus Fanout)
 
 ### What this does

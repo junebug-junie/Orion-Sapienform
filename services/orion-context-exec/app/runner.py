@@ -103,10 +103,12 @@ class ContextExecRunner:
         engine: RLMEngine | None = None,
         *,
         bus: OrionBusAsync | None = None,
+        rpc_bus: OrionBusAsync | None = None,
     ) -> None:
         self.engine_selected = (settings.rlm_engine or "fake").strip().lower()
         self.engine = engine or build_engine(settings.rlm_engine)
         self.bus = bus
+        self.rpc_bus = rpc_bus or bus
 
     def _engine_runtime_debug(
         self,
@@ -336,7 +338,7 @@ class ContextExecRunner:
         request = request.model_copy(update={"llm_profile": profile_selection.selected})
 
         organ_runtime = OrganRuntime(
-            bus=self.bus,
+            bus=self.rpc_bus,
             request=request,
             run_id=run_id,
             llm_route=profile_selection.route_used,
@@ -445,7 +447,7 @@ class ContextExecRunner:
             artifact=artifact,
             profile_selection=profile_selection,
             runtime_debug=runtime_debug,
-            bus=self.bus,
+            bus=self.rpc_bus,
         )
         runtime_debug["model_synthesis_used"] = synthesis_result.model_synthesis_used
         if synthesis_result.fallback_reason:
@@ -538,7 +540,7 @@ class ContextExecRunner:
         failure_modes: list[str],
     ) -> ContextExecRunV1:
         organ_runtime = OrganRuntime(
-            bus=self.bus,
+            bus=self.rpc_bus,
             request=request,
             run_id=run_id,
             llm_route=str(request.llm_profile or settings.context_exec_default_llm_profile),
@@ -602,7 +604,7 @@ class ContextExecRunner:
                 artifact=artifact,
                 profile_selection=profile_selection,
                 runtime_debug=runtime_debug_base,
-                bus=self.bus,
+                bus=self.rpc_bus,
             )
         runtime_debug = dict(runtime_debug_base)
         runtime_debug["model_synthesis_used"] = synthesis_result.model_synthesis_used

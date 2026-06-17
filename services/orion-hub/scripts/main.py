@@ -124,7 +124,7 @@ app = FastAPI(
 
 # These are populated on startup and imported by other modules:
 bus: Optional[OrionBusAsync] = None
-cortex_bus: Optional[OrionBusAsync] = None
+rpc_bus: Optional[OrionBusAsync] = None
 cortex_client: Optional[CortexGatewayClient] = None
 tts_client: Optional[TTSClient] = None
 html_content: str = "<html><body><h1>Error loading UI</h1></body></html>"
@@ -207,7 +207,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, cortex_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, signals_inspect_cache, cognition_trace_cache, presence_state, presence_context_store, substrate_autonomy_task
+    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, signals_inspect_cache, cognition_trace_cache, presence_state, presence_context_store, substrate_autonomy_task
 
     # ------------------------------------------------------------
     # Orion Bus Initialization
@@ -223,12 +223,14 @@ async def startup_event():
             await bus.connect()
             logger.info("OrionBusAsync connection established successfully.")
 
-            # Cortex RPC uses a forked bus + rpc worker so long-lived Hub subscribers
-            # (trace/biometrics caches) cannot steal gateway reply messages.
-            cortex_bus = await bus.fork(start_rpc_worker=True)
-            cortex_client = CortexGatewayClient(cortex_bus)
-            tts_client = TTSClient(bus)
-            logger.info("Bus Clients initialized (cortex RPC on forked bus).")
+            # Outbound RPC uses a forked bus + worker so long-lived Hub subscribers
+            # (trace/biometrics caches) cannot steal gateway/TTS/embedding replies.
+            from orion.core.bus.rpc_fork import fork_rpc_client
+
+            rpc_bus = await fork_rpc_client(bus)
+            cortex_client = CortexGatewayClient(rpc_bus)
+            tts_client = TTSClient(rpc_bus)
+            logger.info("Bus Clients initialized (Hub RPC on forked bus).")
 
             # Biometrics cache (singleton)
             biometrics_cache = BiometricsCache(
@@ -429,7 +431,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus, cortex_bus, biometrics_cache, notification_cache, signals_inspect_cache, cognition_trace_cache, substrate_autonomy_task
+    global bus, rpc_bus, biometrics_cache, notification_cache, signals_inspect_cache, cognition_trace_cache, substrate_autonomy_task
     pool = getattr(app.state, "memory_pg_pool", None)
     if pool is not None:
         try:
@@ -453,13 +455,13 @@ async def shutdown_event() -> None:
         await signals_inspect_cache.stop()
     if cognition_trace_cache is not None:
         await cognition_trace_cache.stop()
-    if cortex_bus is not None:
+    if rpc_bus is not None:
         try:
-            await cortex_bus.close()
-            logger.info("Cortex OrionBusAsync fork closed.")
+            await rpc_bus.close()
+            logger.info("Hub RPC OrionBusAsync fork closed.")
         except Exception as e:
-            logger.warning("Error while closing cortex bus fork: %s", e)
-        cortex_bus = None
+            logger.warning("Error while closing Hub RPC bus fork: %s", e)
+        rpc_bus = None
     if bus is not None:
         try:
             await bus.close()

@@ -242,7 +242,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         )
 
         if should_route:
-            router = DecisionRouter(svc.bus)
+            router = DecisionRouter(_bus_for_rpc())
             routed = await router.route(req, correlation_id=str(env.correlation_id), source=sref)
             req = routed.request
             route_meta = routed.decision.model_dump(mode="json")
@@ -277,7 +277,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
         if has_explicit_workflow_request(req):
             try:
                 workflow_result = await execute_chat_workflow(
-                    bus=svc.bus,
+                    bus=_bus_for_rpc(),
                     source=sref,
                     req=req,
                     correlation_id=str(env.correlation_id),
@@ -322,7 +322,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
 
         if has_workflow_schedule_management_request(req):
             management_result = await execute_workflow_schedule_management(
-                bus=svc.bus,
+                bus=_bus_for_rpc(),
                 source=sref,
                 req=req,
                 correlation_id=str(env.correlation_id),
@@ -380,7 +380,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
     # 3. Execution
     try:
         verb_result = await call_verb_runtime(
-            svc.bus,
+            _bus_for_rpc(),
             source=sref,
             client_request=req,
             correlation_id=str(env.correlation_id),
@@ -572,6 +572,13 @@ svc = Rabbit(
     handler=handle,
     concurrent_handlers=True,
 )
+_rpc_bus = None
+
+
+def _bus_for_rpc():
+    return _rpc_bus if _rpc_bus is not None else svc.bus
+
+
 equilibrium_hunter: Hunter
 dream_hunter: Hunter
 
@@ -625,6 +632,7 @@ memory_cards_hunter = Hunter(
 
 
 async def main() -> None:
+    global _rpc_bus
     logging.basicConfig(level=logging.INFO)
     s = get_settings()
     logger.info(
@@ -641,6 +649,11 @@ async def main() -> None:
             "exec_lane_routing_enabled=true: run one cortex-exec consumer per lane (chat, spark, background) "
             "subscribed to the lane exec channels; a missing subscriber causes PlanExecution RPC timeouts."
         )
+    await svc.bus.connect()
+    from orion.core.bus.rpc_fork import fork_rpc_client
+
+    _rpc_bus = await fork_rpc_client(svc.bus)
+    logger.info("orch_rpc_bus_fork_ready")
     await asyncio.gather(
         svc.start(),
         equilibrium_hunter.start(),

@@ -497,7 +497,7 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
 
     # 3. Execute Plan
     res = await router.run_plan(
-        svc.bus,
+        _bus_for_rpc(),
         source=_source(),
         req=req_env.payload,
         correlation_id=corr_id,
@@ -726,7 +726,7 @@ async def handle_verb_request(env: BaseEnvelope) -> None:
     result = await verb_runtime.handle_request(
         req,
         extra_meta={
-            "bus": svc.bus,
+            "bus": _bus_for_rpc(),
             "source": _source(),
             "correlation_id": corr_id,
         },
@@ -787,6 +787,13 @@ async def handle_verb_request(env: BaseEnvelope) -> None:
 
 
 svc = Rabbit(_cfg(), request_channel=settings.channel_exec_request, handler=handle)
+_rpc_bus = None
+
+
+def _bus_for_rpc():
+    return _rpc_bus if _rpc_bus is not None else svc.bus
+
+
 verb_runtime = VerbRuntime(
     service_name=settings.service_name,
     instance_id=settings.node_name,
@@ -810,6 +817,7 @@ core_event_listener = Hunter(_cfg(), handler=handle_core_event, patterns=[settin
 
 
 async def main() -> None:
+    global _rpc_bus
     logging.basicConfig(level=logging.INFO, stream=sys.stdout, force=True)
     pageindex_base_url = str(settings.journal_pageindex_service_url or "").strip()
     pageindex_client_enabled = bool(pageindex_base_url)
@@ -826,6 +834,12 @@ async def main() -> None:
         "on" if verb_listener is not None else "off",
     )
     _run_autonomy_graph_probe()
+    await svc.bus.connect()
+    from orion.core.bus.rpc_fork import fork_rpc_client
+
+    _rpc_bus = await fork_rpc_client(svc.bus)
+    verb_runtime.bus = _rpc_bus
+    logger.info("exec_rpc_bus_fork_ready")
     assert trace_listener is not None, "Trace listener not initialized"
     assert core_event_listener is not None, "Core event listener not initialized"
     if verb_listener is not None:

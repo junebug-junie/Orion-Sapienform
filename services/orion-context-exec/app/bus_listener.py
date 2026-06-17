@@ -38,8 +38,11 @@ async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
             channels.append(alias)
 
     await bus.connect()
+    from orion.core.bus.rpc_fork import fork_rpc_client
+
+    rpc_bus = await fork_rpc_client(bus)
     logger.info("subscribed channels=%s compat_alias=%s", channels, settings.context_exec_compat_agent_chain_enabled)
-    runner = ContextExecRunner(bus=bus)
+    runner = ContextExecRunner(bus=bus, rpc_bus=rpc_bus)
 
     try:
         async with bus.subscribe(*channels) as pubsub:
@@ -62,6 +65,8 @@ async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
     except asyncio.CancelledError:
         raise
     finally:
+        with suppress(Exception):
+            await rpc_bus.close()
         with suppress(Exception):
             await bus.close()
 

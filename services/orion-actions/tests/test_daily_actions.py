@@ -325,3 +325,75 @@ def test_rpc_request_with_retry_raises_after_last_timeout():
                 ),
             )
         )
+
+
+def test_enqueue_self_experiment_candidate_skill_probe(monkeypatch) -> None:
+    from app import main as actions_main
+
+    posted: list[dict] = []
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+    def fake_post(url, json, timeout):  # noqa: ANN001
+        posted.append({"url": url, "json": json, "timeout": timeout})
+        return FakeResponse()
+
+    monkeypatch.setattr(actions_main.settings, "actions_self_experiments_enabled", True)
+    monkeypatch.setattr(actions_main.settings, "actions_self_experiments_url", "http://self-experiments.test")
+    monkeypatch.setattr(actions_main.requests, "post", fake_post)
+
+    parent = BaseEnvelope(
+        kind="test",
+        source=ServiceRef(name="tests", version="0.1.0"),
+        correlation_id="00000000-0000-4000-8000-000000000123",
+    )
+    actions_main._enqueue_self_experiment_candidate(
+        body={"skill_id": "skills.system.time_now.v1"},
+        action_name=actions_main.ACTION_DAILY_PULSE_V1,
+        parent=parent,
+        request_date="2026-06-17",
+    )
+    assert len(posted) == 1
+    payload = posted[0]["json"]
+    assert payload["skill_id"] == "skills.system.time_now.v1"
+    assert payload["source"] == "daily_pulse_v1"
+    assert payload["source_ref"] == "2026-06-17"
+    assert payload["correlation_id"] == "00000000-0000-4000-8000-000000000123"
+
+
+def test_enqueue_self_experiment_candidate_manual_review(monkeypatch) -> None:
+    from app import main as actions_main
+
+    posted: list[dict] = []
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+    def fake_post(url, json, timeout):  # noqa: ANN001
+        posted.append(json)
+        return FakeResponse()
+
+    monkeypatch.setattr(actions_main.settings, "actions_self_experiments_enabled", True)
+    monkeypatch.setattr(actions_main.settings, "actions_self_experiments_url", "http://self-experiments.test")
+    monkeypatch.setattr(actions_main.requests, "post", fake_post)
+
+    parent = BaseEnvelope(
+        kind="test",
+        source=ServiceRef(name="tests", version="0.1.0"),
+        correlation_id="00000000-0000-4000-8000-000000000456",
+    )
+    actions_main._enqueue_self_experiment_candidate(
+        body={
+            "experiment_type": "manual_review_candidate",
+            "question": "Check whether transport reducer lag is still dominant.",
+        },
+        action_name=actions_main.ACTION_DAILY_METACOG_V1,
+        parent=parent,
+        request_date="2026-06-17",
+    )
+    assert posted[0]["experiment_type"] == "manual_review_candidate"
+    assert posted[0]["source"] == "daily_metacog_v1"
+    assert "transport reducer lag" in posted[0]["question"]

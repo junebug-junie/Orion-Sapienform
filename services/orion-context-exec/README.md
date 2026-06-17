@@ -83,6 +83,8 @@ PYTHONPATH=. orion_dev/bin/python scripts/orion_proposal_cli.py list --status st
 
 Durable state lives on a host-mounted NVMe path mapped into the container at `/var/lib/orion/context-exec`. The app never references host device paths — only container paths (`CONTEXT_EXEC_STORAGE_ROOT`, sub-roots, and proposal ledger JSON). Docker compose binds `${CONTEXT_EXEC_HOST_STORAGE_ROOT:-/mnt/rlm-nvme/context-exec}` → `/var/lib/orion/context-exec`. `GET /health` includes a `storage` block (`configured`, `ok`, `dirs`, `run_ledger_enabled`). Startup calls `ensure_storage_dirs()` to create the sub-directory skeleton when the mount is writable.
 
+**Run ledger (forensic bundles):** When `CONTEXT_EXEC_RUN_LEDGER_ENABLED=true` (default), every completed run writes an immutable evidence bundle to `{CONTEXT_EXEC_RUN_ROOT}/{run_id}/` (e.g. `/var/lib/orion/context-exec/runs/ctxrun_abc123/`): `manifest.json` (`schema=orion.context_exec.run_ledger.v1`), `run.json` (full serialized `ContextExecRunV1`), `final.md`, and — when present — `artifact.json`, `runtime_debug.json`, `verb_trace.json`, and the redacted `request.json`. Writes are atomic (`*.tmp` → `fsync` → `os.replace`) and persistence is **fail-open**: a ledger write failure logs a warning and never fails the run. Secret-named keys (`token`, `secret`, `password`, `authorization`, `api_key`, `apikey`, `key`) are redacted to `[REDACTED]` across all persisted payloads (best-effort, key-name based — free text is not scrubbed). This PR persists evidence only — no workspaces, no repo writes, no agent-behavior changes.
+
 **Verification:**
 
 Run from the **repository root** (the smoke ladder requires a `.git` directory; git worktrees with a `.git` file pointer must use the main checkout or run the individual steps below).

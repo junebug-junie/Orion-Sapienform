@@ -77,14 +77,26 @@ class BusClient:
     def __init__(self):
         self.settings = get_settings()
         self.bus = OrionBusAsync(url=self.settings.orion_bus_url)
+        self._intake_bus: OrionBusAsync | None = None
+        self._rpc_bus: OrionBusAsync | None = None
         self.reply_prefix = self.settings.channel_cortex_result_prefix
 
     async def connect(self):
         logger.info(f"Connecting to bus at {self.settings.orion_bus_url}")
         await self.bus.connect()
+        self._intake_bus = await self.bus.fork()
+        await self._intake_bus.connect()
+        self._rpc_bus = await self.bus.fork()
+        await self._rpc_bus.connect()
 
     async def close(self):
         logger.info("Closing bus connection")
+        if self._rpc_bus is not None:
+            await self._rpc_bus.close()
+            self._rpc_bus = None
+        if self._intake_bus is not None:
+            await self._intake_bus.close()
+            self._intake_bus = None
         await self.bus.close()
 
     def _service_ref(self) -> ServiceRef:
@@ -123,16 +135,20 @@ class BusClient:
         logger.info("gateway_wait_orch corr=%s reply=%s request_channel=%s", corr, reply_to, self.settings.channel_cortex_request)
         logger.debug(f"RPC Payload correlation_id={corr}: {env.payload}")
 
+        rpc_bus = self._rpc_bus
+        if rpc_bus is None:
+            raise RuntimeError("Gateway RPC bus is not connected")
+
         async def _wait_for_matching_reply() -> Dict[str, Any]:
-            async with self.bus.subscribe(reply_to) as pubsub:
-                await self.bus.publish(
+            async with rpc_bus.subscribe(reply_to) as pubsub:
+                await rpc_bus.publish(
                     self.settings.channel_cortex_request,
                     env,
                 )
-                async for msg in self.bus.iter_messages(pubsub):
-                    decoded = self.bus.codec.decode(msg.get("data"))
+                async for msg in rpc_bus.iter_messages(pubsub):
+                    decoded = rpc_bus.codec.decode(msg.get("data"))
                     if not decoded.ok:
-                        logger.warning(f"Decode failed correlation_id={corr} error={decoded.error}")
+                        logger.warning("Decode failed correlation_id=%s error=%s", corr, decoded.error)
                         continue
 
                     payload = decoded.envelope.payload
@@ -152,11 +168,21 @@ class BusClient:
                                 req.verb,
                             )
                             continue
-                        logger.info("gateway_orch_result corr=%s reply=%s kind=%s", corr, reply_to, decoded.envelope.kind)
+                        logger.info(
+                            "gateway_orch_result corr=%s reply=%s kind=%s",
+                            corr,
+                            reply_to,
+                            decoded.envelope.kind,
+                        )
                         return payload_dict
 
-                    logger.info("gateway_orch_result corr=%s reply=%s kind=%s", corr, reply_to, decoded.envelope.kind)
-                    return payload  # Should be dict or primitive, or BaseEnvelope if unknown
+                    logger.info(
+                        "gateway_orch_result corr=%s reply=%s kind=%s",
+                        corr,
+                        reply_to,
+                        decoded.envelope.kind,
+                    )
+                    return payload
             raise RuntimeError("RPC reply subscription closed without a match.")
 
         try:
@@ -165,12 +191,18 @@ class BusClient:
                 timeout=self.settings.gateway_rpc_timeout_sec,
             )
         except asyncio.TimeoutError as te:
-            logger.error("gateway_orch_timeout corr=%s reply=%s timeout_sec=%s", corr, reply_to, self.settings.gateway_rpc_timeout_sec)
-            raise TimeoutError(f"RPC timed out after {self.settings.gateway_rpc_timeout_sec}s") from te
+            logger.error(
+                "gateway_orch_timeout corr=%s reply=%s timeout_sec=%s",
+                corr,
+                reply_to,
+                self.settings.gateway_rpc_timeout_sec,
+            )
+            raise TimeoutError(
+                f"RPC timed out after {self.settings.gateway_rpc_timeout_sec}s"
+            ) from te
 
     async def start_gateway_consumer(self):
         logger.info(f"Starting gateway consumer on {self.settings.channel_gateway_request}")
-        # Start a background task for subscription
         asyncio.create_task(self._consume_gateway_request())
 
     async def _gateway_dispatch_one(self, message: Dict[str, Any]) -> None:
@@ -181,15 +213,22 @@ class BusClient:
 
     async def _consume_gateway_request(self):
         logger.info(f"Gateway consumer loop started. Listening on channel: {self.settings.channel_gateway_request}")
+        intake_bus = self._intake_bus
+        if intake_bus is None:
+            raise RuntimeError("Gateway intake bus is not initialized")
         while True:
             try:
-                async with self.bus.subscribe(self.settings.channel_gateway_request) as pubsub:
-                    async for msg in self.bus.iter_messages(pubsub):
-                        # Do not serialize Hub chats: a slow brain/orch path must not block other corr ids.
-                        asyncio.create_task(self._gateway_dispatch_one(msg))
+                # One short-lived subscription per message so orch RPC pubsub does not
+                # overlap with a long-lived intake listen() on the same event loop.
+                async with intake_bus.subscribe(self.settings.channel_gateway_request) as pubsub:
+                    msg = await anext(intake_bus.iter_messages(pubsub))
+                await self._gateway_dispatch_one(msg)
             except asyncio.CancelledError:
                 logger.info("Gateway consumer cancelled")
                 break
+            except StopAsyncIteration:
+                logger.warning("Gateway intake subscription closed without a message; reconnecting")
+                await asyncio.sleep(1.0)
             except Exception as e:
                 logger.error(f"Gateway consumer failed: {e}", exc_info=True)
                 await asyncio.sleep(5.0)

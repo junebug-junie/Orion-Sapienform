@@ -28,3 +28,13 @@ def test_memory_consolidation_channels_cataloged():
         entry = ch[name]
         assert entry["schema_id"] == schema_id
         assert entry["message_kind"] == message_kind
+
+
+def test_memory_consolidation_cortex_and_llm_channels_cataloged():
+    ch = _channels()
+    cortex = ch["orion:cortex:request"]
+    assert "orion-memory-consolidation" in cortex["producer_services"]
+    llm_req = ch["orion:exec:request:LLMGatewayService"]
+    assert "orion-memory-consolidation" in llm_req["producer_services"]
+    llm_res = ch["orion:exec:result:LLMGatewayService:*"]
+    assert "orion-memory-consolidation" in llm_res["consumer_services"]

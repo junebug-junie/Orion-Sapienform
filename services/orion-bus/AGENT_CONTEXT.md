@@ -20,5 +20,20 @@ Never emit full message payloads or per-packet traces.
 ## Publishing
 Default `PUBLISH_ORION_BUS_GRAMMAR=false`. Fail-open on publish errors.
 
+## RPC + long-lived subscribers
+Services that run Hunter/Rabbit `subscribe()` loops **and** outbound `rpc_request()` on the same
+`OrionBusAsync` instance can lose replies (stolen by trace caches or torn down by overlapping
+`listen()`). Pattern:
+
+```python
+from orion.core.bus.rpc_fork import fork_rpc_client
+
+rpc_bus = await fork_rpc_client(listener_bus)  # dedicated worker pubsub
+# keep listener_bus for intake/publish; route all rpc_request via rpc_bus
+```
+
+Hub, cortex-gateway, cortex-orch, cortex-exec, context-exec, actions, chat-memory, vision-council,
+and agent-chain follow this split as of the bus RPC hardening pass.
+
 ## Downstream (deferred)
 `bus_transport_reducer` → `StateDeltaV1(target_kind=transport_bus)` → field pressure hints.

@@ -1,5 +1,5 @@
 # Daily metacog grounded recall: true 24h window, tight fusion/render budgets.
-# Scheduler daily journal keeps journal.daily.grounded.v1 (7d); metacog uses this profile.
+# All journal recall profiles use a 24h SQL window; metacog keeps tighter fusion/render budgets.
 profile: journal.daily.metacog.grounded.v1
 enable_vector: false
 

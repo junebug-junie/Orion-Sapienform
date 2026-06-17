@@ -7,12 +7,12 @@ vector_top_k: 0
 rdf_top_k: 8
 max_per_source: 4
 max_total_items: 24
-time_decay_half_life_hours: 72
+time_decay_half_life_hours: 24
 render_budget_tokens: 256
 cards_top_k: 4
 enable_query_expansion: true
 enable_sql_timeline: true
-sql_since_minutes: 10080
+sql_since_minutes: 1440
 sql_top_k: 200
 
 filters:
@@ -40,4 +40,4 @@ relevance:
   text_similarity_weight: 0.15
   recency_weight: 0.1
   enable_recency: true
-  recency_half_life_hours: 72
+  recency_half_life_hours: 24

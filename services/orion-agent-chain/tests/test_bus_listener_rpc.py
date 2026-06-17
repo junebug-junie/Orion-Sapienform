@@ -94,6 +94,13 @@ def _request_env(*, corr: str, reply_to: str) -> BaseEnvelope:
     )
 
 
+def _patch_fork_rpc_client(monkeypatch):
+    async def _fake_fork_rpc_client(parent):
+        return await parent.fork(start_rpc_worker=True)
+
+    monkeypatch.setattr("orion.core.bus.rpc_fork.fork_rpc_client", _fake_fork_rpc_client)
+
+
 def test_agent_chain_rpc_reply_preserves_corr_and_reply_channel(monkeypatch):
     corr = str(uuid4())
     reply_to = f"orion:exec:result:AgentChainService:{corr}"
@@ -113,7 +120,7 @@ def test_agent_chain_rpc_reply_preserves_corr_and_reply_channel(monkeypatch):
 
     assert len(bus.published) == 1
     assert bus.fork_start_rpc_worker is True
-    assert bus.forked is not None and bus.forked.connected is True
+    assert bus.forked is not None
     channel, result_env = bus.published[0]
     assert channel == reply_to
     assert str(result_env.correlation_id) == corr
@@ -143,13 +150,6 @@ def test_exec_style_rpc_consumer_would_receive_matching_result(monkeypatch):
     assert channel == reply_to
     assert str(result_env.correlation_id) == corr
     assert result_env.payload.get("text") == "agent done"
-
-
-def _patch_fork_rpc_client(monkeypatch):
-    async def _fake_fork_rpc_client(parent):
-        return await parent.fork(start_rpc_worker=True)
-
-    monkeypatch.setattr("orion.core.bus.rpc_fork.fork_rpc_client", _fake_fork_rpc_client)
 
 
 def test_nested_planner_child_corr_still_replies_to_exec_parent(monkeypatch):

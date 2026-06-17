@@ -25,10 +25,10 @@ class Settings(BaseSettings):
         default="orion:exec:request:LLMGatewayService", alias="CHANNEL_LLM_INTAKE"
     )
     CHANNEL_CORTEX_REQUEST: str = Field(
-        default="orion:exec:request:CortexOrchService", alias="CHANNEL_CORTEX_REQUEST"
+        default="orion:cortex:request", alias="CHANNEL_CORTEX_REQUEST"
     )
     CHANNEL_CORTEX_RESULT_PREFIX: str = Field(
-        default="orion:exec:result:CortexOrchService", alias="CHANNEL_CORTEX_RESULT_PREFIX"
+        default="orion:cortex:result", alias="CHANNEL_CORTEX_RESULT_PREFIX"
     )
 
     POSTGRES_URI: str = Field(default="", alias="POSTGRES_URI")

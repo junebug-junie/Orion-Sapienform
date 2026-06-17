@@ -74,7 +74,7 @@ channels:
   - name: "orion:cortex:request"
     kind: "request"
     schema_id: "CortexClientRequest"
-    producer_services: ["orion-hub", "orion-cortex-gateway", "orion-actions"]
+    producer_services: ["orion-hub", "orion-cortex-gateway", "orion-actions", "orion-memory-consolidation"]
     consumer_services: ["orion-cortex-orch"]
     stability: "experimental"
     since: "2026-01-08"
@@ -169,6 +169,7 @@ channels:
       - "orion-vision-council"
       - "orion-hub"
       - "orion-mind"
+      - "orion-memory-consolidation"
     consumer_services: ["orion-llm-gateway"]
     stability: "experimental"
     since: "2026-01-08"
@@ -193,7 +194,7 @@ channels:
     kind: "result"
     schema_id: "ChatResultPayload"
     producer_services: ["orion-llm-gateway"]
-    consumer_services: ["orion-cortex-exec", "orion-hub", "orion-planner-react"]
+    consumer_services: ["orion-cortex-exec", "orion-hub", "orion-planner-react", "orion-memory-consolidation"]
     stability: "experimental"
     since: "2026-01-08"
 

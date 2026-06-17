@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -33,6 +34,8 @@ async def test_connect_forks_separate_intake_and_rpc_buses(monkeypatch) -> None:
         child = BusClient()
         child.connect = fake_connect  # type: ignore[method-assign]
         child.close = AsyncMock()
+        if start_rpc_worker:
+            child._rpc_worker_task = asyncio.get_running_loop().create_future()
         return child
 
     client.bus = AsyncMock()
@@ -47,3 +50,4 @@ async def test_connect_forks_separate_intake_and_rpc_buses(monkeypatch) -> None:
     assert client._intake_bus is not client._rpc_bus
     assert client._intake_bus is not client.bus
     assert client._rpc_bus is not client.bus
+    assert client._rpc_bus._rpc_worker_task is not None

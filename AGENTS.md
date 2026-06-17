@@ -74,6 +74,9 @@ Check:
 - service entrypoint
 - imports
 - relevant tests
+- 
+### Bring up Docker services
+- e.g. docker compose --env-file .env --env-file services/orion-bus/.env -f services/orion-bus/docker-compose.yml build
 
 ### Templates or frontend JS
 Check:

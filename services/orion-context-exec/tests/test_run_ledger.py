@@ -227,3 +227,20 @@ def test_fail_open_guard_does_not_propagate(
     except Exception:
         escaped = True
     assert escaped is False
+
+
+def test_manifest_includes_workspace_when_present(storage_roots: Path) -> None:
+    run = _FakeRun(
+        run_id="ctxrun_ws",
+        runtime_debug={
+            "workspace": {
+                "enabled": True,
+                "allocated": True,
+                "root": "/var/lib/orion/context-exec/workspaces/ctxrun_ws",
+            }
+        },
+    )
+    persist_context_exec_run(run)
+    manifest = json.loads((storage_roots / "ctxrun_ws" / "manifest.json").read_text())
+    assert manifest["workspace"]["allocated"] is True
+    assert "ctxrun_ws" in manifest["workspace"]["root"]

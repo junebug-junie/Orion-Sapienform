@@ -59,6 +59,8 @@ def _path_status(path: Path) -> dict[str, Any]:
 
 
 def storage_health_block() -> dict[str, Any]:
+    from .workspace import workspace_health_block
+
     paths = configured_storage_paths()
     dirs = {name: _path_status(path) for name, path in paths.items()}
 
@@ -85,6 +87,7 @@ def storage_health_block() -> dict[str, Any]:
         "root": str(paths["root"]),
         "run_ledger_enabled": settings.context_exec_run_ledger_enabled,
         "dirs": dirs,
+        "workspace": workspace_health_block(),
         "error": error,
     }
 
@@ -224,7 +227,7 @@ def persist_context_exec_run(run: Any, *, request: Any | None = None) -> dict[st
 
     # manifest.json LAST.
     persisted.append("manifest.json")
-    manifest = {
+    manifest: dict[str, Any] = {
         "schema": _RUN_LEDGER_SCHEMA,
         "run_id": run_id,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -234,6 +237,11 @@ def persist_context_exec_run(run: Any, *, request: Any | None = None) -> dict[st
         "version": str(settings.service_version),
         "persisted_files": persisted,
     }
+    runtime_debug_data = run_data.get("runtime_debug")
+    if isinstance(runtime_debug_data, dict):
+        workspace_block = runtime_debug_data.get("workspace")
+        if workspace_block:
+            manifest["workspace"] = workspace_block
     write_json_atomic(target / "manifest.json", manifest)
 
     return {

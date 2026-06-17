@@ -132,7 +132,7 @@ async def handle_intake(env: BaseEnvelope) -> None:
             env.correlation_id or "unknown",
         )
 
-    # 2. To SQL Writer (for Raw storage) - hardcoded canonical channel per request
+    # 2. To SQL Writer (for Raw storage) via CHANNEL_COLLAPSE_SQL_WRITE
     # Fix: Wrap in envelope so sql-writer sees kind="collapse.mirror"
     write_envelope = BaseEnvelope(
         kind="collapse.mirror",
@@ -141,10 +141,10 @@ async def handle_intake(env: BaseEnvelope) -> None:
         correlation_id=env.correlation_id,
         causality_chain=env.causality_chain
     )
-    await intake_hunter.bus.publish("orion:collapse:sql-write", write_envelope)
+    await intake_hunter.bus.publish(settings.CHANNEL_COLLAPSE_SQL_WRITE, write_envelope)
     logger.info(
         "[collapse-mirror] published sql-write channel=%s corr_id=%s",
-        "orion:collapse:sql-write",
+        settings.CHANNEL_COLLAPSE_SQL_WRITE,
         env.correlation_id,
     )
 

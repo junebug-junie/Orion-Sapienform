@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     # === Bus Channels ===
     CHANNEL_COLLAPSE_INTAKE: str = Field(default="orion:collapse:intake", env="CHANNEL_COLLAPSE_INTAKE")
     CHANNEL_COLLAPSE_TRIAGE: str = Field(default="orion:collapse:triage", env="CHANNEL_COLLAPSE_TRIAGE")
+    CHANNEL_COLLAPSE_SQL_WRITE: str = Field(
+        default="orion:collapse:sql-write",
+        env="CHANNEL_COLLAPSE_SQL_WRITE",
+    )
     COLLAPSE_MIRROR_STORE_PATH: str = Field(
         default="/mnt/storage/collapse-mirrors/collapse_mirror_store.json",
         env="COLLAPSE_MIRROR_STORE_PATH",

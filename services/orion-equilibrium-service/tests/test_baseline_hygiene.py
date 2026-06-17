@@ -27,6 +27,8 @@ class TestBaselineHygiene(unittest.TestCase):
         self.mock_settings.health_channel = "health"
         self.mock_settings.metacog_enable = True
         self.mock_settings.metacog_baseline_interval_sec = 0.01
+        self.mock_settings.metacog_baseline_max_skips = 10
+        self.mock_settings.metacog_recall_enabled = False
         self.mock_settings.expected_services.return_value = []
 
     def tearDown(self):

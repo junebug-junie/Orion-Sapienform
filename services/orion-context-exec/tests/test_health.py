@@ -56,6 +56,12 @@ async def test_health(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "cache" in storage["dirs"]
     assert "tmp" in storage["dirs"]
     assert "run_ledger_enabled" in storage
+    workspace = storage["workspace"]
+    assert workspace["enabled"] is True
+    assert workspace["root"]
+    assert "present" in workspace
+    assert "writable" in workspace
+    assert "materialize_repo" in workspace
 
 
 @pytest.mark.asyncio

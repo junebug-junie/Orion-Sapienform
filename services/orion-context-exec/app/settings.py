@@ -84,6 +84,18 @@ class ContextExecSettings(BaseSettings):
         "/var/lib/orion/context-exec/workspaces",
         alias="CONTEXT_EXEC_WORKSPACE_ROOT",
     )
+    context_exec_workspace_enabled: bool = Field(
+        True,
+        alias="CONTEXT_EXEC_WORKSPACE_ENABLED",
+    )
+    context_exec_workspace_materialize_repo: bool = Field(
+        False,
+        alias="CONTEXT_EXEC_WORKSPACE_MATERIALIZE_REPO",
+    )
+    context_exec_workspace_copy_max_bytes: int = Field(
+        250_000_000,
+        alias="CONTEXT_EXEC_WORKSPACE_COPY_MAX_BYTES",
+    )
     context_exec_cache_root: str = Field(
         "/var/lib/orion/context-exec/cache",
         alias="CONTEXT_EXEC_CACHE_ROOT",

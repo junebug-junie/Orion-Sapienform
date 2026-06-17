@@ -243,6 +243,51 @@ class ContextExecRunner:
             causality_chain=causality_chain,
         )
 
+    def _try_allocate_workspace(
+        self,
+        run_id: str,
+        request: ContextExecRequestV1,
+    ) -> dict[str, Any] | None:
+        if not settings.context_exec_workspace_enabled:
+            return None
+        try:
+            from .workspace import allocate_workspace
+
+            workspace = allocate_workspace(
+                run_id,
+                request=request,
+                repo_root=settings.context_exec_repo_root,
+            )
+            return {
+                "enabled": True,
+                "allocated": True,
+                "root": str(workspace.root),
+                "scratch_dir": str(workspace.scratch_dir),
+                "outputs_dir": str(workspace.outputs_dir),
+                "patches_dir": str(workspace.patches_dir),
+                "repo_dir": str(workspace.repo_dir),
+                "manifest_path": str(workspace.manifest_path),
+            }
+        except Exception as exc:
+            logger.warning(
+                "failed to allocate context-exec workspace run_id=%s error=%s",
+                run_id,
+                exc,
+            )
+            return None
+
+    @staticmethod
+    def _apply_workspace_debug(
+        runtime_debug: dict[str, Any],
+        workspace_info: dict[str, Any] | None,
+    ) -> None:
+        if workspace_info:
+            runtime_debug["workspace"] = {
+                "enabled": True,
+                "allocated": True,
+                "root": workspace_info["root"],
+            }
+
     def _persist_run_ledger(
         self,
         run: ContextExecRunV1,
@@ -269,6 +314,7 @@ class ContextExecRunner:
         causality_chain: list[str] | None = None,
     ) -> ContextExecRunV1:
         run_id = f"ctxrun_{uuid.uuid4().hex[:12]}"
+        workspace_info = self._try_allocate_workspace(run_id, request)
         if not request.correlation_id:
             request = request.model_copy(update={"correlation_id": f"ctxcorr_{uuid.uuid4().hex[:12]}"})
         started = time.perf_counter()
@@ -288,6 +334,7 @@ class ContextExecRunner:
                 events=events,
                 verb_trace=verb_trace,
                 failure_modes=failure_modes,
+                workspace_info=workspace_info,
             )
 
         try:
@@ -308,6 +355,7 @@ class ContextExecRunner:
                 ),
                 "correlation_id": request.correlation_id,
             }
+            self._apply_workspace_debug(runtime_debug, workspace_info)
             await events.finished(
                 run_id=run_id,
                 mode=request.mode,
@@ -416,6 +464,7 @@ class ContextExecRunner:
             extra_steps=rlm_steps or None,
         )
         runtime_debug.update(selection_runtime_debug(profile_selection))
+        self._apply_workspace_debug(runtime_debug, workspace_info)
         if profile_selection.fallback_used:
             runtime_debug["fallback_used"] = True
             if profile_selection.fallback_reason:
@@ -538,6 +587,7 @@ class ContextExecRunner:
         events: ContextExecEventEmitter,
         verb_trace: list[ContextExecVerbStepV1],
         failure_modes: list[str],
+        workspace_info: dict[str, Any] | None = None,
     ) -> ContextExecRunV1:
         organ_runtime = OrganRuntime(
             bus=self.rpc_bus,
@@ -579,6 +629,7 @@ class ContextExecRunner:
             "evidence_sources": artifact.get("sources") or {},
         }
         runtime_debug_base.update(selection_runtime_debug(profile_selection))
+        self._apply_workspace_debug(runtime_debug_base, workspace_info)
 
         synthesis_result = None
         if (

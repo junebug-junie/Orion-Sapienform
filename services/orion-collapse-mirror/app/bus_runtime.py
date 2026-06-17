@@ -132,7 +132,7 @@ async def handle_intake(env: BaseEnvelope) -> None:
             env.correlation_id or "unknown",
         )
 
-    # 2. To SQL Writer (for Raw storage) - hardcoded canonical channel per request
+    # 2. To SQL Writer (for Raw storage) via CHANNEL_COLLAPSE_SQL_WRITE
     # Fix: Wrap in envelope so sql-writer sees kind="collapse.mirror"
     write_envelope = BaseEnvelope(
         kind="collapse.mirror",

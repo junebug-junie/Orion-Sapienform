@@ -30,7 +30,7 @@ PASS triage=ok sql-write=ok
 ```
 
 ## Collapse Mirror Live Path Truth (upstream + substrate)
-Unlike the Juniper fanout smoke (intake organ only), this gate checks equilibrium metacog trigger and cortex exec subscribers plus substrate grammar truth.
+Unlike the Juniper fanout smoke (intake organ only), this gate checks equilibrium metacog trigger and cortex exec subscribers plus substrate grammar truth. Requires `redis-cli` and `curl`.
 ```bash
 ./scripts/collapse_mirror_live_path_truth.sh
 ```

@@ -124,7 +124,7 @@ async def _call_cortex(
         timing["elapsed_sec"] = round(time.monotonic() - t0, 3)
         timing["reached_cortex"] = True
         return resp, None, timing
-    except TimeoutError:
+    except (TimeoutError, asyncio.TimeoutError):
         timing["elapsed_sec"] = round(time.monotonic() - t0, 3)
         timing["error_type"] = "TimeoutError"
         timing["error_summary"] = "hub_wait_for_timeout"
@@ -279,6 +279,8 @@ async def suggest_with_escalation(
     if enable_escalation and escalation != primary:
         routes_to_try.append((escalation, timeout_for(escalation)))
 
+    suggest_started = time.monotonic()
+
     attempts_meta: List[Dict[str, Any]] = []
     route_used: Optional[RouteName] = None
     suggest_timeout_budget: Dict[str, Any] = {
@@ -297,9 +299,14 @@ async def suggest_with_escalation(
     }
 
     for idx, (route, timeout_sec) in enumerate(routes_to_try):
+        elapsed_budget = time.monotonic() - suggest_started
+        remaining_budget = max(0.0, verb_timeout_sec - elapsed_budget)
+        if remaining_budget < 5.0:
+            break
+        attempt_timeout_sec = min(float(timeout_sec), remaining_budget)
         attempt: Dict[str, Any] = {
             "route": route,
-            "timeout_sec": timeout_sec,
+            "timeout_sec": attempt_timeout_sec,
             "index": idx,
             "grounding_included": include_grounding,
         }
@@ -309,7 +316,7 @@ async def suggest_with_escalation(
                 session_id=session_id,
                 user_id=user_id,
                 trace_id=None,
-                default_mode="quick",
+                default_mode="brain",
                 auto_default_enabled=bool(getattr(settings, "HUB_AUTO_DEFAULT_ENABLED", False)),
                 source_label="hub_memory_graph_suggest",
                 prompt=user_prompt,
@@ -344,7 +351,7 @@ async def suggest_with_escalation(
         resp, cortex_err, timing = await _call_cortex(
             cortex_client,
             req,
-            timeout_sec=timeout_sec,
+            timeout_sec=attempt_timeout_sec,
             settings=settings,
             route=route,
         )
@@ -360,6 +367,8 @@ async def suggest_with_escalation(
                 }
             )
             attempts_meta.append(attempt)
+            if err_code == "hub_wait_for_timeout":
+                break
             continue
 
         text, text_diag = hub_memory_graph_suggest_text(resp)

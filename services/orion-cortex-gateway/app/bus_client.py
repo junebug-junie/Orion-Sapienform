@@ -218,17 +218,15 @@ class BusClient:
             raise RuntimeError("Gateway intake bus is not initialized")
         while True:
             try:
-                # One short-lived subscription per message so orch RPC pubsub does not
-                # overlap with a long-lived intake listen() on the same event loop.
+                # Long-lived intake on a forked bus; orch RPC uses _rpc_bus so listen() overlap
+                # cannot tear down the subscriber. Dispatch in background so slow Hub chats
+                # do not miss messages published while a prior corr is still in flight.
                 async with intake_bus.subscribe(self.settings.channel_gateway_request) as pubsub:
-                    msg = await anext(intake_bus.iter_messages(pubsub))
-                await self._gateway_dispatch_one(msg)
+                    async for msg in intake_bus.iter_messages(pubsub):
+                        asyncio.create_task(self._gateway_dispatch_one(msg))
             except asyncio.CancelledError:
                 logger.info("Gateway consumer cancelled")
                 break
-            except StopAsyncIteration:
-                logger.warning("Gateway intake subscription closed without a message; reconnecting")
-                await asyncio.sleep(1.0)
             except Exception as e:
                 logger.error(f"Gateway consumer failed: {e}", exc_info=True)
                 await asyncio.sleep(5.0)

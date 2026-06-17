@@ -38,8 +38,9 @@ def resolve_memory_graph_suggest_timeouts(
     """
     Return (verb_timeout_sec, quick_timeout_sec, brain_timeout_sec, verb_timeout_ms).
 
-    When escalation is enabled, Quick + Brain share one verb budget (default 180s total),
-    so a browser fetch limit of 180s is not exceeded by sequential attempts.
+    When escalation is enabled, the primary route gets the full verb budget (default 180s)
+    because a single cortex/LLM round-trip often needs most of that wall clock. Brain
+    escalation is reserved for fast validation failures and uses any remaining budget.
 
     Per-route overrides (MEMORY_GRAPH_SUGGEST_*_TIMEOUT_SEC) are capped to the verb budget.
     """
@@ -53,16 +54,13 @@ def resolve_memory_graph_suggest_timeouts(
         if quick_raw > 0:
             quick = min(quick_raw, verb_sec)
         else:
-            quick = max(45.0, round(verb_sec * 0.35, 1))
+            quick = verb_sec
         if brain_raw > 0:
-            brain = min(brain_raw, max(45.0, verb_sec - quick))
+            brain = min(brain_raw, verb_sec)
         else:
-            brain = max(45.0, round(verb_sec - quick, 1))
-        total = quick + brain
-        if total > verb_sec:
-            scale = verb_sec / total
-            quick = round(quick * scale, 1)
-            brain = round(verb_sec - quick, 1)
+            brain = max(45.0, round(verb_sec * 0.25, 1))
+        quick = min(quick, verb_sec)
+        brain = min(brain, verb_sec)
     else:
         if quick_raw > 0:
             quick = min(quick_raw, verb_sec)
@@ -88,7 +86,7 @@ def memory_graph_suggest_server_budget_sec(
         settings, escalation_enabled=escalation_enabled
     )
     if escalation_enabled:
-        return float(quick) + float(brain)
+        return float(quick)
     primary = str(getattr(settings, "MEMORY_GRAPH_SUGGEST_PRIMARY_ROUTE", "quick") or "quick").strip().lower()
     return float(brain if primary == "brain" else quick)
 

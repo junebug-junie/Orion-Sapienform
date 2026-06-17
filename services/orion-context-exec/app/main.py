@@ -76,10 +76,15 @@ async def lifespan(app: FastAPI):
     log_agent_lane_startup_warning()
     app.state.bus_stop_event = asyncio.Event()
     bus = OrionBusAsync(url=settings.orion_bus_url, enabled=settings.orion_bus_enabled)
+    rpc_bus = None
     if bus.enabled:
         await bus.connect()
+        from orion.core.bus.rpc_fork import fork_rpc_client
+
+        rpc_bus = await fork_rpc_client(bus)
     app.state.bus = bus
-    runner = ContextExecRunner(bus=bus if bus.enabled else None)
+    app.state.rpc_bus = rpc_bus
+    runner = ContextExecRunner(bus=bus if bus.enabled else None, rpc_bus=rpc_bus if rpc_bus is not None else None)
     set_runner(runner)
     app.state.bus_task = asyncio.create_task(run_bus_worker(app.state.bus_stop_event))
     app.state.heartbeat_task = asyncio.create_task(heartbeat_loop())
@@ -90,6 +95,10 @@ async def lifespan(app: FastAPI):
         with suppress(asyncio.CancelledError):
             await task
     bus = getattr(app.state, "bus", None)
+    rpc_bus = getattr(app.state, "rpc_bus", None)
+    if rpc_bus is not None and rpc_bus.enabled:
+        with suppress(Exception):
+            await rpc_bus.close()
     if bus is not None and bus.enabled:
         with suppress(Exception):
             await bus.close()

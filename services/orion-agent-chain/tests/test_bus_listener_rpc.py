@@ -34,7 +34,6 @@ class _FakeBus:
 
     async def fork(self, *, start_rpc_worker: bool = False):
         self.fork_start_rpc_worker = start_rpc_worker
-        assert start_rpc_worker is False
         if self.forked is None:
             self.forked = _FakePlannerBus()
         return self.forked
@@ -95,6 +94,13 @@ def _request_env(*, corr: str, reply_to: str) -> BaseEnvelope:
     )
 
 
+def _patch_fork_rpc_client(monkeypatch):
+    async def _fake_fork_rpc_client(parent):
+        return await parent.fork(start_rpc_worker=True)
+
+    monkeypatch.setattr("orion.core.bus.rpc_fork.fork_rpc_client", _fake_fork_rpc_client)
+
+
 def test_agent_chain_rpc_reply_preserves_corr_and_reply_channel(monkeypatch):
     corr = str(uuid4())
     reply_to = f"orion:exec:result:AgentChainService:{corr}"
@@ -108,11 +114,13 @@ def test_agent_chain_rpc_reply_preserves_corr_and_reply_channel(monkeypatch):
 
     monkeypatch.setattr(bus_listener, "execute_agent_chain", _fake_execute)
 
+    _patch_fork_rpc_client(monkeypatch)
+
     asyncio.run(bus_listener._handle_request(bus, {"data": b"ignored"}))
 
     assert len(bus.published) == 1
-    assert bus.fork_start_rpc_worker is False
-    assert bus.forked is not None and bus.forked.connected is True
+    assert bus.fork_start_rpc_worker is True
+    assert bus.forked is not None
     channel, result_env = bus.published[0]
     assert channel == reply_to
     assert str(result_env.correlation_id) == corr
@@ -132,6 +140,8 @@ def test_exec_style_rpc_consumer_would_receive_matching_result(monkeypatch):
 
     monkeypatch.setattr(bus_listener, "execute_agent_chain", _fake_execute)
 
+    _patch_fork_rpc_client(monkeypatch)
+
     asyncio.run(bus_listener._handle_request(bus, {"data": b"ignored"}))
 
     # Integration-ish assertion: the publish tuple is exactly what Exec rpc_request waits on
@@ -149,6 +159,7 @@ def test_nested_planner_child_corr_still_replies_to_exec_parent(monkeypatch):
     bus = _FakeBus(env)
     monkeypatch.setattr(agent_api, "_resolve_tools", lambda _body, **_kwargs: ([], []))
     monkeypatch.setattr(bus_listener, "execute_agent_chain", agent_api.execute_agent_chain)
+    _patch_fork_rpc_client(monkeypatch)
 
     asyncio.run(bus_listener._handle_request(bus, {"data": b"ignored"}))
 
@@ -178,6 +189,7 @@ def test_bus_listener_error_reply_uses_agent_chain_result_shape(monkeypatch):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(bus_listener, "execute_agent_chain", _boom)
+    _patch_fork_rpc_client(monkeypatch)
 
     asyncio.run(bus_listener._handle_request(bus, {"data": b"ignored"}))
 

@@ -101,6 +101,12 @@ async def _bus():
     return bus
 
 
+async def _rpc_bus():
+    from .main import rpc_bus
+
+    return rpc_bus
+
+
 @router.post("/api/memory/crystallizations/propose")
 async def crystallization_propose(
     request: Request,
@@ -269,7 +275,7 @@ async def crystallization_approve_proposal(
     projection_summary = None
     if bool(getattr(_settings(), "CRYSTALLIZER_AUTO_PROJECT_ON_APPROVE", True)):
         updated, proj = await project_crystallization(
-            pool, await _bus(), updated, actor=session, config=_projection_config(),
+            pool, await _rpc_bus(), updated, actor=session, config=_projection_config(),
         )
         await update_crystallization(pool, updated)
         projection_summary = {
@@ -710,7 +716,7 @@ async def crystallization_projection_rebuild(
     items = await list_crystallizations(pool, status="active", limit=limit)
     results = []
     for item in items:
-        updated, proj = await project_crystallization(pool, await _bus(), item, actor=session, config=_projection_config())
+        updated, proj = await project_crystallization(pool, await _rpc_bus(), item, actor=session, config=_projection_config())
         await update_crystallization(pool, updated)
         results.append({"crystallization_id": item.crystallization_id, "card_id": proj.card_id, "chroma": proj.chroma, "errors": proj.errors})
     return {"rebuilt": len(results), "items": results}
@@ -728,7 +734,7 @@ async def graphiti_sync(
     if not row:
         raise HTTPException(status_code=404, detail="not_found")
     updated, proj = await project_crystallization(
-        pool, await _bus(), row, actor=session, config=_projection_config(),
+        pool, await _rpc_bus(), row, actor=session, config=_projection_config(),
         project_card=False, project_chroma=False, project_graphiti=True,
     )
     await update_crystallization(pool, updated)

@@ -21,6 +21,7 @@ from app.settings import settings
 logger = logging.getLogger(settings.SERVICE_NAME)
 
 bus_hunter: Optional[Hunter] = None
+embed_rpc_bus = None
 http_client: Optional[httpx.AsyncClient] = None
 chunk_counts: Dict[str, int] = {}
 
@@ -159,7 +160,7 @@ async def _request_embedding_http(doc: MemoryDocument) -> Optional[EmbeddingResu
 
 
 async def _request_embedding_bus(doc: MemoryDocument) -> Optional[EmbeddingResultV1]:
-    if bus_hunter is None or bus_hunter.bus is None:
+    if bus_hunter is None or bus_hunter.bus is None or embed_rpc_bus is None:
         logger.warning("Bus not initialized; cannot request embedding.")
         return None
 
@@ -177,13 +178,13 @@ async def _request_embedding_bus(doc: MemoryDocument) -> Optional[EmbeddingResul
     )
 
     try:
-        msg = await bus_hunter.bus.rpc_request(
+        msg = await embed_rpc_bus.rpc_request(
             settings.CHAT_MEMORY_EMBED_REQUEST_CHANNEL,
             env,
             reply_channel=reply_channel,
             timeout_sec=float(settings.CHAT_MEMORY_EMBED_TIMEOUT_MS) / 1000.0,
         )
-        decoded = bus_hunter.bus.codec.decode(msg.get("data"))
+        decoded = embed_rpc_bus.codec.decode(msg.get("data"))
         if not decoded.ok or decoded.envelope is None:
             logger.warning(f"Embedding RPC decode failed: {decoded.error}")
             return None
@@ -253,7 +254,7 @@ async def handle_envelope(env: BaseEnvelope) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global bus_hunter, http_client
+    global bus_hunter, embed_rpc_bus, http_client
 
     logging.basicConfig(
         level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
@@ -262,6 +263,10 @@ async def lifespan(app: FastAPI):
 
     cfg = _cfg()
     bus_hunter = Hunter(cfg, patterns=settings.SUBSCRIBE_CHANNELS, handler=handle_envelope)
+    await bus_hunter.bus.connect()
+    from orion.core.bus.rpc_fork import fork_rpc_client
+
+    embed_rpc_bus = await fork_rpc_client(bus_hunter.bus)
     await bus_hunter.start_background()
 
     if (settings.CHAT_MEMORY_EMBED_MODE or "bus").lower() == "http":
@@ -270,6 +275,9 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    if embed_rpc_bus is not None:
+        await embed_rpc_bus.close()
+        embed_rpc_bus = None
     if bus_hunter:
         await bus_hunter.stop()
     if http_client:

@@ -7,7 +7,7 @@ import logging
 import os
 import time
 import requests
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict
@@ -72,6 +72,7 @@ from .workflow_schedule_metrics import WorkflowScheduleMetrics
 from .workflow_schedule_store import ClaimedSchedule, ScheduleAttentionSignal, WorkflowScheduleStore
 
 logger = logging.getLogger("orion-actions")
+_actions_rpc_bus = None
 PROCESS_STARTED_AT_UTC = datetime.now(timezone.utc)
 
 ACTION_DAILY_PULSE_V1 = "daily_pulse_v1"
@@ -915,6 +916,7 @@ def _threshold_notify_skill_args(*, findings: list[str], correlation_id: str) ->
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _actions_rpc_bus
     deduper = ActionDedupe(ttl_seconds=settings.actions_dedupe_ttl_seconds)
     journal_deduper = ActionDedupe(ttl_seconds=settings.actions_journaling_cooldown_seconds)
     journal_post_persist_deduper = ActionDedupe(ttl_seconds=settings.actions_notify_dedupe_window_seconds)
@@ -992,7 +994,7 @@ async def lifespan(app: FastAPI):
             return parent.derive_child(kind=req.kind, source=src, payload=req, reply_to=reply_channel)
 
         msg = await _rpc_request_with_retry(
-            bus=hunter.bus,
+            bus=_actions_rpc_bus,
             request_channel=settings.cortex_exec_request_channel,
             reply_prefix="orion:exec:result",
             timeout_sec=timeout_sec,
@@ -1043,13 +1045,13 @@ async def lifespan(app: FastAPI):
         )
         reply_channel = new_reply_channel("orion:cortex:result")
         req_env = parent.derive_child(kind="cortex.orch.request", source=src, payload=req, reply_to=reply_channel)
-        msg = await hunter.bus.rpc_request(
+        msg = await _actions_rpc_bus.rpc_request(
             settings.cortex_request_channel,
             req_env,
             reply_channel=reply_channel,
             timeout_sec=float(settings.actions_exec_timeout_seconds),
         )
-        decoded = hunter.bus.codec.decode(msg.get("data"))
+        decoded = _actions_rpc_bus.codec.decode(msg.get("data"))
         if not decoded.ok or decoded.envelope is None:
             raise RuntimeError(f"cortex_orch_decode_failed:{decoded.error}")
         orch_payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
@@ -1810,13 +1812,13 @@ async def lifespan(app: FastAPI):
             return {}
         reply_channel = new_reply_channel("orion:cortex:result")
         rpc_env = env.model_copy(update={"reply_to": reply_channel})
-        msg = await hunter.bus.rpc_request(
+        msg = await _actions_rpc_bus.rpc_request(
             settings.cortex_request_channel,
             rpc_env,
             reply_channel=reply_channel,
             timeout_sec=float(settings.actions_exec_timeout_seconds),
         )
-        decoded = hunter.bus.codec.decode(msg.get("data"))
+        decoded = _actions_rpc_bus.codec.decode(msg.get("data"))
         if not decoded.ok or decoded.envelope is None:
             raise RuntimeError(f"cortex_orch_decode_failed:{decoded.error}")
         orch_payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
@@ -2125,6 +2127,11 @@ async def lifespan(app: FastAPI):
         patterns.append("orion:world_pulse:run:result")
     hunter = Hunter(_cfg(), patterns=patterns, handler=handle_envelope)
     app.state.bus_handler = handle_envelope
+    await hunter.bus.connect()
+    from orion.core.bus.rpc_fork import fork_rpc_client
+
+    _actions_rpc_bus = await fork_rpc_client(hunter.bus)
+    app.state.rpc_bus = _actions_rpc_bus
 
     logger.info(
         "Starting orion-actions Hunter channels=%s bus=%s cortex_request=%s",
@@ -2138,6 +2145,11 @@ async def lifespan(app: FastAPI):
     scheduler_task = asyncio.create_task(_scheduler_loop(), name="orion-actions-scheduler")
 
     yield
+
+    if _actions_rpc_bus is not None:
+        with suppress(Exception):
+            await _actions_rpc_bus.close()
+        _actions_rpc_bus = None
 
     for t in (hunter_task, scheduler_task):
         t.cancel()

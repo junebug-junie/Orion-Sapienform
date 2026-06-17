@@ -31,6 +31,7 @@ settings = Settings()
 class CouncilService:
     def __init__(self):
         self.bus = OrionBusAsync(url=settings.ORION_BUS_URL)
+        self._rpc_bus: OrionBusAsync | None = None
         self._consumer_task: Optional[asyncio.Task] = None
         self._rpc_task: Optional[asyncio.Task] = None
         self._shutdown_event = asyncio.Event()
@@ -40,6 +41,9 @@ class CouncilService:
         logger.add(lambda m: print(m, end=""), level=settings.LOG_LEVEL)
 
         await self.bus.connect()
+        from orion.core.bus.rpc_fork import fork_rpc_client
+
+        self._rpc_bus = await fork_rpc_client(self.bus)
         self._consumer_task = asyncio.create_task(self._consume())
         self._rpc_task = asyncio.create_task(self._consume_rpc())
         logger.info(f"[COUNCIL] Started. Listening on {settings.CHANNEL_COUNCIL_INTAKE} and {settings.CHANNEL_COUNCIL_REQUEST}")
@@ -53,6 +57,9 @@ class CouncilService:
                     await t
                 except asyncio.CancelledError:
                     pass
+        if self._rpc_bus is not None:
+            await self._rpc_bus.close()
+            self._rpc_bus = None
         await self.bus.close()
 
     async def _consume(self):
@@ -216,15 +223,19 @@ class CouncilService:
             payload=chat_request
         )
 
+        if self._rpc_bus is None:
+            logger.error("[COUNCIL] RPC bus not initialized; cannot call LLM gateway")
+            return []
+
         try:
-            reply = await self.bus.rpc_request(
+            reply = await self._rpc_bus.rpc_request(
                 settings.CHANNEL_LLM_REQUEST,
                 envelope,
                 reply_channel=reply_to,
                 timeout_sec=30.0
             )
 
-            decoded = self.bus.codec.decode(reply.get("data"))
+            decoded = self._rpc_bus.codec.decode(reply.get("data"))
             if not decoded.ok:
                 logger.error(f"[COUNCIL] LLM decode error: {decoded.error}")
                 return []

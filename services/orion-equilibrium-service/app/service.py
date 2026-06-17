@@ -370,6 +370,45 @@ class EquilibriumService(BaseChassis):
                 logger.warning(f"Metacognition tick loop error: {e}")
             await asyncio.sleep(interval)
 
+    async def _maybe_emit_baseline_metacog_trigger(self) -> bool:
+        """Evaluate distress/zen and publish a baseline metacog trigger when due."""
+        distress, zen, _ = self._calculate_metrics()
+        last_d, last_z = self._last_baseline_scores
+        unchanged = abs(distress - last_d) < 0.01 and abs(zen - last_z) < 0.01
+        max_skips = max(0, int(settings.metacog_baseline_max_skips))
+
+        if unchanged and self._baseline_skip_count < max_skips:
+            self._baseline_skip_count += 1
+            logger.info(
+                "Skipping baseline trigger (no change). distress=%.3f zen=%.3f skip=%d max_skips=%d",
+                distress,
+                zen,
+                self._baseline_skip_count,
+                max_skips,
+            )
+            return False
+
+        if unchanged and max_skips > 0:
+            logger.info(
+                "Forcing baseline trigger after unchanged scores. distress=%.3f zen=%.3f skip=%d",
+                distress,
+                zen,
+                self._baseline_skip_count,
+            )
+
+        self._baseline_skip_count = 0
+        self._last_baseline_scores = (distress, zen)
+
+        trigger = MetacogTriggerV1(
+            trigger_kind="baseline",
+            reason="scheduled_check",
+            zen_state="zen" if zen > 0.5 else "not_zen",
+            pressure=distress,
+            recall_enabled=settings.metacog_recall_enabled,
+        )
+        await self._publish_metacog_trigger(trigger)
+        return True
+
     async def _metacog_baseline_loop(self) -> None:
         if not settings.metacog_enable:
             return
@@ -377,28 +416,10 @@ class EquilibriumService(BaseChassis):
         interval = float(settings.metacog_baseline_interval_sec)
         while not self._stop.is_set():
             try:
-                await asyncio.sleep(interval)
-                distress, zen, _ = self._calculate_metrics()
-
-                last_d, last_z = self._last_baseline_scores
-                if abs(distress - last_d) < 0.01 and abs(zen - last_z) < 0.01 and self._baseline_skip_count < 10:
-                    self._baseline_skip_count += 1
-                    logger.info("Skipping baseline trigger (no change). distress=%.3f zen=%.3f skip=%d", distress, zen, self._baseline_skip_count)
-                    continue
-
-                self._baseline_skip_count = 0
-                self._last_baseline_scores = (distress, zen)
-
-                trigger = MetacogTriggerV1(
-                    trigger_kind="baseline",
-                    reason="scheduled_check",
-                    zen_state="zen" if zen > 0.5 else "not_zen",
-                    pressure=distress,
-                    recall_enabled=settings.metacog_recall_enabled,
-                )
-                await self._publish_metacog_trigger(trigger)
+                await self._maybe_emit_baseline_metacog_trigger()
             except Exception as e:
                 logger.error(f"Metacog baseline loop error: {e}")
+            await asyncio.sleep(interval)
 
     async def _spark_heartbeat_loop(self) -> None:
         if not self.bus.enabled:

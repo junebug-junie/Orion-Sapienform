@@ -47,7 +47,8 @@ class Settings(BaseSettings):
 
     # Metacognition
     metacog_enable: bool = Field(False, alias="EQUILIBRIUM_METACOG_ENABLE")
-    metacog_baseline_interval_sec: float = Field(60.0, alias="EQUILIBRIUM_METACOG_BASELINE_INTERVAL_SEC")
+    metacog_baseline_interval_sec: float = Field(3600.0, alias="EQUILIBRIUM_METACOG_BASELINE_INTERVAL_SEC")
+    metacog_baseline_max_skips: int = Field(3, alias="EQUILIBRIUM_METACOG_BASELINE_MAX_SKIPS")
     metacog_cooldown_sec: float = Field(30.0, alias="EQUILIBRIUM_METACOG_COOLDOWN_SEC")
     metacog_pad_pulse_threshold: float = Field(0.8, alias="EQUILIBRIUM_METACOG_PAD_PULSE_THRESHOLD")
     metacog_recall_enabled: bool = Field(

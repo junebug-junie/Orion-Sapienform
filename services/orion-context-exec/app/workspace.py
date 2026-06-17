@@ -42,7 +42,13 @@ class ContextExecWorkspace:
 
 
 def workspace_dir(run_id: str) -> Path:
-    return Path(settings.context_exec_workspace_root) / run_id
+    if not run_id or run_id != Path(run_id).name:
+        raise ValueError(f"invalid workspace run_id: {run_id!r}")
+    root = Path(settings.context_exec_workspace_root).resolve()
+    target = (root / run_id).resolve()
+    if target != root and root not in target.parents:
+        raise ValueError(f"workspace path escapes root: {run_id!r}")
+    return target
 
 
 def _load_existing_workspace(run_id: str, root: Path) -> ContextExecWorkspace | None:

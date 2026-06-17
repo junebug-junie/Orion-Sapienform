@@ -274,19 +274,28 @@ class ContextExecRunner:
                 run_id,
                 exc,
             )
-            return None
+            return {
+                "enabled": True,
+                "allocated": False,
+                "error": str(exc),
+            }
 
     @staticmethod
     def _apply_workspace_debug(
         runtime_debug: dict[str, Any],
         workspace_info: dict[str, Any] | None,
     ) -> None:
-        if workspace_info:
-            runtime_debug["workspace"] = {
-                "enabled": True,
-                "allocated": True,
-                "root": workspace_info["root"],
-            }
+        if not workspace_info:
+            return
+        block: dict[str, Any] = {
+            "enabled": bool(workspace_info.get("enabled", True)),
+            "allocated": bool(workspace_info.get("allocated", False)),
+        }
+        if workspace_info.get("root"):
+            block["root"] = workspace_info["root"]
+        if workspace_info.get("error"):
+            block["error"] = workspace_info["error"]
+        runtime_debug["workspace"] = block
 
     def _persist_run_ledger(
         self,

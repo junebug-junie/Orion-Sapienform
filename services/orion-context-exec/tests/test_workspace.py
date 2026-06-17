@@ -121,6 +121,17 @@ async def test_runner_workspace_allocation_fail_open(monkeypatch: pytest.MonkeyP
         req = ContextExecRequestV1(text="hello", mode="belief_provenance")
         run = await runner.run(req)
     assert run.status in {"ok", "schema_invalid", "error"}
+    ws = run.runtime_debug.get("workspace") or {}
+    assert ws.get("enabled") is True
+    assert ws.get("allocated") is False
+    assert "boom" in str(ws.get("error", ""))
+
+
+def test_workspace_dir_rejects_traversal(workspace_roots: Path) -> None:
+    with pytest.raises(ValueError, match="invalid workspace run_id"):
+        workspace_dir("../evil")
+    with pytest.raises(ValueError, match="invalid workspace run_id"):
+        workspace_dir("ctxrun/evil")
 
 
 @pytest.mark.asyncio

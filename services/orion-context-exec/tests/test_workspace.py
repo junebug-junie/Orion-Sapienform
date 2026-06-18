@@ -108,6 +108,26 @@ def test_materialize_repo_skips_git(
 
 
 @pytest.mark.asyncio
+async def test_runner_workspace_disabled_visible_in_runtime_debug(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.runner.settings.context_exec_workspace_enabled", False)
+    monkeypatch.setattr("app.runner.settings.context_exec_run_ledger_enabled", False)
+    monkeypatch.setattr("app.runner.settings.context_exec_agent_synthesis_enabled", False)
+    monkeypatch.setattr("app.runner.settings.context_exec_proposal_ledger_enabled", False)
+    monkeypatch.setattr("app.runner.settings.context_exec_fake_organs_enabled", True)
+    monkeypatch.setattr("app.runner.settings.orion_bus_enabled", False)
+    monkeypatch.setattr("app.runner.settings.rlm_engine", "fake")
+    runner = ContextExecRunner()
+    req = ContextExecRequestV1(text="hello", mode="belief_provenance")
+    run = await runner.run(req)
+    ws = run.runtime_debug.get("workspace") or {}
+    assert ws.get("enabled") is False
+    assert ws.get("allocated") is False
+    assert ws.get("reason") == "CONTEXT_EXEC_WORKSPACE_ENABLED=false"
+
+
+@pytest.mark.asyncio
 async def test_runner_workspace_allocation_fail_open(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("app.runner.settings.context_exec_workspace_enabled", True)
     monkeypatch.setattr("app.runner.settings.context_exec_run_ledger_enabled", False)

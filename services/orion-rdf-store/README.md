@@ -31,6 +31,19 @@ Writer env (typical Fuseki):
 - `RDF_STORE_BASE_URL=http://orion-athena-fuseki:3030`
 - `RDF_STORE_DATASET=orion`
 
+### Athena production layout (Jun 2026)
+
+| Path | Role |
+|------|------|
+| `/mnt/graphdb/rdf-store/fuseki` | **Active** Fuseki data dir (nvme) — bind-mount → `/fuseki` |
+| `/mnt/storage-lukewarm/rdf-store/fuseki` | Legacy tier; should be empty after cutover |
+| `/mnt/graphdb/rdf_logs/fuseki-compact-run.log` | Compact job log |
+| `/mnt/scripts/Orion-Sapienform/logs/orion-fuseki-recover.log` | Recover cron log |
+
+**JVM (`.env`):** `FUSEKI_JVM_XMS=8g`, `FUSEKI_JVM_XMX=96g`. Fuseki runs as uid **100** (`fuseki`) inside `stain/jena-fuseki:5.1.0`.
+
+**Writer throttling** ([`orion-rdf-writer/.env`](../orion-rdf-writer/.env)): `RDF_WRITE_WORKERS=2`, `RDF_WRITE_MAX_IN_FLIGHT=8` — slows TDB bloat; does not replace compact.
+
 ---
 
 ## Disk: why Fuseki hurt us (read this before migrating again)
@@ -64,10 +77,10 @@ If the **destination filesystem hits 100%**, Fuseki fails with `No space left on
 | Active vs stale sizes | `make storage-status` |
 | Remove duplicate after cutover | `CONFIRM=1 make delete-stale-copy` |
 | Block start when disk low | `make disk-guard` (`FUSEKI_MIN_FREE_GB`, default 50) |
-| Shrink index bloat (offline) | `SOURCE=…/databases/orion DEST=…/fuseki-compact/databases/orion make compact` |
+| Shrink index bloat (offline) | `SOURCE=/mnt/graphdb/rdf-store/fuseki/databases/orion make compact` |
 | Remount if active tree truncated | `make restore-mount` |
 
-**Typical cutover cleanup:** verify health on nvme → `CONFIRM=1 make delete-stale-copy` (reclaim ~1.3T on lukewarm) → run **`make compact`** to shrink TDB index bloat.
+**Typical cutover cleanup:** verify health on nvme → `CONFIRM=1 make delete-stale-copy` (reclaim stale lukewarm copy) → `make compact` to shrink TDB index bloat.
 
 ---
 
@@ -82,16 +95,33 @@ These are **different problems**:
 | Fix | **`make compact`** (offline rebuild) — **keeps your triples**, rewrites indexes tighter | Do **not** SPARQL DELETE memory graphs |
 | Wrong fix | Hoping deletes aren't needed | Retention/prune on autonomy/chat (deletes memory) |
 
-**`make compact` is the primary tool for your goal.** It stops Fuseki briefly, runs `tdb2.tdbcompact`, swaps in a tighter database. Logical triple count stays the same; disk size should drop dramatically (exact ratio depends on how bloated indexes are).
+**`make compact` is the primary tool for index bloat.** It stops Fuseki and rdf-writer, runs Jena 5 **`tdb2.tdbcompact --loc --deleteOld`** in-place, fixes dataset ownership, restarts services, and runs `make health-probe`. Logical triple count stays the same; on-disk size should drop dramatically.
 
 ```bash
-# Needs free space on DEST filesystem (see script output). Example:
-SOURCE=/mnt/storage-lukewarm/rdf-store/fuseki/databases/orion \
-DEST=/mnt/graphdb/rdf-store/fuseki-compact/databases/orion \
-make compact
+cd services/orion-rdf-store
+
+# Dry-run (checks disk space, prints plan):
+SOURCE=/mnt/graphdb/rdf-store/fuseki/databases/orion DRY_RUN=1 make compact
+
+# Manual compact (expect Fuseki downtime; duration scales with dataset size):
+SOURCE=/mnt/graphdb/rdf-store/fuseki/databases/orion make compact
 ```
 
-Schedule compact **quarterly** or when `make storage-status` shows disk creeping up while triple count is stable.
+**Jun 2026 reference:** ~395 GB bloated → ~33 GB after compact (~30 min on nvme).
+
+### How `scripts/fuseki_tdb_compact.sh` works
+
+Jena 5 compacts **in-place** (creates a new `Data-NNNN` tree, then `--deleteOld` removes the previous one). There is **no `--loc2`** destination flag — older docs/scripts that used `--loc2` will fail.
+
+The script:
+
+1. Creates **`FUSEKI_DATA_DIR/.compact-in-progress`** so `make recover` skips restarts during compact
+2. Stops **`orion-athena-fuseki`** and **`orion-athena-rdf-writer`**
+3. Runs **`tdb2.tdbcompact`** via host Java, or **`eclipse-temurin:21-jre-jammy`** Docker if no host JDK
+4. **`chown -R 100:101`** on the dataset (compact in Docker runs as root; without this step Fuseki returns **503** / `AccessDeniedException` on `tdb.lock`)
+5. Restarts Fuseki + rdf-writer, runs **`make health-probe`**
+
+Requires free space on the dataset filesystem **≥ current dataset size** (peak usage during compact).
 
 Also keep write pressure low (`RDF_WRITE_WORKERS=2`, `RDF_WRITE_MAX_IN_FLIGHT=8`) to slow future bloat buildup.
 
@@ -119,26 +149,116 @@ Under heavy write load, Fuseki/TDB2 can return **`Maximum lock count exceeded`**
 1. Pin `FUSEKI_IMAGE=stain/jena-fuseki:5.1.0+`
 2. `make health-probe` — ping + query + graph-store POST
 3. `make recover` — restart when write probe fails
-4. Cron every 15–30 min: `make recover`
+4. Cron every 20 min: `make recover` (see [Scheduled maintenance](#scheduled-maintenance-athena-cron))
 5. Lower writer concurrency: `RDF_WRITE_WORKERS=2`, `RDF_WRITE_MAX_IN_FLIGHT=8`
 6. Client retries via `FUSEKI_HTTP_RETRY_*` on Hub/writer paths
+7. Weekly **`make compact`** — primary defense against index bloat causing lock/GC pressure
 
 ---
 
-## Recommended Athena cron (copy/paste)
+## Scheduled maintenance (Athena cron)
+
+Install on the host that runs Fuseki (`crontab -e` as `athena`):
 
 ```cron
-# Fuseki lock recovery
-*/20 * * * * cd /path/to/Orion-Sapienform/services/orion-rdf-store && make recover >/dev/null 2>&1
+# Fuseki lock recovery — restarts when health-probe fails; skips if compact lock present
+*/20 * * * * cd /mnt/scripts/Orion-Sapienform/services/orion-rdf-store && make recover >> /mnt/scripts/Orion-Sapienform/logs/orion-fuseki-recover.log 2>&1
 
-# Weekly TDB compact (reclaim index bloat — keeps all memory triples)
-0 3 * * 0 cd /path/to/Orion-Sapienform/services/orion-rdf-store && \
-  SOURCE=/mnt/storage-lukewarm/rdf-store/fuseki/databases/orion \
-  DEST=/mnt/graphdb/rdf-store/fuseki-compact/databases/orion \
-  make compact >> /mnt/graphdb/rdf_logs/fuseki-compact.log 2>&1
+# Weekly TDB compact — reclaims index bloat; ~downtime scales with dataset size
+0 3 * * 0 cd /mnt/scripts/Orion-Sapienform/services/orion-rdf-store && SOURCE=/mnt/graphdb/rdf-store/fuseki/databases/orion make compact >> /mnt/graphdb/rdf_logs/fuseki-compact-run.log 2>&1
 ```
 
-Adjust paths and ensure `SOURCE`/`DEST` are set for `compact` in that cron entry or in a wrapper script.
+| Job | Prevents bloat? | What it does |
+|-----|-----------------|--------------|
+| **`make recover`** (every 20 min) | No | Ping + query + write probe; restart on failure |
+| **`make compact`** (weekly) | **Yes** | Offline in-place TDB rebuild; keeps all triples |
+| Writer `RDF_WRITE_*` limits | Slows bloat | Continuous; configured in orion-rdf-writer |
+| **`make disk-guard`** | No (ENOSPC guard) | Only runs on manual `make up` |
+
+After weekly compact, confirm success:
+
+```bash
+tail -30 /mnt/graphdb/rdf_logs/fuseki-compact-run.log   # look for "Compact complete"
+cd services/orion-rdf-store && make health-probe
+du -sh /mnt/graphdb/rdf-store/fuseki/databases/orion
+```
+
+Schedule compact more often if `make storage-status` shows dataset size creeping up while triple count is stable.
+
+---
+
+## Troubleshooting
+
+### Fuseki slow / high CPU / OOM
+
+- Check dataset size: `du -sh $FUSEKI_DATA_DIR/databases/orion` — bloat shows up here before RAM helps
+- Confirm JVM heap in `.env` (`FUSEKI_JVM_XMX`); container must be recreated after changes
+- Ensure nothing else is hammering the store (stuck integration tests, runaway pytest)
+- Run **`make compact`** if disk >> expected for triple count
+
+### Fuseki 503 after compact
+
+Usually **`tdb.lock` owned by root** after Docker compact. Fix and restart:
+
+```bash
+docker stop orion-athena-fuseki
+docker run --rm -v /mnt/graphdb/rdf-store/fuseki/databases/orion:/db alpine \
+  sh -c 'chown -R 100:101 /db && chmod -R u+rwX,g+rwX /db'
+rm -f /mnt/graphdb/rdf-store/fuseki/.compact-in-progress
+cd services/orion-rdf-store && docker compose restart orion-athena-fuseki && make health-probe
+```
+
+The compact script performs this chown automatically; manual fix only needed if compact was interrupted or run outside the script.
+
+### Recover cron restarted Fuseki during compact
+
+`make recover` checks **`$FUSEKI_DATA_DIR/.compact-in-progress`** and exits without restarting. If compact was killed mid-run, remove a stale lock:
+
+```bash
+rm -f /mnt/graphdb/rdf-store/fuseki/.compact-in-progress
+```
+
+### `Maximum lock count exceeded`
+
+See [Performance and lock exhaustion](#performance-and-lock-exhaustion) above.
+
+---
+
+## Recreate Athena Fuseki ops (checklist)
+
+Use this after a fresh host, lost crontab, or disaster recovery.
+
+1. **Env & stack**
+   ```bash
+   cd services/orion-rdf-store
+   cp .env_example .env
+   # Confirm: FUSEKI_DATA_DIR=/mnt/graphdb/rdf-store/fuseki
+   # Confirm: FUSEKI_JVM_XMS=8g, FUSEKI_JVM_XMX=96g
+   make preflight && make disk-guard && make up && make health-probe
+   ```
+
+2. **Writer** — point [`orion-rdf-writer`](../orion-rdf-writer/) at `http://orion-athena-fuseki:3030`; keep `RDF_WRITE_WORKERS=2`, `RDF_WRITE_MAX_IN_FLIGHT=8`.
+
+3. **Cron** — paste the two lines from [Scheduled maintenance](#scheduled-maintenance-athena-cron); ensure log dirs exist:
+   ```bash
+   mkdir -p /mnt/graphdb/rdf_logs /mnt/scripts/Orion-Sapienform/logs
+   ```
+
+4. **Post-migration cleanup** (if moving or rsyncing data):
+   ```bash
+   make storage-status
+   CONFIRM=1 make delete-stale-copy   # after nvme is healthy active mount
+   SOURCE=/mnt/graphdb/rdf-store/fuseki/databases/orion make compact
+   ```
+
+5. **Verify**
+   ```bash
+   make health-probe
+   du -sh /mnt/graphdb/rdf-store/fuseki/databases/orion
+   df -h /mnt/graphdb /mnt/storage-lukewarm
+   ```
+
+**Do not use:** `--loc2` on `tdb2.tdbcompact` (Jena 5), or `DEST=` swap-based compact flows from pre-2026 scripts — they fail on current Jena.
 
 ---
 

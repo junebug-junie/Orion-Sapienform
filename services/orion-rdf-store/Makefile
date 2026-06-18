@@ -13,7 +13,7 @@ help:
 	@echo "  storage-status     -> show active mount vs stale duplicate sizes"
 	@echo "  delete-stale-copy  -> remove non-active copy (CONFIRM=1; frees ~1.3T after migration)"
 	@echo "  restore-mount      -> remount Fuseki on the copy that still has a full dataset"
-	@echo "  compact            -> offline TDB2 compact (SOURCE/DEST env; stops Fuseki)"
+	@echo "  compact            -> offline TDB2 in-place compact (SOURCE env; stops Fuseki)"
 	@echo "  prune              -> SPARQL retention prune (RDF_RETENTION_* env)"
 	@echo "  prune-dry-run      -> retention dry-run (no UPDATE executed)"
 	@echo "  config             -> docker compose config sanity-check"

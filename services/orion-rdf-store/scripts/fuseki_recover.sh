@@ -7,6 +7,12 @@ cd "${ROOT}"
 
 SERVICE="${FUSEKI_SERVICE_NAME:-orion-athena-fuseki}"
 WAIT_SEC="${FUSEKI_RECOVER_WAIT_SEC:-20}"
+COMPACT_LOCK="${FUSEKI_COMPACT_LOCK:-${FUSEKI_DATA_DIR:-/mnt/graphdb/rdf-store/fuseki}/.compact-in-progress}"
+
+if [ -f "${COMPACT_LOCK}" ]; then
+  echo "fuseki_recover: compact in progress (${COMPACT_LOCK}); skipping"
+  exit 0
+fi
 
 if ./scripts/fuseki_health_probe.sh; then
   echo "fuseki_recover: ${SERVICE} healthy"

@@ -248,9 +248,17 @@ class ContextExecRunner:
         self,
         run_id: str,
         request: ContextExecRequestV1,
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         if not settings.context_exec_workspace_enabled:
-            return None
+            logger.info(
+                "context-exec workspace disabled run_id=%s reason=CONTEXT_EXEC_WORKSPACE_ENABLED=false",
+                run_id,
+            )
+            return {
+                "enabled": False,
+                "allocated": False,
+                "reason": "CONTEXT_EXEC_WORKSPACE_ENABLED=false",
+            }
         try:
             from .workspace import allocate_workspace
 
@@ -258,6 +266,11 @@ class ContextExecRunner:
                 run_id,
                 request=request,
                 repo_root=settings.context_exec_repo_root,
+            )
+            logger.info(
+                "context-exec workspace allocated run_id=%s root=%s",
+                run_id,
+                workspace.root,
             )
             return {
                 "enabled": True,
@@ -286,7 +299,7 @@ class ContextExecRunner:
         runtime_debug: dict[str, Any],
         workspace_info: dict[str, Any] | None,
     ) -> None:
-        if not workspace_info:
+        if workspace_info is None:
             return
         block: dict[str, Any] = {
             "enabled": bool(workspace_info.get("enabled", True)),
@@ -294,6 +307,8 @@ class ContextExecRunner:
         }
         if workspace_info.get("root"):
             block["root"] = workspace_info["root"]
+        if workspace_info.get("reason"):
+            block["reason"] = workspace_info["reason"]
         if workspace_info.get("error"):
             block["error"] = workspace_info["error"]
         runtime_debug["workspace"] = block

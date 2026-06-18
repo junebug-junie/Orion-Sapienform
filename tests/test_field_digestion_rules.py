@@ -107,6 +107,52 @@ def test_diffusion_spreads_gpu_pressure_to_capability() -> None:
     assert state.capability_vectors["capability:llm_inference"]["pressure"] == 0.68
 
 
+def test_capability_to_capability_diffusion() -> None:
+    """Transport capability pressure must bleed into orchestration via cap→cap edge."""
+    from app.digestion.diffusion import apply_diffusion
+
+    edge = FieldEdgeV1(
+        source_id="capability:transport",
+        target_id="capability:orchestration",
+        edge_type="capability_capability",
+        weight=0.70,
+        channel_map={"transport_pressure": "transport_pressure"},
+    )
+    state = FieldStateV1(
+        generated_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+        tick_id="tick_cap_cap",
+        node_vectors={},
+        capability_vectors={
+            "capability:transport": {"transport_pressure": 1.0},
+            "capability:orchestration": {"transport_pressure": 0.0},
+        },
+        edges=[edge],
+    )
+    apply_diffusion(state, diffusion_rate=1.0)
+    assert state.capability_vectors["capability:orchestration"]["transport_pressure"] == 0.70
+
+
+def test_reasoning_load_diffuses_to_orchestration() -> None:
+    """reasoning_load on athena must reach orchestration.reasoning_pressure via lattice edges."""
+    from pathlib import Path
+    from app.graph.lattice import load_lattice
+    from app.tensor.field_state import empty_field_state
+    from app.tensor.update_rules import run_digestion_tick
+    from app.ingest.state_deltas import Perturbation
+
+    lattice_path = Path("config/field/orion_field_topology.v1.yaml")
+    lattice = load_lattice(lattice_path)
+    field = empty_field_state(lattice=lattice, now=datetime(2026, 5, 24, tzinfo=timezone.utc), tick_id="tick_rload")
+    field = run_digestion_tick(
+        field,
+        perturbations=[Perturbation(node_id="node:athena", channel="reasoning_load", intensity=1.0, label="test")],
+        decay_rate=1.0,
+        diffusion_rate=1.0,
+    )
+    cap = field.capability_vectors.get("capability:orchestration") or {}
+    assert cap.get("reasoning_pressure", 0.0) > 0.0, "reasoning_load on athena must reach orchestration.reasoning_pressure"
+
+
 def test_suppression_blocks_availability_panic_for_circe() -> None:
     from app.digestion.suppression import apply_suppression
 

@@ -11,7 +11,7 @@ class FieldEdgeV1(BaseModel):
 
     source_id: str
     target_id: str
-    edge_type: Literal["node_capability", "node_service", "service_organ", "capability_cognitive", "node_dependency"]
+    edge_type: Literal["node_capability", "node_service", "service_organ", "capability_cognitive", "node_dependency", "capability_capability"]
     weight: float = Field(ge=0.0, le=1.0)
     channel_map: dict[str, str] = Field(default_factory=dict)
 

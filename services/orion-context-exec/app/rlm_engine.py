@@ -328,6 +328,9 @@ def build_engine(name: str) -> RLMEngine:
         return TimeoutRLMEngine()
     if selected == "alexzhang":
         return AlexZhangRLMEngine()
+    if selected == "smolcode":
+        from .smolcode_engine import SmolagentsCodeEngine
+        return SmolagentsCodeEngine()
     if selected == "fake":
         return FakeRLMEngine()
     logger.warning("unknown CONTEXT_EXEC_RLM_ENGINE=%s; falling back to fake", name)

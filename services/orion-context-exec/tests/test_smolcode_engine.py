@@ -113,3 +113,12 @@ async def test_smolcode_model_calls_agent_lane():
     runtime.llm_chat.assert_awaited_once()
     _, kwargs = runtime.llm_chat.call_args
     assert kwargs.get("route") == "agent"
+
+
+def test_build_engine_smolcode():
+    from app.rlm_engine import build_engine
+    from app.smolcode_engine import SmolagentsCodeEngine
+
+    engine = build_engine("smolcode")
+    assert isinstance(engine, SmolagentsCodeEngine)
+    assert engine.engine_name == "smolcode"

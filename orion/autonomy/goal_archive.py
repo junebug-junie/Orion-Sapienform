@@ -9,7 +9,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
 from orion.autonomy.constants import AUTONOMY_GOALS_GRAPH
-from orion.graph.backend_config import resolve_autonomy_read_query_url, resolve_graph_update_url, resolve_rdf_store_auth
+from orion.graph.backend_config import (
+    resolve_autonomy_graph_update_url,
+    resolve_autonomy_read_query_url,
+    resolve_graph_update_url,
+    resolve_rdf_store_auth,
+)
 from orion.graph.sparql_client import SparqlHttpClient
 
 logger = logging.getLogger("orion.autonomy.goal_archive")
@@ -59,7 +64,9 @@ def build_archive_candidates(
 def _resolve_graph_endpoints() -> tuple[str, str, str | None, str | None]:
     query_url, _src = resolve_autonomy_read_query_url()
     if query_url:
-        update_url = resolve_graph_update_url() or query_url
+        update_url, _usrc = resolve_autonomy_graph_update_url()
+        if not update_url:
+            update_url = resolve_graph_update_url() or query_url
         user, password = resolve_rdf_store_auth()
         return query_url, update_url, user, password
 

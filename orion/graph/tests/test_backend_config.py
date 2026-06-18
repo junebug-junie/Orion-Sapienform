@@ -73,3 +73,13 @@ def test_autonomy_read_prefers_autonomy_query_url(monkeypatch: pytest.MonkeyPatc
     url, src = resolve_autonomy_read_query_url()
     assert url == "http://a/orion/query"
     assert src == "AUTONOMY_GRAPH_QUERY_URL"
+
+
+def test_autonomy_update_prefers_autonomy_update_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    from orion.graph.backend_config import resolve_autonomy_graph_update_url
+
+    monkeypatch.setenv("AUTONOMY_GRAPH_UPDATE_URL", "http://a/orion/update")
+    monkeypatch.setenv("RDF_STORE_UPDATE_URL", "http://b/orion/update")
+    url, src = resolve_autonomy_graph_update_url()
+    assert url == "http://a/orion/update"
+    assert src == "AUTONOMY_GRAPH_UPDATE_URL"

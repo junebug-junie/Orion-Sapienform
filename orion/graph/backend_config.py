@@ -236,6 +236,26 @@ def resolve_autonomy_read_query_url(environ: Mapping[str, str] | None = None) ->
     return None, "unconfigured"
 
 
+def resolve_autonomy_graph_update_url(environ: Mapping[str, str] | None = None) -> tuple[str | None, str]:
+    """SPARQL update URL for autonomy writes (AUTONOMY_GRAPH_UPDATE_URL wins, then RDF_STORE, then Fuseki derive)."""
+    env = dict(os.environ if environ is None else environ)
+    u = _strip(env.get("AUTONOMY_GRAPH_UPDATE_URL"))
+    if u:
+        return u, "AUTONOMY_GRAPH_UPDATE_URL"
+    u = _strip(env.get("RDF_STORE_UPDATE_URL"))
+    if u:
+        return u, "RDF_STORE_UPDATE_URL"
+    cfg = resolve_graph_backend(env)
+    if cfg.update_url and cfg.backend in {"fuseki", "sparql"}:
+        return cfg.update_url, cfg.source
+    base = _fuseki_base()
+    ds = _fuseki_dataset()
+    if _strip(env.get("RDF_STORE_BACKEND")).lower() == "fuseki" and base:
+        _, url, _, src = _derive_fuseki_urls(base, ds)
+        return url, src
+    return None, "unconfigured"
+
+
 def resolve_generic_sparql_read_query_url(environ: Mapping[str, str] | None = None) -> tuple[str | None, str]:
     """Non-autonomy reads (self-study, orionmem): RDF_STORE_QUERY_URL first, then autonomy URL, then resolver."""
     env = dict(os.environ if environ is None else environ)

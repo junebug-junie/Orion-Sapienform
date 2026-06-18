@@ -33,6 +33,53 @@ def test_decay_fades_pressure_channels() -> None:
     assert state.node_vectors["node:atlas"]["availability"] == 1.0
 
 
+def test_decay_covers_execution_and_transport_channels() -> None:
+    """Execution and transport channels must decay — previously they were omitted and pinned at 1.0."""
+    from app.digestion.decay import apply_decay
+
+    state = FieldStateV1(
+        generated_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+        tick_id="tick_decay_exec",
+        node_vectors={
+            "node:athena": {
+                "execution_load": 1.0,
+                "execution_friction": 1.0,
+                "failure_pressure": 1.0,
+                "reasoning_load": 1.0,
+                "transport_pressure": 1.0,
+                "contract_pressure": 1.0,
+                "reliability_pressure": 1.0,
+                "availability": 1.0,          # must NOT decay
+                "delivery_confidence": 1.0,   # must NOT decay
+            }
+        },
+        capability_vectors={
+            "capability:orchestration": {
+                "pressure": 1.0,
+                "execution_pressure": 1.0,
+                "reliability_pressure": 1.0,
+                "confidence": 1.0,            # must NOT decay
+            }
+        },
+        edges=[],
+    )
+    apply_decay(state, decay_rate=0.92)
+    node = state.node_vectors["node:athena"]
+    cap = state.capability_vectors["capability:orchestration"]
+
+    for ch in ("execution_load", "execution_friction", "failure_pressure",
+               "reasoning_load", "transport_pressure", "contract_pressure", "reliability_pressure"):
+        assert node[ch] < 1.0, f"node channel {ch!r} should have decayed"
+
+    assert node["availability"] == 1.0, "availability must not decay"
+    assert node["delivery_confidence"] == 1.0, "delivery_confidence must not decay"
+
+    assert cap["pressure"] < 1.0, "capability pressure should decay"
+    assert cap["execution_pressure"] < 1.0, "capability execution_pressure should decay"
+    assert cap["reliability_pressure"] < 1.0, "capability reliability_pressure should decay"
+    assert cap["confidence"] == 1.0, "capability confidence must not decay"
+
+
 def test_diffusion_spreads_gpu_pressure_to_capability() -> None:
     from app.digestion.diffusion import apply_diffusion
 
@@ -58,6 +105,52 @@ def test_diffusion_spreads_gpu_pressure_to_capability() -> None:
     )
     apply_diffusion(state, diffusion_rate=1.0)
     assert state.capability_vectors["capability:llm_inference"]["pressure"] == 0.68
+
+
+def test_capability_to_capability_diffusion() -> None:
+    """Transport capability pressure must bleed into orchestration via cap→cap edge."""
+    from app.digestion.diffusion import apply_diffusion
+
+    edge = FieldEdgeV1(
+        source_id="capability:transport",
+        target_id="capability:orchestration",
+        edge_type="capability_capability",
+        weight=0.70,
+        channel_map={"transport_pressure": "transport_pressure"},
+    )
+    state = FieldStateV1(
+        generated_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+        tick_id="tick_cap_cap",
+        node_vectors={},
+        capability_vectors={
+            "capability:transport": {"transport_pressure": 1.0},
+            "capability:orchestration": {"transport_pressure": 0.0},
+        },
+        edges=[edge],
+    )
+    apply_diffusion(state, diffusion_rate=1.0)
+    assert state.capability_vectors["capability:orchestration"]["transport_pressure"] == 0.70
+
+
+def test_reasoning_load_diffuses_to_orchestration() -> None:
+    """reasoning_load on athena must reach orchestration.reasoning_pressure via lattice edges."""
+    from pathlib import Path
+    from app.graph.lattice import load_lattice
+    from app.tensor.field_state import empty_field_state
+    from app.tensor.update_rules import run_digestion_tick
+    from app.ingest.state_deltas import Perturbation
+
+    lattice_path = Path("config/field/orion_field_topology.v1.yaml")
+    lattice = load_lattice(lattice_path)
+    field = empty_field_state(lattice=lattice, now=datetime(2026, 5, 24, tzinfo=timezone.utc), tick_id="tick_rload")
+    field = run_digestion_tick(
+        field,
+        perturbations=[Perturbation(node_id="node:athena", channel="reasoning_load", intensity=1.0, label="test")],
+        decay_rate=1.0,
+        diffusion_rate=1.0,
+    )
+    cap = field.capability_vectors.get("capability:orchestration") or {}
+    assert cap.get("reasoning_pressure", 0.0) > 0.0, "reasoning_load on athena must reach orchestration.reasoning_pressure"
 
 
 def test_suppression_blocks_availability_panic_for_circe() -> None:

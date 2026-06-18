@@ -5,7 +5,7 @@ from orion.schemas.field_state import FieldStateV1
 
 def apply_diffusion(state: FieldStateV1, *, diffusion_rate: float) -> None:
     for edge in state.edges:
-        src = state.node_vectors.get(edge.source_id, {})
+        src = state.node_vectors.get(edge.source_id) or state.capability_vectors.get(edge.source_id, {})
         tgt = state.capability_vectors.setdefault(edge.target_id, {})
         for src_ch, tgt_ch in edge.channel_map.items():
             src_val = float(src.get(src_ch, 0.0))

@@ -13,6 +13,7 @@ class Perturbation:
     channel: str
     intensity: float
     label: str
+    mode: str = "add"  # "add" accumulates; "replace" sets the channel to exactly intensity
 
 
 def _node_key(raw: str) -> str:
@@ -101,6 +102,7 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                         channel=channel,
                         intensity=float(hints[key]),
                         label=delta.delta_id,
+                        mode="replace",
                     )
                 )
 

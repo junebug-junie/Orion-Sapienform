@@ -165,7 +165,7 @@ class SmolagentsCodeEngine(RLMEngine):
                 "mode": request.mode,
             }
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         tools = _make_tools(organ_runtime, loop)
         model = OrionSmolagentsModel(organ_runtime, loop)
         agent = CodeAgent(tools=tools, model=model, max_steps=12)

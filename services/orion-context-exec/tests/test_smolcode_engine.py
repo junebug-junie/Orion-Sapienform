@@ -98,7 +98,7 @@ async def test_smolcode_model_calls_agent_lane():
     from app.smolcode_engine import OrionSmolagentsModel
 
     runtime = _make_runtime()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     model = OrionSmolagentsModel(runtime, loop)
 
     messages = [

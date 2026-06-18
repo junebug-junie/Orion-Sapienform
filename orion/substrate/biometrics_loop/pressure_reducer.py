@@ -180,7 +180,10 @@ def reduce_node_pressure_candidates(
             projection_operation = "update"
 
         node_state.last_updated_at = clock
-        node_state.evidence_event_ids = sorted(set(node_state.evidence_event_ids + evidence))
+        # Cap to 200 most-recent IDs — this list is append-only and grows to 400K+ events
+        # without a bound, causing deepcopy/serialize to become O(N) per tick.
+        all_ids = sorted(set(node_state.evidence_event_ids + evidence))
+        node_state.evidence_event_ids = all_ids[-200:]
 
         if role == "node_pressure_detected":
             if pressure_kind not in node_state.active_pressures:

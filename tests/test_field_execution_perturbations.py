@@ -41,6 +41,45 @@ def test_execution_run_delta_maps_to_node_channels() -> None:
     assert perturbations[0].node_id == "node:athena"
 
 
+def test_execution_perturbations_use_replace_mode() -> None:
+    """Two consecutive execution_run deltas should not accumulate — second replaces first."""
+    delta_a = StateDeltaV1(
+        delta_id="delta_exec_a",
+        target_projection="active_execution_trajectory",
+        target_kind="execution_run",
+        target_id="cortex.exec:athena:corr-a",
+        operation="update",
+        after={"node_id": "athena", "pressure_hints": {"execution_load": 1.0, "failure_pressure": 1.0}},
+        caused_by_event_ids=["gev_a"],
+        reducer_id="execution_trajectory_reducer",
+    )
+    delta_b = StateDeltaV1(
+        delta_id="delta_exec_b",
+        target_projection="active_execution_trajectory",
+        target_kind="execution_run",
+        target_id="cortex.exec:athena:corr-b",
+        operation="update",
+        after={"node_id": "athena", "pressure_hints": {"execution_load": 0.25, "failure_pressure": 0.0}},
+        caused_by_event_ids=["gev_b"],
+        reducer_id="execution_trajectory_reducer",
+    )
+    lattice = load_lattice(LATTICE)
+    field = empty_field_state(lattice=lattice, now=FIXED_TS, tick_id="tick_replace")
+
+    # Apply first (maxed) delta then a second (low) delta in the same tick
+    all_perturbations = delta_to_perturbations(delta_a) + delta_to_perturbations(delta_b)
+    field = run_digestion_tick(field, perturbations=all_perturbations, decay_rate=1.0, diffusion_rate=1.0)
+
+    node = field.node_vectors.get("node:athena") or {}
+    # replace mode: last write wins — execution_load should be 0.25, not 1.0
+    assert node.get("execution_load") == 0.25, f"expected 0.25 got {node.get('execution_load')}"
+    assert node.get("failure_pressure") == 0.0, f"expected 0.0 got {node.get('failure_pressure')}"
+
+    # verify all execution perturbations carry replace mode
+    for p in delta_to_perturbations(delta_a):
+        assert p.mode == "replace", f"channel {p.channel} should be replace mode"
+
+
 def test_execution_perturbations_diffuse_to_orchestration_capability() -> None:
     lattice = load_lattice(LATTICE)
     delta = StateDeltaV1(

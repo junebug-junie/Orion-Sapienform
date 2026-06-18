@@ -49,3 +49,49 @@ def test_repo_write_blocked():
         assert False, "expected PermissionError"
     except PermissionError:
         pass
+
+
+def test_repo_list_top_level(tmp_path, monkeypatch):
+    from app import settings as settings_mod
+
+    (tmp_path / "services" / "demo").mkdir(parents=True)
+    (tmp_path / "services" / "demo" / "main.py").write_text("pass\n")
+    (tmp_path / "services" / "demo" / ".env").write_text("SECRET=1\n")
+    (tmp_path / "docker").mkdir()
+
+    monkeypatch.setattr(settings_mod.settings, "context_exec_repo_root", str(tmp_path))
+    monkeypatch.setattr(settings_mod.settings, "orion_repo_root", str(tmp_path))
+
+    from app import repo_tools
+    entries = repo_tools.repo_list("")
+    assert "services/" in entries
+    assert "docker/" not in entries          # docker/ not in ALLOW_PREFIXES
+    assert not any(".env" in e for e in entries)
+
+
+def test_repo_list_subpath(tmp_path, monkeypatch):
+    from app import settings as settings_mod
+
+    svc = tmp_path / "services" / "orion-context-exec" / "app"
+    svc.mkdir(parents=True)
+    (svc / "runner.py").write_text("pass\n")
+    (svc / "__pycache__").mkdir()
+
+    monkeypatch.setattr(settings_mod.settings, "context_exec_repo_root", str(tmp_path))
+    monkeypatch.setattr(settings_mod.settings, "orion_repo_root", str(tmp_path))
+
+    from app import repo_tools
+    entries = repo_tools.repo_list("services/orion-context-exec/app")
+    assert "services/orion-context-exec/app/runner.py" in entries
+    assert not any("__pycache__" in e for e in entries)
+
+
+def test_repo_list_traversal_blocked(tmp_path, monkeypatch):
+    from app import settings as settings_mod
+
+    monkeypatch.setattr(settings_mod.settings, "context_exec_repo_root", str(tmp_path))
+    monkeypatch.setattr(settings_mod.settings, "orion_repo_root", str(tmp_path))
+
+    from app import repo_tools
+    assert repo_tools.repo_list("../outside") == []
+    assert repo_tools.repo_list("/etc") == []

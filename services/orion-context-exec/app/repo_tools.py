@@ -101,5 +101,26 @@ def repo_read(path: str, max_chars: int | None = None) -> RepoFile | None:
     return RepoFile(path=rel, content=content, truncated=truncated, source_ref=f"repo:{rel}")
 
 
+def repo_list(path: str = "", *, max_entries: int = 200) -> list[str]:
+    root = _repo_root()
+    sub = path.lstrip("/")
+    base = (root / sub).resolve() if sub else root
+    if not str(base).startswith(str(root)) or not base.is_dir():
+        return []
+    entries: list[str] = []
+    for fp in sorted(base.iterdir()):
+        rel = str(fp.relative_to(root)).replace("\\", "/")
+        if _is_denied(rel):
+            continue
+        if fp.is_dir():
+            if _is_allowed(rel + "/"):
+                entries.append(rel + "/")
+        elif _is_allowed(rel):
+            entries.append(rel)
+        if len(entries) >= max_entries:
+            break
+    return entries
+
+
 def repo_write(*_args: object, **_kwargs: object) -> None:
     raise PermissionError("repo.write blocked by context-exec policy")

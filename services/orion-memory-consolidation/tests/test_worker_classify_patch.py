@@ -97,10 +97,10 @@ async def test_consolidate_window_persists_draft(monkeypatch):
     bus = AsyncMock()
     bus.publish = AsyncMock()
 
-    async def _fake_suggest_once(*args, **kwargs):
+    async def _fake_suggest_with_escalation(*args, **kwargs):
         return {"draft": draft_data}
 
-    monkeypatch.setattr(worker, "suggest_once", _fake_suggest_once)
+    monkeypatch.setattr(worker, "suggest_with_escalation", _fake_suggest_with_escalation)
     monkeypatch.setattr(
         worker,
         "insert_pending_draft",

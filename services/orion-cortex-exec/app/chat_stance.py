@@ -1391,12 +1391,34 @@ def _load_autonomy_state_fallback_local(
     }
 
 
+def _should_skip_autonomy_graph_load(ctx: Dict[str, Any], *, verb: str) -> bool:
+    opts = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
+    meta = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+    if verb in {"memory_graph_suggest", "introspect_spark"}:
+        return True
+    if bool(ctx.get("skip_autonomy_context")) or bool(opts.get("skip_autonomy_context")):
+        return True
+    if bool(ctx.get("skip_chat_stance_inputs")) or bool(opts.get("skip_chat_stance_inputs")):
+        return True
+    if bool(meta.get("consolidation_suggest")):
+        return True
+    return False
+
+
 def _load_autonomy_state(ctx: Dict[str, Any]) -> Dict[str, Any]:
     started_at = time.perf_counter()
     graphdb_cfg = resolve_autonomy_graphdb_config()
     verb = str(ctx.get("verb") or "").strip().lower()
     mode = str(ctx.get("mode") or "").strip().lower()
     plan = resolve_autonomy_graph_read_plan(ctx)
+
+    if _should_skip_autonomy_graph_load(ctx, verb=verb):
+        logger.info(
+            "chat_stance_skip_autonomy_graph verb=%s correlation_id=%s",
+            verb,
+            ctx.get("correlation_id") or ctx.get("trace_id"),
+        )
+        return _load_autonomy_state_fallback_local(ctx, plan, graphdb_cfg, started_at)
 
     log_autonomy_graph_backend_decision(plan=plan, consumer="chat_stance", verb=verb, mode=mode)
 

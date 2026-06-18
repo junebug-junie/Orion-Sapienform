@@ -5,7 +5,7 @@ import asyncio
 import logging
 from typing import Any
 
-from smolagents import CodeAgent
+from smolagents.models import Model, ChatMessage
 
 from orion.schemas.context_exec import ContextExecRequestV1
 
@@ -23,31 +23,35 @@ def _messages_to_prompt(messages: list) -> str:
     for msg in messages:
         if hasattr(msg, "role"):
             role = str(msg.role.value if hasattr(msg.role, "value") else msg.role)
-            content = str(msg.content or "")
+            raw = msg.content or ""
+            content = raw if isinstance(raw, str) else " ".join(
+                p.get("text", "") if isinstance(p, dict) else str(p) for p in raw
+            )
         elif isinstance(msg, dict):
             role = str(msg.get("role", "user"))
-            content = str(msg.get("content", ""))
+            raw = msg.get("content", "")
+            content = raw if isinstance(raw, str) else str(raw)
         else:
             continue
         parts.append(f"### {role.capitalize()}\n{content}")
     return "\n\n".join(parts)
 
 
-class OrionSmolagentsModel:
+class OrionSmolagentsModel(Model):
     """smolagents Model wrapper that calls organ_runtime.llm_chat via agent lane."""
 
     def __init__(self, runtime: OrganRuntime, loop: asyncio.AbstractEventLoop) -> None:
         self._runtime = runtime
         self._loop = loop
 
-    def __call__(
+    def generate(
         self,
         messages: list,
         stop_sequences: list[str] | None = None,
-        grammar: str | None = None,
-    ) -> Any:
-        from smolagents.models import ChatMessage
-
+        response_format: object = None,
+        tools_to_call_from: object = None,
+        **kwargs: object,
+    ) -> ChatMessage:
         prompt = _messages_to_prompt(messages)
         future = asyncio.run_coroutine_threadsafe(
             self._runtime.llm_chat(prompt, route="agent"),
@@ -164,6 +168,8 @@ class SmolagentsCodeEngine(RLMEngine):
                 "engine": "smolcode",
                 "mode": request.mode,
             }
+
+        from smolagents import CodeAgent  # lazy import — only loaded when engine is selected
 
         loop = asyncio.get_running_loop()
         tools = _make_tools(organ_runtime, loop)

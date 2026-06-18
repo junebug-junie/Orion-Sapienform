@@ -33,6 +33,53 @@ def test_decay_fades_pressure_channels() -> None:
     assert state.node_vectors["node:atlas"]["availability"] == 1.0
 
 
+def test_decay_covers_execution_and_transport_channels() -> None:
+    """Execution and transport channels must decay — previously they were omitted and pinned at 1.0."""
+    from app.digestion.decay import apply_decay
+
+    state = FieldStateV1(
+        generated_at=datetime(2026, 5, 24, tzinfo=timezone.utc),
+        tick_id="tick_decay_exec",
+        node_vectors={
+            "node:athena": {
+                "execution_load": 1.0,
+                "execution_friction": 1.0,
+                "failure_pressure": 1.0,
+                "reasoning_load": 1.0,
+                "transport_pressure": 1.0,
+                "contract_pressure": 1.0,
+                "reliability_pressure": 1.0,
+                "availability": 1.0,          # must NOT decay
+                "delivery_confidence": 1.0,   # must NOT decay
+            }
+        },
+        capability_vectors={
+            "capability:orchestration": {
+                "pressure": 1.0,
+                "execution_pressure": 1.0,
+                "reliability_pressure": 1.0,
+                "confidence": 1.0,            # must NOT decay
+            }
+        },
+        edges=[],
+    )
+    apply_decay(state, decay_rate=0.92)
+    node = state.node_vectors["node:athena"]
+    cap = state.capability_vectors["capability:orchestration"]
+
+    for ch in ("execution_load", "execution_friction", "failure_pressure",
+               "reasoning_load", "transport_pressure", "contract_pressure", "reliability_pressure"):
+        assert node[ch] < 1.0, f"node channel {ch!r} should have decayed"
+
+    assert node["availability"] == 1.0, "availability must not decay"
+    assert node["delivery_confidence"] == 1.0, "delivery_confidence must not decay"
+
+    assert cap["pressure"] < 1.0, "capability pressure should decay"
+    assert cap["execution_pressure"] < 1.0, "capability execution_pressure should decay"
+    assert cap["reliability_pressure"] < 1.0, "capability reliability_pressure should decay"
+    assert cap["confidence"] == 1.0, "capability confidence must not decay"
+
+
 def test_diffusion_spreads_gpu_pressure_to_capability() -> None:
     from app.digestion.diffusion import apply_diffusion
 

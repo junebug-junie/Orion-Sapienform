@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.memory_graph.cortex_suggest_extract import extract_suggest_draft_dict_from_cortex_payload
 from orion.memory_graph.draft_repository import insert_pending_draft
 from orion.memory_graph.dto import SuggestDraftV1
 from orion.memory_graph.draft_sanitize import sanitize_suggest_draft_dict
-from orion.memory_graph.suggest_runner import suggest_once
+from orion.memory_graph.suggest_runner import suggest_once, suggest_with_escalation
 
 from app.window_fetch import should_close_turn
 from app.classify import classify_turn
@@ -24,13 +24,26 @@ from orion.schemas.memory_consolidation import (
 
 logger = logging.getLogger(__name__)
 
+_MAX_TURNS_FOR_SUGGEST = 3
+_MAX_TURN_FIELD_CHARS = 800
+
+
+def _clip(text: str, *, limit: int) -> str:
+    s = (text or "").strip()
+    if len(s) <= limit:
+        return s
+    return s[: limit - 3] + "..."
+
 
 def build_window_transcript(turns: list[dict]) -> str:
+    selected = turns[-_MAX_TURNS_FOR_SUGGEST:] if len(turns) > _MAX_TURNS_FOR_SUGGEST else turns
     lines = []
-    for t in turns:
+    for t in selected:
         sig = t.get("memory_significance_score")
         prefix = f"[sig={sig:.2f}] " if isinstance(sig, (int, float)) else ""
-        lines.append(f"{prefix}User: {t.get('prompt', '')}\nOrion: {t.get('response', '')}\n")
+        prompt = _clip(str(t.get("prompt") or ""), limit=_MAX_TURN_FIELD_CHARS)
+        response = _clip(str(t.get("response") or ""), limit=_MAX_TURN_FIELD_CHARS)
+        lines.append(f"{prefix}User: {prompt}\nOrion: {response}\n")
     return "\n".join(lines)
 
 
@@ -66,7 +79,7 @@ class ConsolidationSuggestRunner:
         turns = window.get("turns") or []
         transcript = build_window_transcript(turns)
         try:
-            raw = await suggest_once(
+            raw = await suggest_with_escalation(
                 bus,
                 transcript=transcript,
                 cortex_request_channel=settings.CHANNEL_CORTEX_REQUEST,
@@ -78,7 +91,7 @@ class ConsolidationSuggestRunner:
                 ),
                 timeout_sec=float(settings.MEMORY_SUGGEST_TIMEOUT_SEC),
             )
-            draft_dict = _extract_draft_dict(raw)
+            draft_dict = extract_suggest_draft_dict_from_cortex_payload(raw)
             draft_dict = sanitize_suggest_draft_dict(draft_dict)
             draft = SuggestDraftV1.model_validate(draft_dict)
             corr_ids = window.get("turn_correlation_ids") or []
@@ -102,25 +115,6 @@ class ConsolidationSuggestRunner:
         except Exception:
             logger.exception("memory_consolidation_suggest_failed window_id=%s", window_id)
             await self._window_store.mark_failed(window_id)
-
-
-def _extract_draft_dict(raw: dict[str, Any]) -> dict[str, Any]:
-    if "draft" in raw and isinstance(raw["draft"], dict):
-        return raw["draft"]
-    steps = raw.get("steps") or raw.get("step_results") or []
-    for step in reversed(steps):
-        if not isinstance(step, dict):
-            continue
-        detail = step.get("detail") if isinstance(step.get("detail"), dict) else {}
-        output = detail.get("output") or detail.get("draft")
-        if isinstance(output, dict):
-            return output
-        text = detail.get("text") or detail.get("content")
-        if isinstance(text, str) and text.strip().startswith("{"):
-            return json.loads(text)
-    if isinstance(raw.get("result"), dict):
-        return _extract_draft_dict(raw["result"])
-    raise ValueError("memory_graph_suggest_draft_not_found")
 
 
 async def handle_memory_turn_persisted(

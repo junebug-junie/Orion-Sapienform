@@ -4108,7 +4108,12 @@ def _should_prepare_brain_reply_context(*, step: ExecutionStep, ctx: Dict[str, A
     # context.metadata (prompt/response/spark_meta). Full brain stance + unified
     # beliefs (GraphDB/recall/social) is wasted work and dominated latency after the
     # 2026-05-09 cognitive unification layer landed in build_chat_stance_inputs.
-    if verb_name == "introspect_spark":
+    if verb_name in {"introspect_spark", "memory_graph_suggest"}:
+        return False
+    if bool(ctx.get("skip_brain_reply_context")):
+        return False
+    opts = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
+    if bool(opts.get("skip_brain_reply_context")):
         return False
     if verb_name.startswith("skills.runtime."):
         return False

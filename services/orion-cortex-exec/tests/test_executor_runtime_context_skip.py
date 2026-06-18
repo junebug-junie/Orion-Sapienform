@@ -50,3 +50,13 @@ def test_introspect_spark_skips_heavy_brain_reply_context_prep():
         services=["LLMGatewayService"],
     )
     assert _should_prepare_brain_reply_context(step=step, ctx={"mode": "brain"}) is False
+
+
+def test_memory_graph_suggest_skips_heavy_brain_reply_context_prep():
+    step = ExecutionStep(
+        verb_name="memory_graph_suggest",
+        step_name="llm_memory_graph_suggest",
+        order=0,
+        services=["LLMGatewayService"],
+    )
+    assert _should_prepare_brain_reply_context(step=step, ctx={"mode": "brain"}) is False

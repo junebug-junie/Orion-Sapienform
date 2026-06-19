@@ -167,8 +167,8 @@ services:
       FUSEKI_USER: ${FUSEKI_USER:-}
       FUSEKI_PASS: ${FUSEKI_PASS:-}
       GDB_CLIENT_ENABLED: ${GDB_CLIENT_ENABLED:-false}
-      AUTONOMY_GRAPH_QUERY_URL: ${AUTONOMY_GRAPH_QUERY_URL:-http://orion-athena-fuseki:3030/orion/query}
-      AUTONOMY_GRAPH_UPDATE_URL: ${AUTONOMY_GRAPH_UPDATE_URL:-http://orion-athena-fuseki:3030/orion/update}
+      AUTONOMY_GRAPH_QUERY_URL: ${AUTONOMY_GRAPH_QUERY_URL-http://orion-athena-fuseki:3030/orion/query}
+      AUTONOMY_GRAPH_UPDATE_URL: ${AUTONOMY_GRAPH_UPDATE_URL-http://orion-athena-fuseki:3030/orion/update}
       SUBSTRATE_STORE_BACKEND: ${SUBSTRATE_STORE_BACKEND:-sparql}
       SUBSTRATE_GRAPH_QUERY_URL: ${SUBSTRATE_GRAPH_QUERY_URL:-http://orion-athena-fuseki:3030/orion/query}
       SUBSTRATE_GRAPH_UPDATE_URL: ${SUBSTRATE_GRAPH_UPDATE_URL:-http://orion-athena-fuseki:3030/orion/update}

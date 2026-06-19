@@ -5546,6 +5546,12 @@ loadDismissedIds();
       header.appendChild(title);
       header.appendChild(badge);
 
+      const meta = document.createElement('div');
+      meta.className = 'text-[10px] text-gray-400';
+      const createdAt = item.created_at ? new Date(item.created_at).toLocaleString() : null;
+      const source = item.source_service || 'unknown';
+      meta.textContent = createdAt ? `${createdAt} • ${source}` : source;
+
       const body = document.createElement('div');
       body.className = 'text-[11px] text-gray-300 whitespace-pre-wrap';
       body.textContent = item.message || '';
@@ -5575,6 +5581,7 @@ loadDismissedIds();
       actions.appendChild(snoozeBtn);
 
       card.appendChild(header);
+      card.appendChild(meta);
       card.appendChild(body);
       card.appendChild(actions);
       attentionList.appendChild(card);

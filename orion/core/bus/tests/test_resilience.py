@@ -1,13 +1,8 @@
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 import pytest
 
-os.chdir(Path(__file__).resolve().parents[1])
-
-from app.bus_resilience import publish_with_reconnect
+from orion.core.bus.resilience import publish_with_reconnect
 
 
 class _FlakyBus:

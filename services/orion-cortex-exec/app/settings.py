@@ -232,6 +232,7 @@ class Settings(BaseSettings):
         "only_when_requested",
         alias="WORLD_PULSE_POLITICS_STANCE_DEFAULT",
     )
+    health_http_port: int = Field(8070, alias="HEALTH_HTTP_PORT")
 
     @field_validator("orion_situation_weather_lat", "orion_situation_weather_lon", mode="before")
     @classmethod

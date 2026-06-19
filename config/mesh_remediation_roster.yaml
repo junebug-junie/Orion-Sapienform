@@ -1,0 +1,102 @@
+services:
+  - id: landing-pad
+    heartbeat_name: landing-pad
+    compose_dir: orion-landing-pad
+    compose_service: orion-landing-pad
+    include_bus_env: false
+    auto_remediate: true
+    probe:
+      mode: redis_and_http
+      intake_channels:
+        - orion:pad:rpc:request
+      ready_url: "http://${PROJECT}-landing-pad:8370/ready"
+      service_name: landing-pad
+
+  - id: cortex-gateway
+    heartbeat_name: cortex-gateway
+    compose_dir: orion-cortex-gateway
+    compose_service: cortex-gateway
+    include_bus_env: false
+    auto_remediate: true
+    probe:
+      mode: redis_and_http
+      intake_channels:
+        - orion:cortex:gateway:request
+      ready_url: "http://${PROJECT}-cortex-gateway:8022/ready"
+      service_name: cortex-gateway
+
+  - id: cortex-orch
+    heartbeat_name: cortex-orch
+    compose_dir: orion-cortex-orch
+    compose_service: cortex-orchestrator
+    include_bus_env: false
+    auto_remediate: true
+    probe:
+      mode: redis_and_http
+      intake_channels:
+        - orion:cortex:request
+      ready_url: "http://${PROJECT}-cortex-orch:8072/ready"
+      service_name: cortex-orch
+
+  - id: cortex-exec
+    heartbeat_name: cortex-exec
+    compose_dir: orion-cortex-exec
+    compose_service: cortex-exec
+    include_bus_env: false
+    auto_remediate: true
+    probe:
+      mode: redis_and_http
+      intake_channels:
+        - orion:cortex:exec:request
+      ready_url: "http://${PROJECT}-cortex-exec:8070/ready"
+      service_name: cortex-exec
+
+  - id: recall
+    heartbeat_name: recall
+    compose_dir: orion-recall
+    compose_service: recall
+    include_bus_env: false
+    auto_remediate: true
+    probe:
+      mode: redis_and_http
+      intake_channels:
+        - orion:exec:request:RecallService
+      ready_url: "http://${PROJECT}-recall:8260/ready"
+      service_name: recall
+
+  - id: llm-gateway
+    heartbeat_name: llm-gateway
+    compose_dir: orion-llm-gateway
+    compose_service: llm-gateway
+    include_bus_env: false
+    auto_remediate: true
+    probe:
+      mode: redis_and_http
+      intake_channels:
+        - orion:exec:request:LLMGatewayService
+      ready_url: "http://${PROJECT}-llm-gateway:8210/ready"
+      service_name: llm-gateway
+
+  - id: notify
+    heartbeat_name: notify
+    compose_dir: orion-notify
+    compose_service: notify
+    include_bus_env: false
+    auto_remediate: false
+    probe:
+      mode: http
+      intake_channels: []
+      ready_url: "http://${PROJECT}-notify:7140/health"
+      service_name: notify
+
+  - id: equilibrium
+    heartbeat_name: orion-equilibrium-service
+    compose_dir: orion-equilibrium-service
+    compose_service: equilibrium-service
+    include_bus_env: true
+    auto_remediate: false
+    probe:
+      mode: redis
+      intake_channels: []
+      ready_url: null
+      service_name: orion-equilibrium-service

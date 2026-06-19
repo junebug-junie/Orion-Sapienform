@@ -4,6 +4,10 @@ from typing import Optional
 import logging
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from orion.bus.consumer_readiness import bus_consumer_readiness_v1, check_bus_consumer_readiness
+from orion.schemas.telemetry.system_health import BusConsumerReadinessV1
 
 from orion.schemas.cortex.contracts import (
     CortexClientRequest,
@@ -45,6 +49,46 @@ def health():
         "service": settings.service_name,
         "node": settings.node_name
     }
+
+
+@app.get("/ready")
+async def ready() -> JSONResponse:
+    intake_bus = getattr(bus_client, "_intake_bus", None)
+    if intake_bus is None or not getattr(intake_bus, "enabled", False):
+        body = BusConsumerReadinessV1(
+            ok=False,
+            http_alive=True,
+            bus_consumer_ready=False,
+            intake_channel=settings.channel_gateway_request,
+            subscriber_count=0,
+            dependency_status="unavailable",
+            error="intake bus not connected",
+        )
+        return JSONResponse(body.model_dump(mode="json"), status_code=503)
+
+    redis = getattr(intake_bus, "redis", None)
+    if redis is None:
+        body = BusConsumerReadinessV1(
+            ok=False,
+            http_alive=True,
+            bus_consumer_ready=False,
+            intake_channel=settings.channel_gateway_request,
+            subscriber_count=0,
+            dependency_status="unavailable",
+            error="redis unavailable",
+        )
+        return JSONResponse(body.model_dump(mode="json"), status_code=503)
+
+    result = await check_bus_consumer_readiness(
+        redis,
+        intake_channel=settings.channel_gateway_request,
+        service_name=settings.service_name,
+        check_heartbeat=False,
+    )
+    body = bus_consumer_readiness_v1(result, http_alive=True)
+    status_code = 200 if body.ok else 503
+    return JSONResponse(body.model_dump(mode="json"), status_code=status_code)
+
 
 @app.post("/v1/cortex/chat")
 async def chat(req: CortexChatRequest, response: Response):

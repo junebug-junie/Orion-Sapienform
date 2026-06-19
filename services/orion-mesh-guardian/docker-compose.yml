@@ -1,0 +1,40 @@
+services:
+  mesh-guardian:
+    build:
+      context: ../..
+      dockerfile: services/orion-mesh-guardian/Dockerfile
+    container_name: ${PROJECT}-mesh-guardian
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${PORT:-7160}:${PORT:-7160}"
+    volumes:
+      - ${ORION_REPO_ROOT:-../..}:/repo:ro
+      - ${DOCKER_SOCK_PATH:-/var/run/docker.sock}:/var/run/docker.sock
+    environment:
+      PROJECT: ${PROJECT}
+      NODE_NAME: ${NODE_NAME}
+      SERVICE_NAME: ${SERVICE_NAME:-orion-mesh-guardian}
+      SERVICE_VERSION: ${SERVICE_VERSION:-0.1.0}
+      PORT: ${PORT:-7160}
+      ORION_REPO_ROOT: /repo
+      ORION_BUS_URL: ${ORION_BUS_URL}
+      NOTIFY_BASE_URL: ${NOTIFY_BASE_URL:-http://${PROJECT}-notify:7140}
+      NOTIFY_API_TOKEN: ${NOTIFY_API_TOKEN}
+      MESH_GUARDIAN_ROSTER_PATH: ${MESH_GUARDIAN_ROSTER_PATH:-/repo/config/mesh_remediation_roster.yaml}
+      MESH_GUARDIAN_ENABLED: ${MESH_GUARDIAN_ENABLED:-true}
+      MESH_GUARDIAN_AUTO_REMEDIATE: ${MESH_GUARDIAN_AUTO_REMEDIATE:-false}
+      MESH_GUARDIAN_REMEDIATION_COOLDOWN_SEC: ${MESH_GUARDIAN_REMEDIATION_COOLDOWN_SEC:-300}
+      MESH_GUARDIAN_MAX_ATTEMPTS_PER_HOUR: ${MESH_GUARDIAN_MAX_ATTEMPTS_PER_HOUR:-3}
+      MESH_GUARDIAN_PROBE_INTERVAL_SEC: ${MESH_GUARDIAN_PROBE_INTERVAL_SEC:-15}
+      MESH_GUARDIAN_POST_REMEDIATE_GRACE_SEC: ${MESH_GUARDIAN_POST_REMEDIATE_GRACE_SEC:-60}
+      MESH_GUARDIAN_CONSECUTIVE_PROBE_FAILS: ${MESH_GUARDIAN_CONSECUTIVE_PROBE_FAILS:-2}
+      MESH_GUARDIAN_EQUILIBRIUM_GRACE_SEC: ${MESH_GUARDIAN_EQUILIBRIUM_GRACE_SEC:-30}
+      CHANNEL_EQUILIBRIUM_SNAPSHOT: ${CHANNEL_EQUILIBRIUM_SNAPSHOT:-orion:equilibrium:snapshot}
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

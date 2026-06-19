@@ -12,6 +12,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    ports:
+      - "${HEALTH_HTTP_PORT:-8070}:${HEALTH_HTTP_PORT:-8070}"
 
     volumes:
       - ${ORION_HOST_TAILSCALE_BIN:-/usr/bin/tailscale}:${ORION_CONTAINER_TAILSCALE_BIN:-/usr/bin/tailscale}:ro
@@ -40,6 +42,8 @@ services:
       SERVICE_VERSION: ${SERVICE_VERSION}
 
       HEARTBEAT_INTERVAL_SEC: ${HEARTBEAT_INTERVAL_SEC}
+
+      HEALTH_HTTP_PORT: ${HEALTH_HTTP_PORT:-8070}
 
       ORION_BUS_URL: ${ORION_BUS_URL}
       ORION_BUS_ENFORCE_CATALOG: ${ORION_BUS_ENFORCE_CATALOG}

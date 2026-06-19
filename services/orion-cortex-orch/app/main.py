@@ -660,6 +660,19 @@ async def main() -> None:
             "subscribed to the lane exec channels; a missing subscriber causes PlanExecution RPC timeouts."
         )
     await svc.bus.connect()
+    from .health_http import create_health_app, start_health_server
+
+    health_app = create_health_app(
+        redis_getter=lambda: getattr(svc.bus, "redis", None),
+        intake_channel=s.channel_cortex_request,
+        service_name=s.service_name,
+        service_version=s.service_version,
+    )
+    health_task = await start_health_server(
+        app=health_app,
+        host=s.api_host,
+        port=int(s.api_port),
+    )
     from orion.core.bus.rpc_fork import fork_rpc_client
 
     _rpc_bus = await fork_rpc_client(svc.bus)
@@ -670,6 +683,7 @@ async def main() -> None:
             equilibrium_hunter.start(),
             dream_hunter.start(),
             memory_cards_hunter.start(),
+            health_task,
         )
     finally:
         await _close_rpc_bus()

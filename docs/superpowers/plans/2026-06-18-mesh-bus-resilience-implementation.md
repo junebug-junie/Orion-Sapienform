@@ -794,7 +794,7 @@ services:
       service_name: orion-equilibrium-service
 ```
 
-**Port verification before commit:** cross-check every `ready_url` against the service's `docker-compose.yml` and `.env_example` (known values: gateway `8022`, orch `8072`, exec `8070`, landing-pad `8370`, recall `8260`, llm-gateway `8210`). Equilibrium is bus-only (no HTTP); guardian observes it via equilibrium snapshot layer only — set `probe.mode: redis` with empty channels so active probe is a no-op and equilibrium layer drives status.
+**Port verification before commit:** cross-check every `ready_url` against the service's `docker-compose.yml` and `.env_example` (known values: gateway `8022`, orch `8072`, exec `8070`, landing-pad `8370`, recall `8260`, llm-gateway `8210`, mesh-guardian `7161` — `orion-actions` owns `7160`). Equilibrium is bus-only (no HTTP); guardian observes it via equilibrium snapshot layer only — set `probe.mode: redis` with empty channels so active probe is a no-op and equilibrium layer drives status.
 
 - [ ] **Step 2: Commit**
 
@@ -878,7 +878,7 @@ def health() -> dict:
     }
 ```
 
-- [ ] **Step 2: Dockerfile** (copy pattern from `services/orion-notify-digest/Dockerfile`; port 7160; COPY `orion/`)
+- [ ] **Step 2: Dockerfile** (copy pattern from `services/orion-notify-digest/Dockerfile`; port 7161; COPY `orion/`)
 
 - [ ] **Step 3: docker-compose.yml** (from design spec — `app-net`, docker.sock, `/repo:ro`, env vars)
 
@@ -1402,8 +1402,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-curl -sf "http://${PROJECT:-orion}-mesh-guardian:7160/health" | jq -e '.ok == true'
-curl -sf "http://${PROJECT:-orion}-mesh-guardian:7160/ready" || true  # may 503 before bus connect
+curl -sf "http://${PROJECT:-orion}-mesh-guardian:7161/health" | jq -e '.ok == true'
+curl -sf "http://${PROJECT:-orion}-mesh-guardian:7161/ready" || true  # may 503 before bus connect
 
 PYTHONPATH=. ./orion_dev/bin/python -m pytest \
   services/orion-mesh-guardian/tests/test_state_machine.py \

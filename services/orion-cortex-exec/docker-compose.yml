@@ -195,6 +195,7 @@ services:
     extends:
       service: cortex-exec
     container_name: ${PROJECT}-cortex-exec-chat
+    ports: !override []
     environment:
       EXEC_LANE: chat
       CHANNEL_EXEC_REQUEST: orion:cortex:exec:request:chat
@@ -203,6 +204,7 @@ services:
     extends:
       service: cortex-exec
     container_name: ${PROJECT}-cortex-exec-spark
+    ports: !override []
     environment:
       EXEC_LANE: spark
       CHANNEL_EXEC_REQUEST: orion:cortex:exec:request:spark
@@ -211,6 +213,7 @@ services:
     extends:
       service: cortex-exec
     container_name: ${PROJECT}-cortex-exec-background
+    ports: !override []
     environment:
       EXEC_LANE: background
       CHANNEL_EXEC_REQUEST: orion:cortex:exec:request:background

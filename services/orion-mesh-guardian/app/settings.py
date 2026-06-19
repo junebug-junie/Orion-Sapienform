@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     consecutive_probe_fails: int = Field(2, alias="MESH_GUARDIAN_CONSECUTIVE_PROBE_FAILS")
     equilibrium_grace_sec: int = Field(30, alias="MESH_GUARDIAN_EQUILIBRIUM_GRACE_SEC")
     channel_equilibrium_snapshot: str = Field("orion:equilibrium:snapshot", alias="CHANNEL_EQUILIBRIUM_SNAPSHOT")
-    health_http_port: int = Field(7160, alias="PORT")
+    health_http_port: int = Field(7161, alias="PORT")
 
     class Config:
         env_file = ".env"

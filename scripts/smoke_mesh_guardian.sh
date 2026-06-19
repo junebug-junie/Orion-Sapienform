@@ -17,8 +17,8 @@ else
 fi
 
 if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
-  curl -sf "http://${PROJECT:-orion}-mesh-guardian:7160/health" | jq -e '.ok == true' || true
-  curl -sf "http://${PROJECT:-orion}-mesh-guardian:7160/ready" || true
+  curl -sf "http://${PROJECT:-orion}-mesh-guardian:7161/health" | jq -e '.ok == true' || true
+  curl -sf "http://${PROJECT:-orion}-mesh-guardian:7161/ready" || true
 fi
 
 PYTHONPATH=.:services/orion-mesh-guardian "${PY}" -m pytest \

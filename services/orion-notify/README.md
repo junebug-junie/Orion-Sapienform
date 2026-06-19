@@ -113,7 +113,14 @@ Attention rules for `orion.chat.attention` can also set:
 
 Escalation checks run on a background loop configured by:
 
-- `NOTIFY_ESCALATION_POLL_SECONDS` (default: 60)
+- `NOTIFY_ESCALATION_POLL_SECONDS` (default: 60; set `0` to disable)
+
+When SMTP is configured and the poll interval is > 0, notify:
+
+1. Sends **immediate email** for `POST /attention/request` with `severity=critical` (e.g. mesh-health observe-only / max-attempts).
+2. Polls sql-writer for pending `severity=error` attention past `ack_deadline_minutes` and sends escalation email (`orion.chat.attention.escalation`).
+
+Mesh-guardian unhealable failures use `severity=critical`; transient unhealthy-confirmed uses `error` and escalates if unacked.
 
 Chat message rules for `orion.chat.message` can set:
 

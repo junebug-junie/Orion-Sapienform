@@ -25,16 +25,29 @@ class AttentionPublisher:
     ) -> None:
         severity = event.get("severity", "error")
         message = event.get("message", f"mesh health: {service_id}")
+        event_ctx = event.get("context") or {}
+        mesh_event = event_ctx.get("event", "attention")
+        reason = f"[Orion mesh] {service_id} — {mesh_event}"
+        body = "\n".join(
+            [
+                message,
+                "",
+                f"service: {service_id}",
+                f"heartbeat: {heartbeat_name}",
+                f"event: {mesh_event}",
+            ]
+        )
         context = {
             "source_service": self._source,
             "event_kind": "orion.mesh.health.attention.v1",
             "service_id": service_id,
             "heartbeat_name": heartbeat_name,
             "correlation_id": event.get("correlation_id") or str(uuid4()),
-            **(event.get("context") or {}),
+            "reason": reason,
+            **event_ctx,
         }
         self._client.attention_request(
-            message=message,
+            message=body,
             severity=severity,
             require_ack=True,
             context=context,

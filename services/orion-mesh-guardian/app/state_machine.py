@@ -109,7 +109,7 @@ def transition(state: ServiceState, inp: TransitionInput, *, service_id: str = "
                 new_state.phase = ServicePhase.attention_only
                 attention_events.append(
                     _attention_event(
-                        severity="error",
+                        severity="critical",
                         message=f"mesh health: {service_id} persistent failure after tier-1",
                         service_id=service_id,
                         correlation_id=corr,
@@ -164,7 +164,7 @@ def transition(state: ServiceState, inp: TransitionInput, *, service_id: str = "
             new_state.phase = ServicePhase.attention_only
             attention_events.append(
                 _attention_event(
-                    severity="error",
+                    severity="critical",
                     message=(
                         f"mesh health: {service_id} unhealthy confirmed "
                         f"(observe-only, auto_remediate disabled)"
@@ -193,7 +193,7 @@ def transition(state: ServiceState, inp: TransitionInput, *, service_id: str = "
             new_state.phase = ServicePhase.attention_only
             attention_events.append(
                 _attention_event(
-                    severity="error",
+                    severity="critical",
                     message=f"mesh health: {service_id} observe-only (auto_remediate disabled)",
                     service_id=service_id,
                     correlation_id=corr,
@@ -206,7 +206,7 @@ def transition(state: ServiceState, inp: TransitionInput, *, service_id: str = "
             new_state.phase = ServicePhase.attention_only
             attention_events.append(
                 _attention_event(
-                    severity="error",
+                    severity="critical",
                     message=f"mesh health: {service_id} max remediation attempts reached",
                     service_id=service_id,
                     correlation_id=corr,

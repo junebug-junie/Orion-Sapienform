@@ -293,6 +293,12 @@ def _resolve_autonomy_backend() -> str:
 
 
 def _run_autonomy_graph_probe() -> None:
+    from orion.autonomy.graph_gate import autonomy_graph_backend_raw
+
+    if autonomy_graph_backend_raw() == "disabled":
+        logger.info("autonomy_graph_probe skipped reason=autonomy_graph_backend_disabled")
+        return
+
     backend = _resolve_autonomy_backend()
     if backend != "graph":
         return

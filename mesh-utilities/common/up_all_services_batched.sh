@@ -79,6 +79,11 @@ if ! [[ "$BATCH_SIZE" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3) )); then
+  echo "ERROR: Bash 4.3+ required (wait -n). Current: ${BASH_VERSION}" >&2
+  exit 2
+fi
+
 # ------------------------------------------------------------------------------
 # Build effective excludes
 # ------------------------------------------------------------------------------
@@ -263,7 +268,7 @@ FAILED_UP=()
 
 if [[ " ${RUN_LIST[*]} " =~ " ${BUS_SERVICE_DIR} " ]]; then
   echo ""
-  echo "=== Critical path: $BUS_SERVICE_DIR (sequential, before batches) ==="
+  echo "=== Critical path: $BUS_SERVICE_DIR (sequential, before sliding pool) ==="
   if ! up_one "$BUS_SERVICE_DIR"; then
     FAILED_UP+=("$BUS_SERVICE_DIR")
   fi
@@ -300,8 +305,14 @@ if [[ "${#REST_LIST[@]}" -gt 0 ]]; then
 
     set +e
     wait -n
+    wait_rc=$?
     set -e
-    in_flight=$((in_flight - 1))
+    if [[ "$wait_rc" -eq 127 ]]; then
+      echo "WARNING: wait -n found no child (in_flight=$in_flight); assuming pool drained" >&2
+      in_flight=0
+    else
+      in_flight=$((in_flight - 1))
+    fi
   done
 
   collect_batch_failures "$FAIL_TMP_DIR"

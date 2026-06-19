@@ -104,3 +104,18 @@ def test_graph_approve_reports_failed_consolidation_mark(approve_client, monkeyp
     assert body["ok"] is True
     assert body["consolidation_draft_marked"] is False
     assert body["consolidation_draft_status"] == "update_failed"
+
+
+def test_graph_approve_without_consolidation_draft_omits_inbox_fields(approve_client) -> None:
+    client, update_mock = approve_client
+    resp = client.post(
+        "/api/memory/graph/approve",
+        json={"draft": _MIN_DRAFT},
+        headers={"X-Orion-Session-Id": "test-session"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert "consolidation_draft_id" not in body
+    assert "consolidation_draft_marked" not in body
+    update_mock.assert_not_awaited()

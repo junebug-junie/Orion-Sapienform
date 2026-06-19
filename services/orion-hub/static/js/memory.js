@@ -840,7 +840,7 @@
           }
           graphSetOut({ ok: true, created, card_ids: data.card_ids || [] }, false);
           const titles = created.map((c) => c.title).filter(Boolean);
-          if (data.consolidation_draft_marked === false) {
+          if (approvedConsolidationDraftId && data.consolidation_draft_marked === false) {
             setStatus(
               statusEl,
               "Graph approved but consolidation draft inbox was not updated — check logs.",

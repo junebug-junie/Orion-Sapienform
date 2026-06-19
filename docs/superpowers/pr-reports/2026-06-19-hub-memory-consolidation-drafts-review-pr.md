@@ -55,7 +55,7 @@ PYTHONPATH=.:services/orion-hub ./venv/bin/python -m pytest \
   tests/test_memory_graph_draft_repository.py -q
 ```
 
-**Result:** 13 passed, exit 0
+**Result:** 14 passed, exit 0
 
 ---
 
@@ -73,6 +73,17 @@ PYTHONPATH=.:services/orion-hub ./venv/bin/python -m pytest \
 | Non-atomic approve undocumented | README operator note + UI warning behavior documented |
 
 **Remaining:** Live stack smoke (operator deploy).
+
+---
+
+## Code review (fourth pass — fix applied)
+
+**Verdict:** Ready to merge
+
+| Issue | Fix |
+|-------|-----|
+| Manual graph approve showed false inbox error (`consolidation_draft_marked === false` when no draft id) | API omits inbox fields without `consolidation_draft_id`; UI guards on `approvedConsolidationDraftId` |
+| Missing test for approve without consolidation draft | `test_graph_approve_without_consolidation_draft_omits_inbox_fields` |
 
 ---
 

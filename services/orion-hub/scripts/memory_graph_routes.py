@@ -206,10 +206,15 @@ async def memory_graph_approve(
                 "consolidation_draft_marked": False,
                 "consolidation_draft_status": "update_failed",
             }
+        return {
+            "ok": True,
+            "violations": [],
+            "card_ids": [str(x) for x in result.card_ids],
+            "consolidation_draft_id": consolidation_draft_id,
+            "consolidation_draft_marked": True,
+        }
     return {
         "ok": True,
         "violations": [],
         "card_ids": [str(x) for x in result.card_ids],
-        "consolidation_draft_id": consolidation_draft_id,
-        "consolidation_draft_marked": bool(consolidation_draft_id),
     }

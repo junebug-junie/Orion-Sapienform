@@ -145,6 +145,7 @@ async def memory_graph_approve(
         raise HTTPException(status_code=400, detail="named_graph_iri_required")
 
     pool = _pool(request)
+    consolidation_draft_id = str(body.get("consolidation_draft_id") or "").strip() or None
     card_defaults = _parse_card_projection_defaults(body if isinstance(body, dict) else {})
     try:
         result = await approve_memory_graph_draft(
@@ -183,8 +184,20 @@ async def memory_graph_approve(
 
     if not result.ok:
         return {"ok": False, "violations": result.violations, "card_ids": []}
+    if consolidation_draft_id:
+        try:
+            from orion.memory_graph.draft_repository import update_consolidation_draft_status
+
+            await update_consolidation_draft_status(pool, consolidation_draft_id, status="approved")
+        except Exception as exc:
+            logger.warning(
+                "consolidation_draft_mark_approved_failed draft_id=%s error=%s",
+                consolidation_draft_id,
+                exc,
+            )
     return {
         "ok": True,
         "violations": [],
         "card_ids": [str(x) for x in result.card_ids],
+        "consolidation_draft_id": consolidation_draft_id,
     }

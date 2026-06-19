@@ -76,9 +76,10 @@
 
   let lastApprovedCardIds = [];
 
-  function styleSubviewButtons(btnReview, btnAll, btnLog, btnCrystallizations, activeKey) {
+  function styleSubviewButtons(btnReview, btnConsolidationDrafts, btnAll, btnLog, btnCrystallizations, activeKey) {
     const pairs = [
       ["review", btnReview],
+      ["consolidation_drafts", btnConsolidationDrafts],
       ["all", btnAll],
       ["log", btnLog],
       ["crystallizations", btnCrystallizations],
@@ -95,9 +96,10 @@
     });
   }
 
-  function showSubview(review, all, log, crystallizations, key) {
+  function showSubview(review, consolidationDrafts, all, log, crystallizations, key) {
     const panels = [
       ["review", review],
+      ["consolidation_drafts", consolidationDrafts],
       ["all", all],
       ["log", log],
       ["crystallizations", crystallizations],
@@ -108,7 +110,7 @@
       panel.classList.toggle("hidden", !active);
       panel.classList.toggle("flex", active);
     });
-    const target = { review, all, log, crystallizations }[key];
+    const target = { review, consolidation_drafts: consolidationDrafts, all, log, crystallizations }[key];
     if (target && typeof target.scrollIntoView === "function") {
       target.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
@@ -322,6 +324,79 @@
     if (handlers.cyHost) await loadNeighborhood(card.card_id, handlers.cyHost, card.title);
   }
 
+  async function loadConsolidationDrafts(listEl, panelStatusEl, statusEl, draftTa, memoryDraftViz, memoryDraftForm, graphSetOut, onLoaded) {
+    if (!listEl) return;
+    listEl.innerHTML = "";
+    setStatus(panelStatusEl, "Loading consolidation drafts…", false);
+    try {
+      const data = await apiFetch("/api/memory/consolidation/drafts?status=pending_review&limit=50");
+      const items = data.items || [];
+      if (!items.length) {
+        listEl.textContent =
+          "No automated graph drafts awaiting review. Consolidation creates drafts when conversation windows close.";
+      }
+      items.forEach((item) => {
+        const row = document.createElement("div");
+        row.className = "flex flex-wrap justify-between gap-2 border border-gray-800 rounded px-2 py-2 bg-gray-900/60";
+        const summary = item.summary || {};
+        const created = item.created_at ? String(item.created_at).replace("T", " ").slice(0, 19) : "";
+        const meta = document.createElement("div");
+        meta.className = "min-w-0 flex-1 text-[11px]";
+        meta.innerHTML = `<div class="font-medium text-gray-100">${escapeHtml(String(item.draft_id || "").slice(0, 8))}…</div>
+          <div class="text-gray-500">${escapeHtml(created)} · ${Number(item.turn_count || 0)} turn(s) · e=${Number(summary.entities || 0)} s=${Number(summary.situations || 0)} ed=${Number(summary.edges || 0)}</div>`;
+        const actions = document.createElement("div");
+        actions.className = "flex flex-wrap gap-1 items-start";
+        const loadBtn = document.createElement("button");
+        loadBtn.type = "button";
+        loadBtn.className = "px-2 py-0.5 rounded border border-indigo-700 bg-indigo-900/30 text-indigo-100 text-[10px]";
+        loadBtn.textContent = "Load in editor";
+        loadBtn.addEventListener("click", async () => {
+          try {
+            setStatus(panelStatusEl, "Loading draft…", false);
+            const detail = await apiFetch(`/api/memory/consolidation/drafts/${encodeURIComponent(item.draft_id)}`);
+            if (!draftTa) return;
+            draftTa.value = JSON.stringify(detail.draft || {}, null, 2);
+            if (memoryDraftViz && memoryDraftViz.refresh) memoryDraftViz.refresh();
+            if (memoryDraftForm && memoryDraftForm.refresh) memoryDraftForm.refresh();
+            if (typeof onLoaded === "function") onLoaded(String(item.draft_id || ""));
+            graphSetOut({ ok: true, note: "Loaded consolidation draft into editor.", draft_id: item.draft_id }, false);
+            setStatus(statusEl, `Loaded graph draft ${String(item.draft_id || "").slice(0, 8)}… — Validate / Approve above.`, false);
+            setStatus(panelStatusEl, "Draft loaded in editor.", false);
+            const annotator = document.getElementById("memoryGraphAnnotator");
+            if (annotator && typeof annotator.scrollIntoView === "function") {
+              annotator.scrollIntoView({ behavior: "smooth", block: "start" });
+            }
+          } catch (e) {
+            setStatus(panelStatusEl, formatMemoryApiError(e), true);
+          }
+        });
+        const rejectBtn = document.createElement("button");
+        rejectBtn.type = "button";
+        rejectBtn.className = "px-2 py-0.5 rounded border border-red-900 bg-red-950/40 text-red-200 text-[10px]";
+        rejectBtn.textContent = "Reject";
+        rejectBtn.addEventListener("click", async () => {
+          try {
+            await apiFetch(`/api/memory/consolidation/drafts/${encodeURIComponent(item.draft_id)}/status`, {
+              method: "POST",
+              body: JSON.stringify({ status: "rejected" }),
+            });
+            await loadConsolidationDrafts(listEl, panelStatusEl, statusEl, draftTa, memoryDraftViz, memoryDraftForm, graphSetOut, onLoaded);
+          } catch (e) {
+            setStatus(panelStatusEl, formatMemoryApiError(e), true);
+          }
+        });
+        actions.appendChild(loadBtn);
+        actions.appendChild(rejectBtn);
+        row.appendChild(meta);
+        row.appendChild(actions);
+        listEl.appendChild(row);
+      });
+      setStatus(panelStatusEl, `Loaded ${items.length} graph draft(s).`, false);
+    } catch (e) {
+      setStatus(panelStatusEl, formatMemoryApiError(e), true);
+    }
+  }
+
   async function loadReview(reviewPanel, statusEl, detailEl, cyHost) {
     reviewPanel.innerHTML = "";
     setStatus(statusEl, "Loading review queue…", false);
@@ -330,7 +405,7 @@
       const items = data.items || [];
       if (!items.length) {
         reviewPanel.textContent =
-          "No cards awaiting manual review. Graph approve creates active situation cards directly — use All Cards to browse them.";
+          "No cards awaiting manual review. Graph approve creates active situation cards directly — use Graph drafts for automated consolidation drafts, or All Cards to browse.";
       }
       items.forEach((c) => {
         reviewPanel.appendChild(
@@ -583,6 +658,7 @@
   document.addEventListener("DOMContentLoaded", () => {
     const statusEl = document.getElementById("memoryStatus");
     const review = document.getElementById("memoryReviewPanel");
+    const consolidationDrafts = document.getElementById("memoryConsolidationDraftsPanel");
     const all = document.getElementById("memoryAllPanel");
     const log = document.getElementById("memoryLogPanel");
     const crystallizations = document.getElementById("memoryCrystallizationPanel");
@@ -590,36 +666,15 @@
     const detail = document.getElementById("memoryDetail");
     const cyHost = document.getElementById("memoryCytoscapeHost");
     const btnR = document.getElementById("memorySubviewReview");
+    const btnCD = document.getElementById("memorySubviewConsolidationDrafts");
     const btnA = document.getElementById("memorySubviewAll");
     const btnL = document.getElementById("memorySubviewLog");
     const btnC = document.getElementById("memorySubviewCrystallizations");
+    const consolidationList = document.getElementById("memoryConsolidationDraftsList");
+    const consolidationStatus = document.getElementById("memoryConsolidationDraftsStatus");
     if (!review || !all || !log) return;
 
-    function activateSubview(key) {
-      if (graphAnnotator) {
-        graphAnnotator.classList.toggle("hidden", key === "crystallizations");
-      }
-      if (key === "crystallizations") {
-        if (detail) detail.classList.add("hidden");
-        if (cyHost) cyHost.classList.add("hidden");
-        setStatus(statusEl, "", false);
-      }
-      showSubview(review, all, log, crystallizations, key);
-      styleSubviewButtons(btnR, btnA, btnL, btnC, key);
-      if (key === "review") loadReview(review, statusEl, detail, cyHost);
-      else if (key === "all") loadAll(all, statusEl, detail, cyHost);
-      else if (key === "log") loadLog(log, statusEl, { cardIds: lastApprovedCardIds });
-      else if (key === "crystallizations" && window.OrionMemoryCrystallizationUI) {
-        window.OrionMemoryCrystallizationUI.activate();
-      }
-    }
-
-    if (btnR) btnR.addEventListener("click", () => activateSubview("review"));
-    if (btnA) btnA.addEventListener("click", () => activateSubview("all"));
-    if (btnL) btnL.addEventListener("click", () => activateSubview("log"));
-    if (btnC) btnC.addEventListener("click", () => activateSubview("crystallizations"));
-    styleSubviewButtons(btnR, btnA, btnL, btnC, "all");
-    activateSubview("all");
+    let activeConsolidationDraftId = null;
 
     const draftTa = document.getElementById("memoryGraphDraftJson");
     const graphOut = document.getElementById("memoryGraphAnnotatorOut");
@@ -669,6 +724,48 @@
       graphOut.classList.toggle("text-red-400", !!isErr);
       graphOut.classList.toggle("text-gray-400", !isErr);
     }
+
+    function activateSubview(key) {
+      if (graphAnnotator) {
+        graphAnnotator.classList.toggle("hidden", key === "crystallizations");
+      }
+      if (key === "crystallizations") {
+        if (detail) detail.classList.add("hidden");
+        if (cyHost) cyHost.classList.add("hidden");
+        setStatus(statusEl, "", false);
+      }
+      showSubview(review, consolidationDrafts, all, log, crystallizations, key);
+      styleSubviewButtons(btnR, btnCD, btnA, btnL, btnC, key);
+      if (key === "review") loadReview(review, statusEl, detail, cyHost);
+      else if (key === "consolidation_drafts") {
+        loadConsolidationDrafts(
+          consolidationList,
+          consolidationStatus,
+          statusEl,
+          draftTa,
+          memoryDraftViz,
+          memoryDraftForm,
+          graphSetOut,
+          (draftId) => {
+            activeConsolidationDraftId = draftId;
+          },
+        );
+      }
+      else if (key === "all") loadAll(all, statusEl, detail, cyHost);
+      else if (key === "log") loadLog(log, statusEl, { cardIds: lastApprovedCardIds });
+      else if (key === "crystallizations" && window.OrionMemoryCrystallizationUI) {
+        window.OrionMemoryCrystallizationUI.activate();
+      }
+    }
+
+    if (btnR) btnR.addEventListener("click", () => activateSubview("review"));
+    if (btnCD) btnCD.addEventListener("click", () => activateSubview("consolidation_drafts"));
+    if (btnA) btnA.addEventListener("click", () => activateSubview("all"));
+    if (btnL) btnL.addEventListener("click", () => activateSubview("log"));
+    if (btnC) btnC.addEventListener("click", () => activateSubview("crystallizations"));
+    styleSubviewButtons(btnR, btnCD, btnA, btnL, btnC, "all");
+    activateSubview("all");
+
     if (vBtn && draftTa) {
       vBtn.addEventListener("click", async () => {
         graphSetOut("…", false);
@@ -695,6 +792,9 @@
           const raw = draftTa.value.trim();
           const draftBody = JSON.parse(raw);
           const approvePayload = { draft: draftBody };
+          if (activeConsolidationDraftId) {
+            approvePayload.consolidation_draft_id = activeConsolidationDraftId;
+          }
           if (memoryDraftForm && typeof memoryDraftForm.buildCardProjectionPayload === "function") {
             approvePayload.card_projection_defaults = memoryDraftForm.buildCardProjectionPayload();
           }
@@ -732,6 +832,23 @@
               : "Graph approved.",
             false
           );
+          if (activeConsolidationDraftId) {
+            activeConsolidationDraftId = null;
+            if (consolidationDrafts && !consolidationDrafts.classList.contains("hidden")) {
+              loadConsolidationDrafts(
+                consolidationList,
+                consolidationStatus,
+                statusEl,
+                draftTa,
+                memoryDraftViz,
+                memoryDraftForm,
+                graphSetOut,
+                (draftId) => {
+                  activeConsolidationDraftId = draftId;
+                },
+              );
+            }
+          }
           activateSubview("all");
         } catch (e) {
           graphSetOut(e.body || e.message || String(e), true);

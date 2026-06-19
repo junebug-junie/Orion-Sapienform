@@ -38,3 +38,4 @@ def test_memory_js_includes_consolidation_drafts_subview() -> None:
     assert "onRejected" in text
     assert "activeConsolidationDraftId === draftId" in text
     assert "approvedConsolidationDraftId && data.consolidation_draft_marked === false" in text
+    assert "Rejected consolidation draft cleared from editor." in text

@@ -51,15 +51,27 @@ No new bus channels or env keys — uses existing Hub memory Postgres pool and g
 cd .worktrees/feat/hub-memory-consolidation-drafts
 PYTHONPATH=.:services/orion-hub ./venv/bin/python -m pytest \
   services/orion-hub/tests/test_memory_consolidation_draft_routes.py \
+  services/orion-hub/tests/test_memory_graph_consolidation_draft_approve.py \
   services/orion-hub/tests/test_memory_review_ui.py \
   tests/test_memory_graph_draft_repository.py -q
 ```
 
-**Result:** 14 passed, exit 0
+**Result:** 16 passed, exit 0
 
 ---
 
-## Code review (third pass — all review items addressed)
+## Code review (fifth pass — fix applied)
+
+**Verdict:** Ready to merge
+
+| Issue | Fix |
+|-------|-----|
+| `memory_schema_missing` only tested on list | Parametrized get + status POST tests |
+| Reject left rejected draft JSON in editor (approve without inbox link) | Clear editor/viz on reject when loaded draft matches |
+
+**Remaining:** Live stack smoke (operator deploy).
+
+---
 
 **Verdict:** Ready to merge
 

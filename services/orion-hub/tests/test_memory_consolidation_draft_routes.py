@@ -146,13 +146,58 @@ def test_list_consolidation_drafts_memory_schema_missing(client: TestClient, mon
 
     exc = memory_routes._AsyncpgUndefinedTableError('relation "memory_graph_suggest_drafts" does not exist')
 
-    async def _raise(_pool, **kwargs):
+    async def _raise(*_args, **_kwargs):
         raise exc
 
     monkeypatch.setattr("scripts.memory_consolidation_draft_routes.list_consolidation_drafts", _raise)
     resp = client.get(
         "/api/memory/consolidation/drafts",
         headers={"X-Orion-Session-Id": "test-session"},
+    )
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "memory_schema_missing"
+
+
+@pytest.mark.parametrize(
+    ("patch_target", "method", "path", "kwargs"),
+    [
+        (
+            "get_consolidation_draft",
+            "get",
+            "/api/memory/consolidation/drafts/draft-x",
+            {},
+        ),
+        (
+            "update_consolidation_draft_status",
+            "post",
+            "/api/memory/consolidation/drafts/draft-x/status",
+            {"json": {"status": "rejected"}},
+        ),
+    ],
+)
+def test_consolidation_draft_routes_memory_schema_missing(
+    client: TestClient,
+    monkeypatch,
+    patch_target: str,
+    method: str,
+    path: str,
+    kwargs: dict,
+) -> None:
+    from scripts import memory_routes
+
+    if memory_routes._AsyncpgUndefinedTableError is None:
+        pytest.skip("asyncpg UndefinedTableError unavailable")
+
+    exc = memory_routes._AsyncpgUndefinedTableError('relation "memory_graph_suggest_drafts" does not exist')
+
+    async def _raise(*_args, **_kwargs):
+        raise exc
+
+    monkeypatch.setattr(f"scripts.memory_consolidation_draft_routes.{patch_target}", _raise)
+    resp = getattr(client, method)(
+        path,
+        headers={"X-Orion-Session-Id": "test-session"},
+        **kwargs,
     )
     assert resp.status_code == 503
     assert resp.json()["detail"] == "memory_schema_missing"

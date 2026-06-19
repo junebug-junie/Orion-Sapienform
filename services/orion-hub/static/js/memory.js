@@ -761,7 +761,16 @@
             activeConsolidationDraftId = draftId;
           },
           (draftId) => {
-            if (activeConsolidationDraftId === draftId) activeConsolidationDraftId = null;
+            if (activeConsolidationDraftId === draftId) {
+              activeConsolidationDraftId = null;
+              if (draftTa) {
+                draftTa.value = "";
+                if (memoryDraftViz && memoryDraftViz.refresh) memoryDraftViz.refresh();
+                if (memoryDraftForm && memoryDraftForm.refresh) memoryDraftForm.refresh();
+              }
+              graphSetOut({ ok: true, note: "Rejected consolidation draft cleared from editor." }, false);
+              setStatus(statusEl, "Rejected graph draft cleared from editor.", false);
+            }
           },
         );
       }

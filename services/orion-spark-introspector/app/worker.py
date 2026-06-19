@@ -429,6 +429,10 @@ def _log_turn_effect_alert_suppressed_dedupe(
 
 def _append_turn_effect_metadata(meta: Dict[str, Any], spark_meta: Dict[str, Any] | None) -> None:
     turn_effect = turn_effect_from_spark_meta(spark_meta or {})
+    if not turn_effect and isinstance(spark_meta, dict):
+        precomputed = spark_meta.get("turn_effect")
+        if isinstance(precomputed, dict) and precomputed:
+            turn_effect = precomputed
     evidence = None
     if isinstance(turn_effect, dict) and "evidence" in turn_effect:
         evidence = turn_effect.get("evidence")
@@ -439,6 +443,10 @@ def _append_turn_effect_metadata(meta: Dict[str, Any], spark_meta: Dict[str, Any
     meta["turn_effect_summary"] = summarize_turn_effect(turn_effect)
     if isinstance(evidence, dict):
         meta["turn_effect_evidence"] = evidence
+    elif isinstance(spark_meta, dict):
+        precomputed_evidence = spark_meta.get("turn_effect_evidence")
+        if isinstance(precomputed_evidence, dict) and precomputed_evidence:
+            meta["turn_effect_evidence"] = precomputed_evidence
 
 
 def _alert_direction(rule: str) -> str:
@@ -505,6 +513,8 @@ def _candidate_quality(spark_meta: Dict[str, Any]) -> int:
         "spark_event_id",
         "phi_post_before",
         "phi_post_after",
+        "turn_effect",
+        "turn_effect_evidence",
     )
     return 1 if any(k in spark_meta for k in rich_keys) else 0
 
@@ -822,12 +832,20 @@ async def _update_tissue_from_candidate(c: SparkCandidatePayload) -> None:
         "trigger": "spark.candidate",
     }
     turn_effect = turn_effect_from_spark_meta(c.spark_meta or {})
+    if not turn_effect and isinstance(c.spark_meta, dict):
+        precomputed = c.spark_meta.get("turn_effect")
+        if isinstance(precomputed, dict) and precomputed:
+            turn_effect = precomputed
     evidence = None
     if isinstance(turn_effect, dict) and "evidence" in turn_effect:
         evidence = turn_effect.get("evidence")
         turn_effect = {k: v for k, v in turn_effect.items() if k != "evidence"}
     if turn_effect:
         metadata["turn_effect"] = turn_effect
+    if isinstance(c.spark_meta, dict):
+        precomputed_evidence = c.spark_meta.get("turn_effect_evidence")
+        if isinstance(precomputed_evidence, dict) and precomputed_evidence:
+            metadata["turn_effect_evidence"] = precomputed_evidence
     if isinstance(evidence, dict):
         metadata["turn_effect_evidence"] = evidence
 

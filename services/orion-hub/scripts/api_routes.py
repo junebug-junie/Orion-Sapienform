@@ -2580,6 +2580,22 @@ async def api_chat(
             await publish_chat_turn(bus, env_turn)
             logger.info("Published chat.history turn row -> %s", settings.chat_history_turn_channel)
 
+            from .spark_candidate import publish_spark_introspect_candidate
+
+            await publish_spark_introspect_candidate(
+                bus,
+                trace_id=str(final_corr_id),
+                prompt=latest_user_prompt,
+                response=text,
+                spark_meta=spark_meta,
+                source="hub_http",
+                correlation_id=str(final_corr_id),
+            )
+            logger.info(
+                "Published spark.candidate -> %s",
+                settings.CHANNEL_SPARK_INTROSPECT_CANDIDATE,
+            )
+
             # Legacy log for downstream SQL-writer compatibility
             chat_log_payload = {
                 "correlation_id": final_corr_id,

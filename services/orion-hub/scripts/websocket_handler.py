@@ -42,6 +42,7 @@ from scripts.workflow_payloads import extract_workflow_payload
 from scripts.mutation_cognition_context import build_mutation_cognition_context
 from scripts.presence_session import inject_session_presence
 from scripts.substrate_effect_pipeline import run_substrate_effect_pipeline
+from scripts.spark_candidate import publish_spark_introspect_candidate
 from scripts.warm_start import mini_personality_summary
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
 from orion.schemas.metacognitive_trace import MetacognitiveTraceV1
@@ -1318,24 +1319,17 @@ async def websocket_endpoint(websocket: WebSocket):
                             ),
                             "chat.social turn",
                         )
-                    # 2. Spark Introspection Candidate
-                    candidate_payload = {
-                        "trace_id": trace_id,
-                        "source": "hub_ws",
-                        "prompt": transcript,
-                        "response": orion_response_text,
-                        "spark_meta": spark_meta
-                    }
-                    env_spark = BaseEnvelope(
-                        kind="spark.candidate",
-                        correlation_id=trace_id,
-                        source=ServiceRef(name="hub", node=settings.NODE_NAME),
-                        payload=candidate_payload
-                    )
-                    # Kept the literal string to ensure it hits the default introspection channel
-                    # and avoids settings attribute errors
+                    # 2. Spark Introspection Candidate (drives Cognitive EKG refresh)
                     _schedule_publish(
-                        bus.publish("orion:spark:introspect:candidate:log", env_spark),
+                        publish_spark_introspect_candidate(
+                            bus,
+                            trace_id=trace_id,
+                            prompt=transcript,
+                            response=orion_response_text,
+                            spark_meta=spark_meta,
+                            source="hub_ws",
+                            correlation_id=trace_id,
+                        ),
                         "spark.candidate",
                     )
 

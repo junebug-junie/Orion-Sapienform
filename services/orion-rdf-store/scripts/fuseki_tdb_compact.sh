@@ -117,12 +117,15 @@ docker run --rm \
 
 echo "==> Restarting ${SERVICE}"
 docker compose -f docker-compose.yml up -d "${SERVICE}"
-docker compose -f docker-compose.yml restart "${SERVICE}"
 docker start "${WRITER_SERVICE}" 2>/dev/null || true
 
-echo "==> Verifying health"
-if ! make health-probe; then
-  echo "compact: health-probe failed after restart" >&2
+echo "==> Verifying health (waiting for Fuseki boot; start_period=90s)"
+PROBE_ATTEMPTS="${FUSEKI_COMPACT_HEALTH_PROBE_MAX_ATTEMPTS:-24}"
+PROBE_INTERVAL="${FUSEKI_COMPACT_HEALTH_PROBE_INTERVAL_SEC:-5}"
+if ! FUSEKI_HEALTH_PROBE_MAX_ATTEMPTS="${PROBE_ATTEMPTS}" \
+     FUSEKI_HEALTH_PROBE_INTERVAL_SEC="${PROBE_INTERVAL}" \
+     make health-probe; then
+  echo "compact: health-probe failed after restart (${PROBE_ATTEMPTS} attempts × ${PROBE_INTERVAL}s)" >&2
   exit 1
 fi
 

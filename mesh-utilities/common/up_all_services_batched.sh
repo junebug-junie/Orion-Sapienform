@@ -20,6 +20,7 @@ set -o pipefail
 # Optional env vars:
 #   WAIT_SEC=30
 #   BATCH_SIZE=5                        # max concurrent bring-ups after bus (sliding)
+#   BUS_WAIT_SEC=120                    # max seconds to wait for bus redis readiness
 #   PROJECT_NAME=orion                  # informational only (NOT used for -p)
 #   EXCLUDE_SERVICES="svc1 svc2"        # replaces defaults/file excludes
 #   EXCLUDE_SERVICES_ADD="svc3 svc4"    # adds to excludes
@@ -33,6 +34,7 @@ set -o pipefail
 
 WAIT_SEC="${WAIT_SEC:-30}"
 BATCH_SIZE="${BATCH_SIZE:-5}"
+BUS_WAIT_SEC="${BUS_WAIT_SEC:-120}"
 PROJECT_NAME="${PROJECT_NAME:-${COMPOSE_PROJECT_NAME:-${PROJECT:-orion}}}"  # informational only
 
 BUS_SERVICE_DIR="orion-bus"
@@ -76,6 +78,11 @@ fi
 
 if ! [[ "$BATCH_SIZE" =~ ^[1-9][0-9]*$ ]]; then
   echo "ERROR: BATCH_SIZE must be a positive integer (got: $BATCH_SIZE)" >&2
+  exit 2
+fi
+
+if ! [[ "$BUS_WAIT_SEC" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: BUS_WAIT_SEC must be a positive integer (got: $BUS_WAIT_SEC)" >&2
   exit 2
 fi
 
@@ -159,12 +166,14 @@ up_one() {
 up_one_bg() {
   local svc="$1"
   local fail_dir="$2"
-  if ! up_one "$svc"; then
+  local log_file="$fail_dir/$svc.up.log"
+  if ! up_one "$svc" > "$log_file" 2>&1; then
     echo "$svc" > "$fail_dir/$svc.fail"
   fi
+  sed "s/^/[$svc] /" "$log_file"
 }
 
-collect_batch_failures() {
+collect_up_failures() {
   local fail_dir="$1"
   local f
   shopt -s nullglob
@@ -172,6 +181,58 @@ collect_batch_failures() {
     FAILED_UP+=("$(basename "$f" .fail)")
   done
   shopt -u nullglob
+}
+
+bus_redis_port() {
+  local bus_env="$SERVICES_DIR/$BUS_SERVICE_DIR/.env"
+  local port="6379"
+  if [[ -f "$bus_env" ]]; then
+    local val
+    val="$(grep -E '^REDIS_PORT=' "$bus_env" | tail -1 | cut -d= -f2- | tr -d "\"'" | xargs)"
+    [[ -n "$val" ]] && port="$val"
+  fi
+  echo "$port"
+}
+
+wait_for_bus_ready() {
+  local port max_wait interval elapsed
+  port="$(bus_redis_port)"
+  max_wait="$BUS_WAIT_SEC"
+  interval=2
+  elapsed=0
+
+  echo ""
+  echo "=== Waiting for bus readiness (redis PONG on localhost:$port, max ${max_wait}s) ==="
+
+  while [[ "$elapsed" -lt "$max_wait" ]]; do
+    if command -v redis-cli >/dev/null 2>&1; then
+      if redis-cli -h localhost -p "$port" ping 2>/dev/null | grep -q PONG; then
+        echo "✅ Bus ready (redis-cli PONG on port $port)"
+        return 0
+      fi
+    fi
+
+    local cmd core_id health
+    cmd="$(compose_cmd "$BUS_SERVICE_DIR")" || return 1
+    set +e
+    # shellcheck disable=SC2086
+    core_id=$($cmd ps -q bus-core 2>/dev/null | head -1)
+    set -e
+    if [[ -n "${core_id//[$'\n\r\t ']}" ]]; then
+      health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$core_id" 2>/dev/null || echo "unknown")"
+      if [[ "$health" == "healthy" || "$health" == "running" ]]; then
+        echo "✅ Bus ready (bus-core container: $health)"
+        return 0
+      fi
+    fi
+
+    sleep "$interval"
+    elapsed=$((elapsed + interval))
+    echo "  ... still waiting (${elapsed}s / ${max_wait}s)"
+  done
+
+  echo "ERROR: bus not ready within ${max_wait}s" >&2
+  return 1
 }
 
 ps_ids() {
@@ -202,11 +263,11 @@ trap cleanup_fail_tmp EXIT INT TERM
 set -e
 
 mapfile -t CANDIDATES < <(
-  find "$SERVICES_DIR" -mindepth 1 -maxdepth 1 -type d -printf "%f\n" \
-  | sort \
-  | while read -r svc; do
-      [[ -f "$SERVICES_DIR/$svc/$COMPOSE_BASENAME" ]] && echo "$svc"
-    done
+  for d in "$SERVICES_DIR"/*; do
+    [[ -d "$d" ]] || continue
+    svc="$(basename "$d")"
+    [[ -f "$SERVICES_DIR/$svc/$COMPOSE_BASENAME" ]] && echo "$svc"
+  done | sort
 )
 
 if [[ "${#CANDIDATES[@]}" -eq 0 ]]; then
@@ -265,16 +326,22 @@ fi
 # Bring up: bus first (alone), then remaining services with sliding concurrency
 # ------------------------------------------------------------------------------
 FAILED_UP=()
+BUS_READY=false
 
 if [[ " ${RUN_LIST[*]} " =~ " ${BUS_SERVICE_DIR} " ]]; then
   echo ""
   echo "=== Critical path: $BUS_SERVICE_DIR (sequential, before sliding pool) ==="
   if ! up_one "$BUS_SERVICE_DIR"; then
     FAILED_UP+=("$BUS_SERVICE_DIR")
+  elif wait_for_bus_ready; then
+    BUS_READY=true
+  else
+    FAILED_UP+=("$BUS_SERVICE_DIR")
   fi
 else
   echo ""
   echo "WARNING: $BUS_SERVICE_DIR not in run list (missing compose/.env or excluded)."
+  BUS_READY=true
 fi
 
 REST_LIST=()
@@ -283,7 +350,10 @@ for svc in "${RUN_LIST[@]}"; do
   REST_LIST+=("$svc")
 done
 
-if [[ "${#REST_LIST[@]}" -gt 0 ]]; then
+if [[ "$BUS_READY" != true ]]; then
+  echo ""
+  echo "ERROR: critical path $BUS_SERVICE_DIR failed; skipping sliding pool" >&2
+elif [[ "${#REST_LIST[@]}" -gt 0 ]]; then
   echo ""
   echo "=== Sliding pool: max $BATCH_SIZE in flight (${#REST_LIST[@]} services after bus) ==="
 
@@ -315,7 +385,7 @@ if [[ "${#REST_LIST[@]}" -gt 0 ]]; then
     fi
   done
 
-  collect_batch_failures "$FAIL_TMP_DIR"
+  collect_up_failures "$FAIL_TMP_DIR"
   rm -rf "$FAIL_TMP_DIR"
   FAIL_TMP_DIR=""
 fi

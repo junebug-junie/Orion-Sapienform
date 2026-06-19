@@ -140,12 +140,12 @@ class BaseChassis:
                 )
                 await self.bus.publish(self.cfg.health_channel, v1_env)
             except Exception as e:
-                logger.warning("Heartbeat publish failed: %s; reconnecting", e)
+                logger.warning("Heartbeat publish failed: {}; reconnecting", e)
                 try:
                     await self.bus.reconnect()
                     await self.bus.publish(self.cfg.health_channel, v1_env)
                 except Exception as retry_exc:
-                    logger.warning("Heartbeat publish retry failed: %s", retry_exc)
+                    logger.warning("Heartbeat publish retry failed: {}", retry_exc)
             await asyncio.sleep(float(self.cfg.heartbeat_interval_sec or 10.0))
 
     async def _publish_error(self, err: BaseException, *, when: str, env: BaseEnvelope | None = None) -> None:

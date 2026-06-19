@@ -107,7 +107,8 @@ class MeshGuardianService:
             await save_one(self.bus.redis, entry.id, out.new_state)
 
         for event in out.attention_events:
-            self.attention.publish_transition(
+            await asyncio.to_thread(
+                self.attention.publish_transition,
                 service_id=entry.id,
                 heartbeat_name=entry.heartbeat_name,
                 event=event,
@@ -122,7 +123,8 @@ class MeshGuardianService:
             tier = 2 if out.should_remediate_tier2 else 1
             result = await execute_remediation(entry, repo_root=self.settings.orion_repo_root, tier=tier)
             if not result.ok:
-                self.attention.publish_transition(
+                await asyncio.to_thread(
+                    self.attention.publish_transition,
                     service_id=entry.id,
                     heartbeat_name=entry.heartbeat_name,
                     event={

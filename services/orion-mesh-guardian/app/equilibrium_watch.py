@@ -16,7 +16,7 @@ def equilibrium_status_for_service(
 ) -> tuple[bool, str | None]:
     """Return (equilibrium_bad, reason)."""
     if snapshot is None:
-        return True, "no_snapshot"
+        return False, None
     svc = None
     for item in snapshot.services:
         if item.service == heartbeat_name:

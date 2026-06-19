@@ -174,6 +174,7 @@ def transition(state: ServiceState, inp: TransitionInput, *, service_id: str = "
 
     if new_state.phase == ServicePhase.unhealthy_confirmed:
         if not inp.auto_remediate:
+            new_state.phase = ServicePhase.attention_only
             attention_events.append(
                 _attention_event(
                     severity="error",

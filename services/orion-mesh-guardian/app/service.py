@@ -44,7 +44,7 @@ class MeshGuardianService:
         roster_errors = validate_roster(self.roster)
         if roster_errors:
             raise ValueError("invalid mesh guardian roster: " + "; ".join(roster_errors))
-        await self.bus.connect()
+        await self._connect_bus_with_retry()
         if self.bus.redis is not None:
             self.states = await load_all(self.bus.redis)
         for entry in self.roster.services:
@@ -66,6 +66,34 @@ class MeshGuardianService:
 
     def equilibrium_subscriber_alive(self) -> bool:
         return self._equilibrium_task_alive
+
+    async def _connect_bus_with_retry(
+        self,
+        *,
+        max_wait_sec: float = 60.0,
+        initial_backoff_sec: float = 1.0,
+    ) -> None:
+        """Connect to mesh Redis; retry through transient bring-up races (batched compose up)."""
+        deadline = time.monotonic() + max_wait_sec
+        backoff = initial_backoff_sec
+        while True:
+            try:
+                await self.bus.connect()
+                return
+            except Exception as exc:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise
+                wait = min(backoff, remaining)
+                logger.warning(
+                    "mesh guardian bus connect failed url=%s err=%s; retry in %.1fs",
+                    self.settings.orion_bus_url,
+                    exc,
+                    wait,
+                )
+                await self.bus.close()
+                await asyncio.sleep(wait)
+                backoff = min(backoff * 2.0, 15.0)
 
     async def _equilibrium_loop(self) -> None:
         self._equilibrium_task_alive = True

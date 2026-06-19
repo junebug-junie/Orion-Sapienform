@@ -8,7 +8,7 @@ services:
     env_file:
       - .env
     ports:
-      - "${PORT:-7160}:${PORT:-7160}"
+      - "${PORT:-7161}:${PORT:-7161}"
     volumes:
       - ${ORION_REPO_ROOT:-../..}:/repo:ro
       - ${DOCKER_SOCK_PATH:-/var/run/docker.sock}:/var/run/docker.sock
@@ -17,7 +17,7 @@ services:
       NODE_NAME: ${NODE_NAME}
       SERVICE_NAME: ${SERVICE_NAME:-orion-mesh-guardian}
       SERVICE_VERSION: ${SERVICE_VERSION:-0.1.0}
-      PORT: ${PORT:-7160}
+      PORT: ${PORT:-7161}
       ORION_REPO_ROOT: /repo
       ORION_BUS_URL: ${ORION_BUS_URL}
       NOTIFY_BASE_URL: ${NOTIFY_BASE_URL:-http://${PROJECT}-notify:7140}

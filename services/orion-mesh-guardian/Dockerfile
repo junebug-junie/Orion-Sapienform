@@ -16,6 +16,6 @@ COPY services/orion-mesh-guardian/app ./app
 COPY orion ./orion
 COPY config ./config
 
-EXPOSE 7160
+EXPOSE 7161
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7160"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7161"]

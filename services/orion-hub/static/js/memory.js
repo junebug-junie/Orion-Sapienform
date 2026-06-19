@@ -792,8 +792,9 @@
           const raw = draftTa.value.trim();
           const draftBody = JSON.parse(raw);
           const approvePayload = { draft: draftBody };
-          if (activeConsolidationDraftId) {
-            approvePayload.consolidation_draft_id = activeConsolidationDraftId;
+          const approvedConsolidationDraftId = activeConsolidationDraftId;
+          if (approvedConsolidationDraftId) {
+            approvePayload.consolidation_draft_id = approvedConsolidationDraftId;
           }
           if (memoryDraftForm && typeof memoryDraftForm.buildCardProjectionPayload === "function") {
             approvePayload.card_projection_defaults = memoryDraftForm.buildCardProjectionPayload();
@@ -825,31 +826,27 @@
           }
           graphSetOut({ ok: true, created, card_ids: data.card_ids || [] }, false);
           const titles = created.map((c) => c.title).filter(Boolean);
-          setStatus(
-            statusEl,
-            titles.length
-              ? `Approved ${titles.length} active card(s): ${titles.slice(0, 2).join(" · ")}${titles.length > 2 ? " …" : ""}`
-              : "Graph approved.",
-            false
-          );
-          if (activeConsolidationDraftId) {
-            activeConsolidationDraftId = null;
-            if (consolidationDrafts && !consolidationDrafts.classList.contains("hidden")) {
-              loadConsolidationDrafts(
-                consolidationList,
-                consolidationStatus,
-                statusEl,
-                draftTa,
-                memoryDraftViz,
-                memoryDraftForm,
-                graphSetOut,
-                (draftId) => {
-                  activeConsolidationDraftId = draftId;
-                },
-              );
-            }
+          if (data.consolidation_draft_marked === false) {
+            setStatus(
+              statusEl,
+              "Graph approved but consolidation draft inbox was not updated — check logs.",
+              true,
+            );
+          } else {
+            setStatus(
+              statusEl,
+              titles.length
+                ? `Approved ${titles.length} active card(s): ${titles.slice(0, 2).join(" · ")}${titles.length > 2 ? " …" : ""}`
+                : "Graph approved.",
+              false,
+            );
           }
-          activateSubview("all");
+          if (approvedConsolidationDraftId) {
+            activeConsolidationDraftId = null;
+            activateSubview("consolidation_drafts");
+          } else {
+            activateSubview("all");
+          }
         } catch (e) {
           graphSetOut(e.body || e.message || String(e), true);
         }
@@ -857,6 +854,7 @@
     }
     if (sBtn && draftTa) {
       sBtn.addEventListener("click", async () => {
+        activeConsolidationDraftId = null;
         graphSetOut("…", false);
         try {
           const raw =

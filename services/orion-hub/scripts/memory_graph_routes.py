@@ -185,19 +185,31 @@ async def memory_graph_approve(
     if not result.ok:
         return {"ok": False, "violations": result.violations, "card_ids": []}
     if consolidation_draft_id:
+        consolidation_draft_marked = False
         try:
             from orion.memory_graph.draft_repository import update_consolidation_draft_status
 
-            await update_consolidation_draft_status(pool, consolidation_draft_id, status="approved")
+            updated = await update_consolidation_draft_status(pool, consolidation_draft_id, status="approved")
+            consolidation_draft_marked = updated is not None
         except Exception as exc:
             logger.warning(
                 "consolidation_draft_mark_approved_failed draft_id=%s error=%s",
                 consolidation_draft_id,
                 exc,
             )
+        if not consolidation_draft_marked:
+            return {
+                "ok": True,
+                "violations": [],
+                "card_ids": [str(x) for x in result.card_ids],
+                "consolidation_draft_id": consolidation_draft_id,
+                "consolidation_draft_marked": False,
+                "consolidation_draft_status": "update_failed",
+            }
     return {
         "ok": True,
         "violations": [],
         "card_ids": [str(x) for x in result.card_ids],
         "consolidation_draft_id": consolidation_draft_id,
+        "consolidation_draft_marked": bool(consolidation_draft_id),
     }

@@ -32,7 +32,7 @@ No new bus channels or env keys — uses existing Hub memory Postgres pool and g
 |--------|------|---------|
 | GET | `/api/memory/consolidation/drafts?status=pending_review&limit=50` | Inbox list (summary only) |
 | GET | `/api/memory/consolidation/drafts/{draft_id}` | Full draft JSON |
-| POST | `/api/memory/consolidation/drafts/{draft_id}/status` | `{ "status": "rejected" \| "approved" \| "pending_review" }` |
+| POST | `/api/memory/consolidation/drafts/{draft_id}/status` | `{ "status": "rejected" \| "pending_review" }` only (`approved` via graph approve) |
 | POST | `/api/memory/graph/approve` | Optional `consolidation_draft_id` in body |
 
 ---
@@ -55,7 +55,7 @@ PYTHONPATH=.:services/orion-hub ./venv/bin/python -m pytest \
   tests/test_memory_graph_draft_repository.py -q
 ```
 
-**Result:** 9 passed, exit 0
+**Result:** 12 passed, exit 0
 
 ---
 

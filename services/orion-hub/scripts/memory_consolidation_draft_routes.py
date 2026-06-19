@@ -12,6 +12,7 @@ from orion.memory_graph.draft_repository import (
 )
 
 from .session import ensure_session
+from .memory_routes import _http_if_missing_memory_schema
 
 logger = logging.getLogger("orion-hub.memory_consolidation_drafts")
 
@@ -71,6 +72,7 @@ async def list_memory_consolidation_drafts(
     try:
         rows = await list_consolidation_drafts(pool, status=status, limit=limit)
     except Exception as exc:
+        _http_if_missing_memory_schema(exc)
         logger.warning("consolidation_drafts_list_failed error=%s", exc)
         raise HTTPException(status_code=503, detail="memory_store_error") from exc
     return {
@@ -91,6 +93,7 @@ async def get_memory_consolidation_draft(
     try:
         row = await get_consolidation_draft(pool, draft_id)
     except Exception as exc:
+        _http_if_missing_memory_schema(exc)
         logger.warning("consolidation_draft_get_failed draft_id=%s error=%s", draft_id, exc)
         raise HTTPException(status_code=503, detail="memory_store_error") from exc
     if row is None:
@@ -107,12 +110,13 @@ async def set_memory_consolidation_draft_status(
 ) -> Dict[str, Any]:
     await _need_session(x_orion_session_id)
     status_raw = str((body or {}).get("status") or "").strip()
-    if status_raw not in ("approved", "rejected", "pending_review"):
+    if status_raw not in ("rejected", "pending_review"):
         raise HTTPException(status_code=400, detail="invalid_consolidation_draft_status")
     pool = _pool(request)
     try:
         row = await update_consolidation_draft_status(pool, draft_id, status=status_raw)  # type: ignore[arg-type]
     except Exception as exc:
+        _http_if_missing_memory_schema(exc)
         logger.warning(
             "consolidation_draft_status_failed draft_id=%s status=%s error=%s",
             draft_id,

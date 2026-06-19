@@ -117,6 +117,16 @@ def test_set_consolidation_draft_status_invalid(client: TestClient) -> None:
     assert resp.status_code == 400
 
 
+def test_set_consolidation_draft_status_rejects_approved(client: TestClient) -> None:
+    resp = client.post(
+        "/api/memory/consolidation/drafts/draft-1/status",
+        json={"status": "approved"},
+        headers={"X-Orion-Session-Id": "test-session"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "invalid_consolidation_draft_status"
+
+
 def test_draft_repository_list_sql_shape() -> None:
     source = open(
         __import__("orion.memory_graph.draft_repository", fromlist=["draft_repository"]).__file__,

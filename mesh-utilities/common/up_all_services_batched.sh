@@ -184,6 +184,12 @@ print_failed_logs() {
   docker logs --tail 80 "$cid" 2>&1 || true
 }
 
+FAIL_TMP_DIR=""
+cleanup_fail_tmp() {
+  [[ -n "${FAIL_TMP_DIR:-}" && -d "$FAIL_TMP_DIR" ]] && rm -rf "$FAIL_TMP_DIR"
+}
+trap cleanup_fail_tmp EXIT INT TERM
+
 # ------------------------------------------------------------------------------
 # Discover candidates
 # ------------------------------------------------------------------------------
@@ -294,6 +300,7 @@ if [[ "${#REST_LIST[@]}" -gt 0 ]]; then
 
     collect_batch_failures "$FAIL_TMP_DIR"
     rm -rf "$FAIL_TMP_DIR"
+    FAIL_TMP_DIR=""
   done
 fi
 

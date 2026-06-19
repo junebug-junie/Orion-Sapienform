@@ -845,6 +845,33 @@ async def websocket_endpoint(websocket: WebSocket):
                     substrate_summary.get("changed_behavior"),
                 )
 
+            # Chat grammar trace (fail-open, behind PUBLISH_HUB_CHAT_GRAMMAR env flag)
+            if bus and settings.PUBLISH_HUB_CHAT_GRAMMAR:
+                try:
+                    from scripts.grammar_emit import build_chat_turn_grammar_events
+                    from scripts.grammar_publish import publish_hub_chat_grammar_trace
+                    _chat_grammar_events = build_chat_turn_grammar_events(
+                        turn_id=trace_id,
+                        session_id=str(session_id or "anonymous"),
+                        node_id=settings.NODE_NAME,
+                        word_count=len((transcript or "").split()),
+                        repair_pressure_level=float((substrate_summary or {}).get("level", 0.0)),
+                        repair_pressure_confidence=float((substrate_summary or {}).get("confidence", 0.0)),
+                        has_repair_signal=substrate_summary is not None,
+                    )
+                    _schedule_publish(
+                        publish_hub_chat_grammar_trace(
+                            bus,
+                            _chat_grammar_events,
+                            correlation_id=trace_id,
+                            channel=settings.GRAMMAR_EVENT_CHANNEL,
+                            enabled=True,
+                        ),
+                        "chat.grammar",
+                    )
+                except Exception:
+                    logger.warning("hub_chat_grammar_wire_failed corr=%s", trace_id, exc_info=True)
+
             if diagnostic:
                 logger.info("WS outbound CortexChatRequest corr=%s payload=%s", trace_id, chat_req.model_dump(mode="json"))
 

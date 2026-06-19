@@ -5,9 +5,18 @@ from unittest.mock import MagicMock, patch
 from orion.autonomy.goal_archive import (
     archive_subjects_drain,
     build_archive_candidates,
+    build_archive_status_update,
     goal_archive_enabled,
     maybe_archive_after_goal_publish,
 )
+
+
+def test_build_archive_status_update_scopes_named_graph() -> None:
+    update = build_archive_status_update(artifact_id="goal-test-1")
+    assert "DELETE { GRAPH <http://conjourney.net/graph/autonomy/goals>" in update
+    assert 'INSERT { GRAPH <http://conjourney.net/graph/autonomy/goals>' in update
+    assert 'orion:artifactId "goal-test-1"' in update
+    assert 'orion:proposalStatus "archived"' in update
 
 
 def test_build_archive_candidates_keeps_highest_priority_per_drive_origin() -> None:

@@ -10,6 +10,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.pad import KIND_PAD_RPC_REQUEST_V1, KIND_PAD_RPC_RESPONSE_V1, PadRpcRequestV1, PadRpcResponseV1
 
+from ..bus_resilience import publish_with_reconnect
 from ..observability.stats import PadStatsTracker
 from ..settings import Settings
 from ..store.redis_store import PadStore
@@ -118,7 +119,12 @@ class PadRpcServer:
                 payload=resp.model_dump(mode="json"),
             )
             try:
-                await self.bus.publish(req.reply_channel, out)
+                await publish_with_reconnect(
+                    self.bus,
+                    req.reply_channel,
+                    out,
+                    log_label="pad_rpc_response_publish",
+                )
             except Exception as exc:
                 elapsed = time.perf_counter() - started
                 logger.warning(

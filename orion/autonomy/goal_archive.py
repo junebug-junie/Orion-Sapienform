@@ -61,6 +61,21 @@ def build_archive_candidates(
     return to_archive
 
 
+def build_archive_status_update(*, artifact_id: str, graph_uri: str = AUTONOMY_GOALS_GRAPH_URI) -> str:
+    """SPARQL UPDATE that sets proposalStatus=archived in a named graph (Fuseki requires GRAPH in DELETE/INSERT)."""
+    safe_id = artifact_id.replace("\\", "\\\\").replace('"', '\\"')
+    return f"""
+PREFIX orion: <http://conjourney.net/orion#>
+DELETE {{ GRAPH <{graph_uri}> {{ ?a orion:proposalStatus ?old . }} }}
+INSERT {{ GRAPH <{graph_uri}> {{ ?a orion:proposalStatus "archived" . }} }}
+WHERE {{
+  GRAPH <{graph_uri}> {{
+    ?a orion:artifactId "{safe_id}" .
+    OPTIONAL {{ ?a orion:proposalStatus ?old . }}
+  }}
+}}"""
+
+
 def _resolve_graph_endpoints() -> tuple[str, str, str | None, str | None]:
     query_url, _src = resolve_autonomy_read_query_url()
     if query_url:
@@ -166,17 +181,7 @@ def archive_subject_goals(
     applied = 0
     if not dry_run:
         for aid in to_archive:
-            update = f"""
-PREFIX orion: <http://conjourney.net/orion#>
-DELETE {{ ?a orion:proposalStatus ?old . }}
-INSERT {{ ?a orion:proposalStatus "archived" . }}
-WHERE {{
-  GRAPH <{AUTONOMY_GOALS_GRAPH_URI}> {{
-    ?a orion:artifactId "{aid}" .
-    OPTIONAL {{ ?a orion:proposalStatus ?old . }}
-  }}
-}}"""
-            client.update(update)
+            client.update(build_archive_status_update(artifact_id=aid))
             applied += 1
 
     summary = {

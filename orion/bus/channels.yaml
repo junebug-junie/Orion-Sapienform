@@ -154,7 +154,7 @@ channels:
   - name: "orion:cortex:exec:request:background"
     kind: "request"
     schema_id: "CortexExecRequestPayload"
-    producer_services: ["orion-cortex-orch"]
+    producer_services: ["orion-cortex-orch", "orion-actions"]
     consumer_services: ["orion-cortex-exec"]
     stability: "experimental"
     since: "2026-05-13"

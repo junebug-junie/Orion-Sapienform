@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from sqlalchemy import or_
 
 from app.db import get_session, remove_session
@@ -134,6 +134,36 @@ async def list_attention(limit: int = 50, status: Optional[str] = None):
         return [_attention_to_schema(row) for row in rows]
     finally:
         remove_session()
+
+
+@router.post("/attention/{attention_id}/escalate")
+async def mark_attention_escalated(attention_id: str):
+    db = get_session()
+    try:
+        row = (
+            db.query(NotificationRequestDB)
+            .filter(NotificationRequestDB.attention_id == attention_id)
+            .first()
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="attention_not_found")
+        if row.attention_escalated_at is not None:
+            return {
+                "attention_id": attention_id,
+                "escalated_at": row.attention_escalated_at.isoformat(),
+                "status": "already_escalated",
+            }
+        now = datetime.utcnow()
+        row.attention_escalated_at = now
+        db.commit()
+        return {
+            "attention_id": attention_id,
+            "escalated_at": now.isoformat(),
+            "status": "escalated",
+        }
+    finally:
+        remove_session()
+
 
 @router.get("/chat/messages")
 async def list_chat_messages(limit: int = 50, status: Optional[str] = None, session_id: Optional[str] = None):

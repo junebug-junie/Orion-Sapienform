@@ -39,8 +39,8 @@ def _parse_ts(value: Any) -> Optional[datetime]:
 
 def _hub_link(hub_url_base: str, attention_id: str) -> Optional[str]:
     base = hub_url_base.strip().rstrip("/")
-    if not base:
-        return None
+    if not base or not attention_id:
+        return base or None
     return f"{base}/#attention"
 
 
@@ -52,6 +52,8 @@ def _build_escalation_request(row: Dict[str, Any], *, hub_url_base: str) -> Noti
         "Attention request was not acknowledged before the escalation deadline.",
         "",
         str(row.get("message") or ""),
+        "",
+        f"Attention ID: {attention_id}",
     ]
     if hub_url:
         body_lines.extend(["", f"Hub: {hub_url}"])

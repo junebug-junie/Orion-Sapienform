@@ -17,9 +17,17 @@ def test_attention_publisher_calls_notify_client() -> None:
         publisher.publish_transition(
             service_id="landing-pad",
             heartbeat_name="landing-pad",
-            event={"severity": "error", "message": "unhealthy", "correlation_id": "abc"},
+            event={
+                "severity": "critical",
+                "message": "mesh health: landing-pad observe-only",
+                "correlation_id": "abc",
+                "context": {"event": "observe_only"},
+            },
         )
     mock_client.attention_request.assert_called_once()
     kwargs = mock_client.attention_request.call_args.kwargs
-    assert kwargs["severity"] == "error"
+    assert kwargs["severity"] == "critical"
     assert kwargs["context"]["event_kind"] == "orion.mesh.health.attention.v1"
+    assert kwargs["context"]["reason"] == "[Orion mesh] landing-pad — observe_only"
+    assert "service: landing-pad" in kwargs["message"]
+    assert "heartbeat: landing-pad" in kwargs["message"]

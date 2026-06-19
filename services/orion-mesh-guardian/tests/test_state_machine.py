@@ -112,6 +112,19 @@ def test_post_grace_still_bad_schedules_tier2() -> None:
     assert out.new_state.pending_tier2 is True
 
 
+def test_post_grace_persistent_failure_is_critical() -> None:
+    state = ServiceState(
+        phase=ServicePhase.post_check_grace,
+        post_grace_until_ts=1000.0,
+        pending_tier2=True,
+        attempts_this_hour=3,
+    )
+    out = transition(state, _inp(now=1100.0, probe_status="probe_bad"), service_id="landing-pad")
+    assert out.new_state.phase == ServicePhase.attention_only
+    assert out.attention_events[0]["severity"] == "critical"
+    assert "persistent failure" in out.attention_events[0]["message"]
+
+
 def test_max_attempts_moves_to_attention_only() -> None:
     state = ServiceState(phase=ServicePhase.unhealthy_confirmed, attempts_this_hour=3)
     out = transition(state, _inp(probe_status="probe_bad"), service_id="landing-pad")

@@ -46,8 +46,6 @@ def maybe_send_email(
     should, reason = should_send_email(payload)
     if not should:
         return
-    if immediate_critical_only and severity == "error":
-        return
     try:
         transport.send(payload)
         logger.info(

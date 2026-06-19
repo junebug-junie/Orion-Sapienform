@@ -272,7 +272,10 @@ async def attention_request(
         )
         asyncio.create_task(_publish_persistence_event(bus, "orion:notify:persistence:request", record))
 
-    return _attention_request_to_state(payload, notify_payload.notification_id)
+    return _attention_request_to_state(
+        payload.model_copy(update={"context": notify_payload.context}),
+        notify_payload.notification_id,
+    )
 
 
 @app.post("/attention/{attention_id}/ack")

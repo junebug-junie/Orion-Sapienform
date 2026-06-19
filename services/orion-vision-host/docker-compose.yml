@@ -3,7 +3,7 @@ services:
     build:
       context: ../..
       dockerfile: services/orion-vision-host/Dockerfile
-    container_name: orion-${PROJECT}-vision-host
+    container_name: ${PROJECT}-vision-host
     restart: unless-stopped
 
     env_file:

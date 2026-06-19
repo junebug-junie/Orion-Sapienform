@@ -3,6 +3,7 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
@@ -37,6 +38,10 @@ from orion.schemas.notify import (
 
 from .settings import settings
 
+from .attention_escalation import attention_escalation_loop
+from .email_delivery import enrich_with_policy, maybe_send_email, should_send_email
+from .policy import Policy
+
 logger = logging.getLogger("orion-notify")
 
 app = FastAPI(
@@ -50,18 +55,34 @@ CHAT_MESSAGE_EVENT_KIND = "orion.chat.message"
 CHAT_MESSAGE_ESCALATION_EVENT_KIND = "orion.chat.message.escalation"
 
 
+def _load_policy() -> Policy:
+    path = Path(settings.POLICY_RULES_PATH)
+    if not path.is_file():
+        path = Path(__file__).resolve().parent / "policy" / "rules.yaml"
+    return Policy.load(str(path))
+
+
 @app.on_event("startup")
 async def on_startup() -> None:
     app.state.env_lookup = dict(os.environ)
     app.state.bus = await _init_bus()
     app.state.email_transport = _build_email_transport()
-    # No DB init
-    # No policy load (stateless)
-    # No escalation loop (stateless)
+    app.state.policy = _load_policy()
+    app.state.proxy_get = _proxy_get
+    app.state.proxy_post = _proxy_post
+    if app.state.email_transport and settings.NOTIFY_ESCALATION_POLL_SECONDS > 0:
+        app.state.escalation_task = asyncio.create_task(attention_escalation_loop(app))
 
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
+    escalation_task = getattr(app.state, "escalation_task", None)
+    if escalation_task:
+        escalation_task.cancel()
+        try:
+            await escalation_task
+        except asyncio.CancelledError:
+            pass
     bus = getattr(app.state, "bus", None)
     if bus is not None:
         try:
@@ -72,11 +93,17 @@ async def on_shutdown() -> None:
 
 @app.get("/health")
 async def health() -> dict:
+    escalation_enabled = bool(
+        getattr(app.state, "email_transport", None) is not None
+        and settings.NOTIFY_ESCALATION_POLL_SECONDS > 0
+    )
     return {
         "ok": True,
         "service": settings.SERVICE_NAME,
         "version": settings.SERVICE_VERSION,
-        "mode": "stateless_router"
+        "mode": "router_with_escalation" if escalation_enabled else "router",
+        "escalation_poll_seconds": settings.NOTIFY_ESCALATION_POLL_SECONDS,
+        "smtp_configured": getattr(app.state, "email_transport", None) is not None,
     }
 
 
@@ -99,6 +126,20 @@ async def _proxy_get(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         except httpx.HTTPError as exc:
             logger.error(f"Proxy GET failed to {url}: {exc}")
             raise HTTPException(status_code=502, detail="Failed to read from upstream persistence")
+
+async def _proxy_post(path: str, json_body: Optional[Dict[str, Any]] = None) -> Any:
+    url = f"{settings.SQL_WRITER_API_URL}/api/notify-read{path}"
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.post(url, json=json_body or {}, timeout=10.0)
+            if resp.status_code == 404:
+                raise HTTPException(status_code=404, detail="Resource not found via sql-writer")
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPError as exc:
+            logger.error(f"Proxy POST failed to {url}: {exc}")
+            raise HTTPException(status_code=502, detail="Failed to write to upstream persistence")
+
 
 async def _proxy_post_resolve(payload: PreferenceResolutionRequest) -> Any:
     url = f"{settings.SQL_WRITER_API_URL}/api/notify-read/preferences/resolve"
@@ -128,8 +169,8 @@ async def notify(
         payload.created_at = datetime.utcnow()
 
     email_transport: EmailTransport | None = getattr(request.app.state, "email_transport", None)
-    should_send_email, send_reason = _should_send_email(payload)
-    if should_send_email:
+    should_send, send_reason = should_send_email(payload)
+    if should_send:
         logger.info(
             "[NOTIFY] email_send_eligible notification_id=%s event_kind=%s reason=%s",
             payload.notification_id,
@@ -148,22 +189,7 @@ async def notify(
                 payload.notification_id,
                 payload.event_kind,
             )
-            try:
-                email_transport.send(payload)
-            except Exception as exc:
-                logger.error(
-                    "[NOTIFY] email_send_failed notification_id=%s event_kind=%s error_class=%s error=%s",
-                    payload.notification_id,
-                    payload.event_kind,
-                    exc.__class__.__name__,
-                    str(exc),
-                )
-            else:
-                logger.info(
-                    "[NOTIFY] email_send_succeeded notification_id=%s event_kind=%s",
-                    payload.notification_id,
-                    payload.event_kind,
-                )
+            maybe_send_email(email_transport, payload)
 
     # 1. Publish In-App (if enabled)
     # We do this blindly as a router. Policy logic is stripped for statelessness or should be in the consumer.
@@ -208,12 +234,14 @@ async def attention_request(
     x_orion_notify_token: Optional[str] = Header(default=None, alias="X-Orion-Notify-Token"),
 ) -> ChatAttentionState:
     _check_token(x_orion_notify_token)
-    # Convert to notification
-    notify_payload = _attention_request_to_notification(payload)
-
-    # Reuse notify handler logic (publish to bus)
-    # But we need to return the State object immediately.
-    # Since we are stateless, we construct the state from the request.
+    policy: Policy = request.app.state.policy
+    notify_payload = enrich_with_policy(
+        _attention_request_to_notification(payload),
+        policy,
+        datetime.utcnow(),
+    )
+    email_transport: EmailTransport | None = getattr(request.app.state, "email_transport", None)
+    maybe_send_email(email_transport, notify_payload, immediate_critical_only=True)
 
     bus: OrionBusAsync | None = request.app.state.bus
 
@@ -793,17 +821,3 @@ def _build_email_transport() -> EmailTransport | None:
         len(settings.notify_email_to),
     )
     return transport
-
-
-def _should_send_email(payload: NotificationRequest) -> tuple[bool, Optional[str]]:
-    channels = payload.channels_requested or []
-    if any(channel.lower() == "email" for channel in channels):
-        return True, "channels_requested=email"
-
-    severity = (payload.severity or "").lower()
-    if severity == "error":
-        return True, "severity=error"
-    if severity == "critical":
-        return True, "severity=critical"
-
-    return False, None

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from app.state_machine import ServicePhase, ServiceState, TransitionInput, transition
+import pytest
 
+from app.state_machine import ServicePhase, ServiceState, TransitionInput, transition
 
 def _inp(**kwargs) -> TransitionInput:
     base = dict(
@@ -58,6 +59,30 @@ def test_suspect_confirmed_observe_only_skips_unhealthy_confirmed_phase() -> Non
     assert out.new_state.phase == ServicePhase.attention_only
     assert len(out.attention_events) == 1
     assert "observe-only" in out.attention_events[0]["message"]
+    assert out.attention_events[0]["severity"] == "critical"
+
+
+def test_unhealthy_confirmed_transient_is_error() -> None:
+    state = ServiceState(phase=ServicePhase.suspect, consecutive_probe_fails=1)
+    out = transition(
+        state,
+        _inp(equilibrium_bad=True, probe_status="probe_bad", auto_remediate=True),
+        service_id="landing-pad",
+    )
+    assert out.new_state.phase == ServicePhase.unhealthy_confirmed
+    assert out.attention_events[0]["severity"] == "error"
+
+
+@pytest.mark.parametrize("setup", ["max_attempts", "observe_only_unhealthy"])
+def test_unhealable_attention_events_are_critical(setup: str) -> None:
+    if setup == "max_attempts":
+        state = ServiceState(phase=ServicePhase.unhealthy_confirmed, attempts_this_hour=3)
+        out = transition(state, _inp(probe_status="probe_bad"), service_id="landing-pad")
+    else:
+        state = ServiceState(phase=ServicePhase.unhealthy_confirmed)
+        out = transition(state, _inp(probe_status="probe_bad", auto_remediate=False), service_id="landing-pad")
+    assert out.new_state.phase == ServicePhase.attention_only
+    assert out.attention_events[0]["severity"] == "critical"
 
 
 def test_unhealthy_confirmed_observe_only_without_auto_remediate() -> None:

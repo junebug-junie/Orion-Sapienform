@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
+from sqlalchemy import create_engine
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SQL_WRITER_ROOT = Path(__file__).resolve().parents[1]
@@ -44,6 +45,23 @@ def test_upsert_with_correlation_id_uses_on_conflict() -> None:
     sess.add.assert_not_called()
     sess.execute.assert_called_once()
     sess.commit.assert_called_once()
+
+
+def test_on_conflict_update_uses_metadata_column_not_python_attr() -> None:
+    """Regression: ON CONFLICT SET must target DB column 'metadata', not Python attr 'metadata_'."""
+    sess = MagicMock()
+    data = {
+        "correlation_id": "corr-123",
+        "phi": 0.7,
+        "metadata_": {"source": "test"},
+    }
+
+    upsert_spark_telemetry(sess, data)
+
+    stmt = sess.execute.call_args[0][0]
+    compiled = str(stmt.compile(dialect=create_engine("postgresql://").dialect))
+    assert "metadata_ =" not in compiled
+    assert "metadata =" in compiled
 
 
 def test_upsert_filters_unknown_keys() -> None:

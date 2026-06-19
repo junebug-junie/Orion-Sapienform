@@ -845,6 +845,19 @@ async def main() -> None:
     )
     _run_autonomy_graph_probe()
     await svc.bus.connect()
+    from .health_http import create_health_app, start_health_server
+
+    health_app = create_health_app(
+        redis_getter=lambda: getattr(svc.bus, "redis", None),
+        intake_channel=settings.channel_exec_request,
+        service_name=settings.service_name,
+        service_version=settings.service_version,
+    )
+    health_task = await start_health_server(
+        app=health_app,
+        host="0.0.0.0",
+        port=int(settings.health_http_port),
+    )
     from orion.core.bus.rpc_fork import fork_rpc_client
 
     _rpc_bus = await fork_rpc_client(svc.bus)
@@ -857,7 +870,7 @@ async def main() -> None:
             await verb_listener.start_background()
         await trace_listener.start_background()
         await core_event_listener.start_background()
-        await svc.start()
+        await asyncio.gather(svc.start(), health_task)
     finally:
         await _close_rpc_bus()
 

@@ -121,6 +121,9 @@ class Settings(BaseSettings):
     orion_auto_extractor_stage2_enabled: bool = Field(False, alias="ORION_AUTO_EXTRACTOR_STAGE2_ENABLED")
     orion_auto_extractor_auto_promote_threshold: int = Field(2, alias="ORION_AUTO_EXTRACTOR_AUTO_PROMOTE_THRESHOLD")
 
+    api_host: str = Field("0.0.0.0", alias="API_HOST")
+    api_port: int = Field(8072, alias="API_PORT")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

@@ -5,7 +5,11 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from loguru import logger
+
+from orion.bus.consumer_readiness import bus_consumer_readiness_v1, check_bus_consumer_readiness
+from orion.schemas.telemetry.system_health import BusConsumerReadinessV1
 
 from .service import LandingPadService
 from .settings import settings
@@ -30,6 +34,51 @@ mount_web(app, store=service.store, settings=settings)
 @app.get("/health")
 async def health() -> Dict[str, Any]:
     return {"ok": True, "service": settings.app_name, "version": settings.service_version, "node": settings.node_name}
+
+
+@app.get("/ready")
+async def ready() -> JSONResponse:
+    if not service.bus.enabled:
+        body = BusConsumerReadinessV1(
+            ok=False,
+            http_alive=True,
+            bus_consumer_ready=False,
+            intake_channel=service.settings.pad_rpc_request_channel,
+            subscriber_count=0,
+            dependency_status="unavailable",
+            error="bus not connected",
+        )
+        return JSONResponse(body.model_dump(mode="json"), status_code=503)
+
+    redis = getattr(service.bus, "redis", None)
+    if redis is None:
+        body = BusConsumerReadinessV1(
+            ok=False,
+            http_alive=True,
+            bus_consumer_ready=False,
+            intake_channel=service.settings.pad_rpc_request_channel,
+            subscriber_count=0,
+            dependency_status="unavailable",
+            error="redis unavailable",
+        )
+        return JSONResponse(body.model_dump(mode="json"), status_code=503)
+
+    async def _rpc_smoke() -> bool:
+        task = getattr(service.rpc, "_task", None)
+        return task is not None and not task.done()
+
+    result = await check_bus_consumer_readiness(
+        redis,
+        intake_channel=service.settings.pad_rpc_request_channel,
+        service_name=service.settings.app_name,
+        health_channel=service.settings.orion_health_channel,
+        heartbeat_ttl_sec=float(service.settings.heartbeat_interval_sec) * 3.0,
+        check_heartbeat=True,
+        rpc_smoke_fn=_rpc_smoke,
+    )
+    body = bus_consumer_readiness_v1(result, http_alive=True)
+    status_code = 200 if body.ok else 503
+    return JSONResponse(body.model_dump(mode="json"), status_code=status_code)
 
 
 @app.get("/frame/latest")

@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     actions_audit_channel: str = Field("orion:actions:audit", alias="ACTIONS_AUDIT_CHANNEL")
     cortex_request_channel: str = Field("orion:cortex:request", alias="CORTEX_REQUEST_CHANNEL")
     cortex_exec_request_channel: str = Field("orion:cortex:exec:request", alias="CORTEX_EXEC_REQUEST_CHANNEL")
+    cortex_exec_daily_request_channel: str = Field(
+        "orion:cortex:exec:request:background",
+        alias="CORTEX_EXEC_DAILY_REQUEST_CHANNEL",
+    )
     actions_verb: str = Field("actions.respond_to_juniper_collapse_mirror.v1", alias="ACTIONS_VERB")
 
     notify_url: str = Field("http://orion-notify:7140", alias="NOTIFY_URL")

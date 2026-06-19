@@ -1021,7 +1021,7 @@ async def lifespan(app: FastAPI):
 
         msg = await _rpc_request_with_retry(
             bus=_actions_rpc_bus,
-            request_channel=settings.cortex_exec_request_channel,
+            request_channel=settings.cortex_exec_daily_request_channel,
             reply_prefix="orion:exec:result",
             timeout_sec=timeout_sec,
             envelope_factory=_plan_envelope,
@@ -1903,6 +1903,67 @@ async def lifespan(app: FastAPI):
                             )
                     last_skill_run_monotonic = now_monotonic
 
+                goal_archive_should_run, goal_archive_local_date = should_run_daily(
+                    now_utc=now_utc,
+                    tz_name=settings.actions_daily_timezone,
+                    hour_local=settings.actions_daily_goal_archive_hour_local,
+                    minute_local=settings.actions_daily_goal_archive_minute_local,
+                    last_ran_date=last_daily_run.get(ACTION_DAILY_GOAL_ARCHIVE),
+                )
+                goal_archive_first_run = ACTION_DAILY_GOAL_ARCHIVE not in last_daily_run
+                goal_archive_startup = (
+                    settings.actions_daily_goal_archive_run_on_startup and goal_archive_first_run
+                )
+                if settings.actions_daily_goal_archive_enabled and (
+                    goal_archive_should_run or goal_archive_startup
+                ):
+                    from orion.autonomy.goal_archive import archive_subjects, archive_subjects_drain
+
+                    archive_corr = str(uuid4())
+                    if goal_archive_first_run and not goal_archive_should_run:
+                        drain_result = await asyncio.to_thread(archive_subjects_drain, dry_run=False)
+                        summaries = list(drain_result.get("subjects") or [])
+                        if drain_result.get("error"):
+                            summaries.append({"error": drain_result["error"], "drain": drain_result})
+                        archive_ok = bool(summaries) and not drain_result.get("error") and all(
+                            "error" not in s for s in summaries if isinstance(s, dict)
+                        )
+                    else:
+                        summaries = await asyncio.to_thread(archive_subjects, dry_run=False)
+                        archive_ok = bool(summaries) and all(
+                            "error" not in s for s in summaries if isinstance(s, dict)
+                        )
+                    if archive_ok:
+                        goal_archive_cursor = scheduler_cursor_completed_local_date(
+                            forced_date=forced_date,
+                            window_request_date=build_daily_window(
+                                now_utc=now_utc,
+                                tz_name=settings.actions_daily_timezone,
+                                override_date=forced_date,
+                            ).request_date,
+                            scheduled_local_date=goal_archive_local_date,
+                        )
+                        last_daily_run[ACTION_DAILY_GOAL_ARCHIVE] = goal_archive_cursor
+                        scheduler_cursor_store.set_last_completed(ACTION_DAILY_GOAL_ARCHIVE, goal_archive_cursor)
+                        _scheduler_daily_structured_log(
+                            job_key=ACTION_DAILY_GOAL_ARCHIVE,
+                            local_date=goal_archive_cursor,
+                            correlation_id=archive_corr,
+                            restart_dedupe_source="durable" if ACTION_DAILY_GOAL_ARCHIVE in cursor_keys_at_startup else "memory",
+                        )
+                        logger.info(
+                            "autonomy_goal_archive_scheduler_result local_date=%s summaries=%s",
+                            goal_archive_cursor,
+                            summaries,
+                        )
+                    else:
+                        logger.warning(
+                            "autonomy_goal_archive_scheduler_failed correlation_id=%s summaries=%s "
+                            "(check AUTONOMY_GRAPH_QUERY_URL / AUTONOMY_GRAPH_UPDATE_URL on orion-actions)",
+                            archive_corr,
+                            summaries,
+                        )
+
                 pulse_should_run, pulse_local_date = should_run_daily(
                     now_utc=now_utc,
                     tz_name=settings.actions_daily_timezone,
@@ -2005,67 +2066,6 @@ async def lifespan(app: FastAPI):
                             local_date=meta_cursor,
                             correlation_id=str(env.correlation_id),
                             restart_dedupe_source="durable" if ACTION_DAILY_METACOG_V1 in cursor_keys_at_startup else "memory",
-                        )
-
-                goal_archive_should_run, goal_archive_local_date = should_run_daily(
-                    now_utc=now_utc,
-                    tz_name=settings.actions_daily_timezone,
-                    hour_local=settings.actions_daily_goal_archive_hour_local,
-                    minute_local=settings.actions_daily_goal_archive_minute_local,
-                    last_ran_date=last_daily_run.get(ACTION_DAILY_GOAL_ARCHIVE),
-                )
-                goal_archive_first_run = ACTION_DAILY_GOAL_ARCHIVE not in last_daily_run
-                goal_archive_startup = (
-                    settings.actions_daily_goal_archive_run_on_startup and goal_archive_first_run
-                )
-                if settings.actions_daily_goal_archive_enabled and (
-                    goal_archive_should_run or goal_archive_startup
-                ):
-                    from orion.autonomy.goal_archive import archive_subjects, archive_subjects_drain
-
-                    archive_corr = str(uuid4())
-                    if goal_archive_first_run and not goal_archive_should_run:
-                        drain_result = await asyncio.to_thread(archive_subjects_drain, dry_run=False)
-                        summaries = list(drain_result.get("subjects") or [])
-                        if drain_result.get("error"):
-                            summaries.append({"error": drain_result["error"], "drain": drain_result})
-                        archive_ok = bool(summaries) and not drain_result.get("error") and all(
-                            "error" not in s for s in summaries if isinstance(s, dict)
-                        )
-                    else:
-                        summaries = await asyncio.to_thread(archive_subjects, dry_run=False)
-                        archive_ok = bool(summaries) and all(
-                            "error" not in s for s in summaries if isinstance(s, dict)
-                        )
-                    if archive_ok:
-                        goal_archive_cursor = scheduler_cursor_completed_local_date(
-                            forced_date=forced_date,
-                            window_request_date=build_daily_window(
-                                now_utc=now_utc,
-                                tz_name=settings.actions_daily_timezone,
-                                override_date=forced_date,
-                            ).request_date,
-                            scheduled_local_date=goal_archive_local_date,
-                        )
-                        last_daily_run[ACTION_DAILY_GOAL_ARCHIVE] = goal_archive_cursor
-                        scheduler_cursor_store.set_last_completed(ACTION_DAILY_GOAL_ARCHIVE, goal_archive_cursor)
-                        _scheduler_daily_structured_log(
-                            job_key=ACTION_DAILY_GOAL_ARCHIVE,
-                            local_date=goal_archive_cursor,
-                            correlation_id=archive_corr,
-                            restart_dedupe_source="durable" if ACTION_DAILY_GOAL_ARCHIVE in cursor_keys_at_startup else "memory",
-                        )
-                        logger.info(
-                            "autonomy_goal_archive_scheduler_result local_date=%s summaries=%s",
-                            goal_archive_cursor,
-                            summaries,
-                        )
-                    else:
-                        logger.warning(
-                            "autonomy_goal_archive_scheduler_failed correlation_id=%s summaries=%s "
-                            "(check AUTONOMY_GRAPH_QUERY_URL / AUTONOMY_GRAPH_UPDATE_URL on orion-actions)",
-                            archive_corr,
-                            summaries,
                         )
 
                 journal_should_run, journal_local_date = should_run_daily(

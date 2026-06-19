@@ -3,10 +3,11 @@ set -u
 set -o pipefail
 
 # ==============================================================================
-# Orion Mesh - Bring up all service docker-compose stacks (bus first, then batched)
+# Orion Mesh - Bring up all service docker-compose stacks (bus first, sliding pool)
 #
-# Parallel batched variant of up_all_services.sh: orion-bus runs alone first,
-# then remaining services start in parallel batches of BATCH_SIZE.
+# Parallel sliding-window variant of up_all_services.sh: orion-bus runs alone first,
+# then remaining services start with at most BATCH_SIZE in flight at once (as one
+# finishes, the next starts — no waiting for a full batch to drain).
 #
 # IMPORTANT:
 # - This script intentionally does NOT set a docker compose project name (-p).
@@ -18,7 +19,7 @@ set -o pipefail
 #
 # Optional env vars:
 #   WAIT_SEC=30
-#   BATCH_SIZE=5                        # parallel services per batch (after bus)
+#   BATCH_SIZE=5                        # max concurrent bring-ups after bus (sliding)
 #   PROJECT_NAME=orion                  # informational only (NOT used for -p)
 #   EXCLUDE_SERVICES="svc1 svc2"        # replaces defaults/file excludes
 #   EXCLUDE_SERVICES_ADD="svc3 svc4"    # adds to excludes
@@ -210,7 +211,7 @@ fi
 
 echo "=== Repo root: $REPO_ROOT ==="
 echo "=== Project name (informational): $PROJECT_NAME ==="
-echo "=== Batch size (after bus): $BATCH_SIZE ==="
+echo "=== Max concurrency (sliding, after bus): $BATCH_SIZE ==="
 echo "=== Discovered services (have $COMPOSE_BASENAME) ==="
 printf ' - %s\n' "${CANDIDATES[@]}"
 
@@ -256,7 +257,7 @@ if [[ "${#SKIPPED_NOENV[@]}" -gt 0 ]]; then
 fi
 
 # ------------------------------------------------------------------------------
-# Bring up: bus first (alone), then remaining services in parallel batches
+# Bring up: bus first (alone), then remaining services with sliding concurrency
 # ------------------------------------------------------------------------------
 FAILED_UP=()
 
@@ -278,30 +279,34 @@ for svc in "${RUN_LIST[@]}"; do
 done
 
 if [[ "${#REST_LIST[@]}" -gt 0 ]]; then
-  TOTAL_BATCHES=$(( (${#REST_LIST[@]} + BATCH_SIZE - 1) / BATCH_SIZE ))
-  batch_num=0
+  echo ""
+  echo "=== Sliding pool: max $BATCH_SIZE in flight (${#REST_LIST[@]} services after bus) ==="
 
-  for (( i=0; i<${#REST_LIST[@]}; i+=BATCH_SIZE )); do
-    batch_num=$((batch_num + 1))
-    batch=( "${REST_LIST[@]:i:BATCH_SIZE}" )
-    echo ""
-    echo "=== Batch $batch_num/$TOTAL_BATCHES: ${batch[*]} ==="
+  FAIL_TMP_DIR="$(mktemp -d)"
+  next_idx=0
+  in_flight=0
+  rest_total="${#REST_LIST[@]}"
 
-    FAIL_TMP_DIR="$(mktemp -d)"
-    pids=()
-    for svc in "${batch[@]}"; do
+  while [[ "$next_idx" -lt "$rest_total" ]] || [[ "$in_flight" -gt 0 ]]; do
+    while [[ "$in_flight" -lt "$BATCH_SIZE" ]] && [[ "$next_idx" -lt "$rest_total" ]]; do
+      svc="${REST_LIST[$next_idx]}"
+      next_idx=$((next_idx + 1))
       up_one_bg "$svc" "$FAIL_TMP_DIR" &
-      pids+=( "$!" )
+      in_flight=$((in_flight + 1))
+      echo "  -> started [$svc] ($in_flight/$BATCH_SIZE in flight, $next_idx/$rest_total started)"
     done
 
-    for pid in "${pids[@]}"; do
-      wait "$pid" || true
-    done
+    [[ "$in_flight" -eq 0 ]] && break
 
-    collect_batch_failures "$FAIL_TMP_DIR"
-    rm -rf "$FAIL_TMP_DIR"
-    FAIL_TMP_DIR=""
+    set +e
+    wait -n
+    set -e
+    in_flight=$((in_flight - 1))
   done
+
+  collect_batch_failures "$FAIL_TMP_DIR"
+  rm -rf "$FAIL_TMP_DIR"
+  FAIL_TMP_DIR=""
 fi
 
 echo ""

@@ -100,5 +100,6 @@ def default_registry() -> SchemaKernelRegistry:
             "claim",
             "pressure",
             "contradiction",
+            "organ_signal",
         ),
     )

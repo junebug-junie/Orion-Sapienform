@@ -57,6 +57,44 @@ async def test_escalation_sends_email_for_stale_error_attention():
 
 
 @pytest.mark.asyncio
+async def test_escalation_marks_before_send_even_if_smtp_fails():
+    class FailingTransport:
+        def send(self, payload) -> None:
+            raise RuntimeError("smtp down")
+
+    old = datetime.now(timezone.utc) - timedelta(minutes=90)
+    row = {
+        "attention_id": "att-3",
+        "severity": "error",
+        "require_ack": True,
+        "acked_at": None,
+        "escalated_at": None,
+        "created_at": old.isoformat(),
+        "ack_deadline_minutes": 60,
+        "reason": "attention_request",
+        "message": "mesh health: landing-pad unhealthy confirmed",
+        "source_service": "orion-mesh-guardian",
+        "context": {"escalation_channels": ["email"]},
+    }
+    proxy_get = AsyncMock(return_value=[row])
+    proxy_post = AsyncMock(return_value={"status": "escalated"})
+    policy = SimpleNamespace(
+        evaluate=lambda payload, now: SimpleNamespace(ack_deadline_minutes=60, escalation_channels=["email"])
+    )
+
+    count = await run_attention_escalation_once(
+        email_transport=FailingTransport(),
+        policy=policy,
+        proxy_get=proxy_get,
+        proxy_post=proxy_post,
+        hub_url_base="",
+    )
+
+    assert count == 1
+    proxy_post.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_escalation_skips_critical_attention_rows():
     sent = DummyTransport()
     old = datetime.now(timezone.utc) - timedelta(minutes=90)

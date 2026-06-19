@@ -124,8 +124,8 @@ async def run_attention_escalation_once(
             continue
 
         escalation = _build_escalation_request(row, hub_url_base=hub_url_base)
-        maybe_send_email(email_transport, escalation)
         await proxy_post(f"/attention/{attention_id}/escalate", {})
+        maybe_send_email(email_transport, escalation)
         sent += 1
         logger.info("[NOTIFY] attention_escalated attention_id=%s", attention_id)
 

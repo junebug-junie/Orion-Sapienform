@@ -38,6 +38,12 @@ from orion.substrate.transport_loop.pipeline import (
     empty_transport_projection,
     process_transport_grammar_events,
 )
+from orion.schemas.chat_projection import ChatSessionProjectionV1
+from orion.substrate.chat_loop.constants import (
+    CHAT_GRAMMAR_CURSOR_NAME,
+    CHAT_SESSION_PROJECTION_ID,
+)
+from orion.substrate.chat_loop.pipeline import process_chat_grammar_events
 
 from .publish import publish_accepted_events
 from .reducer_health import (
@@ -85,6 +91,13 @@ REDUCER_SPECS: tuple[ReducerSpec, ...] = (
         enabled=lambda s: s.enable_transport_bus_reducer,
         batch_limit=lambda s: s.transport_grammar_batch_limit,
     ),
+    ReducerSpec(
+        reducer_key="chat_grammar",
+        cursor_name=CHAT_GRAMMAR_CURSOR_NAME,
+        source_service="orion-hub",
+        enabled=lambda s: s.enable_chat_grammar_reducer,
+        batch_limit=lambda s: s.chat_grammar_batch_limit,
+    ),
 )
 
 
@@ -108,6 +121,7 @@ class BiometricsSubstrateWorker:
             asyncio.create_task(self._biometrics_poll_loop(), name="biometrics-substrate-poll"),
             asyncio.create_task(self._execution_poll_loop(), name="execution-substrate-poll"),
             asyncio.create_task(self._transport_poll_loop(), name="transport-substrate-poll"),
+            asyncio.create_task(self._chat_poll_loop(), name="chat-substrate-poll"),
             asyncio.create_task(self._prune_loop(), name="substrate-receipt-pruner"),
         ]
 
@@ -193,6 +207,9 @@ class BiometricsSubstrateWorker:
     async def _transport_poll_loop(self) -> None:
         await self._grammar_reducer_poll_loop(REDUCER_SPECS[2], self._transport_tick)
 
+    async def _chat_poll_loop(self) -> None:
+        await self._grammar_reducer_poll_loop(REDUCER_SPECS[3], self._chat_tick)
+
     async def _grammar_reducer_poll_loop(
         self,
         spec: ReducerSpec,
@@ -214,11 +231,12 @@ class BiometricsSubstrateWorker:
             try:
                 last_event_id = await asyncio.to_thread(tick_fn)
                 if last_event_id:
-                    advance_fn = (
-                        self._store.advance_execution_cursor
-                        if spec.cursor_name == EXECUTION_GRAMMAR_CURSOR_NAME
-                        else self._store.advance_transport_cursor
-                    )
+                    if spec.cursor_name == EXECUTION_GRAMMAR_CURSOR_NAME:
+                        advance_fn = self._store.advance_execution_cursor
+                    elif spec.cursor_name == CHAT_GRAMMAR_CURSOR_NAME:
+                        advance_fn = self._store.advance_chat_cursor
+                    else:
+                        advance_fn = self._store.advance_transport_cursor
                     await asyncio.to_thread(
                         self._advance_cursor,
                         spec,
@@ -487,6 +505,42 @@ class BiometricsSubstrateWorker:
                 events=batch,
                 load_projection=load_projection,
                 save_projection=self._store.save_execution_trajectory,
+                save_receipt=self._store.save_receipt,
+                now=now,
+            )
+
+        return self._process_events_with_poison_isolation(
+            spec=spec,
+            events=events,
+            process_batch=process_batch,
+        )
+
+    def _chat_tick(self) -> str | None:
+        spec = REDUCER_SPECS[3]
+        events = self._store.fetch_chat_grammar_events(
+            limit=spec.batch_limit(self._settings),
+        )
+        if not events:
+            return None
+
+        now = datetime.now(timezone.utc)
+
+        def _load_chat_projection() -> ChatSessionProjectionV1:
+            return self._store.load_chat_session_projection(
+                CHAT_SESSION_PROJECTION_ID
+            ) or ChatSessionProjectionV1(
+                projection_id=CHAT_SESSION_PROJECTION_ID,
+                generated_at=datetime.now(timezone.utc),
+            )
+
+        def _save_chat_projection(p: ChatSessionProjectionV1) -> None:
+            self._store.save_chat_session_projection(p)
+
+        def process_batch(batch: list[GrammarEventV1]) -> None:
+            process_chat_grammar_events(
+                events=batch,
+                load_projection=_load_chat_projection,
+                save_projection=_save_chat_projection,
                 save_receipt=self._store.save_receipt,
                 now=now,
             )

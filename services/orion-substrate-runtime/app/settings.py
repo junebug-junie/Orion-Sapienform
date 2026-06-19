@@ -25,6 +25,8 @@ class Settings(BaseSettings):
         False,
         alias="ENABLE_TRANSPORT_BUS_REDUCER",
     )
+    enable_chat_grammar_reducer: bool = Field(False, alias="ENABLE_CHAT_GRAMMAR_REDUCER")
+    chat_grammar_batch_limit: int = Field(100, alias="CHAT_GRAMMAR_BATCH_LIMIT")
     bus_stream_depth_critical: int = Field(100_000, alias="BUS_STREAM_DEPTH_CRITICAL")
     transport_substrate_maturity: str = Field(
         "trace_only",

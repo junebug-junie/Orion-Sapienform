@@ -390,9 +390,14 @@ elif [[ "${#REST_LIST[@]}" -gt 0 ]]; then
   FAIL_TMP_DIR=""
 fi
 
-echo ""
-echo "=== Waiting $WAIT_SEC seconds for containers to settle... ==="
-sleep "$WAIT_SEC"
+if [[ "$BUS_READY" == true ]]; then
+  echo ""
+  echo "=== Waiting $WAIT_SEC seconds for containers to settle... ==="
+  sleep "$WAIT_SEC"
+else
+  echo ""
+  echo "=== Skipping settle wait (bus not ready) ==="
+fi
 
 # ------------------------------------------------------------------------------
 # Status report
@@ -448,12 +453,20 @@ done
 
 echo ""
 if [[ "${#FAILED_UP[@]}" -gt 0 ]]; then
-  echo "⚠️  Compose up failures during bring-up:"
+  echo "⚠️  Bring-up failures (compose or readiness):"
   printf ' - %s\n' "${FAILED_UP[@]}"
   echo ""
 fi
 
+if [[ "$BUS_READY" != true ]]; then
+  echo "❌ Critical path $BUS_SERVICE_DIR not ready; sliding pool was skipped." >&2
+  exit 1
+fi
+
 if [[ "${#FAILED_SERVICES[@]}" -eq 0 ]]; then
+  if [[ "${#FAILED_UP[@]}" -gt 0 ]]; then
+    exit 1
+  fi
   echo "✅ All services are running."
 else
   echo "❌ Services with issues:"

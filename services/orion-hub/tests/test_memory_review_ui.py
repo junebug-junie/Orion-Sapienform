@@ -26,3 +26,16 @@ def test_template_includes_cards_recall_profiles() -> None:
     template = (HUB_ROOT / "templates" / "index.html").read_text(encoding="utf-8")
     assert 'value="biographical.v1"' in template
     assert 'value="self.factual.v1"' in template
+    assert 'id="memorySubviewConsolidationDrafts"' in template
+    assert 'id="memoryConsolidationDraftsPanel"' in template
+
+
+def test_memory_js_includes_consolidation_drafts_subview() -> None:
+    text = (HUB_ROOT / "static" / "js" / "memory.js").read_text(encoding="utf-8")
+    assert "/api/memory/consolidation/drafts" in text
+    assert "consolidation_draft_id" in text
+    assert "memorySubviewConsolidationDrafts" in text
+    assert "onRejected" in text
+    assert "activeConsolidationDraftId === draftId" in text
+    assert "approvedConsolidationDraftId && data.consolidation_draft_marked === false" in text
+    assert "Rejected consolidation draft cleared from editor." in text

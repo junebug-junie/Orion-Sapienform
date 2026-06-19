@@ -985,6 +985,7 @@
         </div>
         <div class="flex flex-wrap gap-2 text-xs">
           <button type="button" id="memorySubviewReview" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200">Review Queue</button>
+          <button type="button" id="memorySubviewConsolidationDrafts" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200">Graph drafts</button>
           <button type="button" id="memorySubviewAll" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200">All Cards</button>
           <button type="button" id="memorySubviewLog" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200">Activity Log</button>
           <button type="button" id="memorySubviewCrystallizations" class="px-2 py-1 rounded border border-gray-600 bg-gray-800 text-gray-200">Crystallizations</button>
@@ -1018,6 +1019,11 @@
         </div>
         <div id="memoryStatus" class="text-xs text-gray-400 min-h-[1.25rem]"></div>
         <div id="memoryReviewPanel" class="memory-subview flex flex-col gap-2 text-sm"></div>
+        <div id="memoryConsolidationDraftsPanel" class="memory-subview hidden flex-col gap-2 text-sm">
+          <p class="text-[10px] text-gray-500">Automated memory consolidation drafts (<code class="text-gray-400">memory_graph_suggest_drafts</code>). Load into the graph editor above, then Validate / Approve.</p>
+          <div id="memoryConsolidationDraftsStatus" class="text-xs text-gray-400 min-h-[1rem]"></div>
+          <div id="memoryConsolidationDraftsList" class="flex flex-col gap-1 max-h-64 overflow-y-auto"></div>
+        </div>
         <div id="memoryAllPanel" class="memory-subview hidden flex-col gap-2 text-sm"></div>
         <div id="memoryLogPanel" class="memory-subview hidden flex-col gap-2 text-sm"></div>
         <div id="memoryCrystallizationPanel" class="memory-subview hidden flex-col gap-2 text-sm">

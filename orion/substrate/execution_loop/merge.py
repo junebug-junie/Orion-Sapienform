@@ -64,7 +64,7 @@ def merge_execution_run_state(
 
     merged.evidence_event_ids = sorted(
         set(existing.evidence_event_ids) | set(incoming.evidence_event_ids)
-    )
+    )[-200:]
     merged.last_updated_at = incoming.last_updated_at
 
     egress_emitted = (

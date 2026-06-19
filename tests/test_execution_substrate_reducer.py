@@ -245,6 +245,15 @@ def test_merge_unions_evidence_event_ids() -> None:
     assert "gev_partial_1" in merged.evidence_event_ids
 
 
+def test_merge_caps_evidence_event_ids_at_200() -> None:
+    base = _run_with_full_egress()
+    base.evidence_event_ids = [f"gev_old_{i}" for i in range(250)]
+    incoming = extract_execution_state_from_events(_partial_batch_no_egress(), now=FIXED_TS)
+    incoming.evidence_event_ids = [f"gev_new_{i}" for i in range(100)]
+    merged = merge_execution_run_state(base, incoming)
+    assert len(merged.evidence_event_ids) <= 200
+
+
 def test_reducer_partial_batch_after_full_does_not_downgrade() -> None:
     full_events = [
         _exec_atom(

@@ -51,7 +51,7 @@ def test_ready_200_when_consumer_ready(client: TestClient) -> None:
         mock_service.bus = MagicMock(enabled=True, redis=fake_redis)
         mock_service.settings.pad_rpc_request_channel = "orion:pad:rpc:request"
         mock_service.settings.app_name = "landing-pad"
-        mock_service.settings.orion_health_channel = "orion:system:health"
+        mock_service.settings.health_channel = "orion:system:health"
         mock_service.settings.heartbeat_interval_sec = 10
         mock_service.rpc._task = rpc_task
         mock_v1.return_value = MagicMock(ok=True, model_dump=lambda mode: {"ok": True})

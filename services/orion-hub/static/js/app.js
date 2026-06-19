@@ -5483,6 +5483,11 @@ loadDismissedIds();
     return notification && notification.event_kind === ATTENTION_EVENT_KIND;
   }
 
+  function isNotificationTrayItem(notification) {
+    // Attention requests have their own Pending Attention panel; keep them out of the general tray.
+    return notification && !isAttentionNotification(notification);
+  }
+
   function normalizeAttentionItem(notification) {
     if (!notification) return null;
     return {
@@ -6457,7 +6462,9 @@ loadDismissedIds();
     const filter = notificationFilter ? notificationFilter.value : 'all';
     notificationList.innerHTML = '';
     const filtered = sortedNotificationsForTray(notifications).filter(
-      (n) => filter === 'all' || (n.severity || '').toLowerCase() === filter
+      (n) =>
+        isNotificationTrayItem(n) &&
+        (filter === 'all' || (n.severity || '').toLowerCase() === filter)
     );
 
     if (filtered.length === 0) {

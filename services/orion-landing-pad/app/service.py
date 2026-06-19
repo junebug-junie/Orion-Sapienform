@@ -21,6 +21,7 @@ from orion.schemas.pad import (
     PadRpcResponseV1,
 )
 
+from .bus_resilience import publish_with_reconnect
 from .observability.stats import PadStatsTracker
 from .pipeline.aggregate import FrameAggregator
 from .pipeline.ingest import BoundedPadQueue, IngestLoop, QueueItem
@@ -135,7 +136,12 @@ class LandingPadService:
                 source=self._source(),
                 payload=event.model_dump(mode="json"),
             )
-            await self.bus.publish(self.settings.pad_output_event_channel, env)
+            await publish_with_reconnect(
+                self.bus,
+                self.settings.pad_output_event_channel,
+                env,
+                log_label="pad_event_publish",
+            )
 
             if event.salience >= self.settings.pad_pulse_salience:
                 signal_env = env.derive_child(
@@ -143,7 +149,12 @@ class LandingPadService:
                     source=self._source(),
                     payload={"event_id": event.event_id, "salience": event.salience},
                 )
-                await self.bus.publish(self.settings.pad_output_signal_channel, signal_env)
+                await publish_with_reconnect(
+                    self.bus,
+                    self.settings.pad_output_signal_channel,
+                    signal_env,
+                    log_label="pad_signal_publish",
+                )
 
             self.aggregator.add_event(event)
 
@@ -158,7 +169,12 @@ class LandingPadService:
                         source=self._source(),
                         payload=frame.model_dump(mode="json"),
                     )
-                    await self.bus.publish(self.settings.pad_output_frame_channel, env)
+                    await publish_with_reconnect(
+                        self.bus,
+                        self.settings.pad_output_frame_channel,
+                        env,
+                        log_label="pad_frame_publish",
+                    )
             except Exception as exc:
                 logger.exception(f"Frame build failed: {exc}")
             await asyncio.sleep(interval)
@@ -184,7 +200,12 @@ class LandingPadService:
                         },
                     },
                 )
-                await self.bus.publish(self.settings.health_channel, env)
+                await publish_with_reconnect(
+                    self.bus,
+                    self.settings.health_channel,
+                    env,
+                    log_label="pad_heartbeat_publish",
+                )
             except Exception as exc:
                 logger.warning(f"Heartbeat publish failed: {exc}")
             await asyncio.sleep(float(self.settings.heartbeat_interval_sec))
@@ -199,7 +220,12 @@ class LandingPadService:
                     source=self._source(),
                     payload=stats_payload,
                 )
-                await self.bus.publish(self.settings.pad_output_stats_channel, env)
+                await publish_with_reconnect(
+                    self.bus,
+                    self.settings.pad_output_stats_channel,
+                    env,
+                    log_label="pad_stats_publish",
+                )
             except Exception as exc:
                 logger.warning(f"Stats publish failed: {exc}")
             await asyncio.sleep(interval)

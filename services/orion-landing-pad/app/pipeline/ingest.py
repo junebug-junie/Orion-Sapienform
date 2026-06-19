@@ -103,39 +103,60 @@ class IngestLoop:
                 pass
 
     async def _run(self) -> None:
-        async with self.bus.subscribe(*self.allowlist, patterns=True) as pubsub:
-            async for msg in self.bus.iter_messages(pubsub):
-                if self._stop.is_set():
-                    break
-                channel_raw = msg.get("channel") or ""
-                channel = channel_raw.decode("utf-8") if isinstance(channel_raw, (bytes, bytearray)) else str(channel_raw)
-                if _channel_matches(channel, self.denylist):
-                    self.stats.increment_dropped(reason="denylist")
-                    continue
-                data = msg.get("data")
-                if data is None:
-                    continue
-                decoded = self.bus.codec.decode(data)
-                if not decoded.ok or decoded.envelope is None:
-                    self.stats.increment_dropped(reason="decode_failed")
-                    continue
+        backoff_sec = 1.0
+        while not self._stop.is_set():
+            try:
+                async with self.bus.subscribe(*self.allowlist, patterns=True) as pubsub:
+                    backoff_sec = 1.0
+                    async for msg in self.bus.iter_messages(pubsub):
+                        if self._stop.is_set():
+                            break
+                        channel_raw = msg.get("channel") or ""
+                        channel = channel_raw.decode("utf-8") if isinstance(channel_raw, (bytes, bytearray)) else str(channel_raw)
+                        if _channel_matches(channel, self.denylist):
+                            self.stats.increment_dropped(reason="denylist")
+                            continue
+                        data = msg.get("data")
+                        if data is None:
+                            continue
+                        decoded = self.bus.codec.decode(data)
+                        if not decoded.ok or decoded.envelope is None:
+                            self.stats.increment_dropped(reason="decode_failed")
+                            continue
 
-                env = decoded.envelope
-                if env.source and env.source.name == self.app_name:
-                    self.stats.increment_dropped(reason="self_loop")
-                    continue
-                if env.kind.startswith("orion.pad."):
-                    self.stats.increment_dropped(reason="loop_guard_kind")
-                    continue
+                        env = decoded.envelope
+                        if env.source and env.source.name == self.app_name:
+                            self.stats.increment_dropped(reason="self_loop")
+                            continue
+                        if env.kind.startswith("orion.pad."):
+                            self.stats.increment_dropped(reason="loop_guard_kind")
+                            continue
 
-                priority = self._priority_from_env(env)
-                item = QueueItem(envelope=env, channel=channel, priority=priority, received_ts=time.time())
-                accepted = await self.queue.put(item)
-                if accepted:
-                    self.stats.increment_ingested()
-                else:
-                    self.stats.increment_dropped(reason="queue_full")
-                self.stats.set_queue_depth(self.queue.depth())
+                        priority = self._priority_from_env(env)
+                        item = QueueItem(envelope=env, channel=channel, priority=priority, received_ts=time.time())
+                        accepted = await self.queue.put(item)
+                        if accepted:
+                            self.stats.increment_ingested()
+                        else:
+                            self.stats.increment_dropped(reason="queue_full")
+                        self.stats.set_queue_depth(self.queue.depth())
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "pad ingest subscriber loop failed patterns={} err={}; reconnecting in {:.1f}s",
+                    self.allowlist,
+                    exc,
+                    backoff_sec,
+                )
+                try:
+                    await self.bus.reconnect()
+                except Exception:
+                    logger.exception("bus reconnect failed after pad ingest subscriber error")
+            if self._stop.is_set():
+                break
+            await asyncio.sleep(backoff_sec)
+            backoff_sec = min(backoff_sec * 2.0, 30.0)
 
     @staticmethod
     def _priority_from_env(env: BaseEnvelope) -> str:

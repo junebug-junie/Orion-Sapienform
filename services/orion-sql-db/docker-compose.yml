@@ -7,6 +7,9 @@ services:
     image: postgres:15
     container_name: ${PROJECT}-sql-db
     shm_size: '1gb'
+    # Cap RSS so runaway autovacuum/TOAST work cannot take the whole host (346Gi).
+    mem_limit: ${POSTGRES_MEM_LIMIT:-48g}
+    memswap_limit: ${POSTGRES_MEM_LIMIT:-48g}
     restart: unless-stopped
     environment:
       - POSTGRES_USER=${POSTGRES_USER}

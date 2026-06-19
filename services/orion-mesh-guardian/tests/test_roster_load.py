@@ -28,3 +28,21 @@ services:
 
 def test_never_remediate_ids_include_notify() -> None:
     assert "notify" in NEVER_REMEDIATE_IDS
+
+
+def test_validate_roster_flags_missing_ready_url() -> None:
+    from app.roster import ProbeConfig, ProbeMode, RosterDocument, RosterEntry, validate_roster
+
+    doc = RosterDocument(
+        services=[
+            RosterEntry(
+                id="bad-svc",
+                heartbeat_name="bad-svc",
+                compose_dir="orion-landing-pad",
+                compose_service="orion-landing-pad",
+                probe=ProbeConfig(mode=ProbeMode.http, ready_url=None),
+            )
+        ]
+    )
+    errors = validate_roster(doc)
+    assert any("ready_url" in err for err in errors)

@@ -19,6 +19,12 @@ def _snapshot(*services: EquilibriumServiceState) -> EquilibriumSnapshotV1:
     )
 
 
+def test_equilibrium_ok_when_no_snapshot_yet() -> None:
+    bad, reason = equilibrium_status_for_service(None, heartbeat_name="landing-pad", grace_sec=30)
+    assert bad is False
+    assert reason is None
+
+
 def test_equilibrium_bad_when_down() -> None:
     svc = EquilibriumServiceState(
         service="landing-pad",
@@ -27,7 +33,7 @@ def test_equilibrium_bad_when_down() -> None:
         heartbeat_interval_sec=10.0,
         down_for_ms=5000,
     )
-    bad, reason = equilibrium_status_for_service(_snapshot(svc), heartbeat_name="landing-pad", grace_sec=30, now_ts=0)
+    bad, reason = equilibrium_status_for_service(_snapshot(svc), heartbeat_name="landing-pad", grace_sec=30)
     assert bad is True
     assert reason == "down"
 
@@ -40,6 +46,6 @@ def test_equilibrium_bad_when_degraded_beyond_grace() -> None:
         heartbeat_interval_sec=10.0,
         down_for_ms=31000,
     )
-    bad, reason = equilibrium_status_for_service(_snapshot(svc), heartbeat_name="landing-pad", grace_sec=30, now_ts=0)
+    bad, reason = equilibrium_status_for_service(_snapshot(svc), heartbeat_name="landing-pad", grace_sec=30)
     assert bad is True
     assert reason == "degraded_beyond_grace"

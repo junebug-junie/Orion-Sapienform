@@ -64,3 +64,15 @@ def load_roster(path: str, *, project: str, node_name: str) -> RosterDocument:
             )
         )
     return RosterDocument(services=services)
+
+
+def validate_roster(doc: RosterDocument) -> list[str]:
+    errors: list[str] = []
+    seen: set[str] = set()
+    for entry in doc.services:
+        if entry.id in seen:
+            errors.append(f"duplicate roster id: {entry.id}")
+        seen.add(entry.id)
+        if entry.probe.mode in (ProbeMode.http, ProbeMode.redis_and_http) and not entry.probe.ready_url:
+            errors.append(f"{entry.id}: http probe requires ready_url")
+    return errors

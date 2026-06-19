@@ -11,7 +11,7 @@ from .attention import AttentionPublisher
 from .equilibrium_watch import equilibrium_status_for_service, watch_equilibrium
 from .probe import run_probe
 from .remediator import execute_remediation
-from .roster import NEVER_REMEDIATE_IDS, RosterDocument, RosterEntry, load_roster
+from .roster import NEVER_REMEDIATE_IDS, RosterDocument, RosterEntry, load_roster, validate_roster
 from .settings import Settings
 from .state_machine import ServiceState, TransitionInput, transition
 from .state_store import load_all, save_one
@@ -41,6 +41,9 @@ class MeshGuardianService:
             project=self.settings.project,
             node_name=self.settings.node_name,
         )
+        roster_errors = validate_roster(self.roster)
+        if roster_errors:
+            raise ValueError("invalid mesh guardian roster: " + "; ".join(roster_errors))
         await self.bus.connect()
         if self.bus.redis is not None:
             self.states = await load_all(self.bus.redis)
@@ -159,14 +162,12 @@ class MeshGuardianService:
                 if self.roster is None or self.bus.redis is None:
                     await asyncio.sleep(self.settings.probe_interval_sec)
                     continue
-                now = time.time()
                 for entry in self.roster.services:
                     if entry.probe.mode.value == "redis" and not entry.probe.intake_channels:
                         eq_bad, _ = equilibrium_status_for_service(
                             self.latest_snapshot,
                             heartbeat_name=entry.heartbeat_name,
                             grace_sec=float(self.settings.equilibrium_grace_sec),
-                            now_ts=now,
                         )
                         await self._apply_transition(entry, probe_status="probe_ok", equilibrium_bad=eq_bad)
                         continue
@@ -175,7 +176,6 @@ class MeshGuardianService:
                         self.latest_snapshot,
                         heartbeat_name=entry.heartbeat_name,
                         grace_sec=float(self.settings.equilibrium_grace_sec),
-                        now_ts=now,
                     )
                     await self._apply_transition(entry, probe_status=probe.status, equilibrium_bad=eq_bad)
             except asyncio.CancelledError:

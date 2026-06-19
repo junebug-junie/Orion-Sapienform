@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
 
 from orion.schemas.telemetry.system_health import EquilibriumSnapshotV1
 
@@ -12,7 +11,6 @@ def equilibrium_status_for_service(
     *,
     heartbeat_name: str,
     grace_sec: float,
-    now_ts: float,
 ) -> tuple[bool, str | None]:
     """Return (equilibrium_bad, reason)."""
     if snapshot is None:
@@ -33,13 +31,21 @@ def equilibrium_status_for_service(
     return False, None
 
 
-async def watch_equilibrium(bus, channel: str, out_queue: asyncio.Queue[EquilibriumSnapshotV1 | None]) -> None:
+async def _enqueue_snapshot(
+    out_queue: asyncio.Queue[EquilibriumSnapshotV1],
+    snapshot: EquilibriumSnapshotV1,
+) -> None:
+    if out_queue.full():
+        try:
+            out_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+    await out_queue.put(snapshot)
+
+
+async def watch_equilibrium(bus, channel: str, out_queue: asyncio.Queue[EquilibriumSnapshotV1]) -> None:
     async with bus.subscribe(channel) as pubsub:
-        async for raw in pubsub.listen():
-            if raw is None:
-                continue
-            if isinstance(raw, dict) and raw.get("type") not in (None, "message", "pmessage"):
-                continue
+        async for raw in bus.iter_messages(pubsub):
             data = raw.get("data") if isinstance(raw, dict) else raw
             if data is None:
                 continue
@@ -58,4 +64,4 @@ async def watch_equilibrium(bus, channel: str, out_queue: asyncio.Queue[Equilibr
                 snapshot = EquilibriumSnapshotV1.model_validate(payload)
             except Exception:
                 continue
-            await out_queue.put(snapshot)
+            await _enqueue_snapshot(out_queue, snapshot)

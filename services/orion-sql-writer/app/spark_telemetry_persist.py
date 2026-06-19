@@ -22,6 +22,7 @@ def upsert_spark_telemetry(sess: Session, data: dict[str, Any]) -> bool:
         return True
 
     stmt = insert(SparkTelemetrySQL).values(**filtered)
+    metadata_col = SparkTelemetrySQL.__table__.c.metadata
     update_cols = {
         "phi": stmt.excluded.phi,
         "novelty": stmt.excluded.novelty,
@@ -29,7 +30,7 @@ def upsert_spark_telemetry(sess: Session, data: dict[str, Any]) -> bool:
         "trace_verb": stmt.excluded.trace_verb,
         "stimulus_summary": stmt.excluded.stimulus_summary,
         "timestamp": stmt.excluded.timestamp,
-        "metadata_": text(
+        metadata_col: text(
             "(COALESCE(spark_telemetry.metadata::jsonb, '{}'::jsonb) "
             "|| COALESCE(EXCLUDED.metadata::jsonb, '{}'::jsonb))::json"
         ),

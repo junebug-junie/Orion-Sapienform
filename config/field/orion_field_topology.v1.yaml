@@ -35,6 +35,8 @@ node_channels:
   - delivery_confidence
   - bus_health
   - observer_failure_pressure
+  - conversation_load
+  - repair_pressure
 
 capability_channels:
   - pressure

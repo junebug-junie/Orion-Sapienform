@@ -160,6 +160,22 @@ def transition(state: ServiceState, inp: TransitionInput, *, service_id: str = "
         if not confirmed:
             return TransitionOutput(new_state=new_state, attention_events=attention_events)
 
+        if not inp.auto_remediate:
+            new_state.phase = ServicePhase.attention_only
+            attention_events.append(
+                _attention_event(
+                    severity="error",
+                    message=(
+                        f"mesh health: {service_id} unhealthy confirmed "
+                        f"(observe-only, auto_remediate disabled)"
+                    ),
+                    service_id=service_id,
+                    correlation_id=corr,
+                    event="observe_only",
+                )
+            )
+            return TransitionOutput(new_state=new_state, attention_events=attention_events)
+
         new_state.phase = ServicePhase.unhealthy_confirmed
         attention_events.append(
             _attention_event(

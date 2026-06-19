@@ -71,7 +71,7 @@ async def ready() -> JSONResponse:
         redis,
         intake_channel=service.settings.pad_rpc_request_channel,
         service_name=service.settings.app_name,
-        health_channel=service.settings.orion_health_channel,
+        health_channel=service.settings.health_channel,
         heartbeat_ttl_sec=float(service.settings.heartbeat_interval_sec) * 3.0,
         check_heartbeat=True,
         rpc_smoke_fn=_rpc_smoke,

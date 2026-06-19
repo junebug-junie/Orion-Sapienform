@@ -48,6 +48,18 @@ def test_unhealthy_confirmed_auto_remediate_tier1() -> None:
     assert out.new_state.phase == ServicePhase.remediating_tier1
 
 
+def test_suspect_confirmed_observe_only_skips_unhealthy_confirmed_phase() -> None:
+    state = ServiceState(phase=ServicePhase.suspect, consecutive_probe_fails=1)
+    out = transition(
+        state,
+        _inp(equilibrium_bad=True, probe_status="probe_bad", auto_remediate=False),
+        service_id="landing-pad",
+    )
+    assert out.new_state.phase == ServicePhase.attention_only
+    assert len(out.attention_events) == 1
+    assert "observe-only" in out.attention_events[0]["message"]
+
+
 def test_unhealthy_confirmed_observe_only_without_auto_remediate() -> None:
     state = ServiceState(phase=ServicePhase.unhealthy_confirmed)
     out = transition(state, _inp(probe_status="probe_bad", auto_remediate=False), service_id="landing-pad")

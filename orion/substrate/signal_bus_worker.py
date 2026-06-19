@@ -34,6 +34,8 @@ class SubstrateSignalBusWorker:
 
     async def handle_envelope(self, env: Any) -> None:
         payload = env.payload
+        if hasattr(payload, "model_dump"):
+            payload = payload.model_dump()
         if not isinstance(payload, dict):
             return
 
@@ -46,7 +48,15 @@ class SubstrateSignalBusWorker:
         if not supports_signal(signal):
             return
 
-        molecule = signal_to_molecule(signal)
-        self._store.add(molecule)
-        if self._harness is not None:
-            self._harness.record_emit(molecule, organ=signal.organ_id)
+        try:
+            molecule = signal_to_molecule(signal)
+            self._store.add(molecule)
+            if self._harness is not None:
+                self._harness.record_emit(molecule, organ=signal.organ_id)
+        except Exception as exc:
+            logger.warning(
+                "substrate signal bus worker: bridge/store failed organ=%s kind=%s: %s",
+                signal.organ_id,
+                signal.signal_kind,
+                exc,
+            )

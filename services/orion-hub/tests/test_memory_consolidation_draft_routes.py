@@ -135,3 +135,24 @@ def test_draft_repository_list_sql_shape() -> None:
     assert "FROM memory_graph_suggest_drafts" in source
     assert "async def list_consolidation_drafts" in source
     assert "async def update_consolidation_draft_status" in source
+    assert "status = 'pending_review'" in source
+
+
+def test_list_consolidation_drafts_memory_schema_missing(client: TestClient, monkeypatch) -> None:
+    from scripts import memory_routes
+
+    if memory_routes._AsyncpgUndefinedTableError is None:
+        pytest.skip("asyncpg UndefinedTableError unavailable")
+
+    exc = memory_routes._AsyncpgUndefinedTableError('relation "memory_graph_suggest_drafts" does not exist')
+
+    async def _raise(_pool, **kwargs):
+        raise exc
+
+    monkeypatch.setattr("scripts.memory_consolidation_draft_routes.list_consolidation_drafts", _raise)
+    resp = client.get(
+        "/api/memory/consolidation/drafts",
+        headers={"X-Orion-Session-Id": "test-session"},
+    )
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "memory_schema_missing"

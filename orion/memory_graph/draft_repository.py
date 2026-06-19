@@ -99,16 +99,28 @@ async def update_consolidation_draft_status(
     *,
     status: DraftStatus,
 ) -> dict[str, Any] | None:
-    row = await pool.fetchrow(
-        """
-        UPDATE memory_graph_suggest_drafts
-        SET status = $2
-        WHERE draft_id = $1
-        RETURNING draft_id, memory_window_id, status, draft, turn_correlation_ids, created_at
-        """,
-        str(draft_id),
-        status,
-    )
+    if status == "approved":
+        row = await pool.fetchrow(
+            """
+            UPDATE memory_graph_suggest_drafts
+            SET status = $2
+            WHERE draft_id = $1 AND status = 'pending_review'
+            RETURNING draft_id, memory_window_id, status, draft, turn_correlation_ids, created_at
+            """,
+            str(draft_id),
+            status,
+        )
+    else:
+        row = await pool.fetchrow(
+            """
+            UPDATE memory_graph_suggest_drafts
+            SET status = $2
+            WHERE draft_id = $1
+            RETURNING draft_id, memory_window_id, status, draft, turn_correlation_ids, created_at
+            """,
+            str(draft_id),
+            status,
+        )
     if row is None:
         return None
     return _row_to_dict(row)

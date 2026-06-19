@@ -35,3 +35,5 @@ def test_memory_js_includes_consolidation_drafts_subview() -> None:
     assert "/api/memory/consolidation/drafts" in text
     assert "consolidation_draft_id" in text
     assert "memorySubviewConsolidationDrafts" in text
+    assert "onRejected" in text
+    assert "activeConsolidationDraftId === draftId" in text

@@ -12,7 +12,7 @@ from orion.memory_graph.draft_repository import (
 )
 
 from .session import ensure_session
-from .memory_routes import _http_if_missing_memory_schema
+from .memory_routes import _clamp_limit, _http_if_missing_memory_schema
 
 logger = logging.getLogger("orion-hub.memory_consolidation_drafts")
 
@@ -70,7 +70,7 @@ async def list_memory_consolidation_drafts(
     await _need_session(x_orion_session_id)
     pool = _pool(request)
     try:
-        rows = await list_consolidation_drafts(pool, status=status, limit=limit)
+        rows = await list_consolidation_drafts(pool, status=status, limit=_clamp_limit(limit, default=50, cap=200))
     except Exception as exc:
         _http_if_missing_memory_schema(exc)
         logger.warning("consolidation_drafts_list_failed error=%s", exc)

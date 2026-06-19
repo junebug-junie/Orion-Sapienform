@@ -55,35 +55,24 @@ PYTHONPATH=.:services/orion-hub ./venv/bin/python -m pytest \
   tests/test_memory_graph_draft_repository.py -q
 ```
 
-**Result:** 12 passed, exit 0
-
-```bash
-PYTHONPATH=.:services/orion-hub ./venv/bin/python -m pytest \
-  services/orion-hub/tests/test_memory_consolidation_draft_routes.py \
-  services/orion-hub/tests/test_memory_graph_consolidation_draft_approve.py \
-  services/orion-hub/tests/test_memory_review_ui.py \
-  tests/test_memory_graph_draft_repository.py -q
-```
+**Result:** 13 passed, exit 0
 
 ---
 
-## Code review (second pass — after fixes, commit `c0664381`)
+## Code review (third pass — all review items addressed)
 
 **Verdict:** Ready to merge
 
-| Prior issue | Fix verified |
-|-------------|--------------|
-| Status POST allowed `approved` without graph approve | Only `rejected` / `pending_review`; test `test_set_consolidation_draft_status_rejects_approved` |
-| `activeConsolidationDraftId` not cleared on manual Suggest | Cleared at start of Suggest handler |
-| Approve hook silently succeeded if draft update failed | Returns `consolidation_draft_marked: false`, `consolidation_draft_status: update_failed`; UI shows error status |
-| Missing `memory_schema_missing` for undefined table | `_http_if_missing_memory_schema` on list/get/status |
-| No test for approve + `consolidation_draft_id` hook | `test_memory_graph_consolidation_draft_approve.py` (success + update_failed) |
+| Issue | Fix |
+|-------|-----|
+| Reject did not clear `activeConsolidationDraftId` | `onRejected` callback clears id when rejected draft was loaded |
+| Unrelated `fb53b08a` on branch | Rebased onto `main`; mesh email plan commit dropped |
+| No `memory_schema_missing` test | `test_list_consolidation_drafts_memory_schema_missing` |
+| List `limit` not clamped at route | `_clamp_limit(limit, default=50, cap=200)` |
+| Approve hook no `pending_review` guard | `update_consolidation_draft_status` requires `pending_review` for `approved` |
+| Non-atomic approve undocumented | README operator note + UI warning behavior documented |
 
-**Strengths:** Minimal diff; approve path still succeeds when graph/cards succeed even if inbox mark fails (operator gets explicit signal). Consolidation draft id captured before async approve so Suggest cannot race.
-
-**Remaining minor (non-blocking):**
-- Live stack checklist still unchecked (requires Hub deploy on branch).
-- `gh` auth unavailable — PR must be opened manually.
+**Remaining:** Live stack smoke (operator deploy).
 
 ---
 

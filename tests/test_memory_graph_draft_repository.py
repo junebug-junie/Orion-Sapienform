@@ -10,3 +10,4 @@ def test_insert_pending_draft_sql_shape():
     assert "async def list_consolidation_drafts" in source
     assert "async def get_consolidation_draft" in source
     assert "async def update_consolidation_draft_status" in source
+    assert "status = 'pending_review'" in source

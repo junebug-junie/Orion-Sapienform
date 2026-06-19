@@ -324,7 +324,7 @@
     if (handlers.cyHost) await loadNeighborhood(card.card_id, handlers.cyHost, card.title);
   }
 
-  async function loadConsolidationDrafts(listEl, panelStatusEl, statusEl, draftTa, memoryDraftViz, memoryDraftForm, graphSetOut, onLoaded) {
+  async function loadConsolidationDrafts(listEl, panelStatusEl, statusEl, draftTa, memoryDraftViz, memoryDraftForm, graphSetOut, onLoaded, onRejected) {
     if (!listEl) return;
     listEl.innerHTML = "";
     setStatus(panelStatusEl, "Loading consolidation drafts…", false);
@@ -380,7 +380,18 @@
               method: "POST",
               body: JSON.stringify({ status: "rejected" }),
             });
-            await loadConsolidationDrafts(listEl, panelStatusEl, statusEl, draftTa, memoryDraftViz, memoryDraftForm, graphSetOut, onLoaded);
+            if (typeof onRejected === "function") onRejected(String(item.draft_id || ""));
+            await loadConsolidationDrafts(
+              listEl,
+              panelStatusEl,
+              statusEl,
+              draftTa,
+              memoryDraftViz,
+              memoryDraftForm,
+              graphSetOut,
+              onLoaded,
+              onRejected,
+            );
           } catch (e) {
             setStatus(panelStatusEl, formatMemoryApiError(e), true);
           }
@@ -748,6 +759,9 @@
           graphSetOut,
           (draftId) => {
             activeConsolidationDraftId = draftId;
+          },
+          (draftId) => {
+            if (activeConsolidationDraftId === draftId) activeConsolidationDraftId = null;
           },
         );
       }

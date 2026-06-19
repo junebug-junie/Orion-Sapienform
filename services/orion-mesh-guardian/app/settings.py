@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from enum import Enum
-
-from pydantic import BaseModel, Field
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -17,7 +15,7 @@ class Settings(BaseSettings):
     notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
     roster_path: str = Field("/repo/config/mesh_remediation_roster.yaml", alias="MESH_GUARDIAN_ROSTER_PATH")
     enabled: bool = Field(True, alias="MESH_GUARDIAN_ENABLED")
-    auto_remediate: bool = Field(True, alias="MESH_GUARDIAN_AUTO_REMEDIATE")
+    auto_remediate: bool = Field(False, alias="MESH_GUARDIAN_AUTO_REMEDIATE")
     remediation_cooldown_sec: int = Field(300, alias="MESH_GUARDIAN_REMEDIATION_COOLDOWN_SEC")
     max_attempts_per_hour: int = Field(3, alias="MESH_GUARDIAN_MAX_ATTEMPTS_PER_HOUR")
     probe_interval_sec: int = Field(15, alias="MESH_GUARDIAN_PROBE_INTERVAL_SEC")

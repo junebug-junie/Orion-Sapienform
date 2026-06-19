@@ -50,6 +50,9 @@ docker compose --env-file .env --env-file services/orion-notify/.env \
 
 docker compose --env-file .env --env-file services/orion-mesh-guardian/.env \
   -f services/orion-mesh-guardian/docker-compose.yml up -d --build mesh-guardian
+
+docker compose --env-file .env --env-file services/orion-sql-writer/.env \
+  -f services/orion-sql-writer/docker-compose.yml up -d --build orion-sql-writer
 ```
 
 Ensure SMTP vars are set in `services/orion-notify/.env` (`NOTIFY_EMAIL_*`). Escalation runs when `NOTIFY_ESCALATION_POLL_SECONDS > 0` (default 60).
@@ -63,4 +66,6 @@ Ensure SMTP vars are set in `services/orion-notify/.env` (`NOTIFY_EMAIL_*`). Esc
 ## Code review notes
 
 - Escalation marks DB before SMTP send to avoid duplicate emails on partial failure
+- Escalation email includes `Attention ID` in body for Hub lookup
 - Multi-notify-replica deploy may still race; acceptable for single-replica Athena stack
+- SMTP failure after escalate mark does not retry (anti-spam tradeoff)

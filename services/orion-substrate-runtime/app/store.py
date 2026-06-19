@@ -30,11 +30,18 @@ from orion.substrate.transport_loop.constants import (
     TRANSPORT_BUS_PROJECTION_ID,
     TRANSPORT_GRAMMAR_CURSOR_NAME,
 )
+from orion.substrate.chat_loop.constants import (
+    CHAT_GRAMMAR_CURSOR_NAME,
+    CHAT_SOURCE_SERVICE,
+    CHAT_TRACE_PREFIX,
+)
+from orion.schemas.chat_projection import ChatSessionProjectionV1
 
 GRAMMAR_CURSOR_REGISTRY: dict[str, tuple[str, str]] = {
     GRAMMAR_CURSOR_NAME: ("orion-biometrics", "biometrics.node:"),
     EXECUTION_GRAMMAR_CURSOR_NAME: ("orion-cortex-exec", "cortex.exec:"),
     TRANSPORT_GRAMMAR_CURSOR_NAME: ("orion-bus", "bus.transport:"),
+    CHAT_GRAMMAR_CURSOR_NAME: ("orion-hub", "hub.chat:"),
 }
 from orion.substrate.biometrics_loop.lineage import emission_touches_node, receipt_touches_node
 from orion.substrate.receipts.retention import (
@@ -347,6 +354,14 @@ class BiometricsSubstrateStore:
             limit=limit,
         )
 
+    def fetch_chat_grammar_events(self, *, limit: int = 100) -> list[GrammarEventV1]:
+        return self._fetch_grammar_events(
+            cursor_name=CHAT_GRAMMAR_CURSOR_NAME,
+            source_service=CHAT_SOURCE_SERVICE,
+            trace_prefix=CHAT_TRACE_PREFIX,
+            limit=limit,
+        )
+
     def advance_cursor(self, *, event_id: str, created_at: datetime) -> None:
         now = datetime.now(timezone.utc)
         with self._engine.begin() as conn:
@@ -416,6 +431,31 @@ class BiometricsSubstrateStore:
                 ),
                 {
                     "cursor_name": TRANSPORT_GRAMMAR_CURSOR_NAME,
+                    "created_at": created_at,
+                    "event_id": event_id,
+                    "updated_at": now,
+                },
+            )
+
+    def advance_chat_cursor(self, *, event_id: str, created_at: datetime) -> None:
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_reduction_cursor (
+                        cursor_name, last_event_created_at, last_event_id, updated_at
+                    ) VALUES (
+                        :cursor_name, :created_at, :event_id, :updated_at
+                    )
+                    ON CONFLICT (cursor_name) DO UPDATE SET
+                        last_event_created_at = EXCLUDED.last_event_created_at,
+                        last_event_id = EXCLUDED.last_event_id,
+                        updated_at = EXCLUDED.updated_at
+                    """
+                ),
+                {
+                    "cursor_name": CHAT_GRAMMAR_CURSOR_NAME,
                     "created_at": created_at,
                     "event_id": event_id,
                     "updated_at": now,
@@ -492,6 +532,18 @@ class BiometricsSubstrateStore:
 
     def save_execution_trajectory(self, projection: ExecutionTrajectoryProjectionV1) -> None:
         self._save_projection("substrate_execution_trajectory_projection", projection)
+
+    def load_chat_session_projection(
+        self, projection_id: str
+    ) -> ChatSessionProjectionV1 | None:
+        return self._load_projection(
+            "substrate_chat_session_projection",
+            projection_id,
+            ChatSessionProjectionV1,
+        )
+
+    def save_chat_session_projection(self, projection: ChatSessionProjectionV1) -> None:
+        self._save_projection("substrate_chat_session_projection", projection)
 
     def load_transport_bus_projection(
         self, projection_id: str = TRANSPORT_BUS_PROJECTION_ID

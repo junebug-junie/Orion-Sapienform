@@ -1,0 +1,5 @@
+CHAT_GRAMMAR_CURSOR_NAME = "chat_grammar_consumer"
+CHAT_SESSION_PROJECTION_ID = "active_chat_session"
+CHAT_REDUCER_ID = "chat_turn_reducer"
+CHAT_SOURCE_SERVICE = "orion-hub"
+CHAT_TRACE_PREFIX = "hub.chat:"

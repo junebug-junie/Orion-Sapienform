@@ -106,6 +106,23 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                     )
                 )
 
+    if delta.target_kind == "chat_turn":
+        hints = dict(after.get("pressure_hints") or {})
+        for channel, key in (
+            ("conversation_load", "conversation_load"),
+            ("repair_pressure", "repair_pressure"),
+        ):
+            if key in hints:
+                out.append(
+                    Perturbation(
+                        node_id=node_id,
+                        channel=channel,
+                        intensity=float(hints[key]),
+                        label=delta.delta_id,
+                        mode="replace",
+                    )
+                )
+
     if delta.target_kind == "transport_bus":
         hints = dict((delta.after or {}).get("pressure_hints") or {})
         node_key = _node_key(str((delta.after or {}).get("node_id") or delta.target_id.replace("bus:", "")))

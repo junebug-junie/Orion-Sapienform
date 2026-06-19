@@ -376,6 +376,10 @@ class Settings(BaseSettings):
     SUBSTRATE_GRAPHDB_USER: str = Field(default="", alias="SUBSTRATE_GRAPHDB_USER")
     SUBSTRATE_GRAPHDB_PASS: str = Field(default="", alias="SUBSTRATE_GRAPHDB_PASS")
 
+    # --- Chat Grammar Substrate Lane ---
+    PUBLISH_HUB_CHAT_GRAMMAR: bool = Field(default=False, alias="PUBLISH_HUB_CHAT_GRAMMAR")
+    GRAMMAR_EVENT_CHANNEL: str = Field(default="orion:grammar:event", alias="GRAMMAR_EVENT_CHANNEL")
+
     # --- Grammar Atlas (substrate trace/graph read API) ---
     GRAMMAR_ATLAS_ENABLED: bool = Field(default=True, alias="GRAMMAR_ATLAS_ENABLED")
     GRAMMAR_ATLAS_POLL_INTERVAL_MS: int = Field(

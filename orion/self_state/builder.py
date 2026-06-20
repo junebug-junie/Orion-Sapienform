@@ -229,31 +229,6 @@ def build_self_state(
         overall_salience=attention.overall_salience,
     )
 
-    dimension_trajectory: dict[str, float] = {}
-    trajectory_condition: str = "unknown"
-    if previous_self_state is not None:
-        for dim_id, score in dimension_scores.items():
-            prev_dim = previous_self_state.dimensions.get(dim_id)
-            if prev_dim is not None:
-                delta = clamp(-1.0, 1.0, score - prev_dim.score)
-                if abs(delta) >= 0.02:
-                    dimension_trajectory[dim_id] = round(delta, 4)
-        if dimension_trajectory:
-            weighted_delta = 0.0
-            total_w = 0.0
-            for dim_id, delta in dimension_trajectory.items():
-                w = float(policy.dimension_weights.get(dim_id, 0.0))
-                weighted_delta += delta * w
-                total_w += w
-            if total_w > 0:
-                net = weighted_delta / total_w
-                if net > 0.03:
-                    trajectory_condition = "improving"
-                elif net < -0.03:
-                    trajectory_condition = "degrading"
-                else:
-                    trajectory_condition = "stable"
-
     if enable_transport_influence:
         hints = transport_channel_hints(field)
         integrity = transport_integrity_score(hints)
@@ -271,6 +246,34 @@ def build_self_state(
         summary_labels = sorted(
             set(summary_labels) | set(transport_summary_labels(hints, integrity))
         )
+
+    dimension_trajectory: dict[str, float] = {}
+    trajectory_condition: Literal["improving", "degrading", "stable", "unknown"] = "unknown"
+    if previous_self_state is not None:
+        for dim_id, score in dimension_scores.items():
+            prev_dim = previous_self_state.dimensions.get(dim_id)
+            if prev_dim is not None:
+                delta = clamp(-1.0, 1.0, score - prev_dim.score)
+                if abs(delta) >= 0.02:
+                    dimension_trajectory[dim_id] = round(delta, 4)
+        weighted_delta = 0.0
+        total_w = 0.0
+        for dim_id, score in dimension_scores.items():
+            prev_dim = previous_self_state.dimensions.get(dim_id)
+            if prev_dim is None:
+                continue
+            delta = clamp(-1.0, 1.0, score - prev_dim.score)
+            w = float(policy.dimension_weights.get(dim_id, 0.0))
+            weighted_delta += delta * w
+            total_w += w
+        if total_w > 0:
+            net = weighted_delta / total_w
+            if net > 0.03:
+                trajectory_condition = "improving"
+            elif net < -0.03:
+                trajectory_condition = "degrading"
+            else:
+                trajectory_condition = "stable"
 
     return SelfStateV1(
         self_state_id=stable_self_state_id(
@@ -295,5 +298,5 @@ def build_self_state(
         warnings=warnings,
         summary_labels=summary_labels,
         dimension_trajectory=dimension_trajectory,
-        trajectory_condition=trajectory_condition,  # type: ignore[arg-type]
+        trajectory_condition=trajectory_condition,
     )

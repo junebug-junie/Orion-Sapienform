@@ -94,7 +94,6 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
             ("execution_friction", "execution_friction"),
             ("reasoning_load", "reasoning_load"),
             ("failure_pressure", "failure_pressure"),
-            ("egress_confidence", "egress_confidence"),
         ):
             if key in hints:
                 out.append(

@@ -90,6 +90,10 @@ def _emit_summary_labels(
         and dimension_scores.get("execution_pressure", 0.0) >= 0.7
     ):
         labels.append("stabilized_but_loaded")
+    if dimension_scores.get("social_pressure", 0.0) >= 0.5:
+        labels.append("social_pressurized")
+    if dimension_scores.get("introspection_pressure", 0.0) >= 0.5:
+        labels.append("introspection_loaded")
     return sorted(set(labels))
 
 

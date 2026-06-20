@@ -94,6 +94,7 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
             ("execution_friction", "execution_friction"),
             ("reasoning_load", "reasoning_load"),
             ("failure_pressure", "failure_pressure"),
+            ("egress_confidence", "egress_confidence"),
         ):
             if key in hints:
                 out.append(
@@ -105,6 +106,16 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                         mode="replace",
                     )
                 )
+        if "egress_confidence" in hints:
+            out.append(
+                Perturbation(
+                    node_id=node_key,
+                    channel="egress_confidence_deficit",
+                    intensity=max(0.0, min(1.0, 1.0 - float(hints["egress_confidence"]))),
+                    label=delta.delta_id,
+                    mode="replace",
+                )
+            )
 
     if delta.target_kind == "chat_turn":
         hints = dict(after.get("pressure_hints") or {})

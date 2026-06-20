@@ -26,6 +26,10 @@ def clamp01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
 
 
+def clamp(lo: float, hi: float, x: float) -> float:
+    return max(lo, min(hi, float(x)))
+
+
 def condition_from_intensity(
     intensity: float,
     thresholds: SelfStateConditionThresholdsV1,

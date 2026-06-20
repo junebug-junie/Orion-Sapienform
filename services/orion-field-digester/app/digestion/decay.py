@@ -15,6 +15,10 @@ NODE_DECAY_CHANNELS = {
     "execution_friction",
     "reasoning_load",
     "failure_pressure",
+    "egress_confidence_deficit",
+    # chat
+    "repair_pressure",
+    "conversation_load",
     # transport
     "transport_pressure",
     "contract_pressure",

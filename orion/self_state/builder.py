@@ -250,12 +250,6 @@ def build_self_state(
     dimension_trajectory: dict[str, float] = {}
     trajectory_condition: Literal["improving", "degrading", "stable", "unknown"] = "unknown"
     if previous_self_state is not None:
-        for dim_id, score in dimension_scores.items():
-            prev_dim = previous_self_state.dimensions.get(dim_id)
-            if prev_dim is not None:
-                delta = clamp(-1.0, 1.0, score - prev_dim.score)
-                if abs(delta) >= 0.02:
-                    dimension_trajectory[dim_id] = round(delta, 4)
         weighted_delta = 0.0
         total_w = 0.0
         for dim_id, score in dimension_scores.items():
@@ -263,14 +257,16 @@ def build_self_state(
             if prev_dim is None:
                 continue
             delta = clamp(-1.0, 1.0, score - prev_dim.score)
+            if abs(delta) >= 0.02:
+                dimension_trajectory[dim_id] = round(delta, 4)
             w = float(policy.dimension_weights.get(dim_id, 0.0))
             weighted_delta += delta * w
             total_w += w
         if total_w > 0:
             net = weighted_delta / total_w
-            if net > 0.03:
+            if net > policy.trajectory_threshold:
                 trajectory_condition = "improving"
-            elif net < -0.03:
+            elif net < -policy.trajectory_threshold:
                 trajectory_condition = "degrading"
             else:
                 trajectory_condition = "stable"

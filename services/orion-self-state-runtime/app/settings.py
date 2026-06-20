@@ -20,6 +20,10 @@ class Settings(BaseSettings):
         False,
         alias="ENABLE_TRANSPORT_SELF_STATE_INFLUENCE",
     )
+    self_state_max_previous_age_sec: float = Field(
+        300.0,
+        alias="SELF_STATE_MAX_PREVIOUS_AGE_SEC",
+    )
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
 

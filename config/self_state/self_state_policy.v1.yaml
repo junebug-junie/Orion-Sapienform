@@ -84,3 +84,4 @@ context_channels:
 
 unresolved_pressure_threshold: 0.60
 dominant_channel_threshold: 0.25
+trajectory_threshold: 0.03

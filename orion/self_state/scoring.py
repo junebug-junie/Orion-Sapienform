@@ -19,6 +19,9 @@ PRESSURE_CHANNELS = frozenset({
     "thermal_pressure",
     "staleness",
     "pressure",
+    "repair_pressure",
+    "conversation_load",
+    "egress_confidence_deficit",
 })
 
 

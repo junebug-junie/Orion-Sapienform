@@ -32,6 +32,7 @@ def scores_from_llm_result(content: str, raw: dict[str, Any]) -> dict[str, Any]:
     shift_scores: dict[str, float] | None = None
     shift_kind: str | None = None
     line = "novel"
+    novelty_from_logprobs = False
 
     for entry in logprobs:
         tok = str(entry.get("token") or "").strip().upper()
@@ -52,6 +53,8 @@ def scores_from_llm_result(content: str, raw: dict[str, Any]) -> dict[str, Any]:
 
         if line == "novel" and tok in ("YES", "NO"):
             novelty_score = binary_score_from_top_logprobs(tops)
+            if novelty_score is not None:
+                novelty_from_logprobs = True
         elif line == "shift" and tok in SHIFT_KINDS:
             shift_scores = enum_scores_from_top_logprobs(tops, SHIFT_KINDS)
             if shift_scores:
@@ -77,12 +80,14 @@ def scores_from_llm_result(content: str, raw: dict[str, Any]) -> dict[str, Any]:
     if shift_scores and shift_kind:
         shift_conf_score = shift_scores.get(shift_kind)
     confidence = appraisal_confidence(novelty_score, shift_conf_score)
+    scoring_source = "logprobs" if novelty_from_logprobs else ("text" if novelty_score is not None else "missing")
 
     return {
         "novelty_score": novelty_score,
         "shift_kind": shift_kind,
         "shift_scores": shift_scores or {},
         "confidence": confidence,
+        "scoring_source": scoring_source,
         "memory_significance_score": mem_score,
         "conversation_boundary_score": bnd_score,
     }

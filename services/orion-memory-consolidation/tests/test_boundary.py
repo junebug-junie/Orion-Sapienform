@@ -147,6 +147,14 @@ def test_scores_from_llm_result_four_lines():
     assert result["conversation_boundary_score"] is not None
 
 
+def test_scores_from_llm_result_text_fallback_marks_scoring_source():
+    content = "NOVEL: YES\nSHIFT: TOPIC\nMEMORY: YES\nBOUNDARY: NO\n"
+    raw = {"choices": [{"logprobs": {"content": []}}]}
+    result = scores_from_llm_result(content, raw)
+    assert result["scoring_source"] == "text"
+    assert result["novelty_score"] == pytest.approx(0.85)
+
+
 def test_should_close_by_time_gap_when_phase_missing():
     turns = [
         {"memory_classify_ts": "2026-06-16T10:00:00+00:00"},

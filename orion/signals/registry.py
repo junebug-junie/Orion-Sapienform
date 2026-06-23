@@ -257,7 +257,10 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         signal_kinds=["turn_change"],
         canonical_dimensions=["novelty", "salience", "contradiction", "confidence"],
         causal_parent_organs=["hub"],
-        bus_channels=["orion:memory:turn:persisted"],
+        bus_channels=[
+            "orion:memory:turn:persisted",
+            "orion:signals:memory_consolidation",
+        ],
         notes=["Logprob turn change appraisal substrate perturbation."],
     ),
     "journaler": OrionOrganRegistryEntry(

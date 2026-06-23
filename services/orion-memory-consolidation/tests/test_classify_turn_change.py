@@ -165,6 +165,30 @@ async def test_classify_turn_topic_pivot_high_novelty():
 
 
 @pytest.mark.asyncio
+async def test_classify_turn_text_fallback_marks_degraded():
+    bus = AsyncMock()
+    content = "NOVEL: YES\nSHIFT: TOPIC\nMEMORY: NO\nBOUNDARY: NO\n"
+    bus.rpc_request.return_value = {"data": b"x"}
+
+    def _decode_side_effect(_):
+        class _R:
+            ok = True
+            envelope = type("E", (), {"payload": {"content": content, "raw": {"choices": [{"logprobs": {"content": []}}]}}})()
+
+        return _R()
+
+    bus.codec.decode = Mock(side_effect=_decode_side_effect)
+    prior = [{"correlation_id": "prev", "prompt": "cats", "response": "cute"}]
+    turn = MemoryTurnPersistedV1(correlation_id=str(uuid4()), prompt="pivot", response="ok", spark_meta={})
+    from app.settings import settings as app_settings
+
+    patch = await classify_mod.classify_turn(bus, turn=turn, prior_turns=prior, settings=app_settings)
+    appr = patch["turn_change_appraisal"]
+    assert appr["turn_change_status"] == "degraded"
+    assert appr["novelty_score"] == pytest.approx(0.85)
+
+
+@pytest.mark.asyncio
 async def test_classify_turn_low_margin_triggers_session_window_reappraisal():
     bus = AsyncMock()
     first_content = "NOVEL: YES\nSHIFT: TOPIC\nMEMORY: NO\nBOUNDARY: NO\n"
@@ -219,6 +243,69 @@ async def test_classify_turn_llm_failure_preserves_baseline_context():
     assert appr["turn_change_status"] == "degraded"
     assert appr["baseline_mode"] == "prior_turn"
     assert appr["prior_correlation_id"] == "prev"
+
+
+@pytest.mark.asyncio
+async def test_worker_skips_substrate_emit_low_confidence(monkeypatch):
+    worker = _load("app/worker.py", "memory_consolidation_worker")
+    published = []
+
+    bus = AsyncMock()
+
+    async def _publish(channel, env):
+        published.append((channel, env))
+
+    bus.publish = _publish
+
+    appraisal = {
+        "turn_change_status": "ok",
+        "novelty_score": 0.9,
+        "shift_kind": "TOPIC",
+        "confidence": 0.04,
+    }
+
+    async def _fake_classify(bus, *, turn, prior_turns, settings):
+        return {"turn_change_appraisal": appraisal, "memory_classify_status": "ok"}
+
+    monkeypatch.setattr(worker, "classify_turn", _fake_classify)
+
+    window_store = AsyncMock()
+    window_store._get_open_window = AsyncMock(return_value=None)
+    window_store.get_window_turns = AsyncMock(return_value=[])
+    window_store.append_turn = AsyncMock()
+    suggest_runner = AsyncMock()
+
+    corr = str(uuid4())
+    turn = MemoryTurnPersistedV1(correlation_id=corr, prompt="hi", response="hello", spark_meta={})
+    from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+
+    env = BaseEnvelope(
+        kind="memory.turn.persisted.v1",
+        correlation_id=corr,
+        source=ServiceRef(name="sql-writer", version="0.1", node="local"),
+        payload=turn.model_dump(mode="json"),
+    )
+
+    await worker.handle_memory_turn_persisted(
+        env, bus=bus, window_store=window_store, suggest_runner=suggest_runner
+    )
+
+    signal_kinds = [e.kind for _, e in published]
+    assert "signal.memory_consolidation.turn_change" not in signal_kinds
+
+
+def test_session_window_baseline_respects_turn_cap():
+    prior = [
+        {"correlation_id": "t1", "prompt": "one", "response": "r1"},
+        {"correlation_id": "t2", "prompt": "two", "response": "r2"},
+        {"correlation_id": "t3", "prompt": "three", "response": "r3"},
+        {"correlation_id": "t4", "prompt": "four", "response": "r4"},
+    ]
+    _, text = classify_mod._session_window_baseline(prior, n=2)
+    assert "three" in text
+    assert "four" in text
+    assert "one" not in text
+    assert "two" not in text
 
 
 @pytest.mark.asyncio

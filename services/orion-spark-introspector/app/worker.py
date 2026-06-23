@@ -457,8 +457,6 @@ def _log_turn_effect_alert_suppressed_dedupe(
 def _append_turn_effect_metadata(meta: Dict[str, Any], spark_meta: Dict[str, Any] | None) -> None:
     turn_effect = turn_effect_from_appraisal(spark_meta or {})
     if not turn_effect:
-        turn_effect = turn_effect_from_appraisal(spark_meta or {})
-    if not turn_effect:
         turn_effect = turn_effect_from_spark_meta(spark_meta or {})
     if not turn_effect and isinstance(spark_meta, dict):
         precomputed = spark_meta.get("turn_effect")

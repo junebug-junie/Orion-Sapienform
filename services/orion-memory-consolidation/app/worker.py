@@ -143,13 +143,15 @@ async def _maybe_publish_turn_change_signal(
     novelty = appraisal.get("novelty_score")
     if not isinstance(novelty, (int, float)) or float(novelty) < settings.TURN_CHANGE_SUBSTRATE_THRESHOLD:
         return
+    confidence = appraisal.get("confidence")
+    if confidence is None or float(confidence) < settings.TURN_CHANGE_CONFIDENCE_MARGIN:
+        return
     shift_kind = str(appraisal.get("shift_kind") or "NONE")
-    confidence = float(appraisal.get("confidence") or 0.0)
     signal = build_turn_change_signal(
         correlation_id=correlation_id,
         shift_kind=shift_kind,
         novelty_score=float(novelty),
-        confidence=confidence,
+        confidence=float(confidence),
     )
     env = BaseEnvelope(
         kind="signal.memory_consolidation.turn_change",

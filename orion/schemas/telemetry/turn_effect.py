@@ -49,6 +49,11 @@ def _evidence_block(block: Any) -> Optional[Dict[str, float]]:
 
 
 def turn_effect_from_spark_meta(spark_meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if isinstance(spark_meta, dict):
+        appraisal = spark_meta.get("turn_change_appraisal")
+        if isinstance(appraisal, dict) and appraisal.get("turn_change_status") == "degraded":
+            return None
+
     appraisal_effect = turn_effect_from_appraisal(spark_meta)
     if appraisal_effect is not None:
         return appraisal_effect

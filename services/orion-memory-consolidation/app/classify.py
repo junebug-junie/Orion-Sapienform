@@ -191,11 +191,17 @@ async def classify_turn(
             scores["shift_scores"] = retry.get("shift_scores", scores.get("shift_scores"))
             if retry.get("confidence") is not None:
                 scores["confidence"] = retry["confidence"]
+            if retry.get("scoring_source"):
+                scores["scoring_source"] = retry["scoring_source"]
             baseline_mode = "session_window"
             _, baseline_text = _session_window_baseline(prior_turns, n=settings.TURN_CHANGE_WINDOW_TURNS)
             prior_corr = None
 
-    status = "ok" if scores.get("novelty_score") is not None else "degraded"
+    status = (
+        "ok"
+        if scores.get("novelty_score") is not None and scores.get("scoring_source") == "logprobs"
+        else "degraded"
+    )
     appraisal = build_turn_change_appraisal(
         baseline_mode=baseline_mode,
         prior_correlation_id=prior_corr,

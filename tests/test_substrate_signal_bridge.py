@@ -172,3 +172,22 @@ def test_bridged_molecule_validates_against_default_registry_for_both_kinds():
             )
         for relation in molecule.relations:
             assert registry.has_predicate(relation.predicate)
+
+
+def test_turn_change_signal_converts_to_organ_signal_molecule():
+    from orion.memory.turn_change_signal import build_turn_change_signal
+    from orion.signals.signal_ids import make_signal_id
+    from orion.substrate.signal_bridge import signal_to_molecule
+
+    signal = build_turn_change_signal(
+        correlation_id="corr-abc",
+        shift_kind="TOPIC",
+        novelty_score=0.82,
+        confidence=0.91,
+    )
+    molecule = signal_to_molecule(signal)
+    assert molecule.molecule_kind == "organ_signal"
+    assert molecule.gradients["novelty"] > 0.5
+    assert molecule.gradients["salience"] > 0.5
+    assert molecule.provenance["source_event_id"] == "corr-abc"
+    assert signal.causal_parents == [make_signal_id("hub", "corr-abc")]

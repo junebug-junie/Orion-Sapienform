@@ -10,6 +10,7 @@ from orion.memory_graph.draft_repository import (
     list_consolidation_drafts,
     update_consolidation_draft_status,
 )
+from orion.memory_graph.consolidation_draft_hydrate import hydrate_consolidation_draft_dict
 
 from .session import ensure_session
 from .memory_routes import _clamp_limit, _http_if_missing_memory_schema
@@ -98,6 +99,17 @@ async def get_memory_consolidation_draft(
         raise HTTPException(status_code=503, detail="memory_store_error") from exc
     if row is None:
         raise HTTPException(status_code=404, detail="consolidation_draft_not_found")
+    draft_payload = row.get("draft")
+    if isinstance(draft_payload, dict):
+        try:
+            hydrated = await hydrate_consolidation_draft_dict(
+                pool,
+                draft_payload,
+                row.get("turn_correlation_ids") or [],
+            )
+            row = {**row, "draft": hydrated}
+        except Exception as exc:
+            logger.warning("consolidation_draft_hydrate_failed draft_id=%s error=%s", draft_id, exc)
     return _public_item(row, include_draft=True)
 
 

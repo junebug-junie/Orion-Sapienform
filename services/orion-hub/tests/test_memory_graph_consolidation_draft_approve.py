@@ -73,6 +73,10 @@ def approve_client(monkeypatch):
         "orion.memory_graph.draft_repository.update_consolidation_draft_status",
         update_mock,
     )
+    monkeypatch.setattr(
+        "scripts.memory_graph_routes._consolidation_supplemental_utterance_text",
+        AsyncMock(return_value={}),
+    )
     return TestClient(app), update_mock
 
 

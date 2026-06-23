@@ -8,6 +8,7 @@ from orion.schemas.telemetry.turn_effect import (
     evaluate_turn_effect_alert,
     should_emit_turn_effect_alert,
     summarize_turn_effect,
+    turn_effect_from_appraisal,
     turn_effect_from_spark_meta,
 )
 
@@ -89,3 +90,33 @@ def test_turn_effect_alert_decision_and_cooldown():
     assert should_emit_turn_effect_alert(None, now, 120) is True
     assert should_emit_turn_effect_alert(now, now + 1, 120) is False
     assert should_emit_turn_effect_alert(now, now + 120, 120) is True
+
+
+def test_turn_effect_from_appraisal():
+    spark_meta = {
+        "turn_change_appraisal": {
+            "turn_change_status": "ok",
+            "novelty_score": 0.82,
+            "shift_kind": "TOPIC",
+            "confidence": 0.91,
+        }
+    }
+    effect = turn_effect_from_appraisal(spark_meta)
+    assert effect is not None
+    assert effect["turn"]["novelty"] == pytest.approx(0.82)
+    assert effect["evidence"]["turn_change_appraisal"]["shift_kind"] == "TOPIC"
+
+
+def test_turn_effect_from_appraisal_degraded_returns_none_novelty():
+    effect = turn_effect_from_appraisal({"turn_change_appraisal": {"turn_change_status": "degraded"}})
+    assert effect is None
+
+
+def test_turn_effect_degraded_appraisal_blocks_phi_fallback():
+    spark_meta = {
+        "turn_change_appraisal": {"turn_change_status": "degraded"},
+        "phi_before": {"novelty": 0.1},
+        "phi_after": {"novelty": 0.9},
+    }
+    effect = turn_effect_from_spark_meta(spark_meta)
+    assert effect is None

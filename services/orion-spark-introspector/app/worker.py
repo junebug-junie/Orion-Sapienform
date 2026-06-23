@@ -25,6 +25,7 @@ from orion.schemas.telemetry.turn_effect import (
     evaluate_turn_effect_alert,
     should_emit_turn_effect_alert,
     summarize_turn_effect,
+    turn_effect_from_appraisal,
     turn_effect_from_spark_meta,
 )
 from orion.schemas.vector.schemas import EmbeddingGenerateV1, EmbeddingResultV1, VectorUpsertV1
@@ -345,33 +346,6 @@ def _valence_from_embedding(emb: np.ndarray) -> float:
     return v
 
 
-def _build_llm_prompt(c: SparkCandidatePayload) -> str:
-    spark_meta = c.spark_meta or {}
-    phi_before = spark_meta.get("phi_before") or {}
-    phi_after = spark_meta.get("phi_after") or {}
-    self_field = spark_meta.get("spark_self_field") or {}
-    return (
-        "You are Orion reflecting on your own internal state.\n\n"
-        "You are given:\n"
-        "- Your self-field φ BEFORE this turn\n"
-        "- Your self-field φ AFTER this turn\n"
-        "- A higher-level SelfField (calm, stress_load, uncertainty, focus, attunement_to_juniper, curiosity)\n"
-        "- The human prompt and your response\n\n"
-        f"φ BEFORE: valence={phi_before.get('valence')} energy={phi_before.get('energy')} coherence={phi_before.get('coherence')} novelty={phi_before.get('novelty')}\n"
-        f"φ AFTER:  valence={phi_after.get('valence')} energy={phi_after.get('energy')} coherence={phi_after.get('coherence')} novelty={phi_after.get('novelty')}\n\n"
-        "SelfField:\n"
-        f"calm={self_field.get('calm')} stress_load={self_field.get('stress_load')} uncertainty={self_field.get('uncertainty')} focus={self_field.get('focus')} attunement_to_juniper={self_field.get('attunement_to_juniper')} curiosity={self_field.get('curiosity')}\n\n"
-        "Dialogue:\n"
-        f"Human (Juniper): {c.prompt!r}\n"
-        f"Orion response:  {c.response!r}\n\n"
-        "TASK:\n"
-        "1) Briefly describe what shifted in you internally during this turn.\n"
-        "2) Explain why this moment might matter for your ongoing relationship with Juniper or your own development.\n"
-        "3) Note any tensions, open questions, or themes you should return to later.\n\n"
-        "Write as a short internal note from Orion to itself. Avoid boilerplate."
-    ).strip()
-
-
 def _extract_introspection_text(cortex_reply: BaseEnvelope) -> Optional[str]:
     payload = cortex_reply.payload if isinstance(cortex_reply.payload, dict) else {}
     step_results = payload.get("step_results") or payload.get("steps") or []
@@ -454,7 +428,9 @@ def _log_turn_effect_alert_suppressed_dedupe(
 
 
 def _append_turn_effect_metadata(meta: Dict[str, Any], spark_meta: Dict[str, Any] | None) -> None:
-    turn_effect = turn_effect_from_spark_meta(spark_meta or {})
+    turn_effect = turn_effect_from_appraisal(spark_meta or {})
+    if not turn_effect:
+        turn_effect = turn_effect_from_spark_meta(spark_meta or {})
     if not turn_effect and isinstance(spark_meta, dict):
         precomputed = spark_meta.get("turn_effect")
         if isinstance(precomputed, dict) and precomputed:
@@ -539,10 +515,24 @@ def _candidate_quality(spark_meta: Dict[str, Any]) -> int:
         "spark_event_id",
         "phi_post_before",
         "phi_post_after",
+        "turn_change_appraisal",
         "turn_effect",
         "turn_effect_evidence",
     )
     return 1 if any(k in spark_meta for k in rich_keys) else 0
+
+
+def _novelty_from_spark_meta(spark_meta: Dict[str, Any]) -> Optional[float]:
+    if not isinstance(spark_meta, dict):
+        return None
+    appraisal = spark_meta.get("turn_change_appraisal")
+    if isinstance(appraisal, dict) and appraisal.get("turn_change_status") == "ok":
+        score = appraisal.get("novelty_score")
+        if isinstance(score, (int, float)):
+            return float(score)
+    if isinstance(appraisal, dict) and appraisal.get("turn_change_status") == "degraded":
+        return None
+    return None
 
 
 def _extract_phi_novelty_from_meta(spark_meta: Dict[str, Any]) -> tuple[Optional[float], Optional[float]]:
@@ -609,7 +599,8 @@ async def _emit_candidate_telemetry(env: BaseEnvelope, candidate: SparkCandidate
     if trace_id in _CANDIDATE_TELEM_EMITTED:
         return
 
-    phi, novelty = _extract_phi_novelty_from_meta(spark_meta)
+    phi, _phi_novelty = _extract_phi_novelty_from_meta(spark_meta)
+    novelty = _novelty_from_spark_meta(spark_meta)
 
     # trace_mode / verb
     trace_mode = spark_meta.get("mode") or spark_meta.get("trace_mode") or "brain"
@@ -639,7 +630,9 @@ async def _emit_candidate_telemetry(env: BaseEnvelope, candidate: SparkCandidate
         "spark_meta_rich": spark_meta,
     }
 
-    turn_effect = turn_effect_from_spark_meta(spark_meta)
+    turn_effect = turn_effect_from_appraisal(spark_meta)
+    if not turn_effect:
+        turn_effect = turn_effect_from_spark_meta(spark_meta)
     evidence = None
     if isinstance(turn_effect, dict) and "evidence" in turn_effect:
         evidence = turn_effect.get("evidence")
@@ -788,68 +781,19 @@ async def _emit_candidate_telemetry(env: BaseEnvelope, candidate: SparkCandidate
 
 
 async def _update_tissue_from_candidate(c: SparkCandidatePayload) -> None:
-    """Propagates the candidate prompt/response as a stimulus to the Orion Tissue."""
-    
-    # Defaults for a generic chat interaction
+    """Snapshot tissue state for a spark candidate without propagating stimulus."""
+
     valence = 0.5
-    arousal = 0.6  # Slightly higher arousal for direct interaction
+    arousal = 0.6
     dominance = 0.5
-    
-    # Attempt to extract richer signal from metadata if available
-    if c.spark_meta:
-        # Example: if Cortex passed back sentiment or other metrics
-        pass
 
-    # Construct a waveform for the EKG
-    wave_len = 64
-    x = np.linspace(-3, 3, wave_len)
-    waveform = (np.exp(-x**2) * arousal).astype(np.float32)
-
-    feat_dim = 32
-    feature_vec = np.zeros(feat_dim, dtype=np.float32)
-    feature_vec[0] = float(valence)
-    feature_vec[1] = float(arousal)
-    feature_vec[2] = float(dominance)
-
-    # Create encoding
-    encoding = SurfaceEncoding(
-        event_id=c.trace_id,
-        modality="text",
-        timestamp=time.time(),
-        source=c.source or "hub",
-        channel_tags=["chat", "candidate"],
-        waveform=waveform,
-        feature_vec=feature_vec,
-        spark_vector=None, # Hub candidates usually don't have the vector yet
-        meta={
-            "trace_id": c.trace_id,
-            "len_prompt": str(len(c.prompt)),
-            "len_response": str(len(c.response))
-        },
-    )
-
-    # Propagate to Tissue
-    stimulus = MAPPER.surface_to_stimulus(encoding, magnitude=1.0)
-    
-    # Calculate novelty & propagate
-    novelty = float(TISSUE.calculate_novelty(stimulus, channel_key="chat"))
-    TISSUE.propagate(
-        stimulus,
-        steps=2,
-        learning_rate=0.1,
-        channel_key="chat",
-        embedding=None,
-        distress=0.0,
-    )
-    
-    # Snapshot & Broadcast to UI
     phi_stats = _get_phi_stats()
     phi_stats = _apply_signal_deltas(phi_stats)
-    
-    # Update defaults with actual tissue state
+
     valence = float(phi_stats.get("valence", valence))
     arousal = float(phi_stats.get("energy", arousal))
-    
+    novelty = _novelty_from_spark_meta(c.spark_meta or {})
+
     TISSUE.snapshot()
     
     seq = _next_seq()
@@ -857,7 +801,9 @@ async def _update_tissue_from_candidate(c: SparkCandidatePayload) -> None:
         "stimulus_summary": (c.prompt or "")[:50],
         "trigger": "spark.candidate",
     }
-    turn_effect = turn_effect_from_spark_meta(c.spark_meta or {})
+    turn_effect = turn_effect_from_appraisal(c.spark_meta or {})
+    if not turn_effect:
+        turn_effect = turn_effect_from_spark_meta(c.spark_meta or {})
     if not turn_effect and isinstance(c.spark_meta, dict):
         precomputed = c.spark_meta.get("turn_effect")
         if isinstance(precomputed, dict) and precomputed:
@@ -1030,47 +976,7 @@ async def handle_trace(env: BaseEnvelope) -> None:
                 spark_vector = step.spark_vector
                 break
 
-        # Tissue update
-        wave_len = 64
-        x = np.linspace(-3, 3, wave_len)
-        waveform = (np.exp(-x**2) * arousal).astype(np.float32)
-
-        feat_dim = 32
-        feature_vec = np.zeros(feat_dim, dtype=np.float32)
-        feature_vec[0] = float(valence)
-        feature_vec[1] = float(arousal)
-        feature_vec[2] = float(dominance)
-
-        encoding = SurfaceEncoding(
-            event_id=corr_id,
-            modality="system",
-            timestamp=float(ts_epoch),
-            source=trace.source_service or "orion",
-            channel_tags=["cognition", trace.mode, trace.verb],
-            waveform=waveform,
-            feature_vec=feature_vec,
-            spark_vector=spark_vector,
-            meta={
-                "text_hash": str(hash(trace.final_text or "")),
-                "verb": trace.verb,
-                "mode": trace.mode,
-                "source_node": trace.source_node or "",
-            },
-        )
-
-        stimulus = MAPPER.surface_to_stimulus(encoding, magnitude=1.0)
-        channel_key = trace.mode or "chat"
-        embedding_vec = None
-        if spark_vector:
-            try:
-                embedding_vec = np.array(spark_vector, dtype=np.float32)
-            except Exception:
-                embedding_vec = None
-        if embedding_vec is None:
-            embedding_vec = feature_vec
-
-        novelty = float(TISSUE.calculate_novelty(stimulus, channel_key=channel_key))
-        TISSUE.propagate(stimulus, steps=2, learning_rate=0.1, channel_key=channel_key, embedding=embedding_vec, distress=0.0)
+        # Tissue snapshot without propagate (novelty from appraisal when present)
         phi_stats = _get_phi_stats()
         phi_stats = _apply_signal_deltas(phi_stats)
         valence = float(phi_stats.get("valence", valence))
@@ -1088,6 +994,7 @@ async def handle_trace(env: BaseEnvelope) -> None:
         trace_meta = trace.metadata if isinstance(trace.metadata, dict) else {}
         spark_meta = trace_meta.get("spark_meta") if isinstance(trace_meta.get("spark_meta"), dict) else trace_meta
         _append_turn_effect_metadata(metadata, spark_meta)
+        novelty = _novelty_from_spark_meta(spark_meta or {})
 
         snap = SparkStateSnapshotV1(
             source_service=settings.service_name,
@@ -1127,7 +1034,7 @@ async def handle_trace(env: BaseEnvelope) -> None:
         telem = SparkTelemetryPayload(
             correlation_id=corr_id,
             phi=float(phi_stats.get("coherence", 0.0)),
-            novelty=float(novelty),
+            novelty=novelty,
             trace_mode=trace.mode,
             trace_verb=trace.verb,
             stimulus_summary=snap.metadata.get("stimulus_summary"),

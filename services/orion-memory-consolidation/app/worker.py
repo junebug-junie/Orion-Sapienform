@@ -93,8 +93,21 @@ class ConsolidationSuggestRunner:
             )
             draft_dict = extract_suggest_draft_dict_from_cortex_payload(raw)
             draft_dict = sanitize_suggest_draft_dict(draft_dict)
-            draft = SuggestDraftV1.model_validate(draft_dict)
             corr_ids = window.get("turn_correlation_ids") or []
+            turns = window.get("turns") or []
+            from orion.memory_graph.consolidation_draft_hydrate import hydrate_draft_utterance_text
+
+            turns_by_correlation = {
+                str(t.get("correlation_id")): t
+                for t in turns
+                if isinstance(t, dict) and str(t.get("correlation_id") or "").strip()
+            }
+            draft_dict = hydrate_draft_utterance_text(
+                draft_dict,
+                turn_correlation_ids=corr_ids,
+                turns_by_correlation=turns_by_correlation,
+            )
+            draft = SuggestDraftV1.model_validate(draft_dict)
             draft_id = await insert_pending_draft(
                 self._pool,
                 memory_window_id=window_id,
@@ -117,6 +130,39 @@ class ConsolidationSuggestRunner:
             await self._window_store.mark_failed(window_id)
 
 
+async def _maybe_publish_turn_change_signal(
+    bus: OrionBusAsync,
+    *,
+    correlation_id: str,
+    appraisal: dict[str, Any],
+) -> None:
+    from orion.memory.turn_change_signal import build_turn_change_signal
+
+    if appraisal.get("turn_change_status") != "ok":
+        return
+    novelty = appraisal.get("novelty_score")
+    if not isinstance(novelty, (int, float)) or float(novelty) < settings.TURN_CHANGE_SUBSTRATE_THRESHOLD:
+        return
+    confidence = appraisal.get("confidence")
+    if confidence is None or float(confidence) < settings.TURN_CHANGE_CONFIDENCE_MARGIN:
+        return
+    shift_kind = str(appraisal.get("shift_kind") or "NONE")
+    signal = build_turn_change_signal(
+        correlation_id=correlation_id,
+        shift_kind=shift_kind,
+        novelty_score=float(novelty),
+        confidence=float(confidence),
+    )
+    env = BaseEnvelope(
+        kind="signal.memory_consolidation.turn_change",
+        correlation_id=correlation_id,
+        source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME),
+        payload=signal.model_dump(mode="json"),
+    )
+    channel = f"{settings.CHANNEL_SIGNALS_PREFIX}:memory_consolidation"
+    await bus.publish(channel, env)
+
+
 async def handle_memory_turn_persisted(
     env: BaseEnvelope,
     *,
@@ -126,8 +172,22 @@ async def handle_memory_turn_persisted(
 ) -> None:
     turn = MemoryTurnPersistedV1.model_validate(env.payload)
     assert str(env.correlation_id) == turn.correlation_id, "correlation_id mismatch"
-    patch_fields = await classify_turn(bus, turn=turn, settings=settings)
+    open_row = await window_store._get_open_window()
+    prior_turns = (
+        await window_store.get_window_turns(open_row["memory_window_id"])
+        if open_row is not None
+        else []
+    )
+    patch_fields = await classify_turn(bus, turn=turn, prior_turns=prior_turns, settings=settings)
     await publish_spark_meta_patch(bus, turn.correlation_id, patch_fields)
+    try:
+        await _maybe_publish_turn_change_signal(
+            bus,
+            correlation_id=turn.correlation_id,
+            appraisal=patch_fields.get("turn_change_appraisal") or {},
+        )
+    except Exception:
+        logger.exception("turn_change_signal_publish_failed corr=%s", turn.correlation_id)
     await window_store.append_turn(turn, scores=patch_fields)
     open_row = await window_store._get_open_window()
     window_turns = (

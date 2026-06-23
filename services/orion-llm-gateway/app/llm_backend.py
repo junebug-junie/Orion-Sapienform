@@ -22,11 +22,6 @@ from .llm_uncertainty import (
     extract_llm_uncertainty_from_openai_response,
 )
 
-from orion.spark.integration import (
-    ingest_chat_and_get_state,
-    build_collapse_mirror_meta,
-)
-
 logger = logging.getLogger("orion-llm-gateway.backend")
 
 
@@ -497,40 +492,6 @@ def _get_raw_user_text(body: ChatBody) -> Optional[str]:
         return None
 
 
-def _derive_mode_tags(verb: str, text: str | None) -> List[str]:
-    verb_l = (verb or "").lower()
-    text_l = (text or "").lower()
-    tags: List[str] = []
-
-    if any(k in verb_l or k in text_l for k in ("summary", "summarize", "tl;dr")):
-        tags.append("mode:summarize")
-    if any(k in verb_l or k in text_l for k in ("analy", "analysis", "inspect", "review")):
-        tags.append("mode:analyze")
-    if any(k in verb_l or k in text_l for k in ("debug", "traceback", "stack", "error")):
-        tags.append("mode:debug")
-    if any(k in verb_l or k in text_l for k in ("plan", "goal", "roadmap", "exec", "step")):
-        tags.append("mode:plan")
-    if any(k in verb_l or k in text_l for k in ("build", "code", "implement", "write")):
-        tags.append("mode:build")
-    if not tags:
-        tags.append("mode:chat")
-    return tags
-
-
-def _spark_ingest_text(*, text: str, agent_id: str, tags: List[str], spark_vector: Optional[List[float]] = None) -> Dict[str, Any]:
-    """
-    Thin wrapper so we can reuse the ingest pathway consistently.
-    """
-    state = ingest_chat_and_get_state(
-        user_message=str(text).strip(),
-        agent_id=agent_id,
-        tags=tags,
-        sentiment=None,
-        spark_vector=spark_vector,
-    )
-    return state
-
-
 def _spark_ingest_for_body(body: ChatBody) -> Dict[str, Any]:
     try:
         messages = _serialize_messages(body.messages or [])
@@ -540,52 +501,27 @@ def _spark_ingest_for_body(body: ChatBody) -> Dict[str, Any]:
         source = getattr(body, "source", "llm-gateway")
         verb = getattr(body, "verb", None) or "unknown"
 
-        # Prefer canonical raw user text if provided (prevents encoding mega-prompts).
         raw_user_text = _get_raw_user_text(body)
         latest_user = raw_user_text
 
-        # Fallback: Find last user message in message list
         if not latest_user:
             for m in reversed(messages):
                 if (m.get("role") or "").lower() == "user":
                     latest_user = m.get("content")
                     break
 
-        # Fallback: last message content
         if not latest_user:
             latest_user = messages[-1].get("content")
 
         if not latest_user:
             return {}
 
-        # Debug: prove exactly what Spark is encoding pre-LLM
-        logger.warning(
-            "[SPARK_DEBUG] phase=pre verb=%s source=%s using_raw=%s latest_user_200=%r",
-            verb,
-            source,
-            bool(raw_user_text),
-            str(latest_user)[:200],
-        )
-
-        tags = ["juniper", "chat", source, f"verb:{verb}", "phase:pre", *(_derive_mode_tags(verb, latest_user))]
-        state = _spark_ingest_text(text=str(latest_user), agent_id=source, tags=tags, spark_vector=None)
-
-        meta = build_collapse_mirror_meta(
-            state["phi_after"],
-            state["surface_encoding"],
-            self_field=state.get("self_field"),
-        )
-        meta.update(
-            {
-                "phi_before": state["phi_before"],
-                "phi_after": state["phi_after"],
-                "latest_user_message": str(latest_user),
-                "trace_verb": verb,
-                "spark_phase": "pre",
-                "spark_used_raw_user_text": bool(raw_user_text),
-            }
-        )
-        return meta
+        return {
+            "latest_user_message": str(latest_user),
+            "trace_verb": verb,
+            "spark_phase": "pre",
+            "spark_used_raw_user_text": bool(raw_user_text),
+        }
     except Exception as e:
         logger.warning(f"[LLM-GW Spark] Ingestion failed: {e}")
         return {}
@@ -596,22 +532,17 @@ def _maybe_publish_spark_introspect(body: ChatBody, spark_meta: Dict, response_t
         if not spark_meta:
             return
 
-        phi_before = spark_meta.get("phi_before", {})
-        phi_after = spark_meta.get("phi_after", {})
-        self_field = spark_meta.get("spark_self_field", {})
+        if not spark_meta.get("latest_user_message"):
+            return
 
-        delta = abs((phi_after.get("valence", 0) - phi_before.get("valence", 0)))
-
-        if delta > 0.05 or self_field.get("uncertainty", 0) > 0.3:
-            # STRICT boundary: publish a SparkCandidateV1 payload (will be wrapped in a BaseEnvelope)
-            payload = {
-                "trace_id": body.trace_id or "gw",
-                "source": getattr(body, "source", "gw"),
-                "prompt": spark_meta.get("latest_user_message") or "",
-                "response": response_text,
-                "spark_meta": spark_meta,
-            }
-            _run_async(_publish_spark_introspect(payload))
+        payload = {
+            "trace_id": body.trace_id or "gw",
+            "source": getattr(body, "source", "gw"),
+            "prompt": spark_meta.get("latest_user_message") or "",
+            "response": response_text,
+            "spark_meta": spark_meta,
+        }
+        _run_async(_publish_spark_introspect(payload))
     except Exception as e:
         logger.error(f"[LLM-GW Spark] Publish failed: {e}")
 
@@ -661,39 +592,12 @@ async def _publish_spark_introspect(payload: Dict[str, Any]) -> None:
 
 
 def _spark_post_ingest_for_reply(body: ChatBody, spark_meta: Dict[str, Any], response_text: str) -> None:
-    """
-    Post-LLM Spark ingest: encode the assistant reply too.
-
-    Why: encoding only the user's input often under-represents semantic change.
-    Assistant responses are frequently the "semantic bulk" (summaries, plans, code).
-
-    This intentionally does NOT replace phi_before/phi_after from the pre-ingest.
-    It writes separate keys so downstream analysis can compare phases cleanly.
-    """
     try:
         if not spark_meta:
             return
         if not response_text:
             return
-
-        source = getattr(body, "source", "llm-gateway")
-        verb = getattr(body, "verb", None) or "unknown"
-
-        logger.warning(
-            "[SPARK_DEBUG] phase=post verb=%s source=%s reply_200=%r",
-            verb,
-            source,
-            str(response_text)[:200],
-        )
-
-        tags = ["juniper", "chat", source, f"verb:{verb}", "assistant_reply", "phase:post", *(_derive_mode_tags(verb, response_text))]
-        post_state = _spark_ingest_text(text=str(response_text), agent_id=source, tags=tags, spark_vector=None)
-
-        # Bound what we store; keep full text out of telemetry by default.
         spark_meta["latest_assistant_message"] = str(response_text)[:2000]
-        spark_meta["phi_post_before"] = post_state.get("phi_before")
-        spark_meta["phi_post_after"] = post_state.get("phi_after")
-        spark_meta["spark_phase_post"] = True
     except Exception as e:
         logger.warning(f"[LLM-GW Spark] Post-ingest failed: {e}")
 

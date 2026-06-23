@@ -250,6 +250,19 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         ],
         notes=[]
     ),
+    "memory_consolidation": OrionOrganRegistryEntry(
+        organ_id="memory_consolidation",
+        organ_class=OrganClass.endogenous,
+        service="orion-memory-consolidation",
+        signal_kinds=["turn_change"],
+        canonical_dimensions=["novelty", "salience", "contradiction", "confidence"],
+        causal_parent_organs=["hub"],
+        bus_channels=[
+            "orion:memory:turn:persisted",
+            "orion:signals:memory_consolidation",
+        ],
+        notes=["Logprob turn change appraisal substrate perturbation."],
+    ),
     "journaler": OrionOrganRegistryEntry(
         organ_id="journaler",
         organ_class=OrganClass.endogenous,

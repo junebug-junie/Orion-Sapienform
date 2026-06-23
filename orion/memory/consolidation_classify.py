@@ -2,6 +2,8 @@ import math
 import re
 from typing import Any
 
+from orion.memory.turn_change_classify import build_turn_change_prompt
+
 _MEMORY_LINE = re.compile(r"^MEMORY:\s*(YES|NO)\s*$", re.I | re.M)
 _BOUNDARY_LINE = re.compile(r"^BOUNDARY:\s*(YES|NO)\s*$", re.I | re.M)
 
@@ -32,20 +34,23 @@ def parse_classify_lines(text: str) -> tuple[str | None, str | None]:
     )
 
 
-def build_classify_prompt(*, prompt: str, response: str, spark_meta: dict[str, Any]) -> str:
+def build_classify_prompt(
+    *,
+    prompt: str,
+    response: str,
+    spark_meta: dict[str, Any],
+    baseline_mode: str = "none",
+    baseline_text: str = "",
+) -> str:
     phase = (
         (spark_meta.get("conversation_phase") or {}).get("phase_change")
         or spark_meta.get("temporal_phase")
         or "unknown"
     )
-    phi_after = spark_meta.get("phi_after") or {}
-    novelty = phi_after.get("novelty", spark_meta.get("spark_phi_novelty", "?"))
-    coherence = phi_after.get("coherence", spark_meta.get("spark_phi_coherence", "?"))
-    return (
-        "Classify this turn. Output exactly two lines:\n"
-        "MEMORY: YES or NO\n"
-        "BOUNDARY: YES or NO\n\n"
-        f"phase={phase} novelty={novelty} coherence={coherence}\n"
-        f"User: {prompt[:300]!r}\n"
-        f"Orion: {response[:300]!r}\n"
+    return build_turn_change_prompt(
+        prompt=prompt,
+        response=response,
+        baseline_mode=baseline_mode,
+        baseline_text=baseline_text,
+        phase=str(phase),
     )

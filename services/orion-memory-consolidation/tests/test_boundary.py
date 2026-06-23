@@ -80,11 +80,79 @@ def test_scores_from_llm_result_uses_logprobs():
             }
         ]
     }
-    mem, bnd = scores_from_llm_result(content, raw)
+    result = scores_from_llm_result(content, raw)
+    mem = result["memory_significance_score"]
+    bnd = result["conversation_boundary_score"]
     assert mem is not None
     assert bnd is not None
     assert mem > 0.5
     assert bnd < 0.5
+
+
+def test_scores_from_llm_result_four_lines():
+    content = "NOVEL: YES\nSHIFT: TOPIC\nMEMORY: YES\nBOUNDARY: NO\n"
+    raw = {
+        "choices": [
+            {
+                "logprobs": {
+                    "content": [
+                        {"token": "NOVEL:", "logprob": -0.1},
+                        {
+                            "token": "YES",
+                            "logprob": -0.2,
+                            "top_logprobs": [
+                                {"token": "YES", "logprob": -0.2},
+                                {"token": "NO", "logprob": -2.0},
+                            ],
+                        },
+                        {"token": "SHIFT:", "logprob": -0.1},
+                        {
+                            "token": "TOPIC",
+                            "logprob": -0.3,
+                            "top_logprobs": [
+                                {"token": "TOPIC", "logprob": -0.3},
+                                {"token": "NONE", "logprob": -2.0},
+                                {"token": "STANCE", "logprob": -2.5},
+                                {"token": "REPAIR", "logprob": -3.0},
+                            ],
+                        },
+                        {"token": "MEMORY:", "logprob": -0.1},
+                        {
+                            "token": "YES",
+                            "logprob": -0.2,
+                            "top_logprobs": [
+                                {"token": "YES", "logprob": -0.2},
+                                {"token": "NO", "logprob": -2.0},
+                            ],
+                        },
+                        {"token": "BOUNDARY:", "logprob": -0.1},
+                        {
+                            "token": "NO",
+                            "logprob": -0.3,
+                            "top_logprobs": [
+                                {"token": "NO", "logprob": -0.3},
+                                {"token": "YES", "logprob": -1.5},
+                            ],
+                        },
+                    ]
+                }
+            }
+        ]
+    }
+    result = scores_from_llm_result(content, raw)
+    assert result["novelty_score"] == pytest.approx(0.83, abs=0.05)
+    assert result["shift_kind"] == "TOPIC"
+    assert result["shift_scores"]["TOPIC"] > result["shift_scores"]["NONE"]
+    assert result["memory_significance_score"] is not None
+    assert result["conversation_boundary_score"] is not None
+
+
+def test_scores_from_llm_result_text_fallback_marks_scoring_source():
+    content = "NOVEL: YES\nSHIFT: TOPIC\nMEMORY: YES\nBOUNDARY: NO\n"
+    raw = {"choices": [{"logprobs": {"content": []}}]}
+    result = scores_from_llm_result(content, raw)
+    assert result["scoring_source"] == "text"
+    assert result["novelty_score"] == pytest.approx(0.85)
 
 
 def test_should_close_by_time_gap_when_phase_missing():

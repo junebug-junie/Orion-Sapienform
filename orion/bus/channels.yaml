@@ -1858,6 +1858,15 @@ channels:
     stability: "experimental"
     since: "2026-05-02"
 
+  - name: "orion:signals:memory_consolidation"
+    kind: "event"
+    schema_id: "OrionSignalV1"
+    message_kind: "signal.memory_consolidation.turn_change"
+    producer_services: ["orion-memory-consolidation"]
+    consumer_services: ["orion-signal-gateway", "orion-hub", "*"]
+    stability: "experimental"
+    since: "2026-06-22"
+
   - name: "orion:substrate:tier_outcomes"
     kind: "event"
     schema_id: "SubstrateTierOutcomesPayloadV1"

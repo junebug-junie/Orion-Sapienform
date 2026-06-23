@@ -51,16 +51,23 @@ async def test_handle_memory_turn_persisted_classify_and_patch(monkeypatch):
 
     bus.publish = _publish
 
-    async def _fake_classify(bus, *, turn, settings):
+    async def _fake_classify(bus, *, turn, prior_turns, settings):
         return {
             "memory_significance_score": 0.8,
             "conversation_boundary_score": 0.2,
             "memory_classify_status": "ok",
+            "turn_change_appraisal": {
+                "turn_change_status": "ok",
+                "novelty_score": 0.3,
+                "baseline_mode": "none",
+            },
         }
 
     monkeypatch.setattr(worker, "classify_turn", _fake_classify)
 
     window_store = AsyncMock()
+    window_store._get_open_window = AsyncMock(return_value=None)
+    window_store.get_window_turns = AsyncMock(return_value=[])
     window_store.append_turn = AsyncMock()
     window_store.close_current_window = AsyncMock()
     suggest_runner = AsyncMock()

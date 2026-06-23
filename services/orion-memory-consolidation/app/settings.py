@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     POSTGRES_URI: str = Field(default="", alias="POSTGRES_URI")
     MEMORY_CONSOLIDATION_ENABLED: bool = Field(default=True, alias="MEMORY_CONSOLIDATION_ENABLED")
     MEMORY_CLASSIFY_TIMEOUT_SEC: float = Field(default=8.0, alias="MEMORY_CLASSIFY_TIMEOUT_SEC")
+    # Margin on novelty_score (0-1) for session-window reappraisal; also minimum confidence for substrate emit.
+    TURN_CHANGE_CONFIDENCE_MARGIN: float = Field(default=0.15, alias="TURN_CHANGE_CONFIDENCE_MARGIN")
+    TURN_CHANGE_SUBSTRATE_THRESHOLD: float = Field(default=0.65, alias="TURN_CHANGE_SUBSTRATE_THRESHOLD")
+    TURN_CHANGE_WINDOW_TURNS: int = Field(default=3, alias="TURN_CHANGE_WINDOW_TURNS")
+    CHANNEL_SIGNALS_PREFIX: str = Field(default="orion:signals", alias="CHANNEL_SIGNALS_PREFIX")
     MEMORY_BOUNDARY_SCORE_THRESHOLD: float = Field(default=0.70, alias="MEMORY_BOUNDARY_SCORE_THRESHOLD")
     MEMORY_BOUNDARY_LLM_ONLY_THRESHOLD: float = Field(default=0.85, alias="MEMORY_BOUNDARY_LLM_ONLY_THRESHOLD")
     MEMORY_BOUNDARY_OVERRIDE_THRESHOLD: float = Field(default=0.92, alias="MEMORY_BOUNDARY_OVERRIDE_THRESHOLD")

@@ -27,13 +27,14 @@ def build_turn_change_signal(
     now = datetime.now(timezone.utc)
     dims = dimensions_for_shift(shift_kind=shift_kind, novelty_score=novelty_score)
     dims["confidence"] = max(0.0, min(1.0, float(confidence)))
+    hub_parent = make_signal_id("hub", correlation_id)
     return OrionSignalV1(
         signal_id=make_signal_id("memory_consolidation", correlation_id),
         organ_id="memory_consolidation",
         organ_class=OrganClass.endogenous,
         signal_kind="turn_change",
         dimensions=dims,
-        causal_parents=[],
+        causal_parents=[hub_parent],
         source_event_id=correlation_id,
         observed_at=now,
         emitted_at=now,

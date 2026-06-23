@@ -19,7 +19,6 @@ from app.boundary import scores_from_llm_result
 
 logger = logging.getLogger(__name__)
 
-_MAX_TURNS_FOR_WINDOW = 3
 _MAX_TURN_FIELD_CHARS = 800
 
 
@@ -30,8 +29,9 @@ def _clip(text: str, *, limit: int) -> str:
     return s[: limit - 3] + "..."
 
 
-def _build_window_transcript(turns: list[dict]) -> str:
-    selected = turns[-_MAX_TURNS_FOR_WINDOW:] if len(turns) > _MAX_TURNS_FOR_WINDOW else turns
+def _build_window_transcript(turns: list[dict], *, max_turns: int | None = None) -> str:
+    cap = max_turns if max_turns is not None else len(turns)
+    selected = turns[-cap:] if len(turns) > cap else turns
     lines = []
     for t in selected:
         sig = t.get("memory_significance_score")
@@ -54,13 +54,17 @@ def _session_window_baseline(prior_turns: list[dict], *, n: int) -> tuple[str, s
     selected = prior_turns[-n:] if len(prior_turns) > n else prior_turns
     if not selected:
         return "none", ""
-    return "session_window", _build_window_transcript(selected)
+    return "session_window", _build_window_transcript(selected, max_turns=n)
 
 
-def _degraded_patch() -> dict:
+def _degraded_patch(
+    *,
+    baseline_mode: str = "none",
+    prior_correlation_id: str | None = None,
+) -> dict:
     appraisal = build_turn_change_appraisal(
-        baseline_mode="none",
-        prior_correlation_id=None,
+        baseline_mode=baseline_mode,
+        prior_correlation_id=prior_correlation_id,
         novelty_score=None,
         shift_kind=None,
         shift_scores=None,
@@ -176,7 +180,7 @@ async def classify_turn(
 
     if scores is None:
         logger.error("memory_classify_degraded corr=%s err=%s", turn.correlation_id, last_error)
-        return _degraded_patch()
+        return _degraded_patch(baseline_mode=baseline_mode, prior_correlation_id=prior_corr)
 
     novelty = scores.get("novelty_score")
     if novel_margin_below_threshold(novelty, margin=settings.TURN_CHANGE_CONFIDENCE_MARGIN):
@@ -185,6 +189,8 @@ async def classify_turn(
             scores["novelty_score"] = retry.get("novelty_score", novelty)
             scores["shift_kind"] = retry.get("shift_kind", scores.get("shift_kind"))
             scores["shift_scores"] = retry.get("shift_scores", scores.get("shift_scores"))
+            if retry.get("confidence") is not None:
+                scores["confidence"] = retry["confidence"]
             baseline_mode = "session_window"
             _, baseline_text = _session_window_baseline(prior_turns, n=settings.TURN_CHANGE_WINDOW_TURNS)
             prior_corr = None

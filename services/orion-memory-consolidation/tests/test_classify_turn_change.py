@@ -165,6 +165,63 @@ async def test_classify_turn_topic_pivot_high_novelty():
 
 
 @pytest.mark.asyncio
+async def test_classify_turn_low_margin_triggers_session_window_reappraisal():
+    bus = AsyncMock()
+    first_content = "NOVEL: YES\nSHIFT: TOPIC\nMEMORY: NO\nBOUNDARY: NO\n"
+    retry_content = "NOVEL: NO\nSHIFT: NONE\nMEMORY: NO\nBOUNDARY: NO\n"
+    call_count = 0
+    bus.rpc_request.return_value = {"data": b"x"}
+
+    def _decode_side_effect(_):
+        nonlocal call_count
+        call_count += 1
+        content = first_content if call_count == 1 else retry_content
+        class _R:
+            ok = True
+            envelope = type(
+                "E",
+                (),
+                {
+                    "payload": _llm_raw(
+                        content,
+                        novel_lp=-2.0 if call_count == 1 else -0.2,
+                        shift_token="TOPIC" if call_count == 1 else "NONE",
+                    )
+                },
+            )()
+
+        return _R()
+
+    bus.codec.decode = Mock(side_effect=_decode_side_effect)
+    prior = [{"correlation_id": "prev", "prompt": "cats", "response": "cute"}]
+    turn = MemoryTurnPersistedV1(
+        correlation_id=str(uuid4()), prompt="maybe pivot", response="ok", spark_meta={}
+    )
+    from app.settings import settings as app_settings
+
+    patch = await classify_mod.classify_turn(bus, turn=turn, prior_turns=prior, settings=app_settings)
+    appr = patch["turn_change_appraisal"]
+    assert bus.rpc_request.await_count == 2
+    assert appr["baseline_mode"] == "session_window"
+    assert appr["novelty_score"] < 0.5
+
+
+@pytest.mark.asyncio
+async def test_classify_turn_llm_failure_preserves_baseline_context():
+    bus = AsyncMock()
+    bus.rpc_request.side_effect = RuntimeError("llm down")
+    prior = [{"correlation_id": "prev", "prompt": "cats", "response": "cute"}]
+    turn = MemoryTurnPersistedV1(correlation_id=str(uuid4()), prompt="hi", response="hello", spark_meta={})
+    from app.settings import settings as app_settings
+
+    patch = await classify_mod.classify_turn(bus, turn=turn, prior_turns=prior, settings=app_settings)
+    appr = patch["turn_change_appraisal"]
+    assert appr["turn_change_status"] == "degraded"
+    assert appr["baseline_mode"] == "prior_turn"
+    assert appr["prior_correlation_id"] == "prev"
+
+
+@pytest.mark.asyncio
 async def test_worker_emits_substrate_signal_above_threshold(monkeypatch):
     worker = _load("app/worker.py", "memory_consolidation_worker")
     published = []

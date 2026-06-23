@@ -35,6 +35,7 @@ class SelfStatePolicyV1(BaseModel):
 
     unresolved_pressure_threshold: float = 0.60
     dominant_channel_threshold: float = 0.25
+    trajectory_threshold: float = 0.03
 
 
 def load_self_state_policy(path: str | Path) -> SelfStatePolicyV1:

@@ -22,11 +22,6 @@ from .llm_uncertainty import (
     extract_llm_uncertainty_from_openai_response,
 )
 
-from orion.spark.integration import (
-    ingest_chat_and_get_state,
-    build_collapse_mirror_meta,
-)
-
 logger = logging.getLogger("orion-llm-gateway.backend")
 
 
@@ -495,40 +490,6 @@ def _get_raw_user_text(body: ChatBody) -> Optional[str]:
         return raw or None
     except Exception:
         return None
-
-
-def _derive_mode_tags(verb: str, text: str | None) -> List[str]:
-    verb_l = (verb or "").lower()
-    text_l = (text or "").lower()
-    tags: List[str] = []
-
-    if any(k in verb_l or k in text_l for k in ("summary", "summarize", "tl;dr")):
-        tags.append("mode:summarize")
-    if any(k in verb_l or k in text_l for k in ("analy", "analysis", "inspect", "review")):
-        tags.append("mode:analyze")
-    if any(k in verb_l or k in text_l for k in ("debug", "traceback", "stack", "error")):
-        tags.append("mode:debug")
-    if any(k in verb_l or k in text_l for k in ("plan", "goal", "roadmap", "exec", "step")):
-        tags.append("mode:plan")
-    if any(k in verb_l or k in text_l for k in ("build", "code", "implement", "write")):
-        tags.append("mode:build")
-    if not tags:
-        tags.append("mode:chat")
-    return tags
-
-
-def _spark_ingest_text(*, text: str, agent_id: str, tags: List[str], spark_vector: Optional[List[float]] = None) -> Dict[str, Any]:
-    """
-    Thin wrapper so we can reuse the ingest pathway consistently.
-    """
-    state = ingest_chat_and_get_state(
-        user_message=str(text).strip(),
-        agent_id=agent_id,
-        tags=tags,
-        sentiment=None,
-        spark_vector=spark_vector,
-    )
-    return state
 
 
 def _spark_ingest_for_body(body: ChatBody) -> Dict[str, Any]:

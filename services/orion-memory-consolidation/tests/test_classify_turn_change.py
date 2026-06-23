@@ -308,6 +308,46 @@ def test_session_window_baseline_respects_turn_cap():
     assert "two" not in text
 
 
+def test_prior_turn_baseline_clips_long_fields():
+    long_prompt = "x" * 1000
+    prior = [{"correlation_id": "prev", "prompt": long_prompt, "response": "ok"}]
+    _, text, corr = classify_mod._prior_turn_baseline(prior)
+    assert corr == "prev"
+    assert len(text) < len(long_prompt)
+    assert "..." in text
+
+
+@pytest.mark.asyncio
+async def test_classify_turn_reappraisal_failure_keeps_primary_scores():
+    bus = AsyncMock()
+    first_content = "NOVEL: YES\nSHIFT: TOPIC\nMEMORY: NO\nBOUNDARY: NO\n"
+    call_count = 0
+    bus.rpc_request.return_value = {"data": b"x"}
+
+    def _decode_side_effect(_):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            payload = _llm_raw(first_content, novel_lp=-2.0, shift_token="TOPIC")
+            class _R:
+                ok = True
+                envelope = type("E", (), {"payload": payload})()
+            return _R()
+        raise RuntimeError("reappraisal down")
+
+    bus.codec.decode = Mock(side_effect=_decode_side_effect)
+    prior = [{"correlation_id": "prev", "prompt": "cats", "response": "cute"}]
+    turn = MemoryTurnPersistedV1(correlation_id=str(uuid4()), prompt="pivot", response="ok", spark_meta={})
+    from app.settings import settings as app_settings
+
+    patch = await classify_mod.classify_turn(bus, turn=turn, prior_turns=prior, settings=app_settings)
+    appr = patch["turn_change_appraisal"]
+    assert bus.rpc_request.await_count == 2
+    assert appr["baseline_mode"] == "prior_turn"
+    assert appr["novelty_score"] == pytest.approx(0.5, abs=0.05)
+    assert "turn_change_appraisal" in patch
+
+
 @pytest.mark.asyncio
 async def test_worker_emits_substrate_signal_above_threshold(monkeypatch):
     worker = _load("app/worker.py", "memory_consolidation_worker")

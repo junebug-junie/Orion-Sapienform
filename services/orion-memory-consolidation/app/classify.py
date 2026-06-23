@@ -46,7 +46,9 @@ def _prior_turn_baseline(prior_turns: list[dict]) -> tuple[str, str, str | None]
     if not prior_turns:
         return "none", "", None
     last = prior_turns[-1]
-    text = f"User: {last.get('prompt', '')}\nOrion: {last.get('response', '')}\n"
+    prompt = _clip(str(last.get("prompt") or ""), limit=_MAX_TURN_FIELD_CHARS)
+    response = _clip(str(last.get("response") or ""), limit=_MAX_TURN_FIELD_CHARS)
+    text = f"User: {prompt}\nOrion: {response}\n"
     return "prior_turn", text, str(last.get("correlation_id") or "")
 
 
@@ -184,18 +186,29 @@ async def classify_turn(
 
     novelty = scores.get("novelty_score")
     if novel_margin_below_threshold(novelty, margin=settings.TURN_CHANGE_CONFIDENCE_MARGIN):
-        retry = await reappraise_with_session_window(bus, turn=turn, prior_turns=prior_turns, settings=settings)
-        if retry:
-            scores["novelty_score"] = retry.get("novelty_score", novelty)
-            scores["shift_kind"] = retry.get("shift_kind", scores.get("shift_kind"))
-            scores["shift_scores"] = retry.get("shift_scores", scores.get("shift_scores"))
-            if retry.get("confidence") is not None:
-                scores["confidence"] = retry["confidence"]
-            if retry.get("scoring_source"):
-                scores["scoring_source"] = retry["scoring_source"]
-            baseline_mode = "session_window"
-            _, baseline_text = _session_window_baseline(prior_turns, n=settings.TURN_CHANGE_WINDOW_TURNS)
-            prior_corr = None
+        try:
+            retry = await reappraise_with_session_window(
+                bus, turn=turn, prior_turns=prior_turns, settings=settings
+            )
+            if retry:
+                scores["novelty_score"] = retry.get("novelty_score", novelty)
+                scores["shift_kind"] = retry.get("shift_kind", scores.get("shift_kind"))
+                scores["shift_scores"] = retry.get("shift_scores", scores.get("shift_scores"))
+                if retry.get("confidence") is not None:
+                    scores["confidence"] = retry["confidence"]
+                if retry.get("scoring_source"):
+                    scores["scoring_source"] = retry["scoring_source"]
+                baseline_mode = "session_window"
+                _, baseline_text = _session_window_baseline(
+                    prior_turns, n=settings.TURN_CHANGE_WINDOW_TURNS
+                )
+                prior_corr = None
+        except Exception as exc:
+            logger.warning(
+                "turn_change_reappraisal_failed corr=%s err=%s",
+                turn.correlation_id,
+                exc,
+            )
 
     status = (
         "ok"

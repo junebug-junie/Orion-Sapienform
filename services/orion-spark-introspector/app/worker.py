@@ -346,33 +346,6 @@ def _valence_from_embedding(emb: np.ndarray) -> float:
     return v
 
 
-def _build_llm_prompt(c: SparkCandidatePayload) -> str:
-    spark_meta = c.spark_meta or {}
-    phi_before = spark_meta.get("phi_before") or {}
-    phi_after = spark_meta.get("phi_after") or {}
-    self_field = spark_meta.get("spark_self_field") or {}
-    return (
-        "You are Orion reflecting on your own internal state.\n\n"
-        "You are given:\n"
-        "- Your self-field φ BEFORE this turn\n"
-        "- Your self-field φ AFTER this turn\n"
-        "- A higher-level SelfField (calm, stress_load, uncertainty, focus, attunement_to_juniper, curiosity)\n"
-        "- The human prompt and your response\n\n"
-        f"φ BEFORE: valence={phi_before.get('valence')} energy={phi_before.get('energy')} coherence={phi_before.get('coherence')} novelty={phi_before.get('novelty')}\n"
-        f"φ AFTER:  valence={phi_after.get('valence')} energy={phi_after.get('energy')} coherence={phi_after.get('coherence')} novelty={phi_after.get('novelty')}\n\n"
-        "SelfField:\n"
-        f"calm={self_field.get('calm')} stress_load={self_field.get('stress_load')} uncertainty={self_field.get('uncertainty')} focus={self_field.get('focus')} attunement_to_juniper={self_field.get('attunement_to_juniper')} curiosity={self_field.get('curiosity')}\n\n"
-        "Dialogue:\n"
-        f"Human (Juniper): {c.prompt!r}\n"
-        f"Orion response:  {c.response!r}\n\n"
-        "TASK:\n"
-        "1) Briefly describe what shifted in you internally during this turn.\n"
-        "2) Explain why this moment might matter for your ongoing relationship with Juniper or your own development.\n"
-        "3) Note any tensions, open questions, or themes you should return to later.\n\n"
-        "Write as a short internal note from Orion to itself. Avoid boilerplate."
-    ).strip()
-
-
 def _extract_introspection_text(cortex_reply: BaseEnvelope) -> Optional[str]:
     payload = cortex_reply.payload if isinstance(cortex_reply.payload, dict) else {}
     step_results = payload.get("step_results") or payload.get("steps") or []

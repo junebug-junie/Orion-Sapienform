@@ -155,6 +155,84 @@ def test_scores_from_llm_result_text_fallback_marks_scoring_source():
     assert result["novelty_score"] == pytest.approx(0.85)
 
 
+def test_scores_from_llm_result_bpe_split_labels():
+    """llama.cpp BPE splits NOVEL: into NO+VEL+: — must not score NO on the novel line."""
+    content = "NOVEL: YES  \nSHIFT: TOPIC  \nMEMORY: YES  \nBOUNDARY: YES"
+    raw = {
+        "choices": [
+            {
+                "logprobs": {
+                    "content": [
+                        {
+                            "token": "NO",
+                            "logprob": 0.0,
+                            "top_logprobs": [
+                                {"token": "NO", "logprob": 0.0},
+                                {"token": " NO", "logprob": -26.272},
+                                {"token": "YES", "logprob": -29.234},
+                            ],
+                        },
+                        {"token": "VEL", "logprob": -0.1},
+                        {"token": ":", "logprob": -0.05},
+                        {
+                            "token": " YES",
+                            "logprob": -0.0,
+                            "top_logprobs": [
+                                {"token": " YES", "logprob": -0.0},
+                                {"token": " NO", "logprob": -13.941},
+                                {"token": "YES", "logprob": -24.127},
+                            ],
+                        },
+                        {"token": "  \n", "logprob": -0.1},
+                        {"token": "SHIFT", "logprob": -0.1},
+                        {"token": ":", "logprob": -0.05},
+                        {
+                            "token": " TOP",
+                            "logprob": -0.2,
+                            "top_logprobs": [
+                                {"token": " TOP", "logprob": -0.2},
+                                {"token": " NONE", "logprob": -2.0},
+                                {"token": " ST", "logprob": -2.5},
+                            ],
+                        },
+                        {"token": "IC", "logprob": -0.1},
+                        {"token": "  \n", "logprob": -0.1},
+                        {"token": "MEMORY", "logprob": -0.1},
+                        {"token": ":", "logprob": -0.05},
+                        {
+                            "token": " YES",
+                            "logprob": -0.077,
+                            "top_logprobs": [
+                                {"token": " YES", "logprob": -0.077},
+                                {"token": " NO", "logprob": -2.604},
+                            ],
+                        },
+                        {"token": "  \n", "logprob": -0.1},
+                        {"token": "BOUND", "logprob": -0.1},
+                        {"token": "ARY", "logprob": -0.1},
+                        {"token": ":", "logprob": -0.05},
+                        {
+                            "token": " YES",
+                            "logprob": -0.007,
+                            "top_logprobs": [
+                                {"token": " YES", "logprob": -0.007},
+                                {"token": " NO", "logprob": -4.901},
+                            ],
+                        },
+                    ]
+                }
+            }
+        ]
+    }
+    result = scores_from_llm_result(content, raw)
+    assert result["scoring_source"] == "logprobs"
+    assert result["novelty_score"] == pytest.approx(1.0, abs=0.05)
+    assert result["shift_kind"] == "TOPIC"
+    assert result["shift_scores"]["TOPIC"] > 0
+    assert result["memory_significance_score"] is not None
+    assert result["conversation_boundary_score"] is not None
+
+
 def test_should_close_by_time_gap_when_phase_missing():
     turns = [
         {"memory_classify_ts": "2026-06-16T10:00:00+00:00"},

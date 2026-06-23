@@ -74,7 +74,8 @@ def build_turn_change_prompt(
 ) -> str:
     p, r = _clip_pair(prompt, response)
     return (
-        "Classify this turn vs the baseline. Output exactly four lines:\n"
+        "Classify this turn vs the baseline. Output exactly four lines.\n"
+        "NOVEL means the user introduced new facts, goals, or a meaningful topic change.\n"
         "NOVEL: YES or NO\n"
         "SHIFT: NONE or TOPIC or STANCE or REPAIR\n"
         "MEMORY: YES or NO\n"

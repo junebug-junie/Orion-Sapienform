@@ -260,9 +260,7 @@ def _handle_cognition_trace(g: Graph, trace: CognitionTracePayload) -> Tuple[str
     g.add((run_uri, ORION.timestamp, Literal(trace.timestamp, datatype=XSD.double)))
     g.add((run_uri, ORION.sourceService, Literal(trace.source_service, datatype=XSD.string)))
 
-    if trace.final_text:
-        # Truncate if excessively large, but generally keep it
-        g.add((run_uri, ORION.producedFinalText, Literal(trace.final_text)))
+    # final_text omitted: full text lives in Postgres; IRI is the join key
 
     # Steps
     prev_step_uri = None
@@ -284,11 +282,7 @@ def _handle_cognition_trace(g: Graph, trace: CognitionTracePayload) -> Tuple[str
             g.add((step_uri, ORION.prevStep, prev_step_uri))
         prev_step_uri = step_uri
 
-        # Evidence / Thoughts (if any in result/artifacts)
-        if step.result:
-            thought = step.result.get("thought") or step.result.get("reasoning")
-            if thought:
-                g.add((step_uri, ORION.hasThought, Literal(thought)))
+        # thought/reasoning text omitted: full text lives in Postgres; IRI is the join key
 
         # Used Services/Tools
         # We don't have explicit 'tools used' in StepExecutionResult other than artifacts?
@@ -310,9 +304,7 @@ def _handle_social_room_turn(g: Graph, payload: dict[str, Any]) -> Tuple[str, st
     g.add((turn_uri, ORION.artifactId, Literal(turn.turn_id, datatype=XSD.string)))
     g.add((turn_uri, ORION.sessionId, Literal(session_val, datatype=XSD.string)))
     g.add((turn_uri, ORION.profile, Literal(turn.profile, datatype=XSD.string)))
-    g.add((turn_uri, ORION.promptText, Literal(turn.prompt)))
-    g.add((turn_uri, ORION.responseText, Literal(turn.response)))
-    g.add((turn_uri, ORION.textContent, Literal(turn.text or f"User: {turn.prompt}\nOrion: {turn.response}")))
+    # promptText/responseText/textContent omitted: full text lives in Postgres; IRI is the join key
     if turn.trace_verb:
         g.add((turn_uri, ORION.traceVerb, Literal(turn.trace_verb, datatype=XSD.string)))
     if turn.recall_profile:
@@ -353,7 +345,7 @@ def _handle_metacognitive_trace(g: Graph, trace: MetacognitiveTraceV1) -> Tuple[
     g.add((trace_uri, ORION.generatedByModel, Literal(trace.model, datatype=XSD.string)))
     g.add((trace_uri, ORION.traceStage, Literal(trace.trace_stage, datatype=XSD.string)))
     g.add((trace_uri, ORION.traceRole, Literal(trace.trace_role, datatype=XSD.string)))
-    g.add((trace_uri, ORION.traceText, Literal(trace.content)))
+    # traceText omitted: full text lives in Postgres; IRI is the join key
     g.add((trace_uri, ORION.correlationId, Literal(trace.correlation_id, datatype=XSD.string)))
     if trace.session_id:
         g.add((trace_uri, ORION.sessionId, Literal(trace.session_id, datatype=XSD.string)))
@@ -378,12 +370,7 @@ def _handle_chat_turn(g: Graph, data: dict) -> Tuple[str, str]:
 
     g.add((turn_uri, ORION.sessionId, Literal(session_id, datatype=XSD.string)))
 
-    prompt = data.get("prompt")
-    if prompt:
-        g.add((turn_uri, ORION.prompt, Literal(prompt)))
-    response = data.get("response")
-    if response:
-        g.add((turn_uri, ORION.response, Literal(response)))
+    # prompt/response text omitted: full text lives in Postgres; IRI is the join key
 
     timestamp = data.get("timestamp")
     if timestamp:
@@ -450,9 +437,7 @@ def _handle_chat_message(g: Graph, data: dict) -> Tuple[str, str]:
 
     g.add((message_uri, ORION.sessionId, Literal(session_id, datatype=XSD.string)))
 
-    content = data.get("content")
-    if content:
-        g.add((message_uri, ORION.content, Literal(content)))
+    # content text omitted: full text lives in Postgres; IRI is the join key
 
     role = data.get("role")
     if role:

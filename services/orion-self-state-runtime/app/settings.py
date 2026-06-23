@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     )
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
+    bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
+    bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
+    channel_substrate_self_state: str = Field(
+        "orion:substrate:self_state",
+        alias="CHANNEL_SUBSTRATE_SELF_STATE",
+    )
+
 
 _settings: Settings | None = None
 

@@ -6,9 +6,12 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 
+from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.codec import OrionCodec
+
 from app.settings import get_settings
 from app.store import SelfStateRuntimeStore
-from app.worker import SelfStateRuntimeWorker
+from app.worker import SelfStateRuntimeWorker, set_publisher_bus
 
 _settings = get_settings()
 logging.basicConfig(level=getattr(logging, _settings.log_level.upper(), logging.INFO))
@@ -19,11 +22,15 @@ store = SelfStateRuntimeStore(_settings.postgres_uri)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    bus = OrionBusAsync(_settings.bus_url, enabled=_settings.bus_enabled, codec=OrionCodec())
+    await bus.connect()
+    set_publisher_bus(bus)
     await worker.start()
     try:
         yield
     finally:
         await worker.stop()
+        await bus.close()
 
 
 app = FastAPI(title="orion-self-state-runtime", lifespan=lifespan)

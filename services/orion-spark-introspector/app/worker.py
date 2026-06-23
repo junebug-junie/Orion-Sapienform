@@ -17,6 +17,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, Envelope, ServiceRef
 from orion.core.bus.codec import OrionCodec
 from orion.core.bus.work_queue import RedisStreamWorkQueue
 from orion.schemas.platform import CoreEventV1
+from orion.schemas.self_state import SelfStateV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.spark import SparkTelemetryPayload, SparkStateSnapshotV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
@@ -70,6 +71,31 @@ _VALENCE_POS: Optional[np.ndarray] = None
 _VALENCE_NEG: Optional[np.ndarray] = None
 _VALENCE_INIT_TASK: Optional[asyncio.Task] = None
 _VALENCE_ANCHORS_EXPIRES_AT: float = 0.0
+
+_LATEST_SELF_STATE: Optional[SelfStateV1] = None
+
+
+def set_latest_self_state(ss: SelfStateV1) -> None:
+    global _LATEST_SELF_STATE
+    _LATEST_SELF_STATE = ss
+
+
+def _phi_from_self_state(ss: SelfStateV1) -> Dict[str, float]:
+    d = ss.dimensions
+    return {
+        "coherence": d["coherence"].score if "coherence" in d else 0.5,
+        "energy":    1.0 - d["resource_pressure"].score if "resource_pressure" in d else 0.5,
+        "novelty":   d["uncertainty"].score if "uncertainty" in d else 0.5,
+        "valence":   d["agency_readiness"].score * 2.0 - 1.0 if "agency_readiness" in d else 0.0,
+    }
+
+
+def _get_phi_stats() -> Dict[str, float]:
+    """Return phi dimensions from substrate self-state when available, tissue otherwise."""
+    ss = _LATEST_SELF_STATE
+    if ss is not None:
+        return _phi_from_self_state(ss)
+    return {k: float(v) for k, v in (TISSUE.phi() or {}).items()}
 
 
 def set_publisher_bus(bus: OrionBusAsync):
@@ -817,7 +843,7 @@ async def _update_tissue_from_candidate(c: SparkCandidatePayload) -> None:
     )
     
     # Snapshot & Broadcast to UI
-    phi_stats = {k: float(v) for k, v in (TISSUE.phi() or {}).items()}
+    phi_stats = _get_phi_stats()
     phi_stats = _apply_signal_deltas(phi_stats)
     
     # Update defaults with actual tissue state
@@ -915,7 +941,7 @@ async def handle_trace(env: BaseEnvelope) -> None:
         iso_ts = _to_iso_utc(ts_epoch)
 
         if _is_heartbeat_trace(trace):
-            phi_stats = {k: float(v) for k, v in (TISSUE.phi() or {}).items()}
+            phi_stats = _get_phi_stats()
             phi_stats = _apply_signal_deltas(phi_stats)
             valence = float(phi_stats.get("valence", 0.5))
             arousal = float(phi_stats.get("energy", 0.5))
@@ -1045,7 +1071,7 @@ async def handle_trace(env: BaseEnvelope) -> None:
 
         novelty = float(TISSUE.calculate_novelty(stimulus, channel_key=channel_key))
         TISSUE.propagate(stimulus, steps=2, learning_rate=0.1, channel_key=channel_key, embedding=embedding_vec, distress=0.0)
-        phi_stats = {k: float(v) for k, v in (TISSUE.phi() or {}).items()}
+        phi_stats = _get_phi_stats()
         phi_stats = _apply_signal_deltas(phi_stats)
         valence = float(phi_stats.get("valence", valence))
         arousal = float(phi_stats.get("energy", arousal))
@@ -1250,7 +1276,7 @@ async def handle_semantic_upsert(env: BaseEnvelope) -> None:
         distress=0.0,
     )
 
-    phi_stats = {k: float(v) for k, v in (TISSUE.phi() or {}).items()}
+    phi_stats = _get_phi_stats()
     phi_stats = _apply_signal_deltas(phi_stats)
     tissue_valence = float(phi_stats.get("valence", 0.0))
     arousal_display = max(0.0, min(1.0, 0.15 + (1.2 * novelty)))
@@ -1859,3 +1885,19 @@ async def handle_signal(env: BaseEnvelope) -> None:
         logger.warning("Ignoring malformed spark.signal payload")
         return
     _register_signal(sig)
+
+
+async def handle_self_state(env: BaseEnvelope) -> None:
+    payload = env.payload if isinstance(env.payload, dict) else {}
+    try:
+        ss = SelfStateV1.model_validate(payload)
+    except ValidationError:
+        logger.warning("Ignoring malformed substrate.self_state payload")
+        return
+    set_latest_self_state(ss)
+    logger.debug(
+        "self_state_updated self_state_id=%s condition=%s intensity=%.3f",
+        ss.self_state_id,
+        ss.overall_condition,
+        ss.overall_intensity,
+    )

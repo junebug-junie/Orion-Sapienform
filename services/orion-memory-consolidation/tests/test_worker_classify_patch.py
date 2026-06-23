@@ -90,7 +90,30 @@ async def test_handle_memory_turn_persisted_classify_and_patch(monkeypatch):
     assert len(published) == 1
     patch_env = published[0][1]
     assert patch_env.kind == "chat.history.spark_meta.patch.v1"
+    payload = patch_env.payload
+    assert payload["spark_meta"]["novelty"] == pytest.approx(0.3)
+    assert payload["spark_meta"]["turn_effect"]["turn"]["novelty"] == pytest.approx(0.3)
     window_store.append_turn.assert_awaited_once()
+
+
+def test_enrich_spark_meta_patch_mirrors_novelty_and_turn_effect():
+    enriched = worker.enrich_spark_meta_patch(
+        {
+            "turn_change_appraisal": {
+                "turn_change_status": "ok",
+                "novelty_score": 0.72,
+                "shift_kind": "TOPIC",
+                "confidence": 0.8,
+            }
+        }
+    )
+    assert enriched["novelty"] == pytest.approx(0.72)
+    assert enriched["turn_effect"]["turn"]["novelty"] == pytest.approx(0.72)
+
+
+def test_enrich_spark_meta_patch_skips_degraded():
+    raw = {"turn_change_appraisal": {"turn_change_status": "degraded"}}
+    assert worker.enrich_spark_meta_patch(raw) == raw
 
 
 @pytest.mark.asyncio

@@ -28,6 +28,23 @@ _MAX_TURNS_FOR_SUGGEST = 3
 _MAX_TURN_FIELD_CHARS = 800
 
 
+def enrich_spark_meta_patch(patch_fields: dict[str, Any]) -> dict[str, Any]:
+    """Mirror appraisal novelty to top-level spark_meta fields hub/SQL viewers expect."""
+    out = dict(patch_fields or {})
+    appraisal = out.get("turn_change_appraisal")
+    if not isinstance(appraisal, dict) or appraisal.get("turn_change_status") != "ok":
+        return out
+    novelty = appraisal.get("novelty_score")
+    if isinstance(novelty, (int, float)):
+        out["novelty"] = float(novelty)
+    from orion.schemas.telemetry.turn_effect import turn_effect_from_appraisal
+
+    turn_effect = turn_effect_from_appraisal({"turn_change_appraisal": appraisal})
+    if turn_effect:
+        out["turn_effect"] = turn_effect
+    return out
+
+
 def _clip(text: str, *, limit: int) -> str:
     s = (text or "").strip()
     if len(s) <= limit:
@@ -52,6 +69,7 @@ async def publish_spark_meta_patch(
     correlation_id: str,
     patch_fields: dict[str, Any],
 ) -> None:
+    patch_fields = enrich_spark_meta_patch(patch_fields)
     svc_ref = ServiceRef(
         name=settings.SERVICE_NAME,
         version=settings.SERVICE_VERSION,

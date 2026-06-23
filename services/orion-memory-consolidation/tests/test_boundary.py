@@ -48,8 +48,8 @@ class _Settings:
         ("long_gap", 0.50, False),
         ("unknown", 0.90, True),
         ("unknown", 0.80, False),
-        ("same_breath", 0.95, True),
-        ("short_pause", 0.92, True),
+        ("same_breath", 0.95, False),
+        ("short_pause", 0.92, False),
         ("resumed_thread", 0.91, False),
     ],
 )

@@ -29,8 +29,8 @@ def should_close_window(turn: MemoryTurnPersistedV1, scores: dict, settings) -> 
         return True
     if phase == "unknown" and bnd >= settings.MEMORY_BOUNDARY_LLM_ONLY_THRESHOLD:
         return True
-    if phase in {"same_breath", "short_pause", "resumed_thread"} and bnd >= settings.MEMORY_BOUNDARY_OVERRIDE_THRESHOLD:
-        return True
+    # Active chat phases: quick-lane BOUNDARY:YES is too noisy to close windows.
+    # Rely on long_gap/stale_thread/unknown signals and time-gap fallback instead.
     return False
 
 

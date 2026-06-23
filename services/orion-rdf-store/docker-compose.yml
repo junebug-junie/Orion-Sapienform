@@ -33,3 +33,9 @@ services:
       timeout: 15s
       retries: 3
       start_period: 90s
+    deploy:
+      resources:
+        limits:
+          memory: ${FUSEKI_MEM_LIMIT:-40g}
+        reservations:
+          memory: ${FUSEKI_MEM_RESERVATION:-8g}

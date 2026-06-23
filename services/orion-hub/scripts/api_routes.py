@@ -153,7 +153,6 @@ from .substrate_execution_dispatch_routes import router as substrate_execution_d
 from .substrate_feedback_routes import router as substrate_feedback_router
 from .substrate_consolidation_routes import router as substrate_consolidation_router
 from .substrate_lattice_routes import router as substrate_lattice_router
-
 router.include_router(grammar_atlas_router)
 router.include_router(substrate_biometrics_router)
 router.include_router(substrate_field_router)

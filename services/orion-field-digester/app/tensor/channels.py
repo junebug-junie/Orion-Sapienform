@@ -20,6 +20,8 @@ NODE_CHANNELS = [
     "delivery_confidence",
     "bus_health",
     "observer_failure_pressure",
+    "field_coherence_warning",
+    "prediction_error",
 ]
 CAPABILITY_CHANNELS = [
     "pressure",

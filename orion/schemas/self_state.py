@@ -73,3 +73,4 @@ class SelfStateV1(BaseModel):
 
     dimension_trajectory: dict[str, float] = Field(default_factory=dict)
     trajectory_condition: Literal["improving", "degrading", "stable", "unknown"] = "unknown"
+    prediction_error_scores: dict[str, float] = Field(default_factory=dict)

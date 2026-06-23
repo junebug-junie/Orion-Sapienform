@@ -177,4 +177,18 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                     label=delta.delta_id,
                 )
             )
+
+    if delta.target_kind == "prediction_signal":
+        hints = dict((delta.after or {}).get("pressure_hints") or {})
+        node_key = _node_key(str((delta.after or {}).get("node_id") or delta.target_id))
+        if "prediction_error" in hints:
+            out.append(
+                Perturbation(
+                    node_id=node_key,
+                    channel="prediction_error",
+                    intensity=max(0.0, min(1.0, float(hints["prediction_error"]))),
+                    label=delta.delta_id,
+                    mode="replace",
+                )
+            )
     return out

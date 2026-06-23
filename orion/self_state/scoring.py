@@ -22,6 +22,8 @@ PRESSURE_CHANNELS = frozenset({
     "repair_pressure",
     "conversation_load",
     "egress_confidence_deficit",
+    "prediction_error",
+    "field_coherence_warning",
 })
 
 

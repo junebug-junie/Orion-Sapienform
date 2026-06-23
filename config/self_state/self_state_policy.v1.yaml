@@ -52,6 +52,8 @@ channel_dimension_map:
   repair_pressure: social_pressure
   conversation_load: social_pressure
   egress_confidence_deficit: introspection_pressure
+  prediction_error: uncertainty
+  field_coherence_warning: coherence
 
 stabilizing_channels:
   availability: 0.50
@@ -77,6 +79,8 @@ pressure_channels:
   - repair_pressure
   - conversation_load
   - egress_confidence_deficit
+  - prediction_error
+  - field_coherence_warning
 
 context_channels:
   - recent_perturbation_count

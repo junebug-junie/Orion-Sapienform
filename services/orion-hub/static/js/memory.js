@@ -795,8 +795,15 @@
         try {
           flushDraftEditorToJson();
           const raw = draftTa.value.trim();
-          const body = JSON.parse(raw);
-          const data = await apiFetch("/api/memory/graph/validate", { method: "POST", body: JSON.stringify(body) });
+          const draftBody = JSON.parse(raw);
+          const validatePayload = { draft: draftBody };
+          if (activeConsolidationDraftId) {
+            validatePayload.consolidation_draft_id = activeConsolidationDraftId;
+          }
+          const data = await apiFetch("/api/memory/graph/validate", {
+            method: "POST",
+            body: JSON.stringify(validatePayload),
+          });
           const out = { ...data };
           if (Array.isArray(data.warnings) && data.warnings.length) {
             out.topical_warnings = data.warnings;

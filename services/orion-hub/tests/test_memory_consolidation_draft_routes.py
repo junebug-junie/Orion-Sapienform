@@ -87,7 +87,17 @@ def test_list_consolidation_drafts(client: TestClient) -> None:
     assert "draft" not in body["items"][0]
 
 
-def test_get_consolidation_draft(client: TestClient) -> None:
+def test_get_consolidation_draft(client: TestClient, monkeypatch) -> None:
+    async def _hydrate(_pool, draft, turn_correlation_ids):
+        return {
+            **draft,
+            "utterance_text_by_id": {"turn-id-1": "User: hi\nOrion: there"},
+        }
+
+    monkeypatch.setattr(
+        "scripts.memory_consolidation_draft_routes.hydrate_consolidation_draft_dict",
+        _hydrate,
+    )
     resp = client.get(
         "/api/memory/consolidation/drafts/draft-2",
         headers={"X-Orion-Session-Id": "test-session"},
@@ -96,6 +106,7 @@ def test_get_consolidation_draft(client: TestClient) -> None:
     body = resp.json()
     assert body["draft_id"] == "draft-2"
     assert isinstance(body.get("draft"), dict)
+    assert body["draft"]["utterance_text_by_id"]["turn-id-1"] == "User: hi\nOrion: there"
 
 
 def test_set_consolidation_draft_status(client: TestClient) -> None:

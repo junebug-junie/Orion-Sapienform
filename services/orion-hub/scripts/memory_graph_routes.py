@@ -9,6 +9,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import ValidationError
 
 from orion.memory_graph.approve import approve_memory_graph_draft, preview_validate_only
+from orion.memory_graph.consolidation_draft_hydrate import hydrate_consolidation_draft_dict
 from orion.memory_graph.dto import CardProjectionDefaultsV1, SuggestDraftV1
 from orion.memory_graph.utterance_text import ensure_draft_utterance_text
 
@@ -52,6 +53,32 @@ def _parse_draft_body(body: Dict[str, Any]) -> tuple[SuggestDraftV1, Dict[str, s
     return draft, supplemental
 
 
+async def _consolidation_supplemental_utterance_text(pool, consolidation_draft_id: str) -> Dict[str, str]:
+    from orion.memory_graph.draft_repository import get_consolidation_draft
+
+    row = await get_consolidation_draft(pool, consolidation_draft_id)
+    if not row:
+        return {}
+    draft = row.get("draft") if isinstance(row.get("draft"), dict) else {}
+    hydrated = await hydrate_consolidation_draft_dict(pool, draft, row.get("turn_correlation_ids") or [])
+    text_map = hydrated.get("utterance_text_by_id") if isinstance(hydrated.get("utterance_text_by_id"), dict) else {}
+    return {str(k): str(v) for k, v in text_map.items() if str(k).strip() and str(v).strip()}
+
+
+async def _parse_draft_body_with_consolidation(
+    pool,
+    body: Dict[str, Any],
+) -> tuple[SuggestDraftV1, Dict[str, str]]:
+    draft, supplemental = _parse_draft_body(body)
+    consolidation_draft_id = str(body.get("consolidation_draft_id") or "").strip() or None
+    if consolidation_draft_id:
+        supplemental = {
+            **await _consolidation_supplemental_utterance_text(pool, consolidation_draft_id),
+            **supplemental,
+        }
+    return draft, supplemental
+
+
 def _pool(request: Request):
     pool = getattr(request.app.state, "memory_pg_pool", None)
     if pool is None:
@@ -68,8 +95,9 @@ async def memory_graph_validate(
     from scripts.main import bus
 
     await ensure_session(x_orion_session_id, bus)
+    pool = _pool(request)
     try:
-        draft, supplemental = _parse_draft_body(body if isinstance(body, dict) else {})
+        draft, supplemental = await _parse_draft_body_with_consolidation(pool, body if isinstance(body, dict) else {})
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=e.errors()) from e
     ok, violations, preview = preview_validate_only(
@@ -128,8 +156,10 @@ async def memory_graph_approve(
     target = resolve_memory_graph_rdf_target()
     if target is None:
         raise HTTPException(status_code=503, detail="graph_backend_unconfigured")
+    pool = _pool(request)
+    consolidation_draft_id = str(body.get("consolidation_draft_id") or "").strip() or None
     try:
-        draft, supplemental = _parse_draft_body(body if isinstance(body, dict) else {})
+        draft, supplemental = await _parse_draft_body_with_consolidation(pool, body if isinstance(body, dict) else {})
         draft = ensure_draft_utterance_text(draft, supplemental=supplemental)
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=e.errors()) from e
@@ -144,8 +174,6 @@ async def memory_graph_approve(
     if not named:
         raise HTTPException(status_code=400, detail="named_graph_iri_required")
 
-    pool = _pool(request)
-    consolidation_draft_id = str(body.get("consolidation_draft_id") or "").strip() or None
     card_defaults = _parse_card_projection_defaults(body if isinstance(body, dict) else {})
     try:
         result = await approve_memory_graph_draft(

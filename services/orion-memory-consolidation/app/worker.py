@@ -93,8 +93,21 @@ class ConsolidationSuggestRunner:
             )
             draft_dict = extract_suggest_draft_dict_from_cortex_payload(raw)
             draft_dict = sanitize_suggest_draft_dict(draft_dict)
-            draft = SuggestDraftV1.model_validate(draft_dict)
             corr_ids = window.get("turn_correlation_ids") or []
+            turns = window.get("turns") or []
+            from orion.memory_graph.consolidation_draft_hydrate import hydrate_draft_utterance_text
+
+            turns_by_correlation = {
+                str(t.get("correlation_id")): t
+                for t in turns
+                if isinstance(t, dict) and str(t.get("correlation_id") or "").strip()
+            }
+            draft_dict = hydrate_draft_utterance_text(
+                draft_dict,
+                turn_correlation_ids=corr_ids,
+                turns_by_correlation=turns_by_correlation,
+            )
+            draft = SuggestDraftV1.model_validate(draft_dict)
             draft_id = await insert_pending_draft(
                 self._pool,
                 memory_window_id=window_id,

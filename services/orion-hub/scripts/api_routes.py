@@ -61,7 +61,6 @@ from orion.autonomy.goal_actions import (
     GoalActionResult,
     complete_goal,
     dismiss_goal,
-    outcome_ref_from_result,
     promote_goal,
 )
 from .social_room import is_social_room_payload, social_room_client_meta
@@ -154,8 +153,6 @@ from .substrate_execution_dispatch_routes import router as substrate_execution_d
 from .substrate_feedback_routes import router as substrate_feedback_router
 from .substrate_consolidation_routes import router as substrate_consolidation_router
 from .substrate_lattice_routes import router as substrate_lattice_router
-from .substrate_autonomy_outcome_routes import router as substrate_autonomy_outcome_router
-
 router.include_router(grammar_atlas_router)
 router.include_router(substrate_biometrics_router)
 router.include_router(substrate_field_router)
@@ -167,7 +164,6 @@ router.include_router(substrate_execution_dispatch_router)
 router.include_router(substrate_feedback_router)
 router.include_router(substrate_consolidation_router)
 router.include_router(substrate_lattice_router)
-router.include_router(substrate_autonomy_outcome_router)
 
 
 def _hub_uses_host_network_mode() -> bool:
@@ -6409,11 +6405,6 @@ def _execute_autonomy_goal_action(
             raise HTTPException(status_code=404, detail="unsupported_goal_action")
     except GoalActionError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
-    try:
-        from scripts.substrate_autonomy_outcome_routes import save_action_outcome
-        save_action_outcome(outcome_ref_from_result(result))
-    except Exception:
-        pass
     return _goal_action_payload(result)
 
 

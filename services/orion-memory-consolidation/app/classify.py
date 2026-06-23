@@ -88,9 +88,9 @@ async def _llm_classify(bus: OrionBusAsync, *, prompt: str, settings) -> dict:
         route="quick",
         options={
             "return_logprobs": True,
-            "logprobs_top_k": 4,
+            "logprobs_top_k": 8,
             "logprob_summary_only": False,
-            "max_tokens": 16,
+            "max_tokens": 24,
             "llm_route": "quick",
         },
     )
@@ -184,9 +184,29 @@ async def classify_turn(
         logger.error("memory_classify_degraded corr=%s err=%s", turn.correlation_id, last_error)
         return _degraded_patch(baseline_mode=baseline_mode, prior_correlation_id=prior_corr)
 
+    logger.info(
+        "turn_change_classify corr=%s novelty=%s shift=%s confidence=%s source=%s mem=%s bnd=%s",
+        turn.correlation_id,
+        scores.get("novelty_score"),
+        scores.get("shift_kind"),
+        scores.get("confidence"),
+        scores.get("scoring_source"),
+        scores.get("memory_significance_score"),
+        scores.get("conversation_boundary_score"),
+    )
+
     novelty = scores.get("novelty_score")
+    shift_kind = scores.get("shift_kind")
+    reappraise_low_margin = novel_margin_below_threshold(
+        novelty, margin=settings.TURN_CHANGE_CONFIDENCE_MARGIN
+    )
+    reappraise_shift_mismatch = (
+        shift_kind in ("TOPIC", "STANCE", "REPAIR")
+        and isinstance(novelty, (int, float))
+        and float(novelty) < 0.35
+    )
     if (
-        novel_margin_below_threshold(novelty, margin=settings.TURN_CHANGE_CONFIDENCE_MARGIN)
+        (reappraise_low_margin or reappraise_shift_mismatch)
         and len(prior_turns) >= 2
     ):
         try:

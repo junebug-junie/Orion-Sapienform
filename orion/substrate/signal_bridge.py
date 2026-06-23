@@ -8,6 +8,7 @@ seam.
 Supported inputs (MVP):
     (organ_id="cortex_exec", signal_kind="cognition_run")
     (organ_id="cortex_exec", signal_kind="cognition_step")
+    (organ_id="memory_consolidation", signal_kind="turn_change")
 
 These are the signals produced by orion.signals.adapters.cognition_trace.
 """
@@ -29,6 +30,7 @@ SUPPORTED_SIGNAL_KINDS: frozenset[tuple[str, str]] = frozenset(
     {
         ("cortex_exec", "cognition_run"),
         ("cortex_exec", "cognition_step"),
+        ("memory_consolidation", "turn_change"),
     }
 )
 

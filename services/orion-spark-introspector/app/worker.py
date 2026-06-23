@@ -25,6 +25,7 @@ from orion.schemas.telemetry.turn_effect import (
     evaluate_turn_effect_alert,
     should_emit_turn_effect_alert,
     summarize_turn_effect,
+    turn_effect_from_appraisal,
     turn_effect_from_spark_meta,
 )
 from orion.schemas.vector.schemas import EmbeddingGenerateV1, EmbeddingResultV1, VectorUpsertV1
@@ -454,7 +455,9 @@ def _log_turn_effect_alert_suppressed_dedupe(
 
 
 def _append_turn_effect_metadata(meta: Dict[str, Any], spark_meta: Dict[str, Any] | None) -> None:
-    turn_effect = turn_effect_from_spark_meta(spark_meta or {})
+    turn_effect = turn_effect_from_appraisal(spark_meta or {})
+    if not turn_effect:
+        turn_effect = turn_effect_from_spark_meta(spark_meta or {})
     if not turn_effect and isinstance(spark_meta, dict):
         precomputed = spark_meta.get("turn_effect")
         if isinstance(precomputed, dict) and precomputed:
@@ -539,10 +542,24 @@ def _candidate_quality(spark_meta: Dict[str, Any]) -> int:
         "spark_event_id",
         "phi_post_before",
         "phi_post_after",
+        "turn_change_appraisal",
         "turn_effect",
         "turn_effect_evidence",
     )
     return 1 if any(k in spark_meta for k in rich_keys) else 0
+
+
+def _novelty_from_spark_meta(spark_meta: Dict[str, Any]) -> Optional[float]:
+    if not isinstance(spark_meta, dict):
+        return None
+    appraisal = spark_meta.get("turn_change_appraisal")
+    if isinstance(appraisal, dict) and appraisal.get("turn_change_status") == "ok":
+        score = appraisal.get("novelty_score")
+        if isinstance(score, (int, float)):
+            return float(score)
+    if isinstance(appraisal, dict) and appraisal.get("turn_change_status") == "degraded":
+        return None
+    return None
 
 
 def _extract_phi_novelty_from_meta(spark_meta: Dict[str, Any]) -> tuple[Optional[float], Optional[float]]:
@@ -609,7 +626,8 @@ async def _emit_candidate_telemetry(env: BaseEnvelope, candidate: SparkCandidate
     if trace_id in _CANDIDATE_TELEM_EMITTED:
         return
 
-    phi, novelty = _extract_phi_novelty_from_meta(spark_meta)
+    phi, _phi_novelty = _extract_phi_novelty_from_meta(spark_meta)
+    novelty = _novelty_from_spark_meta(spark_meta)
 
     # trace_mode / verb
     trace_mode = spark_meta.get("mode") or spark_meta.get("trace_mode") or "brain"
@@ -828,28 +846,14 @@ async def _update_tissue_from_candidate(c: SparkCandidatePayload) -> None:
         },
     )
 
-    # Propagate to Tissue
-    stimulus = MAPPER.surface_to_stimulus(encoding, magnitude=1.0)
-    
-    # Calculate novelty & propagate
-    novelty = float(TISSUE.calculate_novelty(stimulus, channel_key="chat"))
-    TISSUE.propagate(
-        stimulus,
-        steps=2,
-        learning_rate=0.1,
-        channel_key="chat",
-        embedding=None,
-        distress=0.0,
-    )
-    
-    # Snapshot & Broadcast to UI
+    # Snapshot tissue state without propagating (novelty from appraisal)
     phi_stats = _get_phi_stats()
     phi_stats = _apply_signal_deltas(phi_stats)
-    
-    # Update defaults with actual tissue state
+
     valence = float(phi_stats.get("valence", valence))
     arousal = float(phi_stats.get("energy", arousal))
-    
+    novelty = _novelty_from_spark_meta(c.spark_meta or {})
+
     TISSUE.snapshot()
     
     seq = _next_seq()
@@ -1069,8 +1073,6 @@ async def handle_trace(env: BaseEnvelope) -> None:
         if embedding_vec is None:
             embedding_vec = feature_vec
 
-        novelty = float(TISSUE.calculate_novelty(stimulus, channel_key=channel_key))
-        TISSUE.propagate(stimulus, steps=2, learning_rate=0.1, channel_key=channel_key, embedding=embedding_vec, distress=0.0)
         phi_stats = _get_phi_stats()
         phi_stats = _apply_signal_deltas(phi_stats)
         valence = float(phi_stats.get("valence", valence))
@@ -1088,6 +1090,7 @@ async def handle_trace(env: BaseEnvelope) -> None:
         trace_meta = trace.metadata if isinstance(trace.metadata, dict) else {}
         spark_meta = trace_meta.get("spark_meta") if isinstance(trace_meta.get("spark_meta"), dict) else trace_meta
         _append_turn_effect_metadata(metadata, spark_meta)
+        novelty = _novelty_from_spark_meta(spark_meta or {})
 
         snap = SparkStateSnapshotV1(
             source_service=settings.service_name,
@@ -1127,7 +1130,7 @@ async def handle_trace(env: BaseEnvelope) -> None:
         telem = SparkTelemetryPayload(
             correlation_id=corr_id,
             phi=float(phi_stats.get("coherence", 0.0)),
-            novelty=float(novelty),
+            novelty=novelty,
             trace_mode=trace.mode,
             trace_verb=trace.verb,
             stimulus_summary=snap.metadata.get("stimulus_summary"),

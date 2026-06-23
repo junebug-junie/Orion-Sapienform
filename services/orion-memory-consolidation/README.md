@@ -8,6 +8,18 @@ Subscribes to `orion:memory:turn:persisted` (sql-writer post-commit outbox), cla
 |-----------|---------|
 | In | `orion:memory:turn:persisted` |
 | Out | `orion:chat:history:spark_meta:patch` |
+| Out (threshold) | `orion:signals:memory_consolidation` (`signal.memory_consolidation.turn_change`) |
+
+## Turn change appraisal
+
+Each persisted turn (after the first in a window) gets a logprob-calibrated `turn_change_appraisal` patch on `spark_meta`: novelty score, shift kind, confidence, and baseline mode (`prior_turn` or `session_window` fallback). High-confidence novel turns also emit `OrionSignalV1` on `orion:signals:memory_consolidation`.
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `TURN_CHANGE_CONFIDENCE_MARGIN` | `0.15` | Re-appraise vs session window when novelty margin is below this |
+| `TURN_CHANGE_SUBSTRATE_THRESHOLD` | `0.65` | Minimum novelty to emit substrate signal |
+| `TURN_CHANGE_WINDOW_TURNS` | `3` | Prior turns in session-window baseline |
+| `CHANNEL_SIGNALS_PREFIX` | `orion:signals` | Bus prefix for organ signal publish |
 
 ## Bring-up
 

@@ -130,6 +130,37 @@ class ConsolidationSuggestRunner:
             await self._window_store.mark_failed(window_id)
 
 
+async def _maybe_publish_turn_change_signal(
+    bus: OrionBusAsync,
+    *,
+    correlation_id: str,
+    appraisal: dict[str, Any],
+) -> None:
+    from orion.memory.turn_change_signal import build_turn_change_signal
+
+    if appraisal.get("turn_change_status") != "ok":
+        return
+    novelty = appraisal.get("novelty_score")
+    if not isinstance(novelty, (int, float)) or float(novelty) < settings.TURN_CHANGE_SUBSTRATE_THRESHOLD:
+        return
+    shift_kind = str(appraisal.get("shift_kind") or "NONE")
+    confidence = float(appraisal.get("confidence") or 0.0)
+    signal = build_turn_change_signal(
+        correlation_id=correlation_id,
+        shift_kind=shift_kind,
+        novelty_score=float(novelty),
+        confidence=confidence,
+    )
+    env = BaseEnvelope(
+        kind="signal.memory_consolidation.turn_change",
+        correlation_id=correlation_id,
+        source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME),
+        payload=signal.model_dump(mode="json"),
+    )
+    channel = f"{settings.CHANNEL_SIGNALS_PREFIX}:memory_consolidation"
+    await bus.publish(channel, env)
+
+
 async def handle_memory_turn_persisted(
     env: BaseEnvelope,
     *,
@@ -139,8 +170,19 @@ async def handle_memory_turn_persisted(
 ) -> None:
     turn = MemoryTurnPersistedV1.model_validate(env.payload)
     assert str(env.correlation_id) == turn.correlation_id, "correlation_id mismatch"
-    patch_fields = await classify_turn(bus, turn=turn, settings=settings)
+    open_row = await window_store._get_open_window()
+    prior_turns = (
+        await window_store.get_window_turns(open_row["memory_window_id"])
+        if open_row is not None
+        else []
+    )
+    patch_fields = await classify_turn(bus, turn=turn, prior_turns=prior_turns, settings=settings)
     await publish_spark_meta_patch(bus, turn.correlation_id, patch_fields)
+    await _maybe_publish_turn_change_signal(
+        bus,
+        correlation_id=turn.correlation_id,
+        appraisal=patch_fields.get("turn_change_appraisal") or {},
+    )
     await window_store.append_turn(turn, scores=patch_fields)
     open_row = await window_store._get_open_window()
     window_turns = (

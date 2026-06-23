@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     # Spark signals (normalized distress/equilibrium)
     channel_spark_signal: str = Field("orion:spark:signal", alias="CHANNEL_SPARK_SIGNAL")
 
+    # Substrate self-state (replace tissue phi when available)
+    channel_substrate_self_state: str = Field(
+        "orion:substrate:self_state",
+        alias="CHANNEL_SUBSTRATE_SELF_STATE",
+    )
+
     # Core events (legacy bus events)
     channel_core_events: str = Field("orion:core:events", alias="CHANNEL_CORE_EVENTS")
 

@@ -28,6 +28,7 @@ from .worker import (
     _PRODUCER_BOOT_ID,
     close_spark_stream_wq,
     handle_candidate,
+    handle_self_state,
     handle_semantic_upsert,
     handle_signal,
     handle_trace,
@@ -72,6 +73,8 @@ async def lifespan(app: FastAPI):
             await handle_semantic_upsert(env)
         elif env.kind == "spark.signal.v1":
             await handle_signal(env)
+        elif env.kind == "substrate.self_state.v1":
+            await handle_self_state(env)
         else:
             await handle_candidate(env)
 
@@ -80,6 +83,7 @@ async def lifespan(app: FastAPI):
         settings.channel_cognition_trace_pub,
         settings.channel_spark_signal,
         settings.channel_vector_semantic_upsert,
+        settings.channel_substrate_self_state,
     ]
 
     svc = Hunter(

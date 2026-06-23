@@ -5,3 +5,5 @@ pydantic-settings==2.6.1
 sqlalchemy==2.0.36
 psycopg2-binary==2.9.10
 PyYAML==6.0.2
+redis==5.0.4
+loguru>=0.7

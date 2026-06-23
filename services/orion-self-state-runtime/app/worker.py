@@ -3,7 +3,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from typing import Optional
+from uuid import uuid4
 
+from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.resilience import publish_with_reconnect
+from orion.schemas.self_state import SelfStateV1
 from orion.self_state.builder import build_self_state
 from orion.self_state.policy import load_self_state_policy
 
@@ -11,6 +17,17 @@ from app.settings import get_settings
 from app.store import SelfStateRuntimeStore
 
 logger = logging.getLogger("orion.self_state.runtime")
+
+_bus: Optional[OrionBusAsync] = None
+
+
+def set_publisher_bus(bus: OrionBusAsync) -> None:
+    global _bus
+    _bus = bus
+
+
+def _svc_ref(settings) -> ServiceRef:
+    return ServiceRef(name=settings.service_name, version=settings.service_version)
 
 
 class SelfStateRuntimeWorker:
@@ -29,7 +46,9 @@ class SelfStateRuntimeWorker:
     async def _poll_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                await asyncio.to_thread(self._tick)
+                state = await asyncio.to_thread(self._tick)
+                if state is not None and _bus is not None and _bus.enabled:
+                    await self._publish_self_state(state)
             except Exception:
                 logger.exception("self_state_runtime_tick_failed")
             try:
@@ -42,16 +61,35 @@ class SelfStateRuntimeWorker:
             except asyncio.CancelledError:
                 break
 
-    def _tick(self) -> None:
+    async def _publish_self_state(self, state: SelfStateV1) -> None:
+        envelope = BaseEnvelope(
+            kind="substrate.self_state.v1",
+            source=_svc_ref(self._settings),
+            correlation_id=uuid4(),
+            payload=state.model_dump(mode="json"),
+        )
+        try:
+            await publish_with_reconnect(
+                _bus,
+                self._settings.channel_substrate_self_state,
+                envelope,
+                log_label="self_state_publish",
+            )
+        except Exception:
+            logger.exception(
+                "self_state_publish_failed self_state_id=%s", state.self_state_id
+            )
+
+    def _tick(self) -> Optional[SelfStateV1]:
         if not self._settings.enable_self_state_runtime:
-            return
+            return None
 
         attention = self._store.load_latest_attention_frame()
         if attention is None:
-            return
+            return None
 
         if self._store.load_self_state_for_attention_frame(attention.frame_id) is not None:
-            return
+            return None
 
         field = self._store.load_field_for_tick(attention.source_field_tick_id)
         if field is None:
@@ -60,7 +98,7 @@ class SelfStateRuntimeWorker:
                 attention.source_field_tick_id,
                 attention.frame_id,
             )
-            return
+            return None
 
         previous = self._store.load_latest_self_state()
         state = build_self_state(
@@ -78,3 +116,4 @@ class SelfStateRuntimeWorker:
             state.overall_condition,
             state.overall_intensity,
         )
+        return state

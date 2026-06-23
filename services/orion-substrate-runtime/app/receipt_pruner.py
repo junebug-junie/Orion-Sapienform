@@ -114,6 +114,8 @@ def run_safe_prune(engine: Engine, *, batch_size: int = 10000) -> int:
             break
     if total_deleted:
         logger.warning("substrate_receipt_safe_prune deleted=%s", total_deleted)
+        with engine.begin() as conn:
+            conn.execute(text("VACUUM substrate_reduction_receipts"))
     return total_deleted
 
 

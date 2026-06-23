@@ -7,10 +7,22 @@ services:
     image: postgres:15
     container_name: ${PROJECT}-sql-db
     shm_size: '1gb'
-    # Cap RSS so runaway autovacuum/TOAST work cannot take the whole host (346Gi).
-    mem_limit: ${POSTGRES_MEM_LIMIT:-48g}
-    memswap_limit: ${POSTGRES_MEM_LIMIT:-48g}
+    # Cap RSS so runaway autovacuum/TOAST work cannot freeze the host (346Gi).
+    # 16g is enough for normal ops; 48g let TOAST vacuum thrash disk for minutes per OOM cycle.
+    mem_limit: ${POSTGRES_MEM_LIMIT:-16g}
+    memswap_limit: ${POSTGRES_MEM_LIMIT:-16g}
     restart: unless-stopped
+    # Bound vacuum memory so a single worker cannot pin the cgroup before the cap trips.
+    command:
+      - postgres
+      - -c
+      - autovacuum_work_mem=256MB
+      - -c
+      - maintenance_work_mem=512MB
+      - -c
+      - max_parallel_maintenance_workers=1
+      - -c
+      - vacuum_cost_delay=2ms
     environment:
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}

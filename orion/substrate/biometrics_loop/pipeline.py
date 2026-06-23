@@ -70,6 +70,8 @@ def process_biometrics_grammar_events(
 
     node_bio = load_node_bio()
     pressure = load_pressure()
+    node_bio_dirty = False
+    pressure_dirty = False
 
     for event in events:
         stats["events"] += 1
@@ -81,7 +83,7 @@ def process_biometrics_grammar_events(
                 catalog=catalog,
                 stale_after_sec=stale_after_sec,
             )
-            save_node_bio(node_bio)
+            node_bio_dirty = True
             save_receipt(bio_receipt)
             stats["receipts"] += 1
 
@@ -118,7 +120,7 @@ def process_biometrics_grammar_events(
             emission_id=emission.emission_id,
             now=clock,
         )
-        save_pressure(pressure)
+        pressure_dirty = True
         save_receipt(pressure_receipt)
         stats["receipts"] += 1
 
@@ -131,5 +133,11 @@ def process_biometrics_grammar_events(
             if accepted:
                 publish_accepted(accepted)
                 stats["published"] += len(accepted)
+
+    # Flush projections once per batch instead of once per event to avoid hot-row TOAST bloat.
+    if node_bio_dirty:
+        save_node_bio(node_bio)
+    if pressure_dirty:
+        save_pressure(pressure)
 
     return stats

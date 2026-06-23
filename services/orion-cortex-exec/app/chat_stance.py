@@ -15,7 +15,7 @@ from orion.autonomy.graph_gate import (
     log_autonomy_graph_backend_decision,
     resolve_autonomy_graph_read_plan,
 )
-from orion.autonomy.models import AutonomyEvidenceRefV1
+from orion.autonomy.models import ActionOutcomeRefV1, AutonomyEvidenceRefV1
 from orion.autonomy.reducer import AutonomyReducerInputV1, reduce_autonomy_state
 from orion.autonomy.summary import summarize_autonomy_lookup, summarize_autonomy_state
 from orion.autonomy.repository import (
@@ -1868,6 +1868,25 @@ def _build_autonomy_reducer_evidence(ctx: Dict[str, Any], autonomy: Dict[str, An
     return evidence
 
 
+def _load_recent_action_outcomes() -> list[ActionOutcomeRefV1]:
+    try:
+        from app.settings import get_settings
+        hub_url = (get_settings().orion_hub_url or "").rstrip("/")
+        if not hub_url:
+            return []
+        import requests as _requests
+        resp = _requests.get(
+            f"{hub_url}/api/substrate/autonomy/outcomes/recent",
+            params={"limit": 10},
+            timeout=2.0,
+        )
+        if resp.status_code != 200:
+            return []
+        return [ActionOutcomeRefV1.model_validate(o) for o in resp.json()]
+    except Exception:
+        return []
+
+
 def _run_autonomy_reducer(ctx: Dict[str, Any], autonomy: Dict[str, Any]):
     evidence = _build_autonomy_reducer_evidence(ctx, autonomy)
     state_obj = autonomy.get("state")
@@ -1878,7 +1897,7 @@ def _run_autonomy_reducer(ctx: Dict[str, Any], autonomy: Dict[str, Any]):
             subject=subject,
             previous_state=state_obj,
             evidence=evidence,
-            action_outcomes=[],
+            action_outcomes=_load_recent_action_outcomes(),
         )
     )
 

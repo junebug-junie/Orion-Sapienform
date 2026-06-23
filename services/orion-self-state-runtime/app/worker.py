@@ -10,9 +10,11 @@ from uuid import uuid4
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.resilience import publish_with_reconnect
+from orion.identity.snapshot import build_identity_snapshot
 from orion.schemas.self_state import SelfStateV1
 from orion.self_state.builder import build_self_state
 from orion.self_state.policy import load_self_state_policy
+from orion.self_state.prediction import build_next_cycle_prediction, compute_prediction_errors
 
 from app.settings import get_settings
 from app.store import SelfStateRuntimeStore
@@ -20,6 +22,7 @@ from app.store import SelfStateRuntimeStore
 logger = logging.getLogger("orion.self_state.runtime")
 
 _bus: Optional[OrionBusAsync] = None
+_IDENTITY_SNAPSHOT_EVERY_N = 10
 
 
 def set_publisher_bus(bus: OrionBusAsync) -> None:
@@ -37,6 +40,7 @@ class SelfStateRuntimeWorker:
         self._store = SelfStateRuntimeStore(self._settings.postgres_uri)
         self._policy = load_self_state_policy(Path(self._settings.self_state_policy_path))
         self._stop = asyncio.Event()
+        self._tick_count = 0
 
     async def start(self) -> None:
         asyncio.create_task(self._poll_loop(), name="self-state-runtime-poll")
@@ -113,6 +117,9 @@ class SelfStateRuntimeWorker:
                     datetime.now(timezone.utc) - prev_ts
                 ).total_seconds() > self._settings.self_state_max_previous_age_sec:
                     previous = None
+
+        prev_prediction = self._store.load_latest_self_state_prediction()
+
         state = build_self_state(
             field=field,
             attention=attention,
@@ -120,7 +127,14 @@ class SelfStateRuntimeWorker:
             previous_self_state=previous,
             enable_transport_influence=self._settings.enable_transport_self_state_influence,
         )
+
+        if prev_prediction is not None:
+            state.prediction_error_scores = compute_prediction_errors(state, prev_prediction)
+
         self._store.save_self_state(state)
+
+        next_prediction = build_next_cycle_prediction(state)
+        self._store.save_self_state_prediction(next_prediction)
         logger.info(
             "self_state_saved self_state_id=%s frame_id=%s condition=%s intensity=%.3f",
             state.self_state_id,
@@ -128,4 +142,31 @@ class SelfStateRuntimeWorker:
             state.overall_condition,
             state.overall_intensity,
         )
+
+        self._tick_count += 1
+        if self._tick_count % _IDENTITY_SNAPSHOT_EVERY_N == 0:
+            self._maybe_emit_identity_snapshot(state)
+
         return state
+
+    def _maybe_emit_identity_snapshot(self, state) -> None:  # type: ignore[type-arg]
+        try:
+            ranked = sorted(state.dimensions.items(), key=lambda kv: kv[1].score, reverse=True)
+            dominant_drive = ranked[0][0] if ranked else "unknown"
+            active_drives = [dim_id for dim_id, _ in ranked[:3]]
+            key_unknowns = [dim_id for dim_id, dim in ranked if dim.score < 0.2][:5]
+            snapshot = build_identity_snapshot(
+                self_state=state,
+                dominant_drive=dominant_drive,
+                active_drives=active_drives,
+                key_unknowns=key_unknowns,
+            )
+            self._store.save_identity_snapshot(snapshot)
+            logger.info(
+                "identity_snapshot_saved snapshot_id=%s condition=%s drive=%s",
+                snapshot.snapshot_id,
+                snapshot.self_state_condition,
+                snapshot.dominant_drive,
+            )
+        except Exception:
+            logger.exception("identity_snapshot_emit_failed")

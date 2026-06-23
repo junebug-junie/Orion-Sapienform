@@ -5,6 +5,8 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+from orion.field_coherence import check_field_coherence
+
 from app.graph.lattice import load_lattice
 from app.ingest.state_deltas import Perturbation, delta_to_perturbations
 from app.settings import get_settings
@@ -88,6 +90,9 @@ class FieldDigesterWorker:
             decay_rate=self._settings.biometrics_field_decay_rate,
             diffusion_rate=self._settings.biometrics_field_diffusion_rate,
         )
+
+        for node_id, suspicion in check_field_coherence(state).items():
+            state.node_vectors.setdefault(node_id, {})["field_coherence_warning"] = suspicion
 
         last = fetched[-1]
         self._store.commit_digest_tick(

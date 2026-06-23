@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     orion_bus_enforce_catalog: bool = Field(False, alias="ORION_BUS_ENFORCE_CATALOG")
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
 
+    # Hub URL for reading action outcomes (closes the goal action → autonomy feedback loop)
+    orion_hub_url: str | None = Field(None, alias="ORION_HUB_URL")
+
     # Intake channel (hub or orch -> exec)
     channel_exec_request: str = Field("orion:cortex:exec:request", alias="CHANNEL_EXEC_REQUEST")
     exec_lane: str = Field("legacy", alias="EXEC_LANE")

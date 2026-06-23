@@ -34,6 +34,10 @@ from orion.substrate.transport_loop.constants import (
     TRANSPORT_BUS_PROJECTION_ID,
     TRANSPORT_GRAMMAR_CURSOR_NAME,
 )
+from orion.substrate.prediction_error import (
+    execution_prediction_error,
+    transport_prediction_error,
+)
 from orion.substrate.transport_loop.pipeline import (
     empty_transport_projection,
     process_transport_grammar_events,
@@ -58,6 +62,40 @@ from .settings import Settings, get_settings
 from .store import BiometricsSubstrateStore
 
 logger = logging.getLogger("orion.substrate.runtime")
+
+
+def _prediction_error_receipt(
+    *,
+    reducer_key: str,
+    node_id: str,
+    prediction_error: float,
+    now: datetime,
+) -> Any:
+    from orion.schemas.reduction_receipt import ReductionReceiptV1
+    from orion.schemas.state_delta import StateDeltaV1
+    import uuid
+
+    delta_id = f"prediction_error:{reducer_key}:{now.isoformat()}"
+    receipt_id = f"receipt:prediction_error:{reducer_key}:{uuid.uuid4().hex[:8]}"
+    return ReductionReceiptV1(
+        receipt_id=receipt_id,
+        state_deltas=[
+            StateDeltaV1(
+                delta_id=delta_id,
+                target_projection=f"substrate.{reducer_key}.projection",
+                target_kind="prediction_signal",
+                target_id=node_id,
+                operation="update",
+                after={
+                    "node_id": node_id,
+                    "pressure_hints": {"prediction_error": round(prediction_error, 4)},
+                },
+                caused_by_event_ids=[],
+                reducer_id=f"substrate.{reducer_key}",
+            )
+        ],
+        created_at=now,
+    )
 
 
 @dataclass(frozen=True)
@@ -500,6 +538,8 @@ class BiometricsSubstrateWorker:
             loaded = self._store.load_execution_trajectory(EXECUTION_TRAJECTORY_PROJECTION_ID)
             return loaded or empty_execution_projection(now=now)
 
+        prev_projection = load_projection()
+
         def process_batch(batch: list[GrammarEventV1]) -> None:
             process_execution_grammar_events(
                 events=batch,
@@ -509,11 +549,26 @@ class BiometricsSubstrateWorker:
                 now=now,
             )
 
-        return self._process_events_with_poison_isolation(
+        last_id = self._process_events_with_poison_isolation(
             spec=spec,
             events=events,
             process_batch=process_batch,
         )
+
+        if last_id is not None:
+            curr_projection = load_projection()
+            error = execution_prediction_error(prev_projection, curr_projection)
+            if error > 0.0:
+                self._store.save_receipt(
+                    _prediction_error_receipt(
+                        reducer_key="execution_trajectory",
+                        node_id="node:substrate.execution",
+                        prediction_error=error,
+                        now=now,
+                    )
+                )
+
+        return last_id
 
     def _chat_tick(self) -> str | None:
         spec = REDUCER_SPECS[3]
@@ -565,6 +620,8 @@ class BiometricsSubstrateWorker:
             loaded = self._store.load_transport_bus_projection(TRANSPORT_BUS_PROJECTION_ID)
             return loaded or empty_transport_projection(now=now)
 
+        prev_projection = load_projection()
+
         def process_batch(batch: list[GrammarEventV1]) -> None:
             process_transport_grammar_events(
                 events=batch,
@@ -575,8 +632,23 @@ class BiometricsSubstrateWorker:
                 stream_depth_critical=self._settings.bus_stream_depth_critical,
             )
 
-        return self._process_events_with_poison_isolation(
+        last_id = self._process_events_with_poison_isolation(
             spec=spec,
             events=events,
             process_batch=process_batch,
         )
+
+        if last_id is not None:
+            curr_projection = load_projection()
+            error = transport_prediction_error(prev_projection, curr_projection)
+            if error > 0.0:
+                self._store.save_receipt(
+                    _prediction_error_receipt(
+                        reducer_key="transport_bus",
+                        node_id="node:substrate.transport",
+                        prediction_error=error,
+                        now=now,
+                    )
+                )
+
+        return last_id

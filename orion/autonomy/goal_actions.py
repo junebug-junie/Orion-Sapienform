@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
-from orion.autonomy.models import AutonomyGoalHeadlineV1
+from orion.autonomy.models import ActionOutcomeRefV1, AutonomyGoalHeadlineV1
 from orion.autonomy.repository import AUTONOMY_GOALS_GRAPH, _escape_sparql, _literal
 from orion.core.schemas.reasoning import ClaimV1, ReasoningProvenanceV1
 from orion.core.schemas.reasoning_io import ReasoningWriteContextV1, ReasoningWriteRequestV1
@@ -39,6 +39,23 @@ class GoalActionResult:
     hitl_satisfied: bool = False
     completed_at: str | None = None
     planned_task_id: str | None = None
+
+
+def outcome_ref_from_result(
+    result: GoalActionResult,
+    *,
+    now: datetime | None = None,
+) -> ActionOutcomeRefV1:
+    observed_at = now or datetime.now(timezone.utc)
+    success = result.proposal_status in {"planned", "completed", "archived"}
+    return ActionOutcomeRefV1(
+        action_id=result.artifact_id,
+        kind=result.action,
+        summary=f"{result.action}:{result.proposal_status}",
+        success=success,
+        surprise=0.0,
+        observed_at=observed_at,
+    )
 
 
 def _autonomy_goal_execution_enabled() -> bool:

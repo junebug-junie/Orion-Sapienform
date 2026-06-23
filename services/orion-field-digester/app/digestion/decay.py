@@ -24,6 +24,8 @@ NODE_DECAY_CHANNELS = {
     "catalog_drift_pressure",
     "observer_failure_pressure",
     "reliability_pressure",
+    "field_coherence_warning",
+    "prediction_error",
 }
 
 CAPABILITY_DECAY_CHANNELS = {

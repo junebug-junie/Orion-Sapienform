@@ -5,6 +5,8 @@ pydantic-settings==2.5.2
 redis[hiredis]==5.0.7
 # orion.core.bus.catalog_loader (channel catalog YAML)
 PyYAML==6.0.3
+# tests/test_biometrics_pipeline.py → orion.substrate → graphdb_store
+requests>=2.32.4,<3.0.0
 opentelemetry-api==1.27.0
 opentelemetry-sdk==1.27.0
 opentelemetry-exporter-otlp-proto-grpc==1.27.0

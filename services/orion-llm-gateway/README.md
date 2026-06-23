@@ -6,6 +6,15 @@ It now supports **latent vector emission** for vLLM/llama-cola responses (when t
 
 For **llama.cpp** and **llama-cola** backends, `ChatRequestPayload.options` may include **`chat_template_kwargs`** (e.g. `{"enable_thinking": false}`). The gateway forwards that object to `/v1/chat/completions` so Qwen3-style thinking can be toggled **per request** without restarting the model host.
 
+### Spark metadata (v1)
+
+The gateway no longer runs tissue ingest on chat turns. Result `spark_meta` is thin metadata only:
+
+- `latest_user_message`, `latest_assistant_message` (clipped)
+- `trace_verb`, `spark_phase`, `spark_used_raw_user_text`
+
+Turn novelty and shift classification live in `spark_meta.turn_change_appraisal`, patched asynchronously by `orion-memory-consolidation` on `orion:chat:history:spark_meta:patch`. See `services/orion-memory-consolidation/README.md`.
+
 ## Contracts
 
 ### Consumed Channels

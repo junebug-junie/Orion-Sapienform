@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from orion.schemas.state_delta import StateDeltaV1
@@ -105,6 +106,20 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
                         mode="replace",
                     )
                 )
+        try:
+            egress_raw = float(hints["egress_confidence"]) if "egress_confidence" in hints else None
+        except (TypeError, ValueError):
+            egress_raw = None
+        if egress_raw is not None and math.isfinite(egress_raw):
+            out.append(
+                Perturbation(
+                    node_id=node_key,
+                    channel="egress_confidence_deficit",
+                    intensity=max(0.0, min(1.0, 1.0 - egress_raw)),
+                    label=delta.delta_id,
+                    mode="replace",
+                )
+            )
 
     if delta.target_kind == "chat_turn":
         hints = dict(after.get("pressure_hints") or {})
@@ -130,7 +145,7 @@ def delta_to_perturbations(delta: StateDeltaV1) -> list[Perturbation]:
             ("bus_health", "bus_health"),
             ("delivery_confidence", "delivery_confidence"),
             ("transport_pressure", "transport_pressure"),
-            ("catalog_drift_pressure", "contract_pressure"),
+            ("catalog_drift_pressure", "catalog_drift_pressure"),
             ("observer_failure_pressure", "observer_failure_pressure"),
             ("reliability_pressure", "reliability_pressure"),
             ("contract_pressure", "contract_pressure"),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 from orion.self_state.builder import build_self_state
@@ -63,6 +64,17 @@ class SelfStateRuntimeWorker:
             return
 
         previous = self._store.load_latest_self_state()
+        if previous is not None:
+            if previous.self_state_policy_id != self._policy.policy_id:
+                previous = None
+            else:
+                prev_ts = previous.generated_at
+                if prev_ts.tzinfo is None:
+                    prev_ts = prev_ts.replace(tzinfo=timezone.utc)
+                if (
+                    datetime.now(timezone.utc) - prev_ts
+                ).total_seconds() > self._settings.self_state_max_previous_age_sec:
+                    previous = None
         state = build_self_state(
             field=field,
             attention=attention,

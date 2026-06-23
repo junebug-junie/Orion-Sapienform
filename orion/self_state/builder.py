@@ -11,6 +11,7 @@ from orion.self_state.transport import (
 )
 from orion.self_state.scoring import (
     agency_readiness_score,
+    clamp,
     clamp01,
     collect_attention_channel_pressures,
     collect_field_channel_pressures,
@@ -89,6 +90,10 @@ def _emit_summary_labels(
         and dimension_scores.get("execution_pressure", 0.0) >= 0.7
     ):
         labels.append("stabilized_but_loaded")
+    if dimension_scores.get("social_pressure", 0.0) >= 0.5:
+        labels.append("social_pressurized")
+    if dimension_scores.get("introspection_pressure", 0.0) >= 0.5:
+        labels.append("introspection_loaded")
     return sorted(set(labels))
 
 
@@ -116,7 +121,6 @@ def build_self_state(
     now: datetime | None = None,
     enable_transport_influence: bool = False,
 ) -> SelfStateV1:
-    del previous_self_state  # reserved for continuity deltas in a later revision
     generated_at = now or datetime.now(timezone.utc)
 
     warnings: list[str] = []
@@ -167,8 +171,8 @@ def build_self_state(
         "reasoning_pressure": reasoning_p,
         "reliability_pressure": reliability_p,
         "continuity_pressure": continuity_p,
-        "introspection_pressure": 0.0,
-        "social_pressure": 0.0,
+        "introspection_pressure": mapped.get("introspection_pressure", 0.0),
+        "social_pressure": mapped.get("social_pressure", 0.0),
         "policy_pressure": 0.0,
     }
 
@@ -247,6 +251,30 @@ def build_self_state(
             set(summary_labels) | set(transport_summary_labels(hints, integrity))
         )
 
+    dimension_trajectory: dict[str, float] = {}
+    trajectory_condition: Literal["improving", "degrading", "stable", "unknown"] = "unknown"
+    if previous_self_state is not None:
+        weighted_delta = 0.0
+        total_w = 0.0
+        for dim_id, score in dimension_scores.items():
+            prev_dim = previous_self_state.dimensions.get(dim_id)
+            if prev_dim is None:
+                continue
+            delta = clamp(-1.0, 1.0, score - prev_dim.score)
+            if abs(delta) >= 0.02:
+                dimension_trajectory[dim_id] = round(delta, 4)
+            w = float(policy.dimension_weights.get(dim_id, 0.0))
+            weighted_delta += delta * w
+            total_w += w
+        if total_w > 0:
+            net = weighted_delta / total_w
+            if net > policy.trajectory_threshold:
+                trajectory_condition = "improving"
+            elif net < -policy.trajectory_threshold:
+                trajectory_condition = "degrading"
+            else:
+                trajectory_condition = "stable"
+
     return SelfStateV1(
         self_state_id=stable_self_state_id(
             source_field_tick_id=field.tick_id,
@@ -269,4 +297,6 @@ def build_self_state(
         stabilizing_factors=stabilizing,
         warnings=warnings,
         summary_labels=summary_labels,
+        dimension_trajectory=dimension_trajectory,
+        trajectory_condition=trajectory_condition,
     )

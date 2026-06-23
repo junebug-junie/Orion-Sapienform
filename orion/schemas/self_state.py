@@ -70,3 +70,6 @@ class SelfStateV1(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
     summary_labels: list[str] = Field(default_factory=list)
+
+    dimension_trajectory: dict[str, float] = Field(default_factory=dict)
+    trajectory_condition: Literal["improving", "degrading", "stable", "unknown"] = "unknown"

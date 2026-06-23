@@ -19,11 +19,18 @@ PRESSURE_CHANNELS = frozenset({
     "thermal_pressure",
     "staleness",
     "pressure",
+    "repair_pressure",
+    "conversation_load",
+    "egress_confidence_deficit",
 })
 
 
 def clamp01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
+
+
+def clamp(lo: float, hi: float, x: float) -> float:
+    return max(lo, min(hi, float(x)))
 
 
 def condition_from_intensity(

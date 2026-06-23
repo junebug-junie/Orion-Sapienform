@@ -18,6 +18,8 @@ dimension_weights:
   reliability_pressure: 0.15
   continuity_pressure: 0.03
   introspection_pressure: 0.02
+  social_pressure: 0.04
+  policy_pressure: 0.00
 
 attention_target_weights:
   system: 0.30
@@ -47,6 +49,9 @@ channel_dimension_map:
   reliability_pressure: reliability_pressure
   confidence: coherence
   available_capacity: coherence
+  repair_pressure: social_pressure
+  conversation_load: social_pressure
+  egress_confidence_deficit: introspection_pressure
 
 stabilizing_channels:
   availability: 0.50
@@ -69,6 +74,9 @@ pressure_channels:
   - execution_pressure
   - reasoning_pressure
   - reliability_pressure
+  - repair_pressure
+  - conversation_load
+  - egress_confidence_deficit
 
 context_channels:
   - recent_perturbation_count
@@ -76,3 +84,4 @@ context_channels:
 
 unresolved_pressure_threshold: 0.60
 dominant_channel_threshold: 0.25
+trajectory_threshold: 0.03

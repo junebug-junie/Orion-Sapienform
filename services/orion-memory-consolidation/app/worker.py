@@ -180,11 +180,14 @@ async def handle_memory_turn_persisted(
     )
     patch_fields = await classify_turn(bus, turn=turn, prior_turns=prior_turns, settings=settings)
     await publish_spark_meta_patch(bus, turn.correlation_id, patch_fields)
-    await _maybe_publish_turn_change_signal(
-        bus,
-        correlation_id=turn.correlation_id,
-        appraisal=patch_fields.get("turn_change_appraisal") or {},
-    )
+    try:
+        await _maybe_publish_turn_change_signal(
+            bus,
+            correlation_id=turn.correlation_id,
+            appraisal=patch_fields.get("turn_change_appraisal") or {},
+        )
+    except Exception:
+        logger.exception("turn_change_signal_publish_failed corr=%s", turn.correlation_id)
     await window_store.append_turn(turn, scores=patch_fields)
     open_row = await window_store._get_open_window()
     window_turns = (

@@ -2,6 +2,8 @@ import math
 import re
 from typing import Any
 
+from orion.memory.turn_change_classify import build_turn_change_prompt
+
 _MEMORY_LINE = re.compile(r"^MEMORY:\s*(YES|NO)\s*$", re.I | re.M)
 _BOUNDARY_LINE = re.compile(r"^BOUNDARY:\s*(YES|NO)\s*$", re.I | re.M)
 
@@ -30,9 +32,6 @@ def parse_classify_lines(text: str) -> tuple[str | None, str | None]:
         mem.group(1).upper() if mem else None,
         bnd.group(1).upper() if bnd else None,
     )
-
-
-from orion.memory.turn_change_classify import build_turn_change_prompt
 
 
 def build_classify_prompt(

@@ -12,7 +12,7 @@ Subscribes to `orion:memory:turn:persisted` (sql-writer post-commit outbox), cla
 
 ## Turn change appraisal
 
-Each persisted turn (after the first in a window) gets a logprob-calibrated `turn_change_appraisal` patch on `spark_meta`: novelty score, shift kind, confidence, and baseline mode (`prior_turn` or `session_window` fallback). High-confidence novel turns also emit `OrionSignalV1` on `orion:signals:memory_consolidation`.
+Each persisted turn (after the first in a window) gets a logprob-calibrated `turn_change_appraisal` patch on `spark_meta`: novelty score, shift kind, confidence, and baseline mode (`prior_turn` or `session_window` fallback). The first turn in a window uses `turn_change_status=skipped` (no baseline, no LLM call). High-confidence novel turns also emit `OrionSignalV1` on `orion:signals:memory_consolidation`.
 
 | Env | Default | Purpose |
 |-----|---------|---------|

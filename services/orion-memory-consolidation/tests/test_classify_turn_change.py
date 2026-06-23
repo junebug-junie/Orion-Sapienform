@@ -107,6 +107,7 @@ async def test_classify_turn_first_turn_baseline_none():
     patch = await classify_mod.classify_turn(bus, turn=turn, prior_turns=[], settings=app_settings)
     assert "turn_change_appraisal" in patch
     assert patch["turn_change_appraisal"]["baseline_mode"] == "none"
+    assert patch["turn_change_appraisal"]["turn_change_status"] == "skipped"
     assert patch["turn_change_appraisal"]["novelty_score"] is None
     bus.rpc_request.assert_not_awaited()
 
@@ -217,7 +218,10 @@ async def test_classify_turn_low_margin_triggers_session_window_reappraisal():
         return _R()
 
     bus.codec.decode = Mock(side_effect=_decode_side_effect)
-    prior = [{"correlation_id": "prev", "prompt": "cats", "response": "cute"}]
+    prior = [
+        {"correlation_id": "prev1", "prompt": "cats", "response": "cute"},
+        {"correlation_id": "prev2", "prompt": "dogs", "response": "fun"},
+    ]
     turn = MemoryTurnPersistedV1(
         correlation_id=str(uuid4()), prompt="maybe pivot", response="ok", spark_meta={}
     )
@@ -336,7 +340,10 @@ async def test_classify_turn_reappraisal_failure_keeps_primary_scores():
         raise RuntimeError("reappraisal down")
 
     bus.codec.decode = Mock(side_effect=_decode_side_effect)
-    prior = [{"correlation_id": "prev", "prompt": "cats", "response": "cute"}]
+    prior = [
+        {"correlation_id": "prev1", "prompt": "cats", "response": "cute"},
+        {"correlation_id": "prev2", "prompt": "dogs", "response": "fun"},
+    ]
     turn = MemoryTurnPersistedV1(correlation_id=str(uuid4()), prompt="pivot", response="ok", spark_meta={})
     from app.settings import settings as app_settings
 
@@ -346,6 +353,29 @@ async def test_classify_turn_reappraisal_failure_keeps_primary_scores():
     assert appr["baseline_mode"] == "prior_turn"
     assert appr["novelty_score"] == pytest.approx(0.5, abs=0.05)
     assert "turn_change_appraisal" in patch
+
+
+@pytest.mark.asyncio
+async def test_classify_turn_low_margin_single_prior_skips_reappraisal():
+    bus = AsyncMock()
+    content = "NOVEL: YES\nSHIFT: TOPIC\nMEMORY: NO\nBOUNDARY: NO\n"
+    bus.rpc_request.return_value = {"data": b"x"}
+
+    def _decode_side_effect(_):
+        class _R:
+            ok = True
+            envelope = type("E", (), {"payload": _llm_raw(content, novel_lp=-2.0, shift_token="TOPIC")})()
+
+        return _R()
+
+    bus.codec.decode = Mock(side_effect=_decode_side_effect)
+    prior = [{"correlation_id": "prev", "prompt": "cats", "response": "cute"}]
+    turn = MemoryTurnPersistedV1(correlation_id=str(uuid4()), prompt="pivot", response="ok", spark_meta={})
+    from app.settings import settings as app_settings
+
+    patch = await classify_mod.classify_turn(bus, turn=turn, prior_turns=prior, settings=app_settings)
+    assert bus.rpc_request.await_count == 1
+    assert patch["turn_change_appraisal"]["baseline_mode"] == "prior_turn"
 
 
 @pytest.mark.asyncio
@@ -404,3 +434,53 @@ async def test_worker_emits_substrate_signal_above_threshold(monkeypatch):
 
     signal_kinds = [env.kind for _, env in published]
     assert "signal.memory_consolidation.turn_change" in signal_kinds
+
+
+@pytest.mark.asyncio
+async def test_worker_append_turn_when_substrate_publish_fails(monkeypatch):
+    worker = _load("app/worker.py", "memory_consolidation_worker")
+
+    bus = AsyncMock()
+    publish_calls = []
+
+    async def _publish(channel, env):
+        publish_calls.append((channel, env))
+        if "signals" in channel:
+            raise RuntimeError("bus down")
+
+    bus.publish = _publish
+
+    appraisal = {
+        "turn_change_status": "ok",
+        "novelty_score": 0.9,
+        "shift_kind": "TOPIC",
+        "confidence": 0.88,
+    }
+
+    async def _fake_classify(bus, *, turn, prior_turns, settings):
+        return {"turn_change_appraisal": appraisal, "memory_classify_status": "ok"}
+
+    monkeypatch.setattr(worker, "classify_turn", _fake_classify)
+
+    window_store = AsyncMock()
+    window_store._get_open_window = AsyncMock(return_value=None)
+    window_store.get_window_turns = AsyncMock(return_value=[])
+    window_store.append_turn = AsyncMock()
+    suggest_runner = AsyncMock()
+
+    corr = str(uuid4())
+    turn = MemoryTurnPersistedV1(correlation_id=corr, prompt="hi", response="hello", spark_meta={})
+    from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+
+    env = BaseEnvelope(
+        kind="memory.turn.persisted.v1",
+        correlation_id=corr,
+        source=ServiceRef(name="sql-writer", version="0.1", node="local"),
+        payload=turn.model_dump(mode="json"),
+    )
+
+    await worker.handle_memory_turn_persisted(
+        env, bus=bus, window_store=window_store, suggest_runner=suggest_runner
+    )
+
+    window_store.append_turn.assert_awaited_once()

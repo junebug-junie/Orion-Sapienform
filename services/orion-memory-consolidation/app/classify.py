@@ -19,7 +19,7 @@ from app.boundary import scores_from_llm_result
 
 logger = logging.getLogger(__name__)
 
-_MAX_TURN_FIELD_CHARS = 800
+_MAX_TURN_FIELD_CHARS = 300
 
 
 def _clip(text: str, *, limit: int) -> str:
@@ -148,7 +148,7 @@ async def classify_turn(
             shift_kind=None,
             shift_scores=None,
             confidence=None,
-            status="ok",
+            status="skipped",
         )
         return {
             "turn_change_appraisal": appraisal,
@@ -185,7 +185,10 @@ async def classify_turn(
         return _degraded_patch(baseline_mode=baseline_mode, prior_correlation_id=prior_corr)
 
     novelty = scores.get("novelty_score")
-    if novel_margin_below_threshold(novelty, margin=settings.TURN_CHANGE_CONFIDENCE_MARGIN):
+    if (
+        novel_margin_below_threshold(novelty, margin=settings.TURN_CHANGE_CONFIDENCE_MARGIN)
+        and len(prior_turns) >= 2
+    ):
         try:
             retry = await reappraise_with_session_window(
                 bus, turn=turn, prior_turns=prior_turns, settings=settings

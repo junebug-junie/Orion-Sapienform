@@ -71,3 +71,24 @@ def test_build_change_only_prompt_two_lines():
     assert "NOVEL:" in p
     assert "SHIFT:" in p
     assert "MEMORY:" not in p
+
+
+def test_dimensions_for_shift_branches():
+    from orion.memory.turn_change_signal import dimensions_for_shift
+
+    topic = dimensions_for_shift(shift_kind="TOPIC", novelty_score=0.8)
+    assert topic["novelty"] == pytest.approx(0.8)
+    assert topic["salience"] == pytest.approx(0.8)
+
+    stance = dimensions_for_shift(shift_kind="STANCE", novelty_score=0.7)
+    assert stance["contradiction"] == pytest.approx(0.7)
+    assert stance["salience"] == pytest.approx(0.7)
+
+    repair = dimensions_for_shift(shift_kind="REPAIR", novelty_score=0.6)
+    assert repair == {"contradiction": pytest.approx(0.6)}
+
+    none_high = dimensions_for_shift(shift_kind="NONE", novelty_score=0.9)
+    assert none_high["salience"] == pytest.approx(0.15)
+
+    none_low = dimensions_for_shift(shift_kind="NONE", novelty_score=0.2)
+    assert none_low["salience"] == pytest.approx(0.04)

@@ -60,10 +60,22 @@ def _session_window_baseline(prior_turns: list[dict], *, n: int) -> tuple[str, s
     return "session_window", _build_window_transcript(selected, max_turns=n)
 
 
+_CLASSIFY_ROUTES = frozenset({"metacog", "quick"})
+
+
+def _resolve_classify_route(settings) -> str:
+    route = str(getattr(settings, "TURN_CHANGE_CLASSIFY_ROUTE", "metacog") or "metacog").strip().lower()
+    if route not in _CLASSIFY_ROUTES:
+        logger.warning("invalid TURN_CHANGE_CLASSIFY_ROUTE=%r; falling back to metacog", route)
+        return "metacog"
+    return route
+
+
 def _degraded_patch(
     *,
     baseline_mode: str = "none",
     prior_correlation_id: str | None = None,
+    classify_route: str | None = None,
 ) -> dict:
     appraisal = build_turn_change_appraisal(
         baseline_mode=baseline_mode,
@@ -74,25 +86,32 @@ def _degraded_patch(
         confidence=None,
         status="degraded",
     )
-    return {
+    out = {
         "turn_change_appraisal": appraisal,
         "memory_classify_status": "degraded",
         "memory_classify_ts": datetime.now(timezone.utc).isoformat(),
     }
+    if classify_route is not None:
+        out["turn_change_classify_route"] = classify_route
+    return out
 
 
-async def _llm_classify(bus: OrionBusAsync, *, prompt: str, settings) -> dict:
+async def _llm_classify(
+    bus: OrionBusAsync, *, prompt: str, settings, llm_route: str | None = None
+) -> dict:
+    route = llm_route or _resolve_classify_route(settings)
     rpc_corr = str(uuid4())
     reply_channel = f"orion:exec:result:LLMGatewayService:{rpc_corr}"
     payload = ChatRequestPayload(
         messages=[LLMMessage(role="user", content=prompt)],
-        route="quick",
+        route=route,
         options={
             "return_logprobs": True,
             "logprobs_top_k": 8,
             "logprob_summary_only": False,
             "max_tokens": 24,
-            "llm_route": "quick",
+            "llm_route": route,
+            "chat_template_kwargs": {"enable_thinking": False},
         },
     )
     env = BaseEnvelope(
@@ -141,6 +160,7 @@ async def classify_turn(
     bus: OrionBusAsync, *, turn: MemoryTurnPersistedV1, prior_turns: list[dict], settings
 ) -> dict:
     baseline_mode, baseline_text, prior_corr = _prior_turn_baseline(prior_turns)
+    classify_route = _resolve_classify_route(settings)
     if baseline_mode == "none":
         appraisal = build_turn_change_appraisal(
             baseline_mode="none",
@@ -153,6 +173,7 @@ async def classify_turn(
         )
         return {
             "turn_change_appraisal": appraisal,
+            "turn_change_classify_route": classify_route,
             "memory_classify_status": "degraded",
             "memory_classify_ts": datetime.now(timezone.utc).isoformat(),
         }
@@ -169,7 +190,9 @@ async def classify_turn(
     scores: dict | None = None
     for attempt in range(2):
         try:
-            scores = await _llm_classify(bus, prompt=prompt, settings=settings)
+            scores = await _llm_classify(
+                bus, prompt=prompt, settings=settings, llm_route=classify_route
+            )
             break
         except Exception as exc:
             last_error = exc
@@ -183,11 +206,16 @@ async def classify_turn(
 
     if scores is None:
         logger.error("memory_classify_degraded corr=%s err=%s", turn.correlation_id, last_error)
-        return _degraded_patch(baseline_mode=baseline_mode, prior_correlation_id=prior_corr)
+        return _degraded_patch(
+            baseline_mode=baseline_mode,
+            prior_correlation_id=prior_corr,
+            classify_route=classify_route,
+        )
 
     logger.info(
-        "turn_change_classify corr=%s novelty=%s shift=%s confidence=%s source=%s mem=%s bnd=%s",
+        "turn_change_classify corr=%s route=%s novelty=%s shift=%s confidence=%s source=%s mem=%s bnd=%s",
         turn.correlation_id,
+        classify_route,
         scores.get("novelty_score"),
         scores.get("shift_kind"),
         scores.get("confidence"),
@@ -249,6 +277,7 @@ async def classify_turn(
         appraisal["reappraised_session_window"] = True
     return {
         "turn_change_appraisal": appraisal,
+        "turn_change_classify_route": classify_route,
         "memory_significance_score": scores.get("memory_significance_score"),
         "conversation_boundary_score": scores.get("conversation_boundary_score"),
         "memory_classify_status": "ok" if status == "ok" else "degraded",

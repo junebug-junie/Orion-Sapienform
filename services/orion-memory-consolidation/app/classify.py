@@ -75,6 +75,7 @@ def _degraded_patch(
     *,
     baseline_mode: str = "none",
     prior_correlation_id: str | None = None,
+    classify_route: str | None = None,
 ) -> dict:
     appraisal = build_turn_change_appraisal(
         baseline_mode=baseline_mode,
@@ -85,11 +86,14 @@ def _degraded_patch(
         confidence=None,
         status="degraded",
     )
-    return {
+    out = {
         "turn_change_appraisal": appraisal,
         "memory_classify_status": "degraded",
         "memory_classify_ts": datetime.now(timezone.utc).isoformat(),
     }
+    if classify_route is not None:
+        out["turn_change_classify_route"] = classify_route
+    return out
 
 
 async def _llm_classify(bus: OrionBusAsync, *, prompt: str, settings) -> dict:
@@ -154,6 +158,7 @@ async def classify_turn(
     bus: OrionBusAsync, *, turn: MemoryTurnPersistedV1, prior_turns: list[dict], settings
 ) -> dict:
     baseline_mode, baseline_text, prior_corr = _prior_turn_baseline(prior_turns)
+    classify_route = _resolve_classify_route(settings)
     if baseline_mode == "none":
         appraisal = build_turn_change_appraisal(
             baseline_mode="none",
@@ -166,6 +171,7 @@ async def classify_turn(
         )
         return {
             "turn_change_appraisal": appraisal,
+            "turn_change_classify_route": classify_route,
             "memory_classify_status": "degraded",
             "memory_classify_ts": datetime.now(timezone.utc).isoformat(),
         }
@@ -196,9 +202,12 @@ async def classify_turn(
 
     if scores is None:
         logger.error("memory_classify_degraded corr=%s err=%s", turn.correlation_id, last_error)
-        return _degraded_patch(baseline_mode=baseline_mode, prior_correlation_id=prior_corr)
+        return _degraded_patch(
+            baseline_mode=baseline_mode,
+            prior_correlation_id=prior_corr,
+            classify_route=classify_route,
+        )
 
-    classify_route = _resolve_classify_route(settings)
     logger.info(
         "turn_change_classify corr=%s route=%s novelty=%s shift=%s confidence=%s source=%s mem=%s bnd=%s",
         turn.correlation_id,

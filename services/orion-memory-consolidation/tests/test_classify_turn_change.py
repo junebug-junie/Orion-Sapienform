@@ -240,6 +240,7 @@ async def test_classify_turn_first_turn_baseline_none():
     assert patch["turn_change_appraisal"]["baseline_mode"] == "none"
     assert patch["turn_change_appraisal"]["turn_change_status"] == "skipped"
     assert patch["turn_change_appraisal"]["novelty_score"] is None
+    assert patch["turn_change_classify_route"] == "metacog"
     bus.rpc_request.assert_not_awaited()
 
 
@@ -387,19 +388,12 @@ async def test_classify_turn_llm_failure_preserves_baseline_context():
     assert appr["turn_change_status"] == "degraded"
     assert appr["baseline_mode"] == "prior_turn"
     assert appr["prior_correlation_id"] == "prev"
+    assert patch["turn_change_classify_route"] == "metacog"
 
 
 @pytest.mark.asyncio
 async def test_worker_spark_meta_patch_includes_classify_route(monkeypatch):
-    import sys
-    from unittest.mock import MagicMock
-
-    budget_stub = MagicMock()
-    budget_stub.suggest_token_budget_config_from_mapping = MagicMock(return_value=MagicMock())
-    sys.modules.setdefault("orion.memory_graph.suggest_token_budget", budget_stub)
-    sys.modules.setdefault("orion.memory_graph.suggest_runner", MagicMock())
-
-    worker = _load("app/worker.py", "memory_consolidation_worker_spark_route")
+    worker = _load("app/worker.py", "memory_consolidation_worker")
     published = []
 
     bus = AsyncMock()

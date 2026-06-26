@@ -74,6 +74,7 @@ _VALENCE_INIT_TASK: Optional[asyncio.Task] = None
 _VALENCE_ANCHORS_EXPIRES_AT: float = 0.0
 
 _LATEST_SELF_STATE: Optional[SelfStateV1] = None
+_PREV_PHI: Optional[Dict[str, float]] = None
 
 
 def set_latest_self_state(ss: SelfStateV1) -> None:
@@ -1844,16 +1845,92 @@ async def handle_signal(env: BaseEnvelope) -> None:
 
 
 async def handle_self_state(env: BaseEnvelope) -> None:
+    global _PREV_PHI
     payload = env.payload if isinstance(env.payload, dict) else {}
     try:
         ss = SelfStateV1.model_validate(payload)
     except ValidationError:
         logger.warning("Ignoring malformed substrate.self_state payload")
         return
+
+    phi_now = _phi_from_self_state(ss)
+    phi_prev = _PREV_PHI  # snapshot before update
+    _PREV_PHI = phi_now
     set_latest_self_state(ss)
+
+    # Compute real inter-tick delta — two genuinely time-separated substrate snapshots.
+    turn_effect: Optional[Dict[str, float]] = None
+    if phi_prev is not None:
+        turn_effect = {k: round(phi_now[k] - phi_prev.get(k, phi_now[k]), 4) for k in phi_now}
+
     logger.debug(
-        "self_state_updated self_state_id=%s condition=%s intensity=%.3f",
+        "self_state_updated self_state_id=%s condition=%s intensity=%.3f phi=%s delta=%s",
         ss.self_state_id,
         ss.overall_condition,
         ss.overall_intensity,
+        phi_now,
+        turn_effect,
     )
+
+    if not (_pub_bus and _pub_bus.enabled):
+        return
+
+    seq = _next_seq()
+    meta: Dict[str, Any] = {
+        "trigger": "substrate_tick",
+        "self_state_id": ss.self_state_id,
+        "condition": ss.overall_condition,
+        "trajectory": ss.trajectory_condition,
+        "phi_before": phi_prev,
+        "phi_after": phi_now,
+    }
+    if turn_effect is not None:
+        meta["turn_effect"] = {"turn": turn_effect}
+        meta["spark_meta"] = {
+            "phi_before": phi_prev,
+            "phi_post_after": phi_now,
+        }
+
+    snap = SparkStateSnapshotV1(
+        source_service=settings.service_name,
+        source_node=settings.node_name,
+        producer_boot_id=_PRODUCER_BOOT_ID,
+        seq=seq,
+        snapshot_ts=ss.generated_at,
+        valid_for_ms=int(settings.spark_state_valid_for_ms),
+        correlation_id=ss.self_state_id,
+        trace_mode="substrate",
+        trace_verb="self_state_tick",
+        phi=phi_now,
+        valence=float(phi_now.get("valence", 0.0)),
+        arousal=float(phi_now.get("energy", 0.5)),
+        dominance=0.5,
+        vector_present=False,
+        metadata=meta,
+    )
+    snap_env = SparkStateSnapshotEnvelope(
+        source=_svc_ref(),
+        correlation_id=ss.self_state_id,
+        causality_chain=env.causality_chain,
+        payload=snap,
+    )
+    await _pub_bus.publish(settings.channel_spark_state_snapshot, snap_env)
+
+    try:
+        ws_payload = {
+            "type": "tissue.update",
+            "telemetry_id": str(uuid4()),
+            "correlation_id": ss.self_state_id,
+            "timestamp": ss.generated_at.isoformat(),
+            "stats": {
+                "phi": float(phi_now.get("coherence", 0.5)),
+                "novelty": float(phi_now.get("novelty", 0.0)),
+                "valence": float(phi_now.get("valence", 0.0)),
+                "arousal": float(phi_now.get("energy", 0.5)),
+            },
+            "grid": [],
+            "metadata": meta,
+        }
+        await manager.broadcast(ws_payload)
+    except Exception as exc:
+        logger.warning("Failed to broadcast substrate tick to WebSocket: %s", exc)

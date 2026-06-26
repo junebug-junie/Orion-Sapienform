@@ -36,6 +36,8 @@ class ConceptSettings(BaseSettings):
             "orion:spark:telemetry",
             "orion:metacognition:tick",
             "orion:cognition:trace",
+            "orion:substrate:self_state",
+            "orion:feedback:frame",
         ],
         validation_alias=AliasChoices("BUS_INTAKE_CHANNELS", "CONCEPT_INTAKE_CHANNELS"),
     )

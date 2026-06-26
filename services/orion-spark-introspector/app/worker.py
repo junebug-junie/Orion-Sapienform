@@ -74,6 +74,7 @@ _VALENCE_INIT_TASK: Optional[asyncio.Task] = None
 _VALENCE_ANCHORS_EXPIRES_AT: float = 0.0
 
 _LATEST_SELF_STATE: Optional[SelfStateV1] = None
+_PREV_PHI: Optional[Dict[str, float]] = None
 
 
 def set_latest_self_state(ss: SelfStateV1) -> None:
@@ -83,11 +84,60 @@ def set_latest_self_state(ss: SelfStateV1) -> None:
 
 def _phi_from_self_state(ss: SelfStateV1) -> Dict[str, float]:
     d = ss.dimensions
+    traj = ss.dimension_trajectory  # per-dimension change vectors from self-state-runtime
+
+    def _s(key: str, default: float = 0.5) -> float:
+        dim = d.get(key)
+        return float(dim.score) if dim is not None else default
+
+    def _t(key: str) -> float:
+        return max(-1.0, min(1.0, float(traj.get(key, 0.0))))
+
+    # Coherence: geometric mean across integration dimensions.
+    # Every factor must be healthy — a single broken link collapses the whole.
+    # This mirrors IIT: consciousness requires global integration, not local patches.
+    field_coh   = _s("coherence", 0.5)
+    continuity  = 1.0 - _s("continuity_pressure", 0.0)
+    reliability = 1.0 - _s("reliability_pressure", 0.0)
+    transport   = _s("transport_integrity", 1.0)
+    coherence   = max(0.01, (field_coh * continuity * reliability * transport) ** 0.25)
+
+    # Energy: activation × available capacity (multiplicative, not additive).
+    # Being highly active with no room left isn't energy — it's grinding.
+    intensity     = _s("field_intensity", 0.5)
+    resource_cap  = 1.0 - _s("resource_pressure", 0.5)
+    execution_cap = 1.0 - _s("execution_pressure", 0.3)
+    energy = intensity * (resource_cap * execution_cap) ** 0.5
+    # Trajectory: rising intensity or recovering capacity builds energy momentum.
+    energy += 0.1 * max(0.0, _t("field_intensity")) - 0.1 * max(0.0, _t("resource_pressure"))
+    energy = max(0.0, min(1.0, energy))
+
+    # Novelty: genuine surprise requires a stable ground to notice it against.
+    # Uncertainty on a fragmented system is noise. Uncertainty when coherent = signal.
+    uncertainty   = _s("uncertainty", 0.5)
+    introspection = _s("introspection_pressure", 0.3)
+    novelty = min(1.0, (0.6 * uncertainty + 0.4 * introspection) * (0.3 + 0.7 * coherence))
+
+    # Valence: hedonic tone from agency, social ease, and constraint load.
+    agency      = _s("agency_readiness", 0.5)
+    social_ease = 1.0 - _s("social_pressure", 0.0)
+    policy_ease = 1.0 - _s("policy_pressure", 0.0)
+    raw_valence = 0.5 * agency + 0.3 * social_ease + 0.2 * policy_ease  # [0, 1]
+    # Coherence modulates: fragmentation mutes affect in both directions —
+    # can't feel fully alive, or fully distressed, when scattered.
+    valence = (raw_valence * 2.0 - 1.0) * (0.4 + 0.6 * coherence)
+    # Trajectory: the direction of change matters for how this moment is experienced.
+    if ss.trajectory_condition == "improving":
+        valence += 0.12
+    elif ss.trajectory_condition == "degrading":
+        valence -= 0.12
+    valence = max(-1.0, min(1.0, valence))
+
     return {
-        "coherence": d["coherence"].score if "coherence" in d else 0.5,
-        "energy":    1.0 - d["resource_pressure"].score if "resource_pressure" in d else 0.5,
-        "novelty":   d["uncertainty"].score if "uncertainty" in d else 0.5,
-        "valence":   d["agency_readiness"].score * 2.0 - 1.0 if "agency_readiness" in d else 0.0,
+        "coherence": round(coherence, 4),
+        "energy":    round(energy, 4),
+        "novelty":   round(novelty, 4),
+        "valence":   round(valence, 4),
     }
 
 
@@ -1795,16 +1845,92 @@ async def handle_signal(env: BaseEnvelope) -> None:
 
 
 async def handle_self_state(env: BaseEnvelope) -> None:
+    global _PREV_PHI
     payload = env.payload if isinstance(env.payload, dict) else {}
     try:
         ss = SelfStateV1.model_validate(payload)
     except ValidationError:
         logger.warning("Ignoring malformed substrate.self_state payload")
         return
+
+    phi_now = _phi_from_self_state(ss)
+    phi_prev = _PREV_PHI  # snapshot before update
+    _PREV_PHI = phi_now
     set_latest_self_state(ss)
+
+    # Compute real inter-tick delta — two genuinely time-separated substrate snapshots.
+    turn_effect: Optional[Dict[str, float]] = None
+    if phi_prev is not None:
+        turn_effect = {k: round(phi_now[k] - phi_prev.get(k, phi_now[k]), 4) for k in phi_now}
+
     logger.debug(
-        "self_state_updated self_state_id=%s condition=%s intensity=%.3f",
+        "self_state_updated self_state_id=%s condition=%s intensity=%.3f phi=%s delta=%s",
         ss.self_state_id,
         ss.overall_condition,
         ss.overall_intensity,
+        phi_now,
+        turn_effect,
     )
+
+    if not (_pub_bus and _pub_bus.enabled):
+        return
+
+    seq = _next_seq()
+    meta: Dict[str, Any] = {
+        "trigger": "substrate_tick",
+        "self_state_id": ss.self_state_id,
+        "condition": ss.overall_condition,
+        "trajectory": ss.trajectory_condition,
+        "phi_before": phi_prev,
+        "phi_after": phi_now,
+    }
+    if turn_effect is not None:
+        meta["turn_effect"] = {"turn": turn_effect}
+        meta["spark_meta"] = {
+            "phi_before": phi_prev,
+            "phi_post_after": phi_now,
+        }
+
+    snap = SparkStateSnapshotV1(
+        source_service=settings.service_name,
+        source_node=settings.node_name,
+        producer_boot_id=_PRODUCER_BOOT_ID,
+        seq=seq,
+        snapshot_ts=ss.generated_at,
+        valid_for_ms=int(settings.spark_state_valid_for_ms),
+        correlation_id=ss.self_state_id,
+        trace_mode="substrate",
+        trace_verb="self_state_tick",
+        phi=phi_now,
+        valence=float(phi_now.get("valence", 0.0)),
+        arousal=float(phi_now.get("energy", 0.5)),
+        dominance=0.5,
+        vector_present=False,
+        metadata=meta,
+    )
+    snap_env = SparkStateSnapshotEnvelope(
+        source=_svc_ref(),
+        correlation_id=ss.self_state_id,
+        causality_chain=env.causality_chain,
+        payload=snap,
+    )
+    await _pub_bus.publish(settings.channel_spark_state_snapshot, snap_env)
+
+    try:
+        ws_payload = {
+            "type": "tissue.update",
+            "telemetry_id": str(uuid4()),
+            "correlation_id": ss.self_state_id,
+            "timestamp": ss.generated_at.isoformat(),
+            "stats": {
+                "phi": float(phi_now.get("coherence", 0.5)),
+                "novelty": float(phi_now.get("novelty", 0.0)),
+                "valence": float(phi_now.get("valence", 0.0)),
+                "arousal": float(phi_now.get("energy", 0.5)),
+            },
+            "grid": [],
+            "metadata": meta,
+        }
+        await manager.broadcast(ws_payload)
+    except Exception as exc:
+        logger.warning("Failed to broadcast substrate tick to WebSocket: %s", exc)

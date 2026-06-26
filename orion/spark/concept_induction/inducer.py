@@ -21,9 +21,31 @@ from orion.core.schemas.concept_induction import (
 
 from .clusterer import ConceptClusterer
 from .embedder import EmbeddingClient
-from .extractor import SpacyConceptExtractor
+from .extractor import ExtractionResult, SpacyConceptExtractor
 from .settings import ConceptSettings
 from .summarizer import Summarizer
+
+# spaCy NER labels → open concept type vocabulary
+_NER_TO_CONCEPT_TYPE: dict[str, str] = {
+    "person": "person",
+    "norp": "group",
+    "fac": "place",
+    "org": "organization",
+    "gpe": "place",
+    "loc": "place",
+    "product": "artifact",
+    "event": "event",
+    "work_of_art": "artifact",
+    "law": "policy",
+    "language": "language",
+    "date": "temporal",
+    "time": "temporal",
+    "money": "quantity",
+    "quantity": "quantity",
+    "cardinal": "quantity",
+    "ordinal": "quantity",
+    "percent": "quantity",
+}
 
 logger = logging.getLogger("orion.spark.concept.inducer")
 
@@ -149,22 +171,40 @@ class ConceptInducer:
         embeddings_resp = self.embedder.embed(candidates)
         clusters = self.clusterer.cluster(candidates, embeddings_resp.embeddings)
 
+        freq_data = extraction.debug.get("freq", {})
+        raw_counts = [
+            v["count"] for v in freq_data.values() if isinstance(v, dict) and "count" in v
+        ]
+        max_freq = max(raw_counts, default=1.0) or 1.0
+
         concept_items: List[ConceptItem] = []
         for cand in candidates:
             concept_id = make_concept_id(cand)
+            raw_freq = freq_data.get(cand, {})
+            raw_count = raw_freq["count"] if isinstance(raw_freq, dict) else 0.0
+            salience = raw_count / max_freq
+
+            has_embed = cand in embeddings_resp.embeddings
+            confidence = min(1.0, 0.5 + (0.15 if has_embed else 0.0) + 0.35 * salience)
+
+            ner_label = extraction.entity_types.get(cand)
+            concept_type = _NER_TO_CONCEPT_TYPE.get(ner_label, "topic") if ner_label else "topic"
+
             concept_items.append(
                 ConceptItem(
                     concept_id=concept_id,
                     label=cand,
                     aliases=[],
-                    type="identity" if subject in {"orion", "juniper"} else "relationship",
-                    salience=1.0,
-                    confidence=0.6 if not embeddings_resp.embeddings else 0.75,
-                    embedding_ref=f"embedding:{concept_id}"
-                    if cand in embeddings_resp.embeddings
-                    else None,
+                    type=concept_type,
+                    salience=salience,
+                    confidence=confidence,
+                    embedding_ref=f"embedding:{concept_id}" if has_embed else None,
                     evidence=evidence[:5],
-                    metadata={"source": "spacy", "extraction": "ner+chunks"},
+                    metadata={
+                        "source": "spacy",
+                        "extraction": "ner+chunks",
+                        "ner_label": ner_label or "",
+                    },
                 )
             )
 

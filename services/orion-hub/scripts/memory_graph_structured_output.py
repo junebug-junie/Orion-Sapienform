@@ -6,11 +6,13 @@ import os
 from typing import Any, Dict
 
 from orion.memory_graph.schema_contract import compact_suggest_draft_json_schema
+from orion.memory_graph.suggest_token_budget import (
+    completion_budget_for_transcript,
+    suggest_token_budget_config_from_mapping,
+)
 
 
 _DEFAULT_STRUCTURED_METHOD = "json_object_schema"
-# Two-turn drafts with entities/situations/edges routinely exceed ~2k chars; 1600 tokens truncates.
-_DEFAULT_SUGGEST_MAX_TOKENS = 4096
 
 
 def _normalize_structured_output_method(method: str) -> str:
@@ -37,13 +39,16 @@ def resolve_memory_graph_structured_output_method(settings: Any) -> str:
     return _normalize_structured_output_method(raw)
 
 
-def memory_graph_suggest_llm_options(settings: Any, *, diagnostic: bool) -> Dict[str, Any]:
+def memory_graph_suggest_llm_options(
+    settings: Any,
+    *,
+    diagnostic: bool,
+    transcript: str = "",
+) -> Dict[str, Any]:
     """Options merged into CortexChatRequest for structured SuggestDraftV1 extraction."""
     method = resolve_memory_graph_structured_output_method(settings)
-    max_tokens = max(
-        _DEFAULT_SUGGEST_MAX_TOKENS,
-        int(getattr(settings, "MEMORY_GRAPH_SUGGEST_MAX_TOKENS", 0) or 0),
-    )
+    budget_cfg = suggest_token_budget_config_from_mapping(settings)
+    max_tokens = completion_budget_for_transcript(transcript, config=budget_cfg)
     opts: Dict[str, Any] = {
         "structured_output_schema_name": "SuggestDraftV1",
         "structured_output_schema": compact_suggest_draft_json_schema(),

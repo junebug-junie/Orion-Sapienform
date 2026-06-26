@@ -307,6 +307,13 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
                         ("final_text", payload.get("final_text")),
                     )
                     json_text = _extract_first_json_object_text(cleaned)
+                    if not json_text and str(verb_name or "").strip().lower() == "memory_graph_suggest":
+                        from orion.memory_graph.json_extract import salvage_truncated_json_object_text
+
+                        if provider_meta.get("finish_reason") == "length" and cleaned.lstrip().startswith("{"):
+                            json_text = salvage_truncated_json_object_text(cleaned)
+                            if json_text:
+                                diagnostics["structured_output_salvaged"] = True
                     if not json_text:
                         for extra_field, extra_val in extra_fields:
                             if extra_field == field:

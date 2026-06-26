@@ -464,7 +464,38 @@ class Settings(BaseSettings):
     MEMORY_GRAPH_SUGGEST_MAX_TOKENS: int = Field(
         default=4096,
         alias="MEMORY_GRAPH_SUGGEST_MAX_TOKENS",
-        description="Min completion budget for suggest draft JSON (gateway max_tokens).",
+        description=(
+            "Completion ceiling for suggest draft JSON (gateway max_tokens). "
+            "Actual budget is min(this, ctx - prompt - overhead); see MEMORY_GRAPH_SUGGEST_CTX_TOKENS."
+        ),
+    )
+    MEMORY_GRAPH_SUGGEST_CTX_TOKENS: int = Field(
+        default=4096,
+        alias="MEMORY_GRAPH_SUGGEST_CTX_TOKENS",
+        description=(
+            "Assumed llama.cpp ctx_size for the suggest route (align with config/llm_profiles.yaml "
+            "atlas-fast / quick lane)."
+        ),
+    )
+    MEMORY_GRAPH_SUGGEST_PROMPT_OVERHEAD_TOKENS: int = Field(
+        default=1800,
+        alias="MEMORY_GRAPH_SUGGEST_PROMPT_OVERHEAD_TOKENS",
+        description="Reserved tokens for system prompt, schema, and template outside the user transcript.",
+    )
+    MEMORY_GRAPH_SUGGEST_MIN_COMPLETION_TOKENS: int = Field(
+        default=768,
+        alias="MEMORY_GRAPH_SUGGEST_MIN_COMPLETION_TOKENS",
+        description="Floor for memory_graph_suggest completion budget after ctx subtraction.",
+    )
+    MEMORY_GRAPH_SUGGEST_CHARS_PER_TOKEN: int = Field(
+        default=3,
+        alias="MEMORY_GRAPH_SUGGEST_CHARS_PER_TOKEN",
+        description="Rough chars-per-token estimate for transcript length when budgeting suggest output.",
+    )
+    MEMORY_GRAPH_SUGGEST_MIN_PROMPT_TOKENS_ESTIMATE: int = Field(
+        default=400,
+        alias="MEMORY_GRAPH_SUGGEST_MIN_PROMPT_TOKENS_ESTIMATE",
+        description="Minimum assumed prompt tokens before transcript length is applied.",
     )
     MEMORY_GRAPH_SUGGEST_CONTEXT_TURNS: int = Field(
         default=3,

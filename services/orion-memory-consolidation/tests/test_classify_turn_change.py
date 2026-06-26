@@ -391,7 +391,15 @@ async def test_classify_turn_llm_failure_preserves_baseline_context():
 
 @pytest.mark.asyncio
 async def test_worker_spark_meta_patch_includes_classify_route(monkeypatch):
-    worker = _load("app/worker.py", "memory_consolidation_worker")
+    import sys
+    from unittest.mock import MagicMock
+
+    budget_stub = MagicMock()
+    budget_stub.suggest_token_budget_config_from_mapping = MagicMock(return_value=MagicMock())
+    sys.modules.setdefault("orion.memory_graph.suggest_token_budget", budget_stub)
+    sys.modules.setdefault("orion.memory_graph.suggest_runner", MagicMock())
+
+    worker = _load("app/worker.py", "memory_consolidation_worker_spark_route")
     published = []
 
     bus = AsyncMock()

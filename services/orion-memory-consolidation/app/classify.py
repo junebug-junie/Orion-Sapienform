@@ -11,7 +11,8 @@ from orion.memory.consolidation_classify import build_classify_prompt
 from orion.memory.turn_change_classify import (
     build_change_only_prompt,
     build_turn_change_appraisal,
-    novel_margin_below_threshold,
+    reconcile_novelty_with_shift,
+    should_session_reappraise,
 )
 from orion.schemas.memory_consolidation import MemoryTurnPersistedV1
 
@@ -196,18 +197,10 @@ async def classify_turn(
     )
 
     novelty = scores.get("novelty_score")
-    shift_kind = scores.get("shift_kind")
-    reappraise_low_margin = novel_margin_below_threshold(
-        novelty, margin=settings.TURN_CHANGE_CONFIDENCE_MARGIN
-    )
-    reappraise_shift_mismatch = (
-        shift_kind in ("TOPIC", "STANCE", "REPAIR")
-        and isinstance(novelty, (int, float))
-        and float(novelty) < 0.35
-    )
-    if (
-        (reappraise_low_margin or reappraise_shift_mismatch)
-        and len(prior_turns) >= 2
+    if should_session_reappraise(
+        scores,
+        margin=settings.TURN_CHANGE_CONFIDENCE_MARGIN,
+        prior_turn_count=len(prior_turns),
     ):
         try:
             retry = await reappraise_with_session_window(
@@ -221,6 +214,7 @@ async def classify_turn(
                     scores["confidence"] = retry["confidence"]
                 if retry.get("scoring_source"):
                     scores["scoring_source"] = retry["scoring_source"]
+                scores["reappraised_session_window"] = True
                 baseline_mode = "session_window"
                 _, baseline_text = _session_window_baseline(
                     prior_turns, n=settings.TURN_CHANGE_WINDOW_TURNS
@@ -232,6 +226,8 @@ async def classify_turn(
                 turn.correlation_id,
                 exc,
             )
+
+    scores = reconcile_novelty_with_shift(scores)
 
     status = (
         "ok"
@@ -247,6 +243,10 @@ async def classify_turn(
         confidence=scores.get("confidence"),
         status=status,
     )
+    if scores.get("novelty_adjusted_from_shift"):
+        appraisal["novelty_adjusted_from_shift"] = True
+    if scores.get("reappraised_session_window"):
+        appraisal["reappraised_session_window"] = True
     return {
         "turn_change_appraisal": appraisal,
         "memory_significance_score": scores.get("memory_significance_score"),

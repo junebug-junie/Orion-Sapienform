@@ -47,6 +47,58 @@ def novel_margin_below_threshold(novelty_score: float | None, *, margin: float) 
     return m is not None and m < float(margin)
 
 
+def shift_novelty_mismatch(
+    shift_kind: str | None,
+    novelty_score: float | None,
+    shift_scores: dict[str, float] | None,
+    *,
+    novelty_ceiling: float = 0.35,
+    shift_floor: float = 0.5,
+) -> bool:
+    if shift_kind not in ("TOPIC", "STANCE", "REPAIR"):
+        return False
+    if not isinstance(novelty_score, (int, float)) or float(novelty_score) >= novelty_ceiling:
+        return False
+    scores = shift_scores if isinstance(shift_scores, dict) else {}
+    sk = scores.get(shift_kind)
+    return isinstance(sk, (int, float)) and float(sk) >= shift_floor
+
+
+def reconcile_novelty_with_shift(
+    scores: dict[str, Any],
+    *,
+    blend: float = 0.65,
+) -> dict[str, Any]:
+    """Lift novelty when shift mass is strong but the NOVEL line says NO."""
+    shift_kind = scores.get("shift_kind")
+    novelty = scores.get("novelty_score")
+    shift_scores = scores.get("shift_scores") if isinstance(scores.get("shift_scores"), dict) else {}
+    if not shift_novelty_mismatch(shift_kind, novelty, shift_scores):
+        return scores
+    sk_score = float(shift_scores[str(shift_kind)])
+    lifted = max(float(novelty or 0.0), sk_score * blend)
+    out = dict(scores)
+    out["novelty_score"] = lifted
+    out["confidence"] = appraisal_confidence(lifted, sk_score)
+    out["novelty_adjusted_from_shift"] = True
+    return out
+
+
+def should_session_reappraise(
+    scores: dict[str, Any],
+    *,
+    margin: float,
+    prior_turn_count: int,
+) -> bool:
+    if prior_turn_count < 1:
+        return False
+    novelty = scores.get("novelty_score")
+    shift_kind = scores.get("shift_kind")
+    if novel_margin_below_threshold(novelty, margin=margin):
+        return True
+    return shift_novelty_mismatch(shift_kind, novelty, scores.get("shift_scores"))
+
+
 def parse_novel_shift_lines(text: str) -> tuple[str | None, str | None]:
     novel = _NOVEL_LINE.search(text or "")
     shift = _SHIFT_LINE.search(text or "")
@@ -74,8 +126,13 @@ def build_turn_change_prompt(
 ) -> str:
     p, r = _clip_pair(prompt, response)
     return (
-        "Classify this turn vs the baseline. Output exactly four lines.\n"
-        "NOVEL means the user introduced new facts, goals, or a meaningful topic change.\n"
+        "Compare CURRENT vs BASELINE. Output exactly four lines.\n"
+        "NOVEL: YES when the user adds facts, events, feelings, goals, identity claims, "
+        "or reframes the conversation vs baseline.\n"
+        "NOVEL: NO only when the exchange is pure continuation with no new substance.\n"
+        "SHIFT: NONE | TOPIC (subject) | STANCE (identity/beliefs/relationship framing) | "
+        "REPAIR (correction/recovery).\n"
+        "If SHIFT is TOPIC, STANCE, or REPAIR, NOVEL should be YES unless it is trivial repetition.\n"
         "NOVEL: YES or NO\n"
         "SHIFT: NONE or TOPIC or STANCE or REPAIR\n"
         "MEMORY: YES or NO\n"
@@ -96,7 +153,10 @@ def build_change_only_prompt(
 ) -> str:
     p, r = _clip_pair(prompt, response)
     return (
-        "Re-appraise change vs session window baseline. Output exactly two lines:\n"
+        "Re-appraise CURRENT vs the session window baseline. Output exactly two lines.\n"
+        "NOVEL: YES for new facts, disclosures, identity/autonomy claims, or reframing.\n"
+        "NOVEL: NO only for pure continuation with no new substance.\n"
+        "If SHIFT is TOPIC, STANCE, or REPAIR, NOVEL should be YES unless trivial repetition.\n"
         "NOVEL: YES or NO\n"
         "SHIFT: NONE or TOPIC or STANCE or REPAIR\n\n"
         f"phase={phase}\n"

@@ -356,15 +356,30 @@ async def test_classify_turn_reappraisal_failure_keeps_primary_scores():
 
 
 @pytest.mark.asyncio
-async def test_classify_turn_low_margin_single_prior_skips_reappraisal():
+async def test_classify_turn_low_margin_single_prior_triggers_reappraisal():
     bus = AsyncMock()
-    content = "NOVEL: YES\nSHIFT: TOPIC\nMEMORY: NO\nBOUNDARY: NO\n"
+    first_content = "NOVEL: YES\nSHIFT: TOPIC\nMEMORY: NO\nBOUNDARY: NO\n"
+    retry_content = "NOVEL: NO\nSHIFT: NONE\nMEMORY: NO\nBOUNDARY: NO\n"
+    call_count = 0
     bus.rpc_request.return_value = {"data": b"x"}
 
     def _decode_side_effect(_):
+        nonlocal call_count
+        call_count += 1
+        content = first_content if call_count == 1 else retry_content
         class _R:
             ok = True
-            envelope = type("E", (), {"payload": _llm_raw(content, novel_lp=-2.0, shift_token="TOPIC")})()
+            envelope = type(
+                "E",
+                (),
+                {
+                    "payload": _llm_raw(
+                        content,
+                        novel_lp=-2.0 if call_count == 1 else -0.2,
+                        shift_token="TOPIC" if call_count == 1 else "NONE",
+                    )
+                },
+            )()
 
         return _R()
 
@@ -374,8 +389,8 @@ async def test_classify_turn_low_margin_single_prior_skips_reappraisal():
     from app.settings import settings as app_settings
 
     patch = await classify_mod.classify_turn(bus, turn=turn, prior_turns=prior, settings=app_settings)
-    assert bus.rpc_request.await_count == 1
-    assert patch["turn_change_appraisal"]["baseline_mode"] == "prior_turn"
+    assert bus.rpc_request.await_count == 2
+    assert patch["turn_change_appraisal"]["baseline_mode"] == "session_window"
 
 
 @pytest.mark.asyncio

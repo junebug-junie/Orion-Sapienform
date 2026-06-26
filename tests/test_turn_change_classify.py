@@ -73,6 +73,27 @@ def test_build_change_only_prompt_two_lines():
     assert "MEMORY:" not in p
 
 
+def test_reconcile_novelty_with_shift_lifts_stance_mismatch():
+    from orion.memory.turn_change_classify import reconcile_novelty_with_shift
+
+    scores = {
+        "novelty_score": 2e-9,
+        "shift_kind": "STANCE",
+        "shift_scores": {"STANCE": 0.96, "TOPIC": 0.03, "NONE": 0.01, "REPAIR": 0.0},
+        "confidence": 0.93,
+    }
+    out = reconcile_novelty_with_shift(scores)
+    assert out["novelty_score"] == pytest.approx(0.96 * 0.65, rel=1e-3)
+    assert out["novelty_adjusted_from_shift"] is True
+
+
+def test_reconcile_novelty_with_shift_skips_when_no_mismatch():
+    from orion.memory.turn_change_classify import reconcile_novelty_with_shift
+
+    scores = {"novelty_score": 0.8, "shift_kind": "TOPIC", "shift_scores": {"TOPIC": 0.9}}
+    assert reconcile_novelty_with_shift(scores) == scores
+
+
 def test_dimensions_for_shift_branches():
     from orion.memory.turn_change_signal import dimensions_for_shift
 

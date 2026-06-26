@@ -121,6 +121,19 @@ def test_resolve_classify_route_allowlist(raw, expected):
     assert classify_mod._resolve_classify_route(settings) == expected
 
 
+def test_resolve_classify_route_logs_invalid(caplog):
+    import logging
+
+    from app.settings import Settings
+
+    with caplog.at_level(logging.WARNING):
+        route = classify_mod._resolve_classify_route(
+            Settings(TURN_CHANGE_CLASSIFY_ROUTE="chat-thinking")
+        )
+    assert route == "metacog"
+    assert "invalid TURN_CHANGE_CLASSIFY_ROUTE" in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_classify_turn_rpc_uses_metacog_route_and_disables_thinking():
     bus = AsyncMock()
@@ -319,6 +332,7 @@ async def test_classify_turn_text_fallback_marks_degraded():
     appr = patch["turn_change_appraisal"]
     assert appr["turn_change_status"] == "degraded"
     assert appr["novelty_score"] == pytest.approx(0.85)
+    assert patch["turn_change_classify_route"] == "metacog"
 
 
 @pytest.mark.asyncio

@@ -96,19 +96,21 @@ def _degraded_patch(
     return out
 
 
-async def _llm_classify(bus: OrionBusAsync, *, prompt: str, settings) -> dict:
-    llm_route = _resolve_classify_route(settings)
+async def _llm_classify(
+    bus: OrionBusAsync, *, prompt: str, settings, llm_route: str | None = None
+) -> dict:
+    route = llm_route or _resolve_classify_route(settings)
     rpc_corr = str(uuid4())
     reply_channel = f"orion:exec:result:LLMGatewayService:{rpc_corr}"
     payload = ChatRequestPayload(
         messages=[LLMMessage(role="user", content=prompt)],
-        route=llm_route,
+        route=route,
         options={
             "return_logprobs": True,
             "logprobs_top_k": 8,
             "logprob_summary_only": False,
             "max_tokens": 24,
-            "llm_route": llm_route,
+            "llm_route": route,
             "chat_template_kwargs": {"enable_thinking": False},
         },
     )
@@ -188,7 +190,9 @@ async def classify_turn(
     scores: dict | None = None
     for attempt in range(2):
         try:
-            scores = await _llm_classify(bus, prompt=prompt, settings=settings)
+            scores = await _llm_classify(
+                bus, prompt=prompt, settings=settings, llm_route=classify_route
+            )
             break
         except Exception as exc:
             last_error = exc

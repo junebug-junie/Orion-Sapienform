@@ -19,6 +19,20 @@ Layer 10 of the Orion cognition substrate: observes `ExecutionDispatchFrameV1` o
 
 `8122` (`FEEDBACK_RUNTIME_PORT`)
 
+## Bus / Redis
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `ORION_BUS_URL` | `redis://bus-core:6379/0` (compose) | Redis URL for Orion bus publish |
+| `ORION_BUS_ENABLED` | `true` | Disable bus connect/publish when `false` |
+| `FEEDBACK_BUS_CHANNEL` | `orion:feedback:frame` | Channel for `feedback.frame.v1` envelopes |
+
+Bring up with root `.env` so `ORION_BUS_URL` matches the live stack:
+
+```bash
+docker compose --env-file ../../.env --env-file .env -f docker-compose.yml up -d --build
+```
+
 ## Migration
 
 ```bash
@@ -31,7 +45,7 @@ docker exec -i orion-athena-sql-db psql -U postgres -d conjourney \
 ```bash
 cd services/orion-feedback-runtime
 cp -n .env_example .env
-docker compose up -d --build
+docker compose --env-file ../../.env --env-file .env up -d --build
 ```
 
 ## Smoke

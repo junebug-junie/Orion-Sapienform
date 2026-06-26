@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     enable_feedback_runtime: bool = Field(True, alias="ENABLE_FEEDBACK_RUNTIME")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
-    bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
+    bus_url: str = Field(default="redis://127.0.0.1:6379/0", alias="ORION_BUS_URL")
     bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
     feedback_bus_channel: str = Field("orion:feedback:frame", alias="FEEDBACK_BUS_CHANNEL")
 

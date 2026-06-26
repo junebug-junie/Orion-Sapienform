@@ -60,6 +60,17 @@ def _session_window_baseline(prior_turns: list[dict], *, n: int) -> tuple[str, s
     return "session_window", _build_window_transcript(selected, max_turns=n)
 
 
+_CLASSIFY_ROUTES = frozenset({"metacog", "quick"})
+
+
+def _resolve_classify_route(settings) -> str:
+    route = str(getattr(settings, "TURN_CHANGE_CLASSIFY_ROUTE", "metacog") or "metacog").strip().lower()
+    if route not in _CLASSIFY_ROUTES:
+        logger.warning("invalid TURN_CHANGE_CLASSIFY_ROUTE=%r; falling back to metacog", route)
+        return "metacog"
+    return route
+
+
 def _degraded_patch(
     *,
     baseline_mode: str = "none",

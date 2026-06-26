@@ -103,6 +103,24 @@ def test_settings_default_classify_route_is_metacog():
     assert s.TURN_CHANGE_CLASSIFY_ROUTE == "metacog"
 
 
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("metacog", "metacog"),
+        ("METACOG", "metacog"),
+        ("quick", "quick"),
+        (" chat ", "metacog"),  # invalid → fallback
+        ("chat-thinking", "metacog"),
+        ("", "metacog"),
+    ],
+)
+def test_resolve_classify_route_allowlist(raw, expected):
+    from app.settings import Settings
+
+    settings = Settings(TURN_CHANGE_CLASSIFY_ROUTE=raw)
+    assert classify_mod._resolve_classify_route(settings) == expected
+
+
 @pytest.mark.asyncio
 async def test_classify_turn_first_turn_baseline_none():
     bus = AsyncMock()

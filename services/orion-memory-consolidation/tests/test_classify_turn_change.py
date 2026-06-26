@@ -96,6 +96,13 @@ def _llm_raw(content: str, *, novel_lp=-0.2, shift_token="NONE") -> dict:
     }
 
 
+def test_settings_default_classify_route_is_metacog():
+    from app.settings import Settings
+
+    s = Settings()
+    assert s.TURN_CHANGE_CLASSIFY_ROUTE == "metacog"
+
+
 @pytest.mark.asyncio
 async def test_classify_turn_first_turn_baseline_none():
     bus = AsyncMock()

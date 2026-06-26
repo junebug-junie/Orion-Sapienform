@@ -16,6 +16,7 @@ Each persisted turn (after the first in a window) gets a logprob-calibrated `tur
 
 | Env | Default | Purpose |
 |-----|---------|---------|
+| `TURN_CHANGE_CLASSIFY_ROUTE` | `metacog` | Gateway route for classify RPC (`metacog` or `quick`) |
 | `TURN_CHANGE_CONFIDENCE_MARGIN` | `0.15` | Re-appraise vs session window when novelty margin is below this |
 | `TURN_CHANGE_SUBSTRATE_THRESHOLD` | `0.65` | Minimum novelty to emit substrate signal |
 | `TURN_CHANGE_WINDOW_TURNS` | `3` | Prior turns in session-window baseline |

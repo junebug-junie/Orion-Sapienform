@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.core.schemas.drives import ArtifactProvenance, TensionEventV1
+from orion.schemas.feedback_frame import FeedbackFrameV1
+from orion.schemas.self_state import SelfStateV1
 
 from .dossier import build_evidence_items, build_source_event_ref, extract_trace_id, extract_turn_id
 
@@ -257,3 +259,207 @@ def derive_pressure_competition_tensions(
     )
     event.provenance.tension_refs = [event.artifact_id]
     return [event]
+
+
+def extract_tensions_from_self_state(
+    *,
+    envelope: BaseEnvelope,
+    intake_channel: str,
+    self_state: SelfStateV1,
+    previous_self_state: Optional[SelfStateV1] = None,
+) -> List[TensionEventV1]:
+    """Derive tensions from substrate self-state ticks, using dimension deltas where a previous state exists."""
+    subject = "orion"
+    model_layer = "self-model"
+    entity_id = "self:orion"
+
+    d = self_state.dimensions
+
+    def _s(key: str, default: float = 0.5) -> float:
+        dim = d.get(key)
+        return float(dim.score) if dim is not None else default
+
+    def _delta(key: str) -> Optional[float]:
+        if previous_self_state is None:
+            return None
+        prev = previous_self_state.dimensions.get(key)
+        return _s(key) - (float(prev.score) if prev is not None else _s(key))
+
+    ts = envelope.created_at if envelope.created_at.tzinfo else envelope.created_at.replace(tzinfo=timezone.utc)
+    trace_id = extract_trace_id(envelope)
+    turn_id = extract_turn_id(envelope)
+    source_event_ref = build_source_event_ref(envelope, intake_channel)
+    evidence_text = f"condition={self_state.overall_condition} trajectory={self_state.trajectory_condition}"
+    evidence_items = build_evidence_items(envelope, intake_channel, evidence_text)
+    prov = ArtifactProvenance(
+        intake_channel=intake_channel,
+        correlation_id=str(envelope.correlation_id),
+        trace_id=str(trace_id) if trace_id else None,
+        turn_id=turn_id,
+        evidence_text=evidence_text,
+        evidence_summary=evidence_items[0].summary if evidence_items else None,
+        source_event_refs=[source_event_ref],
+        evidence_items=evidence_items,
+    )
+    traj_mul = 1.25 if self_state.trajectory_condition == "degrading" else 1.0
+
+    events: List[TensionEventV1] = []
+
+    # Coherence drop → contradiction (integration is breaking down)
+    coh_delta = _delta("coherence")
+    coh_now = _s("coherence")
+    fire_coh = coh_delta < -0.04 if coh_delta is not None else coh_now < 0.35
+    mag_coh = clamp01(abs(coh_delta) * traj_mul) if coh_delta is not None else clamp01((0.5 - coh_now) * traj_mul)
+    if fire_coh and mag_coh > 0.0:
+        events.append(TensionEventV1(
+            artifact_id=_artifact_id(envelope, entity_id, "tension.contradiction.v1"),
+            subject=subject, model_layer=model_layer, entity_id=entity_id,
+            kind="tension.contradiction.v1", ts=ts, confidence=0.82,
+            correlation_id=str(envelope.correlation_id),
+            trace_id=str(trace_id) if trace_id else None, turn_id=turn_id,
+            provenance=prov,
+            related_nodes=["substrate:coherence", "drive:coherence", "drive:predictive"],
+            magnitude=mag_coh,
+            drive_impacts={"coherence": 1.0, "predictive": 0.7},
+        ))
+
+    # Agency/social-ease drop → distress
+    agency_delta = _delta("agency_readiness")
+    social_delta = _delta("social_pressure")  # rising pressure = distress signal
+    agency_now = _s("agency_readiness")
+    if agency_delta is not None or social_delta is not None:
+        combined = (-(agency_delta or 0.0) + (social_delta or 0.0)) / 2.0
+        fire_dist = combined > 0.04
+        mag_dist = clamp01(combined * traj_mul)
+    else:
+        fire_dist = agency_now < 0.30
+        mag_dist = clamp01((0.5 - agency_now) * traj_mul)
+    if fire_dist and mag_dist > 0.0:
+        events.append(TensionEventV1(
+            artifact_id=_artifact_id(envelope, entity_id, "tension.distress.v1"),
+            subject=subject, model_layer=model_layer, entity_id=entity_id,
+            kind="tension.distress.v1", ts=ts, confidence=0.78,
+            correlation_id=str(envelope.correlation_id),
+            trace_id=str(trace_id) if trace_id else None, turn_id=turn_id,
+            provenance=prov,
+            related_nodes=["substrate:agency_readiness", "substrate:social_pressure", "drive:relational", "drive:continuity"],
+            magnitude=mag_dist,
+            drive_impacts={"relational": 0.9, "continuity": 0.55},
+        ))
+
+    # Uncertainty rise → identity_drift (ground shifting)
+    unc_delta = _delta("uncertainty")
+    unc_now = _s("uncertainty")
+    fire_unc = unc_delta > 0.05 if unc_delta is not None else unc_now > 0.75
+    mag_unc = clamp01(unc_delta * traj_mul) if unc_delta is not None else clamp01((unc_now - 0.5) * traj_mul)
+    if fire_unc and mag_unc > 0.0:
+        events.append(TensionEventV1(
+            artifact_id=_artifact_id(envelope, entity_id, "tension.identity_drift.v1"),
+            subject=subject, model_layer=model_layer, entity_id=entity_id,
+            kind="tension.identity_drift.v1", ts=ts, confidence=0.72,
+            correlation_id=str(envelope.correlation_id),
+            trace_id=str(trace_id) if trace_id else None, turn_id=turn_id,
+            provenance=prov,
+            related_nodes=["substrate:uncertainty", "drive:continuity", "drive:autonomy"],
+            magnitude=mag_unc,
+            drive_impacts={"continuity": 0.8, "autonomy": 0.6, "predictive": 0.4},
+        ))
+
+    # Resource + execution pressure rise → cognitive_load
+    res_delta = _delta("resource_pressure")
+    exe_delta = _delta("execution_pressure")
+    res_now = _s("resource_pressure")
+    exe_now = _s("execution_pressure")
+    if res_delta is not None or exe_delta is not None:
+        load_delta = ((res_delta or 0.0) + (exe_delta or 0.0)) / 2.0
+        fire_load = load_delta > 0.04
+        mag_load = clamp01(load_delta * traj_mul)
+    else:
+        overall_load = (res_now + exe_now) / 2.0
+        fire_load = overall_load > 0.65
+        mag_load = clamp01((overall_load - 0.5) * traj_mul)
+    if fire_load and mag_load > 0.0:
+        events.append(TensionEventV1(
+            artifact_id=_artifact_id(envelope, entity_id, "tension.cognitive_load.v1"),
+            subject=subject, model_layer=model_layer, entity_id=entity_id,
+            kind="tension.cognitive_load.v1", ts=ts, confidence=0.76,
+            correlation_id=str(envelope.correlation_id),
+            trace_id=str(trace_id) if trace_id else None, turn_id=turn_id,
+            provenance=prov,
+            related_nodes=["substrate:resource_pressure", "substrate:execution_pressure", "drive:capability"],
+            magnitude=mag_load,
+            drive_impacts={"capability": 0.9, "coherence": 0.45},
+        ))
+
+    for event in events:
+        event.provenance.tension_refs = [event.artifact_id]
+    return events
+
+
+def extract_tensions_from_feedback(
+    *,
+    envelope: BaseEnvelope,
+    intake_channel: str,
+    feedback_frame: FeedbackFrameV1,
+) -> List[TensionEventV1]:
+    """Derive tensions from a scored feedback frame — real outcome signal closing the autonomy loop."""
+    subject = "orion"
+    model_layer = "self-model"
+    entity_id = "self:orion"
+
+    ts = envelope.created_at if envelope.created_at.tzinfo else envelope.created_at.replace(tzinfo=timezone.utc)
+    trace_id = extract_trace_id(envelope)
+    turn_id = extract_turn_id(envelope)
+    source_event_ref = build_source_event_ref(envelope, intake_channel)
+    evidence_text = (
+        f"outcome_status={feedback_frame.outcome_status} "
+        f"score={feedback_frame.outcome_score:.3f} "
+        f"confidence={feedback_frame.confidence_score:.3f}"
+    )
+    evidence_items = build_evidence_items(envelope, intake_channel, evidence_text)
+    prov = ArtifactProvenance(
+        intake_channel=intake_channel,
+        correlation_id=str(envelope.correlation_id),
+        trace_id=str(trace_id) if trace_id else None,
+        turn_id=turn_id,
+        evidence_text=evidence_text,
+        evidence_summary=evidence_items[0].summary if evidence_items else None,
+        source_event_refs=[source_event_ref],
+        evidence_items=evidence_items,
+    )
+
+    events: List[TensionEventV1] = []
+    conf = clamp01(feedback_frame.confidence_score)
+
+    # Failed/absent/blocked outcome → contradiction (predicted success, got nothing)
+    if feedback_frame.outcome_status in ("failed", "absent", "blocked"):
+        events.append(TensionEventV1(
+            artifact_id=_artifact_id(envelope, entity_id, "tension.contradiction.v1"),
+            subject=subject, model_layer=model_layer, entity_id=entity_id,
+            kind="tension.contradiction.v1", ts=ts, confidence=conf,
+            correlation_id=str(envelope.correlation_id),
+            trace_id=str(trace_id) if trace_id else None, turn_id=turn_id,
+            provenance=prov,
+            related_nodes=["feedback:outcome_status", "drive:predictive", "drive:coherence"],
+            magnitude=clamp01(1.0 - feedback_frame.outcome_score),
+            drive_impacts={"predictive": 1.0, "coherence": 0.65},
+        ))
+
+    # Low outcome score → distress (the action didn't land; autonomy frustrated)
+    if feedback_frame.outcome_score < 0.4:
+        mag = clamp01((0.5 - feedback_frame.outcome_score) * 2.0)
+        events.append(TensionEventV1(
+            artifact_id=_artifact_id(envelope, entity_id, "tension.distress.v1"),
+            subject=subject, model_layer=model_layer, entity_id=entity_id,
+            kind="tension.distress.v1", ts=ts, confidence=conf,
+            correlation_id=str(envelope.correlation_id),
+            trace_id=str(trace_id) if trace_id else None, turn_id=turn_id,
+            provenance=prov,
+            related_nodes=["feedback:outcome_score", "drive:relational", "drive:continuity", "drive:autonomy"],
+            magnitude=mag,
+            drive_impacts={"relational": 0.8, "continuity": 0.55, "autonomy": 0.5},
+        ))
+
+    for event in events:
+        event.provenance.tension_refs = [event.artifact_id]
+    return events

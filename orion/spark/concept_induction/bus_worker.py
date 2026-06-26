@@ -11,6 +11,8 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.schemas.concept_induction import ConceptProfile, ConceptProfileDelta
 from orion.core.schemas.drives import ArtifactProvenance, GraphReadyArtifact, TurnDossierV1
+from orion.schemas.feedback_frame import FeedbackFrameV1
+from orion.schemas.self_state import SelfStateV1
 from orion.schemas.vector.schemas import VectorWriteRequest
 
 from .audit import build_drive_audit
@@ -29,7 +31,12 @@ from .inducer import ConceptInducer, WindowEvent
 from .settings import ConceptSettings
 from .store import LocalProfileStore
 from .summarizer import Summarizer
-from .tensions import derive_pressure_competition_tensions, extract_tensions
+from .tensions import (
+    derive_pressure_competition_tensions,
+    extract_tensions,
+    extract_tensions_from_feedback,
+    extract_tensions_from_self_state,
+)
 from .rdf_materialization import build_concept_profile_rdf_request
 
 logger = logging.getLogger("orion.spark.concept.worker")
@@ -112,6 +119,7 @@ class ConceptWorker:
         self.inflight_subjects: Set[str] = set()
         self.recent_event_seen: Dict[str, datetime] = {}
         self.trigger_decisions: List[dict] = []
+        self._previous_self_state: Optional[SelfStateV1] = None
         self._stopped = False
         self._liveness = WorkerLivenessState(
             worker_initialized=True,
@@ -144,6 +152,8 @@ class ConceptWorker:
             ],
             "cognition_trace": ["channel contains cognition:trace"],
             "collapse_event": ["channel contains collapse"],
+            "self_state_update": ["kind=substrate.self_state.v1"],
+            "feedback_outcome": ["kind=feedback.frame.v1"],
             "generic_activity": ["fallback"],
         }
 
@@ -207,6 +217,10 @@ class ConceptWorker:
             return "cognition_trace"
         if "collapse" in lowered_channel:
             return "collapse_event"
+        if lowered_kind == "substrate.self_state.v1":
+            return "self_state_update"
+        if lowered_kind == "feedback.frame.v1":
+            return "feedback_outcome"
         return "generic_activity"
 
     def _select_trigger_subjects(
@@ -415,19 +429,64 @@ class ConceptWorker:
         )
         await self.bus.publish(self.cfg.turn_dossier_channel, env)
 
-    async def handle_envelope(self, env: BaseEnvelope, intake_channel: str) -> None:
-        text = self._extract_text(env)
-        subject = self._detect_subject(env, intake_channel)
-        model_layer = self._model_layer(subject, intake_channel)
-        entity_id = self._entity_id(subject, model_layer)
+    @staticmethod
+    def _payload_dict(env: BaseEnvelope) -> dict:
+        payload = env.payload
+        if hasattr(payload, "model_dump"):
+            payload = payload.model_dump()
+        return payload if isinstance(payload, dict) else {}
 
-        spark_tensions = extract_tensions(
+    def _tensions_from_self_state(self, env: BaseEnvelope, intake_channel: str) -> List[TensionEventV1]:
+        try:
+            self_state = SelfStateV1.model_validate(self._payload_dict(env))
+        except Exception:
+            logger.warning("substrate_self_state_parse_failed kind=%s", env.kind)
+            return []
+        tensions = extract_tensions_from_self_state(
             envelope=env,
             intake_channel=intake_channel,
-            subject=subject,
-            model_layer=model_layer,
-            entity_id=entity_id,
+            self_state=self_state,
+            previous_self_state=self._previous_self_state,
         )
+        self._previous_self_state = self_state
+        return tensions
+
+    def _tensions_from_feedback(self, env: BaseEnvelope, intake_channel: str) -> List[TensionEventV1]:
+        try:
+            frame = FeedbackFrameV1.model_validate(self._payload_dict(env))
+        except Exception:
+            logger.warning("feedback_frame_parse_failed kind=%s", env.kind)
+            return []
+        return extract_tensions_from_feedback(
+            envelope=env,
+            intake_channel=intake_channel,
+            feedback_frame=frame,
+        )
+
+    async def handle_envelope(self, env: BaseEnvelope, intake_channel: str) -> None:
+        text = self._extract_text(env)
+
+        if env.kind == "substrate.self_state.v1":
+            subject = "orion"
+            model_layer = model_layer_for_subject(subject)
+            entity_id = entity_id_for_subject(subject, model_layer)
+            spark_tensions = self._tensions_from_self_state(env, intake_channel)
+        elif env.kind == "feedback.frame.v1":
+            subject = "orion"
+            model_layer = model_layer_for_subject(subject)
+            entity_id = entity_id_for_subject(subject, model_layer)
+            spark_tensions = self._tensions_from_feedback(env, intake_channel)
+        else:
+            subject = self._detect_subject(env, intake_channel)
+            model_layer = self._model_layer(subject, intake_channel)
+            entity_id = self._entity_id(subject, model_layer)
+            spark_tensions = extract_tensions(
+                envelope=env,
+                intake_channel=intake_channel,
+                subject=subject,
+                model_layer=model_layer,
+                entity_id=entity_id,
+            )
         published_artifacts: List[GraphReadyArtifact] = []
         for tension in spark_tensions:
             await self._publish_tension_event(tension, env.correlation_id)
@@ -535,6 +594,10 @@ class ConceptWorker:
             suppressed_goal_signatures=suppressed_signatures,
         )
         await self._publish_dossier(dossier, env.correlation_id)
+
+        # Structured substrate/feedback signals carry no text: skip concept induction.
+        if env.kind in {"substrate.self_state.v1", "feedback.frame.v1"}:
+            return
 
         source_kind = self._source_kind(env, intake_channel)
         subjects = self._select_trigger_subjects(env, intake_channel, source_kind, text)

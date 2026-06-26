@@ -93,17 +93,19 @@ def _degraded_patch(
 
 
 async def _llm_classify(bus: OrionBusAsync, *, prompt: str, settings) -> dict:
+    llm_route = _resolve_classify_route(settings)
     rpc_corr = str(uuid4())
     reply_channel = f"orion:exec:result:LLMGatewayService:{rpc_corr}"
     payload = ChatRequestPayload(
         messages=[LLMMessage(role="user", content=prompt)],
-        route="quick",
+        route=llm_route,
         options={
             "return_logprobs": True,
             "logprobs_top_k": 8,
             "logprob_summary_only": False,
             "max_tokens": 24,
-            "llm_route": "quick",
+            "llm_route": llm_route,
+            "chat_template_kwargs": {"enable_thinking": False},
         },
     )
     env = BaseEnvelope(
@@ -196,9 +198,11 @@ async def classify_turn(
         logger.error("memory_classify_degraded corr=%s err=%s", turn.correlation_id, last_error)
         return _degraded_patch(baseline_mode=baseline_mode, prior_correlation_id=prior_corr)
 
+    classify_route = _resolve_classify_route(settings)
     logger.info(
-        "turn_change_classify corr=%s novelty=%s shift=%s confidence=%s source=%s mem=%s bnd=%s",
+        "turn_change_classify corr=%s route=%s novelty=%s shift=%s confidence=%s source=%s mem=%s bnd=%s",
         turn.correlation_id,
+        classify_route,
         scores.get("novelty_score"),
         scores.get("shift_kind"),
         scores.get("confidence"),
@@ -260,6 +264,7 @@ async def classify_turn(
         appraisal["reappraised_session_window"] = True
     return {
         "turn_change_appraisal": appraisal,
+        "turn_change_classify_route": classify_route,
         "memory_significance_score": scores.get("memory_significance_score"),
         "conversation_boundary_score": scores.get("conversation_boundary_score"),
         "memory_classify_status": "ok" if status == "ok" else "degraded",

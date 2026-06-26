@@ -122,6 +122,43 @@ def test_resolve_classify_route_allowlist(raw, expected):
 
 
 @pytest.mark.asyncio
+async def test_classify_turn_rpc_uses_metacog_route_and_disables_thinking():
+    bus = AsyncMock()
+    content = "NOVEL: NO\nSHIFT: NONE\nMEMORY: NO\nBOUNDARY: NO\n"
+    captured: dict = {}
+
+    async def _rpc_request(channel, env, **kwargs):
+        captured["channel"] = channel
+        captured["env"] = env
+        captured["kwargs"] = kwargs
+        return {"data": b"x"}
+
+    bus.rpc_request = _rpc_request
+
+    def _decode_side_effect(_):
+        class _R:
+            ok = True
+            envelope = type("E", (), {"payload": _llm_raw(content, novel_lp=-2.0, shift_token="NONE")})()
+
+        return _R()
+
+    bus.codec.decode = Mock(side_effect=_decode_side_effect)
+    prior = [{"correlation_id": "prev", "prompt": "cats", "response": "cute"}]
+    turn = MemoryTurnPersistedV1(
+        correlation_id=str(uuid4()), prompt="more cats", response="still cute", spark_meta={}
+    )
+    from app.settings import settings as app_settings
+
+    patch = await classify_mod.classify_turn(bus, turn=turn, prior_turns=prior, settings=app_settings)
+    payload = captured["env"].payload
+    assert payload["route"] == "metacog"
+    assert payload["options"]["llm_route"] == "metacog"
+    assert payload["options"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert payload["options"]["return_logprobs"] is True
+    assert patch["turn_change_classify_route"] == "metacog"
+
+
+@pytest.mark.asyncio
 async def test_classify_turn_first_turn_baseline_none():
     bus = AsyncMock()
     bus.codec.decode.return_value.ok = True

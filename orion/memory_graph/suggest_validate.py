@@ -514,7 +514,10 @@ def validate_for_escalation(
 
 
 def parse_json_object(text: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    from orion.memory_graph.json_extract import extract_first_json_object_text
+    from orion.memory_graph.json_extract import (
+        extract_first_json_object_text,
+        salvage_truncated_json_object_text,
+    )
 
     import json
 
@@ -522,6 +525,8 @@ def parse_json_object(text: str) -> Tuple[Optional[Dict[str, Any]], Optional[str
     if not raw:
         return None, "empty_output"
     blob = extract_first_json_object_text(raw)
+    if not blob:
+        blob = salvage_truncated_json_object_text(raw)
     if not blob:
         return None, "no_json_object"
     try:

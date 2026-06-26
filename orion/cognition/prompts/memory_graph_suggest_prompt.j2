@@ -70,13 +70,14 @@ Dual spine (relational + topical — both required when the text supports them):
 Minimal example (match real turn ids; keep output compact):
 - Two-turn feedback on a "pragmatic take": Juniper + Orion + abstract "pragmatic take"; situations for user acknowledgment and assistant affirmation; schema:about from situation to topic; shared topic id if both turns discuss it.
 - Shower example: Juniper + Orion + abstract "shower"; situations for departure and availability.
-- Include orionmem:inSituation edges; fill utterance_text_by_id; dispositions only when trust/distrust is explicit.
+- Include orionmem:inSituation edges; omit utterance_text_by_id (the server hydrates turn text); dispositions only when trust/distrust is explicit.
+- Keep output compact: short stable ids (e.g. e_user, e_orion, s1) instead of long urn:uuid values unless required; at most 6 entities, 4 situations, and 8 edges for the selected turns; minified JSON on one logical object (no markdown fences).
 
 Rules:
 - Return JSON only. No markdown. No prose before or after the JSON.
 - Use only the selected utterance text and provided grounding.
 - Do not invent new facts beyond what roles and language reasonably imply.
-- Every entity must have id, label, entityKind, and surfaceForms. Prefer urn:uuid:… ids for entities and situations (RDF-compatible). Each urn:uuid must be a valid RFC-4122 UUID (hex digits 0-9 and a-f only); do not invent sequential suffixes like …90ag.
+- Every entity must have id, label, entityKind, and surfaceForms. Prefer short stable ids (e.g. e_user, e_orion, s1). When you use urn:uuid ids they must be valid RFC-4122 UUIDs (hex digits 0-9 and a-f only); do not invent sequential suffixes like …90ag.
 - Every situation must reference at least one utterance_id.
 - Every edge predicate must be one of the listed predicates.
 - Use null instead of omitting optional scalar fields.

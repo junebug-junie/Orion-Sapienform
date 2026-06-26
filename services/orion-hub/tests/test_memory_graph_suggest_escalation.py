@@ -288,7 +288,7 @@ def test_quick_timeout_does_not_escalate_to_brain(hub_settings, fixture_draft_te
     assert "hub_wait_for_timeout" in str(out["attempts"][0].get("validation_errors", []))
 
 
-def test_truncated_json_escalates_to_brain(hub_settings, fixture_draft_text: str) -> None:
+def test_truncated_json_escalates_to_metacog(hub_settings, fixture_draft_text: str) -> None:
     _ensure_hub_scripts_import_path()
     from scripts.memory_graph_suggest import suggest_with_escalation
 
@@ -320,9 +320,7 @@ def test_truncated_json_escalates_to_brain(hub_settings, fixture_draft_text: str
     )
     assert out["ok"] is True
     assert out["route_used"] == "brain"
-    assert len(calls) == 2
-    phases = [str(a.get("phase") or "") for a in out.get("attempts") or []]
-    assert "json_truncated" in phases
+    assert calls == ["quick", "metacog"]
 
 
 def test_cortex_prose_returns_no_json_object_without_draft(hub_settings) -> None:

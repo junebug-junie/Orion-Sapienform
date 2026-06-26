@@ -38,9 +38,11 @@ async def test_retry_failed_windows_runs_suggest(monkeypatch):
     suggest_runner = AsyncMock()
     suggest_runner.consolidate_window = AsyncMock()
     bus = AsyncMock()
+    pool = AsyncMock()
+    pool.fetchval = AsyncMock(return_value="ok")
 
     await retry_failed_windows(
-        pool=AsyncMock(),
+        pool=pool,
         bus=bus,
         window_store=window_store,
         suggest_runner=suggest_runner,

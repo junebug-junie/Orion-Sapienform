@@ -57,10 +57,10 @@ def _normalize_route(raw: str | None, default: RouteName) -> RouteName:
 
 
 def _apply_llm_route(options: Dict[str, Any], route: RouteName) -> Dict[str, Any]:
-    """Map suggest escalation labels to LLM gateway lanes (always cheap quick, not UI brain/chat)."""
+    """Map suggest escalation labels to LLM gateway lanes."""
     out = dict(options or {})
-    # MEMORY_GRAPH_SUGGEST_ESCALATION_ROUTE=brain is a retry label only — not Hub UI brain mode.
-    out["llm_route"] = "quick"
+    # MEMORY_GRAPH_SUGGEST_ESCALATION_ROUTE=brain escalates to metacog (larger ctx), not Hub UI chat.
+    out["llm_route"] = "metacog" if route == "brain" else "quick"
     return out
 
 
@@ -340,7 +340,16 @@ async def suggest_with_escalation(
         opts = _apply_llm_route(dict(req.options or {}), route)
         if include_grounding:
             opts["memory_graph_include_grounding"] = True
-        structured_opts = memory_graph_suggest_llm_options(settings, diagnostic=diagnostic)
+        budget_text = "\n".join(
+            str(m.get("content") or "")
+            for m in (continuity or [])
+            if isinstance(m, dict)
+        ).strip() or user_prompt
+        structured_opts = memory_graph_suggest_llm_options(
+            settings,
+            diagnostic=diagnostic,
+            transcript=budget_text,
+        )
         opts.update(structured_opts)
         opts["skip_brain_reply_context"] = True
         opts["structured_output_method_requested"] = resolve_memory_graph_structured_output_method(

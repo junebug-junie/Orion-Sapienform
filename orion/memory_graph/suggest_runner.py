@@ -7,13 +7,24 @@ from typing import Any, Dict, Optional
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.memory_graph.schema_contract import compact_suggest_draft_json_schema
+from orion.memory_graph.suggest_token_budget import (
+    SuggestTokenBudgetConfig,
+    completion_budget_for_transcript,
+    suggest_token_budget_config_from_env,
+)
 from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, LLMMessage, RecallDirective
 
-_DEFAULT_SUGGEST_MAX_TOKENS = 8192
+_SUGGEST_ROUTE_ATTEMPTS = ("quick", "metacog")
 
 
-def build_memory_graph_suggest_options(*, llm_route: str = "quick") -> Dict[str, Any]:
+def build_memory_graph_suggest_options(
+    *,
+    llm_route: str = "quick",
+    transcript: str = "",
+    budget_config: SuggestTokenBudgetConfig | None = None,
+) -> Dict[str, Any]:
     """LLM options aligned with Hub memory_graph_suggest structured output."""
+    cfg = budget_config or suggest_token_budget_config_from_env()
     return {
         "llm_route": llm_route,
         "no_write": True,
@@ -27,7 +38,7 @@ def build_memory_graph_suggest_options(*, llm_route: str = "quick") -> Dict[str,
         "structured_output_thinking_policy": "disabled_for_artifact",
         "chat_template_kwargs": {"enable_thinking": False},
         "temperature": 0.1,
-        "max_tokens": _DEFAULT_SUGGEST_MAX_TOKENS,
+        "max_tokens": completion_budget_for_transcript(transcript, config=cfg),
     }
 
 
@@ -41,6 +52,7 @@ async def suggest_once(
     timeout_sec: float = 120.0,
     session_id: Optional[str] = None,
     llm_route: str = "quick",
+    budget_config: SuggestTokenBudgetConfig | None = None,
 ) -> Dict[str, Any]:
     trace_id = str(uuid.uuid4())
     reply_channel = f"{cortex_result_prefix}:{trace_id}"
@@ -55,7 +67,11 @@ async def suggest_once(
         route_intent="none",
         verb="memory_graph_suggest",
         packs=[],
-        options=build_memory_graph_suggest_options(llm_route=llm_route),
+        options=build_memory_graph_suggest_options(
+            llm_route=llm_route,
+            transcript=transcript,
+            budget_config=budget_config,
+        ),
         recall=RecallDirective(enabled=False),
         context=ctx,
     )
@@ -90,14 +106,16 @@ async def suggest_with_escalation(
     source: ServiceRef,
     timeout_sec: float = 120.0,
     session_id: Optional[str] = None,
+    budget_config: SuggestTokenBudgetConfig | None = None,
 ) -> Dict[str, Any]:
-    """Try quick lane first, then brain lane if draft JSON cannot be extracted."""
+    """Try quick lane first, then metacog if draft JSON cannot be extracted."""
     from orion.memory_graph.cortex_suggest_extract import extract_suggest_draft_dict_from_cortex_payload
 
     last_raw: Dict[str, Any] = {}
     last_err: Exception | None = None
     per_attempt_timeout = float(timeout_sec)
-    for route in ("quick", "brain"):
+    cfg = budget_config or suggest_token_budget_config_from_env()
+    for route in _SUGGEST_ROUTE_ATTEMPTS:
         try:
             raw = await suggest_once(
                 bus,
@@ -108,6 +126,7 @@ async def suggest_with_escalation(
                 timeout_sec=per_attempt_timeout,
                 session_id=session_id,
                 llm_route=route,
+                budget_config=cfg,
             )
             last_raw = raw if isinstance(raw, dict) else {}
             extract_suggest_draft_dict_from_cortex_payload(last_raw)

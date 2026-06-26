@@ -11,6 +11,7 @@ from orion.memory_graph.draft_repository import insert_pending_draft
 from orion.memory_graph.dto import SuggestDraftV1
 from orion.memory_graph.draft_sanitize import sanitize_suggest_draft_dict
 from orion.memory_graph.suggest_runner import suggest_once, suggest_with_escalation
+from orion.memory_graph.suggest_token_budget import suggest_token_budget_config_from_mapping
 
 from app.window_fetch import should_close_turn
 from app.classify import classify_turn
@@ -97,6 +98,7 @@ class ConsolidationSuggestRunner:
         turns = window.get("turns") or []
         transcript = build_window_transcript(turns)
         try:
+            budget_config = suggest_token_budget_config_from_mapping(settings)
             raw = await suggest_with_escalation(
                 bus,
                 transcript=transcript,
@@ -108,6 +110,7 @@ class ConsolidationSuggestRunner:
                     node=settings.NODE_NAME,
                 ),
                 timeout_sec=float(settings.MEMORY_SUGGEST_TIMEOUT_SEC),
+                budget_config=budget_config,
             )
             draft_dict = extract_suggest_draft_dict_from_cortex_payload(raw)
             draft_dict = sanitize_suggest_draft_dict(draft_dict)

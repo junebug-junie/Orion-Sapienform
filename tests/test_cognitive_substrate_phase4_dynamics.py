@@ -270,3 +270,103 @@ def test_non_destructive_integration_materialization_still_works() -> None:
     result = engine.tick(now=datetime.now(timezone.utc))
     assert result.tick_at
     assert materializer.store.snapshot().nodes["concept-int"].node_kind == "concept"
+
+
+def test_prediction_error_seeds_pressure_propagates_and_leaves_calm_nodes_cold() -> None:
+    surprising = ConceptNodeV1(
+        node_id="concept-surprising",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        label="Surprising",
+        temporal=_temporal(0),
+        provenance=_prov(),
+        metadata={"prediction_error": 0.8},
+    )
+    neighbor = ConceptNodeV1(
+        node_id="concept-neighbor",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        label="Neighbor",
+        temporal=_temporal(0),
+        provenance=_prov(),
+    )
+    calm = ConceptNodeV1(
+        node_id="concept-calm",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        label="Calm",
+        temporal=_temporal(0),
+        provenance=_prov(),
+    )
+    record = SubstrateGraphRecordV1(
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        nodes=[surprising, neighbor, calm],
+        edges=[_edge("concept-surprising", "concept", "concept-neighbor", "concept", "supports")],
+    )
+    materializer = SubstrateGraphMaterializer(store=InMemorySubstrateGraphStore())
+    materializer.apply_record(record)
+    engine = SubstrateDynamicsEngine(store=materializer.store)
+    engine.tick(now=datetime.now(timezone.utc))
+    snap = materializer.store.snapshot()
+
+    seed_pressure = snap.nodes["concept-surprising"].metadata.get("dynamic_pressure", 0.0)
+    neighbor_pressure = snap.nodes["concept-neighbor"].metadata.get("dynamic_pressure", 0.0)
+    calm_pressure = snap.nodes["concept-calm"].metadata.get("dynamic_pressure", 0.0)
+
+    # surprise raises pressure on the implicated node (0.8 * weight 0.6, fresh ~ no decay)
+    assert seed_pressure > 0.4
+    # and propagates, attenuated, to its neighbour
+    assert 0.0 < neighbor_pressure < seed_pressure
+    # a node with no standing prediction error stays cold
+    assert calm_pressure == 0.0
+
+
+def test_prediction_error_pressure_decays_with_age() -> None:
+    fresh = ConceptNodeV1(
+        node_id="concept-fresh",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        label="Fresh surprise",
+        temporal=_temporal(0),
+        provenance=_prov(),
+        metadata={"prediction_error": 0.9},
+    )
+    # half the 1800s default horizon -> decay factor ~0.5
+    aging = ConceptNodeV1(
+        node_id="concept-aging",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        label="Aging surprise",
+        temporal=_temporal(15),
+        provenance=_prov(),
+        metadata={"prediction_error": 0.9},
+    )
+    # well beyond the horizon -> fully decayed to cold
+    stale = ConceptNodeV1(
+        node_id="concept-stale",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        label="Stale surprise",
+        temporal=_temporal(40),
+        provenance=_prov(),
+        metadata={"prediction_error": 0.9},
+    )
+    record = SubstrateGraphRecordV1(
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        nodes=[fresh, aging, stale],
+        edges=[],
+    )
+    materializer = SubstrateGraphMaterializer(store=InMemorySubstrateGraphStore())
+    materializer.apply_record(record)
+    engine = SubstrateDynamicsEngine(store=materializer.store)
+    engine.tick(now=datetime.now(timezone.utc))
+    snap = materializer.store.snapshot()
+
+    fresh_p = snap.nodes["concept-fresh"].metadata.get("dynamic_pressure", 0.0)
+    aging_p = snap.nodes["concept-aging"].metadata.get("dynamic_pressure", 0.0)
+    stale_p = snap.nodes["concept-stale"].metadata.get("dynamic_pressure", 0.0)
+
+    assert fresh_p > aging_p > 0.0
+    assert stale_p == 0.0

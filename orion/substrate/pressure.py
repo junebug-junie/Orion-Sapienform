@@ -13,6 +13,13 @@ class PressureConfig:
     contradiction_neighbor_attenuation: float = 0.5
     max_hops: int = 2
     max_pressure: float = 1.0
+    # Prediction-error feedback: surprise (how wrong the model just was) seeds
+    # pressure on the implicated node and decays with age so Orion preferentially
+    # attends to the parts of its self-model that are currently wrong, then lets go
+    # as prediction improves. weight<=0 disables the loop.
+    prediction_error_weight: float = 0.6
+    prediction_error_propagation_attenuation: float = 0.6
+    prediction_error_decay_horizon_seconds: int = 1800
 
 
 def _clamp(value: float) -> float:
@@ -36,6 +43,33 @@ def drive_seed_pressure(node: BaseSubstrateNodeV1, config: PressureConfig) -> fl
         return 0.0
     declared = float(node.metadata.get("pressure") or 0.0)
     return _clamp(max(config.drive_base * node.signals.salience, declared))
+
+
+def prediction_error_pressure(node: BaseSubstrateNodeV1, config: PressureConfig, *, now: datetime) -> float:
+    """Seed pressure from a node's standing prediction error (0..1 surprise score).
+
+    The surprise is read from ``metadata['prediction_error']`` (written by the
+    substrate runtime's prediction-error reducers) and decays linearly toward zero
+    over ``prediction_error_decay_horizon_seconds`` measured from the node's
+    ``observed_at``. A node that keeps being surprising is re-observed (its
+    ``observed_at`` advances), so sustained error holds pressure; a node whose
+    prediction improves stops refreshing and the seed fades on its own.
+    """
+    if config.prediction_error_weight <= 0:
+        return 0.0
+    raw = float(node.metadata.get("prediction_error") or 0.0)
+    if raw <= 0.0:
+        return 0.0
+    observed = node.temporal.observed_at
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=timezone.utc)
+    horizon = config.prediction_error_decay_horizon_seconds
+    if horizon <= 0:
+        decay = 1.0
+    else:
+        age_seconds = max(0.0, (now - observed).total_seconds())
+        decay = max(0.0, 1.0 - (age_seconds / horizon))
+    return _clamp(raw * config.prediction_error_weight * decay)
 
 
 def contradiction_amplification(node: BaseSubstrateNodeV1, *, now: datetime) -> tuple[float, list[str]]:

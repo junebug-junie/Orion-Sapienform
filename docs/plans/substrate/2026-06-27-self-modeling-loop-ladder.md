@@ -17,12 +17,12 @@ behind trials + rollback.
 
 | Rung | Theory | Organ that exists | Wire to add | State |
 |------|--------|-------------------|-------------|-------|
-| 1 Self-model feedback | predictive processing | `self_state/prediction.py`, `pressure.py`, `dynamics.py` | prediction_error → pressure | **DONE** (`feat/substrate-prediction-error-pressure`) |
-| 2 Integration / higher-order | GWT binding + HOT | `CognitiveUnificationLayer`, `projection_builder.py` | register reducer lanes + bind self_state | spec below |
+| 1 Self-model feedback | predictive processing | `self_state/prediction.py`, `pressure.py`, `dynamics.py` | prediction_error → pressure | **DONE** |
+| 2 Integration / higher-order | GWT binding + HOT | `CognitiveUnificationLayer`, `projection_builder.py` | register reducer lanes + bind self_state | **self_state DONE**; reducer lanes pending |
 | 3 Continuous broadcast | GWT broadcast | `attention_frame.py` | always-on, substrate-wide re-broadcast | spec below |
 | 4 Autobiographical continuity | narrative/HOT | `consolidation.py` | episodic time-window rollup | spec below |
 | 5 Endogenous agency | intrinsic motivation | `frontier_curiosity.py` | intrinsic-signal-seeded goals | spec below |
-| 6 Self-revision | metacognition | `mutation_*` pipeline | prediction-error/drift → proposals | spec below |
+| 6 Self-revision | metacognition | `mutation_*` pipeline | prediction-error/drift → proposals | **DONE** (signals path: `mutation_self_revision.py`) |
 
 Dependency order: 1 → 2 → 3, then 4, then 5, then 6. Rung 6 consumes rung 1's
 signal; rungs 4/5/6 all read the unified state from rung 2.

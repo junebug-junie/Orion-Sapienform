@@ -1244,6 +1244,9 @@ class PlanRunner:
             final_text, recital_stripped = strip_identity_recital_leadin(
                 final_text,
                 str(ctx.get("user_message") or ""),
+                chat_stance_brief=ctx.get("chat_stance_brief")
+                if isinstance(ctx.get("chat_stance_brief"), dict)
+                else None,
             )
             if recital_stripped:
                 identity_diag["identity_recital_leadin_stripped"] = True

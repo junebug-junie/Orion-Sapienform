@@ -10,6 +10,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 
+from app.retry_degraded_classifies import run_classify_retry_loop
 from app.retry_failed_windows import run_retry_loop
 from app.settings import settings
 from app.window_state import WindowStore
@@ -21,6 +22,7 @@ bus_hunter: Optional[Hunter] = None
 pg_pool: Optional[asyncpg.Pool] = None
 bus_client: Optional[OrionBusAsync] = None
 _retry_task: Optional[asyncio.Task] = None
+_classify_retry_task: Optional[asyncio.Task] = None
 
 
 def _cfg() -> ChassisConfig:
@@ -37,7 +39,7 @@ def _cfg() -> ChassisConfig:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global bus_hunter, pg_pool, bus_client, _retry_task
+    global bus_hunter, pg_pool, bus_client, _retry_task, _classify_retry_task
 
     dsn = (settings.POSTGRES_URI or "").strip()
     if dsn:
@@ -77,6 +79,14 @@ async def lifespan(app: FastAPI):
         _retry_task = asyncio.create_task(
             run_retry_loop(pool=pg_pool, bus=bus_client, window_store=window_store, suggest_runner=suggest_runner)
         )
+        _classify_retry_task = asyncio.create_task(
+            run_classify_retry_loop(
+                pool=pg_pool,
+                bus=bus_client,
+                window_store=window_store,
+                suggest_runner=suggest_runner,
+            )
+        )
 
     app.state.pg_pool = pg_pool
     app.state.bus_hunter = bus_hunter
@@ -84,6 +94,8 @@ async def lifespan(app: FastAPI):
 
     if _retry_task is not None:
         _retry_task.cancel()
+    if _classify_retry_task is not None:
+        _classify_retry_task.cancel()
     if bus_hunter is not None:
         await bus_hunter.stop()
     if bus_client is not None:

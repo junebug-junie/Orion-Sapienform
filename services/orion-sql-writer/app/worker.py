@@ -644,7 +644,32 @@ def _chat_history_llm_uncertainty_scalars(unc: dict[str, Any]) -> dict[str, Any]
     }
 
 
-def _merge_spark_meta(existing: Any, updates: Dict[str, Any]) -> Dict[str, Any]:
+# Keys written by memory-consolidation classify; introspector telemetry must not clobber these.
+_CLASSIFY_SPARK_META_KEYS = frozenset(
+    {
+        "turn_change_appraisal",
+        "turn_effect",
+        "novelty",
+        "memory_classify_status",
+        "memory_classify_ts",
+        "turn_change_classify_route",
+        "memory_significance_score",
+        "conversation_boundary_score",
+    }
+)
+
+
+def _has_ok_turn_change_appraisal(meta: dict[str, Any]) -> bool:
+    appraisal = meta.get("turn_change_appraisal")
+    return isinstance(appraisal, dict) and appraisal.get("turn_change_status") == "ok"
+
+
+def _merge_spark_meta(
+    existing: Any,
+    updates: Dict[str, Any],
+    *,
+    source: str = "patch",
+) -> Dict[str, Any]:
     base: Dict[str, Any]
     if isinstance(existing, dict):
         base = deepcopy(existing)
@@ -653,12 +678,29 @@ def _merge_spark_meta(existing: Any, updates: Dict[str, Any]) -> Dict[str, Any]:
     else:
         base = {"raw_existing": str(existing)}
 
-    for k, v in (updates or {}).items():
+    incoming = dict(updates or {})
+    if source == "telemetry" and _has_ok_turn_change_appraisal(base):
+        incoming = {k: v for k, v in incoming.items() if k not in _CLASSIFY_SPARK_META_KEYS}
+
+    for k, v in incoming.items():
         if v is None:
             continue
         base[k] = v
 
     return _json_sanitize(base)
+
+
+def _coalesce_chat_history_turn_fields(filtered_data: dict, existing: Any) -> None:
+    """Do not let a partial chat.history turn overwrite prompt/response already filled."""
+    if existing is None:
+        return
+    for field in ("prompt", "response"):
+        if field not in filtered_data:
+            continue
+        incoming = filtered_data.get(field)
+        prior = getattr(existing, field, None)
+        if _is_missing_scalar(incoming) and not _is_missing_scalar(prior):
+            filtered_data[field] = prior
 
 
 def _apply_spark_meta_patch(payload: dict) -> bool:
@@ -1123,7 +1165,11 @@ def _write_row(sql_model_cls, data: dict) -> bool:
                         .first()
                     )
                     if existing_chat is not None:
-                        merged = _merge_spark_meta(getattr(existing_chat, "spark_meta", None), meta_for_chat)
+                        merged = _merge_spark_meta(
+                            getattr(existing_chat, "spark_meta", None),
+                            meta_for_chat,
+                            source="telemetry",
+                        )
                         stmt = (
                             update(ChatHistoryLogSQL)
                             .where(ChatHistoryLogSQL.correlation_id == corr_id)
@@ -1204,6 +1250,20 @@ def _write_row(sql_model_cls, data: dict) -> bool:
                 raise
 
         try:
+            if sql_model_cls is ChatHistoryLogSQL:
+                lookup_id = filtered_data.get("id") or filtered_data.get("correlation_id")
+                existing_turn = None
+                if lookup_id:
+                    existing_turn = (
+                        sess.query(ChatHistoryLogSQL)
+                        .filter(
+                            (ChatHistoryLogSQL.id == str(lookup_id))
+                            | (ChatHistoryLogSQL.correlation_id == str(lookup_id))
+                        )
+                        .first()
+                    )
+                if existing_turn is not None:
+                    _coalesce_chat_history_turn_fields(filtered_data, existing_turn)
             sess.merge(sql_model_cls(**filtered_data))
             sess.commit()
             return True
@@ -1529,6 +1589,91 @@ async def _persist_grammar_event_envelope(
                 event.trace_id,
                 fallback_exc,
             )
+
+
+def _fetch_chat_turn_for_memory_emit(corr_id: str) -> dict | None:
+    if not corr_id:
+        return None
+    sess = get_session()
+    try:
+        row = (
+            sess.query(ChatHistoryLogSQL)
+            .filter(ChatHistoryLogSQL.correlation_id == corr_id)
+            .first()
+        )
+        if row is None:
+            return None
+        prompt = str(getattr(row, "prompt", "") or "").strip()
+        response = str(getattr(row, "response", "") or "").strip()
+        if not prompt or not response:
+            return None
+        spark_meta = getattr(row, "spark_meta", None)
+        if not isinstance(spark_meta, dict):
+            spark_meta = {}
+        appraisal = spark_meta.get("turn_change_appraisal")
+        if isinstance(appraisal, dict) and appraisal.get("turn_change_status") == "ok":
+            return None
+        return {
+            "correlation_id": corr_id,
+            "prompt": prompt,
+            "response": response,
+            "spark_meta": spark_meta,
+            "session_id": getattr(row, "session_id", None),
+        }
+    finally:
+        sess.close()
+        remove_session()
+
+
+async def _emit_memory_turn_persisted(
+    bus: Any,
+    *,
+    parent_env: BaseEnvelope,
+    turn: dict,
+) -> None:
+    if bus is None or not settings.sql_writer_emit_memory_turn_persisted:
+        return
+    corr = str(turn["correlation_id"])
+    persisted = MemoryTurnPersistedV1(
+        correlation_id=corr,
+        prompt=str(turn["prompt"]),
+        response=str(turn["response"]),
+        spark_meta=turn.get("spark_meta") if isinstance(turn.get("spark_meta"), dict) else {},
+        session_id=turn.get("session_id"),
+    )
+    out_env = parent_env.derive_child(
+        kind=MEMORY_TURN_PERSISTED_KIND,
+        source=ServiceRef(
+            name=settings.service_name,
+            version=settings.service_version,
+            node=settings.node_name,
+        ),
+        payload=persisted.model_dump(mode="json"),
+        reply_to=None,
+    )
+    if str(out_env.correlation_id) != corr or str(out_env.payload.get("correlation_id")) != corr:
+        logger.error(
+            "memory_turn_persisted_corr_mismatch env=%s payload=%s expected=%s",
+            out_env.correlation_id,
+            out_env.payload.get("correlation_id"),
+            corr,
+        )
+    await bus.publish(settings.channel_memory_turn_persisted, out_env)
+
+
+async def _maybe_emit_memory_turn_from_row(
+    bus: Any,
+    *,
+    parent_env: BaseEnvelope,
+    corr_id: str,
+) -> None:
+    turn = await asyncio.to_thread(_fetch_chat_turn_for_memory_emit, corr_id)
+    if turn is None:
+        return
+    try:
+        await _emit_memory_turn_persisted(bus, parent_env=parent_env, turn=turn)
+    except Exception:
+        logger.exception("Failed to emit memory turn persisted event corr=%s", corr_id)
 
 
 async def handle_envelope(env: BaseEnvelope, *, bus: Any | None = None) -> None:
@@ -2041,33 +2186,24 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
             ):
                 try:
                     corr = str(env.correlation_id or extra_sql_fields.get("correlation_id") or "")
-                    if corr:
-                        spark_meta = data_to_process.get("spark_meta") if isinstance(data_to_process.get("spark_meta"), dict) else {}
-                        persisted = MemoryTurnPersistedV1(
-                            correlation_id=corr,
-                            prompt=str(data_to_process.get("prompt") or ""),
-                            response=str(data_to_process.get("response") or ""),
-                            spark_meta=spark_meta,
-                            session_id=data_to_process.get("session_id"),
+                    prompt = str(data_to_process.get("prompt") or "").strip()
+                    response = str(data_to_process.get("response") or "").strip()
+                    if corr and prompt and response:
+                        await _emit_memory_turn_persisted(
+                            bus,
+                            parent_env=env,
+                            turn={
+                                "correlation_id": corr,
+                                "prompt": prompt,
+                                "response": response,
+                                "spark_meta": data_to_process.get("spark_meta")
+                                if isinstance(data_to_process.get("spark_meta"), dict)
+                                else {},
+                                "session_id": data_to_process.get("session_id"),
+                            },
                         )
-                        out_env = env.derive_child(
-                            kind=MEMORY_TURN_PERSISTED_KIND,
-                            source=ServiceRef(
-                                name=settings.service_name,
-                                version=settings.service_version,
-                                node=settings.node_name,
-                            ),
-                            payload=persisted.model_dump(mode="json"),
-                            reply_to=None,
-                        )
-                        if str(out_env.correlation_id) != corr or str(out_env.payload.get("correlation_id")) != corr:
-                            logger.error(
-                                "memory_turn_persisted_corr_mismatch env=%s payload=%s expected=%s",
-                                out_env.correlation_id,
-                                out_env.payload.get("correlation_id"),
-                                corr,
-                            )
-                        await bus.publish(settings.channel_memory_turn_persisted, out_env)
+                    elif corr:
+                        await _maybe_emit_memory_turn_from_row(bus, parent_env=env, corr_id=corr)
                 except Exception:
                     logger.exception(
                         "Failed to emit memory turn persisted event corr=%s",
@@ -2077,6 +2213,14 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
             if schema_model is ChatGptLogTurnV1:
                 written_label = "ChatGptLogTurnV1"
             logger.info(f"Written {written_label} -> {sql_model.__tablename__}")
+            if (
+                write_ok
+                and bus is not None
+                and env.kind == "chat.history.message.v1"
+                and (payload.get("role") or "").lower() == "assistant"
+            ):
+                corr = str(env.correlation_id or payload.get("correlation_id") or "")
+                await _maybe_emit_memory_turn_from_row(bus, parent_env=env, corr_id=corr)
 
         except Exception as e:
             logger.exception(f"Error writing {env.kind} to {sql_model.__tablename__}, falling back.")

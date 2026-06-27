@@ -140,6 +140,44 @@ async def _llm_classify(
     return scores_from_llm_result(content, raw)
 
 
+async def _classify_scores(
+    bus: OrionBusAsync,
+    *,
+    prompt: str,
+    settings,
+    primary_route: str,
+) -> dict:
+    """Try primary classify route, then alternate lane, with short per-route retries."""
+    alternate = "quick" if primary_route == "metacog" else "metacog"
+    routes = (primary_route, alternate)
+    last_error: Exception | None = None
+    for route in routes:
+        for attempt in range(2):
+            try:
+                scores = await _llm_classify(
+                    bus, prompt=prompt, settings=settings, llm_route=route
+                )
+                if scores.get("novelty_score") is not None:
+                    scores["classify_route_used"] = route
+                    return scores
+                last_error = RuntimeError("classify_missing_novelty_score")
+                logger.warning(
+                    "memory_classify_empty_scores route=%s attempt=%s",
+                    route,
+                    attempt + 1,
+                )
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "memory_classify_attempt_failed route=%s attempt=%s err=%s",
+                    route,
+                    attempt + 1,
+                    exc,
+                )
+            await asyncio.sleep(0.2)
+    raise last_error or RuntimeError("classify_failed")
+
+
 async def reappraise_with_session_window(
     bus: OrionBusAsync, *, turn: MemoryTurnPersistedV1, prior_turns: list[dict], settings
 ) -> dict:
@@ -188,34 +226,27 @@ async def classify_turn(
 
     last_error: Exception | None = None
     scores: dict | None = None
-    for attempt in range(2):
-        try:
-            scores = await _llm_classify(
-                bus, prompt=prompt, settings=settings, llm_route=classify_route
-            )
-            break
-        except Exception as exc:
-            last_error = exc
-            logger.warning(
-                "memory_classify_attempt_failed attempt=%s corr=%s err=%s",
-                attempt + 1,
-                turn.correlation_id,
-                exc,
-            )
-            await asyncio.sleep(0.2)
+    try:
+        scores = await _classify_scores(
+            bus, prompt=prompt, settings=settings, primary_route=classify_route
+        )
+    except Exception as exc:
+        last_error = exc
+        logger.error("memory_classify_degraded corr=%s err=%s", turn.correlation_id, last_error)
 
     if scores is None:
-        logger.error("memory_classify_degraded corr=%s err=%s", turn.correlation_id, last_error)
         return _degraded_patch(
             baseline_mode=baseline_mode,
             prior_correlation_id=prior_corr,
             classify_route=classify_route,
         )
 
+    route_used = str(scores.pop("classify_route_used", classify_route) or classify_route)
+
     logger.info(
         "turn_change_classify corr=%s route=%s novelty=%s shift=%s confidence=%s source=%s mem=%s bnd=%s",
         turn.correlation_id,
-        classify_route,
+        route_used,
         scores.get("novelty_score"),
         scores.get("shift_kind"),
         scores.get("confidence"),
@@ -259,7 +290,8 @@ async def classify_turn(
 
     status = (
         "ok"
-        if scores.get("novelty_score") is not None and scores.get("scoring_source") == "logprobs"
+        if scores.get("novelty_score") is not None
+        and scores.get("scoring_source") in ("logprobs", "text")
         else "degraded"
     )
     appraisal = build_turn_change_appraisal(
@@ -277,7 +309,7 @@ async def classify_turn(
         appraisal["reappraised_session_window"] = True
     return {
         "turn_change_appraisal": appraisal,
-        "turn_change_classify_route": classify_route,
+        "turn_change_classify_route": route_used,
         "memory_significance_score": scores.get("memory_significance_score"),
         "conversation_boundary_score": scores.get("conversation_boundary_score"),
         "memory_classify_status": "ok" if status == "ok" else "degraded",

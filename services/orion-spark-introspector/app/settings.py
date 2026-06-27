@@ -56,6 +56,11 @@ class Settings(BaseSettings):
         alias="CHANNEL_SUBSTRATE_SELF_STATE",
     )
 
+    channel_chat_history_spark_meta_patch: str = Field(
+        "orion:chat:history:spark_meta:patch",
+        alias="CHANNEL_CHAT_HISTORY_SPARK_META_PATCH",
+    )
+
     # Core events (legacy bus events)
     channel_core_events: str = Field("orion:core:events", alias="CHANNEL_CORE_EVENTS")
 

@@ -64,6 +64,7 @@ _TURN_EFFECT_ALERT_DEDUPE: Dict[str, float] = {}
 _CANDIDATE_QUALITY: Dict[str, int] = {}
 _CANDIDATE_LAST_SEEN_TS: Dict[str, float] = {}
 _CANDIDATE_TELEM_EMITTED: Dict[str, float] = {}
+_CANDIDATE_SPARK_META: Dict[str, Dict[str, Any]] = {}
 # keep cache small + bounded
 _CANDIDATE_CACHE_TTL_SEC = 600.0  # 10 minutes
 _EXPECTED_EMB: Dict[str, np.ndarray] = {}
@@ -218,6 +219,7 @@ def _prune_candidate_caches() -> None:
         _CANDIDATE_LAST_SEEN_TS.pop(k, None)
         _CANDIDATE_QUALITY.pop(k, None)
         _CANDIDATE_TELEM_EMITTED.pop(k, None)
+        _CANDIDATE_SPARK_META.pop(k, None)
     # drop entries that no longer have a last-seen timestamp
     known_keys = set(_CANDIDATE_LAST_SEEN_TS)
     for k in set(_CANDIDATE_QUALITY) - known_keys:
@@ -232,6 +234,7 @@ def _prune_candidate_caches() -> None:
             _CANDIDATE_LAST_SEEN_TS.pop(k, None)
             _CANDIDATE_QUALITY.pop(k, None)
             _CANDIDATE_TELEM_EMITTED.pop(k, None)
+            _CANDIDATE_SPARK_META.pop(k, None)
 
 
 def _register_signal(signal: SparkSignalV1) -> None:
@@ -572,6 +575,20 @@ def _candidate_quality(spark_meta: Dict[str, Any]) -> int:
     return 1 if any(k in spark_meta for k in rich_keys) else 0
 
 
+def _merge_spark_meta_dict(base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(base or {})
+    for key, value in (patch or {}).items():
+        if value is None:
+            continue
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            merged = dict(out[key])
+            merged.update(value)
+            out[key] = merged
+        else:
+            out[key] = value
+    return out
+
+
 def _novelty_from_spark_meta(spark_meta: Dict[str, Any]) -> Optional[float]:
     if not isinstance(spark_meta, dict):
         return None
@@ -580,6 +597,16 @@ def _novelty_from_spark_meta(spark_meta: Dict[str, Any]) -> Optional[float]:
         score = appraisal.get("novelty_score")
         if isinstance(score, (int, float)):
             return float(score)
+        top = spark_meta.get("novelty")
+        if isinstance(top, (int, float)):
+            return float(top)
+        turn_effect = spark_meta.get("turn_effect")
+        if isinstance(turn_effect, dict):
+            turn = turn_effect.get("turn")
+            if isinstance(turn, dict):
+                te_novelty = turn.get("novelty")
+                if isinstance(te_novelty, (int, float)):
+                    return float(te_novelty)
     if isinstance(appraisal, dict) and appraisal.get("turn_change_status") == "degraded":
         return None
     return None
@@ -830,32 +857,31 @@ async def _emit_candidate_telemetry(env: BaseEnvelope, candidate: SparkCandidate
     )
 
 
-async def _update_tissue_from_candidate(c: SparkCandidatePayload) -> None:
-    """Snapshot tissue state for a spark candidate without propagating stimulus."""
-
-    valence = 0.5
-    arousal = 0.6
-    dominance = 0.5
-
+async def _broadcast_tissue_update(
+    *,
+    correlation_id: str,
+    spark_meta: Dict[str, Any],
+    trigger: str,
+    stimulus_summary: str = "",
+) -> None:
+    """Push tissue.update to Hub EKG websocket clients."""
     phi_stats = _get_phi_stats()
     phi_stats = _apply_signal_deltas(phi_stats)
+    valence = float(phi_stats.get("valence", 0.5))
+    arousal = float(phi_stats.get("energy", 0.6))
+    novelty = _novelty_from_spark_meta(spark_meta)
+    if novelty is None:
+        return
 
-    valence = float(phi_stats.get("valence", valence))
-    arousal = float(phi_stats.get("energy", arousal))
-    novelty = _novelty_from_spark_meta(c.spark_meta or {})
-
-    TISSUE.snapshot()
-    
-    seq = _next_seq()
     metadata = {
-        "stimulus_summary": (c.prompt or "")[:50],
-        "trigger": "spark.candidate",
+        "stimulus_summary": (stimulus_summary or "")[:50],
+        "trigger": trigger,
     }
-    turn_effect = turn_effect_from_appraisal(c.spark_meta or {})
+    turn_effect = turn_effect_from_appraisal(spark_meta)
     if not turn_effect:
-        turn_effect = turn_effect_from_spark_meta(c.spark_meta or {})
-    if not turn_effect and isinstance(c.spark_meta, dict):
-        precomputed = c.spark_meta.get("turn_effect")
+        turn_effect = turn_effect_from_spark_meta(spark_meta)
+    if not turn_effect and isinstance(spark_meta, dict):
+        precomputed = spark_meta.get("turn_effect")
         if isinstance(precomputed, dict) and precomputed:
             turn_effect = precomputed
     evidence = None
@@ -864,8 +890,79 @@ async def _update_tissue_from_candidate(c: SparkCandidatePayload) -> None:
         turn_effect = {k: v for k, v in turn_effect.items() if k != "evidence"}
     if turn_effect:
         metadata["turn_effect"] = turn_effect
-    if isinstance(c.spark_meta, dict):
-        precomputed_evidence = c.spark_meta.get("turn_effect_evidence")
+    if isinstance(spark_meta, dict):
+        precomputed_evidence = spark_meta.get("turn_effect_evidence")
+        if isinstance(precomputed_evidence, dict) and precomputed_evidence:
+            metadata["turn_effect_evidence"] = precomputed_evidence
+    if isinstance(evidence, dict):
+        metadata["turn_effect_evidence"] = evidence
+
+    ws_payload = {
+        "type": "tissue.update",
+        "telemetry_id": str(uuid4()),
+        "correlation_id": correlation_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "stats": {
+            "phi": float(phi_stats.get("coherence", 0.0)),
+            "novelty": float(novelty),
+            "valence": valence,
+            "arousal": arousal,
+        },
+        "grid": [],
+        "metadata": metadata,
+    }
+    await manager.broadcast(ws_payload)
+
+
+async def _update_tissue_from_candidate(c: SparkCandidatePayload) -> None:
+    """Snapshot tissue state for a spark candidate without propagating stimulus."""
+
+    trace_id = str(c.trace_id)
+    _CANDIDATE_SPARK_META[trace_id] = _merge_spark_meta_dict(
+        _CANDIDATE_SPARK_META.get(trace_id, {}),
+        c.spark_meta or {},
+    )
+    spark_meta = _CANDIDATE_SPARK_META[trace_id]
+
+    TISSUE.snapshot()
+
+    # Broadcast to Web UI via WebSocket
+    try:
+        await _broadcast_tissue_update(
+            correlation_id=trace_id,
+            spark_meta=spark_meta,
+            trigger="spark.candidate",
+            stimulus_summary=(c.prompt or ""),
+        )
+    except Exception as e:
+        logger.warning("Failed to broadcast candidate tissue update: %s", e)
+
+    phi_stats = _get_phi_stats()
+    phi_stats = _apply_signal_deltas(phi_stats)
+    valence = float(phi_stats.get("valence", 0.5))
+    arousal = float(phi_stats.get("energy", 0.6))
+    novelty = _novelty_from_spark_meta(spark_meta)
+
+    seq = _next_seq()
+    metadata = {
+        "stimulus_summary": (c.prompt or "")[:50],
+        "trigger": "spark.candidate",
+    }
+    turn_effect = turn_effect_from_appraisal(spark_meta)
+    if not turn_effect:
+        turn_effect = turn_effect_from_spark_meta(spark_meta)
+    if not turn_effect and isinstance(spark_meta, dict):
+        precomputed = spark_meta.get("turn_effect")
+        if isinstance(precomputed, dict) and precomputed:
+            turn_effect = precomputed
+    evidence = None
+    if isinstance(turn_effect, dict) and "evidence" in turn_effect:
+        evidence = turn_effect.get("evidence")
+        turn_effect = {k: v for k, v in turn_effect.items() if k != "evidence"}
+    if turn_effect:
+        metadata["turn_effect"] = turn_effect
+    if isinstance(spark_meta, dict):
+        precomputed_evidence = spark_meta.get("turn_effect_evidence")
         if isinstance(precomputed_evidence, dict) and precomputed_evidence:
             metadata["turn_effect_evidence"] = precomputed_evidence
     if isinstance(evidence, dict):
@@ -878,46 +975,63 @@ async def _update_tissue_from_candidate(c: SparkCandidatePayload) -> None:
         seq=seq,
         snapshot_ts=datetime.now(timezone.utc),
         valid_for_ms=int(settings.spark_state_valid_for_ms),
-        correlation_id=c.trace_id,
+        correlation_id=trace_id,
         trace_mode="chat",
         trace_verb="candidate",
         phi=phi_stats,
         valence=valence,
         arousal=arousal,
-        dominance=dominance,
+        dominance=0.5,
         vector_present=False,
         metadata=metadata,
     )
-
-    # Broadcast to Web UI via WebSocket
-    try:
-        telemetry_id = str(uuid4())
-        ws_payload = {
-            "type": "tissue.update",
-            "telemetry_id": telemetry_id,
-            "correlation_id": c.trace_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "stats": {
-                "phi": float(phi_stats.get("coherence", 0.0)),
-                "novelty": novelty,
-                "valence": valence,
-                "arousal": arousal,
-            },
-            "grid": [], # grid is optional/expensive
-            "metadata": snap.metadata,
-        }
-        await manager.broadcast(ws_payload)
-    except Exception as e:
-        logger.warning("Failed to broadcast candidate tissue update: %s", e)
 
     # Optionally publish state snapshot to bus if enabled
     if _pub_bus and _pub_bus.enabled:
         snap_env = SparkStateSnapshotEnvelope(
             source=_svc_ref(),
-            correlation_id=c.trace_id,
+            correlation_id=trace_id,
             payload=snap,
         )
         await _pub_bus.publish(settings.channel_spark_state_snapshot, snap_env)
+
+
+async def handle_spark_meta_patch(env: BaseEnvelope) -> None:
+    """Refresh Hub EKG when memory-consolidation patches turn_change_appraisal."""
+    from orion.schemas.memory_consolidation import ChatHistorySparkMetaPatchV1
+
+    try:
+        patch = ChatHistorySparkMetaPatchV1.model_validate(env.payload)
+    except ValidationError:
+        logger.warning("Skipping invalid spark_meta patch payload")
+        return
+
+    corr = str(patch.correlation_id or env.correlation_id or "").strip()
+    if not corr:
+        return
+
+    _prune_candidate_caches()
+    _CANDIDATE_LAST_SEEN_TS[corr] = time.time()
+    merged = _merge_spark_meta_dict(_CANDIDATE_SPARK_META.get(corr, {}), patch.spark_meta or {})
+    _CANDIDATE_SPARK_META[corr] = merged
+
+    novelty = _novelty_from_spark_meta(merged)
+    if novelty is None:
+        return
+
+    try:
+        await _broadcast_tissue_update(
+            correlation_id=corr,
+            spark_meta=merged,
+            trigger="chat.history.spark_meta.patch",
+        )
+        logger.info(
+            "spark_meta_patch_tissue_refresh corr=%s novelty=%.4f",
+            corr,
+            novelty,
+        )
+    except Exception as exc:
+        logger.warning("Failed to broadcast spark_meta patch tissue update corr=%s: %s", corr, exc)
 
 
 async def handle_trace(env: BaseEnvelope) -> None:

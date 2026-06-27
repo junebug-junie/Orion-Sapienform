@@ -31,6 +31,7 @@ from .worker import (
     handle_self_state,
     handle_semantic_upsert,
     handle_signal,
+    handle_spark_meta_patch,
     handle_trace,
     set_publisher_bus,
 )
@@ -75,6 +76,8 @@ async def lifespan(app: FastAPI):
             await handle_signal(env)
         elif env.kind == "substrate.self_state.v1":
             await handle_self_state(env)
+        elif env.kind == "chat.history.spark_meta.patch.v1":
+            await handle_spark_meta_patch(env)
         else:
             await handle_candidate(env)
 
@@ -84,6 +87,7 @@ async def lifespan(app: FastAPI):
         settings.channel_spark_signal,
         settings.channel_vector_semantic_upsert,
         settings.channel_substrate_self_state,
+        settings.channel_chat_history_spark_meta_patch,
     ]
 
     svc = Hunter(

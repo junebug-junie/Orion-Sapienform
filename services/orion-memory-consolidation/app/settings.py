@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     )
     MEMORY_WINDOW_FALLBACK_GAP_SEC: int = Field(default=5400, alias="MEMORY_WINDOW_FALLBACK_GAP_SEC")
     MEMORY_FAILED_RETRY_INTERVAL_SEC: int = Field(default=1800, alias="MEMORY_FAILED_RETRY_INTERVAL_SEC")
+    MEMORY_CLASSIFY_RETRY_INTERVAL_SEC: int = Field(default=120, alias="MEMORY_CLASSIFY_RETRY_INTERVAL_SEC")
 
     class Config:
         env_file = ".env"

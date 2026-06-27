@@ -193,6 +193,12 @@ async def handle_memory_turn_persisted(
 ) -> None:
     turn = MemoryTurnPersistedV1.model_validate(env.payload)
     assert str(env.correlation_id) == turn.correlation_id, "correlation_id mismatch"
+    existing_appraisal = turn.spark_meta.get("turn_change_appraisal")
+    if (
+        isinstance(existing_appraisal, dict)
+        and existing_appraisal.get("turn_change_status") == "ok"
+    ):
+        return
     open_row = await window_store._get_open_window()
     prior_turns = (
         await window_store.get_window_turns(open_row["memory_window_id"])

@@ -311,7 +311,7 @@ async def test_classify_turn_topic_pivot_high_novelty():
 
 
 @pytest.mark.asyncio
-async def test_classify_turn_text_fallback_marks_degraded():
+async def test_classify_turn_text_fallback_marks_ok():
     bus = AsyncMock()
     content = "NOVEL: YES\nSHIFT: TOPIC\nMEMORY: NO\nBOUNDARY: NO\n"
     bus.rpc_request.return_value = {"data": b"x"}
@@ -330,7 +330,7 @@ async def test_classify_turn_text_fallback_marks_degraded():
 
     patch = await classify_mod.classify_turn(bus, turn=turn, prior_turns=prior, settings=app_settings)
     appr = patch["turn_change_appraisal"]
-    assert appr["turn_change_status"] == "degraded"
+    assert appr["turn_change_status"] == "ok"
     assert appr["novelty_score"] == pytest.approx(0.85)
     assert patch["turn_change_classify_route"] == "metacog"
 

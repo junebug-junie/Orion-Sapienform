@@ -12,12 +12,14 @@ from app.store import BiometricsSubstrateStore, GRAMMAR_CURSOR_REGISTRY
 
 REDUCER_KEY_BY_CURSOR: dict[str, str] = {
     "biometrics_grammar_consumer": "biometrics",
+    "chat_grammar_consumer": "chat_grammar",
     "execution_grammar_reducer": "execution_trajectory",
     "transport_grammar_reducer": "transport_bus",
 }
 
 ENABLED_BY_REDUCER_KEY: dict[str, Any] = {
     "biometrics": lambda s: True,
+    "chat_grammar": lambda s: s.enable_chat_grammar_reducer,
     "execution_trajectory": lambda s: s.enable_execution_trajectory_reducer,
     "transport_bus": lambda s: s.enable_transport_bus_reducer,
 }
@@ -143,6 +145,7 @@ def build_substrate_grammar_truth(store: BiometricsSubstrateStore) -> dict[str, 
             "biometrics_node": settings.enable_biometrics_node_reducer,
             "biometrics_pressure_organ": settings.enable_biometrics_pressure_organ,
             "node_pressure": settings.enable_node_pressure_reducer,
+            "chat_grammar": settings.enable_chat_grammar_reducer,
             "execution_trajectory": settings.enable_execution_trajectory_reducer,
             "transport_bus": settings.enable_transport_bus_reducer,
         },

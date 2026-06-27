@@ -40,6 +40,7 @@ from orion.substrate.relational import (
 from orion.cognition.projection_context import summarize_projection_inputs
 from orion.substrate.relational.layer import _lightweight_belief_set, _skip_unified_beliefs_ctx
 from orion.substrate.relational.adapters.spark_ctx import map_spark_ctx_to_substrate
+from orion.substrate.relational.adapters.self_state_ctx import map_self_state_ctx_to_substrate
 
 logger = logging.getLogger("orion.cognition.projection_builder")
 
@@ -101,6 +102,17 @@ def build_projection_unification_registry() -> ProducerRegistryV1:
                 freshness_ttl_sec=300,
                 pull_on_cold=True,
                 adapter_fn=map_spark_ctx_to_substrate,
+            ),
+            # Self-model lane (higher-order): Orion's beliefs about its own
+            # condition, carrying per-dimension prediction error that seeds
+            # dynamics pressure. ctx-sourced; no cold fan-out (read from ctx).
+            ProducerEntryV1(
+                producer_id="self_state",
+                trust_tier=GRAPHDB_DURABLE,
+                anchor_scopes=("orion",),
+                freshness_ttl_sec=120,
+                pull_on_cold=False,
+                adapter_fn=map_self_state_ctx_to_substrate,
             ),
             ProducerEntryV1(
                 producer_id="orionmem",

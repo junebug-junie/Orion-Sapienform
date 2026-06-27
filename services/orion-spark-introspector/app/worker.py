@@ -612,6 +612,29 @@ def _novelty_from_spark_meta(spark_meta: Dict[str, Any]) -> Optional[float]:
     return None
 
 
+def _merged_spark_meta_for_corr(corr_id: str, spark_meta: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    base = dict(_CANDIDATE_SPARK_META.get(corr_id, {}) or {})
+    if isinstance(spark_meta, dict) and spark_meta:
+        return _merge_spark_meta_dict(base, spark_meta)
+    return base
+
+
+def _display_novelty_for_corr(
+    corr_id: str,
+    spark_meta: Dict[str, Any] | None = None,
+    *,
+    embedding_novelty: float | None = None,
+) -> float | None:
+    """Prefer classify/appraisal novelty from merged candidate cache; fall back to embedding distance."""
+    merged = _merged_spark_meta_for_corr(corr_id, spark_meta)
+    from_appraisal = _novelty_from_spark_meta(merged)
+    if from_appraisal is not None:
+        return from_appraisal
+    if embedding_novelty is not None:
+        return float(embedding_novelty)
+    return None
+
+
 def _extract_phi_novelty_from_meta(spark_meta: Dict[str, Any]) -> tuple[Optional[float], Optional[float]]:
     """
     Prefer:
@@ -1158,7 +1181,10 @@ async def handle_trace(env: BaseEnvelope) -> None:
         trace_meta = trace.metadata if isinstance(trace.metadata, dict) else {}
         spark_meta = trace_meta.get("spark_meta") if isinstance(trace_meta.get("spark_meta"), dict) else trace_meta
         _append_turn_effect_metadata(metadata, spark_meta)
-        novelty = _novelty_from_spark_meta(spark_meta or {})
+        novelty = _display_novelty_for_corr(
+            corr_id,
+            spark_meta if isinstance(spark_meta, dict) else None,
+        )
 
         snap = SparkStateSnapshotV1(
             source_service=settings.service_name,
@@ -1207,24 +1233,29 @@ async def handle_trace(env: BaseEnvelope) -> None:
             state_snapshot=snap,
         )
 
-        # Broadcast to Web UI
+        # Broadcast to Web UI — skip when novelty unknown so patch refresh is not zeroed out
         try:
-            telemetry_id = str(uuid4())
-            ws_payload = {
-                "type": "tissue.update",
-                "telemetry_id": telemetry_id,
-                "correlation_id": corr_id,
-                "timestamp": iso_ts,
-                "stats": {
-                    "phi": telem.phi,
-                    "novelty": telem.novelty,
-                    "valence": valence,
-                    "arousal": arousal,
-                },
-                "grid": [],
-                "metadata": telem.metadata,
-            }
-            await manager.broadcast(ws_payload)
+            display_novelty = _display_novelty_for_corr(
+                corr_id,
+                spark_meta if isinstance(spark_meta, dict) else None,
+            )
+            if display_novelty is not None:
+                telemetry_id = str(uuid4())
+                ws_payload = {
+                    "type": "tissue.update",
+                    "telemetry_id": telemetry_id,
+                    "correlation_id": corr_id,
+                    "timestamp": iso_ts,
+                    "stats": {
+                        "phi": telem.phi,
+                        "novelty": display_novelty,
+                        "valence": valence,
+                        "arousal": arousal,
+                    },
+                    "grid": [],
+                    "metadata": telem.metadata,
+                }
+                await manager.broadcast(ws_payload)
         except Exception as e:
             logger.warning(f"Failed to broadcast tissue update: {e}")
 
@@ -1352,7 +1383,10 @@ async def handle_semantic_upsert(env: BaseEnvelope) -> None:
     tissue_valence = float(phi_stats.get("valence", 0.0))
     arousal_display = max(0.0, min(1.0, 0.15 + (1.2 * novelty)))
     coherence_stat = float(phi_stats.get("coherence", coherence))
-    tissue_novelty = float(phi_stats.get("novelty", novelty))
+    corr_key = str(env.correlation_id or upsert.doc_id)
+    tissue_novelty = _display_novelty_for_corr(corr_key, embedding_novelty=float(novelty))
+    if tissue_novelty is None:
+        tissue_novelty = float(novelty)
     TISSUE.snapshot()
 
     try:

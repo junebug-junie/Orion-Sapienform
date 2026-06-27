@@ -1,0 +1,35 @@
+---
+description: Anti-slop guardrails for Orion chat/personality changes — structural fixes only, no keyword ontologies
+alwaysApply: true
+---
+
+# Conversational behavior — anti-slop
+
+When changing how Orion speaks (tone, curiosity, companionship, stance, personality prompts):
+
+## Forbidden
+
+- Keyword or phrase trigger lists for user emotional states, medical events, or life situations
+- Prompt patches of the form "when the user says X, do Y"
+- Regex detectors on user message text to select conversational mode
+- New banned-phrase lists **without** fixing the structural choke point that produces those phrases
+- Global LLM temperature bumps as a substitute for stance pipeline fixes
+- Claiming a personality fix without a test through `enforce_chat_stance_quality` or the chat_general runtime path
+
+## Required before proposing or implementing
+
+1. **Name the choke point** — file + function (e.g. `enforce_chat_stance_quality` in `services/orion-cortex-exec/app/chat_stance.py`)
+2. **Separate signals** — what the stance LLM / substrate already infers vs what Python post-processing destroys
+3. **Wire through existing pipeline** — stance brief → enforce → speech pass; prefer schema/contract changes over prompt-only edits
+4. **Test structurally** — fixture replaying a stance brief or transcript through enforce/speech contract, not just assert substring in a `.j2` file
+
+## Self-check (reject your own proposal if any are true)
+
+- Adds `if "surgery" in user_message` or similar
+- Adds a new YAML list of feelings/symptoms/situations
+- Only edits `chat_general.j2` without touching `enforce_chat_stance_quality` when the bug is business-mode compression
+- Cannot point to the deterministic code path that caused the bad reply
+
+## Reference spec
+
+`docs/superpowers/specs/2026-06-26-orion-relational-stance-design.md`

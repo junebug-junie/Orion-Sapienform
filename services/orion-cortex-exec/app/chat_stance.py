@@ -842,9 +842,16 @@ def suppress_chat_general_speech_identity_priming(ctx: Dict[str, Any]) -> bool:
     return True
 
 
-def strip_identity_recital_leadin(text: str, user_message: str) -> tuple[str, bool]:
+def strip_identity_recital_leadin(
+    text: str,
+    user_message: str,
+    *,
+    chat_stance_brief: Dict[str, Any] | ChatStanceBrief | None = None,
+) -> tuple[str, bool]:
     """Drop leading Juniper/Oríon label recital from speech on ordinary turns."""
     if _is_identity_sensitive_turn(user_message):
+        return text, False
+    if chat_stance_brief is not None and _is_relational_stance_brief(chat_stance_brief):
         return text, False
     candidate = str(text or "")
     if not candidate.strip():

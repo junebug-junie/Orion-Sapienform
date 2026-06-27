@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.chat_stance import enforce_chat_stance_quality
+from app.chat_stance import enforce_chat_stance_quality, strip_identity_recital_leadin
 from orion.schemas.chat_stance import ChatStanceBrief
 
 
@@ -37,6 +37,42 @@ def _relational_brief(**overrides) -> ChatStanceBrief:
     }
     base.update(overrides)
     return ChatStanceBrief.model_validate(base)
+
+
+def test_strip_identity_recital_leadin_skips_relational_turn() -> None:
+    raw = "You're Juniper — the one building this with me. What's been the weirdest part?"
+    brief = {
+        "conversation_frame": "reflective",
+        "task_mode": "reflective_dialogue",
+    }
+    stripped, changed = strip_identity_recital_leadin(
+        raw,
+        "someone to talk. im lonely",
+        chat_stance_brief=brief,
+    )
+    assert changed is False
+    assert stripped == raw
+
+
+def test_enforce_preserves_relational_frame_only_brief() -> None:
+    brief = ChatStanceBrief.model_validate(
+        {
+            "conversation_frame": "reflective",
+            "task_mode": "direct_response",
+            "identity_salience": "low",
+            "user_intent": "Hold space.",
+            "self_relevance": "x",
+            "juniper_relevance": "Relational continuity matters.",
+            "active_relationship_facets": ["companionship"],
+            "response_priorities": ["companion_presence"],
+            "response_hazards": [],
+            "answer_strategy": "DirectAnswer",
+            "stance_summary": "short",
+        }
+    )
+    enriched, _ = enforce_chat_stance_quality(brief, {"user_message": "just talk to me"})
+    assert enriched.active_relationship_facets == ["companionship"]
+    assert enriched.juniper_relevance == "Relational continuity matters."
 
 
 def test_enforce_preserves_relational_brief_on_non_identity_turn() -> None:

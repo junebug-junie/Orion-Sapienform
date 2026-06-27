@@ -7,6 +7,7 @@ import pytest
 
 from app.worker import (
     _CANDIDATE_SPARK_META,
+    _display_novelty_for_corr,
     _merge_spark_meta_dict,
     _novelty_from_spark_meta,
     handle_spark_meta_patch,
@@ -39,6 +40,24 @@ def test_merge_spark_meta_dict_nested_appraisal() -> None:
     merged = _merge_spark_meta_dict(base, patch)
     assert merged["turn_change_appraisal"]["turn_change_status"] == "ok"
     assert merged["novelty"] == pytest.approx(0.91)
+
+
+def test_display_novelty_prefers_cached_appraisal_over_embedding() -> None:
+    corr = "corr-display-novelty"
+    _CANDIDATE_SPARK_META[corr] = {
+        "turn_change_appraisal": {"turn_change_status": "ok", "novelty_score": 0.71},
+        "novelty": 0.71,
+    }
+    try:
+        assert _display_novelty_for_corr(corr, embedding_novelty=0.12) == pytest.approx(0.71)
+    finally:
+        _CANDIDATE_SPARK_META.pop(corr, None)
+
+
+def test_display_novelty_falls_back_to_embedding_without_appraisal() -> None:
+    corr = "corr-embedding-only"
+    _CANDIDATE_SPARK_META.pop(corr, None)
+    assert _display_novelty_for_corr(corr, embedding_novelty=0.28) == pytest.approx(0.28)
 
 
 @pytest.mark.asyncio

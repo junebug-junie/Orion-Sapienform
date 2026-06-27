@@ -187,6 +187,17 @@ For each command:
 ### Remaining risks
 Only real remaining uncertainty.
 
+## Conversational behavior changes (anti-slop)
+
+When fixing Orion chat tone, curiosity, companionship, or personality — **structural fixes only**.
+
+**Forbidden:** keyword/phrase trigger lists for feelings or medical states; "when user says X" prompt patches; regex mode detectors; global temperature bumps without stance wiring; personality fixes with no test through `enforce_chat_stance_quality` or the `chat_general` runtime path.
+
+**Required:** name the choke point (file + function); explain what the stance LLM already infers vs what post-processing destroys; wire through stance brief → enforce → speech pass; add a fixture test replaying stance/enforce, not just prompt substring asserts.
+
+**Spec:** `docs/superpowers/specs/2026-06-26-orion-relational-stance-design.md`  
+**Cursor rule:** `.cursor/rules/conversational-behavior-anti-slop.mdc`
+
 ## Forbidden response patterns
 - long design essays when implementation was requested
 - repeating the prompt back to the user

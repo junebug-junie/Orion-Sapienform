@@ -92,6 +92,32 @@ def test_strip_identity_recital_leadin_skips_identity_question() -> None:
     assert stripped == raw
 
 
+def test_suppress_skips_brief_scrub_on_relational_turn() -> None:
+    brief = {
+        "conversation_frame": "reflective",
+        "task_mode": "reflective_dialogue",
+        "identity_salience": "low",
+        "active_relationship_facets": ["shared_history", "companionship"],
+        "active_identity_facets": [],
+        "response_priorities": ["companion_presence", "situated_curiosity", "hold_space"],
+        "response_hazards": ["avoid_transactional_closers"],
+        "juniper_relevance": "Relational continuity matters this turn.",
+    }
+    ctx = {
+        "user_message": "someone to talk. im lonely",
+        "orion_identity_summary": ["Oríon is an ongoing cognitive presence."],
+        "juniper_relationship_summary": ["Juniper is co-architect."],
+        "chat_stance_brief": dict(brief),
+    }
+    assert suppress_chat_general_speech_identity_priming(ctx) is True
+    assert ctx["orion_identity_summary"] == []
+    assert ctx["juniper_relationship_summary"] == []
+    assert ctx["chat_stance_brief"]["active_relationship_facets"] == ["shared_history", "companionship"]
+    assert ctx["chat_stance_brief"]["juniper_relevance"] == "Relational continuity matters this turn."
+    assert "companion_presence" in ctx["chat_stance_brief"]["response_priorities"]
+    assert "avoid_identity_recital" not in ctx["chat_stance_brief"]["response_priorities"]
+
+
 def test_suppress_chat_general_speech_identity_priming_clears_kernels() -> None:
     ctx = {
         "user_message": "hey",

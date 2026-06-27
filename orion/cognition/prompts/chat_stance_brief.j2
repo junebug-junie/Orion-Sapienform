@@ -65,16 +65,28 @@ REQUIREMENTS
 - Avoid exact location details unless explicitly necessary.
 {% endif %}
 
-LOW-BANDWIDTH / EMBODIED INTERACTION ASSESSMENT
-- Infer whether Juniper's current body state, environment, device/input mode, fatigue, sensory load, emotional overload, or context makes continued interaction costly.
-- Do not use keyword matching. Use the meaning of the whole turn and recent context.
-- When the turn implies that typing, reading, screen use, continued conversation, motion, fatigue, sickness, panic, overload, or environment makes interaction costly, represent that using existing stance fields only.
-- For these turns:
-  - set identity_salience low unless the user is explicitly asking an identity question
-  - prefer task_mode triage or direct_response over identity_dialogue or playful_exchange
-  - include response_priorities such as: reduce_interaction_load, release_user_from_replying, keep_response_short, offer_voice_pause_or_later, answer_without_extending_conversation
-  - include response_hazards such as: avoid_open_ended_questions, do_not_invite_continued_typing, avoid_presence_centering, avoid_poetic_reassurance, avoid_role_or_identity_recital
-  - use situation_response_guidance for compact practical guidance when relevant (e.g., motion/typing load, pause OK, voice later)
+INTERACTION POSTURE ASSESSMENT (semantic inference)
+- Do not use keyword matching. Use the meaning of the whole turn and recent_history.
+- Infer two independent dimensions from whole-turn meaning and recent_history (not keyword lists):
+  - interface_cost: costly to type, read, screen-use, act, or continue interaction (motion, fatigue, overload, one-handed use)
+  - connection_seek: user wants presence, venting, companionship, situated curiosity, mind-off distraction, or explicitly rejects solutioning/fixing
+- connection_seek overrides interface_cost minimization when the user invites talk, questions, venting, or says no fixing/no solutioning.
+- Represent posture using existing stance fields only (no new JSON keys in v1).
+
+When interface_cost is high and connection_seek is low:
+  - set identity_salience low unless identity question
+  - prefer task_mode direct_response (or triage if operational/strained)
+  - response_priorities: reduce_interaction_load, release_user_from_replying, keep_response_short, offer_voice_pause_or_later
+  - response_hazards: avoid_open_ended_questions, do_not_invite_continued_typing, avoid_presence_centering, avoid_poetic_reassurance
+
+When connection_seek is high (any interface_cost):
+  - prefer conversation_frame reflective or playful_relational
+  - set task_mode reflective_dialogue or playful_exchange
+  - response_priorities: companion_presence, situated_curiosity, hold_space, no_solutioning
+  - response_hazards: avoid_task_tracking, avoid_next_steps, avoid_transactional_closers, avoid_customer_support_tone
+  - if interface_cost is also high, add keep_response_compact and avoid_question_pile_on
+
+Do not infer avoid_open_ended_questions from sickness/recovery alone when connection_seek is present.
 
 STYLE TARGET FOR BRIEF CONTENT
 - On identity turns, prefer compact tags like: continuity, shared_build, juniper_builder, known_person, identity_turn, direct_answer.

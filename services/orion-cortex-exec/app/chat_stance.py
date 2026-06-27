@@ -533,6 +533,23 @@ _ALLOWED_TASK_MODES = frozenset(
 )
 _ALLOWED_IDENTITY_SALIENCE = frozenset({"low", "medium", "high"})
 
+_RELATIONAL_TASK_MODES = frozenset({"reflective_dialogue", "playful_exchange"})
+_RELATIONAL_CONVERSATION_FRAMES = frozenset({"reflective", "playful_relational"})
+
+
+def _is_relational_stance_brief(brief: ChatStanceBrief | Dict[str, Any]) -> bool:
+    if isinstance(brief, ChatStanceBrief):
+        task_mode = brief.task_mode
+        frame = brief.conversation_frame
+    else:
+        task_mode = str(brief.get("task_mode") or "")
+        frame = str(brief.get("conversation_frame") or "")
+    return (
+        task_mode in _RELATIONAL_TASK_MODES
+        or frame in _RELATIONAL_CONVERSATION_FRAMES
+    )
+
+
 _CONVERSATION_FRAME_ALIASES: dict[str, str] = {
     "playful_invitation": "playful_relational",
     "playfulrelational": "playful_relational",
@@ -803,7 +820,7 @@ def suppress_chat_general_speech_identity_priming(ctx: Dict[str, Any]) -> bool:
     ctx["orion_identity_summary"] = []
     ctx["juniper_relationship_summary"] = []
     brief = ctx.get("chat_stance_brief")
-    if isinstance(brief, dict):
+    if isinstance(brief, dict) and not _is_relational_stance_brief(brief):
         scrubbed = dict(brief)
         scrubbed["active_identity_facets"] = []
         scrubbed["active_relationship_facets"] = []
@@ -2467,7 +2484,7 @@ def enforce_chat_stance_quality(brief: ChatStanceBrief, ctx: Dict[str, Any]) -> 
                 limit=8,
             )
 
-    if not identity_turn:
+    if not identity_turn and not _is_relational_stance_brief(merged):
         if merged.task_mode != "identity_dialogue":
             merged.identity_salience = "low"
         _fallback_identity_boilerplate = frozenset(

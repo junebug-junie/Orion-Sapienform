@@ -54,16 +54,14 @@ def test_final_prompt_has_identity_no_generic_collapse_rail() -> None:
     assert "Do not surface negative rail phrases like \"not a generic user\" or \"not a generic assistant\"" in prompt
 
 
-def test_stance_brief_has_semantic_low_bandwidth_guidance() -> None:
+def test_stance_brief_has_semantic_interaction_posture_guidance() -> None:
     prompt = Path("orion/cognition/prompts/chat_stance_brief.j2").read_text(encoding="utf-8")
-    assert "LOW-BANDWIDTH / EMBODIED INTERACTION ASSESSMENT" in prompt
+    assert "INTERACTION POSTURE ASSESSMENT" in prompt
+    assert "interface_cost" in prompt
+    assert "connection_seek" in prompt
     assert "Do not use keyword matching" in prompt
-    assert "response_priorities" in prompt
-    assert "response_hazards" in prompt
+    assert "companion_presence" in prompt
     assert "reduce_interaction_load" in prompt
-    assert "release_user_from_replying" in prompt
-    assert "avoid_open_ended_questions" in prompt
-    assert "avoid_presence_centering" in prompt
 
 
 def test_final_prompt_obey_low_bandwidth_stance_contract() -> None:

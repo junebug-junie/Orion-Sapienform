@@ -47,6 +47,7 @@ class FrontierCuriosityEvaluator:
         perception_brief: MetacogPerceptionBriefV1,
         operator_requested: bool = False,
         query_cache_enabled: bool = True,
+        endogenous_signals: list[FrontierInvocationSignalV1] | None = None,
     ) -> FrontierInvocationRunResultV1:
         coordinator = SubstrateSemanticReadCoordinator(store=self._store, cache_enabled=query_cache_enabled)
         seed_execution = coordinator.execute(SubstrateQueryPlanner.curiosity_seed(max_nodes=64, max_edges=128))
@@ -75,6 +76,11 @@ class FrontierCuriosityEvaluator:
             perception_brief=perception_brief,
             operator_requested=operator_requested,
         )
+        # Rung 5: intrinsic curiosity_candidate seeds (endogenous_curiosity.py)
+        # ride the same decision/plan path as derived signals — no separate
+        # invocation authority, same zone guardrails.
+        if endogenous_signals:
+            signals.extend(endogenous_signals)
         decision = self._decide(signals=signals)
         plan = self._build_plan(decision=decision, anchor_scope=anchor_scope, subject_ref=subject_ref)
         return FrontierInvocationRunResultV1(

@@ -17,6 +17,7 @@ services:
       - CHANNEL_LLM_REQUEST=${CHANNEL_LLM_REQUEST:-orion:exec:request:LLMGatewayService}
       - CHANNEL_LLM_REPLY_PREFIX=${CHANNEL_LLM_REPLY_PREFIX:-orion:council:reply}
       - COUNCIL_MODEL=${COUNCIL_MODEL:-gpt-4o}
+      - COUNCIL_LLM_ROUTE=${COUNCIL_LLM_ROUTE:-metacog}
     networks:
       - app-net
     ports:

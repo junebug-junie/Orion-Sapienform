@@ -103,3 +103,21 @@ curl -X POST -H "X-Orion-Operator-Token: $SUBSTRATE_CURSOR_RESET_OPERATOR_TOKEN"
 ```
 
 Accepted-pressure reducer output publishes to `orion:grammar:accepted-pressure` (not canonical `orion:grammar:event`).
+
+## Dynamics tick (rung-1 pacemaker)
+
+`SUBSTRATE_WRITE_PREDICTION_ERROR_NODES=true` writes execution/transport prediction-error
+values onto durable substrate graph nodes (`metadata['prediction_error']`), but by itself
+nothing ever reads them back — the seeded surprise just sits inert on the node. Set
+`SUBSTRATE_DYNAMICS_TICK_ENABLED=true` to run a periodic, bounded, fail-open
+`SubstrateDynamicsEngine.tick()` against the same shared substrate graph store, which
+seeds and propagates activation pressure from those `prediction_error` values.
+
+- `SUBSTRATE_DYNAMICS_TICK_ENABLED` (default `false`): enable the tick loop.
+- `SUBSTRATE_DYNAMICS_TICK_INTERVAL_SEC` (default `30.0`): tick cadence. Deliberately slower
+  than `GRAMMAR_POLL_INTERVAL_SEC` because each tick issues a bounded but real query
+  (`snapshot()`, `limit_nodes=500`) against the configured store backend, not an in-memory read.
+
+Only meaningful once `SUBSTRATE_WRITE_PREDICTION_ERROR_NODES=true` and
+`SUBSTRATE_STORE_BACKEND=sparql` (Fuseki) are set — with the in-memory default store the
+prediction-error nodes are process-local and this tick has nothing durable to consume.

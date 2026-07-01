@@ -30,7 +30,10 @@ def merge_result_inputs(
     request: Optional[Dict[str, Any]],
     meta: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Combine task request + meta into the artifact provenance inputs dict."""
+    """Combine task request + meta into the artifact provenance inputs dict.
+
+    On key collision, frame/routing meta wins over request.
+    """
     return {**(request or {}), **(meta or {})}
 
 
@@ -75,11 +78,8 @@ def build_artifact_payload(res: VisionResult) -> Optional[VisionArtifactPayload]
     )
 
     for k, v in artifacts.items():
-        if k not in _RESERVED_OUTPUT_KEYS:
-            if hasattr(outputs, k):
-                pass
-            else:
-                setattr(outputs, k, v)
+        if k not in _RESERVED_OUTPUT_KEYS and not hasattr(outputs, k):
+            setattr(outputs, k, v)
 
     fingerprints = artifacts.get("_fingerprints")
     if isinstance(fingerprints, dict) and fingerprints:

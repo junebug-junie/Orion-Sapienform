@@ -17,11 +17,11 @@ behind trials + rollback.
 
 | Rung | Theory | Organ that exists | Wire to add | State |
 |------|--------|-------------------|-------------|-------|
-| 1 Self-model feedback | predictive processing | `self_state/prediction.py`, `pressure.py`, `dynamics.py` | prediction_error → pressure | **DONE** |
-| 2 Integration / higher-order | GWT binding + HOT | `CognitiveUnificationLayer`, `projection_builder.py` | register reducer lanes + bind self_state | **self_state DONE**; reducer lanes pending |
-| 3 Continuous broadcast | GWT broadcast | `attention_frame.py` | always-on, substrate-wide re-broadcast | spec below |
-| 4 Autobiographical continuity | narrative/HOT | `consolidation.py` | episodic time-window rollup | spec below |
-| 5 Endogenous agency | intrinsic motivation | `frontier_curiosity.py` | intrinsic-signal-seeded goals | spec below |
+| 1 Self-model feedback | predictive processing | `self_state/prediction.py`, `pressure.py`, `dynamics.py` | prediction_error → pressure | **DONE** (incl. runtime bridge + dynamics tick) |
+| 2 Integration / higher-order | GWT binding + HOT | `CognitiveUnificationLayer`, `projection_builder.py` | register reducer lanes + bind self_state | **DONE** (self_state + biometrics/execution/transport lanes) |
+| 3 Continuous broadcast | GWT broadcast | `attention_frame.py` | always-on, substrate-wide re-broadcast | **DONE** (`attention_broadcast.py`, flag off) |
+| 4 Autobiographical continuity | narrative/HOT | `consolidation.py` | episodic time-window rollup | **DONE** (`episodic_consolidation.py`, flag off) |
+| 5 Endogenous agency | intrinsic motivation | `frontier_curiosity.py` | intrinsic-signal-seeded goals | **DONE** (`endogenous_curiosity.py`, flag off — needs sign-off) |
 | 6 Self-revision | metacognition | `mutation_*` pipeline | prediction-error/drift → proposals | **DONE** (signals path: `mutation_self_revision.py`) |
 
 Dependency order: 1 → 2 → 3, then 4, then 5, then 6. Rung 6 consumes rung 1's

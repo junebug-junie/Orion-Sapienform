@@ -8,6 +8,7 @@ from app.chat_stance import (
     strip_identity_recital_leadin,
     strip_transactional_closers,
 )
+from app.executor import _prior_stance_cache_get, _prior_stance_cache_set
 from orion.schemas.chat_stance import ChatStanceBrief
 
 
@@ -321,4 +322,26 @@ def test_compile_speech_contract_all_closing_moves() -> None:
         brief = _relational_brief(interaction_regime="relational", companion_closing_move=move)
         contract = compile_speech_contract(brief)
         assert expected_word in contract, f"move={move!r}: expected {expected_word!r} in {contract!r}"
+
+
+def test_prior_stance_cache_set_and_get() -> None:
+    _prior_stance_cache_set("sess-abc", {"interaction_regime": "relational", "task_mode": "reflective_dialogue"})
+    result = _prior_stance_cache_get("sess-abc")
+    assert result is not None
+    assert result["interaction_regime"] == "relational"
+
+
+def test_prior_stance_cache_returns_none_for_missing_key() -> None:
+    result = _prior_stance_cache_get("sess-does-not-exist-xyz")
+    assert result is None
+
+
+def test_prior_stance_cache_evicts_expired_entry(monkeypatch) -> None:
+    import app.executor as _exec
+    # Override TTL to 0 to force immediate expiry
+    monkeypatch.setattr(_exec, "_PRIOR_STANCE_TTL_SECONDS", 0)
+    _prior_stance_cache_set("sess-ttl-test", {"interaction_regime": "relational"})
+    import time as _t; _t.sleep(0.01)
+    result = _prior_stance_cache_get("sess-ttl-test")
+    assert result is None
 

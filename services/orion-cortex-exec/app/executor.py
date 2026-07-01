@@ -84,6 +84,32 @@ from .llm_lane import resolve_llm_lane_for_step
 
 logger = logging.getLogger("orion.cortex.exec")
 
+import threading as _threading
+
+_PRIOR_STANCE_CACHE: dict[str, tuple[float, dict]] = {}
+_PRIOR_STANCE_LOCK = _threading.Lock()
+_PRIOR_STANCE_TTL_SECONDS: float = 1800.0  # 30 minutes; mutable for tests
+
+
+def _prior_stance_cache_set(session_id: str, summary: dict) -> None:
+    """Store compact brief summary keyed by session_id for next-turn carryforward."""
+    with _PRIOR_STANCE_LOCK:
+        _PRIOR_STANCE_CACHE[session_id] = (time.monotonic(), dict(summary))
+
+
+def _prior_stance_cache_get(session_id: str) -> dict | None:
+    """Return stored brief summary if present and not expired; evict on expiry."""
+    with _PRIOR_STANCE_LOCK:
+        entry = _PRIOR_STANCE_CACHE.get(session_id)
+        if entry is None:
+            return None
+        ts, summary = entry
+        if time.monotonic() - ts > _PRIOR_STANCE_TTL_SECONDS:
+            del _PRIOR_STANCE_CACHE[session_id]
+            return None
+        return dict(summary)
+
+
 _SYSTEM_TELEMETRY_KEYS = {
     "turn_effect",
     "turn_effect_summary",

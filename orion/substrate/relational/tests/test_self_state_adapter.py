@@ -24,6 +24,11 @@ def _state() -> SelfStateV1:
         },
         dimension_trajectory={"coherence": -0.1},
         prediction_error_scores={"coherence": 0.55, "uncertainty": 0.2},
+        # In production the worker computes overall_surprise from
+        # prediction_error_scores in the same tick (see
+        # services/orion-self-state-runtime/app/worker.py::_tick); this fixture
+        # mirrors that invariant since it's a max() of the scores above.
+        overall_surprise=0.55,
     )
 
 

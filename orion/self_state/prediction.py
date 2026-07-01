@@ -39,3 +39,17 @@ def compute_prediction_errors(
         if err >= 0.01:
             errors[dim_id] = round(err, 4)
     return errors
+
+
+def compute_overall_surprise(prediction_error_scores: dict[str, float]) -> float:
+    """Whole-self surprise: max per-dimension prediction error.
+
+    Uses max (not mean) to match the existing convention already in
+    ``orion/substrate/relational/adapters/self_state_ctx.py`` — the self as a
+    whole is treated as surprised when *any* dimension is badly mispredicted,
+    not only when the average dimension is. This formalizes that convention as
+    a stable schema field instead of leaving it duplicated adapter-side logic.
+    """
+    if not prediction_error_scores:
+        return 0.0
+    return max(float(v or 0.0) for v in prediction_error_scores.values())

@@ -22,7 +22,7 @@ class Settings(BaseSettings):
         False,
         alias="ENABLE_TRANSPORT_FIELD_DIGESTION",
     )
-    enable_idle_tick: bool = Field(True, alias="FIELD_DIGESTER_IDLE_TICK_ENABLED")
+    enable_idle_tick: bool = Field(False, alias="FIELD_DIGESTER_IDLE_TICK_ENABLED")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
 

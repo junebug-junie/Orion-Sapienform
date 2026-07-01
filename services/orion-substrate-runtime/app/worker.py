@@ -171,6 +171,7 @@ class BiometricsSubstrateWorker:
             asyncio.create_task(self._chat_poll_loop(), name="chat-substrate-poll"),
             asyncio.create_task(self._prune_loop(), name="substrate-receipt-pruner"),
             asyncio.create_task(self._dynamics_tick_loop(), name="substrate-dynamics-tick"),
+            asyncio.create_task(self._episodic_tick_loop(), name="substrate-episodic-tick"),
         ]
 
     async def stop(self) -> None:
@@ -657,6 +658,71 @@ class BiometricsSubstrateWorker:
                 await asyncio.to_thread(self._dynamics_tick)
             except Exception:
                 logger.exception("substrate_dynamics_tick_loop_failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+    def _episodic_tick(self) -> None:
+        """Rung 4: roll the last *completed* receipt window into an episode.
+
+        Windows are clock-aligned to episodic_window_seconds, so every tick
+        inside the same period sees the same completed window and the same
+        receipt set — the derived episode_id is stable and the insert is
+        idempotent (ON CONFLICT DO NOTHING). Output is proposal-marked and
+        never mutates accepted truth. Default-off, fail-open.
+        """
+        s = self._settings
+        if not s.enable_episodic_tick:
+            return
+        try:
+            from datetime import timedelta
+
+            from orion.substrate.episodic_consolidation import (
+                EpisodicConsolidationEvaluator,
+            )
+
+            window = max(1, int(s.episodic_window_seconds))
+            now = datetime.now(timezone.utc)
+            end = datetime.fromtimestamp(
+                (int(now.timestamp()) // window) * window, tz=timezone.utc
+            )
+            start = end - timedelta(seconds=window)
+            cap = max(1, int(s.episodic_max_receipts))
+            # Fetch past the cap so the evaluator can flag truncation honestly.
+            receipts = self._store.fetch_receipts_between(
+                start=start, end=end, limit=max(cap * 4, 256)
+            )
+            evaluator = EpisodicConsolidationEvaluator(
+                window_seconds=window, max_receipts_per_episode=cap
+            )
+            episode = evaluator.consolidate(receipts=receipts, window_end=end)
+            if episode is None:
+                return
+            inserted = self._store.save_episode_summary(episode)
+            pruned = self._store.prune_episode_summaries(
+                older_than=now - timedelta(days=float(s.episodic_retention_days))
+            )
+            logger.info(
+                "substrate_episodic_tick_completed episode_id=%s receipts=%d "
+                "inserted=%s pruned=%d",
+                episode.episode_id,
+                episode.receipt_count_total,
+                inserted,
+                pruned,
+            )
+        except Exception:
+            logger.exception("substrate_episodic_tick_failed")
+
+    async def _episodic_tick_loop(self) -> None:
+        interval = float(self._settings.episodic_tick_interval_sec)
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._episodic_tick)
+            except Exception:
+                logger.exception("substrate_episodic_tick_loop_failed")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except asyncio.TimeoutError:

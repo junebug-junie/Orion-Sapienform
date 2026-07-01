@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     grammar_poll_interval_sec: float = Field(5.0, alias="GRAMMAR_POLL_INTERVAL_SEC")
     enable_dynamics_tick: bool = Field(False, alias="SUBSTRATE_DYNAMICS_TICK_ENABLED")
     dynamics_tick_interval_sec: float = Field(30.0, alias="SUBSTRATE_DYNAMICS_TICK_INTERVAL_SEC")
+    enable_episodic_tick: bool = Field(False, alias="SUBSTRATE_EPISODIC_TICK_ENABLED")
+    episodic_tick_interval_sec: float = Field(300.0, alias="SUBSTRATE_EPISODIC_TICK_INTERVAL_SEC")
+    # Window + tick interval must stay under receipt retention (default 30 min),
+    # or completed windows will already be pruned when consolidated.
+    episodic_window_seconds: int = Field(900, alias="SUBSTRATE_EPISODIC_WINDOW_SECONDS")
+    episodic_max_receipts: int = Field(64, alias="SUBSTRATE_EPISODIC_MAX_RECEIPTS")
+    episodic_retention_days: float = Field(14.0, alias="SUBSTRATE_EPISODIC_RETENTION_DAYS")
     biometrics_grammar_batch_limit: int = Field(50, alias="BIOMETRICS_GRAMMAR_BATCH_LIMIT")
     execution_grammar_batch_limit: int = Field(100, alias="EXECUTION_GRAMMAR_BATCH_LIMIT")
     transport_grammar_batch_limit: int = Field(500, alias="TRANSPORT_GRAMMAR_BATCH_LIMIT")

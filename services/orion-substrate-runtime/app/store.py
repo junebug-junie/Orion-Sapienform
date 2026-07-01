@@ -23,6 +23,7 @@ from orion.schemas.transport_projection import TransportBusProjectionV1
 from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.organ_emission import OrganEmissionV1
 from orion.schemas.reduction_receipt import ReductionReceiptV1
+from orion.core.schemas.substrate_episodes import EpisodeSummaryV1
 
 from orion.substrate.biometrics_loop.constants import GRAMMAR_CURSOR_NAME
 from orion.substrate.execution_loop.constants import EXECUTION_GRAMMAR_CURSOR_NAME
@@ -629,6 +630,104 @@ class BiometricsSubstrateStore:
                 ),
                 insert_params,
             )
+
+    def fetch_receipts_between(
+        self,
+        *,
+        start: datetime,
+        end: datetime,
+        limit: int = 500,
+    ) -> list[ReductionReceiptV1]:
+        """Receipts in [start, end] for episodic consolidation, oldest first.
+
+        Metadata-only rows (compact receipt_json) still validate — absent event
+        lists default to empty. Unparseable rows are skipped, not fatal.
+        """
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT receipt_json FROM substrate_reduction_receipts
+                    WHERE created_at >= :start AND created_at <= :end
+                    ORDER BY created_at ASC, receipt_id ASC
+                    LIMIT :limit
+                    """
+                ),
+                {"start": start, "end": end, "limit": limit},
+            ).mappings().all()
+        receipts: list[ReductionReceiptV1] = []
+        for row in rows:
+            payload = row["receipt_json"]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            try:
+                receipts.append(ReductionReceiptV1.model_validate(payload))
+            except Exception:
+                logger.warning("substrate_receipt_parse_failed", exc_info=True)
+        return receipts
+
+    def save_episode_summary(self, episode: EpisodeSummaryV1) -> bool:
+        """Insert a proposal-marked episode; idempotent on episode_id."""
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_episode_summaries (
+                        episode_id, status, window_start, window_end,
+                        episode_json, created_at
+                    ) VALUES (
+                        :episode_id, :status, :window_start, :window_end,
+                        :episode_json, :created_at
+                    )
+                    ON CONFLICT (episode_id) DO NOTHING
+                    """
+                ),
+                {
+                    "episode_id": episode.episode_id,
+                    "status": episode.status,
+                    "window_start": episode.window_start,
+                    "window_end": episode.window_end,
+                    "episode_json": Json(episode.model_dump(mode="json")),
+                    "created_at": episode.created_at,
+                },
+            )
+            return bool(result.rowcount)
+
+    def fetch_recent_episode_summaries(self, *, limit: int = 20) -> list[EpisodeSummaryV1]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT episode_json FROM substrate_episode_summaries
+                    ORDER BY window_end DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"limit": limit},
+            ).mappings().all()
+        episodes: list[EpisodeSummaryV1] = []
+        for row in rows:
+            payload = row["episode_json"]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            try:
+                episodes.append(EpisodeSummaryV1.model_validate(payload))
+            except Exception:
+                logger.warning("substrate_episode_parse_failed", exc_info=True)
+        return episodes
+
+    def prune_episode_summaries(self, *, older_than: datetime) -> int:
+        with self._engine.begin() as conn:
+            result = conn.execute(
+                text(
+                    """
+                    DELETE FROM substrate_episode_summaries
+                    WHERE created_at < :older_than
+                    """
+                ),
+                {"older_than": older_than},
+            )
+            return int(result.rowcount or 0)
 
     def save_emission(self, emission: OrganEmissionV1) -> None:
         now = datetime.now(timezone.utc)

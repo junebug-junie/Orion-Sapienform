@@ -1019,6 +1019,7 @@ def _upgrade_brief_for_relational_continuation(brief: ChatStanceBrief) -> ChatSt
         merged.conversation_frame = "reflective"
     if merged.task_mode not in _RELATIONAL_TASK_MODES:
         merged.task_mode = "reflective_dialogue"
+    merged.interaction_regime = "relational"
     merged.response_priorities = _unique(
         list(merged.response_priorities)
         + ["companion_presence", "hold_space", "no_solutioning", "situated_curiosity"],
@@ -2150,10 +2151,12 @@ def _run_autonomy_reducer(ctx: Dict[str, Any], autonomy: Dict[str, Any]):
 
 
 def _inject_prior_stance_to_inputs(ctx: Dict[str, Any], inputs: Dict[str, Any]) -> None:
-    """Copy prior brief summary from ctx into stance inputs when present and non-empty."""
+    """Copy prior brief summary into stance inputs and expose it as a TOP-LEVEL ctx
+    key for the chat_stance_brief.j2 render (which uses ctx.copy()), when present and non-empty."""
     prior = ctx.get("prior_chat_stance_brief")
     if isinstance(prior, dict) and prior:
         inputs["prior_stance"] = prior
+        ctx["prior_stance"] = prior
 
 
 def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:

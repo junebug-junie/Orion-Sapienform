@@ -377,3 +377,62 @@ def test_stance_brief_prompt_has_prior_stance_and_regime_fields() -> None:
     assert "companion_closing_move" in prompt
     assert "carry" in prompt.lower() or "carryforward" in prompt.lower() or "carry forward" in prompt.lower()
 
+
+def test_inject_prior_stance_exposes_top_level_ctx_key() -> None:
+    prior = {"interaction_regime": "relational", "task_mode": "reflective_dialogue"}
+    ctx = {"prior_chat_stance_brief": prior}
+    inputs: dict = {}
+    _inject_prior_stance_to_inputs(ctx, inputs)
+    assert inputs.get("prior_stance") == prior
+    assert ctx.get("prior_stance") == prior
+
+
+def test_prior_stance_reaches_stance_brief_render() -> None:
+    from jinja2 import Template
+    from app.executor import _prompt_render_ctx
+    prior = {"interaction_regime": "relational", "task_mode": "reflective_dialogue"}
+    ctx = {"prior_chat_stance_brief": prior}
+    inputs: dict = {}
+    _inject_prior_stance_to_inputs(ctx, inputs)
+    render_ctx = _prompt_render_ctx(ctx)
+    rendered = Template(
+        Path("orion/cognition/prompts/chat_stance_brief.j2").read_text(encoding="utf-8")
+    ).render(**render_ctx)
+    assert "- prior_stance:" in rendered
+    assert "relational" in rendered
+    assert "carry" in rendered.lower()
+
+
+def test_stance_brief_render_omits_prior_stance_when_absent() -> None:
+    from jinja2 import Template
+    from app.executor import _prompt_render_ctx
+    render_ctx = _prompt_render_ctx({})
+    rendered = Template(
+        Path("orion/cognition/prompts/chat_stance_brief.j2").read_text(encoding="utf-8")
+    ).render(**render_ctx)
+    assert "- prior_stance:" not in rendered
+
+
+def test_load_prior_stance_into_ctx_sets_top_level_from_cache() -> None:
+    from app.executor import _load_prior_stance_into_ctx, _prior_stance_cache_set
+    _prior_stance_cache_set("sess-load-test", {"interaction_regime": "relational", "task_mode": "reflective_dialogue"})
+    ctx = {"session_id": "sess-load-test"}
+    _load_prior_stance_into_ctx(ctx)
+    assert ctx.get("prior_stance", {}).get("interaction_regime") == "relational"
+    assert ctx.get("prior_chat_stance_brief", {}).get("interaction_regime") == "relational"
+
+
+def test_load_prior_stance_into_ctx_noop_without_session_id() -> None:
+    from app.executor import _load_prior_stance_into_ctx
+    ctx: dict = {}
+    _load_prior_stance_into_ctx(ctx)
+    assert "prior_stance" not in ctx
+
+
+def test_upgrade_brief_for_relational_continuation_sets_regime() -> None:
+    from app.chat_stance import _upgrade_brief_for_relational_continuation
+    brief = _instrumental_brief()
+    upgraded = _upgrade_brief_for_relational_continuation(brief)
+    assert upgraded.interaction_regime == "relational"
+    assert upgraded.conversation_frame in {"reflective", "playful_relational"}
+

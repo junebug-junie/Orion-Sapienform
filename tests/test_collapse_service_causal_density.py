@@ -124,3 +124,50 @@ def test_metacog_lane_modest_self_report_but_severe_self_state_pulls_score_up(tm
     blended = score_causal_density_with_self_state(entry.event_id, self_state=_unstable_self_state())
 
     assert blended.causal_density.score > self_report_only.causal_density.score
+
+
+def test_metacog_lane_accepts_dict_self_state_like_real_caller(tmp_path, monkeypatch):
+    """The real production caller (ScoreCausalDensityVerb.execute) passes a plain
+    dict read back from JSONB storage, never a SelfStateV1 instance. This exercises
+    the _coerce_self_state dict path end-to-end."""
+    import orion.collapse.service as svc
+    monkeypatch.setattr(svc, "_get_store", lambda: _store(tmp_path))
+
+    entry = create_entry_from_v2(
+        _base_entry_payload(
+            observer="Orion",
+            source_service="metacog",
+            numeric_overrides={"valence": 0.2, "arousal": 0.2, "risk_score": 0.2},
+        ),
+    )
+    self_report_only = score_causal_density_with_self_state(entry.event_id, self_state=None)
+    blended = score_causal_density_with_self_state(
+        entry.event_id, self_state=_unstable_self_state().model_dump(mode="json")
+    )
+
+    assert blended.causal_density.score > self_report_only.causal_density.score
+
+
+def test_metacog_lane_malformed_self_state_falls_back_to_self_report_only(tmp_path, monkeypatch):
+    """Schema drift or garbage payloads must fail open to pure self-report, never raise."""
+    import orion.collapse.service as svc
+    monkeypatch.setattr(svc, "_get_store", lambda: _store(tmp_path))
+
+    entry = create_entry_from_v2(
+        _base_entry_payload(
+            observer="Orion",
+            source_service="metacog",
+            numeric_overrides={"valence": 0.2, "arousal": 0.2, "risk_score": 0.2},
+        ),
+    )
+    self_report_only = score_causal_density_with_self_state(entry.event_id, self_state=None)
+
+    malformed_dict = score_causal_density_with_self_state(
+        entry.event_id, self_state={"garbage": "not a valid self state", "extra_field": 123}
+    )
+    assert malformed_dict.causal_density.score == self_report_only.causal_density.score
+
+    malformed_str = score_causal_density_with_self_state(
+        entry.event_id, self_state="not json at all"
+    )
+    assert malformed_str.causal_density.score == self_report_only.causal_density.score

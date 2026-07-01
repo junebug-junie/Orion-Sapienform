@@ -131,6 +131,8 @@ def _label_for_score(score: float) -> str:
     return "ambient"
 
 
+# Starting-default blend weights, not derived from any calibration data yet.
+# Expect these to get retuned once we have real metacog-lane outcomes to check against.
 METACOG_SELF_REPORT_WEIGHT = 0.35
 METACOG_PHI_EVIDENCE_WEIGHT = 0.65
 

@@ -24,6 +24,7 @@ from orion.schemas.grammar import GrammarEventV1
 from orion.schemas.organ_emission import OrganEmissionV1
 from orion.schemas.reduction_receipt import ReductionReceiptV1
 from orion.core.schemas.substrate_episodes import EpisodeSummaryV1
+from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
 
 from orion.substrate.biometrics_loop.constants import GRAMMAR_CURSOR_NAME
 from orion.substrate.execution_loop.constants import EXECUTION_GRAMMAR_CURSOR_NAME
@@ -501,6 +502,18 @@ class BiometricsSubstrateStore:
                     "created_at": now,
                 },
             )
+
+    def load_attention_broadcast(
+        self, projection_id: str = "substrate.attention.broadcast.v1"
+    ) -> AttentionBroadcastProjectionV1 | None:
+        return self._load_projection(
+            "substrate_attention_broadcast_projection",
+            projection_id,
+            AttentionBroadcastProjectionV1,
+        )
+
+    def save_attention_broadcast(self, projection: AttentionBroadcastProjectionV1) -> None:
+        self._save_projection("substrate_attention_broadcast_projection", projection)
 
     def load_node_biometrics(self, projection_id: str) -> NodeBiometricsProjectionV1 | None:
         return self._load_projection(

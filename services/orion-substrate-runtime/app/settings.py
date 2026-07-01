@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     episodic_window_seconds: int = Field(900, alias="SUBSTRATE_EPISODIC_WINDOW_SECONDS")
     episodic_max_receipts: int = Field(64, alias="SUBSTRATE_EPISODIC_MAX_RECEIPTS")
     episodic_retention_days: float = Field(14.0, alias="SUBSTRATE_EPISODIC_RETENTION_DAYS")
+    enable_attention_broadcast: bool = Field(False, alias="ORION_ATTENTION_BROADCAST_ENABLED")
+    attention_broadcast_interval_sec: float = Field(
+        30.0, alias="ORION_ATTENTION_BROADCAST_INTERVAL_SEC"
+    )
+    attention_broadcast_min_salience: float = Field(
+        0.2, alias="ORION_ATTENTION_BROADCAST_MIN_SALIENCE"
+    )
     biometrics_grammar_batch_limit: int = Field(50, alias="BIOMETRICS_GRAMMAR_BATCH_LIMIT")
     execution_grammar_batch_limit: int = Field(100, alias="EXECUTION_GRAMMAR_BATCH_LIMIT")
     transport_grammar_batch_limit: int = Field(500, alias="TRANSPORT_GRAMMAR_BATCH_LIMIT")

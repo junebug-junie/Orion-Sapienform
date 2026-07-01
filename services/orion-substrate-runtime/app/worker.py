@@ -172,6 +172,9 @@ class BiometricsSubstrateWorker:
             asyncio.create_task(self._prune_loop(), name="substrate-receipt-pruner"),
             asyncio.create_task(self._dynamics_tick_loop(), name="substrate-dynamics-tick"),
             asyncio.create_task(self._episodic_tick_loop(), name="substrate-episodic-tick"),
+            asyncio.create_task(
+                self._attention_broadcast_loop(), name="substrate-attention-broadcast"
+            ),
         ]
 
     async def stop(self) -> None:
@@ -715,6 +718,63 @@ class BiometricsSubstrateWorker:
             )
         except Exception:
             logger.exception("substrate_episodic_tick_failed")
+
+    def _attention_broadcast_tick(self) -> None:
+        """Rung 3: run the workspace competition over the substrate graph.
+
+        High-pressure nodes (dynamic_pressure from rung 1, prediction_error,
+        and the belief-derived nodes the rung-2 lanes materialize) compete via
+        the same select_actions policy the chat frame uses; the winning
+        coalition is persisted as a single-row projection other organs can
+        query. No action is taken from the broadcast. Default-off, fail-open.
+        """
+        s = self._settings
+        if not s.enable_attention_broadcast:
+            return
+
+        store = self._get_substrate_graph_store(
+            log_label="substrate_attention_broadcast_store_init_failed"
+        )
+        if store is None:
+            return
+
+        try:
+            from orion.substrate.attention_broadcast import (
+                broadcast_projection_from_frame,
+                build_substrate_attention_frame,
+            )
+
+            state = store.snapshot()
+            frame = build_substrate_attention_frame(
+                nodes=list(state.nodes.values()),
+                min_salience=float(s.attention_broadcast_min_salience),
+                now=datetime.now(timezone.utc),
+            )
+            projection = broadcast_projection_from_frame(frame)
+            self._store.save_attention_broadcast(projection)
+            logger.info(
+                "substrate_attention_broadcast_completed selected=%s loop=%s "
+                "open_loops=%d",
+                projection.selected_action_type,
+                projection.selected_open_loop_id,
+                len(frame.open_loops),
+            )
+        except Exception:
+            logger.exception("substrate_attention_broadcast_failed")
+
+    async def _attention_broadcast_loop(self) -> None:
+        interval = float(self._settings.attention_broadcast_interval_sec)
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._attention_broadcast_tick)
+            except Exception:
+                logger.exception("substrate_attention_broadcast_loop_failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
 
     async def _episodic_tick_loop(self) -> None:
         interval = float(self._settings.episodic_tick_interval_sec)

@@ -2149,6 +2149,13 @@ def _run_autonomy_reducer(ctx: Dict[str, Any], autonomy: Dict[str, Any]):
     )
 
 
+def _inject_prior_stance_to_inputs(ctx: Dict[str, Any], inputs: Dict[str, Any]) -> None:
+    """Copy prior brief summary from ctx into stance inputs when present and non-empty."""
+    prior = ctx.get("prior_chat_stance_brief")
+    if isinstance(prior, dict) and prior:
+        inputs["prior_stance"] = prior
+
+
 def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     # Single unified beliefs call replaces independent producer fan-outs for
     # identity, orionmem, recall, and social lanes.
@@ -2239,6 +2246,7 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
             ctx.pop("chat_attention_frame", None)
             ctx.pop("chat_attention_frame_debug", None)
 
+    _inject_prior_stance_to_inputs(ctx, inputs)
     ctx["chat_stance_inputs"] = inputs
     ctx["chat_concept_summary"] = concept
     ctx["chat_social_summary"] = social

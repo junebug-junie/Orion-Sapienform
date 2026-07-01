@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.chat_stance import (
+    _inject_prior_stance_to_inputs,
     compile_speech_contract,
     enforce_chat_stance_quality,
     strip_identity_recital_leadin,
@@ -344,4 +345,25 @@ def test_prior_stance_cache_evicts_expired_entry(monkeypatch) -> None:
     import time as _t; _t.sleep(0.01)
     result = _prior_stance_cache_get("sess-ttl-test")
     assert result is None
+
+
+def test_inject_prior_stance_to_inputs_when_present() -> None:
+    ctx = {"prior_chat_stance_brief": {"interaction_regime": "relational", "task_mode": "reflective_dialogue"}}
+    inputs: dict = {}
+    _inject_prior_stance_to_inputs(ctx, inputs)
+    assert inputs.get("prior_stance") == ctx["prior_chat_stance_brief"]
+
+
+def test_inject_prior_stance_to_inputs_noop_when_absent() -> None:
+    ctx: dict = {}
+    inputs: dict = {}
+    _inject_prior_stance_to_inputs(ctx, inputs)
+    assert "prior_stance" not in inputs
+
+
+def test_inject_prior_stance_to_inputs_noop_for_empty_dict() -> None:
+    ctx = {"prior_chat_stance_brief": {}}
+    inputs: dict = {}
+    _inject_prior_stance_to_inputs(ctx, inputs)
+    assert "prior_stance" not in inputs
 

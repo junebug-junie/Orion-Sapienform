@@ -1,3 +1,3 @@
-from .service import create_entry_from_v2, enrich_entry, score_causal_density
+from .service import create_entry_from_v2, enrich_entry, score_causal_density, score_causal_density_with_self_state
 
-__all__ = ["create_entry_from_v2", "enrich_entry", "score_causal_density"]
+__all__ = ["create_entry_from_v2", "enrich_entry", "score_causal_density", "score_causal_density_with_self_state"]

@@ -1019,6 +1019,7 @@ def _upgrade_brief_for_relational_continuation(brief: ChatStanceBrief) -> ChatSt
         merged.conversation_frame = "reflective"
     if merged.task_mode not in _RELATIONAL_TASK_MODES:
         merged.task_mode = "reflective_dialogue"
+    merged.interaction_regime = "relational"
     merged.response_priorities = _unique(
         list(merged.response_priorities)
         + ["companion_presence", "hold_space", "no_solutioning", "situated_curiosity"],
@@ -1037,6 +1038,51 @@ def _upgrade_brief_for_relational_continuation(brief: ChatStanceBrief) -> ChatSt
     if not merged.juniper_relevance or "practical usefulness" in merged.juniper_relevance.lower():
         merged.juniper_relevance = "Relational continuity matters this turn."
     return merged
+
+
+_COMPANION_CLOSING_MOVE_MAP: dict[str, str] = {
+    "end_with_a_wondering": "End with a wondering, not an offer.",
+    "leave_space_without_offer": "Leave space. Do not close with an offer to help.",
+    "ground_observation": "End with a grounded observation from the thread.",
+    "be_with_silence": "Hold the silence. No closing move required.",
+}
+
+
+def compile_speech_contract(brief: "ChatStanceBrief") -> str:
+    """Deterministic regime-specific contract injected near TASK in chat_general.j2.
+
+    Pure Python — no LLM, no I/O. Called after enforce_chat_stance_quality.
+    """
+    regime = brief.interaction_regime
+
+    if regime is None:
+        if brief.task_mode in _RELATIONAL_TASK_MODES or brief.conversation_frame in _RELATIONAL_CONVERSATION_FRAMES:
+            regime = "relational"
+        else:
+            regime = "instrumental"
+
+    if regime == "minimal":
+        return (
+            "Keep this reply very short. Do not ask questions. "
+            "Release Juniper from replying — offer voice, a pause, or continuation later."
+        )
+
+    if regime == "relational":
+        parts = ["This is a companion turn."]
+        move = brief.companion_closing_move
+        if move and move in _COMPANION_CLOSING_MOVE_MAP:
+            parts.append(_COMPANION_CLOSING_MOVE_MAP[move])
+        else:
+            parts.append("Stay present; do not offer next steps, trackers, or support closers.")
+        if "situated_curiosity" in list(brief.response_priorities or []):
+            parts.append("Ask one grounded question from this thread — not a generic reversal.")
+        return " ".join(parts)
+
+    # instrumental (default)
+    parts = ["Answer directly."]
+    if brief.task_mode == "triage":
+        parts.append("Lead with the operational blocker.")
+    return " ".join(parts)
 
 
 def strip_identity_recital_leadin(
@@ -2104,6 +2150,15 @@ def _run_autonomy_reducer(ctx: Dict[str, Any], autonomy: Dict[str, Any]):
     )
 
 
+def _inject_prior_stance_to_inputs(ctx: Dict[str, Any], inputs: Dict[str, Any]) -> None:
+    """Copy prior brief summary into stance inputs and expose it as a TOP-LEVEL ctx
+    key for the chat_stance_brief.j2 render (which uses ctx.copy()), when present and non-empty."""
+    prior = ctx.get("prior_chat_stance_brief")
+    if isinstance(prior, dict) and prior:
+        inputs["prior_stance"] = prior
+        ctx["prior_stance"] = prior
+
+
 def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     # Single unified beliefs call replaces independent producer fan-outs for
     # identity, orionmem, recall, and social lanes.
@@ -2196,6 +2251,7 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
             ctx.pop("chat_attention_frame", None)
             ctx.pop("chat_attention_frame_debug", None)
 
+    _inject_prior_stance_to_inputs(ctx, inputs)
     ctx["chat_stance_inputs"] = inputs
     ctx["chat_concept_summary"] = concept
     ctx["chat_social_summary"] = social

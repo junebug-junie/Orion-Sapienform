@@ -11,6 +11,7 @@ import inspect
 import json
 import logging
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -73,6 +74,7 @@ from .spark_narrative import spark_phi_hint, spark_phi_narrative
 from .chat_stance import (
     build_chat_stance_debug_payload,
     build_chat_stance_inputs,
+    compile_speech_contract,
     enforce_chat_stance_quality,
     fallback_chat_stance_brief,
     identity_kernel_with_fallbacks,
@@ -83,6 +85,51 @@ from .situation import build_situation_for_ctx
 from .llm_lane import resolve_llm_lane_for_step
 
 logger = logging.getLogger("orion.cortex.exec")
+
+_PRIOR_STANCE_CACHE: dict[str, tuple[float, dict]] = {}
+_PRIOR_STANCE_LOCK = threading.Lock()
+_PRIOR_STANCE_TTL_SECONDS: float = 1800.0  # 30 minutes; mutable for tests
+_PRIOR_STANCE_MAX_ENTRIES: int = 1024  # opportunistic-sweep threshold
+
+
+def _prior_stance_cache_set(session_id: str, summary: dict) -> None:
+    """Store compact brief summary keyed by session_id for next-turn carryforward.
+
+    Opportunistically evicts expired entries when the cache grows past a threshold so
+    sessions that are written once and never re-read cannot leak unboundedly."""
+    with _PRIOR_STANCE_LOCK:
+        now = time.monotonic()
+        if len(_PRIOR_STANCE_CACHE) > _PRIOR_STANCE_MAX_ENTRIES:
+            for _k in [k for k, (ts, _) in _PRIOR_STANCE_CACHE.items() if now - ts > _PRIOR_STANCE_TTL_SECONDS]:
+                del _PRIOR_STANCE_CACHE[_k]
+        _PRIOR_STANCE_CACHE[session_id] = (now, dict(summary))
+
+
+def _prior_stance_cache_get(session_id: str) -> dict | None:
+    """Return stored brief summary if present and not expired; evict on expiry."""
+    with _PRIOR_STANCE_LOCK:
+        entry = _PRIOR_STANCE_CACHE.get(session_id)
+        if entry is None:
+            return None
+        ts, summary = entry
+        if time.monotonic() - ts > _PRIOR_STANCE_TTL_SECONDS:
+            del _PRIOR_STANCE_CACHE[session_id]
+            return None
+        return dict(summary)
+
+
+def _load_prior_stance_into_ctx(ctx: Dict[str, Any]) -> None:
+    """Load prior-turn stance summary from the session cache into ctx as a TOP-LEVEL
+    key so chat_stance_brief.j2 (rendered via ctx.copy()) can carry the prior
+    interaction_regime forward. No-op when no session_id or no cached prior."""
+    session_id = str(ctx.get("session_id") or "")
+    if not session_id:
+        return
+    prior = _prior_stance_cache_get(session_id)
+    if prior:
+        ctx["prior_chat_stance_brief"] = prior
+        ctx["prior_stance"] = prior
+
 
 _SYSTEM_TELEMETRY_KEYS = {
     "turn_effect",
@@ -2545,6 +2592,8 @@ async def call_step_services(
                 consumed_by,
             )
             ctx["message_history"] = _format_message_history_for_chat_prompt(ctx.get("messages"))
+            if step.verb_name == "chat_general" and step.step_name == "synthesize_chat_stance_brief":
+                _load_prior_stance_into_ctx(ctx)
             if step.verb_name == "chat_general" and step.step_name == "llm_chat_general":
                 if suppress_chat_general_speech_identity_priming(ctx):
                     logs.append("info <- suppressed identity kernel priming for ordinary chat_general speech turn")
@@ -3804,6 +3853,15 @@ async def call_step_services(
                         semantic_fallback,
                     )
                     ctx["chat_stance_brief"] = parsed_brief.model_dump(mode="json")
+                    _session_id = str(ctx.get("session_id") or "")
+                    if _session_id:
+                        _prior_stance_cache_set(_session_id, {
+                            "interaction_regime": parsed_brief.interaction_regime,
+                            "task_mode": parsed_brief.task_mode,
+                            "response_priorities": list(parsed_brief.response_priorities[:4]),
+                            "response_hazards": list(parsed_brief.response_hazards[:4]),
+                        })
+                    ctx["speech_contract"] = compile_speech_contract(parsed_brief)
                     quality_modified = synthesized_brief != ctx["chat_stance_brief"]
                     ctx["chat_stance_debug"] = build_chat_stance_debug_payload(
                         ctx=ctx,

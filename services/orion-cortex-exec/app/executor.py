@@ -73,6 +73,7 @@ from .spark_narrative import spark_phi_hint, spark_phi_narrative
 from .chat_stance import (
     build_chat_stance_debug_payload,
     build_chat_stance_inputs,
+    compile_speech_contract,
     enforce_chat_stance_quality,
     fallback_chat_stance_brief,
     identity_kernel_with_fallbacks,
@@ -2571,6 +2572,12 @@ async def call_step_services(
                 consumed_by,
             )
             ctx["message_history"] = _format_message_history_for_chat_prompt(ctx.get("messages"))
+            if step.verb_name == "chat_general" and step.step_name == "synthesize_chat_stance_brief":
+                _session_id = str(ctx.get("session_id") or "")
+                if _session_id:
+                    _prior = _prior_stance_cache_get(_session_id)
+                    if _prior:
+                        ctx["prior_chat_stance_brief"] = _prior
             if step.verb_name == "chat_general" and step.step_name == "llm_chat_general":
                 if suppress_chat_general_speech_identity_priming(ctx):
                     logs.append("info <- suppressed identity kernel priming for ordinary chat_general speech turn")
@@ -3830,6 +3837,15 @@ async def call_step_services(
                         semantic_fallback,
                     )
                     ctx["chat_stance_brief"] = parsed_brief.model_dump(mode="json")
+                    _session_id = str(ctx.get("session_id") or "")
+                    if _session_id:
+                        _prior_stance_cache_set(_session_id, {
+                            "interaction_regime": parsed_brief.interaction_regime,
+                            "task_mode": parsed_brief.task_mode,
+                            "response_priorities": list(parsed_brief.response_priorities[:4]),
+                            "response_hazards": list(parsed_brief.response_hazards[:4]),
+                        })
+                    ctx["speech_contract"] = compile_speech_contract(parsed_brief)
                     quality_modified = synthesized_brief != ctx["chat_stance_brief"]
                     ctx["chat_stance_debug"] = build_chat_stance_debug_payload(
                         ctx=ctx,

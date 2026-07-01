@@ -19,6 +19,11 @@ def test_projection_registry_matches_expected_chat_stance_producers() -> None:
         "autonomy",
         "concept_induction",
         "spark",
+        # self-model (higher-order rung) + substrate "felt state" reducer lanes
+        "self_state",
+        "biometrics",
+        "execution",
+        "transport",
         "orionmem",
         "recall",
         "social",

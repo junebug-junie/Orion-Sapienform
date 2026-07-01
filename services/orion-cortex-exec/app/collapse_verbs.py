@@ -9,7 +9,9 @@ from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.core.verbs.base import BaseVerb, VerbContext
 from orion.core.verbs.models import VerbEffectV1
 from orion.core.verbs.registry import verb
-from orion.collapse import create_entry_from_v2, enrich_entry, score_causal_density
+from orion.collapse import create_entry_from_v2, enrich_entry, score_causal_density_with_self_state
+
+from app.substrate_felt_state_reader import hydrate_felt_state_ctx
 
 
 class CollapseMirrorLogPayload(RootModel[Dict[str, Any]]):
@@ -134,7 +136,9 @@ class ScoreCausalDensityVerb(BaseVerb[CollapseMirrorEventRequest, CollapseMirror
         bus = ctx.meta.get("bus")
         source = ctx.meta.get("source")
 
-        entry = score_causal_density(payload.event_id)
+        felt_state_ctx: Dict[str, Any] = {}
+        hydrate_felt_state_ctx(felt_state_ctx)
+        entry = score_causal_density_with_self_state(payload.event_id, self_state=felt_state_ctx.get("self_state"))
 
         effects: List[VerbEffectV1] = []
         if entry.is_causally_dense:

@@ -10,8 +10,10 @@ from typing import Any, Dict, Optional
 from orion.schemas.collapse_mirror import (
     CollapseMirrorCausalDensity,
     CollapseMirrorEntryV2,
+    mirror_kind,
     normalize_collapse_entry,
 )
+from orion.schemas.self_state import SelfStateV1
 
 logger = logging.getLogger("orion.collapse.service")
 
@@ -129,13 +131,59 @@ def _label_for_score(score: float) -> str:
     return "ambient"
 
 
-def score_causal_density(event_id: str) -> CollapseMirrorEntryV2:
-    store = _get_store()
-    entry = store.get(event_id)
+# Starting-default blend weights, not derived from any calibration data yet.
+# Expect these to get retuned once we have real metacog-lane outcomes to check against.
+METACOG_SELF_REPORT_WEIGHT = 0.35
+METACOG_PHI_EVIDENCE_WEIGHT = 0.65
 
+_SEVERITY_ORDER = ("quiet", "steady", "loaded", "strained", "unstable")
+
+
+def _condition_severity_rank(condition: str | None) -> int:
+    try:
+        return _SEVERITY_ORDER.index(condition or "")
+    except ValueError:
+        return -1  # unknown/missing: not a signal either way
+
+
+def _coerce_self_state(raw: Any) -> SelfStateV1 | None:
+    if raw is None:
+        return None
+    try:
+        if isinstance(raw, SelfStateV1):
+            return raw
+        if isinstance(raw, dict):
+            return SelfStateV1.model_validate(raw)
+        if isinstance(raw, str) and raw.strip():
+            return SelfStateV1.model_validate_json(raw)
+    except Exception as exc:
+        logger.debug("collapse_density_self_state_parse_failed error=%s", exc)
+    return None
+
+
+def _phi_evidence_score(self_state: SelfStateV1 | None) -> float | None:
+    """Computed phi evidence score in [0, 1], or None if no self_state available.
+
+    Blends: (a) magnitude of prediction_error_scores (max), (b) overall_condition
+    severity rank normalized to [0, 1], (c) a fixed bump if trajectory_condition
+    is "degrading" (a transition matters independent of absolute severity).
+    """
+    if self_state is None:
+        return None
+    prediction_error = max(
+        (float(v or 0.0) for v in (self_state.prediction_error_scores or {}).values()),
+        default=0.0,
+    )
+    severity_rank = _condition_severity_rank(self_state.overall_condition)
+    severity_norm = max(0.0, severity_rank / (len(_SEVERITY_ORDER) - 1)) if severity_rank >= 0 else 0.0
+    degrading_bump = 0.15 if self_state.trajectory_condition == "degrading" else 0.0
+    evidence = max(0.0, min(1.0, 0.5 * prediction_error + 0.5 * severity_norm + degrading_bump))
+    return evidence
+
+
+def _self_report_signals(entry: CollapseMirrorEntryV2) -> list[float]:
     numeric = entry.numeric_sisters
     signals: list[float] = []
-
     for value in (numeric.valence, numeric.arousal, numeric.clarity, numeric.overload, numeric.risk_score):
         if value is None:
             continue
@@ -143,24 +191,60 @@ def score_causal_density(event_id: str) -> CollapseMirrorEntryV2:
             signals.append(abs(float(value)))
         except (TypeError, ValueError):
             continue
-
     if numeric.constraints.severity_score is not None:
         try:
             signals.append(float(numeric.constraints.severity_score))
         except (TypeError, ValueError):
             pass
-
     if entry.tag_scores:
         tag_values = [float(v) for v in entry.tag_scores.values() if v is not None]
         if tag_values:
             signals.append(max(tag_values))
-
     if entry.change_type_scores:
         change_values = [float(v) for v in entry.change_type_scores.values() if v is not None]
         if change_values:
             signals.append(max(change_values))
+    return signals
 
-    score = _score_from_values(signals)
+
+def score_causal_density(event_id: str) -> CollapseMirrorEntryV2:
+    """Unchanged public entry point: no self_state, no behavior change for any
+    existing caller. Strict-lane and unknown-lane entries always go through this
+    path with self_state=None, which is byte-for-byte identical to the
+    pre-this-change behavior."""
+    return score_causal_density_with_self_state(event_id, self_state=None)
+
+
+def score_causal_density_with_self_state(
+    event_id: str,
+    self_state: SelfStateV1 | dict | str | None,
+) -> CollapseMirrorEntryV2:
+    store = _get_store()
+    entry = store.get(event_id)
+
+    self_report_signals = _self_report_signals(entry)
+    self_report_score = _score_from_values(self_report_signals)
+
+    lane = mirror_kind(entry)
+    if lane == "metacog":
+        phi_score = _phi_evidence_score(_coerce_self_state(self_state))
+        if phi_score is None:
+            # No self_state available this call: fall back to pure self-report
+            # rather than silently blending with a fabricated zero.
+            score = self_report_score
+        else:
+            score = max(
+                0.0,
+                min(
+                    1.0,
+                    METACOG_SELF_REPORT_WEIGHT * self_report_score
+                    + METACOG_PHI_EVIDENCE_WEIGHT * phi_score,
+                ),
+            )
+    else:
+        # strict / unknown: exactly the pre-existing behavior, no self_state involved.
+        score = self_report_score
+
     label = _label_for_score(score)
 
     entry.causal_density = CollapseMirrorCausalDensity(

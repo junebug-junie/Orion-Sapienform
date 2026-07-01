@@ -55,7 +55,7 @@
 
 **Design decision this task assumes (revisit if Open Question 1 resolves differently):** keep `score_causal_density(event_id: str)` as the existing pure/no-new-dependency entry point used by strict/unknown lanes and by any other current caller, and add a new function `score_causal_density_with_self_state(event_id: str, self_state: SelfStateV1 | dict | None) -> CollapseMirrorEntryV2` that `ScoreCausalDensityVerb` calls instead. This keeps `orion/collapse/service.py` free of any new DB/bus dependency (preserving finding #3) and keeps the blend logic unit-testable with a plain in-memory `SelfStateV1`/dict fixture, with no network or Postgres mock required. `score_causal_density()` itself becomes a one-line delegation: `return score_causal_density_with_self_state(event_id, self_state=None)`, so every existing call site (including the strict lane) keeps working unchanged and self_state defaults to absent (which must produce identical output to today — verified by Task 1's Step 1(a) test).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```python
 # tests/test_collapse_service_causal_density.py
@@ -187,12 +187,12 @@ def test_metacog_lane_modest_self_report_but_severe_self_state_pulls_score_up(tm
     assert blended.causal_density.score > self_report_only.causal_density.score
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `PYTHONPATH=. ./orion_dev/bin/python -m pytest tests/test_collapse_service_causal_density.py -v`
 Expected: FAIL (`ImportError: cannot import name 'score_causal_density_with_self_state'`)
 
-- [ ] **Step 3: Implement the blend**
+- [x] **Step 3: Implement the blend**
 
 Add to `orion/collapse/service.py`, replacing the current `score_causal_density` (lines 132–177):
 
@@ -345,7 +345,9 @@ from orion.schemas.collapse_mirror import (
 
 **Note on the "unchanged" claim for strict lane:** `score_causal_density()` now delegates to `score_causal_density_with_self_state(event_id, self_state=None)`, and the `lane == "metacog"` branch is only taken when `mirror_kind(entry) == "metacog"` AND a non-`None` `self_state` is actually supplied. For strict-lane entries the `else` branch runs unconditionally and computes `self_report_score` identically to the pre-change function — same `_self_report_signals` extraction, same `_score_from_values` call, same `_label_for_score` call. This is what Step 1's `test_strict_lane_score_unchanged_with_or_without_self_state` verifies directly (passing `self_state=_unstable_self_state()` to a strict-lane entry must not move the score at all, because the lane check gates the phi branch before self_state is ever consulted).
 
-- [ ] **Step 4: Wire the verb layer to pass self_state (only if Open Question 1 resolves to option (c) — reuse `substrate_felt_state_reader`)**
+- [x] **Step 4: Wire the verb layer to pass self_state (only if Open Question 1 resolves to option (c) — reuse `substrate_felt_state_reader`)**
+
+**Resolved:** Open Question 1 resolved to option (c) for this implementation (thinnest seam, consistent with non-goals forbidding new bus/DB/schema surface). This step was implemented.
 
 In `services/orion-cortex-exec/app/collapse_verbs.py::ScoreCausalDensityVerb.execute()`, replace:
 ```python
@@ -362,17 +364,17 @@ entry = score_causal_density_with_self_state(payload.event_id, self_state=felt_s
 ```
 and export `score_causal_density_with_self_state` from `orion/collapse/__init__.py` alongside the existing `score_causal_density` export. **Do not implement this step until Open Question 1 is explicitly resolved** — if the follow-up call picks option (a) or (b) instead, this step's shape changes (a Postgres read local to `orion/collapse/service.py`, or a bus RPC call, respectively).
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `PYTHONPATH=. ./orion_dev/bin/python -m pytest tests/test_collapse_service_causal_density.py -v`
 Expected: PASS (3 tests)
 
-- [ ] **Step 6: Run existing collapse-adjacent suites for regressions**
+- [x] **Step 6: Run existing collapse-adjacent suites for regressions**
 
 Run: `PYTHONPATH=. ./orion_dev/bin/python -m pytest tests/test_journaler_worker.py services/orion-actions/tests/test_journal_actions.py services/orion-cortex-exec/tests/test_collapse_llm_uncertainty_telemetry.py -v`
 Expected: PASS (confirms nothing importing `orion.collapse` broke)
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add orion/collapse/service.py orion/collapse/__init__.py tests/test_collapse_service_causal_density.py

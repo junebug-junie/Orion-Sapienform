@@ -338,9 +338,11 @@ def test_prior_stance_cache_returns_none_for_missing_key() -> None:
 
 
 def test_prior_stance_cache_evicts_expired_entry(monkeypatch) -> None:
-    import app.executor as _exec
-    # Override TTL to 0 to force immediate expiry
-    monkeypatch.setattr(_exec, "_PRIOR_STANCE_TTL_SECONDS", 0)
+    # Override TTL to 0 to force immediate expiry. Patch the function's own module
+    # namespace (__globals__) rather than a fresh `import app.executor`: under the
+    # full suite the executor can be imported under duplicate module identities, and
+    # __globals__ is the exact dict the helpers read _PRIOR_STANCE_TTL_SECONDS from.
+    monkeypatch.setitem(_prior_stance_cache_get.__globals__, "_PRIOR_STANCE_TTL_SECONDS", 0)
     _prior_stance_cache_set("sess-ttl-test", {"interaction_regime": "relational"})
     import time as _t; _t.sleep(0.01)
     result = _prior_stance_cache_get("sess-ttl-test")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -62,6 +63,13 @@ from .settings import Settings, get_settings
 from .store import BiometricsSubstrateStore
 
 logger = logging.getLogger("orion.substrate.runtime")
+
+_PREDICTION_ERROR_NODE_FLAG = "SUBSTRATE_WRITE_PREDICTION_ERROR_NODES"
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _prediction_error_nodes_enabled() -> bool:
+    return os.getenv(_PREDICTION_ERROR_NODE_FLAG, "false").strip().lower() in _TRUTHY
 
 
 def _prediction_error_receipt(
@@ -147,6 +155,7 @@ class BiometricsSubstrateWorker:
         self._stop = asyncio.Event()
         self._bus = None
         self._tasks: list[asyncio.Task[None]] = []
+        self._substrate_graph_store: Any = None
 
     async def start(self) -> None:
         s = self._settings
@@ -524,6 +533,75 @@ class BiometricsSubstrateWorker:
         )
         return last_id, published
 
+    def _write_prediction_error_node(
+        self,
+        *,
+        node_id: str,
+        error: float,
+        now: datetime,
+        reducer_key: str = "",
+    ) -> None:
+        """Upsert a durable substrate node carrying the surprise (Rung 1 bridge).
+
+        Default-off (env flag), fail-open: never raises out of a tick. When
+        enabled it writes a single node under a fixed identity_key so re-writes
+        collapse (no unbounded node growth), letting the dynamics engine seed
+        pressure from ``metadata['prediction_error']``.
+        """
+        if not _prediction_error_nodes_enabled():
+            return
+
+        try:
+            store = self._substrate_graph_store
+            if store is None:
+                from orion.substrate.graphdb_store import build_substrate_store_from_env
+
+                store = build_substrate_store_from_env()
+                self._substrate_graph_store = store
+        except Exception:
+            logger.exception("substrate_prediction_error_store_init_failed")
+            return
+
+        try:
+            from orion.core.schemas.cognitive_substrate import (
+                ConceptNodeV1,
+                SubstrateProvenanceV1,
+                SubstrateSignalBundleV1,
+            )
+            from orion.substrate.adapters._common import make_temporal
+
+            salience = max(0.0, min(1.0, error))
+            node = ConceptNodeV1(
+                node_id=node_id,
+                anchor_scope="orion",
+                subject_ref="entity:orion",
+                label=f"substrate:{node_id}",
+                temporal=make_temporal(observed_at=now),
+                provenance=SubstrateProvenanceV1(
+                    authority="local_inferred",
+                    source_kind="substrate_prediction_error",
+                    source_channel="substrate.runtime",
+                    producer="substrate_runtime_worker",
+                    tier_rank=2,
+                ),
+                signals=SubstrateSignalBundleV1(confidence=1.0, salience=salience),
+                metadata={
+                    "source_kind": "substrate_prediction_error",
+                    "prediction_error": round(salience, 6),
+                    "reducer_key": reducer_key,
+                },
+            )
+            store.upsert_node(
+                identity_key=f"substrate_prediction_error|{node_id}",
+                node=node,
+            )
+        except Exception:
+            logger.warning(
+                "substrate_prediction_error_node_upsert_failed node_id=%s",
+                node_id,
+                exc_info=True,
+            )
+
     def _execution_tick(self) -> str | None:
         spec = REDUCER_SPECS[1]
         events = self._store.fetch_execution_grammar_events(
@@ -566,6 +644,12 @@ class BiometricsSubstrateWorker:
                         prediction_error=error,
                         now=now,
                     )
+                )
+                self._write_prediction_error_node(
+                    node_id="node:substrate.execution",
+                    error=error,
+                    now=now,
+                    reducer_key="execution_trajectory",
                 )
 
         return last_id
@@ -649,6 +733,12 @@ class BiometricsSubstrateWorker:
                         prediction_error=error,
                         now=now,
                     )
+                )
+                self._write_prediction_error_node(
+                    node_id="node:substrate.transport",
+                    error=error,
+                    now=now,
+                    reducer_key="transport_bus",
                 )
 
         return last_id

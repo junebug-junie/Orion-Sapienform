@@ -170,6 +170,7 @@ class BiometricsSubstrateWorker:
             asyncio.create_task(self._transport_poll_loop(), name="transport-substrate-poll"),
             asyncio.create_task(self._chat_poll_loop(), name="chat-substrate-poll"),
             asyncio.create_task(self._prune_loop(), name="substrate-receipt-pruner"),
+            asyncio.create_task(self._dynamics_tick_loop(), name="substrate-dynamics-tick"),
         ]
 
     async def stop(self) -> None:
@@ -533,6 +534,26 @@ class BiometricsSubstrateWorker:
         )
         return last_id, published
 
+    def _get_substrate_graph_store(self, *, log_label: str):
+        """Return the cached shared substrate graph store, building it on first use.
+
+        Shared by ``_write_prediction_error_node`` and ``_dynamics_tick`` — both
+        need the same durable store and cache it on ``self._substrate_graph_store``
+        so repeated ticks don't rebuild it. Fail-open: returns None on init error
+        (caller decides whether that means "skip this tick").
+        """
+        try:
+            store = self._substrate_graph_store
+            if store is None:
+                from orion.substrate.graphdb_store import build_substrate_store_from_env
+
+                store = build_substrate_store_from_env()
+                self._substrate_graph_store = store
+            return store
+        except Exception:
+            logger.exception(log_label)
+            return None
+
     def _write_prediction_error_node(
         self,
         *,
@@ -551,15 +572,10 @@ class BiometricsSubstrateWorker:
         if not _prediction_error_nodes_enabled():
             return
 
-        try:
-            store = self._substrate_graph_store
-            if store is None:
-                from orion.substrate.graphdb_store import build_substrate_store_from_env
-
-                store = build_substrate_store_from_env()
-                self._substrate_graph_store = store
-        except Exception:
-            logger.exception("substrate_prediction_error_store_init_failed")
+        store = self._get_substrate_graph_store(
+            log_label="substrate_prediction_error_store_init_failed"
+        )
+        if store is None:
             return
 
         try:
@@ -601,6 +617,52 @@ class BiometricsSubstrateWorker:
                 node_id,
                 exc_info=True,
             )
+
+    def _dynamics_tick(self) -> None:
+        """Periodic pacemaker for the graph substrate (closes PR #766 rung-1 gap).
+
+        Runs SubstrateDynamicsEngine.tick() against the same durable store
+        _write_prediction_error_node writes to, so pressure seeded from
+        metadata['prediction_error'] actually propagates instead of sitting
+        inert. Default-off, fail-open: never raises out of a tick.
+        """
+        if not self._settings.enable_dynamics_tick:
+            return
+
+        store = self._get_substrate_graph_store(
+            log_label="substrate_dynamics_store_init_failed"
+        )
+        if store is None:
+            return
+
+        try:
+            from orion.substrate.dynamics import SubstrateDynamicsEngine
+
+            engine = SubstrateDynamicsEngine(store=store)
+            result = engine.tick(now=datetime.now(timezone.utc))
+            logger.info(
+                "substrate_dynamics_tick_completed activation_updates=%d "
+                "pressure_updates=%d dormancy_transitions=%d",
+                len(result.activation_updates),
+                len(result.pressure_updates),
+                len(result.dormancy_transitions),
+            )
+        except Exception:
+            logger.exception("substrate_dynamics_tick_failed")
+
+    async def _dynamics_tick_loop(self) -> None:
+        interval = float(self._settings.dynamics_tick_interval_sec)
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._dynamics_tick)
+            except Exception:
+                logger.exception("substrate_dynamics_tick_loop_failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
 
     def _execution_tick(self) -> str | None:
         spec = REDUCER_SPECS[1]

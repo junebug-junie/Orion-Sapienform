@@ -100,10 +100,7 @@ def map_self_state_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecord
 
     # An anchor node summarizing overall condition, carrying max surprise so the
     # self as a whole gains pressure when any dimension is badly mispredicted.
-    overall_error = max(
-        (float(v or 0.0) for v in state.prediction_error_scores.values()),
-        default=0.0,
-    )
+    overall_error = float(getattr(state, "overall_surprise", 0.0) or 0.0)
     nodes.append(
         ConceptNodeV1(
             anchor_scope="orion",

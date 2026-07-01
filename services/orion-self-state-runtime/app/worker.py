@@ -14,7 +14,11 @@ from orion.identity.snapshot import build_identity_snapshot
 from orion.schemas.self_state import SelfStateV1
 from orion.self_state.builder import build_self_state
 from orion.self_state.policy import load_self_state_policy
-from orion.self_state.prediction import build_next_cycle_prediction, compute_prediction_errors
+from orion.self_state.prediction import (
+    build_next_cycle_prediction,
+    compute_overall_surprise,
+    compute_prediction_errors,
+)
 
 from app.settings import get_settings
 from app.store import SelfStateRuntimeStore
@@ -130,6 +134,7 @@ class SelfStateRuntimeWorker:
 
         if prev_prediction is not None:
             state.prediction_error_scores = compute_prediction_errors(state, prev_prediction)
+            state.overall_surprise = compute_overall_surprise(state.prediction_error_scores)
 
         self._store.save_self_state(state)
 

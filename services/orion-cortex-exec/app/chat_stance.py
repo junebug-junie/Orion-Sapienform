@@ -1249,6 +1249,59 @@ def _project_autonomy_from_beliefs(
     }
 
 
+_SELF_STATE_SEVERE_CONDITIONS = {"strained", "unstable"}
+
+
+def _project_self_state_from_beliefs(
+    beliefs: UnifiedRelationalBeliefSetV1 | None,
+    ctx: Dict[str, Any],
+) -> Dict[str, Any] | None:
+    """Projection helper: fold Orion's self-model condition into stance hazards.
+
+    Reads the ``self:overall_condition`` and ``self:{dimension_id}`` belief
+    nodes produced by ``orion.substrate.relational.adapters.self_state_ctx``.
+    Returns None if beliefs have no self-model nodes (nothing to fold in),
+    signalling the caller not to add any self_state-derived hazard.
+    """
+    if beliefs is None:
+        return None
+
+    anchor = beliefs.anchors.get("orion")
+    if not anchor:
+        return None
+
+    self_nodes = [n for n in anchor.concepts if str(getattr(n, "label", "")).startswith("self:")]
+    if not self_nodes:
+        return None
+
+    overall_condition: str | None = None
+    trajectory_condition: str | None = None
+    hazards: list[str] = []
+    pressure_threshold = _env_float("SELF_STATE_STANCE_PRESSURE_THRESHOLD", 0.8)
+
+    for node in self_nodes:
+        meta = node.metadata or {}
+        if node.label == "self:overall_condition":
+            overall_condition = meta.get("overall_condition")
+            trajectory_condition = meta.get("trajectory_condition")
+            if overall_condition in _SELF_STATE_SEVERE_CONDITIONS:
+                hazards.append(f"self_state overall_condition={overall_condition}")
+        else:
+            dim_id = meta.get("self_dimension_id")
+            score = meta.get("score")
+            if dim_id and isinstance(score, (int, float)) and score >= pressure_threshold:
+                hazards.append(f"self_state {dim_id} score={score:.2f} above threshold")
+
+    if overall_condition is None and not hazards:
+        return None
+
+    return {
+        "overall_condition": overall_condition,
+        "trajectory_condition": trajectory_condition,
+        "hazards": hazards,
+    }
+
+
 def _concept_summary_from_store(ctx: Dict[str, Any] | None = None) -> dict[str, list[str]]:
     ctx = ctx if isinstance(ctx, dict) else {}
     try:
@@ -2178,6 +2231,10 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     reasoning = _compile_reasoning_summary(ctx)
     ctx["chat_reasoning_summary"] = reasoning["summary"]
     autonomy = _project_autonomy_from_beliefs(beliefs, ctx) or _load_autonomy_state(ctx)
+    self_state_projection = _project_self_state_from_beliefs(beliefs, ctx)
+    if self_state_projection:
+        social["hazards"] = _unique((social.get("hazards") or []) + list(self_state_projection.get("hazards") or []), limit=8)
+        ctx["chat_self_state_condition"] = self_state_projection.get("overall_condition")
     mutation_cognition = _mutation_cognition_from_ctx(ctx)
     social["hazards"] = _unique((social.get("hazards") or []) + list((reasoning.get("summary") or {}).get("hazards") or []), limit=8)
 

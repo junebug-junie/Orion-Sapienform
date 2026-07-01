@@ -1,44 +1,51 @@
 import asyncio
-import datetime
 from typing import Optional, Any
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from loguru import logger
+from rdflib import Graph, Namespace, URIRef, Literal
+from rdflib.namespace import RDF
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.vision import (
+    VisionEventBundleItem,
     VisionEventPayload,
     VisionScribeAckPayload,
     VisionScribeRequestPayload,
     VisionScribeResultPayload
 )
 
-# Assuming shared schemas for writers exist as per instructions
-try:
-    from orion.schemas.sql.schemas import SqlWriteRequest
-except ImportError:
-    from pydantic import BaseModel, ConfigDict
-    class SqlWriteRequest(BaseModel):
-        model_config = ConfigDict(extra="allow")
-        table: str
-        data: dict
-    logger.warning("Could not import SqlWriteRequest, using fallback")
-
 try:
     from orion.schemas.rdf import RdfWriteRequest
 except ImportError:
     from pydantic import BaseModel, ConfigDict
     class RdfWriteRequest(BaseModel):
-        model_config = ConfigDict(extra="allow")
-        graph: str
-        triples: list
+        model_config = ConfigDict(extra="ignore")
+        id: str
+        source: str
+        graph: Optional[str] = None
+        triples: Optional[str] = None
     logger.warning("Could not import RdfWriteRequest, using fallback")
 
 from .settings import Settings
 
 settings = Settings()
+
+ORION = Namespace("http://conjourney.net/orion#")
+
+
+def _build_event_triples(evt: VisionEventBundleItem) -> str:
+    g = Graph()
+    subject = URIRef(f"http://conjourney.net/event/{evt.event_id}")
+    g.add((subject, RDF.type, ORION.VisionEvent))
+    g.add((subject, ORION.hasNarrative, Literal(evt.narrative)))
+    g.add((subject, ORION.hasType, Literal(evt.event_type)))
+    for ent in evt.entities:
+        g.add((subject, ORION.mentionsEntity, Literal(ent)))
+    return g.serialize(format="nt")
+
 
 class ScribeService:
     def __init__(self):
@@ -155,32 +162,20 @@ class ScribeService:
             for evt in payload.events:
                 # 1. SQL Write
                 try:
-                    sql_req = SqlWriteRequest(
-                        table="vision_events",
-                        data={
-                            "event_id": evt.event_id,
-                            "event_type": evt.event_type,
-                            "narrative": evt.narrative,
-                            "confidence": evt.confidence,
-                            "created_at": datetime.datetime.utcnow().isoformat()
-                        }
-                    )
-                    await self._send_write(settings.CHANNEL_SQL_WRITE, "sql.write.request", sql_req, source_env)
+                    await self._send_write(settings.CHANNEL_SQL_WRITE, "vision.event.v1", evt, source_env)
                 except Exception as e:
                     logger.error(f"[SCRIBE] SQL Write failed for {evt.event_id}: {e}")
                     errors.append(f"SQL:{e}")
 
                 # 2. RDF Write
                 try:
-                    triples = [
-                        (f"orion:event:{evt.event_id}", "rdf:type", "orion:VisionEvent"),
-                        (f"orion:event:{evt.event_id}", "orion:hasNarrative", evt.narrative),
-                        (f"orion:event:{evt.event_id}", "orion:hasType", evt.event_type),
-                    ]
-                    for ent in evt.entities:
-                        triples.append((f"orion:event:{evt.event_id}", "orion:mentionsEntity", ent))
-
-                    rdf_req = RdfWriteRequest(graph="vision", triples=triples)
+                    nt_content = _build_event_triples(evt)
+                    rdf_req = RdfWriteRequest(
+                        id=evt.event_id,
+                        source=settings.SERVICE_NAME,
+                        graph="orion:vision",
+                        triples=nt_content,
+                    )
                     await self._send_write(settings.CHANNEL_RDF_ENQUEUE, "rdf.write.request", rdf_req, source_env)
                 except Exception as e:
                     logger.error(f"[SCRIBE] RDF Write failed for {evt.event_id}: {e}")

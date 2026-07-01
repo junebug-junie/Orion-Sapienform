@@ -157,6 +157,7 @@ class VisionRunner:
                         task_type=task.task_type,
                         device=device,
                         error=f"pipeline disabled: {target}",
+                        inputs=merge_result_inputs(task.request, task.meta),
                         meta={"error_code": "pipeline_disabled"},
                     )
                 artifacts = self._run_pipeline(self.profiles.get_pipeline(target), task.request, device, warnings)
@@ -168,6 +169,7 @@ class VisionRunner:
                         task_type=task.task_type,
                         device=device,
                         error=f"profile disabled: {target}",
+                        inputs=merge_result_inputs(task.request, task.meta),
                         meta={"error_code": "profile_disabled"},
                     )
                 artifacts = self._run_profile(self.profiles.get_profile(target), task.request, device, warnings)
@@ -179,6 +181,7 @@ class VisionRunner:
                 task_type=task.task_type,
                 device=device,
                 error=f"unknown task/profile: {target}",
+                inputs=merge_result_inputs(task.request, task.meta),
                 meta={"error_code": "unknown_task"},
             )
         except FileNotFoundError as e:
@@ -189,6 +192,7 @@ class VisionRunner:
                 device=device,
                 error=str(e),
                 warnings=warnings,
+                inputs=merge_result_inputs(task.request, task.meta),
                 meta={"error_code": "image_not_found"},
             )
         except ValueError as e:
@@ -201,6 +205,7 @@ class VisionRunner:
                 device=device,
                 error=msg,
                 warnings=warnings,
+                inputs=merge_result_inputs(task.request, task.meta),
                 meta={"error_code": code},
             )
         except Exception as e:
@@ -214,6 +219,7 @@ class VisionRunner:
                 device=device,
                 error=msg,
                 warnings=warnings,
+                inputs=merge_result_inputs(task.request, task.meta),
                 meta={"error_code": code},
             )
 

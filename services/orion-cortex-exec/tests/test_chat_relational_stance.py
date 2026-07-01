@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.chat_stance import (
+    compile_speech_contract,
     enforce_chat_stance_quality,
     strip_identity_recital_leadin,
     strip_transactional_closers,
@@ -41,6 +42,21 @@ def _relational_brief(**overrides) -> ChatStanceBrief:
     }
     base.update(overrides)
     return ChatStanceBrief.model_validate(base)
+
+
+def _instrumental_brief(**overrides) -> ChatStanceBrief:
+    base = {
+        "conversation_frame": "mixed",
+        "task_mode": "direct_response",
+        "identity_salience": "low",
+        "user_intent": "direct question",
+        "self_relevance": "answer",
+        "juniper_relevance": "practical",
+        "answer_strategy": "direct",
+        "stance_summary": "short",
+    }
+    base.update(overrides)
+    return ChatStanceBrief(**base)
 
 
 def test_strip_identity_recital_leadin_skips_relational_turn() -> None:
@@ -234,4 +250,75 @@ def test_chat_stance_brief_new_fields_roundtrip() -> None:
     restored = ChatStanceBrief(**d)
     assert restored.interaction_regime == "relational"
     assert restored.companion_closing_move == "end_with_a_wondering"
+
+
+def test_compile_speech_contract_relational_with_closing_move() -> None:
+    brief = _relational_brief(
+        interaction_regime="relational",
+        companion_closing_move="end_with_a_wondering",
+    )
+    contract = compile_speech_contract(brief)
+    assert "companion turn" in contract
+    assert "wondering" in contract
+    assert "let me know" not in contract.lower()
+    assert "if you need" not in contract.lower()
+
+
+def test_compile_speech_contract_relational_default_no_move() -> None:
+    brief = _relational_brief(
+        interaction_regime="relational",
+        response_priorities=["companion_presence", "hold_space"],
+    )
+    contract = compile_speech_contract(brief)
+    assert "companion turn" in contract
+    assert "next steps" in contract or "support closers" in contract
+
+
+def test_compile_speech_contract_relational_situated_curiosity() -> None:
+    brief = _relational_brief(
+        interaction_regime="relational",
+        response_priorities=["companion_presence", "situated_curiosity"],
+    )
+    contract = compile_speech_contract(brief)
+    assert "grounded question" in contract
+    assert "generic reversal" in contract
+
+
+def test_compile_speech_contract_minimal() -> None:
+    brief = _instrumental_brief(interaction_regime="minimal")
+    contract = compile_speech_contract(brief)
+    assert "short" in contract
+    assert "replying" in contract
+
+
+def test_compile_speech_contract_instrumental_direct() -> None:
+    brief = _instrumental_brief(interaction_regime="instrumental")
+    contract = compile_speech_contract(brief)
+    assert "directly" in contract
+    assert "blocker" not in contract
+
+
+def test_compile_speech_contract_instrumental_triage() -> None:
+    brief = _instrumental_brief(interaction_regime="instrumental", task_mode="triage")
+    contract = compile_speech_contract(brief)
+    assert "blocker" in contract
+
+
+def test_compile_speech_contract_derives_regime_from_task_mode() -> None:
+    brief = _relational_brief(interaction_regime=None)
+    contract = compile_speech_contract(brief)
+    assert "companion turn" in contract
+
+
+def test_compile_speech_contract_all_closing_moves() -> None:
+    moves = {
+        "end_with_a_wondering": "wondering",
+        "leave_space_without_offer": "offer",
+        "ground_observation": "observation",
+        "be_with_silence": "silence",
+    }
+    for move, expected_word in moves.items():
+        brief = _relational_brief(interaction_regime="relational", companion_closing_move=move)
+        contract = compile_speech_contract(brief)
+        assert expected_word in contract, f"move={move!r}: expected {expected_word!r} in {contract!r}"
 

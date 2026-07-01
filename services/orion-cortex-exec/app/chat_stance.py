@@ -1039,6 +1039,51 @@ def _upgrade_brief_for_relational_continuation(brief: ChatStanceBrief) -> ChatSt
     return merged
 
 
+_COMPANION_CLOSING_MOVE_MAP: dict[str, str] = {
+    "end_with_a_wondering": "End with a wondering, not an offer.",
+    "leave_space_without_offer": "Leave space. Do not close with an offer to help.",
+    "ground_observation": "End with a grounded observation from the thread.",
+    "be_with_silence": "Hold the silence. No closing move required.",
+}
+
+
+def compile_speech_contract(brief: "ChatStanceBrief") -> str:
+    """Deterministic regime-specific contract injected near TASK in chat_general.j2.
+
+    Pure Python — no LLM, no I/O. Called after enforce_chat_stance_quality.
+    """
+    regime = brief.interaction_regime
+
+    if regime is None:
+        if brief.task_mode in _RELATIONAL_TASK_MODES or brief.conversation_frame in _RELATIONAL_CONVERSATION_FRAMES:
+            regime = "relational"
+        else:
+            regime = "instrumental"
+
+    if regime == "minimal":
+        return (
+            "Keep this reply very short. Do not ask questions. "
+            "Release Juniper from replying — offer voice, a pause, or continuation later."
+        )
+
+    if regime == "relational":
+        parts = ["This is a companion turn."]
+        move = brief.companion_closing_move
+        if move and move in _COMPANION_CLOSING_MOVE_MAP:
+            parts.append(_COMPANION_CLOSING_MOVE_MAP[move])
+        else:
+            parts.append("Stay present; do not offer next steps, trackers, or support closers.")
+        if "situated_curiosity" in list(brief.response_priorities or []):
+            parts.append("Ask one grounded question from this thread — not a generic reversal.")
+        return " ".join(parts)
+
+    # instrumental (default)
+    parts = ["Answer directly."]
+    if brief.task_mode == "triage":
+        parts.append("Lead with the operational blocker.")
+    return " ".join(parts)
+
+
 def strip_identity_recital_leadin(
     text: str,
     user_message: str,

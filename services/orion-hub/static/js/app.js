@@ -11169,6 +11169,10 @@ loadDismissedIds();
           presence_context: presenceContext,
           surface_context: { surface: 'hub_desktop', input_modality: 'spoken' },
           llm_route: voiceRoute,
+          social_room_mode: (socialRoomToggle && socialRoomToggle.checked) ? 'hub_direct' : null,
+          social_redaction_posture: (socialRoomToggle && socialRoomToggle.checked && socialRedactionPostureSelect)
+            ? socialRedactionPostureSelect.value
+            : null,
         };
         const audioLaneVerbs = modeVerbOverride ? [modeVerbOverride] : selectedVerbs;
         const audioIsChatQuick =

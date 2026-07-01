@@ -405,7 +405,8 @@ def build_social_artifact_dialogue(
         return pending, revision, None, result, "artifact wording/scope revision requested"
 
     if pending and any(needle in lowered for needle in ("yes", "that works", "that's right", "that is right", "okay keep", "sounds right", "works for me")):
-        accepted_scope = _dialogue_scope_hint(prompt, posture=posture) if _dialogue_scope_hint(prompt, posture=posture) != "session_only" else pending.proposed_scope
+        accepted_scope_hint = _dialogue_scope_hint(prompt, posture=posture)
+        accepted_scope = accepted_scope_hint if accepted_scope_hint != "session_only" else pending.proposed_scope
         confirmation = SocialArtifactConfirmationV1(
             proposal_id=pending.proposal_id,
             artifact_type=pending.artifact_type,
@@ -553,7 +554,12 @@ def _summarize_thread(payload: Dict[str, Any], request: SocialSkillRequestV1) ->
     )
 
 
-def _safe_recall(payload: Dict[str, Any], request: SocialSkillRequestV1) -> SocialSkillResultV1:
+def _safe_recall(
+    payload: Dict[str, Any],
+    request: SocialSkillRequestV1,
+    *,
+    posture: str = DEFAULT_SOCIAL_REDACTION_POSTURE,
+) -> SocialSkillResultV1:
     peer = payload.get("social_peer_continuity") or {}
     room = payload.get("social_room_continuity") or {}
     candidate_snippets = [
@@ -563,7 +569,9 @@ def _safe_recall(payload: Dict[str, Any], request: SocialSkillRequestV1) -> Soci
     topics = [str(item).strip() for item in peer.get("recent_shared_topics") or [] if str(item).strip()]
     if topics:
         candidate_snippets.append(f"Shared topics: {', '.join(topics[:3])}")
-    safe_snippets = [item[:180] for item in candidate_snippets if item and not _blocked_memory_text(item)]
+    safe_snippets = [
+        item[:180] for item in candidate_snippets if item and not _blocked_memory_text(item, posture=posture)
+    ]
     safety_notes = []
     if len(safe_snippets) < len([item for item in candidate_snippets if item]):
         safety_notes.append("blocked private/sealed memory was suppressed")
@@ -731,7 +739,7 @@ def select_social_room_skill(
 
     builder_map = {
         "social_summarize_thread": _summarize_thread,
-        "social_safe_recall": _safe_recall,
+        "social_safe_recall": lambda payload, request: _safe_recall(payload, request, posture=posture),
         "social_self_ground": _self_ground,
         "social_followup_question": _followup_question,
         "social_room_reflection": _room_reflection,

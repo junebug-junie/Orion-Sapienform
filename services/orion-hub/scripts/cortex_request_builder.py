@@ -460,7 +460,10 @@ def build_cortex_chat_request(
                     "selected_verbs": selected_verbs,
                 },
             )
-    elif social_room and not selected_verbs:
+    elif social_room and (
+        not selected_verbs
+        or str(payload.get("social_room_mode") or "").strip().lower() == "hub_direct"
+    ):
         verb_override = SOCIAL_ROOM_VERB
     elif len(selected_verbs) == 1:
         verb_override = selected_verbs[0]

@@ -1102,3 +1102,23 @@ def test_build_chat_request_social_room_metadata_includes_redaction_posture(monk
     )
     assert req.metadata["social_redaction_posture"] == "relaxed"
     assert debug["social_redaction_posture"] == "relaxed"
+
+
+def test_hub_direct_social_room_forces_chat_social_room_verb_over_selected_verbs() -> None:
+    req, debug, _ = hub_builder.build_chat_request(
+        payload={
+            "chat_profile": "social_room",
+            "social_room_mode": "hub_direct",
+            "verbs": ["chat_general"],
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+        session_id="sid-social",
+        user_id="juniper",
+        trace_id="trace-social",
+        default_mode="brain",
+        auto_default_enabled=False,
+        source_label="hub_ws",
+        prompt="hello",
+    )
+    assert req.verb == "chat_social_room"
+    assert debug["social_room_mode"] == "hub_direct"

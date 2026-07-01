@@ -648,3 +648,21 @@ def test_apply_social_memory_summary_to_payload_merges_known_fields_only() -> No
 def test_apply_social_memory_summary_to_payload_noop_for_missing_summary() -> None:
     payload = {"chat_profile": "social_room"}
     assert hub_social_room.apply_social_memory_summary_to_payload(payload, None) == payload
+
+
+def test_safe_recall_relaxed_posture_does_not_suppress_blocked_memory_snippets() -> None:
+    payload = {
+        "social_peer_continuity": {
+            "safe_continuity_summary": "private journal notes from last week",
+        },
+    }
+    request = hub_social_room.SocialSkillRequestV1(
+        request_id="req-1",
+        prompt="what do you remember",
+        allowlist=["social_safe_recall"],
+    )
+    strict_result = hub_social_room._safe_recall(payload, request, posture="strict")
+    relaxed_result = hub_social_room._safe_recall(payload, request, posture="relaxed")
+    assert strict_result.snippets == []
+    assert relaxed_result.snippets
+    assert "private journal" in relaxed_result.snippets[0]

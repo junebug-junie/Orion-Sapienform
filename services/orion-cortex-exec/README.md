@@ -52,6 +52,32 @@ When the executor computes `turn_effect` / `turn_effect_evidence`, they are incl
 
 **Stack verification (after deploy):** subscribe to the Hub chat turn channel (see Hub `chat_history_turn_channel`) and confirm envelope payloads include `spark_meta.turn_effect` on turns where phi telemetry ran. Confirm `orion-spark-concept-induction` logs `handle_envelope` for that channel and `orion-rdf-writer` logs RDF for `memory.drives.audit.v1`. In GraphDB, query the latest `DriveAudit` for your subject and check `orion:derivedFromTension` / `orion:tensionKind` bindings.
 
+### Collapse mirror verbs and φ-gated causal density
+
+Cortex Exec registers collapse verbs in `app/collapse_verbs.py` (`orion.collapse.log`, `orion.collapse.enrich`, `orion.collapse.score`). Scoring logic lives in `orion/collapse/service.py` and is invoked by `orion.collapse.score`.
+
+**Lanes** (`mirror_kind()` in `orion/schemas/collapse_mirror.py`):
+
+| Lane | Typical observer / origin | Scoring |
+| :--- | :--- | :--- |
+| `strict` | Juniper-observed, or `source_service` → `collapse_mirror_service` | Self-reported numeric signals only (unchanged). |
+| `metacog` | Orion-observed, or `source_service` → `metacog` | Blends self-report with computed `SelfStateV1` φ evidence when available. |
+| `unknown` | Everything else | Self-reported numeric signals only (unchanged). |
+
+For **metacog-lane** entries, `ScoreCausalDensityVerb` hydrates the latest fresh `self_state` via `hydrate_felt_state_ctx()` (`app/substrate_felt_state_reader.py`, same reader used by `chat_stance.py`) and passes it to `score_causal_density_with_self_state()`. The blend is `0.35 × self_report_score + 0.65 × phi_evidence_score` (clamped `[0,1]`). φ evidence combines max `prediction_error_scores`, `overall_condition` severity rank, and a bump when `trajectory_condition == "degrading"`. Narrative fields (`summary`, `mantra`, `trigger`, etc.) are untouched — only `causal_density.score` and the derived `is_causally_dense` boolean change.
+
+If `self_state` is absent, stale, or fails to parse, metacog-lane scoring falls back to pure self-report (fail-open, same as strict/unknown). `score_causal_density(event_id)` remains a no-`self_state` entry point for callers that do not need the blend.
+
+**Relevant env (no new keys for this feature):**
+
+| Variable | Default (`.env_example`) | Role |
+| :--- | :--- | :--- |
+| `ENABLE_SUBSTRATE_FELT_STATE_CTX` | `true` | Gates Postgres reads in `SubstrateFeltStateReader`. When `false`, metacog scoring uses self-report only. |
+| `SUBSTRATE_FELT_STATE_DATABASE_URL` | `postgresql://…/conjourney` | Postgres URL for `substrate_self_state` (written by `orion-self-state-runtime`). |
+| `SUBSTRATE_FELT_STATE_MAX_AGE_SEC` | `120` | Freshness window; stale rows are not injected. |
+
+**Tests:** `tests/test_collapse_service_causal_density.py` (repo root) covers strict-lane parity, metacog pull-down/pull-up, dict-shaped `self_state` coercion, and malformed-input fallback.
+
 ## Running & Testing
 
 ### Run via Docker

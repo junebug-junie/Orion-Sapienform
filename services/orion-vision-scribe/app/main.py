@@ -5,10 +5,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from loguru import logger
+from rdflib import Graph, Namespace, URIRef, Literal
+from rdflib.namespace import RDF
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.vision import (
+    VisionEventBundleItem,
     VisionEventPayload,
     VisionScribeAckPayload,
     VisionScribeRequestPayload,
@@ -31,14 +34,30 @@ try:
 except ImportError:
     from pydantic import BaseModel, ConfigDict
     class RdfWriteRequest(BaseModel):
-        model_config = ConfigDict(extra="allow")
-        graph: str
-        triples: list
+        model_config = ConfigDict(extra="ignore")
+        id: str
+        source: str
+        graph: Optional[str] = None
+        triples: Optional[str] = None
     logger.warning("Could not import RdfWriteRequest, using fallback")
 
 from .settings import Settings
 
 settings = Settings()
+
+ORION = Namespace("http://conjourney.net/orion#")
+
+
+def _build_event_triples(evt: VisionEventBundleItem) -> str:
+    g = Graph()
+    subject = URIRef(f"http://conjourney.net/event/{evt.event_id}")
+    g.add((subject, RDF.type, ORION.VisionEvent))
+    g.add((subject, ORION.hasNarrative, Literal(evt.narrative)))
+    g.add((subject, ORION.hasType, Literal(evt.event_type)))
+    for ent in evt.entities:
+        g.add((subject, ORION.mentionsEntity, Literal(ent)))
+    return g.serialize(format="nt")
+
 
 class ScribeService:
     def __init__(self):
@@ -172,15 +191,13 @@ class ScribeService:
 
                 # 2. RDF Write
                 try:
-                    triples = [
-                        (f"orion:event:{evt.event_id}", "rdf:type", "orion:VisionEvent"),
-                        (f"orion:event:{evt.event_id}", "orion:hasNarrative", evt.narrative),
-                        (f"orion:event:{evt.event_id}", "orion:hasType", evt.event_type),
-                    ]
-                    for ent in evt.entities:
-                        triples.append((f"orion:event:{evt.event_id}", "orion:mentionsEntity", ent))
-
-                    rdf_req = RdfWriteRequest(graph="vision", triples=triples)
+                    nt_content = _build_event_triples(evt)
+                    rdf_req = RdfWriteRequest(
+                        id=evt.event_id,
+                        source=settings.SERVICE_NAME,
+                        graph="orion:vision",
+                        triples=nt_content,
+                    )
                     await self._send_write(settings.CHANNEL_RDF_ENQUEUE, "rdf.write.request", rdf_req, source_env)
                 except Exception as e:
                     logger.error(f"[SCRIBE] RDF Write failed for {evt.event_id}: {e}")

@@ -4,3 +4,4 @@ redis[hiredis]==5.0.7
 pydantic==2.9.2
 pydantic-settings==2.5.2
 loguru==0.7.2
+rdflib==7.0.0

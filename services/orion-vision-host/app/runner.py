@@ -80,6 +80,12 @@ class VisionRunner:
     def _is_enabled(self, name: str) -> bool:
         return name in self.enabled
 
+    def _resolve_dtype(self, p: ProfileDef) -> str:
+        profile_dtype = (p.dtype or "").strip().lower()
+        if profile_dtype and profile_dtype != "auto":
+            return profile_dtype
+        return (settings.VISION_DTYPE or "auto").strip().lower()
+
     def warm_profiles(self) -> List[str]:
         """
         Load weights for profiles with warm_on_start=true that are enabled and implemented.
@@ -109,7 +115,7 @@ class VisionRunner:
         return warmed
 
     def _warm_profile_backend(self, p: ProfileDef, device: str) -> None:
-        dtype = p.dtype or settings.VISION_DTYPE
+        dtype = self._resolve_dtype(p)
         if p.kind == "embedding":
             model_id = (
                 p.model_id if p.model_id and not p.model_id.startswith("REPLACE_ME") else self.DEFAULT_EMBED_MODEL
@@ -318,7 +324,7 @@ class VisionRunner:
         img = _load_image_from_request(request)
 
         model_id = p.model_id if p.model_id and not p.model_id.startswith("REPLACE_ME") else self.DEFAULT_EMBED_MODEL
-        dtype = p.dtype or "auto"
+        dtype = self._resolve_dtype(p)
 
         model, processor = self.models.load_siglip_image_embedder(
             profile_name=p.name,
@@ -330,7 +336,11 @@ class VisionRunner:
 
         inputs = processor(images=img, return_tensors="pt")
         if device.startswith("cuda"):
-            inputs = {k: v.to(device) for k, v in inputs.items()}
+            model_dtype = next(model.parameters()).dtype
+            inputs = {
+                k: v.to(device=device, dtype=model_dtype if torch.is_floating_point(v) else v.dtype)
+                for k, v in inputs.items()
+            }
 
         with torch.inference_mode():
             if hasattr(model, "get_image_features"):
@@ -378,7 +388,7 @@ class VisionRunner:
         img = _load_image_from_request(request)
 
         model_id = p.model_id if p.model_id and not p.model_id.startswith("REPLACE_ME") else self.DEFAULT_GDINO_MODEL
-        dtype = p.dtype or "auto"
+        dtype = self._resolve_dtype(p)
 
         # Prompts:
         prompts = request.get("prompts")
@@ -408,7 +418,11 @@ class VisionRunner:
 
         inputs = processor(images=img, text=text, return_tensors="pt")
         if device.startswith("cuda"):
-            inputs = {k: v.to(device) for k, v in inputs.items()}
+            model_dtype = next(model.parameters()).dtype
+            inputs = {
+                k: v.to(device=device, dtype=model_dtype if torch.is_floating_point(v) else v.dtype)
+                for k, v in inputs.items()
+            }
 
         with torch.inference_mode():
             outputs = model(**inputs)
@@ -512,7 +526,7 @@ class VisionRunner:
         if p.model_id and not p.model_id.startswith("REPLACE_ME"):
             model_id = p.model_id
 
-        dtype = p.dtype or "auto"
+        dtype = self._resolve_dtype(p)
 
         model, processor = self.models.load_vlm_captioner(
             profile_name=p.name,
@@ -536,7 +550,11 @@ class VisionRunner:
         inputs = processor(images=img, text=text_prompt, return_tensors="pt")
 
         if device.startswith("cuda"):
-            inputs = {k: v.to(device) for k, v in inputs.items()}
+            model_dtype = next(model.parameters()).dtype
+            inputs = {
+                k: v.to(device=device, dtype=model_dtype if torch.is_floating_point(v) else v.dtype)
+                for k, v in inputs.items()
+            }
 
         max_tokens = settings.VISION_VLM_MAX_TOKENS
         temperature = settings.VISION_VLM_TEMPERATURE

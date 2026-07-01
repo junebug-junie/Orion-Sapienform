@@ -55,6 +55,7 @@ services:
       - /mnt/telemetry/orion-vision-host:/mnt/telemetry/orion-vision-host
       - /mnt/telemetry/models/vision:/mnt/telemetry/models/vision
       - /mnt/telemetry/models/hf:/mnt/telemetry/models/hf
+      - /mnt/telemetry/vision/frames:/mnt/telemetry/vision/frames:ro
 
     ports:
       - "${HOST_PORT}:6600"

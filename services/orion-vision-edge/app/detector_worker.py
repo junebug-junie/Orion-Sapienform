@@ -249,7 +249,10 @@ async def run_detector_loop():
                         None, _save_debug_frame, frame, vision_objects, "all"
                     )
 
-                # Publish Artifact
+                # Publish Artifact (optional; Host chain owns orion:vision:artifacts when disabled)
+                if not settings.EDGE_PUBLISH_ARTIFACTS:
+                    continue
+
                 artifact = VisionEdgeArtifact(
                     artifact_id=str(uuid.uuid4()),
                     correlation_id=str(env.correlation_id),

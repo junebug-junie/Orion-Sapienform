@@ -91,6 +91,9 @@ class Settings(BaseSettings):
     CHANNEL_VISION_EDGE_HEALTH: str = Field("orion:vision:edge:health", alias="CHANNEL_VISION_EDGE_HEALTH")
     CHANNEL_VISION_EDGE_ERROR: str = Field("orion:vision:edge:error", alias="CHANNEL_VISION_EDGE_ERROR")
 
+    # When false, edge still publishes frame pointers but Host owns orion:vision:artifacts.
+    EDGE_PUBLISH_ARTIFACTS: bool = Field(True, alias="EDGE_PUBLISH_ARTIFACTS")
+
     @property
     def detector_names(self) -> List[str]:
         return [d.strip() for d in self.DETECTORS.split(",") if d.strip()]

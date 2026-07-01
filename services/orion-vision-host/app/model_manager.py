@@ -154,8 +154,20 @@ class ModelManager:
             torch_dtype = self._torch_dtype(dtype, device)
             logger.info(f"[MODEL] loading vlm profile={profile_name} device={device} dtype={torch_dtype} id={model_id}")
 
-            processor = AutoProcessor.from_pretrained(model_id)
-            model = AutoModelForVision2Seq.from_pretrained(model_id, torch_dtype=torch_dtype)
+            mid = model_id.lower()
+            if "blip2" in mid:
+                from transformers import Blip2ForConditionalGeneration, Blip2Processor
+
+                processor = Blip2Processor.from_pretrained(model_id)
+                model = Blip2ForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch_dtype)
+            elif "blip" in mid:
+                from transformers import BlipForConditionalGeneration, BlipProcessor
+
+                processor = BlipProcessor.from_pretrained(model_id)
+                model = BlipForConditionalGeneration.from_pretrained(model_id, torch_dtype=torch_dtype)
+            else:
+                processor = AutoProcessor.from_pretrained(model_id)
+                model = AutoModelForVision2Seq.from_pretrained(model_id, torch_dtype=torch_dtype)
 
             model.eval()
             if device.startswith("cuda"):

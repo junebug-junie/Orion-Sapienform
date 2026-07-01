@@ -1,13 +1,27 @@
 services:
   orion-vision-scribe:
-    build: .
+    build:
+      context: ../..
+      dockerfile: services/orion-vision-scribe/Dockerfile
+    container_name: ${PROJECT}-vision-scribe
+    restart: unless-stopped
+    env_file:
+      - .env
     environment:
-      - ORION_BUS_URL=redis://redis:6379/0
-      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
-      - CHANNEL_SCRIBE_INTAKE=orion:vision:events
-      - CHANNEL_SCRIBE_REQUEST=orion:exec:request:VisionScribeService
-    volumes:
-      - ./app:/app/app
-      - ../../orion:/app/orion
-    depends_on:
-      - redis
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG:-true}
+      - CHANNEL_SCRIBE_INTAKE=${CHANNEL_SCRIBE_INTAKE:-orion:vision:events}
+      - CHANNEL_SCRIBE_PUB=${CHANNEL_SCRIBE_PUB:-orion:vision:scribe:pub}
+      - CHANNEL_SCRIBE_REQUEST=${CHANNEL_SCRIBE_REQUEST:-orion:exec:request:VisionScribeService}
+      - CHANNEL_SQL_WRITE=${CHANNEL_SQL_WRITE:-orion:collapse:sql-write}
+      - CHANNEL_RDF_ENQUEUE=${CHANNEL_RDF_ENQUEUE:-orion:rdf-collapse:enqueue}
+      - CHANNEL_VECTOR_WRITE=${CHANNEL_VECTOR_WRITE:-orion:vector:write}
+    networks:
+      - app-net
+    ports:
+      - "${VISION_SCRIBE_HTTP_PORT:-8026}:8000"
+
+networks:
+  app-net:
+    external: true

@@ -1,14 +1,27 @@
 services:
   orion-vision-council:
-    build: .
+    build:
+      context: ../..
+      dockerfile: services/orion-vision-council/Dockerfile
+    container_name: ${PROJECT}-vision-council
+    restart: unless-stopped
+    env_file:
+      - .env
     environment:
-      - ORION_BUS_URL=redis://redis:6379/0
-      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG}
-      - CHANNEL_COUNCIL_INTAKE=orion:vision:windows
-      - CHANNEL_COUNCIL_PUB=orion:vision:events
-      - CHANNEL_COUNCIL_REQUEST=orion:exec:request:VisionCouncilService
-    volumes:
-      - ./app:/app/app
-      - ../../orion:/app/orion
-    depends_on:
-      - redis
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG:-true}
+      - CHANNEL_COUNCIL_INTAKE=${CHANNEL_COUNCIL_INTAKE:-orion:vision:windows}
+      - CHANNEL_COUNCIL_PUB=${CHANNEL_COUNCIL_PUB:-orion:vision:events}
+      - CHANNEL_COUNCIL_REQUEST=${CHANNEL_COUNCIL_REQUEST:-orion:exec:request:VisionCouncilService}
+      - CHANNEL_LLM_REQUEST=${CHANNEL_LLM_REQUEST:-orion:exec:request:LLMGatewayService}
+      - CHANNEL_LLM_REPLY_PREFIX=${CHANNEL_LLM_REPLY_PREFIX:-orion:council:reply}
+      - COUNCIL_MODEL=${COUNCIL_MODEL:-gpt-4o}
+    networks:
+      - app-net
+    ports:
+      - "${VISION_COUNCIL_HTTP_PORT:-8025}:8000"
+
+networks:
+  app-net:
+    external: true

@@ -16,12 +16,9 @@ from orion.schemas.vision import (
     VisionTaskRequestPayload,
     VisionTaskResultPayload,
     VisionArtifactPayload,
-    VisionArtifactOutputs,
-    VisionObject,
-    VisionCaption,
-    VisionEmbedding,
 )
 
+from .artifacts import build_artifact_payload
 from .models import VisionResult, VisionTask
 from .profiles import VisionProfiles
 from .runner import VisionRunner
@@ -340,63 +337,7 @@ class VisionHostService:
              await self._publish_artifact_broadcast(artifact_payload, source_envelope)
 
     def _create_artifact_payload(self, res: VisionResult, source_envelope: BaseEnvelope) -> Optional[VisionArtifactPayload]:
-        if not res.artifacts:
-            return None
-
-        artifacts = res.artifacts
-        artifact_id = str(uuid.uuid4())
-
-        objects = None
-        caption = None
-        embedding = None
-
-        if "objects" in artifacts and isinstance(artifacts["objects"], list):
-            objects = []
-            for obj in artifacts["objects"]:
-                objects.append(VisionObject(
-                    label=str(obj.get("label", "unknown")),
-                    score=float(obj.get("score", 0.0)),
-                    box_xyxy=obj.get("box_xyxy", [0,0,0,0])
-                ))
-
-        if "caption" in artifacts and isinstance(artifacts["caption"], dict):
-            caption = VisionCaption(
-                text=artifacts["caption"].get("text", ""),
-                confidence=artifacts["caption"].get("confidence")
-            )
-
-        if "embedding" in artifacts and isinstance(artifacts["embedding"], dict):
-            embedding = VisionEmbedding(
-                ref=artifacts["embedding"].get("ref", ""),
-                path=artifacts["embedding"].get("path", ""),
-                dim=artifacts["embedding"].get("dim", 0)
-            )
-
-        outputs = VisionArtifactOutputs(
-            objects=objects,
-            caption=caption,
-            embedding=embedding
-        )
-
-        # Add extras
-        for k, v in artifacts.items():
-            if k not in ("objects", "caption", "embedding", "configured", "implemented", "kind", "device", "model_id"):
-                if hasattr(outputs, k): # Shouldn't happen given above
-                     pass
-                else:
-                    # VisionArtifactOutputs allows extra, but Pydantic might need setattr
-                    setattr(outputs, k, v)
-
-        return VisionArtifactPayload(
-            artifact_id=artifact_id,
-            correlation_id=res.corr_id,
-            task_type=res.task_type,
-            device=res.device or "unknown",
-            inputs=res.meta.get("request", {}) or {},
-            outputs=outputs,
-            timing={"latency_s": res.meta.get("latency_s", 0.0)},
-            model_fingerprints={res.task_type: str(artifacts.get("model_id", "unknown"))}
-        )
+        return build_artifact_payload(res)
 
     async def _publish_artifact_broadcast(self, payload: VisionArtifactPayload, source_envelope: BaseEnvelope):
         envelope = BaseEnvelope(

@@ -41,6 +41,7 @@ class VisionResult(BaseModel):
     device: Optional[str] = None
 
     artifacts: Dict[str, Any] = Field(default_factory=dict)
+    inputs: Dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     error: Optional[str] = None
 

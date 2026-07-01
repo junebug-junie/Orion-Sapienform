@@ -41,6 +41,9 @@ from orion.cognition.projection_context import summarize_projection_inputs
 from orion.substrate.relational.layer import _lightweight_belief_set, _skip_unified_beliefs_ctx
 from orion.substrate.relational.adapters.spark_ctx import map_spark_ctx_to_substrate
 from orion.substrate.relational.adapters.self_state_ctx import map_self_state_ctx_to_substrate
+from orion.substrate.relational.adapters.execution_ctx import map_execution_ctx_to_substrate
+from orion.substrate.relational.adapters.transport_ctx import map_transport_ctx_to_substrate
+from orion.substrate.relational.adapters.biometrics_ctx import map_biometrics_ctx_to_substrate
 
 logger = logging.getLogger("orion.cognition.projection_builder")
 
@@ -113,6 +116,33 @@ def build_projection_unification_registry() -> ProducerRegistryV1:
                 freshness_ttl_sec=120,
                 pull_on_cold=False,
                 adapter_fn=map_self_state_ctx_to_substrate,
+            ),
+            # Substrate "felt state" reducer lanes (rung 2): Orion's beliefs about
+            # its own body — biometric pressure, in-flight execution, transport bus.
+            # ctx-sourced; no cold fan-out (read from ctx).
+            ProducerEntryV1(
+                producer_id="biometrics",
+                trust_tier=SNAPSHOT_EPHEMERAL,
+                anchor_scopes=("orion",),
+                freshness_ttl_sec=120,
+                pull_on_cold=False,
+                adapter_fn=map_biometrics_ctx_to_substrate,
+            ),
+            ProducerEntryV1(
+                producer_id="execution",
+                trust_tier=SNAPSHOT_EPHEMERAL,
+                anchor_scopes=("orion",),
+                freshness_ttl_sec=120,
+                pull_on_cold=False,
+                adapter_fn=map_execution_ctx_to_substrate,
+            ),
+            ProducerEntryV1(
+                producer_id="transport",
+                trust_tier=SNAPSHOT_EPHEMERAL,
+                anchor_scopes=("orion",),
+                freshness_ttl_sec=120,
+                pull_on_cold=False,
+                adapter_fn=map_transport_ctx_to_substrate,
             ),
             ProducerEntryV1(
                 producer_id="orionmem",

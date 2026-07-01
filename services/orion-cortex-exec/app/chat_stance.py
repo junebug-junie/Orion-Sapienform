@@ -2107,6 +2107,8 @@ def _run_autonomy_reducer(ctx: Dict[str, Any], autonomy: Dict[str, Any]):
 def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
     # Single unified beliefs call replaces independent producer fan-outs for
     # identity, orionmem, recall, and social lanes.
+    from app.substrate_felt_state_reader import hydrate_felt_state_ctx
+    hydrate_felt_state_ctx(ctx)
     beliefs = _unified_beliefs_for_stance(ctx)
 
     identity = _project_identity_from_beliefs(beliefs, ctx)

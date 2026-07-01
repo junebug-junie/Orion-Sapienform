@@ -367,3 +367,11 @@ def test_inject_prior_stance_to_inputs_noop_for_empty_dict() -> None:
     _inject_prior_stance_to_inputs(ctx, inputs)
     assert "prior_stance" not in inputs
 
+
+def test_stance_brief_prompt_has_prior_stance_and_regime_fields() -> None:
+    prompt = Path("orion/cognition/prompts/chat_stance_brief.j2").read_text(encoding="utf-8")
+    assert "prior_stance" in prompt
+    assert "interaction_regime" in prompt
+    assert "companion_closing_move" in prompt
+    assert "carry" in prompt.lower() or "carryforward" in prompt.lower() or "carry forward" in prompt.lower()
+

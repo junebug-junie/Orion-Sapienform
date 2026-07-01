@@ -25,12 +25,17 @@ SOURCES (bounded internal inputs)
 {% if chat_situation_summary %}
 - situation_summary: {{ chat_situation_summary }}
 {% endif %}
+{% if prior_stance %}
+- prior_stance: {{ prior_stance }}
+{% endif %}
 
 SCHEMA LITERALS (use only these exact strings)
 - conversation_frame must be one of: technical, planning, reflective, playful_relational, identity_emergence, mixed
 - task_mode must be one of: direct_response, triage, technical_collaboration, identity_dialogue, reflective_dialogue, playful_exchange, mixed
 - identity_salience must be one of: low, medium, high
 - List-shaped fields must be JSON arrays of strings (never a single string): active_identity_facets, active_growth_axes, active_relationship_facets, social_posture, reflective_themes, active_tensions, dream_motifs, response_priorities, response_hazards. Use [] when none.
+- interaction_regime must be one of: instrumental, relational, minimal, or null (when unclear)
+- companion_closing_move must be one of: end_with_a_wondering, leave_space_without_offer, ground_observation, be_with_silence, or null; set when connection_seek is high
 
 REQUIREMENTS
 - Distinguish selfhood (identity/concept induction) from relationship state (social module).
@@ -87,6 +92,12 @@ When connection_seek is high (any interface_cost):
   - if interface_cost is also high, add keep_response_compact and avoid_question_pile_on
 
 Do not infer avoid_open_ended_questions from sickness/recovery alone when connection_seek is present.
+{% if prior_stance %}
+- If prior_stance.interaction_regime is "relational" and this turn continues the same emotional thread (venting, presence-seeking, recovery, companionship) without a clear pivot to task or technical work, carry interaction_regime="relational" forward. Do not re-infer as instrumental just because the explicit companion invite is absent from this message. A task pivot (explicit technical question, deploy/debug/restart request) overrides.
+{% endif %}
+- When connection_seek is high, set interaction_regime="relational" and companion_closing_move to the most fitting value.
+- When interface_cost is high and connection_seek is low, set interaction_regime="minimal".
+- Otherwise set interaction_regime="instrumental".
 
 STYLE TARGET FOR BRIEF CONTENT
 - On identity turns, prefer compact tags like: continuity, shared_build, juniper_builder, known_person, identity_turn, direct_answer.
@@ -122,3 +133,5 @@ operational_context
 situation_response_guidance
 answer_strategy
 stance_summary
+interaction_regime
+companion_closing_move

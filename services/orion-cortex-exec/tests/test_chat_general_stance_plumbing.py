@@ -190,3 +190,34 @@ def test_chat_general_prompt_does_not_prime_identity_recital_examples() -> None:
     assert "not through identity recital" in text
     assert "{% if orion_identity_summary %}" in text
     assert "Chat profile, recall profile, or config edits" in text
+
+
+def test_turn_contract_block_appears_before_task() -> None:
+    prompt = Path("orion/cognition/prompts/chat_general.j2").read_text(encoding="utf-8")
+    assert "{% if speech_contract %}" in prompt
+    assert "TURN CONTRACT" in prompt
+    contract_pos = prompt.find("TURN CONTRACT")
+    task_pos = prompt.find("\nTASK\n")
+    assert task_pos > 0, "TASK section not found"
+    assert contract_pos < task_pos, "TURN CONTRACT must appear before TASK"
+
+
+def test_turn_contract_block_absent_when_speech_contract_falsy() -> None:
+    """Jinja block must be guarded — no TURN CONTRACT emitted when speech_contract is not set."""
+    from jinja2 import Template
+    tmpl = Template(Path("orion/cognition/prompts/chat_general.j2").read_text(encoding="utf-8"))
+    rendered = tmpl.render(
+        user_message="test",
+        message_history="",
+        memory_digest="",
+        orion_identity_summary=[],
+        juniper_relationship_summary=[],
+        response_policy_summary=[],
+        chat_stance_brief="{}",
+        chat_attention_frame=None,
+        situation_prompt_fragment=None,
+        world_context_capsule=None,
+        menu_topic_selection=None,
+        speech_contract=None,
+    )
+    assert "TURN CONTRACT" not in rendered

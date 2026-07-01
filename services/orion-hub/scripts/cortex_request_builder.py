@@ -107,6 +107,14 @@ def _hub_social_style_confidence_floor() -> float:
     return max(0.0, min(value, 1.0))
 
 
+def _hub_social_redaction_posture(payload: Dict[str, Any]) -> str:
+    override = str((payload or {}).get("social_redaction_posture") or "").strip().lower()
+    if override in ("strict", "relaxed"):
+        return override
+    env_value = os.getenv("HUB_SOCIAL_ROOM_REDACTION_POSTURE", "strict").strip().lower()
+    return env_value if env_value in ("strict", "relaxed") else "strict"
+
+
 def _normalize_mode(value: Any, *, default_mode: str, auto_default_enabled: bool) -> str:
     mode = str(value or "").strip().lower()
     if mode in {"brain", "agent", "council", "auto"}:
@@ -591,9 +599,11 @@ def build_cortex_chat_request(
         skill_allowlist = resolve_social_skill_allowlist(
             ",".join(allowlist_raw) if isinstance(allowlist_raw, list) else allowlist_raw
         )
+        redaction_posture = _hub_social_redaction_posture(payload)
         artifact_proposal, artifact_revision, artifact_confirmation, _, _ = build_social_artifact_dialogue(
             payload=payload,
             prompt=prompt,
+            posture=redaction_posture,
         )
         skills_enabled = _hub_social_skills_enabled()
         if isinstance(skill_cfg, dict) and skill_cfg.get("enabled") is not None:
@@ -603,6 +613,7 @@ def build_cortex_chat_request(
             prompt=prompt,
             skills_enabled=skills_enabled,
             allowlist=skill_allowlist,
+            posture=redaction_posture,
         )
         style_cfg = payload.get("social_style_config") or {}
         adaptation_enabled = _hub_social_style_adaptation_enabled()
@@ -626,6 +637,7 @@ def build_cortex_chat_request(
         metadata.update(
             {
                 "chat_profile": SOCIAL_ROOM_PROFILE,
+                "social_redaction_posture": redaction_posture,
                 "social_grounding_state": build_social_grounding_state(payload=payload).model_dump(mode="json"),
                 "social_concept_evidence": [
                     item.model_dump(mode="json") for item in build_social_concept_evidence(payload.get("concept_evidence"))
@@ -729,6 +741,8 @@ def build_cortex_chat_request(
         isinstance(metadata.get("situation_prompt_fragment"), dict) and metadata.get("situation_prompt_fragment")
     )
     if social_room:
+        debug["social_redaction_posture"] = metadata.get("social_redaction_posture")
+        debug["social_room_mode"] = payload.get("social_room_mode")
         debug["social_skill_allowlist"] = metadata.get("social_skill_request", {}).get("allowlist") or []
         debug["social_skill_selection"] = metadata.get("social_skill_selection")
         debug["social_skill_request"] = metadata.get("social_skill_request")

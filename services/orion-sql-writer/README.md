@@ -23,6 +23,7 @@ Configured via `SQL_WRITER_SUBSCRIBE_CHANNELS` (JSON list).
 | `orion:biometrics:summary` | `biometrics.summary.v1` | `BiometricsSummarySQL` |
 | `orion:biometrics:induction` | `biometrics.induction.v1` | `BiometricsInductionSQL` |
 | `orion:spark:telemetry` | `spark.telemetry` | `SparkTelemetrySQL` |
+| `orion:vision:events:sql-write` | `vision.event.v1` | `VisionEventSQL` |
 
 ### Environment Variables
 Provenance: repo root `.env` (mesh globals: `ORION_BUS_URL`, `PROJECT`, `NET`, …) → service `.env_example` → `docker-compose.yml` → `settings.py`

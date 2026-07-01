@@ -70,6 +70,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "mind.run.artifact.v1": "MindRunSQL",
     "grammar.event.v1": "GrammarEventSQL",
     "chat.history.spark_meta.patch.v1": "__patch_chat_history__",
+    "vision.event.v1": "VisionEventSQL",
 }
 
 
@@ -98,6 +99,7 @@ class Settings(BaseSettings):
         default=[
             "orion:tags:enriched",
             "orion:collapse:sql-write",
+            "orion:vision:events:sql-write",
             "orion:chat:history:log",
             "orion:chat:history:turn",
             "orion:chat:social:turn",

@@ -1,5 +1,4 @@
 import asyncio
-import datetime
 from typing import Optional, Any
 from contextlib import asynccontextmanager
 
@@ -17,17 +16,6 @@ from orion.schemas.vision import (
     VisionScribeRequestPayload,
     VisionScribeResultPayload
 )
-
-# Assuming shared schemas for writers exist as per instructions
-try:
-    from orion.schemas.sql.schemas import SqlWriteRequest
-except ImportError:
-    from pydantic import BaseModel, ConfigDict
-    class SqlWriteRequest(BaseModel):
-        model_config = ConfigDict(extra="allow")
-        table: str
-        data: dict
-    logger.warning("Could not import SqlWriteRequest, using fallback")
 
 try:
     from orion.schemas.rdf import RdfWriteRequest
@@ -174,17 +162,7 @@ class ScribeService:
             for evt in payload.events:
                 # 1. SQL Write
                 try:
-                    sql_req = SqlWriteRequest(
-                        table="vision_events",
-                        data={
-                            "event_id": evt.event_id,
-                            "event_type": evt.event_type,
-                            "narrative": evt.narrative,
-                            "confidence": evt.confidence,
-                            "created_at": datetime.datetime.utcnow().isoformat()
-                        }
-                    )
-                    await self._send_write(settings.CHANNEL_SQL_WRITE, "sql.write.request", sql_req, source_env)
+                    await self._send_write(settings.CHANNEL_SQL_WRITE, "vision.event.v1", evt, source_env)
                 except Exception as e:
                     logger.error(f"[SCRIBE] SQL Write failed for {evt.event_id}: {e}")
                     errors.append(f"SQL:{e}")

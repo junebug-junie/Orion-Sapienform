@@ -14,7 +14,7 @@ services:
       - CHANNEL_SCRIBE_INTAKE=${CHANNEL_SCRIBE_INTAKE:-orion:vision:events}
       - CHANNEL_SCRIBE_PUB=${CHANNEL_SCRIBE_PUB:-orion:vision:scribe:pub}
       - CHANNEL_SCRIBE_REQUEST=${CHANNEL_SCRIBE_REQUEST:-orion:exec:request:VisionScribeService}
-      - CHANNEL_SQL_WRITE=${CHANNEL_SQL_WRITE:-orion:collapse:sql-write}
+      - CHANNEL_SQL_WRITE=${CHANNEL_SQL_WRITE:-orion:vision:events:sql-write}
       - CHANNEL_RDF_ENQUEUE=${CHANNEL_RDF_ENQUEUE:-orion:rdf:enqueue}
       - CHANNEL_VECTOR_WRITE=${CHANNEL_VECTOR_WRITE:-orion:vector:write}
     networks:

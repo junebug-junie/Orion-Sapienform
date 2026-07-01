@@ -467,3 +467,202 @@ def test_style_adaptation_snapshot_is_bounded_and_identity_preserving() -> None:
     assert abs(snapshot.playfulness_delta) <= 0.35
     assert abs(snapshot.summarization_tendency_delta) <= 0.35
     assert "Oríon" in snapshot.core_identity_anchor
+
+
+def test_redaction_score_relaxed_ignores_keyword_hits_but_keeps_pii_regex() -> None:
+    strict_score, strict_reasons = hub_social_room._redaction_score(
+        "this is private, keep it secret", posture="strict"
+    )
+    relaxed_score, relaxed_reasons = hub_social_room._redaction_score(
+        "this is private, keep it secret", posture="relaxed"
+    )
+    assert strict_score > 0.0
+    assert "mentions_private" in strict_reasons
+    assert relaxed_score == 0.0
+    assert relaxed_reasons == []
+
+    email_strict, _ = hub_social_room._redaction_score("reach me at a@b.com", posture="strict")
+    email_relaxed, _ = hub_social_room._redaction_score("reach me at a@b.com", posture="relaxed")
+    assert email_strict == email_relaxed
+    assert email_relaxed > 0.0
+
+
+def test_build_social_redaction_relaxed_scores_lower_than_strict_for_same_text() -> None:
+    strict = hub_social_room.build_social_redaction(
+        prompt="this is a private secret", response="okay", posture="strict"
+    )
+    relaxed = hub_social_room.build_social_redaction(
+        prompt="this is a private secret", response="okay", posture="relaxed"
+    )
+    assert strict.overall_score > relaxed.overall_score
+    assert relaxed.overall_score == 0.0
+
+
+def test_dialogue_scope_hint_defaults_narrower_under_strict_than_relaxed() -> None:
+    assert hub_social_room._dialogue_scope_hint("remember this for later", posture="strict") == "session_only"
+    assert hub_social_room._dialogue_scope_hint("remember this for later", posture="relaxed") == "peer_local"
+
+
+def test_build_social_artifact_dialogue_strict_blocks_private_wording() -> None:
+    _, _, confirmation, result, _ = hub_social_room.build_social_artifact_dialogue(
+        payload={},
+        prompt="keep this journal entry between us",
+        posture="strict",
+    )
+    assert confirmation is not None
+    assert confirmation.decision_state == "declined"
+    assert result is not None
+
+
+def test_build_social_artifact_dialogue_relaxed_allows_private_wording() -> None:
+    _, _, confirmation, result, _ = hub_social_room.build_social_artifact_dialogue(
+        payload={},
+        prompt="keep this journal entry between us",
+        posture="relaxed",
+    )
+    assert confirmation is None
+    assert result is not None
+    assert "declined" not in (result.summary or "").lower()
+
+
+def test_select_social_room_skill_forwards_posture_to_artifact_dialogue() -> None:
+    allowlist = hub_social_room.resolve_social_skill_allowlist()
+    strict_selection, strict_result, _ = hub_social_room.select_social_room_skill(
+        payload={},
+        prompt="keep this journal entry between us",
+        skills_enabled=True,
+        allowlist=allowlist,
+        posture="strict",
+    )
+    relaxed_selection, relaxed_result, _ = hub_social_room.select_social_room_skill(
+        payload={},
+        prompt="keep this journal entry between us",
+        skills_enabled=True,
+        allowlist=allowlist,
+        posture="relaxed",
+    )
+    assert strict_selection.selected_skill == "social_artifact_dialogue"
+    assert relaxed_selection.selected_skill == "social_artifact_dialogue"
+    assert strict_result is not None
+    assert relaxed_result is not None
+    assert "wouldn" in (strict_result.summary or "").lower()
+    assert "wouldn" not in (relaxed_result.summary or "").lower()
+
+
+def test_social_room_client_meta_includes_redaction_posture_default() -> None:
+    meta = hub_social_room.social_room_client_meta(
+        payload={"chat_profile": "social_room"},
+        route_debug={},
+        trace_verb=None,
+        memory_digest=None,
+    )
+    assert meta["social_redaction_posture"] == "strict"
+
+
+def test_social_room_client_meta_prefers_route_debug_posture_over_payload() -> None:
+    meta = hub_social_room.social_room_client_meta(
+        payload={"chat_profile": "social_room", "social_redaction_posture": "strict"},
+        route_debug={"social_redaction_posture": "relaxed"},
+        trace_verb=None,
+        memory_digest=None,
+    )
+    assert meta["social_redaction_posture"] == "relaxed"
+
+
+def test_build_social_room_turn_uses_posture_from_client_meta() -> None:
+    relaxed_turn = hub_social_room.build_social_room_turn(
+        prompt="this is private, keep it secret",
+        response="okay",
+        session_id="s1",
+        correlation_id="c1",
+        user_id="juniper",
+        source="hub_ws",
+        recall_profile=None,
+        trace_verb=None,
+        client_meta={"social_redaction_posture": "relaxed"},
+        memory_digest=None,
+    )
+    strict_turn = hub_social_room.build_social_room_turn(
+        prompt="this is private, keep it secret",
+        response="okay",
+        session_id="s1",
+        correlation_id="c1",
+        user_id="juniper",
+        source="hub_ws",
+        recall_profile=None,
+        trace_verb=None,
+        client_meta={"social_redaction_posture": "strict"},
+        memory_digest=None,
+    )
+    assert relaxed_turn.redaction.overall_score == 0.0
+    assert strict_turn.redaction.overall_score > 0.0
+
+
+def test_social_room_client_meta_includes_hub_direct_mode_tag() -> None:
+    meta = hub_social_room.social_room_client_meta(
+        payload={"chat_profile": "social_room", "social_room_mode": "hub_direct"},
+        route_debug={},
+        trace_verb=None,
+        memory_digest=None,
+    )
+    assert meta["social_room_mode"] == "hub_direct"
+
+
+def test_hub_direct_room_identity_uses_a_stable_room_id_not_session_scoped() -> None:
+    identity_a = hub_social_room.hub_direct_room_identity("juniper")
+    identity_b = hub_social_room.hub_direct_room_identity("juniper")
+    assert identity_a == identity_b
+    assert identity_a["external_room"] == {"platform": "hub", "room_id": "hub-direct"}
+    assert identity_a["external_participant"]["participant_id"] == "juniper"
+
+
+def test_hub_direct_room_identity_defaults_participant_id_when_missing() -> None:
+    identity = hub_social_room.hub_direct_room_identity(None)
+    assert identity["external_participant"]["participant_id"] == "juniper"
+    assert identity["external_participant"]["participant_kind"] == "human"
+
+
+def test_apply_social_memory_summary_to_payload_merges_known_fields_only() -> None:
+    payload = {"chat_profile": "social_room"}
+    summary = {
+        "participant": {"participant_id": "juniper"},
+        "room": {"room_id": "hub-direct"},
+        "stance": {"warmth": 0.8},
+        "peer_style": None,
+        "room_ritual": None,
+        "context_window": {"thread_key": "t1"},
+        "context_selection_decision": None,
+        "context_candidates": [],
+        "episode_snapshot": {"summary": "not part of the mapped fields"},
+    }
+    merged = hub_social_room.apply_social_memory_summary_to_payload(payload, summary)
+    assert merged["social_peer_continuity"] == {"participant_id": "juniper"}
+    assert merged["social_room_continuity"] == {"room_id": "hub-direct"}
+    assert merged["social_stance_snapshot"] == {"warmth": 0.8}
+    assert merged["social_context_window"] == {"thread_key": "t1"}
+    assert "social_peer_style_hint" not in merged
+    assert "social_episode_snapshot" not in merged
+    assert merged["chat_profile"] == "social_room"
+
+
+def test_apply_social_memory_summary_to_payload_noop_for_missing_summary() -> None:
+    payload = {"chat_profile": "social_room"}
+    assert hub_social_room.apply_social_memory_summary_to_payload(payload, None) == payload
+
+
+def test_safe_recall_relaxed_posture_does_not_suppress_blocked_memory_snippets() -> None:
+    payload = {
+        "social_peer_continuity": {
+            "safe_continuity_summary": "private journal notes from last week",
+        },
+    }
+    request = hub_social_room.SocialSkillRequestV1(
+        request_id="req-1",
+        prompt="what do you remember",
+        allowlist=["social_safe_recall"],
+    )
+    strict_result = hub_social_room._safe_recall(payload, request, posture="strict")
+    relaxed_result = hub_social_room._safe_recall(payload, request, posture="relaxed")
+    assert strict_result.snippets == []
+    assert relaxed_result.snippets
+    assert "private journal" in relaxed_result.snippets[0]

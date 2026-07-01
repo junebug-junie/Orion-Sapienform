@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
 from orion.inspection.social import build_social_inspection_snapshot
 from orion.schemas.social_chat import (
@@ -66,6 +66,8 @@ _EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
 _PHONE_RE = re.compile(r"(?:\+?\d[\d\-\s().]{7,}\d)")
 _LONG_DIGIT_RE = re.compile(r"\b\d{8,}\b")
 _BLOCKED_MEMORY_RE = re.compile(r"\b(sealed|private|password|secret|ssn|mirror|journal)\b", re.IGNORECASE)
+SocialRedactionPosture = Literal["strict", "relaxed"]
+DEFAULT_SOCIAL_REDACTION_POSTURE: SocialRedactionPosture = "strict"
 _MEMORY_DIALOGUE_RE = re.compile(
     r"(keep (?:this|that|a short)|carry forward|shared cue|takeaway|room-local|peer-local|session-only|reword that|shorter and safer)",
     re.IGNORECASE,
@@ -81,6 +83,55 @@ def is_social_room_payload(payload: Dict[str, Any] | None) -> bool:
     return str(raw or "").strip().lower() == SOCIAL_ROOM_PROFILE
 
 
+HUB_DIRECT_ROOM_PLATFORM = "hub"
+HUB_DIRECT_ROOM_ID = "hub-direct"
+
+
+def _normalize_redaction_posture(value: Any) -> SocialRedactionPosture:
+    candidate = str(value or "").strip().lower()
+    return candidate if candidate in ("strict", "relaxed") else DEFAULT_SOCIAL_REDACTION_POSTURE
+
+
+def hub_direct_room_identity(user_id: str | None) -> Dict[str, Any]:
+    """Stable platform/room/participant identity for Hub's own social_room toggle."""
+    participant_id = str(user_id or "juniper").strip() or "juniper"
+    return {
+        "external_room": {
+            "platform": HUB_DIRECT_ROOM_PLATFORM,
+            "room_id": HUB_DIRECT_ROOM_ID,
+        },
+        "external_participant": {
+            "participant_id": participant_id,
+            "participant_name": "Juniper",
+            "participant_kind": "human",
+        },
+    }
+
+
+_SOCIAL_MEMORY_SUMMARY_KEY_MAP = {
+    "social_peer_continuity": "participant",
+    "social_room_continuity": "room",
+    "social_stance_snapshot": "stance",
+    "social_peer_style_hint": "peer_style",
+    "social_room_ritual_summary": "room_ritual",
+    "social_context_window": "context_window",
+    "social_context_selection_decision": "context_selection_decision",
+    "social_context_candidates": "context_candidates",
+}
+
+
+def apply_social_memory_summary_to_payload(payload: Dict[str, Any], summary: Dict[str, Any] | None) -> Dict[str, Any]:
+    """Merge an orion-social-memory GET /summary response into an outgoing chat payload."""
+    merged = dict(payload)
+    if not isinstance(summary, dict):
+        return merged
+    for payload_key, summary_key in _SOCIAL_MEMORY_SUMMARY_KEY_MAP.items():
+        value = summary.get(summary_key)
+        if value:
+            merged[payload_key] = value
+    return merged
+
+
 def build_social_grounding_state(*, payload: Dict[str, Any], trace_verb: str | None = None) -> SocialGroundingStateV1:
     anchor = payload.get("continuity_anchor") or payload.get("identity_anchor") or "Juniper ↔ Oríon ongoing peer dialogue"
     if trace_verb:
@@ -90,7 +141,7 @@ def build_social_grounding_state(*, payload: Dict[str, Any], trace_verb: str | N
     )
 
 
-def _redaction_score(text: str | None) -> tuple[float, list[str]]:
+def _redaction_score(text: str | None, *, posture: str = DEFAULT_SOCIAL_REDACTION_POSTURE) -> tuple[float, list[str]]:
     raw = str(text or "")
     score = 0.0
     reasons: list[str] = []
@@ -103,24 +154,32 @@ def _redaction_score(text: str | None) -> tuple[float, list[str]]:
     if _LONG_DIGIT_RE.search(raw):
         score += 0.30
         reasons.append("contains_long_numeric_token")
-    lowered = raw.lower()
-    for needle, weight in (
-        ("address", 0.20),
-        ("password", 0.50),
-        ("ssn", 0.60),
-        ("secret", 0.20),
-        ("private", 0.15),
-    ):
-        if needle in lowered:
-            score += weight
-            reasons.append(f"mentions_{needle}")
+    if _normalize_redaction_posture(posture) != "relaxed":
+        lowered = raw.lower()
+        for needle, weight in (
+            ("address", 0.20),
+            ("password", 0.50),
+            ("ssn", 0.60),
+            ("secret", 0.20),
+            ("private", 0.15),
+        ):
+            if needle in lowered:
+                score += weight
+                reasons.append(f"mentions_{needle}")
     return min(score, 1.0), reasons
 
 
-def build_social_redaction(*, prompt: str, response: str, memory_digest: str | None = None) -> SocialRedactionScoreV1:
-    prompt_score, prompt_reasons = _redaction_score(prompt)
-    response_score, response_reasons = _redaction_score(response)
-    memory_score, memory_reasons = _redaction_score(memory_digest)
+def build_social_redaction(
+    *,
+    prompt: str,
+    response: str,
+    memory_digest: str | None = None,
+    posture: str = DEFAULT_SOCIAL_REDACTION_POSTURE,
+) -> SocialRedactionScoreV1:
+    posture = _normalize_redaction_posture(posture)
+    prompt_score, prompt_reasons = _redaction_score(prompt, posture=posture)
+    response_score, response_reasons = _redaction_score(response, posture=posture)
+    memory_score, memory_reasons = _redaction_score(memory_digest, posture=posture)
     overall = max(prompt_score, response_score, memory_score)
     if overall >= 0.7:
         level = "high"
@@ -207,11 +266,13 @@ def _first_nonempty(*values: Any) -> str:
     return ""
 
 
-def _blocked_memory_text(text: str | None) -> bool:
+def _blocked_memory_text(text: str | None, *, posture: str = DEFAULT_SOCIAL_REDACTION_POSTURE) -> bool:
+    if _normalize_redaction_posture(posture) == "relaxed":
+        return False
     return bool(_BLOCKED_MEMORY_RE.search(str(text or "")))
 
 
-def _dialogue_scope_hint(prompt: str) -> str:
+def _dialogue_scope_hint(prompt: str, *, posture: str = DEFAULT_SOCIAL_REDACTION_POSTURE) -> str:
     lowered = prompt.lower()
     if any(needle in lowered for needle in ("room-local", "room local", "in this room", "for the room", "here in the room")):
         return "room_local"
@@ -219,7 +280,7 @@ def _dialogue_scope_hint(prompt: str) -> str:
         return "peer_local"
     if "session-only" in lowered or "session only" in lowered:
         return "session_only"
-    return "session_only"
+    return "peer_local" if _normalize_redaction_posture(posture) == "relaxed" else "session_only"
 
 
 def _artifact_type_hint(prompt: str) -> str:
@@ -270,13 +331,15 @@ def build_social_artifact_dialogue(
     *,
     payload: Dict[str, Any],
     prompt: str,
+    posture: str = DEFAULT_SOCIAL_REDACTION_POSTURE,
 ) -> Tuple[Optional[SocialArtifactProposalV1], Optional[SocialArtifactRevisionV1], Optional[SocialArtifactConfirmationV1], Optional[SocialSkillResultV1], str]:
+    posture = _normalize_redaction_posture(posture)
     lowered = prompt.lower()
     if not _MEMORY_DIALOGUE_RE.search(prompt):
         pending = _proposal_source(payload)
         if pending is None:
             return None, None, None, None, "no shared-artifact dialogue cue matched"
-    if _blocked_memory_text(prompt):
+    if _blocked_memory_text(prompt, posture=posture):
         confirmation = SocialArtifactConfirmationV1(
             artifact_type=_artifact_type_hint(prompt),  # type: ignore[arg-type]
             decision_state="declined",
@@ -342,7 +405,8 @@ def build_social_artifact_dialogue(
         return pending, revision, None, result, "artifact wording/scope revision requested"
 
     if pending and any(needle in lowered for needle in ("yes", "that works", "that's right", "that is right", "okay keep", "sounds right", "works for me")):
-        accepted_scope = _dialogue_scope_hint(prompt) if _dialogue_scope_hint(prompt) != "session_only" else pending.proposed_scope
+        accepted_scope_hint = _dialogue_scope_hint(prompt, posture=posture)
+        accepted_scope = accepted_scope_hint if accepted_scope_hint != "session_only" else pending.proposed_scope
         confirmation = SocialArtifactConfirmationV1(
             proposal_id=pending.proposal_id,
             artifact_type=pending.artifact_type,
@@ -366,7 +430,7 @@ def build_social_artifact_dialogue(
         )
         return pending, None, confirmation, result, "explicit acceptance of a pending shared artifact"
 
-    scope = _dialogue_scope_hint(prompt)
+    scope = _dialogue_scope_hint(prompt, posture=posture)
     artifact_type = _artifact_type_hint(prompt)
     summary = _condense_artifact_summary(prompt)
     clarify_scope = scope == "session_only" and not any(
@@ -490,7 +554,12 @@ def _summarize_thread(payload: Dict[str, Any], request: SocialSkillRequestV1) ->
     )
 
 
-def _safe_recall(payload: Dict[str, Any], request: SocialSkillRequestV1) -> SocialSkillResultV1:
+def _safe_recall(
+    payload: Dict[str, Any],
+    request: SocialSkillRequestV1,
+    *,
+    posture: str = DEFAULT_SOCIAL_REDACTION_POSTURE,
+) -> SocialSkillResultV1:
     peer = payload.get("social_peer_continuity") or {}
     room = payload.get("social_room_continuity") or {}
     candidate_snippets = [
@@ -500,7 +569,9 @@ def _safe_recall(payload: Dict[str, Any], request: SocialSkillRequestV1) -> Soci
     topics = [str(item).strip() for item in peer.get("recent_shared_topics") or [] if str(item).strip()]
     if topics:
         candidate_snippets.append(f"Shared topics: {', '.join(topics[:3])}")
-    safe_snippets = [item[:180] for item in candidate_snippets if item and not _blocked_memory_text(item)]
+    safe_snippets = [
+        item[:180] for item in candidate_snippets if item and not _blocked_memory_text(item, posture=posture)
+    ]
     safety_notes = []
     if len(safe_snippets) < len([item for item in candidate_snippets if item]):
         safety_notes.append("blocked private/sealed memory was suppressed")
@@ -587,13 +658,21 @@ def _exit_or_pause(payload: Dict[str, Any], request: SocialSkillRequestV1) -> So
     )
 
 
-def _skill_from_heuristics(payload: Dict[str, Any], prompt: str, allowlist: List[SocialSkillName]) -> tuple[SocialSkillName | None, str]:
+def _skill_from_heuristics(
+    payload: Dict[str, Any],
+    prompt: str,
+    allowlist: List[SocialSkillName],
+    *,
+    posture: str = DEFAULT_SOCIAL_REDACTION_POSTURE,
+) -> tuple[SocialSkillName | None, str]:
     lowered = prompt.lower()
     policy = payload.get("social_turn_policy") or {}
     open_threads = payload.get("social_room_continuity", {}).get("open_threads") or []
 
     if "social_artifact_dialogue" in allowlist:
-        proposal, revision, confirmation, result, reason = build_social_artifact_dialogue(payload=payload, prompt=prompt)
+        proposal, revision, confirmation, result, reason = build_social_artifact_dialogue(
+            payload=payload, prompt=prompt, posture=posture
+        )
         if any(item is not None for item in (proposal, revision, confirmation)) and result is not None:
             return "social_artifact_dialogue", reason
     if "social_self_ground" in allowlist and any(needle in lowered for needle in ("who are you", "what are you", "remind me who you are")):
@@ -624,7 +703,9 @@ def select_social_room_skill(
     prompt: str,
     skills_enabled: bool,
     allowlist: List[SocialSkillName],
+    posture: str = DEFAULT_SOCIAL_REDACTION_POSTURE,
 ) -> tuple[SocialSkillSelectionV1, SocialSkillResultV1 | None, SocialSkillRequestV1]:
+    posture = _normalize_redaction_posture(posture)
     request = _make_skill_request(payload, prompt=prompt, allowlist=allowlist)
     if not skills_enabled:
         selection = SocialSkillSelectionV1(
@@ -645,7 +726,7 @@ def select_social_room_skill(
         logger.debug("social_skill_suppressed reason=%s", selection.suppressed_reason)
         return selection, None, request
 
-    skill_name, reason = _skill_from_heuristics(payload, prompt, allowlist)
+    skill_name, reason = _skill_from_heuristics(payload, prompt, allowlist, posture=posture)
     if skill_name is None:
         selection = SocialSkillSelectionV1(
             considered_skills=allowlist,
@@ -658,12 +739,12 @@ def select_social_room_skill(
 
     builder_map = {
         "social_summarize_thread": _summarize_thread,
-        "social_safe_recall": _safe_recall,
+        "social_safe_recall": lambda payload, request: _safe_recall(payload, request, posture=posture),
         "social_self_ground": _self_ground,
         "social_followup_question": _followup_question,
         "social_room_reflection": _room_reflection,
         "social_exit_or_pause": _exit_or_pause,
-        "social_artifact_dialogue": lambda payload, request: build_social_artifact_dialogue(payload=payload, prompt=request.prompt)[3],  # type: ignore[return-value]
+        "social_artifact_dialogue": lambda payload, request: build_social_artifact_dialogue(payload=payload, prompt=request.prompt, posture=posture)[3],  # type: ignore[return-value]
     }
     result = builder_map[skill_name](payload, request)
     selection = SocialSkillSelectionV1(
@@ -710,8 +791,16 @@ def social_room_client_meta(
     gif_observed_signal = route_debug.get("social_gif_observed_signal") or payload.get("social_gif_observed_signal") or {}
     gif_proxy_context = route_debug.get("social_gif_proxy_context") or payload.get("social_gif_proxy_context") or {}
     gif_interpretation = route_debug.get("social_gif_interpretation") or payload.get("social_gif_interpretation") or {}
+    redaction_posture = _normalize_redaction_posture(
+        route_debug.get("social_redaction_posture") or payload.get("social_redaction_posture")
+    )
+    social_room_mode = str(
+        route_debug.get("social_room_mode") or payload.get("social_room_mode") or ""
+    ).strip().lower() or None
     return {
         "chat_profile": SOCIAL_ROOM_PROFILE,
+        "social_redaction_posture": redaction_posture,
+        "social_room_mode": social_room_mode,
         "social_grounding_state": grounding.model_dump(mode="json"),
         "social_concept_evidence": [item.model_dump(mode="json") for item in concept_evidence],
         "social_recall_profile": route_debug.get("recall_profile") or SOCIAL_ROOM_RECALL_PROFILE,
@@ -826,11 +915,12 @@ def build_social_room_turn(
     memory_digest: str | None,
 ) -> SocialRoomTurnV1:
     social_meta = dict(client_meta or {})
+    posture = _normalize_redaction_posture(social_meta.get("social_redaction_posture"))
     grounding_state = SocialGroundingStateV1.model_validate(
         social_meta.get("social_grounding_state") or {}
     )
     concept_evidence = build_social_concept_evidence(social_meta.get("social_concept_evidence"))
-    redaction = build_social_redaction(prompt=prompt, response=response, memory_digest=memory_digest)
+    redaction = build_social_redaction(prompt=prompt, response=response, memory_digest=memory_digest, posture=posture)
     tags = [SOCIAL_ROOM_PROFILE]
     if trace_verb:
         tags.append(str(trace_verb))

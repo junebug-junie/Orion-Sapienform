@@ -1062,3 +1062,63 @@ def test_skill_runner_deterministic_lane_strips_recall_and_packs_from_payload() 
     assert req.recall.get("required") is False
     assert req.recall.get("profile") is None
     assert req.packs == []
+
+
+def test_hub_social_redaction_posture_defaults_to_strict(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HUB_SOCIAL_ROOM_REDACTION_POSTURE", raising=False)
+    assert hub_builder._hub_social_redaction_posture({}) == "strict"
+
+
+def test_hub_social_redaction_posture_reads_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HUB_SOCIAL_ROOM_REDACTION_POSTURE", "relaxed")
+    assert hub_builder._hub_social_redaction_posture({}) == "relaxed"
+
+
+def test_hub_social_redaction_posture_payload_override_wins_over_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HUB_SOCIAL_ROOM_REDACTION_POSTURE", "strict")
+    assert hub_builder._hub_social_redaction_posture({"social_redaction_posture": "relaxed"}) == "relaxed"
+
+
+def test_hub_social_redaction_posture_rejects_invalid_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HUB_SOCIAL_ROOM_REDACTION_POSTURE", "yolo")
+    assert hub_builder._hub_social_redaction_posture({}) == "strict"
+
+
+def test_build_chat_request_social_room_metadata_includes_redaction_posture(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HUB_SOCIAL_ROOM_REDACTION_POSTURE", raising=False)
+    req, debug, _ = hub_builder.build_chat_request(
+        payload={
+            "chat_profile": "social_room",
+            "social_redaction_posture": "relaxed",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+        session_id="sid-social",
+        user_id="juniper",
+        trace_id="trace-social",
+        default_mode="brain",
+        auto_default_enabled=False,
+        source_label="hub_ws",
+        prompt="hello",
+    )
+    assert req.metadata["social_redaction_posture"] == "relaxed"
+    assert debug["social_redaction_posture"] == "relaxed"
+
+
+def test_hub_direct_social_room_forces_chat_social_room_verb_over_selected_verbs() -> None:
+    req, debug, _ = hub_builder.build_chat_request(
+        payload={
+            "chat_profile": "social_room",
+            "social_room_mode": "hub_direct",
+            "verbs": ["chat_general"],
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+        session_id="sid-social",
+        user_id="juniper",
+        trace_id="trace-social",
+        default_mode="brain",
+        auto_default_enabled=False,
+        source_label="hub_ws",
+        prompt="hello",
+    )
+    assert req.verb == "chat_social_room"
+    assert debug["social_room_mode"] == "hub_direct"

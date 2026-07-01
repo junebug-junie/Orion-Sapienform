@@ -266,6 +266,19 @@
               <input type="checkbox" id="textToSpeechToggle" class="h-3 w-3 text-red-600 rounded bg-gray-700 border-gray-600" />
               <span>TTS</span>
             </label>
+            <label class="flex items-center gap-1.5 text-xs text-gray-400" for="socialRoomToggle" title="Route this session's chat through the chat_social_room verb (peer-mode Orion) instead of chat_general">
+              <input type="checkbox" id="socialRoomToggle" class="h-3 w-3 text-pink-500 rounded bg-gray-700 border-gray-600" />
+              <span>Social room</span>
+            </label>
+            <select
+              id="socialRedactionPostureSelect"
+              class="bg-gray-800 text-gray-200 rounded border border-gray-700 px-1.5 py-1 text-[10px]"
+              aria-label="Social room redaction posture"
+              title="Strict keeps the private/secret/password/ssn keyword blocklist active; Relaxed skips it for this trusted 1:1 toggle (PII regexes for email/phone/long numbers stay on either way)"
+            >
+              <option value="strict" selected>Strict</option>
+              <option value="relaxed">Relaxed</option>
+            </select>
             <button id="presenceOpenButton" type="button" class="rounded border border-indigo-500/40 bg-indigo-500/10 px-2 py-1 text-[10px] font-semibold text-indigo-200 hover:bg-indigo-500/20">Presence</button>
             <span id="presenceStatusChip" class="rounded-full border border-gray-600 bg-gray-700/40 px-2 py-0.5 text-[10px] text-gray-200">Solo</span>
           </div>

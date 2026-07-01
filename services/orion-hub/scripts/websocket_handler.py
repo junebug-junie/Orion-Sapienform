@@ -28,7 +28,12 @@ from scripts.chat_history import (
     publish_chat_turn,
     select_reasoning_trace_for_history,
 )
-from scripts.social_room import is_social_room_payload, social_room_client_meta
+from scripts.social_room import (
+    apply_social_memory_summary_to_payload,
+    hub_direct_room_identity,
+    is_social_room_payload,
+    social_room_client_meta,
+)
 from scripts.cortex_chat_display import hub_effective_chat_text
 from scripts.context_exec_agent_bridge import run_hub_agent_via_context_exec, should_use_context_exec_agent_lane
 from scripts.trace_payloads import extract_agent_trace_payload
@@ -122,6 +127,44 @@ def _normalize_bool(value: Any, default: bool = True) -> bool:
         if lowered in {"0", "false", "no", "n", "off"}:
             return False
     return default
+
+
+async def _apply_hub_direct_social_room_mode(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Populate chat_profile/continuity fields for the Hub UI's own social_room toggle.
+
+    Hub-local only: does not invoke external room delivery or third-party chat bridges.
+    Mirrors the social-memory prefetch pattern (identity + GET /summary) but stops at
+    build_chat_request() — reply delivery stays in the Hub websocket UI.
+
+    The write-back half (publish_social_room_turn -> orion-sql-writer ->
+    orion-social-memory) fires automatically off chat_profile=="social_room".
+    """
+    if str(data.get("social_room_mode") or "").strip().lower() != "hub_direct":
+        return data
+    identity = hub_direct_room_identity(data.get("user_id"))
+    enriched = dict(data)
+    enriched["chat_profile"] = "social_room"
+    enriched["social_room_mode"] = "hub_direct"
+    enriched.setdefault("external_room", identity["external_room"])
+    enriched.setdefault("external_participant", identity["external_participant"])
+    posture = str(data.get("social_redaction_posture") or "").strip().lower()
+    if posture in ("strict", "relaxed"):
+        enriched["social_redaction_posture"] = posture
+    try:
+        from scripts.api_routes import _fetch_social_memory
+
+        summary = await _fetch_social_memory(
+            "/summary",
+            {
+                "platform": identity["external_room"]["platform"],
+                "room_id": identity["external_room"]["room_id"],
+                "participant_id": identity["external_participant"]["participant_id"],
+            },
+        )
+    except Exception as exc:
+        logger.warning("hub_direct_social_memory_fetch_failed error=%s", exc)
+        return enriched
+    return apply_social_memory_summary_to_payload(enriched, summary)
 
 
 def _log_hub_route_decision(
@@ -725,6 +768,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 turns=turns,
             )
             data = dict(data)
+            data = await _apply_hub_direct_social_room_mode(data)
             data = inject_session_presence(data, str(session_id or "anonymous"), presence_context_store)
             data["mutation_cognition_context"] = build_mutation_cognition_context()
             try:
@@ -770,6 +814,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 (execution_policy or {}).get("invocation_mode") if isinstance(execution_policy, dict) else None,
                 ((execution_policy or {}).get("schedule") or {}).get("kind") if isinstance(execution_policy, dict) else None,
             )
+            if route_debug.get("verb"):
+                trace_verb = str(route_debug["verb"])
             chat_req.metadata = dict(chat_req.metadata or {})
             chat_req.metadata["trace_verb"] = trace_verb
             mode = chat_req.mode

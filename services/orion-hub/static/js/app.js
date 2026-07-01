@@ -151,6 +151,8 @@ loadDismissedIds();
   const recallToggle = document.getElementById('recallToggle');
   const recallRequiredToggle = document.getElementById('recallRequiredToggle');
   const noWriteToggle = document.getElementById('noWriteToggle');
+  const socialRoomToggle = document.getElementById('socialRoomToggle');
+  const socialRedactionPostureSelect = document.getElementById('socialRedactionPostureSelect');
   const presenceOpenButton = document.getElementById('presenceOpenButton');
   const presenceStatusChip = document.getElementById('presenceStatusChip');
   const presenceModalRoot = document.getElementById('presenceModalRoot');
@@ -10809,6 +10811,10 @@ loadDismissedIds();
        presence_context: presenceContext,
        surface_context: { surface: 'hub_desktop', input_modality: 'typed' },
        llm_route: effectiveRoute,
+       social_room_mode: (socialRoomToggle && socialRoomToggle.checked) ? 'hub_direct' : null,
+       social_redaction_posture: (socialRoomToggle && socialRoomToggle.checked && socialRedactionPostureSelect)
+         ? socialRedactionPostureSelect.value
+         : null,
     };
     if (!omitChatUiMode) {
       payload.mode = requestMode;
@@ -11163,6 +11169,10 @@ loadDismissedIds();
           presence_context: presenceContext,
           surface_context: { surface: 'hub_desktop', input_modality: 'spoken' },
           llm_route: voiceRoute,
+          social_room_mode: (socialRoomToggle && socialRoomToggle.checked) ? 'hub_direct' : null,
+          social_redaction_posture: (socialRoomToggle && socialRoomToggle.checked && socialRedactionPostureSelect)
+            ? socialRedactionPostureSelect.value
+            : null,
         };
         const audioLaneVerbs = modeVerbOverride ? [modeVerbOverride] : selectedVerbs;
         const audioIsChatQuick =

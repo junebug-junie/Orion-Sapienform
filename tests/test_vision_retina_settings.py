@@ -67,3 +67,34 @@ def test_jpeg_quality_clamped(monkeypatch: pytest.MonkeyPatch) -> None:
     assert s.JPEG_QUALITY == 100
     s2 = _reload_settings(monkeypatch, JPEG_QUALITY="-5")
     assert s2.JPEG_QUALITY == 1
+
+
+@pytest.mark.parametrize(
+    ("env_key", "env_value"),
+    [
+        ("RETINA_WIDTH", ""),
+        ("RETINA_HEIGHT", ""),
+        ("RETINA_WIDTH", "   "),
+        ("RETINA_HEIGHT", "   "),
+    ],
+)
+def test_blank_retina_dimensions_coerced_to_none(
+    monkeypatch: pytest.MonkeyPatch,
+    env_key: str,
+    env_value: str,
+) -> None:
+    """Docker compose passes empty RETINA_WIDTH/HEIGHT; must not crash Settings()."""
+    s = _reload_settings(monkeypatch, **{env_key: env_value})
+    assert getattr(s, env_key) is None
+
+
+def test_blank_retina_width_and_height_together(monkeypatch: pytest.MonkeyPatch) -> None:
+    s = _reload_settings(monkeypatch, RETINA_WIDTH="", RETINA_HEIGHT="")
+    assert s.RETINA_WIDTH is None
+    assert s.RETINA_HEIGHT is None
+
+
+def test_retina_dimensions_explicit_integers(monkeypatch: pytest.MonkeyPatch) -> None:
+    s = _reload_settings(monkeypatch, RETINA_WIDTH="640", RETINA_HEIGHT="480")
+    assert s.RETINA_WIDTH == 640
+    assert s.RETINA_HEIGHT == 480

@@ -62,7 +62,7 @@ cp .env_example .env
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `ORION_BUS_URL` | `redis://localhost:6379/0` | Redis pub/sub (use mesh URL in prod) |
+| `ORION_BUS_URL` | `redis://100.92.216.81:6379/0` | Redis pub/sub — shared mesh bus (same as sibling vision services) |
 | `RETINA_SOURCE_TYPE` | `folder` | `folder`, `mock`, `rtsp`, `webcam` |
 | `RETINA_SOURCE` | `/mnt/telemetry/vision/intake` | Folder path, RTSP URL, or webcam index |
 | `RETINA_SOURCE_PATH` | — | Legacy alias for `RETINA_SOURCE` |

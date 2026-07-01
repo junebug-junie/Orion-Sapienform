@@ -44,6 +44,13 @@ class Settings(BaseSettings):
             return 90
         return max(1, min(100, n))
 
+    @field_validator("RETINA_WIDTH", "RETINA_HEIGHT", mode="before")
+    @classmethod
+    def _blank_to_none(cls, v: object) -> object:
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
+
     @model_validator(mode="after")
     def _apply_source_path_alias(self) -> "Settings":
         if self.RETINA_SOURCE_PATH and "RETINA_SOURCE" not in self.model_fields_set:

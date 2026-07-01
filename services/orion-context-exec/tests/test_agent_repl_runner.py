@@ -18,3 +18,46 @@ def test_agent_repl_is_a_valid_mode():
 
     req = ContextExecRequestV1(text="what does orion-hub do?", mode="agent_repl")
     assert req.mode == "agent_repl"
+
+
+@pytest.mark.asyncio
+async def test_llm_chat_route_forwards_messages_and_stop(monkeypatch):
+    from app import llm_tools
+    from orion.core.bus.bus_schemas import LLMMessage
+
+    captured = {}
+
+    class FakeCodec:
+        def decode(self, data):
+            class D:
+                ok = True
+
+                class envelope:
+                    payload = {"content": "ok"}
+
+            return D()
+
+    class FakeBus:
+        codec = FakeCodec()
+
+        async def rpc_request(self, channel, env, *, reply_channel, timeout_sec):
+            captured["payload"] = env.payload
+            return {"data": b"x"}
+
+    monkeypatch.setattr(llm_tools.settings, "orion_bus_enabled", True, raising=False)
+
+    msgs = [
+        LLMMessage(role="system", content="you are an agent"),
+        LLMMessage(role="user", content="find the bug"),
+    ]
+    result = await llm_tools.llm_chat_route(
+        FakeBus(),
+        prompt="find the bug",
+        route="agent",
+        messages=msgs,
+        stop=["<end_code>"],
+    )
+    assert result["ok"] is True
+    payload = captured["payload"]
+    assert [m["role"] for m in payload["messages"]] == ["system", "user"]
+    assert payload["options"]["stop"] == ["<end_code>"]

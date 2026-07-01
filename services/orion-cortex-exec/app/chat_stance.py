@@ -842,6 +842,203 @@ def suppress_chat_general_speech_identity_priming(ctx: Dict[str, Any]) -> bool:
     return True
 
 
+_TRANSACTIONAL_CLOSER_SENTENCE_RES = (
+    re.compile(r"\blet me know\b", re.IGNORECASE),
+    re.compile(r"\bif you need anything\b", re.IGNORECASE),
+    re.compile(r"\bneed anything\b", re.IGNORECASE),
+    re.compile(r"\bwhat'?s the next step\b", re.IGNORECASE),
+    re.compile(r"\bi'?m here if you need\b", re.IGNORECASE),
+    re.compile(r"\bwhen you'?re ready\b", re.IGNORECASE),
+    re.compile(r"\bmake the time pass\b", re.IGNORECASE),
+)
+
+_COMPANION_INVITE_MARKERS = (
+    "shoulder to talk",
+    "someone to talk",
+    "keep my mind off",
+    "keep me mind off",
+    "mind off",
+    "just talk",
+    "hold space",
+    "don't fix",
+    "dont fix",
+    "no fixing",
+    "no solution",
+)
+
+_VENT_CONTINUATION_MARKERS = (
+    "thanks",
+    "it's hard",
+    "its hard",
+    "just hard",
+    "rough night",
+    "terrible night",
+    "can't sleep",
+    "cant sleep",
+    "nurses in and out",
+)
+
+_TASK_PIVOT_MARKERS = (
+    "can you fix",
+    "how do i",
+    "deploy",
+    "restart",
+    "debug",
+    "track this",
+    "remind me",
+    "what's the next step",
+    "whats the next step",
+)
+
+
+def _brief_response_hazards(brief: ChatStanceBrief | Dict[str, Any]) -> list[str]:
+    if isinstance(brief, ChatStanceBrief):
+        return [str(h) for h in brief.response_hazards]
+    return [str(h) for h in (brief.get("response_hazards") or [])]
+
+
+def _should_strip_transactional_closers(
+    chat_stance_brief: Dict[str, Any] | ChatStanceBrief | None,
+) -> bool:
+    if chat_stance_brief is None:
+        return False
+    if _is_relational_stance_brief(chat_stance_brief):
+        return True
+    hazards = _brief_response_hazards(chat_stance_brief)
+    return "avoid_transactional_closers" in hazards or "avoid_next_steps" in hazards
+
+
+def _sentence_is_transactional_closer(sentence: str) -> bool:
+    candidate = str(sentence or "").strip()
+    if not candidate:
+        return False
+    return any(pattern.search(candidate) for pattern in _TRANSACTIONAL_CLOSER_SENTENCE_RES)
+
+
+def _split_reply_sentences(text: str) -> list[str]:
+    parts = re.split(r"(?<=[.!?])\s+", str(text or "").strip())
+    return [part.strip() for part in parts if part.strip()]
+
+
+def strip_transactional_closers(
+    text: str,
+    *,
+    chat_stance_brief: Dict[str, Any] | ChatStanceBrief | None = None,
+) -> tuple[str, bool]:
+    """Drop trailing customer-support closers when stance contract forbids them."""
+    if not _should_strip_transactional_closers(chat_stance_brief):
+        return text, False
+    candidate = str(text or "").strip()
+    if not candidate:
+        return text, False
+    sentences = _split_reply_sentences(candidate)
+    if len(sentences) <= 1:
+        if _sentence_is_transactional_closer(sentences[0]):
+            return "", True
+        return text, False
+    changed = False
+    while len(sentences) > 1 and _sentence_is_transactional_closer(sentences[-1]):
+        sentences.pop()
+        changed = True
+    if not sentences:
+        return text, False
+    stripped = " ".join(sentences).strip()
+    return stripped, changed
+
+
+def _history_message_text(message: Any) -> str:
+    if not isinstance(message, dict):
+        return ""
+    for key in ("content", "text", "message"):
+        value = message.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _history_message_role(message: Any) -> str:
+    if not isinstance(message, dict):
+        return ""
+    return str(message.get("role") or message.get("speaker") or "").strip().lower()
+
+
+def _continuation_of_relational_thread(ctx: Dict[str, Any]) -> bool:
+    """Carry companion stance across follow-up venting turns in the same thread."""
+    user_message = str(ctx.get("user_message") or "").strip().lower()
+    if not user_message or _is_identity_sensitive_turn(user_message):
+        return False
+    if any(marker in user_message for marker in _TASK_PIVOT_MARKERS):
+        return False
+    if any(re.search(pattern, user_message) for pattern in _TECHNICAL_TURN_PATTERNS):
+        return False
+
+    history = ctx.get("message_history")
+    if not isinstance(history, list):
+        history = []
+
+    recent = [msg for msg in history[-6:] if isinstance(msg, dict)]
+    companion_invite_seen = any(
+        _history_message_role(msg) == "user"
+        and any(marker in _history_message_text(msg).lower() for marker in _COMPANION_INVITE_MARKERS)
+        for msg in recent
+    )
+    if not companion_invite_seen:
+        companion_invite_seen = any(marker in user_message for marker in _COMPANION_INVITE_MARKERS)
+    if not companion_invite_seen:
+        return False
+
+    if any(marker in user_message for marker in _COMPANION_INVITE_MARKERS):
+        return True
+
+    if not any(marker in user_message for marker in _VENT_CONTINUATION_MARKERS):
+        return False
+
+    for msg in reversed(recent):
+        if _history_message_role(msg) != "assistant":
+            continue
+        assistant_text = _history_message_text(msg).lower()
+        if any(
+            phrase in assistant_text
+            for phrase in (
+                "hold space",
+                "sit with",
+                "don't have to hold",
+                "dont have to hold",
+                "i'm here",
+                "im here",
+            )
+        ):
+            return True
+        break
+    return False
+
+
+def _upgrade_brief_for_relational_continuation(brief: ChatStanceBrief) -> ChatStanceBrief:
+    merged = brief.model_copy(deep=True)
+    if merged.conversation_frame not in _RELATIONAL_CONVERSATION_FRAMES:
+        merged.conversation_frame = "reflective"
+    if merged.task_mode not in _RELATIONAL_TASK_MODES:
+        merged.task_mode = "reflective_dialogue"
+    merged.response_priorities = _unique(
+        list(merged.response_priorities)
+        + ["companion_presence", "hold_space", "no_solutioning", "situated_curiosity"],
+        limit=8,
+    )
+    merged.response_hazards = _unique(
+        list(merged.response_hazards)
+        + [
+            "avoid_transactional_closers",
+            "avoid_next_steps",
+            "avoid_customer_support_tone",
+            "avoid_task_tracking",
+        ],
+        limit=8,
+    )
+    if not merged.juniper_relevance or "practical usefulness" in merged.juniper_relevance.lower():
+        merged.juniper_relevance = "Relational continuity matters this turn."
+    return merged
+
+
 def strip_identity_recital_leadin(
     text: str,
     user_message: str,
@@ -2491,7 +2688,10 @@ def enforce_chat_stance_quality(brief: ChatStanceBrief, ctx: Dict[str, Any]) -> 
                 limit=8,
             )
 
-    if not identity_turn and not _is_relational_stance_brief(merged):
+    if _continuation_of_relational_thread(ctx) and not _is_relational_stance_brief(merged):
+        merged = _upgrade_brief_for_relational_continuation(merged)
+
+    if not identity_turn and not _is_relational_stance_brief(merged) and not _continuation_of_relational_thread(ctx):
         if merged.task_mode != "identity_dialogue":
             merged.identity_salience = "low"
         _fallback_identity_boilerplate = frozenset(

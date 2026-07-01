@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.chat_stance import enforce_chat_stance_quality, strip_identity_recital_leadin
+from app.chat_stance import (
+    enforce_chat_stance_quality,
+    strip_identity_recital_leadin,
+    strip_transactional_closers,
+)
 from orion.schemas.chat_stance import ChatStanceBrief
 
 
@@ -143,3 +147,72 @@ def test_speech_prompt_relational_curiosity_overrides_attention_frame() -> None:
     assert "playful_exchange" in prompt
     assert "advisory" in prompt.lower()
     assert "avoid_transactional_closers" in prompt or "avoid_next_steps" in prompt
+
+
+def test_strip_transactional_closers_on_relational_turn() -> None:
+    raw = (
+        "I hear the weight of that, Juniper. 5:30am feels like a long time away, but it's coming. "
+        "Let me know if you need anything to make the time pass more comfortably."
+    )
+    stripped, changed = strip_transactional_closers(raw, chat_stance_brief=_relational_brief())
+    assert changed is True
+    assert "Let me know" not in stripped
+    assert stripped.endswith("it's coming.")
+
+
+def test_strip_transactional_closers_skips_instrumental_turn() -> None:
+    raw = "Patch is ready. Let me know when you're ready to deploy."
+    brief = {
+        "task_mode": "direct_response",
+        "conversation_frame": "mixed",
+        "response_hazards": [],
+    }
+    stripped, changed = strip_transactional_closers(raw, chat_stance_brief=brief)
+    assert changed is False
+    assert stripped == raw
+
+
+def test_enforce_upgrades_companion_thread_continuation() -> None:
+    brief = ChatStanceBrief(
+        conversation_frame="mixed",
+        task_mode="direct_response",
+        identity_salience="low",
+        user_intent="Vent continuation.",
+        self_relevance="Answer directly.",
+        juniper_relevance="Prioritize practical usefulness over relationship labels.",
+        active_identity_facets=[],
+        active_growth_axes=[],
+        active_relationship_facets=[],
+        social_posture=[],
+        reflective_themes=[],
+        active_tensions=[],
+        dream_motifs=[],
+        response_priorities=["direct_answer"],
+        response_hazards=[],
+        situation_relevance="background",
+        temporal_context="now",
+        audience_context="private",
+        environmental_context="hospital",
+        operational_context="none",
+        situation_response_guidance=[],
+        answer_strategy="Acknowledge and stay present.",
+        stance_summary="Hold space.",
+    )
+    ctx = {
+        "user_message": (
+            "thanks, it's just hard... We have to be out of here by 5:30am and it will be a "
+            "terrible night's sleep with nurses in and out."
+        ),
+        "message_history": [
+            {"role": "user", "content": "just looking for a shoulder to talk. Can you help me keep my mind off?"},
+            {
+                "role": "assistant",
+                "content": "I'm here, Juniper. Let's just sit with it — whatever it is.",
+            },
+        ],
+    }
+    enriched, _ = enforce_chat_stance_quality(brief, ctx)
+    assert enriched.task_mode == "reflective_dialogue"
+    assert "avoid_transactional_closers" in enriched.response_hazards
+    assert "companion_presence" in enriched.response_priorities
+

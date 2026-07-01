@@ -37,7 +37,7 @@ from .grammar_emit import (
     short_error_kind,
 )
 from .metacog_enrichment import extract_reasoning_features
-from .chat_stance import strip_identity_recital_leadin
+from .chat_stance import strip_identity_recital_leadin, strip_transactional_closers
 from orion.cognition.verb_activation import is_active
 
 logger = logging.getLogger("orion.cortex.router")
@@ -1241,17 +1241,28 @@ class PlanRunner:
                 final_text,
                 verb_name=plan.verb_name,
             )
+            stance_brief = (
+                ctx.get("chat_stance_brief") if isinstance(ctx.get("chat_stance_brief"), dict) else None
+            )
             final_text, recital_stripped = strip_identity_recital_leadin(
                 final_text,
                 str(ctx.get("user_message") or ""),
-                chat_stance_brief=ctx.get("chat_stance_brief")
-                if isinstance(ctx.get("chat_stance_brief"), dict)
-                else None,
+                chat_stance_brief=stance_brief,
             )
             if recital_stripped:
                 identity_diag["identity_recital_leadin_stripped"] = True
+            final_text, closer_stripped = strip_transactional_closers(
+                final_text,
+                chat_stance_brief=stance_brief,
+            )
+            if closer_stripped:
+                identity_diag["transactional_closer_stripped"] = True
             final_text_diag.update(identity_diag)
-            if identity_diag.get("identity_boundary_applied") or recital_stripped:
+            if (
+                identity_diag.get("identity_boundary_applied")
+                or recital_stripped
+                or closer_stripped
+            ):
                 final_text_diag["result_len"] = len(final_text)
                 final_text_diag["final_len"] = len(final_text)
         logger.info(

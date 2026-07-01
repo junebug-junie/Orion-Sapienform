@@ -261,7 +261,7 @@ profiles:
   - name: vlm_caption
     enabled: true
     warm_on_start: true
-    kind: vlm
+    kind: caption_frame
     backend: transformers
     description: >
       Vision-Language captioner for converting perception into language artifacts.

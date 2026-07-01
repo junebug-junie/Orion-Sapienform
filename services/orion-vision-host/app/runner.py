@@ -13,6 +13,7 @@ from PIL import Image
 
 import torch
 
+from .artifacts import merge_result_inputs
 from .model_manager import ModelManager
 from .models import VisionResult, VisionTask
 from .profiles import PipelineDef, ProfileDef, VisionProfiles
@@ -156,6 +157,7 @@ class VisionRunner:
                         task_type=task.task_type,
                         device=device,
                         error=f"pipeline disabled: {target}",
+                        inputs=merge_result_inputs(task.request, task.meta),
                         meta={"error_code": "pipeline_disabled"},
                     )
                 artifacts = self._run_pipeline(self.profiles.get_pipeline(target), task.request, device, warnings)
@@ -167,6 +169,7 @@ class VisionRunner:
                         task_type=task.task_type,
                         device=device,
                         error=f"profile disabled: {target}",
+                        inputs=merge_result_inputs(task.request, task.meta),
                         meta={"error_code": "profile_disabled"},
                     )
                 artifacts = self._run_profile(self.profiles.get_profile(target), task.request, device, warnings)
@@ -178,6 +181,7 @@ class VisionRunner:
                 task_type=task.task_type,
                 device=device,
                 error=f"unknown task/profile: {target}",
+                inputs=merge_result_inputs(task.request, task.meta),
                 meta={"error_code": "unknown_task"},
             )
         except FileNotFoundError as e:
@@ -188,6 +192,7 @@ class VisionRunner:
                 device=device,
                 error=str(e),
                 warnings=warnings,
+                inputs=merge_result_inputs(task.request, task.meta),
                 meta={"error_code": "image_not_found"},
             )
         except ValueError as e:
@@ -200,6 +205,7 @@ class VisionRunner:
                 device=device,
                 error=msg,
                 warnings=warnings,
+                inputs=merge_result_inputs(task.request, task.meta),
                 meta={"error_code": code},
             )
         except Exception as e:
@@ -213,6 +219,7 @@ class VisionRunner:
                 device=device,
                 error=msg,
                 warnings=warnings,
+                inputs=merge_result_inputs(task.request, task.meta),
                 meta={"error_code": code},
             )
 
@@ -226,6 +233,7 @@ class VisionRunner:
             task_type=task.task_type,
             device=device,
             artifacts=artifacts,
+            inputs=merge_result_inputs(task.request, task.meta),
             warnings=warnings,
             meta=meta,
         )
@@ -242,6 +250,7 @@ class VisionRunner:
 
         out: Dict[str, Any] = {"pipeline": pipe.name, "steps": [], "artifacts": {}}
         merged_artifacts = {}
+        fingerprints: Dict[str, str] = {}
 
         for step in pipe.steps:
             if step.when and not _safe_when(step.when, request):
@@ -263,6 +272,12 @@ class VisionRunner:
             # Merge fields for the consolidated artifact
             if isinstance(artifacts, dict):
                 merged_artifacts.update(artifacts)
+                mid = artifacts.get("model_id")
+                if mid:
+                    fingerprints[step.use] = str(mid)
+
+        if fingerprints:
+            merged_artifacts["_fingerprints"] = fingerprints
 
         # For retina_fast or other pipelines, we return the merged result as the top-level artifact content
         # preserving key metadata

@@ -814,6 +814,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 (execution_policy or {}).get("invocation_mode") if isinstance(execution_policy, dict) else None,
                 ((execution_policy or {}).get("schedule") or {}).get("kind") if isinstance(execution_policy, dict) else None,
             )
+            if route_debug.get("verb"):
+                trace_verb = str(route_debug["verb"])
             chat_req.metadata = dict(chat_req.metadata or {})
             chat_req.metadata["trace_verb"] = trace_verb
             mode = chat_req.mode

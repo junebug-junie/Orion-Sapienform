@@ -6,7 +6,9 @@ defaults:
   every_n_frames: 10
   min_seconds_between_tasks_per_camera: 5
   max_inflight_per_camera: 1
-  request: {}
+  request:
+    want_caption: true
+    want_embeddings: true
 
 global:
   max_inflight_total: 2

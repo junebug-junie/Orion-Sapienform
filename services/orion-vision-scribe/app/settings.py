@@ -19,5 +19,5 @@ class Settings(BaseSettings):
     CHANNEL_SCRIBE_REQUEST: str = "orion:exec:request:VisionScribeService"
 
     CHANNEL_SQL_WRITE: str = "orion:collapse:sql-write"
-    CHANNEL_RDF_ENQUEUE: str = "orion:rdf-collapse:enqueue"
+    CHANNEL_RDF_ENQUEUE: str = "orion:rdf:enqueue"
     CHANNEL_VECTOR_WRITE: str = "orion:vector:write"

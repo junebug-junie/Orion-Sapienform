@@ -534,6 +534,26 @@ class BiometricsSubstrateWorker:
         )
         return last_id, published
 
+    def _get_substrate_graph_store(self, *, log_label: str):
+        """Return the cached shared substrate graph store, building it on first use.
+
+        Shared by ``_write_prediction_error_node`` and ``_dynamics_tick`` — both
+        need the same durable store and cache it on ``self._substrate_graph_store``
+        so repeated ticks don't rebuild it. Fail-open: returns None on init error
+        (caller decides whether that means "skip this tick").
+        """
+        try:
+            store = self._substrate_graph_store
+            if store is None:
+                from orion.substrate.graphdb_store import build_substrate_store_from_env
+
+                store = build_substrate_store_from_env()
+                self._substrate_graph_store = store
+            return store
+        except Exception:
+            logger.exception(log_label)
+            return None
+
     def _write_prediction_error_node(
         self,
         *,
@@ -552,15 +572,10 @@ class BiometricsSubstrateWorker:
         if not _prediction_error_nodes_enabled():
             return
 
-        try:
-            store = self._substrate_graph_store
-            if store is None:
-                from orion.substrate.graphdb_store import build_substrate_store_from_env
-
-                store = build_substrate_store_from_env()
-                self._substrate_graph_store = store
-        except Exception:
-            logger.exception("substrate_prediction_error_store_init_failed")
+        store = self._get_substrate_graph_store(
+            log_label="substrate_prediction_error_store_init_failed"
+        )
+        if store is None:
             return
 
         try:
@@ -614,15 +629,10 @@ class BiometricsSubstrateWorker:
         if not self._settings.enable_dynamics_tick:
             return
 
-        try:
-            store = self._substrate_graph_store
-            if store is None:
-                from orion.substrate.graphdb_store import build_substrate_store_from_env
-
-                store = build_substrate_store_from_env()
-                self._substrate_graph_store = store
-        except Exception:
-            logger.exception("substrate_dynamics_store_init_failed")
+        store = self._get_substrate_graph_store(
+            log_label="substrate_dynamics_store_init_failed"
+        )
+        if store is None:
             return
 
         try:

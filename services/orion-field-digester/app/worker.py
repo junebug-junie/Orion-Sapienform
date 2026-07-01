@@ -49,7 +49,7 @@ class FieldDigesterWorker:
 
     def _tick(self) -> None:
         fetched = self._store.fetch_new_receipts(limit=50)
-        if not fetched:
+        if not fetched and not self._settings.enable_idle_tick:
             return
 
         now = datetime.now(timezone.utc)
@@ -93,6 +93,10 @@ class FieldDigesterWorker:
 
         for node_id, suspicion in check_field_coherence(state).items():
             state.node_vectors.setdefault(node_id, {})["field_coherence_warning"] = suspicion
+
+        if not fetched:
+            self._store.save_field(state)
+            return
 
         last = fetched[-1]
         self._store.commit_digest_tick(

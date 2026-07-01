@@ -5,7 +5,7 @@ services:
       dockerfile: services/orion-vision-retina/Dockerfile
     container_name: orion-vision-retina
     environment:
-      - ORION_BUS_URL=${ORION_BUS_URL:-redis://redis:6379/0}
+      - ORION_BUS_URL=${ORION_BUS_URL:-redis://100.92.216.81:6379/0}
       - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG:-false}
       - CHANNEL_RETINA_PUB=${CHANNEL_RETINA_PUB:-orion:vision:frames}
       - CHANNEL_RETINA_ERROR=${CHANNEL_RETINA_ERROR:-orion:vision:retina:error}
@@ -27,13 +27,12 @@ services:
       - ../../orion:/app/orion
       - /mnt/telemetry/vision/frames:/mnt/telemetry/vision/frames
       - /mnt/telemetry/vision/intake:/mnt/telemetry/vision/intake
-    depends_on:
-      - redis
     # Optional USB webcam:
     # devices:
     #   - /dev/video0:/dev/video0
+    networks:
+      - app-net
 
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
+networks:
+  app-net:
+    external: true

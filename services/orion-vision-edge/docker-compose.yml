@@ -55,12 +55,13 @@ services:
       - CHANNEL_VISION_ARTIFACTS=${CHANNEL_VISION_ARTIFACTS}
 
       - FRAME_STORAGE_DIR=${FRAME_STORAGE_DIR}
+      - EDGE_PUBLISH_ARTIFACTS=${EDGE_PUBLISH_ARTIFACTS:-false}
       - EDGE_DEBUG_SAVE_FRAMES=${EDGE_DEBUG_SAVE_FRAMES}
       - EDGE_DEBUG_DIR=${EDGE_DEBUG_DIR}
 
     volumes:
       - /mnt/telemetry/orion-vision-edge
-      - /tmp/orion-frames:/mnt/frames
+      - /mnt/telemetry/vision/frames:/mnt/telemetry/vision/frames
       - /tmp/orion-debug:/mnt/debug
 
     ports:

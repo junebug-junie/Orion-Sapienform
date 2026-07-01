@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import BaseEnvelope
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.vision import (
     VisionTaskRequestPayload,
     VisionTaskResultPayload,
@@ -280,7 +280,7 @@ class VisionHostService:
             logger.error(f"[BUS] payload validation failed: {e}")
             return
 
-        corr_id = envelope.correlation_id or str(uuid.uuid4())
+        corr_id = str(envelope.correlation_id) if envelope.correlation_id else str(uuid.uuid4())
         reply_to = envelope.reply_to or f"{settings.CHANNEL_VISIONHOST_REPLY_PREFIX}:{corr_id}"
 
         task = VisionTask(
@@ -321,17 +321,15 @@ class VisionHostService:
             meta=result_meta,
         )
 
-        # Publish reply
-        reply_envelope = BaseEnvelope(
-            schema_id="vision.task.result",
-            schema_version="1.0.0",
+        # Publish reply (orion.envelope wrapper; kind carries vision.task.result)
+        host_ref = ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION)
+        reply_envelope = source_envelope.derive_child(
             kind="vision.task.result",
-            source=f"{settings.SERVICE_NAME}:{settings.SERVICE_VERSION}",
-            correlation_id=res.corr_id,
-            causality_chain=source_envelope.causality_chain + [source_envelope.correlation_id] if source_envelope.correlation_id else [],
-            payload=result_payload
+            source=host_ref,
+            payload=result_payload,
         )
-        await self.bus.publish(res.reply_channel, reply_envelope)
+        reply_channel = source_envelope.reply_to or f"{settings.CHANNEL_VISIONHOST_REPLY_PREFIX}:{res.corr_id}"
+        await self.bus.publish(reply_channel, reply_envelope)
 
         if res.ok and artifact_payload:
              await self._publish_artifact_broadcast(artifact_payload, source_envelope)
@@ -340,14 +338,11 @@ class VisionHostService:
         return build_artifact_payload(res)
 
     async def _publish_artifact_broadcast(self, payload: VisionArtifactPayload, source_envelope: BaseEnvelope):
-        envelope = BaseEnvelope(
-            schema_id="vision.artifact",
-            schema_version="1.0.0",
+        host_ref = ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION)
+        envelope = source_envelope.derive_child(
             kind="vision.artifact",
-            source=f"{settings.SERVICE_NAME}:{settings.SERVICE_VERSION}",
-            correlation_id=payload.correlation_id,
-            causality_chain=source_envelope.causality_chain + [source_envelope.correlation_id] if source_envelope.correlation_id else [],
-            payload=payload
+            source=host_ref,
+            payload=payload,
         )
 
         await self.bus.publish(settings.CHANNEL_VISIONHOST_PUB, envelope)
@@ -437,7 +432,10 @@ async def http_task(payload: Dict[str, Any]):
         if res.ok and res.artifacts and service.bus:
              # Create dummy source envelope
              dummy_env = BaseEnvelope(
-                 schema_id="http", schema_version="1", kind="http", source="http", correlation_id=corr_id, payload={}
+                 kind="http.direct",
+                 source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
+                 correlation_id=uuid.UUID(corr_id),
+                 payload={},
              )
              # Reuse creation logic
              art_payload = service._create_artifact_payload(res, dummy_env)

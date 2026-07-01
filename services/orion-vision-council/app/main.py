@@ -193,6 +193,7 @@ class CouncilService:
 
         chat_request = ChatRequestPayload(
             model=settings.COUNCIL_MODEL,
+            route=settings.COUNCIL_LLM_ROUTE,
             messages=[
                 LLMMessage(role="system", content="You are a visual analysis AI. Output strict JSON."),
                 LLMMessage(role="user", content=prompt)

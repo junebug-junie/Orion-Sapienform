@@ -23,3 +23,4 @@ class Settings(BaseSettings):
 
     # Config
     COUNCIL_MODEL: str = "gpt-4o"
+    COUNCIL_LLM_ROUTE: str = "metacog"

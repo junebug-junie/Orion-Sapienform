@@ -51,3 +51,5 @@ class ChatStanceBrief(BaseModel):
 
     answer_strategy: str = Field(...)
     stance_summary: str = Field(...)
+    interaction_regime: Literal["instrumental", "relational", "minimal"] | None = Field(default=None)
+    companion_closing_move: str | None = Field(default=None)

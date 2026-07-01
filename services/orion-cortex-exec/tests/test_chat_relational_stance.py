@@ -216,3 +216,22 @@ def test_enforce_upgrades_companion_thread_continuation() -> None:
     assert "avoid_transactional_closers" in enriched.response_hazards
     assert "companion_presence" in enriched.response_priorities
 
+
+def test_chat_stance_brief_new_fields_default_none() -> None:
+    brief = _relational_brief()
+    assert brief.interaction_regime is None
+    assert brief.companion_closing_move is None
+
+
+def test_chat_stance_brief_new_fields_roundtrip() -> None:
+    brief = _relational_brief(
+        interaction_regime="relational",
+        companion_closing_move="end_with_a_wondering",
+    )
+    d = brief.model_dump(mode="json")
+    assert d["interaction_regime"] == "relational"
+    assert d["companion_closing_move"] == "end_with_a_wondering"
+    restored = ChatStanceBrief(**d)
+    assert restored.interaction_regime == "relational"
+    assert restored.companion_closing_move == "end_with_a_wondering"
+

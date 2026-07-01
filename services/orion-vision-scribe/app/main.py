@@ -1,5 +1,4 @@
 import asyncio
-import uuid
 import datetime
 from typing import Optional, Any
 from contextlib import asynccontextmanager
@@ -8,7 +7,7 @@ from fastapi import FastAPI
 from loguru import logger
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import BaseEnvelope
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.vision import (
     VisionEventPayload,
     VisionScribeAckPayload,
@@ -106,18 +105,14 @@ class ScribeService:
             logger.error(f"[SCRIBE] RPC invalid payload: {e}")
             return
 
-        ack = await self._write_to_sinks(req.events)
+        ack = await self._write_to_sinks(req.events, env)
 
         # 1. Reply
         res_payload = VisionScribeResultPayload(ack=ack)
 
-        reply_env = BaseEnvelope(
-            schema_id="vision.scribe.result",
-            schema_version="1.0.0",
+        reply_env = env.derive_child(
             kind="vision.scribe.result",
-            source=f"{settings.SERVICE_NAME}:{settings.SERVICE_VERSION}",
-            correlation_id=env.correlation_id,
-            causality_chain=env.causality_chain + [env.correlation_id] if env.correlation_id else [],
+            source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
             payload=res_payload,
             reply_to=None
         )
@@ -126,13 +121,9 @@ class ScribeService:
             await self.bus.publish(env.reply_to, reply_env)
 
         # 2. Broadcast Ack
-        ack_env = BaseEnvelope(
-            schema_id="vision.scribe.ack",
-            schema_version="1.0.0",
+        ack_env = env.derive_child(
             kind="vision.scribe.ack",
-            source=f"{settings.SERVICE_NAME}:{settings.SERVICE_VERSION}",
-            correlation_id=env.correlation_id or str(uuid.uuid4()),
-            causality_chain=env.causality_chain + [env.correlation_id] if env.correlation_id else [],
+            source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
             payload=ack
         )
         await self.bus.publish(settings.CHANNEL_SCRIBE_PUB, ack_env)
@@ -147,22 +138,18 @@ class ScribeService:
             logger.error(f"[SCRIBE] Invalid payload: {e}")
             return
 
-        ack = await self._write_to_sinks(payload)
+        ack = await self._write_to_sinks(payload, env)
 
         # Ack Broadcast
-        ack_env = BaseEnvelope(
-            schema_id="vision.scribe.ack",
-            schema_version="1.0.0",
+        ack_env = env.derive_child(
             kind="vision.scribe.ack",
-            source=f"{settings.SERVICE_NAME}:{settings.SERVICE_VERSION}",
-            correlation_id=env.correlation_id or str(uuid.uuid4()),
-            causality_chain=env.causality_chain + [env.correlation_id] if env.correlation_id else [],
+            source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
             payload=ack
         )
         await self.bus.publish(settings.CHANNEL_SCRIBE_PUB, ack_env)
         logger.info(f"[SCRIBE] Processed and acked {len(payload.events)} events")
 
-    async def _write_to_sinks(self, payload: VisionEventPayload) -> VisionScribeAckPayload:
+    async def _write_to_sinks(self, payload: VisionEventPayload, source_env: BaseEnvelope) -> VisionScribeAckPayload:
         errors = []
         try:
             for evt in payload.events:
@@ -178,7 +165,7 @@ class ScribeService:
                             "created_at": datetime.datetime.utcnow().isoformat()
                         }
                     )
-                    await self._send_write(settings.CHANNEL_SQL_WRITE, "sql.write.request", sql_req)
+                    await self._send_write(settings.CHANNEL_SQL_WRITE, "sql.write.request", sql_req, source_env)
                 except Exception as e:
                     logger.error(f"[SCRIBE] SQL Write failed for {evt.event_id}: {e}")
                     errors.append(f"SQL:{e}")
@@ -194,7 +181,7 @@ class ScribeService:
                         triples.append((f"orion:event:{evt.event_id}", "orion:mentionsEntity", ent))
 
                     rdf_req = RdfWriteRequest(graph="vision", triples=triples)
-                    await self._send_write(settings.CHANNEL_RDF_ENQUEUE, "rdf.write.request", rdf_req)
+                    await self._send_write(settings.CHANNEL_RDF_ENQUEUE, "rdf.write.request", rdf_req, source_env)
                 except Exception as e:
                     logger.error(f"[SCRIBE] RDF Write failed for {evt.event_id}: {e}")
                     errors.append(f"RDF:{e}")
@@ -206,14 +193,11 @@ class ScribeService:
             logger.error(f"[SCRIBE] Write flow failed: {e}")
             return VisionScribeAckPayload(ok=False, error=str(e))
 
-    async def _send_write(self, channel: str, kind: str, payload: Any):
-        env = BaseEnvelope(
-            schema_id=kind,
-            schema_version="1.0.0",
+    async def _send_write(self, channel: str, kind: str, payload: Any, source_env: BaseEnvelope):
+        env = source_env.derive_child(
             kind=kind,
-            source=f"{settings.SERVICE_NAME}:{settings.SERVICE_VERSION}",
-            correlation_id=str(uuid.uuid4()),
-            payload=payload
+            source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
+            payload=payload,
         )
         await self.bus.publish(channel, env)
 

@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from loguru import logger
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import BaseEnvelope
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef, ChatRequestPayload, LLMMessage
 from orion.schemas.vision import (
     VisionWindowPayload,
     VisionEventPayload,
@@ -100,20 +100,16 @@ class CouncilService:
             logger.error(f"[COUNCIL] RPC invalid payload: {e}")
             return
 
-        event_payload = await self._generate_events(req.window)
+        event_payload = await self._generate_events(req.window, env)
         if not event_payload:
             return
 
         # 1. Reply to caller
         res_payload = VisionCouncilResultPayload(events=event_payload)
 
-        reply_env = BaseEnvelope(
-            schema_id="vision.council.result",
-            schema_version="1.0.0",
+        reply_env = env.derive_child(
             kind="vision.council.result",
-            source=f"{settings.SERVICE_NAME}:{settings.SERVICE_VERSION}",
-            correlation_id=env.correlation_id,
-            causality_chain=env.causality_chain + [env.correlation_id] if env.correlation_id else [],
+            source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
             payload=res_payload,
             reply_to=None
         )
@@ -122,13 +118,9 @@ class CouncilService:
             await self.bus.publish(env.reply_to, reply_env)
 
         # 2. Broadcast for consistency
-        broadcast_env = BaseEnvelope(
-            schema_id="vision.event.bundle",
-            schema_version="1.0.0",
+        broadcast_env = env.derive_child(
             kind="vision.event.bundle",
-            source=f"{settings.SERVICE_NAME}:{settings.SERVICE_VERSION}",
-            correlation_id=env.correlation_id,
-            causality_chain=env.causality_chain + [env.correlation_id] if env.correlation_id else [],
+            source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
             payload=event_payload
         )
         await self.bus.publish(settings.CHANNEL_COUNCIL_PUB, broadcast_env)
@@ -144,24 +136,20 @@ class CouncilService:
             logger.error(f"[COUNCIL] Invalid payload: {e}")
             return
 
-        event_payload = await self._generate_events(payload)
+        event_payload = await self._generate_events(payload, env)
         if not event_payload:
             return
 
-        out_env = BaseEnvelope(
-            schema_id="vision.event.bundle",
-            schema_version="1.0.0",
+        out_env = env.derive_child(
             kind="vision.event.bundle",
-            source=f"{settings.SERVICE_NAME}:{settings.SERVICE_VERSION}",
-            correlation_id=env.correlation_id or str(uuid.uuid4()),
-            causality_chain=env.causality_chain + [env.correlation_id] if env.correlation_id else [],
+            source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
             payload=event_payload
         )
 
         await self.bus.publish(settings.CHANNEL_COUNCIL_PUB, out_env)
         logger.info(f"[COUNCIL] Published {len(event_payload.events)} events")
 
-    async def _generate_events(self, window: VisionWindowPayload) -> Optional[VisionEventPayload]:
+    async def _generate_events(self, window: VisionWindowPayload, source_env: BaseEnvelope) -> Optional[VisionEventPayload]:
         # Prepare prompt for LLM
         summary = window.summary
         prompt = f"""
@@ -178,7 +166,7 @@ class CouncilService:
         - salience (float 0-1)
         """
 
-        events_data = await self._call_llm(prompt)
+        events_data = await self._call_llm(prompt, source_env)
         if not events_data:
             return None
 
@@ -198,29 +186,25 @@ class CouncilService:
 
         return VisionEventPayload(events=bundle_items)
 
-    async def _call_llm(self, prompt: str) -> List[Dict[str, Any]]:
+    async def _call_llm(self, prompt: str, source_env: BaseEnvelope) -> List[Dict[str, Any]]:
         # RPC to LLM Gateway
         req_id = str(uuid.uuid4())
         reply_to = f"{settings.CHANNEL_LLM_REPLY_PREFIX}:{req_id}"
 
-        chat_request = {
-            "model": settings.COUNCIL_MODEL,
-            "messages": [
-                {"role": "system", "content": "You are a visual analysis AI. Output strict JSON."},
-                {"role": "user", "content": prompt}
+        chat_request = ChatRequestPayload(
+            model=settings.COUNCIL_MODEL,
+            messages=[
+                LLMMessage(role="system", content="You are a visual analysis AI. Output strict JSON."),
+                LLMMessage(role="user", content=prompt)
             ],
-            "stream": False,
-            "json_mode": True
-        }
+            options={"return_json": True}
+        )
 
-        envelope = BaseEnvelope(
-            schema_id="cortex.chat.request",
-            schema_version="1.0.0",
+        envelope = source_env.derive_child(
             kind="llm.chat.request",
-            source=f"{settings.SERVICE_NAME}:{settings.SERVICE_VERSION}",
-            correlation_id=req_id,
-            reply_to=reply_to,
-            payload=chat_request
+            source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION),
+            payload=chat_request,
+            reply_to=reply_to
         )
 
         if self._rpc_bus is None:

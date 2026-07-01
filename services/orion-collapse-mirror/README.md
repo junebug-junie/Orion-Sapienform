@@ -31,6 +31,18 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `ORION_HEALTH_CHANNEL` | `orion:system:health` | Health check channel. |
 | `ERROR_CHANNEL` | `system.error` | Error reporting channel. |
 
+## Causal density scoring (downstream)
+
+This service ingests and fans out collapse entries; it does **not** compute `causal_density.score`. That happens in Cortex Exec via the `orion.collapse.score` verb (`services/orion-cortex-exec/app/collapse_verbs.py`), which calls `orion/collapse/service.py`.
+
+Lane behavior (`mirror_kind()`):
+
+- **Strict lane** (Juniper / `collapse_mirror_service`): score from self-reported `numeric_sisters`, tag/change-type scores only — unchanged by φ grounding.
+- **Metacog lane** (Orion / `metacog`): when fresh `SelfStateV1` is available from `substrate_self_state` (via Cortex Exec's `SubstrateFeltStateReader`), score blends self-report with computed φ evidence; otherwise falls back to self-report only.
+- **Unknown lane**: same as strict (self-report only).
+
+No new bus channels, SQL migrations, or env vars are required on this service for φ-gated scoring. See `services/orion-cortex-exec/README.md` (Collapse mirror verbs section) for blend weights, env flags, and tests.
+
 ## Running & Testing
 
 ### Run via Docker

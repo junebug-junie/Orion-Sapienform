@@ -137,6 +137,90 @@ class VisionEventPayload(BaseModel):
     events: List[VisionEventBundleItem]
 
 
+class VisionSceneEntityV1(BaseModel):
+    entity_id: str | None = None
+    label: str
+    entity_type: str | None = None
+    confidence: float = 0.5
+    evidence_refs: list[str] = Field(default_factory=list)
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+
+class VisionSceneRelationV1(BaseModel):
+    subject: str
+    predicate: str
+    object: str
+    confidence: float = 0.5
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class VisionSalientObservationV1(BaseModel):
+    observation: str
+    salience: float = 0.5
+    confidence: float = 0.5
+    evidence_refs: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+
+
+class VisionUncertaintyV1(BaseModel):
+    uncertainty: str
+    reason: str | None = None
+    confidence: float = 0.5
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class VisionTaskRelevanceV1(BaseModel):
+    task: str
+    relevance: float = 0.5
+    reason: str | None = None
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class VisionMemoryDeltaCandidateV1(BaseModel):
+    claim: str
+    claim_kind: str = "observation"
+    confidence: float = 0.5
+    salience: float = 0.5
+    evidence_refs: list[str] = Field(default_factory=list)
+    should_persist: bool = False
+    reason: str | None = None
+
+
+class VisionEventCandidateV1(BaseModel):
+    event_type: str
+    narrative: str
+    entities: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    confidence: float = 0.5
+    salience: float = 0.5
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
+class VisionGrammarProjectionCandidateV1(BaseModel):
+    atoms: list[dict[str, Any]] = Field(default_factory=list)
+    edges: list[dict[str, Any]] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class VisionSceneInterpretationV1(BaseModel):
+    schema_version: str = "1.0"
+    window_id: str
+    stream_id: str | None = None
+    camera_id: str | None = None
+    scene_summary: str
+    scene_state: dict[str, Any] = Field(default_factory=dict)
+    entities: list[VisionSceneEntityV1] = Field(default_factory=list)
+    relations: list[VisionSceneRelationV1] = Field(default_factory=list)
+    salient_observations: list[VisionSalientObservationV1] = Field(default_factory=list)
+    uncertainties: list[VisionUncertaintyV1] = Field(default_factory=list)
+    task_relevance: list[VisionTaskRelevanceV1] = Field(default_factory=list)
+    event_candidates: list[VisionEventCandidateV1] = Field(default_factory=list)
+    memory_delta_candidates: list[VisionMemoryDeltaCandidateV1] = Field(default_factory=list)
+    grammar_projection: VisionGrammarProjectionCandidateV1 | None = None
+    evidence_refs: list[str] = Field(default_factory=list)
+    raw_model_output: dict[str, Any] | None = None
+
+
 class VisionScribeAckPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ok: bool

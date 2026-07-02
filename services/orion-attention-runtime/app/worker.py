@@ -22,6 +22,7 @@ class AttentionRuntimeWorker:
 
     async def start(self) -> None:
         asyncio.create_task(self._poll_loop(), name="attention-runtime-poll")
+        asyncio.create_task(self._prune_loop(), name="attention-runtime-prune")
 
     async def stop(self) -> None:
         self._stop.set()
@@ -36,6 +37,32 @@ class AttentionRuntimeWorker:
                 await asyncio.wait_for(
                     self._stop.wait(),
                     timeout=float(self._settings.attention_poll_interval_sec),
+                )
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+    def _prune_tick(self) -> None:
+        retention = float(self._settings.attention_frame_retention_hours)
+        if retention <= 0:
+            return
+        deleted = self._store.prune_attention_frames(retention_hours=retention)
+        if deleted:
+            logger.info(
+                "attention_frames_pruned deleted=%d retention_hours=%.1f", deleted, retention
+            )
+
+    async def _prune_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._prune_tick)
+            except Exception:
+                logger.exception("attention_frame_prune_failed")
+            try:
+                await asyncio.wait_for(
+                    self._stop.wait(),
+                    timeout=float(self._settings.attention_frame_prune_interval_sec),
                 )
             except asyncio.TimeoutError:
                 continue

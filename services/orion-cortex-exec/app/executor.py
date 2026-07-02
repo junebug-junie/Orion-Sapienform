@@ -786,6 +786,43 @@ def _metacog_messages(
     ]
 
 
+_METACOG_UNCERTAINTY_PROBE_MAX_CHARS = 512
+
+
+def _truncate_metacog_probe_text(text: str, *, limit: int = _METACOG_UNCERTAINTY_PROBE_MAX_CHARS) -> str:
+    s = str(text or "").strip()
+    if len(s) <= limit:
+        return s
+    return s[: limit - 3] + "..."
+
+
+def _metacog_uncertainty_probe_messages(patch: MetacogDraftTextPatchV1) -> List[Dict[str, Any]]:
+    typ = _truncate_metacog_probe_text(patch.type or "unknown")
+    entity = _truncate_metacog_probe_text(patch.emergent_entity or "unknown")
+    summary = _truncate_metacog_probe_text(patch.summary or "")
+    sig_hint = _truncate_metacog_probe_text(patch.resonance_signature or "")
+    system = _truncate_metacog_probe_text(
+        "You are a metacognition uncertainty probe. "
+        "Output exactly one line: the resonance_signature only. "
+        "No JSON, no markdown, no preamble."
+    )
+    user_parts = [f"type={typ} entity={entity} summary={summary}"]
+    if sig_hint:
+        user_parts.append(f"reference_signature={sig_hint}")
+    user_parts.append('Format: "<type>: <entity> | Δ:<delta> | →<intent>"')
+    user = _truncate_metacog_probe_text(" ".join(user_parts))
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
+def _should_run_metacog_uncertainty_probe() -> bool:
+    if not getattr(settings, "cortex_metacog_return_logprobs", False):
+        return False
+    return bool(getattr(settings, "cortex_metacog_uncertainty_probe_enabled", True))
+
+
 def _fallback_metacog_draft(ctx: Dict[str, Any]) -> CollapseMirrorEntryV2:
     """
     If the LLM returns non-JSON, produce a valid baseline draft so the pipeline continues.

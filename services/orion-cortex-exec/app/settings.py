@@ -92,6 +92,11 @@ class Settings(BaseSettings):
         alias="CORTEX_METACOG_LOGPROB_PROBE_MODE",
         description="When CORTEX_METACOG_RETURN_LOGPROBS: empty=OpenAI chat logprobs; native_completion=aligned llama.cpp /completion.",
     )
+    cortex_metacog_uncertainty_probe_enabled: bool = Field(
+        True,
+        alias="CORTEX_METACOG_UNCERTAINTY_PROBE_ENABLED",
+        description="When CORTEX_METACOG_RETURN_LOGPROBS: run pass-2 native probe after successful draft parse.",
+    )
     daily_metacog_prompt_max_chars: int = Field(
         8192,
         alias="CORTEX_DAILY_METACOG_PROMPT_MAX_CHARS",

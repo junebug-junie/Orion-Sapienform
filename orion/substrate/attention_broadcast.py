@@ -16,6 +16,7 @@ action is taken from the broadcast (that is rung 5's governed territory).
 from __future__ import annotations
 
 import os
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
@@ -34,6 +35,11 @@ BROADCAST_FLAG = "ORION_ATTENTION_BROADCAST_ENABLED"
 BROADCAST_PROJECTION_ID = "substrate.attention.broadcast.v1"
 DEFAULT_MIN_SALIENCE = 0.2
 DEFAULT_MAX_SIGNALS = 24
+
+# Hysteresis state: sliding window of recent coalition node IDs
+_coalition_history: deque[frozenset[str]] = deque(maxlen=3)
+_current_active_coalition: frozenset[str] | None = None
+_dwell_ticks: int = 0
 
 
 def attention_broadcast_enabled() -> bool:
@@ -157,17 +163,51 @@ def build_substrate_attention_frame(
 
 
 def broadcast_projection_from_frame(frame: AttentionFrameV1) -> AttentionBroadcastProjectionV1:
+    global _current_active_coalition, _dwell_ticks, _coalition_history
+
     selected = frame.selected_action
     selected_loop = None
     if selected is not None and selected.open_loop_id:
         selected_loop = next(
             (loop for loop in frame.open_loops if loop.id == selected.open_loop_id), None
         )
+
+    attended_node_ids = list(selected_loop.source_refs[:16]) if selected_loop is not None else []
+    coalition = frozenset(attended_node_ids)
+
+    # Hysteresis: 2-tick activation, 3-tick decay
+    _coalition_history.append(coalition)
+
+    # Soft activation: coalition must appear in 2+ of last 3 ticks to become active
+    coalition_count = sum(1 for c in _coalition_history if c == coalition)
+    if coalition_count >= 2:
+        if _current_active_coalition != coalition:
+            _current_active_coalition = coalition
+            _dwell_ticks = 0  # reset on transition
+        _dwell_ticks += 1
+    else:
+        # Decay: if active coalition drops below threshold, allow switch
+        if _current_active_coalition is not None and coalition_count == 0:
+            _current_active_coalition = None
+            _dwell_ticks = 0
+
+    # Compute stability score from recent salience consistency
+    # (simplified: high if dwell_ticks > 3, medium if transitioning, low if flickering)
+    if _dwell_ticks > 3:
+        stability_score = 0.9
+    elif _dwell_ticks > 0:
+        stability_score = 0.6
+    else:
+        stability_score = 0.3
+
     return AttentionBroadcastProjectionV1(
         generated_at=frame.generated_at,
         frame=frame,
         selected_action_type=selected.action_type if selected is not None else "none",
         selected_open_loop_id=selected.open_loop_id if selected is not None else None,
         selected_description=selected_loop.description if selected_loop is not None else None,
-        attended_node_ids=list(selected_loop.source_refs[:16]) if selected_loop is not None else [],
+        attended_node_ids=attended_node_ids,
+        dwell_ticks=_dwell_ticks,
+        coalition_stability_score=stability_score,
+        coalition_history=[],  # could track transitions here; MVP keeps empty
     )

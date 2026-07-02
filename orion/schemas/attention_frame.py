@@ -132,3 +132,6 @@ class AttentionBroadcastProjectionV1(BaseModel):
     selected_open_loop_id: str | None = None
     selected_description: str | None = None
     attended_node_ids: list[str] = Field(default_factory=list)
+    dwell_ticks: int = 0
+    coalition_stability_score: float = Field(default=1.0, ge=0.0, le=1.0)
+    coalition_history: list[dict[str, Any]] = Field(default_factory=list, max_length=10)

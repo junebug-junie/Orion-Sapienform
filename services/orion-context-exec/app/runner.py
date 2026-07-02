@@ -362,6 +362,17 @@ class ContextExecRunner:
                 workspace_info=workspace_info,
             )
 
+        if request.mode == "agent_repl":
+            return await self._run_agent_repl(
+                request=request,
+                run_id=run_id,
+                started=started,
+                events=events,
+                verb_trace=verb_trace,
+                failure_modes=failure_modes,
+                workspace_info=workspace_info,
+            )
+
         try:
             profile_selection = await resolve_llm_profile(request.llm_profile)
         except LLMProfileUnavailableError as exc:
@@ -784,6 +795,158 @@ class ContextExecRunner:
             findings_bundle=fb,
             artifact_type=artifact_type,
             artifact=artifact,
+            final_text=final_text,
+            verb_trace=verb_trace,
+            operator_summary=operator_summary,
+            runtime_debug=runtime_debug,
+            failure_modes=failure_modes,
+        )
+        self._persist_run_ledger(run, request)
+        return run
+
+    async def _run_agent_repl(
+        self,
+        *,
+        request: ContextExecRequestV1,
+        run_id: str,
+        started: float,
+        events: ContextExecEventEmitter,
+        verb_trace: list[ContextExecVerbStepV1],
+        failure_modes: list[str],
+        workspace_info: dict[str, Any] | None = None,
+    ) -> ContextExecRunV1:
+        from .smolcode_engine import SmolagentsCodeEngine
+
+        try:
+            profile_selection = await resolve_llm_profile(request.llm_profile)
+        except LLMProfileUnavailableError as exc:
+            failure_modes.append(str(exc))
+            profile_selection = LLMProfileSelection(
+                requested=request.llm_profile,
+                selected="agent",
+                route_used="agent",
+            )
+
+        request = request.model_copy(update={"llm_profile": profile_selection.selected})
+        organ_runtime = OrganRuntime(
+            bus=self.rpc_bus,
+            request=request,
+            run_id=run_id,
+            llm_route=profile_selection.route_used,
+        )
+        namespace = self._build_namespace(organ_runtime)
+        organ_status = getattr(namespace, "_organ_status", {}) or {}
+
+        loop = asyncio.get_running_loop()
+
+        def _step_callback(memory_step: Any) -> None:
+            # Runs in the executor thread while the main loop awaits run_in_executor.
+            try:
+                idx = int(getattr(memory_step, "step_number", len(verb_trace)))
+                thought = str(getattr(memory_step, "model_output", "") or "")
+                code = str(getattr(memory_step, "code_action", "") or "")
+                obs = str(getattr(memory_step, "observations", "") or "")
+                err = getattr(memory_step, "error", None)
+                is_final = bool(getattr(memory_step, "is_final_answer", False))
+                timing = getattr(memory_step, "timing", None)
+                dur_ms = int(float(getattr(timing, "duration", 0.0) or 0.0) * 1000)
+                status = "error" if err else "ok"
+                step = ContextExecVerbStepV1(
+                    step_index=idx,
+                    verb="agent_step",
+                    callable="python_interpreter",
+                    input_summary=code[:2000] or thought[:2000],
+                    output_summary=(str(err) if err else obs)[:2000],
+                    status=status,
+                    duration_ms=dur_ms,
+                )
+                verb_trace.append(step)
+                asyncio.run_coroutine_threadsafe(
+                    events.agent_step(
+                        run_id=run_id,
+                        mode=request.mode,
+                        step_index=idx,
+                        thought=thought,
+                        tool_id="python_interpreter",
+                        tool_args=code,
+                        observation=str(err) if err else obs,
+                        duration_ms=dur_ms,
+                        is_final=is_final,
+                    ),
+                    loop,
+                )
+            except Exception:  # never break the loop on telemetry failure
+                logger.warning("agent_repl step_callback failed run_id=%s", run_id, exc_info=True)
+
+        engine = self.engine if getattr(self.engine, "engine_name", "") == "smolcode" else SmolagentsCodeEngine()
+
+        status = "ok"
+        result: dict[str, Any]
+        try:
+            result = await asyncio.wait_for(
+                engine.run(
+                    request,
+                    namespace,
+                    organ_runtime=organ_runtime,
+                    step_callbacks=[_step_callback],
+                    max_steps=settings.context_exec_agent_repl_max_steps,
+                    per_step_timeout=settings.context_exec_llm_timeout_sec,
+                ),
+                timeout=settings.context_exec_max_seconds,
+            )
+        except asyncio.TimeoutError:
+            status = "timeout"
+            failure_modes.append("timeout")
+            result = {"error": "agent reasoning loop exceeded time budget", "engine": "smolcode"}
+
+        if isinstance(result, dict) and result.get("error") and status == "ok":
+            status = "error"
+            failure_modes.append("agent_repl_error")
+
+        if status == "ok":
+            final_text = str(result.get("summary") or "").strip() or "The agent completed without a final answer."
+        else:
+            # No canned relational apology on this lane; plain diagnostic text only.
+            final_text = f"Agent reasoning loop did not complete: {result.get('error') or status}"
+
+        runtime_debug = self._engine_runtime_debug(
+            engine_used="smolcode",
+            mode=request.mode,
+            subcalls=len(organ_runtime.llm_rpc_calls),
+        )
+        runtime_debug.update(selection_runtime_debug(profile_selection))
+        self._apply_workspace_debug(runtime_debug, workspace_info)
+        runtime_debug["organ_status"] = organ_status
+        runtime_debug["correlation_id"] = request.correlation_id
+        runtime_debug["agent_repl"] = True
+        runtime_debug["step_count"] = len(verb_trace)
+
+        operator_summary = ContextExecOperatorSummaryV1(
+            title="Agent reasoning loop",
+            summary=final_text,
+            agent_mode="agent_repl",
+            route_used=profile_selection.route_used,
+            model_synthesis_used=False,
+            safety=ContextExecSafetySummaryV1(),
+        )
+
+        await events.finished(
+            run_id=run_id,
+            mode=request.mode,
+            status=status,
+            artifact_type=None,
+            schema_valid=True,
+            failure_modes=failure_modes,
+        )
+        run = ContextExecRunV1(
+            run_id=run_id,
+            status=status,  # type: ignore[arg-type]
+            mode=request.mode,
+            text=request.text,
+            answer_contract=request.answer_contract.model_dump(mode="json") if request.answer_contract else None,
+            findings_bundle=None,
+            artifact_type=None,
+            artifact={},
             final_text=final_text,
             verb_trace=verb_trace,
             operator_summary=operator_summary,

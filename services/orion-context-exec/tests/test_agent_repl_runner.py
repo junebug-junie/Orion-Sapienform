@@ -121,3 +121,56 @@ async def test_event_emitter_agent_step_publishes():
     assert payload["step_index"] == 0
     assert payload["tool_id"] == "python_interpreter"
     assert payload["correlation_id"] == "corr-1"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_repl_returns_final_answer_as_final_text(monkeypatch):
+    from app import runner as runner_mod
+    from app.runner import ContextExecRunner
+    from app.rlm_engine import RLMEngine
+    from orion.schemas.context_exec import (
+        ContextExecRequestV1,
+        context_exec_permissions_for_llm_profile,
+    )
+
+    class StubEngine(RLMEngine):
+        engine_name = "smolcode"
+
+        async def run(self, request, namespace, *, organ_runtime=None,
+                      step_callbacks=None, max_steps=None, per_step_timeout=None):
+            # Simulate one emitted step via the callback, then a final answer.
+            if step_callbacks:
+                class _Step:
+                    step_number = 0
+                    is_final_answer = False
+                    model_output = "let me look"
+                    code_action = "repo_list('services')"
+                    observations = "orion-hub/"
+                    error = None
+
+                    class timing:
+                        duration = 0.5
+                step_callbacks[0](_Step())
+            return {"summary": "orion-hub is the operator UI + chat gateway.",
+                    "engine": "smolcode", "mode": request.mode}
+
+    r = ContextExecRunner(engine=StubEngine())
+
+    async def fake_resolve(profile):
+        from app.llm_profile_resolver import LLMProfileSelection
+        return LLMProfileSelection(requested=profile, selected="agent", route_used="agent")
+
+    monkeypatch.setattr(runner_mod, "resolve_llm_profile", fake_resolve)
+
+    req = ContextExecRequestV1(
+        text="what does orion-hub do?",
+        mode="agent_repl",
+        permissions=context_exec_permissions_for_llm_profile("agent"),
+        llm_profile="agent",
+    )
+    run = await r.run(req)
+    assert run.mode == "agent_repl"
+    assert run.status == "ok"
+    assert run.final_text == "orion-hub is the operator UI + chat gateway."
+    # step callback populated the visible trace
+    assert any(s.callable == "python_interpreter" for s in run.verb_trace)

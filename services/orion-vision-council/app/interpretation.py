@@ -131,24 +131,49 @@ def _events_list_to_minimal_interpretation(
     )
 
 
+def _coerce_legacy_events_field(data: dict[str, Any]) -> dict[str, Any]:
+    """Map legacy ``events`` arrays into ``event_candidates`` when the latter is absent."""
+    events = data.get("events")
+    if not isinstance(events, list) or data.get("event_candidates"):
+        return data
+    coerced = {k: v for k, v in data.items() if k != "events"}
+    coerced["event_candidates"] = events
+    if not coerced.get("scene_summary"):
+        first_narrative = events[0].get("narrative") if events and isinstance(events[0], dict) else None
+        coerced["scene_summary"] = str(first_narrative) if first_narrative else "Events from legacy format"
+    return coerced
+
+
 def parse_llm_content(content: str, window: VisionWindowPayload) -> VisionSceneInterpretationV1 | None:
     try:
         text = _strip_markdown_fences(content)
         data = json.loads(text)
+        raw_model_output: dict[str, Any] | list[Any] | None = None
 
         if isinstance(data, dict) and "interpretation" in data:
+            raw_model_output = data
             data = data["interpretation"]
 
         if isinstance(data, list):
-            return _events_list_to_minimal_interpretation(data, window)
+            interpretation = _events_list_to_minimal_interpretation(data, window)
+            return interpretation.model_copy(
+                update={"raw_model_output": raw_model_output if isinstance(raw_model_output, dict) else {"events": data}}
+            )
 
         if isinstance(data, dict):
             if set(data.keys()) == {"events"} and isinstance(data.get("events"), list):
-                return _events_list_to_minimal_interpretation(data["events"], window)
+                interpretation = _events_list_to_minimal_interpretation(data["events"], window)
+                return interpretation.model_copy(update={"raw_model_output": data})
 
+            data = _coerce_legacy_events_field(data)
             if not data.get("window_id"):
                 data = {**data, "window_id": window.window_id}
-            return VisionSceneInterpretationV1.model_validate(data)
+            interpretation = VisionSceneInterpretationV1.model_validate(data)
+            if interpretation.raw_model_output is None and raw_model_output is not None:
+                interpretation = interpretation.model_copy(update={"raw_model_output": raw_model_output})
+            elif interpretation.raw_model_output is None:
+                interpretation = interpretation.model_copy(update={"raw_model_output": data})
+            return interpretation
 
         logger.error(f"[COUNCIL] Unexpected LLM JSON type: {type(data).__name__}")
         return None

@@ -30,6 +30,8 @@ from .interpretation import (
     project_interpretation_to_events,
     try_legacy_fallback,
 )
+
+_MAX_DEBUG_INTERPRETATIONS = 20
 from .settings import Settings
 
 settings = Settings()
@@ -46,8 +48,8 @@ class CouncilService:
 
     def _record_interpretation(self, interpretation: VisionSceneInterpretationV1) -> None:
         self._recent_interpretations.append(interpretation.model_dump())
-        if len(self._recent_interpretations) > 20:
-            self._recent_interpretations = self._recent_interpretations[-20:]
+        if len(self._recent_interpretations) > _MAX_DEBUG_INTERPRETATIONS:
+            self._recent_interpretations = self._recent_interpretations[-_MAX_DEBUG_INTERPRETATIONS:]
 
     async def start(self):
         logger.remove()
@@ -288,5 +290,5 @@ async def debug_last_interpretation():
 
 @app.get("/debug/recent-interpretations")
 async def debug_recent_interpretations(limit: int = 10):
-    limit = min(max(1, limit), 20)
+    limit = min(max(1, limit), _MAX_DEBUG_INTERPRETATIONS)
     return {"interpretations": service._recent_interpretations[-limit:]}

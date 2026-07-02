@@ -104,6 +104,70 @@ def test_project_event_candidates_to_vision_event_payload():
     assert event.event_id
 
 
+def test_parse_interpretation_wrapper():
+    window = _window()
+    inner = json.loads(_valid_interpretation_json(window))
+    content = json.dumps({"interpretation": inner})
+
+    interpretation = parse_llm_content(content, window)
+
+    assert interpretation is not None
+    assert interpretation.scene_summary == "A person walks through the frame."
+    assert interpretation.raw_model_output is not None
+    assert "interpretation" in interpretation.raw_model_output
+
+
+def test_hybrid_events_key_with_scene_summary_coerces_event_candidates():
+    window = _window()
+    content = json.dumps(
+        {
+            "schema_version": "1.0",
+            "window_id": window.window_id,
+            "scene_summary": "Hybrid legacy events field.",
+            "events": [
+                {
+                    "event_type": "presence",
+                    "narrative": "Someone is visible near the door.",
+                    "entities": ["person"],
+                    "tags": ["entry"],
+                    "confidence": 0.6,
+                    "salience": 0.5,
+                }
+            ],
+        }
+    )
+
+    interpretation = parse_llm_content(content, window)
+
+    assert interpretation is not None
+    assert interpretation.scene_summary == "Hybrid legacy events field."
+    assert len(interpretation.event_candidates) == 1
+    assert interpretation.event_candidates[0].event_type == "presence"
+
+
+def test_empty_event_candidates_projection_returns_empty_payload():
+    window = _window()
+    interpretation = VisionSceneInterpretationV1(
+        window_id=window.window_id,
+        scene_summary="No events detected.",
+        event_candidates=[],
+    )
+
+    payload = project_interpretation_to_events(interpretation, window)
+
+    assert payload.events == []
+
+
+def test_markdown_fenced_json_parses():
+    window = _window()
+    fenced = f"```json\n{_valid_interpretation_json(window)}\n```"
+
+    interpretation = parse_llm_content(fenced, window)
+
+    assert interpretation is not None
+    assert interpretation.event_candidates[0].event_type == "movement"
+
+
 def test_fallback_events_dict_to_minimal_interpretation():
     window = _window()
     content = json.dumps(

@@ -21,4 +21,4 @@ VisionWindowPayload → VisionSceneInterpretationV1 → VisionEventPayload
 | `GET /debug/last-interpretation` | Most recent `VisionSceneInterpretationV1` (in-memory ring buffer) |
 | `GET /debug/recent-interpretations?limit=10` | Last N interpretations (max 20) |
 
-Interpretations are retained in an in-memory ring buffer (max 20 items) for local debugging only; they are not persisted.
+Interpretations are retained in an in-memory ring buffer (max 20 items) for local debugging only; they are not persisted. Debug endpoints are unauthenticated — restrict network exposure in production.

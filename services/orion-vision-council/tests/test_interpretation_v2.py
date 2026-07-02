@@ -14,6 +14,8 @@ sys.path[:0] = [str(REPO_ROOT), str(SERVICE_ROOT)]
 
 from app.interpretation import (  # noqa: E402
     InterpretationParseOutcome,
+    build_interpretation_llm_options,
+    build_interpretation_prompt,
     parse_llm_content,
     project_interpretation_to_events,
     try_legacy_fallback,
@@ -87,7 +89,7 @@ def test_strict_v2_still_parses_as_strict_v2():
     assert outcome.salvage_warnings == []
 
 
-def test_salient_observations_event_type_narrative_salvages_to_observation():
+def test_salient_observations_event_type_narrative_partitions_to_event_candidates():
     window = _window()
     content = json.dumps(
         {
@@ -109,14 +111,14 @@ def test_salient_observations_event_type_narrative_salvages_to_observation():
 
     outcome = _parse(content, window)
 
-    assert outcome.parse_mode == "salvaged_v2"
+    assert outcome.parse_mode == "strict_v2"
     assert outcome.interpretation is not None
-    assert outcome.interpretation.scene_summary == "A door and a screen are visible."
-    obs = outcome.interpretation.salient_observations[0]
-    assert obs.observation == "A door and a screen are visible."
-    assert obs.confidence == pytest.approx(0.8)
-    assert obs.tags == ["door", "screen"]
-    assert any("narrative" in w for w in outcome.salvage_warnings)
+    assert outcome.interpretation.salient_observations == []
+    candidate = outcome.interpretation.event_candidates[0]
+    assert candidate.event_type == "object_seen"
+    assert candidate.narrative == "A door and a screen are visible."
+    assert candidate.tags == ["door", "screen"]
+    assert outcome.salvage_warnings == []
 
 
 def test_uncertainties_string_list_salvages_to_objects():
@@ -219,7 +221,7 @@ def test_valid_event_candidates_preserved_while_other_nested_malformed():
     assert outcome.interpretation.event_candidates[0].narrative == "Someone stands at the door."
 
 
-def test_event_candidates_synthesized_from_salient_observations_when_missing():
+def test_event_candidates_populated_from_misplaced_salient_observations():
     window = _window()
     content = json.dumps(
         {
@@ -241,17 +243,17 @@ def test_event_candidates_synthesized_from_salient_observations_when_missing():
 
     outcome = _parse(content, window)
 
-    assert outcome.parse_mode == "salvaged_v2"
+    assert outcome.parse_mode == "strict_v2"
     assert outcome.interpretation is not None
     assert len(outcome.interpretation.event_candidates) == 1
     candidate = outcome.interpretation.event_candidates[0]
-    assert candidate.event_type == "visual_observation"
+    assert candidate.event_type == "object_seen"
     assert candidate.narrative == "A door and a screen are visible."
     assert candidate.tags == ["door", "screen"]
-    assert any("synthesized" in w for w in outcome.salvage_warnings)
+    assert outcome.salvage_warnings == []
 
 
-def test_missing_scene_summary_salvages_not_legacy():
+def test_missing_scene_summary_normalizes_to_strict_v2():
     window = _window()
     content = json.dumps(
         {
@@ -264,7 +266,7 @@ def test_missing_scene_summary_salvages_not_legacy():
 
     outcome = _parse(content, window)
 
-    assert outcome.parse_mode == "salvaged_v2"
+    assert outcome.parse_mode == "strict_v2"
     assert outcome.interpretation is not None
     assert outcome.interpretation.scene_summary == "a person walks"
     assert outcome.interpretation.event_candidates == []
@@ -545,3 +547,113 @@ def test_registry_imports_vision_scene_interpretation_v1():
         scene_summary="Registry smoke test",
     )
     assert instance.schema_version == "1.0"
+
+
+def test_build_interpretation_prompt_caps_artifact_bloat():
+    artifacts = [f"art-{idx}" for idx in range(40)]
+    uris = [f"s3://bucket/art-{idx}.jpg" for idx in range(40)]
+    window = _window(
+        artifact_ids=artifacts,
+        artifact_uris=uris,
+        summary={
+            "top_labels": ["door"],
+            "captions": [f"caption-{idx}" for idx in range(6)],
+            "detection_count": 40,
+            "evidence": {"hard_labels": ["door"]},
+        },
+    )
+    prompt = build_interpretation_prompt(window)
+    assert "artifact_uris" not in prompt
+    assert '"artifact_id_count": 40' in prompt
+    assert "art-7" in prompt
+    assert "art-39" not in prompt
+    assert len(prompt) < 4000
+
+
+def test_misplaced_event_shape_in_salient_observations_parses_strict_v2():
+    """Live failure mode: LLM put event_candidates fields under salient_observations."""
+    window = _window(
+        artifact_ids=["0262cc41-5af4-40b9-bc19-3646f687aec2", "af106cf4-c86f-46f1-88f3-3cec93771f40"],
+        summary={
+            "top_labels": ["door", "screen"],
+            "detection_count": 2,
+            "evidence": {"hard_labels": ["door", "screen"]},
+        },
+    )
+    content = json.dumps(
+        {
+            "schema_version": "1.0",
+            "window_id": window.window_id,
+            "stream_id": window.stream_id,
+            "camera_id": window.camera_id,
+            "scene_summary": "A door and a screen are visible.",
+            "scene_state": {},
+            "entities": [],
+            "relations": [],
+            "salient_observations": [
+                {
+                    "event_type": "door presence",
+                    "narrative": "A door is present.",
+                    "confidence": 1.0,
+                    "salience": 0.5,
+                    "evidence_refs": ["0262cc41-5af4-40b9-bc19-3646f687aec2"],
+                },
+                {
+                    "event_type": "screen presence",
+                    "narrative": "A screen is present.",
+                    "confidence": 1.0,
+                    "salience": 0.5,
+                    "evidence_refs": ["af106cf4-c86f-46f1-88f3-3cec93771f40"],
+                },
+            ],
+            "uncertainties": [],
+            "task_relevance": [],
+            "event_candidates": [],
+            "memory_delta_candidates": [],
+            "grammar_projection": None,
+            "evidence_refs": [],
+        }
+    )
+    outcome = _parse(content, window)
+    assert outcome.parse_mode == "strict_v2"
+    assert outcome.salvage_warnings == []
+    assert len(outcome.interpretation.event_candidates) == 2
+    assert outcome.interpretation.salient_observations == []
+
+
+def test_normalize_dedupes_duplicate_event_candidates() -> None:
+    window = _window()
+    content = json.dumps(
+        {
+            "window_id": window.window_id,
+            "scene_summary": "Door visible.",
+            "salient_observations": [
+                {
+                    "event_type": "visual_observation",
+                    "narrative": "A door is visible.",
+                    "confidence": 0.8,
+                    "salience": 0.6,
+                }
+            ],
+            "uncertainties": [],
+            "event_candidates": [
+                {
+                    "event_type": "visual_observation",
+                    "narrative": "A door is visible.",
+                    "confidence": 0.7,
+                    "salience": 0.5,
+                }
+            ],
+        }
+    )
+    outcome = _parse(content, window)
+    assert outcome.parse_mode == "strict_v2"
+    assert len(outcome.interpretation.event_candidates) == 1
+
+
+def test_build_interpretation_llm_options_wires_structured_schema():
+    opts = build_interpretation_llm_options()
+    assert opts["structured_output_schema_name"] == "VisionSceneInterpretationV1"
+    assert isinstance(opts["structured_output_schema"], dict)
+    assert opts["structured_output_method"] == "json_object_schema"
+    assert opts["return_json"] is True

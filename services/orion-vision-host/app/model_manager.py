@@ -116,7 +116,9 @@ class ModelManager:
             if m is not None and p is not None:
                 return m, p
 
-            torch_dtype = self._torch_dtype(dtype, device)
+            torch_dtype = torch.float32
+            if not device.startswith("cuda"):
+                torch_dtype = self._torch_dtype(dtype, device)
             logger.info(f"[MODEL] loading grounding-dino profile={profile_name} device={device} dtype={torch_dtype} id={model_id}")
 
             processor = GroundingDinoProcessor.from_pretrained(model_id)

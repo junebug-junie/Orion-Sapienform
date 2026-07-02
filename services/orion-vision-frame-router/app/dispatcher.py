@@ -5,6 +5,7 @@ import os
 import time
 from typing import TYPE_CHECKING
 
+from loguru import logger
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.vision import VisionFramePointerPayload, VisionTaskResultPayload
 
@@ -80,6 +81,16 @@ class FrameDispatcher:
 
             if not self.settings.DRY_RUN and self.bus:
                 await self.bus.publish(self.settings.CHANNEL_HOST_INTAKE, task_env)
+
+            want_caption = bool((task.request or {}).get("want_caption"))
+            logger.info(
+                "[ROUTER] dispatch tier={} task_type={} want_caption={} camera_id={} stream_id={}",
+                decision.dispatch_tier,
+                task.task_type,
+                want_caption,
+                camera_id,
+                frame.stream_id,
+            )
 
             self.state.mark_dispatched(
                 correlation_id=corr,

@@ -61,3 +61,30 @@ async def test_llm_chat_route_forwards_messages_and_stop(monkeypatch):
     payload = captured["payload"]
     assert [m["role"] for m in payload["messages"]] == ["system", "user"]
     assert payload["options"]["stop"] == ["<end_code>"]
+
+
+@pytest.mark.asyncio
+async def test_organ_runtime_llm_chat_passes_messages_and_stop(monkeypatch):
+    from app import organ_runtime as orm
+    from orion.core.bus.bus_schemas import LLMMessage
+    from orion.schemas.context_exec import ContextExecRequestV1
+
+    seen = {}
+
+    async def fake_route(bus, **kwargs):
+        seen.update(kwargs)
+        return {"ok": True, "content": "hi"}
+
+    monkeypatch.setattr(orm.llm_tools, "llm_chat_route", fake_route)
+
+    rt = orm.OrganRuntime(
+        bus=object(),
+        request=ContextExecRequestV1(text="q", mode="agent_repl"),
+        run_id="r1",
+        llm_route="agent",
+    )
+    msgs = [LLMMessage(role="user", content="q")]
+    await rt.llm_chat("q", route="agent", messages=msgs, stop=["<end_code>"])
+    assert seen["messages"] == msgs
+    assert seen["stop"] == ["<end_code>"]
+    assert seen["route"] == "agent"

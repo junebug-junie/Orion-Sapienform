@@ -73,6 +73,8 @@ class OrganRuntime:
         route: str | None = None,
         context: Any = None,
         schema: str | None = None,
+        messages: Any = None,
+        stop: list[str] | None = None,
     ) -> dict[str, Any]:
         route_key = (route or self.llm_route).strip().lower()
         result = await llm_tools.llm_chat_route(
@@ -84,6 +86,8 @@ class OrganRuntime:
             user_id=self.request.user_id,
             context=context,
             schema=schema,
+            messages=messages,
+            stop=stop,
         )
         self.llm_rpc_calls.append({"route": route_key, "prompt": prompt, "result": result})
         return result

@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Dict, Type
 
 from pydantic import BaseModel
+
+
+@dataclass(frozen=True)
+class SchemaRegistration:
+    model: Type[BaseModel]
+    kind: str
 
 from orion.core.bus.bus_schemas import (
     ChatRequestPayload,
@@ -439,6 +446,7 @@ from orion.schemas.vision import (
     VisionArtifactPayload,
     VisionCouncilRequestPayload,
     VisionCouncilResultPayload,
+    VisionEdgeActivityPayload,
     VisionEdgeArtifact,
     VisionEdgeError,
     VisionEdgeHealth,
@@ -680,6 +688,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "VisionTaskResultPayload": VisionTaskResultPayload,
     "VisionArtifactPayload": VisionArtifactPayload,
     "VisionEdgeArtifact": VisionEdgeArtifact,
+    "VisionEdgeActivityPayload": VisionEdgeActivityPayload,
     "VisionEdgeHealth": VisionEdgeHealth,
     "VisionEdgeError": VisionEdgeError,
     "VisionEventPayload": VisionEventPayload,
@@ -1119,6 +1128,13 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SelfExperimentDispatchResponseV1": SelfExperimentDispatchResponseV1,
     "SelfExperimentListResponseV1": SelfExperimentListResponseV1,
 
+}
+
+SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
+    "VisionEdgeActivityPayload": SchemaRegistration(
+        model=VisionEdgeActivityPayload,
+        kind="vision.edge.activity.v1",
+    ),
 }
 
 

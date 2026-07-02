@@ -97,6 +97,17 @@ class VisionFramePointerPayload(BaseModel):
 VisionFramePointer = VisionFramePointerPayload
 
 
+class VisionEdgeActivityPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    stream_id: str
+    camera_id: Optional[str] = None
+    labels: List[str] = Field(default_factory=list)
+    max_score: float = 1.0
+    frame_ts: Optional[float] = None
+    image_path: Optional[str] = None
+    artifact_id: Optional[str] = None
+
+
 class VisionWindowPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     window_id: str

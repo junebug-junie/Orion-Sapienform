@@ -24,6 +24,11 @@ except ImportError:
     CortexChatRequest = None
     logger.warning("Cortex schemas not found, using dicts")
 
+from .evidence_grounding import (
+    _edge_person_hits,
+    build_person_presence_fallback,
+    enforce_evidence_grounding,
+)
 from .interpretation import (
     InterpretationParseOutcome,
     build_interpretation_prompt,
@@ -167,6 +172,17 @@ class CouncilService:
             return
 
         interpretation, parse_outcome = await self._generate_interpretation(payload, env)
+        if interpretation is not None:
+            interpretation, grounding_notes = enforce_evidence_grounding(interpretation, payload)
+            for note in grounding_notes:
+                logger.info(f"[COUNCIL] grounding {note}")
+        elif _edge_person_hits(payload) > 0:
+            interpretation = build_person_presence_fallback(payload)
+            parse_outcome = InterpretationParseOutcome(
+                interpretation=interpretation,
+                parse_mode="edge_fallback",
+            )
+
         if interpretation is not None:
             self._record_interpretation(interpretation, parse_outcome)
 

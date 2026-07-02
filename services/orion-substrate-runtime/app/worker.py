@@ -175,6 +175,9 @@ class BiometricsSubstrateWorker:
             asyncio.create_task(
                 self._attention_broadcast_loop(), name="substrate-attention-broadcast"
             ),
+            asyncio.create_task(
+                self._endogenous_curiosity_loop(), name="substrate-endogenous-curiosity"
+            ),
         ]
 
     async def stop(self) -> None:
@@ -769,6 +772,193 @@ class BiometricsSubstrateWorker:
                 await asyncio.to_thread(self._attention_broadcast_tick)
             except Exception:
                 logger.exception("substrate_attention_broadcast_loop_failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+    def _repair_appraisal_from_chat(self) -> Any | None:
+        """Best-effort repair-pressure input for endogenous curiosity seeds."""
+        try:
+            projection = self._store.load_chat_session_projection(CHAT_SESSION_PROJECTION_ID)
+            if projection is None or not projection.turns:
+                return None
+            best_level = 0.0
+            best_conf = 0.0
+            evidence_ids: list[str] = []
+            for turn in projection.turns.values():
+                level = float(getattr(turn, "repair_pressure_level", 0.0) or 0.0)
+                if level <= best_level:
+                    continue
+                best_level = level
+                best_conf = float(getattr(turn, "repair_pressure_confidence", 0.0) or 0.0)
+                evidence_ids = list(getattr(turn, "evidence_event_ids", None) or [])[:8]
+            if best_level <= 0.0:
+                return None
+            from types import SimpleNamespace
+
+            return SimpleNamespace(
+                dimensions={"level": best_level},
+                causal_molecule_ids=evidence_ids,
+                summary=f"chat repair pressure level={best_level:.2f}",
+                confidence=best_conf or 0.6,
+            )
+        except Exception:
+            logger.exception("substrate_endogenous_curiosity_repair_load_failed")
+            return None
+
+    @staticmethod
+    def _neutral_frontier_metacog_inputs() -> tuple[Any, Any]:
+        """Low-tension metacog inputs so endogenous seeds drive the decision path."""
+        from orion.graph_cognition.brief import MetacogPerceptionBriefV1
+        from orion.graph_cognition.evidence import SignalEvidenceBundleV1
+        from orion.graph_cognition.interpreters import (
+            CoherenceAssessmentV1,
+            ConceptDriftSignalV1,
+            ContradictionCandidateSetV1,
+            GoalPressureStateV1,
+            GraphCognitionReportV1,
+            IdentityConflictSignalV1,
+            SocialContinuityAssessmentV1,
+        )
+
+        evidence = SignalEvidenceBundleV1(
+            spans=(),
+            truncated=False,
+            degraded=True,
+            notes=("endogenous_curiosity_tick",),
+        )
+        report = GraphCognitionReportV1(
+            coherence=CoherenceAssessmentV1(
+                score=0.85, confidence=0.5, evidence=evidence, notes=()
+            ),
+            identity_conflict=IdentityConflictSignalV1(
+                conflict_score=0.1, active=False, confidence=0.5, evidence=evidence
+            ),
+            goal_pressure=GoalPressureStateV1(
+                pressure_score=0.1,
+                stalled_goal_count=0,
+                competing_goal_density=0.0,
+                confidence=0.5,
+                evidence=evidence,
+            ),
+            social_continuity=SocialContinuityAssessmentV1(
+                continuity_score=0.8, confidence=0.5, degraded=False, evidence=evidence
+            ),
+            concept_drift=ConceptDriftSignalV1(
+                drift_score=0.1, active=False, confidence=0.5, evidence=evidence
+            ),
+            contradiction_candidates=ContradictionCandidateSetV1(
+                candidates=(), confidence=0.5, evidence=evidence
+            ),
+        )
+        brief = MetacogPerceptionBriefV1(
+            top_tensions=(),
+            top_stabilizers=("coherence",),
+            overall_priority="advance",
+            recommended_verbs=("observe",),
+            confidence=0.5,
+            degraded=True,
+            supporting_evidence=evidence,
+            notes_for_router=("endogenous_curiosity_tick",),
+        )
+        return report, brief
+
+    def _endogenous_curiosity_tick(self) -> None:
+        """Rung 5: seed curiosity candidates from intrinsic substrate signals.
+
+        Reads prediction-error nodes (rung 1), the latest attention broadcast
+        (rung 3), and chat repair pressure, then routes bounded
+        ``curiosity_candidate`` signals through ``FrontierCuriosityEvaluator``
+        without operator_requested. Output is decision/plan only — no expansion,
+        landing, or auto-apply. Default-off; kill switch beats enable.
+        """
+        s = self._settings
+        if not s.enable_endogenous_curiosity or s.endogenous_curiosity_kill_switch:
+            return
+
+        from orion.substrate.endogenous_curiosity import (
+            EndogenousCuriosityConfig,
+            endogenous_curiosity_candidates,
+        )
+
+        config = EndogenousCuriosityConfig(
+            enabled=True,
+            kill_switch=False,
+            budget=max(1, int(s.endogenous_curiosity_budget)),
+        )
+
+        nodes: list[Any] = []
+        store = self._get_substrate_graph_store(
+            log_label="substrate_endogenous_curiosity_store_init_failed"
+        )
+        if store is not None:
+            try:
+                nodes = list(store.snapshot().nodes.values())
+            except Exception:
+                logger.exception("substrate_endogenous_curiosity_snapshot_failed")
+
+        attention_frame = None
+        try:
+            broadcast = self._store.load_attention_broadcast()
+            if broadcast is not None:
+                attention_frame = broadcast.frame
+        except Exception:
+            logger.exception("substrate_endogenous_curiosity_broadcast_load_failed")
+
+        seeds = endogenous_curiosity_candidates(
+            nodes=nodes,
+            repair_appraisal=self._repair_appraisal_from_chat(),
+            attention_frame=attention_frame,
+            config=config,
+        )
+        if not seeds:
+            logger.info("substrate_endogenous_curiosity_tick_completed seeds=0 outcome=noop")
+            return
+
+        if store is None:
+            logger.info(
+                "substrate_endogenous_curiosity_tick_completed seeds=%d outcome=skipped_no_store",
+                len(seeds),
+            )
+            return
+
+        try:
+            from orion.substrate.frontier_curiosity import FrontierCuriosityEvaluator
+
+            cognition_report, perception_brief = self._neutral_frontier_metacog_inputs()
+            evaluator = FrontierCuriosityEvaluator(store=store)
+            result = evaluator.evaluate(
+                anchor_scope="orion",
+                subject_ref="entity:orion",
+                cognition_report=cognition_report,
+                perception_brief=perception_brief,
+                operator_requested=False,
+                endogenous_signals=seeds,
+            )
+            endogenous_count = sum(
+                1 for sig in result.signals if "endogenous_seed" in (sig.notes or [])
+            )
+            logger.info(
+                "substrate_endogenous_curiosity_tick_completed seeds=%d outcome=%s "
+                "task=%s endogenous_signals=%d",
+                len(seeds),
+                result.decision.outcome,
+                result.decision.chosen_task_type,
+                endogenous_count,
+            )
+        except Exception:
+            logger.exception("substrate_endogenous_curiosity_tick_failed")
+
+    async def _endogenous_curiosity_loop(self) -> None:
+        interval = float(self._settings.endogenous_curiosity_tick_interval_sec)
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._endogenous_curiosity_tick)
+            except Exception:
+                logger.exception("substrate_endogenous_curiosity_loop_failed")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except asyncio.TimeoutError:

@@ -55,6 +55,16 @@ class Settings(BaseSettings):
     attention_broadcast_min_salience: float = Field(
         0.2, alias="ORION_ATTENTION_BROADCAST_MIN_SALIENCE"
     )
+    enable_endogenous_curiosity: bool = Field(
+        False, alias="ORION_ENDOGENOUS_CURIOSITY_ENABLED"
+    )
+    endogenous_curiosity_kill_switch: bool = Field(
+        False, alias="ORION_ENDOGENOUS_CURIOSITY_KILL_SWITCH"
+    )
+    endogenous_curiosity_budget: int = Field(3, alias="ORION_ENDOGENOUS_CURIOSITY_BUDGET")
+    endogenous_curiosity_tick_interval_sec: float = Field(
+        60.0, alias="ORION_ENDOGENOUS_CURIOSITY_TICK_INTERVAL_SEC"
+    )
     biometrics_grammar_batch_limit: int = Field(50, alias="BIOMETRICS_GRAMMAR_BATCH_LIMIT")
     execution_grammar_batch_limit: int = Field(100, alias="EXECUTION_GRAMMAR_BATCH_LIMIT")
     transport_grammar_batch_limit: int = Field(500, alias="TRANSPORT_GRAMMAR_BATCH_LIMIT")

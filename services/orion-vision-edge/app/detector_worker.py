@@ -19,8 +19,6 @@ from .activity import ActivityRateLimiter, labels_from_detections, publish_activ
 from .context import settings, bus, detectors
 from .utils import draw_boxes
 
-_activity_limiter = ActivityRateLimiter(min_interval_s=settings.EDGE_ACTIVITY_MIN_INTERVAL_S)
-
 logger = logging.getLogger("orion-vision-edge.detector")
 
 VISION_EDGE_ARTIFACT_KIND = "vision.edge.artifact.v1"
@@ -148,6 +146,7 @@ def run_detectors_on_frame(frame: np.ndarray) -> Tuple[np.ndarray, List[VisionOb
     return annotated, detections
 
 async def run_detector_loop():
+    activity_limiter = ActivityRateLimiter(min_interval_s=settings.EDGE_ACTIVITY_MIN_INTERVAL_S)
     logger.info(f"[DETECTOR] Starting detector loop. Subscribing to {settings.CHANNEL_VISION_FRAMES}")
     
     if not bus.enabled:
@@ -256,7 +255,7 @@ async def run_detector_loop():
                     frame_ts=pointer.frame_ts,
                     image_path=pointer.image_path,
                     artifact_id=artifact_id,
-                    limiter=_activity_limiter,
+                    limiter=activity_limiter,
                     parent_env=env,
                 )
 

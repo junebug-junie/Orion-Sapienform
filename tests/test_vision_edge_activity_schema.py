@@ -1,4 +1,4 @@
-from orion.schemas.registry import SCHEMA_REGISTRY
+from orion.schemas.registry import SCHEMA_REGISTRY, resolve
 from orion.schemas.vision import VisionEdgeActivityPayload
 
 
@@ -20,4 +20,7 @@ def test_vision_edge_activity_payload_roundtrip() -> None:
 
 def test_registry_has_edge_activity_kind() -> None:
     assert "VisionEdgeActivityPayload" in SCHEMA_REGISTRY
-    assert SCHEMA_REGISTRY["VisionEdgeActivityPayload"].kind == "vision.edge.activity.v1"
+    reg = SCHEMA_REGISTRY["VisionEdgeActivityPayload"]
+    assert reg.kind == "vision.edge.activity.v1"
+    assert reg.model is VisionEdgeActivityPayload
+    assert resolve("VisionEdgeActivityPayload") is VisionEdgeActivityPayload

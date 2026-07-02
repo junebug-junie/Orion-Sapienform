@@ -222,8 +222,8 @@ Add explicit rules to the existing prompt:
 
 ### 8.3 Python choke point — `enforce_evidence_grounding()`
 
-**File:** `services/orion-vision-council/app/interpretation.py`  
-**Call site:** after LLM parse/salvage, before `project_interpretation_to_events()`.
+**File:** `services/orion-vision-council/app/evidence_grounding.py`  
+**Call site:** `CouncilService._finalize_interpretation()` in `main.py` — after LLM parse/salvage, before `project_interpretation_to_events()` (intake and RPC paths).
 
 | Rule | Action |
 |------|--------|

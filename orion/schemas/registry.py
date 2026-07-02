@@ -1130,6 +1130,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
 
 }
 
+# Incremental kind lookup for new schemas; runtime validation still uses resolve() / _REGISTRY.
 SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "VisionEdgeActivityPayload": SchemaRegistration(
         model=VisionEdgeActivityPayload,

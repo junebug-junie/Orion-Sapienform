@@ -13,6 +13,13 @@ def test_sanitize_rejects_youtube_slop() -> None:
     assert reason == "stoplist_ratio"
 
 
+def test_sanitize_rejects_prompt_echo() -> None:
+    text, ok, reason = sanitize_caption("describe this image. youtube")
+    assert ok is False
+    assert text is None
+    assert reason == "prompt_echo"
+
+
 def test_sanitize_accepts_plain_scene() -> None:
     text, ok, reason = sanitize_caption("A desk with two monitors and an open door.")
     assert ok is True

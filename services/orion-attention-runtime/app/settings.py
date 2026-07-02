@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     )
     attention_poll_interval_sec: float = Field(2.0, alias="ATTENTION_POLL_INTERVAL_SEC")
     enable_attention_runtime: bool = Field(True, alias="ENABLE_ATTENTION_RUNTIME")
+    attention_frame_retention_hours: float = Field(72.0, alias="ATTENTION_FRAME_RETENTION_HOURS")
+    attention_frame_prune_interval_sec: float = Field(3600.0, alias="ATTENTION_FRAME_PRUNE_INTERVAL_SEC")
     enable_transport_attention_visibility: bool = Field(
         False,
         alias="ENABLE_TRANSPORT_ATTENTION_VISIBILITY",

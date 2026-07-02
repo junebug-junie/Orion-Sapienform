@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from psycopg2.extras import Json
 from sqlalchemy import create_engine, text
@@ -9,6 +9,23 @@ from sqlalchemy.engine import Engine
 
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
+
+# Batched, guard-railed prune: never deletes the newest frame (by generated_at,
+# matching load_latest_attention_frame's ordering).
+PRUNE_ATTENTION_FRAMES_SQL = """
+DELETE FROM substrate_attention_frames
+WHERE ctid IN (
+    SELECT ctid
+    FROM substrate_attention_frames
+    WHERE created_at < :cutoff
+      AND frame_id <> (
+          SELECT frame_id FROM substrate_attention_frames
+          ORDER BY generated_at DESC LIMIT 1
+      )
+    ORDER BY created_at ASC
+    LIMIT :batch_size
+)
+"""
 
 
 class AttentionRuntimeStore:
@@ -129,3 +146,20 @@ class AttentionRuntimeStore:
                     "created_at": now,
                 },
             )
+
+    def prune_attention_frames(self, *, retention_hours: float, batch_size: int = 5000) -> int:
+        if retention_hours <= 0:
+            return 0
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=retention_hours)
+        total_deleted = 0
+        while True:
+            with self._engine.begin() as conn:
+                result = conn.execute(
+                    text(PRUNE_ATTENTION_FRAMES_SQL),
+                    {"cutoff": cutoff, "batch_size": batch_size},
+                )
+            deleted = result.rowcount or 0
+            total_deleted += deleted
+            if deleted < batch_size:
+                break
+        return total_deleted

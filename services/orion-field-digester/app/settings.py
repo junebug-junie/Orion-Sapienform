@@ -23,6 +23,8 @@ class Settings(BaseSettings):
         alias="ENABLE_TRANSPORT_FIELD_DIGESTION",
     )
     enable_idle_tick: bool = Field(False, alias="FIELD_DIGESTER_IDLE_TICK_ENABLED")
+    field_state_retention_hours: float = Field(72.0, alias="FIELD_STATE_RETENTION_HOURS")
+    field_state_prune_interval_sec: float = Field(3600.0, alias="FIELD_STATE_PRUNE_INTERVAL_SEC")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
 

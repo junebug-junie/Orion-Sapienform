@@ -65,6 +65,9 @@ def test_should_run_metacog_uncertainty_probe_respects_settings(monkeypatch):
     monkeypatch.setattr(executor_module.settings, "cortex_metacog_return_logprobs", False)
     assert executor_module._should_run_metacog_uncertainty_probe() is False
     monkeypatch.setattr(executor_module.settings, "cortex_metacog_return_logprobs", True)
+    monkeypatch.setattr(executor_module.settings, "cortex_metacog_logprob_probe_mode", "")
+    assert executor_module._should_run_metacog_uncertainty_probe() is False
+    monkeypatch.setattr(executor_module.settings, "cortex_metacog_logprob_probe_mode", "native_completion")
     monkeypatch.setattr(executor_module.settings, "cortex_metacog_uncertainty_probe_enabled", False)
     assert executor_module._should_run_metacog_uncertainty_probe() is False
     monkeypatch.setattr(executor_module.settings, "cortex_metacog_uncertainty_probe_enabled", True)

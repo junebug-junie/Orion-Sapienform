@@ -254,6 +254,71 @@ def test_enrich_trims_biometrics_before_ctx_overflow_fallback(monkeypatch):
     assert calls == ["enrich"]
 
 
+def test_enrich_ctx_overflow_after_biometrics_trim(monkeypatch):
+    executor_module = _load_executor_module()
+    calls: list[str] = []
+
+    class FakeLLMClient:
+        def __init__(self, bus):
+            self.bus = bus
+
+        async def chat(self, **kwargs):
+            calls.append("enrich")
+            return {}
+
+    monkeypatch.setattr(executor_module, "LLMGatewayClient", FakeLLMClient)
+    monkeypatch.setattr(executor_module.settings, "cortex_metacog_enrich_prompt_max_chars", 50000)
+    monkeypatch.setattr(executor_module.settings, "cortex_metacog_enrich_worker_ctx_char_budget", 1000)
+
+    draft_entry = CollapseMirrorEntryV2(
+        event_id="evt-overflow",
+        id="evt-overflow",
+        trigger="dense",
+        observer="orion",
+        observer_state=["zen"],
+        type="flow",
+        emergent_entity="Test",
+        summary="Test summary",
+        mantra="Test mantra",
+        field_resonance="Test resonance",
+        resonance_signature="Test sig",
+        source_service="metacog",
+    ).model_dump(mode="json")
+    draft_entry["state_snapshot"] = {"telemetry": {"metacog_draft_mode": "llm"}}
+
+    template = _load_template("log_orion_metacognition_enrich.j2")
+    ctx = _draft_ctx(spark_blob="{}")
+    ctx["biometrics_json"] = json.dumps({"hrv": "x" * 5000})
+    ctx["collapse_entry"] = draft_entry
+    ctx["collapse_json"] = json.dumps(draft_entry)
+
+    step = ExecutionStep(
+        verb_name="log_orion_metacognition",
+        step_name="enrich_entry",
+        order=1,
+        services=["MetacogEnrichService"],
+        prompt_template=template,
+    )
+    source = ServiceRef(name="test", node="test", version="1.0")
+
+    result = asyncio.run(
+        executor_module.call_step_services(
+            bus=object(),
+            source=source,
+            step=step,
+            ctx=ctx,
+            correlation_id="corr-enrich-overflow",
+        )
+    )
+
+    assert result.status == "success"
+    assert ctx["biometrics_json"] == "{}"
+    assert calls == []
+    enrich_result = result.result["MetacogEnrichService"]
+    assert enrich_result["ok"] is True
+    assert enrich_result["fallback_reason"] == "prompt_context_overflow"
+
+
 def test_firebreak_skip_includes_fallback_reason_and_diagnostics():
     executor_module = _load_executor_module()
     mock_bus = MagicMock()

@@ -820,7 +820,17 @@ def _metacog_uncertainty_probe_messages(patch: MetacogDraftTextPatchV1) -> List[
 def _should_run_metacog_uncertainty_probe() -> bool:
     if not getattr(settings, "cortex_metacog_return_logprobs", False):
         return False
-    return bool(getattr(settings, "cortex_metacog_uncertainty_probe_enabled", True))
+    if not bool(getattr(settings, "cortex_metacog_uncertainty_probe_enabled", True)):
+        return False
+    probe_mode = str(getattr(settings, "cortex_metacog_logprob_probe_mode", "") or "").strip().lower()
+    if probe_mode != "native_completion":
+        if probe_mode:
+            logger.warning(
+                "metacog_uncertainty_probe_skipped unsupported_probe_mode=%s (only native_completion)",
+                probe_mode,
+            )
+        return False
+    return True
 
 
 def _fallback_metacog_draft(ctx: Dict[str, Any]) -> CollapseMirrorEntryV2:
@@ -2838,46 +2848,42 @@ async def call_step_services(
                             and not patch_error
                             and _should_run_metacog_uncertainty_probe()
                         ):
-                            probe_mode = str(
-                                getattr(settings, "cortex_metacog_logprob_probe_mode", "") or ""
-                            ).strip()
-                            if probe_mode == "native_completion":
-                                probe_options: Dict[str, Any] = {
-                                    "temperature": 0.8,
-                                    "max_tokens": 128,
-                                    "return_logprobs": True,
-                                    "logprobs_top_k": 5,
-                                    "logprob_summary_only": True,
-                                    "logprob_probe_mode": "native_completion",
-                                    "stream": False,
-                                    **_md_lane,
-                                }
-                                probe_req = ChatRequestPayload(
-                                    model=req_model,
-                                    profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
-                                    messages=_metacog_uncertainty_probe_messages(patch_model),
-                                    raw_user_text="metacog_uncertainty_probe",
-                                    route="metacog",
-                                    options=probe_options,
+                            probe_options: Dict[str, Any] = {
+                                "temperature": 0.8,
+                                "max_tokens": 128,
+                                "return_logprobs": True,
+                                "logprobs_top_k": 5,
+                                "logprob_summary_only": True,
+                                "logprob_probe_mode": "native_completion",
+                                "stream": False,
+                                **_md_lane,
+                            }
+                            probe_req = ChatRequestPayload(
+                                model=req_model,
+                                profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
+                                messages=_metacog_uncertainty_probe_messages(patch_model),
+                                raw_user_text="metacog_uncertainty_probe",
+                                route="metacog",
+                                options=probe_options,
+                            )
+                            try:
+                                probe_res = await llm_client.chat(
+                                    source=source,
+                                    req=probe_req,
+                                    correlation_id=correlation_id,
+                                    reply_to=reply_channel,
+                                    timeout_sec=effective_timeout,
                                 )
-                                try:
-                                    probe_res = await llm_client.chat(
-                                        source=source,
-                                        req=probe_req,
-                                        correlation_id=correlation_id,
-                                        reply_to=reply_channel,
-                                        timeout_sec=effective_timeout,
-                                    )
-                                    if hasattr(probe_res, "meta") and isinstance(probe_res.meta, dict):
-                                        maybe_unc = probe_res.meta.get("llm_uncertainty")
-                                        if isinstance(maybe_unc, dict):
-                                            probe_unc = maybe_unc
-                                except Exception as probe_exc:
-                                    logger.warning(
-                                        "metacog_uncertainty_probe_failed corr_id=%s error=%s",
-                                        correlation_id,
-                                        probe_exc,
-                                    )
+                                if hasattr(probe_res, "meta") and isinstance(probe_res.meta, dict):
+                                    maybe_unc = probe_res.meta.get("llm_uncertainty")
+                                    if isinstance(maybe_unc, dict):
+                                        probe_unc = maybe_unc
+                            except Exception as probe_exc:
+                                logger.warning(
+                                    "metacog_uncertainty_probe_failed corr_id=%s error=%s",
+                                    correlation_id,
+                                    probe_exc,
+                                )
                     else:
                         finish_reason = None
 

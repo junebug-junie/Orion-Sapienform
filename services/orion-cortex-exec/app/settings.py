@@ -90,7 +90,7 @@ class Settings(BaseSettings):
     cortex_metacog_logprob_probe_mode: str = Field(
         default="",
         alias="CORTEX_METACOG_LOGPROB_PROBE_MODE",
-        description="When CORTEX_METACOG_RETURN_LOGPROBS: empty=OpenAI chat logprobs; native_completion=aligned llama.cpp /completion.",
+        description="Pass-2 uncertainty probe mode. Only native_completion is supported (llama.cpp /completion). Other values skip pass 2.",
     )
     cortex_metacog_uncertainty_probe_enabled: bool = Field(
         True,

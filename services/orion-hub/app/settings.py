@@ -99,8 +99,16 @@ class Settings(BaseSettings):
         alias="HUB_CONTEXT_EXEC_API_URL",
     )
     HUB_CONTEXT_EXEC_TIMEOUT_SEC: float = Field(
-        default=120.0,
+        default=600.0,
         alias="HUB_CONTEXT_EXEC_TIMEOUT_SEC",
+    )
+    HUB_AGENT_REPL_ENABLED: bool = Field(
+        default=True,
+        alias="HUB_AGENT_REPL_ENABLED",
+    )
+    HUB_CONTEXT_EXEC_EVENT_CHANNEL: str = Field(
+        default="orion:context_exec:event",
+        alias="HUB_CONTEXT_EXEC_EVENT_CHANNEL",
     )
     CONTEXT_EXEC_INVESTIGATION_V2_ENABLED: bool = Field(
         default=False,

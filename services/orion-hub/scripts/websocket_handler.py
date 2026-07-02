@@ -500,6 +500,7 @@ async def websocket_endpoint(websocket: WebSocket):
     tts_client = scripts.main.tts_client
     biometrics_cache = scripts.main.biometrics_cache
     notification_cache = scripts.main.notification_cache
+    agent_step_relay = scripts.main.agent_step_relay
     presence_state = scripts.main.presence_state
     presence_context_store = getattr(scripts.main, "presence_context_store", None)
 
@@ -963,12 +964,37 @@ async def websocket_endpoint(websocket: WebSocket):
                 logger.info("voice.chat.start corr=%s session_id=%s", trace_id, session_id)
                 used_context_exec_lane = should_use_context_exec_agent_lane(chat_req)
                 if used_context_exec_lane:
-                    ctx_out = await run_hub_agent_via_context_exec(
-                        req=chat_req,
-                        prompt=transcript or prompt_with_ctx,
-                        correlation_id=trace_id,
-                        route_debug=route_debug if isinstance(route_debug, dict) else {},
-                    )
+                    step_queue: asyncio.Queue = asyncio.Queue(maxsize=256)
+                    relay = agent_step_relay
+                    drain_task = None
+                    if relay is not None:
+                        relay.register_queue(trace_id, step_queue)
+
+                        async def _drain_steps() -> None:
+                            try:
+                                while True:
+                                    item = await step_queue.get()
+                                    await _safe_ws_send_json(websocket, item)
+                            except asyncio.CancelledError:
+                                pass
+
+                        drain_task = asyncio.create_task(_drain_steps(), name=f"agent-steps-{trace_id}")
+                    try:
+                        ctx_out = await run_hub_agent_via_context_exec(
+                            req=chat_req,
+                            prompt=transcript or prompt_with_ctx,
+                            correlation_id=trace_id,
+                            route_debug=route_debug if isinstance(route_debug, dict) else {},
+                        )
+                    finally:
+                        if drain_task is not None:
+                            drain_task.cancel()
+                            try:
+                                await drain_task
+                            except asyncio.CancelledError:
+                                pass
+                        if relay is not None:
+                            relay.unregister_queue(trace_id, step_queue)
                     if ctx_out.get("error"):
                         await websocket.send_json(
                             await _with_biometrics(

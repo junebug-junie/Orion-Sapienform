@@ -137,7 +137,8 @@ def test_should_use_context_exec_agent_lane_when_enabled() -> None:
 
 def test_build_context_exec_request_sets_llm_profile() -> None:
     req = CortexChatRequest(prompt="trace autopsy corr abc", mode="agent", trace_id="corr-1")
-    body = build_context_exec_request(req=req, prompt=req.prompt, llm_profile="chat")
+    with patch("scripts.context_exec_agent_bridge.agent_repl_enabled", return_value=False):
+        body = build_context_exec_request(req=req, prompt=req.prompt, llm_profile="chat")
     assert body.llm_profile == "chat"
     assert body.mode == "trace_autopsy"
 

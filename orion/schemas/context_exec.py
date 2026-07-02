@@ -24,6 +24,7 @@ ContextExecMode = Literal[
     "memory_contradiction_review",
     "general_investigation",
     "investigation_v2",
+    "agent_repl",
 ]
 
 

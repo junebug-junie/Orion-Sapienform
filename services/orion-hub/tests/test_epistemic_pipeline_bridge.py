@@ -49,9 +49,10 @@ def test_v2_request_threads_answer_contract() -> None:
     build_context_exec_request, _, _, CortexChatRequest = _hub_imports()
     prompt = "why do you give shallow responses?"
     meta = {"answer_contract_draft": {"request_kind": "conceptual", "asks_for_explanation": True}}
-    with patch("scripts.context_exec_agent_bridge.investigation_v2_enabled", return_value=True):
-        req = CortexChatRequest(prompt=prompt, mode="agent", trace_id="corr-ac", metadata=meta)
-        body = build_context_exec_request(req=req, prompt=prompt, llm_profile="agent")
+    with patch("scripts.context_exec_agent_bridge.agent_repl_enabled", return_value=False):
+        with patch("scripts.context_exec_agent_bridge.investigation_v2_enabled", return_value=True):
+            req = CortexChatRequest(prompt=prompt, mode="agent", trace_id="corr-ac", metadata=meta)
+            body = build_context_exec_request(req=req, prompt=prompt, llm_profile="agent")
     assert body.answer_contract is not None
     assert body.answer_contract.request_kind == "conceptual"
     assert body.answer_contract.requires_repo_grounding is False

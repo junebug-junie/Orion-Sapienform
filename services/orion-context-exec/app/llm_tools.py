@@ -39,6 +39,8 @@ async def llm_chat_route(
     user_id: str | None = None,
     context: Any = None,
     schema: str | None = None,
+    messages: list[LLMMessage] | None = None,
+    stop: list[str] | None = None,
 ) -> dict[str, Any]:
     """Invoke LLM gateway bus RPC with an explicit trusted route id."""
     route_key = str(route or "").strip().lower()
@@ -52,19 +54,22 @@ async def llm_chat_route(
 
     reply_channel = f"orion:exec:result:LLMGatewayService:{uuid.uuid4().hex}"
     corr = _corr_uuid(correlation_id)
-    messages = [LLMMessage(role="user", content=prompt)]
+    chat_messages = messages if messages else [LLMMessage(role="user", content=prompt)]
+    options: dict[str, Any] = {}
+    if schema:
+        options["schema"] = schema
+    if stop:
+        options["stop"] = list(stop)
+    if context is not None:
+        options["context"] = context
     req = ChatRequestPayload(
-        messages=messages,
+        messages=chat_messages,
         route=route_key,
         raw_user_text=prompt,
         session_id=session_id,
         user_id=user_id,
-        options={"schema": schema} if schema else {},
+        options=options,
     )
-    if context is not None:
-        req_options = dict(req.options)
-        req_options["context"] = context
-        req = req.model_copy(update={"options": req_options})
 
     env = BaseEnvelope(
         kind="llm.chat.request",

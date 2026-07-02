@@ -73,10 +73,7 @@ def _coerce(raw: Any) -> list[FrontierInvocationSignalV1] | None:
                 return None
 
         # Now raw should be a list
-        if not isinstance(raw, list):
-            return None
-
-        if len(raw) == 0:
+        if not isinstance(raw, list) or len(raw) == 0:
             return None
 
         # Convert each item to FrontierInvocationSignalV1
@@ -112,7 +109,7 @@ def map_curiosity_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV
     raw_signals = ctx.get("curiosity_signals")
 
     signals = _coerce(raw_signals)
-    if signals is None or len(signals) == 0:
+    if not signals:
         return None
 
     # Sort by signal_strength descending, take top 3
@@ -120,28 +117,30 @@ def map_curiosity_ctx_to_substrate(ctx: dict[str, Any]) -> SubstrateGraphRecordV
         :_TOP_SIGNALS
     ]
 
-    if not sorted_signals:
-        return None
-
-    # Extract focal node refs (up to 2 per signal, 6 total cap)
+    # Single pass: extract focal refs, evidence summaries, confidences, and signal types
     focal_node_refs: list[str] = []
+    evidence_summaries: list[str] = []
+    confidences: list[float] = []
+    signal_types: list[str] = []
+
     for signal in sorted_signals:
+        # Focal refs with cap
         refs = signal.focal_node_refs[: _FOCAL_REFS_PER_SIGNAL]
         focal_node_refs.extend(refs)
         if len(focal_node_refs) >= _TOTAL_FOCAL_REFS_CAP:
             focal_node_refs = focal_node_refs[:_TOTAL_FOCAL_REFS_CAP]
-            break
 
-    # Extract evidence summaries
-    evidence_summaries = [s.evidence_summary for s in sorted_signals if s.evidence_summary]
+        # Evidence summary
+        if signal.evidence_summary:
+            evidence_summaries.append(signal.evidence_summary)
+
+        # Confidence and signal type
+        confidences.append(signal.confidence)
+        signal_types.append(signal.signal_type)
 
     # Calculate average confidence
-    confidences = [s.confidence for s in sorted_signals]
     avg_confidence = sum(confidences) / len(confidences) if confidences else 0.5
     avg_confidence = max(0.0, min(1.0, avg_confidence))
-
-    # Extract signal types
-    signal_types = [s.signal_type for s in sorted_signals]
 
     # Emit the node
     node = ConceptNodeV1(

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -86,3 +86,6 @@ class SelfStateV1(BaseModel):
     ] | None = None
     attention_dwell_ticks: int = 0
     attention_node_count: int = 0
+
+    # Hub presence: Orion's connection liveness and chat rhythm
+    hub_presence: dict[str, Any] | None = None

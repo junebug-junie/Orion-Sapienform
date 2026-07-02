@@ -48,6 +48,7 @@ class SelfStateRuntimeWorker:
 
     async def start(self) -> None:
         asyncio.create_task(self._poll_loop(), name="self-state-runtime-poll")
+        asyncio.create_task(self._prune_loop(), name="self-state-runtime-prune")
 
     async def stop(self) -> None:
         self._stop.set()
@@ -64,6 +65,34 @@ class SelfStateRuntimeWorker:
                 await asyncio.wait_for(
                     self._stop.wait(),
                     timeout=float(self._settings.self_state_poll_interval_sec),
+                )
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+    def _prune_tick(self) -> None:
+        retention = float(self._settings.self_state_retention_hours)
+        if retention <= 0:
+            return
+        deleted = self._store.prune_history(retention_hours=retention)
+        if deleted:
+            logger.info(
+                "self_state_history_pruned deleted=%d retention_hours=%.1f",
+                deleted,
+                retention,
+            )
+
+    async def _prune_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(self._prune_tick)
+            except Exception:
+                logger.exception("self_state_prune_failed")
+            try:
+                await asyncio.wait_for(
+                    self._stop.wait(),
+                    timeout=float(self._settings.self_state_prune_interval_sec),
                 )
             except asyncio.TimeoutError:
                 continue

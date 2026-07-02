@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from psycopg2.extras import Json
 from sqlalchemy import create_engine, text
@@ -12,6 +12,33 @@ from orion.schemas.field_state import FieldStateV1
 from orion.schemas.identity_snapshot import IdentitySnapshotV1
 from orion.schemas.self_state import SelfStateV1
 from orion.schemas.self_state_prediction import SelfStatePredictionV1
+
+
+def _prune_sql(table: str, pk: str) -> str:
+    # Batched, guard-railed prune: never deletes the newest row (by
+    # generated_at, matching the latest-row readers' ordering).
+    return f"""
+DELETE FROM {table}
+WHERE ctid IN (
+    SELECT ctid
+    FROM {table}
+    WHERE created_at < :cutoff
+      AND {pk} <> (
+          SELECT {pk} FROM {table}
+          ORDER BY generated_at DESC LIMIT 1
+      )
+    ORDER BY created_at ASC
+    LIMIT :batch_size
+)
+"""
+
+
+# Trusted module constants (NOT user input) — table/pk names are literals.
+PRUNE_HISTORY_SQL: dict[str, str] = {
+    "substrate_self_state": _prune_sql("substrate_self_state", "self_state_id"),
+    "self_state_predictions": _prune_sql("self_state_predictions", "prediction_id"),
+    "identity_snapshots": _prune_sql("identity_snapshots", "snapshot_id"),
+}
 
 
 class SelfStateRuntimeStore:
@@ -292,3 +319,20 @@ class SelfStateRuntimeStore:
         if isinstance(payload, str):
             payload = json.loads(payload)
         return SelfStatePredictionV1.model_validate(payload)
+
+    def prune_history(self, *, retention_hours: float, batch_size: int = 5000) -> int:
+        if retention_hours <= 0:
+            return 0
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=retention_hours)
+        total_deleted = 0
+        for sql in PRUNE_HISTORY_SQL.values():
+            while True:
+                with self._engine.begin() as conn:
+                    result = conn.execute(
+                        text(sql), {"cutoff": cutoff, "batch_size": batch_size}
+                    )
+                deleted = result.rowcount or 0
+                total_deleted += deleted
+                if deleted < batch_size:
+                    break
+        return total_deleted

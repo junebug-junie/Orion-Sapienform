@@ -24,6 +24,8 @@ class Settings(BaseSettings):
         300.0,
         alias="SELF_STATE_MAX_PREVIOUS_AGE_SEC",
     )
+    self_state_retention_hours: float = Field(72.0, alias="SELF_STATE_RETENTION_HOURS")
+    self_state_prune_interval_sec: float = Field(3600.0, alias="SELF_STATE_PRUNE_INTERVAL_SEC")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
     bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")

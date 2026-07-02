@@ -838,6 +838,7 @@ class ContextExecRunner:
         organ_status = getattr(namespace, "_organ_status", {}) or {}
 
         loop = asyncio.get_running_loop()
+        step_futures: list[asyncio.Future] = []
 
         def _step_callback(memory_step: Any) -> None:
             # Runs in the executor thread while the main loop awaits run_in_executor.
@@ -861,7 +862,7 @@ class ContextExecRunner:
                     duration_ms=dur_ms,
                 )
                 verb_trace.append(step)
-                asyncio.run_coroutine_threadsafe(
+                fut = asyncio.run_coroutine_threadsafe(
                     events.agent_step(
                         run_id=run_id,
                         mode=request.mode,
@@ -875,6 +876,7 @@ class ContextExecRunner:
                     ),
                     loop,
                 )
+                step_futures.append(fut)
             except Exception:  # never break the loop on telemetry failure
                 logger.warning("agent_repl step_callback failed run_id=%s", run_id, exc_info=True)
 
@@ -882,6 +884,7 @@ class ContextExecRunner:
 
         status = "ok"
         result: dict[str, Any]
+        budget_sec = min(request.budget.max_seconds, settings.context_exec_max_seconds)
         try:
             result = await asyncio.wait_for(
                 engine.run(
@@ -892,12 +895,18 @@ class ContextExecRunner:
                     max_steps=settings.context_exec_agent_repl_max_steps,
                     per_step_timeout=settings.context_exec_llm_timeout_sec,
                 ),
-                timeout=settings.context_exec_max_seconds,
+                timeout=budget_sec,
             )
         except asyncio.TimeoutError:
             status = "timeout"
             failure_modes.append("timeout")
             result = {"error": "agent reasoning loop exceeded time budget", "engine": "smolcode"}
+
+        if step_futures:
+            await asyncio.gather(
+                *(asyncio.wrap_future(f) for f in step_futures),
+                return_exceptions=True,
+            )
 
         if isinstance(result, dict) and result.get("error") and status == "ok":
             status = "error"

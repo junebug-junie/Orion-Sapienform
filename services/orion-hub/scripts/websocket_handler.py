@@ -967,6 +967,11 @@ async def websocket_endpoint(websocket: WebSocket):
                     step_queue: asyncio.Queue = asyncio.Queue(maxsize=256)
                     relay = agent_step_relay
                     drain_task = None
+                    if relay is None:
+                        logger.warning(
+                            "agent_step_relay unavailable; live step streaming disabled corr=%s",
+                            trace_id,
+                        )
                     if relay is not None:
                         relay.register_queue(trace_id, step_queue)
 
@@ -987,6 +992,13 @@ async def websocket_endpoint(websocket: WebSocket):
                             route_debug=route_debug if isinstance(route_debug, dict) else {},
                         )
                     finally:
+                        if relay is not None:
+                            while not step_queue.empty():
+                                try:
+                                    item = step_queue.get_nowait()
+                                except asyncio.QueueEmpty:
+                                    break
+                                await _safe_ws_send_json(websocket, item)
                         if drain_task is not None:
                             drain_task.cancel()
                             try:

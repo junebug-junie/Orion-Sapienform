@@ -73,4 +73,8 @@ class AgentStepRelay:
             try:
                 q.put_nowait(item)
             except asyncio.QueueFull:
+                logger.debug(
+                    "agent_step relay queue full corr=%s; dropping frame",
+                    cid,
+                )
                 continue

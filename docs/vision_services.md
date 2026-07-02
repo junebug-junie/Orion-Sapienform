@@ -2,6 +2,10 @@
 
 This document outlines the architecture and contracts for the Orion Vision subsystem, comprising the Host and downstream workers.
 
+**Per-service READMEs:** `services/orion-vision-edge/`, `orion-vision-frame-router/`, `orion-vision-host/`, `orion-vision-window/`, `orion-vision-council/` (operator checklists and smoke commands).
+
+**Grounded pipeline design:** `docs/plans/vision/2026-07-02-vision-grounded-pipeline-design.md`
+
 ## Architecture
 
 The vision pipeline is a distributed system using the Titanium Contract Stack over Redis PubSub.

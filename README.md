@@ -704,7 +704,11 @@ Orion runs on real machines in a real room. The substrate matters.
 
 | Service | Role |
 |---|---|
+| `orion-vision-edge` | On-device YOLO/motion; publishes activity triggers and slim detection artifacts. |
+| `orion-vision-frame-router` | Baseline vs triggered dispatch to host (caption gating). |
 | `orion-vision-host` | Detection, captioning, image embeddings, retina-style tasks. |
+| `orion-vision-window` | Rolling artifact windows with evidence tiers. |
+| `orion-vision-council` | LLM scene interpretation with evidence grounding. |
 | `orion-whisper-tts` | Hearing and speech path. |
 | `orion-biometrics` | Body-state / biometric telemetry. |
 | `orion-power-guard` | Power safety and guardrails. |
@@ -2330,6 +2334,8 @@ Current and intended surfaces:
 - LEDs and mood/state panels,
 - mobile science-lab robot experiments,
 - wearable shoulder-node experiments.
+
+The vision mesh uses edge YOLO/motion triggers to gate host VLM caption work, evidence-tiered window summaries, and Council grounding so walk-bys produce `person_presence` without caption hallucinations. See [`docs/vision_services.md`](docs/vision_services.md) and service READMEs under `services/orion-vision-*`.
 
 Vision should not be treated as omniscience. It should be noisy, bounded, consent-aware evidence. False positives, lighting shifts, dust, and movement artifacts are expected engineering problems.
 

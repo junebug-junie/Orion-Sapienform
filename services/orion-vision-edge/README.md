@@ -5,7 +5,9 @@ It captures frames, runs lightweight detectors (YOLO, motion, etc.), and publish
 
 It adheres to the "Pointer" architecture:
 1. Capture frame -> Save to shared storage -> Publish `VisionFramePointer`.
-2. Consume pointer -> Run detectors -> Publish `VisionEdgeArtifact`.
+2. Consume pointer -> Run detectors -> Publish rate-limited **activity triggers** and optional slim **edge-detection artifacts** (no VLM caption).
+
+When YOLO or motion fires on `person` / `motion`, the detector publishes compact `VisionEdgeActivityPayload` envelopes on `orion:vision:edge:activity`. The frame router uses these to gate expensive host caption/embed work (baseline vs triggered dispatch).
 
 ---
 
@@ -17,17 +19,20 @@ sequenceDiagram
     participant Capture as CaptureWorker
     participant Detect as DetectorWorker
     participant Bus as Orion Bus (Redis)
+    participant Router as Frame Router
     participant Guard as Security Watcher
 
     Cam->>Capture: Get Frame
     Capture->>Disk: Save Frame (Shared Volume)
-    Capture->>Bus: Publish VisionFramePointer (vision.frames)
+    Capture->>Bus: Publish VisionFramePointer (orion:vision:frames)
 
     Bus->>Detect: Consume VisionFramePointer
     Detect->>Disk: Read Frame
     Detect->>Detect: Run YOLO / Motion
-    Detect->>Bus: Publish VisionEdgeArtifact (vision.artifacts)
+    Detect->>Bus: Publish VisionEdgeActivity (orion:vision:edge:activity)
+    Detect->>Bus: Publish VisionEdgeArtifact (orion:vision:artifacts, optional)
 
+    Bus->>Router: Activity triggers (person/motion TTL)
     Bus->>Guard: Consume VisionEdgeArtifact
 ```
 
@@ -39,8 +44,18 @@ sequenceDiagram
 
 | Env var | Default | Notes |
 |---|---|---|
-| `CHANNEL_VISION_FRAMES` | `vision.frames` | Pointers to captured frames |
-| `CHANNEL_VISION_ARTIFACTS` | `vision.artifacts` | Detection results (VisionEdgeArtifact) |
+| `CHANNEL_VISION_FRAMES` | `orion:vision:frames` | Pointers to captured frames |
+| `CHANNEL_VISION_EDGE_ACTIVITY` | `orion:vision:edge:activity` | Rate-limited person/motion trigger signals (`vision.edge.activity.v1`) |
+| `CHANNEL_VISION_ARTIFACTS` | `orion:vision:artifacts` | Slim detection artifacts when `EDGE_PUBLISH_ARTIFACTS=true` (`task_type=edge_detection`, objects only) |
+
+### Activity & artifacts
+
+| Env var | Default | Notes |
+|---|---|---|
+| `EDGE_ACTIVITY_MIN_INTERVAL_S` | `1.0` | Per `(stream_id, label)` rate limit for activity publish |
+| `EDGE_PUBLISH_ARTIFACTS` | `true` | When true, publish slim `edge_detection` artifacts (no caption) for window evidence |
+
+Activity is published on every frame where YOLO/motion yields trigger labels, independent of `EDGE_PUBLISH_ARTIFACTS`.
 
 ### YOLO Settings
 
@@ -74,6 +89,11 @@ To verify detection:
 
 To verify bus traffic:
 ```bash
-# Tap artifacts
-redis-cli SUBSCRIBE vision.artifacts
+# Activity triggers (person/motion)
+redis-cli -u "$ORION_BUS_URL" SUBSCRIBE orion:vision:edge:activity
+
+# Slim edge artifacts (when EDGE_PUBLISH_ARTIFACTS=true)
+redis-cli -u "$ORION_BUS_URL" SUBSCRIBE orion:vision:artifacts
 ```
+
+Walk-by acceptance: after a person detection, edge logs should show `Found: ['person']` and activity envelopes on `orion:vision:edge:activity`.

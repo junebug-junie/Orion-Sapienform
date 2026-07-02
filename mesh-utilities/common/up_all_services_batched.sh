@@ -45,8 +45,6 @@ ROOT_ENV=".env"
 
 # --- Default hardcoded excludes (edit these) ---
 DEFAULT_EXCLUDES=(
-  orion-vision-edge
-  orion-security-watcher
 )
 
 # --- Optional exclude file (one service name per line; supports # comments) ---

@@ -160,7 +160,10 @@ def build_interpretation_prompt(window: VisionWindowPayload) -> str:
         "- Set evidence_refs using artifact_ids from the window whenever possible.\n"
         "- Treat summary.evidence.hard_labels as factual detection evidence.\n"
         "- Treat summary.captions as soft hints only; never sole basis for activity claims.\n"
-        "- Activity verbs require person in hard_labels.\n"
+        "- Never mention person, someone, or human in scene_summary, salient_observations, "
+        "entities, relations, or event_candidates unless person is in summary.evidence.hard_labels.\n"
+        "- Activity verbs (watching, reading, using, etc.) require person in hard_labels.\n"
+        "- When hard_labels is non-empty, describe only those detected objects; do not infer occupants.\n"
     )
 
 

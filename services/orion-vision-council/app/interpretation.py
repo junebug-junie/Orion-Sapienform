@@ -21,8 +21,6 @@ from orion.schemas.vision import (
     VisionWindowPayload,
 )
 
-from .evidence_grounding import enforce_evidence_grounding
-
 ParseMode = Literal[
     "strict_v2",
     "salvaged_v2",
@@ -121,13 +119,6 @@ def build_interpretation_prompt(window: VisionWindowPayload) -> str:
         "- Treat summary.captions as soft hints only; never sole basis for activity claims.\n"
         "- Activity verbs require person in hard_labels.\n"
     )
-
-
-def apply_evidence_pipeline(
-    interpretation: VisionSceneInterpretationV1,
-    window: VisionWindowPayload,
-) -> tuple[VisionSceneInterpretationV1, list[str]]:
-    return enforce_evidence_grounding(interpretation, window)
 
 
 def _clamp_float(value: Any, default: float = 0.5) -> float:

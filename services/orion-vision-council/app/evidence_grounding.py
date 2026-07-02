@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import uuid
 
 from orion.schemas.vision import (
     VisionEventCandidateV1,
@@ -20,7 +19,7 @@ def _hard_labels(window: VisionWindowPayload) -> set[str]:
     return {str(x).lower() for x in (ev.get("hard_labels") or [])}
 
 
-def _edge_person_hits(window: VisionWindowPayload) -> int:
+def edge_person_hits(window: VisionWindowPayload) -> int:
     ev = (window.summary or {}).get("evidence") or {}
     try:
         return int(ev.get("edge_person_hits") or 0)

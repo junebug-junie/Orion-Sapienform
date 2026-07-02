@@ -75,3 +75,14 @@ class SelfStateV1(BaseModel):
     trajectory_condition: Literal["improving", "degrading", "stable", "unknown"] = "unknown"
     prediction_error_scores: dict[str, float] = Field(default_factory=dict)
     overall_surprise: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    # Attention schema: Orion's current focus quality and type
+    attention_schema_type: Literal[
+        "focused_single",
+        "distributed",
+        "open_loop",
+        "none",
+        "unknown",
+    ] | None = None
+    attention_dwell_ticks: int = 0
+    attention_node_count: int = 0

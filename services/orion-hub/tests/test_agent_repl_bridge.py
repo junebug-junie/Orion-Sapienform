@@ -75,3 +75,12 @@ def test_agent_repl_does_not_use_keyword_mode(monkeypatch):
         llm_profile="agent",
     )
     assert body.mode == "agent_repl"
+
+
+def test_agent_lane_never_builds_investigation_v2(monkeypatch):
+    build_context_exec_request, settings, CortexChatRequest = _hub_imports()
+    # Even if the legacy investigation_v2 flag is on, the agent lane must not use it.
+    monkeypatch.setattr(settings, "HUB_AGENT_REPL_ENABLED", True, raising=False)
+    monkeypatch.setattr(settings, "CONTEXT_EXEC_INVESTIGATION_V2_ENABLED", True, raising=False)
+    body = build_context_exec_request(req=_req(CortexChatRequest, "x"), prompt="anything", llm_profile="agent")
+    assert body.mode == "agent_repl"

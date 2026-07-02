@@ -182,6 +182,8 @@ def build_context_exec_request(
             llm_profile="agent",
         )
     answer_contract = _answer_contract_for_hub_request(req, prompt)
+    # DORMANT / LEGACY: investigation_v2 + keyword inference below are not used on the
+    # agent lane while agent_repl_enabled() is true (default). Kept for rollback only.
     if investigation_v2_enabled():
         # Agent lane: permissions are ceiling; answer_contract gates warranted probes.
         permissions = context_exec_permissions_for_llm_profile("agent")

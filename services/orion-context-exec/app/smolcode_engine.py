@@ -31,12 +31,13 @@ def _to_llm_messages(messages: list) -> tuple[list[LLMMessage], str]:
             raw = msg.content or ""
         elif isinstance(msg, dict):
             role = str(msg.get("role", "user"))
-            raw = msg.get("content", "")
+            raw = msg.get("content") or ""
         else:
             continue
         content = raw if isinstance(raw, str) else " ".join(
             p.get("text", "") if isinstance(p, dict) else str(p) for p in raw
         )
+        role = {"tool-call": "assistant", "tool-response": "tool"}.get(role, role)
         role = role if role in {"system", "user", "assistant", "tool"} else "user"
         out.append(LLMMessage(role=role, content=content))
         if role == "user":

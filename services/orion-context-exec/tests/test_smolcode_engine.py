@@ -181,3 +181,19 @@ async def test_model_preserves_roles_and_forwards_stop():
     sent = kwargs.get("messages")
     assert [m.role for m in sent] == ["system", "user"]
     assert kwargs.get("stop") == ["<end_code>"]
+
+
+def test_to_llm_messages_maps_smolagents_tool_roles():
+    from app.smolcode_engine import _to_llm_messages
+
+    msgs = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "thought + code"},
+        {"role": "tool-call", "content": "repo_grep('x')"},
+        {"role": "tool-response", "content": "Observation: ..."},
+        {"role": "user", "content": None},
+    ]
+    out, last_user = _to_llm_messages(msgs)
+    assert [m.role for m in out] == ["system", "user", "assistant", "assistant", "tool", "user"]
+    assert last_user == ""

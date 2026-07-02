@@ -14,6 +14,7 @@ from PIL import Image
 import torch
 
 from .artifacts import merge_result_inputs
+from .caption_sanitize import CAPTION_PROMPT, sanitize_caption
 from .model_manager import ModelManager
 from .models import VisionResult, VisionTask
 from .profiles import PipelineDef, ProfileDef, VisionProfiles
@@ -303,7 +304,7 @@ class VisionRunner:
             return self._run_detect_grounding_dino(p, request, device)
 
         if p.kind == "caption_frame":
-            return self._run_caption_frame(p, request, device)
+            return self._run_caption_frame(p, request, device, warnings)
 
         # Everything else remains contract-only for now (no fake inference).
         warnings.append(f"kind not implemented yet: {p.kind}")
@@ -518,7 +519,13 @@ class VisionRunner:
     # ------------------------
     # Real Captioning (VLM)
     # ------------------------
-    def _run_caption_frame(self, p: ProfileDef, request: Dict[str, Any], device: str) -> Dict[str, Any]:
+    def _run_caption_frame(
+        self,
+        p: ProfileDef,
+        request: Dict[str, Any],
+        device: str,
+        warnings: List[str],
+    ) -> Dict[str, Any]:
         img = _load_image_from_request(request)
 
         # Use env defaults if not specified in profile
@@ -546,7 +553,7 @@ class VisionRunner:
         # Note: API differences between VLMs are significant.
         # Using a generic approach for "IDEFICS2" or similar.
 
-        text_prompt = "Describe this image."
+        text_prompt = CAPTION_PROMPT
         inputs = processor(images=img, text=text_prompt, return_tensors="pt")
 
         if device.startswith("cuda"):
@@ -570,7 +577,11 @@ class VisionRunner:
         generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
 
         # Clean up prompt from output if needed (model dependent)
-        caption = generated_text.replace(text_prompt, "").strip()
+        cleaned = generated_text.replace(text_prompt, "").strip()
+        caption_text, ok, reason = sanitize_caption(cleaned)
+        if not ok:
+            warnings.append(f"caption_rejected:{reason}")
+            caption_text = ""
 
         return {
             "configured": True,
@@ -579,7 +590,7 @@ class VisionRunner:
             "model_id": model_id,
             "device": device,
             "caption": {
-                "text": caption,
+                "text": caption_text,
                 "confidence": 1.0 # Placeholder
             }
         }

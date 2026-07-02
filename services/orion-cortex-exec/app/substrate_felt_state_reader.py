@@ -76,6 +76,14 @@ _LANES: tuple[LaneSpec, ...] = (
         projection_id=None,
         max_age_sec=1800,
     ),
+    LaneSpec(
+        ctx_key="curiosity_signals",
+        table="substrate_endogenous_curiosity_candidates",
+        payload_col="candidates_json",
+        ts_col="generated_at",
+        projection_id=None,
+        max_age_sec=30,
+    ),
 )
 
 

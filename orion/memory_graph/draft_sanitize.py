@@ -132,6 +132,53 @@ def repair_malformed_urn_uuid_refs(data: Dict[str, Any]) -> Dict[str, Any]:
     remap = _build_malformed_urn_uuid_remap(data)
     if not remap:
         return data
+    return _apply_ref_remap_to_draft(data, remap)
+
+
+def _build_short_local_ref_remap(data: Dict[str, Any]) -> Dict[str, str]:
+    """Map prompt-style short ids (e_user, s1, …) to stable urn:uuid refs."""
+    if not isinstance(data, dict):
+        return {}
+    refs: Set[str] = set()
+    for ent in data.get("entities") or []:
+        if isinstance(ent, dict):
+            _collect_refs(ent.get("id"), refs)
+            _collect_refs(ent.get("generalizes_to"), refs)
+    for sit in data.get("situations") or []:
+        if isinstance(sit, dict):
+            _collect_refs(sit.get("id"), refs)
+            _collect_refs(sit.get("stimulus_entity_id"), refs)
+            _collect_refs(sit.get("about_entity_ids"), refs)
+            _collect_refs(sit.get("target_entity_ids"), refs)
+            _collect_refs(sit.get("participants"), refs)
+    for disp in data.get("dispositions") or []:
+        if isinstance(disp, dict):
+            _collect_refs(disp.get("id"), refs)
+            _collect_refs(disp.get("holder_id"), refs)
+            _collect_refs(disp.get("target_id"), refs)
+    for edge in data.get("edges") or []:
+        if isinstance(edge, dict):
+            _collect_refs(edge.get("s"), refs)
+            _collect_refs(edge.get("o"), refs)
+
+    utterance_ids = {
+        str(uid).strip()
+        for uid in (data.get("utterance_ids") or [])
+        if not is_blank_ref(uid)
+    }
+
+    remap: Dict[str, str] = {}
+    for ref in sorted(refs):
+        if ref in utterance_ids:
+            continue
+        if not is_resolvable_entity_ref(ref):
+            remap[ref] = _stable_repaired_urn_uuid(ref)
+    return remap
+
+
+def _apply_ref_remap_to_draft(data: Dict[str, Any], remap: Dict[str, str]) -> Dict[str, Any]:
+    if not remap:
+        return data
 
     def apply_ref(value: Any) -> Any:
         return _apply_urn_uuid_remap(value, remap, apply_ref)
@@ -150,6 +197,14 @@ def repair_malformed_urn_uuid_refs(data: Dict[str, Any]) -> Dict[str, Any]:
         apply_ref(edge) for edge in (out.get("edges") or []) if isinstance(edge, dict)
     ]
     return out
+
+
+def repair_short_local_refs(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Rewrite compact LLM ids (e_user, s1) so RDF conversion accepts them."""
+    if not isinstance(data, dict):
+        return data
+    remap = _build_short_local_ref_remap(data)
+    return _apply_ref_remap_to_draft(data, remap)
 
 
 def _known_node_ids(data: Dict[str, Any]) -> Tuple[Set[str], Set[str], Set[str]]:
@@ -281,6 +336,7 @@ def sanitize_suggest_draft_dict(
 
     out = normalize_role_grounded_draft_dict(dict(data))
     out = repair_malformed_urn_uuid_refs(out)
+    out = repair_short_local_refs(out)
     entity_ids, situation_ids, utterance_ids = _known_node_ids(out)
     graph_nodes = entity_ids | situation_ids
 

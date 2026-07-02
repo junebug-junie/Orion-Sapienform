@@ -183,6 +183,55 @@ def test_sanitize_repairs_malformed_sequential_urn_uuid_suffixes() -> None:
     assert len(g) > 10
 
 
+def test_sanitize_repairs_short_local_entity_and_situation_ids() -> None:
+    data = {
+        "ontology_version": "orionmem-2026-05",
+        "utterance_ids": ["hub-utterance:u1"],
+        "entities": [
+            {
+                "id": "e_user",
+                "label": "User",
+                "entityKind": "person",
+                "surfaceForms": ["I"],
+            },
+            {
+                "id": "e_orion",
+                "label": "Orion",
+                "entityKind": "person",
+                "surfaceForms": ["Orion"],
+            },
+        ],
+        "situations": [
+            {
+                "id": "s1",
+                "utterance_ids": ["hub-utterance:u1"],
+                "label": "User shares update",
+                "stimulus_entity_id": "e_user",
+                "about_entity_ids": ["e_orion"],
+                "target_entity_ids": [],
+                "affectLabel": "neutral",
+                "timeQualitative": "recent",
+                "participants": [{"entity_id": "e_user", "role": "agent"}],
+            }
+        ],
+        "edges": [
+            {"s": "e_user", "p": "orionmem:inSituation", "o": "s1", "confidence": 0.9}
+        ],
+        "dispositions": [],
+        "utterance_text_by_id": {"hub-utterance:u1": "Hey Orion"},
+    }
+    cleaned = sanitize_suggest_draft_dict(data)
+    assert "e_user" not in json.dumps(cleaned)
+    assert "s1" not in json.dumps(cleaned)
+    for ent in cleaned["entities"]:
+        assert is_resolvable_entity_ref(ent["id"])
+    for sit in cleaned["situations"]:
+        assert is_resolvable_entity_ref(sit["id"])
+    draft = SuggestDraftV1.model_validate(cleaned)
+    g = draft_to_graph(draft)
+    assert len(g) > 10
+
+
 def test_sanitize_replaces_stale_occurred_at_with_today() -> None:
     from datetime import date
 

@@ -285,6 +285,7 @@ def _is_flat_legacy_event_dict(data: dict[str, Any]) -> bool:
     if "event_candidates" in data or "events" in data:
         return False
     v2_markers = {
+        "scene_summary",
         "salient_observations",
         "uncertainties",
         "entities",
@@ -386,6 +387,22 @@ def salvage_interpretation_dict(
         coerced_events = _synthesize_event_candidates_from_observations(
             coerced_salient, window, warnings
         )
+    if not coerced_events and (
+        data.get("event_type") or data.get("narrative") or data.get("type")
+    ):
+        top_level = {
+            "event_type": data.get("event_type") or data.get("type"),
+            "narrative": data.get("narrative") or data.get("observation") or data.get("summary"),
+            "entities": data.get("entities"),
+            "tags": data.get("tags"),
+            "confidence": data.get("confidence"),
+            "salience": data.get("salience"),
+            "evidence_refs": data.get("evidence_refs"),
+        }
+        coerced = _coerce_event_candidate_item(top_level, 0, window, warnings)
+        if coerced is not None:
+            warnings.append("promoted top-level event fields -> event_candidates[0]")
+            coerced_events = [coerced]
     salvaged["event_candidates"] = coerced_events
 
     if not salvaged.get("window_id"):
@@ -529,17 +546,16 @@ def parse_llm_content(content: str, window: VisionWindowPayload) -> Interpretati
             if salvaged is not None:
                 try:
                     interpretation = VisionSceneInterpretationV1.model_validate(salvaged)
-                    if warnings or interpretation.event_candidates or interpretation.salient_observations:
-                        interpretation = _attach_raw_model_output(
-                            interpretation, raw_model_output, data
-                        )
-                        outcome = InterpretationParseOutcome(
-                            interpretation=interpretation,
-                            parse_mode="salvaged_v2",
-                            salvage_warnings=warnings,
-                        )
-                        _log_parse_outcome(outcome, window)
-                        return outcome
+                    interpretation = _attach_raw_model_output(
+                        interpretation, raw_model_output, data
+                    )
+                    outcome = InterpretationParseOutcome(
+                        interpretation=interpretation,
+                        parse_mode="salvaged_v2",
+                        salvage_warnings=warnings,
+                    )
+                    _log_parse_outcome(outcome, window)
+                    return outcome
                 except ValidationError as exc:
                     logger.warning(
                         f"[COUNCIL] interpretation_salvage_failed window_id={window.window_id} "

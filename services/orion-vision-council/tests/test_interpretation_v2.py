@@ -251,6 +251,49 @@ def test_event_candidates_synthesized_from_salient_observations_when_missing():
     assert any("synthesized" in w for w in outcome.salvage_warnings)
 
 
+def test_missing_scene_summary_salvages_not_legacy():
+    window = _window()
+    content = json.dumps(
+        {
+            "window_id": window.window_id,
+            "salient_observations": [],
+            "uncertainties": [],
+            "event_candidates": [],
+        }
+    )
+
+    outcome = _parse(content, window)
+
+    assert outcome.parse_mode == "salvaged_v2"
+    assert outcome.interpretation is not None
+    assert outcome.interpretation.scene_summary == "a person walks"
+    assert outcome.interpretation.event_candidates == []
+
+
+def test_scene_summary_with_top_level_event_fields_salvages():
+    window = _window()
+    content = json.dumps(
+        {
+            "window_id": window.window_id,
+            "scene_summary": "Person visible at door.",
+            "event_type": "presence",
+            "narrative": "Someone stands at the door.",
+            "salient_observations": [],
+            "uncertainties": ["lighting"],
+            "event_candidates": [],
+        }
+    )
+
+    outcome = _parse(content, window)
+
+    assert outcome.parse_mode == "salvaged_v2"
+    assert outcome.interpretation is not None
+    assert outcome.interpretation.scene_summary == "Person visible at door."
+    assert len(outcome.interpretation.event_candidates) == 1
+    assert outcome.interpretation.event_candidates[0].event_type == "presence"
+    assert outcome.interpretation.event_candidates[0].narrative == "Someone stands at the door."
+
+
 def test_flat_event_dict_uses_legacy_not_salvaged_v2():
     window = _window()
     content = json.dumps({"event_type": "solo", "narrative": "solo event"})

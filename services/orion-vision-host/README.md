@@ -18,7 +18,18 @@ GPU-backed vision inference service (FastAPI + Redis bus). Tasks arrive on `CHAN
 4. **VRAM floors:** Tune `VISION_VRAM_RESERVE_MB`, `VISION_VRAM_SOFT_FLOOR_MB`, `VISION_VRAM_HARD_FLOOR_MB` to match co-hosted workloads.
 5. **Concurrency:** `VISION_MAX_INFLIGHT`, `VISION_MAX_INFLIGHT_PER_GPU`, `VISION_QUEUE_WHEN_BUSY`, `VISION_MAX_QUEUE` — queue full returns `error_code=queue_full` on the bus reply and in structured logs.
 6. **Timeouts:** `VISION_TIMEOUT_S` wraps the threaded `VisionRunner.execute` path (wall-clock); logs include `scheduler_total_s`, estimated `queue_wait_est_s`, and `inference_s` when available.
-7. **Models:** Override `VISION_VLM_MODEL_ID` for your VRAM budget (default is smaller than 8B-class; profile YAML `REPLACE_ME` falls back to runner defaults). Enable only profiles you need via `VISION_ENABLED_PROFILES`.
+7. **Models:** Override `VISION_VLM_MODEL_ID` for your VRAM budget (default is BLIP2 per grounded pipeline plan; use `Salesforce/blip-image-captioning-base` on P100 cohabitation — see `.env_example` comment). Enable only profiles you need via `VISION_ENABLED_PROFILES`.
+8. **Caption quality:** VLM captions use a factual prompt and `caption_sanitize` rejects prompt-echo and stoplist garbage before artifacts are stored. Rejected captions append `caption_rejected:{reason}` to task meta warnings.
+
+## Caption sanitizer
+
+`retina_fast` caption path (`_run_caption_frame`):
+
+- Prompt: list visible objects/people only — no activity guesses.
+- Post-decode: `sanitize_caption()` rejects `prompt_echo`, `too_short`, and high stoplist ratio (YouTube/google/video slop).
+- Rejected captions are cleared; warnings surface in artifact meta.
+
+Env: `VISION_VLM_MODEL_ID`, `VISION_VLM_TEMPERATURE` (default `0.2`).
 
 ## Observability (logs-first)
 

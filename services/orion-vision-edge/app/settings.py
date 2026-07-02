@@ -90,6 +90,8 @@ class Settings(BaseSettings):
     VISION_EVENTS_PUBLISH_NOTABLE: str = Field("orion:vision:edge:event:notable", alias="VISION_EVENTS_PUBLISH_NOTABLE")
     CHANNEL_VISION_EDGE_HEALTH: str = Field("orion:vision:edge:health", alias="CHANNEL_VISION_EDGE_HEALTH")
     CHANNEL_VISION_EDGE_ERROR: str = Field("orion:vision:edge:error", alias="CHANNEL_VISION_EDGE_ERROR")
+    CHANNEL_VISION_EDGE_ACTIVITY: str = Field("orion:vision:edge:activity", alias="CHANNEL_VISION_EDGE_ACTIVITY")
+    EDGE_ACTIVITY_MIN_INTERVAL_S: float = Field(1.0, alias="EDGE_ACTIVITY_MIN_INTERVAL_S")
 
     # When false, edge still publishes frame pointers but Host owns orion:vision:artifacts.
     EDGE_PUBLISH_ARTIFACTS: bool = Field(True, alias="EDGE_PUBLISH_ARTIFACTS")

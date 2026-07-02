@@ -1,6 +1,6 @@
 # Orion Vision Frame Router
 
-Policy bridge between **Retina** (continuous frame capture) and **Vision Host** (on-demand GPU inference). Subscribes to frame pointers, applies YAML sampling/backpressure rules, and dispatches `VisionTaskRequestPayload` tasks while preserving envelope causality.
+Policy bridge between **Retina** (continuous frame capture) and **Vision Host** (on-demand GPU inference). Subscribes to frame pointers **and edge activity triggers**, applies YAML baseline/triggered dispatch rules, and dispatches `VisionTaskRequestPayload` tasks while preserving envelope causality.
 
 This service does **not** capture frames, run inference, or touch GPU models.
 
@@ -13,9 +13,12 @@ This service does **not** capture frames, run inference, or touch GPU models.
    orion-vision-retina  ──publish──►  orion:vision:frames
            │                              (vision.frame.pointer)
            │                                      │
+   orion-vision-edge   ──publish──►  orion:vision:edge:activity
+           │                         (person/motion triggers)
+           │                                      │
            │                                      ▼
            │                         orion-vision-frame-router
-           │                              (policy + sampling)
+           │                    (baseline vs triggered policy + sampling)
            │                                      │
            │                                      ▼
            │              orion:exec:request:VisionHostService
@@ -34,16 +37,32 @@ This service does **not** capture frames, run inference, or touch GPU models.
 
 | | **orion-vision-retina** | **orion-vision-frame-router** (this) | **orion-vision-host** |
 |---|-------------------------|--------------------------------------|------------------------|
-| Role | Capture + persist JPEGs | Policy bridge + backpressure | GPU inference |
-| Trigger | Internal loop (`RETINA_FPS`) | Bus: `orion:vision:frames` | Bus: host intake channel |
-| Output | Frame pointers | Host task requests | Artifacts + task replies |
+| Role | Capture + persist JPEGs | Policy bridge + trigger gating + backpressure | GPU inference |
+| Trigger | Internal loop (`RETINA_FPS`) | Bus: frames + edge activity | Bus: host intake channel |
+| Output | Frame pointers | Host task requests (baseline or triggered tier) | Artifacts + task replies |
 | Needs GPU | No | No | Yes |
+
+## Dispatch tiers
+
+Policy file: `config/vision_frame_router.yaml`. Merge order: `defaults` → `streams[stream_id]` → `cameras[camera_id]`.
+
+The router subscribes to `orion:vision:edge:activity` and maintains per-`stream_id` trigger TTL. Each frame dispatch selects one tier:
+
+| Tier | When | Host request | Purpose |
+|------|------|--------------|---------|
+| **baseline** | No active trigger labels within TTL | `want_caption: false`, `want_embeddings: false` | Detect-only `retina_fast` without VLM on every frame |
+| **triggered** | Edge activity includes configured `trigger_labels` (default: `person`, `motion`) within `trigger_ttl_seconds` | `want_caption: true`, `want_embeddings: true` | Caption + embed when someone or motion is present |
+
+Task meta includes `dispatch_tier` (`baseline` or `triggered`) for observability.
+
+Per-stream overrides use the `streams:` block (e.g. `streams.cam0`). Legacy per-camera overrides remain under `cameras:` keyed by `camera_id`.
 
 ## Bus channels
 
 | Channel | Direction | Payload |
 |---------|-----------|---------|
 | `orion:vision:frames` | Subscribe | `VisionFramePointerPayload` (`vision.frame.pointer`) |
+| `orion:vision:edge:activity` | Subscribe | `VisionEdgeActivityPayload` (`vision.edge.activity.v1`) |
 | `orion:exec:request:VisionHostService` | Publish | `VisionTaskRequestPayload` (`vision.task.request`) |
 | `orion:vision:reply:*` | PSUBSCRIBE | `VisionTaskResultPayload` (`vision.task.result`) |
 | `orion:system:health` | Publish | `SystemHealthV1` router metrics |
@@ -52,7 +71,7 @@ This service does **not** capture frames, run inference, or touch GPU models.
 
 Default policy: `config/vision_frame_router.yaml` (mounted at `/app/config/vision_frame_router.yaml` in Docker).
 
-Per-camera overrides control `task_type`, `every_n_frames`, rate limits, and request fields (e.g. open-vocab prompts). Set `ROUTER_POLICY_PATH` to point at a custom file.
+Policy defines `defaults.baseline` and `defaults.triggered` tiers (see **Dispatch tiers** above). Per-stream overrides control `streams.cam0` etc.; per-camera overrides remain under `cameras:`. Set `ROUTER_POLICY_PATH` to point at a custom file.
 
 ## Configuration
 
@@ -61,7 +80,7 @@ cd services/orion-vision-frame-router
 cp .env_example .env   # edit ORION_BUS_URL, DRY_RUN, etc.
 ```
 
-Key env vars: `ROUTER_ENABLED`, `DRY_RUN`, `MAX_INFLIGHT_TOTAL`, `TASK_TIMEOUT_SECONDS`, `REQUIRE_IMAGE_PATH_EXISTS`.
+Key env vars: `ROUTER_ENABLED`, `DRY_RUN`, `MAX_INFLIGHT_TOTAL`, `TASK_TIMEOUT_SECONDS`, `REQUIRE_IMAGE_PATH_EXISTS`, `CHANNEL_EDGE_ACTIVITY_IN`.
 
 **Deployment:** Vision Host should consume **only** `orion:exec:request:VisionHostService` when this router is enabled — do not also wire Host to auto-subscribe `orion:vision:frames`, or GPU work will bypass policy.
 
@@ -90,6 +109,9 @@ With Retina publishing frames and the router running on shared `app-net`:
 ```bash
 # Frame intake (from Retina)
 redis-cli -u "$ORION_BUS_URL" SUBSCRIBE orion:vision:frames
+
+# Edge activity triggers (from vision-edge)
+redis-cli -u "$ORION_BUS_URL" SUBSCRIBE orion:vision:edge:activity
 
 # Host task dispatch (from router)
 redis-cli -u "$ORION_BUS_URL" SUBSCRIBE orion:exec:request:VisionHostService

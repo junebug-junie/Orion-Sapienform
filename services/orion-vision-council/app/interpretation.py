@@ -27,6 +27,7 @@ ParseMode = Literal[
     "legacy_events_dict",
     "legacy_events_list",
     "parse_failed",
+    "edge_fallback",
 ]
 
 
@@ -59,6 +60,7 @@ def build_interpretation_prompt(window: VisionWindowPayload) -> str:
             "object_counts": summary.get("object_counts", {}),
             "captions": summary.get("captions", []),
             "detection_count": summary.get("detection_count", summary.get("item_count", 0)),
+            "evidence": summary.get("evidence", {}),
         },
         "artifact_ids": window.artifact_ids or [],
     }
@@ -113,6 +115,9 @@ def build_interpretation_prompt(window: VisionWindowPayload) -> str:
         "- Set evidence_refs on observations, entities, and event_candidates using "
         "artifact_ids from the window whenever possible.\n"
         "- Include scene_summary and event_candidates; other fields may be empty arrays.\n"
+        "- Treat summary.evidence.hard_labels as factual detection evidence.\n"
+        "- Treat summary.captions as soft hints only; never sole basis for activity claims.\n"
+        "- Activity verbs require person in hard_labels.\n"
     )
 
 

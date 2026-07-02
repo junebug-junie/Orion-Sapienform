@@ -21,10 +21,15 @@ class PendingTask(BaseModel):
     reply_to: str
 
 
+class StreamTriggerState(BaseModel):
+    label_ts: dict[str, float] = Field(default_factory=dict)
+
+
 class RouterState:
     def __init__(self) -> None:
         self.cameras: dict[str, CameraState] = {}
         self.pending: dict[str, PendingTask] = {}
+        self.stream_triggers: dict[str, StreamTriggerState] = {}
 
     def camera(self, camera_id: str) -> CameraState:
         if camera_id not in self.cameras:
@@ -77,4 +82,22 @@ class RouterState:
         for cid, task in list(self.pending.items()):
             if now - task.dispatched_at >= timeout_s:
                 out.append(cid)
+        return out
+
+    def record_activity(self, stream_id: str, labels: list[str], *, now: float) -> None:
+        st = self.stream_triggers.setdefault(stream_id, StreamTriggerState())
+        for label in labels:
+            st.label_ts[label.lower()] = now
+
+    def active_labels(
+        self, stream_id: str, trigger_labels: list[str], ttl_s: float, *, now: float
+    ) -> list[str]:
+        st = self.stream_triggers.get(stream_id)
+        if not st:
+            return []
+        out: list[str] = []
+        for label in trigger_labels:
+            ts = st.label_ts.get(label.lower())
+            if ts is not None and (now - ts) <= ttl_s:
+                out.append(label.lower())
         return out

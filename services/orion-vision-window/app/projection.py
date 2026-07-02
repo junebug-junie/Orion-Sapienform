@@ -14,6 +14,8 @@ from orion.schemas.vision import VisionArtifactPayload, VisionWindowPayload
 
 SNAPSHOT_SCHEMA_V1 = "vision_window_snapshot.v1"
 MAX_URIS_PER_ENVELOPE = 32
+HARD_SCORE_THRESHOLD = 0.25
+CAPTION_STOPLIST = frozenset({"youtube", "google", "video", "watching", "describe", "image"})
 
 
 def stream_key_from_artifact(art: VisionArtifactPayload) -> str:
@@ -63,6 +65,42 @@ def artifact_uris_from_artifact(art: VisionArtifactPayload) -> List[str]:
     return out[:MAX_URIS_PER_ENVELOPE]
 
 
+def _caption_soft_tokens(text: str) -> List[str]:
+    tokens = [t.strip(".,!?").lower() for t in text.split() if t.strip()]
+    return [t for t in tokens if t in CAPTION_STOPLIST]
+
+
+def _build_evidence(items: List[Tuple[VisionArtifactPayload, float]]) -> Dict[str, Any]:
+    hard_counts: Dict[str, int] = {}
+    soft_labels: List[str] = []
+    edge_person_hits = 0
+    host_person_hits = 0
+    caption_count = 0
+    for art, _ts in items:
+        is_edge = art.task_type == "edge_detection"
+        if art.outputs.caption and art.outputs.caption.text:
+            caption_count += 1
+            soft_labels.extend(_caption_soft_tokens(art.outputs.caption.text))
+        for obj in art.outputs.objects or []:
+            if obj.score < HARD_SCORE_THRESHOLD:
+                continue
+            label = obj.label.lower()
+            hard_counts[label] = hard_counts.get(label, 0) + 1
+            if label == "person":
+                if is_edge:
+                    edge_person_hits += 1
+                else:
+                    host_person_hits += 1
+    hard_labels = sorted(hard_counts.keys())
+    return {
+        "hard_labels": hard_labels,
+        "soft_labels": sorted(set(soft_labels)),
+        "edge_person_hits": edge_person_hits,
+        "host_person_hits": host_person_hits,
+        "caption_count": caption_count,
+    }
+
+
 def summarize_items(items: List[Tuple[VisionArtifactPayload, float]]) -> Dict[str, Any]:
     counts: Dict[str, int] = {}
     captions: List[str] = []
@@ -80,6 +118,7 @@ def summarize_items(items: List[Tuple[VisionArtifactPayload, float]]) -> Dict[st
         "captions": captions,
         "label_counts": counts,
         "detection_count": sum(counts.values()) if counts else 0,
+        "evidence": _build_evidence(items),
     }
 
 

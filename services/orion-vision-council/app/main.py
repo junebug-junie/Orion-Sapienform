@@ -24,6 +24,11 @@ except ImportError:
     CortexChatRequest = None
     logger.warning("Cortex schemas not found, using dicts")
 
+from .evidence_grounding import (
+    build_person_presence_fallback,
+    edge_person_hits,
+    enforce_evidence_grounding,
+)
 from .interpretation import (
     InterpretationParseOutcome,
     build_interpretation_prompt,
@@ -124,6 +129,9 @@ class CouncilService:
             return
 
         interpretation, parse_outcome = await self._generate_interpretation(req.window, env)
+        interpretation, parse_outcome = self._finalize_interpretation(
+            interpretation, parse_outcome, req.window
+        )
         if interpretation is not None:
             self._record_interpretation(interpretation, parse_outcome)
 
@@ -167,6 +175,10 @@ class CouncilService:
             return
 
         interpretation, parse_outcome = await self._generate_interpretation(payload, env)
+        interpretation, parse_outcome = self._finalize_interpretation(
+            interpretation, parse_outcome, payload
+        )
+
         if interpretation is not None:
             self._record_interpretation(interpretation, parse_outcome)
 
@@ -186,6 +198,24 @@ class CouncilService:
 
         await self.bus.publish(settings.CHANNEL_COUNCIL_PUB, out_env)
         logger.info(f"[COUNCIL] Published {len(event_payload.events)} events")
+
+    def _finalize_interpretation(
+        self,
+        interpretation: VisionSceneInterpretationV1 | None,
+        parse_outcome: InterpretationParseOutcome,
+        window: VisionWindowPayload,
+    ) -> tuple[VisionSceneInterpretationV1 | None, InterpretationParseOutcome]:
+        if interpretation is not None:
+            interpretation, grounding_notes = enforce_evidence_grounding(interpretation, window)
+            for note in grounding_notes:
+                logger.info(f"[COUNCIL] grounding {note}")
+        elif edge_person_hits(window) > 0:
+            interpretation = build_person_presence_fallback(window)
+            parse_outcome = InterpretationParseOutcome(
+                interpretation=interpretation,
+                parse_mode="edge_fallback",
+            )
+        return interpretation, parse_outcome
 
     async def _generate_interpretation(
         self,

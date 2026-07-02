@@ -20,3 +20,7 @@ def test_rate_limiter_blocks_duplicate_within_one_second() -> None:
     assert limiter.allow("cam0", "person", now=100.0) is True
     assert limiter.allow("cam0", "person", now=100.5) is False
     assert limiter.allow("cam0", "person", now=101.1) is True
+
+
+def test_empty_detections_yields_no_labels() -> None:
+    assert labels_from_detections([]) == []

@@ -6,7 +6,7 @@ import os
 import uuid
 import numpy as np
 from datetime import datetime, timezone
-from typing import List, Tuple
+from typing import Any, List, Tuple
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.vision import (
@@ -15,8 +15,11 @@ from orion.schemas.vision import (
 )
 from orion.schemas.telemetry.system_health import SystemHealthV1
 
+from .activity import ActivityRateLimiter, labels_from_detections, publish_activity_if_allowed
 from .context import settings, bus, detectors
 from .utils import draw_boxes
+
+_activity_limiter = ActivityRateLimiter(min_interval_s=settings.EDGE_ACTIVITY_MIN_INTERVAL_S)
 
 logger = logging.getLogger("orion-vision-edge.detector")
 
@@ -56,7 +59,7 @@ def _save_debug_frame(frame, detections, name_suffix=""):
     except Exception as e:
         logger.warning(f"Debug save failed: {e}")
 
-def _run_detectors(frame: np.ndarray) -> List[VisionObject]:
+def _run_detectors(frame: np.ndarray) -> Tuple[List[VisionObject], List[dict[str, Any]]]:
     """
     Synchronous detection pipeline.
     """
@@ -119,13 +122,13 @@ def _run_detectors(frame: np.ndarray) -> List[VisionObject]:
         except Exception as e:
             logger.error(f"Event detector {name} failed: {e}")
             
-    return vision_objects
+    return vision_objects, det_dicts
 
 def run_detectors_on_frame(frame: np.ndarray) -> Tuple[np.ndarray, List[VisionObject]]:
     """
     Public API for Routes: Run detectors and return annotated frame.
     """
-    detections = _run_detectors(frame)
+    detections, _ = _run_detectors(frame)
     annotated = frame.copy()
     
     # Draw boxes
@@ -234,14 +237,33 @@ async def run_detector_loop():
             
             # Run Detectors
             try:
-                vision_objects = await asyncio.get_event_loop().run_in_executor(
+                vision_objects, det_dicts = await asyncio.get_event_loop().run_in_executor(
                     None, _run_detectors, frame
+                )
+
+                labels = labels_from_detections(det_dicts)
+                max_score = max((float(d.get("score", 0)) for d in det_dicts), default=0.0)
+                stream_id = pointer.stream_id or settings.STREAM_ID
+                artifact_id = str(uuid.uuid4())
+
+                await publish_activity_if_allowed(
+                    bus,
+                    settings,
+                    stream_id=stream_id,
+                    camera_id=pointer.camera_id,
+                    labels=labels,
+                    max_score=max_score,
+                    frame_ts=pointer.frame_ts,
+                    image_path=pointer.image_path,
+                    artifact_id=artifact_id,
+                    limiter=_activity_limiter,
+                    parent_env=env,
                 )
 
                 if vision_objects:
                      # Log detections
-                     labels = [o.label for o in vision_objects]
-                     logger.info(f"[DETECTOR] Found: {labels}")
+                     found_labels = [o.label for o in vision_objects]
+                     logger.info(f"[DETECTOR] Found: {found_labels}")
 
                 # Debug Save
                 if settings.EDGE_DEBUG_SAVE_FRAMES and vision_objects:
@@ -254,11 +276,15 @@ async def run_detector_loop():
                     continue
 
                 artifact = VisionEdgeArtifact(
-                    artifact_id=str(uuid.uuid4()),
+                    artifact_id=artifact_id,
                     correlation_id=str(env.correlation_id),
                     task_type="edge_detection",
                     device=settings.YOLO_DEVICE,
-                    inputs={"image_path": pointer.image_path, "pointer_id": str(env.id)},
+                    inputs={
+                        "stream_id": stream_id,
+                        "camera_id": pointer.camera_id,
+                        "image_path": pointer.image_path,
+                    },
                     outputs={"objects": vision_objects},
                     timing={"ts": time.time(), "latency": time.time() - pointer.frame_ts} if pointer.frame_ts else {},
                     model_fingerprints={"yolo": settings.YOLO_MODEL},

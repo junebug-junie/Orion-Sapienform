@@ -78,3 +78,71 @@ console.log(JSON.stringify({{
     assert payload["show"] is True
     assert payload["missing"] is False
     assert payload["extractedMode"] == "agent"
+
+
+def test_live_agent_step_anchors_to_conversation_not_body() -> None:
+    script = f"""
+const helpers = require({json.dumps(str(JS_PATH))});
+
+class El {{
+  constructor(tag) {{
+    this.tagName = tag;
+    this.id = '';
+    this.className = '';
+    this.textContent = '';
+    this.dataset = {{}};
+    this.children = [];
+    this.parent = null;
+    this.scrollTop = 0;
+    this.scrollHeight = 0;
+  }}
+  appendChild(child) {{
+    child.parent = this;
+    this.children.push(child);
+    this.scrollHeight += 1;
+    return child;
+  }}
+  querySelector(sel) {{
+    if (sel === '.agent-live-trace__steps') {{
+      return this.children.find((c) => c.className === 'agent-live-trace__steps') || null;
+    }}
+    return null;
+  }}
+}}
+
+const conversation = new El('div');
+conversation.id = 'conversation';
+const body = new El('body');
+const byId = {{ conversation, body }};
+
+const doc = {{
+  getElementById(id) {{ return byId[id] || null; }},
+  createElement(tag) {{ return new El(tag); }},
+  body,
+}};
+
+helpers.appendLiveAgentStep('corr-1', {{
+  step_index: 0,
+  tool_id: 'python_interpreter',
+  duration_ms: 120,
+  observation: 'matched services/orion-hub/scripts/cortex_request_builder.py',
+}}, doc);
+
+const panel = byId['agent-live-corr-1'] || conversation.children.find((c) => c.id === 'agent-live-corr-1');
+console.log(JSON.stringify({{
+  anchorId: helpers.LIVE_TRACE_ANCHOR_ID,
+  resolvedAnchor: helpers.resolveLiveTraceAnchor(doc) === conversation,
+  panelInConversation: conversation.children.some((c) => c.id === 'agent-live-corr-1'),
+  panelOnBody: body.children.some((c) => c.id === 'agent-live-corr-1'),
+  hasStepsHost: Boolean(panel && panel.querySelector('.agent-live-trace__steps')),
+  stepCount: panel ? panel.querySelector('.agent-live-trace__steps').children.length : 0,
+}}));
+"""
+    payload = json.loads(_run_node(script))
+
+    assert payload["anchorId"] == "conversation"
+    assert payload["resolvedAnchor"] is True
+    assert payload["panelInConversation"] is True
+    assert payload["panelOnBody"] is False
+    assert payload["hasStepsHost"] is True
+    assert payload["stepCount"] == 1

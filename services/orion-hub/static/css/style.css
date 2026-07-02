@@ -33,6 +33,53 @@ input[type=range]::-moz-range-thumb {
   flex-direction: column;
 }
 
+/* Live context-exec / agent_repl steps streamed into the Oríon + Juniper chat column */
+.agent-live-trace {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 12rem;
+  margin-bottom: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid rgba(55, 65, 81, 0.85);
+  border-radius: 0.75rem;
+  background: rgba(3, 7, 18, 0.75);
+}
+
+.agent-live-trace__heading {
+  flex-shrink: 0;
+  margin-bottom: 0.35rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgb(129, 140, 248);
+}
+
+.agent-live-trace__steps {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.68rem;
+  line-height: 1.35;
+  color: rgb(209, 213, 219);
+}
+
+.agent-live-trace__step {
+  padding: 0.2rem 0;
+  border-top: 1px solid rgba(55, 65, 81, 0.45);
+  word-break: break-word;
+}
+
+.agent-live-trace__step:first-child {
+  border-top: none;
+}
+
+.agent-live-trace__step.is-final {
+  color: rgb(167, 243, 208);
+}
+
 /* Preserve paragraph breaks and wrap nicely */
 .message-text {
   white-space: pre-wrap;

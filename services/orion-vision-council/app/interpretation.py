@@ -182,11 +182,36 @@ def project_interpretation_to_events(
     return VisionEventPayload(events=bundle_items)
 
 
+def try_legacy_fallback(
+    content: str,
+    window: VisionWindowPayload,
+) -> VisionSceneInterpretationV1 | None:
+    """Parse legacy flat event-list JSON when full interpretation parsing fails."""
+    try:
+        text = _strip_markdown_fences(content)
+        data = json.loads(text)
+        events: list[dict[str, Any]] | None = None
+        if isinstance(data, list):
+            events = data
+        elif isinstance(data, dict) and isinstance(data.get("events"), list):
+            events = data["events"]
+        elif isinstance(data, dict):
+            events = [data]
+        if not events:
+            return None
+        return _events_list_to_minimal_interpretation(events, window)
+    except Exception as e:
+        logger.error(f"[COUNCIL] Legacy fallback parse failed: {e} | Content: {content!r}")
+        return None
+
+
 def parse_and_project(
     content: str,
     window: VisionWindowPayload,
 ) -> tuple[VisionSceneInterpretationV1 | None, VisionEventPayload | None]:
     interpretation = parse_llm_content(content, window)
+    if interpretation is None:
+        interpretation = try_legacy_fallback(content, window)
     if interpretation is None:
         return None, None
     return interpretation, project_interpretation_to_events(interpretation, window)

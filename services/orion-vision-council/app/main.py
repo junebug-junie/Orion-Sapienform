@@ -1,7 +1,7 @@
 import asyncio
-import json
 import uuid
-from typing import Optional, Dict, Any, List
+from typing import Optional
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -12,9 +12,9 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef, ChatRequestPayl
 from orion.schemas.vision import (
     VisionWindowPayload,
     VisionEventPayload,
-    VisionEventBundleItem,
     VisionCouncilRequestPayload,
-    VisionCouncilResultPayload
+    VisionCouncilResultPayload,
+    VisionSceneInterpretationV1,
 )
 
 # Check if CortexChatRequest is available, otherwise assume dict for now to avoid cross-service import issues if not in schemas yet
@@ -24,9 +24,16 @@ except ImportError:
     CortexChatRequest = None
     logger.warning("Cortex schemas not found, using dicts")
 
+from .interpretation import (
+    build_interpretation_prompt,
+    parse_llm_content,
+    project_interpretation_to_events,
+    try_legacy_fallback,
+)
 from .settings import Settings
 
 settings = Settings()
+
 
 class CouncilService:
     def __init__(self):
@@ -35,6 +42,12 @@ class CouncilService:
         self._consumer_task: Optional[asyncio.Task] = None
         self._rpc_task: Optional[asyncio.Task] = None
         self._shutdown_event = asyncio.Event()
+        self._recent_interpretations: list[dict] = []
+
+    def _record_interpretation(self, interpretation: VisionSceneInterpretationV1) -> None:
+        self._recent_interpretations.append(interpretation.model_dump())
+        if len(self._recent_interpretations) > 20:
+            self._recent_interpretations = self._recent_interpretations[-20:]
 
     async def start(self):
         logger.remove()
@@ -100,7 +113,15 @@ class CouncilService:
             logger.error(f"[COUNCIL] RPC invalid payload: {e}")
             return
 
-        event_payload = await self._generate_events(req.window, env)
+        interpretation = await self._generate_interpretation(req.window, env)
+        if interpretation is not None:
+            self._record_interpretation(interpretation)
+
+        event_payload = (
+            self._project_interpretation_to_events(interpretation, req.window)
+            if interpretation is not None
+            else None
+        )
         if not event_payload:
             return
 
@@ -125,7 +146,6 @@ class CouncilService:
         )
         await self.bus.publish(settings.CHANNEL_COUNCIL_PUB, broadcast_env)
 
-
     async def _process_window(self, env: BaseEnvelope, is_rpc: bool = False):
         try:
             if isinstance(env.payload, dict):
@@ -136,7 +156,15 @@ class CouncilService:
             logger.error(f"[COUNCIL] Invalid payload: {e}")
             return
 
-        event_payload = await self._generate_events(payload, env)
+        interpretation = await self._generate_interpretation(payload, env)
+        if interpretation is not None:
+            self._record_interpretation(interpretation)
+
+        event_payload = (
+            self._project_interpretation_to_events(interpretation, payload)
+            if interpretation is not None
+            else None
+        )
         if not event_payload:
             return
 
@@ -149,45 +177,32 @@ class CouncilService:
         await self.bus.publish(settings.CHANNEL_COUNCIL_PUB, out_env)
         logger.info(f"[COUNCIL] Published {len(event_payload.events)} events")
 
-    async def _generate_events(self, window: VisionWindowPayload, source_env: BaseEnvelope) -> Optional[VisionEventPayload]:
-        # Prepare prompt for LLM
-        summary = window.summary
-        prompt = f"""
-        Analyze this visual window summary (30s):
-        - Objects: {summary.get('top_labels')}
-        - Captions: {summary.get('captions')}
-
-        Identify key events. Return JSON list of events with fields:
-        - event_type (str)
-        - narrative (str)
-        - entities (list[str])
-        - tags (list[str])
-        - confidence (float 0-1)
-        - salience (float 0-1)
-        """
-
-        events_data = await self._call_llm(prompt, source_env)
-        if not events_data:
+    async def _generate_interpretation(
+        self,
+        window: VisionWindowPayload,
+        source_env: BaseEnvelope,
+    ) -> VisionSceneInterpretationV1 | None:
+        prompt = build_interpretation_prompt(window)
+        content = await self._call_llm_raw(prompt, source_env)
+        if not content:
             return None
 
-        bundle_items = []
-        for evt in events_data:
-            item = VisionEventBundleItem(
-                event_id=str(uuid.uuid4()),
-                event_type=evt.get("event_type", "unknown"),
-                narrative=evt.get("narrative", ""),
-                entities=evt.get("entities", []),
-                tags=evt.get("tags", []),
-                confidence=float(evt.get("confidence", 0.5)),
-                salience=float(evt.get("salience", 0.5)),
-                evidence_refs=window.artifact_ids
-            )
-            bundle_items.append(item)
+        interpretation = parse_llm_content(content, window)
+        if interpretation is None:
+            interpretation = try_legacy_fallback(content, window)
+        return interpretation
 
-        return VisionEventPayload(events=bundle_items)
+    def _project_interpretation_to_events(
+        self,
+        interpretation: VisionSceneInterpretationV1,
+        window: VisionWindowPayload,
+    ) -> VisionEventPayload | None:
+        payload = project_interpretation_to_events(interpretation, window)
+        if not payload.events:
+            return None
+        return payload
 
-    async def _call_llm(self, prompt: str, source_env: BaseEnvelope) -> List[Dict[str, Any]]:
-        # RPC to LLM Gateway
+    async def _call_llm_raw(self, prompt: str, source_env: BaseEnvelope) -> str | None:
         req_id = str(uuid.uuid4())
         reply_to = f"{settings.CHANNEL_LLM_REPLY_PREFIX}:{req_id}"
 
@@ -210,7 +225,7 @@ class CouncilService:
 
         if self._rpc_bus is None:
             logger.error("[COUNCIL] RPC bus not initialized; cannot call LLM gateway")
-            return []
+            return None
 
         try:
             reply = await self._rpc_bus.rpc_request(
@@ -223,7 +238,7 @@ class CouncilService:
             decoded = self._rpc_bus.codec.decode(reply.get("data"))
             if not decoded.ok:
                 logger.error(f"[COUNCIL] LLM decode error: {decoded.error}")
-                return []
+                return None
 
             res_env = decoded.envelope
 
@@ -236,30 +251,17 @@ class CouncilService:
 
             if not content:
                 logger.warning(f"[COUNCIL] Empty LLM response: {res_env.payload}")
-                return []
+                return None
 
-            try:
-                if "```json" in content:
-                    content = content.split("```json")[1].split("```")[0]
-                elif "```" in content:
-                    content = content.split("```")[1].split("```")[0]
-
-                data = json.loads(content)
-                if isinstance(data, list):
-                    return data
-                if isinstance(data, dict) and "events" in data:
-                    return data["events"]
-                return [data] if isinstance(data, dict) else []
-            except Exception as e:
-                logger.error(f"[COUNCIL] JSON parse error: {e} | Content: {content}")
-                return []
+            return content
 
         except TimeoutError:
             logger.error("[COUNCIL] LLM timeout")
-            return []
+            return None
         except Exception as e:
             logger.error(f"[COUNCIL] LLM error: {e}")
-            return []
+            return None
+
 
 service = CouncilService()
 
@@ -270,3 +272,21 @@ async def lifespan(app: FastAPI):
     await service.stop()
 
 app = FastAPI(title="Orion Vision Council", version="0.1.0", lifespan=lifespan)
+
+
+@app.get("/health")
+async def health():
+    return {"ok": True}
+
+
+@app.get("/debug/last-interpretation")
+async def debug_last_interpretation():
+    if not service._recent_interpretations:
+        return {"interpretation": None}
+    return {"interpretation": service._recent_interpretations[-1]}
+
+
+@app.get("/debug/recent-interpretations")
+async def debug_recent_interpretations(limit: int = 10):
+    limit = min(max(1, limit), 20)
+    return {"interpretations": service._recent_interpretations[-limit:]}

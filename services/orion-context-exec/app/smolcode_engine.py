@@ -7,6 +7,7 @@ from typing import Any
 
 from smolagents.models import Model, ChatMessage
 
+from orion.core.bus.bus_schemas import LLMMessage
 from orion.schemas.context_exec import ContextExecRequestV1
 
 from .callable_namespace import ContextNamespace
@@ -17,32 +18,50 @@ from .settings import settings
 logger = logging.getLogger("orion-context-exec.smolcode_engine")
 
 
-def _messages_to_prompt(messages: list) -> str:
-    """Flatten smolagents message list to a single prompt string for llm_chat."""
-    parts: list[str] = []
+def _to_llm_messages(messages: list) -> tuple[list[LLMMessage], str]:
+    """Convert smolagents messages to Orion LLMMessage list, preserving roles.
+
+    Returns (messages, last_user_text) — last_user_text feeds raw_user_text/telemetry.
+    """
+    out: list[LLMMessage] = []
+    last_user = ""
     for msg in messages:
         if hasattr(msg, "role"):
             role = str(msg.role.value if hasattr(msg.role, "value") else msg.role)
             raw = msg.content or ""
-            content = raw if isinstance(raw, str) else " ".join(
-                p.get("text", "") if isinstance(p, dict) else str(p) for p in raw
-            )
         elif isinstance(msg, dict):
             role = str(msg.get("role", "user"))
             raw = msg.get("content", "")
-            content = raw if isinstance(raw, str) else str(raw)
         else:
             continue
-        parts.append(f"### {role.capitalize()}\n{content}")
-    return "\n\n".join(parts)
+        content = raw if isinstance(raw, str) else " ".join(
+            p.get("text", "") if isinstance(p, dict) else str(p) for p in raw
+        )
+        role = role if role in {"system", "user", "assistant", "tool"} else "user"
+        out.append(LLMMessage(role=role, content=content))
+        if role == "user":
+            last_user = content
+    if not out:
+        out = [LLMMessage(role="user", content="")]
+    return out, last_user
 
 
 class OrionSmolagentsModel(Model):
     """smolagents Model wrapper that calls organ_runtime.llm_chat via agent lane."""
 
-    def __init__(self, runtime: OrganRuntime, loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(
+        self,
+        runtime: OrganRuntime,
+        loop: asyncio.AbstractEventLoop,
+        *,
+        per_step_timeout: float | None = None,
+    ) -> None:
+        super().__init__()
         self._runtime = runtime
         self._loop = loop
+        self._per_step_timeout = float(
+            per_step_timeout if per_step_timeout is not None else settings.context_exec_llm_timeout_sec
+        )
 
     def generate(
         self,
@@ -52,12 +71,17 @@ class OrionSmolagentsModel(Model):
         tools_to_call_from: object = None,
         **kwargs: object,
     ) -> ChatMessage:
-        prompt = _messages_to_prompt(messages)
+        llm_messages, last_user = _to_llm_messages(messages)
         future = asyncio.run_coroutine_threadsafe(
-            self._runtime.llm_chat(prompt, route="agent"),
+            self._runtime.llm_chat(
+                last_user,
+                route="agent",
+                messages=llm_messages,
+                stop=list(stop_sequences) if stop_sequences else None,
+            ),
             self._loop,
         )
-        result = future.result(timeout=120)
+        result = future.result(timeout=self._per_step_timeout)
         content = result.get("content") or ""
         return ChatMessage(role="assistant", content=content)
 
@@ -161,6 +185,9 @@ class SmolagentsCodeEngine(RLMEngine):
         namespace: ContextNamespace,
         *,
         organ_runtime: OrganRuntime | None = None,
+        step_callbacks: list | None = None,
+        max_steps: int | None = None,
+        per_step_timeout: float | None = None,
     ) -> Any:
         if organ_runtime is None:
             return {
@@ -173,8 +200,13 @@ class SmolagentsCodeEngine(RLMEngine):
 
         loop = asyncio.get_running_loop()
         tools = _make_tools(organ_runtime, loop)
-        model = OrionSmolagentsModel(organ_runtime, loop)
-        agent = CodeAgent(tools=tools, model=model, max_steps=12)
+        model = OrionSmolagentsModel(organ_runtime, loop, per_step_timeout=per_step_timeout)
+        agent = CodeAgent(
+            tools=tools,
+            model=model,
+            max_steps=int(max_steps or settings.context_exec_agent_repl_max_steps),
+            step_callbacks=list(step_callbacks) if step_callbacks else None,
+        )
 
         try:
             result = await loop.run_in_executor(None, agent.run, request.text)

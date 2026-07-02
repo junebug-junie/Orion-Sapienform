@@ -157,3 +157,27 @@ async def test_smolcode_engine_real_agent_loop():
     assert "error" not in result, f"Engine returned error: {result.get('error')}"
     assert "summary" in result
     assert call_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_model_preserves_roles_and_forwards_stop():
+    from app.smolcode_engine import OrionSmolagentsModel
+
+    runtime = _make_runtime()
+    loop = asyncio.get_running_loop()
+    model = OrionSmolagentsModel(runtime, loop, per_step_timeout=7.0)
+
+    messages = [
+        {"role": "system", "content": "You are a codebase agent."},
+        {"role": "user", "content": "find the bug"},
+    ]
+    await loop.run_in_executor(
+        None, lambda: model.generate(messages, stop_sequences=["<end_code>"])
+    )
+
+    runtime.llm_chat.assert_awaited_once()
+    _, kwargs = runtime.llm_chat.call_args
+    assert kwargs.get("route") == "agent"
+    sent = kwargs.get("messages")
+    assert [m.role for m in sent] == ["system", "user"]
+    assert kwargs.get("stop") == ["<end_code>"]

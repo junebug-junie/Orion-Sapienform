@@ -60,7 +60,7 @@ class ContextExecSettings(BaseSettings):
     context_exec_sandbox_mode: str = Field("docker", alias="CONTEXT_EXEC_SANDBOX_MODE")
     context_exec_max_depth: int = Field(1, alias="CONTEXT_EXEC_MAX_DEPTH")
     context_exec_max_subcalls: int = Field(6, alias="CONTEXT_EXEC_MAX_SUBCALLS")
-    context_exec_max_seconds: float = Field(45.0, alias="CONTEXT_EXEC_MAX_SECONDS")
+    context_exec_max_seconds: float = Field(600.0, alias="CONTEXT_EXEC_MAX_SECONDS")
     context_exec_write_enabled: bool = Field(False, alias="CONTEXT_EXEC_WRITE_ENABLED")
     context_exec_network_enabled: bool = Field(False, alias="CONTEXT_EXEC_NETWORK_ENABLED")
     context_exec_repl_output_chars: int = Field(8192, alias="CONTEXT_EXEC_REPL_OUTPUT_CHARS")
@@ -163,7 +163,7 @@ class ContextExecSettings(BaseSettings):
         5.0,
         alias="CONTEXT_EXEC_LLM_GATEWAY_TIMEOUT_SEC",
     )
-    context_exec_llm_timeout_sec: float = Field(30.0, alias="CONTEXT_EXEC_LLM_TIMEOUT_SEC")
+    context_exec_llm_timeout_sec: float = Field(120.0, alias="CONTEXT_EXEC_LLM_TIMEOUT_SEC")
 
     context_exec_agent_synthesis_enabled: bool = Field(
         True,
@@ -194,6 +194,7 @@ class ContextExecSettings(BaseSettings):
     orion_repo_root: str = Field("/app", alias="ORION_REPO_ROOT")
     rlm_engine: str = Field("alexzhang", alias="CONTEXT_EXEC_RLM_ENGINE")
     context_exec_rlm_fallback_enabled: bool = Field(True, alias="CONTEXT_EXEC_RLM_FALLBACK_ENABLED")
+    context_exec_agent_repl_max_steps: int = Field(12, alias="CONTEXT_EXEC_AGENT_REPL_MAX_STEPS")
 
     context_exec_proposal_ledger_enabled: bool = Field(
         False,

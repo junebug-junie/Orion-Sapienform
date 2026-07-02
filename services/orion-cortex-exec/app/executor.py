@@ -2726,17 +2726,9 @@ async def call_step_services(
                     "stream": False,
                     **_md_lane,
                 }
-                if getattr(settings, "cortex_metacog_return_logprobs", False):
-                    md_options["return_logprobs"] = True
-                    md_options["logprobs_top_k"] = 5
-                    md_options["logprob_summary_only"] = True
-                    probe_mode = str(
-                        getattr(settings, "cortex_metacog_logprob_probe_mode", "") or ""
-                    ).strip()
-                    if probe_mode:
-                        md_options["logprob_probe_mode"] = probe_mode
 
                 llm_res: Any = None
+                probe_unc: Dict[str, Any] | None = None
                 if not metacog_budget_ok:
                     logs.append("skip <- MetacogDraftService LLM (prompt_budget_exceeded)")
                     raw_content = ""
@@ -2795,17 +2787,61 @@ async def call_step_services(
                             patch_error = str(exc)
                             patch_model = MetacogDraftTextPatchV1()
                         finish_reason = _extract_llm_finish_reason(llm_res)
+                        if (
+                            not draft_error
+                            and not patch_error
+                            and _should_run_metacog_uncertainty_probe()
+                        ):
+                            probe_mode = str(
+                                getattr(settings, "cortex_metacog_logprob_probe_mode", "") or ""
+                            ).strip()
+                            if probe_mode == "native_completion":
+                                probe_options: Dict[str, Any] = {
+                                    "temperature": 0.8,
+                                    "max_tokens": 128,
+                                    "return_logprobs": True,
+                                    "logprobs_top_k": 5,
+                                    "logprob_summary_only": True,
+                                    "logprob_probe_mode": "native_completion",
+                                    "stream": False,
+                                    **_md_lane,
+                                }
+                                probe_req = ChatRequestPayload(
+                                    model=req_model,
+                                    profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
+                                    messages=_metacog_uncertainty_probe_messages(patch_model),
+                                    raw_user_text="metacog_uncertainty_probe",
+                                    route="metacog",
+                                    options=probe_options,
+                                )
+                                try:
+                                    probe_res = await llm_client.chat(
+                                        source=source,
+                                        req=probe_req,
+                                        correlation_id=correlation_id,
+                                        reply_to=reply_channel,
+                                        timeout_sec=effective_timeout,
+                                    )
+                                    if hasattr(probe_res, "meta") and isinstance(probe_res.meta, dict):
+                                        maybe_unc = probe_res.meta.get("llm_uncertainty")
+                                        if isinstance(maybe_unc, dict):
+                                            probe_unc = maybe_unc
+                                except Exception as probe_exc:
+                                    logger.warning(
+                                        "metacog_uncertainty_probe_failed corr_id=%s error=%s",
+                                        correlation_id,
+                                        probe_exc,
+                                    )
                     else:
                         finish_reason = None
 
                     base_entry = _fallback_metacog_draft(ctx).model_dump(mode="json")
                     base_entry = _apply_metacog_system_fields(base_entry, ctx)
-                    unc = None
-                    md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
-                    if isinstance(md.get("llm_uncertainty"), dict):
-                        unc = md["llm_uncertainty"]
-                    elif llm_res is not None and hasattr(llm_res, "meta") and isinstance(llm_res.meta, dict):
-                        unc = llm_res.meta.get("llm_uncertainty")
+                    unc = probe_unc
+                    if unc is None:
+                        md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+                        if isinstance(md.get("llm_uncertainty"), dict):
+                            unc = md["llm_uncertainty"]
                     if isinstance(unc, dict):
                         attach_llm_uncertainty_to_collapse_payload(base_entry, unc)
                     raw_trigger_null = not isinstance(ctx.get("trigger"), dict)

@@ -33,6 +33,19 @@ logger = logging.getLogger("llamacpp-host")
 BOOT_ID = str(uuid.uuid4())
 _LLAMA_FLAG_PATTERN = re.compile(r"--([a-z0-9][a-z0-9-]*)")
 _LLAMA_BUILD_PATTERN = re.compile(r"version:\s*(\d+)")
+_GGUF_SHARD_PATTERN = re.compile(r"^(.+/)(.+)-(\d{5})-of-(\d{5})\.gguf$")
+
+
+def _shard_filenames_for_download(filename: str) -> list[str]:
+    """Expand a multi-part GGUF first-shard path into all shard filenames."""
+    match = _GGUF_SHARD_PATTERN.match(filename)
+    if not match:
+        return [filename]
+    prefix_dir, stem, _first_idx, total = match.groups()
+    total_n = int(total)
+    if total_n <= 1:
+        return [filename]
+    return [f"{prefix_dir}{stem}-{idx:05d}-of-{total}.gguf" for idx in range(1, total_n + 1)]
 
 
 def _ensure_model_file(model_path: str, dl: Optional[LlamaCppConfig]) -> None:
@@ -51,14 +64,18 @@ def _ensure_model_file(model_path: str, dl: Optional[LlamaCppConfig]) -> None:
 
     Path(dl.model_root).mkdir(parents=True, exist_ok=True)
 
-    logger.info("Downloading %s/%s -> %s", dl.repo_id, dl.filename, dl.model_root)
-    hf_hub_download(
-        repo_id=dl.repo_id,
-        filename=dl.filename,
-        local_dir=dl.model_root,
-        local_dir_use_symlinks=False,
-        token=settings.hf_token,
-    )
+    for shard_filename in _shard_filenames_for_download(dl.filename):
+        shard_path = Path(dl.model_root) / shard_filename
+        if shard_path.exists():
+            continue
+        logger.info("Downloading %s/%s -> %s", dl.repo_id, shard_filename, dl.model_root)
+        hf_hub_download(
+            repo_id=dl.repo_id,
+            filename=shard_filename,
+            local_dir=dl.model_root,
+            local_dir_use_symlinks=False,
+            token=settings.hf_token,
+        )
 
     if not p.exists():
         raise FileNotFoundError(f"Download completed but model still missing at: {model_path}")

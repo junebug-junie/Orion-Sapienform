@@ -226,3 +226,26 @@ def test_qwen3_implicit_budget_off_emits_jinja_and_budget(monkeypatch):
     assert _find_flag_value(cmd, "--reasoning-budget") == "0"
     assert "--chat-template-kwargs" in cmd
     assert cmd.index("--jinja") < cmd.index("--chat-template-kwargs")
+
+
+def test_shard_filenames_for_download_expands_multi_part_gguf(monkeypatch):
+    monkeypatch.setenv("LLM_PROFILE_NAME", "qwen3-coder-next-q4km-2xv100-32gb-agent-breadth")
+    main = importlib.import_module("app.main")
+    filename = "Qwen3-Coder-Next-Q5_K_M/Qwen3-Coder-Next-Q5_K_M-00001-of-00004.gguf"
+    shards = main._shard_filenames_for_download(filename)
+    assert len(shards) == 4
+    assert shards[0].endswith("00001-of-00004.gguf")
+    assert shards[-1].endswith("00004-of-00004.gguf")
+
+
+def test_qwen3_coder_next_profile_uses_hf_shard_paths():
+    repo_root = Path(__file__).resolve().parents[3]
+    config_path = repo_root / "config" / "llm_profiles.yaml"
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    for key in (
+        "qwen3-coder-next-q4km-2xv100-32gb-agent-breadth",
+        "qwen3-coder-next-q5km-2xv100-32gb-agent-depth",
+    ):
+        filename = raw["profiles"][key]["llamacpp"]["hf_filename"]
+        assert "-Q4_K_M-" in filename or "-Q5_K_M-" in filename
+        assert filename.endswith("-00001-of-00004.gguf")

@@ -499,7 +499,7 @@ profiles:
     llamacpp:
       model_root: "/models/gguf"
       hf_repo_id: "Qwen/Qwen3-Coder-Next-GGUF"
-      hf_filename: "Qwen3-Coder-Next-Q4_K_M/Qwen3-Coder-Next-00001-of-00004.gguf"
+      hf_filename: "Qwen3-Coder-Next-Q4_K_M/Qwen3-Coder-Next-Q4_K_M-00001-of-00004.gguf"
       host: "0.0.0.0"
       port: 8080
 
@@ -557,7 +557,7 @@ profiles:
     llamacpp:
       model_root: "/models/gguf"
       hf_repo_id: "Qwen/Qwen3-Coder-Next-GGUF"
-      hf_filename: "Qwen3-Coder-Next-Q5_K_M/Qwen3-Coder-Next-00001-of-00004.gguf"
+      hf_filename: "Qwen3-Coder-Next-Q5_K_M/Qwen3-Coder-Next-Q5_K_M-00001-of-00004.gguf"
       host: "0.0.0.0"
       port: 8080
 

@@ -115,3 +115,20 @@ class AttentionFrameV1(BaseModel):
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
         return value
+
+
+class AttentionBroadcastProjectionV1(BaseModel):
+    """Current substrate-wide attention (rung 3): the selected coalition of the
+    latest workspace competition, re-broadcast as a single queryable projection.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    schema_version: Literal["attention.broadcast.projection.v1"] = "attention.broadcast.projection.v1"
+    projection_id: str = "substrate.attention.broadcast.v1"
+    generated_at: datetime = Field(default_factory=_utc_now)
+    frame: AttentionFrameV1
+    selected_action_type: str = "none"
+    selected_open_loop_id: str | None = None
+    selected_description: str | None = None
+    attended_node_ids: list[str] = Field(default_factory=list)

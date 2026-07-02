@@ -724,7 +724,10 @@ channels:
     kind: "event"
     schema_id: "VisionArtifactPayload"
     producer_services: ["orion-vision-edge", "orion-vision-host"]
-    consumer_services: ["orion-security-watcher", "orion-vision-council"]
+    consumer_services:
+      - "orion-security-watcher"
+      - "orion-vision-window"
+      - "orion-vision-council"
     stability: "experimental"
     since: "2026-01-08"
 

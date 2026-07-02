@@ -6,11 +6,13 @@ This document outlines the architecture and contracts for the Orion Vision subsy
 
 The vision pipeline is a distributed system using the Titanium Contract Stack over Redis PubSub.
 
-1.  **Vision Host (`orion-vision-host`)**: GPU-accelerated inference service. Executes tasks (Embed, Detect, Caption, Retina) and broadcasts artifacts.
-2.  **Vision Retina (`orion-vision-retina`)**: Capture service that publishes frame pointers.
-3.  **Vision Window (`orion-vision-window`)**: Aggregates artifacts into time-based windows.
-4.  **Vision Council (`orion-vision-council`)**: Performs high-level cognitive analysis on windows using LLMs. Council V2 parses `VisionSceneInterpretationV1` internally (strict validation, then salvage/coercion for common malformed nested fields, then legacy fallback), then projects `event_candidates` to the legacy `VisionEventPayload` published on `orion:vision:events` (Scribe contract unchanged).
-5.  **Vision Scribe (`orion-vision-scribe`)**: Persists events to SQL, RDF, and Vector stores.
+1.  **Vision Edge (`orion-vision-edge`)**: On-device capture + YOLO/motion detectors. Publishes frame pointers, slim edge-detection artifacts, and compact activity trigger signals.
+2.  **Vision Frame Router (`orion-vision-frame-router`)**: Subscribes to frames and edge activity; dispatches `retina_fast` tasks to Host using baseline vs triggered policy tiers.
+3.  **Vision Host (`orion-vision-host`)**: GPU-accelerated inference service. Executes tasks (Embed, Detect, Caption, Retina) and broadcasts artifacts.
+4.  **Vision Retina (`orion-vision-retina`)**: Capture service that publishes frame pointers (legacy/alternate capture path).
+5.  **Vision Window (`orion-vision-window`)**: Aggregates artifacts into time-based windows with evidence tiers.
+6.  **Vision Council (`orion-vision-council`)**: Performs high-level cognitive analysis on windows using LLMs. Council V2 parses `VisionSceneInterpretationV1` internally (strict validation, then salvage/coercion for common malformed nested fields, then legacy fallback), then projects `event_candidates` to the legacy `VisionEventPayload` published on `orion:vision:events` (Scribe contract unchanged).
+7.  **Vision Scribe (`orion-vision-scribe`)**: Persists events to SQL, RDF, and Vector stores.
 
 ## Channels and Kinds
 
@@ -20,6 +22,11 @@ The vision pipeline is a distributed system using the Titanium Contract Stack ov
 | **Host** | `CHANNEL_VISIONHOST_PUB` | `orion:vision:artifacts` | `vision.artifact` | Out (Broadcast) |
 | **Host** | (Caller specified) | - | `vision.task.result` | Out (Reply) |
 | **Retina** | `CHANNEL_RETINA_PUB` | `orion:vision:frames` | `vision.frame.pointer` | Out |
+| **Edge** | `CHANNEL_VISION_EDGE_ACTIVITY` | `orion:vision:edge:activity` | `vision.edge.activity.v1` | Out |
+| **Edge** | (artifact pub) | `orion:vision:artifacts` | `vision.artifact` | Out |
+| **Frame Router** | `CHANNEL_FRAMES_IN` | `orion:vision:frames` | `vision.frame.pointer` | In |
+| **Frame Router** | `CHANNEL_EDGE_ACTIVITY_IN` | `orion:vision:edge:activity` | `vision.edge.activity.v1` | In |
+| **Frame Router** | `CHANNEL_HOST_INTAKE` | `orion:exec:request:VisionHostService` | `vision.task.request` | Out (Req) |
 | **Window** | `CHANNEL_WINDOW_INTAKE` | `orion:vision:artifacts` | `vision.artifact` | In |
 | **Window** | `CHANNEL_WINDOW_PUB` | `orion:vision:windows` | `vision.window` | Out |
 | **Council** | `CHANNEL_COUNCIL_INTAKE` | `orion:vision:windows` | `vision.window` | In |
@@ -56,11 +63,32 @@ All messages MUST be `BaseEnvelope` objects.
 ### `VisionWindowPayload`
 -   `window_id`: Unique ID.
 -   `start_ts`, `end_ts`: Window duration.
--   `summary`: Aggregated stats (counts, top labels).
+-   `summary`: Aggregated stats (counts, top labels, `evidence` block with hard/soft labels and person hit counts).
 -   `artifact_ids`: List of artifacts in this window.
 
+### `VisionEdgeActivityPayload`
+-   `stream_id`: Operator-facing stream key (e.g. `cam0`).
+-   `camera_id`: Stable capture identifier (RTSP URL on edge deployments).
+-   `labels`: Trigger labels detected (`person`, `motion`, …).
+-   `max_score`: Highest detector score in the triggering frame.
+-   `frame_ts`, `image_path`, `artifact_id`: Provenance for downstream dispatch.
+
 ### `VisionEventPayload`
--   `events`: List of high-level events (`event_type`, `narrative`, `entities`, `tags`, `confidence`).
+
+## Frame router dispatch tiers
+
+Policy file: `config/vision_frame_router.yaml`. Resolution order: `cameras[camera_id]` → `streams[stream_id]` → `defaults`.
+
+The frame router subscribes to `orion:vision:edge:activity` and maintains per-`stream_id` trigger TTL state. Each frame dispatch selects one tier:
+
+| Tier | When | `retina_fast` request | Purpose |
+| :--- | :--- | :--- | :--- |
+| **baseline** | No active trigger labels within TTL | `want_caption: false`, `want_embeddings: false` | Keep GroundingDINO fresh without VLM on every frame |
+| **triggered** | Edge activity includes a configured `trigger_labels` entry (default: `person`, `motion`) within `trigger_ttl_seconds` | `want_caption: true`, `want_embeddings: true` | Rich caption + embed when someone or motion is present |
+
+Triggered tier settings merge over baseline (rate limits, `every_n_frames`, etc.). Task meta includes `dispatch_tier` (`baseline` or `triggered`) for observability.
+
+Per-stream overrides use the `streams:` block (e.g. `streams.cam0`). Legacy per-camera overrides remain under `cameras:` keyed by `camera_id`.
 
 ## Deployment
 

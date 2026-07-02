@@ -2,13 +2,23 @@ version: 1
 
 defaults:
   enabled: true
-  task_type: retina_fast
-  every_n_frames: 10
-  min_seconds_between_tasks_per_camera: 5
-  max_inflight_per_camera: 1
-  request:
-    want_caption: true
-    want_embeddings: true
+  baseline:
+    task_type: retina_fast
+    every_n_frames: 10
+    min_seconds_between_tasks_per_camera: 5
+    max_inflight_per_camera: 1
+    request:
+      want_caption: false
+      want_embeddings: false
+  triggered:
+    task_type: retina_fast
+    trigger_labels: [person, motion]
+    trigger_ttl_seconds: 8
+    min_seconds_between_tasks_per_camera: 2
+    max_inflight_per_camera: 1
+    request:
+      want_caption: true
+      want_embeddings: true
 
 global:
   max_inflight_total: 2
@@ -16,6 +26,10 @@ global:
   # When false, same drop behavior but reason global_inflight_backpressure (no queue in MVP).
   drop_when_busy: true
   require_image_path_exists: true
+
+streams:
+  cam0:
+    enabled: true
 
 cameras:
   mock-cam-01:

@@ -77,7 +77,7 @@ All messages MUST be `BaseEnvelope` objects.
 
 ## Frame router dispatch tiers
 
-Policy file: `config/vision_frame_router.yaml`. Resolution order: `cameras[camera_id]` → `streams[stream_id]` → `defaults`.
+Policy file: `config/vision_frame_router.yaml`. Merge order: `defaults` base, then `streams[stream_id]`, then `cameras[camera_id]` (camera-specific wins).
 
 The frame router subscribes to `orion:vision:edge:activity` and maintains per-`stream_id` trigger TTL state. Each frame dispatch selects one tier:
 

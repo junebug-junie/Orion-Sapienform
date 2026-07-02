@@ -472,6 +472,127 @@ profiles:
       - if you want a lighter fallback, use hf_filename: "Qwen_QwQ-32B-Q4_K_M.gguf"
 
 
+  # Qwen3-Coder-Next — HF: https://huggingface.co/Qwen/Qwen3-Coder-Next-GGUF
+  # 80B MoE / 3B active; non-thinking; agentic coding + tool use; native 262k ctx.
+  # Weights are 4-shard GGUF — pre-download the full quant folder before first boot:
+  #   huggingface-cli download Qwen/Qwen3-Coder-Next-GGUF --include "Qwen3-Coder-Next-Q4_K_M/*"
+  #   huggingface-cli download Qwen/Qwen3-Coder-Next-GGUF --include "Qwen3-Coder-Next-Q5_K_M/*"
+  qwen3-coder-next-q4km-2xv100-32gb-agent-breadth:
+    display_name: "Qwen3-Coder-Next – Q4_K_M (llama.cpp, 2x V100 32GB, agent breadth)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "qwen3-coder-next-q4_k_m"
+
+    supports_tools: true
+    supports_embeddings: false
+    supports_vision: false
+
+    gpu:
+      num_gpus: 2
+      tensor_parallel_size: 1
+      device_ids: [0, 1]
+      max_model_len: 40960
+      max_batch_tokens: 1024
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.90
+
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "Qwen/Qwen3-Coder-Next-GGUF"
+      hf_filename: "Qwen3-Coder-Next-Q4_K_M/Qwen3-Coder-Next-00001-of-00004.gguf"
+      host: "0.0.0.0"
+      port: 8080
+
+      ctx_size: 40960
+      n_gpu_layers: 99
+      threads: 16
+      n_parallel: 1
+      batch_size: 1024
+
+      reasoning_budget: 0
+
+      no_context_shift: true
+      split_mode: "row"
+      tensor_split: "1,1"
+      flash_attn: "on"
+
+      temperature: 1.0
+      top_k: 40
+      top_p: 0.95
+      min_p: 0.0
+      presence_penalty: 0.0
+
+      n_predict: 16384
+
+    notes: |
+      Breadth-oriented Qwen3-Coder-Next profile for 2x V100 32GB (row split).
+      - Target lane: context-exec agent_repl / smolagents CodeAgent via gateway route="agent".
+      - Q4_K_M (~48GB weights) fits two 32GB GPUs with headroom for ~40k KV cache.
+      - Non-thinking coder: reasoning_budget 0 emits --jinja + --reasoning-budget 0 (no redacted_thinking blocks).
+      - Sampling matches Qwen model-card agent defaults (temp 1.0, top_k 40, top_p 0.95).
+      - Single parallel slot keeps smolagents multi-step loops stable on the shared worker.
+      - Pair with qwen3-coder-next-q5km-2xv100-32gb-agent-depth when you want a heavier lane.
+      - Wire: ATLAS_AGENT_PROFILE_NAME=qwen3-coder-next-q4km-2xv100-32gb-agent-breadth
+      - If OOM: lower ctx_size to 32768, then batch_size to 768.
+
+  qwen3-coder-next-q5km-2xv100-32gb-agent-depth:
+    display_name: "Qwen3-Coder-Next – Q5_K_M (llama.cpp, 2x V100 32GB, agent depth)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "qwen3-coder-next-q5_k_m"
+
+    supports_tools: true
+    supports_embeddings: false
+    supports_vision: false
+
+    gpu:
+      num_gpus: 2
+      tensor_parallel_size: 1
+      device_ids: [0, 1]
+      max_model_len: 65536
+      max_batch_tokens: 1024
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.90
+
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "Qwen/Qwen3-Coder-Next-GGUF"
+      hf_filename: "Qwen3-Coder-Next-Q5_K_M/Qwen3-Coder-Next-00001-of-00004.gguf"
+      host: "0.0.0.0"
+      port: 8080
+
+      ctx_size: 65536
+      n_gpu_layers: 99
+      threads: 16
+      n_parallel: 1
+      batch_size: 1024
+
+      reasoning_budget: 0
+
+      no_context_shift: true
+      split_mode: "row"
+      tensor_split: "1,1"
+      flash_attn: "on"
+
+      temperature: 1.0
+      top_k: 40
+      top_p: 0.95
+      min_p: 0.0
+      presence_penalty: 0.0
+
+      n_predict: 32768
+
+    notes: |
+      Depth-oriented Qwen3-Coder-Next profile for 2x V100 32GB (row split).
+      - Target lane: long-horizon agent_repl sweeps (large repo reads, multi-step tool chains).
+      - Q5_K_M (~57GB weights) trades VRAM for sharper code + tool-call quality vs Q4_K_M.
+      - 64k ctx supports smolagents transcripts + repo snippets without YaRN (native 262k available if VRAM allows later tuning).
+      - Same non-thinking launch policy as the breadth profile (reasoning_budget 0 → jinja path).
+      - Use when Gate 1 smolcode live proof needs more reasoning depth; expect slower per-step latency.
+      - Wire: dedicated atlas-agent worker OR swap ATLAS_AGENT_PROFILE_NAME for depth-first deployments.
+      - If OOM: lower ctx_size to 49152 before falling back to qwen3-coder-next-q4km-2xv100-32gb-agent-breadth.
+
+
   # ─────────────────────────────────────────────
   # DeepSeek 70B via llama.cpp on Atlas
   # ─────────────────────────────────────────────

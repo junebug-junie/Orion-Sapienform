@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import create_engine, text
@@ -15,6 +15,24 @@ from orion.schemas.reduction_receipt import ReductionReceiptV1
 from app.ingest.receipts import parse_receipt_json
 
 FIELD_DIGEST_CURSOR_NAME = "field_digest_receipt_consumer"
+
+# Batched, guard-railed prune: never deletes the newest row (by generated_at,
+# the same ordering load_latest_field uses), so readers can never observe an
+# empty table even when the writer is paused.
+PRUNE_FIELD_STATE_SQL = """
+DELETE FROM substrate_field_state
+WHERE ctid IN (
+    SELECT ctid
+    FROM substrate_field_state
+    WHERE created_at < :cutoff
+      AND tick_id <> (
+          SELECT tick_id FROM substrate_field_state
+          ORDER BY generated_at DESC LIMIT 1
+      )
+    ORDER BY created_at ASC
+    LIMIT :batch_size
+)
+"""
 
 
 @dataclass(frozen=True)
@@ -171,6 +189,23 @@ class FieldDigesterStore:
                     "created_at": now,
                 },
             )
+
+    def prune_field_state(self, *, retention_hours: float, batch_size: int = 5000) -> int:
+        if retention_hours <= 0:
+            return 0
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=retention_hours)
+        total_deleted = 0
+        while True:
+            with self._engine.begin() as conn:
+                result = conn.execute(
+                    text(PRUNE_FIELD_STATE_SQL),
+                    {"cutoff": cutoff, "batch_size": batch_size},
+                )
+            deleted = result.rowcount or 0
+            total_deleted += deleted
+            if deleted < batch_size:
+                break
+        return total_deleted
 
     def advance_cursor(self, receipt_id: str, created_at: datetime) -> None:
         now = datetime.now(timezone.utc)

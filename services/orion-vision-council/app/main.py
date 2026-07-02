@@ -25,10 +25,10 @@ except ImportError:
     logger.warning("Cortex schemas not found, using dicts")
 
 from .interpretation import (
+    InterpretationParseOutcome,
     build_interpretation_prompt,
     parse_llm_content,
     project_interpretation_to_events,
-    try_legacy_fallback,
 )
 
 _MAX_DEBUG_INTERPRETATIONS = 20
@@ -46,8 +46,16 @@ class CouncilService:
         self._shutdown_event = asyncio.Event()
         self._recent_interpretations: list[dict] = []
 
-    def _record_interpretation(self, interpretation: VisionSceneInterpretationV1) -> None:
-        self._recent_interpretations.append(interpretation.model_dump())
+    def _record_interpretation(
+        self,
+        interpretation: VisionSceneInterpretationV1,
+        outcome: InterpretationParseOutcome,
+    ) -> None:
+        record = interpretation.model_dump()
+        record["parse_mode"] = outcome.parse_mode
+        if outcome.salvage_warnings:
+            record["salvage_warnings"] = list(outcome.salvage_warnings)
+        self._recent_interpretations.append(record)
         if len(self._recent_interpretations) > _MAX_DEBUG_INTERPRETATIONS:
             self._recent_interpretations = self._recent_interpretations[-_MAX_DEBUG_INTERPRETATIONS:]
 
@@ -115,9 +123,9 @@ class CouncilService:
             logger.error(f"[COUNCIL] RPC invalid payload: {e}")
             return
 
-        interpretation = await self._generate_interpretation(req.window, env)
+        interpretation, parse_outcome = await self._generate_interpretation(req.window, env)
         if interpretation is not None:
-            self._record_interpretation(interpretation)
+            self._record_interpretation(interpretation, parse_outcome)
 
         event_payload = (
             self._project_interpretation_to_events(interpretation, req.window)
@@ -158,9 +166,9 @@ class CouncilService:
             logger.error(f"[COUNCIL] Invalid payload: {e}")
             return
 
-        interpretation = await self._generate_interpretation(payload, env)
+        interpretation, parse_outcome = await self._generate_interpretation(payload, env)
         if interpretation is not None:
-            self._record_interpretation(interpretation)
+            self._record_interpretation(interpretation, parse_outcome)
 
         event_payload = (
             self._project_interpretation_to_events(interpretation, payload)
@@ -183,16 +191,14 @@ class CouncilService:
         self,
         window: VisionWindowPayload,
         source_env: BaseEnvelope,
-    ) -> VisionSceneInterpretationV1 | None:
+    ) -> tuple[VisionSceneInterpretationV1 | None, InterpretationParseOutcome]:
         prompt = build_interpretation_prompt(window)
         content = await self._call_llm_raw(prompt, source_env)
         if not content:
-            return None
+            return None, InterpretationParseOutcome(interpretation=None, parse_mode="parse_failed")
 
-        interpretation = parse_llm_content(content, window)
-        if interpretation is None:
-            interpretation = try_legacy_fallback(content, window)
-        return interpretation
+        outcome = parse_llm_content(content, window)
+        return outcome.interpretation, outcome
 
     def _project_interpretation_to_events(
         self,

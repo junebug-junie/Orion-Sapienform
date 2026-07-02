@@ -231,5 +231,5 @@ def test_registry_registers_three_reducer_lanes() -> None:
 
     reg = build_projection_unification_registry()
     ids = [p.producer_id for p in reg.producers]
-    assert len(reg.producers) == 14
-    assert {"biometrics", "execution", "transport", "attention", "episodes"} <= set(ids)
+    assert len(reg.producers) == 15
+    assert {"biometrics", "execution", "transport", "attention", "episodes", "curiosity"} <= set(ids)

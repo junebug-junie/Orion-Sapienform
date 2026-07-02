@@ -48,6 +48,7 @@ from orion.substrate.relational.adapters.attention_ctx import (
     map_attention_broadcast_ctx_to_substrate,
 )
 from orion.substrate.relational.adapters.episodes_ctx import map_episode_ctx_to_substrate
+from orion.substrate.relational.adapters.curiosity_ctx import map_curiosity_ctx_to_substrate
 
 logger = logging.getLogger("orion.cognition.projection_builder")
 
@@ -169,6 +170,17 @@ def build_projection_unification_registry() -> ProducerRegistryV1:
                 freshness_ttl_sec=1800,
                 pull_on_cold=False,
                 adapter_fn=map_episode_ctx_to_substrate,
+            ),
+            # Curiosity lane (rung-5 observer): Orion's detected self-model gaps,
+            # from endogenous curiosity signals. Informs introspection.
+            # ctx-sourced; fast TTL (signals refresh ~every 20s).
+            ProducerEntryV1(
+                producer_id="curiosity",
+                trust_tier=SNAPSHOT_EPHEMERAL,
+                anchor_scopes=("orion",),
+                freshness_ttl_sec=60,
+                pull_on_cold=False,
+                adapter_fn=map_curiosity_ctx_to_substrate,
             ),
             ProducerEntryV1(
                 producer_id="orionmem",

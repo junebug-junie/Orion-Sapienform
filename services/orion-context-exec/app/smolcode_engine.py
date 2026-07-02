@@ -14,6 +14,7 @@ from .callable_namespace import ContextNamespace
 from .organ_runtime import OrganRuntime
 from .rlm_engine import RLMEngine
 from .settings import settings
+from .workspace import ContextExecWorkspace
 
 logger = logging.getLogger("orion-context-exec.smolcode_engine")
 
@@ -87,21 +88,40 @@ class OrionSmolagentsModel(Model):
         return ChatMessage(role="assistant", content=content)
 
 
-def _make_tools(runtime: OrganRuntime, loop: asyncio.AbstractEventLoop) -> list:
-    """Build the four read-only smolagents tools backed by OrganRuntime."""
+def _repo_reads_enabled(runtime: OrganRuntime) -> bool:
+    return bool(settings.context_exec_real_repo_enabled and runtime.request.permissions.read_repo)
+
+
+def _make_tools(
+    runtime: OrganRuntime,
+    loop: asyncio.AbstractEventLoop,
+    *,
+    workspace_info: dict[str, Any] | None = None,
+    workspace: ContextExecWorkspace | None = None,
+) -> list:
+    """Build smolagents tools for agent_repl: read-only repo, workspace artifacts, recall."""
     from smolagents import tool
 
+    from . import repo_tools, workspace_tools
+
     @tool
-    def repo_grep(pattern: str) -> str:
-        """Search the repository for lines matching a regex pattern.
+    def repo_grep(pattern: str, path: str = "", limit: int = 100, literal: bool = False) -> str:
+        """Search the repository for lines matching a regex or literal pattern.
 
         Args:
-            pattern: Regular expression to search for in file contents.
+            pattern: Regular expression (or literal string when literal=True).
+            path: Optional repo-relative directory to search under.
+            limit: Maximum number of matches to return.
+            literal: When True, treat pattern as a literal string.
 
         Returns:
-            Newline-separated matches as 'path:line: content'. 'No matches found.' if empty.
+            Newline-separated matches as 'path:line: content', or a clear status message.
         """
-        hits = runtime.repo_grep(pattern, limit=30)
+        if not _repo_reads_enabled(runtime):
+            if not settings.context_exec_real_repo_enabled:
+                return "repo reads disabled by settings"
+            return "repo read permission denied"
+        hits = runtime.repo_grep(pattern, path=path or None, limit=limit, literal=literal)
         if not hits:
             return "No matches found."
         return "\n".join(
@@ -119,6 +139,10 @@ def _make_tools(runtime: OrganRuntime, loop: asyncio.AbstractEventLoop) -> list:
         Returns:
             File content as a string, or an error message if not found/allowed.
         """
+        if not _repo_reads_enabled(runtime):
+            if not settings.context_exec_real_repo_enabled:
+                return "repo reads disabled by settings"
+            return "repo read permission denied"
         result = runtime.repo_read(path)
         if result is None:
             return f"File not found or not permitted: {path}"
@@ -126,6 +150,76 @@ def _make_tools(runtime: OrganRuntime, loop: asyncio.AbstractEventLoop) -> list:
         if result.get("truncated"):
             content += "\n[TRUNCATED]"
         return content
+
+    @tool
+    def repo_read_range(path: str, start_line: int, end_line: int) -> str:
+        """Read a numbered line range from a repository file.
+
+        Args:
+            path: Repo-relative file path.
+            start_line: First line number (1-based, inclusive).
+            end_line: Last line number (inclusive).
+
+        Returns:
+            Line-numbered content or a clear blocked/absent/range error message.
+        """
+        if not _repo_reads_enabled(runtime):
+            if not settings.context_exec_real_repo_enabled:
+                return "repo reads disabled by settings"
+            return "repo read permission denied"
+        return repo_tools.repo_read_range(path, start_line, end_line)
+
+    @tool
+    def repo_find_files(pattern: str, path: str = "", limit: int = 200) -> str:
+        """Find repository files matching a glob-style pattern.
+
+        Args:
+            pattern: Glob pattern matched against file names or repo-relative paths.
+            path: Optional repo-relative directory to search under.
+            limit: Maximum number of paths to return.
+
+        Returns:
+            Newline-separated repo-relative paths or a clear status message.
+        """
+        if not _repo_reads_enabled(runtime):
+            if not settings.context_exec_real_repo_enabled:
+                return "repo reads disabled by settings"
+            return "repo read permission denied"
+        return repo_tools.repo_find_files(pattern, path=path, limit=limit)
+
+    @tool
+    def repo_tree(path: str = "", depth: int = 2, limit: int = 300) -> str:
+        """Show a bounded directory tree under a repository path.
+
+        Args:
+            path: Repo-relative directory. Empty string means repo root.
+            depth: Maximum directory depth to display.
+            limit: Maximum number of tree lines to return.
+
+        Returns:
+            Deterministic tree text or a clear blocked/absent error message.
+        """
+        if not _repo_reads_enabled(runtime):
+            if not settings.context_exec_real_repo_enabled:
+                return "repo reads disabled by settings"
+            return "repo read permission denied"
+        return repo_tools.repo_tree(path=path, depth=depth, limit=limit)
+
+    @tool
+    def repo_outline(path: str) -> str:
+        """Return a Python AST outline (imports, classes, functions) with line numbers.
+
+        Args:
+            path: Repo-relative Python file path.
+
+        Returns:
+            Outline text, or a clear unsupported/blocked/absent message.
+        """
+        if not _repo_reads_enabled(runtime):
+            if not settings.context_exec_real_repo_enabled:
+                return "repo reads disabled by settings"
+            return "repo read permission denied"
+        return repo_tools.repo_outline(path)
 
     @tool
     def repo_list(path: str = "") -> str:
@@ -137,15 +231,93 @@ def _make_tools(runtime: OrganRuntime, loop: asyncio.AbstractEventLoop) -> list:
         Returns:
             Newline-separated entries. Directories end with '/'.
         """
-        if not settings.context_exec_real_repo_enabled:
-            return "repo reads disabled by settings"
-        if not runtime.request.permissions.read_repo:
+        if not _repo_reads_enabled(runtime):
+            if not settings.context_exec_real_repo_enabled:
+                return "repo reads disabled by settings"
             return "repo read permission denied"
-        from .repo_tools import repo_list as _repo_list
-        entries = _repo_list(path)
+        entries = repo_tools.repo_list(path)
         if not entries:
             return f"No allowed entries under: {path!r}"
         return "\n".join(entries)
+
+    @tool
+    def patch_validate(unified_diff: str) -> str:
+        """Validate unified diff syntax and repo path policy without applying changes.
+
+        Args:
+            unified_diff: Unified diff text to validate.
+
+        Returns:
+            Concise valid/invalid summary with files touched and reason if invalid.
+        """
+        return repo_tools.patch_validate(unified_diff)
+
+    @tool
+    def workspace_write(path: str, content: str) -> str:
+        """Write content to a path inside the current run workspace (not canonical repo).
+
+        Args:
+            path: Workspace-relative path (scratch/, outputs/, patches/, repo/).
+            content: Text content to write.
+
+        Returns:
+            Confirmation with workspace-relative path or unavailable/blocked message.
+        """
+        return workspace_tools.workspace_write(workspace_info, workspace, path, content)
+
+    @tool
+    def workspace_read(path: str) -> str:
+        """Read a file from the current run workspace.
+
+        Args:
+            path: Workspace-relative path.
+
+        Returns:
+            File content or unavailable/blocked/absent message.
+        """
+        return workspace_tools.workspace_read(workspace_info, workspace, path)
+
+    @tool
+    def workspace_list(path: str = "") -> str:
+        """List entries under a path in the current run workspace.
+
+        Args:
+            path: Workspace-relative directory. Empty string lists workspace root.
+
+        Returns:
+            Newline-separated entries or unavailable/blocked message.
+        """
+        return workspace_tools.workspace_list(workspace_info, workspace, path)
+
+    @tool
+    def workspace_write_patch(name: str, unified_diff: str) -> str:
+        """Write a unified diff under workspace patches/ (not canonical repo).
+
+        Args:
+            name: Patch filename (`.patch` appended if missing).
+            unified_diff: Unified diff text.
+
+        Returns:
+            Confirmation with patches/ path or unavailable message.
+        """
+        return workspace_tools.workspace_write_patch(
+            workspace_info, workspace, name, unified_diff
+        )
+
+    @tool
+    def workspace_write_report(name: str, markdown: str) -> str:
+        """Write a markdown report under workspace outputs/.
+
+        Args:
+            name: Report filename (`.md` appended if missing).
+            markdown: Markdown content.
+
+        Returns:
+            Confirmation with outputs/ path or unavailable message.
+        """
+        return workspace_tools.workspace_write_report(
+            workspace_info, workspace, name, markdown
+        )
 
     @tool
     def recall_query(query: str) -> str:
@@ -172,7 +344,22 @@ def _make_tools(runtime: OrganRuntime, loop: asyncio.AbstractEventLoop) -> list:
             f"- {h.get('snippet') or h.get('title') or 'hit'}" for h in hits[:10]
         )
 
-    return [repo_grep, repo_read, repo_list, recall_query]
+    return [
+        repo_grep,
+        repo_read,
+        repo_read_range,
+        repo_find_files,
+        repo_tree,
+        repo_outline,
+        repo_list,
+        patch_validate,
+        workspace_write,
+        workspace_read,
+        workspace_list,
+        workspace_write_patch,
+        workspace_write_report,
+        recall_query,
+    ]
 
 
 class SmolagentsCodeEngine(RLMEngine):
@@ -189,6 +376,8 @@ class SmolagentsCodeEngine(RLMEngine):
         step_callbacks: list | None = None,
         max_steps: int | None = None,
         per_step_timeout: float | None = None,
+        workspace_info: dict[str, Any] | None = None,
+        workspace: ContextExecWorkspace | None = None,
     ) -> Any:
         if organ_runtime is None:
             return {
@@ -200,7 +389,12 @@ class SmolagentsCodeEngine(RLMEngine):
         from smolagents import CodeAgent  # lazy import — only loaded when engine is selected
 
         loop = asyncio.get_running_loop()
-        tools = _make_tools(organ_runtime, loop)
+        tools = _make_tools(
+            organ_runtime,
+            loop,
+            workspace_info=workspace_info,
+            workspace=workspace,
+        )
         model = OrionSmolagentsModel(organ_runtime, loop, per_step_timeout=per_step_timeout)
         agent = CodeAgent(
             tools=tools,

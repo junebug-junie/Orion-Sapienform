@@ -158,6 +158,7 @@ class OrganRuntime:
         *,
         path: str | None = None,
         limit: int = 50,
+        literal: bool = False,
     ) -> list[dict[str, Any]]:
         if not settings.context_exec_real_repo_enabled:
             return []
@@ -165,7 +166,9 @@ class OrganRuntime:
             return []
         hits = [
             h.model_dump(mode="json")
-            for h in repo_tools.repo_grep(pattern, path=path, limit=limit)
+            for h in repo_tools.repo_grep(
+                pattern, path=path, limit=limit, literal=literal
+            )
         ]
         if self.organ_status is not None:
             record_repo(self.organ_status, hits)

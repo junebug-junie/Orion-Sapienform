@@ -9,7 +9,7 @@ The vision pipeline is a distributed system using the Titanium Contract Stack ov
 1.  **Vision Host (`orion-vision-host`)**: GPU-accelerated inference service. Executes tasks (Embed, Detect, Caption, Retina) and broadcasts artifacts.
 2.  **Vision Retina (`orion-vision-retina`)**: Capture service that publishes frame pointers.
 3.  **Vision Window (`orion-vision-window`)**: Aggregates artifacts into time-based windows.
-4.  **Vision Council (`orion-vision-council`)**: Performs high-level cognitive analysis on windows using LLMs.
+4.  **Vision Council (`orion-vision-council`)**: Performs high-level cognitive analysis on windows using LLMs. Council V2 parses `VisionSceneInterpretationV1` internally, then projects `event_candidates` to the legacy `VisionEventPayload` published on `orion:vision:events` (Scribe contract unchanged).
 5.  **Vision Scribe (`orion-vision-scribe`)**: Persists events to SQL, RDF, and Vector stores.
 
 ## Channels and Kinds

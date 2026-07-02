@@ -37,6 +37,10 @@ async def test_health(monkeypatch: pytest.MonkeyPatch) -> None:
     assert data["service"] == "orion-context-exec"
     assert data["write_enabled"] is False
     assert data["max_depth"] == 1
+    assert "agent_repl_max_steps" in data
+    assert "max_seconds" in data
+    assert "llm_timeout_sec" in data
+    assert isinstance(data["agent_repl_max_steps"], int)
     block = data["proposal_review_api"]
     assert "enabled" in block
     assert "store_configured" in block

@@ -95,3 +95,50 @@ def test_baseline_dispatch_without_trigger(trigger_policy_path: Path) -> None:
     assert decision.should_dispatch is True
     assert decision.dispatch_tier == "baseline"
     assert decision.request_overrides.get("want_caption") is False
+
+
+def test_legacy_camera_with_empty_trigger_labels_stays_baseline(tmp_path: Path) -> None:
+    p = tmp_path / "policy.yaml"
+    p.write_text(
+        """
+version: 1
+defaults:
+  enabled: true
+  baseline:
+    task_type: retina_fast
+    every_n_frames: 1
+    min_seconds_between_tasks_per_camera: 0
+    request:
+      want_caption: false
+      want_embeddings: false
+  triggered:
+    task_type: retina_fast
+    trigger_labels: [person, motion]
+    trigger_ttl_seconds: 8
+    min_seconds_between_tasks_per_camera: 0
+    request:
+      want_caption: true
+      want_embeddings: true
+global:
+  max_inflight_total: 4
+  require_image_path_exists: false
+streams: {}
+cameras:
+  porch_eye:
+    enabled: true
+    task_type: detect_open_vocab
+    every_n_frames: 1
+    min_seconds_between_tasks_per_camera: 0
+    triggered:
+      trigger_labels: []
+""",
+        encoding="utf-8",
+    )
+    settings = Settings(ROUTER_POLICY_PATH=str(p), REQUIRE_IMAGE_PATH_EXISTS=False)
+    policy = FrameDispatchPolicy.load(settings)
+    state = RouterState()
+    state.record_activity("cam0", ["person"], now=100.0)
+    decision = policy.decide(_frame_env(camera_id="porch_eye", stream_id="cam0"), state, now=100.5, image_path_exists=True)
+    assert decision.dispatch_tier == "baseline"
+    assert decision.task_type == "detect_open_vocab"
+    assert decision.request_overrides.get("want_caption") is False

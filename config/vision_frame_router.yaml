@@ -37,12 +37,16 @@ cameras:
     task_type: retina_fast
     every_n_frames: 3
     min_seconds_between_tasks_per_camera: 2
+    triggered:
+      trigger_labels: []
 
   porch_eye:
     enabled: true
     task_type: detect_open_vocab
     every_n_frames: 5
     min_seconds_between_tasks_per_camera: 3
+    triggered:
+      trigger_labels: []
     request:
       prompts:
         - person

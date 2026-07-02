@@ -46,7 +46,7 @@ def enforce_evidence_grounding(
             continue
         updated = cand
         if mentions_activity and "person" in hard and cand.confidence > 0.4:
-            if not (window.summary or {}).get("captions"):
+            if (window.summary or {}).get("captions"):
                 updated = cand.model_copy(update={"confidence": 0.4, "tags": [*cand.tags, "caption_inferred"]})
                 notes.append(f"capped_confidence:{cand.event_type}")
         kept.append(updated)

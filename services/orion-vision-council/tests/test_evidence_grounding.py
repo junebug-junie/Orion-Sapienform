@@ -64,3 +64,29 @@ def test_person_presence_fallback_on_edge_hits() -> None:
 
 def test_activity_pattern_matches_watching() -> None:
     assert ACTIVITY_PATTERN.search("watching a video")
+
+
+def test_enforce_caps_activity_confidence_when_captions_present() -> None:
+    window = _window(
+        captions=["A person near the door."],
+        evidence={"hard_labels": ["person", "door"], "edge_person_hits": 1, "host_person_hits": 1},
+    )
+    interpretation = VisionSceneInterpretationV1(
+        window_id="w1",
+        scene_summary="Activity near door",
+        event_candidates=[
+            {
+                "event_type": "human_activity",
+                "narrative": "A person is watching the door.",
+                "entities": ["person"],
+                "tags": [],
+                "confidence": 0.9,
+                "salience": 0.8,
+                "evidence_refs": ["art-edge-1"],
+            }
+        ],
+    )
+    grounded, notes = enforce_evidence_grounding(interpretation, window)
+    assert grounded.event_candidates[0].confidence == 0.4
+    assert "caption_inferred" in grounded.event_candidates[0].tags
+    assert any("capped_confidence" in n for n in notes)

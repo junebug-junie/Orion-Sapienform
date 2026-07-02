@@ -88,3 +88,36 @@ async def test_organ_runtime_llm_chat_passes_messages_and_stop(monkeypatch):
     assert seen["messages"] == msgs
     assert seen["stop"] == ["<end_code>"]
     assert seen["route"] == "agent"
+
+
+@pytest.mark.asyncio
+async def test_event_emitter_agent_step_publishes():
+    from app.events import ContextExecEventEmitter
+
+    published = []
+
+    class FakeBus:
+        async def publish(self, channel, env):
+            published.append((channel, env.kind, env.payload))
+
+    import app.events as ev
+    ev.settings.orion_bus_enabled = True
+
+    emitter = ContextExecEventEmitter(FakeBus(), correlation_id="corr-1")
+    await emitter.agent_step(
+        run_id="r1",
+        mode="agent_repl",
+        step_index=0,
+        thought="I will grep the repo",
+        tool_id="python_interpreter",
+        tool_args="repo_grep('runtime')",
+        observation="services/orion-hub/... matched",
+        duration_ms=1234,
+        is_final=False,
+    )
+    assert published, "no event published"
+    channel, kind, payload = published[0]
+    assert kind == "context.exec.agent_step.v1"
+    assert payload["step_index"] == 0
+    assert payload["tool_id"] == "python_interpreter"
+    assert payload["correlation_id"] == "corr-1"

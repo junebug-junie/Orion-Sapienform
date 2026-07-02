@@ -73,9 +73,10 @@ def test_quick_profile_permissions_remain_narrow() -> None:
 
 def test_v2_enabled_agent_lane_uses_investigation_v2_without_repo_keywords() -> None:
     build_context_exec_request, _, CortexChatRequest = _hub_imports()
-    with patch("scripts.context_exec_agent_bridge.investigation_v2_enabled", return_value=True):
-        req = CortexChatRequest(prompt=CORTEX_CHANGE_PROMPT, mode="agent", trace_id="corr-v2")
-        body = build_context_exec_request(req=req, prompt=req.prompt, llm_profile="agent")
+    with patch("scripts.context_exec_agent_bridge.agent_repl_enabled", return_value=False):
+        with patch("scripts.context_exec_agent_bridge.investigation_v2_enabled", return_value=True):
+            req = CortexChatRequest(prompt=CORTEX_CHANGE_PROMPT, mode="agent", trace_id="corr-v2")
+            body = build_context_exec_request(req=req, prompt=req.prompt, llm_profile="agent")
     assert body.mode == "investigation_v2"
     assert body.permissions.read_repo is True
     assert body.text == CORTEX_CHANGE_PROMPT
@@ -83,13 +84,14 @@ def test_v2_enabled_agent_lane_uses_investigation_v2_without_repo_keywords() -> 
 
 def test_v2_bypasses_infer_context_exec_mode() -> None:
     build_context_exec_request, _, CortexChatRequest = _hub_imports()
-    with patch("scripts.context_exec_agent_bridge.investigation_v2_enabled", return_value=True):
-        with patch(
-            "scripts.context_exec_agent_bridge._infer_context_exec_mode",
-            return_value="repo_impact_analysis",
-        ) as infer_mock:
-            req = CortexChatRequest(prompt=CORTEX_CHANGE_PROMPT, mode="agent", trace_id="corr-bypass")
-            body = build_context_exec_request(req=req, prompt=req.prompt, llm_profile="agent")
+    with patch("scripts.context_exec_agent_bridge.agent_repl_enabled", return_value=False):
+        with patch("scripts.context_exec_agent_bridge.investigation_v2_enabled", return_value=True):
+            with patch(
+                "scripts.context_exec_agent_bridge._infer_context_exec_mode",
+                return_value="repo_impact_analysis",
+            ) as infer_mock:
+                req = CortexChatRequest(prompt=CORTEX_CHANGE_PROMPT, mode="agent", trace_id="corr-bypass")
+                body = build_context_exec_request(req=req, prompt=req.prompt, llm_profile="agent")
     infer_mock.assert_not_called()
     assert body.mode == "investigation_v2"
     assert body.permissions.read_repo is True
@@ -100,31 +102,34 @@ def test_no_magic_phrase_repo_permission() -> None:
     prompt = CORTEX_CHANGE_PROMPT
     assert "repo" not in prompt.lower()
     assert "impact" not in prompt.lower()
-    with patch("scripts.context_exec_agent_bridge.investigation_v2_enabled", return_value=True):
-        req = CortexChatRequest(prompt=prompt, mode="agent", trace_id="corr-no-magic")
-        body = build_context_exec_request(req=req, prompt=prompt, llm_profile="agent")
+    with patch("scripts.context_exec_agent_bridge.agent_repl_enabled", return_value=False):
+        with patch("scripts.context_exec_agent_bridge.investigation_v2_enabled", return_value=True):
+            req = CortexChatRequest(prompt=prompt, mode="agent", trace_id="corr-no-magic")
+            body = build_context_exec_request(req=req, prompt=prompt, llm_profile="agent")
     assert body.mode == "investigation_v2"
     assert body.permissions.read_repo is True
 
 
 def test_v2_disabled_preserves_keyword_mode_inference() -> None:
     build_context_exec_request, _, CortexChatRequest = _hub_imports()
-    with patch("scripts.context_exec_agent_bridge.investigation_v2_enabled", return_value=False):
-        req = CortexChatRequest(
-            prompt="what breaks if we replace agent-chain-service with context-exec?",
-            mode="agent",
-            trace_id="corr-legacy",
-        )
-        body = build_context_exec_request(req=req, prompt=req.prompt, llm_profile="agent")
+    with patch("scripts.context_exec_agent_bridge.agent_repl_enabled", return_value=False):
+        with patch("scripts.context_exec_agent_bridge.investigation_v2_enabled", return_value=False):
+            req = CortexChatRequest(
+                prompt="what breaks if we replace agent-chain-service with context-exec?",
+                mode="agent",
+                trace_id="corr-legacy",
+            )
+            body = build_context_exec_request(req=req, prompt=req.prompt, llm_profile="agent")
     assert body.mode == "repo_impact_analysis"
     assert body.permissions.read_repo is True
 
 
 def test_v2_enabled_quick_profile_grants_read_broad_agent_permissions() -> None:
     build_context_exec_request, _, CortexChatRequest = _hub_imports()
-    with patch("scripts.context_exec_agent_bridge.investigation_v2_enabled", return_value=True):
-        req = CortexChatRequest(prompt=CORTEX_CHANGE_PROMPT, mode="agent", trace_id="corr-quick")
-        body = build_context_exec_request(req=req, prompt=req.prompt, llm_profile="quick")
+    with patch("scripts.context_exec_agent_bridge.agent_repl_enabled", return_value=False):
+        with patch("scripts.context_exec_agent_bridge.investigation_v2_enabled", return_value=True):
+            req = CortexChatRequest(prompt=CORTEX_CHANGE_PROMPT, mode="agent", trace_id="corr-quick")
+            body = build_context_exec_request(req=req, prompt=req.prompt, llm_profile="quick")
     assert body.mode == "investigation_v2"
     assert body.llm_profile == "quick"
     assert body.permissions.read_repo is True

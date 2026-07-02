@@ -10556,6 +10556,10 @@ loadDismissedIds();
           if (d.kind === 'notification' && d.notification) {
             addNotification(d.notification);
           }
+          if (d.kind === 'agent_step' && d.step) {
+            try { appendLiveAgentStep(d.correlation_id, d.step); } catch (err) { console.warn('agent_step render failed', err); }
+            return;
+          }
           if (d.memory_digest || d.recall_debug || typeof d.memory_used === 'boolean') {
             updateMemoryPanelFromResponse(d);
           }

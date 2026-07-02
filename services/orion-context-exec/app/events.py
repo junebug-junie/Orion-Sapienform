@@ -106,6 +106,34 @@ class ContextExecEventEmitter:
             payload=step.model_dump(mode="json"),
         )
 
+    async def agent_step(
+        self,
+        *,
+        run_id: str,
+        mode: ContextExecMode,
+        step_index: int,
+        thought: str,
+        tool_id: str,
+        tool_args: str,
+        observation: str,
+        duration_ms: int,
+        is_final: bool,
+    ) -> None:
+        await self.publish(
+            "context.exec.agent_step.v1",
+            run_id=run_id,
+            mode=mode,
+            payload={
+                "step_index": step_index,
+                "thought": (thought or "")[:2000],
+                "tool_id": tool_id,
+                "tool_args": (tool_args or "")[:2000],
+                "observation": (observation or "")[:2000],
+                "duration_ms": int(duration_ms or 0),
+                "is_final": bool(is_final),
+            },
+        )
+
     async def schema_invalid(self, *, run_id: str, mode: ContextExecMode, artifact_type: str | None) -> None:
         await self.publish(
             "context.exec.schema_invalid.v1",

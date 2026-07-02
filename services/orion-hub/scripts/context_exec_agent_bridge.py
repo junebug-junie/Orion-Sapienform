@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from orion.schemas.context_exec import (
+    ContextExecBudgetV1,
     ContextExecPermissionV1,
     ContextExecRequestV1,
     ContextExecRunV1,
@@ -124,6 +125,10 @@ def investigation_v2_enabled() -> bool:
     return bool(settings.CONTEXT_EXEC_INVESTIGATION_V2_ENABLED)
 
 
+def agent_repl_enabled() -> bool:
+    return bool(settings.HUB_AGENT_REPL_ENABLED)
+
+
 def _answer_contract_for_hub_request(req: CortexChatRequest, prompt: str) -> AnswerContract:
     """Normalize hub answer_contract_draft + options into a bus-safe AnswerContract."""
     meta = req.metadata if isinstance(req.metadata, dict) else {}
@@ -161,7 +166,24 @@ def build_context_exec_request(
     llm_profile: str,
 ) -> ContextExecRequestV1:
     llm_profile_norm = normalize_llm_profile(llm_profile)
+    if agent_repl_enabled():
+        # First-class agent reasoning loop. No keyword classification on this lane.
+        permissions = context_exec_permissions_for_llm_profile("agent")
+        return ContextExecRequestV1(
+            text=prompt,
+            mode="agent_repl",
+            session_id=req.session_id,
+            user_id=req.user_id,
+            correlation_id=req.trace_id,
+            messages=list(req.messages or []),
+            packs=list(req.packs or []),
+            permissions=permissions,
+            budget=ContextExecBudgetV1(max_seconds=600.0),
+            llm_profile="agent",
+        )
     answer_contract = _answer_contract_for_hub_request(req, prompt)
+    # DORMANT / LEGACY: investigation_v2 + keyword inference below are not used on the
+    # agent lane while agent_repl_enabled() is true (default). Kept for rollback only.
     if investigation_v2_enabled():
         # Agent lane: permissions are ceiling; answer_contract gates warranted probes.
         permissions = context_exec_permissions_for_llm_profile("agent")

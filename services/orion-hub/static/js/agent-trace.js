@@ -85,6 +85,36 @@
     }));
   }
 
+  const _liveAgentSteps = new Map(); // correlationId -> [step,...]
+
+  function appendLiveAgentStep(correlationId, step) {
+    if (!correlationId || !step) return;
+    const list = _liveAgentSteps.get(correlationId) || [];
+    list.push(step);
+    _liveAgentSteps.set(correlationId, list);
+
+    let panel = document.getElementById(`agent-live-${correlationId}`);
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = `agent-live-${correlationId}`;
+      panel.className = 'agent-live-trace';
+      const heading = document.createElement('div');
+      heading.className = 'agent-live-trace__heading';
+      heading.textContent = 'Reasoning steps (live)';
+      panel.appendChild(heading);
+      const anchor = document.getElementById('chat-messages') || document.body;
+      anchor.appendChild(panel);
+    }
+
+    const row = document.createElement('div');
+    row.className = 'agent-live-trace__step' + (step.is_final ? ' is-final' : '');
+    const idx = step.step_index != null ? step.step_index : (list.length - 1);
+    const dur = step.duration_ms != null ? `${step.duration_ms}ms` : '';
+    row.textContent = `#${idx} ${step.tool_id || 'step'} ${dur} — ${String(step.observation || step.thought || '').slice(0, 200)}`;
+    panel.appendChild(row);
+    panel.scrollTop = panel.scrollHeight;
+  }
+
   const api = {
     normalizeSummary,
     shouldShowAgentTrace,
@@ -96,6 +126,7 @@
   };
 
   global.OrionAgentTrace = api;
+  global.appendLiveAgentStep = appendLiveAgentStep;
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api;
   }

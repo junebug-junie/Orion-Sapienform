@@ -11,12 +11,40 @@ from orion.schemas.vision import (
 ACTIVITY_PATTERN = re.compile(
     r"\b(watching|reading|using|talking|listening|playing|browsing)\b", re.I
 )
-PERSON_PATTERN = re.compile(r"\bperson|someone|human\b", re.I)
+PERSON_PATTERN = re.compile(r"\b(person|someone|human)\b", re.I)
+CAPTION_STOPLIST = frozenset(
+    {"youtube", "google", "video", "watching", "describe", "image", "webcam", "com"}
+)
 
 
 def _hard_labels(window: VisionWindowPayload) -> set[str]:
     ev = (window.summary or {}).get("evidence") or {}
     return {str(x).lower() for x in (ev.get("hard_labels") or [])}
+
+
+def _soft_labels(window: VisionWindowPayload) -> set[str]:
+    ev = (window.summary or {}).get("evidence") or {}
+    return {str(x).lower() for x in (ev.get("soft_labels") or [])}
+
+
+def _narrative_slop_tokens(text: str) -> set[str]:
+    tokens = {t.strip(".,!?").lower() for t in text.split() if t.strip()}
+    return tokens & CAPTION_STOPLIST
+
+
+def _activity_claim_has_caption_slop(
+    narrative: str,
+    window: VisionWindowPayload,
+    *,
+    mentions_activity: bool,
+) -> bool:
+    if not mentions_activity:
+        return False
+    hard = _hard_labels(window)
+    soft_slop = _soft_labels(window) & CAPTION_STOPLIST
+    if "person" in hard:
+        return bool(soft_slop)
+    return bool(_narrative_slop_tokens(narrative) | soft_slop)
 
 
 def edge_person_hits(window: VisionWindowPayload) -> int:
@@ -44,10 +72,17 @@ def enforce_evidence_grounding(
         if mentions_activity and "person" not in hard:
             notes.append(f"dropped:{cand.event_type}:activity_without_person")
             continue
+        if _activity_claim_has_caption_slop(
+            narrative, window, mentions_activity=mentions_activity
+        ):
+            notes.append(f"dropped:{cand.event_type}:caption_slop")
+            continue
         updated = cand
         if mentions_activity and "person" in hard and cand.confidence > 0.4:
             if (window.summary or {}).get("captions"):
-                updated = cand.model_copy(update={"confidence": 0.4, "tags": [*cand.tags, "caption_inferred"]})
+                updated = cand.model_copy(
+                    update={"confidence": 0.4, "tags": [*cand.tags, "caption_inferred"]}
+                )
                 notes.append(f"capped_confidence:{cand.event_type}")
         kept.append(updated)
     return interpretation.model_copy(update={"event_candidates": kept}), notes

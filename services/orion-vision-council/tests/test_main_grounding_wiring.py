@@ -53,12 +53,29 @@ def test_finalize_drops_youtube_activity_without_hard_person() -> None:
     )
     interpretation, outcome = svc._finalize_interpretation(
         _youtube_interpretation(),
-        InterpretationParseOutcome(interpretation=_youtube_interpretation(), parse_mode="parsed"),
+        InterpretationParseOutcome(interpretation=_youtube_interpretation(), parse_mode="strict_v2"),
         window,
     )
     assert interpretation is not None
     assert interpretation.event_candidates == []
-    assert outcome.parse_mode == "parsed"
+    assert outcome.parse_mode == "strict_v2"
+
+
+def test_finalize_preserves_strict_v2_when_edge_fallback_after_grounding() -> None:
+    svc = CouncilService()
+    window = _window(
+        captions=["describe this image. youtube"],
+        evidence={"hard_labels": ["door", "screen"], "edge_person_hits": 2, "host_person_hits": 0},
+    )
+    interpretation, outcome = svc._finalize_interpretation(
+        _youtube_interpretation(),
+        InterpretationParseOutcome(interpretation=_youtube_interpretation(), parse_mode="strict_v2"),
+        window,
+    )
+    assert interpretation is not None
+    assert interpretation.event_candidates[0].event_type == "person_presence"
+    assert outcome.parse_mode == "strict_v2"
+    assert "edge_fallback_after_grounding" in outcome.salvage_warnings
 
 
 def test_finalize_edge_fallback_on_parse_failure() -> None:

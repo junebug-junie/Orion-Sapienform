@@ -168,7 +168,7 @@ profiles:
       (GroundingDINO/OWL-ViT/YOLO-World/etc).
     model_id: "REPLACE_ME/open_vocab_detector"
     device: auto
-    dtype: auto
+    dtype: fp32                       # GroundingDINO matmul fails fp16 on P100; fp32 required
     cost:
       vram_estimate_mb: 2800
       latency_class: medium            # low|medium|high

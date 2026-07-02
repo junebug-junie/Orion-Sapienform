@@ -30,11 +30,21 @@ def labels_from_detections(detections: list[dict[str, Any]]) -> list[str]:
 
 
 class ActivityRateLimiter:
+    _MAX_TRACKED_KEYS = 256
+    _STALE_MULTIPLIER = 10.0
+
     def __init__(self, min_interval_s: float = 1.0) -> None:
         self.min_interval_s = min_interval_s
         self._last: dict[tuple[str, str], float] = {}
 
+    def _prune_stale(self, *, now: float) -> None:
+        if len(self._last) <= self._MAX_TRACKED_KEYS:
+            return
+        cutoff = now - max(self.min_interval_s * self._STALE_MULTIPLIER, 60.0)
+        self._last = {key: ts for key, ts in self._last.items() if ts >= cutoff}
+
     def allow(self, stream_id: str, label: str, *, now: float) -> bool:
+        self._prune_stale(now=now)
         key = (stream_id, label)
         prev = self._last.get(key)
         if prev is not None and (now - prev) < self.min_interval_s:

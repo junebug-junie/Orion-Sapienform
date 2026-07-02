@@ -22,5 +22,8 @@ class Settings(BaseSettings):
     CHANNEL_LLM_REPLY_PREFIX: str = "orion:council:reply"
 
     # Config
-    COUNCIL_MODEL: str = "gpt-4o"
+    COUNCIL_MODEL: str = "llama-3-8b-instruct-q4_k_m"
     COUNCIL_LLM_ROUTE: str = "metacog"
+    COUNCIL_LLM_MAX_TOKENS: int = 1024
+    COUNCIL_LLM_TIMEOUT_SEC: float = 90.0
+    COUNCIL_STRUCTURED_OUTPUT_METHOD: str = "json_object_schema"

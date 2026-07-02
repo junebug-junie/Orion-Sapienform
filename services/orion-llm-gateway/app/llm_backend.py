@@ -10,6 +10,7 @@ import re
 
 import httpx
 
+from orion.llm.openai_message_content import join_openai_message_content
 from orion.core.bus.async_service import OrionBusAsync
 
 from .models import ChatBody, ChatMessage, GenerateBody, ExecStepPayload
@@ -215,7 +216,7 @@ def _extract_text_from_openai_response(data: Dict[str, Any]) -> str:
         # 1. Chat Completion
         msg = first.get("message")
         if isinstance(msg, dict) and msg.get("content") is not None:
-            return str(msg["content"]).strip()
+            return join_openai_message_content(msg.get("content"))
 
         # 2. Text Completion
         if "text" in first:

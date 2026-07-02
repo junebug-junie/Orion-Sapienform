@@ -66,6 +66,35 @@ def test_activity_pattern_matches_watching() -> None:
     assert ACTIVITY_PATTERN.search("watching a video")
 
 
+def test_enforce_drops_activity_caption_slop_when_soft_labels_slop() -> None:
+    window = _window(
+        captions=["youtube stream on screen"],
+        evidence={
+            "hard_labels": ["person", "screen"],
+            "edge_person_hits": 1,
+            "soft_labels": ["youtube"],
+        },
+    )
+    interpretation = VisionSceneInterpretationV1(
+        window_id="w1",
+        scene_summary="Person watching",
+        event_candidates=[
+            {
+                "event_type": "human_activity",
+                "narrative": "A person is watching a video on the screen.",
+                "entities": ["person"],
+                "tags": [],
+                "confidence": 0.9,
+                "salience": 0.8,
+                "evidence_refs": ["art-edge-1"],
+            }
+        ],
+    )
+    grounded, notes = enforce_evidence_grounding(interpretation, window)
+    assert grounded.event_candidates == []
+    assert any("caption_slop" in note for note in notes)
+
+
 def test_enforce_caps_activity_confidence_when_captions_present() -> None:
     window = _window(
         captions=["A person near the door."],

@@ -174,3 +174,80 @@ async def test_run_agent_repl_returns_final_answer_as_final_text(monkeypatch):
     assert run.final_text == "orion-hub is the operator UI + chat gateway."
     # step callback populated the visible trace
     assert any(s.callable == "python_interpreter" for s in run.verb_trace)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_repl_engine_error_sets_error_status(monkeypatch):
+    from app import runner as runner_mod
+    from app.runner import ContextExecRunner
+    from app.rlm_engine import RLMEngine
+    from orion.schemas.context_exec import (
+        ContextExecRequestV1,
+        context_exec_permissions_for_llm_profile,
+    )
+
+    class StubEngine(RLMEngine):
+        engine_name = "smolcode"
+
+        async def run(self, request, namespace, *, organ_runtime=None,
+                      step_callbacks=None, max_steps=None, per_step_timeout=None):
+            return {"error": "boom", "engine": "smolcode", "mode": request.mode}
+
+    r = ContextExecRunner(engine=StubEngine())
+
+    async def fake_resolve(profile):
+        from app.llm_profile_resolver import LLMProfileSelection
+        return LLMProfileSelection(requested=profile, selected="agent", route_used="agent")
+
+    monkeypatch.setattr(runner_mod, "resolve_llm_profile", fake_resolve)
+
+    req = ContextExecRequestV1(
+        text="what does orion-hub do?",
+        mode="agent_repl",
+        permissions=context_exec_permissions_for_llm_profile("agent"),
+        llm_profile="agent",
+    )
+    run = await r.run(req)
+    assert run.status == "error"
+    assert "agent_repl_error" in run.failure_modes
+    assert run.final_text == "Agent reasoning loop did not complete: boom"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_repl_timeout_sets_timeout_status(monkeypatch):
+    import asyncio
+
+    from app import runner as runner_mod
+    from app.runner import ContextExecRunner
+    from app.rlm_engine import RLMEngine
+    from orion.schemas.context_exec import (
+        ContextExecRequestV1,
+        context_exec_permissions_for_llm_profile,
+    )
+
+    class StubEngine(RLMEngine):
+        engine_name = "smolcode"
+
+        async def run(self, request, namespace, *, organ_runtime=None,
+                      step_callbacks=None, max_steps=None, per_step_timeout=None):
+            await asyncio.sleep(5)
+
+    r = ContextExecRunner(engine=StubEngine())
+
+    async def fake_resolve(profile):
+        from app.llm_profile_resolver import LLMProfileSelection
+        return LLMProfileSelection(requested=profile, selected="agent", route_used="agent")
+
+    monkeypatch.setattr(runner_mod, "resolve_llm_profile", fake_resolve)
+    monkeypatch.setattr(runner_mod.settings, "context_exec_max_seconds", 0.05)
+
+    req = ContextExecRequestV1(
+        text="what does orion-hub do?",
+        mode="agent_repl",
+        permissions=context_exec_permissions_for_llm_profile("agent"),
+        llm_profile="agent",
+    )
+    run = await r.run(req)
+    assert run.status == "timeout"
+    assert "timeout" in run.failure_modes
+    assert run.final_text.startswith("Agent reasoning loop did not complete:")

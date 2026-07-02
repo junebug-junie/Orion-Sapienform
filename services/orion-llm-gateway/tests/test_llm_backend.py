@@ -555,6 +555,35 @@ class TestLLMBackendExecution(unittest.TestCase):
             settings.llm_route_table_json = original
             _load_route_targets.cache_clear()
 
+    @patch("app.llm_backend._execute_llamacpp_native_completion")
+    @patch("app.llm_backend._execute_openai_chat")
+    def test_response_format_blocks_native_completion_detour(self, mock_openai, mock_native):
+        mock_openai.return_value = {"text": "{}", "spark_meta": {}, "raw": {}}
+        original = settings.llm_route_table_json
+        try:
+            settings.llm_route_table_json = (
+                '{"chat":{"url":"http://llamacpp:8080","served_by":"atlas","backend":"llamacpp"}}'
+            )
+            _load_route_targets.cache_clear()
+            with patch.object(settings, "llm_logprob_summary_enabled", True), patch.object(
+                settings, "llm_logprob_native_completion_enabled", True
+            ):
+                run_llm_chat(
+                    ChatBody(
+                        messages=[ChatMessage(role="user", content="hi")],
+                        options={
+                            "return_logprobs": True,
+                            "logprob_probe_mode": "native_completion",
+                            "response_format": {"type": "json_object"},
+                        },
+                    )
+                )
+            mock_openai.assert_called_once()
+            mock_native.assert_not_called()
+        finally:
+            settings.llm_route_table_json = original
+            _load_route_targets.cache_clear()
+
     @patch("app.llm_backend._execute_openai_chat")
     def test_no_route_still_uses_default_chat_when_route_table_active(self, mock_execute):
         original = settings.llm_route_table_json

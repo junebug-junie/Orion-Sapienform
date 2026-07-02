@@ -786,6 +786,53 @@ def _metacog_messages(
     ]
 
 
+_METACOG_UNCERTAINTY_PROBE_MAX_CHARS = 512
+
+
+def _truncate_metacog_probe_text(text: str, *, limit: int = _METACOG_UNCERTAINTY_PROBE_MAX_CHARS) -> str:
+    s = str(text or "").strip()
+    if len(s) <= limit:
+        return s
+    return s[: limit - 3] + "..."
+
+
+def _metacog_uncertainty_probe_messages(patch: MetacogDraftTextPatchV1) -> List[Dict[str, Any]]:
+    typ = _truncate_metacog_probe_text(patch.type or "unknown")
+    entity = _truncate_metacog_probe_text(patch.emergent_entity or "unknown")
+    summary = _truncate_metacog_probe_text(patch.summary or "")
+    sig_hint = _truncate_metacog_probe_text(patch.resonance_signature or "")
+    system = _truncate_metacog_probe_text(
+        "You are a metacognition uncertainty probe. "
+        "Output exactly one line: the resonance_signature only. "
+        "No JSON, no markdown, no preamble."
+    )
+    user_parts = [f"type={typ} entity={entity} summary={summary}"]
+    if sig_hint:
+        user_parts.append(f"reference_signature={sig_hint}")
+    user_parts.append('Format: "<type>: <entity> | Δ:<delta> | →<intent>"')
+    user = _truncate_metacog_probe_text(" ".join(user_parts))
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
+def _should_run_metacog_uncertainty_probe() -> bool:
+    if not getattr(settings, "cortex_metacog_return_logprobs", False):
+        return False
+    if not bool(getattr(settings, "cortex_metacog_uncertainty_probe_enabled", True)):
+        return False
+    probe_mode = str(getattr(settings, "cortex_metacog_logprob_probe_mode", "") or "").strip().lower()
+    if probe_mode != "native_completion":
+        if probe_mode:
+            logger.warning(
+                "metacog_uncertainty_probe_skipped unsupported_probe_mode=%s (only native_completion)",
+                probe_mode,
+            )
+        return False
+    return True
+
+
 def _fallback_metacog_draft(ctx: Dict[str, Any]) -> CollapseMirrorEntryV2:
     """
     If the LLM returns non-JSON, produce a valid baseline draft so the pipeline continues.
@@ -1102,6 +1149,38 @@ def _enforce_metacog_publish_prompt_budget(
         )
         return False, section_sizes, prompt_chars, char_limit
     return True, section_sizes, prompt_chars, char_limit
+
+
+def _maybe_trim_metacog_enrich_prompt_for_worker_ctx(
+    *,
+    prompt: str,
+    ctx: Dict[str, Any],
+    template_str: str,
+    correlation_id: str,
+) -> tuple[str, str | None]:
+    budget = int(settings.cortex_metacog_enrich_worker_ctx_char_budget)
+    if len(prompt or "") <= budget:
+        return prompt, None
+    bio = str(ctx.get("biometrics_json") or "")
+    if bio.strip() and bio.strip() != "{}":
+        logger.warning(
+            "metacog_enrich_ctx_trim_biometrics corr_id=%s prompt_chars=%s budget=%s bio_chars=%s",
+            correlation_id,
+            len(prompt),
+            budget,
+            len(bio),
+        )
+        ctx["biometrics_json"] = "{}"
+        prompt = _render_prompt(template_str, ctx)
+        if len(prompt) <= budget:
+            return prompt, None
+    logger.warning(
+        "metacog_enrich_ctx_overflow corr_id=%s prompt_chars=%s budget=%s",
+        correlation_id,
+        len(prompt),
+        budget,
+    )
+    return prompt, "prompt_context_overflow"
 
 
 def _resolve_metacog_draft_fallback_reason(
@@ -2599,6 +2678,8 @@ async def call_step_services(
                     logs.append("info <- suppressed identity kernel priming for ordinary chat_general speech turn")
         prompt = _render_prompt(step.prompt_template or "", ctx) if step.prompt_template else ""
 
+        enrich_ctx_overflow: str | None = None
+
         shortcut = _attempt_mind_handoff_chat_stance_shortcut(
             step=step,
             service=service,
@@ -2653,6 +2734,18 @@ async def call_step_services(
             else:
                 ctx["metacog_enrich_prompt_chars"] = metacog_prompt_chars
                 ctx["metacog_enrich_section_sizes"] = metacog_section_sizes
+            if (
+                service == "MetacogEnrichService"
+                and metacog_budget_ok
+                and step.prompt_template
+            ):
+                prompt, enrich_ctx_overflow = _maybe_trim_metacog_enrich_prompt_for_worker_ctx(
+                    prompt=prompt,
+                    ctx=ctx,
+                    template_str=step.prompt_template,
+                    correlation_id=correlation_id,
+                )
+                metacog_prompt_chars = len(prompt or "")
         # ----------------------------------------------------------------
 
         if service in {"MetacogDraftService", "MetacogEnrichService"}:
@@ -2689,17 +2782,9 @@ async def call_step_services(
                     "stream": False,
                     **_md_lane,
                 }
-                if getattr(settings, "cortex_metacog_return_logprobs", False):
-                    md_options["return_logprobs"] = True
-                    md_options["logprobs_top_k"] = 5
-                    md_options["logprob_summary_only"] = True
-                    probe_mode = str(
-                        getattr(settings, "cortex_metacog_logprob_probe_mode", "") or ""
-                    ).strip()
-                    if probe_mode:
-                        md_options["logprob_probe_mode"] = probe_mode
 
                 llm_res: Any = None
+                probe_unc: Dict[str, Any] | None = None
                 if not metacog_budget_ok:
                     logs.append("skip <- MetacogDraftService LLM (prompt_budget_exceeded)")
                     raw_content = ""
@@ -2758,17 +2843,57 @@ async def call_step_services(
                             patch_error = str(exc)
                             patch_model = MetacogDraftTextPatchV1()
                         finish_reason = _extract_llm_finish_reason(llm_res)
+                        if (
+                            not draft_error
+                            and not patch_error
+                            and _should_run_metacog_uncertainty_probe()
+                        ):
+                            probe_options: Dict[str, Any] = {
+                                "temperature": 0.8,
+                                "max_tokens": 128,
+                                "return_logprobs": True,
+                                "logprobs_top_k": 5,
+                                "logprob_summary_only": True,
+                                "logprob_probe_mode": "native_completion",
+                                "stream": False,
+                                **_md_lane,
+                            }
+                            probe_req = ChatRequestPayload(
+                                model=req_model,
+                                profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
+                                messages=_metacog_uncertainty_probe_messages(patch_model),
+                                raw_user_text="metacog_uncertainty_probe",
+                                route="metacog",
+                                options=probe_options,
+                            )
+                            try:
+                                probe_res = await llm_client.chat(
+                                    source=source,
+                                    req=probe_req,
+                                    correlation_id=correlation_id,
+                                    reply_to=reply_channel,
+                                    timeout_sec=effective_timeout,
+                                )
+                                if hasattr(probe_res, "meta") and isinstance(probe_res.meta, dict):
+                                    maybe_unc = probe_res.meta.get("llm_uncertainty")
+                                    if isinstance(maybe_unc, dict):
+                                        probe_unc = maybe_unc
+                            except Exception as probe_exc:
+                                logger.warning(
+                                    "metacog_uncertainty_probe_failed corr_id=%s error=%s",
+                                    correlation_id,
+                                    probe_exc,
+                                )
                     else:
                         finish_reason = None
 
                     base_entry = _fallback_metacog_draft(ctx).model_dump(mode="json")
                     base_entry = _apply_metacog_system_fields(base_entry, ctx)
-                    unc = None
-                    md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
-                    if isinstance(md.get("llm_uncertainty"), dict):
-                        unc = md["llm_uncertainty"]
-                    elif llm_res is not None and hasattr(llm_res, "meta") and isinstance(llm_res.meta, dict):
-                        unc = llm_res.meta.get("llm_uncertainty")
+                    unc = probe_unc
+                    if unc is None:
+                        md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+                        if isinstance(md.get("llm_uncertainty"), dict):
+                            unc = md["llm_uncertainty"]
                     if isinstance(unc, dict):
                         attach_llm_uncertainty_to_collapse_payload(base_entry, unc)
                     raw_trigger_null = not isinstance(ctx.get("trigger"), dict)
@@ -2934,7 +3059,11 @@ async def call_step_services(
                 _me_lane = resolve_llm_lane_for_step(step=_me_step, ctx=ctx, settings=settings)
 
                 enrich_fallback_reason: str | None = None
-                if not metacog_budget_ok:
+                if enrich_ctx_overflow:
+                    logs.append("skip <- MetacogEnrichService LLM (prompt_context_overflow)")
+                    enrich_fallback_reason = enrich_ctx_overflow
+                    patch: Dict[str, Any] = {}
+                elif not metacog_budget_ok:
                     logs.append("skip <- MetacogEnrichService LLM (prompt_budget_exceeded)")
                     enrich_fallback_reason = "prompt_budget_exceeded"
                     patch: Dict[str, Any] = {}
@@ -2963,7 +3092,7 @@ async def call_step_services(
                     )
 
                 try:
-                    if metacog_budget_ok:
+                    if metacog_budget_ok and not enrich_ctx_overflow:
                         raw_content = _extract_llm_text(llm_res)
                         raw_content = _clean_raw_llm_content(raw_content)
 

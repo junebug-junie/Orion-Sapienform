@@ -716,6 +716,8 @@ def _execute_ollama_chat(
 
 def _should_use_native_llamacpp_completion(body: ChatBody, backend: str) -> bool:
     opts = body.options or {}
+    if opts.get("response_format"):
+        return False
     return (
         backend == "llamacpp"
         and bool(opts.get("return_logprobs"))

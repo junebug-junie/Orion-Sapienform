@@ -90,7 +90,12 @@ class Settings(BaseSettings):
     cortex_metacog_logprob_probe_mode: str = Field(
         default="",
         alias="CORTEX_METACOG_LOGPROB_PROBE_MODE",
-        description="When CORTEX_METACOG_RETURN_LOGPROBS: empty=OpenAI chat logprobs; native_completion=aligned llama.cpp /completion.",
+        description="Pass-2 uncertainty probe mode. Only native_completion is supported (llama.cpp /completion). Other values skip pass 2.",
+    )
+    cortex_metacog_uncertainty_probe_enabled: bool = Field(
+        True,
+        alias="CORTEX_METACOG_UNCERTAINTY_PROBE_ENABLED",
+        description="When CORTEX_METACOG_RETURN_LOGPROBS: run pass-2 native probe after successful draft parse.",
     )
     daily_metacog_prompt_max_chars: int = Field(
         8192,
@@ -106,6 +111,11 @@ class Settings(BaseSettings):
         20480,
         alias="CORTEX_METACOG_ENRICH_PROMPT_MAX_CHARS",
         description="Lane A log_orion_metacognition: skip MetacogEnrichService LLM when rendered prompt exceeds this char budget.",
+    )
+    cortex_metacog_enrich_worker_ctx_char_budget: int = Field(
+        12000,
+        alias="CORTEX_METACOG_ENRICH_WORKER_CTX_CHAR_BUDGET",
+        description="MetacogEnrichService: trim biometrics_json and re-render when prompt exceeds worker ctx char budget.",
     )
 
     publish_cortex_exec_grammar: bool = Field(False, alias="PUBLISH_CORTEX_EXEC_GRAMMAR")

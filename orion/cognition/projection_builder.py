@@ -44,6 +44,10 @@ from orion.substrate.relational.adapters.self_state_ctx import map_self_state_ct
 from orion.substrate.relational.adapters.execution_ctx import map_execution_ctx_to_substrate
 from orion.substrate.relational.adapters.transport_ctx import map_transport_ctx_to_substrate
 from orion.substrate.relational.adapters.biometrics_ctx import map_biometrics_ctx_to_substrate
+from orion.substrate.relational.adapters.attention_ctx import (
+    map_attention_broadcast_ctx_to_substrate,
+)
+from orion.substrate.relational.adapters.episodes_ctx import map_episode_ctx_to_substrate
 
 logger = logging.getLogger("orion.cognition.projection_builder")
 
@@ -143,6 +147,28 @@ def build_projection_unification_registry() -> ProducerRegistryV1:
                 freshness_ttl_sec=120,
                 pull_on_cold=False,
                 adapter_fn=map_transport_ctx_to_substrate,
+            ),
+            # Workspace-broadcast lane (rung-3 consumer): what Orion is
+            # currently attending to, from the continuous substrate broadcast.
+            # ctx-sourced; no cold fan-out (read from ctx).
+            ProducerEntryV1(
+                producer_id="attention",
+                trust_tier=SNAPSHOT_EPHEMERAL,
+                anchor_scopes=("orion",),
+                freshness_ttl_sec=120,
+                pull_on_cold=False,
+                adapter_fn=map_attention_broadcast_ctx_to_substrate,
+            ),
+            # Episodic lane (rung-4 consumer): the latest proposal-marked
+            # episode summary — "what happened to me" — enters beliefs.
+            # ctx-sourced; longer TTL (episodes are 15-minute windows).
+            ProducerEntryV1(
+                producer_id="episodes",
+                trust_tier=SNAPSHOT_EPHEMERAL,
+                anchor_scopes=("orion",),
+                freshness_ttl_sec=1800,
+                pull_on_cold=False,
+                adapter_fn=map_episode_ctx_to_substrate,
             ),
             ProducerEntryV1(
                 producer_id="orionmem",

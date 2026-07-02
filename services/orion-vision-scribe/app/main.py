@@ -154,17 +154,29 @@ class ScribeService:
             payload=ack
         )
         await self.bus.publish(settings.CHANNEL_SCRIBE_PUB, ack_env)
-        logger.info(f"[SCRIBE] Processed and acked {len(payload.events)} events")
+        logger.info(
+            "[SCRIBE] Processed {} events ack_ok={}",
+            len(payload.events),
+            ack.ok,
+        )
 
     async def _write_to_sinks(self, payload: VisionEventPayload, source_env: BaseEnvelope) -> VisionScribeAckPayload:
         errors = []
         try:
             for evt in payload.events:
+                sql_ok = False
+                rdf_ok = False
                 # 1. SQL Write
                 try:
                     await self._send_write(settings.CHANNEL_SQL_WRITE, "vision.event.v1", evt, source_env)
+                    sql_ok = True
                 except Exception as e:
-                    logger.error(f"[SCRIBE] SQL Write failed for {evt.event_id}: {e}")
+                    logger.error(
+                        "[SCRIBE] SQL Write failed event_id={} channel={}: {}",
+                        evt.event_id,
+                        settings.CHANNEL_SQL_WRITE,
+                        e,
+                    )
                     errors.append(f"SQL:{e}")
 
                 # 2. RDF Write
@@ -177,9 +189,23 @@ class ScribeService:
                         triples=nt_content,
                     )
                     await self._send_write(settings.CHANNEL_RDF_ENQUEUE, "rdf.write.request", rdf_req, source_env)
+                    rdf_ok = True
                 except Exception as e:
-                    logger.error(f"[SCRIBE] RDF Write failed for {evt.event_id}: {e}")
+                    logger.error(
+                        "[SCRIBE] RDF Write failed event_id={} channel={}: {}",
+                        evt.event_id,
+                        settings.CHANNEL_RDF_ENQUEUE,
+                        e,
+                    )
                     errors.append(f"RDF:{e}")
+
+                logger.info(
+                    "[SCRIBE] vision_persist event_id={} sql={} rdf={} ack_ok={}",
+                    evt.event_id,
+                    sql_ok,
+                    rdf_ok,
+                    sql_ok and rdf_ok,
+                )
 
             if errors:
                  return VisionScribeAckPayload(ok=False, error="; ".join(errors), message="Partial success")

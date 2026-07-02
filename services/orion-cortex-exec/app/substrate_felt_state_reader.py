@@ -24,6 +24,10 @@ class LaneSpec:
     payload_col: str
     ts_col: str
     projection_id: str | None
+    # Per-lane freshness override; None → the reader's global max_age_sec.
+    # Episodes roll up 15-minute windows, so the global 120s gate would
+    # unconditionally reject them.
+    max_age_sec: int | None = None
 
 
 # Trusted module constants (NOT user input). Each lane is a single latest row in
@@ -56,6 +60,21 @@ _LANES: tuple[LaneSpec, ...] = (
         payload_col="projection_json",
         ts_col="generated_at",
         projection_id="active_node_pressure_projection",
+    ),
+    LaneSpec(
+        ctx_key="attention_broadcast",
+        table="substrate_attention_broadcast_projection",
+        payload_col="projection_json",
+        ts_col="generated_at",
+        projection_id="substrate.attention.broadcast.v1",
+    ),
+    LaneSpec(
+        ctx_key="episode_summary",
+        table="substrate_episode_summaries",
+        payload_col="episode_json",
+        ts_col="created_at",
+        projection_id=None,
+        max_age_sec=1800,
     ),
 )
 
@@ -122,6 +141,7 @@ class SubstrateFeltStateReader:
             return
         for lane in _LANES:
             try:
+                max_age = lane.max_age_sec if lane.max_age_sec is not None else self._max_age_sec
                 # Respect upstream: never overwrite a pre-existing ctx key.
                 if ctx.get(lane.ctx_key) is not None:
                     continue
@@ -129,7 +149,7 @@ class SubstrateFeltStateReader:
                 cached = self._cache.get(lane.ctx_key)
                 if cached is not None:
                     payload, fetched_at = cached
-                    if (time.monotonic() - fetched_at) <= self._max_age_sec:
+                    if (time.monotonic() - fetched_at) <= max_age:
                         ctx[lane.ctx_key] = payload
                         continue
                 result = self._fetch_lane(lane)
@@ -141,7 +161,7 @@ class SubstrateFeltStateReader:
                 if ts.tzinfo is None:
                     ts = ts.replace(tzinfo=timezone.utc)
                 age = (datetime.now(timezone.utc) - ts).total_seconds()
-                if age > self._max_age_sec:
+                if age > max_age:
                     # Stale: do not inject.
                     continue
                 ctx[lane.ctx_key] = payload

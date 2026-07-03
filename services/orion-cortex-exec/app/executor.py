@@ -163,11 +163,12 @@ _SYSTEM_TELEMETRY_KEYS = {
 _METACOG_DRAFT_CTX_LEN_KEYS: tuple[str, ...] = (
     "context_summary",
     "spark_state_json",
+    "spark_phi_narrative",
     "turn_effect_json",
     "recent_turn_effect_alerts_json",
     "turn_effect_policy_json",
     "turn_effect_explanations_json",
-    "biometrics_json",
+    "metacog_biometrics_cue",
 )
 
 _METACOG_ENRICH_CTX_LEN_KEYS: tuple[str, ...] = _METACOG_DRAFT_CTX_LEN_KEYS + ("collapse_json",)
@@ -548,6 +549,8 @@ def _set_metacog_draft_telemetry(
     prompt_chars: int | None = None,
     prompt_limit_chars: int | None = None,
     section_sizes: Dict[str, int] | None = None,
+    ctx_trim_applied: list[str] | None = None,
+    biometrics_cue_chars: int | None = None,
 ) -> None:
     state_snapshot = entry_dict.get("state_snapshot")
     if not isinstance(state_snapshot, dict):
@@ -565,6 +568,10 @@ def _set_metacog_draft_telemetry(
         telemetry["metacog_prompt_limit_chars"] = int(prompt_limit_chars)
     if section_sizes:
         telemetry["metacog_prompt_section_sizes"] = dict(section_sizes)
+    if ctx_trim_applied:
+        telemetry["metacog_ctx_trim_applied"] = list(ctx_trim_applied)
+    if biometrics_cue_chars is not None:
+        telemetry["metacog_biometrics_cue_chars"] = int(biometrics_cue_chars)
     state_snapshot["telemetry"] = telemetry
     entry_dict["state_snapshot"] = state_snapshot
 
@@ -576,6 +583,8 @@ def _set_metacog_enrich_telemetry(
     prompt_chars: int | None = None,
     prompt_limit_chars: int | None = None,
     section_sizes: Dict[str, int] | None = None,
+    ctx_trim_applied: list[str] | None = None,
+    biometrics_cue_chars: int | None = None,
 ) -> None:
     state_snapshot = entry_dict.get("state_snapshot")
     if not isinstance(state_snapshot, dict):
@@ -589,6 +598,10 @@ def _set_metacog_enrich_telemetry(
         telemetry["metacog_enrich_prompt_limit_chars"] = int(prompt_limit_chars)
     if section_sizes:
         telemetry["metacog_enrich_prompt_section_sizes"] = dict(section_sizes)
+    if ctx_trim_applied:
+        telemetry["metacog_ctx_trim_applied"] = list(ctx_trim_applied)
+    if biometrics_cue_chars is not None:
+        telemetry["metacog_biometrics_cue_chars"] = int(biometrics_cue_chars)
     state_snapshot["telemetry"] = telemetry
     entry_dict["state_snapshot"] = state_snapshot
 
@@ -754,6 +767,118 @@ def _default_biometrics_context(*, status: str, reason: str) -> Dict[str, Any]:
         "summary": None,
         "induction": None,
     }
+
+
+_METACOG_BIOMETRICS_CUE_DRAFT_MAX_CHARS = 350
+_METACOG_BIOMETRICS_CUE_ENRICH_MAX_CHARS = 600
+_METACOG_BIOMETRICS_CUE_MAX_NODES = 4
+
+
+def _metacog_cluster_composites(biometrics: Dict[str, Any]) -> Dict[str, float]:
+    cluster = biometrics.get("cluster") if isinstance(biometrics.get("cluster"), dict) else {}
+    composite = cluster.get("composite") if isinstance(cluster.get("composite"), dict) else {}
+    composites = cluster.get("composites") if isinstance(cluster.get("composites"), dict) else {}
+    merged = dict(composites)
+    merged.update({k: v for k, v in composite.items() if k not in merged})
+    out: Dict[str, float] = {}
+    for key in ("strain", "homeostasis", "stability"):
+        raw = merged.get(key)
+        if raw is not None:
+            try:
+                out[key] = round(float(raw), 2)
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def _metacog_format_node_cue_line(node_id: str, node_data: Any) -> str:
+    if not isinstance(node_data, dict):
+        return f"{node_id}: unknown"[:80]
+    status = str(node_data.get("status") or "OK")
+    summary = node_data.get("summary") if isinstance(node_data.get("summary"), dict) else {}
+    composites = summary.get("composites") if isinstance(summary.get("composites"), dict) else {}
+    pressures = summary.get("pressures") if isinstance(summary.get("pressures"), dict) else {}
+    parts = [f"{node_id}:"]
+    if status.upper() not in {"OK", "FRESH"}:
+        parts.append(f"status={status}")
+    strain = composites.get("strain")
+    if strain is not None:
+        try:
+            parts.append(f"strain={float(strain):.2f}")
+        except (TypeError, ValueError):
+            pass
+    gpu = pressures.get("gpu")
+    if gpu is None:
+        gpu = pressures.get("gpu_util")
+    if gpu is not None:
+        try:
+            parts.append(f"gpu={float(gpu):.2f}")
+        except (TypeError, ValueError):
+            pass
+    if len(parts) == 1:
+        parts.append("ok")
+    return " ".join(parts)[:80]
+
+
+def _metacog_cue_freshness_s(biometrics: Dict[str, Any]) -> int | None:
+    freshness = biometrics.get("freshness_s")
+    if freshness is not None:
+        try:
+            return int(round(float(freshness)))
+        except (TypeError, ValueError):
+            pass
+    age_ms = biometrics.get("age_ms")
+    if age_ms is not None:
+        try:
+            return int(round(float(age_ms) / 1000.0))
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _metacog_biometrics_cue(ctx: Dict[str, Any], *, phase: str) -> str:
+    biometrics = ctx.get("biometrics")
+    if not isinstance(biometrics, dict):
+        payload: Dict[str, Any] = {"status": "missing", "reason": "no_biometrics_ctx"}
+        return json.dumps(payload, separators=(",", ":"))
+
+    status = str(biometrics.get("status") or "missing")
+    cluster = biometrics.get("cluster") if isinstance(biometrics.get("cluster"), dict) else {}
+    constraint = str(biometrics.get("constraint") or cluster.get("constraint") or "NONE")
+    composites = _metacog_cluster_composites(biometrics)
+
+    if phase == "enrich":
+        cluster_payload: Dict[str, Any] = {"constraint": constraint}
+        cluster_payload.update(composites)
+        enrich_payload: Dict[str, Any] = {"cluster": cluster_payload}
+        nodes_obj = biometrics.get("nodes") if isinstance(biometrics.get("nodes"), dict) else {}
+        node_lines: list[str] = []
+        for node_id in sorted(nodes_obj.keys())[:_METACOG_BIOMETRICS_CUE_MAX_NODES]:
+            node_lines.append(_metacog_format_node_cue_line(str(node_id), nodes_obj[node_id]))
+        if node_lines:
+            enrich_payload["nodes"] = node_lines
+        cue = json.dumps(enrich_payload, separators=(",", ":"))
+        if len(cue) > _METACOG_BIOMETRICS_CUE_ENRICH_MAX_CHARS:
+            cue = json.dumps({"cluster": cluster_payload}, separators=(",", ":"))
+        if len(cue) > _METACOG_BIOMETRICS_CUE_ENRICH_MAX_CHARS:
+            cue = json.dumps({"status": "trimmed"}, separators=(",", ":"))
+        return cue
+
+    draft_payload: Dict[str, Any] = {
+        "status": status,
+        "constraint": constraint,
+        **composites,
+    }
+    freshness_s = _metacog_cue_freshness_s(biometrics)
+    if freshness_s is not None:
+        draft_payload["freshness_s"] = freshness_s
+    cue = json.dumps(draft_payload, separators=(",", ":"))
+    if len(cue) > _METACOG_BIOMETRICS_CUE_DRAFT_MAX_CHARS:
+        minimal: Dict[str, Any] = {"status": status, **composites}
+        cue = json.dumps(minimal, separators=(",", ":"))
+    if len(cue) > _METACOG_BIOMETRICS_CUE_DRAFT_MAX_CHARS:
+        cue = json.dumps({"status": status}, separators=(",", ":"))
+    return cue
 
 
 def _metacog_messages(
@@ -1151,36 +1276,62 @@ def _enforce_metacog_publish_prompt_budget(
     return True, section_sizes, prompt_chars, char_limit
 
 
-def _maybe_trim_metacog_enrich_prompt_for_worker_ctx(
+def _maybe_trim_metacog_prompt_for_worker_ctx(
     *,
+    phase: str,
     prompt: str,
     ctx: Dict[str, Any],
     template_str: str,
     correlation_id: str,
-) -> tuple[str, str | None]:
-    budget = int(settings.cortex_metacog_enrich_worker_ctx_char_budget)
+) -> tuple[str, str | None, list[str]]:
+    if phase == "draft":
+        budget = int(settings.cortex_metacog_draft_worker_ctx_char_budget)
+    else:
+        budget = int(settings.cortex_metacog_enrich_worker_ctx_char_budget)
+    trim_applied: list[str] = []
     if len(prompt or "") <= budget:
-        return prompt, None
-    bio = str(ctx.get("biometrics_json") or "")
-    if bio.strip() and bio.strip() != "{}":
+        return prompt, None, trim_applied
+
+    cue = str(ctx.get("metacog_biometrics_cue") or "")
+    if cue.strip() and cue.strip() != '{"status":"trimmed"}':
         logger.warning(
-            "metacog_enrich_ctx_trim_biometrics corr_id=%s prompt_chars=%s budget=%s bio_chars=%s",
+            "metacog_%s_ctx_trim_biometrics_cue corr_id=%s prompt_chars=%s budget=%s cue_chars=%s",
+            phase,
             correlation_id,
             len(prompt),
             budget,
-            len(bio),
+            len(cue),
         )
-        ctx["biometrics_json"] = "{}"
+        ctx["metacog_biometrics_cue"] = '{"status":"trimmed"}'
+        trim_applied.append("biometrics_cue")
         prompt = _render_prompt(template_str, ctx)
         if len(prompt) <= budget:
-            return prompt, None
+            return prompt, None, trim_applied
+
+    spark = str(ctx.get("spark_state_json") or "")
+    if spark.strip() and spark.strip() != "{}":
+        logger.warning(
+            "metacog_%s_ctx_trim_spark_state corr_id=%s prompt_chars=%s budget=%s spark_chars=%s",
+            phase,
+            correlation_id,
+            len(prompt),
+            budget,
+            len(spark),
+        )
+        ctx["spark_state_json"] = "{}"
+        trim_applied.append("spark_state_json")
+        prompt = _render_prompt(template_str, ctx)
+        if len(prompt) <= budget:
+            return prompt, None, trim_applied
+
     logger.warning(
-        "metacog_enrich_ctx_overflow corr_id=%s prompt_chars=%s budget=%s",
+        "metacog_%s_ctx_overflow corr_id=%s prompt_chars=%s budget=%s",
+        phase,
         correlation_id,
         len(prompt),
         budget,
     )
-    return prompt, "prompt_context_overflow"
+    return prompt, "prompt_context_overflow", trim_applied
 
 
 def _resolve_metacog_draft_fallback_reason(
@@ -1192,6 +1343,8 @@ def _resolve_metacog_draft_fallback_reason(
 ) -> str | None:
     if draft_error == "prompt_budget_exceeded":
         return "prompt_budget_exceeded"
+    if draft_error == "prompt_context_overflow":
+        return "prompt_context_overflow"
     if finish_reason == "length":
         return "llm_finish_reason_length"
     if draft_error == "no_json":
@@ -2676,9 +2829,12 @@ async def call_step_services(
             if step.verb_name == "chat_general" and step.step_name == "llm_chat_general":
                 if suppress_chat_general_speech_identity_priming(ctx):
                     logs.append("info <- suppressed identity kernel priming for ordinary chat_general speech turn")
+        if service == "MetacogEnrichService" and ctx.get("metacog_biometrics_cue_enrich"):
+            ctx["metacog_biometrics_cue"] = ctx["metacog_biometrics_cue_enrich"]
         prompt = _render_prompt(step.prompt_template or "", ctx) if step.prompt_template else ""
 
         enrich_ctx_overflow: str | None = None
+        draft_ctx_overflow: str | None = None
 
         shortcut = _attempt_mind_handoff_chat_stance_shortcut(
             step=step,
@@ -2709,6 +2865,8 @@ async def call_step_services(
         metacog_section_sizes: Dict[str, int] = {}
         metacog_prompt_chars = len(prompt or "")
         metacog_prompt_limit = 0
+        draft_trim_applied: list[str] = []
+        enrich_trim_applied: list[str] = []
         if metacog_phase:
             metacog_section_sizes = _log_metacog_publish_prompt_diagnostics(
                 service=service,
@@ -2728,24 +2886,45 @@ async def call_step_services(
                     section_keys=metacog_section_keys,
                 )
             )
+            if metacog_phase == "draft" and metacog_budget_ok and step.prompt_template:
+                prompt, draft_ctx_overflow, draft_trim_applied = _maybe_trim_metacog_prompt_for_worker_ctx(
+                    phase="draft",
+                    prompt=prompt,
+                    ctx=ctx,
+                    template_str=step.prompt_template,
+                    correlation_id=correlation_id,
+                )
+            if (
+                service == "MetacogEnrichService"
+                and metacog_budget_ok
+                and step.prompt_template
+            ):
+                prompt, enrich_ctx_overflow, enrich_trim_applied = _maybe_trim_metacog_prompt_for_worker_ctx(
+                    phase="enrich",
+                    prompt=prompt,
+                    ctx=ctx,
+                    template_str=step.prompt_template,
+                    correlation_id=correlation_id,
+                )
+            trim_applied = draft_trim_applied or enrich_trim_applied
+            if trim_applied:
+                ctx["metacog_ctx_trim_applied"] = trim_applied
+                metacog_section_sizes = _metacog_ctx_section_sizes(ctx, metacog_section_keys)
+                metacog_prompt_chars = len(prompt or "")
+                _log_metacog_publish_prompt_diagnostics(
+                    service=service,
+                    phase=f"{metacog_phase}_post_trim",
+                    correlation_id=correlation_id,
+                    prompt=prompt,
+                    ctx=ctx,
+                    section_keys=metacog_section_keys,
+                )
             if metacog_phase == "draft":
                 ctx["metacog_draft_prompt_chars"] = metacog_prompt_chars
                 ctx["metacog_draft_section_sizes"] = metacog_section_sizes
             else:
                 ctx["metacog_enrich_prompt_chars"] = metacog_prompt_chars
                 ctx["metacog_enrich_section_sizes"] = metacog_section_sizes
-            if (
-                service == "MetacogEnrichService"
-                and metacog_budget_ok
-                and step.prompt_template
-            ):
-                prompt, enrich_ctx_overflow = _maybe_trim_metacog_enrich_prompt_for_worker_ctx(
-                    prompt=prompt,
-                    ctx=ctx,
-                    template_str=step.prompt_template,
-                    correlation_id=correlation_id,
-                )
-                metacog_prompt_chars = len(prompt or "")
         # ----------------------------------------------------------------
 
         if service in {"MetacogDraftService", "MetacogEnrichService"}:
@@ -2785,7 +2964,17 @@ async def call_step_services(
 
                 llm_res: Any = None
                 probe_unc: Dict[str, Any] | None = None
-                if not metacog_budget_ok:
+                if draft_ctx_overflow:
+                    logs.append("skip <- MetacogDraftService LLM (prompt_context_overflow)")
+                    raw_content = ""
+                    parsed: Dict[str, Any] = {}
+                    draft_error = "prompt_context_overflow"
+                    patch_error = None
+                    filtered: Dict[str, Any] = {}
+                    stripped: list[str] = []
+                    patch_model = MetacogDraftTextPatchV1()
+                    finish_reason = None
+                elif not metacog_budget_ok:
                     logs.append("skip <- MetacogDraftService LLM (prompt_budget_exceeded)")
                     raw_content = ""
                     parsed: Dict[str, Any] = {}
@@ -2814,7 +3003,7 @@ async def call_step_services(
                     )
 
                 try:
-                    if metacog_budget_ok:
+                    if metacog_budget_ok and not draft_ctx_overflow:
                         raw_content = _extract_llm_text(llm_res)
                         raw_content = _clean_raw_llm_content(raw_content)
 
@@ -2914,6 +3103,12 @@ async def call_step_services(
                         prompt_chars=metacog_prompt_chars,
                         prompt_limit_chars=metacog_prompt_limit,
                         section_sizes=metacog_section_sizes,
+                        ctx_trim_applied=(
+                            ctx.get("metacog_ctx_trim_applied")
+                            if isinstance(ctx.get("metacog_ctx_trim_applied"), list)
+                            else None
+                        ),
+                        biometrics_cue_chars=len(str(ctx.get("metacog_biometrics_cue") or "")),
                     )
                     if ctx.get("turn_effect"):
                         turn_summary = summarize_turn_effect(ctx["turn_effect"])
@@ -3204,6 +3399,12 @@ async def call_step_services(
                         prompt_chars=metacog_prompt_chars,
                         prompt_limit_chars=metacog_prompt_limit,
                         section_sizes=metacog_section_sizes,
+                        ctx_trim_applied=(
+                            ctx.get("metacog_ctx_trim_applied")
+                            if isinstance(ctx.get("metacog_ctx_trim_applied"), list)
+                            else None
+                        ),
+                        biometrics_cue_chars=len(str(ctx.get("metacog_biometrics_cue") or "")),
                     )
 
                     final_entry = normalize_collapse_entry(final_dict)
@@ -3519,6 +3720,22 @@ async def call_step_services(
                                 nodes = raw_biometrics.get("nodes")
                                 if isinstance(nodes, dict):
                                     biometrics_context["nodes"] = nodes
+                                cluster_raw = raw_biometrics.get("cluster")
+                                if isinstance(cluster_raw, dict):
+                                    biometrics_context["cluster"] = cluster_raw
+                                elif state_res.biometrics and state_res.biometrics.cluster:
+                                    biometrics_context["cluster"] = state_res.biometrics.cluster.model_dump(mode="json")
+                                cluster_obj = biometrics_context.get("cluster")
+                                if isinstance(cluster_obj, dict) and cluster_obj.get("constraint"):
+                                    biometrics_context["constraint"] = cluster_obj.get("constraint")
+                            if state_res.biometrics and state_res.biometrics.age_ms is not None:
+                                biometrics_context["age_ms"] = state_res.biometrics.age_ms
+                            if state_res.age_ms is not None and biometrics_context.get("age_ms") is None:
+                                biometrics_context["age_ms"] = state_res.age_ms
+                            if biometrics_context.get("freshness_s") is None:
+                                derived_freshness = _metacog_cue_freshness_s(biometrics_context)
+                                if derived_freshness is not None:
+                                    biometrics_context["freshness_s"] = derived_freshness
                         ctx["biometrics"] = biometrics_context
                         ctx["biometrics_json"] = json.dumps(biometrics_context, indent=2)
                         if state_res.ok and state_res.snapshot:
@@ -3658,6 +3875,10 @@ async def call_step_services(
                 ctx["trigger"] = trigger.model_dump(mode="json")
                 ctx["trigger_kind"] = trigger.trigger_kind
                 ctx["context_summary"] = summary_text
+                ctx["metacog_biometrics_cue"] = _metacog_biometrics_cue(ctx, phase="draft")
+                ctx["metacog_biometrics_cue_enrich"] = _metacog_biometrics_cue(ctx, phase="enrich")
+                if "biometrics_json" not in ctx:
+                    ctx["biometrics_json"] = json.dumps(ctx.get("biometrics") or {}, indent=2)
                 merged_result[service] = {"ok": True, "summary_len": len(summary_text)}
                 logs.append("ok <- MetacogContextService")
                 continue

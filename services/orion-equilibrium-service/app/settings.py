@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from pydantic import Field, model_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _parse_list(val: str | None) -> List[str]:
@@ -15,6 +15,13 @@ def _parse_list(val: str | None) -> List[str]:
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        extra="ignore",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_ignore_empty=True,
+    )
+
     service_name: str = Field("orion-equilibrium-service", alias="SERVICE_NAME")
     service_version: str = Field("0.1.0", alias="SERVICE_VERSION")
     node_name: Optional[str] = Field(None, alias="NODE_NAME")
@@ -74,10 +81,6 @@ class Settings(BaseSettings):
     channel_cortex_orch_request: str = Field("orion:verb:request", alias="CHANNEL_CORTEX_ORCH_REQUEST")
     channel_collapse_mirror_user_event: str = Field("orion:collapse:intake", alias="CHANNEL_COLLAPSE_MIRROR_USER_EVENT")
     channel_pad_signal: str = Field("orion:pad:signal", alias="CHANNEL_PAD_SIGNAL")
-
-    class Config:
-        env_file = ".env"
-        extra = "ignore"
 
     @model_validator(mode="after")
     def _coerce_windows(self) -> "Settings":

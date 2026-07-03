@@ -214,17 +214,19 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
             payload={"error": "validation_failed", "details": ve.errors()},
         )
 
+    req_options = typed_req.payload.options or {}
     body = ChatBody(
         model=typed_req.payload.model,
         messages=[m.model_dump() for m in typed_req.payload.messages],
         raw_user_text=typed_req.payload.raw_user_text,
-        options=typed_req.payload.options or {},
+        options=req_options,
         profile_name=typed_req.payload.profile,
         route=typed_req.payload.route,
         trace_id=str(typed_req.correlation_id),
         user_id=typed_req.payload.user_id,
         session_id=typed_req.payload.session_id,
         source=typed_req.source.name,
+        verb=str(req_options.get("verb") or "").strip() or None,
     )
     messages = body.messages or []
     memory_marker = "RELEVANT MEMORY"
@@ -237,7 +239,6 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
     )
     snippet_source = marked_message or fallback_message or (messages[0] if messages else None)
     snippet = str(getattr(snippet_source, "content", "") or "")[:160]
-    req_options = typed_req.payload.options or {}
     mind_phase = req_options.get("mind_phase")
     logger.info(
         "gateway_llm_request_received event=gateway_llm_request_received correlation_id=%s route=%s "

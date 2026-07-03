@@ -4139,6 +4139,7 @@ async def call_step_services(
                     if ctx.get("return_json") is not None
                     else None,
                     "gateway_read_timeout_sec": gateway_read_timeout_sec,
+                    "verb": step.verb_name,
                     **lane_opts,
                 }
                 for _fwd_key in (

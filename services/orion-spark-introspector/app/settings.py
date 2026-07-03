@@ -139,6 +139,10 @@ class Settings(BaseSettings):
     spark_introspection_drop_on_pressure: bool = Field(True, alias="SPARK_INTROSPECTION_DROP_ON_PRESSURE")
     spark_introspection_acquire_timeout_sec: float = Field(0.0, alias="SPARK_INTROSPECTION_ACQUIRE_TIMEOUT_SEC")
     spark_introspection_min_interval_sec: float = Field(0.0, alias="SPARK_INTROSPECTION_MIN_INTERVAL_SEC")
+    spark_introspection_require_rich_meta: bool = Field(
+        True,
+        alias="SPARK_INTROSPECTION_REQUIRE_RICH_META",
+    )
     spark_introspection_idempotency_enable: bool = Field(True, alias="SPARK_INTROSPECTION_IDEMPOTENCY_ENABLE")
     spark_introspection_redis_url: Optional[str] = Field(None, alias="SPARK_INTROSPECTION_REDIS_URL")
     spark_introspection_key_prefix: str = Field("spark:introspection", alias="SPARK_INTROSPECTION_KEY_PREFIX")

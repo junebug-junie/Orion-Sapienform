@@ -59,6 +59,7 @@ SYNC_PREFIXES = (
     "MEMORY_SUGGEST_",
     "MEMORY_FAILED_",
     "MEMORY_WINDOW_",
+    "SPARK_INTROSPECTION_",
     "TURN_CHANGE_",
     "CHANNEL_SIGNALS_",
     "CHANNEL_VISION_",
@@ -100,6 +101,7 @@ DEFAULT_SERVICES = (
     "orion-self-experiments",
     "orion-actions",
     "orion-spark-concept-induction",
+    "orion-spark-introspector",
     # Transport substrate stack (M3–M7)
     "orion-substrate-runtime",
     "orion-field-digester",

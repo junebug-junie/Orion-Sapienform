@@ -426,6 +426,16 @@ Then open the Hub Memory tab → **Review queue**, or `GET /api/memory/cards?sta
 
 **Compute lane override (mode vs compute):** Hub chat UI exposes **Mode** and **Compute** dropdowns. Mode decides behavior (`Auto`, `Grounded Small`, `Brain`, `Quick`, `Story`, `Agent`, `Council`); **Compute** selects the GPU/model lane (`chat`, `quick`, `agent`, `metacog`). Default compute is `quick`. Hub proxies `GET /api/llm-routes` from `HUB_LLM_GATEWAY_URL` (`GET /routes` on orion-llm-gateway) and polls every 30s. Selected lane is sent as `llm_route` on chat payloads (wired into cortex `options.llm_route`). Agent mode still routes to context-exec with `llm_profile` bound to the selected compute lane. Down lanes warn with explicit **Use quick / Try anyway / Cancel** — no silent fallback.
 
+**Social room toggle vs Mode vs Compute:**
+
+| Control | What it sets | Social room ON override |
+|---------|----------------|-------------------------|
+| **Mode** | Behavior lane (`brain`, `agent`, `council`, …) | Forces `mode=brain` |
+| **Compute** | GPU/model lane via `llm_route` (`chat`, `quick`, …) | **Still applies** — pick which model serves `chat_social_room` |
+| **Social room** checkbox | `chat_profile=social_room`, `social_room_mode=hub_direct` | Forces verb **`chat_social_room`** (not `chat_general` / `chat_quick`) |
+
+Bridge env keys `SOCIAL_BRIDGE_HUB_MODE` / `SOCIAL_BRIDGE_HUB_VERB` affect **CallSyne bridge → Hub** calls only; the Hub UI toggle ignores them.
+
 **Agent mode → context-exec:** When `HUB_AGENT_CONTEXT_EXEC_ENABLED=true` (default), Hub **Agent** mode calls `POST /context-exec/run` on `HUB_CONTEXT_EXEC_API_URL` instead of legacy AgentChain/ReAct. Selected route is passed as `llm_profile` on the context-exec request. Hub renders an inline operator response (`Agent run complete`, mode, route, synthesis status, result, proposal link, mutation none) from `operator_summary`. Proposal review / Pending Decisions remain unchanged.
 
 **Investigation v2 (epistemic pipeline):** When `CONTEXT_EXEC_INVESTIGATION_V2_ENABLED=true`, Hub Agent lane threads `answer_contract` from `answer_contract_draft` into context-exec, sends `mode=investigation_v2` with profile-derived permissions (`context_exec_permissions_for_llm_profile`), and receives **`final_text`** (finalize-rendered user voice) as `llm_response`. `InvestigationReportV2` remains an inspectable operator sidecar in `metadata.context_exec` (`operator_report_text`). Conceptual/personal turns do not trigger repo/trace sweeps. Default is `false` (legacy keyword mode inference preserved).

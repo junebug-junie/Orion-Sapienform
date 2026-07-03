@@ -353,6 +353,10 @@ class Settings(BaseSettings):
     # --- No-Write Debug Mode (skip publishing chat history) ---
     HUB_DEFAULT_NO_WRITE: bool = Field(default=False, alias="HUB_DEFAULT_NO_WRITE")
     HUB_AUTO_DEFAULT_ENABLED: bool = Field(default=False, alias="HUB_AUTO_DEFAULT_ENABLED")
+    ENABLE_REPAIR_PRESSURE_SPEECH_WIRING: bool = Field(
+        default=True,
+        alias="ENABLE_REPAIR_PRESSURE_SPEECH_WIRING",
+    )
     HUB_AUTONOMY_SUBJECT_DISPLAY: str = Field(default="two", alias="HUB_AUTONOMY_SUBJECT_DISPLAY")
     SUBSTRATE_AUTONOMY_ENABLED: bool = Field(default=False, alias="SUBSTRATE_AUTONOMY_ENABLED")
     SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED: bool = Field(default=True, alias="SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED")

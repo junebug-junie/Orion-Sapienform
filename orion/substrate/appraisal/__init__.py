@@ -1,6 +1,10 @@
 """Substrate-derived appraisers. See docs/plans/substrate/2026-05-23-repair-pressure-v1.md."""
 
-from .contract import REPAIR_PRESSURE_DEBUG_KEY, apply_repair_pressure_contract
+from .contract import (
+    REPAIR_PRESSURE_CONTRACT_METADATA_KEY,
+    REPAIR_PRESSURE_DEBUG_KEY,
+    apply_repair_pressure_contract,
+)
 from .evidence import DETECTOR_NAME, extract_repair_evidence
 from .models import RepairEvidenceV1, RepairPressureAppraisalV1
 from .repair_pressure import appraise_repair_pressure
@@ -30,6 +34,7 @@ __all__ = [
     "KIND_LABELS",
     "MoleculeSummaryV1",
     "ORGAN_ID",
+    "REPAIR_PRESSURE_CONTRACT_METADATA_KEY",
     "REPAIR_PRESSURE_DEBUG_KEY",
     "RepairEvidenceV1",
     "RepairPressureAppraisalV1",

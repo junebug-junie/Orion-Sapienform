@@ -46,6 +46,7 @@ from .cortex_request_builder import (
 from .mutation_cognition_context import build_mutation_cognition_context
 from .context_exec_agent_bridge import run_hub_agent_via_context_exec, should_use_context_exec_agent_lane
 from .substrate_effect_pipeline import run_substrate_effect_pipeline
+from .repair_pressure_wiring import attach_repair_pressure_contract
 from orion.substrate.appraisal.view_model import build_substrate_effect_view
 from .substrate_effect_cache import substrate_effect_cache
 from .autonomy_constitution import (
@@ -2099,7 +2100,7 @@ async def handle_chat_request(
     # Runs sync before the cortex call so the snapshot exists when the
     # chat result is serialized. Today the appraiser is sub-millisecond;
     # if it ever grows costly, move to asyncio.to_thread or post-cortex.
-    substrate_summary, _ = run_substrate_effect_pipeline(
+    substrate_summary, substrate_snapshot = run_substrate_effect_pipeline(
         turn_id=corr_id,
         message_id=None,
         user_text=user_prompt,
@@ -2146,6 +2147,11 @@ async def handle_chat_request(
         )
     except HubRequestValidationError as exc:
         return {"error": str(exc), "error_code": exc.code}
+    attach_repair_pressure_contract(
+        req,
+        substrate_snapshot,
+        enabled=settings.ENABLE_REPAIR_PRESSURE_SPEECH_WIRING,
+    )
     workflow_request = req.metadata.get("workflow_request") if isinstance(req.metadata, dict) else None
     execution_policy = workflow_request.get("execution_policy") if isinstance(workflow_request, dict) else None
     logger.info(

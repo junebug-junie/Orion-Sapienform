@@ -452,6 +452,18 @@ def test_compile_speech_contract_repair_concrete_overrides_relational() -> None:
     assert "no broad architecture wandering" in contract
 
 
+def test_compile_speech_contract_concrete_bias_appends_to_relational() -> None:
+    brief = _relational_brief(interaction_regime="relational", companion_closing_move="end_with_a_wondering")
+    repair = {
+        "mode": "concrete_bias",
+        "rules": ["be more specific", "include next concrete action"],
+    }
+    contract = compile_speech_contract(brief, repair_contract=repair)
+    assert "companion turn" in contract.lower()
+    assert "be more specific" in contract
+    assert "include next concrete action" in contract
+
+
 def test_compile_speech_contract_concrete_bias_appends_to_instrumental() -> None:
     brief = _instrumental_brief(task_mode="direct_response")
     repair = {

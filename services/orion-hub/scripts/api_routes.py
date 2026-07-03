@@ -2150,7 +2150,7 @@ async def handle_chat_request(
     attach_repair_pressure_contract(
         req,
         substrate_snapshot,
-        enabled=bool(getattr(settings, "ENABLE_REPAIR_PRESSURE_SPEECH_WIRING", True)),
+        enabled=settings.ENABLE_REPAIR_PRESSURE_SPEECH_WIRING,
     )
     workflow_request = req.metadata.get("workflow_request") if isinstance(req.metadata, dict) else None
     execution_policy = workflow_request.get("execution_policy") if isinstance(workflow_request, dict) else None

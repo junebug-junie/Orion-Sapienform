@@ -906,7 +906,7 @@ async def websocket_endpoint(websocket: WebSocket):
             attach_repair_pressure_contract(
                 chat_req,
                 substrate_snapshot,
-                enabled=bool(getattr(settings, "ENABLE_REPAIR_PRESSURE_SPEECH_WIRING", True)),
+                enabled=settings.ENABLE_REPAIR_PRESSURE_SPEECH_WIRING,
             )
 
             # Chat grammar trace (fail-open, behind PUBLISH_HUB_CHAT_GRAMMAR env flag)

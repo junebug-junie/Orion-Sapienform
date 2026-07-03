@@ -58,6 +58,8 @@ def test_handle_chat_request_summary_marks_no_change_for_benign():
     assert summary is not None
     assert summary["changed_behavior"] is False
     assert summary["behavior_applied"] is None
+    assert cortex.last_req is not None
+    assert REPAIR_PRESSURE_CONTRACT_METADATA_KEY not in (cortex.last_req.metadata or {})
 
 
 def test_handle_chat_request_attaches_repair_contract_metadata_on_high_pressure():
@@ -73,3 +75,15 @@ def test_handle_chat_request_attaches_repair_contract_metadata_on_high_pressure(
     assert isinstance(contract, dict)
     assert contract.get("mode") in {"repair_concrete", "concrete_bias"}
     assert contract.get("rules")
+
+
+def test_handle_chat_request_omits_repair_contract_when_flag_disabled(monkeypatch):
+    monkeypatch.setattr(api_routes.settings, "ENABLE_REPAIR_PRESSURE_SPEECH_WIRING", False)
+    cortex = _FakeCortex()
+    payload = _make_payload(
+        "you gave me garbage directions — stop, build me a design spec for claude, "
+        "arsonist pov only, nuts and bolts"
+    )
+    asyncio.run(api_routes.handle_chat_request(cortex, payload, "session-flag-off", no_write=True))
+    assert cortex.last_req is not None
+    assert REPAIR_PRESSURE_CONTRACT_METADATA_KEY not in (cortex.last_req.metadata or {})

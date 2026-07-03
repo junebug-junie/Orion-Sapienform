@@ -23,6 +23,12 @@ def _snapshot(*, before_mode: str, after_mode: str, rules: list[str] | None = No
     )
 
 
+def test_attach_skips_when_snapshot_none() -> None:
+    req = CortexChatRequest(prompt="hi", mode="brain")
+    attach_repair_pressure_contract(req, None, enabled=True)
+    assert req.metadata is None or REPAIR_PRESSURE_CONTRACT_METADATA_KEY not in (req.metadata or {})
+
+
 def test_attach_skips_when_disabled() -> None:
     req = CortexChatRequest(prompt="hi", mode="brain")
     attach_repair_pressure_contract(req, _snapshot(before_mode="default", after_mode="repair_concrete"), enabled=False)

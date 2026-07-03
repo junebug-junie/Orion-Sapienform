@@ -39,3 +39,14 @@ def test_metadata_repair_concrete_reaches_speech_contract() -> None:
 def test_metadata_absent_keeps_instrumental_contract() -> None:
     text = _resolve_speech_contract({})
     assert text == "Answer directly."
+
+
+def test_metadata_disabled_keeps_instrumental_contract() -> None:
+    md = {
+        REPAIR_PRESSURE_CONTRACT_METADATA_KEY: {
+            "mode": "repair_concrete",
+            "rules": ["include file/module boundaries"],
+        }
+    }
+    text = _resolve_speech_contract(md, enabled=False)
+    assert text == "Answer directly."

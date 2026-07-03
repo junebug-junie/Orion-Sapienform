@@ -815,7 +815,8 @@ def _metacog_biometrics_cue(ctx: Dict[str, Any], *, phase: str) -> str:
         return json.dumps(payload, separators=(",", ":"))
 
     status = str(biometrics.get("status") or "missing")
-    constraint = str(biometrics.get("constraint") or "NONE")
+    cluster = biometrics.get("cluster") if isinstance(biometrics.get("cluster"), dict) else {}
+    constraint = str(biometrics.get("constraint") or cluster.get("constraint") or "NONE")
     composites = _metacog_cluster_composites(biometrics)
 
     if phase == "enrich":
@@ -2803,6 +2804,8 @@ async def call_step_services(
             if step.verb_name == "chat_general" and step.step_name == "llm_chat_general":
                 if suppress_chat_general_speech_identity_priming(ctx):
                     logs.append("info <- suppressed identity kernel priming for ordinary chat_general speech turn")
+        if service == "MetacogEnrichService" and ctx.get("metacog_biometrics_cue_enrich"):
+            ctx["metacog_biometrics_cue"] = ctx["metacog_biometrics_cue_enrich"]
         prompt = _render_prompt(step.prompt_template or "", ctx) if step.prompt_template else ""
 
         enrich_ctx_overflow: str | None = None
@@ -2873,9 +2876,6 @@ async def call_step_services(
                 metacog_prompt_chars = len(prompt or "")
                 if draft_trim_applied:
                     ctx["metacog_ctx_trim_applied"] = draft_trim_applied
-            elif metacog_phase == "enrich":
-                if ctx.get("metacog_biometrics_cue_enrich"):
-                    ctx["metacog_biometrics_cue"] = ctx["metacog_biometrics_cue_enrich"]
             if (
                 service == "MetacogEnrichService"
                 and metacog_budget_ok
@@ -3679,6 +3679,9 @@ async def call_step_services(
                                     biometrics_context["cluster"] = cluster_raw
                                 elif state_res.biometrics and state_res.biometrics.cluster:
                                     biometrics_context["cluster"] = state_res.biometrics.cluster.model_dump(mode="json")
+                                cluster_obj = biometrics_context.get("cluster")
+                                if isinstance(cluster_obj, dict) and cluster_obj.get("constraint"):
+                                    biometrics_context["constraint"] = cluster_obj.get("constraint")
                         ctx["biometrics"] = biometrics_context
                         ctx["biometrics_json"] = json.dumps(biometrics_context, indent=2)
                         if state_res.ok and state_res.snapshot:

@@ -114,6 +114,101 @@ def test_metacog_biometrics_cue_enrich_includes_node_lines():
     assert any("atlas" in line for line in parsed["nodes"])
 
 
+def test_enrich_prompt_uses_enrich_biometrics_cue(monkeypatch):
+    executor_module = _load_executor_module()
+    captured_prompts: list[str] = []
+
+    class FakeLLMClient:
+        def __init__(self, bus):
+            self.bus = bus
+
+        async def chat(self, **kwargs):
+            req = kwargs.get("req")
+            messages = getattr(req, "messages", []) or []
+            if messages:
+                msg = messages[0]
+                content = getattr(msg, "content", None)
+                if content is None and isinstance(msg, dict):
+                    content = msg.get("content")
+                captured_prompts.append(str(content or ""))
+            return {}
+
+    monkeypatch.setattr(executor_module, "LLMGatewayClient", FakeLLMClient)
+    monkeypatch.setattr(executor_module.settings, "cortex_metacog_enrich_prompt_max_chars", 50000)
+    monkeypatch.setattr(executor_module.settings, "cortex_metacog_enrich_worker_ctx_char_budget", 50000)
+
+    biometrics = {
+        "status": "fresh",
+        "constraint": "GPU_MEM",
+        "cluster": {
+            "composite": {"strain": 0.62, "homeostasis": 0.5, "stability": 0.44},
+        },
+        "nodes": {
+            "atlas": {
+                "status": "OK",
+                "summary": {"composites": {"strain": 0.71}, "pressures": {"gpu": 0.82}},
+            },
+        },
+    }
+    ctx = _draft_ctx()
+    ctx["biometrics"] = biometrics
+    ctx["metacog_biometrics_cue"] = executor_module._metacog_biometrics_cue(
+        {"biometrics": biometrics}, phase="draft"
+    )
+    ctx["metacog_biometrics_cue_enrich"] = executor_module._metacog_biometrics_cue(
+        {"biometrics": biometrics}, phase="enrich"
+    )
+
+    draft_parsed = json.loads(ctx["metacog_biometrics_cue"])
+    enrich_parsed = json.loads(ctx["metacog_biometrics_cue_enrich"])
+    assert "nodes" not in draft_parsed
+    assert any("atlas" in line for line in enrich_parsed["nodes"])
+
+    draft_entry = CollapseMirrorEntryV2(
+        event_id="evt-enrich-cue",
+        id="evt-enrich-cue",
+        trigger="dense",
+        observer="orion",
+        observer_state=["zen"],
+        type="flow",
+        emergent_entity="Test",
+        summary="Test summary",
+        mantra="Test mantra",
+        field_resonance="Test resonance",
+        resonance_signature="Test sig",
+        source_service="metacog",
+    ).model_dump(mode="json")
+    draft_entry["state_snapshot"] = {"telemetry": {"metacog_draft_mode": "llm"}}
+    ctx["collapse_entry"] = draft_entry
+    ctx["collapse_json"] = json.dumps(draft_entry)
+
+    template = _load_template("log_orion_metacognition_enrich.j2")
+    step = ExecutionStep(
+        verb_name="log_orion_metacognition",
+        step_name="enrich_entry",
+        order=1,
+        services=["MetacogEnrichService"],
+        prompt_template=template,
+    )
+    source = ServiceRef(name="test", node="test", version="1.0")
+
+    result = asyncio.run(
+        executor_module.call_step_services(
+            bus=object(),
+            source=source,
+            step=step,
+            ctx=ctx,
+            correlation_id="corr-enrich-cue-swap",
+        )
+    )
+
+    assert result.status == "success"
+    assert captured_prompts
+    prompt = captured_prompts[0]
+    assert "atlas: strain=0.71 gpu=0.82" in prompt
+    assert '"nodes"' in prompt
+
+
 def test_metacog_biometrics_cue_missing_biometrics():
     executor_module = _load_executor_module()
     cue = executor_module._metacog_biometrics_cue({}, phase="draft")

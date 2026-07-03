@@ -18,10 +18,12 @@ def test_mark_dispatched_tracks_inflight() -> None:
         reply_to="orion:vision:reply:abc",
         now=100.0,
         frame_ts=99.0,
+        stream_id="cam0",
     )
     assert rs.inflight_total() == 1
     assert "abc" in rs.cameras["cam1"].inflight
     assert rs.pending["abc"].task_type == "retina_fast"
+    assert rs.pending["abc"].stream_id == "cam0"
 
 
 def test_clear_pending_drops_inflight() -> None:

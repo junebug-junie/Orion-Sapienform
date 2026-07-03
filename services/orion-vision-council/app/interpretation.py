@@ -31,7 +31,7 @@ ParseMode = Literal[
     "legacy_events_dict",
     "legacy_events_list",
     "parse_failed",
-    "edge_fallback",
+    "host_fallback",
 ]
 
 

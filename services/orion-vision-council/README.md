@@ -13,7 +13,7 @@ VisionWindowPayload → VisionSceneInterpretationV1 → enforce_evidence_groundi
 3. **Grounding** — `CouncilService._finalize_interpretation()` calls `enforce_evidence_grounding()` on **both** intake and RPC paths:
    - Drop person/activity claims when `person` ∉ `summary.evidence.hard_labels`
    - Cap activity confidence when only captions support the claim
-   - On parse failure + `edge_person_hits > 0`: deterministic `person_presence` fallback (no YouTube hallucination)
+   - On parse failure + `host_person_hits > 0`: deterministic `person_presence` fallback (no YouTube hallucination)
 4. **Projection** — `project_interpretation_to_events` maps grounded `event_candidates` to `VisionEventBundleItem` entries.
 5. **Publish** — the event bundle is published on `orion:vision:events` (and returned on RPC reply when applicable).
 
@@ -24,7 +24,7 @@ VisionWindowPayload → VisionSceneInterpretationV1 → enforce_evidence_groundi
 | Narrative mentions person/activity; `person` not in `hard_labels` | Drop event candidate |
 | Activity verb without hard `person` | Drop event candidate |
 | Activity claim with hard `person` but caption-only support | Cap confidence at 0.4, tag `caption_inferred` |
-| LLM parse fails; `edge_person_hits > 0` | Emit `person_presence` fallback (`parse_mode=edge_fallback`) |
+| LLM parse fails; `host_person_hits > 0` | Emit `person_presence` fallback (`parse_mode=host_fallback`, tag `host_detect`) |
 
 Choke point: `services/orion-vision-council/app/evidence_grounding.py`, wired via `_finalize_interpretation()` in `main.py`.
 

@@ -11,7 +11,7 @@ This document outlines the architecture and contracts for the Orion Vision subsy
 The vision pipeline is a distributed system using the Titanium Contract Stack over Redis PubSub.
 
 1.  **Vision Edge (`orion-vision-edge`)**: On-device capture + YOLO/motion detectors. Publishes frame pointers, slim edge-detection artifacts, and compact activity trigger signals.
-2.  **Vision Frame Router (`orion-vision-frame-router`)**: Subscribes to frames and edge activity; dispatches `retina_fast` tasks to Host using baseline vs triggered policy tiers.
+2.  **Vision Frame Router (`orion-vision-frame-router`)**: Subscribes to frames; dispatches `retina_fast` tasks to Host using baseline vs triggered policy tiers. Trigger TTL is refreshed from host task replies (person detections), not edge activity.
 3.  **Vision Host (`orion-vision-host`)**: GPU-accelerated inference service. Executes tasks (Embed, Detect, Caption, Retina) and broadcasts artifacts.
 4.  **Vision Retina (`orion-vision-retina`)**: Capture service that publishes frame pointers (legacy/alternate capture path).
 5.  **Vision Window (`orion-vision-window`)**: Aggregates artifacts into time-based windows with evidence tiers.
@@ -29,7 +29,6 @@ The vision pipeline is a distributed system using the Titanium Contract Stack ov
 | **Edge** | `CHANNEL_VISION_EDGE_ACTIVITY` | `orion:vision:edge:activity` | `vision.edge.activity.v1` | Out |
 | **Edge** | (artifact pub) | `orion:vision:artifacts` | `vision.artifact` | Out |
 | **Frame Router** | `CHANNEL_FRAMES_IN` | `orion:vision:frames` | `vision.frame.pointer` | In |
-| **Frame Router** | `CHANNEL_EDGE_ACTIVITY_IN` | `orion:vision:edge:activity` | `vision.edge.activity.v1` | In |
 | **Frame Router** | `CHANNEL_HOST_INTAKE` | `orion:exec:request:VisionHostService` | `vision.task.request` | Out (Req) |
 | **Window** | `CHANNEL_WINDOW_INTAKE` | `orion:vision:artifacts` | `vision.artifact` | In |
 | **Window** | `CHANNEL_WINDOW_PUB` | `orion:vision:windows` | `vision.window` | Out |
@@ -83,12 +82,12 @@ All messages MUST be `BaseEnvelope` objects.
 
 Policy file: `config/vision_frame_router.yaml`. Merge order: `defaults` base, then `streams[stream_id]`, then `cameras[camera_id]` (camera-specific wins).
 
-The frame router subscribes to `orion:vision:edge:activity` and maintains per-`stream_id` trigger TTL state. Each frame dispatch selects one tier:
+The frame router maintains per-`stream_id` trigger TTL from **host task replies** (person labels in GroundingDINO output). Each frame dispatch selects one tier:
 
 | Tier | When | `retina_fast` request | Purpose |
 | :--- | :--- | :--- | :--- |
 | **baseline** | No active trigger labels within TTL | `want_caption: false`, `want_embeddings: false` | Keep GroundingDINO fresh without VLM on every frame |
-| **triggered** | Edge activity includes a configured `trigger_labels` entry (default: `person`, `motion`) within `trigger_ttl_seconds` | `want_caption: true`, `want_embeddings: true` | Rich caption + embed when someone or motion is present |
+| **triggered** | Host recently detected configured `trigger_labels` (default: `person`) within `trigger_ttl_seconds` | `want_caption: true`, `want_embeddings: true` | Rich caption + embed when a person was detected on the host pipe |
 
 Triggered tier settings merge over baseline (rate limits, `every_n_frames`, etc.). Task meta includes `dispatch_tier` (`baseline` or `triggered`) for observability.
 

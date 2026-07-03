@@ -17,7 +17,7 @@ Window summaries include an `evidence` block used by Council for grounded interp
 |-------|---------|
 | `hard_labels` | Detection labels above score threshold (factual tier) |
 | `soft_labels` | Tokens from captions matching stoplist (YouTube, google, …) |
-| `edge_person_hits` | Person detections from `task_type=edge_detection` |
+| `edge_person_hits` | Always 0 (edge artifacts excluded from pipeline evidence) |
 | `host_person_hits` | Person detections from host `retina_fast` artifacts |
 | `caption_count` | Number of captioned artifacts in the window |
 

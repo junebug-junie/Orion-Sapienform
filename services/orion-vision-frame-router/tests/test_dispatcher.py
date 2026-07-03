@@ -10,7 +10,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.schemas.vision import VisionFramePointerPayload, VisionTaskResultPayload
+from orion.schemas.vision import (
+    VisionArtifactOutputs,
+    VisionArtifactPayload,
+    VisionFramePointerPayload,
+    VisionObject,
+    VisionTaskResultPayload,
+)
 
 from app.dispatcher import FrameDispatcher
 from app.metrics import RouterMetrics
@@ -203,3 +209,84 @@ async def test_publish_failure_does_not_mark_inflight(policy_path: Path) -> None
     assert dispatcher.metrics.frames_dispatched_total == 0
     assert dispatcher.metrics.last_error is not None
     assert "frame_handler_error" in dispatcher.metrics.last_error
+
+
+def _host_reply_with_person(*, corr, stream_id: str = "cam0") -> BaseEnvelope:
+    artifact = VisionArtifactPayload(
+        artifact_id="a1",
+        correlation_id=str(corr),
+        task_type="retina_fast",
+        device="cuda:0",
+        inputs={"stream_id": stream_id},
+        outputs=VisionArtifactOutputs(
+            objects=[VisionObject(label="person", score=0.9, box_xyxy=[0, 0, 1, 1])]
+        ),
+        timing={},
+        model_fingerprints={},
+    )
+    payload = VisionTaskResultPayload(ok=True, task_type="retina_fast", artifact=artifact)
+    return BaseEnvelope(
+        kind="vision.task.result",
+        source=ServiceRef(name="vision-host", version="0.1.0"),
+        correlation_id=corr,
+        payload=payload.model_dump(mode="json"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_host_reply_records_person_trigger_for_stream(tmp_path: Path) -> None:
+    policy_yaml = tmp_path / "policy.yaml"
+    policy_yaml.write_text(
+        """
+version: 1
+defaults:
+  enabled: true
+  baseline:
+    task_type: retina_fast
+    every_n_frames: 1
+    min_seconds_between_tasks_per_camera: 0
+    request:
+      want_caption: false
+  triggered:
+    task_type: retina_fast
+    trigger_labels: [person]
+    trigger_ttl_seconds: 8
+    min_seconds_between_tasks_per_camera: 0
+    request:
+      want_caption: true
+global:
+  max_inflight_total: 2
+  require_image_path_exists: false
+streams:
+  cam0:
+    enabled: true
+cameras: {}
+""",
+        encoding="utf-8",
+    )
+    settings = Settings(ROUTER_POLICY_PATH=str(policy_yaml), REQUIRE_IMAGE_PATH_EXISTS=False)
+    dispatcher = FrameDispatcher(
+        settings=settings,
+        policy=FrameDispatchPolicy.load(settings),
+        state=RouterState(),
+        metrics=RouterMetrics(),
+        bus=FakeBus(),
+    )
+    corr = uuid4()
+    frame = VisionFramePointerPayload(
+        image_path="/tmp/f.jpg",
+        camera_id="rtsp://cam",
+        stream_id="cam0",
+        frame_ts=time.time(),
+    )
+    frame_env = BaseEnvelope(
+        kind="vision.frame.pointer",
+        source=ServiceRef(name="vision-edge", version="0.2.0"),
+        correlation_id=corr,
+        payload=frame.model_dump(mode="json"),
+    )
+    await dispatcher.handle_frame_envelope(frame_env)
+    await dispatcher.handle_reply_envelope(_host_reply_with_person(corr=corr))
+    active = dispatcher.state.active_labels("cam0", ["person"], ttl_s=8.0, now=time.time())
+    assert active == ["person"]
+    assert dispatcher.metrics.host_trigger_updates_total == 1

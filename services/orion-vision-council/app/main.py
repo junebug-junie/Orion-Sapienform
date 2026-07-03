@@ -27,7 +27,7 @@ except ImportError:
 
 from .evidence_grounding import (
     build_person_presence_fallback,
-    edge_person_hits,
+    host_person_hits,
     enforce_evidence_grounding,
 )
 from .interpretation import (
@@ -249,20 +249,20 @@ class CouncilService:
             interpretation, grounding_notes = enforce_evidence_grounding(interpretation, window)
             for note in grounding_notes:
                 logger.info(f"[COUNCIL] grounding {note}")
-            if not interpretation.event_candidates and edge_person_hits(window) > 0:
+            if not interpretation.event_candidates and host_person_hits(window) > 0:
                 interpretation = build_person_presence_fallback(window)
                 warnings = list(parse_outcome.salvage_warnings)
-                warnings.append("edge_fallback_after_grounding")
+                warnings.append("host_fallback_after_grounding")
                 parse_outcome = InterpretationParseOutcome(
                     interpretation=interpretation,
                     parse_mode=parse_outcome.parse_mode,
                     salvage_warnings=warnings,
                 )
-        elif edge_person_hits(window) > 0:
+        elif host_person_hits(window) > 0:
             interpretation = build_person_presence_fallback(window)
             parse_outcome = InterpretationParseOutcome(
                 interpretation=interpretation,
-                parse_mode="edge_fallback",
+                parse_mode="host_fallback",
             )
         return interpretation, parse_outcome
 

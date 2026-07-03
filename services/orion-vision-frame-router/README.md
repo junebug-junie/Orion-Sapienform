@@ -1,6 +1,6 @@
 # Orion Vision Frame Router
 
-Policy bridge between **Retina** (continuous frame capture) and **Vision Host** (on-demand GPU inference). Subscribes to frame pointers **and edge activity triggers**, applies YAML baseline/triggered dispatch rules, and dispatches `VisionTaskRequestPayload` tasks while preserving envelope causality.
+Policy bridge between **Retina** (continuous frame capture) and **Vision Host** (on-demand GPU inference). Subscribes to frame pointers, applies YAML baseline/triggered dispatch rules, and dispatches `VisionTaskRequestPayload` tasks while preserving envelope causality. **Triggered tier TTL is refreshed from host task replies** (GroundingDINO person detections), not from edge activity.
 
 This service does **not** capture frames, run inference, or touch GPU models.
 
@@ -13,9 +13,6 @@ This service does **not** capture frames, run inference, or touch GPU models.
    orion-vision-retina  ──publish──►  orion:vision:frames
            │                              (vision.frame.pointer)
            │                                      │
-   orion-vision-edge   ──publish──►  orion:vision:edge:activity
-           │                         (person/motion triggers)
-           │                                      │
            │                                      ▼
            │                         orion-vision-frame-router
            │                    (baseline vs triggered policy + sampling)
@@ -26,6 +23,9 @@ This service does **not** capture frames, run inference, or touch GPU models.
            │                                      │
            │                                      ▼
            │                         orion-vision-host (GPU)
+           │                                      │
+           │                    host reply (person in artifact)
+           │                         refreshes trigger TTL
            │                                      │
            │                                      ▼
            │              orion:vision:reply:<correlation_id>
@@ -38,7 +38,7 @@ This service does **not** capture frames, run inference, or touch GPU models.
 | | **orion-vision-retina** | **orion-vision-frame-router** (this) | **orion-vision-host** |
 |---|-------------------------|--------------------------------------|------------------------|
 | Role | Capture + persist JPEGs | Policy bridge + trigger gating + backpressure | GPU inference |
-| Trigger | Internal loop (`RETINA_FPS`) | Bus: frames + edge activity | Bus: host intake channel |
+| Trigger | Internal loop (`RETINA_FPS`) | Bus: frames; host replies refresh trigger TTL | Bus: host intake channel |
 | Output | Frame pointers | Host task requests (baseline or triggered tier) | Artifacts + task replies |
 | Needs GPU | No | No | Yes |
 
@@ -46,12 +46,12 @@ This service does **not** capture frames, run inference, or touch GPU models.
 
 Policy file: `config/vision_frame_router.yaml`. Merge order: `defaults` → `streams[stream_id]` → `cameras[camera_id]`.
 
-The router subscribes to `orion:vision:edge:activity` and maintains per-`stream_id` trigger TTL. Each frame dispatch selects one tier:
+The router maintains per-`stream_id` trigger TTL from **host task replies** (person labels in GroundingDINO output). Each frame dispatch selects one tier:
 
 | Tier | When | Host request | Purpose |
 |------|------|--------------|---------|
 | **baseline** | No active trigger labels within TTL | `want_caption: false`, `want_embeddings: false` | Detect-only `retina_fast` without VLM on every frame |
-| **triggered** | Edge activity includes configured `trigger_labels` (default: `person`, `motion`) within `trigger_ttl_seconds` | `want_caption: true`, `want_embeddings: true` | Caption + embed when someone or motion is present |
+| **triggered** | Host recently detected configured `trigger_labels` (default: `person`) within `trigger_ttl_seconds` | `want_caption: true`, `want_embeddings: true` | Caption + embed when a person was detected on the host pipe |
 
 Task meta includes `dispatch_tier` (`baseline` or `triggered`) for observability.
 
@@ -62,7 +62,6 @@ Per-stream overrides use the `streams:` block (e.g. `streams.cam0`). Legacy per-
 | Channel | Direction | Payload |
 |---------|-----------|---------|
 | `orion:vision:frames` | Subscribe | `VisionFramePointerPayload` (`vision.frame.pointer`) |
-| `orion:vision:edge:activity` | Subscribe | `VisionEdgeActivityPayload` (`vision.edge.activity.v1`) |
 | `orion:exec:request:VisionHostService` | Publish | `VisionTaskRequestPayload` (`vision.task.request`) |
 | `orion:vision:reply:*` | PSUBSCRIBE | `VisionTaskResultPayload` (`vision.task.result`) |
 | `orion:system:health` | Publish | `SystemHealthV1` router metrics |
@@ -80,7 +79,7 @@ cd services/orion-vision-frame-router
 cp .env_example .env   # edit ORION_BUS_URL, DRY_RUN, etc.
 ```
 
-Key env vars: `ROUTER_ENABLED`, `DRY_RUN`, `MAX_INFLIGHT_TOTAL`, `TASK_TIMEOUT_SECONDS`, `REQUIRE_IMAGE_PATH_EXISTS`, `CHANNEL_EDGE_ACTIVITY_IN`.
+Key env vars: `ROUTER_ENABLED`, `DRY_RUN`, `MAX_INFLIGHT_TOTAL`, `TASK_TIMEOUT_SECONDS`, `REQUIRE_IMAGE_PATH_EXISTS`.
 
 **Deployment:** Vision Host should consume **only** `orion:exec:request:VisionHostService` when this router is enabled — do not also wire Host to auto-subscribe `orion:vision:frames`, or GPU work will bypass policy.
 
@@ -110,13 +109,10 @@ With Retina publishing frames and the router running on shared `app-net`:
 # Frame intake (from Retina)
 redis-cli -u "$ORION_BUS_URL" SUBSCRIBE orion:vision:frames
 
-# Edge activity triggers (from vision-edge)
-redis-cli -u "$ORION_BUS_URL" SUBSCRIBE orion:vision:edge:activity
-
 # Host task dispatch (from router)
 redis-cli -u "$ORION_BUS_URL" SUBSCRIBE orion:exec:request:VisionHostService
 
-# Host replies (router clears pending on match)
+# Host replies (router clears pending + refreshes trigger TTL on person detect)
 redis-cli -u "$ORION_BUS_URL" PSUBSCRIBE 'orion:vision:reply:*'
 
 # Router health telemetry

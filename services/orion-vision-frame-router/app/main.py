@@ -11,7 +11,6 @@ from loguru import logger
 
 from orion.core.bus.async_service import OrionBusAsync
 
-from .activity import handle_activity_envelope
 from .dispatcher import FrameDispatcher
 from .metrics import RouterMetrics, make_health_envelope
 from .policy import FrameDispatchPolicy
@@ -35,7 +34,6 @@ class FrameRouterService:
         self.policy: FrameDispatchPolicy | None = None
         self.dispatcher: FrameDispatcher | None = None
         self._frames_task: Optional[asyncio.Task] = None
-        self._activity_task: Optional[asyncio.Task] = None
         self._reply_task: Optional[asyncio.Task] = None
         self._timeout_task: Optional[asyncio.Task] = None
         self._health_task: Optional[asyncio.Task] = None
@@ -57,7 +55,6 @@ class FrameRouterService:
         await self.bus.connect()
         self._shutdown.clear()
         self._frames_task = asyncio.create_task(self._frames_loop())
-        self._activity_task = asyncio.create_task(self._activity_loop())
         self._reply_task = asyncio.create_task(self._reply_loop())
         self._timeout_task = asyncio.create_task(self._timeout_loop())
         self._health_task = asyncio.create_task(self._health_loop())
@@ -65,7 +62,7 @@ class FrameRouterService:
 
     async def stop(self) -> None:
         self._shutdown.set()
-        for task in (self._frames_task, self._activity_task, self._reply_task, self._timeout_task, self._health_task):
+        for task in (self._frames_task, self._reply_task, self._timeout_task, self._health_task):
             if task:
                 task.cancel()
                 try:
@@ -95,28 +92,6 @@ class FrameRouterService:
                 except Exception as exc:
                     if not self._shutdown.is_set():
                         logger.error(f"[FRAME-ROUTER] frames consumer error: {exc}")
-                        await asyncio.sleep(1)
-
-    async def _activity_loop(self) -> None:
-        async with self.bus.subscribe(self.settings.CHANNEL_EDGE_ACTIVITY_IN) as pubsub:
-            while not self._shutdown.is_set():
-                try:
-                    async for msg in self.bus.iter_messages(pubsub):
-                        if self._shutdown.is_set():
-                            break
-                        data = msg.get("data")
-                        if not data:
-                            continue
-                        decoded = self.bus.codec.decode(data)
-                        if decoded.ok and decoded.envelope:
-                            handle_activity_envelope(decoded.envelope, self.state, now=time.time())
-                        elif not decoded.ok:
-                            self.metrics.decode_errors_total += 1
-                            self.metrics.last_error = f"activity_decode_error: {decoded.error}"
-                            logger.warning(f"[FRAME-ROUTER] activity decode failed: {decoded.error}")
-                except Exception as exc:
-                    if not self._shutdown.is_set():
-                        logger.error(f"[FRAME-ROUTER] activity consumer error: {exc}")
                         await asyncio.sleep(1)
 
     async def _reply_loop(self) -> None:

@@ -19,7 +19,7 @@ def test_vision_edge_activity_channel_cataloged() -> None:
     assert entry["schema_id"] == "VisionEdgeActivityPayload"
     assert entry["message_kind"] == "vision.edge.activity.v1"
     assert "orion-vision-edge" in entry["producer_services"]
-    assert "orion-vision-frame-router" in entry["consumer_services"]
+    assert "orion-vision-frame-router" not in entry.get("consumer_services", [])
 
 
 def test_vision_edge_activity_schema_registry_aligns_with_resolve() -> None:

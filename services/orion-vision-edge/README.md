@@ -7,7 +7,7 @@ It adheres to the "Pointer" architecture:
 1. Capture frame -> Save to shared storage -> Publish `VisionFramePointer`.
 2. Consume pointer -> Run detectors -> Publish rate-limited **activity triggers** and optional slim **edge-detection artifacts** (no VLM caption).
 
-When YOLO or motion fires on `person` / `motion`, the detector publishes compact `VisionEdgeActivityPayload` envelopes on `orion:vision:edge:activity`. The frame router uses these to gate expensive host caption/embed work (baseline vs triggered dispatch).
+When YOLO or motion fires on `person` / `motion`, the detector publishes compact `VisionEdgeActivityPayload` envelopes on `orion:vision:edge:activity` for **edge-local consumers** (e.g. security watcher). The host vision pipe does **not** subscribe to this channel.
 
 ---
 
@@ -32,9 +32,10 @@ sequenceDiagram
     Detect->>Bus: Publish VisionEdgeActivity (orion:vision:edge:activity)
     Detect->>Bus: Publish VisionEdgeArtifact (orion:vision:artifacts, optional)
 
-    Bus->>Router: Activity triggers (person/motion TTL)
-    Bus->>Guard: Consume VisionEdgeArtifact
+    Bus->>Guard: Consume VisionEdgeArtifact (optional, edge-local)
 ```
+
+Edge activity on `orion:vision:edge:activity` is for edge-local subscribers only; the host pipe (frame router → host → window → council) is independent.
 
 ---
 
@@ -53,7 +54,7 @@ sequenceDiagram
 | Env var | Default | Notes |
 |---|---|---|
 | `EDGE_ACTIVITY_MIN_INTERVAL_S` | `1.0` | Per `(stream_id, label)` rate limit for activity publish |
-| `EDGE_PUBLISH_ARTIFACTS` | `true` | When true, publish slim `edge_detection` artifacts (no caption) for window evidence |
+| `EDGE_PUBLISH_ARTIFACTS` | `false` | When true, publish slim `edge_detection` artifacts (no caption); host pipe ignores these for evidence |
 
 Activity is published on every frame where YOLO/motion yields trigger labels, independent of `EDGE_PUBLISH_ARTIFACTS`.
 

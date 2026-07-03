@@ -436,3 +436,36 @@ def test_upgrade_brief_for_relational_continuation_sets_regime() -> None:
     assert upgraded.interaction_regime == "relational"
     assert upgraded.conversation_frame in {"reflective", "playful_relational"}
 
+
+def test_compile_speech_contract_repair_concrete_overrides_relational() -> None:
+    brief = _relational_brief(interaction_regime="relational", companion_closing_move="end_with_a_wondering")
+    repair = {
+        "mode": "repair_concrete",
+        "rules": [
+            "no broad architecture wandering",
+            "include tests/acceptance checks",
+        ],
+    }
+    contract = compile_speech_contract(brief, repair_contract=repair)
+    assert "companion turn" not in contract.lower()
+    assert "include tests/acceptance checks" in contract
+    assert "no broad architecture wandering" in contract
+
+
+def test_compile_speech_contract_concrete_bias_appends_to_instrumental() -> None:
+    brief = _instrumental_brief(task_mode="direct_response")
+    repair = {
+        "mode": "concrete_bias",
+        "rules": ["be more specific", "include next concrete action"],
+    }
+    contract = compile_speech_contract(brief, repair_contract=repair)
+    assert contract.startswith("Answer directly.")
+    assert "be more specific" in contract
+    assert "include next concrete action" in contract
+
+
+def test_compile_speech_contract_ignores_default_repair_contract() -> None:
+    brief = _instrumental_brief()
+    contract = compile_speech_contract(brief, repair_contract={"mode": "default"})
+    assert contract == "Answer directly."
+

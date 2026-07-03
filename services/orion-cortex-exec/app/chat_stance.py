@@ -1048,7 +1048,26 @@ _COMPANION_CLOSING_MOVE_MAP: dict[str, str] = {
 }
 
 
-def compile_speech_contract(brief: "ChatStanceBrief") -> str:
+def _compile_repair_speech_overlay(repair_contract: dict[str, Any] | None) -> str | None:
+    if not isinstance(repair_contract, dict):
+        return None
+    mode = str(repair_contract.get("mode") or "")
+    rules = repair_contract.get("rules") or []
+    if mode not in {"repair_concrete", "concrete_bias"} or not rules:
+        return None
+    intro = (
+        "Repair turn: answer concretely and operationally."
+        if mode == "repair_concrete"
+        else "Add concrete specificity this turn."
+    )
+    return intro + " " + "; ".join(str(r) for r in rules) + "."
+
+
+def compile_speech_contract(
+    brief: "ChatStanceBrief",
+    *,
+    repair_contract: dict[str, Any] | None = None,
+) -> str:
     """Deterministic regime-specific contract injected near TASK in chat_general.j2.
 
     Pure Python — no LLM, no I/O. Called after enforce_chat_stance_quality.
@@ -1062,12 +1081,11 @@ def compile_speech_contract(brief: "ChatStanceBrief") -> str:
             regime = "instrumental"
 
     if regime == "minimal":
-        return (
+        regime_text = (
             "Keep this reply very short. Do not ask questions. "
             "Release Juniper from replying — offer voice, a pause, or continuation later."
         )
-
-    if regime == "relational":
+    elif regime == "relational":
         parts = ["This is a companion turn."]
         move = brief.companion_closing_move
         if move and move in _COMPANION_CLOSING_MOVE_MAP:
@@ -1076,13 +1094,21 @@ def compile_speech_contract(brief: "ChatStanceBrief") -> str:
             parts.append("Stay present; do not offer next steps, trackers, or support closers.")
         if "situated_curiosity" in list(brief.response_priorities or []):
             parts.append("Ask one grounded question from this thread — not a generic reversal.")
-        return " ".join(parts)
+        regime_text = " ".join(parts)
+    else:
+        # instrumental (default)
+        parts = ["Answer directly."]
+        if brief.task_mode == "triage":
+            parts.append("Lead with the operational blocker.")
+        regime_text = " ".join(parts)
 
-    # instrumental (default)
-    parts = ["Answer directly."]
-    if brief.task_mode == "triage":
-        parts.append("Lead with the operational blocker.")
-    return " ".join(parts)
+    overlay = _compile_repair_speech_overlay(repair_contract)
+    if overlay is None:
+        return regime_text
+    mode = str((repair_contract or {}).get("mode") or "")
+    if mode == "repair_concrete":
+        return overlay
+    return f"{regime_text} {overlay}"
 
 
 def strip_identity_recital_leadin(

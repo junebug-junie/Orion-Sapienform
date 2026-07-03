@@ -51,7 +51,7 @@
         }
       }
     ],
-    "created": 1783040933,
+    "created": 1783041052,
     "model": "/models/gguf/Qwen_Qwen3-8B-Q5_K_M.gguf",
     "system_fingerprint": "b9859-4fc4ec554",
     "object": "chat.completion",
@@ -60,20 +60,20 @@
       "prompt_tokens": 38,
       "total_tokens": 66,
       "prompt_tokens_details": {
-        "cached_tokens": 4
+        "cached_tokens": 37
       }
     },
-    "id": "chatcmpl-iKZVfNyjpIXd3mYeeU7u5ayR37KjsgVO",
+    "id": "chatcmpl-jVXxNXsIlyai3c7ZVJqCbiCaEjaeT708",
     "timings": {
-      "cache_n": 4,
-      "prompt_n": 34,
-      "prompt_ms": 41.073,
-      "prompt_per_token_ms": 1.208029411764706,
-      "prompt_per_second": 827.7944148223894,
+      "cache_n": 37,
+      "prompt_n": 1,
+      "prompt_ms": 12.27,
+      "prompt_per_token_ms": 12.27,
+      "prompt_per_second": 81.49959250203749,
       "predicted_n": 28,
-      "predicted_ms": 348.749,
-      "predicted_per_token_ms": 12.455321428571429,
-      "predicted_per_second": 80.28696856478442
+      "predicted_ms": 349.435,
+      "predicted_per_token_ms": 12.479821428571428,
+      "predicted_per_second": 80.12935166769213
     }
   },
   "content": "{\n  \"ok\": true,\n  \"name\": \"Juniper\",\n  \"count\": 3\n}",

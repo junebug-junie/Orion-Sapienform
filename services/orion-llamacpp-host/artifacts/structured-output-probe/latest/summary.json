@@ -194,10 +194,10 @@
         "n_ctx": 16384,
         "speculative": false,
         "is_processing": true,
-        "id_task": 11865,
-        "n_prompt_tokens": 1627,
-        "n_prompt_tokens_processed": 1238,
-        "n_prompt_tokens_cache": 1,
+        "id_task": 19099,
+        "n_prompt_tokens": 561,
+        "n_prompt_tokens_processed": 512,
+        "n_prompt_tokens_cache": 49,
         "params": {
           "seed": 4294967295,
           "temperature": 0.10000000149011612,
@@ -252,10 +252,10 @@
         },
         "next_token": [
           {
-            "has_next_token": true,
-            "has_new_line": true,
-            "n_remain": 635,
-            "n_decoded": 389
+            "has_next_token": false,
+            "has_new_line": false,
+            "n_remain": 538,
+            "n_decoded": 486
           }
         ]
       }
@@ -298,7 +298,7 @@
           ],
           "tags": [],
           "object": "model",
-          "created": 1783040931,
+          "created": 1783041044,
           "owned_by": "llamacpp",
           "meta": {
             "vocab_type": 2,

@@ -55,7 +55,7 @@
         }
       }
     ],
-    "created": 1783040950,
+    "created": 1783041068,
     "model": "/models/gguf/Qwen_Qwen3-8B-Q5_K_M.gguf",
     "system_fingerprint": "b9859-4fc4ec554",
     "object": "chat.completion",
@@ -67,17 +67,17 @@
         "cached_tokens": 37
       }
     },
-    "id": "chatcmpl-0tOU5CYjU9Bmc5tJ5VRnFl6uhgHbNrTO",
+    "id": "chatcmpl-VdnVl0OF0cawjRRKdIPF39vDVDMQk5Fg",
     "timings": {
       "cache_n": 37,
       "prompt_n": 1,
-      "prompt_ms": 12.354,
-      "prompt_per_token_ms": 12.354,
-      "prompt_per_second": 80.94544277157196,
+      "prompt_ms": 12.239,
+      "prompt_per_token_ms": 12.239,
+      "prompt_per_second": 81.70602173380178,
       "predicted_n": 28,
-      "predicted_ms": 349.429,
-      "predicted_per_token_ms": 12.479607142857143,
-      "predicted_per_second": 80.13072755838812
+      "predicted_ms": 348.329,
+      "predicted_per_token_ms": 12.440321428571428,
+      "predicted_per_second": 80.38377510916403
     }
   },
   "content": "{\n  \"ok\": true,\n  \"name\": \"Juniper\",\n  \"count\": 3\n}",

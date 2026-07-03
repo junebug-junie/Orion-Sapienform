@@ -16,6 +16,7 @@ from .signal_bridge import SIGNAL_KIND
 
 
 REPAIR_PRESSURE_DEBUG_KEY = "repair_pressure"
+REPAIR_PRESSURE_CONTRACT_METADATA_KEY = "repair_pressure_contract"
 
 _LEVEL_HIGH = 0.75
 _LEVEL_MID = 0.45

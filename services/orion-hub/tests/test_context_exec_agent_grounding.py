@@ -179,3 +179,42 @@ def test_agent_trace_summary_grounded_success_shape() -> None:
     assert summary["unique_tool_count"] == 1
     assert len(summary["tools"]) == 1
     assert summary["raw"]["answer_status"] == "answered_grounded"
+
+
+def test_agent_trace_summary_propagates_semantic_tool_callable() -> None:
+    run = ContextExecRunV1(
+        run_id="run-agent-repl",
+        status="ok",
+        mode="agent_repl",
+        text="find runner.py",
+        final_text="Found runner.py in context-exec.",
+        verb_trace=[
+            ContextExecVerbStepV1(
+                step_index=0,
+                verb="agent_step",
+                callable="repo_find_files",
+                input_summary='repo_find_files("*.py")',
+                output_summary="runner.py",
+                status="ok",
+                duration_ms=120,
+            )
+        ],
+        runtime_debug={
+            "agent_repl": True,
+            "agent_repl_tool_counts": {"repo_find_files": 1},
+            "agent_repl_semantic_tool_detected": True,
+        },
+        operator_summary=ContextExecOperatorSummaryV1(
+            title="Agent reasoning loop",
+            summary="Found runner.py in context-exec.",
+            agent_mode="agent_repl",
+            route_used="agent",
+            model_synthesis_used=False,
+            safety=ContextExecSafetySummaryV1(),
+        ),
+    )
+    summary = build_agent_trace_summary(run=run, correlation_id="corr-repl")
+    assert summary["steps"][0]["tool_id"] == "repo_find_files"
+    assert summary["tool_call_count"] == 1
+    assert summary["tools"][0]["tool_id"] == "repo_find_files"
+    assert summary["tools"][0]["count"] == 1

@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 import uuid
+from collections import Counter
 from typing import Any
 
 from orion.core.bus.async_service import OrionBusAsync
@@ -17,6 +18,7 @@ from orion.schemas.context_exec import (
     ProposalEnvelopeV1,
 )
 
+from .agent_repl_telemetry import detect_semantic_tools_from_code
 from .agent_synthesis import (
     LLM_GATEWAY_SYNTHESIS_UNAVAILABLE,
     run_agent_synthesis,
@@ -839,6 +841,7 @@ class ContextExecRunner:
 
         loop = asyncio.get_running_loop()
         step_futures: list[asyncio.Future] = []
+        semantic_tool_counts: Counter[str] = Counter()
 
         def _step_callback(memory_step: Any) -> None:
             # Runs in the executor thread while the main loop awaits run_in_executor.
@@ -852,10 +855,16 @@ class ContextExecRunner:
                 timing = getattr(memory_step, "timing", None)
                 dur_ms = int(float(getattr(timing, "duration", 0.0) or 0.0) * 1000)
                 status = "error" if err else "ok"
+                semantic_tools = detect_semantic_tools_from_code(code)
+                for tool in semantic_tools:
+                    semantic_tool_counts[tool] += 1
+                callable_name = (
+                    semantic_tools[0] if len(semantic_tools) == 1 else "python_interpreter"
+                )
                 step = ContextExecVerbStepV1(
                     step_index=idx,
                     verb="agent_step",
-                    callable="python_interpreter",
+                    callable=callable_name,
                     input_summary=code[:2000] or thought[:2000],
                     output_summary=(str(err) if err else obs)[:2000],
                     status=status,
@@ -868,7 +877,7 @@ class ContextExecRunner:
                         mode=request.mode,
                         step_index=idx,
                         thought=thought,
-                        tool_id="python_interpreter",
+                        tool_id=callable_name,
                         tool_args=code,
                         observation=str(err) if err else obs,
                         duration_ms=dur_ms,
@@ -950,6 +959,8 @@ class ContextExecRunner:
         runtime_debug["agent_repl"] = True
         runtime_debug["agent_repl_max_steps"] = settings.context_exec_agent_repl_max_steps
         runtime_debug["step_count"] = len(verb_trace)
+        runtime_debug["agent_repl_tool_counts"] = dict(sorted(semantic_tool_counts.items()))
+        runtime_debug["agent_repl_semantic_tool_detected"] = bool(semantic_tool_counts)
 
         operator_summary = ContextExecOperatorSummaryV1(
             title="Agent reasoning loop",

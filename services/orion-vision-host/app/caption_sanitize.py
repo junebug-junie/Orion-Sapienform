@@ -1,19 +1,13 @@
 from __future__ import annotations
 
-import re
+from orion.vision.caption_echo import CAPTION_PROMPT, is_caption_prompt_echo
 
-CAPTION_PROMPT = (
-    "List visible objects and people. "
-    "State only what is directly visible. "
-    "No guesses about activity."
-)
-_PROMPT_ECHO = re.compile(r"describe this image", re.I)
 _STOPLIST = frozenset({"youtube", "google", "video", "watching", "webcam", "com"})
 
 
 def sanitize_caption(raw: str) -> tuple[str | None, bool, str | None]:
     text = (raw or "").strip()
-    if _PROMPT_ECHO.search(text):
+    if is_caption_prompt_echo(text):
         return None, False, "prompt_echo"
     if len(text) < 12:
         return None, False, "too_short"

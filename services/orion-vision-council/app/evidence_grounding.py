@@ -166,6 +166,42 @@ def enforce_evidence_grounding(
     return interpretation.model_copy(update=updates), notes
 
 
+def _events_mention_person(candidates: list[VisionEventCandidateV1]) -> bool:
+    return any(
+        c.event_type == "person_presence" or _text_mentions_person(c.narrative or "")
+        for c in candidates
+    )
+
+
+def ensure_grounded_person_presence(
+    interpretation: VisionSceneInterpretationV1,
+    window: VisionWindowPayload,
+) -> tuple[VisionSceneInterpretationV1, list[str]]:
+    """Inject person_presence when detections prove person but the LLM omitted them."""
+    hard = _hard_labels(window)
+    if "person" not in hard and host_person_hits(window) <= 0:
+        return interpretation, []
+    if _events_mention_person(list(interpretation.event_candidates)):
+        return interpretation, []
+
+    refs = list(window.artifact_ids or [])
+    person_event = VisionEventCandidateV1(
+        event_type="person_presence",
+        narrative="A person was detected on camera.",
+        entities=["person"],
+        tags=["host_detect"],
+        confidence=0.85,
+        salience=0.7,
+        evidence_refs=refs,
+    )
+    updates: dict[str, object] = {
+        "event_candidates": [*interpretation.event_candidates, person_event],
+    }
+    if not _text_mentions_person(interpretation.scene_summary):
+        updates["scene_summary"] = _grounded_scene_summary_from_labels(hard | {"person"})
+    return interpretation.model_copy(update=updates), ["injected:person_presence:grounded_evidence"]
+
+
 def build_person_presence_fallback(window: VisionWindowPayload) -> VisionSceneInterpretationV1:
     refs = list(window.artifact_ids or [])
     return VisionSceneInterpretationV1(

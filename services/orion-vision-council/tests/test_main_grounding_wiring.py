@@ -61,7 +61,7 @@ def test_finalize_drops_youtube_activity_without_hard_person() -> None:
     assert outcome.parse_mode == "strict_v2"
 
 
-def test_finalize_preserves_strict_v2_when_host_fallback_after_grounding() -> None:
+def test_finalize_preserves_strict_v2_when_host_person_injected_after_grounding() -> None:
     svc = CouncilService()
     window = _window(
         captions=["describe this image. youtube"],
@@ -75,7 +75,40 @@ def test_finalize_preserves_strict_v2_when_host_fallback_after_grounding() -> No
     assert interpretation is not None
     assert interpretation.event_candidates[0].event_type == "person_presence"
     assert outcome.parse_mode == "strict_v2"
-    assert "host_fallback_after_grounding" in outcome.salvage_warnings
+
+
+def test_finalize_injects_person_when_llm_omits_despite_hard_labels() -> None:
+    svc = CouncilService()
+    window = _window(
+        evidence={
+            "hard_labels": ["door", "person", "screen"],
+            "host_person_hits": 3,
+            "edge_person_hits": 0,
+        },
+    )
+    interpretation = VisionSceneInterpretationV1(
+        window_id="w1",
+        scene_summary="Doors and screens visible.",
+        event_candidates=[
+            {
+                "event_type": "visual_observation",
+                "narrative": "Two doors are identified in the scene.",
+                "entities": ["door"],
+                "tags": [],
+                "confidence": 0.8,
+                "salience": 0.7,
+                "evidence_refs": ["art-edge-1"],
+            }
+        ],
+    )
+    interpretation, outcome = svc._finalize_interpretation(
+        interpretation,
+        InterpretationParseOutcome(interpretation=interpretation, parse_mode="strict_v2"),
+        window,
+    )
+    assert interpretation is not None
+    assert any(c.event_type == "person_presence" for c in interpretation.event_candidates)
+    assert outcome.parse_mode == "strict_v2"
 
 
 def test_finalize_host_fallback_on_parse_failure() -> None:

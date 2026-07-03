@@ -8,6 +8,7 @@ from orion.schemas.vision import VisionSceneInterpretationV1, VisionWindowPayloa
 from app.evidence_grounding import (
     ACTIVITY_PATTERN,
     build_person_presence_fallback,
+    ensure_grounded_person_presence,
     enforce_evidence_grounding,
 )
 
@@ -169,6 +170,36 @@ def test_enforce_scrubs_person_from_event_entities() -> None:
     grounded, notes = enforce_evidence_grounding(interpretation, window)
     assert grounded.event_candidates[0].entities == ["door", "screen"]
     assert any("scrubbed:entities" in note for note in notes)
+
+
+def test_ensure_grounded_person_presence_injects_when_llm_omits_person() -> None:
+    window = _window(
+        evidence={
+            "hard_labels": ["door", "person", "screen"],
+            "host_person_hits": 5,
+            "edge_person_hits": 0,
+        },
+    )
+    interpretation = VisionSceneInterpretationV1(
+        window_id="w1",
+        scene_summary="Multiple screens and doors are visible.",
+        event_candidates=[
+            {
+                "event_type": "visual_observation",
+                "narrative": "Two doors are identified in the scene.",
+                "entities": ["door"],
+                "tags": [],
+                "confidence": 0.8,
+                "salience": 0.7,
+                "evidence_refs": ["art-edge-1"],
+            },
+        ],
+    )
+    updated, notes = ensure_grounded_person_presence(interpretation, window)
+    assert len(updated.event_candidates) == 2
+    assert updated.event_candidates[-1].event_type == "person_presence"
+    assert "person" in updated.scene_summary.lower()
+    assert notes == ["injected:person_presence:grounded_evidence"]
 
 
 def test_enforce_caps_activity_confidence_when_captions_present() -> None:

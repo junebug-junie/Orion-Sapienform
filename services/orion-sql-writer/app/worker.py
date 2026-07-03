@@ -77,6 +77,7 @@ from orion.evidence_index import build_evidence_units
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.resilience import publish_with_reconnect
 from orion.journaler import (
     JOURNAL_CREATED_KIND,
     JOURNAL_WRITE_KIND,
@@ -1628,6 +1629,16 @@ def _fetch_chat_turn_for_memory_emit(corr_id: str) -> dict | None:
         remove_session()
 
 
+async def _publish_post_commit(
+    bus: Any,
+    channel: str,
+    msg: BaseEnvelope,
+    *,
+    log_label: str,
+) -> None:
+    await publish_with_reconnect(bus, channel, msg, log_label=log_label)
+
+
 async def _emit_memory_turn_persisted(
     bus: Any,
     *,
@@ -1661,7 +1672,12 @@ async def _emit_memory_turn_persisted(
             out_env.payload.get("correlation_id"),
             corr,
         )
-    await bus.publish(settings.channel_memory_turn_persisted, out_env)
+    await _publish_post_commit(
+        bus,
+        settings.channel_memory_turn_persisted,
+        out_env,
+        log_label="memory_turn_persisted",
+    )
 
 
 async def _maybe_emit_memory_turn_from_row(
@@ -2136,7 +2152,12 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                         payload=build_created_event_payload(journal_payload),
                         reply_to=None,
                     )
-                    await bus.publish(settings.sql_writer_journal_created_channel, created_env)
+                    await _publish_post_commit(
+                        bus,
+                        settings.sql_writer_journal_created_channel,
+                        created_env,
+                        log_label="journal_created",
+                    )
                     logger.info(
                         "journal_created_event_emitted corr=%s entry_id=%s channel=%s",
                         getattr(env, "correlation_id", None),
@@ -2158,7 +2179,12 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                         payload=stored_payload.model_dump(mode="json"),
                         reply_to=None,
                     )
-                    await bus.publish("orion:collapse:stored", stored_env)
+                    await _publish_post_commit(
+                        bus,
+                        "orion:collapse:stored",
+                        stored_env,
+                        log_label="collapse_stored",
+                    )
                 except Exception:
                     logger.exception("Failed to emit collapse stored event corr=%s", getattr(env, "correlation_id", None))
             if (
@@ -2178,7 +2204,12 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                         payload=stored_payload.model_dump(mode="json"),
                         reply_to=None,
                     )
-                    await bus.publish(settings.sql_writer_social_turn_stored_channel, stored_env)
+                    await _publish_post_commit(
+                        bus,
+                        settings.sql_writer_social_turn_stored_channel,
+                        stored_env,
+                        log_label="social_turn_stored",
+                    )
                 except Exception:
                     logger.exception("Failed to emit social turn stored event corr=%s", getattr(env, "correlation_id", None))
             if (

@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from typing import Optional
+from typing import Any, Optional
 
 from contextlib import asynccontextmanager
 
@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from loguru import logger
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.llm.openai_message_content import join_openai_message_content
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef, ChatRequestPayload, LLMMessage
 from orion.schemas.vision import (
     VisionWindowPayload,
@@ -31,6 +32,7 @@ from .evidence_grounding import (
 )
 from .interpretation import (
     InterpretationParseOutcome,
+    build_interpretation_llm_options,
     build_interpretation_prompt,
     parse_llm_content,
     project_interpretation_to_events,
@@ -42,6 +44,43 @@ from .settings import Settings
 settings = Settings()
 
 
+def _extract_chat_result_text(payload: Any) -> str:
+    if payload is None:
+        return ""
+    if hasattr(payload, "model_dump"):
+        payload = payload.model_dump(mode="json")
+    if not isinstance(payload, dict):
+        return join_openai_message_content(payload)
+
+    for key in ("content", "text"):
+        text = join_openai_message_content(payload.get(key))
+        if text:
+            return text
+
+    choices = payload.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0] if isinstance(choices[0], dict) else {}
+        msg = first.get("message") if isinstance(first.get("message"), dict) else {}
+        text = join_openai_message_content(msg.get("content"))
+        if text:
+            return text
+        text = join_openai_message_content(first.get("text"))
+        if text:
+            return text
+
+    raw = payload.get("raw")
+    if isinstance(raw, dict):
+        raw_choices = raw.get("choices")
+        if isinstance(raw_choices, list) and raw_choices:
+            first = raw_choices[0] if isinstance(raw_choices[0], dict) else {}
+            msg = first.get("message") if isinstance(first.get("message"), dict) else {}
+            text = join_openai_message_content(msg.get("content"))
+            if text:
+                return text
+
+    return ""
+
+
 class CouncilService:
     def __init__(self):
         self.bus = OrionBusAsync(url=settings.ORION_BUS_URL)
@@ -50,6 +89,7 @@ class CouncilService:
         self._rpc_task: Optional[asyncio.Task] = None
         self._shutdown_event = asyncio.Event()
         self._recent_interpretations: list[dict] = []
+        self._llm_semaphore = asyncio.Semaphore(1)
 
     def _record_interpretation(
         self,
@@ -209,6 +249,15 @@ class CouncilService:
             interpretation, grounding_notes = enforce_evidence_grounding(interpretation, window)
             for note in grounding_notes:
                 logger.info(f"[COUNCIL] grounding {note}")
+            if not interpretation.event_candidates and edge_person_hits(window) > 0:
+                interpretation = build_person_presence_fallback(window)
+                warnings = list(parse_outcome.salvage_warnings)
+                warnings.append("edge_fallback_after_grounding")
+                parse_outcome = InterpretationParseOutcome(
+                    interpretation=interpretation,
+                    parse_mode=parse_outcome.parse_mode,
+                    salvage_warnings=warnings,
+                )
         elif edge_person_hits(window) > 0:
             interpretation = build_person_presence_fallback(window)
             parse_outcome = InterpretationParseOutcome(
@@ -251,7 +300,10 @@ class CouncilService:
                 LLMMessage(role="system", content="You are a visual analysis AI. Output strict JSON."),
                 LLMMessage(role="user", content=prompt)
             ],
-            options={"return_json": True}
+            options=build_interpretation_llm_options(
+                structured_output_method=settings.COUNCIL_STRUCTURED_OUTPUT_METHOD,
+                max_tokens=settings.COUNCIL_LLM_MAX_TOKENS,
+            ),
         )
 
         envelope = source_env.derive_child(
@@ -266,12 +318,13 @@ class CouncilService:
             return None
 
         try:
-            reply = await self._rpc_bus.rpc_request(
-                settings.CHANNEL_LLM_REQUEST,
-                envelope,
-                reply_channel=reply_to,
-                timeout_sec=30.0
-            )
+            async with self._llm_semaphore:
+                reply = await self._rpc_bus.rpc_request(
+                    settings.CHANNEL_LLM_REQUEST,
+                    envelope,
+                    reply_channel=reply_to,
+                    timeout_sec=settings.COUNCIL_LLM_TIMEOUT_SEC,
+                )
 
             decoded = self._rpc_bus.codec.decode(reply.get("data"))
             if not decoded.ok:
@@ -279,16 +332,13 @@ class CouncilService:
                 return None
 
             res_env = decoded.envelope
-
-            content = ""
-            if isinstance(res_env.payload, dict):
-                 if "content" in res_env.payload:
-                     content = res_env.payload["content"]
-                 elif "choices" in res_env.payload:
-                     content = res_env.payload["choices"][0]["message"]["content"]
+            content = _extract_chat_result_text(res_env.payload)
 
             if not content:
                 logger.warning(f"[COUNCIL] Empty LLM response: {res_env.payload}")
+                return None
+            if content.startswith("[Error:"):
+                logger.error(f"[COUNCIL] LLM gateway error response: {content[:240]}")
                 return None
 
             return content

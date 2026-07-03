@@ -226,10 +226,66 @@ profiles:
       - Scope: each orion-llamacpp-host process loads one LLM_PROFILE_NAME; other profiles/workers are unaffected.
       - Knobs: (1) chat_template_kwargs.enable_thinking false -> --chat-template-kwargs; (2) reasoning_budget 0 -> --reasoning-budget 0 (llama.cpp; use when kwargs alone still leave thinking on).
       - If thinking still appears: check logs for ERROR about missing flags; upgrade pinned llama-server (Dockerfile LLAMACPP_IMAGE_TAG) so --chat-template-kwargs and/or --reasoning-budget appear in llama-server --help.
-      - Q4_K_M for VRAM headroom with 16k context.
+      - Q4_K_M for VRAM headroom with 16k context split across n_parallel slots (4 x 4k per slot).
       - Gateway does not set enable_thinking per request.
+      - For dedicated metacog lane: use qwen3-8b-q5km-v100-16gb-atlas-metacog-16k instead.
       - If OOM: lower ctx_size or use Qwen_Qwen3-8B-Q3_K_M.gguf from the same repo.
 
+  qwen3-8b-q5km-v100-16gb-atlas-metacog-16k:
+    display_name: "Qwen3 8B – Q5_K_M (llama.cpp, Atlas Metacog, V100 16GB, 16k single-lane, non-thinking)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "qwen3-8b-q5_k_m"
+
+    supports_tools: false
+    supports_embeddings: false
+    supports_vision: false
+
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      device_ids: [0]
+      max_model_len: 16384
+      max_batch_tokens: 512
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.88
+
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "bartowski/Qwen_Qwen3-8B-GGUF"
+      hf_filename: "Qwen_Qwen3-8B-Q5_K_M.gguf"
+      host: "0.0.0.0"
+      port: 8080
+
+      ctx_size: 16384
+      n_gpu_layers: 99
+      threads: 8
+      n_parallel: 1
+      batch_size: 512
+
+      reasoning: "off"
+      reasoning_budget: 0
+
+      temperature: 0.35
+      top_k: 20
+      top_p: 0.90
+      min_p: 0.0
+      presence_penalty: 0.20
+
+      n_predict: 4096
+
+      no_context_shift: true
+
+    notes: |
+      Atlas metacog lane on one V100 16GB — optimized for episodic structured JSON (draft + enrich).
+      - Q5_K_M (~5.9GB weights): best quality/size tradeoff that still leaves ~6GB for 16k KV + overhead on 16GB.
+        Q4_K_M is not the ceiling here; Q6_K (~6.7GB) also fits but gains are marginal for JSON extraction vs latency.
+        Q8_0 (~8.7GB) fits but leaves less KV headroom if ctx grows.
+      - n_parallel=1 -> full 16k ctx per request (not 4k split across slots).
+      - Thinking off via llamacpp.reasoning: off (--reasoning off); do not use deprecated enable_thinking kwargs.
+      - Lower temperature + presence_penalty mirror qwen3-30b-a3b-instruct-2507-q5km-atlas-metacog-16k tuning.
+      - Set ATLAS_METACOG_PROFILE_NAME to this key on atlas-metacog worker.
+      - If OOM at boot: drop ctx_size to 8192 before falling back to Q4_K_M (Qwen_Qwen3-8B-Q4_K_M.gguf).
 
   qwen36-35b-a3b-udq4km-v100-32gb-balanced:
     display_name: "Qwen 3.6 35B A3B – UD-Q4_K_M (llama.cpp, 1x V100 32GB, balanced continuity)"

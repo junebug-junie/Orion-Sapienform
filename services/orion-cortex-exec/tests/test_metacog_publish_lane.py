@@ -59,21 +59,316 @@ def _draft_ctx(*, spark_blob: str = "{}") -> dict:
         "turn_effect_policy_json": "{}",
         "turn_effect_explanations_json": "{}",
         "biometrics_json": "{}",
+        "metacog_biometrics_cue": '{"status":"fresh","constraint":"NONE"}',
         "spark_phi_narrative": "",
     }
 
 
-def test_metacog_draft_section_keys_cover_template_fields():
+def test_metacog_biometrics_cue_draft_compact():
+    executor_module = _load_executor_module()
+    ctx = {
+        "biometrics": {
+            "status": "fresh",
+            "freshness_s": 12.0,
+            "constraint": "NONE",
+            "cluster": {
+                "composite": {"strain": 0.42, "homeostasis": 0.71, "stability": 0.88},
+            },
+            "nodes": {},
+        }
+    }
+    cue = executor_module._metacog_biometrics_cue(ctx, phase="draft")
+    assert len(cue) <= 350
+    parsed = json.loads(cue)
+    assert parsed["status"] == "fresh"
+    assert parsed["strain"] == 0.42
+    assert parsed["homeostasis"] == 0.71
+    assert parsed["stability"] == 0.88
+    assert parsed["freshness_s"] == 12
+
+
+def test_metacog_biometrics_cue_enrich_includes_node_lines():
+    executor_module = _load_executor_module()
+    ctx = {
+        "biometrics": {
+            "status": "fresh",
+            "constraint": "GPU_MEM",
+            "cluster": {
+                "composite": {"strain": 0.62, "homeostasis": 0.5, "stability": 0.44},
+            },
+            "nodes": {
+                "atlas": {
+                    "status": "OK",
+                    "summary": {"composites": {"strain": 0.71}, "pressures": {"gpu": 0.82}},
+                },
+                "athena": {"status": "OK", "summary": {}},
+            },
+        }
+    }
+    cue = executor_module._metacog_biometrics_cue(ctx, phase="enrich")
+    assert len(cue) <= 600
+    parsed = json.loads(cue)
+    assert "cluster" in parsed
+    assert isinstance(parsed.get("nodes"), list)
+    assert len(parsed["nodes"]) <= 4
+    assert any("atlas" in line for line in parsed["nodes"])
+
+
+def test_enrich_prompt_uses_enrich_biometrics_cue(monkeypatch):
+    executor_module = _load_executor_module()
+    captured_prompts: list[str] = []
+
+    class FakeLLMClient:
+        def __init__(self, bus):
+            self.bus = bus
+
+        async def chat(self, **kwargs):
+            req = kwargs.get("req")
+            messages = getattr(req, "messages", []) or []
+            if messages:
+                msg = messages[0]
+                content = getattr(msg, "content", None)
+                if content is None and isinstance(msg, dict):
+                    content = msg.get("content")
+                captured_prompts.append(str(content or ""))
+            return {}
+
+    monkeypatch.setattr(executor_module, "LLMGatewayClient", FakeLLMClient)
+    monkeypatch.setattr(executor_module.settings, "cortex_metacog_enrich_prompt_max_chars", 50000)
+    monkeypatch.setattr(executor_module.settings, "cortex_metacog_enrich_worker_ctx_char_budget", 50000)
+
+    biometrics = {
+        "status": "fresh",
+        "constraint": "GPU_MEM",
+        "cluster": {
+            "composite": {"strain": 0.62, "homeostasis": 0.5, "stability": 0.44},
+        },
+        "nodes": {
+            "atlas": {
+                "status": "OK",
+                "summary": {"composites": {"strain": 0.71}, "pressures": {"gpu": 0.82}},
+            },
+        },
+    }
+    ctx = _draft_ctx()
+    ctx["biometrics"] = biometrics
+    ctx["metacog_biometrics_cue"] = executor_module._metacog_biometrics_cue(
+        {"biometrics": biometrics}, phase="draft"
+    )
+    ctx["metacog_biometrics_cue_enrich"] = executor_module._metacog_biometrics_cue(
+        {"biometrics": biometrics}, phase="enrich"
+    )
+
+    draft_parsed = json.loads(ctx["metacog_biometrics_cue"])
+    enrich_parsed = json.loads(ctx["metacog_biometrics_cue_enrich"])
+    assert "nodes" not in draft_parsed
+    assert any("atlas" in line for line in enrich_parsed["nodes"])
+
+    draft_entry = CollapseMirrorEntryV2(
+        event_id="evt-enrich-cue",
+        id="evt-enrich-cue",
+        trigger="dense",
+        observer="orion",
+        observer_state=["zen"],
+        type="flow",
+        emergent_entity="Test",
+        summary="Test summary",
+        mantra="Test mantra",
+        field_resonance="Test resonance",
+        resonance_signature="Test sig",
+        source_service="metacog",
+    ).model_dump(mode="json")
+    draft_entry["state_snapshot"] = {"telemetry": {"metacog_draft_mode": "llm"}}
+    ctx["collapse_entry"] = draft_entry
+    ctx["collapse_json"] = json.dumps(draft_entry)
+
+    template = _load_template("log_orion_metacognition_enrich.j2")
+    step = ExecutionStep(
+        verb_name="log_orion_metacognition",
+        step_name="enrich_entry",
+        order=1,
+        services=["MetacogEnrichService"],
+        prompt_template=template,
+    )
+    source = ServiceRef(name="test", node="test", version="1.0")
+
+    result = asyncio.run(
+        executor_module.call_step_services(
+            bus=object(),
+            source=source,
+            step=step,
+            ctx=ctx,
+            correlation_id="corr-enrich-cue-swap",
+        )
+    )
+
+    assert result.status == "success"
+    assert captured_prompts
+    prompt = captured_prompts[0]
+    assert "atlas: strain=0.71 gpu=0.82" in prompt
+    assert '"nodes"' in prompt
+
+
+def test_metacog_biometrics_cue_missing_biometrics():
+    executor_module = _load_executor_module()
+    cue = executor_module._metacog_biometrics_cue({}, phase="draft")
+    parsed = json.loads(cue)
+    assert parsed["status"] == "missing"
+
+
+def test_metacog_context_service_sets_biometrics_cue_from_cluster(monkeypatch):
+    executor_module = _load_executor_module()
+    from orion.schemas.telemetry.biometrics import BiometricsClusterV1
+
+    cluster = BiometricsClusterV1(
+        composites={"strain": 0.55, "homeostasis": 0.66, "stability": 0.77},
+        constraint="NONE",
+    )
+    biometrics_context = executor_module._default_biometrics_context(
+        status="fresh", reason="state_service"
+    )
+    biometrics_context["cluster"] = cluster.model_dump(mode="json")
+    ctx = {"biometrics": biometrics_context}
+    ctx["metacog_biometrics_cue"] = executor_module._metacog_biometrics_cue(ctx, phase="draft")
+
+    parsed = json.loads(ctx["metacog_biometrics_cue"])
+    assert parsed["strain"] == 0.55
+    assert parsed["homeostasis"] == 0.66
+    assert parsed["stability"] == 0.77
+
+
+def test_metacog_format_node_cue_line_skips_bad_numeric_fields():
+    executor_module = _load_executor_module()
+    line = executor_module._metacog_format_node_cue_line(
+        "atlas",
+        {
+            "status": "OK",
+            "summary": {
+                "composites": {"strain": "not-a-number"},
+                "pressures": {"gpu": "bad"},
+            },
+        },
+    )
+    assert line == "atlas: ok"
+    assert "strain=" not in line
+    assert "gpu=" not in line
+
+
+def test_metacog_biometrics_cue_enrich_overflow_falls_back_to_cluster_only(monkeypatch):
+    executor_module = _load_executor_module()
+    monkeypatch.setattr(executor_module, "_METACOG_BIOMETRICS_CUE_ENRICH_MAX_CHARS", 120)
+    ctx = {
+        "biometrics": {
+            "status": "fresh",
+            "constraint": "GPU_MEM",
+            "cluster": {
+                "composite": {"strain": 0.62, "homeostasis": 0.5, "stability": 0.44},
+            },
+            "nodes": {
+                "atlas": {
+                    "status": "OK",
+                    "summary": {"composites": {"strain": 0.71}, "pressures": {"gpu": 0.82}},
+                },
+                "athena": {"status": "OK", "summary": {}},
+            },
+        }
+    }
+    cue = executor_module._metacog_biometrics_cue(ctx, phase="enrich")
+    parsed = json.loads(cue)
+    assert "cluster" in parsed
+    assert "nodes" not in parsed
+    assert len(cue) <= 120
+
+
+def test_metacog_biometrics_cue_draft_uses_age_ms_when_freshness_missing():
+    executor_module = _load_executor_module()
+    ctx = {
+        "biometrics": {
+            "status": "fresh",
+            "age_ms": 12500,
+            "constraint": "NONE",
+            "cluster": {"composite": {"strain": 0.42, "homeostasis": 0.71, "stability": 0.88}},
+        }
+    }
+    cue = executor_module._metacog_biometrics_cue(ctx, phase="draft")
+    parsed = json.loads(cue)
+    assert parsed["freshness_s"] == 12
+
+
+def test_metacog_draft_prompt_under_slim_budget():
     executor_module = _load_executor_module()
     template = _load_template("log_orion_metacognition_draft.j2")
-    for key in executor_module._METACOG_DRAFT_CTX_LEN_KEYS:
+    ctx = _draft_ctx()
+    ctx["metacog_biometrics_cue"] = executor_module._metacog_biometrics_cue(
+        {
+            "biometrics": {
+                "status": "fresh",
+                "freshness_s": 12,
+                "constraint": "NONE",
+                "cluster": {"composite": {"strain": 0.42, "homeostasis": 0.71, "stability": 0.88}},
+            }
+        },
+        phase="draft",
+    )
+    prompt = executor_module._render_prompt(template, ctx)
+    assert len(ctx["metacog_biometrics_cue"]) <= 350
+    assert len(prompt) <= 6500
+
+
+def test_metacog_draft_prompt_live_anatomy_fits_worker_budget():
+    """Replay spec §2 section sizes (minus removed biometrics_json blob)."""
+    executor_module = _load_executor_module()
+    template = _load_template("log_orion_metacognition_draft.j2")
+    ctx = _draft_ctx()
+    ctx["context_summary"] = "T" * 1183
+    ctx["spark_state_json"] = "S" * 634
+    ctx["spark_phi_narrative"] = "P" * 550
+    ctx["turn_effect_json"] = "E" * 60
+    ctx["recent_turn_effect_alerts_json"] = "[]"
+    ctx["turn_effect_policy_json"] = "{}"
+    ctx["turn_effect_explanations_json"] = "{}"
+    ctx["metacog_biometrics_cue"] = executor_module._metacog_biometrics_cue(
+        {
+            "biometrics": {
+                "status": "fresh",
+                "age_ms": 12000,
+                "constraint": "NONE",
+                "cluster": {"composite": {"strain": 0.42, "homeostasis": 0.71, "stability": 0.88}},
+            }
+        },
+        phase="draft",
+    )
+    slim_prompt = executor_module._render_prompt(template, ctx)
+    fat_ctx = dict(ctx)
+    fat_ctx["metacog_biometrics_cue"] = "{}"
+    fat_ctx["biometrics_json"] = json.dumps({"blob": "x" * 3823})
+    # Template no longer references biometrics_json; savings vs legacy is cue vs blob size.
+    assert len(ctx["metacog_biometrics_cue"]) <= 350
+    assert len(slim_prompt) <= int(executor_module.settings.cortex_metacog_draft_worker_ctx_char_budget)
+    assert len(ctx["metacog_biometrics_cue"]) < len(fat_ctx["biometrics_json"])
+
+
+def test_metacog_draft_section_keys_cover_template_fields():
+    executor_module = _load_executor_module()
+    keys = executor_module._METACOG_DRAFT_CTX_LEN_KEYS
+    assert "biometrics_json" not in keys
+    assert "metacog_biometrics_cue" in keys
+    assert "spark_phi_narrative" in keys
+
+    template = _load_template("log_orion_metacognition_draft.j2")
+    for key in keys:
         assert f"{{{{ {key} }}}}" in template or f"{{{{ {key}|" in template
 
 
 def test_metacog_enrich_section_keys_cover_template_fields():
     executor_module = _load_executor_module()
+    keys = executor_module._METACOG_ENRICH_CTX_LEN_KEYS
+    assert "biometrics_json" not in keys
+    assert "metacog_biometrics_cue" in keys
+    assert "spark_phi_narrative" in keys
+
     template = _load_template("log_orion_metacognition_enrich.j2")
-    for key in executor_module._METACOG_ENRICH_CTX_LEN_KEYS:
+    for key in keys:
         assert f"{{{{ {key} }}}}" in template or f"{{{{ {key}|" in template
 
 
@@ -189,7 +484,94 @@ def test_oversized_enrich_prompt_skips_llm_with_budget_fallback(monkeypatch):
     assert telemetry["metacog_enrich_fallback_reason"] == "prompt_budget_exceeded"
 
 
-def test_enrich_trims_biometrics_before_ctx_overflow_fallback(monkeypatch):
+def test_draft_trims_biometrics_cue_before_ctx_overflow_fallback(monkeypatch):
+    executor_module = _load_executor_module()
+    calls: list[str] = []
+
+    class FakeLLMClient:
+        def __init__(self, bus):
+            self.bus = bus
+
+        async def chat(self, **kwargs):
+            calls.append("draft")
+            return {}
+
+    monkeypatch.setattr(executor_module, "LLMGatewayClient", FakeLLMClient)
+    monkeypatch.setattr(executor_module.settings, "cortex_metacog_draft_prompt_max_chars", 50000)
+    monkeypatch.setattr(executor_module.settings, "cortex_metacog_draft_worker_ctx_char_budget", 8000)
+
+    template = _load_template("log_orion_metacognition_draft.j2")
+    ctx = _draft_ctx(spark_blob="{}")
+    ctx["metacog_biometrics_cue"] = json.dumps({"status": "fresh", "blob": "x" * 5000})
+    ctx["spark_state_json"] = "{}"
+
+    step = ExecutionStep(
+        verb_name="log_orion_metacognition",
+        step_name="draft_entry",
+        order=0,
+        services=["MetacogDraftService"],
+        prompt_template=template,
+    )
+    source = ServiceRef(name="test", node="test", version="1.0")
+
+    result = asyncio.run(
+        executor_module.call_step_services(
+            bus=object(), source=source, step=step, ctx=ctx, correlation_id="corr-draft-trim",
+        )
+    )
+
+    assert result.status == "success"
+    assert json.loads(ctx["metacog_biometrics_cue"])["status"] == "trimmed"
+    assert ctx["metacog_ctx_trim_applied"] == ["biometrics_cue"]
+    assert ctx["metacog_draft_prompt_chars"] <= 8000
+    telemetry = ctx["collapse_entry"]["state_snapshot"]["telemetry"]
+    assert telemetry["metacog_ctx_trim_applied"] == ["biometrics_cue"]
+    assert telemetry["metacog_biometrics_cue_chars"] == len('{"status":"trimmed"}')
+    assert calls == ["draft"]
+
+
+def test_draft_ctx_overflow_after_cue_and_spark_trim(monkeypatch):
+    executor_module = _load_executor_module()
+    calls: list[str] = []
+
+    class FakeLLMClient:
+        def __init__(self, bus):
+            self.bus = bus
+
+        async def chat(self, **kwargs):
+            calls.append("draft")
+            return {}
+
+    monkeypatch.setattr(executor_module, "LLMGatewayClient", FakeLLMClient)
+    monkeypatch.setattr(executor_module.settings, "cortex_metacog_draft_prompt_max_chars", 50000)
+    monkeypatch.setattr(executor_module.settings, "cortex_metacog_draft_worker_ctx_char_budget", 500)
+
+    template = _load_template("log_orion_metacognition_draft.j2")
+    ctx = _draft_ctx(spark_blob="Z" * 8000)
+    ctx["metacog_biometrics_cue"] = json.dumps({"status": "fresh", "strain": 0.5})
+
+    step = ExecutionStep(
+        verb_name="log_orion_metacognition",
+        step_name="draft_entry",
+        order=0,
+        services=["MetacogDraftService"],
+        prompt_template=template,
+    )
+    source = ServiceRef(name="test", node="test", version="1.0")
+
+    result = asyncio.run(
+        executor_module.call_step_services(
+            bus=object(), source=source, step=step, ctx=ctx, correlation_id="corr-draft-overflow",
+        )
+    )
+
+    assert result.status == "success"
+    assert calls == []
+    draft_result = result.result["MetacogDraftService"]
+    assert draft_result.get("fallback_reason") == "prompt_context_overflow"
+
+
+def test_enrich_trims_metacog_biometrics_cue_before_ctx_overflow_fallback(monkeypatch):
     executor_module = _load_executor_module()
     calls: list[str] = []
 
@@ -223,7 +605,7 @@ def test_enrich_trims_biometrics_before_ctx_overflow_fallback(monkeypatch):
 
     template = _load_template("log_orion_metacognition_enrich.j2")
     ctx = _draft_ctx(spark_blob="{}")
-    ctx["biometrics_json"] = json.dumps({"hrv": "x" * 5000})
+    ctx["metacog_biometrics_cue"] = json.dumps({"status": "fresh", "blob": "x" * 5000})
     ctx["collapse_entry"] = draft_entry
     ctx["collapse_json"] = json.dumps(draft_entry)
 
@@ -247,7 +629,7 @@ def test_enrich_trims_biometrics_before_ctx_overflow_fallback(monkeypatch):
     )
 
     assert result.status == "success"
-    assert ctx["biometrics_json"] == "{}"
+    assert json.loads(ctx["metacog_biometrics_cue"])["status"] == "trimmed"
     enrich_result = result.result["MetacogEnrichService"]
     assert enrich_result["ok"] is True
     assert enrich_result.get("fallback_reason") != "prompt_context_overflow"
@@ -287,8 +669,8 @@ def test_enrich_ctx_overflow_after_biometrics_trim(monkeypatch):
     draft_entry["state_snapshot"] = {"telemetry": {"metacog_draft_mode": "llm"}}
 
     template = _load_template("log_orion_metacognition_enrich.j2")
-    ctx = _draft_ctx(spark_blob="{}")
-    ctx["biometrics_json"] = json.dumps({"hrv": "x" * 5000})
+    ctx = _draft_ctx(spark_blob="Z" * 8000)
+    ctx["metacog_biometrics_cue"] = json.dumps({"status": "fresh", "strain": 0.5})
     ctx["collapse_entry"] = draft_entry
     ctx["collapse_json"] = json.dumps(draft_entry)
 
@@ -312,7 +694,6 @@ def test_enrich_ctx_overflow_after_biometrics_trim(monkeypatch):
     )
 
     assert result.status == "success"
-    assert ctx["biometrics_json"] == "{}"
     assert calls == []
     enrich_result = result.result["MetacogEnrichService"]
     assert enrich_result["ok"] is True
@@ -422,6 +803,97 @@ def test_manual_dense_fallback_still_publishes():
     publish = result.result["MetacogPublishService"]
     assert "skipped" not in publish
     mock_bus.publish.assert_called()
+
+
+def _unstable_self_state_payload() -> dict:
+    from datetime import datetime, timezone
+
+    from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
+
+    now = datetime.now(timezone.utc)
+    return SelfStateV1(
+        self_state_id="ss-publish",
+        generated_at=now,
+        source_field_tick_id="tick-1",
+        source_field_generated_at=now,
+        source_attention_frame_id="frame-1",
+        source_attention_generated_at=now,
+        overall_condition="unstable",
+        overall_intensity=0.9,
+        overall_confidence=0.7,
+        dimensions={
+            "execution_pressure": SelfStateDimensionV1(
+                dimension_id="execution_pressure", score=0.85, confidence=0.7
+            )
+        },
+        prediction_error_scores={"execution_pressure": 0.62},
+        trajectory_condition="degrading",
+        overall_surprise=0.7,
+    ).model_dump(mode="json")
+
+
+def test_publish_applies_substrate_causal_density_and_trigger_lineage():
+    executor_module = _load_executor_module()
+    mock_bus = MagicMock()
+    mock_bus.publish = AsyncMock()
+
+    valid_entry = CollapseMirrorEntryV2(
+        event_id="evt-substrate",
+        id="evt-substrate",
+        trigger="dense",
+        observer="Orion",
+        observer_state=["strained"],
+        type="flow",
+        emergent_entity="Substrate Pulse",
+        summary="Test summary",
+        mantra="Test mantra",
+        field_resonance="Test resonance",
+        resonance_signature="Test sig",
+        source_service="metacog",
+        tag_scores={"shift": 0.2},
+    ).model_dump(mode="json")
+    valid_entry["state_snapshot"] = {
+        "telemetry": {"metacog_draft_mode": "llm"},
+    }
+
+    ctx = {
+        "trigger": {"trigger_kind": "dense", "reason": "substrate_eventfulness:0.60"},
+        "trigger_kind": "dense",
+        "self_state": _unstable_self_state_payload(),
+        "substrate_eventfulness_score": 0.6,
+        "final_entry": valid_entry,
+    }
+
+    step = ExecutionStep(
+        step_name="publish",
+        verb_name="log_orion_metacognition",
+        services=["MetacogPublishService"],
+        order=1,
+    )
+    source = ServiceRef(name="test", node="test", version="1.0")
+
+    result = asyncio.run(
+        executor_module.call_step_services(
+            bus=mock_bus,
+            source=source,
+            step=step,
+            ctx=ctx,
+            correlation_id=str(uuid4()),
+        )
+    )
+
+    assert result.status == "success"
+    publish = result.result["MetacogPublishService"]
+    assert publish.get("published") is True
+    mock_bus.publish.assert_called_once()
+    envelope = mock_bus.publish.call_args[0][1]
+    payload = envelope.payload
+    assert payload["causal_density"]["score"] > 0.2
+    assert payload["is_causally_dense"] is True
+    telemetry = payload["state_snapshot"]["telemetry"]
+    assert telemetry["trigger_kind"] == "dense"
+    assert telemetry["metacog_causal_density_source"] == "substrate_self_state_blend"
+    assert telemetry["substrate_eventfulness_score"] == 0.6
 
 
 def test_log_orion_metacognition_recall_disabled_by_verb_default():

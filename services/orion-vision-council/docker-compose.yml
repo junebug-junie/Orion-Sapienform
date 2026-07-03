@@ -16,8 +16,11 @@ services:
       - CHANNEL_COUNCIL_REQUEST=${CHANNEL_COUNCIL_REQUEST:-orion:exec:request:VisionCouncilService}
       - CHANNEL_LLM_REQUEST=${CHANNEL_LLM_REQUEST:-orion:exec:request:LLMGatewayService}
       - CHANNEL_LLM_REPLY_PREFIX=${CHANNEL_LLM_REPLY_PREFIX:-orion:council:reply}
-      - COUNCIL_MODEL=${COUNCIL_MODEL:-gpt-4o}
+      - COUNCIL_MODEL=${COUNCIL_MODEL:-llama-3-8b-instruct-q4_k_m}
       - COUNCIL_LLM_ROUTE=${COUNCIL_LLM_ROUTE:-metacog}
+      - COUNCIL_LLM_MAX_TOKENS=${COUNCIL_LLM_MAX_TOKENS:-1024}
+      - COUNCIL_LLM_TIMEOUT_SEC=${COUNCIL_LLM_TIMEOUT_SEC:-90}
+      - COUNCIL_STRUCTURED_OUTPUT_METHOD=${COUNCIL_STRUCTURED_OUTPUT_METHOD:-json_object_schema}
     networks:
       - app-net
     ports:

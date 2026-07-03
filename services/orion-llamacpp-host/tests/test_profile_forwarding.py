@@ -187,6 +187,55 @@ def test_qwen3_8b_balanced_profile_forwards_enable_thinking_false(monkeypatch):
     assert cmd.index("--jinja") < cmd.index("--chat-template-kwargs")
 
 
+def test_qwen3_8b_atlas_metacog_profile_q5km_single_lane_16k(monkeypatch):
+    """Atlas metacog: Q5_K_M, n_parallel=1 -> full 16k ctx per slot, reasoning off."""
+    repo_root = Path(__file__).resolve().parents[3]
+    config_path = repo_root / "config" / "llm_profiles.yaml"
+
+    main = importlib.import_module("app.main")
+    settings_mod = importlib.import_module("app.settings")
+    profiles_mod = importlib.import_module("app.profiles")
+
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    profile_cfg = raw["profiles"]["qwen3-8b-q5km-v100-16gb-atlas-metacog-16k"]
+    profile = profiles_mod.LLMProfile(name="qwen3-8b-q5km-v100-16gb-atlas-metacog-16k", **profile_cfg)
+
+    monkeypatch.setattr(main, "_ensure_model_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _server_bin: {
+            "--jinja",
+            "--reasoning",
+            "--reasoning-budget",
+            "--ctx-size",
+            "--parallel",
+            "--no-context-shift",
+            "--n-predict",
+            "--temp",
+            "--top-k",
+            "--top-p",
+            "--min-p",
+            "--presence-penalty",
+        },
+    )
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _server_bin: 6000)
+    monkeypatch.setattr(
+        settings_mod.settings,
+        "llamacpp_model_path_override",
+        "/models/gguf/Qwen_Qwen3-8B-Q5_K_M.gguf",
+    )
+
+    cmd, _env = main.build_llama_server_cmd_and_env(profile)
+    assert _find_flag_value(cmd, "--reasoning") == "off"
+    assert _find_flag_value(cmd, "--ctx-size") == "16384"
+    assert _find_flag_value(cmd, "--parallel") == "1"
+    assert _find_flag_value(cmd, "--reasoning-budget") == "0"
+    assert _find_flag_value(cmd, "--n-predict") == "4096"
+    assert _find_flag_value(cmd, "--temp") == "0.35"
+    assert "--chat-template-kwargs" not in cmd
+
+
 def test_qwen3_implicit_budget_off_emits_jinja_and_budget(monkeypatch):
     """Synthetic profile: only chat_template_kwargs={'enable_thinking': False} → policy emits --jinja and --reasoning-budget 0."""
     main = importlib.import_module("app.main")

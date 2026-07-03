@@ -13,12 +13,16 @@ from typing import Any, Literal
 from loguru import logger
 from pydantic import ValidationError
 
+from orion.llm.openai_message_content import join_openai_message_content
 from orion.schemas.vision import (
     VisionEventBundleItem,
     VisionEventCandidateV1,
     VisionEventPayload,
     VisionSceneInterpretationV1,
     VisionWindowPayload,
+)
+from orion.schemas.vision_interpretation_contract import (
+    compact_vision_scene_interpretation_json_schema,
 )
 
 ParseMode = Literal[
@@ -38,8 +42,26 @@ class InterpretationParseOutcome:
     salvage_warnings: list[str] = field(default_factory=list)
 
 
+def _coerce_llm_text(content: Any) -> str:
+    return join_openai_message_content(content)
+
+
+def _extract_json_blob(text: str) -> str:
+    stripped = text.strip()
+    if not stripped:
+        return stripped
+    if stripped[0] in "{[":
+        return stripped
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start = stripped.find(opener)
+        end = stripped.rfind(closer)
+        if start >= 0 and end > start:
+            return stripped[start : end + 1]
+    return stripped
+
+
 def _strip_markdown_fences(content: str) -> str:
-    text = content.strip()
+    text = _coerce_llm_text(content)
     if "```json" in text:
         text = text.split("```json", 1)[1].split("```", 1)[0]
     elif "```" in text:
@@ -47,8 +69,17 @@ def _strip_markdown_fences(content: str) -> str:
     return text.strip()
 
 
-def build_interpretation_prompt(window: VisionWindowPayload) -> str:
+_PROMPT_MAX_ARTIFACT_IDS = 8
+_PROMPT_MAX_CAPTIONS = 3
+
+
+def _compact_window_context(window: VisionWindowPayload) -> dict[str, Any]:
     summary = window.summary or {}
+    artifact_ids = list(window.artifact_ids or [])
+    captions = summary.get("captions", [])
+    if isinstance(captions, list) and len(captions) > _PROMPT_MAX_CAPTIONS:
+        captions = captions[:_PROMPT_MAX_CAPTIONS]
+
     context: dict[str, Any] = {
         "window_id": window.window_id,
         "stream_id": window.stream_id,
@@ -58,18 +89,22 @@ def build_interpretation_prompt(window: VisionWindowPayload) -> str:
         "summary": {
             "top_labels": summary.get("top_labels", []),
             "object_counts": summary.get("object_counts", {}),
-            "captions": summary.get("captions", []),
+            "captions": captions,
             "detection_count": summary.get("detection_count", summary.get("item_count", 0)),
             "evidence": summary.get("evidence", {}),
         },
-        "artifact_ids": window.artifact_ids or [],
+        "artifact_ids": artifact_ids[:_PROMPT_MAX_ARTIFACT_IDS],
+        "artifact_id_count": len(artifact_ids),
     }
-    if window.artifact_uris:
-        context["artifact_uris"] = window.artifact_uris
+    if len(artifact_ids) > _PROMPT_MAX_ARTIFACT_IDS:
+        context["artifact_ids_truncated"] = True
     if window.freshness is not None:
         context["freshness"] = window.freshness
-    if window.meta is not None:
-        context["meta"] = window.meta
+    return context
+
+
+def build_interpretation_prompt(window: VisionWindowPayload) -> str:
+    context = _compact_window_context(window)
 
     schema_hint = {
         "schema_version": "1.0",
@@ -80,18 +115,26 @@ def build_interpretation_prompt(window: VisionWindowPayload) -> str:
         "scene_state": {},
         "entities": [],
         "relations": [],
-        "salient_observations": [],
+        "salient_observations": [
+            {
+                "observation": "short factual note — use observation field, not narrative",
+                "salience": 0.5,
+                "confidence": 0.8,
+                "evidence_refs": ["artifact-id-from-window"],
+                "tags": [],
+            }
+        ],
         "uncertainties": [],
         "task_relevance": [],
         "event_candidates": [
             {
-                "event_type": "string",
-                "narrative": "string",
+                "event_type": "visual_observation",
+                "narrative": "Concrete event sentence for scribe projection.",
                 "entities": [],
                 "tags": [],
-                "confidence": 0.0,
-                "salience": 0.0,
-                "evidence_refs": [],
+                "confidence": 0.8,
+                "salience": 0.7,
+                "evidence_refs": ["artifact-id-from-window"],
             }
         ],
         "memory_delta_candidates": [],
@@ -108,17 +151,150 @@ def build_interpretation_prompt(window: VisionWindowPayload) -> str:
         f"{json.dumps(schema_hint, indent=2)}\n\n"
         "Rules:\n"
         "- Output strict JSON only. No markdown fences, commentary, or prose.\n"
+        "- salient_observations items MUST use the observation field (never narrative/event_type).\n"
+        "- event_candidates items MUST use event_type + narrative (scribe events come from here).\n"
+        "- Populate at least one event_candidates entry when anything salient happened.\n"
         "- Use empty arrays [] for missing list fields; do not omit required keys.\n"
         "- Do not invent identities, names, or facts not supported by the context.\n"
         "- Preserve uncertainty when visual evidence is weak; record it in uncertainties.\n"
-        "- Prefer concrete observations over vague impressions.\n"
-        "- Set evidence_refs on observations, entities, and event_candidates using "
-        "artifact_ids from the window whenever possible.\n"
-        "- Include scene_summary and event_candidates; other fields may be empty arrays.\n"
+        "- Set evidence_refs using artifact_ids from the window whenever possible.\n"
         "- Treat summary.evidence.hard_labels as factual detection evidence.\n"
         "- Treat summary.captions as soft hints only; never sole basis for activity claims.\n"
-        "- Activity verbs require person in hard_labels.\n"
+        "- Never mention person, someone, or human in scene_summary, salient_observations, "
+        "entities, relations, or event_candidates unless person is in summary.evidence.hard_labels.\n"
+        "- Activity verbs (watching, reading, using, etc.) require person in hard_labels.\n"
+        "- When hard_labels is non-empty, describe only those detected objects; do not infer occupants.\n"
     )
+
+
+def build_interpretation_llm_options(
+    *,
+    structured_output_method: str = "json_object_schema",
+    max_tokens: int = 1024,
+) -> dict[str, Any]:
+    """Gateway options for deterministic VisionSceneInterpretationV1 JSON."""
+    return {
+        "return_json": True,
+        "max_tokens": max_tokens,
+        "structured_output_method": structured_output_method,
+        "structured_output_schema_name": "VisionSceneInterpretationV1",
+        "structured_output_schema": compact_vision_scene_interpretation_json_schema(),
+        "structured_output_thinking_policy": "disabled_for_artifact",
+        "temperature": 0.1,
+    }
+
+
+def _is_event_candidate_shape(item: dict[str, Any]) -> bool:
+    """Structural: event list items carry event_type and/or narrative without observation."""
+    if "event_type" in item:
+        return True
+    return "narrative" in item and "observation" not in item
+
+
+def _observation_dict_from_item(item: dict[str, Any], window: VisionWindowPayload | None) -> dict[str, Any] | None:
+    observation = item.get("observation") or item.get("summary") or item.get("description")
+    if not observation:
+        return None
+    return {
+        "observation": str(observation),
+        "confidence": _clamp_float(item.get("confidence")),
+        "salience": _clamp_float(item.get("salience")),
+        "tags": _string_list(item.get("tags")),
+        "evidence_refs": _default_evidence_refs(item, window),
+    }
+
+
+def _event_dedup_key(item: dict[str, Any]) -> tuple[str, str]:
+    return (str(item.get("event_type") or ""), str(item.get("narrative") or ""))
+
+
+def _dedupe_event_dicts(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, str]] = set()
+    deduped: list[dict[str, Any]] = []
+    for item in events:
+        key = _event_dedup_key(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _event_dict_from_item(item: dict[str, Any], window: VisionWindowPayload | None) -> dict[str, Any]:
+    event_type = item.get("event_type") or item.get("type") or "visual_observation"
+    narrative = (
+        item.get("narrative")
+        or item.get("observation")
+        or item.get("summary")
+        or item.get("description")
+        or str(event_type)
+    )
+    return {
+        "event_type": str(event_type),
+        "narrative": str(narrative),
+        "entities": _string_list(item.get("entities")),
+        "tags": _string_list(item.get("tags")),
+        "confidence": _clamp_float(item.get("confidence")),
+        "salience": _clamp_float(item.get("salience")),
+        "evidence_refs": _default_evidence_refs(item, window),
+    }
+
+
+def _normalize_interpretation_shape_for_strict(
+    data: dict[str, Any],
+    window: VisionWindowPayload,
+) -> dict[str, Any]:
+    """
+    Partition misplaced event-shaped dicts out of salient_observations before strict validation.
+    Key-presence only — no situation keyword lists.
+    """
+    out = dict(data)
+    out.setdefault("schema_version", "1.0")
+    out.setdefault("window_id", window.window_id)
+    out.setdefault("stream_id", window.stream_id)
+    out.setdefault("camera_id", window.camera_id)
+    if not out.get("scene_summary"):
+        out["scene_summary"] = _derive_scene_summary(out, window)
+
+    observations: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
+
+    raw_salient = out.get("salient_observations")
+    if isinstance(raw_salient, list):
+        for item in raw_salient:
+            if not isinstance(item, dict):
+                continue
+            if _is_event_candidate_shape(item):
+                events.append(_event_dict_from_item(item, window))
+                continue
+            coerced = _observation_dict_from_item(item, window)
+            if coerced is not None:
+                observations.append(coerced)
+
+    raw_events = out.get("event_candidates")
+    if isinstance(raw_events, list):
+        for item in raw_events:
+            if isinstance(item, dict):
+                events.append(_event_dict_from_item(item, window))
+
+    out["salient_observations"] = observations
+    out["event_candidates"] = _dedupe_event_dicts(events)
+
+    for key in (
+        "uncertainties",
+        "task_relevance",
+        "entities",
+        "relations",
+        "memory_delta_candidates",
+        "evidence_refs",
+    ):
+        if out.get(key) is None:
+            out[key] = []
+    if out.get("scene_state") is None:
+        out["scene_state"] = {}
+    if not out.get("evidence_refs") and window.artifact_ids:
+        out["evidence_refs"] = list(window.artifact_ids[:_PROMPT_MAX_ARTIFACT_IDS])
+    return out
 
 
 def _clamp_float(value: Any, default: float = 0.5) -> float:
@@ -489,7 +665,7 @@ def _log_parse_outcome(
 
 def parse_llm_content(content: str, window: VisionWindowPayload) -> InterpretationParseOutcome:
     try:
-        text = _strip_markdown_fences(content)
+        text = _extract_json_blob(_strip_markdown_fences(content))
         data = json.loads(text)
         raw_model_output: dict[str, Any] | None = None
 
@@ -528,7 +704,10 @@ def parse_llm_content(content: str, window: VisionWindowPayload) -> Interpretati
                     _log_parse_outcome(outcome, window)
                     return outcome
 
-            strict_data = _coerce_legacy_events_field(dict(data))
+            strict_data = _normalize_interpretation_shape_for_strict(
+                _coerce_legacy_events_field(dict(data)),
+                window,
+            )
             if not strict_data.get("window_id"):
                 strict_data["window_id"] = window.window_id
 
@@ -575,7 +754,8 @@ def parse_llm_content(content: str, window: VisionWindowPayload) -> Interpretati
         logger.error(f"[COUNCIL] Unexpected LLM JSON type: {type(data).__name__}")
         return InterpretationParseOutcome(interpretation=None, parse_mode="parse_failed")
     except json.JSONDecodeError as exc:
-        logger.error(f"[COUNCIL] Failed to parse interpretation JSON: {exc}")
+        snippet = repr(_coerce_llm_text(content)[:240])
+        logger.error(f"[COUNCIL] Failed to parse interpretation JSON: {exc} snippet={snippet}")
         return InterpretationParseOutcome(interpretation=None, parse_mode="parse_failed")
     except Exception as exc:
         logger.error(f"[COUNCIL] Failed to parse interpretation JSON: {exc}")

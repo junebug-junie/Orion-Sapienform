@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from orion.inspection.social import build_social_inspection_snapshot
+from orion.inspection.social import (
+    build_hub_direct_inspection_sections,
+    build_social_inspection_snapshot,
+)
 
 
 def _surfaces() -> dict:
@@ -250,3 +253,34 @@ def test_social_inspection_snapshot_omits_blocked_material_and_keeps_pending_art
         for item in bucket
     ).lower()
     assert "sealed private note" not in combined
+
+
+def test_hub_direct_inspection_sections_include_routing_recall_and_gif_na() -> None:
+    route_debug = {
+        "verb": "chat_social_room",
+        "mode": "brain",
+        "llm_route": "chat",
+        "social_room_mode": "hub_direct",
+        "chat_profile": "social_room",
+        "recall_profile": "social.room.v1",
+        "recall_enabled": True,
+        "social_redaction_posture": "strict",
+    }
+    sections = build_hub_direct_inspection_sections(route_debug=route_debug, metadata={})
+    kinds = {section.section_kind for section in sections}
+    assert "routing" in kinds
+    assert "context_window" in kinds
+    assert "gif" in kinds
+    gif = next(item for item in sections if item.section_kind == "gif")
+    assert any("bridge-only" in trace.summary.lower() for trace in gif.decision_traces)
+
+
+def test_hub_direct_inspection_sections_include_skill_when_present() -> None:
+    route_debug = {
+        "verb": "chat_social_room",
+        "social_room_mode": "hub_direct",
+        "social_skill_selection": {"selected_skill": "social_self_ground", "used": True},
+        "social_skill_result": {"summary": "Oríon is here as a peer."},
+    }
+    sections = build_hub_direct_inspection_sections(route_debug=route_debug, metadata={})
+    assert any(section.section_kind == "artifact_dialogue" for section in sections)

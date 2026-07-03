@@ -882,6 +882,24 @@ class ContextExecRunner:
 
         engine = self.engine if getattr(self.engine, "engine_name", "") == "smolcode" else SmolagentsCodeEngine()
 
+        workspace_obj = None
+        if workspace_info and workspace_info.get("allocated"):
+            try:
+                from .workspace import allocate_workspace
+
+                workspace_obj = allocate_workspace(
+                    run_id,
+                    request=request,
+                    repo_root=settings.context_exec_repo_root,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "agent_repl workspace re-load failed run_id=%s error=%s",
+                    run_id,
+                    exc,
+                )
+                workspace_obj = None
+
         status = "ok"
         result: dict[str, Any]
         budget_sec = min(request.budget.max_seconds, settings.context_exec_max_seconds)
@@ -894,6 +912,8 @@ class ContextExecRunner:
                     step_callbacks=[_step_callback],
                     max_steps=settings.context_exec_agent_repl_max_steps,
                     per_step_timeout=settings.context_exec_llm_timeout_sec,
+                    workspace_info=workspace_info,
+                    workspace=workspace_obj,
                 ),
                 timeout=budget_sec,
             )
@@ -928,6 +948,7 @@ class ContextExecRunner:
         runtime_debug["organ_status"] = organ_status
         runtime_debug["correlation_id"] = request.correlation_id
         runtime_debug["agent_repl"] = True
+        runtime_debug["agent_repl_max_steps"] = settings.context_exec_agent_repl_max_steps
         runtime_debug["step_count"] = len(verb_trace)
 
         operator_summary = ContextExecOperatorSummaryV1(

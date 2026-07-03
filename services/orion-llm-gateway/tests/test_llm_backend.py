@@ -9,6 +9,7 @@ sys.path.append(str(ROOT))
 from app.llm_backend import (  # noqa: E402
     _build_ollama_payload,
     _extract_reasoning_from_openai_response,
+    _extract_text_from_openai_response,
     _extract_text_from_ollama_response,
     _extract_vector_from_openai_response,
     _split_think_blocks,
@@ -30,6 +31,25 @@ class TestLLMBackendHelpers(unittest.TestCase):
     def test_extract_text_from_ollama_message(self) -> None:
         data = {"message": {"role": "assistant", "content": "hello"}}
         self.assertEqual(_extract_text_from_ollama_response(data), "hello")
+
+    def test_extract_text_from_openai_message_content_parts(self) -> None:
+        data = {
+            "choices": [
+                {
+                    "message": {
+                        "content": [
+                            {"type": "reasoning", "text": "hidden"},
+                            {"type": "text", "text": '{"ok": true}'},
+                        ]
+                    }
+                }
+            ]
+        }
+        self.assertEqual(_extract_text_from_openai_response(data), '{"ok": true}')
+
+    def test_extract_text_from_openai_string_content(self) -> None:
+        data = {"choices": [{"message": {"content": '{"ok": true}'}}]}
+        self.assertEqual(_extract_text_from_openai_response(data), '{"ok": true}')
 
     def test_extract_text_from_ollama_generate(self) -> None:
         data = {"response": "hi"}

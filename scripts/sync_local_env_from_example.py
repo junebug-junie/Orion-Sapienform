@@ -66,6 +66,9 @@ SYNC_PREFIXES = (
     "EDGE_ACTIVITY_",
     "EDGE_PUBLISH_",
     "VISION_VLM_",
+    "COUNCIL_",
+    "HOST_PORT",
+    "ORION_BUS_URL",
     "SQL_WRITER_EMIT_MEMORY_",
 )
 
@@ -81,6 +84,8 @@ SYNC_EXACT = frozenset(
         "SQL_WRITER_EMIT_MEMORY_TURN_PERSISTED",
         "MEMORY_CONSOLIDATION_ENABLED",
         "LLM_LOGPROB_SUMMARY_ENABLED",
+        "HOST_PORT",
+        "ORION_BUS_URL",
     }
 )
 

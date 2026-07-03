@@ -66,6 +66,112 @@ def test_activity_pattern_matches_watching() -> None:
     assert ACTIVITY_PATTERN.search("watching a video")
 
 
+def test_enforce_drops_activity_caption_slop_when_soft_labels_slop() -> None:
+    window = _window(
+        captions=["youtube stream on screen"],
+        evidence={
+            "hard_labels": ["person", "screen"],
+            "edge_person_hits": 1,
+            "soft_labels": ["youtube"],
+        },
+    )
+    interpretation = VisionSceneInterpretationV1(
+        window_id="w1",
+        scene_summary="Person watching",
+        event_candidates=[
+            {
+                "event_type": "human_activity",
+                "narrative": "A person is watching a video on the screen.",
+                "entities": ["person"],
+                "tags": [],
+                "confidence": 0.9,
+                "salience": 0.8,
+                "evidence_refs": ["art-edge-1"],
+            }
+        ],
+    )
+    grounded, notes = enforce_evidence_grounding(interpretation, window)
+    assert grounded.event_candidates == []
+    assert any("caption_slop" in note for note in notes)
+
+
+def test_enforce_scrubs_scene_summary_when_person_not_in_hard_labels() -> None:
+    window = _window(
+        evidence={"hard_labels": ["door", "screen"], "edge_person_hits": 0, "host_person_hits": 0},
+    )
+    interpretation = VisionSceneInterpretationV1(
+        window_id="w1",
+        scene_summary="A person is standing near the door.",
+        event_candidates=[
+            {
+                "event_type": "visual_observation",
+                "narrative": "A door and screen are visible.",
+                "entities": ["door", "screen"],
+                "tags": [],
+                "confidence": 0.8,
+                "salience": 0.7,
+                "evidence_refs": ["art-edge-1"],
+            }
+        ],
+    )
+    grounded, notes = enforce_evidence_grounding(interpretation, window)
+    assert grounded.scene_summary == "Door and Screen visible in the frame."
+    assert any("scrubbed:scene_summary" in note for note in notes)
+
+
+def test_enforce_drops_salient_observation_with_ungrounded_person() -> None:
+    window = _window(
+        evidence={"hard_labels": ["door"], "edge_person_hits": 0, "host_person_hits": 0},
+    )
+    interpretation = VisionSceneInterpretationV1(
+        window_id="w1",
+        scene_summary="Door visible.",
+        salient_observations=[
+            {
+                "observation": "Someone may be near the door.",
+                "confidence": 0.7,
+                "salience": 0.6,
+                "evidence_refs": ["art-edge-1"],
+            },
+            {
+                "observation": "The door is closed.",
+                "confidence": 0.9,
+                "salience": 0.5,
+                "evidence_refs": ["art-edge-1"],
+            },
+        ],
+        event_candidates=[],
+    )
+    grounded, notes = enforce_evidence_grounding(interpretation, window)
+    assert len(grounded.salient_observations) == 1
+    assert grounded.salient_observations[0].observation == "The door is closed."
+    assert any("dropped:salient_observation" in note for note in notes)
+
+
+def test_enforce_scrubs_person_from_event_entities() -> None:
+    window = _window(
+        evidence={"hard_labels": ["door", "screen"], "edge_person_hits": 0, "host_person_hits": 0},
+    )
+    interpretation = VisionSceneInterpretationV1(
+        window_id="w1",
+        scene_summary="Door and screen visible.",
+        event_candidates=[
+            {
+                "event_type": "visual_observation",
+                "narrative": "A door and screen are visible.",
+                "entities": ["person", "door", "screen"],
+                "tags": [],
+                "confidence": 0.8,
+                "salience": 0.7,
+                "evidence_refs": ["art-edge-1"],
+            }
+        ],
+    )
+    grounded, notes = enforce_evidence_grounding(interpretation, window)
+    assert grounded.event_candidates[0].entities == ["door", "screen"]
+    assert any("scrubbed:entities" in note for note in notes)
+
+
 def test_enforce_caps_activity_confidence_when_captions_present() -> None:
     window = _window(
         captions=["A person near the door."],

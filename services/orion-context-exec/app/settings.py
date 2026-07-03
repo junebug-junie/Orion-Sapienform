@@ -194,7 +194,7 @@ class ContextExecSettings(BaseSettings):
     orion_repo_root: str = Field("/app", alias="ORION_REPO_ROOT")
     rlm_engine: str = Field("alexzhang", alias="CONTEXT_EXEC_RLM_ENGINE")
     context_exec_rlm_fallback_enabled: bool = Field(True, alias="CONTEXT_EXEC_RLM_FALLBACK_ENABLED")
-    context_exec_agent_repl_max_steps: int = Field(12, alias="CONTEXT_EXEC_AGENT_REPL_MAX_STEPS")
+    context_exec_agent_repl_max_steps: int = Field(32, alias="CONTEXT_EXEC_AGENT_REPL_MAX_STEPS")
 
     context_exec_proposal_ledger_enabled: bool = Field(
         False,

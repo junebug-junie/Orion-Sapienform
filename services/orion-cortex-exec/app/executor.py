@@ -549,6 +549,8 @@ def _set_metacog_draft_telemetry(
     prompt_chars: int | None = None,
     prompt_limit_chars: int | None = None,
     section_sizes: Dict[str, int] | None = None,
+    ctx_trim_applied: list[str] | None = None,
+    biometrics_cue_chars: int | None = None,
 ) -> None:
     state_snapshot = entry_dict.get("state_snapshot")
     if not isinstance(state_snapshot, dict):
@@ -566,6 +568,10 @@ def _set_metacog_draft_telemetry(
         telemetry["metacog_prompt_limit_chars"] = int(prompt_limit_chars)
     if section_sizes:
         telemetry["metacog_prompt_section_sizes"] = dict(section_sizes)
+    if ctx_trim_applied:
+        telemetry["metacog_ctx_trim_applied"] = list(ctx_trim_applied)
+    if biometrics_cue_chars is not None:
+        telemetry["metacog_biometrics_cue_chars"] = int(biometrics_cue_chars)
     state_snapshot["telemetry"] = telemetry
     entry_dict["state_snapshot"] = state_snapshot
 
@@ -577,6 +583,8 @@ def _set_metacog_enrich_telemetry(
     prompt_chars: int | None = None,
     prompt_limit_chars: int | None = None,
     section_sizes: Dict[str, int] | None = None,
+    ctx_trim_applied: list[str] | None = None,
+    biometrics_cue_chars: int | None = None,
 ) -> None:
     state_snapshot = entry_dict.get("state_snapshot")
     if not isinstance(state_snapshot, dict):
@@ -590,6 +598,10 @@ def _set_metacog_enrich_telemetry(
         telemetry["metacog_enrich_prompt_limit_chars"] = int(prompt_limit_chars)
     if section_sizes:
         telemetry["metacog_enrich_prompt_section_sizes"] = dict(section_sizes)
+    if ctx_trim_applied:
+        telemetry["metacog_ctx_trim_applied"] = list(ctx_trim_applied)
+    if biometrics_cue_chars is not None:
+        telemetry["metacog_biometrics_cue_chars"] = int(biometrics_cue_chars)
     state_snapshot["telemetry"] = telemetry
     entry_dict["state_snapshot"] = state_snapshot
 
@@ -808,6 +820,22 @@ def _metacog_format_node_cue_line(node_id: str, node_data: Any) -> str:
     return " ".join(parts)[:80]
 
 
+def _metacog_cue_freshness_s(biometrics: Dict[str, Any]) -> int | None:
+    freshness = biometrics.get("freshness_s")
+    if freshness is not None:
+        try:
+            return int(round(float(freshness)))
+        except (TypeError, ValueError):
+            pass
+    age_ms = biometrics.get("age_ms")
+    if age_ms is not None:
+        try:
+            return int(round(float(age_ms) / 1000.0))
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
 def _metacog_biometrics_cue(ctx: Dict[str, Any], *, phase: str) -> str:
     biometrics = ctx.get("biometrics")
     if not isinstance(biometrics, dict):
@@ -832,21 +860,25 @@ def _metacog_biometrics_cue(ctx: Dict[str, Any], *, phase: str) -> str:
         cue = json.dumps(enrich_payload, separators=(",", ":"))
         if len(cue) > _METACOG_BIOMETRICS_CUE_ENRICH_MAX_CHARS:
             cue = json.dumps({"cluster": cluster_payload}, separators=(",", ":"))
-        return cue[:_METACOG_BIOMETRICS_CUE_ENRICH_MAX_CHARS]
+        if len(cue) > _METACOG_BIOMETRICS_CUE_ENRICH_MAX_CHARS:
+            cue = json.dumps({"status": "trimmed"}, separators=(",", ":"))
+        return cue
 
     draft_payload: Dict[str, Any] = {
         "status": status,
         "constraint": constraint,
         **composites,
     }
-    freshness = biometrics.get("freshness_s")
-    if freshness is not None:
-        try:
-            draft_payload["freshness_s"] = int(round(float(freshness)))
-        except (TypeError, ValueError):
-            pass
+    freshness_s = _metacog_cue_freshness_s(biometrics)
+    if freshness_s is not None:
+        draft_payload["freshness_s"] = freshness_s
     cue = json.dumps(draft_payload, separators=(",", ":"))
-    return cue[:_METACOG_BIOMETRICS_CUE_DRAFT_MAX_CHARS]
+    if len(cue) > _METACOG_BIOMETRICS_CUE_DRAFT_MAX_CHARS:
+        minimal: Dict[str, Any] = {"status": status, **composites}
+        cue = json.dumps(minimal, separators=(",", ":"))
+    if len(cue) > _METACOG_BIOMETRICS_CUE_DRAFT_MAX_CHARS:
+        cue = json.dumps({"status": status}, separators=(",", ":"))
+    return cue
 
 
 def _metacog_messages(
@@ -1300,13 +1332,6 @@ def _maybe_trim_metacog_prompt_for_worker_ctx(
         budget,
     )
     return prompt, "prompt_context_overflow", trim_applied
-
-
-def _maybe_trim_metacog_enrich_prompt_for_worker_ctx(
-    **kwargs,
-) -> tuple[str, str | None]:
-    prompt, overflow, _ = _maybe_trim_metacog_prompt_for_worker_ctx(phase="enrich", **kwargs)
-    return prompt, overflow
 
 
 def _resolve_metacog_draft_fallback_reason(
@@ -2840,6 +2865,8 @@ async def call_step_services(
         metacog_section_sizes: Dict[str, int] = {}
         metacog_prompt_chars = len(prompt or "")
         metacog_prompt_limit = 0
+        draft_trim_applied: list[str] = []
+        enrich_trim_applied: list[str] = []
         if metacog_phase:
             metacog_section_sizes = _log_metacog_publish_prompt_diagnostics(
                 service=service,
@@ -2859,12 +2886,6 @@ async def call_step_services(
                     section_keys=metacog_section_keys,
                 )
             )
-            if metacog_phase == "draft":
-                ctx["metacog_draft_prompt_chars"] = metacog_prompt_chars
-                ctx["metacog_draft_section_sizes"] = metacog_section_sizes
-            else:
-                ctx["metacog_enrich_prompt_chars"] = metacog_prompt_chars
-                ctx["metacog_enrich_section_sizes"] = metacog_section_sizes
             if metacog_phase == "draft" and metacog_budget_ok and step.prompt_template:
                 prompt, draft_ctx_overflow, draft_trim_applied = _maybe_trim_metacog_prompt_for_worker_ctx(
                     phase="draft",
@@ -2873,9 +2894,6 @@ async def call_step_services(
                     template_str=step.prompt_template,
                     correlation_id=correlation_id,
                 )
-                metacog_prompt_chars = len(prompt or "")
-                if draft_trim_applied:
-                    ctx["metacog_ctx_trim_applied"] = draft_trim_applied
             if (
                 service == "MetacogEnrichService"
                 and metacog_budget_ok
@@ -2888,9 +2906,25 @@ async def call_step_services(
                     template_str=step.prompt_template,
                     correlation_id=correlation_id,
                 )
+            trim_applied = draft_trim_applied or enrich_trim_applied
+            if trim_applied:
+                ctx["metacog_ctx_trim_applied"] = trim_applied
+                metacog_section_sizes = _metacog_ctx_section_sizes(ctx, metacog_section_keys)
                 metacog_prompt_chars = len(prompt or "")
-                if enrich_trim_applied:
-                    ctx["metacog_ctx_trim_applied"] = enrich_trim_applied
+                _log_metacog_publish_prompt_diagnostics(
+                    service=service,
+                    phase=f"{metacog_phase}_post_trim",
+                    correlation_id=correlation_id,
+                    prompt=prompt,
+                    ctx=ctx,
+                    section_keys=metacog_section_keys,
+                )
+            if metacog_phase == "draft":
+                ctx["metacog_draft_prompt_chars"] = metacog_prompt_chars
+                ctx["metacog_draft_section_sizes"] = metacog_section_sizes
+            else:
+                ctx["metacog_enrich_prompt_chars"] = metacog_prompt_chars
+                ctx["metacog_enrich_section_sizes"] = metacog_section_sizes
         # ----------------------------------------------------------------
 
         if service in {"MetacogDraftService", "MetacogEnrichService"}:
@@ -3069,6 +3103,12 @@ async def call_step_services(
                         prompt_chars=metacog_prompt_chars,
                         prompt_limit_chars=metacog_prompt_limit,
                         section_sizes=metacog_section_sizes,
+                        ctx_trim_applied=(
+                            ctx.get("metacog_ctx_trim_applied")
+                            if isinstance(ctx.get("metacog_ctx_trim_applied"), list)
+                            else None
+                        ),
+                        biometrics_cue_chars=len(str(ctx.get("metacog_biometrics_cue") or "")),
                     )
                     if ctx.get("turn_effect"):
                         turn_summary = summarize_turn_effect(ctx["turn_effect"])
@@ -3359,6 +3399,12 @@ async def call_step_services(
                         prompt_chars=metacog_prompt_chars,
                         prompt_limit_chars=metacog_prompt_limit,
                         section_sizes=metacog_section_sizes,
+                        ctx_trim_applied=(
+                            ctx.get("metacog_ctx_trim_applied")
+                            if isinstance(ctx.get("metacog_ctx_trim_applied"), list)
+                            else None
+                        ),
+                        biometrics_cue_chars=len(str(ctx.get("metacog_biometrics_cue") or "")),
                     )
 
                     final_entry = normalize_collapse_entry(final_dict)
@@ -3682,6 +3728,14 @@ async def call_step_services(
                                 cluster_obj = biometrics_context.get("cluster")
                                 if isinstance(cluster_obj, dict) and cluster_obj.get("constraint"):
                                     biometrics_context["constraint"] = cluster_obj.get("constraint")
+                            if state_res.biometrics and state_res.biometrics.age_ms is not None:
+                                biometrics_context["age_ms"] = state_res.biometrics.age_ms
+                            if state_res.age_ms is not None and biometrics_context.get("age_ms") is None:
+                                biometrics_context["age_ms"] = state_res.age_ms
+                            if biometrics_context.get("freshness_s") is None:
+                                derived_freshness = _metacog_cue_freshness_s(biometrics_context)
+                                if derived_freshness is not None:
+                                    biometrics_context["freshness_s"] = derived_freshness
                         ctx["biometrics"] = biometrics_context
                         ctx["biometrics_json"] = json.dumps(biometrics_context, indent=2)
                         if state_res.ok and state_res.snapshot:

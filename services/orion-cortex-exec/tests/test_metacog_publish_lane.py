@@ -280,6 +280,21 @@ def test_metacog_biometrics_cue_enrich_overflow_falls_back_to_cluster_only(monke
     assert len(cue) <= 120
 
 
+def test_metacog_biometrics_cue_draft_uses_age_ms_when_freshness_missing():
+    executor_module = _load_executor_module()
+    ctx = {
+        "biometrics": {
+            "status": "fresh",
+            "age_ms": 12500,
+            "constraint": "NONE",
+            "cluster": {"composite": {"strain": 0.42, "homeostasis": 0.71, "stability": 0.88}},
+        }
+    }
+    cue = executor_module._metacog_biometrics_cue(ctx, phase="draft")
+    parsed = json.loads(cue)
+    assert parsed["freshness_s"] == 12
+
+
 def test_metacog_draft_prompt_under_slim_budget():
     executor_module = _load_executor_module()
     template = _load_template("log_orion_metacognition_draft.j2")
@@ -298,6 +313,39 @@ def test_metacog_draft_prompt_under_slim_budget():
     prompt = executor_module._render_prompt(template, ctx)
     assert len(ctx["metacog_biometrics_cue"]) <= 350
     assert len(prompt) <= 6500
+
+
+def test_metacog_draft_prompt_live_anatomy_fits_worker_budget():
+    """Replay spec §2 section sizes (minus removed biometrics_json blob)."""
+    executor_module = _load_executor_module()
+    template = _load_template("log_orion_metacognition_draft.j2")
+    ctx = _draft_ctx()
+    ctx["context_summary"] = "T" * 1183
+    ctx["spark_state_json"] = "S" * 634
+    ctx["spark_phi_narrative"] = "P" * 550
+    ctx["turn_effect_json"] = "E" * 60
+    ctx["recent_turn_effect_alerts_json"] = "[]"
+    ctx["turn_effect_policy_json"] = "{}"
+    ctx["turn_effect_explanations_json"] = "{}"
+    ctx["metacog_biometrics_cue"] = executor_module._metacog_biometrics_cue(
+        {
+            "biometrics": {
+                "status": "fresh",
+                "age_ms": 12000,
+                "constraint": "NONE",
+                "cluster": {"composite": {"strain": 0.42, "homeostasis": 0.71, "stability": 0.88}},
+            }
+        },
+        phase="draft",
+    )
+    slim_prompt = executor_module._render_prompt(template, ctx)
+    fat_ctx = dict(ctx)
+    fat_ctx["metacog_biometrics_cue"] = "{}"
+    fat_ctx["biometrics_json"] = json.dumps({"blob": "x" * 3823})
+    # Template no longer references biometrics_json; savings vs legacy is cue vs blob size.
+    assert len(ctx["metacog_biometrics_cue"]) <= 350
+    assert len(slim_prompt) <= int(executor_module.settings.cortex_metacog_draft_worker_ctx_char_budget)
+    assert len(ctx["metacog_biometrics_cue"]) < len(fat_ctx["biometrics_json"])
 
 
 def test_metacog_draft_section_keys_cover_template_fields():
@@ -474,6 +522,11 @@ def test_draft_trims_biometrics_cue_before_ctx_overflow_fallback(monkeypatch):
 
     assert result.status == "success"
     assert json.loads(ctx["metacog_biometrics_cue"])["status"] == "trimmed"
+    assert ctx["metacog_ctx_trim_applied"] == ["biometrics_cue"]
+    assert ctx["metacog_draft_prompt_chars"] <= 8000
+    telemetry = ctx["collapse_entry"]["state_snapshot"]["telemetry"]
+    assert telemetry["metacog_ctx_trim_applied"] == ["biometrics_cue"]
+    assert telemetry["metacog_biometrics_cue_chars"] == len('{"status":"trimmed"}')
     assert calls == ["draft"]
 
 
@@ -518,7 +571,7 @@ def test_draft_ctx_overflow_after_cue_and_spark_trim(monkeypatch):
     assert draft_result.get("fallback_reason") == "prompt_context_overflow"
 
 
-def test_enrich_trims_biometrics_before_ctx_overflow_fallback(monkeypatch):
+def test_enrich_trims_metacog_biometrics_cue_before_ctx_overflow_fallback(monkeypatch):
     executor_module = _load_executor_module()
     calls: list[str] = []
 

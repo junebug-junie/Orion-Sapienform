@@ -51,6 +51,15 @@ class Settings(BaseSettings):
     metacog_baseline_max_skips: int = Field(3, alias="EQUILIBRIUM_METACOG_BASELINE_MAX_SKIPS")
     metacog_cooldown_sec: float = Field(30.0, alias="EQUILIBRIUM_METACOG_COOLDOWN_SEC")
     metacog_pad_pulse_threshold: float = Field(0.8, alias="EQUILIBRIUM_METACOG_PAD_PULSE_THRESHOLD")
+    metacog_substrate_trigger_enable: bool = Field(
+        True, alias="EQUILIBRIUM_METACOG_SUBSTRATE_TRIGGER_ENABLE"
+    )
+    metacog_substrate_dense_threshold: float = Field(
+        0.55, alias="EQUILIBRIUM_METACOG_SUBSTRATE_DENSE_THRESHOLD"
+    )
+    metacog_substrate_pulse_threshold: float = Field(
+        0.30, alias="EQUILIBRIUM_METACOG_SUBSTRATE_PULSE_THRESHOLD"
+    )
     metacog_recall_enabled: bool = Field(
         False,
         alias="EQUILIBRIUM_METACOG_RECALL_ENABLED",

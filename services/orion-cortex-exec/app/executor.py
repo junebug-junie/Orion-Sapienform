@@ -169,6 +169,7 @@ _METACOG_DRAFT_CTX_LEN_KEYS: tuple[str, ...] = (
     "turn_effect_policy_json",
     "turn_effect_explanations_json",
     "metacog_biometrics_cue",
+    "metacog_substrate_cue",
 )
 
 _METACOG_ENRICH_CTX_LEN_KEYS: tuple[str, ...] = _METACOG_DRAFT_CTX_LEN_KEYS + ("collapse_json",)
@@ -686,7 +687,7 @@ def _metacog_trigger_lineage(ctx: Dict[str, Any]) -> Dict[str, Optional[str]]:
     trigger_corr = ctx.get("trigger_correlation_id") or chat_corr or ctx.get("correlation_id")
     trigger_trace = ctx.get("trigger_trace_id") or ctx.get("trace_id")
 
-    trigger_kind = "unknown"
+    trigger_kind = str(trigger.get("trigger_kind") or "").strip() or "unknown"
     if chat_corr:
         trigger_kind = "chat_turn"
     elif str(ctx.get("trigger_source") or "").lower() == "heartbeat":
@@ -3507,8 +3508,21 @@ async def call_step_services(
                         thought_candidate = inline_think_content.strip()
                         thought_source = f"inline_think_content.{thinking_source}"
 
+                    from app.substrate_felt_state_reader import hydrate_felt_state_ctx
+                    from orion.collapse.service import apply_causal_density_to_entry
+
+                    self_state_for_density = ctx.get("self_state")
+                    if not self_state_for_density:
+                        felt_ctx: Dict[str, Any] = {}
+                        hydrate_felt_state_ctx(felt_ctx)
+                        self_state_for_density = felt_ctx.get("self_state")
+
                     entry = normalize_collapse_entry(final_data)
+                    entry = apply_causal_density_to_entry(
+                        entry, self_state=self_state_for_density
+                    )
                     entry_payload = entry.model_dump(mode="json")
+                    entry_payload = _apply_metacog_system_fields(entry_payload, ctx)
                     state_snapshot = entry_payload.get("state_snapshot")
                     if not isinstance(state_snapshot, dict):
                         state_snapshot = {}
@@ -3520,6 +3534,15 @@ async def call_step_services(
                     telemetry["thinking_source"] = thinking_source
                     telemetry["thought_process"] = thought_candidate
                     telemetry["thought_process_source"] = thought_source
+                    telemetry["metacog_causal_density_source"] = (
+                        "substrate_self_state_blend"
+                        if self_state_for_density
+                        else "self_report_only"
+                    )
+                    if ctx.get("substrate_eventfulness_score") is not None:
+                        telemetry["substrate_eventfulness_score"] = ctx.get(
+                            "substrate_eventfulness_score"
+                        )
                     state_snapshot["telemetry"] = telemetry
                     entry_payload["state_snapshot"] = state_snapshot
                     logger.info(
@@ -3877,6 +3900,20 @@ async def call_step_services(
                 ctx["context_summary"] = summary_text
                 ctx["metacog_biometrics_cue"] = _metacog_biometrics_cue(ctx, phase="draft")
                 ctx["metacog_biometrics_cue_enrich"] = _metacog_biometrics_cue(ctx, phase="enrich")
+                from app.substrate_felt_state_reader import hydrate_felt_state_ctx
+                from orion.substrate.metacog_trigger_signals import (
+                    build_metacog_substrate_cue,
+                    compute_substrate_eventfulness,
+                )
+
+                hydrate_felt_state_ctx(ctx)
+                ev = compute_substrate_eventfulness(
+                    self_state=ctx.get("self_state"),
+                    execution_trajectory=ctx.get("execution_trajectory_projection"),
+                )
+                ctx["metacog_substrate_cue"] = build_metacog_substrate_cue(ctx, eventfulness=ev)
+                ctx["substrate_eventfulness_score"] = ev.score
+                ctx["substrate_eventfulness_reasons"] = list(ev.reasons)
                 if "biometrics_json" not in ctx:
                     ctx["biometrics_json"] = json.dumps(ctx.get("biometrics") or {}, indent=2)
                 merged_result[service] = {"ok": True, "summary_len": len(summary_text)}

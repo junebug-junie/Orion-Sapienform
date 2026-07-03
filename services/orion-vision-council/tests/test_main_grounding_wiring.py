@@ -61,11 +61,11 @@ def test_finalize_drops_youtube_activity_without_hard_person() -> None:
     assert outcome.parse_mode == "strict_v2"
 
 
-def test_finalize_preserves_strict_v2_when_edge_fallback_after_grounding() -> None:
+def test_finalize_preserves_strict_v2_when_host_fallback_after_grounding() -> None:
     svc = CouncilService()
     window = _window(
         captions=["describe this image. youtube"],
-        evidence={"hard_labels": ["door", "screen"], "edge_person_hits": 2, "host_person_hits": 0},
+        evidence={"hard_labels": ["door", "screen"], "edge_person_hits": 0, "host_person_hits": 2},
     )
     interpretation, outcome = svc._finalize_interpretation(
         _youtube_interpretation(),
@@ -75,12 +75,12 @@ def test_finalize_preserves_strict_v2_when_edge_fallback_after_grounding() -> No
     assert interpretation is not None
     assert interpretation.event_candidates[0].event_type == "person_presence"
     assert outcome.parse_mode == "strict_v2"
-    assert "edge_fallback_after_grounding" in outcome.salvage_warnings
+    assert "host_fallback_after_grounding" in outcome.salvage_warnings
 
 
-def test_finalize_edge_fallback_on_parse_failure() -> None:
+def test_finalize_host_fallback_on_parse_failure() -> None:
     svc = CouncilService()
-    window = _window(evidence={"hard_labels": ["person"], "edge_person_hits": 2, "host_person_hits": 0})
+    window = _window(evidence={"hard_labels": ["person"], "host_person_hits": 2, "edge_person_hits": 0})
     interpretation, outcome = svc._finalize_interpretation(
         None,
         InterpretationParseOutcome(interpretation=None, parse_mode="parse_failed"),
@@ -88,4 +88,4 @@ def test_finalize_edge_fallback_on_parse_failure() -> None:
     )
     assert interpretation is not None
     assert interpretation.event_candidates[0].event_type == "person_presence"
-    assert outcome.parse_mode == "edge_fallback"
+    assert outcome.parse_mode == "host_fallback"

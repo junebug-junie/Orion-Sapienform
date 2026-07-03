@@ -77,7 +77,8 @@ def _build_evidence(items: List[Tuple[VisionArtifactPayload, float]]) -> Dict[st
     host_person_hits = 0
     caption_count = 0
     for art, _ts in items:
-        is_edge = art.task_type == "edge_detection"
+        if art.task_type == "edge_detection":
+            continue
         if art.outputs.caption and art.outputs.caption.text:
             caption_count += 1
             soft_labels.extend(_caption_soft_tokens(art.outputs.caption.text))
@@ -87,10 +88,7 @@ def _build_evidence(items: List[Tuple[VisionArtifactPayload, float]]) -> Dict[st
             label = obj.label.lower()
             hard_counts[label] = hard_counts.get(label, 0) + 1
             if label == "person":
-                if is_edge:
-                    edge_person_hits += 1
-                else:
-                    host_person_hits += 1
+                host_person_hits += 1
     hard_labels = sorted(hard_counts.keys())
     return {
         "hard_labels": hard_labels,

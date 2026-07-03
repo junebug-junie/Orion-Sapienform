@@ -1,5 +1,7 @@
 # Vision grounded pipeline — edge triggers, selective VLM, council evidence — design
 
+> **Superseded (2026-07-03):** Host pipe no longer consumes edge activity. Frame-router trigger TTL and Council person fallback authority moved to host detections. See `docs/superpowers/plans/2026-07-03-vision-host-pipe-edge-decouple.md`. Edge activity channel remains for edge-local consumers only.
+
 **Date:** 2026-07-02  
 **Status:** Approved (brainstorming)  
 **Scope:** `orion-vision-edge`, `orion-vision-frame-router`, `orion-vision-host`, `orion-vision-window`, `orion-vision-council`, shared schemas/channels/config

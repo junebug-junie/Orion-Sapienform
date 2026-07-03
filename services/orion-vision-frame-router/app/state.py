@@ -14,6 +14,7 @@ class CameraState(BaseModel):
 class PendingTask(BaseModel):
     correlation_id: str
     camera_id: str
+    stream_id: str | None = None
     frame_ts: float | None
     image_path: str
     task_type: str
@@ -54,6 +55,7 @@ class RouterState:
         reply_to: str,
         now: float,
         frame_ts: float | None,
+        stream_id: str | None = None,
     ) -> None:
         cam = self.camera(camera_id)
         cam.frames_dispatched += 1
@@ -62,6 +64,7 @@ class RouterState:
         self.pending[correlation_id] = PendingTask(
             correlation_id=correlation_id,
             camera_id=camera_id,
+            stream_id=stream_id,
             frame_ts=frame_ts,
             image_path=image_path,
             task_type=task_type,

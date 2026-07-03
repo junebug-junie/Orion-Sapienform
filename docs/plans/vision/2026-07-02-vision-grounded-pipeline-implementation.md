@@ -1,5 +1,7 @@
 # Vision Grounded Pipeline Implementation Plan
 
+> **Superseded (2026-07-03):** Host pipe decoupled from edge activity. See `docs/superpowers/plans/2026-07-03-vision-host-pipe-edge-decouple.md` for the current architecture.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Wire edge YOLO/motion triggers into the vision mesh, gate host VLM caption on those triggers, sanitize captions, and ground Council events on structured evidence so Eye-Ball-1 walk-bys produce `person_presence` without YouTube hallucinations.

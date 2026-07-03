@@ -55,11 +55,10 @@ def test_enforce_drops_youtube_activity_without_hard_person() -> None:
     assert notes
 
 
-def test_person_presence_fallback_on_edge_hits() -> None:
-    window = _window(evidence={"hard_labels": ["person"], "edge_person_hits": 2, "host_person_hits": 0})
+def test_person_presence_fallback_uses_host_detect_tag() -> None:
+    window = _window(evidence={"hard_labels": ["person"], "host_person_hits": 2, "edge_person_hits": 0})
     fb = build_person_presence_fallback(window)
-    assert fb.event_candidates[0].event_type == "person_presence"
-    assert "youtube" not in fb.event_candidates[0].narrative.lower()
+    assert fb.event_candidates[0].tags == ["host_detect"]
 
 
 def test_activity_pattern_matches_watching() -> None:

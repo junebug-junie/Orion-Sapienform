@@ -14,7 +14,6 @@ class Settings(BaseSettings):
     ORION_BUS_ENFORCE_CATALOG: bool = False
 
     CHANNEL_FRAMES_IN: str = "orion:vision:frames"
-    CHANNEL_EDGE_ACTIVITY_IN: str = "orion:vision:edge:activity"
     CHANNEL_HOST_INTAKE: str = "orion:exec:request:VisionHostService"
     CHANNEL_HOST_ARTIFACTS: str = "orion:vision:artifacts"
     CHANNEL_REPLY_PREFIX: str = "orion:vision:reply"

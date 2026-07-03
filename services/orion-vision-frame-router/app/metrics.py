@@ -19,6 +19,7 @@ class RouterMetrics:
     frames_skipped_total: int = 0
     skip_reason_counts: dict[str, int] = field(default_factory=dict)
     host_replies_total: int = 0
+    host_trigger_updates_total: int = 0
     host_errors_total: int = 0
     host_timeouts_total: int = 0
     decode_errors_total: int = 0
@@ -63,6 +64,7 @@ def make_health_envelope(
             "dry_run": dry_run,
             "skip_reason_counts": dict(metrics.skip_reason_counts),
             "host_replies_total": metrics.host_replies_total,
+            "host_trigger_updates_total": metrics.host_trigger_updates_total,
             "host_errors_total": metrics.host_errors_total,
             "host_timeouts_total": metrics.host_timeouts_total,
             "decode_errors_total": metrics.decode_errors_total,

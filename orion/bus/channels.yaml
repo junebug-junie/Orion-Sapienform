@@ -768,7 +768,7 @@ channels:
     schema_id: "VisionEdgeActivityPayload"
     message_kind: "vision.edge.activity.v1"
     producer_services: ["orion-vision-edge"]
-    consumer_services: ["orion-vision-frame-router"]
+    consumer_services: []
     stability: "experimental"
     since: "2026-07-02"
 

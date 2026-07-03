@@ -10,6 +10,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.vision import VisionFramePointerPayload, VisionTaskResultPayload
 
 from .envelopes import make_host_task_envelope
+from .host_trigger import extract_host_trigger_labels, stream_id_from_host_result
 from .metrics import RouterMetrics
 from .policy import FrameDispatchPolicy
 from .settings import Settings
@@ -100,6 +101,7 @@ class FrameDispatcher:
                 reply_to=reply_to,
                 now=time.time(),
                 frame_ts=frame.frame_ts,
+                stream_id=frame.stream_id,
             )
             self.metrics.record_dispatch()
 
@@ -124,6 +126,15 @@ class FrameDispatcher:
             self.metrics.host_replies_total += 1
             if not result.ok:
                 self.metrics.host_errors_total += 1
+                return
+
+            allowed = set(self.policy.default_trigger_labels())
+            labels = extract_host_trigger_labels(result, allowed=allowed)
+            stream_id = stream_id_from_host_result(result, fallback_stream_id=cleared.stream_id)
+            if labels and stream_id:
+                self.state.record_activity(stream_id, labels, now=time.time())
+                self.metrics.host_trigger_updates_total += 1
+                logger.info("[ROUTER] host_trigger stream={} labels={}", stream_id, labels)
 
     async def sweep_timeouts(self, *, now: float) -> int:
         async with self._state_lock:

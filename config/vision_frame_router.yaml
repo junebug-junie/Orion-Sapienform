@@ -12,7 +12,7 @@ defaults:
       want_embeddings: false
   triggered:
     task_type: retina_fast
-    trigger_labels: [person, motion]
+    trigger_labels: [person]
     trigger_ttl_seconds: 8
     min_seconds_between_tasks_per_camera: 2
     max_inflight_per_camera: 1

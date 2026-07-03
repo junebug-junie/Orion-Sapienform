@@ -47,10 +47,10 @@ def _activity_claim_has_caption_slop(
     return bool(_narrative_slop_tokens(narrative) | soft_slop)
 
 
-def edge_person_hits(window: VisionWindowPayload) -> int:
+def host_person_hits(window: VisionWindowPayload) -> int:
     ev = (window.summary or {}).get("evidence") or {}
     try:
-        return int(ev.get("edge_person_hits") or 0)
+        return int(ev.get("host_person_hits") or 0)
     except (TypeError, ValueError):
         return 0
 
@@ -178,7 +178,7 @@ def build_person_presence_fallback(window: VisionWindowPayload) -> VisionSceneIn
                 event_type="person_presence",
                 narrative="A person was detected on camera.",
                 entities=["person"],
-                tags=["edge_yolo"],
+                tags=["host_detect"],
                 confidence=0.85,
                 salience=0.7,
                 evidence_refs=refs,

@@ -76,6 +76,11 @@ class FrameDispatchPolicy:
         raw = load_policy_file(settings.ROUTER_POLICY_PATH)
         return cls(settings=settings, raw=raw)
 
+    def default_trigger_labels(self) -> list[str]:
+        normalized = _normalize_tiers(dict(self.defaults))
+        triggered = dict(normalized.get("triggered") or {})
+        return list(triggered.get("trigger_labels") or [])
+
     def resolve_camera_policy(self, camera_id: str) -> tuple[dict[str, Any], str]:
         merged, name = self.resolve_stream_policy(camera_id, None)
         return merged, name

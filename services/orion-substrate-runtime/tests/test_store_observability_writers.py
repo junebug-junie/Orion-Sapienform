@@ -65,10 +65,16 @@ def test_save_curiosity_candidates_inserts_json_array_and_prunes():
     assert "DELETE FROM substrate_endogenous_curiosity_candidates" in prune_sql
 
 
-def test_save_curiosity_candidates_empty_is_noop():
+def test_save_curiosity_candidates_empty_persists_heartbeat():
     store, conn = _store_with_conn()
     store.save_endogenous_curiosity_candidates([])
-    conn.execute.assert_not_called()
+
+    assert conn.execute.call_count == 2  # insert + prune
+    insert_params = conn.execute.call_args_list[0].args[1]
+    assert insert_params["candidate_set_id"].startswith("curiosity-")
+    assert insert_params["candidates_json"].adapted == []
+    prune_sql = str(conn.execute.call_args_list[1].args[0])
+    assert "DELETE FROM substrate_endogenous_curiosity_candidates" in prune_sql
 
 
 def test_save_coalition_dwell_row_shape_and_prune():

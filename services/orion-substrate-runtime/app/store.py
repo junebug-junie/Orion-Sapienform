@@ -523,8 +523,6 @@ class BiometricsSubstrateStore:
         provided signals, then prunes rows older than 24h so the table stays
         bounded. Caller caps the list; this method is a plain writer.
         """
-        if not signals:
-            return
         now = datetime.now(timezone.utc)
         candidates = [sig.model_dump(mode="json") for sig in signals]
         digest = hashlib.sha256(

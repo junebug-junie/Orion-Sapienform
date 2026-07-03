@@ -33,11 +33,19 @@ _TRUTHY = {"1", "true", "yes", "on"}
 ENDOGENOUS_FLAG = "ORION_ENDOGENOUS_CURIOSITY_ENABLED"
 KILL_SWITCH_FLAG = "ORION_ENDOGENOUS_CURIOSITY_KILL_SWITCH"
 BUDGET_ENV = "ORION_ENDOGENOUS_CURIOSITY_BUDGET"
+MIN_REPAIR_LEVEL_ENV = "ORION_ENDOGENOUS_CURIOSITY_MIN_REPAIR_LEVEL"
 HARD_BUDGET_CEILING = 8
 
 
 def _env_flag(name: str) -> bool:
     return str(os.getenv(name, "false")).strip().lower() in _TRUTHY
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name) or default)
+    except (TypeError, ValueError):
+        return default
 
 
 @dataclass(frozen=True)
@@ -59,6 +67,7 @@ class EndogenousCuriosityConfig:
             enabled=_env_flag(ENDOGENOUS_FLAG),
             kill_switch=_env_flag(KILL_SWITCH_FLAG),
             budget=budget,
+            min_repair_level=_env_float(MIN_REPAIR_LEVEL_ENV, 0.6),
         )
 
 

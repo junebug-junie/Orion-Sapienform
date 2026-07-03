@@ -903,6 +903,7 @@ class BiometricsSubstrateWorker:
             enabled=True,
             kill_switch=False,
             budget=max(1, int(s.endogenous_curiosity_budget)),
+            min_repair_level=float(s.endogenous_curiosity_min_repair_level),
         )
 
         nodes: list[Any] = []
@@ -930,6 +931,10 @@ class BiometricsSubstrateWorker:
             config=config,
         )
         if not seeds:
+            try:
+                self._store.save_endogenous_curiosity_candidates([])
+            except Exception:
+                logger.exception("substrate_endogenous_curiosity_persist_failed")
             logger.info("substrate_endogenous_curiosity_tick_completed seeds=0 outcome=noop")
             return
 

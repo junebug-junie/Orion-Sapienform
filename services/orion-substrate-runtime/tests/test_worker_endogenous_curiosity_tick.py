@@ -118,6 +118,40 @@ def test_endogenous_curiosity_fails_open_on_evaluator_error(monkeypatch):
         worker._endogenous_curiosity_tick()  # must not raise
 
 
+def test_endogenous_curiosity_noop_tick_persists_empty_heartbeat(monkeypatch):
+    """When no seeds qualify, tick still writes an empty candidate set for observability."""
+    worker = _make_worker(monkeypatch, enabled=True)
+    fake_store = MagicMock()
+    fake_store.snapshot.return_value = SimpleNamespace(nodes={})
+
+    with patch(
+        "orion.substrate.graphdb_store.build_substrate_store_from_env",
+        return_value=fake_store,
+    ), patch(
+        "orion.substrate.endogenous_curiosity.endogenous_curiosity_candidates",
+        return_value=[],
+    ):
+        worker._endogenous_curiosity_tick()
+
+    worker._store.save_endogenous_curiosity_candidates.assert_called_once_with([])
+
+
+def test_endogenous_curiosity_noop_persist_failure_does_not_break_tick(monkeypatch):
+    worker = _make_worker(monkeypatch, enabled=True)
+    fake_store = MagicMock()
+    fake_store.snapshot.return_value = SimpleNamespace(nodes={})
+    worker._store.save_endogenous_curiosity_candidates.side_effect = RuntimeError("db down")
+
+    with patch(
+        "orion.substrate.graphdb_store.build_substrate_store_from_env",
+        return_value=fake_store,
+    ), patch(
+        "orion.substrate.endogenous_curiosity.endogenous_curiosity_candidates",
+        return_value=[],
+    ):
+        worker._endogenous_curiosity_tick()  # must not raise
+
+
 def test_endogenous_curiosity_persists_bounded_candidate_set(monkeypatch):
     """Evaluator signals are persisted endogenous-first, capped at 8."""
     worker = _make_worker(monkeypatch, enabled=True)

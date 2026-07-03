@@ -20,6 +20,20 @@ def test_sanitize_rejects_prompt_echo() -> None:
     assert reason == "prompt_echo"
 
 
+def test_sanitize_rejects_caption_prompt_echo() -> None:
+    text, ok, reason = sanitize_caption(CAPTION_PROMPT)
+    assert ok is False
+    assert text is None
+    assert reason == "prompt_echo"
+
+
+def test_sanitize_rejects_caption_prompt_echo_with_suffix() -> None:
+    text, ok, reason = sanitize_caption(CAPTION_PROMPT + "s")
+    assert ok is False
+    assert text is None
+    assert reason == "prompt_echo"
+
+
 def test_sanitize_accepts_plain_scene() -> None:
     text, ok, reason = sanitize_caption("A desk with two monitors and an open door.")
     assert ok is True

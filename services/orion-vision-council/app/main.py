@@ -27,6 +27,7 @@ except ImportError:
 
 from .evidence_grounding import (
     build_person_presence_fallback,
+    ensure_grounded_person_presence,
     host_person_hits,
     enforce_evidence_grounding,
 )
@@ -248,6 +249,9 @@ class CouncilService:
         if interpretation is not None:
             interpretation, grounding_notes = enforce_evidence_grounding(interpretation, window)
             for note in grounding_notes:
+                logger.info(f"[COUNCIL] grounding {note}")
+            interpretation, inject_notes = ensure_grounded_person_presence(interpretation, window)
+            for note in inject_notes:
                 logger.info(f"[COUNCIL] grounding {note}")
             if not interpretation.event_candidates and host_person_hits(window) > 0:
                 interpretation = build_person_presence_fallback(window)

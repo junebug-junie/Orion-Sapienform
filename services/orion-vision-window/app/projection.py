@@ -11,11 +11,16 @@ from typing import Any, Dict, List, Tuple
 
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.vision import VisionArtifactPayload, VisionWindowPayload
+from orion.vision.caption_echo import is_caption_prompt_echo
 
 SNAPSHOT_SCHEMA_V1 = "vision_window_snapshot.v1"
 MAX_URIS_PER_ENVELOPE = 32
 HARD_SCORE_THRESHOLD = 0.25
 CAPTION_STOPLIST = frozenset({"youtube", "google", "video", "watching", "describe", "image"})
+
+
+def _skip_edge_artifact(art: VisionArtifactPayload) -> bool:
+    return art.task_type == "edge_detection"
 
 
 def stream_key_from_artifact(art: VisionArtifactPayload) -> str:
@@ -77,11 +82,14 @@ def _build_evidence(items: List[Tuple[VisionArtifactPayload, float]]) -> Dict[st
     host_person_hits = 0
     caption_count = 0
     for art, _ts in items:
-        if art.task_type == "edge_detection":
+        if _skip_edge_artifact(art):
             continue
         if art.outputs.caption and art.outputs.caption.text:
+            cap = art.outputs.caption.text
+            if is_caption_prompt_echo(cap):
+                continue
             caption_count += 1
-            soft_labels.extend(_caption_soft_tokens(art.outputs.caption.text))
+            soft_labels.extend(_caption_soft_tokens(cap))
         for obj in art.outputs.objects or []:
             if obj.score < HARD_SCORE_THRESHOLD:
                 continue
@@ -103,11 +111,15 @@ def summarize_items(items: List[Tuple[VisionArtifactPayload, float]]) -> Dict[st
     counts: Dict[str, int] = {}
     captions: List[str] = []
     for art, _ts in items:
+        if _skip_edge_artifact(art):
+            continue
         if art.outputs.objects:
             for obj in art.outputs.objects:
                 counts[obj.label] = counts.get(obj.label, 0) + 1
         if art.outputs.caption and art.outputs.caption.text:
-            captions.append(art.outputs.caption.text)
+            cap = art.outputs.caption.text
+            if not is_caption_prompt_echo(cap):
+                captions.append(cap)
     top_labels = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:5]
     return {
         "object_counts": counts,

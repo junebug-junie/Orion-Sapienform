@@ -2873,6 +2873,15 @@ def _artifact_confirmation_activates_continuity(
     )
 
 
+def _optional_artifact_record(model_cls, value: object):
+    if not isinstance(value, dict) or not value:
+        return None
+    try:
+        return model_cls.model_validate(value)
+    except Exception:
+        return None
+
+
 def artifact_dialogue_records(
     turn: SocialRoomTurnStoredV1,
     *,
@@ -2882,9 +2891,9 @@ def artifact_dialogue_records(
     proposal = client_meta.get("social_artifact_proposal")
     revision = client_meta.get("social_artifact_revision")
     confirmation = client_meta.get("social_artifact_confirmation")
-    proposal_obj = SocialArtifactProposalV1.model_validate(proposal) if isinstance(proposal, dict) else None
-    revision_obj = SocialArtifactRevisionV1.model_validate(revision) if isinstance(revision, dict) else None
-    confirmation_obj = SocialArtifactConfirmationV1.model_validate(confirmation) if isinstance(confirmation, dict) else None
+    proposal_obj = _optional_artifact_record(SocialArtifactProposalV1, proposal)
+    revision_obj = _optional_artifact_record(SocialArtifactRevisionV1, revision)
+    confirmation_obj = _optional_artifact_record(SocialArtifactConfirmationV1, confirmation)
     if proposal_obj and not _artifact_scope_matches(scope, proposal_obj.proposed_scope):
         proposal_obj = None
     if revision_obj and not _artifact_scope_matches(scope, revision_obj.revised_scope):

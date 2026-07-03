@@ -116,3 +116,74 @@ def test_endogenous_curiosity_fails_open_on_evaluator_error(monkeypatch):
     ) as evaluator_cls:
         evaluator_cls.return_value.evaluate.side_effect = RuntimeError("boom")
         worker._endogenous_curiosity_tick()  # must not raise
+
+
+def test_endogenous_curiosity_persists_bounded_candidate_set(monkeypatch):
+    """Evaluator signals are persisted endogenous-first, capped at 8."""
+    worker = _make_worker(monkeypatch, enabled=True)
+    fake_store = MagicMock()
+    fake_store.snapshot.return_value = SimpleNamespace(
+        nodes={"node:hot": _graph_node("node:hot", 0.85)}
+    )
+    seed = SimpleNamespace(
+        signal_type="curiosity_candidate",
+        notes=["endogenous_seed"],
+        signal_strength=0.85,
+        confidence=0.7,
+    )
+    endogenous = [
+        SimpleNamespace(signal_type="t", notes=["endogenous_seed"], signal_strength=0.9, confidence=0.7)
+        for _ in range(5)
+    ]
+    exogenous = [
+        SimpleNamespace(signal_type="t", notes=[], signal_strength=0.5, confidence=0.6)
+        for _ in range(5)
+    ]
+    decision = SimpleNamespace(outcome="invoke", chosen_task_type="evidence_gap_scan")
+    run_result = SimpleNamespace(signals=endogenous + exogenous, decision=decision)
+
+    with patch(
+        "orion.substrate.graphdb_store.build_substrate_store_from_env",
+        return_value=fake_store,
+    ), patch(
+        "orion.substrate.endogenous_curiosity.endogenous_curiosity_candidates",
+        return_value=[seed],
+    ), patch(
+        "orion.substrate.frontier_curiosity.FrontierCuriosityEvaluator"
+    ) as evaluator_cls:
+        evaluator_cls.return_value.evaluate.return_value = run_result
+        worker._endogenous_curiosity_tick()
+
+    worker._store.save_endogenous_curiosity_candidates.assert_called_once()
+    persisted = worker._store.save_endogenous_curiosity_candidates.call_args.args[0]
+    assert len(persisted) == 8
+    assert persisted[:5] == endogenous  # endogenous seeds ranked first
+
+
+def test_endogenous_curiosity_persist_failure_does_not_break_tick(monkeypatch):
+    worker = _make_worker(monkeypatch, enabled=True)
+    fake_store = MagicMock()
+    fake_store.snapshot.return_value = SimpleNamespace(
+        nodes={"node:hot": _graph_node("node:hot", 0.85)}
+    )
+    seed = SimpleNamespace(
+        signal_type="curiosity_candidate",
+        notes=["endogenous_seed"],
+        signal_strength=0.85,
+        confidence=0.7,
+    )
+    decision = SimpleNamespace(outcome="invoke", chosen_task_type="evidence_gap_scan")
+    run_result = SimpleNamespace(signals=[seed], decision=decision)
+    worker._store.save_endogenous_curiosity_candidates.side_effect = RuntimeError("db down")
+
+    with patch(
+        "orion.substrate.graphdb_store.build_substrate_store_from_env",
+        return_value=fake_store,
+    ), patch(
+        "orion.substrate.endogenous_curiosity.endogenous_curiosity_candidates",
+        return_value=[seed],
+    ), patch(
+        "orion.substrate.frontier_curiosity.FrontierCuriosityEvaluator"
+    ) as evaluator_cls:
+        evaluator_cls.return_value.evaluate.return_value = run_result
+        worker._endogenous_curiosity_tick()  # must not raise

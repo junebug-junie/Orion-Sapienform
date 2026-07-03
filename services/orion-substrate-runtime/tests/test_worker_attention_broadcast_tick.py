@@ -96,3 +96,38 @@ def test_broadcast_fails_open_on_snapshot_error(monkeypatch):
     ):
         worker._attention_broadcast_tick()  # must not raise
     worker._store.save_attention_broadcast.assert_not_called()
+
+
+def test_broadcast_tick_writes_dwell_log_row(monkeypatch):
+    """Each broadcast tick appends a dwell row alongside the projection."""
+    worker = _make_worker(monkeypatch, broadcast_enabled=True)
+    fake_store = MagicMock()
+    fake_store.snapshot.return_value = SimpleNamespace(
+        nodes={"node:hot": _graph_node("node:hot", "unresolved contradiction", 0.9)}
+    )
+    with patch(
+        "orion.substrate.graphdb_store.build_substrate_store_from_env",
+        return_value=fake_store,
+    ):
+        worker._attention_broadcast_tick()
+
+    worker._store.save_attention_broadcast.assert_called_once()
+    worker._store.save_coalition_dwell.assert_called_once()
+    projection = worker._store.save_coalition_dwell.call_args.args[0]
+    assert projection is worker._store.save_attention_broadcast.call_args.args[0]
+
+
+def test_broadcast_tick_dwell_failure_does_not_break_tick(monkeypatch):
+    worker = _make_worker(monkeypatch, broadcast_enabled=True)
+    fake_store = MagicMock()
+    fake_store.snapshot.return_value = SimpleNamespace(
+        nodes={"node:hot": _graph_node("node:hot", "unresolved contradiction", 0.9)}
+    )
+    worker._store.save_coalition_dwell.side_effect = RuntimeError("db down")
+    with patch(
+        "orion.substrate.graphdb_store.build_substrate_store_from_env",
+        return_value=fake_store,
+    ):
+        worker._attention_broadcast_tick()  # must not raise
+
+    worker._store.save_attention_broadcast.assert_called_once()

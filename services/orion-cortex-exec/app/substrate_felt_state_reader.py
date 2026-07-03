@@ -82,7 +82,9 @@ _LANES: tuple[LaneSpec, ...] = (
         payload_col="candidates_json",
         ts_col="generated_at",
         projection_id=None,
-        max_age_sec=30,
+        # 2x the curiosity tick interval default (60s), so a fresh row from the
+        # most recent tick is never rejected as stale.
+        max_age_sec=120,
     ),
 )
 

@@ -40,6 +40,9 @@ DEFAULT_MAX_SIGNALS = 24
 _coalition_history: deque[frozenset[str]] = deque(maxlen=3)
 _current_active_coalition: frozenset[str] | None = None
 _dwell_ticks: int = 0
+# Transition log: last 10 activation/decay events, mirrored into
+# AttentionBroadcastProjectionV1.coalition_history (schema caps at 10).
+_transition_history: deque[dict[str, Any]] = deque(maxlen=10)
 
 
 def attention_broadcast_enabled() -> bool:
@@ -184,10 +187,26 @@ def broadcast_projection_from_frame(frame: AttentionFrameV1) -> AttentionBroadca
         if _current_active_coalition != coalition:
             _current_active_coalition = coalition
             _dwell_ticks = 0  # reset on transition
+            _transition_history.append(
+                {
+                    "at": frame.generated_at.isoformat(),
+                    "event": "activated",
+                    "size": len(coalition),
+                }
+            )
         _dwell_ticks += 1
     else:
-        # Decay: if active coalition drops below threshold, allow switch
-        if _current_active_coalition is not None and coalition_count == 0:
+        # Decay: active coalition has left the recent window entirely
+        if _current_active_coalition is not None and all(
+            c != _current_active_coalition for c in _coalition_history
+        ):
+            _transition_history.append(
+                {
+                    "at": frame.generated_at.isoformat(),
+                    "event": "decayed",
+                    "size": len(_current_active_coalition),
+                }
+            )
             _current_active_coalition = None
             _dwell_ticks = 0
 
@@ -209,5 +228,5 @@ def broadcast_projection_from_frame(frame: AttentionFrameV1) -> AttentionBroadca
         attended_node_ids=attended_node_ids,
         dwell_ticks=_dwell_ticks,
         coalition_stability_score=stability_score,
-        coalition_history=[],  # could track transitions here; MVP keeps empty
+        coalition_history=list(_transition_history),
     )

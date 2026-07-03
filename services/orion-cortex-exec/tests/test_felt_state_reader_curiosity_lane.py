@@ -30,7 +30,8 @@ def test_curiosity_lane_registered():
     assert curiosity_lane.payload_col == "candidates_json"
     assert curiosity_lane.ts_col == "generated_at"
     assert curiosity_lane.projection_id is None
-    assert curiosity_lane.max_age_sec == 30
+    # 2x the endogenous curiosity tick interval default (60s).
+    assert curiosity_lane.max_age_sec == 120
 
 
 def test_curiosity_lane_hydrates_fresh():
@@ -59,12 +60,12 @@ def test_curiosity_lane_hydrates_fresh():
 
 
 def test_curiosity_lane_staleness_check():
-    """Curiosity signals older than 30s are rejected."""
+    """Curiosity signals older than the lane max age (120s) are rejected."""
     reader = SubstrateFeltStateReader(enabled=False, database_url="postgresql://invalid", max_age_sec=120)
     reader._enabled = True
 
     # Mock _fetch_lane to return stale data
-    old_time = datetime.now(timezone.utc) - timedelta(seconds=40)
+    old_time = datetime.now(timezone.utc) - timedelta(seconds=130)
     candidates = [{"signal_type": "curiosity_candidate", "signal_strength": 0.8}]
 
     def mock_fetch(lane: LaneSpec):

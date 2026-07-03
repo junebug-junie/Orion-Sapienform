@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import random
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 logger = logging.getLogger("orion.substrate.store")
@@ -514,6 +515,93 @@ class BiometricsSubstrateStore:
 
     def save_attention_broadcast(self, projection: AttentionBroadcastProjectionV1) -> None:
         self._save_projection("substrate_attention_broadcast_projection", projection)
+
+    def save_endogenous_curiosity_candidates(self, signals: list[Any]) -> None:
+        """Persist one bounded candidate set for the felt-state curiosity lane.
+
+        Inserts a single row whose ``candidates_json`` is the JSON array of the
+        provided signals, then prunes rows older than 24h so the table stays
+        bounded. Caller caps the list; this method is a plain writer.
+        """
+        if not signals:
+            return
+        now = datetime.now(timezone.utc)
+        candidates = [sig.model_dump(mode="json") for sig in signals]
+        digest = hashlib.sha256(
+            "|".join([now.isoformat()] + sorted(str(c.get("signal_id", "")) for c in candidates)).encode("utf-8")
+        ).hexdigest()[:24]
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_endogenous_curiosity_candidates (
+                        candidate_set_id, generated_at, candidates_json, created_at
+                    ) VALUES (
+                        :candidate_set_id, :generated_at, :candidates_json, :created_at
+                    )
+                    ON CONFLICT (candidate_set_id) DO NOTHING
+                    """
+                ),
+                {
+                    "candidate_set_id": f"curiosity-{digest}",
+                    "generated_at": now,
+                    "candidates_json": Json(candidates),
+                    "created_at": now,
+                },
+            )
+            conn.execute(
+                text(
+                    """
+                    DELETE FROM substrate_endogenous_curiosity_candidates
+                    WHERE generated_at < :older_than
+                    """
+                ),
+                {"older_than": now - timedelta(hours=24)},
+            )
+
+    def save_coalition_dwell(self, projection: AttentionBroadcastProjectionV1) -> None:
+        """Append one dwell row per broadcast tick; prunes rows older than 24h."""
+        generated_at = projection.generated_at
+        attended = sorted(str(node_id) for node_id in projection.attended_node_ids)
+        digest = hashlib.sha256(
+            "|".join([generated_at.isoformat()] + attended).encode("utf-8")
+        ).hexdigest()[:24]
+        dwell_ticks = int(projection.dwell_ticks)
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_coalition_dwell_log (
+                        dwell_id, generated_at, coalition_ids, candidate_ticks,
+                        active, dwell_ticks, salience_trend, created_at
+                    ) VALUES (
+                        :dwell_id, :generated_at, :coalition_ids, :candidate_ticks,
+                        :active, :dwell_ticks, :salience_trend, :created_at
+                    )
+                    ON CONFLICT (dwell_id) DO NOTHING
+                    """
+                ),
+                {
+                    "dwell_id": f"dwell-{digest}",
+                    "generated_at": generated_at,
+                    "coalition_ids": Json(list(projection.attended_node_ids)),
+                    "candidate_ticks": dwell_ticks,
+                    "active": dwell_ticks > 0,
+                    "dwell_ticks": dwell_ticks,
+                    "salience_trend": float(projection.coalition_stability_score),
+                    "created_at": now,
+                },
+            )
+            conn.execute(
+                text(
+                    """
+                    DELETE FROM substrate_coalition_dwell_log
+                    WHERE generated_at < :older_than
+                    """
+                ),
+                {"older_than": now - timedelta(hours=24)},
+            )
 
     def load_node_biometrics(self, projection_id: str) -> NodeBiometricsProjectionV1 | None:
         return self._load_projection(

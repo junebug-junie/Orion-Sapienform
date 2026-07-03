@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from orion.self_state.policy import SelfStatePolicyV1
 from orion.self_state.transport import (
@@ -22,6 +22,7 @@ from orion.self_state.scoring import (
     uncertainty_score,
     weighted_overall_intensity,
 )
+from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
 from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
@@ -55,6 +56,45 @@ ALL_DIMENSION_IDS: tuple[DimensionId, ...] = (
     "social_pressure",
     "policy_pressure",
 )
+
+
+AttentionSchemaType = Literal[
+    "focused_single",
+    "distributed",
+    "open_loop",
+    "none",
+    "unknown",
+]
+
+
+def derive_attention_schema(
+    projection: AttentionBroadcastProjectionV1 | None,
+) -> tuple[AttentionSchemaType | None, int, int]:
+    """Derive (attention_schema_type, attention_dwell_ticks, attention_node_count).
+
+    Pure and total: an absent projection yields the schema defaults (None, 0, 0);
+    the function never raises on well-typed input.
+    """
+    if projection is None:
+        return None, 0, 0
+    node_count = len(projection.attended_node_ids)
+    if node_count == 1:
+        schema_type: AttentionSchemaType = "focused_single"
+    elif node_count >= 2:
+        schema_type = "distributed"
+    elif projection.frame.open_loops:
+        schema_type = "open_loop"
+    else:
+        schema_type = "none"
+    dwell_ticks = max(0, int(projection.dwell_ticks))
+    return schema_type, dwell_ticks, node_count
+
+
+def normalize_hub_presence(hub_presence: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Pass a non-empty presence dict through as-is; anything else becomes None."""
+    if isinstance(hub_presence, dict) and hub_presence:
+        return hub_presence
+    return None
 
 
 def stable_self_state_id(
@@ -120,6 +160,8 @@ def build_self_state(
     previous_self_state: SelfStateV1 | None = None,
     now: datetime | None = None,
     enable_transport_influence: bool = False,
+    attention_broadcast: AttentionBroadcastProjectionV1 | None = None,
+    hub_presence: dict[str, Any] | None = None,
 ) -> SelfStateV1:
     generated_at = now or datetime.now(timezone.utc)
 
@@ -275,6 +317,12 @@ def build_self_state(
             else:
                 trajectory_condition = "stable"
 
+    (
+        attention_schema_type,
+        attention_dwell_ticks,
+        attention_node_count,
+    ) = derive_attention_schema(attention_broadcast)
+
     return SelfStateV1(
         self_state_id=stable_self_state_id(
             source_field_tick_id=field.tick_id,
@@ -299,4 +347,8 @@ def build_self_state(
         summary_labels=summary_labels,
         dimension_trajectory=dimension_trajectory,
         trajectory_condition=trajectory_condition,
+        attention_schema_type=attention_schema_type,
+        attention_dwell_ticks=attention_dwell_ticks,
+        attention_node_count=attention_node_count,
+        hub_presence=normalize_hub_presence(hub_presence),
     )

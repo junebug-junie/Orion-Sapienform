@@ -755,6 +755,10 @@ class BiometricsSubstrateWorker:
             )
             projection = broadcast_projection_from_frame(frame)
             self._store.save_attention_broadcast(projection)
+            try:
+                self._store.save_coalition_dwell(projection)
+            except Exception:
+                logger.exception("substrate_coalition_dwell_persist_failed")
             logger.info(
                 "substrate_attention_broadcast_completed selected=%s loop=%s "
                 "open_loops=%d",
@@ -941,6 +945,21 @@ class BiometricsSubstrateWorker:
             endogenous_count = sum(
                 1 for sig in result.signals if "endogenous_seed" in (sig.notes or [])
             )
+            # Persist a bounded candidate set for the felt-state curiosity lane;
+            # endogenous seeds first, then the rest, capped at 8. Best-effort:
+            # the tick must never fail because persistence failed.
+            try:
+                preferred = [
+                    sig for sig in result.signals if "endogenous_seed" in (sig.notes or [])
+                ]
+                rest = [
+                    sig for sig in result.signals if "endogenous_seed" not in (sig.notes or [])
+                ]
+                persisted = (preferred + rest)[:8]
+                if persisted:
+                    self._store.save_endogenous_curiosity_candidates(persisted)
+            except Exception:
+                logger.exception("substrate_endogenous_curiosity_persist_failed")
             logger.info(
                 "substrate_endogenous_curiosity_tick_completed seeds=%d outcome=%s "
                 "task=%s endogenous_signals=%d",

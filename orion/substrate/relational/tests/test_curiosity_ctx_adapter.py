@@ -310,3 +310,21 @@ def test_tier_rank_set_correctly():
     assert node.provenance.source_channel == "substrate.curiosity"
     assert node.provenance.producer == "curiosity_adapter"
     assert node.provenance.authority == "local_inferred"
+
+
+def test_persisted_candidates_round_trip_through_adapter():
+    """Signals dumped the way substrate-runtime persists them (model_dump
+    mode="json" into candidates_json) hydrate the adapter and emit a node."""
+    signals = [
+        _make_signal(signal_id="sig-rt-1", signal_strength=0.9, evidence_summary="gap a"),
+        _make_signal(signal_id="sig-rt-2", signal_strength=0.5, evidence_summary="gap b"),
+    ]
+    persisted = [sig.model_dump(mode="json") for sig in signals]
+
+    record = map_curiosity_ctx_to_substrate({"curiosity_signals": persisted})
+
+    assert record is not None
+    node = record.nodes[0]
+    assert node.label == "curiosity:unresolved_gaps"
+    assert node.metadata["gap_count"] == 2
+    assert node.metadata["evidence_summaries"] == ["gap a", "gap b"]

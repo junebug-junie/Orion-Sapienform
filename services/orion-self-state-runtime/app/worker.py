@@ -153,12 +153,19 @@ class SelfStateRuntimeWorker:
 
         prev_prediction = self._store.load_latest_self_state_prediction()
 
+        # Best-effort observability inputs: the loaders never raise and return
+        # None when absent/stale, so build_self_state degrades to defaults.
+        attention_broadcast = self._store.load_latest_attention_broadcast()
+        hub_presence = self._store.load_hub_presence()
+
         state = build_self_state(
             field=field,
             attention=attention,
             policy=self._policy,
             previous_self_state=previous,
             enable_transport_influence=self._settings.enable_transport_self_state_influence,
+            attention_broadcast=attention_broadcast,
+            hub_presence=hub_presence,
         )
 
         if prev_prediction is not None:

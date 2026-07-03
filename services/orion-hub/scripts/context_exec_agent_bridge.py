@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from orion.schemas.context_exec import (
@@ -168,6 +169,12 @@ def build_context_exec_request(
     llm_profile_norm = normalize_llm_profile(llm_profile)
     if agent_repl_enabled():
         # First-class agent reasoning loop. No keyword classification on this lane.
+        # Curiosity focus hint (flag-gated, advisory): structural gate only —
+        # lane + flag + fresh candidates. Failures leave the prompt untouched.
+        if bool(getattr(settings, "HUB_AGENT_CURIOSITY_HINT_ENABLED", False)):
+            from scripts.curiosity_hint import apply_curiosity_hint
+
+            prompt = apply_curiosity_hint(prompt)
         permissions = context_exec_permissions_for_llm_profile("agent")
         return ContextExecRequestV1(
             text=prompt,
@@ -456,7 +463,11 @@ async def run_hub_agent_via_context_exec(
         or (route_debug or {}).get("llm_route")
         or "quick"
     )
-    body = build_context_exec_request(req=req, prompt=prompt, llm_profile=llm_profile)
+    # Built off the event loop: the flag-gated curiosity hint inside does a
+    # blocking Postgres read.
+    body = await asyncio.to_thread(
+        build_context_exec_request, req=req, prompt=prompt, llm_profile=llm_profile
+    )
     try:
         run = await run_context_exec(body)
     except ContextExecClientError as exc:

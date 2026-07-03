@@ -1,17 +1,33 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from psycopg2.extras import Json
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
+from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
 from orion.schemas.field_attention_frame import FieldAttentionFrameV1
 from orion.schemas.field_state import FieldStateV1
 from orion.schemas.identity_snapshot import IdentitySnapshotV1
 from orion.schemas.self_state import SelfStateV1
 from orion.schemas.self_state_prediction import SelfStatePredictionV1
+
+logger = logging.getLogger("orion.self_state.runtime.store")
+
+# Observability inputs are best-effort: rows older than these gates are treated
+# as absent so self-state degrades to schema defaults instead of stale data.
+ATTENTION_BROADCAST_MAX_AGE_SEC = 300.0
+HUB_PRESENCE_MAX_AGE_SEC = 600.0
+
+
+def _age_seconds(generated_at: datetime, now: datetime) -> float:
+    if generated_at.tzinfo is None:
+        generated_at = generated_at.replace(tzinfo=timezone.utc)
+    return (now - generated_at).total_seconds()
 
 
 def _prune_sql(table: str, pk: str) -> str:
@@ -71,6 +87,93 @@ class SelfStateRuntimeStore:
         if isinstance(payload, str):
             payload = json.loads(payload)
         return FieldAttentionFrameV1.model_validate(payload)
+
+    def load_latest_attention_broadcast(self) -> AttentionBroadcastProjectionV1 | None:
+        """Best-effort read of the latest attention broadcast projection.
+
+        Returns None on any failure (missing table — the migration is manual —
+        parse errors, connection errors) or when the row is stale.
+        """
+        try:
+            with self._engine.connect() as conn:
+                row = (
+                    conn.execute(
+                        text(
+                            """
+                            SELECT projection_json, generated_at
+                            FROM substrate_attention_broadcast_projection
+                            ORDER BY generated_at DESC
+                            LIMIT 1
+                            """
+                        ),
+                    )
+                    .mappings()
+                    .first()
+                )
+            if not row:
+                return None
+            age = _age_seconds(row["generated_at"], datetime.now(timezone.utc))
+            if age > ATTENTION_BROADCAST_MAX_AGE_SEC:
+                logger.debug(
+                    "attention_broadcast_stale age_sec=%.1f gate_sec=%.1f",
+                    age,
+                    ATTENTION_BROADCAST_MAX_AGE_SEC,
+                )
+                return None
+            payload = row["projection_json"]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            return AttentionBroadcastProjectionV1.model_validate(payload)
+        except Exception:
+            logger.debug("attention_broadcast_load_failed", exc_info=True)
+            return None
+
+    def load_hub_presence(self) -> dict[str, Any] | None:
+        """Best-effort read of the single-row hub presence snapshot.
+
+        Returns the parsed presence_json dict with an added "as_of" key
+        (generated_at isoformat), or None on staleness or any failure
+        (missing table — the migration is manual — parse errors, etc.).
+        """
+        try:
+            with self._engine.connect() as conn:
+                row = (
+                    conn.execute(
+                        text(
+                            """
+                            SELECT presence_json, generated_at
+                            FROM substrate_hub_presence
+                            WHERE presence_id = 'hub'
+                            LIMIT 1
+                            """
+                        ),
+                    )
+                    .mappings()
+                    .first()
+                )
+            if not row:
+                return None
+            generated_at = row["generated_at"]
+            age = _age_seconds(generated_at, datetime.now(timezone.utc))
+            if age > HUB_PRESENCE_MAX_AGE_SEC:
+                logger.debug(
+                    "hub_presence_stale age_sec=%.1f gate_sec=%.1f",
+                    age,
+                    HUB_PRESENCE_MAX_AGE_SEC,
+                )
+                return None
+            payload = row["presence_json"]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            if not isinstance(payload, dict) or not payload:
+                return None
+            if generated_at.tzinfo is None:
+                generated_at = generated_at.replace(tzinfo=timezone.utc)
+            payload["as_of"] = generated_at.isoformat()
+            return payload
+        except Exception:
+            logger.debug("hub_presence_load_failed", exc_info=True)
+            return None
 
     def load_field_for_tick(self, tick_id: str) -> FieldStateV1 | None:
         with self._engine.connect() as conn:

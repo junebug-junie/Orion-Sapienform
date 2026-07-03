@@ -115,6 +115,16 @@ class Settings(BaseSettings):
         alias="CONTEXT_EXEC_INVESTIGATION_V2_ENABLED",
     )
 
+    # --- Self-observability (hub presence + curiosity focus hint) ---
+    HUB_PRESENCE_WRITER_ENABLED: bool = Field(
+        default=True,
+        alias="HUB_PRESENCE_WRITER_ENABLED",
+    )
+    HUB_AGENT_CURIOSITY_HINT_ENABLED: bool = Field(
+        default=False,
+        alias="HUB_AGENT_CURIOSITY_HINT_ENABLED",
+    )
+
     WORLD_PULSE_UI_FIXTURE_RUN_ENABLED: bool = Field(
         default=False,
         alias="WORLD_PULSE_UI_FIXTURE_RUN_ENABLED",

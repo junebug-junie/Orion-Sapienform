@@ -77,7 +77,9 @@ _LANES: tuple[LaneSpec, ...] = (
         payload_col="candidates_json",
         ts_col="generated_at",
         projection_id=None,
-        max_age_sec=30,
+        # 2× the substrate-runtime curiosity tick (60s) so the lane can
+        # actually observe a fresh candidate row between writes.
+        max_age_sec=120,
     ),
 )
 

@@ -22,6 +22,9 @@ psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_biometrics_substr
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_execution_substrate_loop.sql
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_transport_substrate_loop.sql
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_substrate_reducer_quarantine_v1.sql
+# Self-observability v2 (coalition dwell log + endogenous curiosity candidates):
+psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_coalition_dwell_v1.sql
+psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_endogenous_curiosity_candidates_v1.sql
 cp services/orion-substrate-runtime/.env_example services/orion-substrate-runtime/.env
 ```
 

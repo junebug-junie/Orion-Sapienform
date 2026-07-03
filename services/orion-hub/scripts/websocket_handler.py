@@ -48,6 +48,7 @@ from scripts.workflow_payloads import extract_workflow_payload
 from scripts.mutation_cognition_context import build_mutation_cognition_context
 from scripts.presence_session import inject_session_presence
 from scripts.substrate_effect_pipeline import run_substrate_effect_pipeline
+from scripts.repair_pressure_wiring import attach_repair_pressure_contract
 from scripts.spark_candidate import publish_spark_introspect_candidate
 from scripts.warm_start import mini_personality_summary
 from orion.schemas.cortex.contracts import CortexChatRequest, CortexChatResult
@@ -887,7 +888,7 @@ async def websocket_endpoint(websocket: WebSocket):
             except Exception:
                 pass
 
-            substrate_summary, _ = run_substrate_effect_pipeline(
+            substrate_summary, substrate_snapshot = run_substrate_effect_pipeline(
                 turn_id=trace_id,
                 message_id=None,
                 user_text=transcript,
@@ -901,6 +902,12 @@ async def websocket_endpoint(websocket: WebSocket):
                     substrate_summary.get("level_label"),
                     substrate_summary.get("changed_behavior"),
                 )
+
+            attach_repair_pressure_contract(
+                chat_req,
+                substrate_snapshot,
+                enabled=bool(getattr(settings, "ENABLE_REPAIR_PRESSURE_SPEECH_WIRING", True)),
+            )
 
             # Chat grammar trace (fail-open, behind PUBLISH_HUB_CHAT_GRAMMAR env flag)
             if bus and settings.PUBLISH_HUB_CHAT_GRAMMAR:

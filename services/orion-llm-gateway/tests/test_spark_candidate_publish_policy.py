@@ -47,6 +47,8 @@ def test_should_publish_on_normal_chat_completion() -> None:
             None,
             {},
         ),
+        ({"mind_phase": "stance_handoff"}, None, {}),
+        ({"mind_phase": "semantic_synthesis"}, None, {}),
     ],
 )
 def test_should_not_publish_internal_rpc_completions(options, verb, meta_extra) -> None:

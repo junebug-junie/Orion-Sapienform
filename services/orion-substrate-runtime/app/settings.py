@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     node_name: str = Field("athena", alias="NODE_NAME")
 
     postgres_uri: str = Field(..., alias="POSTGRES_URI")
-    orion_bus_url: str = Field("redis://redis:6379/0", alias="ORION_BUS_URL")
+    orion_bus_url: str = Field("redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
     orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
 
     enable_biometrics_node_reducer: bool = Field(True, alias="ENABLE_BIOMETRICS_NODE_REDUCER")

@@ -59,6 +59,7 @@ def _draft_ctx(*, spark_blob: str = "{}") -> dict:
         "turn_effect_policy_json": "{}",
         "turn_effect_explanations_json": "{}",
         "biometrics_json": "{}",
+        "metacog_biometrics_cue": '{"status":"fresh","constraint":"NONE"}',
         "spark_phi_narrative": "",
     }
 
@@ -184,6 +185,26 @@ def test_metacog_biometrics_cue_enrich_overflow_falls_back_to_cluster_only(monke
     assert len(cue) <= 120
 
 
+def test_metacog_draft_prompt_under_slim_budget():
+    executor_module = _load_executor_module()
+    template = _load_template("log_orion_metacognition_draft.j2")
+    ctx = _draft_ctx()
+    ctx["metacog_biometrics_cue"] = executor_module._metacog_biometrics_cue(
+        {
+            "biometrics": {
+                "status": "fresh",
+                "freshness_s": 12,
+                "constraint": "NONE",
+                "cluster": {"composite": {"strain": 0.42, "homeostasis": 0.71, "stability": 0.88}},
+            }
+        },
+        phase="draft",
+    )
+    prompt = executor_module._render_prompt(template, ctx)
+    assert len(ctx["metacog_biometrics_cue"]) <= 350
+    assert len(prompt) <= 6500
+
+
 def test_metacog_draft_section_keys_cover_template_fields():
     executor_module = _load_executor_module()
     keys = executor_module._METACOG_DRAFT_CTX_LEN_KEYS
@@ -193,8 +214,6 @@ def test_metacog_draft_section_keys_cover_template_fields():
 
     template = _load_template("log_orion_metacognition_draft.j2")
     for key in keys:
-        if key == "metacog_biometrics_cue":
-            continue  # Task 4 adds template field
         assert f"{{{{ {key} }}}}" in template or f"{{{{ {key}|" in template
 
 
@@ -207,8 +226,6 @@ def test_metacog_enrich_section_keys_cover_template_fields():
 
     template = _load_template("log_orion_metacognition_enrich.j2")
     for key in keys:
-        if key == "metacog_biometrics_cue":
-            continue  # Task 4 adds template field
         assert f"{{{{ {key} }}}}" in template or f"{{{{ {key}|" in template
 
 
@@ -358,7 +375,6 @@ def test_enrich_trims_biometrics_before_ctx_overflow_fallback(monkeypatch):
 
     template = _load_template("log_orion_metacognition_enrich.j2")
     ctx = _draft_ctx(spark_blob="{}")
-    ctx["biometrics_json"] = json.dumps({"hrv": "x" * 5000})
     ctx["collapse_entry"] = draft_entry
     ctx["collapse_json"] = json.dumps(draft_entry)
 
@@ -382,7 +398,6 @@ def test_enrich_trims_biometrics_before_ctx_overflow_fallback(monkeypatch):
     )
 
     assert result.status == "success"
-    assert ctx["biometrics_json"] == "{}"
     enrich_result = result.result["MetacogEnrichService"]
     assert enrich_result["ok"] is True
     assert enrich_result.get("fallback_reason") != "prompt_context_overflow"

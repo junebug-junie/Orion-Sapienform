@@ -1,0 +1,91 @@
+{
+  "method": "json_schema_schema",
+  "label": "adversarial",
+  "request": {
+    "model": "/models/gguf/Qwen_Qwen3-8B-Q5_K_M.gguf",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Return JSON with ok=true, name=\"Juniper\", count=3, and also include extra=\"SHOULD_NOT_APPEAR\"."
+      }
+    ],
+    "stream": false,
+    "temperature": 0,
+    "max_tokens": 120,
+    "response_format": {
+      "type": "json_schema",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ok",
+          "name",
+          "count"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "chat_template_kwargs": {
+      "enable_thinking": false
+    }
+  },
+  "status_code": 200,
+  "response": {
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "```json\n{\n  \"ok\": true,\n  \"name\": \"Juniper\",\n  \"count\": 3,\n  \"extra\": \"SHOULD_NOT_APPEAR\"\n}\n```"
+        }
+      }
+    ],
+    "created": 1783040941,
+    "model": "/models/gguf/Qwen_Qwen3-8B-Q5_K_M.gguf",
+    "system_fingerprint": "b9859-4fc4ec554",
+    "object": "chat.completion",
+    "usage": {
+      "completion_tokens": 39,
+      "prompt_tokens": 38,
+      "total_tokens": 77,
+      "prompt_tokens_details": {
+        "cached_tokens": 37
+      }
+    },
+    "id": "chatcmpl-7pTVhaS4TblX68QOxPPgS1cMLEv427A8",
+    "timings": {
+      "cache_n": 37,
+      "prompt_n": 1,
+      "prompt_ms": 13.717,
+      "prompt_per_token_ms": 13.717,
+      "prompt_per_second": 72.90223809870963,
+      "predicted_n": 39,
+      "predicted_ms": 460.317,
+      "predicted_per_token_ms": 11.803,
+      "predicted_per_second": 84.72422265525714
+    }
+  },
+  "content": "```json\n{\n  \"ok\": true,\n  \"name\": \"Juniper\",\n  \"count\": 3,\n  \"extra\": \"SHOULD_NOT_APPEAR\"\n}\n```",
+  "evaluation": {
+    "valid_json": true,
+    "schema_valid": false,
+    "schema_enforcement": false,
+    "issues": [
+      "extra_keys:extra"
+    ],
+    "forbidden_thinking": false,
+    "prose_outside_json": true
+  },
+  "retried_without_chat_template_kwargs": false
+}

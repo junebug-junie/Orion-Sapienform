@@ -1,0 +1,63 @@
+{
+  "method": "no_response_format_control",
+  "label": "primary",
+  "request": {
+    "model": "/models/gguf/Qwen_Qwen3-8B-Q5_K_M.gguf",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Return exactly this data as JSON:\nok = true\nname = \"Juniper\"\ncount = 3\nDo not include prose."
+      }
+    ],
+    "stream": false,
+    "temperature": 0,
+    "max_tokens": 120
+  },
+  "status_code": 200,
+  "response": {
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "{\n  \"ok\": true,\n  \"name\": \"Juniper\",\n  \"count\": 3\n}"
+        }
+      }
+    ],
+    "created": 1783040950,
+    "model": "/models/gguf/Qwen_Qwen3-8B-Q5_K_M.gguf",
+    "system_fingerprint": "b9859-4fc4ec554",
+    "object": "chat.completion",
+    "usage": {
+      "completion_tokens": 24,
+      "prompt_tokens": 39,
+      "total_tokens": 63,
+      "prompt_tokens_details": {
+        "cached_tokens": 38
+      }
+    },
+    "id": "chatcmpl-G0t9NSABFqEkAoRixceezJO87fI1DKYS",
+    "timings": {
+      "cache_n": 38,
+      "prompt_n": 1,
+      "prompt_ms": 12.263,
+      "prompt_per_token_ms": 12.263,
+      "prompt_per_second": 81.54611432765229,
+      "predicted_n": 24,
+      "predicted_ms": 273.678,
+      "predicted_per_token_ms": 11.40325,
+      "predicted_per_second": 87.69429767829347
+    }
+  },
+  "content": "{\n  \"ok\": true,\n  \"name\": \"Juniper\",\n  \"count\": 3\n}",
+  "evaluation": {
+    "valid_json": true,
+    "schema_valid": true,
+    "schema_enforcement": null,
+    "issues": [],
+    "forbidden_thinking": false,
+    "prose_outside_json": false
+  },
+  "retried_without_chat_template_kwargs": false
+}

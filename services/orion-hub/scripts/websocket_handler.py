@@ -878,6 +878,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 user_prompt=transcript,
             )
 
+            # ─── Hub presence (best-effort, never blocks chat) ──────────────────
+            # One timestamp per turn; mirrors a liveness snapshot for self-state.
+            try:
+                from scripts.hub_presence import record_turn
+
+                record_turn()
+            except Exception:
+                pass
+
             substrate_summary, _ = run_substrate_effect_pipeline(
                 turn_id=trace_id,
                 message_id=None,

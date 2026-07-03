@@ -583,6 +583,11 @@ class BiometricsSubstrateWorker:
             log_label="substrate_prediction_error_store_init_failed"
         )
         if store is None:
+            logger.warning(
+                "substrate_prediction_error_node_skipped_no_store node_id=%s reducer_key=%s",
+                node_id,
+                reducer_key,
+            )
             return
 
         try:
@@ -617,6 +622,12 @@ class BiometricsSubstrateWorker:
             store.upsert_node(
                 identity_key=f"substrate_prediction_error|{node_id}",
                 node=node,
+            )
+            logger.info(
+                "substrate_prediction_error_node_written node_id=%s error=%.3f reducer_key=%s",
+                node_id,
+                error,
+                reducer_key,
             )
         except Exception:
             logger.warning(

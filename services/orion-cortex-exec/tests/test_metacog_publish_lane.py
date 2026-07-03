@@ -805,6 +805,97 @@ def test_manual_dense_fallback_still_publishes():
     mock_bus.publish.assert_called()
 
 
+def _unstable_self_state_payload() -> dict:
+    from datetime import datetime, timezone
+
+    from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
+
+    now = datetime.now(timezone.utc)
+    return SelfStateV1(
+        self_state_id="ss-publish",
+        generated_at=now,
+        source_field_tick_id="tick-1",
+        source_field_generated_at=now,
+        source_attention_frame_id="frame-1",
+        source_attention_generated_at=now,
+        overall_condition="unstable",
+        overall_intensity=0.9,
+        overall_confidence=0.7,
+        dimensions={
+            "execution_pressure": SelfStateDimensionV1(
+                dimension_id="execution_pressure", score=0.85, confidence=0.7
+            )
+        },
+        prediction_error_scores={"execution_pressure": 0.62},
+        trajectory_condition="degrading",
+        overall_surprise=0.7,
+    ).model_dump(mode="json")
+
+
+def test_publish_applies_substrate_causal_density_and_trigger_lineage():
+    executor_module = _load_executor_module()
+    mock_bus = MagicMock()
+    mock_bus.publish = AsyncMock()
+
+    valid_entry = CollapseMirrorEntryV2(
+        event_id="evt-substrate",
+        id="evt-substrate",
+        trigger="dense",
+        observer="Orion",
+        observer_state=["strained"],
+        type="flow",
+        emergent_entity="Substrate Pulse",
+        summary="Test summary",
+        mantra="Test mantra",
+        field_resonance="Test resonance",
+        resonance_signature="Test sig",
+        source_service="metacog",
+        tag_scores={"shift": 0.2},
+    ).model_dump(mode="json")
+    valid_entry["state_snapshot"] = {
+        "telemetry": {"metacog_draft_mode": "llm"},
+    }
+
+    ctx = {
+        "trigger": {"trigger_kind": "dense", "reason": "substrate_eventfulness:0.60"},
+        "trigger_kind": "dense",
+        "self_state": _unstable_self_state_payload(),
+        "substrate_eventfulness_score": 0.6,
+        "final_entry": valid_entry,
+    }
+
+    step = ExecutionStep(
+        step_name="publish",
+        verb_name="log_orion_metacognition",
+        services=["MetacogPublishService"],
+        order=1,
+    )
+    source = ServiceRef(name="test", node="test", version="1.0")
+
+    result = asyncio.run(
+        executor_module.call_step_services(
+            bus=mock_bus,
+            source=source,
+            step=step,
+            ctx=ctx,
+            correlation_id=str(uuid4()),
+        )
+    )
+
+    assert result.status == "success"
+    publish = result.result["MetacogPublishService"]
+    assert publish.get("published") is True
+    mock_bus.publish.assert_called_once()
+    envelope = mock_bus.publish.call_args[0][1]
+    payload = envelope.payload
+    assert payload["causal_density"]["score"] > 0.2
+    assert payload["is_causally_dense"] is True
+    telemetry = payload["state_snapshot"]["telemetry"]
+    assert telemetry["trigger_kind"] == "dense"
+    assert telemetry["metacog_causal_density_source"] == "substrate_self_state_blend"
+    assert telemetry["substrate_eventfulness_score"] == 0.6
+
+
 def test_log_orion_metacognition_recall_disabled_by_verb_default():
     from orion.cognition.plan_loader import build_plan_for_verb
     from app.recall_utils import delivery_safe_recall_decision

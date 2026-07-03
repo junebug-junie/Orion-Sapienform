@@ -11,6 +11,7 @@ from orion.core.bus.bus_service_chassis import BaseChassis, ChassisConfig
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.schemas.telemetry.metacognition import MetacognitionTickV1
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
+from .substrate_metacog_gate import build_substrate_metacog_trigger
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.system_health import EquilibriumServiceState, EquilibriumSnapshotV1, SystemHealthV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
@@ -398,6 +399,18 @@ class EquilibriumService(BaseChassis):
 
         self._baseline_skip_count = 0
         self._last_baseline_scores = (distress, zen)
+
+        if settings.metacog_substrate_trigger_enable:
+            substrate_trigger = build_substrate_metacog_trigger(
+                zen_state="zen" if zen > 0.5 else "not_zen",
+                pressure=distress,
+                recall_enabled=settings.metacog_recall_enabled,
+                dense_threshold=float(settings.metacog_substrate_dense_threshold),
+                pulse_threshold=float(settings.metacog_substrate_pulse_threshold),
+            )
+            if substrate_trigger is not None:
+                await self._publish_metacog_trigger(substrate_trigger)
+                return True
 
         trigger = MetacogTriggerV1(
             trigger_kind="baseline",

@@ -207,21 +207,12 @@ def _self_report_signals(entry: CollapseMirrorEntryV2) -> list[float]:
     return signals
 
 
-def score_causal_density(event_id: str) -> CollapseMirrorEntryV2:
-    """Unchanged public entry point: no self_state, no behavior change for any
-    existing caller. Strict-lane and unknown-lane entries always go through this
-    path with self_state=None, which is byte-for-byte identical to the
-    pre-this-change behavior."""
-    return score_causal_density_with_self_state(event_id, self_state=None)
-
-
-def score_causal_density_with_self_state(
-    event_id: str,
-    self_state: SelfStateV1 | dict | str | None,
+def apply_causal_density_to_entry(
+    entry: CollapseMirrorEntryV2,
+    *,
+    self_state: SelfStateV1 | dict | str | None = None,
 ) -> CollapseMirrorEntryV2:
-    store = _get_store()
-    entry = store.get(event_id)
-
+    """Apply causal density scoring in-memory (no collapse store required)."""
     self_report_signals = _self_report_signals(entry)
     self_report_score = _score_from_values(self_report_signals)
 
@@ -229,8 +220,6 @@ def score_causal_density_with_self_state(
     if lane == "metacog":
         phi_score = _phi_evidence_score(_coerce_self_state(self_state))
         if phi_score is None:
-            # No self_state available this call: fall back to pure self-report
-            # rather than silently blending with a fabricated zero.
             score = self_report_score
         else:
             score = max(
@@ -242,7 +231,6 @@ def score_causal_density_with_self_state(
                 ),
             )
     else:
-        # strict / unknown: exactly the pre-existing behavior, no self_state involved.
         score = self_report_score
 
     label = _label_for_score(score)
@@ -257,5 +245,23 @@ def score_causal_density_with_self_state(
     if entry.snapshot_kind == "baseline" and entry.is_causally_dense:
         entry.snapshot_kind = "confirmed_dense"
 
+    return entry
+
+
+def score_causal_density(event_id: str) -> CollapseMirrorEntryV2:
+    """Unchanged public entry point: no self_state, no behavior change for any
+    existing caller. Strict-lane and unknown-lane entries always go through this
+    path with self_state=None, which is byte-for-byte identical to the
+    pre-this-change behavior."""
+    return score_causal_density_with_self_state(event_id, self_state=None)
+
+
+def score_causal_density_with_self_state(
+    event_id: str,
+    self_state: SelfStateV1 | dict | str | None,
+) -> CollapseMirrorEntryV2:
+    store = _get_store()
+    entry = store.get(event_id)
+    entry = apply_causal_density_to_entry(entry, self_state=self_state)
     store.save(entry)
     return entry

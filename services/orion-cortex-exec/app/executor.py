@@ -52,6 +52,7 @@ from orion.schemas.telemetry.turn_effect_explanations import (
 )
 from orion.schemas.state.contracts import StateGetLatestRequest, StateLatestReply
 from orion.schemas.chat_stance import ChatStanceBrief
+from orion.substrate.appraisal import REPAIR_PRESSURE_CONTRACT_METADATA_KEY
 from orion.schemas.metacog_patches import MetacogDraftTextPatchV1, MetacogEnrichScorePatchV1
 from orion.schemas.platform import CoreEventV1
 
@@ -4249,7 +4250,16 @@ async def call_step_services(
                             "response_priorities": list(parsed_brief.response_priorities[:4]),
                             "response_hazards": list(parsed_brief.response_hazards[:4]),
                         })
-                    ctx["speech_contract"] = compile_speech_contract(parsed_brief)
+                    _md = ctx.get("metadata") if isinstance(ctx.get("metadata"), dict) else {}
+                    _repair_contract = None
+                    if settings.repair_pressure_speech_wiring_enabled:
+                        _raw = _md.get(REPAIR_PRESSURE_CONTRACT_METADATA_KEY)
+                        if isinstance(_raw, dict):
+                            _repair_contract = _raw
+                    ctx["speech_contract"] = compile_speech_contract(
+                        parsed_brief,
+                        repair_contract=_repair_contract,
+                    )
                     quality_modified = synthesized_brief != ctx["chat_stance_brief"]
                     ctx["chat_stance_debug"] = build_chat_stance_debug_payload(
                         ctx=ctx,

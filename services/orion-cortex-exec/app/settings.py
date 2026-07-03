@@ -239,6 +239,10 @@ class Settings(BaseSettings):
     autonomy_quick_graph_timeout_sec: float = Field(3.0, alias="AUTONOMY_QUICK_GRAPH_TIMEOUT_SEC")
     autonomy_quick_graph_subjects: str = Field("orion", alias="AUTONOMY_QUICK_GRAPH_SUBJECTS")
     autonomy_quick_graph_subqueries: str = Field("identity", alias="AUTONOMY_QUICK_GRAPH_SUBQUERIES")
+    repair_pressure_speech_wiring_enabled: bool = Field(
+        True,
+        alias="ENABLE_REPAIR_PRESSURE_SPEECH_WIRING",
+    )
     world_pulse_stance_enabled: bool = Field(False, alias="WORLD_PULSE_STANCE_ENABLED")
     world_pulse_stance_max_topics: int = Field(5, alias="WORLD_PULSE_STANCE_MAX_TOPICS")
     world_pulse_stance_min_confidence: float = Field(0.65, alias="WORLD_PULSE_STANCE_MIN_CONFIDENCE")

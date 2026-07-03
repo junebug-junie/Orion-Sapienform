@@ -790,12 +790,18 @@ def _metacog_format_node_cue_line(node_id: str, node_data: Any) -> str:
         parts.append(f"status={status}")
     strain = composites.get("strain")
     if strain is not None:
-        parts.append(f"strain={float(strain):.2f}")
+        try:
+            parts.append(f"strain={float(strain):.2f}")
+        except (TypeError, ValueError):
+            pass
     gpu = pressures.get("gpu")
     if gpu is None:
         gpu = pressures.get("gpu_util")
     if gpu is not None:
-        parts.append(f"gpu={float(gpu):.2f}")
+        try:
+            parts.append(f"gpu={float(gpu):.2f}")
+        except (TypeError, ValueError):
+            pass
     if len(parts) == 1:
         parts.append("ok")
     return " ".join(parts)[:80]

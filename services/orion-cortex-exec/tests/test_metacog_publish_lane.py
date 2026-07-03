@@ -120,6 +120,49 @@ def test_metacog_biometrics_cue_missing_biometrics():
     assert parsed["status"] == "missing"
 
 
+def test_metacog_format_node_cue_line_skips_bad_numeric_fields():
+    executor_module = _load_executor_module()
+    line = executor_module._metacog_format_node_cue_line(
+        "atlas",
+        {
+            "status": "OK",
+            "summary": {
+                "composites": {"strain": "not-a-number"},
+                "pressures": {"gpu": "bad"},
+            },
+        },
+    )
+    assert line == "atlas: ok"
+    assert "strain=" not in line
+    assert "gpu=" not in line
+
+
+def test_metacog_biometrics_cue_enrich_overflow_falls_back_to_cluster_only(monkeypatch):
+    executor_module = _load_executor_module()
+    monkeypatch.setattr(executor_module, "_METACOG_BIOMETRICS_CUE_ENRICH_MAX_CHARS", 120)
+    ctx = {
+        "biometrics": {
+            "status": "fresh",
+            "constraint": "GPU_MEM",
+            "cluster": {
+                "composite": {"strain": 0.62, "homeostasis": 0.5, "stability": 0.44},
+            },
+            "nodes": {
+                "atlas": {
+                    "status": "OK",
+                    "summary": {"composites": {"strain": 0.71}, "pressures": {"gpu": 0.82}},
+                },
+                "athena": {"status": "OK", "summary": {}},
+            },
+        }
+    }
+    cue = executor_module._metacog_biometrics_cue(ctx, phase="enrich")
+    parsed = json.loads(cue)
+    assert "cluster" in parsed
+    assert "nodes" not in parsed
+    assert len(cue) <= 120
+
+
 def test_metacog_draft_section_keys_cover_template_fields():
     executor_module = _load_executor_module()
     template = _load_template("log_orion_metacognition_draft.j2")

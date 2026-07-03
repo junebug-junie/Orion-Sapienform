@@ -65,6 +65,8 @@ _CANDIDATE_QUALITY: Dict[str, int] = {}
 _CANDIDATE_LAST_SEEN_TS: Dict[str, float] = {}
 _CANDIDATE_TELEM_EMITTED: Dict[str, float] = {}
 _CANDIDATE_SPARK_META: Dict[str, Dict[str, Any]] = {}
+_CANDIDATE_STIMULUS: Dict[str, Dict[str, Any]] = {}
+_CANDIDATE_HEAVY_ENQUEUED: Dict[str, float] = {}
 # keep cache small + bounded
 _CANDIDATE_CACHE_TTL_SEC = 600.0  # 10 minutes
 _EXPECTED_EMB: Dict[str, np.ndarray] = {}
@@ -220,12 +222,18 @@ def _prune_candidate_caches() -> None:
         _CANDIDATE_QUALITY.pop(k, None)
         _CANDIDATE_TELEM_EMITTED.pop(k, None)
         _CANDIDATE_SPARK_META.pop(k, None)
+        _CANDIDATE_STIMULUS.pop(k, None)
+        _CANDIDATE_HEAVY_ENQUEUED.pop(k, None)
     # drop entries that no longer have a last-seen timestamp
     known_keys = set(_CANDIDATE_LAST_SEEN_TS)
     for k in set(_CANDIDATE_QUALITY) - known_keys:
         _CANDIDATE_QUALITY.pop(k, None)
     for k in set(_CANDIDATE_TELEM_EMITTED) - known_keys:
         _CANDIDATE_TELEM_EMITTED.pop(k, None)
+    for k in set(_CANDIDATE_STIMULUS) - known_keys:
+        _CANDIDATE_STIMULUS.pop(k, None)
+    for k in set(_CANDIDATE_HEAVY_ENQUEUED) - known_keys:
+        _CANDIDATE_HEAVY_ENQUEUED.pop(k, None)
     # hard cap (just in case)
     if len(_CANDIDATE_LAST_SEEN_TS) > 5000:
         # drop oldest
@@ -235,6 +243,8 @@ def _prune_candidate_caches() -> None:
             _CANDIDATE_QUALITY.pop(k, None)
             _CANDIDATE_TELEM_EMITTED.pop(k, None)
             _CANDIDATE_SPARK_META.pop(k, None)
+            _CANDIDATE_STIMULUS.pop(k, None)
+            _CANDIDATE_HEAVY_ENQUEUED.pop(k, None)
 
 
 def _register_signal(signal: SparkSignalV1) -> None:
@@ -573,6 +583,18 @@ def _candidate_quality(spark_meta: Dict[str, Any]) -> int:
         "turn_effect_evidence",
     )
     return 1 if any(k in spark_meta for k in rich_keys) else 0
+
+
+def _remember_candidate_stimulus(candidate: SparkCandidatePayload) -> None:
+    trace_id = str(candidate.trace_id)
+    if not (candidate.prompt or candidate.response):
+        return
+    _CANDIDATE_STIMULUS[trace_id] = {
+        "prompt": candidate.prompt or "",
+        "response": candidate.response or "",
+        "source": candidate.source or "unknown",
+        "introspection": candidate.introspection,
+    }
 
 
 def _merge_spark_meta_dict(base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
@@ -1055,6 +1077,10 @@ async def handle_spark_meta_patch(env: BaseEnvelope) -> None:
         )
     except Exception as exc:
         logger.warning("Failed to broadcast spark_meta patch tissue update corr=%s: %s", corr, exc)
+        return
+
+    if _candidate_quality(merged) >= 1:
+        await _maybe_enqueue_heavy_after_rich_meta(corr, merged, env)
 
 
 async def handle_trace(env: BaseEnvelope) -> None:
@@ -1837,6 +1863,154 @@ async def run_heavy_spark_introspection(
             _get_intro_sem().release()
 
 
+async def _enqueue_heavy_introspection(
+    candidate: SparkCandidatePayload,
+    env: BaseEnvelope,
+) -> bool:
+    """Queue or inline-run heavy introspection once per trace_id."""
+    trace_id = str(candidate.trace_id)
+    if candidate.introspection:
+        return False
+    if trace_id in _CANDIDATE_HEAVY_ENQUEUED:
+        return False
+
+    qual = _candidate_quality(candidate.spark_meta or {})
+    if bool(settings.spark_introspection_require_rich_meta) and qual < 1:
+        return False
+
+    global _warned_queue_inline_both
+    q_on = bool(settings.spark_introspection_queue_enabled)
+    inline_on = bool(settings.spark_introspection_inline_heavy_enabled)
+    if q_on and inline_on and not _warned_queue_inline_both:
+        logger.warning(
+            "spark_queue_inline_both_enabled preferring_queue trace_id=%s",
+            trace_id,
+        )
+        _warned_queue_inline_both = True
+
+    corr_s = str(env.correlation_id) if env.correlation_id else None
+
+    if q_on:
+        try:
+            job_env = build_spark_introspection_job_envelope(candidate, env, settings, _svc_ref())
+            work = (job_env.trace or {}).get("work") or {}
+            if not isinstance(work, dict):
+                work = {}
+            job_id = str(work.get("job_id", ""))
+            idem = str(work.get("idempotency_key", build_idempotency_key(trace_id)))
+            expires_at = str(work.get("expires_at", ""))
+            wq = await get_stream_enqueue_wq()
+            mx = settings.spark_introspection_queue_maxlen
+            sess = (candidate.spark_meta or {}).get("session_id") or (candidate.spark_meta or {}).get(
+                "conversation_id"
+            )
+            msg_id = await wq.enqueue(
+                settings.spark_introspection_queue_stream,
+                job_env,
+                maxlen=int(mx) if mx is not None else None,
+                extra_fields={
+                    "lane": "spark",
+                    "job_id": job_id,
+                    "idempotency_key": idem,
+                    "trace_id": trace_id,
+                    "session_id": str(sess or ""),
+                },
+            )
+            _CANDIDATE_HEAVY_ENQUEUED[trace_id] = time.time()
+            logger.info(
+                "spark_queue_enqueue trace_id=%s correlation_id=%s stream=%s message_id=%s job_id=%s idempotency_key=%s expires_at=%s",
+                trace_id,
+                corr_s,
+                settings.spark_introspection_queue_stream,
+                msg_id,
+                job_id,
+                idem,
+                expires_at,
+            )
+            return True
+        except Exception as ex:
+            logger.error(
+                "spark_queue_enqueue_failed trace_id=%s correlation_id=%s stream=%s error=%s",
+                trace_id,
+                corr_s,
+                settings.spark_introspection_queue_stream,
+                ex,
+            )
+            if inline_on:
+                _CANDIDATE_HEAVY_ENQUEUED[trace_id] = time.time()
+                await run_heavy_spark_introspection(
+                    candidate=candidate,
+                    source_env=env,
+                    correlation_id=corr_s,
+                    bus=None,
+                    from_queue=False,
+                )
+                return True
+            logger.info(
+                "spark_queue_enqueue_failed_skip trace_id=%s correlation_id=%s reason=no_inline_fallback",
+                trace_id,
+                corr_s,
+            )
+            return False
+
+    if inline_on:
+        _CANDIDATE_HEAVY_ENQUEUED[trace_id] = time.time()
+        await run_heavy_spark_introspection(
+            candidate=candidate,
+            source_env=env,
+            correlation_id=corr_s,
+            bus=None,
+            from_queue=False,
+        )
+        return True
+
+    logger.info(
+        "spark_introspection_skipped trace_id=%s reason=heavy_paths_disabled queue_enabled=%s inline_heavy=%s",
+        trace_id,
+        q_on,
+        inline_on,
+    )
+    return False
+
+
+async def _maybe_enqueue_heavy_after_rich_meta(
+    corr: str,
+    merged_meta: Dict[str, Any],
+    env: BaseEnvelope,
+) -> None:
+    """After consolidation patches rich spark_meta, enqueue one heavy introspection job."""
+    if _candidate_quality(merged_meta) < 1:
+        return
+    if corr in _CANDIDATE_HEAVY_ENQUEUED:
+        return
+
+    stim = _CANDIDATE_STIMULUS.get(corr)
+    if not stim or not str(stim.get("prompt") or "").strip():
+        logger.info(
+            "spark_introspection_skipped trace_id=%s reason=patch_no_stimulus",
+            corr,
+        )
+        return
+    if stim.get("introspection"):
+        return
+
+    candidate = SparkCandidatePayload(
+        trace_id=corr,
+        source=str(stim.get("source") or "unknown"),
+        prompt=str(stim.get("prompt") or ""),
+        response=str(stim.get("response") or ""),
+        spark_meta=dict(merged_meta),
+        introspection=None,
+    )
+    _CANDIDATE_QUALITY[corr] = 1
+    if await _enqueue_heavy_introspection(candidate, env):
+        logger.info(
+            "spark_introspection_enqueued_from_patch trace_id=%s correlation_id=%s",
+            corr,
+            env.correlation_id,
+        )
+
+
 async def handle_candidate(env: BaseEnvelope) -> None:
     raw = env.payload if isinstance(env.payload, dict) else {}
     if env.kind == "legacy.message" and isinstance(raw.get("payload"), dict):
@@ -1851,6 +2025,7 @@ async def handle_candidate(env: BaseEnvelope) -> None:
     trace_id = str(candidate.trace_id)
     _prune_candidate_caches()
     _CANDIDATE_LAST_SEEN_TS[trace_id] = time.time()
+    _remember_candidate_stimulus(candidate)
 
     qual = _candidate_quality(candidate.spark_meta or {})
     prev_qual = _CANDIDATE_QUALITY.get(trace_id, -1)
@@ -1899,95 +2074,7 @@ async def handle_candidate(env: BaseEnvelope) -> None:
         )
         return
 
-    global _warned_queue_inline_both
-    q_on = bool(settings.spark_introspection_queue_enabled)
-    inline_on = bool(settings.spark_introspection_inline_heavy_enabled)
-    if q_on and inline_on and not _warned_queue_inline_both:
-        logger.warning(
-            "spark_queue_inline_both_enabled preferring_queue trace_id=%s",
-            trace_id,
-        )
-        _warned_queue_inline_both = True
-
-    corr_s = str(env.correlation_id) if env.correlation_id else None
-
-    if q_on:
-        try:
-            job_env = build_spark_introspection_job_envelope(candidate, env, settings, _svc_ref())
-            work = (job_env.trace or {}).get("work") or {}
-            if not isinstance(work, dict):
-                work = {}
-            job_id = str(work.get("job_id", ""))
-            idem = str(work.get("idempotency_key", build_idempotency_key(trace_id)))
-            expires_at = str(work.get("expires_at", ""))
-            wq = await get_stream_enqueue_wq()
-            mx = settings.spark_introspection_queue_maxlen
-            sess = (candidate.spark_meta or {}).get("session_id") or (candidate.spark_meta or {}).get(
-                "conversation_id"
-            )
-            msg_id = await wq.enqueue(
-                settings.spark_introspection_queue_stream,
-                job_env,
-                maxlen=int(mx) if mx is not None else None,
-                extra_fields={
-                    "lane": "spark",
-                    "job_id": job_id,
-                    "idempotency_key": idem,
-                    "trace_id": trace_id,
-                    "session_id": str(sess or ""),
-                },
-            )
-            logger.info(
-                "spark_queue_enqueue trace_id=%s correlation_id=%s stream=%s message_id=%s job_id=%s idempotency_key=%s expires_at=%s",
-                trace_id,
-                corr_s,
-                settings.spark_introspection_queue_stream,
-                msg_id,
-                job_id,
-                idem,
-                expires_at,
-            )
-            return
-        except Exception as ex:
-            logger.error(
-                "spark_queue_enqueue_failed trace_id=%s correlation_id=%s stream=%s error=%s",
-                trace_id,
-                corr_s,
-                settings.spark_introspection_queue_stream,
-                ex,
-            )
-            if inline_on:
-                await run_heavy_spark_introspection(
-                    candidate=candidate,
-                    source_env=env,
-                    correlation_id=corr_s,
-                    bus=None,
-                    from_queue=False,
-                )
-            else:
-                logger.info(
-                    "spark_queue_enqueue_failed_skip trace_id=%s correlation_id=%s reason=no_inline_fallback",
-                    trace_id,
-                    corr_s,
-                )
-            return
-
-    if inline_on:
-        await run_heavy_spark_introspection(
-            candidate=candidate,
-            source_env=env,
-            correlation_id=corr_s,
-            bus=None,
-            from_queue=False,
-        )
-        return
-
-    logger.info(
-        "spark_introspection_skipped trace_id=%s reason=heavy_paths_disabled queue_enabled=%s inline_heavy=%s",
-        trace_id,
-        q_on,
-        inline_on,
-    )
+    await _enqueue_heavy_introspection(candidate, env)
 
 
 async def handle_signal(env: BaseEnvelope) -> None:

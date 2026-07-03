@@ -560,6 +560,10 @@ def _should_publish_spark_candidate(body: ChatBody, spark_meta: Dict) -> bool:
     if bool(opts.get("post_turn")) and bool(opts.get("skip_chat_stance_inputs")):
         return False
 
+    mind_phase = str(opts.get("mind_phase") or "").strip()
+    if mind_phase:
+        return False
+
     return True
 
 

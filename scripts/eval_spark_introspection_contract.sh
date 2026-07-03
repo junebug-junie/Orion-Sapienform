@@ -25,6 +25,7 @@ export PYTHONPATH=.
 
 "$PY" -m pytest \
   services/orion-spark-introspector/tests/test_handle_candidate_enqueue_policy.py \
+  services/orion-spark-introspector/tests/test_spark_meta_patch_heavy_enqueue.py \
   -q --tb=short
 
 "$PY" -m pytest \

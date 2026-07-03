@@ -214,10 +214,13 @@ Required flow:
 4. Patch the smallest working slice.
 5. Update config, schema, Docker, docs, tests, and evals as needed.
 6. Sync local `.env` from `.env_example` if any env template changed.
-7. Run focused checks.
-8. Run code review skill in a subagent.
-9. Fix review findings.
-10. Commit, push, and produce a Markdown PR description.
+7. Sync local `.env` from `.env_example` if any env template changed (I don't care what your workspace or gitignore says)
+8. Sync local `.env` from `.env_example` IN CASE YOU DIDN'T HEAR ME THE FIRST TWO TIMES!
+9. Sync local `.env` from `.env_example` if any env template changed, FOR THE LOVE OF PETER PAUL AND MARY
+10. Run focused checks.
+11. Run code review skill in a subagent.
+12. Fix review findings.
+13. Commit, push, and produce a Markdown PR description.
 
 ## 1a .Goal-Driven Execution
 

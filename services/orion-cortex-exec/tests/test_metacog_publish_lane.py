@@ -341,6 +341,88 @@ def test_oversized_enrich_prompt_skips_llm_with_budget_fallback(monkeypatch):
     assert telemetry["metacog_enrich_fallback_reason"] == "prompt_budget_exceeded"
 
 
+def test_draft_trims_biometrics_cue_before_ctx_overflow_fallback(monkeypatch):
+    executor_module = _load_executor_module()
+    calls: list[str] = []
+
+    class FakeLLMClient:
+        def __init__(self, bus):
+            self.bus = bus
+
+        async def chat(self, **kwargs):
+            calls.append("draft")
+            return {}
+
+    monkeypatch.setattr(executor_module, "LLMGatewayClient", FakeLLMClient)
+    monkeypatch.setattr(executor_module.settings, "cortex_metacog_draft_prompt_max_chars", 50000)
+    monkeypatch.setattr(executor_module.settings, "cortex_metacog_draft_worker_ctx_char_budget", 8000)
+
+    template = _load_template("log_orion_metacognition_draft.j2")
+    ctx = _draft_ctx(spark_blob="{}")
+    ctx["metacog_biometrics_cue"] = json.dumps({"status": "fresh", "blob": "x" * 5000})
+    ctx["spark_state_json"] = "{}"
+
+    step = ExecutionStep(
+        verb_name="log_orion_metacognition",
+        step_name="draft_entry",
+        order=0,
+        services=["MetacogDraftService"],
+        prompt_template=template,
+    )
+    source = ServiceRef(name="test", node="test", version="1.0")
+
+    result = asyncio.run(
+        executor_module.call_step_services(
+            bus=object(), source=source, step=step, ctx=ctx, correlation_id="corr-draft-trim",
+        )
+    )
+
+    assert result.status == "success"
+    assert json.loads(ctx["metacog_biometrics_cue"])["status"] == "trimmed"
+    assert calls == ["draft"]
+
+
+def test_draft_ctx_overflow_after_cue_and_spark_trim(monkeypatch):
+    executor_module = _load_executor_module()
+    calls: list[str] = []
+
+    class FakeLLMClient:
+        def __init__(self, bus):
+            self.bus = bus
+
+        async def chat(self, **kwargs):
+            calls.append("draft")
+            return {}
+
+    monkeypatch.setattr(executor_module, "LLMGatewayClient", FakeLLMClient)
+    monkeypatch.setattr(executor_module.settings, "cortex_metacog_draft_prompt_max_chars", 50000)
+    monkeypatch.setattr(executor_module.settings, "cortex_metacog_draft_worker_ctx_char_budget", 500)
+
+    template = _load_template("log_orion_metacognition_draft.j2")
+    ctx = _draft_ctx(spark_blob="Z" * 8000)
+    ctx["metacog_biometrics_cue"] = json.dumps({"status": "fresh", "strain": 0.5})
+
+    step = ExecutionStep(
+        verb_name="log_orion_metacognition",
+        step_name="draft_entry",
+        order=0,
+        services=["MetacogDraftService"],
+        prompt_template=template,
+    )
+    source = ServiceRef(name="test", node="test", version="1.0")
+
+    result = asyncio.run(
+        executor_module.call_step_services(
+            bus=object(), source=source, step=step, ctx=ctx, correlation_id="corr-draft-overflow",
+        )
+    )
+
+    assert result.status == "success"
+    assert calls == []
+    draft_result = result.result["MetacogDraftService"]
+    assert draft_result.get("fallback_reason") == "prompt_context_overflow"
+
+
 def test_enrich_trims_biometrics_before_ctx_overflow_fallback(monkeypatch):
     executor_module = _load_executor_module()
     calls: list[str] = []
@@ -375,6 +457,7 @@ def test_enrich_trims_biometrics_before_ctx_overflow_fallback(monkeypatch):
 
     template = _load_template("log_orion_metacognition_enrich.j2")
     ctx = _draft_ctx(spark_blob="{}")
+    ctx["metacog_biometrics_cue"] = json.dumps({"status": "fresh", "blob": "x" * 5000})
     ctx["collapse_entry"] = draft_entry
     ctx["collapse_json"] = json.dumps(draft_entry)
 
@@ -398,6 +481,7 @@ def test_enrich_trims_biometrics_before_ctx_overflow_fallback(monkeypatch):
     )
 
     assert result.status == "success"
+    assert json.loads(ctx["metacog_biometrics_cue"])["status"] == "trimmed"
     enrich_result = result.result["MetacogEnrichService"]
     assert enrich_result["ok"] is True
     assert enrich_result.get("fallback_reason") != "prompt_context_overflow"
@@ -437,8 +521,8 @@ def test_enrich_ctx_overflow_after_biometrics_trim(monkeypatch):
     draft_entry["state_snapshot"] = {"telemetry": {"metacog_draft_mode": "llm"}}
 
     template = _load_template("log_orion_metacognition_enrich.j2")
-    ctx = _draft_ctx(spark_blob="{}")
-    ctx["biometrics_json"] = json.dumps({"hrv": "x" * 5000})
+    ctx = _draft_ctx(spark_blob="Z" * 8000)
+    ctx["metacog_biometrics_cue"] = json.dumps({"status": "fresh", "strain": 0.5})
     ctx["collapse_entry"] = draft_entry
     ctx["collapse_json"] = json.dumps(draft_entry)
 
@@ -462,7 +546,6 @@ def test_enrich_ctx_overflow_after_biometrics_trim(monkeypatch):
     )
 
     assert result.status == "success"
-    assert ctx["biometrics_json"] == "{}"
     assert calls == []
     enrich_result = result.result["MetacogEnrichService"]
     assert enrich_result["ok"] is True

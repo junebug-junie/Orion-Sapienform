@@ -1243,36 +1243,69 @@ def _enforce_metacog_publish_prompt_budget(
     return True, section_sizes, prompt_chars, char_limit
 
 
-def _maybe_trim_metacog_enrich_prompt_for_worker_ctx(
+def _maybe_trim_metacog_prompt_for_worker_ctx(
     *,
+    phase: str,
     prompt: str,
     ctx: Dict[str, Any],
     template_str: str,
     correlation_id: str,
-) -> tuple[str, str | None]:
-    budget = int(settings.cortex_metacog_enrich_worker_ctx_char_budget)
+) -> tuple[str, str | None, list[str]]:
+    if phase == "draft":
+        budget = int(settings.cortex_metacog_draft_worker_ctx_char_budget)
+    else:
+        budget = int(settings.cortex_metacog_enrich_worker_ctx_char_budget)
+    trim_applied: list[str] = []
     if len(prompt or "") <= budget:
-        return prompt, None
-    bio = str(ctx.get("biometrics_json") or "")
-    if bio.strip() and bio.strip() != "{}":
+        return prompt, None, trim_applied
+
+    cue = str(ctx.get("metacog_biometrics_cue") or "")
+    if cue.strip() and cue.strip() != '{"status":"trimmed"}':
         logger.warning(
-            "metacog_enrich_ctx_trim_biometrics corr_id=%s prompt_chars=%s budget=%s bio_chars=%s",
+            "metacog_%s_ctx_trim_biometrics_cue corr_id=%s prompt_chars=%s budget=%s cue_chars=%s",
+            phase,
             correlation_id,
             len(prompt),
             budget,
-            len(bio),
+            len(cue),
         )
-        ctx["biometrics_json"] = "{}"
+        ctx["metacog_biometrics_cue"] = '{"status":"trimmed"}'
+        trim_applied.append("biometrics_cue")
         prompt = _render_prompt(template_str, ctx)
         if len(prompt) <= budget:
-            return prompt, None
+            return prompt, None, trim_applied
+
+    spark = str(ctx.get("spark_state_json") or "")
+    if spark.strip() and spark.strip() != "{}":
+        logger.warning(
+            "metacog_%s_ctx_trim_spark_state corr_id=%s prompt_chars=%s budget=%s spark_chars=%s",
+            phase,
+            correlation_id,
+            len(prompt),
+            budget,
+            len(spark),
+        )
+        ctx["spark_state_json"] = "{}"
+        trim_applied.append("spark_state_json")
+        prompt = _render_prompt(template_str, ctx)
+        if len(prompt) <= budget:
+            return prompt, None, trim_applied
+
     logger.warning(
-        "metacog_enrich_ctx_overflow corr_id=%s prompt_chars=%s budget=%s",
+        "metacog_%s_ctx_overflow corr_id=%s prompt_chars=%s budget=%s",
+        phase,
         correlation_id,
         len(prompt),
         budget,
     )
-    return prompt, "prompt_context_overflow"
+    return prompt, "prompt_context_overflow", trim_applied
+
+
+def _maybe_trim_metacog_enrich_prompt_for_worker_ctx(
+    **kwargs,
+) -> tuple[str, str | None]:
+    prompt, overflow, _ = _maybe_trim_metacog_prompt_for_worker_ctx(phase="enrich", **kwargs)
+    return prompt, overflow
 
 
 def _resolve_metacog_draft_fallback_reason(
@@ -1284,6 +1317,8 @@ def _resolve_metacog_draft_fallback_reason(
 ) -> str | None:
     if draft_error == "prompt_budget_exceeded":
         return "prompt_budget_exceeded"
+    if draft_error == "prompt_context_overflow":
+        return "prompt_context_overflow"
     if finish_reason == "length":
         return "llm_finish_reason_length"
     if draft_error == "no_json":
@@ -2771,6 +2806,7 @@ async def call_step_services(
         prompt = _render_prompt(step.prompt_template or "", ctx) if step.prompt_template else ""
 
         enrich_ctx_overflow: str | None = None
+        draft_ctx_overflow: str | None = None
 
         shortcut = _attempt_mind_handoff_chat_stance_shortcut(
             step=step,
@@ -2826,18 +2862,35 @@ async def call_step_services(
             else:
                 ctx["metacog_enrich_prompt_chars"] = metacog_prompt_chars
                 ctx["metacog_enrich_section_sizes"] = metacog_section_sizes
-            if (
-                service == "MetacogEnrichService"
-                and metacog_budget_ok
-                and step.prompt_template
-            ):
-                prompt, enrich_ctx_overflow = _maybe_trim_metacog_enrich_prompt_for_worker_ctx(
+            if metacog_phase == "draft" and metacog_budget_ok and step.prompt_template:
+                prompt, draft_ctx_overflow, draft_trim_applied = _maybe_trim_metacog_prompt_for_worker_ctx(
+                    phase="draft",
                     prompt=prompt,
                     ctx=ctx,
                     template_str=step.prompt_template,
                     correlation_id=correlation_id,
                 )
                 metacog_prompt_chars = len(prompt or "")
+                if draft_trim_applied:
+                    ctx["metacog_ctx_trim_applied"] = draft_trim_applied
+            elif metacog_phase == "enrich":
+                if ctx.get("metacog_biometrics_cue_enrich"):
+                    ctx["metacog_biometrics_cue"] = ctx["metacog_biometrics_cue_enrich"]
+            if (
+                service == "MetacogEnrichService"
+                and metacog_budget_ok
+                and step.prompt_template
+            ):
+                prompt, enrich_ctx_overflow, enrich_trim_applied = _maybe_trim_metacog_prompt_for_worker_ctx(
+                    phase="enrich",
+                    prompt=prompt,
+                    ctx=ctx,
+                    template_str=step.prompt_template,
+                    correlation_id=correlation_id,
+                )
+                metacog_prompt_chars = len(prompt or "")
+                if enrich_trim_applied:
+                    ctx["metacog_ctx_trim_applied"] = enrich_trim_applied
         # ----------------------------------------------------------------
 
         if service in {"MetacogDraftService", "MetacogEnrichService"}:
@@ -2877,7 +2930,17 @@ async def call_step_services(
 
                 llm_res: Any = None
                 probe_unc: Dict[str, Any] | None = None
-                if not metacog_budget_ok:
+                if draft_ctx_overflow:
+                    logs.append("skip <- MetacogDraftService LLM (prompt_context_overflow)")
+                    raw_content = ""
+                    parsed: Dict[str, Any] = {}
+                    draft_error = "prompt_context_overflow"
+                    patch_error = None
+                    filtered: Dict[str, Any] = {}
+                    stripped: list[str] = []
+                    patch_model = MetacogDraftTextPatchV1()
+                    finish_reason = None
+                elif not metacog_budget_ok:
                     logs.append("skip <- MetacogDraftService LLM (prompt_budget_exceeded)")
                     raw_content = ""
                     parsed: Dict[str, Any] = {}
@@ -2906,7 +2969,7 @@ async def call_step_services(
                     )
 
                 try:
-                    if metacog_budget_ok:
+                    if metacog_budget_ok and not draft_ctx_overflow:
                         raw_content = _extract_llm_text(llm_res)
                         raw_content = _clean_raw_llm_content(raw_content)
 

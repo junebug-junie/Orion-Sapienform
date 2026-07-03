@@ -112,10 +112,15 @@ class Settings(BaseSettings):
         alias="CORTEX_METACOG_ENRICH_PROMPT_MAX_CHARS",
         description="Lane A log_orion_metacognition: skip MetacogEnrichService LLM when rendered prompt exceeds this char budget.",
     )
+    cortex_metacog_draft_worker_ctx_char_budget: int = Field(
+        8000,
+        alias="CORTEX_METACOG_DRAFT_WORKER_CTX_CHAR_BUDGET",
+        description="MetacogDraftService: trim metacog_biometrics_cue/spark_state_json and re-render when prompt exceeds worker ctx char budget.",
+    )
     cortex_metacog_enrich_worker_ctx_char_budget: int = Field(
         12000,
         alias="CORTEX_METACOG_ENRICH_WORKER_CTX_CHAR_BUDGET",
-        description="MetacogEnrichService: trim biometrics_json and re-render when prompt exceeds worker ctx char budget.",
+        description="MetacogEnrichService: trim metacog_biometrics_cue then spark_state_json when prompt exceeds worker ctx char budget.",
     )
 
     publish_cortex_exec_grammar: bool = Field(False, alias="PUBLISH_CORTEX_EXEC_GRAMMAR")

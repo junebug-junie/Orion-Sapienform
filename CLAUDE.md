@@ -217,6 +217,7 @@ Required flow:
 7. Sync local `.env` from `.env_example` if any env template changed (I don't care what your workspace or gitignore says)
 8. Sync local `.env` from `.env_example` IN CASE YOU DIDN'T HEAR ME THE FIRST TWO TIMES!
 9. Sync local `.env` from `.env_example` if any env template changed, FOR THE LOVE OF PETER PAUL AND MARY
+10. ALWAYS USE ORION_BUS_URL=redis://<tailscale-node-ip-address.:6379/0. Full stop. Not bus-core, not redis, not “whatever the bus compose file says.” If you are uncertain, ask!
 10. Run focused checks.
 11. Run code review skill in a subagent.
 12. Fix review findings.

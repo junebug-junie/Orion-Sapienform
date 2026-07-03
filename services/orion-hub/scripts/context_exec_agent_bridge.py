@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from orion.schemas.context_exec import (
@@ -462,7 +463,11 @@ async def run_hub_agent_via_context_exec(
         or (route_debug or {}).get("llm_route")
         or "quick"
     )
-    body = build_context_exec_request(req=req, prompt=prompt, llm_profile=llm_profile)
+    # Built off the event loop: the flag-gated curiosity hint inside does a
+    # blocking Postgres read.
+    body = await asyncio.to_thread(
+        build_context_exec_request, req=req, prompt=prompt, llm_profile=llm_profile
+    )
     try:
         run = await run_context_exec(body)
     except ContextExecClientError as exc:

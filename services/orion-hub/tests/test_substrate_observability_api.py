@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -98,17 +98,21 @@ def _fake_engine(rows_by_table: dict[str, dict | None]):
     return fake_engine
 
 
-def _all_rows() -> dict[str, dict | None]:
+def _all_rows(presence_generated_at: datetime | None = None) -> dict[str, dict | None]:
+    # Presence rows are freshness-gated against wall-clock time, so default to now.
+    presence_at = presence_generated_at or datetime.now(timezone.utc)
     return {
         "substrate_self_state": {"self_state_json": _SELF_STATE, "generated_at": _NOW},
         "substrate_attention_broadcast_projection": {"projection_json": _BROADCAST, "generated_at": _NOW},
         "substrate_endogenous_curiosity_candidates": {"candidates_json": _CANDIDATES, "generated_at": _NOW},
-        "substrate_hub_presence": {"presence_json": _PRESENCE_ROW, "generated_at": _NOW},
+        "substrate_hub_presence": {"presence_json": _PRESENCE_ROW, "generated_at": presence_at},
     }
 
 
 def test_summary_full_contract_shape(client):
-    with patch.object(substrate_observability_routes, "_engine", return_value=_fake_engine(_all_rows())):
+    presence_at = datetime.now(timezone.utc)
+    rows = _all_rows(presence_generated_at=presence_at)
+    with patch.object(substrate_observability_routes, "_engine", return_value=_fake_engine(rows)):
         r = client.get("/api/substrate/observability/summary")
 
     assert r.status_code == 200
@@ -121,7 +125,24 @@ def test_summary_full_contract_shape(client):
     assert body["curiosity"]["gap_count"] == 2
     assert [s["evidence_summary"] for s in body["curiosity"]["signals"]] == ["gap a", "gap b"]
     assert body["hub_presence"]["connection_health"] == "active"
-    assert body["hub_presence"]["generated_at"] == _NOW.isoformat()
+    assert body["hub_presence"]["generated_at"] == presence_at.isoformat()
+
+
+def test_summary_stale_presence_row_falls_back_to_live_snapshot(client):
+    stale_at = datetime.now(timezone.utc) - timedelta(seconds=3600)
+    rows = _all_rows(presence_generated_at=stale_at)
+    hub_presence.record_turn(now=1000.0)
+    with patch.object(substrate_observability_routes, "_engine", return_value=_fake_engine(rows)):
+        with patch.object(hub_presence, "time") as fake_time:
+            fake_time.time.return_value = 1030.0
+            r = client.get("/api/substrate/observability/summary")
+
+    assert r.status_code == 200
+    presence = r.json()["hub_presence"]
+    # Persisted row is >600s old: its write-time connection_health is no longer
+    # truthful, so the route must answer from the in-process snapshot instead.
+    assert presence["last_turn_age_sec"] == 30.0
+    assert presence["generated_at"] != stale_at.isoformat()
 
 
 def test_summary_each_section_degrades_to_null(client):
@@ -170,7 +191,8 @@ def test_summary_curiosity_signals_capped_and_ranked(client):
         "candidates_json": [
             {"signal_type": "t", "signal_strength": i / 10.0, "evidence_summary": f"gap {i}"}
             for i in range(8)
-        ],
+        ]
+        + ["not-a-dict"],
         "generated_at": _NOW,
     }
     with patch.object(substrate_observability_routes, "_engine", return_value=_fake_engine(rows)):

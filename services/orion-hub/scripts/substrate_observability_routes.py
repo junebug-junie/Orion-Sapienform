@@ -24,6 +24,9 @@ logger = logging.getLogger("orion-hub.substrate_observability")
 router = APIRouter(prefix="/api/substrate/observability", tags=["substrate-observability"])
 
 _CURIOSITY_SIGNALS_LIMIT = 5
+# Same staleness gate the self-state runtime applies to substrate_hub_presence:
+# past this age the persisted connection_health is a lie (computed at write time).
+_PRESENCE_MAX_AGE_SEC = 600.0
 
 
 def _engine():
@@ -116,13 +119,14 @@ def _curiosity_section(engine) -> dict[str, Any] | None:
     candidates = _parse_json(row["candidates_json"])
     if not isinstance(candidates, list):
         return None
+    gaps = [c for c in candidates if isinstance(c, dict)]
     signals = sorted(
-        (c for c in candidates if isinstance(c, dict)),
+        gaps,
         key=lambda c: float(c.get("signal_strength") or 0.0),
         reverse=True,
     )[:_CURIOSITY_SIGNALS_LIMIT]
     return {
-        "gap_count": len(candidates),
+        "gap_count": len(gaps),
         "signals": [
             {
                 "signal_type": sig.get("signal_type"),
@@ -135,9 +139,18 @@ def _curiosity_section(engine) -> dict[str, Any] | None:
     }
 
 
+def _presence_row_fresh(generated_at: Any) -> bool:
+    if not isinstance(generated_at, datetime):
+        return False
+    if generated_at.tzinfo is None:
+        generated_at = generated_at.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - generated_at).total_seconds()
+    return age <= _PRESENCE_MAX_AGE_SEC
+
+
 def _hub_presence_section(engine) -> dict[str, Any] | None:
     # Prefer the persisted row (matches what self-state consumed); fall back
-    # to the in-process snapshot when the table is absent or empty.
+    # to the in-process snapshot when the table is absent, empty, or stale.
     if engine is not None:
         try:
             row = _latest_row(
@@ -147,7 +160,7 @@ def _hub_presence_section(engine) -> dict[str, Any] | None:
                 WHERE presence_id = 'hub' LIMIT 1
                 """,
             )
-            if row:
+            if row and _presence_row_fresh(row.get("generated_at")):
                 presence = _parse_json(row["presence_json"])
                 if isinstance(presence, dict) and presence:
                     presence["generated_at"] = _iso(row.get("generated_at"))

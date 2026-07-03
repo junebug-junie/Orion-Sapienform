@@ -553,10 +553,9 @@ class BiometricsSubstrateStore:
                 text(
                     """
                     DELETE FROM substrate_endogenous_curiosity_candidates
-                    WHERE generated_at < :older_than
+                    WHERE generated_at < now() - interval '24 hours'
                     """
                 ),
-                {"older_than": now - timedelta(hours=24)},
             )
 
     def save_coalition_dwell(self, projection: AttentionBroadcastProjectionV1) -> None:
@@ -597,10 +596,9 @@ class BiometricsSubstrateStore:
                 text(
                     """
                     DELETE FROM substrate_coalition_dwell_log
-                    WHERE generated_at < :older_than
+                    WHERE generated_at < now() - interval '24 hours'
                     """
                 ),
-                {"older_than": now - timedelta(hours=24)},
             )
 
     def load_node_biometrics(self, projection_id: str) -> NodeBiometricsProjectionV1 | None:

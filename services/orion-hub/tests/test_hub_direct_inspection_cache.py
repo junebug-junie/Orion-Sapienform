@@ -34,3 +34,11 @@ def test_get_latest_returns_most_recent_room() -> None:
     latest = cache.get_latest()
     assert latest is not None
     assert latest["room_id"] in {"hub-direct", "other-room"}
+
+
+def test_websocket_handler_calls_inspection_cache_store() -> None:
+    """Regression: WS path must store routing_debug (parity with api_routes HTTP path)."""
+    ws_path = Path(__file__).resolve().parents[1] / "scripts" / "websocket_handler.py"
+    source = ws_path.read_text(encoding="utf-8")
+    assert "social_room_inspection_cache.store" in source
+    assert "is_social_room_payload(data)" in source

@@ -693,3 +693,5 @@ def test_build_social_inspection_debug_hub_direct_has_sections() -> None:
     assert snapshot["platform"] == "hub"
     assert snapshot["room_id"] == "hub-direct"
     assert "Hub-direct turn" in snapshot["summary"]
+    section_kinds = {section["section_kind"] for section in snapshot["sections"]}
+    assert {"routing", "context_window", "gif"}.issubset(section_kinds)

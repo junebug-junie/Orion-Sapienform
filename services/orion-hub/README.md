@@ -248,6 +248,21 @@ Routing-only live ramp gates:
 - `SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED` (default `false`)
 - `SUBSTRATE_AUTONOMY_ROUTING_ROLLBACK_DELTA_THRESHOLD` (default `-0.05`)
 
+### 5.3 Self-Observability panel (`Self` tab)
+
+Self-observability v2: the Hub surfaces Orion's own self-model in a dedicated
+**Self** tab (four cards: attention schema, coalition focus, curiosity gaps,
+hub presence) backed by `GET /api/substrate/observability/summary`. Every
+section degrades to `null` independently (missing table, unset
+`POSTGRES_URI`), so the panel renders partial truth instead of erroring.
+
+- Hub records chat-turn timestamps and mirrors a liveness snapshot to
+  `substrate_hub_presence` (`HUB_PRESENCE_WRITER_ENABLED`, default on;
+  apply `services/orion-sql-db/manual_migration_hub_presence_v1.sql`).
+- The Agent lane can prepend a one-line curiosity focus hint from fresh
+  endogenous candidates (`HUB_AGENT_CURIOSITY_HINT_ENABLED`, default off;
+  advisory only, structural gate, no keyword classification).
+
 ---
 
 ## 🚀 Running Hub

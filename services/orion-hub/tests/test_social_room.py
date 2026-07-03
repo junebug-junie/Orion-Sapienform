@@ -692,3 +692,4 @@ def test_build_social_inspection_debug_hub_direct_has_sections() -> None:
     assert len(snapshot["sections"]) >= 3
     assert snapshot["platform"] == "hub"
     assert snapshot["room_id"] == "hub-direct"
+    assert "Hub-direct turn" in snapshot["summary"]

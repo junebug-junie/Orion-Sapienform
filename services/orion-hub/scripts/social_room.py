@@ -905,7 +905,7 @@ def build_social_inspection_debug(
         hub_sections = build_hub_direct_inspection_sections(route_debug=route_debug, metadata=metadata)
         if hub_sections:
             inspection.sections.extend(hub_sections)
-            inspection.summary = inspection.summary or (
+            inspection.summary = (
                 f"Hub-direct turn · {len(inspection.sections)} sections · verb {route_debug.get('verb') or 'chat_social_room'}"
             )
     return SocialInspectionSnapshotV1.model_validate(inspection).model_dump(mode="json")

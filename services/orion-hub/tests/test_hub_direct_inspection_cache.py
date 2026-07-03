@@ -1,10 +1,18 @@
 from __future__ import annotations
 
-import importlib
+import importlib.util
+import sys
+from pathlib import Path
+
+CACHE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "social_room_inspection_cache.py"
+SPEC = importlib.util.spec_from_file_location("hub_social_room_inspection_cache", CACHE_PATH)
+assert SPEC and SPEC.loader
+cache = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = cache
+SPEC.loader.exec_module(cache)
 
 
 def test_store_social_room_inspection_from_route_debug() -> None:
-    cache = importlib.import_module("scripts.social_room_inspection_cache")
     cache._latest.clear()
     route_debug = {
         "verb": "chat_social_room",
@@ -20,7 +28,6 @@ def test_store_social_room_inspection_from_route_debug() -> None:
 
 
 def test_get_latest_returns_most_recent_room() -> None:
-    cache = importlib.import_module("scripts.social_room_inspection_cache")
     cache._latest.clear()
     cache.store("hub-direct", {"verb": "chat_social_room", "corr": "a"})
     cache.store("other-room", {"verb": "chat_social_room", "corr": "b"})

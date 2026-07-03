@@ -68,6 +68,10 @@ class EquilibriumService(BaseChassis):
             raw = await self.bus.redis.hgetall(settings.redis_state_key)
             for key, blob in raw.items():
                 try:
+                    if isinstance(key, (bytes, bytearray)):
+                        key = key.decode("utf-8")
+                    else:
+                        key = str(key)
                     data = json.loads(blob.decode("utf-8") if isinstance(blob, (bytes, bytearray)) else blob)
                     if isinstance(data, dict):
                         if "last_seen_ts" in data and isinstance(data["last_seen_ts"], str):

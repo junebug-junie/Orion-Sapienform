@@ -44,18 +44,19 @@ def _make_worker(store) -> BiometricsSubstrateWorker:
     return worker
 
 
-def test_write_prediction_error_node_upserts_when_flag_on(monkeypatch) -> None:
+def test_write_prediction_error_node_upserts_when_flag_on(monkeypatch, caplog) -> None:
     monkeypatch.setenv(_PREDICTION_ERROR_NODE_FLAG, "true")
     store = _FakeStore()
     worker = _make_worker(store)
     now = datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc)
 
-    worker._write_prediction_error_node(
-        node_id="node:substrate.execution",
-        error=0.42,
-        now=now,
-        reducer_key="execution_trajectory",
-    )
+    with caplog.at_level("INFO"):
+        worker._write_prediction_error_node(
+            node_id="node:substrate.execution",
+            error=0.42,
+            now=now,
+            reducer_key="execution_trajectory",
+        )
 
     assert len(store.calls) == 1
     call = store.calls[0]
@@ -67,6 +68,39 @@ def test_write_prediction_error_node_upserts_when_flag_on(monkeypatch) -> None:
     assert node.temporal.observed_at == now
     assert node.node_id == "node:substrate.execution"
     assert node.metadata["reducer_key"] == "execution_trajectory"
+
+    # Success-path visibility: one INFO line proving the write actually happened.
+    written_records = [
+        r for r in caplog.records if r.message.startswith("substrate_prediction_error_node_written")
+    ]
+    assert len(written_records) == 1
+    assert written_records[0].levelname == "INFO"
+    assert "node:substrate.execution" in written_records[0].message
+    assert "0.420" in written_records[0].message
+    assert "execution_trajectory" in written_records[0].message
+
+
+def test_write_prediction_error_node_warns_when_store_init_failed(monkeypatch, caplog) -> None:
+    monkeypatch.setenv(_PREDICTION_ERROR_NODE_FLAG, "true")
+    worker = _make_worker(None)
+    # Simulate store init failing/unavailable without depending on real env resolution.
+    monkeypatch.setattr(worker, "_get_substrate_graph_store", lambda **_: None)
+
+    with caplog.at_level("WARNING"):
+        worker._write_prediction_error_node(
+            node_id="node:substrate.transport",
+            error=0.5,
+            now=datetime(2026, 7, 1, 12, 0, 0, tzinfo=timezone.utc),
+            reducer_key="transport_bus",
+        )
+
+    skipped_records = [
+        r for r in caplog.records if r.message.startswith("substrate_prediction_error_node_skipped_no_store")
+    ]
+    assert len(skipped_records) == 1
+    assert skipped_records[0].levelname == "WARNING"
+    assert "node:substrate.transport" in skipped_records[0].message
+    assert "transport_bus" in skipped_records[0].message
 
 
 def test_write_prediction_error_node_noop_when_flag_off(monkeypatch) -> None:

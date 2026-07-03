@@ -299,6 +299,71 @@ def test_websocket_chat_path_exports_autonomy_payload_for_brain_lane(monkeypatch
     assert latest["autonomy_repository_status"]["source_available"] is True
 
 
+def test_websocket_chat_path_records_hub_presence(monkeypatch) -> None:
+    """The WS turn-completion path must mirror the HTTP path's best-effort
+    hub_presence.record_turn() call (services/orion-hub/scripts/api_routes.py),
+    so SelfStateV1.hub_presence stays populated for chat traffic that arrives
+    over /ws or /hub/ws instead of the HTTP /api/chat handler."""
+    import scripts.main as hub_main
+    import scripts.hub_presence as hub_presence
+
+    client = _FakeCortexClient()
+    monkeypatch.setattr(hub_main, "bus", object())
+    monkeypatch.setattr(hub_main, "cortex_client", client)
+    monkeypatch.setattr(hub_main, "tts_client", None)
+    monkeypatch.setattr(hub_main, "biometrics_cache", None)
+    monkeypatch.setattr(hub_main, "notification_cache", None)
+    monkeypatch.setattr(hub_main, "presence_state", None)
+
+    calls: list[float | None] = []
+    monkeypatch.setattr(hub_presence, "record_turn", lambda *a, **kw: calls.append(kw.get("now")))
+
+    ws = _FakeWebSocket(
+        {
+            "text_input": "hello from ws",
+            "mode": "brain",
+            "session_id": "sid-ws-presence",
+            "no_write": True,
+        }
+    )
+    asyncio.run(websocket_endpoint(ws))
+
+    assert len(calls) == 1
+
+
+def test_websocket_chat_path_presence_failure_never_blocks_chat(monkeypatch) -> None:
+    """record_turn() is best-effort: if it raises, the WS chat turn must still
+    complete and send a response (matches the HTTP path's bare `except Exception: pass`)."""
+    import scripts.main as hub_main
+    import scripts.hub_presence as hub_presence
+
+    client = _FakeCortexClient()
+    monkeypatch.setattr(hub_main, "bus", object())
+    monkeypatch.setattr(hub_main, "cortex_client", client)
+    monkeypatch.setattr(hub_main, "tts_client", None)
+    monkeypatch.setattr(hub_main, "biometrics_cache", None)
+    monkeypatch.setattr(hub_main, "notification_cache", None)
+    monkeypatch.setattr(hub_main, "presence_state", None)
+
+    def _boom(*a, **kw):
+        raise RuntimeError("presence write blew up")
+
+    monkeypatch.setattr(hub_presence, "record_turn", _boom)
+
+    ws = _FakeWebSocket(
+        {
+            "text_input": "hello from ws",
+            "mode": "brain",
+            "session_id": "sid-ws-presence-fail",
+            "no_write": True,
+        }
+    )
+    asyncio.run(websocket_endpoint(ws))
+
+    responses = [msg for msg in ws.sent if isinstance(msg, dict) and isinstance(msg.get("llm_response"), str)]
+    assert responses
+
+
 def test_handle_chat_request_marks_dream_workflow_as_metadata_only() -> None:
     payload = {
         "mode": "brain",

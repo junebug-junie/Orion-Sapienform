@@ -168,6 +168,12 @@ def build_context_exec_request(
     llm_profile_norm = normalize_llm_profile(llm_profile)
     if agent_repl_enabled():
         # First-class agent reasoning loop. No keyword classification on this lane.
+        # Curiosity focus hint (flag-gated, advisory): structural gate only —
+        # lane + flag + fresh candidates. Failures leave the prompt untouched.
+        if bool(getattr(settings, "HUB_AGENT_CURIOSITY_HINT_ENABLED", False)):
+            from scripts.curiosity_hint import apply_curiosity_hint
+
+            prompt = apply_curiosity_hint(prompt)
         permissions = context_exec_permissions_for_llm_profile("agent")
         return ContextExecRequestV1(
             text=prompt,

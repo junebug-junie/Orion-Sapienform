@@ -84,3 +84,47 @@ def test_agent_lane_never_builds_investigation_v2(monkeypatch):
     monkeypatch.setattr(settings, "CONTEXT_EXEC_INVESTIGATION_V2_ENABLED", True, raising=False)
     body = build_context_exec_request(req=_req(CortexChatRequest, "x"), prompt="anything", llm_profile="agent")
     assert body.mode == "agent_repl"
+
+
+def test_curiosity_hint_off_by_default(monkeypatch):
+    build_context_exec_request, settings, CortexChatRequest = _hub_imports()
+    monkeypatch.setattr(settings, "HUB_AGENT_REPL_ENABLED", True, raising=False)
+    body = build_context_exec_request(
+        req=_req(CortexChatRequest, "x"), prompt="what am I missing?", llm_profile="agent"
+    )
+    assert body.text == "what am I missing?"
+
+
+def test_curiosity_hint_prepends_when_enabled(monkeypatch):
+    build_context_exec_request, settings, CortexChatRequest = _hub_imports()
+    import scripts.curiosity_hint as curiosity_hint
+
+    monkeypatch.setattr(settings, "HUB_AGENT_REPL_ENABLED", True, raising=False)
+    monkeypatch.setattr(settings, "HUB_AGENT_CURIOSITY_HINT_ENABLED", True, raising=False)
+    monkeypatch.setattr(
+        curiosity_hint,
+        "_fetch_fresh_candidates",
+        lambda: [{"signal_strength": 0.8, "evidence_summary": "open loop in transport"}],
+    )
+    body = build_context_exec_request(
+        req=_req(CortexChatRequest, "x"), prompt="what am I missing?", llm_profile="agent"
+    )
+    assert body.mode == "agent_repl"
+    assert body.text.startswith("[curiosity focus] Self-observed gaps: open loop in transport")
+    assert body.text.endswith("\n\nwhat am I missing?")
+
+
+def test_curiosity_hint_failure_leaves_prompt_untouched(monkeypatch):
+    build_context_exec_request, settings, CortexChatRequest = _hub_imports()
+    import scripts.curiosity_hint as curiosity_hint
+
+    def _boom():
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(settings, "HUB_AGENT_REPL_ENABLED", True, raising=False)
+    monkeypatch.setattr(settings, "HUB_AGENT_CURIOSITY_HINT_ENABLED", True, raising=False)
+    monkeypatch.setattr(curiosity_hint, "_fetch_fresh_candidates", _boom)
+    body = build_context_exec_request(
+        req=_req(CortexChatRequest, "x"), prompt="what am I missing?", llm_profile="agent"
+    )
+    assert body.text == "what am I missing?"

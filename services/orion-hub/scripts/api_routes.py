@@ -147,6 +147,7 @@ from .substrate_biometrics_routes import router as substrate_biometrics_router
 from .substrate_field_routes import router as substrate_field_router
 from .substrate_attention_routes import router as substrate_attention_router
 from .substrate_self_state_routes import router as substrate_self_state_router
+from .substrate_observability_routes import router as substrate_observability_router
 from .substrate_proposal_routes import router as substrate_proposal_router
 from .substrate_policy_routes import router as substrate_policy_router
 from .substrate_execution_dispatch_routes import router as substrate_execution_dispatch_router
@@ -158,6 +159,7 @@ router.include_router(substrate_biometrics_router)
 router.include_router(substrate_field_router)
 router.include_router(substrate_attention_router)
 router.include_router(substrate_self_state_router)
+router.include_router(substrate_observability_router)
 router.include_router(substrate_proposal_router)
 router.include_router(substrate_policy_router)
 router.include_router(substrate_execution_dispatch_router)
@@ -2083,6 +2085,15 @@ async def handle_chat_request(
         return inactive
 
     corr_id = str(uuid4())
+
+    # ─── Hub presence (best-effort, never blocks chat) ──────────────────
+    # One timestamp per turn; mirrors a liveness snapshot for self-state.
+    try:
+        from .hub_presence import record_turn
+
+        record_turn()
+    except Exception:
+        pass
 
     # ─── Substrate effect (best-effort, never blocks chat) ─────────────
     # Runs sync before the cortex call so the snapshot exists when the

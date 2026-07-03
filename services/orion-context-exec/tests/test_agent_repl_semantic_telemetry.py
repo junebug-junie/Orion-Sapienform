@@ -57,9 +57,31 @@ def test_detect_semantic_tools_empty_code() -> None:
     assert detect_semantic_tools_from_code("   ") == []
 
 
+def test_detect_semantic_tools_attribute_call() -> None:
+    code = 'result = module.repo_outline("runner.py")'
+    assert detect_semantic_tools_from_code(code) == ["repo_outline"]
+
+
+def test_detect_semantic_tools_source_order_in_comprehension() -> None:
+    code = '[repo_outline(p) for p in repo_find_files("*")]'
+    assert detect_semantic_tools_from_code(code) == ["repo_outline", "repo_find_files"]
+
+
+def test_detect_semantic_tools_unparseable_returns_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.agent_repl_telemetry as telemetry
+
+    def boom(_code: str):
+        raise ValueError("parse exploded")
+
+    monkeypatch.setattr(telemetry, "_detect_via_ast", boom)
+    monkeypatch.setattr(telemetry, "_detect_via_regex", boom)
+    assert detect_semantic_tools_from_code("repo_list()") == []
+
+
 @pytest.mark.asyncio
 async def test_run_agent_repl_single_semantic_tool_in_verb_trace(monkeypatch: pytest.MonkeyPatch) -> None:
     from app import runner as runner_mod
+    from app.events import ContextExecEventEmitter
     from app.runner import ContextExecRunner
     from app.rlm_engine import RLMEngine
     from orion.schemas.context_exec import (
@@ -67,12 +89,21 @@ async def test_run_agent_repl_single_semantic_tool_in_verb_trace(monkeypatch: py
         context_exec_permissions_for_llm_profile,
     )
 
+    live_steps: list[dict] = []
+    orig_agent_step = ContextExecEventEmitter.agent_step
+
+    async def capture_agent_step(self, **kwargs):
+        live_steps.append(kwargs)
+        return await orig_agent_step(self, **kwargs)
+
+    monkeypatch.setattr(ContextExecEventEmitter, "agent_step", capture_agent_step)
+
     class StubEngine(RLMEngine):
         engine_name = "smolcode"
 
         async def run(self, request, namespace, *, organ_runtime=None,
                       step_callbacks=None, max_steps=None, per_step_timeout=None,
-                      workspace_info=None, workspace=None):
+                      workspace_info=None, workspace=None, **_kwargs):
             if step_callbacks:
                 class _Step:
                     step_number = 0
@@ -95,6 +126,7 @@ async def test_run_agent_repl_single_semantic_tool_in_verb_trace(monkeypatch: py
         return LLMProfileSelection(requested=profile, selected="agent", route_used="agent")
 
     monkeypatch.setattr(runner_mod, "resolve_llm_profile", fake_resolve)
+    monkeypatch.setattr(runner_mod.settings, "orion_bus_enabled", False)
 
     req = ContextExecRequestV1(
         text="inspect context-exec",
@@ -106,6 +138,7 @@ async def test_run_agent_repl_single_semantic_tool_in_verb_trace(monkeypatch: py
     assert run.verb_trace[0].callable == "repo_find_files"
     assert run.runtime_debug["agent_repl_tool_counts"] == {"repo_find_files": 1}
     assert run.runtime_debug["agent_repl_semantic_tool_detected"] is True
+    assert live_steps[0]["tool_id"] == "repo_find_files"
 
 
 @pytest.mark.asyncio

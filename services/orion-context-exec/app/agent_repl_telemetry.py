@@ -38,13 +38,19 @@ def _call_name(node: ast.Call) -> str | None:
 
 
 def _detect_via_ast(code: str) -> list[str]:
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for node in ast.walk(ast.parse(code)):
+    tree = ast.parse(code)
+    hits: list[tuple[int, int, str]] = []
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         name = _call_name(node)
-        if name and name in AGENT_REPL_SEMANTIC_TOOLS and name not in seen:
+        if name and name in AGENT_REPL_SEMANTIC_TOOLS:
+            hits.append((node.lineno, node.col_offset, name))
+    hits.sort()
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for _, _, name in hits:
+        if name not in seen:
             seen.add(name)
             ordered.append(name)
     return ordered
@@ -69,3 +75,5 @@ def detect_semantic_tools_from_code(code: str) -> list[str]:
         return _detect_via_ast(code)
     except SyntaxError:
         return _detect_via_regex(code)
+    except Exception:
+        return []

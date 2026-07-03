@@ -1891,6 +1891,14 @@ async def handle_candidate(env: BaseEnvelope) -> None:
     if candidate.introspection:
         return
 
+    if bool(settings.spark_introspection_require_rich_meta) and qual < 1:
+        logger.info(
+            "spark_introspection_skipped trace_id=%s reason=requires_rich_meta qual=%s",
+            trace_id,
+            qual,
+        )
+        return
+
     global _warned_queue_inline_both
     q_on = bool(settings.spark_introspection_queue_enabled)
     inline_on = bool(settings.spark_introspection_inline_heavy_enabled)

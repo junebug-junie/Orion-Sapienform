@@ -528,12 +528,44 @@ def _spark_ingest_for_body(body: ChatBody) -> Dict[str, Any]:
         return {}
 
 
+_SKIP_SPARK_CANDIDATE_PURPOSES = frozenset({"introspect", "classify"})
+_INTROSPECT_SPARK_VERB = "introspect_spark"
+
+
+def _should_publish_spark_candidate(body: ChatBody, spark_meta: Dict) -> bool:
+    """
+    Chat-turn candidates feed spark-introspector; internal RPCs (introspect_spark,
+    memory classify) must not republish or they create self-sustaining heavy loops.
+    """
+    if not spark_meta or not spark_meta.get("latest_user_message"):
+        return False
+
+    opts = body.options or {}
+    if opts.get("skip_spark_candidate_publish"):
+        return False
+
+    purpose = str(opts.get("purpose") or "").strip().lower()
+    if purpose in _SKIP_SPARK_CANDIDATE_PURPOSES:
+        return False
+
+    verb = str(
+        getattr(body, "verb", None)
+        or opts.get("verb")
+        or spark_meta.get("trace_verb")
+        or ""
+    ).strip().lower()
+    if verb == _INTROSPECT_SPARK_VERB:
+        return False
+
+    if bool(opts.get("post_turn")) and bool(opts.get("skip_chat_stance_inputs")):
+        return False
+
+    return True
+
+
 def _maybe_publish_spark_introspect(body: ChatBody, spark_meta: Dict, response_text: str):
     try:
-        if not spark_meta:
-            return
-
-        if not spark_meta.get("latest_user_message"):
+        if not _should_publish_spark_candidate(body, spark_meta):
             return
 
         payload = {

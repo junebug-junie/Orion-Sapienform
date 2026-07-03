@@ -111,6 +111,8 @@ async def _llm_classify(
             "logprob_summary_only": False,
             "max_tokens": 24,
             "llm_route": route,
+            "purpose": "classify",
+            "skip_spark_candidate_publish": True,
             "chat_template_kwargs": {"enable_thinking": False},
         },
     )

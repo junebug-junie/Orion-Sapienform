@@ -62,6 +62,9 @@ class Settings(BaseSettings):
         False, alias="ORION_ENDOGENOUS_CURIOSITY_KILL_SWITCH"
     )
     endogenous_curiosity_budget: int = Field(3, alias="ORION_ENDOGENOUS_CURIOSITY_BUDGET")
+    endogenous_curiosity_min_repair_level: float = Field(
+        0.6, alias="ORION_ENDOGENOUS_CURIOSITY_MIN_REPAIR_LEVEL"
+    )
     endogenous_curiosity_tick_interval_sec: float = Field(
         60.0, alias="ORION_ENDOGENOUS_CURIOSITY_TICK_INTERVAL_SEC"
     )

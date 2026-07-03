@@ -57,6 +57,28 @@ def test_budget_cap_and_hard_ceiling() -> None:
     assert len(runaway) == HARD_BUDGET_CEILING
 
 
+def test_repair_pressure_at_moderate_level_seeds_when_threshold_lowered() -> None:
+    appraisal = SimpleNamespace(
+        dimensions={"level": 0.28},
+        causal_molecule_ids=["mol:chat"],
+        summary="moderate chat repair pressure",
+        confidence=0.65,
+    )
+    candidates = endogenous_curiosity_candidates(
+        repair_appraisal=appraisal,
+        config=_enabled(min_repair_level=0.25),
+    )
+    assert len(candidates) == 1
+    assert candidates[0].signal_strength == 0.28
+    assert candidates[0].evidence_summary == "moderate chat repair pressure"
+
+
+def test_min_repair_level_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("ORION_ENDOGENOUS_CURIOSITY_MIN_REPAIR_LEVEL", "0.25")
+    config = EndogenousCuriosityConfig.from_env()
+    assert config.min_repair_level == 0.25
+
+
 def test_repair_pressure_appraisal_seeds_candidate() -> None:
     appraisal = SimpleNamespace(
         dimensions={"level": 0.75},

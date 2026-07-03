@@ -186,15 +186,29 @@ def test_metacog_biometrics_cue_enrich_overflow_falls_back_to_cluster_only(monke
 
 def test_metacog_draft_section_keys_cover_template_fields():
     executor_module = _load_executor_module()
+    keys = executor_module._METACOG_DRAFT_CTX_LEN_KEYS
+    assert "biometrics_json" not in keys
+    assert "metacog_biometrics_cue" in keys
+    assert "spark_phi_narrative" in keys
+
     template = _load_template("log_orion_metacognition_draft.j2")
-    for key in executor_module._METACOG_DRAFT_CTX_LEN_KEYS:
+    for key in keys:
+        if key == "metacog_biometrics_cue":
+            continue  # Task 4 adds template field
         assert f"{{{{ {key} }}}}" in template or f"{{{{ {key}|" in template
 
 
 def test_metacog_enrich_section_keys_cover_template_fields():
     executor_module = _load_executor_module()
+    keys = executor_module._METACOG_ENRICH_CTX_LEN_KEYS
+    assert "biometrics_json" not in keys
+    assert "metacog_biometrics_cue" in keys
+    assert "spark_phi_narrative" in keys
+
     template = _load_template("log_orion_metacognition_enrich.j2")
-    for key in executor_module._METACOG_ENRICH_CTX_LEN_KEYS:
+    for key in keys:
+        if key == "metacog_biometrics_cue":
+            continue  # Task 4 adds template field
         assert f"{{{{ {key} }}}}" in template or f"{{{{ {key}|" in template
 
 

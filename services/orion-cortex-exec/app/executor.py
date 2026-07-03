@@ -163,11 +163,12 @@ _SYSTEM_TELEMETRY_KEYS = {
 _METACOG_DRAFT_CTX_LEN_KEYS: tuple[str, ...] = (
     "context_summary",
     "spark_state_json",
+    "spark_phi_narrative",
     "turn_effect_json",
     "recent_turn_effect_alerts_json",
     "turn_effect_policy_json",
     "turn_effect_explanations_json",
-    "biometrics_json",
+    "metacog_biometrics_cue",
 )
 
 _METACOG_ENRICH_CTX_LEN_KEYS: tuple[str, ...] = _METACOG_DRAFT_CTX_LEN_KEYS + ("collapse_json",)

@@ -137,7 +137,8 @@ async def test_run_agent_repl_returns_final_answer_as_final_text(monkeypatch):
         engine_name = "smolcode"
 
         async def run(self, request, namespace, *, organ_runtime=None,
-                      step_callbacks=None, max_steps=None, per_step_timeout=None):
+                      step_callbacks=None, max_steps=None, per_step_timeout=None,
+                      workspace_info=None, workspace=None, **_kwargs):
             # Simulate one emitted step via the callback, then a final answer.
             if step_callbacks:
                 class _Step:
@@ -172,8 +173,10 @@ async def test_run_agent_repl_returns_final_answer_as_final_text(monkeypatch):
     assert run.mode == "agent_repl"
     assert run.status == "ok"
     assert run.final_text == "orion-hub is the operator UI + chat gateway."
-    # step callback populated the visible trace
-    assert any(s.callable == "python_interpreter" for s in run.verb_trace)
+    # step callback populated the visible trace with semantic tool id
+    assert any(s.callable == "repo_list" for s in run.verb_trace)
+    assert run.runtime_debug["agent_repl_tool_counts"] == {"repo_list": 1}
+    assert run.runtime_debug["agent_repl_semantic_tool_detected"] is True
 
 
 @pytest.mark.asyncio
@@ -190,7 +193,8 @@ async def test_run_agent_repl_engine_error_sets_error_status(monkeypatch):
         engine_name = "smolcode"
 
         async def run(self, request, namespace, *, organ_runtime=None,
-                      step_callbacks=None, max_steps=None, per_step_timeout=None):
+                      step_callbacks=None, max_steps=None, per_step_timeout=None,
+                      workspace_info=None, workspace=None, **_kwargs):
             return {"error": "boom", "engine": "smolcode", "mode": request.mode}
 
     r = ContextExecRunner(engine=StubEngine())
@@ -229,7 +233,8 @@ async def test_run_agent_repl_timeout_sets_timeout_status(monkeypatch):
         engine_name = "smolcode"
 
         async def run(self, request, namespace, *, organ_runtime=None,
-                      step_callbacks=None, max_steps=None, per_step_timeout=None):
+                      step_callbacks=None, max_steps=None, per_step_timeout=None,
+                      workspace_info=None, workspace=None, **_kwargs):
             await asyncio.sleep(5)
 
     r = ContextExecRunner(engine=StubEngine())

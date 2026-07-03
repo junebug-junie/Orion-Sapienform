@@ -34,6 +34,7 @@ from scripts.social_room import (
     is_social_room_payload,
     social_room_client_meta,
 )
+from scripts import social_room_inspection_cache
 from scripts.cortex_chat_display import hub_effective_chat_text
 from scripts.context_exec_agent_bridge import run_hub_agent_via_context_exec, should_use_context_exec_agent_lane
 from scripts.trace_payloads import extract_agent_trace_payload
@@ -1246,6 +1247,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 cortex_corr_id=cortex_corr_id,
                 root_correlation_id=str(root_corr).strip() if root_corr else None,
             )
+            if is_social_room_payload(data):
+                _social_room_id = str((data.get("external_room") or {}).get("room_id") or "").strip()
+                if _social_room_id and route_debug:
+                    social_room_inspection_cache.store(_social_room_id, route_debug)
             ws_payload = {
                 "llm_response": orion_response_text,
                 # Parity with HTTP /api/chat: lets the UI coalesce if primary string ever lags `raw.final_text`

@@ -97,6 +97,133 @@ def _candidate_bucket(candidates: Iterable[Dict[str, Any]], *, decision: str) ->
     return [item for item in candidates if str(item.get("inclusion_decision") or "") == decision]
 
 
+def build_hub_direct_inspection_sections(
+    *,
+    route_debug: Dict[str, Any],
+    metadata: Dict[str, Any] | None = None,
+) -> list[SocialInspectionSectionV1]:
+    """Materialize hub-local inspection sections when bridge turn-policy surfaces are absent."""
+    debug = dict(route_debug or {})
+    meta = dict(metadata or {})
+    sections: list[SocialInspectionSectionV1] = []
+
+    verb = _compact_text(debug.get("verb") or meta.get("verb"), limit=80)
+    mode = _compact_text(debug.get("mode") or debug.get("selected_ui_route"), limit=40)
+    llm_route = _compact_text((debug.get("options") or {}).get("llm_route") or debug.get("llm_route"), limit=40)
+    social_mode = _compact_text(debug.get("social_room_mode"), limit=40)
+    routing_selected = [item for item in (f"verb={verb}" if verb else "", f"mode={mode}" if mode else "", f"compute={llm_route}" if llm_route else "", f"social_room_mode={social_mode}" if social_mode else "") if item]
+    routing_section = _make_section(
+        section_kind="routing",
+        included=[],
+        selected=routing_selected,
+        softened=[],
+        excluded=[],
+        why="Hub-direct routing uses chat_social_room; compute lane comes from the Hub Compute dropdown.",
+        traces=[
+            _trace(
+                trace_kind="hub_direct_route",
+                decision_state="active",
+                summary=f"{verb or 'chat_social_room'} on compute lane {llm_route or 'quick'}",
+                why="Social room toggle forces the social verb; llm_route is orthogonal.",
+            )
+        ],
+        metadata={"source": "hub_direct"},
+    )
+    if routing_section is not None:
+        sections.append(routing_section)
+
+    recall_profile = _compact_text(debug.get("recall_profile") or (debug.get("options") or {}).get("recall_profile"), limit=80)
+    recall_enabled = debug.get("recall_enabled")
+    recall_selected = [
+        item
+        for item in (
+            f"profile={recall_profile}" if recall_profile else "",
+            f"enabled={recall_enabled}" if recall_enabled is not None else "",
+            "lane=social",
+        )
+        if item
+    ]
+    context_section = _make_section(
+        section_kind="context_window",
+        included=[],
+        selected=recall_selected,
+        softened=[],
+        excluded=[],
+        why="Hub-direct recall uses social.room.v1 when enabled.",
+        traces=[
+            _trace(
+                trace_kind="hub_direct_recall",
+                decision_state="active",
+                summary=recall_profile or "social.room.v1",
+                why="Recall profile is pinned for social_room turns.",
+            )
+        ],
+    )
+    if context_section is not None:
+        sections.append(context_section)
+
+    posture = _compact_text(debug.get("social_redaction_posture") or meta.get("social_redaction_posture"), limit=40)
+    epistemic_section = _make_section(
+        section_kind="epistemic",
+        included=[],
+        selected=[f"redaction_posture={posture}"] if posture else [],
+        softened=[],
+        excluded=[],
+        why="Redaction posture gates keyword blocklist and artifact scope defaults.",
+        traces=[],
+    )
+    if epistemic_section is not None:
+        sections.append(epistemic_section)
+
+    skill_selection = debug.get("social_skill_selection") if isinstance(debug.get("social_skill_selection"), dict) else {}
+    skill_result = debug.get("social_skill_result") if isinstance(debug.get("social_skill_result"), dict) else {}
+    if skill_selection.get("selected_skill") or skill_result.get("summary"):
+        skill_section = _make_section(
+            section_kind="artifact_dialogue",
+            included=[_safe_text(skill_result.get("summary"), limit=180)] if skill_result.get("summary") else [],
+            selected=[_compact_text(skill_selection.get("selected_skill"), limit=80)] if skill_selection.get("selected_skill") else [],
+            softened=[],
+            excluded=[],
+            why="Deterministic social skill surfacing ran before the LLM reply.",
+            traces=[],
+        )
+        if skill_section is not None:
+            sections.append(skill_section)
+
+    safety_section = _make_section(
+        section_kind="safety",
+        included=[],
+        selected=[f"posture={posture}"] if posture else ["bounded recall"],
+        softened=[],
+        excluded=[],
+        why="Hub-direct keeps PII regex hygiene regardless of posture.",
+        traces=[],
+    )
+    if safety_section is not None:
+        sections.append(safety_section)
+
+    gif_section = _make_section(
+        section_kind="gif",
+        included=[],
+        selected=["hub_direct — GIF policy N/A (bridge-only)"],
+        softened=[],
+        excluded=[],
+        why="GIF observe/policy/post lives in orion-social-room-bridge, not Hub websocket chat.",
+        traces=[
+            _trace(
+                trace_kind="hub_direct_gif",
+                decision_state="omitted",
+                summary="GIF policy N/A (bridge-only)",
+                why="Bridge-only transport seam; Hub UI is text-only.",
+            )
+        ],
+    )
+    if gif_section is not None:
+        sections.append(gif_section)
+
+    return sections
+
+
 def build_social_inspection_snapshot(
     *,
     platform: str,

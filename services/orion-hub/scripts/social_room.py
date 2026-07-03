@@ -4,7 +4,7 @@ import logging
 import re
 from typing import Any, Dict, Iterable, List, Literal, Optional, Tuple
 
-from orion.inspection.social import build_social_inspection_snapshot
+from orion.inspection.social import build_hub_direct_inspection_sections, build_social_inspection_snapshot
 from orion.schemas.social_chat import (
     SocialConceptEvidenceV1,
     SocialGroundingStateV1,
@@ -898,6 +898,16 @@ def build_social_inspection_debug(
             inspection.participant_id or "room",
             inspection.metadata.get("safety_omissions"),
         )
+    hub_direct = str(
+        route_debug.get("social_room_mode") or payload.get("social_room_mode") or ""
+    ).strip().lower() == "hub_direct"
+    if hub_direct:
+        hub_sections = build_hub_direct_inspection_sections(route_debug=route_debug, metadata=metadata)
+        if hub_sections:
+            inspection.sections.extend(hub_sections)
+            inspection.summary = inspection.summary or (
+                f"Hub-direct turn · {len(inspection.sections)} sections · verb {route_debug.get('verb') or 'chat_social_room'}"
+            )
     return SocialInspectionSnapshotV1.model_validate(inspection).model_dump(mode="json")
 
 

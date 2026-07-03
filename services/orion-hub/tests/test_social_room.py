@@ -666,3 +666,29 @@ def test_safe_recall_relaxed_posture_does_not_suppress_blocked_memory_snippets()
     assert strict_result.snippets == []
     assert relaxed_result.snippets
     assert "private journal" in relaxed_result.snippets[0]
+
+
+def test_build_social_inspection_debug_hub_direct_has_sections() -> None:
+    payload = {
+        "chat_profile": "social_room",
+        "social_room_mode": "hub_direct",
+        "external_room": {"platform": "hub", "room_id": "hub-direct"},
+        "external_participant": {"participant_id": "juniper"},
+    }
+    route_debug = {
+        "verb": "chat_social_room",
+        "mode": "brain",
+        "llm_route": "chat",
+        "social_room_mode": "hub_direct",
+        "recall_profile": "social.room.v1",
+        "recall_enabled": True,
+        "social_redaction_posture": "strict",
+    }
+    snapshot = hub_social_room.build_social_inspection_debug(
+        payload=payload,
+        route_debug=route_debug,
+        metadata={"social_redaction_posture": "strict"},
+    )
+    assert len(snapshot["sections"]) >= 3
+    assert snapshot["platform"] == "hub"
+    assert snapshot["room_id"] == "hub-direct"

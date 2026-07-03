@@ -120,6 +120,27 @@ def test_metacog_biometrics_cue_missing_biometrics():
     assert parsed["status"] == "missing"
 
 
+def test_metacog_context_service_sets_biometrics_cue_from_cluster(monkeypatch):
+    executor_module = _load_executor_module()
+    from orion.schemas.telemetry.biometrics import BiometricsClusterV1
+
+    cluster = BiometricsClusterV1(
+        composites={"strain": 0.55, "homeostasis": 0.66, "stability": 0.77},
+        constraint="NONE",
+    )
+    biometrics_context = executor_module._default_biometrics_context(
+        status="fresh", reason="state_service"
+    )
+    biometrics_context["cluster"] = cluster.model_dump(mode="json")
+    ctx = {"biometrics": biometrics_context}
+    ctx["metacog_biometrics_cue"] = executor_module._metacog_biometrics_cue(ctx, phase="draft")
+
+    parsed = json.loads(ctx["metacog_biometrics_cue"])
+    assert parsed["strain"] == 0.55
+    assert parsed["homeostasis"] == 0.66
+    assert parsed["stability"] == 0.77
+
+
 def test_metacog_format_node_cue_line_skips_bad_numeric_fields():
     executor_module = _load_executor_module()
     line = executor_module._metacog_format_node_cue_line(

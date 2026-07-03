@@ -3610,6 +3610,11 @@ async def call_step_services(
                                 nodes = raw_biometrics.get("nodes")
                                 if isinstance(nodes, dict):
                                     biometrics_context["nodes"] = nodes
+                                cluster_raw = raw_biometrics.get("cluster")
+                                if isinstance(cluster_raw, dict):
+                                    biometrics_context["cluster"] = cluster_raw
+                                elif state_res.biometrics and state_res.biometrics.cluster:
+                                    biometrics_context["cluster"] = state_res.biometrics.cluster.model_dump(mode="json")
                         ctx["biometrics"] = biometrics_context
                         ctx["biometrics_json"] = json.dumps(biometrics_context, indent=2)
                         if state_res.ok and state_res.snapshot:
@@ -3749,6 +3754,10 @@ async def call_step_services(
                 ctx["trigger"] = trigger.model_dump(mode="json")
                 ctx["trigger_kind"] = trigger.trigger_kind
                 ctx["context_summary"] = summary_text
+                ctx["metacog_biometrics_cue"] = _metacog_biometrics_cue(ctx, phase="draft")
+                ctx["metacog_biometrics_cue_enrich"] = _metacog_biometrics_cue(ctx, phase="enrich")
+                if "biometrics_json" not in ctx:
+                    ctx["biometrics_json"] = json.dumps(ctx.get("biometrics") or {}, indent=2)
                 merged_result[service] = {"ok": True, "summary_len": len(summary_text)}
                 logs.append("ok <- MetacogContextService")
                 continue

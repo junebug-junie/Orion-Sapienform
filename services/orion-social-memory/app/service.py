@@ -264,7 +264,13 @@ class SocialMemoryService:
                 env = decoded.envelope
                 if env.kind != "social.turn.stored.v1":
                     continue
-                await self.process_social_turn(env.payload)
+                try:
+                    await self.process_social_turn(env.payload)
+                except Exception:
+                    logger.exception(
+                        "social_turn_stored_process_failed corr=%s",
+                        getattr(env, "correlation_id", None),
+                    )
 
     async def process_social_turn(self, payload: Dict[str, Any]) -> SocialRelationalMemoryUpdateV1:
         turn = SocialRoomTurnStoredV1.model_validate(payload)

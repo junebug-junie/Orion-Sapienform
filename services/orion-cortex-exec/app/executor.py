@@ -756,6 +756,91 @@ def _default_biometrics_context(*, status: str, reason: str) -> Dict[str, Any]:
     }
 
 
+_METACOG_BIOMETRICS_CUE_DRAFT_MAX_CHARS = 350
+_METACOG_BIOMETRICS_CUE_ENRICH_MAX_CHARS = 600
+_METACOG_BIOMETRICS_CUE_MAX_NODES = 4
+
+
+def _metacog_cluster_composites(biometrics: Dict[str, Any]) -> Dict[str, float]:
+    cluster = biometrics.get("cluster") if isinstance(biometrics.get("cluster"), dict) else {}
+    composite = cluster.get("composite") if isinstance(cluster.get("composite"), dict) else {}
+    composites = cluster.get("composites") if isinstance(cluster.get("composites"), dict) else {}
+    merged = dict(composites)
+    merged.update({k: v for k, v in composite.items() if k not in merged})
+    out: Dict[str, float] = {}
+    for key in ("strain", "homeostasis", "stability"):
+        raw = merged.get(key)
+        if raw is not None:
+            try:
+                out[key] = round(float(raw), 2)
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def _metacog_format_node_cue_line(node_id: str, node_data: Any) -> str:
+    if not isinstance(node_data, dict):
+        return f"{node_id}: unknown"[:80]
+    status = str(node_data.get("status") or "OK")
+    summary = node_data.get("summary") if isinstance(node_data.get("summary"), dict) else {}
+    composites = summary.get("composites") if isinstance(summary.get("composites"), dict) else {}
+    pressures = summary.get("pressures") if isinstance(summary.get("pressures"), dict) else {}
+    parts = [f"{node_id}:"]
+    if status.upper() not in {"OK", "FRESH"}:
+        parts.append(f"status={status}")
+    strain = composites.get("strain")
+    if strain is not None:
+        parts.append(f"strain={float(strain):.2f}")
+    gpu = pressures.get("gpu")
+    if gpu is None:
+        gpu = pressures.get("gpu_util")
+    if gpu is not None:
+        parts.append(f"gpu={float(gpu):.2f}")
+    if len(parts) == 1:
+        parts.append("ok")
+    return " ".join(parts)[:80]
+
+
+def _metacog_biometrics_cue(ctx: Dict[str, Any], *, phase: str) -> str:
+    biometrics = ctx.get("biometrics")
+    if not isinstance(biometrics, dict):
+        payload: Dict[str, Any] = {"status": "missing", "reason": "no_biometrics_ctx"}
+        return json.dumps(payload, separators=(",", ":"))
+
+    status = str(biometrics.get("status") or "missing")
+    constraint = str(biometrics.get("constraint") or "NONE")
+    composites = _metacog_cluster_composites(biometrics)
+
+    if phase == "enrich":
+        cluster_payload: Dict[str, Any] = {"constraint": constraint}
+        cluster_payload.update(composites)
+        enrich_payload: Dict[str, Any] = {"cluster": cluster_payload}
+        nodes_obj = biometrics.get("nodes") if isinstance(biometrics.get("nodes"), dict) else {}
+        node_lines: list[str] = []
+        for node_id in sorted(nodes_obj.keys())[:_METACOG_BIOMETRICS_CUE_MAX_NODES]:
+            node_lines.append(_metacog_format_node_cue_line(str(node_id), nodes_obj[node_id]))
+        if node_lines:
+            enrich_payload["nodes"] = node_lines
+        cue = json.dumps(enrich_payload, separators=(",", ":"))
+        if len(cue) > _METACOG_BIOMETRICS_CUE_ENRICH_MAX_CHARS:
+            cue = json.dumps({"cluster": cluster_payload}, separators=(",", ":"))
+        return cue[:_METACOG_BIOMETRICS_CUE_ENRICH_MAX_CHARS]
+
+    draft_payload: Dict[str, Any] = {
+        "status": status,
+        "constraint": constraint,
+        **composites,
+    }
+    freshness = biometrics.get("freshness_s")
+    if freshness is not None:
+        try:
+            draft_payload["freshness_s"] = int(round(float(freshness)))
+        except (TypeError, ValueError):
+            pass
+    cue = json.dumps(draft_payload, separators=(",", ":"))
+    return cue[:_METACOG_BIOMETRICS_CUE_DRAFT_MAX_CHARS]
+
+
 def _metacog_messages(
     prompt: str,
     *,

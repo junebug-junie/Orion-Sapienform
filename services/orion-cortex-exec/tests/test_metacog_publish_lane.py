@@ -63,6 +63,63 @@ def _draft_ctx(*, spark_blob: str = "{}") -> dict:
     }
 
 
+def test_metacog_biometrics_cue_draft_compact():
+    executor_module = _load_executor_module()
+    ctx = {
+        "biometrics": {
+            "status": "fresh",
+            "freshness_s": 12.0,
+            "constraint": "NONE",
+            "cluster": {
+                "composite": {"strain": 0.42, "homeostasis": 0.71, "stability": 0.88},
+            },
+            "nodes": {},
+        }
+    }
+    cue = executor_module._metacog_biometrics_cue(ctx, phase="draft")
+    assert len(cue) <= 350
+    parsed = json.loads(cue)
+    assert parsed["status"] == "fresh"
+    assert parsed["strain"] == 0.42
+    assert parsed["homeostasis"] == 0.71
+    assert parsed["stability"] == 0.88
+    assert parsed["freshness_s"] == 12
+
+
+def test_metacog_biometrics_cue_enrich_includes_node_lines():
+    executor_module = _load_executor_module()
+    ctx = {
+        "biometrics": {
+            "status": "fresh",
+            "constraint": "GPU_MEM",
+            "cluster": {
+                "composite": {"strain": 0.62, "homeostasis": 0.5, "stability": 0.44},
+            },
+            "nodes": {
+                "atlas": {
+                    "status": "OK",
+                    "summary": {"composites": {"strain": 0.71}, "pressures": {"gpu": 0.82}},
+                },
+                "athena": {"status": "OK", "summary": {}},
+            },
+        }
+    }
+    cue = executor_module._metacog_biometrics_cue(ctx, phase="enrich")
+    assert len(cue) <= 600
+    parsed = json.loads(cue)
+    assert "cluster" in parsed
+    assert isinstance(parsed.get("nodes"), list)
+    assert len(parsed["nodes"]) <= 4
+    assert any("atlas" in line for line in parsed["nodes"])
+
+
+def test_metacog_biometrics_cue_missing_biometrics():
+    executor_module = _load_executor_module()
+    cue = executor_module._metacog_biometrics_cue({}, phase="draft")
+    parsed = json.loads(cue)
+    assert parsed["status"] == "missing"
+
+
 def test_metacog_draft_section_keys_cover_template_fields():
     executor_module = _load_executor_module()
     template = _load_template("log_orion_metacognition_draft.j2")

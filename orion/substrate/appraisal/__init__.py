@@ -4,6 +4,7 @@ from .contract import (
     REPAIR_PRESSURE_CONTRACT_METADATA_KEY,
     REPAIR_PRESSURE_DEBUG_KEY,
     apply_repair_pressure_contract,
+    assemble_repair_contract_delta,
 )
 from .evidence import DETECTOR_NAME, extract_repair_evidence
 from .models import RepairEvidenceV1, RepairPressureAppraisalV1
@@ -44,6 +45,7 @@ __all__ = [
     "SubstrateEffectViewV1",
     "SubstrateOutcomeV1",
     "apply_repair_pressure_contract",
+    "assemble_repair_contract_delta",
     "appraise_repair_pressure",
     "build_substrate_effect_view",
     "confidence_label",

@@ -40,6 +40,55 @@ _RULES_CONCRETE_BIAS: tuple[str, ...] = (
     "include next concrete action",
 )
 
+_KIND_RULE_THRESHOLD = 0.65
+
+_KIND_RULES: dict[str, str] = {
+    "specificity_demand": "include file/module boundaries",
+    "trust_rupture": "acknowledge correction briefly",
+    "coherence_gap": "answer with one concrete operational path",
+    "repetition_failure": "address the repeated ask directly",
+    "operational_block": "include tests/acceptance checks; do not build section",
+    "explicit_repair_command": "obey constraint (span in evidence audit)",
+    "assistant_accountability_demand": "show assumptions",
+}
+
+
+def assemble_repair_contract_delta(
+    *,
+    contract_before: dict[str, Any],
+    level: float,
+    confidence: float,
+    kind_scores: dict[str, float],
+) -> dict[str, Any]:
+    """v2: level gates mode; active kind scores union rules."""
+    out = copy.deepcopy(contract_before)
+    if level >= _LEVEL_HIGH and confidence >= _CONFIDENCE_MIN:
+        out["mode"] = "repair_concrete"
+        base_rules = [
+            r for r in _RULES_REPAIR_CONCRETE if r not in _KIND_RULES.values()
+        ]
+    elif _LEVEL_MID <= level < _LEVEL_HIGH:
+        out["mode"] = "concrete_bias"
+        base_rules = [
+            r for r in _RULES_CONCRETE_BIAS if r not in _KIND_RULES.values()
+        ]
+    else:
+        return out
+
+    kind_rules = [
+        rule
+        for kind, rule in _KIND_RULES.items()
+        if float(kind_scores.get(kind, 0.0)) >= _KIND_RULE_THRESHOLD
+    ]
+    seen: set[str] = set()
+    merged: list[str] = []
+    for r in base_rules + kind_rules:
+        if r not in seen:
+            seen.add(r)
+            merged.append(r)
+    out["rules"] = merged
+    return out
+
 
 def _evidence_kinds_from_dimensions(dims: dict[str, float]) -> list[str]:
     candidate_kinds = (

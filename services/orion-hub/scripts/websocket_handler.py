@@ -892,32 +892,23 @@ async def websocket_endpoint(websocket: WebSocket):
             substrate_snapshot = None
             pre_turn_bundle = None
 
-            if settings.ENABLE_PRE_TURN_APPRAISAL and bus is not None:
-                from scripts.pre_turn_appraisal_client import PreTurnAppraisalClient
-                from scripts.pre_turn_appraisal_wiring import apply_pre_turn_appraisal_bundle
-                from orion.schemas.pre_turn_appraisal import PreTurnAppraisalOptionsV1, PreTurnAppraisalRequestV1
-                from orion.substrate.appraisal.turn_window import build_turn_window
+            if settings.ENABLE_PRE_TURN_APPRAISAL:
+                from scripts.pre_turn_appraisal_wiring import run_pre_turn_appraisal_wiring
 
                 continuity_messages = [
                     m.model_dump(mode="json") if hasattr(m, "model_dump") else m
                     for m in (chat_req.messages or [])
-                ] or [{"role": "user", "content": transcript}]
-                turn_window = build_turn_window(continuity_messages)
-                pre_turn_bundle = await PreTurnAppraisalClient(bus).appraise(
-                    PreTurnAppraisalRequestV1(
-                        correlation_id=trace_id,
-                        session_id=str(session_id or "anonymous"),
-                        turn_window=turn_window,
-                        paradigms_requested=[
-                            p.strip()
-                            for p in settings.PRE_TURN_APPRAISAL_PARADIGMS.split(",")
-                            if p.strip()
-                        ],
-                        contract_before={"mode": "default"},
-                        options=PreTurnAppraisalOptionsV1(timeout_ms=settings.PRE_TURN_APPRAISAL_TIMEOUT_MS),
-                    )
+                ]
+                substrate_summary, pre_turn_bundle = await run_pre_turn_appraisal_wiring(
+                    chat_req,
+                    bus=bus,
+                    correlation_id=trace_id,
+                    session_id=str(session_id or "anonymous"),
+                    continuity_messages=continuity_messages or [{"role": "user", "content": transcript}],
+                    user_prompt=transcript,
+                    paradigms=settings.PRE_TURN_APPRAISAL_PARADIGMS,
+                    timeout_ms=settings.PRE_TURN_APPRAISAL_TIMEOUT_MS,
                 )
-                substrate_summary = apply_pre_turn_appraisal_bundle(chat_req, pre_turn_bundle, enabled=True)
             else:
                 substrate_summary, substrate_snapshot = run_substrate_effect_pipeline(
                     turn_id=trace_id,
@@ -945,14 +936,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 try:
                     from scripts.grammar_emit import build_chat_turn_grammar_events
                     from scripts.grammar_publish import publish_hub_chat_grammar_trace
+                    from scripts.pre_turn_appraisal_wiring import repair_pressure_grammar_scalars
 
-                    if pre_turn_bundle is not None:
-                        scalars = (pre_turn_bundle.grammar_scalars or {}).get("repair_pressure") or {}
-                        repair_pressure_level = float(scalars.get("level", 0.0))
-                        repair_pressure_confidence = float(scalars.get("confidence", 0.0))
-                    else:
-                        repair_pressure_level = float((substrate_summary or {}).get("level", 0.0))
-                        repair_pressure_confidence = float((substrate_summary or {}).get("confidence", 0.0))
+                    repair_pressure_level, repair_pressure_confidence = repair_pressure_grammar_scalars(
+                        pre_turn_bundle=pre_turn_bundle,
+                        substrate_summary=substrate_summary,
+                    )
                     _chat_grammar_events = build_chat_turn_grammar_events(
                         turn_id=trace_id,
                         session_id=str(session_id or "anonymous"),

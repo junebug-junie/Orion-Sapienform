@@ -2135,30 +2135,18 @@ async def handle_chat_request(
 
     if settings.ENABLE_PRE_TURN_APPRAISAL:
         from .main import bus
-        from .pre_turn_appraisal_client import PreTurnAppraisalClient
-        from .pre_turn_appraisal_wiring import apply_pre_turn_appraisal_bundle
-        from orion.schemas.pre_turn_appraisal import PreTurnAppraisalOptionsV1, PreTurnAppraisalRequestV1
-        from orion.substrate.appraisal.turn_window import build_turn_window
+        from .pre_turn_appraisal_wiring import run_pre_turn_appraisal_wiring
 
-        if bus is not None:
-            turn_window = build_turn_window(
-                continuity_messages or [{"role": "user", "content": user_prompt}]
-            )
-            pre_turn_bundle = await PreTurnAppraisalClient(bus).appraise(
-                PreTurnAppraisalRequestV1(
-                    correlation_id=corr_id,
-                    session_id=session_id,
-                    turn_window=turn_window,
-                    paradigms_requested=[
-                        p.strip()
-                        for p in settings.PRE_TURN_APPRAISAL_PARADIGMS.split(",")
-                        if p.strip()
-                    ],
-                    contract_before={"mode": "default"},
-                    options=PreTurnAppraisalOptionsV1(timeout_ms=settings.PRE_TURN_APPRAISAL_TIMEOUT_MS),
-                )
-            )
-            substrate_summary = apply_pre_turn_appraisal_bundle(req, pre_turn_bundle, enabled=True)
+        substrate_summary, pre_turn_bundle = await run_pre_turn_appraisal_wiring(
+            req,
+            bus=bus,
+            correlation_id=corr_id,
+            session_id=session_id,
+            continuity_messages=continuity_messages or [{"role": "user", "content": user_prompt}],
+            user_prompt=user_prompt,
+            paradigms=settings.PRE_TURN_APPRAISAL_PARADIGMS,
+            timeout_ms=settings.PRE_TURN_APPRAISAL_TIMEOUT_MS,
+        )
     else:
         substrate_summary, substrate_snapshot = run_substrate_effect_pipeline(
             turn_id=corr_id,

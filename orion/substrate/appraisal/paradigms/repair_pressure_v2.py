@@ -50,6 +50,8 @@ def _resolve_weights_path(weights_path: str) -> Path:
 
 def load_repair_weights(weights_path: str) -> dict[str, float]:
     resolved = _resolve_weights_path(weights_path)
+    if not resolved.is_file():
+        return {}
     raw = yaml.safe_load(resolved.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         return {}
@@ -216,6 +218,16 @@ class RepairPressureV2Paradigm:
         kind_scores = {ev.evidence_kind: float(ev.score) for ev in evidence}
         confidences = {ev.evidence_kind: float(ev.confidence) for ev in evidence}
         weights = load_repair_weights(self._weights_path)
+        if not weights:
+            return TurnAppraisalParadigmSliceV1(
+                appraisal_kind="repair_pressure",
+                level=0.0,
+                confidence=0.0,
+                dimensions=dict(kind_scores),
+                evidence=evidence,
+                contract_delta=dict(req.contract_before or {"mode": "default"}),
+                notes=["weights_file_missing"],
+            )
         level, confidence = reduce_repair_level(
             kind_scores,
             confidences=confidences,

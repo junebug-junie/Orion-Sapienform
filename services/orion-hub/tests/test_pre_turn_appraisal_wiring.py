@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 from orion.schemas.cortex.contracts import CortexChatRequest
 from orion.schemas.pre_turn_appraisal import TurnAppraisalBundleV1, TurnAppraisalParadigmSliceV1
 from orion.substrate.appraisal import REPAIR_PRESSURE_CONTRACT_METADATA_KEY
@@ -45,3 +47,26 @@ def test_apply_bundle_skips_when_disabled() -> None:
     summary = apply_pre_turn_appraisal_bundle(req, bundle, enabled=False)
     assert summary is None
     assert req.metadata is None
+
+
+@pytest.mark.asyncio
+async def test_run_pre_turn_wiring_skips_when_bus_missing() -> None:
+    _wiring_path = Path(__file__).resolve().parents[1] / "scripts" / "pre_turn_appraisal_wiring.py"
+    _spec = importlib.util.spec_from_file_location("hub_pre_turn_appraisal_wiring_async", _wiring_path)
+    assert _spec and _spec.loader
+    _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+
+    req = CortexChatRequest(prompt="hi", mode="brain")
+    summary, bundle = await _mod.run_pre_turn_appraisal_wiring(
+        req,
+        bus=None,
+        correlation_id="00000000-0000-4000-8000-000000000004",
+        session_id="sess",
+        continuity_messages=[{"role": "user", "content": "hello"}],
+        user_prompt="hello",
+        paradigms="repair_pressure",
+        timeout_ms=800,
+    )
+    assert summary is None
+    assert bundle is None

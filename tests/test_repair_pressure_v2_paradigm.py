@@ -41,6 +41,40 @@ def test_reduce_repair_level_uses_yaml_weights() -> None:
 
 
 @pytest.mark.asyncio
+async def test_paradigm_fail_closed_on_missing_weights_file() -> None:
+    async def _llm(_prompt: str) -> dict:
+        return {
+            "text": "specificity_demand: YES\n",
+            "llm_uncertainty": {
+                "available": True,
+                "content": [
+                    {
+                        "token": "YES",
+                        "logprob": -0.12,
+                        "top_logprobs": [
+                            {"token": "YES", "logprob": -0.12},
+                            {"token": "NO", "logprob": -2.4},
+                        ],
+                    }
+                ],
+            },
+        }
+
+    paradigm = RepairPressureV2Paradigm(
+        llm_caller=_llm,
+        weights_path="/nonexistent/repair_pressure_weights.v2.yaml",
+    )
+    req = PreTurnAppraisalRequestV1(
+        correlation_id="c2",
+        session_id="s1",
+        turn_window=[TurnWindowMessageV1(role="user", content="be specific")],
+    )
+    slice_ = await paradigm.run(req)
+    assert slice_.level == 0.0
+    assert "weights_file_missing" in slice_.notes
+
+
+@pytest.mark.asyncio
 async def test_paradigm_fail_closed_on_empty_llm() -> None:
     paradigm = RepairPressureV2Paradigm(llm_caller=lambda _prompt: {"text": "", "llm_uncertainty": {"available": False}})
     req = PreTurnAppraisalRequestV1(

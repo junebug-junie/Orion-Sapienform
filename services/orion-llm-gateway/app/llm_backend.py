@@ -52,6 +52,7 @@ class RouteTarget:
     url: str
     backend: Optional[str] = None
     served_by: Optional[str] = None
+    model: Optional[str] = None
 
 
 def _run_async(coro: asyncio.Future | Coroutine[Any, Any, Any]) -> None:
@@ -94,10 +95,12 @@ def _load_route_targets() -> Dict[str, RouteTarget]:
                 if not url:
                     logger.warning("[LLM-GW] Route '%s' missing url/base_url", route)
                     continue
+                upstream_model = value.get("model") or value.get("model_id")
                 route_table[str(route)] = RouteTarget(
                     url=url,
                     backend=value.get("backend"),
                     served_by=value.get("served_by"),
+                    model=str(upstream_model) if upstream_model else None,
                 )
                 continue
             logger.warning("[LLM-GW] Route '%s' ignored (invalid value type %s)", route, type(value))
@@ -124,6 +127,7 @@ def _load_route_targets() -> Dict[str, RouteTarget]:
             url=target.url,
             backend=target.backend,
             served_by=served_by_defaults[route],
+            model=target.model,
         )
     return route_table
 

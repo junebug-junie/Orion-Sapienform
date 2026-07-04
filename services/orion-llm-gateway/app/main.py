@@ -253,7 +253,7 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
         len(messages),
     )
 
-    result = run_llm_chat(body)
+    result = await asyncio.to_thread(run_llm_chat, body)
     text = result.get("text") if isinstance(result, dict) else str(result)
 
     # Optional Spark/NeuralHost enrichments. These may be absent depending on

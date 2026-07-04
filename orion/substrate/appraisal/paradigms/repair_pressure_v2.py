@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import inspect
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -17,8 +19,11 @@ from orion.substrate.appraisal.models import EvidenceKind, RepairEvidenceV1
 from orion.substrate.appraisal.probe.logprob_runner import (
     kind_probe_to_evidence,
     parse_yes_no_lines,
+    score_binary_logprob,
     score_kind_from_answer_token,
 )
+
+logger = logging.getLogger("orion.substrate.repair_pressure_v2")
 
 _EVIDENCE_KINDS: tuple[EvidenceKind, ...] = (
     "specificity_demand",
@@ -134,6 +139,35 @@ def _normalize_logprob_content(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+_TEXT_FALLBACK_DETECTOR = "text_classifier_v2_fallback"
+_TEXT_FALLBACK_CONFIDENCE = 0.65
+_TEXT_FALLBACK_YES = (-0.15, -2.5)
+_TEXT_FALLBACK_NO = (-2.5, -0.15)
+
+
+def _evidence_from_parsed_text_only(parsed: dict[str, str]) -> list[RepairEvidenceV1]:
+    """When logprob tokens cannot align to YES/NO lines, use classifier text answers."""
+    evidence: list[RepairEvidenceV1] = []
+    for kind in _EVIDENCE_KINDS:
+        answer = parsed.get(kind)
+        if answer not in {"YES", "NO"}:
+            continue
+        yes_lp, no_lp = _TEXT_FALLBACK_YES if answer == "YES" else _TEXT_FALLBACK_NO
+        score = score_binary_logprob(logprob_yes=yes_lp, logprob_no=no_lp)
+        evidence.append(
+            RepairEvidenceV1(
+                evidence_id=f"ev_{kind}",
+                source_molecule_id="turn_window",
+                evidence_kind=kind,
+                detector=_TEXT_FALLBACK_DETECTOR,
+                score=score,
+                confidence=_TEXT_FALLBACK_CONFIDENCE,
+                features={"text_answer_yes": 1.0 if answer == "YES" else 0.0, "fallback": 1.0},
+            )
+        )
+    return evidence
+
+
 def _answer_token_entries(content: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for entry in content:
@@ -148,36 +182,37 @@ def _answer_token_entries(content: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 
 def _evidence_from_probe_response(payload: dict[str, Any]) -> list[RepairEvidenceV1]:
-    unc = payload.get("llm_uncertainty")
-    if isinstance(unc, dict) and unc.get("available") is False:
-        return []
-
-    text = str(payload.get("text") or "")
+    text = str(payload.get("text") or payload.get("content") or "")
     parsed = parse_yes_no_lines(text)
     if not parsed:
         return []
 
-    content = _normalize_logprob_content(payload)
-    if not content:
-        return []
+    unc = payload.get("llm_uncertainty")
+    if not isinstance(unc, dict):
+        meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+        unc = meta.get("llm_uncertainty")
 
-    answer_entries = _answer_token_entries(content)
-    if not answer_entries:
-        return []
+    logprob_usable = isinstance(unc, dict) and unc.get("available") is not False
+    content = _normalize_logprob_content(payload) if logprob_usable else []
+    answer_entries = _answer_token_entries(content) if content else []
 
     evidence: list[RepairEvidenceV1] = []
-    entry_idx = 0
-    for kind in _EVIDENCE_KINDS:
-        if kind not in parsed:
-            continue
-        if entry_idx >= len(answer_entries):
-            break
-        entry = answer_entries[entry_idx]
-        entry_idx += 1
-        scored = score_kind_from_answer_token(kind, entry)
-        if scored is None:
-            continue
-        evidence.append(kind_probe_to_evidence(scored))
+    if answer_entries:
+        entry_idx = 0
+        for kind in _EVIDENCE_KINDS:
+            if kind not in parsed:
+                continue
+            if entry_idx >= len(answer_entries):
+                break
+            entry = answer_entries[entry_idx]
+            entry_idx += 1
+            scored = score_kind_from_answer_token(kind, entry)
+            if scored is None:
+                continue
+            evidence.append(kind_probe_to_evidence(scored))
+
+    if not evidence:
+        evidence = _evidence_from_parsed_text_only(parsed)
     return evidence
 
 
@@ -205,6 +240,12 @@ class RepairPressureV2Paradigm:
         evidence = _evidence_from_probe_response(payload)
 
         if not evidence:
+            probe_text = str(payload.get("text") or payload.get("content") or "")
+            logger.warning(
+                "repair_pressure_probe_no_evidence corr=%s text_head=%r",
+                req.correlation_id,
+                probe_text[:240],
+            )
             return TurnAppraisalParadigmSliceV1(
                 appraisal_kind="repair_pressure",
                 level=0.0,

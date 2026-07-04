@@ -20,6 +20,21 @@ def _source() -> ServiceRef:
     return ServiceRef(name=settings.service_name, version=settings.service_version, node=settings.node_name)
 
 
+def normalize_llm_gateway_probe_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Map LLM gateway ChatResultPayload → repair probe shape (text + llm_uncertainty + raw)."""
+    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    text = payload.get("content") or payload.get("text") or ""
+    unc = payload.get("llm_uncertainty")
+    if not isinstance(unc, dict):
+        unc = meta.get("llm_uncertainty")
+    raw = payload.get("raw") if isinstance(payload.get("raw"), dict) else {}
+    return {
+        "text": text,
+        "llm_uncertainty": unc if isinstance(unc, dict) else {"available": False},
+        "raw": raw,
+    }
+
+
 async def _llm_probe_call(bus: OrionBusAsync, *, prompt: str, route: str, timeout_sec: float) -> dict[str, Any]:
     rpc_corr = str(uuid4())
     reply_channel = f"orion:exec:result:LLMGatewayService:{rpc_corr}"
@@ -48,7 +63,7 @@ async def _llm_probe_call(bus: OrionBusAsync, *, prompt: str, route: str, timeou
     decoded = bus.codec.decode(msg.get("data"))
     if not decoded.ok or not isinstance(decoded.envelope.payload, dict):
         return {"text": "", "llm_uncertainty": {"available": False}}
-    return decoded.envelope.payload
+    return normalize_llm_gateway_probe_payload(decoded.envelope.payload)
 
 
 async def handle_pre_turn_appraisal_request(env: BaseEnvelope) -> BaseEnvelope:
@@ -98,6 +113,19 @@ async def handle_pre_turn_appraisal_request(env: BaseEnvelope) -> BaseEnvelope:
                 after_mode = str((slice_.contract_delta or {}).get("mode") or before_mode)
                 if before_mode != after_mode:
                     metadata_attachments[REPAIR_PRESSURE_CONTRACT_METADATA_KEY] = dict(slice_.contract_delta)
+            logger.info(
+                "pre_turn_appraisal_paradigm_result corr=%s paradigm=%s level=%.3f confidence=%.3f "
+                "mode=%s evidence=%s notes=%s metadata_attached=%s",
+                req.correlation_id,
+                paradigm_name,
+                slice_.level,
+                slice_.confidence,
+                (slice_.contract_delta or {}).get("mode"),
+                len(slice_.evidence),
+                slice_.notes,
+                paradigm_name == "repair_pressure"
+                and REPAIR_PRESSURE_CONTRACT_METADATA_KEY in metadata_attachments,
+            )
         except Exception:
             logger.warning(
                 "pre_turn_appraisal_paradigm_failed corr=%s paradigm=%s",

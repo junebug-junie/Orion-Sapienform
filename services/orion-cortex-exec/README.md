@@ -22,10 +22,11 @@ Second Rabbit listener (`app/pre_turn_appraisal.py`) serves Hub pre-turn apprais
 4. Kind scores + weights (`REPAIR_PRESSURE_WEIGHTS_V2_PATH`) feed `assemble_repair_contract_delta()`; contract metadata attached when mode changes.
 5. Reply on `orion:cortex:pre_turn_appraisal:result:{correlation_id}` as `TurnAppraisalBundleV1`.
 
-**Operator enable** — Hub only: `ENABLE_PRE_TURN_APPRAISAL=true`. This listener is always registered when cortex-exec starts; no cortex-exec kill switch.
+**Operator enable** — Hub: `ENABLE_PRE_TURN_APPRAISAL=true`. Cortex-exec: **only one replica** may register the pre-turn listener (`ENABLE_PRE_TURN_APPRAISAL_HANDLER=true` on main `cortex-exec`; lane containers `chat` / `spark` / `background` must set `false` in compose to avoid RPC reply races).
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
+| `ENABLE_PRE_TURN_APPRAISAL_HANDLER` | `true` (main only) | Register Rabbit listener on `orion:cortex:pre_turn_appraisal:request`. Lane replicas: `false`. |
 | `REPAIR_PRESSURE_WEIGHTS_V2_PATH` | `config/substrate/repair_pressure_weights.v2.yaml` | Kind weights for level reduction. |
 | `REPAIR_PRESSURE_PROBE_ROUTE` | `quick` | LLM Gateway route for logprob probes. |
 | `CHANNEL_PRE_TURN_APPRAISAL_REQUEST` | `orion:cortex:pre_turn_appraisal:request` | Request channel. |

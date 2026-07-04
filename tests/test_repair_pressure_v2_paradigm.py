@@ -85,3 +85,77 @@ async def test_paradigm_fail_closed_on_empty_llm() -> None:
     slice_ = await paradigm.run(req)
     assert slice_.level == 0.0
     assert "no_repair_evidence" in slice_.notes
+
+
+@pytest.mark.asyncio
+async def test_paradigm_text_fallback_when_llm_uncertainty_unavailable() -> None:
+    kinds_text = "\n".join(
+        f"{kind}: YES"
+        for kind in (
+            "specificity_demand",
+            "trust_rupture",
+            "coherence_gap",
+            "repetition_failure",
+            "operational_block",
+            "explicit_repair_command",
+            "assistant_accountability_demand",
+        )
+    )
+
+    async def _llm(_prompt: str) -> dict:
+        return {
+            "content": kinds_text,
+            "meta": {"llm_uncertainty": {"available": False, "token_count_observed": 0}},
+            "raw": {},
+        }
+
+    paradigm = RepairPressureV2Paradigm(llm_caller=_llm)
+    req = PreTurnAppraisalRequestV1(
+        correlation_id="c4",
+        session_id="s1",
+        turn_window=[TurnWindowMessageV1(role="user", content="give me files and tests")],
+    )
+    slice_ = await paradigm.run(req)
+    assert slice_.level >= 0.45
+    assert "no_repair_evidence" not in slice_.notes
+
+
+@pytest.mark.asyncio
+async def test_paradigm_text_fallback_when_logprob_tokens_do_not_align() -> None:
+    kinds_text = "\n".join(f"{kind}: YES" for kind in (
+        "specificity_demand", "trust_rupture", "coherence_gap",
+        "repetition_failure", "operational_block", "explicit_repair_command",
+        "assistant_accountability_demand",
+    ))
+
+    async def _llm(_prompt: str) -> dict:
+        return {
+            "content": kinds_text,
+            "meta": {"llm_uncertainty": {"available": True, "token_count_observed": 40}},
+            "raw": {
+                "probs": [
+                    {
+                        "token": "Hello",
+                        "logprob": -0.2,
+                        "top_logprobs": [
+                            {"token": "Hello", "logprob": -0.2},
+                            {"token": "Hi", "logprob": -1.5},
+                        ],
+                    }
+                ]
+            },
+        }
+
+    paradigm = RepairPressureV2Paradigm(llm_caller=_llm)
+    req = PreTurnAppraisalRequestV1(
+        correlation_id="c3",
+        session_id="s1",
+        turn_window=[
+            TurnWindowMessageV1(role="user", content="stop hand waving"),
+            TurnWindowMessageV1(role="assistant", content="here is another overview"),
+            TurnWindowMessageV1(role="user", content="give me files and tests"),
+        ],
+    )
+    slice_ = await paradigm.run(req)
+    assert slice_.level >= 0.45
+    assert slice_.contract_delta.get("mode") in {"repair_concrete", "concrete_bias"}

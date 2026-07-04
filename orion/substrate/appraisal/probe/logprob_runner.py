@@ -10,7 +10,10 @@ from orion.substrate.appraisal.models import EvidenceKind, RepairEvidenceV1
 
 
 DETECTOR_NAME = "logprob_probe_v2"
-_LINE_RE = re.compile(r"^([a-z_]+):\s*(YES|NO)\s*$", re.IGNORECASE | re.MULTILINE)
+_LINE_RE = re.compile(
+    r"^\s*(?:[-*•]|\d+[.)])?\s*([a-z_]+)\s*:\s*(YES|NO)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 def _new_evidence_id() -> str:

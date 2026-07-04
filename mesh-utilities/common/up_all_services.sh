@@ -63,6 +63,10 @@ fi
 
 cd "$REPO_ROOT" || exit 2
 
+# cortex-exec multi-lane helpers (explicit build + fleet verification)
+# shellcheck source=cortex_exec_fleet_helpers.sh
+source "$SCRIPT_DIR/cortex_exec_fleet_helpers.sh"
+
 if [[ ! -f "$ROOT_ENV" ]]; then
   echo "ERROR: missing $REPO_ROOT/$ROOT_ENV (run from repo root or ensure it exists)." >&2
   exit 2
@@ -128,6 +132,14 @@ up_one() {
   local svc="$1"
   local cmd
   cmd="$(compose_cmd "$svc")" || return 2
+
+  if [[ "$svc" == "$CORTEX_EXEC_SERVICE_DIR" ]]; then
+    set +e
+    up_cortex_exec_fleet "$cmd" "$REPO_ROOT"
+    local rc=$?
+    set -e
+    return $rc
+  fi
 
   echo ""
   echo "=== [$svc] build + up ==="

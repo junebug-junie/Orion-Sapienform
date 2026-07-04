@@ -85,7 +85,7 @@ def score_kind_from_answer_token(kind: EvidenceKind, entry: dict[str, Any]) -> K
 
 def kind_probe_to_evidence(scored: KindProbeScore, *, source_molecule_id: str = "turn_window") -> RepairEvidenceV1:
     margin = float(scored.features.get("margin", scored.confidence))
-    evidence_confidence = min(1.0, max(0.0, margin / 3.0))
+    evidence_confidence = min(1.0, max(0.0, margin / 2.0))
     return RepairEvidenceV1(
         evidence_id=_new_evidence_id(),
         source_molecule_id=source_molecule_id,

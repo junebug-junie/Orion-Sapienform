@@ -1,0 +1,7 @@
+{
+  "id": "neutral",
+  "class": "neutral",
+  "turn_window": [{"role": "user", "content": "what is the weather like?"}],
+  "mock_probe_lines": {},
+  "expect": {"level_max": 0.25}
+}

@@ -12,11 +12,15 @@ def test_parse_yes_no_lines() -> None:
 specificity_demand: YES
 trust_rupture: NO
 coherence_gap: yes
+- operational_block: YES
+1. explicit_repair_command: NO
 """
     parsed = parse_yes_no_lines(text)
     assert parsed["specificity_demand"] == "YES"
     assert parsed["trust_rupture"] == "NO"
     assert parsed["coherence_gap"] == "YES"
+    assert parsed["operational_block"] == "YES"
+    assert parsed["explicit_repair_command"] == "NO"
 
 
 def test_score_binary_logprob_sigmoid() -> None:

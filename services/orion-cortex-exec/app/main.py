@@ -26,6 +26,7 @@ from orion.schemas.cortex.schemas import PlanExecutionRequest, PlanExecutionResu
 from orion.schemas.platform import CoreEventV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.metacognitive_trace import MetacognitiveTraceEnvelope, MetacognitiveTraceV1
+from orion.substrate.appraisal.contract import REPAIR_PRESSURE_CONTRACT_METADATA_KEY
 from .settings import settings
 from .router import PlanRouter
 from .dream_publish import build_dream_publish_envelope
@@ -64,12 +65,65 @@ def _uuid_from_correlation_id(value: str) -> UUID:
         return uuid5(NAMESPACE_URL, str(value))
 
 
+def _request_metadata_sources(
+    *,
+    req_extra: dict[str, Any],
+    ctx: dict[str, Any] | None,
+) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    ctx_meta = (ctx or {}).get("metadata")
+    if isinstance(ctx_meta, dict):
+        merged.update(ctx_meta)
+    for key, value in req_extra.items():
+        if key not in merged:
+            merged[key] = value
+    return merged
+
+
+def _substrate_trace_fields(incoming: dict[str, Any]) -> dict[str, Any]:
+    contract = incoming.get(REPAIR_PRESSURE_CONTRACT_METADATA_KEY)
+    contract_dict = dict(contract) if isinstance(contract, dict) else None
+    summary = incoming.get("substrate_effect_summary")
+    summary_dict = dict(summary) if isinstance(summary, dict) else None
+    level = None
+    level_label = None
+    changed_behavior = None
+    if summary_dict is not None:
+        level = summary_dict.get("level")
+        level_label = summary_dict.get("level_label")
+        changed_behavior = summary_dict.get("changed_behavior")
+    elif contract_dict is not None:
+        mode = str(contract_dict.get("mode") or "")
+        changed_behavior = mode or None
+    attached = bool(contract_dict) or bool(summary_dict)
+    out: dict[str, Any] = {
+        "repair_pressure_contract": contract_dict,
+        "substrate_effect_attached": attached,
+        "repair_pressure_mode": (contract_dict or {}).get("mode") if contract_dict else None,
+        "repair_pressure_level": level,
+        "repair_pressure_level_label": level_label,
+        "repair_pressure_changed_behavior": changed_behavior,
+    }
+    if summary_dict is not None:
+        out["substrate_effect_summary"] = {
+            "appraisal_kind": summary_dict.get("appraisal_kind"),
+            "level": summary_dict.get("level"),
+            "level_label": summary_dict.get("level_label"),
+            "confidence": summary_dict.get("confidence"),
+            "changed_behavior": summary_dict.get("changed_behavior"),
+            "evidence_count": summary_dict.get("evidence_count"),
+        }
+    return out
+
+
 def build_cognition_trace_metadata(
     res: PlanExecutionResult,
     *,
     req_extra: dict | None = None,
+    ctx: dict | None = None,
 ) -> dict[str, Any]:
     extra = req_extra or {}
+    incoming = _request_metadata_sources(req_extra=extra, ctx=ctx)
     steps = res.steps or []
     last_step = steps[-1].step_name if steps else None
     stance_present = any(
@@ -98,9 +152,10 @@ def build_cognition_trace_metadata(
         "final_text_present": bool((res.final_text or "").strip()),
         "canonical_final_step_name": last_step,
         "canonical_thought_source": thought_source,
-        "session_id": extra.get("session_id") or extra.get("sessionId"),
-        "message_id": extra.get("message_id") or extra.get("messageId"),
+        "session_id": extra.get("session_id") or extra.get("sessionId") or (ctx or {}).get("session_id"),
+        "message_id": extra.get("message_id") or extra.get("messageId") or (ctx or {}).get("message_id"),
         "root_correlation_id": extra.get("root_correlation_id"),
+        **_substrate_trace_fields(incoming),
     }
 
 
@@ -133,7 +188,7 @@ async def _publish_cognition_trace_for_plan_result(
         source_node=settings.node_name,
         recall_used=res.memory_used,
         recall_debug=res.recall_debug,
-        metadata=build_cognition_trace_metadata(res, req_extra=extra),
+        metadata=build_cognition_trace_metadata(res, req_extra=extra, ctx=ctx),
     )
 
     trace_envelope = CognitionTraceEnvelope(
@@ -850,11 +905,12 @@ async def main() -> None:
         pageindex_client_enabled,
     )
     logger.info(
-        "Starting cortex-exec lane=%s channel=%s bus=%s verb_intake=%s",
+        "Starting cortex-exec lane=%s channel=%s bus=%s verb_intake=%s pre_turn_handler=%s",
         settings.exec_lane,
         settings.channel_exec_request,
         settings.orion_bus_url,
         "on" if verb_listener is not None else "off",
+        "on" if settings.enable_pre_turn_appraisal_handler else "off",
     )
     _run_autonomy_graph_probe()
     await svc.bus.connect()
@@ -875,7 +931,8 @@ async def main() -> None:
 
     _rpc_bus = await fork_rpc_client(svc.bus)
     verb_runtime.bus = _rpc_bus
-    bind_pre_turn_appraisal_bus(_rpc_bus or svc.bus)
+    if settings.enable_pre_turn_appraisal_handler:
+        bind_pre_turn_appraisal_bus(_rpc_bus or svc.bus)
     logger.info("exec_rpc_bus_fork_ready")
     assert trace_listener is not None, "Trace listener not initialized"
     assert core_event_listener is not None, "Core event listener not initialized"
@@ -884,7 +941,10 @@ async def main() -> None:
             await verb_listener.start_background()
         await trace_listener.start_background()
         await core_event_listener.start_background()
-        await asyncio.gather(svc.start(), pre_turn_appraisal_svc.start(), health_task)
+        starters: list[Any] = [svc.start(), health_task]
+        if settings.enable_pre_turn_appraisal_handler:
+            starters.insert(1, pre_turn_appraisal_svc.start())
+        await asyncio.gather(*starters)
     finally:
         await _close_rpc_bus()
 

@@ -248,6 +248,10 @@ class Settings(BaseSettings):
         alias="REPAIR_PRESSURE_WEIGHTS_V2_PATH",
     )
     repair_pressure_probe_route: str = Field("quick", alias="REPAIR_PRESSURE_PROBE_ROUTE")
+    enable_pre_turn_appraisal_handler: bool = Field(
+        True,
+        alias="ENABLE_PRE_TURN_APPRAISAL_HANDLER",
+    )
     channel_pre_turn_appraisal_request: str = Field(
         "orion:cortex:pre_turn_appraisal:request",
         alias="CHANNEL_PRE_TURN_APPRAISAL_REQUEST",

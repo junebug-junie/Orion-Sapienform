@@ -83,6 +83,10 @@ async def run_pre_turn_appraisal_wiring(
         )
     )
     summary = apply_pre_turn_appraisal_bundle(req, bundle, enabled=True)
+    if summary is not None:
+        meta = dict(req.metadata or {})
+        meta["substrate_effect_summary"] = summary
+        req.metadata = meta
     return summary, bundle
 
 

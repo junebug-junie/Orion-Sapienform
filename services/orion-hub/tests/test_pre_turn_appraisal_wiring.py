@@ -39,6 +39,33 @@ def test_apply_bundle_attaches_metadata_when_mode_changes() -> None:
     assert summary is not None
     assert summary["level"] == 0.82
     assert summary["changed_behavior"] == "repair_concrete"
+    assert req.metadata.get("substrate_effect_summary") is None
+
+
+def test_substrate_effect_summary_attached_to_request_metadata() -> None:
+    """Mirrors run_pre_turn_appraisal_wiring post-apply metadata attach (lines 86-89)."""
+    req = CortexChatRequest(prompt="paste test", mode="brain")
+    bundle = TurnAppraisalBundleV1(
+        correlation_id="00000000-0000-4000-8000-000000000005",
+        paradigms={
+            "repair_pressure": TurnAppraisalParadigmSliceV1(
+                appraisal_kind="repair_pressure",
+                level=0.698,
+                confidence=0.65,
+                contract_delta={"mode": "concrete_bias", "rules": ["be more specific"]},
+            )
+        },
+        metadata_attachments={
+            "repair_pressure_contract": {"mode": "concrete_bias", "rules": ["be more specific"]}
+        },
+    )
+    summary = apply_pre_turn_appraisal_bundle(req, bundle, enabled=True)
+    assert summary is not None
+    meta = dict(req.metadata or {})
+    meta["substrate_effect_summary"] = summary
+    req.metadata = meta
+    assert req.metadata["substrate_effect_summary"]["level_label"] == "MEDIUM"
+    assert req.metadata[REPAIR_PRESSURE_CONTRACT_METADATA_KEY]["mode"] == "concrete_bias"
 
 
 def test_apply_bundle_skips_when_disabled() -> None:

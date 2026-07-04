@@ -51,6 +51,7 @@ services:
 
       CHANNEL_EXEC_REQUEST: ${CHANNEL_EXEC_REQUEST}
       EXEC_LANE: ${EXEC_LANE:-legacy}
+      ENABLE_PRE_TURN_APPRAISAL_HANDLER: ${ENABLE_PRE_TURN_APPRAISAL_HANDLER:-true}
       CHANNEL_COGNITION_TRACE_PUB: ${CHANNEL_COGNITION_TRACE_PUB:-orion:cognition:trace}
       CHANNEL_METACOG_TRACE_PUB: ${CHANNEL_METACOG_TRACE_PUB:-orion:metacog:trace}
       EXEC_REQUEST_PREFIX: ${EXEC_REQUEST_PREFIX}
@@ -202,6 +203,7 @@ services:
     environment:
       EXEC_LANE: chat
       CHANNEL_EXEC_REQUEST: orion:cortex:exec:request:chat
+      ENABLE_PRE_TURN_APPRAISAL_HANDLER: "false"
 
   cortex-exec-spark:
     extends:
@@ -211,6 +213,7 @@ services:
     environment:
       EXEC_LANE: spark
       CHANNEL_EXEC_REQUEST: orion:cortex:exec:request:spark
+      ENABLE_PRE_TURN_APPRAISAL_HANDLER: "false"
 
   cortex-exec-background:
     extends:
@@ -220,6 +223,7 @@ services:
     environment:
       EXEC_LANE: background
       CHANNEL_EXEC_REQUEST: orion:cortex:exec:request:background
+      ENABLE_PRE_TURN_APPRAISAL_HANDLER: "false"
 
 networks:
   app-net:

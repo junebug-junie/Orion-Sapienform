@@ -1,6 +1,7 @@
 """Tests for Hub CognitionTraceCache and cognition trace API (Runtime Trace Nexus A4)."""
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 from pathlib import Path
@@ -11,6 +12,13 @@ HUB_ROOT = Path(__file__).resolve().parents[1]
 for candidate in (str(REPO_ROOT), str(HUB_ROOT)):
     if candidate not in sys.path:
         sys.path.insert(0, candidate)
+
+_cache_path = HUB_ROOT / "scripts" / "cognition_trace_cache.py"
+_cache_spec = importlib.util.spec_from_file_location("hub_cognition_trace_cache", _cache_path)
+assert _cache_spec and _cache_spec.loader
+_cache_mod = importlib.util.module_from_spec(_cache_spec)
+_cache_spec.loader.exec_module(_cache_mod)
+CognitionTraceCache = _cache_mod.CognitionTraceCache
 
 for key, value in {
     "CHANNEL_VOICE_TRANSCRIPT": "orion:voice:transcript",
@@ -27,7 +35,6 @@ def test_cognition_trace_cache_api_redacted_default() -> None:
 
     from orion.schemas.cortex.types import StepExecutionResult
     from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
-    from scripts.cognition_trace_cache import CognitionTraceCache
 
     cache = CognitionTraceCache(
         enabled=True,
@@ -52,6 +59,12 @@ def test_cognition_trace_cache_api_redacted_default() -> None:
             )
         ],
         recall_used=True,
+        metadata={
+            "repair_pressure_contract": {"mode": "concrete_bias", "rules": ["be more specific"]},
+            "substrate_effect_attached": True,
+            "repair_pressure_mode": "concrete_bias",
+            "repair_pressure_level_label": "MEDIUM",
+        },
     )
 
     async def _run():
@@ -62,4 +75,6 @@ def test_cognition_trace_cache_api_redacted_default() -> None:
     assert body is not None
     assert body["final_text_present"] is True
     assert "SECRET" not in str(body)
+    assert body["metadata"]["repair_pressure_contract"]["mode"] == "concrete_bias"
+    assert body["metadata"]["substrate_effect_attached"] is True
     assert body["steps"][0]["error_present"] is False

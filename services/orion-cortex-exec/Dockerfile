@@ -46,6 +46,9 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 # copy schemas into the container
 COPY orion /app/orion
 
+# Substrate config (repair-pressure v2 weights, etc.)
+COPY config/substrate /app/config/substrate
+
 # Copy rest of hub service code
 COPY services/orion-cortex-exec /app
 

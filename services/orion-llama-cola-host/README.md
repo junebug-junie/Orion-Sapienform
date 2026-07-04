@@ -75,6 +75,35 @@ Returns an OpenAI-style chat completion plus `action_indices` (latent actions):
 
 Generates embeddings by running a short generation and extracting action indices.
 
+### `POST /v1/understand`
+
+Deterministic "understanding" signal for a finished piece of text — no generation, no sampling.
+
+```json
+{ "text": "...", "doc_id": "optional-correlation-id" }
+```
+
+Runs a single forward pass through CoLA's Inverse Dynamics branch (`bc_mode=True`), which derives a
+latent action from an already-written sentence rather than sampling one to drive generation. Returns
+the pre-argmax softmax distribution over the action codebook, mean-pooled across tokens:
+
+```json
+{
+  "doc_id": "optional-correlation-id",
+  "embedding": [0.01, 0.22, ...],
+  "embedding_dim": 64,
+  "embedding_kind": "cola_action_distribution",
+  "embedding_model": "llama3-1-cola",
+  "token_count": 12
+}
+```
+
+This is deliberately different from `action_indices` on `/v1/chat/completions`, which is sampled at
+`tau=2.0` during generation for output diversity/novelty — sampled, non-deterministic, and only a
+collapsed argmax index. `/v1/understand` is for callers that need a stable, repeatable signal for the
+*meaning* of finished text (e.g. `orion-spark-introspector`'s novelty scoring — see its README §6.8),
+not for steering generation.
+
 ### `GET /health`
 
 Returns `{ "status": "ok" }` once the model is loaded.

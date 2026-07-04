@@ -110,6 +110,21 @@ class Settings(BaseSettings):
     # Freshness semantics (for read-model)
     spark_state_valid_for_ms: int = Field(15000, alias="SPARK_STATE_VALID_FOR_MS")
 
+    # CoLA-derived novelty signal (Inverse Dynamics branch of orion-llama-cola-host).
+    # Off by default: the host isn't in default deploy tooling yet, and calling an
+    # unreachable/absent host per turn would just add log noise. Flip on once the
+    # host is confirmed running and reachable.
+    cola_understand_enable: bool = Field(False, alias="COLA_UNDERSTAND_ENABLE")
+    cola_understand_url: str = Field(
+        "http://orion-llama-cola-host:8005",
+        alias="COLA_UNDERSTAND_URL",
+    )
+    cola_understand_timeout_sec: float = Field(8.0, alias="COLA_UNDERSTAND_TIMEOUT_SEC")
+    cola_novelty_window: int = Field(8, alias="COLA_NOVELTY_WINDOW")
+    cola_novelty_max_sessions: int = Field(500, alias="COLA_NOVELTY_MAX_SESSIONS")
+    cola_novelty_gain: float = Field(0.35, alias="COLA_NOVELTY_GAIN")
+    cola_novelty_signal_ttl_ms: int = Field(20000, alias="COLA_NOVELTY_SIGNAL_TTL_MS")
+
     # Tissue
     orion_tissue_snapshot_path: str = Field(
         "/mnt/graphdb/orion/spark/tissue-brain.npy",

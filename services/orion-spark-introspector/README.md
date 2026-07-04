@@ -517,6 +517,60 @@ Checklist:
 
 ---
 
+### 6.8 CoLA-Derived Novelty Signal
+
+Separate from the semantic-embedding valence path above, `handle_semantic_upsert` can also score
+**novelty** for each chat turn using `orion-llama-cola-host`'s CoLA Inverse Dynamics branch instead of
+a generic text embedding. Where valence asks "does this feel good or bad" via a fixed anchor pair,
+this asks "how different is this turn's latent action distribution from what this session has been
+producing" — a per-session, distribution-based novelty score, not a fixed-anchor one.
+
+**How it works:**
+
+1. `orion-llama-cola-host` exposes `POST /v1/understand`, which runs one deterministic (non-sampled)
+   forward pass through CoLA's `bc_mode` branch and returns a pooled probability distribution over its
+   latent action codebook for a given piece of text. Unlike `/v1/chat/completions`' `action_indices`
+   (sampled at `tau=2.0` during generation, meant for output diversity), this is deterministic — same
+   text always gives the same distribution.
+2. `orion-spark-introspector` calls that endpoint directly (bypassing `orion-llm-gateway`'s shared
+   routing table on purpose — this signal doesn't need to compete with chat/agent/metacog routing).
+3. Novelty is scored as cosine distance between the new turn's distribution and the mean of the last
+   `COLA_NOVELTY_WINDOW` turns for that session (a rolling reference, not a fixed anchor).
+4. The result is published as a `SparkSignalV1.novelty_delta` on `CHANNEL_SPARK_SIGNAL` — the same
+   signal bus `handle_signal`/`_register_signal`/`_apply_signal_deltas` already use for the
+   `turn_effect_alerts` "human" signals. It gets folded into `phi_stats["novelty"]` the next time
+   `handle_trace` or `handle_self_state` publishes a `SparkStateSnapshotV1`, which is what
+   `orion-cortex-exec` actually reads for its metacognitive context.
+
+This intentionally does **not** touch `SignalMapper`/`OrionTissue`/`SurfaceEncoding` (the `spark_vector`
+neural-projection path is a separate, currently-dead code path — see the data-flow notes above) and
+does **not** write anything to `orion-vector-host`'s Chroma collections. `orion-vector-host` deliberately
+rejects raw latent vectors (`include_latent=True` is forced back to `False` there, guarded by
+`scripts/smoke_no_latent_leak.py`) to keep its semantic-recall collections uncorrupted — the CoLA
+distribution never goes anywhere near that store.
+
+**Settings:**
+
+| Setting                        | Env var                        | Default                                |
+| ------------------------------- | ------------------------------- | --------------------------------------- |
+| `cola_understand_enable`       | `COLA_UNDERSTAND_ENABLE`       | `false` (opt-in; see rollout note below) |
+| `cola_understand_url`          | `COLA_UNDERSTAND_URL`          | `http://orion-llama-cola-host:8005`     |
+| `cola_understand_timeout_sec`  | `COLA_UNDERSTAND_TIMEOUT_SEC`  | `8`                                      |
+| `cola_novelty_window`          | `COLA_NOVELTY_WINDOW`          | `8` (per-session rolling reference size) |
+| `cola_novelty_max_sessions`    | `COLA_NOVELTY_MAX_SESSIONS`    | `500` (bounded LRU-ish session cap)      |
+| `cola_novelty_gain`            | `COLA_NOVELTY_GAIN`            | `0.35`                                   |
+| `cola_novelty_signal_ttl_ms`   | `COLA_NOVELTY_SIGNAL_TTL_MS`   | `20000`                                  |
+
+**Rollout / rollback:** ships disabled (`COLA_UNDERSTAND_ENABLE=false`). `orion-llama-cola-host` is not
+in default deploy tooling and is excluded from `mesh-utilities`' auto-rebuild lists, so leaving this off
+is the safe default until the host is confirmed running and reachable. Failure mode is fail-open by
+design: any HTTP error, timeout, or disabled flag simply skips publishing a signal, and
+`phi_stats["novelty"]` falls back to its existing self-state-derived baseline (`_phi_from_self_state`)
+untouched. To roll back, set `COLA_UNDERSTAND_ENABLE=false` — no other state needs cleanup, the rolling
+per-session history is in-memory only.
+
+---
+
 ## 7. Roadmap & Open Questions
 
 Planned directions for Spark:

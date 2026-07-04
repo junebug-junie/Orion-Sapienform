@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
+
 from orion.schemas.cortex.contracts import CortexChatRequest
 from orion.schemas.pre_turn_appraisal import TurnAppraisalBundleV1, TurnAppraisalParadigmSliceV1
 from orion.substrate.appraisal import REPAIR_PRESSURE_CONTRACT_METADATA_KEY
-from scripts.pre_turn_appraisal_wiring import apply_pre_turn_appraisal_bundle
+
+_wiring_path = Path(__file__).resolve().parents[1] / "scripts" / "pre_turn_appraisal_wiring.py"
+_spec = importlib.util.spec_from_file_location("hub_pre_turn_appraisal_wiring", _wiring_path)
+assert _spec and _spec.loader
+_wiring = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_wiring)
+apply_pre_turn_appraisal_bundle = _wiring.apply_pre_turn_appraisal_bundle
 
 
 def test_apply_bundle_attaches_metadata_when_mode_changes() -> None:

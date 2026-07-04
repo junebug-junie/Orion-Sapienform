@@ -1,0 +1,8 @@
+# Calibrated starting weights — tune via orion/substrate/evals/repair_pressure_v2_eval.py
+specificity_demand: 0.18
+trust_rupture: 0.17
+coherence_gap: 0.14
+repetition_failure: 0.13
+operational_block: 0.13
+explicit_repair_command: 0.13
+assistant_accountability_demand: 0.12

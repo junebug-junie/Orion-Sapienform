@@ -38,7 +38,7 @@ Before this patch, repair pressure was inferred post-turn via phrase_match in th
 
 ## Schema / bus / API changes
 
-- Added: `PreTurnAppraisalRequestV1`, `PreTurnAppraisalResultV1`, `RepairEvidenceV1`, `KindProbeScoreV1` schemas
+- Added: `PreTurnAppraisalRequestV1`, `TurnAppraisalBundleV1`, `TurnAppraisalParadigmSliceV1`, `TurnWindowMessageV1` schemas (evidence uses existing `RepairEvidenceV1`)
 - Added: `orion:cortex:pre_turn_appraisal:request` and `orion:cortex:pre_turn_appraisal:result:{correlation_id}` channels
 - Behavior changed: hub chat handlers call pre-turn appraisal RPC when `ENABLE_PRE_TURN_APPRAISAL=true`; legacy phrase_match skipped in that mode
 - Compatibility notes: default off on hub (`ENABLE_PRE_TURN_APPRAISAL=false`); cortex-exec handler always serves RPC when hub sends requests
@@ -48,7 +48,7 @@ Before this patch, repair pressure was inferred post-turn via phrase_match in th
 - Added keys (hub): `ENABLE_PRE_TURN_APPRAISAL`, `PRE_TURN_APPRAISAL_PARADIGMS`, `PRE_TURN_APPRAISAL_TIMEOUT_MS`, `CHANNEL_PRE_TURN_APPRAISAL_REQUEST`, `CHANNEL_PRE_TURN_APPRAISAL_RESULT_PREFIX`
 - Added keys (cortex-exec): `REPAIR_PRESSURE_WEIGHTS_V2_PATH`, `REPAIR_PRESSURE_PROBE_ROUTE`, `CHANNEL_PRE_TURN_APPRAISAL_REQUEST`, `CHANNEL_PRE_TURN_APPRAISAL_RESULT_PREFIX`
 - `.env_example` updated: yes (hub + cortex-exec)
-- local `.env` synced with `python scripts/sync_local_env_from_example.py`: not run in worktree (operator should sync after merge)
+- local `.env` synced with `python scripts/sync_local_env_from_example.py orion-hub orion-cortex-exec`: yes (worktree; sync prefixes added for PRE_TURN / REPAIR_PRESSURE probe keys)
 - skipped keys requiring operator action: none
 
 ## Tests run
@@ -58,7 +58,7 @@ pytest tests/test_pre_turn_appraisal_schemas.py tests/test_turn_window.py tests/
 pytest orion/substrate/evals/repair_pressure_v2_eval.py -q
 pytest services/orion-cortex-exec/tests/test_pre_turn_appraisal_rpc.py -q
 pytest services/orion-hub/tests/test_pre_turn_appraisal_wiring.py services/orion-hub/tests/test_handle_chat_request_substrate_effect.py -q
-# Combined gate: 28 passed
+# Combined gate: 29 passed
 ```
 
 ## Evals run

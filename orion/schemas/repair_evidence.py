@@ -1,7 +1,7 @@
 """Repair pressure evidence schema (bus/registry layer).
 
 Lives under orion.schemas so registry and pre_turn_appraisal imports do not
-pull orion.substrate (graphdb_store → requests) at collection time.
+eagerly load orion.substrate.__init__ (SPARQL store stack → requests).
 """
 
 from __future__ import annotations

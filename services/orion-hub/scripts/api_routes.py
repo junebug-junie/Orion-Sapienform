@@ -108,6 +108,7 @@ from orion.core.schemas.substrate_mutation import (
     RecallCanaryRunV1,
     MutationPressureEvidenceV1,
     MutationPressureV1,
+    MutationSignalV1,
     RecallProductionCandidateReviewV1,
     RecallShadowEvalRunV1,
     RecallStrategyProfileV1,
@@ -3273,6 +3274,33 @@ def _emit_substrate_autonomy_scheduler_log(*, payload: Dict[str, Any]) -> None:
     logger.info("substrate_mutation_scheduler %s", json.dumps(payload, sort_keys=True, default=str))
 
 
+def _self_revision_signals_from_latest_self_state(
+    *, min_error: float, max_age_sec: float, now: datetime | None = None
+) -> list["MutationSignalV1"]:
+    """Fail-open: any error or stale/missing self_state returns []."""
+    from scripts.substrate_self_state_routes import _load_latest_self_state
+    from orion.substrate.mutation_self_revision import prediction_error_mutation_signals
+
+    try:
+        state = _load_latest_self_state()
+    except Exception:
+        logger.exception("substrate_self_revision_self_state_load_failed")
+        return []
+    if state is None:
+        return []
+    t = now or datetime.now(timezone.utc)
+    generated_at = state.generated_at
+    if generated_at.tzinfo is None:
+        generated_at = generated_at.replace(tzinfo=timezone.utc)
+    if (t - generated_at).total_seconds() > max_age_sec:
+        return []
+    try:
+        return prediction_error_mutation_signals(state, min_error=min_error)
+    except Exception:
+        logger.exception("substrate_self_revision_signal_build_failed")
+        return []
+
+
 def substrate_autonomy_runtime_supported() -> tuple[bool, str]:
     if not SUBSTRATE_MUTATION_STORE.postgres_url:
         return False, "postgres_url_unset"
@@ -3336,6 +3364,7 @@ def execute_substrate_mutation_scheduled_cycle(
         proposals_enabled = _env_flag("SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED", default=True)
         routing_proposals_enabled = _env_flag("SUBSTRATE_AUTONOMY_ROUTING_PROPOSALS_ENABLED", default=True)
         cognitive_proposals_enabled = _env_flag("SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED", default=False)
+        self_revision_enabled = _env_flag("SUBSTRATE_AUTONOMY_SELF_REVISION_ENABLED", default=False)
         apply_enabled_global = _env_flag("SUBSTRATE_AUTONOMY_APPLY_ENABLED", default=False)
         routing_apply_enabled = _env_flag("SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED", default=False)
         apply_enabled = bool(apply_enabled_global and routing_apply_enabled)
@@ -3421,6 +3450,18 @@ def execute_substrate_mutation_scheduled_cycle(
                 "routing_rollback_delta_threshold": routing_rollback_threshold,
             }
         )
+        self_revision_signals: list[MutationSignalV1] = []
+        if self_revision_enabled and cognitive_proposals_enabled:
+            try:
+                self_revision_signals = _self_revision_signals_from_latest_self_state(
+                    min_error=_env_float("SUBSTRATE_AUTONOMY_SELF_REVISION_MIN_ERROR", default=0.3, minimum=0.0, maximum=1.0),
+                    max_age_sec=_env_float("SUBSTRATE_AUTONOMY_SELF_REVISION_MAX_AGE_SEC", default=300.0, minimum=30.0, maximum=3600.0),
+                    now=tick_now,
+                )
+            except Exception:
+                logger.exception("substrate_self_revision_signals_call_failed")
+                self_revision_signals = []
+
         result = worker.run_cycle(
             telemetry=telemetry,
             measured_metrics_by_proposal={},
@@ -3430,6 +3471,7 @@ def execute_substrate_mutation_scheduled_cycle(
             ),
             replay_telemetry=telemetry,
             now=tick_now,
+            extra_signals=self_revision_signals,
         )
         scheduler_summary = {
             "event": "mutation_scheduler_cycle_finished",
@@ -3446,6 +3488,8 @@ def execute_substrate_mutation_scheduled_cycle(
             "applies_executed": applier.completed,
             "routing_proposals_enabled": routing_proposals_enabled,
             "cognitive_proposals_enabled": cognitive_proposals_enabled,
+            "self_revision_enabled": self_revision_enabled,
+            "self_revision_signals": len(self_revision_signals),
             "routing_apply_enabled": routing_apply_enabled,
             "apply_enabled_global": apply_enabled_global,
             "routing_only_scope": not cognitive_proposals_enabled,

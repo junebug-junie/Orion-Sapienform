@@ -35,6 +35,16 @@ class LlamaCppConfig(BaseModel):
         validation_alias=AliasChoices("filename", "hf_filename"),
         description="GGUF filename in repo",
     )
+    mmproj_filename: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("mmproj_filename", "hf_mmproj_filename"),
+        description="Multimodal projector GGUF filename (llama-server --mmproj)",
+    )
+    mmproj_repo_id: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("mmproj_repo_id", "hf_mmproj_repo_id"),
+        description="HF repo for mmproj; defaults to repo_id when omitted",
+    )
 
     host: str = "0.0.0.0"
     port: int = 8080
@@ -43,6 +53,9 @@ class LlamaCppConfig(BaseModel):
     threads: int = 16
     n_parallel: int = 2
     batch_size: int = 512
+    ubatch_size: Optional[int] = None
+    image_min_tokens: Optional[int] = None
+    image_max_tokens: Optional[int] = None
 
     reasoning: Optional[Literal["on", "off", "auto"]] = None
     reasoning_format: Optional[Literal["none", "deepseek", "deepseek-legacy", "auto"]] = None

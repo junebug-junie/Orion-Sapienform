@@ -48,6 +48,38 @@ def _shard_filenames_for_download(filename: str) -> list[str]:
     return [f"{prefix_dir}{stem}-{idx:05d}-of-{total}.gguf" for idx in range(1, total_n + 1)]
 
 
+def _ensure_hf_gguf_file(
+    *,
+    model_root: str,
+    repo_id: str,
+    filename: str,
+    label: str,
+) -> Path:
+    """Download a GGUF (or shard set) from HuggingFace when missing locally."""
+    target = Path(model_root) / filename
+    if target.exists():
+        return target
+
+    Path(model_root).mkdir(parents=True, exist_ok=True)
+
+    for shard_filename in _shard_filenames_for_download(filename):
+        shard_path = Path(model_root) / shard_filename
+        if shard_path.exists():
+            continue
+        logger.info("Downloading %s/%s -> %s (%s)", repo_id, shard_filename, model_root, label)
+        hf_hub_download(
+            repo_id=repo_id,
+            filename=shard_filename,
+            local_dir=model_root,
+            local_dir_use_symlinks=False,
+            token=settings.hf_token,
+        )
+
+    if not target.exists():
+        raise FileNotFoundError(f"Download completed but {label} still missing at: {target}")
+    return target
+
+
 def _ensure_model_file(model_path: str, dl: Optional[LlamaCppConfig]) -> None:
     """
     Ensure the GGUF exists at model_path. If not, use dl.{repo_id,filename,model_root}
@@ -62,23 +94,35 @@ def _ensure_model_file(model_path: str, dl: Optional[LlamaCppConfig]) -> None:
             f"Model not found and no download spec available: {model_path}"
         )
 
-    Path(dl.model_root).mkdir(parents=True, exist_ok=True)
-
-    for shard_filename in _shard_filenames_for_download(dl.filename):
-        shard_path = Path(dl.model_root) / shard_filename
-        if shard_path.exists():
-            continue
-        logger.info("Downloading %s/%s -> %s", dl.repo_id, shard_filename, dl.model_root)
-        hf_hub_download(
-            repo_id=dl.repo_id,
-            filename=shard_filename,
-            local_dir=dl.model_root,
-            local_dir_use_symlinks=False,
-            token=settings.hf_token,
-        )
+    _ensure_hf_gguf_file(
+        model_root=dl.model_root,
+        repo_id=dl.repo_id,
+        filename=dl.filename,
+        label="language model",
+    )
 
     if not p.exists():
         raise FileNotFoundError(f"Download completed but model still missing at: {model_path}")
+
+
+def _ensure_mmproj_file(cfg: LlamaCppConfig) -> Optional[str]:
+    """Ensure multimodal projector GGUF exists; return concrete path for --mmproj."""
+    if not cfg.mmproj_filename:
+        return None
+
+    repo_id = cfg.mmproj_repo_id or cfg.repo_id
+    if not repo_id:
+        raise FileNotFoundError(
+            "Profile requests mmproj_filename but no mmproj_repo_id or repo_id is configured"
+        )
+
+    mmproj_path = _ensure_hf_gguf_file(
+        model_root=cfg.model_root,
+        repo_id=repo_id,
+        filename=cfg.mmproj_filename,
+        label="mmproj",
+    )
+    return str(mmproj_path)
 
 
 def _resolve_runtime(profile: LLMProfile) -> Tuple[str, LlamaCppConfig, Dict[str, str]]:
@@ -201,6 +245,7 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
 
     # Ensure GGUF exists (download if needed)
     _ensure_model_file(model_path, cfg)
+    mmproj_path = _ensure_mmproj_file(cfg)
 
     # llama-server binary inside your built image
     server_bin = "/app/llama-server"
@@ -295,6 +340,16 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
         append_flag("--split-mode", cfg.split_mode)
     if cfg.tensor_split is not None:
         append_flag("--tensor-split", cfg.tensor_split)
+
+    if mmproj_path is not None:
+        ensure_jinja()
+        append_flag("--mmproj", mmproj_path)
+    if cfg.ubatch_size is not None:
+        append_flag("--ubatch-size", str(cfg.ubatch_size))
+    if cfg.image_min_tokens is not None:
+        append_flag("--image-min-tokens", str(cfg.image_min_tokens))
+    if cfg.image_max_tokens is not None:
+        append_flag("--image-max-tokens", str(cfg.image_max_tokens))
 
     if cfg.n_predict is not None:
         append_flag("--n-predict", str(cfg.n_predict))

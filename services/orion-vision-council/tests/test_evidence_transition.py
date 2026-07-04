@@ -124,6 +124,50 @@ def test_tracker_refresh_ttl() -> None:
     assert decision.reason == "refresh_ttl"
 
 
+def test_tracker_labels_changed() -> None:
+    tracker = EvidenceTransitionTracker()
+    door = snapshot_from_window(_window(hard_labels=["door"]))
+    tracker.record_interpretation(stream_key="cam0", snapshot=door, now=100.0)
+    chair = snapshot_from_window(_window(hard_labels=["chair"]))
+    decision = tracker.evaluate(
+        stream_key="cam0",
+        snapshot=chair,
+        now=110.0,
+        max_refresh_sec=120.0,
+    )
+    assert decision.interpret is True
+    assert decision.reason == "labels_changed"
+
+
+def test_tracker_skips_when_interpret_in_flight() -> None:
+    tracker = EvidenceTransitionTracker()
+    snap = snapshot_from_window(_window(hard_labels=["person"]))
+    tracker.record_interpretation(stream_key="cam0", snapshot=snap, now=100.0)
+    tracker.begin_interpretation(stream_key="cam0")
+    decision = tracker.evaluate(
+        stream_key="cam0",
+        snapshot=snap,
+        now=110.0,
+        max_refresh_sec=120.0,
+    )
+    assert decision.interpret is False
+    assert decision.reason == "interpret_in_flight"
+
+
+def test_abort_interpretation_clears_first_window_placeholder() -> None:
+    tracker = EvidenceTransitionTracker()
+    tracker.begin_interpretation(stream_key="cam0")
+    tracker.abort_interpretation(stream_key="cam0")
+    decision = tracker.evaluate(
+        stream_key="cam0",
+        snapshot=snapshot_from_window(_window()),
+        now=100.0,
+        max_refresh_sec=120.0,
+    )
+    assert decision.interpret is True
+    assert decision.reason == "first_window"
+
+
 @pytest.mark.asyncio
 async def test_generate_interpretation_skips_on_stable_scene() -> None:
     svc = CouncilService()
@@ -151,5 +195,37 @@ async def test_generate_interpretation_calls_llm_on_person_entered() -> None:
 
     with patch.object(svc, "_call_llm_raw", new_callable=AsyncMock, return_value=None) as mock_llm:
         await svc._generate_interpretation(entered, source_env=None)  # type: ignore[arg-type]
+
+    mock_llm.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_generate_interpretation_retries_after_parse_failure() -> None:
+    svc = CouncilService()
+    empty = snapshot_from_window(_window(hard_labels=[]))
+    svc._evidence_transition.record_interpretation(stream_key="cam0", snapshot=empty, now=1.0)
+    entered = _window(hard_labels=["person"])
+
+    with patch.object(svc, "_call_llm_raw", new_callable=AsyncMock, return_value=None) as mock_llm:
+        await svc._generate_interpretation(entered, source_env=None)  # type: ignore[arg-type]
+        await svc._generate_interpretation(entered, source_env=None)  # type: ignore[arg-type]
+
+    assert mock_llm.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_generate_interpretation_rpc_bypasses_transition_gate() -> None:
+    svc = CouncilService()
+    snap = snapshot_from_window(_window(hard_labels=["person"], object_counts={"person": 1}))
+    now = 1_000_000.0
+    svc._evidence_transition.record_interpretation(stream_key="cam0", snapshot=snap, now=now)
+    drift_window = _window(hard_labels=["person"], object_counts={"person": 12})
+
+    with patch.object(svc, "_call_llm_raw", new_callable=AsyncMock, return_value=None) as mock_llm, patch(
+        "app.main.time.time", return_value=now + 10.0
+    ):
+        await svc._generate_interpretation(
+            drift_window, source_env=None, allow_transition_gate=False  # type: ignore[arg-type]
+        )
 
     mock_llm.assert_called_once()

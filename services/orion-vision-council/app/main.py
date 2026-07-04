@@ -332,21 +332,32 @@ class CouncilService:
                         f"reason={decision.reason} "
                         f"labels={EvidenceTransitionTracker.labels_summary(snapshot)}"
                     )
+                    self._evidence_transition.begin_interpretation(stream_key=stream_key)
 
-        prompt = build_interpretation_prompt(window)
-        content = await self._call_llm_raw(prompt, source_env)
-        if not content:
-            return None, InterpretationParseOutcome(interpretation=None, parse_mode="parse_failed")
+        try:
+            prompt = build_interpretation_prompt(window)
+            content = await self._call_llm_raw(prompt, source_env)
+            if not content:
+                return None, InterpretationParseOutcome(interpretation=None, parse_mode="parse_failed")
 
-        outcome = parse_llm_content(content, window)
-        if gate_ctx is not None and outcome.interpretation is not None:
-            stream_key, snapshot, _ = gate_ctx
-            async with self._evidence_transition_lock:
-                self._evidence_transition.record_interpretation(
-                    stream_key=stream_key,
-                    snapshot=snapshot,
-                )
-        return outcome.interpretation, outcome
+            outcome = parse_llm_content(content, window)
+            if gate_ctx is not None:
+                stream_key, snapshot, _ = gate_ctx
+                async with self._evidence_transition_lock:
+                    if outcome.interpretation is not None:
+                        self._evidence_transition.record_interpretation(
+                            stream_key=stream_key,
+                            snapshot=snapshot,
+                        )
+                    else:
+                        self._evidence_transition.abort_interpretation(stream_key=stream_key)
+                gate_ctx = None
+            return outcome.interpretation, outcome
+        finally:
+            if gate_ctx is not None:
+                stream_key, _, _ = gate_ctx
+                async with self._evidence_transition_lock:
+                    self._evidence_transition.abort_interpretation(stream_key=stream_key)
 
     def _project_interpretation_to_events(
         self,

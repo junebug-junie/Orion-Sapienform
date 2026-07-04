@@ -18,7 +18,7 @@ VisionWindowPayload → evidence_transition (host label delta) → VisionSceneIn
 5. **Projection** — `project_interpretation_to_events` maps grounded `event_candidates` to `VisionEventBundleItem` entries.
 6. **Publish** — the event bundle is published on `orion:vision:events` (and returned on RPC reply when applicable).
 
-Bus intake honors the transition gate; **RPC requests always run interpretation** (on-demand callers must not hang or get silent no-ops). Host pipe only — edge is out of scope.
+Bus intake honors the transition gate; **RPC requests always run interpretation** (on-demand callers must not hang or get silent no-ops). Concurrent windows on the same stream coalesce via `interpret_in_flight` so atlas metacog is not double-called on the same transition. Host pipe only — edge is out of scope.
 
 ## Evidence grounding rules
 

@@ -64,6 +64,9 @@ class EvidenceTransitionTracker:
         max_refresh_sec: float,
     ) -> EvidenceTransitionDecision:
         row = self._by_stream.get(stream_key)
+        if row is not None and row.get("interpret_in_flight"):
+            return EvidenceTransitionDecision(interpret=False, reason="interpret_in_flight")
+
         if row is None:
             return EvidenceTransitionDecision(interpret=True, reason="first_window")
 
@@ -82,6 +85,22 @@ class EvidenceTransitionTracker:
             return EvidenceTransitionDecision(interpret=True, reason="refresh_ttl")
 
         return EvidenceTransitionDecision(interpret=False, reason="stable_scene")
+
+    def begin_interpretation(self, *, stream_key: str) -> None:
+        row = dict(self._by_stream.get(stream_key) or {})
+        row["interpret_in_flight"] = True
+        self._by_stream[stream_key] = row
+
+    def abort_interpretation(self, *, stream_key: str) -> None:
+        row = self._by_stream.get(stream_key)
+        if row is None:
+            return
+        row = dict(row)
+        row.pop("interpret_in_flight", None)
+        if row.get("hard_labels") is None and row.get("last_interpret_at") is None:
+            self._by_stream.pop(stream_key, None)
+        else:
+            self._by_stream[stream_key] = row
 
     def record_interpretation(
         self,

@@ -66,6 +66,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `GET /v1/messages` | Anthropic Messages endpoint liveness (same as HEAD). |
 | `POST /v1/messages` | Anthropic Messages passthrough to upstream llama.cpp `/v1/messages` via route table. |
 | `HEAD /v1/messages` | Liveness probe for Anthropic Messages endpoint. |
+| `GET /v1/messages` | Anthropic Messages endpoint liveness (same as HEAD). |
 | `OPTIONS /v1/messages` | CORS/method discovery for Anthropic clients. |
 
 ### Claude Code / free-claude-code (FCC) passthrough

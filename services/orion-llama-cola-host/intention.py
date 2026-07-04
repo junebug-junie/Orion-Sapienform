@@ -1423,7 +1423,10 @@ class IntentionModel_v1(LlamaPreTrainedModel):
             hidden_states_action_probs = hidden_states_action_probs_.detach().clone()
             # hidden_states_action_probs[:, :-1] = hidden_states_action_probs[:, 1:].clone()
             action_idx = hidden_states_action_probs.argmax(dim=-1)
-            return hidden_states_policy_logits, action_idx
+            # hidden_states_action_probs is the pre-argmax softmax distribution over the
+            # num_code action codebook (IDM/"understanding" branch); callers that want a
+            # deterministic, calibrated signal (not just the collapsed argmax) need this.
+            return hidden_states_policy_logits, action_idx, hidden_states_action_probs
         if act_mode:
             return hidden_states_policy_logits / self.tau
         if vq_mode:

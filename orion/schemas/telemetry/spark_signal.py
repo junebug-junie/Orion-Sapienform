@@ -13,7 +13,9 @@ class SparkSignalV1(BaseModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    signal_type: Literal["equilibrium", "recall", "routing", "resource", "human", "vision", "collapse"]
+    signal_type: Literal[
+        "equilibrium", "recall", "routing", "resource", "human", "vision", "collapse", "language"
+    ]
     intensity: float = Field(0.0, ge=0.0, le=1.0)
     valence_delta: Optional[float] = None
     arousal_delta: Optional[float] = None

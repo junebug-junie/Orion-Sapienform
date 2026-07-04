@@ -297,6 +297,20 @@ class EmbeddingRequest(BaseModel):
     input: Union[str, List[str]]
     model: Optional[str] = None
 
+
+class UnderstandRequest(BaseModel):
+    text: str
+    doc_id: Optional[str] = None
+
+
+class UnderstandResponse(BaseModel):
+    doc_id: Optional[str] = None
+    embedding: List[float]
+    embedding_dim: int
+    embedding_kind: str = "cola_action_distribution"
+    embedding_model: str
+    token_count: int
+
 # ----------------------------------------------------------------------
 # Endpoints
 # ----------------------------------------------------------------------
@@ -380,6 +394,46 @@ def create_embeddings(request: EmbeddingRequest):
         data.append({"object": "embedding", "embedding": embedding, "index": idx})
 
     return {"object": "list", "data": data, "model": request.model or "llama-cola"}
+
+
+@app.post("/v1/understand", response_model=UnderstandResponse)
+def understand(request: UnderstandRequest):
+    """Deterministic 'understanding' signal for a finished piece of text.
+
+    Runs a single non-autoregressive forward pass through the CoLA Inverse
+    Dynamics branch (bc_mode=True), which derives a latent action from an
+    already-written sentence rather than sampling one to drive generation.
+    Unlike /v1/chat/completions' action_indices (sampled at tau=2.0 during
+    generation, for novelty/diversity), this is deterministic and pools the
+    pre-argmax softmax distribution over the action codebook, not a single
+    collapsed index.
+    """
+    if not state.llm or not state.tokenizer or not state.device:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+
+    text = (request.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Missing text")
+
+    inputs = state.tokenizer(text, return_tensors="pt").to(state.device)
+    with torch.no_grad():
+        _policy_logits, _action_idx, action_probs = state.llm(
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs.get("attention_mask"),
+            use_cache=False,
+            bc_mode=True,
+        )
+
+    pooled = action_probs[0].mean(dim=0).float().cpu()
+
+    return UnderstandResponse(
+        doc_id=request.doc_id,
+        embedding=pooled.tolist(),
+        embedding_dim=int(pooled.shape[-1]),
+        embedding_model=settings.llm_profile_name,
+        token_count=int(inputs["input_ids"].shape[-1]),
+    )
+
 
 @app.get("/health")
 def health():

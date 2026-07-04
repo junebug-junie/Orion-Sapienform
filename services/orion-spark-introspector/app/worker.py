@@ -4,11 +4,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import OrderedDict, deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+import httpx
 import numpy as np
 from pydantic import BaseModel, Field, ValidationError
 
@@ -407,6 +409,133 @@ def _valence_from_embedding(emb: np.ndarray) -> float:
     if v < -1.0:
         return -1.0
     return v
+
+
+# ---------------------------------------------------------------------------
+# CoLA-derived novelty signal
+#
+# orion-llama-cola-host's /v1/understand runs a deterministic forward pass
+# through the CoLA Inverse Dynamics branch and returns a pooled probability
+# distribution over its latent action codebook for a piece of finished text.
+# We score novelty as distance from a rolling per-session reference of recent
+# turns' distributions (same cosine-distance style already used for valence)
+# and publish it as a SparkSignalV1.novelty_delta over the existing signal bus
+# -- the same live wire orion-cortex-exec already reads for metacognition.
+#
+# Fails open: any error (host down, timeout, bad response) is logged and
+# skipped. No signal is registered, so _apply_signal_deltas leaves the
+# self-state-derived novelty baseline untouched.
+# ---------------------------------------------------------------------------
+
+_COLA_NOVELTY_HISTORY: "OrderedDict[str, Deque[np.ndarray]]" = OrderedDict()
+_COLA_NOVELTY_TASKS: set = set()
+
+
+def _cola_novelty_reference(session_key: str) -> Optional[np.ndarray]:
+    history = _COLA_NOVELTY_HISTORY.get(session_key)
+    if not history:
+        return None
+    return np.mean(np.stack(list(history)), axis=0)
+
+
+def _cola_novelty_remember(session_key: str, distribution: np.ndarray) -> None:
+    history = _COLA_NOVELTY_HISTORY.get(session_key)
+    if history is not None and history and history[-1].shape != distribution.shape:
+        # Codebook dimension changed underneath us (e.g. cola-host redeployed
+        # with a different num_code); stale history would break np.stack, so
+        # start this session's reference over instead of crashing.
+        history.clear()
+    if history is None:
+        if len(_COLA_NOVELTY_HISTORY) >= max(1, int(settings.cola_novelty_max_sessions)):
+            _COLA_NOVELTY_HISTORY.popitem(last=False)
+        history = deque(maxlen=max(1, int(settings.cola_novelty_window)))
+        _COLA_NOVELTY_HISTORY[session_key] = history
+    history.append(distribution)
+    # Touching a session (new or existing) marks it most-recently-used so
+    # eviction above drops the least-active session, not just the oldest one.
+    _COLA_NOVELTY_HISTORY.move_to_end(session_key)
+
+
+_COLA_HTTP_CLIENT: Optional[httpx.AsyncClient] = None
+
+
+def _cola_http_client() -> httpx.AsyncClient:
+    global _COLA_HTTP_CLIENT
+    if _COLA_HTTP_CLIENT is None or _COLA_HTTP_CLIENT.is_closed:
+        _COLA_HTTP_CLIENT = httpx.AsyncClient(timeout=float(settings.cola_understand_timeout_sec))
+    return _COLA_HTTP_CLIENT
+
+
+async def _fetch_cola_understanding(text: str, *, doc_id: str) -> Optional[np.ndarray]:
+    if not settings.cola_understand_enable:
+        return None
+    url = settings.cola_understand_url.rstrip("/") + "/v1/understand"
+    try:
+        client = _cola_http_client()
+        resp = await client.post(url, json={"text": text, "doc_id": doc_id})
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        logger.warning("CoLA understand request failed doc_id=%s error=%s", doc_id, exc)
+        return None
+
+    embedding = data.get("embedding")
+    if not isinstance(embedding, list) or not embedding:
+        return None
+    return np.array(embedding, dtype=np.float32)
+
+
+async def _publish_spark_signal(signal: SparkSignalV1, *, correlation_id: Any) -> None:
+    if not (_pub_bus and _pub_bus.enabled):
+        return
+    signal_env = BaseEnvelope(
+        kind="spark.signal.v1",
+        source=_svc_ref(),
+        correlation_id=correlation_id,
+        payload=signal.model_dump(mode="json"),
+    )
+    await _pub_bus.publish(settings.channel_spark_signal, signal_env)
+
+
+async def _publish_cola_novelty_signal(distance: float, *, correlation_id: Any) -> None:
+    delta = float(settings.cola_novelty_gain) * distance
+    signal = SparkSignalV1(
+        signal_type="language",
+        intensity=max(0.0, min(1.0, distance)),
+        novelty_delta=delta,
+        as_of_ts=datetime.now(timezone.utc),
+        ttl_ms=int(settings.cola_novelty_signal_ttl_ms),
+        source_service=settings.service_name,
+        source_node=settings.node_name,
+    )
+    await _publish_spark_signal(signal, correlation_id=correlation_id)
+
+
+async def _score_cola_novelty(*, text: str, doc_id: str, session_key: str, correlation_id: Any) -> None:
+    if not settings.cola_understand_enable or not text.strip():
+        return
+    distribution = await _fetch_cola_understanding(text, doc_id=doc_id)
+    if distribution is None:
+        return
+
+    try:
+        reference = _cola_novelty_reference(session_key)
+        if reference is not None and reference.shape != distribution.shape:
+            # Codebook dimension changed underneath us (e.g. cola-host redeployed
+            # with a different num_code); drop the stale reference and restart
+            # this session's history instead of crashing on np.dot.
+            _COLA_NOVELTY_HISTORY.pop(session_key, None)
+            reference = None
+        distance = 1.0 if reference is None else _cosine_distance(distribution, reference)
+        _cola_novelty_remember(session_key, distribution)
+    except Exception as exc:
+        logger.warning("CoLA novelty scoring failed doc_id=%s error=%s", doc_id, exc)
+        return
+
+    try:
+        await _publish_cola_novelty_signal(distance, correlation_id=correlation_id)
+    except Exception as exc:
+        logger.warning("Failed to publish CoLA novelty signal doc_id=%s error=%s", doc_id, exc)
 
 
 def _extract_introspection_text(cortex_reply: BaseEnvelope) -> Optional[str]:
@@ -830,13 +959,7 @@ async def _emit_candidate_telemetry(env: BaseEnvelope, candidate: SparkCandidate
                         source_service=settings.service_name,
                         source_node=settings.node_name,
                     )
-                    signal_env = BaseEnvelope(
-                        kind="spark.signal.v1",
-                        source=_svc_ref(),
-                        correlation_id=trace_id,
-                        payload=signal.model_dump(mode="json"),
-                    )
-                    await _pub_bus.publish(settings.channel_spark_signal, signal_env)
+                    await _publish_spark_signal(signal, correlation_id=trace_id)
                     if settings.turn_effect_alerts_notify_enable:
                         notify = CoreEventV1(
                             event="notify",
@@ -1449,6 +1572,19 @@ async def handle_semantic_upsert(env: BaseEnvelope) -> None:
         v_semantic,
         tissue_valence,
     )
+
+    if settings.cola_understand_enable and (upsert.text or "").strip():
+        session_key = str(upsert.meta.get("session_id") or upsert.doc_id)
+        task = asyncio.create_task(
+            _score_cola_novelty(
+                text=upsert.text,
+                doc_id=upsert.doc_id,
+                session_key=session_key,
+                correlation_id=env.correlation_id,
+            )
+        )
+        _COLA_NOVELTY_TASKS.add(task)
+        task.add_done_callback(_COLA_NOVELTY_TASKS.discard)
 
 
 def _get_intro_sem() -> asyncio.Semaphore:

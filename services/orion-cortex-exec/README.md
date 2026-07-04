@@ -8,6 +8,46 @@
 | Channel | Env Var | Kind | Description |
 | :--- | :--- | :--- | :--- |
 | `orion-cortex-exec:request` | `CHANNEL_EXEC_REQUEST` | `cortex.exec.request` | Request from Orchestrator. |
+| `orion:cortex:pre_turn_appraisal:request` | `CHANNEL_PRE_TURN_APPRAISAL_REQUEST` | `pre_turn_appraisal.request.v1` | Pre-turn appraisal RPC from Hub (logprob repair pressure). |
+
+### Pre-turn appraisal RPC (repair pressure v2)
+
+Second Rabbit listener (`app/pre_turn_appraisal.py`) serves Hub pre-turn appraisal requests. Paradigms are resolved from `orion/substrate/appraisal/paradigms/registry.py` (`PARADIGM_REGISTRY`); today `repair_pressure` runs logprob YES/NO probes via LLM Gateway and returns a `TurnAppraisalBundleV1`.
+
+**Flow**
+
+1. Hub publishes `PreTurnAppraisalRequestV1` on `orion:cortex:pre_turn_appraisal:request`.
+2. Handler loops `paradigms_requested`, builds each paradigm from `PARADIGM_REGISTRY`, runs with timeout from `req.options.timeout_ms`.
+3. `repair_pressure` paradigm calls LLM Gateway with `return_logprobs=true` (`REPAIR_PRESSURE_PROBE_ROUTE`, default `quick`).
+4. Kind scores + weights (`REPAIR_PRESSURE_WEIGHTS_V2_PATH`) feed `assemble_repair_contract_delta()`; contract metadata attached when mode changes.
+5. Reply on `orion:cortex:pre_turn_appraisal:result:{correlation_id}` as `TurnAppraisalBundleV1`.
+
+**Operator enable** — Hub only: `ENABLE_PRE_TURN_APPRAISAL=true`. This listener is always registered when cortex-exec starts; no cortex-exec kill switch.
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `REPAIR_PRESSURE_WEIGHTS_V2_PATH` | `config/substrate/repair_pressure_weights.v2.yaml` | Kind weights for level reduction. |
+| `REPAIR_PRESSURE_PROBE_ROUTE` | `quick` | LLM Gateway route for logprob probes. |
+| `CHANNEL_PRE_TURN_APPRAISAL_REQUEST` | `orion:cortex:pre_turn_appraisal:request` | Request channel. |
+| `CHANNEL_PRE_TURN_APPRAISAL_RESULT_PREFIX` | `orion:cortex:pre_turn_appraisal:result` | Reply channel prefix. |
+
+**Fail-closed notes**
+
+- Missing weights file → slice notes include `weights_file_missing`, level stays 0.
+- Unknown paradigm name → listed in `failed_paradigms`.
+- Probe timeout / LLM failure → paradigm in `failed_paradigms`, Hub wiring returns no bundle (fail-closed when bus missing: log + skip).
+
+**Tests**
+
+```bash
+cd services/orion-cortex-exec
+pytest tests/test_pre_turn_appraisal_rpc.py -q
+
+# Substrate paradigm + registry (repo root)
+pytest tests/test_paradigm_registry.py tests/test_repair_pressure_v2_paradigm.py -q
+```
+
+**Related:** Hub `ENABLE_REPAIR_PRESSURE_SPEECH_WIRING` + executor `compile_speech_contract()` merge `repair_pressure_contract` into TURN CONTRACT text on the same turn.
 
 ### Grammar substrate (shadow observability)
 

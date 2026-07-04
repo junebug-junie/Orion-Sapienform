@@ -5,6 +5,7 @@
 - Wire cortex-exec Rabbit listener + hub RPC client into chat handlers (REST + WebSocket); skip legacy phrase_match pipeline when v2 enabled.
 - Add eval harness with transcript fixtures and regression tests across substrate, cortex-exec, and hub.
 - Apply code review fixes: shared wiring helper, fail-closed on missing weights/bus, no legacy fallback when v2 enabled.
+- Document pre-turn rail in `services/orion-hub/README.md` and `services/orion-cortex-exec/README.md` (enable, flow, rollback, tests).
 
 ## Outcome moved
 
@@ -34,6 +35,7 @@ Before this patch, repair pressure was inferred post-turn via phrase_match in th
 - `services/orion-hub/scripts/pre_turn_appraisal_client.py` + `pre_turn_appraisal_wiring.py`: hub client and wiring
 - `services/orion-hub/scripts/api_routes.py` + `websocket_handler.py`: chat integration
 - `services/orion-hub/scripts/substrate_effect_pipeline.py`: skip legacy when v2 enabled
+- `services/orion-hub/README.md`, `services/orion-cortex-exec/README.md`: operator docs for pre-turn rail
 - Tests and eval fixtures across substrate, cortex-exec, and hub
 
 ## Schema / bus / API changes

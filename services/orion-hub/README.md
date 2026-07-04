@@ -45,6 +45,66 @@ In the main chat UI, use the **Story** mode button (bounded fast lane, `chat_kid
 Verb must be active on the hub node (`orion/cognition/verbs/active.yaml`). Default recall profile is
 `chat.story.kids.v1` (vector-off; SQL + timeline + optional cards) unless the client sets `profile_explicit`.
 
+#### Repair pressure — pre-turn appraisal (v2)
+
+When `ENABLE_PRE_TURN_APPRAISAL=true`, Hub appraises repair pressure **before** the cortex chat call using logprob probes on cortex-exec (not the legacy post-turn `phrase_match` substrate effect pipeline).
+
+**Flow**
+
+1. HTTP (`handle_chat_request`) or WebSocket chat handler calls `run_pre_turn_appraisal_wiring()`.
+2. Hub builds a paired turn window (`build_turn_window`) and RPCs cortex-exec via `PreTurnAppraisalClient`.
+3. Bus request: `orion:cortex:pre_turn_appraisal:request` → reply `orion:cortex:pre_turn_appraisal:result:{correlation_id}`.
+4. Hub applies `TurnAppraisalBundleV1`: attaches `repair_pressure_contract` metadata when mode changes and returns `substrate_effect_summary` for the UI chip.
+5. When v2 is enabled, `run_substrate_effect_pipeline()` is **skipped** (legacy phrase_match does not run).
+
+**Operator gate (single flag on Hub)**
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `ENABLE_PRE_TURN_APPRAISAL` | `false` | Master enable for pre-turn appraisal v2. |
+| `PRE_TURN_APPRAISAL_PARADIGMS` | `repair_pressure` | Comma-separated paradigm names (resolved on cortex-exec via `PARADIGM_REGISTRY`). |
+| `PRE_TURN_APPRAISAL_TIMEOUT_MS` | `800` | RPC timeout (ms). |
+| `CHANNEL_PRE_TURN_APPRAISAL_REQUEST` | `orion:cortex:pre_turn_appraisal:request` | Bus request channel. |
+| `CHANNEL_PRE_TURN_APPRAISAL_RESULT_PREFIX` | `orion:cortex:pre_turn_appraisal:result` | Reply channel prefix (`:{correlation_id}` appended). |
+
+Cortex-exec always listens on the pre-turn channels; there is no separate cortex-exec enable flag.
+
+**Speech contract overlay (separate flag, default on)**
+
+`ENABLE_REPAIR_PRESSURE_SPEECH_WIRING=true` (Hub + cortex-exec) merges `repair_pressure_contract` metadata into the TURN CONTRACT on the same turn. Pre-turn v2 can attach that metadata; speech wiring controls whether cortex-exec compiles it into `chat_general.j2`.
+
+**Enable**
+
+```bash
+# After syncing from .env_example (repo root):
+python scripts/sync_local_env_from_example.py orion-hub orion-cortex-exec
+
+# services/orion-hub/.env
+ENABLE_PRE_TURN_APPRAISAL=true
+PRE_TURN_APPRAISAL_PARADIGMS=repair_pressure
+PRE_TURN_APPRAISAL_TIMEOUT_MS=800
+```
+
+Restart Hub and cortex-exec after changing env.
+
+**Rollback**
+
+Set `ENABLE_PRE_TURN_APPRAISAL=false` on Hub. Legacy phrase_match substrate effect pipeline resumes on the next chat turn.
+
+**Tests**
+
+```bash
+cd services/orion-hub
+pytest tests/test_pre_turn_appraisal_wiring.py tests/test_handle_chat_request_substrate_effect.py -q
+```
+
+**Code**
+
+- `scripts/pre_turn_appraisal_client.py` — bus RPC client
+- `scripts/pre_turn_appraisal_wiring.py` — turn window + bundle apply
+- `scripts/api_routes.py`, `scripts/websocket_handler.py` — chat integration
+- `scripts/substrate_effect_pipeline.py` — legacy skip when v2 enabled
+
 ### 2. Text-to-Speech (TTS)
 
 *   **Intake**: `orion:tts:intake`

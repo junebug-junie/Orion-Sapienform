@@ -45,6 +45,8 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `LLM_ROUTE_LATENTS_URL` | `None` | Fallback URL for `route=latents` (if JSON not set). |
 | `LLM_ROUTE_SPECIALIST_URL` | `None` | Fallback URL for `route=specialist` (if JSON not set). |
 | `LLM_GATEWAY_HEALTH_PORT` | `8210` | Local HTTP health port. |
+| `LLM_GATEWAY_ANTHROPIC_PASSTHROUGH_ENABLED` | `true` | Enable Anthropic Messages passthrough for Claude Code / FCC. |
+| `LLM_GATEWAY_ANTHROPIC_PASSTHROUGH_TIMEOUT_SEC` | `900` | Read timeout for `/v1/messages` upstream proxy (tool calls can be long). |
 | `LLM_ROUTE_HEALTH_TIMEOUT_SEC` | `1.5` | Upstream `/health` probe timeout for route catalog. |
 | `LLM_LOGPROB_SUMMARY_ENABLED` | `false` | Global gate for summary-only `llm_uncertainty` on chat results. |
 | `LLM_LOGPROB_TOP_K_DEFAULT` | `5` | Default `top_logprobs` / `n_probs` depth when `return_logprobs` is set. |
@@ -60,6 +62,60 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | :--- | :--- |
 | `GET /health` | Service liveness and configured route keys. |
 | `GET /routes` | Route catalog from `LLM_GATEWAY_ROUTE_TABLE_JSON` with `default_route=chat` and per-route `id`, `served_by`, `backend`, `status`, `latency_ms`, `last_checked_at`. |
+| `GET /v1/models` | Anthropic-compatible model list from configured route keys (FCC / Claude Code). |
+| `GET /v1/messages` | Anthropic Messages endpoint liveness (same as HEAD). |
+| `POST /v1/messages` | Anthropic Messages passthrough to upstream llama.cpp `/v1/messages` via route table. |
+| `HEAD /v1/messages` | Liveness probe for Anthropic Messages endpoint. |
+| `OPTIONS /v1/messages` | CORS/method discovery for Anthropic clients. |
+
+### Claude Code / free-claude-code (FCC) passthrough
+
+The gateway exposes an Anthropic Messages-compatible HTTP membrane for Claude Code and FCC. Traffic uses the same `LLM_GATEWAY_ROUTE_TABLE_JSON` lanes (`agent`, `chat`, `quick`, `metacog`, etc.) but **does not** go through the bus-native `run_llm_chat()` path.
+
+Topology:
+
+```text
+Claude Code / FCC -> http://athena:8210/v1/messages -> route table -> Atlas llama.cpp /v1/messages
+```
+
+Optional per-route upstream model alias in the route table:
+
+```json
+{
+  "agent": {
+    "url": "http://100.121.214.30:8011",
+    "served_by": "atlas-worker-1",
+    "backend": "llamacpp",
+    "model": "qwen-coder-local"
+  }
+}
+```
+
+FCC example config:
+
+```bash
+LLAMACPP_BASE_URL=http://127.0.0.1:8210/v1
+MODEL=llamacpp/agent
+MODEL_OPUS=llamacpp/agent
+MODEL_SONNET=llamacpp/agent
+MODEL_HAIKU=llamacpp/quick
+ANTHROPIC_AUTH_TOKEN=freecc
+ENABLE_MODEL_THINKING=false
+PROVIDER_MAX_CONCURRENCY=1
+HTTP_READ_TIMEOUT=600
+VOICE_NOTE_ENABLED=false
+MESSAGING_PLATFORM=none
+```
+
+Smoke:
+
+```bash
+curl -s http://127.0.0.1:8210/v1/models | jq
+curl -s http://127.0.0.1:8210/v1/messages \
+  -H 'content-type: application/json' \
+  -H 'anthropic-version: 2023-06-01' \
+  -d '{"model":"llamacpp/agent","max_tokens":64,"stream":false,"messages":[{"role":"user","content":"Say OK."}]}' | jq
+```
 
 ### Logprob / `llm_uncertainty` (language surface stability)
 

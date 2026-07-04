@@ -6,7 +6,7 @@ import os
 from typing import Any, Callable
 from uuid import uuid4
 
-from orion.core.schemas.substrate_mutation import MutationDecisionV1
+from orion.core.schemas.substrate_mutation import MutationDecisionV1, MutationSignalV1
 from orion.core.schemas.substrate_review_telemetry import GraphReviewTelemetryRecordV1
 from orion.substrate.mutation_apply import PatchApplier
 from orion.substrate.mutation_decision import DecisionEngine
@@ -52,6 +52,7 @@ class SubstrateAdaptationWorker:
         post_adoption_delta_by_target_surface: dict[str, float] | None = None,
         replay_telemetry: list[GraphReviewTelemetryRecordV1] | None = None,
         now: datetime | None = None,
+        extra_signals: list[MutationSignalV1] | None = None,
     ) -> dict[str, int | list[str]]:
         t = now or datetime.now(timezone.utc)
         cycle_id = f"mutation-cycle-{uuid4()}"
@@ -67,6 +68,9 @@ class SubstrateAdaptationWorker:
         try:
             self._trace(event="mutation_cycle_start", cycle_id=cycle_id, lock_acquired=True)
             signals = self.detectors.from_review_telemetry(telemetry[: self.budget.max_signals])
+            if extra_signals:
+                remaining_budget = max(0, self.budget.max_signals - len(signals))
+                signals = signals + list(extra_signals)[:remaining_budget]
             for signal in signals:
                 self._trace(
                     event="mutation_signal_emitted",

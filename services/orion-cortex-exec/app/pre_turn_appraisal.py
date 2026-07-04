@@ -9,7 +9,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
 from orion.schemas.pre_turn_appraisal import PreTurnAppraisalRequestV1, TurnAppraisalBundleV1
 from orion.substrate.appraisal import REPAIR_PRESSURE_CONTRACT_METADATA_KEY
-from orion.substrate.appraisal.paradigms.repair_pressure_v2 import RepairPressureV2Paradigm
+from orion.substrate.appraisal.paradigms.registry import PARADIGM_REGISTRY, ParadigmBuildContext
 
 from .settings import settings
 
@@ -51,24 +51,6 @@ async def _llm_probe_call(bus: OrionBusAsync, *, prompt: str, route: str, timeou
     return decoded.envelope.payload
 
 
-async def _run_repair_pressure_paradigm(req: PreTurnAppraisalRequestV1, *, bus: OrionBusAsync):
-    timeout_sec = max(0.1, req.options.timeout_ms / 1000.0)
-
-    async def caller(prompt: str) -> dict[str, Any]:
-        return await _llm_probe_call(
-            bus,
-            prompt=prompt,
-            route=settings.repair_pressure_probe_route,
-            timeout_sec=timeout_sec,
-        )
-
-    paradigm = RepairPressureV2Paradigm(
-        llm_caller=caller,
-        weights_path=settings.repair_pressure_weights_v2_path,
-    )
-    return await paradigm.run(req)
-
-
 async def handle_pre_turn_appraisal_request(env: BaseEnvelope) -> BaseEnvelope:
     payload_obj = env.payload.model_dump(mode="json") if hasattr(env.payload, "model_dump") else env.payload
     req = PreTurnAppraisalRequestV1.model_validate(payload_obj or {})
@@ -77,23 +59,53 @@ async def handle_pre_turn_appraisal_request(env: BaseEnvelope) -> BaseEnvelope:
     metadata_attachments: dict[str, Any] = {}
     grammar_scalars: dict[str, dict[str, float]] = {}
 
-    if not settings.enable_repair_pressure_v2:
-        failed.append("repair_pressure")
-    elif "repair_pressure" in req.paradigms_requested:
-        try:
-            slice_ = await asyncio.wait_for(
-                _run_repair_pressure_paradigm(req, bus=_get_bus()),
-                timeout=max(0.1, req.options.timeout_ms / 1000.0),
+    bus = _get_bus()
+    timeout_sec = max(0.1, req.options.timeout_ms / 1000.0)
+
+    async def llm_caller(prompt: str) -> dict[str, Any]:
+        return await _llm_probe_call(
+            bus,
+            prompt=prompt,
+            route=settings.repair_pressure_probe_route,
+            timeout_sec=timeout_sec,
+        )
+
+    build_ctx = ParadigmBuildContext(
+        llm_caller=llm_caller,
+        weights_path=settings.repair_pressure_weights_v2_path,
+    )
+
+    for paradigm_name in req.paradigms_requested:
+        factory = PARADIGM_REGISTRY.get(paradigm_name)
+        if factory is None:
+            logger.warning(
+                "pre_turn_appraisal_unknown_paradigm corr=%s paradigm=%s",
+                req.correlation_id,
+                paradigm_name,
             )
-            paradigms["repair_pressure"] = slice_.model_dump(mode="json")
-            grammar_scalars["repair_pressure"] = {"level": slice_.level, "confidence": slice_.confidence}
-            before_mode = str((req.contract_before or {}).get("mode") or "")
-            after_mode = str((slice_.contract_delta or {}).get("mode") or before_mode)
-            if before_mode != after_mode:
-                metadata_attachments[REPAIR_PRESSURE_CONTRACT_METADATA_KEY] = dict(slice_.contract_delta)
+            failed.append(paradigm_name)
+            continue
+        try:
+            paradigm = factory(build_ctx)
+            slice_ = await asyncio.wait_for(paradigm.run(req), timeout=timeout_sec)
+            paradigms[paradigm_name] = slice_.model_dump(mode="json")
+            grammar_scalars[paradigm_name] = {
+                "level": slice_.level,
+                "confidence": slice_.confidence,
+            }
+            if paradigm_name == "repair_pressure":
+                before_mode = str((req.contract_before or {}).get("mode") or "")
+                after_mode = str((slice_.contract_delta or {}).get("mode") or before_mode)
+                if before_mode != after_mode:
+                    metadata_attachments[REPAIR_PRESSURE_CONTRACT_METADATA_KEY] = dict(slice_.contract_delta)
         except Exception:
-            logger.warning("pre_turn_appraisal_repair_pressure_failed corr=%s", req.correlation_id, exc_info=True)
-            failed.append("repair_pressure")
+            logger.warning(
+                "pre_turn_appraisal_paradigm_failed corr=%s paradigm=%s",
+                req.correlation_id,
+                paradigm_name,
+                exc_info=True,
+            )
+            failed.append(paradigm_name)
 
     bundle = TurnAppraisalBundleV1(
         correlation_id=req.correlation_id,

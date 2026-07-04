@@ -9,19 +9,26 @@ from app.pre_turn_appraisal import handle_pre_turn_appraisal_request
 
 @pytest.mark.asyncio
 async def test_handler_returns_bundle_with_correlation_id(monkeypatch) -> None:
-    async def _fake_run(_req, *, bus):
-        from orion.schemas.pre_turn_appraisal import TurnAppraisalParadigmSliceV1
+    from orion.schemas.pre_turn_appraisal import TurnAppraisalParadigmSliceV1
 
-        return TurnAppraisalParadigmSliceV1(
-            appraisal_kind="repair_pressure",
-            level=0.80,
-            confidence=0.70,
-            dimensions={"level": 0.80},
-            contract_delta={"mode": "repair_concrete", "rules": ["be specific"]},
-        )
+    class _FakeParadigm:
+        name = "repair_pressure"
 
-    monkeypatch.setattr("app.pre_turn_appraisal._run_repair_pressure_paradigm", _fake_run)
-    monkeypatch.setattr("app.pre_turn_appraisal.settings.enable_repair_pressure_v2", True)
+        async def run(self, _req):
+            return TurnAppraisalParadigmSliceV1(
+                appraisal_kind="repair_pressure",
+                level=0.80,
+                confidence=0.70,
+                dimensions={"level": 0.80},
+                contract_delta={"mode": "repair_concrete", "rules": ["be specific"]},
+            )
+
+    def _fake_factory(_ctx):
+        return _FakeParadigm()
+
+    import app.pre_turn_appraisal as handler_module
+
+    monkeypatch.setitem(handler_module.PARADIGM_REGISTRY, "repair_pressure", _fake_factory)
     monkeypatch.setattr("app.pre_turn_appraisal._BUS", object())
 
     payload = PreTurnAppraisalRequestV1(
@@ -43,14 +50,14 @@ async def test_handler_returns_bundle_with_correlation_id(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_handler_marks_failed_when_v2_disabled(monkeypatch) -> None:
-    monkeypatch.setattr("app.pre_turn_appraisal.settings.enable_repair_pressure_v2", False)
+async def test_handler_marks_unknown_paradigm_failed(monkeypatch) -> None:
     monkeypatch.setattr("app.pre_turn_appraisal._BUS", object())
 
     payload = PreTurnAppraisalRequestV1(
         correlation_id="00000000-0000-4000-8000-000000000002",
         session_id="sess",
         turn_window=[TurnWindowMessageV1(role="user", content="nuts and bolts")],
+        paradigms_requested=["not_a_real_paradigm"],
     ).model_dump(mode="json")
 
     env = BaseEnvelope(
@@ -61,5 +68,5 @@ async def test_handler_marks_failed_when_v2_disabled(monkeypatch) -> None:
     )
     reply = await handle_pre_turn_appraisal_request(env)
     bundle = reply.payload
-    assert bundle["failed_paradigms"] == ["repair_pressure"]
+    assert bundle["failed_paradigms"] == ["not_a_real_paradigm"]
     assert bundle["paradigms"] == {}

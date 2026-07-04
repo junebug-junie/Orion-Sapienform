@@ -243,7 +243,6 @@ class Settings(BaseSettings):
         True,
         alias="ENABLE_REPAIR_PRESSURE_SPEECH_WIRING",
     )
-    enable_repair_pressure_v2: bool = Field(True, alias="ENABLE_REPAIR_PRESSURE_V2")
     repair_pressure_weights_v2_path: str = Field(
         "config/substrate/repair_pressure_weights.v2.yaml",
         alias="REPAIR_PRESSURE_WEIGHTS_V2_PATH",

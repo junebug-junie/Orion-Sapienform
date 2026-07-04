@@ -155,7 +155,7 @@ def build_models_list_payload() -> Dict[str, Any]:
 def _passthrough_read_timeout_sec() -> float:
     explicit = float(getattr(settings, "llm_gateway_anthropic_passthrough_timeout_sec", 900.0) or 900.0)
     default_read = float(getattr(settings, "read_timeout_sec", 60.0) or 60.0)
-    return max(30.0, min(max(explicit, default_read), 900.0))
+    return max(30.0, max(explicit, default_read))
 
 
 def _httpx_timeout() -> httpx.Timeout:

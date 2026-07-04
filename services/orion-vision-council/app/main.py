@@ -32,9 +32,9 @@ from .evidence_grounding import (
     host_person_hits,
     enforce_evidence_grounding,
 )
-from .evidence_preflight import (
-    EvidenceSkipTracker,
-    evidence_fingerprint,
+from .evidence_transition import (
+    EvidenceTransitionTracker,
+    snapshot_from_window,
     stream_key_from_window,
 )
 from .interpretation import (
@@ -97,8 +97,8 @@ class CouncilService:
         self._shutdown_event = asyncio.Event()
         self._recent_interpretations: list[dict] = []
         self._llm_semaphore = asyncio.Semaphore(1)
-        self._evidence_skip = EvidenceSkipTracker()
-        self._evidence_skip_lock = asyncio.Lock()
+        self._evidence_transition = EvidenceTransitionTracker()
+        self._evidence_transition_lock = asyncio.Lock()
 
     def _record_interpretation(
         self,
@@ -178,7 +178,7 @@ class CouncilService:
             return
 
         interpretation, parse_outcome = await self._generate_interpretation(
-            req.window, env, allow_evidence_skip=False
+            req.window, env, allow_transition_gate=False
         )
         interpretation, parse_outcome = self._finalize_interpretation(
             interpretation, parse_outcome, req.window
@@ -226,9 +226,10 @@ class CouncilService:
             return
 
         interpretation, parse_outcome = await self._generate_interpretation(payload, env)
-        if parse_outcome.parse_mode == "evidence_unchanged":
+        if parse_outcome.parse_mode == "stable_scene":
             logger.info(
-                f"[COUNCIL] evidence_preflight noop stream={stream_key_from_window(payload)} "
+                f"[COUNCIL] evidence_transition noop stream={stream_key_from_window(payload)} "
+                f"reason={parse_outcome.salvage_warnings[0] if parse_outcome.salvage_warnings else 'stable_scene'} "
                 f"window_id={payload.window_id}"
             )
             return
@@ -287,54 +288,76 @@ class CouncilService:
             )
         return interpretation, parse_outcome
 
-    def _evidence_skip_decision(
-        self, window: VisionWindowPayload, *, allow_evidence_skip: bool
+    def _transition_gate_decision(
+        self, window: VisionWindowPayload, *, allow_transition_gate: bool
     ):
-        if not allow_evidence_skip or not settings.COUNCIL_EVIDENCE_SKIP_ENABLED:
+        if not allow_transition_gate or not settings.COUNCIL_TRANSITION_GATE_ENABLED:
             return None
         stream_key = stream_key_from_window(window)
-        fingerprint = evidence_fingerprint(window)
-        return stream_key, fingerprint, self._evidence_skip.evaluate(
+        snapshot = snapshot_from_window(window)
+        decision = self._evidence_transition.evaluate(
             stream_key=stream_key,
-            fingerprint=fingerprint,
+            snapshot=snapshot,
             now=time.time(),
-            max_skip_sec=settings.COUNCIL_EVIDENCE_SKIP_MAX_SEC,
+            max_refresh_sec=settings.COUNCIL_TRANSITION_REFRESH_SEC,
         )
+        return stream_key, snapshot, decision
 
     async def _generate_interpretation(
         self,
         window: VisionWindowPayload,
         source_env: BaseEnvelope,
         *,
-        allow_evidence_skip: bool = True,
+        allow_transition_gate: bool = True,
     ) -> tuple[VisionSceneInterpretationV1 | None, InterpretationParseOutcome]:
-        skip_ctx = None
-        if allow_evidence_skip and settings.COUNCIL_EVIDENCE_SKIP_ENABLED:
-            async with self._evidence_skip_lock:
-                skip_ctx = self._evidence_skip_decision(window, allow_evidence_skip=True)
-                if skip_ctx is not None:
-                    stream_key, fingerprint, decision = skip_ctx
-                    if decision.skip:
+        gate_ctx = None
+        if allow_transition_gate and settings.COUNCIL_TRANSITION_GATE_ENABLED:
+            async with self._evidence_transition_lock:
+                gate_ctx = self._transition_gate_decision(window, allow_transition_gate=True)
+                if gate_ctx is not None:
+                    stream_key, snapshot, decision = gate_ctx
+                    if not decision.interpret:
                         logger.info(
-                            f"[COUNCIL] evidence_preflight skip stream={stream_key} "
-                            f"fingerprint={fingerprint[:12]} reason={decision.reason}"
+                            f"[COUNCIL] evidence_transition skip stream={stream_key} "
+                            f"reason={decision.reason} "
+                            f"labels={EvidenceTransitionTracker.labels_summary(snapshot)}"
                         )
                         return None, InterpretationParseOutcome(
                             interpretation=None,
-                            parse_mode="evidence_unchanged",
+                            parse_mode="stable_scene",
+                            salvage_warnings=[decision.reason],
                         )
+                    logger.info(
+                        f"[COUNCIL] evidence_transition interpret stream={stream_key} "
+                        f"reason={decision.reason} "
+                        f"labels={EvidenceTransitionTracker.labels_summary(snapshot)}"
+                    )
+                    self._evidence_transition.begin_interpretation(stream_key=stream_key)
 
-        prompt = build_interpretation_prompt(window)
-        content = await self._call_llm_raw(prompt, source_env)
-        if not content:
-            return None, InterpretationParseOutcome(interpretation=None, parse_mode="parse_failed")
+        try:
+            prompt = build_interpretation_prompt(window)
+            content = await self._call_llm_raw(prompt, source_env)
+            if not content:
+                return None, InterpretationParseOutcome(interpretation=None, parse_mode="parse_failed")
 
-        outcome = parse_llm_content(content, window)
-        if skip_ctx is not None and outcome.interpretation is not None:
-            stream_key, fingerprint, _ = skip_ctx
-            async with self._evidence_skip_lock:
-                self._evidence_skip.record_llm(stream_key=stream_key, fingerprint=fingerprint)
-        return outcome.interpretation, outcome
+            outcome = parse_llm_content(content, window)
+            if gate_ctx is not None:
+                stream_key, snapshot, _ = gate_ctx
+                async with self._evidence_transition_lock:
+                    if outcome.interpretation is not None:
+                        self._evidence_transition.record_interpretation(
+                            stream_key=stream_key,
+                            snapshot=snapshot,
+                        )
+                    else:
+                        self._evidence_transition.abort_interpretation(stream_key=stream_key)
+                gate_ctx = None
+            return outcome.interpretation, outcome
+        finally:
+            if gate_ctx is not None:
+                stream_key, _, _ = gate_ctx
+                async with self._evidence_transition_lock:
+                    self._evidence_transition.abort_interpretation(stream_key=stream_key)
 
     def _project_interpretation_to_events(
         self,

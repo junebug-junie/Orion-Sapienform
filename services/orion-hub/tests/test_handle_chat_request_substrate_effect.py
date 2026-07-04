@@ -87,3 +87,43 @@ def test_handle_chat_request_omits_repair_contract_when_flag_disabled(monkeypatc
     asyncio.run(api_routes.handle_chat_request(cortex, payload, "session-flag-off", no_write=True))
     assert cortex.last_req is not None
     assert REPAIR_PRESSURE_CONTRACT_METADATA_KEY not in (cortex.last_req.metadata or {})
+
+
+@pytest.mark.asyncio
+async def test_v2_pre_turn_appraisal_wiring_attaches_metadata(monkeypatch):
+    from orion.schemas.pre_turn_appraisal import TurnAppraisalBundleV1, TurnAppraisalParadigmSliceV1
+
+    bundle = TurnAppraisalBundleV1(
+        correlation_id="00000000-0000-4000-8000-000000000002",
+        paradigms={
+            "repair_pressure": TurnAppraisalParadigmSliceV1(
+                appraisal_kind="repair_pressure",
+                level=0.86,
+                confidence=0.82,
+                contract_delta={"mode": "repair_concrete", "rules": ["be specific"]},
+            )
+        },
+        metadata_attachments={"repair_pressure_contract": {"mode": "repair_concrete", "rules": ["be specific"]}},
+    )
+
+    class _FakeClient:
+        async def appraise(self, *_a, **_k):
+            return bundle
+
+    monkeypatch.setattr(api_routes.settings, "ENABLE_PRE_TURN_APPRAISAL", True)
+    monkeypatch.setattr("scripts.pre_turn_appraisal_client.PreTurnAppraisalClient", lambda _bus: _FakeClient())
+    monkeypatch.setattr("scripts.main.bus", object())
+    monkeypatch.setattr(api_routes.settings, "ENABLE_REPAIR_PRESSURE_SPEECH_WIRING", True)
+
+    cortex = _FakeCortex()
+    payload = _make_payload(
+        "you gave me garbage directions — stop, build me a design spec for claude, "
+        "arsonist pov only, nuts and bolts"
+    )
+    result = await api_routes.handle_chat_request(cortex, payload, "session-v2", no_write=True)
+    assert cortex.last_req is not None
+    md = cortex.last_req.metadata or {}
+    assert md.get(REPAIR_PRESSURE_CONTRACT_METADATA_KEY, {}).get("mode") == "repair_concrete"
+    summary = result.get("substrate_effect_summary")
+    assert summary is not None
+    assert summary.get("changed_behavior") == "repair_concrete"

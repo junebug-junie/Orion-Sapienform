@@ -12,39 +12,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from orion.schemas.repair_evidence import EvidenceKind, RepairEvidenceV1
 
-EvidenceKind = Literal[
-    "specificity_demand",
-    "trust_rupture",
-    "coherence_gap",
-    "repetition_failure",
-    "operational_block",
-    "explicit_repair_command",
-    "assistant_accountability_demand",
-]
+__all__ = ["EvidenceKind", "RepairEvidenceV1", "RepairPressureAppraisalV1"]
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
-
-
-class RepairEvidenceV1(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    evidence_id: str
-    source_molecule_id: str
-
-    evidence_kind: EvidenceKind
-
-    detector: str
-    score: float = Field(ge=0.0, le=1.0)
-    confidence: float = Field(ge=0.0, le=1.0)
-
-    # Audit only. Do not treat as machine contract.
-    span: str | None = None
-    features: dict[str, float] = Field(default_factory=dict)
-
-    created_at: datetime = Field(default_factory=_utcnow)
 
 
 class RepairPressureAppraisalV1(BaseModel):

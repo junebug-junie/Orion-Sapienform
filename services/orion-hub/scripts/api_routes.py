@@ -2097,26 +2097,7 @@ async def handle_chat_request(
     except Exception:
         pass
 
-    # ─── Substrate effect (best-effort, never blocks chat) ─────────────
-    # Runs sync before the cortex call so the snapshot exists when the
-    # chat result is serialized. Today the appraiser is sub-millisecond;
-    # if it ever grows costly, move to asyncio.to_thread or post-cortex.
-    substrate_summary, substrate_snapshot = run_substrate_effect_pipeline(
-        turn_id=corr_id,
-        message_id=None,
-        user_text=user_prompt,
-        source_id=session_id,
-        # TODO: derive contract_before from the active behavior contract
-        #       once one is assembled before chat. v1 uses a fixed baseline.
-        contract_before={"mode": "default"},
-    )
-    if substrate_summary is not None:
-        logger.info(
-            "substrate_effect_attached corr=%s level=%s changed=%s",
-            corr_id,
-            substrate_summary.get("level_label"),
-            substrate_summary.get("changed_behavior"),
-        )
+    # ─── Substrate effect deferred until after CortexChatRequest is built ──
 
     context_turns = int(payload.get("context_turns") or getattr(settings, "HUB_CONTEXT_TURNS", 10))
     continuity_messages = build_continuity_messages(
@@ -2148,11 +2129,47 @@ async def handle_chat_request(
         )
     except HubRequestValidationError as exc:
         return {"error": str(exc), "error_code": exc.code}
-    attach_repair_pressure_contract(
-        req,
-        substrate_snapshot,
-        enabled=settings.ENABLE_REPAIR_PRESSURE_SPEECH_WIRING,
-    )
+
+    substrate_summary = None
+    substrate_snapshot = None
+    pre_turn_bundle = None
+
+    if settings.ENABLE_PRE_TURN_APPRAISAL:
+        from .main import bus
+        from .pre_turn_appraisal_wiring import run_pre_turn_appraisal_wiring
+
+        substrate_summary, pre_turn_bundle = await run_pre_turn_appraisal_wiring(
+            req,
+            bus=bus,
+            correlation_id=corr_id,
+            session_id=session_id,
+            continuity_messages=continuity_messages or [{"role": "user", "content": user_prompt}],
+            user_prompt=user_prompt,
+            paradigms=settings.PRE_TURN_APPRAISAL_PARADIGMS,
+            timeout_ms=settings.PRE_TURN_APPRAISAL_TIMEOUT_MS,
+        )
+    else:
+        substrate_summary, substrate_snapshot = run_substrate_effect_pipeline(
+            turn_id=corr_id,
+            message_id=None,
+            user_text=user_prompt,
+            source_id=session_id,
+            contract_before={"mode": "default"},
+        )
+        attach_repair_pressure_contract(
+            req,
+            substrate_snapshot,
+            enabled=settings.ENABLE_REPAIR_PRESSURE_SPEECH_WIRING,
+        )
+
+    if substrate_summary is not None:
+        logger.info(
+            "substrate_effect_attached corr=%s level=%s changed=%s",
+            corr_id,
+            substrate_summary.get("level_label"),
+            substrate_summary.get("changed_behavior"),
+        )
+
     workflow_request = req.metadata.get("workflow_request") if isinstance(req.metadata, dict) else None
     execution_policy = workflow_request.get("execution_policy") if isinstance(workflow_request, dict) else None
     logger.info(

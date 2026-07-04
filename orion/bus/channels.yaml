@@ -159,6 +159,22 @@ channels:
     stability: "experimental"
     since: "2026-05-13"
 
+  - name: "orion:cortex:pre_turn_appraisal:request"
+    kind: "request"
+    schema_id: "PreTurnAppraisalRequestV1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-cortex-exec"]
+    stability: "experimental"
+    since: "2026-07-03"
+
+  - name: "orion:cortex:pre_turn_appraisal:result:*"
+    kind: "result"
+    schema_id: "TurnAppraisalBundleV1"
+    producer_services: ["orion-cortex-exec"]
+    consumer_services: ["orion-hub"]
+    stability: "experimental"
+    since: "2026-07-03"
+
   - name: "orion:exec:request:LLMGatewayService"
     kind: "request"
     schema_id: "ChatRequestPayload"

@@ -56,6 +56,12 @@ from orion.schemas.cortex.contracts import (
     AutoDepthDecisionV1,
 )
 from orion.schemas.cortex.exec import CortexExecRequestPayload, CortexExecResultPayload
+from orion.schemas.pre_turn_appraisal import (
+    PreTurnAppraisalRequestV1,
+    TurnAppraisalBundleV1,
+    TurnAppraisalParadigmSliceV1,
+    TurnWindowMessageV1,
+)
 from orion.schemas.cortex.schemas import PlanExecutionRequest, PlanExecutionResult
 from orion.schemas.mind.artifact import MindRunArtifactV1
 from orion.schemas.biometrics_projection import (
@@ -637,6 +643,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "AgentTraceSummaryV1": AgentTraceSummaryV1,
     "CortexExecRequestPayload": CortexExecRequestPayload,
     "CortexExecResultPayload": CortexExecResultPayload,
+    "PreTurnAppraisalRequestV1": PreTurnAppraisalRequestV1,
+    "TurnAppraisalBundleV1": TurnAppraisalBundleV1,
+    "TurnAppraisalParadigmSliceV1": TurnAppraisalParadigmSliceV1,
+    "TurnWindowMessageV1": TurnWindowMessageV1,
     "PlanExecutionRequest": PlanExecutionRequest,
     "PlanExecutionResult": PlanExecutionResult,
     "CollapseMirrorEntryV2": CollapseMirrorEntryV2,  # change_type dict coercion support

@@ -888,13 +888,41 @@ async def websocket_endpoint(websocket: WebSocket):
             except Exception:
                 pass
 
-            substrate_summary, substrate_snapshot = run_substrate_effect_pipeline(
-                turn_id=trace_id,
-                message_id=None,
-                user_text=transcript,
-                source_id=str(session_id or "anonymous"),
-                contract_before={"mode": "default"},
-            )
+            substrate_summary = None
+            substrate_snapshot = None
+            pre_turn_bundle = None
+
+            if settings.ENABLE_PRE_TURN_APPRAISAL:
+                from scripts.pre_turn_appraisal_wiring import run_pre_turn_appraisal_wiring
+
+                continuity_messages = [
+                    m.model_dump(mode="json") if hasattr(m, "model_dump") else m
+                    for m in (chat_req.messages or [])
+                ]
+                substrate_summary, pre_turn_bundle = await run_pre_turn_appraisal_wiring(
+                    chat_req,
+                    bus=bus,
+                    correlation_id=trace_id,
+                    session_id=str(session_id or "anonymous"),
+                    continuity_messages=continuity_messages or [{"role": "user", "content": transcript}],
+                    user_prompt=transcript,
+                    paradigms=settings.PRE_TURN_APPRAISAL_PARADIGMS,
+                    timeout_ms=settings.PRE_TURN_APPRAISAL_TIMEOUT_MS,
+                )
+            else:
+                substrate_summary, substrate_snapshot = run_substrate_effect_pipeline(
+                    turn_id=trace_id,
+                    message_id=None,
+                    user_text=transcript,
+                    source_id=str(session_id or "anonymous"),
+                    contract_before={"mode": "default"},
+                )
+                attach_repair_pressure_contract(
+                    chat_req,
+                    substrate_snapshot,
+                    enabled=settings.ENABLE_REPAIR_PRESSURE_SPEECH_WIRING,
+                )
+
             if substrate_summary is not None:
                 logger.info(
                     "substrate_effect_attached ws corr=%s level=%s changed=%s",
@@ -903,24 +931,24 @@ async def websocket_endpoint(websocket: WebSocket):
                     substrate_summary.get("changed_behavior"),
                 )
 
-            attach_repair_pressure_contract(
-                chat_req,
-                substrate_snapshot,
-                enabled=settings.ENABLE_REPAIR_PRESSURE_SPEECH_WIRING,
-            )
-
             # Chat grammar trace (fail-open, behind PUBLISH_HUB_CHAT_GRAMMAR env flag)
             if bus and settings.PUBLISH_HUB_CHAT_GRAMMAR:
                 try:
                     from scripts.grammar_emit import build_chat_turn_grammar_events
                     from scripts.grammar_publish import publish_hub_chat_grammar_trace
+                    from scripts.pre_turn_appraisal_wiring import repair_pressure_grammar_scalars
+
+                    repair_pressure_level, repair_pressure_confidence = repair_pressure_grammar_scalars(
+                        pre_turn_bundle=pre_turn_bundle,
+                        substrate_summary=substrate_summary,
+                    )
                     _chat_grammar_events = build_chat_turn_grammar_events(
                         turn_id=trace_id,
                         session_id=str(session_id or "anonymous"),
                         node_id=settings.NODE_NAME,
                         word_count=len((transcript or "").split()),
-                        repair_pressure_level=float((substrate_summary or {}).get("level", 0.0)),
-                        repair_pressure_confidence=float((substrate_summary or {}).get("confidence", 0.0)),
+                        repair_pressure_level=repair_pressure_level,
+                        repair_pressure_confidence=repair_pressure_confidence,
                         has_repair_signal=substrate_summary is not None,
                     )
                     _schedule_publish(

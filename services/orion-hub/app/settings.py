@@ -357,6 +357,17 @@ class Settings(BaseSettings):
         default=True,
         alias="ENABLE_REPAIR_PRESSURE_SPEECH_WIRING",
     )
+    ENABLE_PRE_TURN_APPRAISAL: bool = Field(default=False, alias="ENABLE_PRE_TURN_APPRAISAL")
+    PRE_TURN_APPRAISAL_PARADIGMS: str = Field(default="repair_pressure", alias="PRE_TURN_APPRAISAL_PARADIGMS")
+    PRE_TURN_APPRAISAL_TIMEOUT_MS: int = Field(default=800, alias="PRE_TURN_APPRAISAL_TIMEOUT_MS")
+    CHANNEL_PRE_TURN_APPRAISAL_REQUEST: str = Field(
+        default="orion:cortex:pre_turn_appraisal:request",
+        alias="CHANNEL_PRE_TURN_APPRAISAL_REQUEST",
+    )
+    CHANNEL_PRE_TURN_APPRAISAL_RESULT_PREFIX: str = Field(
+        default="orion:cortex:pre_turn_appraisal:result",
+        alias="CHANNEL_PRE_TURN_APPRAISAL_RESULT_PREFIX",
+    )
     HUB_AUTONOMY_SUBJECT_DISPLAY: str = Field(default="two", alias="HUB_AUTONOMY_SUBJECT_DISPLAY")
     SUBSTRATE_AUTONOMY_ENABLED: bool = Field(default=False, alias="SUBSTRATE_AUTONOMY_ENABLED")
     SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED: bool = Field(default=True, alias="SUBSTRATE_AUTONOMY_PROPOSALS_ENABLED")

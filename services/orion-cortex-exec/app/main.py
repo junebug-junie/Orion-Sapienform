@@ -793,6 +793,13 @@ async def handle_verb_request(env: BaseEnvelope) -> None:
 
 
 svc = Rabbit(_cfg(), request_channel=settings.channel_exec_request, handler=handle)
+from .pre_turn_appraisal import bind_pre_turn_appraisal_bus, handle_pre_turn_appraisal_request
+
+pre_turn_appraisal_svc = Rabbit(
+    _cfg(),
+    request_channel=settings.channel_pre_turn_appraisal_request,
+    handler=handle_pre_turn_appraisal_request,
+)
 _rpc_bus = None
 
 
@@ -868,6 +875,7 @@ async def main() -> None:
 
     _rpc_bus = await fork_rpc_client(svc.bus)
     verb_runtime.bus = _rpc_bus
+    bind_pre_turn_appraisal_bus(_rpc_bus or svc.bus)
     logger.info("exec_rpc_bus_fork_ready")
     assert trace_listener is not None, "Trace listener not initialized"
     assert core_event_listener is not None, "Core event listener not initialized"
@@ -876,7 +884,7 @@ async def main() -> None:
             await verb_listener.start_background()
         await trace_listener.start_background()
         await core_event_listener.start_background()
-        await asyncio.gather(svc.start(), health_task)
+        await asyncio.gather(svc.start(), pre_turn_appraisal_svc.start(), health_task)
     finally:
         await _close_rpc_bus()
 

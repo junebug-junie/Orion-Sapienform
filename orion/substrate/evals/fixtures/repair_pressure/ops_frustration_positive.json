@@ -1,0 +1,19 @@
+{
+  "id": "ops_frustration_positive",
+  "class": "positive",
+  "turn_window": [
+    {"role": "user", "content": "you gave me garbage directions — again"},
+    {"role": "assistant", "content": "Here is another high-level architecture overview."},
+    {"role": "user", "content": "Stop hand waving. Build me a design spec for Claude with nuts and bolts, file boundaries, tests."}
+  ],
+  "mock_probe_lines": {
+    "specificity_demand": {"yes_lp": -0.10, "no_lp": -2.5, "margin": 2.4},
+    "trust_rupture": {"yes_lp": -0.15, "no_lp": -2.2, "margin": 2.0},
+    "coherence_gap": {"yes_lp": -0.30, "no_lp": -1.8, "margin": 2.0},
+    "repetition_failure": {"yes_lp": -0.20, "no_lp": -2.0, "margin": 1.8},
+    "operational_block": {"yes_lp": -0.12, "no_lp": -2.6, "margin": 2.5},
+    "explicit_repair_command": {"yes_lp": -0.18, "no_lp": -2.1, "margin": 1.9},
+    "assistant_accountability_demand": {"yes_lp": -0.25, "no_lp": -1.9, "margin": 1.6}
+  },
+  "expect": {"level_min": 0.75, "confidence_min": 0.60, "mode": "repair_concrete", "active_kinds_min": 3}
+}

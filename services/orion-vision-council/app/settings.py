@@ -27,3 +27,8 @@ class Settings(BaseSettings):
     COUNCIL_LLM_MAX_TOKENS: int = 1024
     COUNCIL_LLM_TIMEOUT_SEC: float = 90.0
     COUNCIL_STRUCTURED_OUTPUT_METHOD: str = "json_object_schema"
+
+    # Skip metacog LLM when per-stream evidence fingerprint is unchanged (see evidence_preflight.py).
+    COUNCIL_EVIDENCE_SKIP_ENABLED: bool = True
+    # Force a refresh inference at least this often even when evidence is stable (0 = never force).
+    COUNCIL_EVIDENCE_SKIP_MAX_SEC: float = 120.0

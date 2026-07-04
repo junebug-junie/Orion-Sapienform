@@ -5,17 +5,20 @@ Consumes visual window summaries from the bus, calls the LLM gateway for scene i
 ## V2 pipeline
 
 ```
-VisionWindowPayload → VisionSceneInterpretationV1 → enforce_evidence_grounding → VisionEventPayload
+VisionWindowPayload → evidence_preflight (skip if unchanged) → VisionSceneInterpretationV1 → enforce_evidence_grounding → VisionEventPayload
 ```
 
 1. **Intake** — `VisionWindowPayload` arrives on the council intake channel (or via RPC request).
-2. **Interpretation** — `build_interpretation_prompt` shapes the LLM prompt (includes `summary.evidence` rules); the response is parsed into `VisionSceneInterpretationV1` via strict validation, salvage/coercion, then legacy fallback.
-3. **Grounding** — `CouncilService._finalize_interpretation()` calls `enforce_evidence_grounding()` on **both** intake and RPC paths:
+2. **Evidence preflight** — `evidence_preflight.py` fingerprints host evidence (`hard_labels`, `host_person_hits`, `object_counts`). When unchanged for a stream, council skips the metacog LLM and does not publish (configurable refresh via `COUNCIL_EVIDENCE_SKIP_MAX_SEC`).
+3. **Interpretation** — `build_interpretation_prompt` shapes the LLM prompt (includes `summary.evidence` rules); the response is parsed into `VisionSceneInterpretationV1` via strict validation, salvage/coercion, then legacy fallback.
+4. **Grounding** — `CouncilService._finalize_interpretation()` calls `enforce_evidence_grounding()` on **both** intake and RPC paths:
    - Drop person/activity claims when `person` ∉ `summary.evidence.hard_labels`
    - Cap activity confidence when only captions support the claim
    - On parse failure + `host_person_hits > 0`: deterministic `person_presence` fallback (no YouTube hallucination)
-4. **Projection** — `project_interpretation_to_events` maps grounded `event_candidates` to `VisionEventBundleItem` entries.
-5. **Publish** — the event bundle is published on `orion:vision:events` (and returned on RPC reply when applicable).
+5. **Projection** — `project_interpretation_to_events` maps grounded `event_candidates` to `VisionEventBundleItem` entries.
+6. **Publish** — the event bundle is published on `orion:vision:events` (and returned on RPC reply when applicable).
+
+Bus intake honors evidence skip; **RPC requests always run interpretation** (on-demand callers must not hang or get silent no-ops).
 
 ## Evidence grounding rules
 
@@ -27,6 +30,8 @@ VisionWindowPayload → VisionSceneInterpretationV1 → enforce_evidence_groundi
 | LLM parse fails; `host_person_hits > 0` | Emit `person_presence` fallback (`parse_mode=host_fallback`, tag `host_detect`) |
 
 Choke point: `services/orion-vision-council/app/evidence_grounding.py`, wired via `_finalize_interpretation()` in `main.py`.
+
+Evidence skip choke point: `services/orion-vision-council/app/evidence_preflight.py`, wired in `_generate_interpretation()` / `_process_window()` in `main.py`.
 
 ## Debug endpoints
 

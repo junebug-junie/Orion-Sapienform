@@ -1,4 +1,5 @@
 import asyncio
+import time
 import uuid
 from typing import Any, Optional
 
@@ -30,6 +31,11 @@ from .evidence_grounding import (
     ensure_grounded_person_presence,
     host_person_hits,
     enforce_evidence_grounding,
+)
+from .evidence_preflight import (
+    EvidenceSkipTracker,
+    evidence_fingerprint,
+    stream_key_from_window,
 )
 from .interpretation import (
     InterpretationParseOutcome,
@@ -91,6 +97,8 @@ class CouncilService:
         self._shutdown_event = asyncio.Event()
         self._recent_interpretations: list[dict] = []
         self._llm_semaphore = asyncio.Semaphore(1)
+        self._evidence_skip = EvidenceSkipTracker()
+        self._evidence_skip_lock = asyncio.Lock()
 
     def _record_interpretation(
         self,
@@ -169,7 +177,9 @@ class CouncilService:
             logger.error(f"[COUNCIL] RPC invalid payload: {e}")
             return
 
-        interpretation, parse_outcome = await self._generate_interpretation(req.window, env)
+        interpretation, parse_outcome = await self._generate_interpretation(
+            req.window, env, allow_evidence_skip=False
+        )
         interpretation, parse_outcome = self._finalize_interpretation(
             interpretation, parse_outcome, req.window
         )
@@ -216,6 +226,13 @@ class CouncilService:
             return
 
         interpretation, parse_outcome = await self._generate_interpretation(payload, env)
+        if parse_outcome.parse_mode == "evidence_unchanged":
+            logger.info(
+                f"[COUNCIL] evidence_preflight noop stream={stream_key_from_window(payload)} "
+                f"window_id={payload.window_id}"
+            )
+            return
+
         interpretation, parse_outcome = self._finalize_interpretation(
             interpretation, parse_outcome, payload
         )
@@ -270,17 +287,53 @@ class CouncilService:
             )
         return interpretation, parse_outcome
 
+    def _evidence_skip_decision(
+        self, window: VisionWindowPayload, *, allow_evidence_skip: bool
+    ):
+        if not allow_evidence_skip or not settings.COUNCIL_EVIDENCE_SKIP_ENABLED:
+            return None
+        stream_key = stream_key_from_window(window)
+        fingerprint = evidence_fingerprint(window)
+        return stream_key, fingerprint, self._evidence_skip.evaluate(
+            stream_key=stream_key,
+            fingerprint=fingerprint,
+            now=time.time(),
+            max_skip_sec=settings.COUNCIL_EVIDENCE_SKIP_MAX_SEC,
+        )
+
     async def _generate_interpretation(
         self,
         window: VisionWindowPayload,
         source_env: BaseEnvelope,
+        *,
+        allow_evidence_skip: bool = True,
     ) -> tuple[VisionSceneInterpretationV1 | None, InterpretationParseOutcome]:
+        skip_ctx = None
+        if allow_evidence_skip and settings.COUNCIL_EVIDENCE_SKIP_ENABLED:
+            async with self._evidence_skip_lock:
+                skip_ctx = self._evidence_skip_decision(window, allow_evidence_skip=True)
+                if skip_ctx is not None:
+                    stream_key, fingerprint, decision = skip_ctx
+                    if decision.skip:
+                        logger.info(
+                            f"[COUNCIL] evidence_preflight skip stream={stream_key} "
+                            f"fingerprint={fingerprint[:12]} reason={decision.reason}"
+                        )
+                        return None, InterpretationParseOutcome(
+                            interpretation=None,
+                            parse_mode="evidence_unchanged",
+                        )
+
         prompt = build_interpretation_prompt(window)
         content = await self._call_llm_raw(prompt, source_env)
         if not content:
             return None, InterpretationParseOutcome(interpretation=None, parse_mode="parse_failed")
 
         outcome = parse_llm_content(content, window)
+        if skip_ctx is not None and outcome.interpretation is not None:
+            stream_key, fingerprint, _ = skip_ctx
+            async with self._evidence_skip_lock:
+                self._evidence_skip.record_llm(stream_key=stream_key, fingerprint=fingerprint)
         return outcome.interpretation, outcome
 
     def _project_interpretation_to_events(

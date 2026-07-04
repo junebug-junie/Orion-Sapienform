@@ -649,6 +649,203 @@ profiles:
       - If OOM: lower ctx_size to 49152 before falling back to qwen3-coder-next-q4km-2xv100-32gb-agent-breadth.
 
 
+  # Gemma 4 31B IT — HF: https://huggingface.co/google/gemma-4-31B-it
+  # GGUF: Krasnopjorovs/gemma-4-31b-it-Imatrix-GGUF (imatrix Q5_K_M ~21G)
+  # Google sampling (model card § Best Practices): temperature=1.0, top_p=0.95, top_k=64
+  # BF16 google/gemma-4-31B-it needs ~80GB; Q5_K_M + row split fits 2x V100 32GB with usable KV.
+  # Multimodal (image) on llama.cpp uses ggml-org LM + mmproj; see orion-llamacpp-host mmproj/image/ubatch flags.
+  gemma4-31b-it-q5km-2xv100-32gb-balanced:
+    display_name: "Gemma 4 31B IT – Q5_K_M (llama.cpp, 2x V100 32GB, balanced)"
+    task_type: chat
+    backend: llamacpp
+    model_id: "gemma4-31b-it-q5_k_m"
+
+    supports_tools: true
+    supports_embeddings: false
+    supports_vision: false
+
+    gpu:
+      num_gpus: 2
+      tensor_parallel_size: 1
+      device_ids: [0, 1]
+      max_model_len: 65536
+      max_batch_tokens: 1024
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.90
+
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "Krasnopjorovs/gemma-4-31b-it-Imatrix-GGUF"
+      hf_filename: "gemma-4-31b-it-Q5_K_M.gguf"
+      host: "0.0.0.0"
+      port: 8080
+
+      ctx_size: 65536
+      n_gpu_layers: 99
+      threads: 16
+      n_parallel: 1
+      batch_size: 1024
+
+      chat_template_kwargs:
+        enable_thinking: true
+
+      no_context_shift: true
+      split_mode: "row"
+      tensor_split: "1,1"
+      flash_attn: "on"
+
+      # Google Gemma 4 standardized sampling — do not drift low without cause
+      temperature: 1.0
+      top_k: 64
+      top_p: 0.95
+      min_p: 0.0
+      presence_penalty: 0.0
+
+      n_predict: 16384
+
+    notes: |
+      Balanced Gemma 4 31B profile for 2x V100 32GB (row split, equal tensor_split).
+      - Target lane: general chat + reasoning + tool use where multimodal is not required.
+      - Q5_K_M imatrix GGUF (~21G): much smaller weights than Qwen3-Coder-Next Q5 (~57G), so 64k ctx is
+        safer here than on the coder depth profile on the same 2x32GB box.
+      - 64k ctx matches qwen3-coder-next-q5km-2xv100-32gb-agent-depth — proven for ~41k+ agent prompts.
+      - Sampling matches Google model-card defaults (temp 1.0, top_k 64, top_p 0.95). Gemma quality degrades with overly cold temps.
+      - Thinking on via chat_template_kwargs.enable_thinking (Gemma 4 <|think|> / channel template). Strip prior-turn thoughts from history per Google multi-turn guidance.
+      - Single parallel slot for stable long-context + thinking outputs.
+      - Wire: LLM_PROFILE_NAME=gemma4-31b-it-q5km-2xv100-32gb-balanced on orion-llamacpp-host.
+      - If OOM at 64k: lower ctx_size to 49152, then hf_filename gemma-4-31b-it-Q4_K_M.gguf.
+      - For image input on llama.cpp: use gemma4-31b-it-q4km-2xv100-32gb-multimodal (ggml-org + mmproj).
+
+  # Gemma 4 31B IT multimodal — ggml-org LM + mmproj (llama.cpp mtmd, server-cuda-b8740+)
+  gemma4-31b-it-q4km-2xv100-32gb-multimodal:
+    display_name: "Gemma 4 31B IT – Q4_K_M + mmproj (llama.cpp, 2x V100 32GB, text+image)"
+    task_type: multimodal
+    backend: llamacpp
+    model_id: "gemma4-31b-it-q4_k_m"
+
+    supports_tools: true
+    supports_embeddings: false
+    supports_vision: true
+
+    gpu:
+      num_gpus: 2
+      tensor_parallel_size: 1
+      device_ids: [0, 1]
+      max_model_len: 65536
+      max_batch_tokens: 2048
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.90
+
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "ggml-org/gemma-4-31B-it-GGUF"
+      hf_filename: "gemma-4-31B-it-Q4_K_M.gguf"
+      mmproj_filename: "mmproj-gemma-4-31B-it-bf16.gguf"
+      host: "0.0.0.0"
+      port: 8080
+
+      ctx_size: 65536
+      n_gpu_layers: 99
+      threads: 16
+      n_parallel: 1
+      batch_size: 2048
+      ubatch_size: 2048
+
+      # Google: 280/560 for general multimodal chat; max budget 1120 (OCR/docs)
+      image_min_tokens: 280
+      image_max_tokens: 560
+
+      chat_template_kwargs:
+        enable_thinking: true
+
+      no_context_shift: true
+      split_mode: "row"
+      tensor_split: "1,1"
+      flash_attn: "on"
+
+      temperature: 1.0
+      top_k: 64
+      top_p: 0.95
+      min_p: 0.0
+      presence_penalty: 0.0
+
+      n_predict: 16384
+
+    notes: |
+      Gemma 4 31B text+image via llama.cpp libmtmd on 2x V100 32GB.
+      - Uses official ggml-org/gemma-4-31B-it-GGUF (Q4_K_M ~17G) + mmproj-gemma-4-31B-it-bf16.gguf (~1G).
+      - Requires pinned image LLAMACPP_IMAGE_TAG=server-cuda-b8740 (mtmd + --mmproj + image token flags).
+      - ubatch_size/batch_size must be >= image_max_tokens (Gemma vision encoder is non-causal).
+      - 64k ctx matches agent-scale prompts (~41k+) proven on Qwen coder depth lane.
+      - Google sampling: temp 1.0, top_k 64, top_p 0.95 — do not cold-temp this model.
+      - Video: no native flag; send frames as a sequence of images in the chat payload.
+      - No audio on 31B dense. For text+image+audio use gemma4-e4b-it-q4km-v100-32gb-multimodal.
+      - Wire: LLM_PROFILE_NAME=gemma4-31b-it-q4km-2xv100-32gb-multimodal
+      - If OOM: lower image_max_tokens to 280, then ctx_size to 49152.
+
+  # Gemma 4 E4B IT — smaller multimodal with native audio (ggml-org)
+  gemma4-e4b-it-q4km-v100-32gb-multimodal:
+    display_name: "Gemma 4 E4B IT – Q4_K_M + mmproj (llama.cpp, 1x V100 32GB, text+image+audio)"
+    task_type: multimodal
+    backend: llamacpp
+    model_id: "gemma4-e4b-it-q4_k_m"
+
+    supports_tools: true
+    supports_embeddings: false
+    supports_vision: true
+
+    gpu:
+      num_gpus: 1
+      tensor_parallel_size: 1
+      device_ids: [0]
+      max_model_len: 131072
+      max_batch_tokens: 2048
+      max_concurrent_requests: 2
+      gpu_memory_fraction: 0.88
+
+    llamacpp:
+      model_root: "/models/gguf"
+      hf_repo_id: "ggml-org/gemma-4-E4B-it-GGUF"
+      hf_filename: "gemma-4-E4B-it-Q4_K_M.gguf"
+      mmproj_filename: "mmproj-gemma-4-E4B-it-bf16.gguf"
+      host: "0.0.0.0"
+      port: 8080
+
+      ctx_size: 131072
+      n_gpu_layers: 99
+      threads: 8
+      n_parallel: 2
+      batch_size: 2048
+      ubatch_size: 2048
+
+      image_min_tokens: 140
+      image_max_tokens: 280
+
+      chat_template_kwargs:
+        enable_thinking: true
+
+      no_context_shift: true
+      flash_attn: "on"
+
+      temperature: 1.0
+      top_k: 64
+      top_p: 0.95
+      min_p: 0.0
+      presence_penalty: 0.0
+
+      n_predict: 8192
+
+    notes: |
+      Smaller Gemma 4 lane for text + image + audio on one V100 32GB (~5G LM + ~1G mmproj).
+      - E4B is the practical sub-31B option when you need audio without vLLM.
+      - Native 128k ctx; profile uses 131072 with headroom for on-device workloads.
+      - Image token budget 140–280 (Google: fast captioning / general chat tier).
+      - Video: send sampled frames as images (max ~60s @ 1fps per Google model card).
+      - Audio: place audio after text in the prompt (Google modality order).
+      - Wire: LLM_PROFILE_NAME=gemma4-e4b-it-q4km-v100-32gb-multimodal
+      - Alternative all-in-one (vision+audio, no Google): Qwen3-Omni-30B-A3B via ggml-org (heavier MoE).
+
+
   # ─────────────────────────────────────────────
   # DeepSeek 70B via llama.cpp on Atlas
   # ─────────────────────────────────────────────

@@ -298,3 +298,67 @@ def test_qwen3_coder_next_profile_uses_hf_shard_paths():
         filename = raw["profiles"][key]["llamacpp"]["hf_filename"]
         assert "-Q4_K_M-" in filename or "-Q5_K_M-" in filename
         assert filename.endswith("-00001-of-00004.gguf")
+
+
+def test_gemma4_31b_multimodal_profile_forwards_mmproj_and_image_flags(monkeypatch):
+    repo_root = Path(__file__).resolve().parents[3]
+    config_path = repo_root / "config" / "llm_profiles.yaml"
+
+    monkeypatch.setenv("LLM_PROFILE_NAME", "gemma4-31b-it-q4km-2xv100-32gb-multimodal")
+    monkeypatch.setenv("LLM_PROFILES_CONFIG_PATH", str(config_path))
+
+    main = importlib.import_module("app.main")
+    settings_mod = importlib.import_module("app.settings")
+    profiles_mod = importlib.import_module("app.profiles")
+
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    profile_cfg = raw["profiles"]["gemma4-31b-it-q4km-2xv100-32gb-multimodal"]
+    profile = profiles_mod.LLMProfile(name="gemma4-31b-it-q4km-2xv100-32gb-multimodal", **profile_cfg)
+
+    monkeypatch.setattr(main, "_ensure_model_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        main,
+        "_ensure_mmproj_file",
+        lambda _cfg: "/models/gguf/mmproj-gemma-4-31B-it-bf16.gguf",
+    )
+    monkeypatch.setattr(
+        main,
+        "_get_supported_llama_server_flags",
+        lambda _server_bin: {
+            "--jinja",
+            "--chat-template-kwargs",
+            "--flash-attn",
+            "--no-context-shift",
+            "--split-mode",
+            "--tensor-split",
+            "--mmproj",
+            "--ubatch-size",
+            "--image-min-tokens",
+            "--image-max-tokens",
+            "--n-predict",
+            "--temp",
+            "--top-k",
+            "--top-p",
+            "--min-p",
+            "--presence-penalty",
+        },
+    )
+    monkeypatch.setattr(main, "_get_llama_server_build", lambda _server_bin: 8740)
+    monkeypatch.setattr(
+        settings_mod.settings,
+        "llamacpp_model_path_override",
+        "/models/gguf/gemma-4-31B-it-Q4_K_M.gguf",
+    )
+
+    cmd, _env = main.build_llama_server_cmd_and_env(profile)
+
+    assert profile.supports_vision is True
+    assert "--jinja" in cmd
+    assert _find_flag_value(cmd, "--mmproj") == "/models/gguf/mmproj-gemma-4-31B-it-bf16.gguf"
+    assert _find_flag_value(cmd, "--ubatch-size") == "2048"
+    assert _find_flag_value(cmd, "--image-min-tokens") == "280"
+    assert _find_flag_value(cmd, "--image-max-tokens") == "560"
+    assert _find_flag_value(cmd, "--ctx-size") == "65536"
+    assert _find_flag_value(cmd, "--temp") == "1.0"
+    assert _find_flag_value(cmd, "--top-k") == "64"
+    assert _find_flag_value(cmd, "--top-p") == "0.95"

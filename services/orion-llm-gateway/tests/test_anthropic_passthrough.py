@@ -168,6 +168,37 @@ class TestAnthropicPassthroughHTTP:
         call_kwargs = mock_client.post.await_args.kwargs
         assert call_kwargs["json"]["model"] == "qwen-coder-local"
         assert mock_client.post.await_args.args[0] == "http://agent:8011/v1/messages"
+        assert response.headers["x-gateway-route"] == "agent"
+
+    @patch("app.anthropic_passthrough.httpx.AsyncClient")
+    def test_post_v1_messages_non_streaming_x_gateway_route_header(
+        self, mock_client_cls: MagicMock, client: TestClient
+    ) -> None:
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.content = b'{"id":"msg_1","content":[{"type":"text","text":"OK"}]}'
+        mock_response.headers = {"content-type": "application/json"}
+
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = False
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client_cls.return_value = mock_client
+
+        response = client.post(
+            "/v1/messages",
+            headers={"anthropic-version": "2023-06-01", "x-api-key": "freecc"},
+            json={
+                "model": "llamacpp/chat",
+                "max_tokens": 64,
+                "stream": False,
+                "messages": [{"role": "user", "content": "Say OK."}],
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["content"][0]["text"] == "OK"
+        assert response.headers["x-gateway-route"] == "chat"
 
     @patch("app.anthropic_passthrough.httpx.AsyncClient")
     def test_post_v1_messages_streaming_uses_streaming_response(
@@ -207,6 +238,52 @@ class TestAnthropicPassthroughHTTP:
         ) as response:
             assert response.status_code == 200
             assert "text/event-stream" in response.headers.get("content-type", "")
+            chunks: List[bytes] = list(response.iter_bytes())
+            assert b"event: message_start" in b"".join(chunks)
+
+        mock_client_cls.assert_called_once()
+        mock_client.send.assert_awaited_once()
+        assert mock_client.send.await_args.kwargs.get("stream") is True
+
+    @patch("app.anthropic_passthrough.httpx.AsyncClient")
+    def test_post_v1_messages_streaming_x_gateway_route_header(
+        self, mock_client_cls: MagicMock, client: TestClient
+    ) -> None:
+        class _Upstream:
+            status_code = 200
+            headers = {"content-type": "text/event-stream"}
+
+            async def aiter_bytes(self):
+                yield b"event: message_start\n\n"
+                yield b"event: content_block_delta\n\n"
+
+            async def aread(self) -> bytes:
+                return b""
+
+            async def aclose(self) -> None:
+                return None
+
+        mock_upstream = _Upstream()
+        mock_client = MagicMock()
+        mock_client.build_request = MagicMock(return_value=MagicMock())
+        mock_client.send = AsyncMock(return_value=mock_upstream)
+        mock_client.aclose = AsyncMock()
+        mock_client_cls.return_value = mock_client
+
+        with client.stream(
+            "POST",
+            "/v1/messages",
+            headers={"anthropic-version": "2023-06-01"},
+            json={
+                "model": "llamacpp/agent",
+                "max_tokens": 64,
+                "stream": True,
+                "messages": [{"role": "user", "content": "Say OK."}],
+            },
+        ) as response:
+            assert response.status_code == 200
+            assert "text/event-stream" in response.headers.get("content-type", "")
+            assert response.headers["x-gateway-route"] == "agent"
             chunks: List[bytes] = list(response.iter_bytes())
             assert b"event: message_start" in b"".join(chunks)
 

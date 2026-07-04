@@ -360,6 +360,7 @@ async def handle_messages_post(request: Request) -> Response:
                     await upstream.aclose()
                     await client.aclose()
 
+            response_headers["X-Gateway-Route"] = route_key
             return StreamingResponse(
                 _body(),
                 status_code=upstream.status_code,
@@ -377,6 +378,7 @@ async def handle_messages_post(request: Request) -> Response:
                     correlation_id,
                 )
             response_headers = _forwardable_response_headers(upstream.headers)
+            response_headers["X-Gateway-Route"] = route_key
             content_type = response_headers.pop("content-type", None) or response_headers.pop(
                 "Content-Type", None
             )

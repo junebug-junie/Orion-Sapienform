@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from orion.substrate.appraisal.models import RepairEvidenceV1
+from orion.schemas.repair_evidence import RepairEvidenceV1
 
 
 class TurnWindowMessageV1(BaseModel):

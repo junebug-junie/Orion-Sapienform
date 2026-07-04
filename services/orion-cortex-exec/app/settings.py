@@ -243,6 +243,20 @@ class Settings(BaseSettings):
         True,
         alias="ENABLE_REPAIR_PRESSURE_SPEECH_WIRING",
     )
+    enable_repair_pressure_v2: bool = Field(True, alias="ENABLE_REPAIR_PRESSURE_V2")
+    repair_pressure_weights_v2_path: str = Field(
+        "config/substrate/repair_pressure_weights.v2.yaml",
+        alias="REPAIR_PRESSURE_WEIGHTS_V2_PATH",
+    )
+    repair_pressure_probe_route: str = Field("quick", alias="REPAIR_PRESSURE_PROBE_ROUTE")
+    channel_pre_turn_appraisal_request: str = Field(
+        "orion:cortex:pre_turn_appraisal:request",
+        alias="CHANNEL_PRE_TURN_APPRAISAL_REQUEST",
+    )
+    channel_pre_turn_appraisal_result_prefix: str = Field(
+        "orion:cortex:pre_turn_appraisal:result",
+        alias="CHANNEL_PRE_TURN_APPRAISAL_RESULT_PREFIX",
+    )
     world_pulse_stance_enabled: bool = Field(False, alias="WORLD_PULSE_STANCE_ENABLED")
     world_pulse_stance_max_topics: int = Field(5, alias="WORLD_PULSE_STANCE_MAX_TOPICS")
     world_pulse_stance_min_confidence: float = Field(0.65, alias="WORLD_PULSE_STANCE_MIN_CONFIDENCE")

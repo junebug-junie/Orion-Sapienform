@@ -63,7 +63,7 @@ When `ENABLE_PRE_TURN_APPRAISAL=true`, Hub appraises repair pressure **before** 
 | :--- | :--- | :--- |
 | `ENABLE_PRE_TURN_APPRAISAL` | `false` | Master enable for pre-turn appraisal v2. |
 | `PRE_TURN_APPRAISAL_PARADIGMS` | `repair_pressure` | Comma-separated paradigm names (resolved on cortex-exec via `PARADIGM_REGISTRY`). |
-| `PRE_TURN_APPRAISAL_TIMEOUT_MS` | `800` | RPC timeout (ms). |
+| `PRE_TURN_APPRAISAL_TIMEOUT_MS` | `60000` | RPC timeout (ms); logprob probe needs LLM headroom. |
 | `CHANNEL_PRE_TURN_APPRAISAL_REQUEST` | `orion:cortex:pre_turn_appraisal:request` | Bus request channel. |
 | `CHANNEL_PRE_TURN_APPRAISAL_RESULT_PREFIX` | `orion:cortex:pre_turn_appraisal:result` | Reply channel prefix (`:{correlation_id}` appended). |
 
@@ -82,7 +82,7 @@ python scripts/sync_local_env_from_example.py orion-hub orion-cortex-exec
 # services/orion-hub/.env
 ENABLE_PRE_TURN_APPRAISAL=true
 PRE_TURN_APPRAISAL_PARADIGMS=repair_pressure
-PRE_TURN_APPRAISAL_TIMEOUT_MS=800
+PRE_TURN_APPRAISAL_TIMEOUT_MS=60000
 ```
 
 Restart Hub and cortex-exec after changing env.

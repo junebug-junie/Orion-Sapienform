@@ -18,7 +18,7 @@ class PreTurnAppraisalOptionsV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     fail_closed: bool = True
-    timeout_ms: int = Field(default=800, ge=100, le=5000)
+    timeout_ms: int = Field(default=60000, ge=100, le=120000)
     max_turns: int = Field(default=8, ge=1, le=32)
 
 

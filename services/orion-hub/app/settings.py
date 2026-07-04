@@ -359,7 +359,7 @@ class Settings(BaseSettings):
     )
     ENABLE_PRE_TURN_APPRAISAL: bool = Field(default=False, alias="ENABLE_PRE_TURN_APPRAISAL")
     PRE_TURN_APPRAISAL_PARADIGMS: str = Field(default="repair_pressure", alias="PRE_TURN_APPRAISAL_PARADIGMS")
-    PRE_TURN_APPRAISAL_TIMEOUT_MS: int = Field(default=800, alias="PRE_TURN_APPRAISAL_TIMEOUT_MS")
+    PRE_TURN_APPRAISAL_TIMEOUT_MS: int = Field(default=60000, alias="PRE_TURN_APPRAISAL_TIMEOUT_MS")
     CHANNEL_PRE_TURN_APPRAISAL_REQUEST: str = Field(
         default="orion:cortex:pre_turn_appraisal:request",
         alias="CHANNEL_PRE_TURN_APPRAISAL_REQUEST",

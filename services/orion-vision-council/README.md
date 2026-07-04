@@ -5,11 +5,11 @@ Consumes visual window summaries from the bus, calls the LLM gateway for scene i
 ## V2 pipeline
 
 ```
-VisionWindowPayload → evidence_preflight (skip if unchanged) → VisionSceneInterpretationV1 → enforce_evidence_grounding → VisionEventPayload
+VisionWindowPayload → evidence_transition (host label delta) → VisionSceneInterpretationV1 → enforce_evidence_grounding → VisionEventPayload
 ```
 
 1. **Intake** — `VisionWindowPayload` arrives on the council intake channel (or via RPC request).
-2. **Evidence preflight** — `evidence_preflight.py` fingerprints host evidence (`hard_labels`, `host_person_hits`, `object_counts`). When unchanged for a stream, council skips the metacog LLM and does not publish (configurable refresh via `COUNCIL_EVIDENCE_SKIP_MAX_SEC`).
+2. **Evidence transition gate** — `evidence_transition.py` compares host `hard_labels` and `person` presence per stream. Council runs metacog only on `first_window`, `person_entered`, `person_exited`, `labels_changed`, or `refresh_ttl` (`COUNCIL_TRANSITION_REFRESH_SEC`). Stable scenes skip LLM and publish nothing.
 3. **Interpretation** — `build_interpretation_prompt` shapes the LLM prompt (includes `summary.evidence` rules); the response is parsed into `VisionSceneInterpretationV1` via strict validation, salvage/coercion, then legacy fallback.
 4. **Grounding** — `CouncilService._finalize_interpretation()` calls `enforce_evidence_grounding()` on **both** intake and RPC paths:
    - Drop person/activity claims when `person` ∉ `summary.evidence.hard_labels`
@@ -18,7 +18,7 @@ VisionWindowPayload → evidence_preflight (skip if unchanged) → VisionSceneIn
 5. **Projection** — `project_interpretation_to_events` maps grounded `event_candidates` to `VisionEventBundleItem` entries.
 6. **Publish** — the event bundle is published on `orion:vision:events` (and returned on RPC reply when applicable).
 
-Bus intake honors evidence skip; **RPC requests always run interpretation** (on-demand callers must not hang or get silent no-ops).
+Bus intake honors the transition gate; **RPC requests always run interpretation** (on-demand callers must not hang or get silent no-ops). Host pipe only — edge is out of scope.
 
 ## Evidence grounding rules
 
@@ -31,7 +31,7 @@ Bus intake honors evidence skip; **RPC requests always run interpretation** (on-
 
 Choke point: `services/orion-vision-council/app/evidence_grounding.py`, wired via `_finalize_interpretation()` in `main.py`.
 
-Evidence skip choke point: `services/orion-vision-council/app/evidence_preflight.py`, wired in `_generate_interpretation()` / `_process_window()` in `main.py`.
+Evidence transition choke point: `services/orion-vision-council/app/evidence_transition.py`, wired in `_generate_interpretation()` / `_process_window()` in `main.py`.
 
 ## Debug endpoints
 

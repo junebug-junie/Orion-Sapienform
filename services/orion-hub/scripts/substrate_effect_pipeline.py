@@ -90,6 +90,12 @@ def run_substrate_effect_pipeline(
 ) -> tuple[dict[str, Any] | None, SubstrateEffectSnapshot | None]:
     """Run the appraiser end-to-end. Stash a snapshot in `cache`. Return summary."""
 
+    from scripts.settings import settings as hub_settings
+
+    if getattr(hub_settings, "ENABLE_PRE_TURN_APPRAISAL", False):
+        logger.debug("substrate_effect_pipeline_skipped_v2_enabled turn_id=%s", turn_id)
+        return None, None
+
     store_in = cache if cache is not None else substrate_effect_cache
     try:
         if not (user_text or "").strip():

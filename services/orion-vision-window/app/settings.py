@@ -27,8 +27,8 @@ class Settings(BaseSettings):
     # Scene belief habituation (per-stream; ephemeral like live_state)
     WINDOW_BELIEF_ENABLED: bool = True
     WINDOW_BELIEF_VOTE_N: int = 3
-    WINDOW_BELIEF_ENTER_VOTES: int = 2
-    WINDOW_BELIEF_EXIT_VOTES: int = 1
+    WINDOW_BELIEF_ENTER_VOTES: int = 3
+    WINDOW_BELIEF_EXIT_VOTES: int = 0
 
     # HTTP
     HTTP_HOST: str = "0.0.0.0"

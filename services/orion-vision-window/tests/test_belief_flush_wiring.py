@@ -58,7 +58,7 @@ async def test_belief_survives_single_empty_observation() -> None:
     now = time.time()
 
     with patch.object(svc.bus, "publish", new_callable=AsyncMock):
-        for _ in range(2):
+        for _ in range(3):
             await svc._flush_and_publish(
                 stream_id="cam0",
                 buffered=[{"artifact": _artifact("door"), "ts": now, "env": None}],

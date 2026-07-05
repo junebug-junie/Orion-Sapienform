@@ -9372,6 +9372,7 @@ loadDismissedIds();
     quick: { mode: 'brain', verb: 'chat_quick', lane: 'quick', label: 'Quick' },
     story: { mode: 'brain', verb: 'chat_kids_story', lane: null, label: 'Story' },
     agent: { mode: 'agent', verb: null, lane: null, label: 'Agent' },
+    agent_claude: { mode: 'agent-claude', verb: null, lane: null, label: 'Agent Claude', skipComputeConfirm: true },
     council: { mode: 'council', verb: null, lane: null, label: 'Council' },
   };
 
@@ -9394,6 +9395,10 @@ loadDismissedIds();
     }
     if (!silent) {
       updateStatus(`Mode: ${spec.label}`);
+    }
+    const fccRow = document.getElementById('hubFccModelRow');
+    if (fccRow) {
+      fccRow.classList.toggle('hidden', key !== 'agent_claude');
     }
   }
 
@@ -9502,6 +9507,42 @@ loadDismissedIds();
       loadLlmRouteCatalog();
     }, 30000);
   }
+
+  let fccModelLabels = [];
+  let fccDefaultLabel = null;
+  let agentClaudeEnabled = false;
+
+  async function loadFccModelLabels() {
+    const opt = document.getElementById('hubModeAgentClaudeOption');
+    const row = document.getElementById('hubFccModelRow');
+    const sel = document.getElementById('hubFccModelSelect');
+    try {
+      const r = await fetch(`${API_BASE_URL}/api/fcc-model-labels`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const body = await r.json();
+      agentClaudeEnabled = Boolean(body.enabled);
+      fccModelLabels = Array.isArray(body.labels) ? body.labels : [];
+      fccDefaultLabel = body.default_label || fccModelLabels[0] || null;
+      if (opt) opt.hidden = !agentClaudeEnabled;
+      if (sel) {
+        sel.innerHTML = '';
+        fccModelLabels.forEach((label) => {
+          const o = document.createElement('option');
+          o.value = label;
+          o.textContent = label;
+          sel.appendChild(o);
+        });
+        if (fccDefaultLabel) sel.value = fccDefaultLabel;
+      }
+      if (row && hubModeSelect && hubModeSelect.value === 'agent_claude') {
+        row.classList.remove('hidden');
+      }
+    } catch (err) {
+      console.warn('fcc model labels load failed', err);
+      if (opt) opt.hidden = true;
+    }
+  }
+  loadFccModelLabels();
 
   // --- 4. Logic Functions ---
 
@@ -10560,6 +10601,10 @@ loadDismissedIds();
             try { appendLiveAgentStep(d.correlation_id, d.step); } catch (err) { console.warn('agent_step render failed', err); }
             return;
           }
+          if (d.kind === 'claude_step' && d.step) {
+            try { appendLiveClaudeStep(d.correlation_id, d.step); } catch (err) { console.warn('claude_step render failed', err); }
+            return;
+          }
           if (d.memory_digest || d.recall_debug || typeof d.memory_used === 'boolean') {
             updateMemoryPanelFromResponse(d);
           }
@@ -10762,7 +10807,12 @@ loadDismissedIds();
     let effectiveRoute = String(
       (opts && opts.llm_route) || selectedLlmRoute || HUB_COMPUTE_DEFAULT
     ).toLowerCase();
-    if (!(opts && opts.skipRouteDownCheck)) {
+    const forceAgentPath = Boolean(opts && opts.forceAgentPath);
+    const requestModePreview = forceAgentPath
+      ? 'agent'
+      : (opts && opts.mode ? String(opts.mode) : currentMode);
+    const skipCompute = requestModePreview === 'agent-claude' || (HUB_MODE_SPECS[hubModeSelect?.value]?.skipComputeConfirm);
+    if (!(opts && opts.skipRouteDownCheck) && !skipCompute) {
       const confirmedRoute = await confirmDownRouteOrProceed(effectiveRoute);
       if (confirmedRoute === null) {
         updateStatus('Send cancelled (route unavailable).');
@@ -10779,7 +10829,6 @@ loadDismissedIds();
 
     const recallMode = recallModeSelect ? recallModeSelect.value : "auto";
     const recallProfile = recallProfileSelect ? recallProfileSelect.value : "auto";
-    const forceAgentPath = Boolean(opts && opts.forceAgentPath);
     const explicitVerbs = Array.isArray(opts && opts.verbs)
       ? opts.verbs.map((verb) => String(verb || '').trim()).filter(Boolean)
       : null;
@@ -10822,6 +10871,12 @@ loadDismissedIds();
     };
     if (!omitChatUiMode) {
       payload.mode = requestMode;
+    }
+    if (requestMode === 'agent-claude') {
+      const fccSel = document.getElementById('hubFccModelSelect');
+      payload.fcc_model_label = (fccSel && fccSel.value) ? fccSel.value : (fccDefaultLabel || 'MODEL');
+      payload.use_recall = false;
+      payload.llm_route = null;
     }
     const optFromOpts = opts && opts.options && typeof opts.options === 'object' ? { ...opts.options } : {};
     if (isChatQuickSend) {
@@ -11138,7 +11193,10 @@ loadDismissedIds();
     if (audioMeta.client_gate === 'low_peak_warn') {
       updateStatus('Low mic level, sending anyway...');
     }
-    const voiceRoute = await confirmDownRouteOrProceed(
+    const voiceRouteSkipCompute = currentMode === 'agent-claude' || (HUB_MODE_SPECS[hubModeSelect?.value]?.skipComputeConfirm);
+    const voiceRoute = voiceRouteSkipCompute
+      ? (selectedLlmRoute || HUB_COMPUTE_DEFAULT)
+      : await confirmDownRouteOrProceed(
       selectedLlmRoute || HUB_COMPUTE_DEFAULT
     );
     if (voiceRoute === null) {
@@ -11178,6 +11236,12 @@ loadDismissedIds();
             ? socialRedactionPostureSelect.value
             : null,
         };
+        if (currentMode === 'agent-claude') {
+          const fccSel = document.getElementById('hubFccModelSelect');
+          audioPayload.fcc_model_label = (fccSel && fccSel.value) ? fccSel.value : (fccDefaultLabel || 'MODEL');
+          audioPayload.use_recall = false;
+          audioPayload.llm_route = null;
+        }
         const audioLaneVerbs = modeVerbOverride ? [modeVerbOverride] : selectedVerbs;
         const audioIsChatQuick =
           Array.isArray(audioLaneVerbs) &&

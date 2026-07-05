@@ -248,6 +248,7 @@
               <option value="quick">Quick</option>
               <option value="story">Story</option>
               <option value="agent">Agent</option>
+              <option value="agent_claude" id="hubModeAgentClaudeOption" hidden>Agent Claude</option>
               <option value="council">Council</option>
             </select>
           </div>
@@ -260,6 +261,17 @@
               title="GPU/model lane (llm_route): chat, quick, agent, metacog. Still applies when Social room is ON."
             >
               <option value="quick">quick — loading…</option>
+            </select>
+          </div>
+          <div id="hubFccModelRow" class="flex items-center gap-2 pt-1 border-t border-gray-700/80 hidden">
+            <label for="hubFccModelSelect" class="uppercase text-gray-500 font-bold text-[10px] shrink-0">FCC Model</label>
+            <select
+              id="hubFccModelSelect"
+              class="flex-1 min-w-0 bg-gray-900/80 text-gray-100 text-xs rounded border border-gray-700 px-2 py-1.5 focus:outline-none focus:border-indigo-500 font-mono"
+              aria-label="FCC model env label"
+              title="FCC ~/.fcc/.env key label (MODEL, MODEL_HAIKU, …)"
+            >
+              <option value="">loading…</option>
             </select>
           </div>
           <div class="flex items-center gap-3 pt-1 border-t border-gray-700/80">
@@ -3456,6 +3468,7 @@
     window.__HUB_AUTONOMY_SUBJECT_DISPLAY__ = "{{HUB_AUTONOMY_SUBJECT_DISPLAY}}";
   </script>
   <script src="/static/js/agent-trace.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
+  <script src="/static/js/agent-claude-trace.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/workflow-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/workflow-schedule-ui.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>
   <script src="/static/js/social-inspection.js?v={{HUB_UI_ASSET_VERSION}}" defer></script>

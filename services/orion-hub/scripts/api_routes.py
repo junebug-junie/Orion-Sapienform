@@ -2164,6 +2164,22 @@ async def handle_chat_request(
 
     corr_id = str(uuid4())
 
+    if str(payload.get("mode") or "").strip().lower() == "agent-claude":
+        catalog = catalog_from_settings(
+            env_path=settings.HUB_FCC_ENV_PATH,
+            auth_override=settings.HUB_FCC_AUTH_TOKEN,
+        )
+        fcc_label = str(
+            payload.get("fcc_model_label")
+            or catalog.get("default_label")
+            or DEFAULT_FCC_MODEL_LABEL
+        )
+        return await _run_agent_claude_http(
+            prompt=user_prompt,
+            fcc_model_label=fcc_label,
+            correlation_id=corr_id,
+        )
+
     # ─── Hub presence (best-effort, never blocks chat) ──────────────────
     # One timestamp per turn; mirrors a liveness snapshot for self-state.
     try:
@@ -2312,22 +2328,6 @@ async def handle_chat_request(
         user_head=(user_prompt or "")[:80],
         no_write=no_write,
     )
-
-    if str(mode or "").strip().lower() == "agent-claude":
-        catalog = catalog_from_settings(
-            env_path=settings.HUB_FCC_ENV_PATH,
-            auth_override=settings.HUB_FCC_AUTH_TOKEN,
-        )
-        fcc_label = str(
-            payload.get("fcc_model_label")
-            or catalog.get("default_label")
-            or DEFAULT_FCC_MODEL_LABEL
-        )
-        return await _run_agent_claude_http(
-            prompt=user_prompt,
-            fcc_model_label=fcc_label,
-            correlation_id=corr_id,
-        )
 
     if should_use_context_exec_agent_lane(req):
         ctx_result = await run_hub_agent_via_context_exec(

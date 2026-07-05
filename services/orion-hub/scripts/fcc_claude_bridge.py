@@ -1,8 +1,19 @@
 """Spawn Claude Code harness turns for Hub agent-claude mode."""
 from __future__ import annotations
 
+import asyncio
 import json
-from typing import Any, Dict, List, Optional, Tuple
+import logging
+import os
+import time
+import urllib.error
+import urllib.request
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+
+from scripts.fcc_env_catalog import load_fcc_env, resolve_auth_token
+from scripts.fcc_model_mapping import DEFAULT_FCC_MODEL_LABEL, label_to_claude_model_id
+
+logger = logging.getLogger("orion-hub.fcc_claude_bridge")
 
 
 def parse_stream_json_line(line: str) -> Optional[Dict[str, Any]]:
@@ -73,19 +84,6 @@ def extract_final_from_stream_event(
 
     return accumulated, sid, dur
 
-
-import asyncio
-import logging
-import os
-import time
-import urllib.error
-import urllib.request
-from typing import AsyncIterator, Dict, Optional
-
-from scripts.fcc_env_catalog import load_fcc_env, resolve_auth_token
-from scripts.fcc_model_mapping import DEFAULT_FCC_MODEL_LABEL, label_to_claude_model_id
-
-logger = logging.getLogger("orion-hub.fcc_claude_bridge")
 
 _ACTIVE: Dict[str, asyncio.subprocess.Process] = {}
 
@@ -222,6 +220,15 @@ async def run_turn(
     finally:
         _unregister_process(correlation_id)
 
+    stderr_snippet = ""
+    stderr_stream = getattr(proc, "stderr", None) if proc is not None else None
+    if stderr_stream is not None:
+        try:
+            stderr_bytes = await stderr_stream.read()
+            stderr_snippet = stderr_bytes.decode("utf-8", errors="replace").strip()[:500]
+        except Exception:
+            stderr_snippet = ""
+
     duration_ms = int((time.monotonic() - started) * 1000)
     metadata = {
         "fcc_model_label": label,
@@ -231,9 +238,12 @@ async def run_turn(
     }
 
     if exit_code != 0:
+        err_msg = f"claude exited with code {exit_code}"
+        if stderr_snippet:
+            err_msg = f"{err_msg}: {stderr_snippet}"
         yield {
             "type": "error",
-            "error": f"claude exited with code {exit_code}",
+            "error": err_msg,
             "error_code": "fcc_claude_nonzero_exit",
             "metadata": metadata,
             "llm_response": accumulated,

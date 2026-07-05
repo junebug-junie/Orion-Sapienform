@@ -1425,6 +1425,10 @@ async def websocket_endpoint(websocket: WebSocket):
             }
             if substrate_summary is not None:
                 ws_payload["substrate_effect_summary"] = substrate_summary
+            if used_agent_claude_lane:
+                agent_meta = route_debug.get("agent_claude") if isinstance(route_debug, dict) else {}
+                ws_payload["metadata"] = agent_meta if isinstance(agent_meta, dict) else {}
+                ws_payload["context_exec_lane"] = False
             if mode == "council" or settings.HUB_DEBUG_COUNCIL:
                 council_debug = _extract_council_debug_from_result(resp)
                 if council_debug:

@@ -4,7 +4,7 @@ import asyncio
 import logging
 import re
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 try:
@@ -37,7 +37,7 @@ try:
         fetch_rdf_chatturn_exact_matches,
     )
     from .sql_timeline import fetch_recent_fragments, fetch_related_by_entities, fetch_exact_fragments
-    from .sql_chat import fetch_chat_history_pairs, fetch_chat_messages
+    from .sql_chat import fetch_chat_history_pairs, fetch_chat_messages, fetch_chat_turn_timestamps
     from .cards_adapter import fetch_card_fragments_guarded
     try:
         from .storage.graph_compression_adapter import fetch_graph_compression_fragments
@@ -63,7 +63,7 @@ except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
             fetch_rdf_chatturn_exact_matches,
         )
         from app.sql_timeline import fetch_recent_fragments, fetch_related_by_entities, fetch_exact_fragments  # type: ignore
-        from app.sql_chat import fetch_chat_history_pairs, fetch_chat_messages  # type: ignore
+        from app.sql_chat import fetch_chat_history_pairs, fetch_chat_messages, fetch_chat_turn_timestamps  # type: ignore
         from app.cards_adapter import fetch_card_fragments_guarded  # type: ignore
         try:
             from app.storage.graph_compression_adapter import fetch_graph_compression_fragments  # type: ignore
@@ -545,6 +545,81 @@ def _sql_chat_enabled_for_profile(profile: Dict[str, Any]) -> bool:
     profile_name = str(profile.get("profile") or "")
     default_enabled = not profile_name.startswith("chat.general")
     return bool(profile.get("enable_sql_chat", default_enabled))
+
+
+_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def _is_rdf_chatturn(frag: Dict[str, Any]) -> bool:
+    if "chatturn" in {str(t).lower() for t in (frag.get("tags") or [])}:
+        return True
+    ref = str(frag.get("uri") or frag.get("id") or "")
+    return "/chatTurn/" in ref
+
+
+def _chatturn_id_from_fragment(frag: Dict[str, Any]) -> Optional[str]:
+    """Recover the chat_history_log id from an RDF chat-turn fragment.
+
+    RDF turn IRIs look like ``.../chatTurn/<uuid-with-underscores>`` because the writer
+    sanitizes ``-`` to ``_``. Reverse that and validate the UUID shape so we only join
+    ids we can trust.
+    """
+    ref = str(frag.get("uri") or frag.get("id") or "")
+    if "/chatTurn/" not in ref:
+        return None
+    tail = ref.rsplit("/chatTurn/", 1)[-1].strip()
+    if not tail:
+        return None
+    candidate = tail.replace("_", "-")
+    return candidate if _UUID_RE.match(candidate) else None
+
+
+async def _window_rdf_chatturn_candidates(
+    candidates: List[Dict[str, Any]],
+    *,
+    since_minutes: int,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Drop RDF chat-turn candidates older than ``since_minutes``, stamping real timestamps.
+
+    The graph stores no usable ChatTurn timestamp, so these rails otherwise leak months-old
+    turns into reflective recall regardless of the profile window. We resolve each turn's
+    created_at from chat_history_log and keep only those inside the window. Non chat-turn
+    candidates (SQL, cards, RDF claims, etc.) are returned untouched. Memory cards are never
+    touched here.
+    """
+    if since_minutes <= 0:
+        return candidates, 0
+    turn_ids: Dict[int, str] = {}
+    for idx, frag in enumerate(candidates):
+        if not _is_rdf_chatturn(frag):
+            continue
+        cid = _chatturn_id_from_fragment(frag)
+        if cid is not None:
+            turn_ids[idx] = cid
+    if not turn_ids:
+        return candidates, 0
+
+    try:
+        ts_map = await fetch_chat_turn_timestamps(list(set(turn_ids.values())), since_minutes)
+    except Exception as exc:  # pragma: no cover - defensive; never fail recall on this
+        logger.debug("rdf chat-turn windowing skipped: %s", exc)
+        return candidates, 0
+
+    kept: List[Dict[str, Any]] = []
+    dropped = 0
+    for idx, frag in enumerate(candidates):
+        if idx not in turn_ids:
+            kept.append(frag)
+            continue
+        ts = ts_map.get(turn_ids[idx])
+        if ts is None:
+            # Outside the window or not resolvable to a chat row → drop from reflective recall.
+            dropped += 1
+            continue
+        frag = dict(frag)
+        frag["ts"] = ts
+        kept.append(frag)
+    return kept, dropped
 
 
 async def _fetch_anchor_candidates(
@@ -1362,6 +1437,24 @@ async def process_recall(
             backend_counts_total["memory_graph_sparql"] = len(mg_extra)
         except Exception as exc:
             logger.debug("memory_graph_sparql augment skipped: %s", exc)
+
+    if settings.RECALL_RDF_CHAT_WINDOW_ENABLED:
+        rdf_chat_window_min = int(
+            profile.get("rdf_chat_since_minutes")
+            or profile.get("sql_since_minutes")
+            or settings.RECALL_SQL_SINCE_MINUTES
+        )
+        candidates, rdf_chat_dropped = await _window_rdf_chatturn_candidates(
+            candidates, since_minutes=rdf_chat_window_min
+        )
+        if rdf_chat_dropped:
+            backend_counts_total["rdf_chat_out_of_window_dropped"] = rdf_chat_dropped
+            logger.info(
+                "rdf chat-turn windowing profile=%s window_min=%s dropped=%s",
+                profile.get("profile"),
+                rdf_chat_window_min,
+                rdf_chat_dropped,
+            )
 
     suppression_start = time.time()
     candidates, suppressed = _suppress_self_hits(

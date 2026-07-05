@@ -40,6 +40,47 @@ def _to_epoch(value: Any) -> float:
         return 0.0
 
 
+async def fetch_chat_turn_timestamps(
+    turn_ids: List[str],
+    since_minutes: int,
+) -> Dict[str, float]:
+    """Resolve created_at (epoch) for chat turns by id, bounded to the last ``since_minutes``.
+
+    Used to window RDF chat-turn recall, which carries no usable timestamp in the graph
+    (turns are joined back to ``chat_history_log`` on the turn id). Ids outside the window,
+    or not present in the chat table, are simply absent from the returned map so callers can
+    drop them.
+    """
+    if asyncpg is None:
+        return {}
+    ids = [str(t).strip() for t in (turn_ids or []) if str(t).strip()]
+    if not ids:
+        return {}
+    id_col = settings.RECALL_SQL_CHAT_ID_COL
+    query = f"""
+        SELECT {id_col} AS id,
+               {settings.RECALL_SQL_CHAT_CREATED_AT_COL} AS created_at
+        FROM {settings.RECALL_SQL_CHAT_TABLE}
+        WHERE {id_col} = ANY($1::text[])
+          AND {settings.RECALL_SQL_CHAT_CREATED_AT_COL} >= NOW() - INTERVAL '{int(since_minutes)} minutes'
+    """
+    try:
+        conn = await asyncpg.connect(settings.RECALL_PG_DSN)
+        try:
+            rows = await conn.fetch(query, ids)
+        finally:
+            await conn.close()
+    except Exception:
+        return {}
+
+    out: Dict[str, float] = {}
+    for row in rows:
+        rid = str(row.get("id") or "").strip()
+        if rid:
+            out[rid] = _to_epoch(row.get("created_at"))
+    return out
+
+
 def _normalize_text(value: Any) -> str:
     text = str(value or "").strip().lower()
     return " ".join(text.split())

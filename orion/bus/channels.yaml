@@ -1948,6 +1948,7 @@ channels:
       - orion-biometrics
       - orion-cortex-exec
       - orion-bus
+      - orion-harness-governor
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-05-23"

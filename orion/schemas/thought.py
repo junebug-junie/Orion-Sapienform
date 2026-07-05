@@ -16,3 +16,6 @@ class HubAssociationBundleV1(BaseModel):
     execution_trajectory_slice: dict[str, Any] | None = None
     repair_bundle: TurnAppraisalBundleV1 | None = None
     read_source: Literal["felt_state_reader", "hub_sql_fallback"]
+
+
+from orion.schemas.harness_finalize import GrammarReceiptV1  # noqa: F401

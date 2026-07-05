@@ -193,6 +193,16 @@ def hydrate_felt_state_ctx(ctx: dict) -> None:
         return
 
 
+def substrate_felt_state_database_url() -> str:
+    """Public URL resolver for Hub association and other felt-state readers."""
+    return _database_url()
+
+
+def substrate_felt_state_max_age_sec() -> int:
+    """Public max-age gate (seconds) for projection freshness checks."""
+    return _max_age_sec()
+
+
 def reset_reader_for_tests() -> None:
     global _READER
     _READER = None

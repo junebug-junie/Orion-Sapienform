@@ -1,0 +1,16 @@
+{
+  "id": "proceed_below_threshold",
+  "thought": {
+    "imperative": "Proceed anyway.",
+    "tone": "flat",
+    "strain_refs": ["node-a"],
+    "evidence_refs": ["node-a"],
+    "trust_rupture_score": 0.64
+  },
+  "association_stale": false,
+  "coalition_ids": ["node-a"],
+  "expect": {
+    "disposition": "proceed",
+    "boundary_register": false
+  }
+}

@@ -1,0 +1,24 @@
+name: harness_finalize_reflect
+label: Harness Finalize Reflect
+description: >
+  Integrative 5b check for unified turns. Reads draft, felt thought, and
+  substrate finalize appraisal to produce FinalizeReflectionV1 — not user speech.
+
+category: ExecutiveControl
+priority: high
+
+requires_gpu: true
+requires_memory: false
+timeout_ms: 120000
+
+services:
+  - LLMGatewayService
+
+prompt_template: harness_finalize_reflect.j2
+
+steps:
+  - name: llm_harness_finalize_reflect
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: harness_finalize_reflect.j2
+    requires_gpu: true

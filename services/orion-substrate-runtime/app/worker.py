@@ -155,11 +155,19 @@ class BiometricsSubstrateWorker:
         self._stop = asyncio.Event()
         self._bus = None
         self._tasks: list[asyncio.Task[None]] = []
+
+    @property
+    def bus(self):
+        return self._bus
+
+    @property
+    def stop_event(self) -> asyncio.Event:
+        return self._stop
         self._substrate_graph_store: Any = None
 
     async def start(self) -> None:
         s = self._settings
-        if s.orion_bus_enabled and s.publish_accepted_pressure_grammar:
+        if s.orion_bus_enabled:
             from orion.core.bus.async_service import OrionBusAsync
 
             self._bus = OrionBusAsync(url=s.orion_bus_url)

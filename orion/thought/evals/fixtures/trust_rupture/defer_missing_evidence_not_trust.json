@@ -1,0 +1,17 @@
+{
+  "id": "defer_missing_evidence_not_trust",
+  "thought": {
+    "imperative": "Proceed anyway.",
+    "tone": "flat",
+    "strain_refs": ["node-a"],
+    "evidence_refs": [],
+    "trust_rupture_score": 0.4
+  },
+  "association_stale": false,
+  "coalition_ids": ["node-a"],
+  "expect": {
+    "disposition": "defer",
+    "boundary_register": false,
+    "reason_contains": ["missing_evidence_refs"]
+  }
+}

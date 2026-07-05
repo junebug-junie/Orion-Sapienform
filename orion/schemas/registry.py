@@ -505,6 +505,25 @@ from orion.schemas.notify import (
     RecipientProfile,
     RecipientProfileUpdate,
 )
+from orion.schemas.harness_finalize import (
+    FinalizeReflectionV1,
+    GrammarReceiptV1,
+    HarnessDraftMoleculeV1,
+    HarnessPostTurnClosureV1,
+    HarnessRepairOverlayV1,
+    HarnessRunRequestV1,
+    HarnessRunV1,
+    HarnessTurnOutcomeMoleculeV1,
+    HarnessVerdictMoleculeV1,
+    SubstrateFinalizeAppraisalV1,
+)
+from orion.schemas.thought import (
+    CoalitionSnapshotV1,
+    HubAssociationBundleV1,
+    StanceHarnessSliceV1,
+    StanceReactRequestV1,
+    ThoughtEventV1,
+)
 from orion.schemas.attention_frame import AttentionFrameV1, AttentionSignalV1
 from orion.schemas.chat_stance import ChatStanceBrief
 from orion.schemas.situation import (
@@ -1137,6 +1156,21 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SelfExperimentDispatchRequestV1": SelfExperimentDispatchRequestV1,
     "SelfExperimentDispatchResponseV1": SelfExperimentDispatchResponseV1,
     "SelfExperimentListResponseV1": SelfExperimentListResponseV1,
+    "CoalitionSnapshotV1": CoalitionSnapshotV1,
+    "StanceHarnessSliceV1": StanceHarnessSliceV1,
+    "HubAssociationBundleV1": HubAssociationBundleV1,
+    "ThoughtEventV1": ThoughtEventV1,
+    "StanceReactRequestV1": StanceReactRequestV1,
+    "GrammarReceiptV1": GrammarReceiptV1,
+    "HarnessDraftMoleculeV1": HarnessDraftMoleculeV1,
+    "SubstrateFinalizeAppraisalV1": SubstrateFinalizeAppraisalV1,
+    "FinalizeReflectionV1": FinalizeReflectionV1,
+    "HarnessVerdictMoleculeV1": HarnessVerdictMoleculeV1,
+    "HarnessTurnOutcomeMoleculeV1": HarnessTurnOutcomeMoleculeV1,
+    "HarnessPostTurnClosureV1": HarnessPostTurnClosureV1,
+    "HarnessRepairOverlayV1": HarnessRepairOverlayV1,
+    "HarnessRunRequestV1": HarnessRunRequestV1,
+    "HarnessRunV1": HarnessRunV1,
 
 }
 
@@ -1145,6 +1179,66 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "VisionEdgeActivityPayload": SchemaRegistration(
         model=VisionEdgeActivityPayload,
         kind="vision.edge.activity.v1",
+    ),
+    "CoalitionSnapshotV1": SchemaRegistration(
+        model=CoalitionSnapshotV1,
+        kind="coalition.snapshot.v1",
+    ),
+    "StanceHarnessSliceV1": SchemaRegistration(
+        model=StanceHarnessSliceV1,
+        kind="stance.harness.slice.v1",
+    ),
+    "HubAssociationBundleV1": SchemaRegistration(
+        model=HubAssociationBundleV1,
+        kind="hub.association.bundle.v1",
+    ),
+    "ThoughtEventV1": SchemaRegistration(
+        model=ThoughtEventV1,
+        kind="thought.event.v1",
+    ),
+    "StanceReactRequestV1": SchemaRegistration(
+        model=StanceReactRequestV1,
+        kind="stance.react.request.v1",
+    ),
+    "GrammarReceiptV1": SchemaRegistration(
+        model=GrammarReceiptV1,
+        kind="grammar.receipt.v1",
+    ),
+    "HarnessDraftMoleculeV1": SchemaRegistration(
+        model=HarnessDraftMoleculeV1,
+        kind="harness.draft.molecule.v1",
+    ),
+    "SubstrateFinalizeAppraisalV1": SchemaRegistration(
+        model=SubstrateFinalizeAppraisalV1,
+        kind="substrate.finalize.appraisal.v1",
+    ),
+    "FinalizeReflectionV1": SchemaRegistration(
+        model=FinalizeReflectionV1,
+        kind="finalize.reflection.v1",
+    ),
+    "HarnessVerdictMoleculeV1": SchemaRegistration(
+        model=HarnessVerdictMoleculeV1,
+        kind="harness.verdict.molecule.v1",
+    ),
+    "HarnessTurnOutcomeMoleculeV1": SchemaRegistration(
+        model=HarnessTurnOutcomeMoleculeV1,
+        kind="harness.turn.outcome.v1",
+    ),
+    "HarnessPostTurnClosureV1": SchemaRegistration(
+        model=HarnessPostTurnClosureV1,
+        kind="harness.post_turn.closure.v1",
+    ),
+    "HarnessRepairOverlayV1": SchemaRegistration(
+        model=HarnessRepairOverlayV1,
+        kind="harness.repair.overlay.v1",
+    ),
+    "HarnessRunRequestV1": SchemaRegistration(
+        model=HarnessRunRequestV1,
+        kind="harness.run.request.v1",
+    ),
+    "HarnessRunV1": SchemaRegistration(
+        model=HarnessRunV1,
+        kind="harness.run.v1",
     ),
 }
 

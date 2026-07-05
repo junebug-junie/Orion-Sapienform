@@ -15,6 +15,10 @@ from scripts.fcc_model_mapping import DEFAULT_FCC_MODEL_LABEL, label_to_claude_m
 
 logger = logging.getLogger("orion-hub.fcc_claude_bridge")
 
+# asyncio subprocess stdout defaults to 64KiB; claude stream-json lines can exceed that
+# when tool results embed large file reads.
+DEFAULT_STREAM_READ_LIMIT = 8 * 1024 * 1024
+
 
 def parse_stream_json_line(line: str) -> Optional[Dict[str, Any]]:
     stripped = str(line or "").strip()
@@ -40,6 +44,60 @@ def parse_stream_json_lines(lines: List[str]) -> List[Dict[str, Any]]:
 
 def build_step_frame(raw: Dict[str, Any]) -> Dict[str, Any]:
     return {"type": str(raw.get("type") or "unknown"), "raw": raw}
+
+
+def summarize_harness_step(step: Dict[str, Any], *, index: int) -> str:
+    """One-line summary of a harness step for chat history / thought_process."""
+    if not isinstance(step, dict):
+        return f"[{index}] step"
+    stype = str(step.get("type") or "event")
+    raw = step.get("raw") if isinstance(step.get("raw"), dict) else step
+    if not isinstance(raw, dict):
+        return f"[{index}] {stype}"
+
+    if stype == "assistant" or raw.get("type") == "assistant":
+        text = _text_blocks_from_assistant(raw)
+        if text.strip():
+            return f"[{index}] assistant: {text.strip()[:2000]}"
+    if stype == "result" or raw.get("type") == "result":
+        result = raw.get("result")
+        if isinstance(result, str) and result.strip():
+            return f"[{index}] result: {result.strip()[:500]}"
+    return f"[{index}] {stype}"
+
+
+def summarize_harness_steps_for_history(steps: List[Dict[str, Any]]) -> str:
+    """Deterministic harness transcript for reasoning_trace.content → thought_process."""
+    lines = [
+        summarize_harness_step(step, index=i)
+        for i, step in enumerate(steps or [])
+        if isinstance(step, dict)
+    ]
+    return "\n".join(lines).strip()
+
+
+def build_harness_reasoning_trace(
+    *,
+    steps: List[Dict[str, Any]],
+    correlation_id: str,
+    session_id: Optional[str] = None,
+    model_label: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    content = summarize_harness_steps_for_history(steps)
+    if not content:
+        return None
+    return {
+        "trace_role": "reasoning",
+        "trace_stage": "mid_answer",
+        "content": content,
+        "correlation_id": str(correlation_id),
+        "session_id": session_id,
+        "model": str(model_label or "").strip() or None,
+        "metadata": {
+            "source": "agent_claude_harness",
+            "step_count": len(steps or []),
+        },
+    }
 
 
 def _text_blocks_from_assistant(event: Dict[str, Any]) -> str:
@@ -111,12 +169,38 @@ def _preflight_fcc_server(url: str, *, timeout_sec: float = 3.0) -> None:
 
 
 def _build_subprocess_env(*, fcc_server_url: str, auth_token: str) -> Dict[str, str]:
+    from scripts.settings import settings
+
     env = os.environ.copy()
     env["ANTHROPIC_BASE_URL"] = str(fcc_server_url).rstrip("/")
     env["ANTHROPIC_AUTH_TOKEN"] = auth_token
     env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
     env["TERM"] = "dumb"
+    max_ctx = int(getattr(settings, "HUB_AGENT_CLAUDE_MAX_CONTEXT_TOKENS", 65536))
+    read_max = int(getattr(settings, "HUB_AGENT_CLAUDE_FILE_READ_MAX_TOKENS", 8192))
+    if max_ctx > 0:
+        env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(max_ctx)
+    if read_max > 0:
+        env["CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS"] = str(read_max)
     return env
+
+
+def is_context_overflow_text(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return (
+        "exceed_context_size_error" in lowered
+        or "exceeds the available context size" in lowered
+    )
+
+
+def context_overflow_operator_hint(*, n_ctx: int | None = None) -> str:
+    ctx = int(n_ctx or 65536)
+    return (
+        f"\n\n---\nHub: context window full (~{ctx} tokens on llamacpp). "
+        "Prefer rg/Grep before Read; use Read offset/limit on large files "
+        "(orion/bus/channels.yaml is ~65KB). Raise ctx_size in config/llm_profiles.yaml "
+        "or route ~/.fcc/.env MODEL_* to a backend with more headroom."
+    )
 
 
 async def run_turn(
@@ -159,16 +243,20 @@ async def run_turn(
         prompt,
         "--output-format",
         "stream-json",
-        "--dangerously-skip-permissions",
         "--verbose",
         "--model",
         model_id,
     ]
+    if os.geteuid() != 0:
+        argv.insert(-2, "--dangerously-skip-permissions")
     started = time.monotonic()
     proc: Optional[asyncio.subprocess.Process] = None
     accumulated = ""
     claude_session_id: Optional[str] = None
     exit_code = 1
+    read_limit = int(getattr(settings, "HUB_AGENT_CLAUDE_STREAM_READ_LIMIT", DEFAULT_STREAM_READ_LIMIT))
+    if read_limit < 65536:
+        read_limit = 65536
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -177,6 +265,7 @@ async def run_turn(
             env=_build_subprocess_env(fcc_server_url=fcc_server_url, auth_token=auth_token),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=read_limit,
         )
         _register_process(correlation_id, proc)
         assert proc.stdout is not None
@@ -190,6 +279,24 @@ async def run_turn(
                     "type": "error",
                     "error": f"agent-claude turn timed out after {timeout_sec}s",
                     "error_code": "fcc_claude_timeout",
+                }
+                return
+            except asyncio.LimitOverrunError as exc:
+                proc.kill()
+                yield {
+                    "type": "error",
+                    "error": (
+                        "claude stream-json line exceeded read limit "
+                        f"({read_limit} bytes): {exc}. "
+                        "Try a narrower prompt or raise HUB_AGENT_CLAUDE_STREAM_READ_LIMIT."
+                    ),
+                    "error_code": "fcc_claude_stream_line_limit",
+                    "llm_response": accumulated or None,
+                    "metadata": {
+                        "fcc_model_label": label,
+                        "claude_session_id": claude_session_id,
+                        "stream_read_limit": read_limit,
+                    },
                 }
                 return
 

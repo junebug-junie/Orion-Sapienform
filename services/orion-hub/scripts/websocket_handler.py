@@ -38,8 +38,13 @@ from scripts import social_room_inspection_cache
 from scripts.cortex_chat_display import hub_effective_chat_text
 from scripts.context_exec_agent_bridge import run_hub_agent_via_context_exec, should_use_context_exec_agent_lane
 from scripts.agent_claude_input import prepare_agent_claude_input
-from scripts.fcc_claude_bridge import run_turn_from_settings
-from scripts.fcc_env_catalog import catalog_from_settings
+from scripts.fcc_claude_bridge import (
+    build_harness_reasoning_trace,
+    context_overflow_operator_hint,
+    is_context_overflow_text,
+    run_turn_from_settings,
+)
+from scripts.settings import settings
 from scripts.fcc_model_mapping import DEFAULT_FCC_MODEL_LABEL
 from scripts.trace_payloads import extract_agent_trace_payload
 from scripts.voice_stt_errors import (
@@ -528,11 +533,11 @@ async def _run_agent_claude_turn_ws(
         return None
 
     turn = prepare_agent_claude_input(transcript)
-    catalog = catalog_from_settings(env_path=settings.HUB_FCC_ENV_PATH, auth_override=settings.HUB_FCC_AUTH_TOKEN)
-    fcc_label = str(data.get("fcc_model_label") or catalog.get("default_label") or DEFAULT_FCC_MODEL_LABEL)
+    fcc_label = str(data.get("fcc_model_label") or DEFAULT_FCC_MODEL_LABEL).strip() or DEFAULT_FCC_MODEL_LABEL
 
     final_text = ""
     final_meta: Dict[str, Any] = {}
+    harness_steps: List[Dict[str, Any]] = []
     async for event in run_turn_from_settings(
         prompt=turn.prompt,
         fcc_model_label=fcc_label,
@@ -541,6 +546,7 @@ async def _run_agent_claude_turn_ws(
         etype = str(event.get("type") or "")
         if etype == "step":
             step = event.get("step") if isinstance(event.get("step"), dict) else {}
+            harness_steps.append(step)
             await websocket.send_json(
                 await _with_biometrics(
                     {
@@ -572,7 +578,12 @@ async def _run_agent_claude_turn_ws(
             final_text = str(event.get("llm_response") or "")
             final_meta = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
 
-    return {"llm_response": final_text, "metadata": final_meta, "fcc_model_label": fcc_label}
+    return {
+        "llm_response": final_text,
+        "metadata": final_meta,
+        "fcc_model_label": fcc_label,
+        "harness_steps": harness_steps,
+    }
 
 
 async def websocket_endpoint(websocket: WebSocket):
@@ -634,6 +645,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 continue
 
             mode = data.get("mode") or ("auto" if settings.HUB_AUTO_DEFAULT_ENABLED else "brain")
+            client_mode = str(mode or "").strip().lower()
             disable_tts = data.get("disable_tts", False)
             diagnostic = bool(
                 data.get("diagnostic")
@@ -1092,7 +1104,7 @@ async def websocket_endpoint(websocket: WebSocket):
             cortex_result_dump: Dict[str, Any] = {}
             try:
                 logger.info("voice.chat.start corr=%s session_id=%s", trace_id, session_id)
-                if str(mode or "").strip().lower() == "agent-claude":
+                if client_mode == "agent-claude":
                     used_agent_claude_lane = True
                     agent_claude_out = await _run_agent_claude_turn_ws(
                         websocket=websocket,
@@ -1107,10 +1119,27 @@ async def websocket_endpoint(websocket: WebSocket):
                     agent_trace = None
                     cortex_result_dump = {}
                     route_debug = route_debug if isinstance(route_debug, dict) else {}
-                    route_debug["agent_claude"] = {
+                    agent_meta: Dict[str, Any] = {
                         "fcc_model_label": agent_claude_out.get("fcc_model_label"),
                         **(agent_claude_out.get("metadata") or {}),
                     }
+                    if is_context_overflow_text(orion_response_text):
+                        n_ctx = int(getattr(settings, "HUB_AGENT_CLAUDE_MAX_CONTEXT_TOKENS", 65536))
+                        hint = context_overflow_operator_hint(n_ctx=n_ctx)
+                        if hint.strip() not in orion_response_text:
+                            orion_response_text = f"{orion_response_text.rstrip()}{hint}"
+                        agent_meta["context_overflow"] = True
+                    route_debug["agent_claude"] = agent_meta
+                    harness_steps = agent_claude_out.get("harness_steps") or []
+                    harness_trace = build_harness_reasoning_trace(
+                        steps=harness_steps if isinstance(harness_steps, list) else [],
+                        correlation_id=trace_id,
+                        session_id=publish_session_id,
+                        model_label=str(agent_claude_out.get("fcc_model_label") or ""),
+                    )
+                    if harness_trace:
+                        explicit_reasoning_trace = harness_trace
+                        thinking_source = "agent_claude_harness"
                 else:
                     used_context_exec_lane = should_use_context_exec_agent_lane(chat_req)
                     if used_context_exec_lane:
@@ -1454,7 +1483,10 @@ async def websocket_endpoint(websocket: WebSocket):
 
                     # Extract rich metadata
                     gateway_meta = {}
-                    if hasattr(resp, "cortex_result") and resp.cortex_result:
+                    if used_agent_claude_lane:
+                        agent_meta = route_debug.get("agent_claude") if isinstance(route_debug, dict) else {}
+                        gateway_meta = agent_meta if isinstance(agent_meta, dict) else {}
+                    elif resp is not None and hasattr(resp, "cortex_result") and resp.cortex_result:
                         gateway_meta = resp.cortex_result.metadata or {}
 
                     # Include trace_verb in spark_meta for the Visualizer
@@ -1608,8 +1640,16 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Publish assistant reply into chat history
                 try:
                     gateway_meta = {}
-                    if hasattr(resp, "cortex_result") and resp.cortex_result:
+                    if used_agent_claude_lane:
+                        agent_meta = route_debug.get("agent_claude") if isinstance(route_debug, dict) else {}
+                        gateway_meta = agent_meta if isinstance(agent_meta, dict) else {}
+                    elif resp is not None and hasattr(resp, "cortex_result") and resp.cortex_result:
                         gateway_meta = resp.cortex_result.metadata or {}
+                    history_correlation_id = trace_id
+                    if resp is not None and hasattr(resp, "cortex_result") and resp.cortex_result:
+                        history_correlation_id = (
+                            getattr(resp.cortex_result, "correlation_id", None) or trace_id
+                        )
                     selected_reasoning_trace, _ = select_reasoning_trace_for_history(
                         correlation_id=trace_id,
                         reasoning_trace=explicit_reasoning_trace,
@@ -1617,17 +1657,23 @@ async def websocket_endpoint(websocket: WebSocket):
                         reasoning_content=reasoning_content,
                         session_id=publish_session_id,
                         message_id=f"{trace_id}:assistant",
-                        model=((gateway_meta or {}).get("model") if isinstance(gateway_meta, dict) else None),
+                        model=((gateway_meta or {}).get("model") if isinstance(gateway_meta, dict) else None)
+                        or (
+                            route_debug.get("agent_claude", {}).get("fcc_model_label")
+                            if isinstance(route_debug, dict)
+                            and isinstance(route_debug.get("agent_claude"), dict)
+                            else None
+                        ),
                     )
                     assistant_env = build_chat_history_envelope(
                         content=orion_response_text,
                         role="assistant",
                         session_id=publish_session_id,
-                        correlation_id=getattr(resp.cortex_result, "correlation_id", None) or trace_id,
+                        correlation_id=history_correlation_id,
                         speaker=gateway_meta.get("speaker") or settings.SERVICE_NAME,
-                        model=gateway_meta.get("model"),
+                        model=gateway_meta.get("model") or gateway_meta.get("fcc_model_label"),
                         provider=gateway_meta.get("provider"),
-                        tags=[mode, trace_verb],
+                        tags=[client_mode if used_agent_claude_lane else mode, trace_verb],
                         message_id=f"{trace_id}:assistant",
                         memory_status="accepted",
                         memory_tier="ephemeral",

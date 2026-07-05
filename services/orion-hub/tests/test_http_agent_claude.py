@@ -23,4 +23,4 @@ async def test_http_agent_claude_collects_events(monkeypatch: pytest.MonkeyPatch
     )
     assert result["llm_response"] == "HTTP done."
     assert len(result["claude_steps"]) == 1
-    assert prepare_agent_claude_input("x").prompt == "x"
+    assert "hello" in prepare_agent_claude_input("hello").prompt

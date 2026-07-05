@@ -360,6 +360,7 @@ async def startup_event():
             "apiBaseOverride": settings.HUB_API_BASE_OVERRIDE or "",
             "wsBaseOverride": settings.HUB_WS_BASE_OVERRIDE or "",
             "autoDefaultEnabled": bool(settings.HUB_AUTO_DEFAULT_ENABLED),
+            "agentClaudeEnabled": bool(getattr(settings, "HUB_AGENT_CLAUDE_ENABLED", False)),
             "worldPulseFixtureRunEnabled": bool(settings.WORLD_PULSE_UI_FIXTURE_RUN_ENABLED),
             "memoryGraphSuggestFetchTimeoutMs": hub_client_fetch_timeout_ms(
                 settings, escalation_enabled=mg_escalation
@@ -368,6 +369,18 @@ async def startup_event():
         html_content = html_content.replace(
             "{{HUB_CFG}}",
             json.dumps(hub_cfg),
+        )
+        if bool(getattr(settings, "HUB_AGENT_CLAUDE_ENABLED", False)):
+            agent_claude_mode_options = (
+                '<option value="agent_claude_opus">Agent Claude - Opus</option>'
+                '<option value="agent_claude_sonnet">Agent Claude - Sonnet</option>'
+                '<option value="agent_claude_haiku">Agent Claude - Haiku</option>'
+            )
+        else:
+            agent_claude_mode_options = ""
+        html_content = html_content.replace(
+            "{{HUB_AGENT_CLAUDE_MODE_OPTIONS}}",
+            agent_claude_mode_options,
         )
         from scripts.api_routes import resolve_hub_autonomy_subject_display
 

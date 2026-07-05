@@ -74,6 +74,22 @@ def test_stable_scene_when_observed_flickers_but_belief_stable() -> None:
     assert decision.reason == "stable_scene"
 
 
+def test_refresh_ttl_disabled_by_default() -> None:
+    tracker = EvidenceTransitionTracker()
+    snap = snapshot_from_window(
+        _window(hard_labels=["door"], believed_hard_labels=["door"])
+    )
+    tracker.record_interpretation(stream_key="cam0", snapshot=snap, now=100.0)
+    decision = tracker.evaluate(
+        stream_key="cam0",
+        snapshot=snap,
+        now=1000.0,
+        max_refresh_sec=0.0,
+    )
+    assert decision.interpret is False
+    assert decision.reason == "stable_scene"
+
+
 def test_salient_labels_changed_on_belief_transition() -> None:
     tracker = EvidenceTransitionTracker()
     door = snapshot_from_window(_window(hard_labels=["door"], believed_hard_labels=["door"]))

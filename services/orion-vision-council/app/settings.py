@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     )
     # Force refresh at least this often even when labels are stable (0 = never force).
     COUNCIL_TRANSITION_REFRESH_SEC: float = Field(
-        default=120.0,
+        default=0.0,
         validation_alias=AliasChoices(
             "COUNCIL_TRANSITION_REFRESH_SEC",
             "COUNCIL_EVIDENCE_SKIP_MAX_SEC",

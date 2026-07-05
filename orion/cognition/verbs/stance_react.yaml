@@ -1,0 +1,25 @@
+name: stance_react
+label: Stance React
+description: >
+  Reactive felt-layer synthesis for unified Hub turns.
+  Produces ThoughtEventV1 harness input from association, coalition projection,
+  and stance inputs — not user-facing speech.
+
+category: ExecutiveControl
+priority: high
+
+requires_gpu: true
+requires_memory: false
+timeout_ms: 120000
+
+services:
+  - LLMGatewayService
+
+prompt_template: stance_react.j2
+
+steps:
+  - name: llm_stance_react
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: stance_react.j2
+    requires_gpu: true

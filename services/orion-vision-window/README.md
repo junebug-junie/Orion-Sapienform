@@ -25,6 +25,8 @@ Window summaries include an `evidence` block used by Council for grounded interp
 
 Council treats `hard_labels` as admissible evidence; captions are soft hints only. Council gates on `believed_hard_labels` when `belief.schema == scene_belief.v1`.
 
+**Empty flicker:** Enter votes treat empty observations as carrying forward the last non-empty labels; exit votes count raw observations only. Tune `WINDOW_BELIEF_EXIT_VOTES` to control how quickly removed objects leave belief.
+
 ## Configuration
 
 ```bash

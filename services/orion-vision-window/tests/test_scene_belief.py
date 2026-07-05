@@ -35,10 +35,25 @@ def test_belief_requires_exit_votes() -> None:
         tracker.observe(frozenset({"door", "screen", "package"}))
     assert "package" in tracker.believed_labels
     tracker.observe(frozenset({"door", "screen"}))
-    tracker.observe(frozenset({"door", "screen"}))
     result = tracker.observe(frozenset({"door", "screen"}))
     assert "package" not in result.believed_labels
     assert result.removed == frozenset({"package"})
+
+
+def test_exit_votes_respected() -> None:
+    strict = SceneBeliefTracker(vote_n=3, enter_votes=2, exit_votes=0)
+    for _ in range(3):
+        strict.observe(frozenset({"package", "door"}))
+    strict.observe(frozenset({"door"}))
+    strict.observe(frozenset({"door"}))
+    assert "package" in strict.believed_labels
+
+    lenient = SceneBeliefTracker(vote_n=3, enter_votes=2, exit_votes=1)
+    for _ in range(3):
+        lenient.observe(frozenset({"package", "door"}))
+    lenient.observe(frozenset({"door"}))
+    result = lenient.observe(frozenset({"door"}))
+    assert "package" not in result.believed_labels
 
 
 def test_enrich_evidence_includes_believed_tier() -> None:

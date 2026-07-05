@@ -266,6 +266,7 @@ class WindowService:
         if not buffered:
             return
         items: List[Tuple[VisionArtifactPayload, float]] = [(b["artifact"], b["ts"]) for b in buffered]
+        # Skip missing envelopes (direct test calls); production ingest always attaches env.
         envs: List[BaseEnvelope] = [b["env"] for b in buffered if b["env"] is not None]
         window_start = min(b["ts"] for b in buffered)
         window_end = time.time()

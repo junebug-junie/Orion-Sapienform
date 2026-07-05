@@ -32,9 +32,18 @@ class SceneBeliefTracker:
         return observed if observed else self._last_nonempty
 
     def _label_counts(self) -> dict[str, int]:
+        """Enter votes: empty ring slots inherit last non-empty labels (flicker fix)."""
         counts: dict[str, int] = {}
         for entry in self._ring:
             for label in self._effective_labels(entry):
+                counts[label] = counts.get(label, 0) + 1
+        return counts
+
+    def _raw_label_counts(self) -> dict[str, int]:
+        """Exit votes: count only labels present in each raw observation."""
+        counts: dict[str, int] = {}
+        for entry in self._ring:
+            for label in entry:
                 counts[label] = counts.get(label, 0) + 1
         return counts
 
@@ -48,14 +57,16 @@ class SceneBeliefTracker:
         for entry in self._ring:
             candidates.update(self._effective_labels(entry))
 
-        counts = self._label_counts()
+        enter_counts = self._label_counts()
+        exit_counts = self._raw_label_counts()
         new_believed = set(self._believed)
         for label in candidates:
-            count = counts.get(label, 0)
-            can_enter = count >= self._enter_votes and (
-                len(self._ring) >= self._vote_n or (is_empty and count >= self._enter_votes)
+            enter_count = enter_counts.get(label, 0)
+            exit_count = exit_counts.get(label, 0)
+            can_enter = enter_count >= self._enter_votes and (
+                len(self._ring) >= self._vote_n or (is_empty and enter_count >= self._enter_votes)
             )
-            can_exit = len(self._ring) >= self._vote_n and count == 0
+            can_exit = len(self._ring) >= self._vote_n and exit_count <= self._exit_votes
             if label not in self._believed and can_enter:
                 new_believed.add(label)
             elif label in self._believed and can_exit:

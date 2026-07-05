@@ -139,6 +139,21 @@ class Settings(BaseSettings):
         default=1,
         alias="HUB_AGENT_CLAUDE_MAX_CONCURRENT",
     )
+    HUB_AGENT_CLAUDE_STREAM_READ_LIMIT: int = Field(
+        default=8 * 1024 * 1024,
+        alias="HUB_AGENT_CLAUDE_STREAM_READ_LIMIT",
+        description="asyncio StreamReader limit for one claude stream-json line (bytes). Default 8MB.",
+    )
+    HUB_AGENT_CLAUDE_MAX_CONTEXT_TOKENS: int = Field(
+        default=65536,
+        alias="HUB_AGENT_CLAUDE_MAX_CONTEXT_TOKENS",
+        description="Passed to claude as CLAUDE_CODE_MAX_CONTEXT_TOKENS for llamacpp parity.",
+    )
+    HUB_AGENT_CLAUDE_FILE_READ_MAX_TOKENS: int = Field(
+        default=8192,
+        alias="HUB_AGENT_CLAUDE_FILE_READ_MAX_TOKENS",
+        description="Passed to claude as CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS to cap single Read payloads.",
+    )
     HUB_CONTEXT_EXEC_EVENT_CHANNEL: str = Field(
         default="orion:context_exec:event",
         alias="HUB_CONTEXT_EXEC_EVENT_CHANNEL",

@@ -46,7 +46,7 @@ from .cortex_request_builder import (
 from .mutation_cognition_context import build_mutation_cognition_context
 from .context_exec_agent_bridge import run_hub_agent_via_context_exec, should_use_context_exec_agent_lane
 from .agent_claude_input import prepare_agent_claude_input
-from .fcc_claude_bridge import run_turn_from_settings
+from .fcc_claude_bridge import build_harness_reasoning_trace, run_turn_from_settings
 from .fcc_env_catalog import catalog_from_settings
 from .fcc_model_mapping import DEFAULT_FCC_MODEL_LABEL
 from .substrate_effect_pipeline import run_substrate_effect_pipeline
@@ -1930,7 +1930,11 @@ def _http_chat_turn_context_from_result(result: Dict[str, Any]) -> Dict[str, Any
         or ""
     ).strip() or None
     explicit_reasoning_trace = (
-        raw.get("reasoning_trace") if isinstance(raw.get("reasoning_trace"), dict) else None
+        result.get("reasoning_trace")
+        if isinstance(result.get("reasoning_trace"), dict)
+        else raw.get("reasoning_trace")
+        if isinstance(raw.get("reasoning_trace"), dict)
+        else None
     )
     reasoning_content = (
         gateway_meta.get("reasoning_content")
@@ -1945,7 +1949,11 @@ def _http_chat_turn_context_from_result(result: Dict[str, Any]) -> Dict[str, Any
         gateway_meta.get("inline_think_content")
         or raw.get("inline_think_content")
     )
-    raw_thinking_source = gateway_meta.get("thinking_source") or raw.get("thinking_source")
+    raw_thinking_source = (
+        result.get("thinking_source")
+        or gateway_meta.get("thinking_source")
+        or raw.get("thinking_source")
+    )
     thinking_source = "none"
     if isinstance(raw_thinking_source, str) and raw_thinking_source.strip():
         thinking_source = raw_thinking_source.strip()
@@ -2111,6 +2119,11 @@ async def _run_agent_claude_http(
                 "metadata": event.get("metadata"),
             }
         elif etype == "final":
+            harness_trace = build_harness_reasoning_trace(
+                steps=[s for s in steps if isinstance(s, dict)],
+                correlation_id=correlation_id,
+                model_label=fcc_model_label,
+            )
             return {
                 "mode": "agent-claude",
                 "correlation_id": correlation_id,
@@ -2119,6 +2132,8 @@ async def _run_agent_claude_http(
                 "claude_steps": steps,
                 "metadata": event.get("metadata"),
                 "fcc_model_label": fcc_model_label,
+                "reasoning_trace": harness_trace,
+                "thinking_source": "agent_claude_harness" if harness_trace else "none",
             }
     return {
         "error": "agent-claude produced no final frame",

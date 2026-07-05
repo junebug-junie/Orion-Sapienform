@@ -27,6 +27,10 @@ services:
       - ./templates:/app/templates
       - ./static:/app/static
       - ../..:/repo:ro
+      - ../..:/mnt/scripts/Orion-Sapienform:ro
+      - ${HOME}/.fcc:/root/.fcc:ro
+      - ${HOME}/.claude.json:/root/.claude.json:ro
+      - ${HUB_AGENT_CLAUDE_BIN_HOST:-${HOME}/.local/bin/claude}:/usr/local/bin/claude:ro
       - /var/run/docker.sock:/var/run/docker.sock
       #- /mnt/telemetry/models/whisper/${WHISPER_MODEL_SIZE}:/root/.cache/huggingface/hub/models--distil-whisper--${WHISPER_MODEL_SIZE}
     environment:
@@ -83,13 +87,16 @@ services:
       - HUB_CONTEXT_EXEC_TIMEOUT_SEC=${HUB_CONTEXT_EXEC_TIMEOUT_SEC:-600}
       - HUB_AGENT_REPL_ENABLED=${HUB_AGENT_REPL_ENABLED:-true}
       - HUB_AGENT_CLAUDE_ENABLED=${HUB_AGENT_CLAUDE_ENABLED:-false}
-      - HUB_FCC_ENV_PATH=${HUB_FCC_ENV_PATH:-~/.fcc/.env}
+      - HUB_FCC_ENV_PATH=/root/.fcc/.env
       - HUB_FCC_SERVER_URL=${HUB_FCC_SERVER_URL:-http://127.0.0.1:8082}
       - HUB_FCC_AUTH_TOKEN=${HUB_FCC_AUTH_TOKEN:-}
-      - HUB_AGENT_CLAUDE_BIN=${HUB_AGENT_CLAUDE_BIN:-claude}
-      - HUB_AGENT_CLAUDE_WORKSPACE=${HUB_AGENT_CLAUDE_WORKSPACE:-/mnt/scripts/Orion-Sapienform}
+      - HUB_AGENT_CLAUDE_BIN=claude
+      - HUB_AGENT_CLAUDE_WORKSPACE=/mnt/scripts/Orion-Sapienform
       - HUB_AGENT_CLAUDE_TIMEOUT_SEC=${HUB_AGENT_CLAUDE_TIMEOUT_SEC:-900}
       - HUB_AGENT_CLAUDE_MAX_CONCURRENT=${HUB_AGENT_CLAUDE_MAX_CONCURRENT:-1}
+      - HUB_AGENT_CLAUDE_STREAM_READ_LIMIT=${HUB_AGENT_CLAUDE_STREAM_READ_LIMIT:-8388608}
+      - HUB_AGENT_CLAUDE_MAX_CONTEXT_TOKENS=${HUB_AGENT_CLAUDE_MAX_CONTEXT_TOKENS:-65536}
+      - HUB_AGENT_CLAUDE_FILE_READ_MAX_TOKENS=${HUB_AGENT_CLAUDE_FILE_READ_MAX_TOKENS:-8192}
       - HUB_CONTEXT_EXEC_EVENT_CHANNEL=${HUB_CONTEXT_EXEC_EVENT_CHANNEL:-orion:context_exec:event}
       - CONTEXT_EXEC_INVESTIGATION_V2_ENABLED=${CONTEXT_EXEC_INVESTIGATION_V2_ENABLED:-false}
       - SUBSTRATE_TELEMETRY_BASE_URL=${SUBSTRATE_TELEMETRY_BASE_URL:-}

@@ -9372,9 +9372,24 @@ loadDismissedIds();
     quick: { mode: 'brain', verb: 'chat_quick', lane: 'quick', label: 'Quick' },
     story: { mode: 'brain', verb: 'chat_kids_story', lane: null, label: 'Story' },
     agent: { mode: 'agent', verb: null, lane: null, label: 'Agent' },
-    agent_claude: { mode: 'agent-claude', verb: null, lane: null, label: 'Agent Claude', skipComputeConfirm: true },
+    agent_claude_opus: { mode: 'agent-claude', fccModelLabel: 'MODEL_OPUS', verb: null, lane: null, label: 'Agent Claude - Opus', skipComputeConfirm: true },
+    agent_claude_sonnet: { mode: 'agent-claude', fccModelLabel: 'MODEL_SONNET', verb: null, lane: null, label: 'Agent Claude - Sonnet', skipComputeConfirm: true },
+    agent_claude_haiku: { mode: 'agent-claude', fccModelLabel: 'MODEL_HAIKU', verb: null, lane: null, label: 'Agent Claude - Haiku', skipComputeConfirm: true },
     council: { mode: 'council', verb: null, lane: null, label: 'Council' },
   };
+
+  function hubModeSpec(modeKey) {
+    const key = String(modeKey || hubModeSelect?.value || 'grounded_small').trim().toLowerCase();
+    return HUB_MODE_SPECS[key] || HUB_MODE_SPECS.grounded_small;
+  }
+
+  function applyAgentClaudePayloadFields(payload) {
+    const spec = hubModeSpec();
+    if (spec.mode !== 'agent-claude') return;
+    payload.fcc_model_label = spec.fccModelLabel || 'MODEL_SONNET';
+    payload.use_recall = false;
+    payload.llm_route = null;
+  }
 
   function applyHubModeSelection(modeKey, { silent = false } = {}) {
     const key = String(modeKey || 'grounded_small').trim().toLowerCase();
@@ -9395,10 +9410,6 @@ loadDismissedIds();
     }
     if (!silent) {
       updateStatus(`Mode: ${spec.label}`);
-    }
-    const fccRow = document.getElementById('hubFccModelRow');
-    if (fccRow) {
-      fccRow.classList.toggle('hidden', key !== 'agent_claude');
     }
   }
 
@@ -9507,42 +9518,6 @@ loadDismissedIds();
       loadLlmRouteCatalog();
     }, 30000);
   }
-
-  let fccModelLabels = [];
-  let fccDefaultLabel = null;
-  let agentClaudeEnabled = false;
-
-  async function loadFccModelLabels() {
-    const opt = document.getElementById('hubModeAgentClaudeOption');
-    const row = document.getElementById('hubFccModelRow');
-    const sel = document.getElementById('hubFccModelSelect');
-    try {
-      const r = await fetch(`${API_BASE_URL}/api/fcc-model-labels`);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const body = await r.json();
-      agentClaudeEnabled = Boolean(body.enabled);
-      fccModelLabels = Array.isArray(body.labels) ? body.labels : [];
-      fccDefaultLabel = body.default_label || fccModelLabels[0] || null;
-      if (opt) opt.hidden = !agentClaudeEnabled;
-      if (sel) {
-        sel.innerHTML = '';
-        fccModelLabels.forEach((label) => {
-          const o = document.createElement('option');
-          o.value = label;
-          o.textContent = label;
-          sel.appendChild(o);
-        });
-        if (fccDefaultLabel) sel.value = fccDefaultLabel;
-      }
-      if (row && hubModeSelect && hubModeSelect.value === 'agent_claude') {
-        row.classList.remove('hidden');
-      }
-    } catch (err) {
-      console.warn('fcc model labels load failed', err);
-      if (opt) opt.hidden = true;
-    }
-  }
-  loadFccModelLabels();
 
   // --- 4. Logic Functions ---
 
@@ -10811,7 +10786,7 @@ loadDismissedIds();
     const requestModePreview = forceAgentPath
       ? 'agent'
       : (opts && opts.mode ? String(opts.mode) : currentMode);
-    const skipCompute = requestModePreview === 'agent-claude' || (HUB_MODE_SPECS[hubModeSelect?.value]?.skipComputeConfirm);
+    const skipCompute = Boolean(hubModeSpec().skipComputeConfirm);
     if (!(opts && opts.skipRouteDownCheck) && !skipCompute) {
       const confirmedRoute = await confirmDownRouteOrProceed(effectiveRoute);
       if (confirmedRoute === null) {
@@ -10872,12 +10847,7 @@ loadDismissedIds();
     if (!omitChatUiMode) {
       payload.mode = requestMode;
     }
-    if (requestMode === 'agent-claude') {
-      const fccSel = document.getElementById('hubFccModelSelect');
-      payload.fcc_model_label = (fccSel && fccSel.value) ? fccSel.value : (fccDefaultLabel || 'MODEL');
-      payload.use_recall = false;
-      payload.llm_route = null;
-    }
+    applyAgentClaudePayloadFields(payload);
     const optFromOpts = opts && opts.options && typeof opts.options === 'object' ? { ...opts.options } : {};
     if (isChatQuickSend) {
       payload.options = { ...optFromOpts, chat_quick_full_stance: chatQuickVariant === 'stance' };
@@ -11193,7 +11163,7 @@ loadDismissedIds();
     if (audioMeta.client_gate === 'low_peak_warn') {
       updateStatus('Low mic level, sending anyway...');
     }
-    const voiceRouteSkipCompute = currentMode === 'agent-claude' || (HUB_MODE_SPECS[hubModeSelect?.value]?.skipComputeConfirm);
+    const voiceRouteSkipCompute = Boolean(hubModeSpec().skipComputeConfirm);
     const voiceRoute = voiceRouteSkipCompute
       ? (selectedLlmRoute || HUB_COMPUTE_DEFAULT)
       : await confirmDownRouteOrProceed(
@@ -11236,12 +11206,7 @@ loadDismissedIds();
             ? socialRedactionPostureSelect.value
             : null,
         };
-        if (currentMode === 'agent-claude') {
-          const fccSel = document.getElementById('hubFccModelSelect');
-          audioPayload.fcc_model_label = (fccSel && fccSel.value) ? fccSel.value : (fccDefaultLabel || 'MODEL');
-          audioPayload.use_recall = false;
-          audioPayload.llm_route = null;
-        }
+        applyAgentClaudePayloadFields(audioPayload);
         const audioLaneVerbs = modeVerbOverride ? [modeVerbOverride] : selectedVerbs;
         const audioIsChatQuick =
           Array.isArray(audioLaneVerbs) &&

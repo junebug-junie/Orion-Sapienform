@@ -1,10 +1,124 @@
 (function (global) {
   const _liveClaudeSteps = new Map();
   const LIVE_ANCHOR_ID = 'conversation';
+  const PREVIEW_MAX = 240;
 
   function resolveAnchor(doc) {
     const root = doc || (typeof document !== 'undefined' ? document : null);
     return root && root.getElementById ? root.getElementById(LIVE_ANCHOR_ID) : null;
+  }
+
+  function clip(text, maxLen) {
+    const limit = Number.isFinite(maxLen) ? maxLen : PREVIEW_MAX;
+    const value = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!value) return '';
+    return value.length <= limit ? value : `${value.slice(0, limit - 1)}…`;
+  }
+
+  function basename(path) {
+    const raw = String(path || '').trim();
+    if (!raw) return '';
+    const parts = raw.split(/[/\\]/);
+    return parts[parts.length - 1] || raw;
+  }
+
+  function formatToolInput(name, input) {
+    const tool = String(name || 'tool').trim() || 'tool';
+    const args = input && typeof input === 'object' ? input : {};
+    if (tool === 'Read' || tool === 'Write' || tool === 'Edit') {
+      const path = args.file_path || args.path || args.notebook_path;
+      return path ? `${tool} ${basename(path)}` : tool;
+    }
+    if (tool === 'Glob') {
+      return args.pattern ? `Glob ${clip(args.pattern, 80)}` : 'Glob';
+    }
+    if (tool === 'Grep') {
+      const bits = [];
+      if (args.pattern) bits.push(`"${clip(args.pattern, 60)}"`);
+      if (args.path) bits.push(`in ${basename(args.path)}`);
+      return bits.length ? `Grep ${bits.join(' ')}` : 'Grep';
+    }
+    if (tool === 'Bash') {
+      const cmd = args.command || args.cmd || args.script;
+      return cmd ? `Bash ${clip(cmd, 120)}` : 'Bash';
+    }
+    if (tool === 'Task') {
+      return args.description ? `Task ${clip(args.description, 100)}` : 'Task';
+    }
+    const firstKey = Object.keys(args)[0];
+    if (firstKey) {
+      return `${tool} ${clip(String(args[firstKey]), 100)}`;
+    }
+    return tool;
+  }
+
+  function summarizeContentBlocks(content) {
+    if (!Array.isArray(content)) return '';
+    const parts = [];
+    content.forEach((block) => {
+      if (!block || typeof block !== 'object') return;
+      const blockType = String(block.type || '').trim();
+      if (blockType === 'text' && block.text) {
+        parts.push(clip(block.text));
+        return;
+      }
+      if (blockType === 'tool_use') {
+        parts.push(formatToolInput(block.name, block.input));
+        return;
+      }
+      if (blockType === 'tool_result') {
+        const body = typeof block.content === 'string'
+          ? block.content
+          : Array.isArray(block.content)
+            ? block.content.filter((b) => b && b.type === 'text').map((b) => b.text).join('\n')
+            : '';
+        const size = body ? ` (${body.length} chars)` : '';
+        parts.push(`tool result${size}${body ? `: ${clip(body, 120)}` : ''}`);
+      }
+    });
+    return parts.filter(Boolean).join(' | ');
+  }
+
+  function summarizeStep(step) {
+    if (!step || typeof step !== 'object') return 'step';
+    const raw = step.raw && typeof step.raw === 'object' ? step.raw : step;
+    const type = String(step.type || raw.type || 'event').trim() || 'event';
+
+    if (type === 'assistant') {
+      const msg = raw.message && typeof raw.message === 'object' ? raw.message : raw;
+      const summary = summarizeContentBlocks(msg.content);
+      if (summary) return summary;
+      return 'assistant';
+    }
+
+    if (type === 'user') {
+      const msg = raw.message && typeof raw.message === 'object' ? raw.message : raw;
+      const summary = summarizeContentBlocks(msg.content);
+      if (summary) return summary;
+      const text = typeof msg.content === 'string' ? msg.content : raw.content;
+      if (text) return clip(text);
+      return 'user';
+    }
+
+    if (type === 'system') {
+      const subtype = raw.subtype || raw.system_subtype;
+      return subtype ? `system ${subtype}` : 'system';
+    }
+
+    if (type === 'tool_use') {
+      return formatToolInput(raw.name, raw.input);
+    }
+
+    if (type === 'tool_result') {
+      const body = typeof raw.content === 'string' ? raw.content : '';
+      return body ? `tool result: ${clip(body, 160)}` : 'tool result';
+    }
+
+    if (type === 'result') {
+      return clip(String(raw.result || 'result'), PREVIEW_MAX) || 'result';
+    }
+
+    return type;
   }
 
   function ensurePanel(correlationId, doc) {
@@ -27,21 +141,6 @@
     return panel;
   }
 
-  function summarizeStep(step) {
-    if (!step || typeof step !== 'object') return 'step';
-    const raw = step.raw && typeof step.raw === 'object' ? step.raw : step;
-    const type = String(step.type || raw.type || 'event');
-    if (type === 'assistant') {
-      const msg = raw.message && raw.message.content;
-      if (Array.isArray(msg)) {
-        const text = msg.filter((b) => b && b.type === 'text').map((b) => b.text).join('');
-        if (text) return text.slice(0, 240);
-      }
-    }
-    if (type === 'result') return String(raw.result || 'result').slice(0, 240);
-    return type;
-  }
-
   function appendLiveClaudeStep(correlationId, step, doc) {
     if (!correlationId || !step) return;
     const list = _liveClaudeSteps.get(correlationId) || [];
@@ -59,5 +158,5 @@
   }
 
   global.appendLiveClaudeStep = appendLiveClaudeStep;
-  global.OrionClaudeTrace = { appendLiveClaudeStep };
+  global.OrionClaudeTrace = { appendLiveClaudeStep, summarizeStep };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -515,9 +515,11 @@ Bridge env keys `SOCIAL_BRIDGE_HUB_MODE` / `SOCIAL_BRIDGE_HUB_VERB` affect **Cal
 
 ### Agent Claude mode (FCC harness)
 
-When `HUB_AGENT_CLAUDE_ENABLED=true`, Hub exposes **Agent Claude** mode. Each message spawns one `claude -p … --output-format stream-json` turn with `ANTHROPIC_BASE_URL` set to `HUB_FCC_SERVER_URL` (default `http://127.0.0.1:8082`). The **FCC Model** dropdown lists env key labels from `HUB_FCC_ENV_PATH` (`MODEL`, `MODEL_HAIKU`, …), not resolved gateway values. **Compute** lane is ignored for this mode.
+When `HUB_AGENT_CLAUDE_ENABLED=true`, Hub exposes **Agent Claude - Opus / Sonnet / Haiku** modes in the Mode dropdown. Each message spawns one `claude -p … --output-format stream-json` turn with `ANTHROPIC_BASE_URL` set to `HUB_FCC_SERVER_URL` (default `http://127.0.0.1:8082`). Tier selection maps to FCC env keys (`MODEL_OPUS`, `MODEL_SONNET`, `MODEL_HAIKU`). **Compute** lane is ignored for these modes.
 
 **Requirements (v1):** Hub process on host (or container with `claude` on PATH + mounted repo + mounted `~/.fcc/.env`). `fcc-server` running. Default Docker compose keeps `HUB_AGENT_CLAUDE_ENABLED=false`.
+
+**Context limits (llamacpp):** Local `MODEL_*` lanes often use `ctx_size: 65536` (`config/llm_profiles.yaml`). Multi-step repo reads can exceed that (e.g. reading all of `orion/bus/channels.yaml`). Hub passes `CLAUDE_CODE_MAX_CONTEXT_TOKENS` and `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS` (see `HUB_AGENT_CLAUDE_MAX_CONTEXT_TOKENS`, `HUB_AGENT_CLAUDE_FILE_READ_MAX_TOKENS`) into the claude subprocess, and prepends a repo-exploration brief (`prepare_agent_claude_input`). For deep sweeps, raise llamacpp `ctx_size`, route `~/.fcc/.env` to a larger backend, or ask narrower questions.
 
 **Live smoke:**
 

@@ -66,7 +66,8 @@ All messages MUST be `BaseEnvelope` objects.
 ### `VisionWindowPayload`
 -   `window_id`: Unique ID.
 -   `start_ts`, `end_ts`: Window duration.
--   `summary`: Aggregated stats (counts, top labels, `evidence` block with hard/soft labels and person hit counts).
+-   `summary`: Aggregated stats (counts, top labels).
+-   `summary.evidence`: `hard_labels` (observed), `believed_hard_labels` (habituated gate input), `belief` metadata, soft labels, person hit counts.
 -   `artifact_ids`: List of artifacts in this window.
 
 ### `VisionEdgeActivityPayload`

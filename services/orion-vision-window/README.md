@@ -16,12 +16,14 @@ Window summaries include an `evidence` block used by Council for grounded interp
 | Field | Meaning |
 |-------|---------|
 | `hard_labels` | Detection labels above score threshold (factual tier) |
+| `believed_hard_labels` | Habituated labels (vote debounce over last N flushes; council gate input) |
+| `belief` | Metadata: `schema`, `vote_n`, `enter_votes`, `exit_votes`, `observation_count` |
 | `soft_labels` | Tokens from captions matching stoplist (YouTube, google, …) |
 | `edge_person_hits` | Always 0 (edge artifacts excluded from pipeline evidence) |
 | `host_person_hits` | Person detections from host `retina_fast` artifacts |
 | `caption_count` | Number of captioned artifacts in the window |
 
-Council treats `hard_labels` as admissible evidence; captions are soft hints only.
+Council treats `hard_labels` as admissible evidence; captions are soft hints only. Council gates on `believed_hard_labels` when `belief.schema == scene_belief.v1`.
 
 ## Configuration
 

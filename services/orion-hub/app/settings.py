@@ -106,6 +106,39 @@ class Settings(BaseSettings):
         default=True,
         alias="HUB_AGENT_REPL_ENABLED",
     )
+    # --- Hub Agent Claude (FCC harness in chat) ---
+    HUB_AGENT_CLAUDE_ENABLED: bool = Field(
+        default=False,
+        alias="HUB_AGENT_CLAUDE_ENABLED",
+    )
+    HUB_FCC_ENV_PATH: str = Field(
+        default="~/.fcc/.env",
+        alias="HUB_FCC_ENV_PATH",
+    )
+    HUB_FCC_SERVER_URL: str = Field(
+        default="http://127.0.0.1:8082",
+        alias="HUB_FCC_SERVER_URL",
+    )
+    HUB_FCC_AUTH_TOKEN: str = Field(
+        default="",
+        alias="HUB_FCC_AUTH_TOKEN",
+    )
+    HUB_AGENT_CLAUDE_BIN: str = Field(
+        default="claude",
+        alias="HUB_AGENT_CLAUDE_BIN",
+    )
+    HUB_AGENT_CLAUDE_WORKSPACE: str = Field(
+        default="/mnt/scripts/Orion-Sapienform",
+        alias="HUB_AGENT_CLAUDE_WORKSPACE",
+    )
+    HUB_AGENT_CLAUDE_TIMEOUT_SEC: float = Field(
+        default=900.0,
+        alias="HUB_AGENT_CLAUDE_TIMEOUT_SEC",
+    )
+    HUB_AGENT_CLAUDE_MAX_CONCURRENT: int = Field(
+        default=1,
+        alias="HUB_AGENT_CLAUDE_MAX_CONCURRENT",
+    )
     HUB_CONTEXT_EXEC_EVENT_CHANNEL: str = Field(
         default="orion:context_exec:event",
         alias="HUB_CONTEXT_EXEC_EVENT_CHANNEL",

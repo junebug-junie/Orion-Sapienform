@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"sess-abc"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Checking files."}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{}}]}}
+{"type":"result","result":"Here are the hub scripts.","session_id":"sess-abc","duration_ms":1200}

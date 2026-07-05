@@ -37,6 +37,10 @@ from scripts.social_room import (
 from scripts import social_room_inspection_cache
 from scripts.cortex_chat_display import hub_effective_chat_text
 from scripts.context_exec_agent_bridge import run_hub_agent_via_context_exec, should_use_context_exec_agent_lane
+from scripts.agent_claude_input import prepare_agent_claude_input
+from scripts.fcc_claude_bridge import run_turn_from_settings
+from scripts.fcc_env_catalog import catalog_from_settings
+from scripts.fcc_model_mapping import DEFAULT_FCC_MODEL_LABEL
 from scripts.trace_payloads import extract_agent_trace_payload
 from scripts.voice_stt_errors import (
     build_audio_debug,
@@ -495,6 +499,82 @@ async def biometrics_heartbeat(
     except Exception as e:
         logger.error("Biometrics heartbeat error: %s", e, exc_info=True)
 
+
+def _agent_claude_enabled() -> bool:
+    return bool(getattr(settings, "HUB_AGENT_CLAUDE_ENABLED", False))
+
+
+async def _run_agent_claude_turn_ws(
+    *,
+    websocket: WebSocket,
+    data: Dict[str, Any],
+    transcript: str,
+    trace_id: str,
+    biometrics_cache: Any,
+) -> Optional[Dict[str, Any]]:
+    """Run FCC harness turn; stream claude_step frames. Returns final payload or None if error sent."""
+    if not _agent_claude_enabled():
+        await websocket.send_json(
+            await _with_biometrics(
+                {
+                    "error": "Agent Claude mode is disabled",
+                    "error_code": "agent_claude_disabled",
+                    "mode": "agent-claude",
+                    "correlation_id": trace_id,
+                },
+                cache=biometrics_cache,
+            )
+        )
+        return None
+
+    turn = prepare_agent_claude_input(transcript)
+    catalog = catalog_from_settings(env_path=settings.HUB_FCC_ENV_PATH, auth_override=settings.HUB_FCC_AUTH_TOKEN)
+    fcc_label = str(data.get("fcc_model_label") or catalog.get("default_label") or DEFAULT_FCC_MODEL_LABEL)
+
+    final_text = ""
+    final_meta: Dict[str, Any] = {}
+    async for event in run_turn_from_settings(
+        prompt=turn.prompt,
+        fcc_model_label=fcc_label,
+        correlation_id=trace_id,
+    ):
+        etype = str(event.get("type") or "")
+        if etype == "step":
+            step = event.get("step") if isinstance(event.get("step"), dict) else {}
+            await websocket.send_json(
+                await _with_biometrics(
+                    {
+                        "kind": "claude_step",
+                        "correlation_id": trace_id,
+                        "mode": "agent-claude",
+                        "step": step,
+                    },
+                    cache=biometrics_cache,
+                )
+            )
+        elif etype == "error":
+            partial = str(event.get("llm_response") or "")
+            await websocket.send_json(
+                await _with_biometrics(
+                    {
+                        "error": str(event.get("error") or "agent-claude failed"),
+                        "error_code": str(event.get("error_code") or "fcc_claude_nonzero_exit"),
+                        "mode": "agent-claude",
+                        "correlation_id": trace_id,
+                        "llm_response": partial or None,
+                        "metadata": event.get("metadata"),
+                    },
+                    cache=biometrics_cache,
+                )
+            )
+            return None
+        elif etype == "final":
+            final_text = str(event.get("llm_response") or "")
+            final_meta = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+
+    return {"llm_response": final_text, "metadata": final_meta, "fcc_model_label": fcc_label}
+
+
 async def websocket_endpoint(websocket: WebSocket):
     import scripts.main
     bus = scripts.main.bus
@@ -571,6 +651,8 @@ async def websocket_endpoint(websocket: WebSocket):
 
             # 2. Map modes to verbs for the Visualizer
             if mode == "agent":
+                trace_verb = "task_execution"
+            elif mode == "agent-claude":
                 trace_verb = "task_execution"
             elif mode == "council":
                 trace_verb = "council_deliberation"
@@ -1004,86 +1086,109 @@ async def websocket_endpoint(websocket: WebSocket):
             thinking_source: str = "none"
             explicit_reasoning_trace: Optional[Dict[str, Any]] = None
             used_context_exec_lane = False
+            used_agent_claude_lane = False
             workflow_metadata_only = False
+            resp = None
+            cortex_result_dump: Dict[str, Any] = {}
             try:
                 logger.info("voice.chat.start corr=%s session_id=%s", trace_id, session_id)
-                used_context_exec_lane = should_use_context_exec_agent_lane(chat_req)
-                if used_context_exec_lane:
-                    step_queue: asyncio.Queue = asyncio.Queue(maxsize=256)
-                    relay = agent_step_relay
-                    drain_task = None
-                    if relay is None:
-                        logger.warning(
-                            "agent_step_relay unavailable; live step streaming disabled corr=%s",
-                            trace_id,
-                        )
-                    if relay is not None:
-                        relay.register_queue(trace_id, step_queue)
-
-                        async def _drain_steps() -> None:
-                            try:
-                                while True:
-                                    item = await step_queue.get()
-                                    await _safe_ws_send_json(websocket, item)
-                            except asyncio.CancelledError:
-                                pass
-
-                        drain_task = asyncio.create_task(_drain_steps(), name=f"agent-steps-{trace_id}")
-                    try:
-                        ctx_out = await run_hub_agent_via_context_exec(
-                            req=chat_req,
-                            prompt=transcript or prompt_with_ctx,
-                            correlation_id=trace_id,
-                            route_debug=route_debug if isinstance(route_debug, dict) else {},
-                        )
-                    finally:
-                        if relay is not None:
-                            while not step_queue.empty():
-                                try:
-                                    item = step_queue.get_nowait()
-                                except asyncio.QueueEmpty:
-                                    break
-                                await _safe_ws_send_json(websocket, item)
-                        if drain_task is not None:
-                            drain_task.cancel()
-                            try:
-                                await drain_task
-                            except asyncio.CancelledError:
-                                pass
-                        if relay is not None:
-                            relay.unregister_queue(trace_id, step_queue)
-                    if ctx_out.get("error"):
-                        await websocket.send_json(
-                            await _with_biometrics(
-                                {
-                                    "error": ctx_out.get("error"),
-                                    "error_code": ctx_out.get("error_code"),
-                                    "mode": "agent",
-                                    "correlation_id": trace_id,
-                                    "routing_debug": ctx_out.get("routing_debug") or route_debug,
-                                },
-                                cache=biometrics_cache,
-                            )
-                        )
-                        continue
-                    orion_response_text = str(ctx_out.get("llm_response") or "")
-                    agent_trace = ctx_out.get("agent_trace")
-                    cortex_result_dump = ctx_out.get("raw") if isinstance(ctx_out.get("raw"), dict) else {}
-                    route_debug = ctx_out.get("routing_debug") or route_debug
-                    resp = None
-                else:
-                    resp: CortexChatResult = await cortex_client.chat(chat_req, correlation_id=trace_id)
-                    orion_response_text = hub_effective_chat_text(resp)
-                    if resp.cortex_result and isinstance(resp.cortex_result.recall_debug, dict):
-                        recall_debug = resp.cortex_result.recall_debug
-                        memory_digest = recall_debug.get("memory_digest")
-                    agent_trace = extract_agent_trace_payload(resp.cortex_result)
-                    cortex_result_dump = (
-                        resp.cortex_result.model_dump(mode="json")
-                        if getattr(resp, "cortex_result", None) is not None and hasattr(resp.cortex_result, "model_dump")
-                        else {}
+                if str(mode or "").strip().lower() == "agent-claude":
+                    used_agent_claude_lane = True
+                    agent_claude_out = await _run_agent_claude_turn_ws(
+                        websocket=websocket,
+                        data=data,
+                        transcript=transcript or "",
+                        trace_id=trace_id,
+                        biometrics_cache=biometrics_cache,
                     )
-                if not used_context_exec_lane:
+                    if agent_claude_out is None:
+                        continue
+                    orion_response_text = str(agent_claude_out.get("llm_response") or "")
+                    agent_trace = None
+                    cortex_result_dump = {}
+                    route_debug = route_debug if isinstance(route_debug, dict) else {}
+                    route_debug["agent_claude"] = {
+                        "fcc_model_label": agent_claude_out.get("fcc_model_label"),
+                        **(agent_claude_out.get("metadata") or {}),
+                    }
+                else:
+                    used_context_exec_lane = should_use_context_exec_agent_lane(chat_req)
+                    if used_context_exec_lane:
+                        step_queue: asyncio.Queue = asyncio.Queue(maxsize=256)
+                        relay = agent_step_relay
+                        drain_task = None
+                        if relay is None:
+                            logger.warning(
+                                "agent_step_relay unavailable; live step streaming disabled corr=%s",
+                                trace_id,
+                            )
+                        if relay is not None:
+                            relay.register_queue(trace_id, step_queue)
+
+                            async def _drain_steps() -> None:
+                                try:
+                                    while True:
+                                        item = await step_queue.get()
+                                        await _safe_ws_send_json(websocket, item)
+                                except asyncio.CancelledError:
+                                    pass
+
+                            drain_task = asyncio.create_task(_drain_steps(), name=f"agent-steps-{trace_id}")
+                        try:
+                            ctx_out = await run_hub_agent_via_context_exec(
+                                req=chat_req,
+                                prompt=transcript or prompt_with_ctx,
+                                correlation_id=trace_id,
+                                route_debug=route_debug if isinstance(route_debug, dict) else {},
+                            )
+                        finally:
+                            if relay is not None:
+                                while not step_queue.empty():
+                                    try:
+                                        item = step_queue.get_nowait()
+                                    except asyncio.QueueEmpty:
+                                        break
+                                    await _safe_ws_send_json(websocket, item)
+                            if drain_task is not None:
+                                drain_task.cancel()
+                                try:
+                                    await drain_task
+                                except asyncio.CancelledError:
+                                    pass
+                            if relay is not None:
+                                relay.unregister_queue(trace_id, step_queue)
+                        if ctx_out.get("error"):
+                            await websocket.send_json(
+                                await _with_biometrics(
+                                    {
+                                        "error": ctx_out.get("error"),
+                                        "error_code": ctx_out.get("error_code"),
+                                        "mode": "agent",
+                                        "correlation_id": trace_id,
+                                        "routing_debug": ctx_out.get("routing_debug") or route_debug,
+                                    },
+                                    cache=biometrics_cache,
+                                )
+                            )
+                            continue
+                        orion_response_text = str(ctx_out.get("llm_response") or "")
+                        agent_trace = ctx_out.get("agent_trace")
+                        cortex_result_dump = ctx_out.get("raw") if isinstance(ctx_out.get("raw"), dict) else {}
+                        route_debug = ctx_out.get("routing_debug") or route_debug
+                        resp = None
+                    else:
+                        resp: CortexChatResult = await cortex_client.chat(chat_req, correlation_id=trace_id)
+                        orion_response_text = hub_effective_chat_text(resp)
+                        if resp.cortex_result and isinstance(resp.cortex_result.recall_debug, dict):
+                            recall_debug = resp.cortex_result.recall_debug
+                            memory_digest = recall_debug.get("memory_digest")
+                        agent_trace = extract_agent_trace_payload(resp.cortex_result)
+                        cortex_result_dump = (
+                            resp.cortex_result.model_dump(mode="json")
+                            if getattr(resp, "cortex_result", None) is not None and hasattr(resp.cortex_result, "model_dump")
+                            else {}
+                        )
+                if not used_context_exec_lane and not used_agent_claude_lane:
                     raw_traces = getattr(resp.cortex_result, "metacog_traces", None)
                     if isinstance(raw_traces, list):
                         metacog_traces = [t for t in raw_traces if isinstance(t, dict)]

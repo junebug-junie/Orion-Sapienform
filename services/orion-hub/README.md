@@ -519,7 +519,7 @@ When `HUB_AGENT_CLAUDE_ENABLED=true`, Hub exposes **Agent Claude - Opus / Sonnet
 
 **Requirements (v1):** Hub process on host (or container with `claude` on PATH + mounted repo + mounted `~/.fcc/.env`). `fcc-server` running. Default Docker compose keeps `HUB_AGENT_CLAUDE_ENABLED=false`.
 
-**Context limits (llamacpp):** Local `MODEL_*` lanes often use `ctx_size: 65536` (`config/llm_profiles.yaml`). Multi-step repo reads can exceed that (e.g. reading all of `orion/bus/channels.yaml`). Hub passes `CLAUDE_CODE_MAX_CONTEXT_TOKENS` and `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS` (see `HUB_AGENT_CLAUDE_MAX_CONTEXT_TOKENS`, `HUB_AGENT_CLAUDE_FILE_READ_MAX_TOKENS`) into the claude subprocess, and prepends a repo-exploration brief (`prepare_agent_claude_input`). For deep sweeps, raise llamacpp `ctx_size`, route `~/.fcc/.env` to a larger backend, or ask narrower questions.
+**Context limits (llamacpp):** Local `MODEL_*` lanes often use `ctx_size: 65536` (`config/llm_profiles.yaml`). Multi-step repo reads can exceed that (e.g. reading all of `orion/bus/channels.yaml`). Hub passes `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, `CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS`, and `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` (see `HUB_AGENT_CLAUDE_MAX_CONTEXT_TOKENS`, `HUB_AGENT_CLAUDE_FILE_READ_MAX_TOKENS`, `HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`) into the claude subprocess, and prepends a repo-exploration brief (`prepare_agent_claude_input`). Auto-compact triggers earlier than Claude Code default (~83%) so long repo turns summarize before hard overflow. Set `HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=0` to omit. For deep sweeps, raise llamacpp `ctx_size`, route `~/.fcc/.env` to a larger backend, or ask narrower questions.
 
 **Live smoke:**
 

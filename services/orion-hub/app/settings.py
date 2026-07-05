@@ -154,6 +154,14 @@ class Settings(BaseSettings):
         alias="HUB_AGENT_CLAUDE_FILE_READ_MAX_TOKENS",
         description="Passed to claude as CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS to cap single Read payloads.",
     )
+    HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: float = Field(
+        default=70.0,
+        alias="HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
+        description=(
+            "Passed to claude as CLAUDE_AUTOCOMPACT_PCT_OVERRIDE. "
+            "Compact earlier than Claude Code default (~83%%). Set 0 to omit."
+        ),
+    )
     HUB_CONTEXT_EXEC_EVENT_CHANNEL: str = Field(
         default="orion:context_exec:event",
         alias="HUB_CONTEXT_EXEC_EVENT_CHANNEL",

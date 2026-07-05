@@ -45,6 +45,10 @@ from .cortex_request_builder import (
 )
 from .mutation_cognition_context import build_mutation_cognition_context
 from .context_exec_agent_bridge import run_hub_agent_via_context_exec, should_use_context_exec_agent_lane
+from .agent_claude_input import prepare_agent_claude_input
+from .fcc_claude_bridge import run_turn_from_settings
+from .fcc_env_catalog import catalog_from_settings
+from .fcc_model_mapping import DEFAULT_FCC_MODEL_LABEL
 from .substrate_effect_pipeline import run_substrate_effect_pipeline
 from .repair_pressure_wiring import attach_repair_pressure_contract
 from orion.substrate.appraisal.view_model import build_substrate_effect_view
@@ -1061,6 +1065,25 @@ async def api_llm_routes():
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@router.get("/api/fcc-model-labels")
+async def api_fcc_model_labels():
+    from scripts.fcc_env_catalog import catalog_from_settings
+    from scripts.fcc_claude_bridge import _preflight_fcc_server
+
+    payload = catalog_from_settings(
+        env_path=settings.HUB_FCC_ENV_PATH,
+        auth_override=settings.HUB_FCC_AUTH_TOKEN,
+    )
+    fcc_server_ok = False
+    try:
+        _preflight_fcc_server(settings.HUB_FCC_SERVER_URL, timeout_sec=2.0)
+        fcc_server_ok = True
+    except RuntimeError:
+        fcc_server_ok = False
+    payload["fcc_server_ok"] = fcc_server_ok
+    return payload
+
+
 @router.get("/api/presence")
 def api_presence(x_orion_session_id: Optional[str] = Header(None)):
     from .main import presence_context_store
@@ -2053,6 +2076,59 @@ def _chat_turn_trace_linkage(
     }
 
 
+async def _run_agent_claude_http(
+    *,
+    prompt: str,
+    fcc_model_label: str,
+    correlation_id: str,
+) -> dict:
+    if not bool(settings.HUB_AGENT_CLAUDE_ENABLED):
+        return {
+            "error": "Agent Claude mode is disabled",
+            "error_code": "agent_claude_disabled",
+            "mode": "agent-claude",
+            "correlation_id": correlation_id,
+        }
+
+    turn = prepare_agent_claude_input(prompt)
+    steps = []
+    async for event in run_turn_from_settings(
+        prompt=turn.prompt,
+        fcc_model_label=fcc_model_label,
+        correlation_id=correlation_id,
+    ):
+        etype = str(event.get("type") or "")
+        if etype == "step":
+            steps.append(event.get("step"))
+        elif etype == "error":
+            return {
+                "error": str(event.get("error") or "agent-claude failed"),
+                "error_code": str(event.get("error_code") or "fcc_claude_nonzero_exit"),
+                "mode": "agent-claude",
+                "correlation_id": correlation_id,
+                "claude_steps": steps,
+                "llm_response": str(event.get("llm_response") or ""),
+                "metadata": event.get("metadata"),
+            }
+        elif etype == "final":
+            return {
+                "mode": "agent-claude",
+                "correlation_id": correlation_id,
+                "llm_response": str(event.get("llm_response") or ""),
+                "text": str(event.get("llm_response") or ""),
+                "claude_steps": steps,
+                "metadata": event.get("metadata"),
+                "fcc_model_label": fcc_model_label,
+            }
+    return {
+        "error": "agent-claude produced no final frame",
+        "error_code": "fcc_claude_nonzero_exit",
+        "mode": "agent-claude",
+        "correlation_id": correlation_id,
+        "claude_steps": steps,
+    }
+
+
 async def handle_chat_request(
     cortex_client,
     payload: dict,
@@ -2236,6 +2312,22 @@ async def handle_chat_request(
         user_head=(user_prompt or "")[:80],
         no_write=no_write,
     )
+
+    if str(mode or "").strip().lower() == "agent-claude":
+        catalog = catalog_from_settings(
+            env_path=settings.HUB_FCC_ENV_PATH,
+            auth_override=settings.HUB_FCC_AUTH_TOKEN,
+        )
+        fcc_label = str(
+            payload.get("fcc_model_label")
+            or catalog.get("default_label")
+            or DEFAULT_FCC_MODEL_LABEL
+        )
+        return await _run_agent_claude_http(
+            prompt=user_prompt,
+            fcc_model_label=fcc_label,
+            correlation_id=corr_id,
+        )
 
     if should_use_context_exec_agent_lane(req):
         ctx_result = await run_hub_agent_via_context_exec(

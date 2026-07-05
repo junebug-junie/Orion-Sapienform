@@ -1,0 +1,24 @@
+name: orion_voice_finalize
+label: Orion Voice Finalize
+description: >
+  Expression pass (5c) for unified turns. Shapes draft + reflection into Orion's
+  user-visible voice using curated style partials — never chat_general speech.
+
+category: Generative
+priority: high
+
+requires_gpu: true
+requires_memory: false
+timeout_ms: 120000
+
+services:
+  - LLMGatewayService
+
+prompt_template: orion_voice_finalize.j2
+
+steps:
+  - name: llm_orion_voice_finalize
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: orion_voice_finalize.j2
+    requires_gpu: true

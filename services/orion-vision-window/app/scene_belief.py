@@ -16,7 +16,7 @@ class BeliefObserveResult:
 
 
 class SceneBeliefTracker:
-    def __init__(self, *, vote_n: int = 3, enter_votes: int = 2, exit_votes: int = 1) -> None:
+    def __init__(self, *, vote_n: int = 3, enter_votes: int = 3, exit_votes: int = 0) -> None:
         self._vote_n = vote_n
         self._enter_votes = enter_votes
         self._exit_votes = exit_votes
@@ -97,7 +97,7 @@ class SceneBeliefTracker:
 
 
 class SceneBeliefRegistry:
-    def __init__(self, *, vote_n: int = 3, enter_votes: int = 2, exit_votes: int = 1) -> None:
+    def __init__(self, *, vote_n: int = 3, enter_votes: int = 3, exit_votes: int = 0) -> None:
         self._vote_n = vote_n
         self._enter_votes = enter_votes
         self._exit_votes = exit_votes

@@ -78,6 +78,16 @@ def test_enrich_evidence_includes_believed_tier() -> None:
     assert enriched["belief"]["observation_count"] == 3
 
 
+def test_intermittent_label_never_enters_with_full_ring_enter() -> None:
+    tracker = SceneBeliefTracker(vote_n=3, enter_votes=3, exit_votes=0)
+    for _ in range(5):
+        tracker.observe(frozenset({"door", "screen"}))
+        tracker.observe(frozenset({"door", "screen", "package"}))
+    assert "door" in tracker.believed_labels
+    assert "screen" in tracker.believed_labels
+    assert "package" not in tracker.believed_labels
+
+
 def test_registry_isolates_streams() -> None:
     registry = SceneBeliefRegistry(vote_n=3, enter_votes=2, exit_votes=1)
     registry.observe("cam0", frozenset({"door"}))

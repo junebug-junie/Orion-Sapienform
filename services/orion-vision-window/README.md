@@ -27,6 +27,8 @@ Council treats `hard_labels` as admissible evidence; captions are soft hints onl
 
 **Empty flicker:** Enter votes treat empty observations as carrying forward the last non-empty labels; exit votes count raw observations only. Tune `WINDOW_BELIEF_EXIT_VOTES` to control how quickly removed objects leave belief.
 
+**Production defaults (2026-07-04 tuning):** `WINDOW_BELIEF_ENTER_VOTES=3`, `WINDOW_BELIEF_EXIT_VOTES=0` — blocks intermittent marginal detections (e.g. package) from belief ping-pong while keeping door/screen stable.
+
 ## Configuration
 
 ```bash

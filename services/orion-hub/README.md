@@ -513,6 +513,22 @@ Bridge env keys `SOCIAL_BRIDGE_HUB_MODE` / `SOCIAL_BRIDGE_HUB_VERB` affect **Cal
 
 **Agent mode → context-exec:** When `HUB_AGENT_CONTEXT_EXEC_ENABLED=true` (default), Hub **Agent** mode calls `POST /context-exec/run` on `HUB_CONTEXT_EXEC_API_URL` instead of legacy AgentChain/ReAct. Selected route is passed as `llm_profile` on the context-exec request. Hub renders an inline operator response (`Agent run complete`, mode, route, synthesis status, result, proposal link, mutation none) from `operator_summary`. Proposal review / Pending Decisions remain unchanged.
 
+### Agent Claude mode (FCC harness)
+
+When `HUB_AGENT_CLAUDE_ENABLED=true`, Hub exposes **Agent Claude** mode. Each message spawns one `claude -p … --output-format stream-json` turn with `ANTHROPIC_BASE_URL` set to `HUB_FCC_SERVER_URL` (default `http://127.0.0.1:8082`). The **FCC Model** dropdown lists env key labels from `HUB_FCC_ENV_PATH` (`MODEL`, `MODEL_HAIKU`, …), not resolved gateway values. **Compute** lane is ignored for this mode.
+
+**Requirements (v1):** Hub process on host (or container with `claude` on PATH + mounted repo + mounted `~/.fcc/.env`). `fcc-server` running. Default Docker compose keeps `HUB_AGENT_CLAUDE_ENABLED=false`.
+
+**Live smoke:**
+
+```bash
+HUB_AGENT_CLAUDE_ENABLED=true fcc-server  # separate terminal
+PYTHONPATH=services/orion-hub:. python services/orion-hub/scripts/verify_agent_claude_stream_live.py \
+  --ws ws://127.0.0.1:8080/ws \
+  --text "list files in services/orion-hub/scripts" \
+  --fcc-model-label MODEL_HAIKU
+```
+
 **Investigation v2 (epistemic pipeline):** When `CONTEXT_EXEC_INVESTIGATION_V2_ENABLED=true`, Hub Agent lane threads `answer_contract` from `answer_contract_draft` into context-exec, sends `mode=investigation_v2` with profile-derived permissions (`context_exec_permissions_for_llm_profile`), and receives **`final_text`** (finalize-rendered user voice) as `llm_response`. `InvestigationReportV2` remains an inspectable operator sidecar in `metadata.context_exec` (`operator_report_text`). Conceptual/personal turns do not trigger repo/trace sweeps. Default is `false` (legacy keyword mode inference preserved).
 
 **Denver memory correction vertical slice:** `ORION_PY=orion_dev/bin/python bash scripts/denver_memory_correction_vertical_smoke.sh` proves a Denver `memory_correction_proposal` reaches Pending Decisions read-only. Expected final line: `denver_memory_correction_vertical_smoke PASS`. Hub card shows current belief, proposed correction, rationale, evidence summary, risk/confidence, and safety flags. Hub review actions (approve/reject/request changes) are on the detail card when enabled — smoke does not exercise them; pytest covers review POST allowlist and no-execution invariants. No execution or memory mutation in smoke.

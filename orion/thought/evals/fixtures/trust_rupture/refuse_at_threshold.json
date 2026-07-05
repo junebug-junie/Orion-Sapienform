@@ -1,0 +1,17 @@
+{
+  "id": "refuse_at_threshold",
+  "thought": {
+    "imperative": "Proceed anyway.",
+    "tone": "flat",
+    "strain_refs": ["node-a"],
+    "evidence_refs": ["node-a"],
+    "trust_rupture_score": 0.65
+  },
+  "association_stale": false,
+  "coalition_ids": ["node-a"],
+  "expect": {
+    "disposition": "refuse",
+    "boundary_register": true,
+    "reason_contains": ["trust_rupture"]
+  }
+}

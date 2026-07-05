@@ -12,7 +12,7 @@ def build_orion_turn_request(
     user_message: str,
     repair_bundle: TurnAppraisalBundleV1 | None,
 ) -> dict[str, Any]:
-    """Thin Orion-mode turn dict — not build_chat_request / chat_general fields."""
+    """Thin Orion-mode turn dict — not the Brain chat request builder."""
     req: dict[str, Any] = {
         "mode": "orion",
         "correlation_id": correlation_id,

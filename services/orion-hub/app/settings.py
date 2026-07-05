@@ -424,6 +424,14 @@ class Settings(BaseSettings):
         default="orion:thought:result:",
         alias="CHANNEL_THOUGHT_RESULT_PREFIX",
     )
+    CHANNEL_HARNESS_RUN_REQUEST: str = Field(
+        default="orion:harness:run:request",
+        alias="CHANNEL_HARNESS_RUN_REQUEST",
+    )
+    CHANNEL_HARNESS_RESULT_PREFIX: str = Field(
+        default="orion:harness:run:result:",
+        alias="CHANNEL_HARNESS_RESULT_PREFIX",
+    )
 
     ENABLE_PRE_TURN_APPRAISAL: bool = Field(default=False, alias="ENABLE_PRE_TURN_APPRAISAL")
     PRE_TURN_APPRAISAL_PARADIGMS: str = Field(default="repair_pressure", alias="PRE_TURN_APPRAISAL_PARADIGMS")

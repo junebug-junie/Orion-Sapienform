@@ -2203,14 +2203,21 @@ async def handle_chat_request(
                 "error": "harness_governor_disabled",
             }
         from .main import bus
-        from .unified_turn_stub import run_orion_unified_turn_stub
+        from orion.hub.turn_orchestrator import execute_unified_turn
 
-        return await run_orion_unified_turn_stub(
+        frames = await execute_unified_turn(
             bus=bus,
             correlation_id=corr_id,
             session_id=session_id,
             user_message=user_prompt,
+            payload=payload,
         )
+        return frames[-1] if frames else {
+            "type": "turn_error",
+            "phase": "harness",
+            "correlation_id": corr_id,
+            "finalize_ran": False,
+        }
 
     # ─── Hub presence (best-effort, never blocks chat) ──────────────────
     # One timestamp per turn; mirrors a liveness snapshot for self-state.

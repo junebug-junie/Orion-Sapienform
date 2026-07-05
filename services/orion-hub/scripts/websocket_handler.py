@@ -867,15 +867,23 @@ async def websocket_endpoint(websocket: WebSocket):
                         )
                     )
                     continue
-                from scripts.unified_turn_stub import run_orion_unified_turn_stub
+                from orion.hub.turn_orchestrator import run_unified_turn
 
-                stub_frame = await run_orion_unified_turn_stub(
+                await run_unified_turn(
+                    websocket,
                     bus=bus,
                     correlation_id=trace_id,
                     session_id=session_id,
                     user_message=transcript,
+                    payload=data,
+                    continuity_messages=build_continuity_messages(
+                        history=history,
+                        latest_user_prompt=transcript,
+                        turns=turns,
+                    ),
+                    with_biometrics=_with_biometrics,
+                    biometrics_cache=biometrics_cache,
                 )
-                await websocket.send_json(await _with_biometrics(stub_frame, cache=biometrics_cache))
                 continue
 
             # Build outbound chat request through shared builder to keep WS/HTTP identical

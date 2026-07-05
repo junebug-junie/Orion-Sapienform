@@ -28,17 +28,30 @@ def stream_key_from_window(window: VisionWindowPayload) -> str:
     return "default"
 
 
-def _hard_labels_from_window(window: VisionWindowPayload) -> frozenset[str]:
-    summary = window.summary or {}
-    evidence = summary.get("evidence") or {}
-    if not isinstance(evidence, dict):
-        evidence = {}
+def _hard_labels_from_evidence(evidence: dict) -> frozenset[str]:
     raw = evidence.get("hard_labels") or []
     return frozenset(str(label).strip().lower() for label in raw if str(label).strip())
 
 
+def _labels_for_gate(window: VisionWindowPayload) -> frozenset[str]:
+    summary = window.summary or {}
+    evidence = summary.get("evidence") or {}
+    if not isinstance(evidence, dict):
+        evidence = {}
+    believed = evidence.get("believed_hard_labels")
+    belief_meta = evidence.get("belief") or {}
+    if (
+        isinstance(believed, list)
+        and believed
+        and isinstance(belief_meta, dict)
+        and belief_meta.get("schema") == "scene_belief.v1"
+    ):
+        return frozenset(str(label).strip().lower() for label in believed if str(label).strip())
+    return _hard_labels_from_evidence(evidence)
+
+
 def snapshot_from_window(window: VisionWindowPayload) -> EvidenceSnapshot:
-    hard_labels = _hard_labels_from_window(window)
+    hard_labels = _labels_for_gate(window)
     return EvidenceSnapshot(
         hard_labels=hard_labels,
         person_present="person" in hard_labels,
@@ -79,7 +92,7 @@ class EvidenceTransitionTracker:
                 return EvidenceTransitionDecision(interpret=True, reason="person_entered")
             if prev_person and not snapshot.person_present:
                 return EvidenceTransitionDecision(interpret=True, reason="person_exited")
-            return EvidenceTransitionDecision(interpret=True, reason="labels_changed")
+            return EvidenceTransitionDecision(interpret=True, reason="salient_labels_changed")
 
         if max_refresh_sec > 0 and (now - last_interpret_at) >= max_refresh_sec:
             return EvidenceTransitionDecision(interpret=True, reason="refresh_ttl")

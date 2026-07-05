@@ -30,3 +30,11 @@ def test_settings_reads_legacy_skip_max_sec_alias(monkeypatch: pytest.MonkeyPatc
     from app.settings import Settings
 
     assert Settings().COUNCIL_TRANSITION_REFRESH_SEC == 45.0
+
+
+def test_settings_refresh_ttl_default_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("COUNCIL_TRANSITION_REFRESH_SEC", raising=False)
+    monkeypatch.delenv("COUNCIL_EVIDENCE_SKIP_MAX_SEC", raising=False)
+    from app.settings import Settings
+
+    assert Settings().COUNCIL_TRANSITION_REFRESH_SEC == 0.0

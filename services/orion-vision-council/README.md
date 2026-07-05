@@ -9,7 +9,7 @@ VisionWindowPayload → evidence_transition (host label delta) → VisionSceneIn
 ```
 
 1. **Intake** — `VisionWindowPayload` arrives on the council intake channel (or via RPC request).
-2. **Evidence transition gate** — `evidence_transition.py` compares host `hard_labels` and `person` presence per stream. Council runs metacog only on `first_window`, `person_entered`, `person_exited`, `labels_changed`, or `refresh_ttl` (`COUNCIL_TRANSITION_REFRESH_SEC`). Stable scenes skip LLM and publish nothing.
+2. **Evidence transition gate** — `evidence_transition.py` compares **believed** host labels (`summary.evidence.believed_hard_labels` when present) and person presence per stream. Council runs metacog only on `first_window`, `person_entered`, `person_exited`, `salient_labels_changed`, or `refresh_ttl` when explicitly enabled (`COUNCIL_TRANSITION_REFRESH_SEC > 0`). Stable scenes skip LLM and publish nothing.
 3. **Interpretation** — `build_interpretation_prompt` shapes the LLM prompt (includes `summary.evidence` rules); the response is parsed into `VisionSceneInterpretationV1` via strict validation, salvage/coercion, then legacy fallback.
 4. **Grounding** — `CouncilService._finalize_interpretation()` calls `enforce_evidence_grounding()` on **both** intake and RPC paths:
    - Drop person/activity claims when `person` ∉ `summary.evidence.hard_labels`

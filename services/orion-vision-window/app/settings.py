@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     MAX_WINDOW_AGE_MS: int = 60_000
     STALE_AFTER_MS: int = 120_000
 
+    # Scene belief habituation (per-stream; ephemeral like live_state)
+    WINDOW_BELIEF_ENABLED: bool = True
+    WINDOW_BELIEF_VOTE_N: int = 3
+    WINDOW_BELIEF_ENTER_VOTES: int = 2
+    WINDOW_BELIEF_EXIT_VOTES: int = 1
+
     # HTTP
     HTTP_HOST: str = "0.0.0.0"
     HTTP_PORT: int = 8000

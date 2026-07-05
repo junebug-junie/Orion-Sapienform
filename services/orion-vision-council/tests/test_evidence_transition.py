@@ -136,7 +136,7 @@ def test_tracker_labels_changed() -> None:
         max_refresh_sec=120.0,
     )
     assert decision.interpret is True
-    assert decision.reason == "labels_changed"
+    assert decision.reason == "salient_labels_changed"
 
 
 def test_tracker_skips_when_interpret_in_flight() -> None:

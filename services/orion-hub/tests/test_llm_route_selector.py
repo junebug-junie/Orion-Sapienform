@@ -46,9 +46,15 @@ THOUGHT_JS = HUB_ROOT / "static" / "js" / "thought-process.js"
 def test_hub_renders_mode_dropdown() -> None:
     html = INDEX_HTML.read_text(encoding="utf-8")
     assert 'id="hubModeSelect"' in html
+    assert '<option value="orion"' in html
     assert "<option value=\"agent\">Agent</option>" in html
     assert 'id="llmRouteSelector"' not in html
     assert 'class="llm-route-btn"' not in html
+
+
+def test_hub_mode_specs_include_orion_unified_turn() -> None:
+    src = APP_JS.read_text(encoding="utf-8")
+    assert "orion: { mode: 'orion'" in src
 
 
 def test_hub_renders_compute_dropdown_not_chip_row() -> None:

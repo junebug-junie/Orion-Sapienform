@@ -119,3 +119,14 @@ test('buildExecutionStepsPanel returns collapsible section', () => {
   assert.ok(panel.includes('data-orion-action="open-organ-signals"'));
   assert.ok(panel.includes('data-correlation-id="corr-1"'));
 });
+
+test('normalizeOutboundPayload preserves orion unified turn mode', () => {
+  const lane = globalThis.OrionHubGroundedSmallLane;
+  assert.ok(lane && typeof lane.normalizeOutboundPayload === 'function');
+  if (typeof document !== 'undefined' && document.body) {
+    document.body.dataset.orionChatLane = 'grounded_small';
+  }
+  const payload = { text_input: 'hello', mode: 'orion', verbs: [] };
+  lane.normalizeOutboundPayload(payload);
+  assert.equal(payload.mode, 'orion');
+});

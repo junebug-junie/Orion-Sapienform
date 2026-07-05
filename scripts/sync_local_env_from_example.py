@@ -71,6 +71,19 @@ SYNC_PREFIXES = (
     "CHANNEL_SIGNALS_",
     "CHANNEL_VISION_",
     "CHANNEL_EDGE_",
+    "CHANNEL_THOUGHT_",
+    "CHANNEL_HARNESS_",
+    "CHANNEL_FINALIZE_",
+    "ORION_UNIFIED_",
+    "ORION_HARNESS_",
+    "STANCE_REACT_",
+    "HARNESS_FCC_",
+    "HARNESS_GOVERNOR_",
+    "FINALIZE_REFLECT_",
+    "VOICE_FINALIZE_",
+    "SUBSTRATE_FINALIZE_",
+    "FINALIZE_QUICK_",
+    "THOUGHT_",
     "EDGE_ACTIVITY_",
     "EDGE_PUBLISH_",
     "VISION_VLM_",
@@ -115,6 +128,8 @@ DEFAULT_SERVICES = (
     "orion-attention-runtime",
     "orion-self-state-runtime",
     "orion-proposal-runtime",
+    "orion-thought",
+    "orion-harness-governor",
 )
 
 

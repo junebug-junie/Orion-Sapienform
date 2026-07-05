@@ -1210,6 +1210,9 @@
 
   function normalizeOutboundPayload(payload) {
     if (!isChatPayload(payload)) return payload;
+    if (String(payload.mode || '').toLowerCase() === 'orion') {
+      return payload;
+    }
     const lane = getLane();
     const options = asObject(payload.options) ? { ...payload.options } : {};
     const verbs = Array.isArray(payload.verbs) ? payload.verbs.map((v) => String(v || '').trim()).filter(Boolean) : [];
@@ -1295,6 +1298,7 @@
       if (key === LANE_GROUNDED_SMALL) setLane(LANE_GROUNDED_SMALL);
       else if (key === LANE_BRAIN) setLane(LANE_BRAIN);
       else if (key === LANE_QUICK) setLane(LANE_QUICK);
+      else if (key === 'orion') setLane('orion');
       else if (key === 'auto') setLane(LANE_GROUNDED_SMALL);
       else setLane(key || LANE_GROUNDED_SMALL);
     }

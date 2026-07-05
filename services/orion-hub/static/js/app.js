@@ -50,7 +50,7 @@ let isPlayingAudio = false;
 let orionState = 'idle';
 let particles = [];
 let visionIsFloating = false;
-let currentMode = "brain";
+let currentMode = "orion";
 let selectedPacks = [];
 let selectedVerbs = [];
 let modeVerbOverride = null;
@@ -9367,6 +9367,7 @@ loadDismissedIds();
   const hubComputeSelect = document.getElementById('hubComputeSelect');
   const HUB_MODE_SPECS = {
     auto: { mode: 'auto', verb: null, lane: null, label: 'Auto' },
+    orion: { mode: 'orion', verb: null, lane: 'orion', label: 'Orion' },
     grounded_small: { mode: 'brain', verb: null, lane: 'grounded_small', label: 'Grounded Small' },
     brain: { mode: 'brain', verb: null, lane: 'brain', label: 'Brain' },
     quick: { mode: 'brain', verb: 'chat_quick', lane: 'quick', label: 'Quick' },
@@ -9407,6 +9408,8 @@ loadDismissedIds();
       laneApi.setLane(spec.lane);
     } else if (laneApi && typeof laneApi.setLane === 'function' && key === 'auto') {
       laneApi.setLane('grounded_small');
+    } else if (laneApi && typeof laneApi.setLane === 'function' && key === 'orion') {
+      laneApi.setLane('orion');
     }
     if (!silent) {
       updateStatus(`Mode: ${spec.label}`);
@@ -9503,7 +9506,7 @@ loadDismissedIds();
     hubModeSelect.addEventListener('change', () => {
       applyHubModeSelection(hubModeSelect.value);
     });
-    applyHubModeSelection(hubModeSelect.value || 'grounded_small', { silent: true });
+    applyHubModeSelection(hubModeSelect.value || 'orion', { silent: true });
   }
   if (hubComputeSelect) {
     hubComputeSelect.addEventListener('change', () => {

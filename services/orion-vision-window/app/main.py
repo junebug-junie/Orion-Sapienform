@@ -22,6 +22,7 @@ from orion.schemas.vision import (
 
 from .projection import build_window_payload, envelope_to_http_dict, stream_key_from_artifact
 from .recovery_store import RecoveryStore
+from .scene_belief import SceneBeliefRegistry
 from .settings import Settings
 
 settings = Settings()
@@ -67,6 +68,11 @@ class WindowService:
         self._bus_ready = False
 
         self._cursor_i = 0
+        self._belief_registry = SceneBeliefRegistry(
+            vote_n=settings.WINDOW_BELIEF_VOTE_N,
+            enter_votes=settings.WINDOW_BELIEF_ENTER_VOTES,
+            exit_votes=settings.WINDOW_BELIEF_EXIT_VOTES,
+        )
 
         # Metrics counters (§12)
         self._m_ingest = 0
@@ -260,7 +266,7 @@ class WindowService:
         if not buffered:
             return
         items: List[Tuple[VisionArtifactPayload, float]] = [(b["artifact"], b["ts"]) for b in buffered]
-        envs: List[BaseEnvelope] = [b["env"] for b in buffered]
+        envs: List[BaseEnvelope] = [b["env"] for b in buffered if b["env"] is not None]
         window_start = min(b["ts"] for b in buffered)
         window_end = time.time()
         cursor = self._next_cursor()
@@ -273,6 +279,21 @@ class WindowService:
             cursor=cursor,
             stale_after_ms=settings.STALE_AFTER_MS,
         )
+        if settings.WINDOW_BELIEF_ENABLED:
+            summary = dict(payload.summary or {})
+            evidence = dict(summary.get("evidence") or {})
+            observed = frozenset(str(x).strip().lower() for x in evidence.get("hard_labels") or [] if str(x).strip())
+            result = self._belief_registry.observe(stream_id, observed)
+            summary["evidence"] = self._belief_registry.enrich_evidence(stream_id, evidence)
+            payload = payload.model_copy(update={"summary": summary})
+            if result.added or result.removed:
+                added = ",".join(sorted(result.added)) or "-"
+                removed = ",".join(sorted(result.removed)) or "-"
+                believed = ",".join(sorted(result.believed_labels)) or "-"
+                logger.info(
+                    f"[WINDOW] belief_transition stream={stream_id} "
+                    f"added={added} removed={removed} believed={believed}"
+                )
         env_dump = payload.model_dump(mode="json")
 
         async with self._live_lock:

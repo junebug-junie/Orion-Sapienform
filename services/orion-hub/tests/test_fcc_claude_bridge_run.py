@@ -139,9 +139,24 @@ async def test_build_subprocess_env_sets_claude_context_limits(monkeypatch: pyte
 
     monkeypatch.setattr(hub_settings.settings, "HUB_AGENT_CLAUDE_MAX_CONTEXT_TOKENS", 65536, raising=False)
     monkeypatch.setattr(hub_settings.settings, "HUB_AGENT_CLAUDE_FILE_READ_MAX_TOKENS", 8192, raising=False)
+    monkeypatch.setattr(hub_settings.settings, "HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", 70.0, raising=False)
     env = bridge._build_subprocess_env(fcc_server_url="http://127.0.0.1:8082", auth_token="tok")
     assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "65536"
+    assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "65536"
     assert env["CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS"] == "8192"
+    assert env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] == "70"
+    assert "DISABLE_COMPACT" not in env
+    assert "DISABLE_AUTO_COMPACT" not in env
+
+
+@pytest.mark.asyncio
+async def test_build_subprocess_env_omits_autocompact_when_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import settings as hub_settings
+
+    monkeypatch.setattr(hub_settings.settings, "HUB_AGENT_CLAUDE_MAX_CONTEXT_TOKENS", 65536, raising=False)
+    monkeypatch.setattr(hub_settings.settings, "HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", 0.0, raising=False)
+    env = bridge._build_subprocess_env(fcc_server_url="http://127.0.0.1:8082", auth_token="tok")
+    assert "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" not in env
 
 
 def test_is_context_overflow_text_detects_llamacpp_error() -> None:

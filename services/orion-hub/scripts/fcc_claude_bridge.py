@@ -178,10 +178,21 @@ def _build_subprocess_env(*, fcc_server_url: str, auth_token: str) -> Dict[str, 
     env["TERM"] = "dumb"
     max_ctx = int(getattr(settings, "HUB_AGENT_CLAUDE_MAX_CONTEXT_TOKENS", 65536))
     read_max = int(getattr(settings, "HUB_AGENT_CLAUDE_FILE_READ_MAX_TOKENS", 8192))
+    autocompact_pct = float(
+        getattr(settings, "HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", 70.0)
+    )
     if max_ctx > 0:
         env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(max_ctx)
+        # Align compact threshold math with llamacpp ceiling, not model catalog default.
+        env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(max_ctx)
     if read_max > 0:
         env["CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS"] = str(read_max)
+    if 0 < autocompact_pct <= 100:
+        pct = int(autocompact_pct) if autocompact_pct == int(autocompact_pct) else autocompact_pct
+        env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = str(pct)
+    # Never inherit operator flags that disable Claude Code auto-compact.
+    env.pop("DISABLE_COMPACT", None)
+    env.pop("DISABLE_AUTO_COMPACT", None)
     return env
 
 

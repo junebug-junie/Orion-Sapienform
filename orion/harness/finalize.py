@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import uuid
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from orion.cognition.plan_loader import build_plan_for_verb
@@ -12,6 +13,8 @@ from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.harness_finalize import (
     FinalizeReflectionV1,
     GrammarReceiptV1,
+    HarnessDraftMoleculeV1,
+    HarnessPostTurnClosureV1,
     HarnessRepairOverlayV1,
     HarnessTurnOutcomeMoleculeV1,
     HarnessVerdictMoleculeV1,
@@ -22,6 +25,7 @@ from orion.substrate.ids import stable_hash_id
 from orion.thought.policy_refusal import TRUST_RUPTURE_DEFER_THRESHOLD
 
 CortexClientFn = Callable[[PlanExecutionRequest], Awaitable[dict[str, Any]]]
+SubstrateClientFn = Callable[[HarnessDraftMoleculeV1], Awaitable[SubstrateFinalizeAppraisalV1]]
 PublishFn = Callable[..., Awaitable[None]]
 
 DEFAULT_QUICK_GATE_EPSILON = 0.08
@@ -30,6 +34,7 @@ REPAIR_PRESSURE_MAX = 0.3
 
 VERDICT_CHANNEL = "orion:harness:verdict:artifact"
 OUTCOME_CHANNEL = "orion:substrate:turn_outcome"
+POST_TURN_CLOSURE_CHANNEL = "orion:substrate:post_turn_closure"
 
 
 def _quick_gate_epsilon() -> float:
@@ -491,3 +496,147 @@ def _is_uuid(value: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _outcome_molecule_id(molecule: HarnessTurnOutcomeMoleculeV1) -> str:
+    return stable_hash_id(
+        "outcome",
+        [
+            molecule.correlation_id,
+            molecule.thought_event_id,
+            molecule.draft_hash,
+            molecule.final_hash,
+        ],
+    )
+
+
+async def run_substrate_finalize_appraisal(
+    *,
+    draft_molecule: HarnessDraftMoleculeV1,
+    substrate_client: SubstrateClientFn,
+) -> SubstrateFinalizeAppraisalV1:
+    return await substrate_client(draft_molecule)
+
+
+@dataclass
+class HarnessFinalizeChainResult:
+    final_text: str
+    substrate_appraisal: SubstrateFinalizeAppraisalV1
+    reflection: FinalizeReflectionV1
+    verdict_molecule: HarnessVerdictMoleculeV1
+    outcome_molecule: HarnessTurnOutcomeMoleculeV1
+    finalize_changed: bool
+    quick_lane_skipped_5b: bool
+    verdict_molecule_id: str
+
+
+async def run_harness_finalize_chain(
+    *,
+    correlation_id: str,
+    draft_text: str,
+    draft_molecule: HarnessDraftMoleculeV1,
+    thought: ThoughtEventV1,
+    grammar_receipts: list[GrammarReceiptV1] | None,
+    repair_overlay: HarnessRepairOverlayV1,
+    user_message: str,
+    voice_contract: AnswerContract | dict[str, Any] | None,
+    cortex_client: CortexClientFn,
+    substrate_client: SubstrateClientFn,
+    bus: Any = None,
+    verdict_publish_fn: PublishFn | None = None,
+    outcome_publish_fn: PublishFn | None = None,
+) -> HarnessFinalizeChainResult:
+    """Orchestrate finalize beats 5a → 5b → 5c → 6b."""
+    substrate_appraisal = await run_substrate_finalize_appraisal(
+        draft_molecule=draft_molecule,
+        substrate_client=substrate_client,
+    )
+
+    reflection, quick_lane_skipped_5b, cortex_trace_id = await run_finalize_reflection(
+        correlation_id=correlation_id,
+        draft_text=draft_text,
+        thought=thought,
+        substrate_appraisal=substrate_appraisal,
+        repair_overlay=repair_overlay,
+        user_message=user_message,
+        cortex_client=cortex_client,
+    )
+
+    verdict_molecule = await emit_verdict_molecule(
+        correlation_id=correlation_id,
+        reflection=reflection,
+        cortex_trace_id=cortex_trace_id,
+        publish_fn=verdict_publish_fn,
+        bus=bus,
+    )
+    verdict_molecule_id = _verdict_molecule_id(verdict_molecule)
+
+    final_text, voice_meta = await run_orion_voice_finalize(
+        correlation_id=correlation_id,
+        draft_text=draft_text,
+        thought=thought,
+        substrate_appraisal=substrate_appraisal,
+        reflection=reflection,
+        voice_contract=voice_contract,
+        repair_overlay=repair_overlay,
+        user_message=user_message,
+        cortex_client=cortex_client,
+    )
+    finalize_changed = bool(voice_meta.get("finalize_changed"))
+
+    outcome_molecule = await emit_turn_outcome_molecule(
+        correlation_id=correlation_id,
+        thought=thought,
+        substrate_appraisal=substrate_appraisal,
+        reflection=reflection,
+        verdict_molecule=verdict_molecule,
+        draft_text=draft_text,
+        final_text=final_text,
+        finalize_changed=finalize_changed,
+        grammar_receipts=grammar_receipts,
+        publish_fn=outcome_publish_fn,
+        bus=bus,
+    )
+
+    return HarnessFinalizeChainResult(
+        final_text=final_text,
+        substrate_appraisal=substrate_appraisal,
+        reflection=reflection,
+        verdict_molecule=verdict_molecule,
+        outcome_molecule=outcome_molecule,
+        finalize_changed=finalize_changed,
+        quick_lane_skipped_5b=quick_lane_skipped_5b,
+        verdict_molecule_id=verdict_molecule_id,
+    )
+
+
+async def emit_post_turn_closure(
+    *,
+    correlation_id: str,
+    outcome_molecule: HarnessTurnOutcomeMoleculeV1,
+    verdict_molecule_id: str,
+    grammar_event_ids: list[str] | None = None,
+    channel: str = POST_TURN_CLOSURE_CHANNEL,
+    publish_fn: PublishFn | None = None,
+    bus: Any = None,
+) -> HarnessPostTurnClosureV1:
+    closure = HarnessPostTurnClosureV1(
+        correlation_id=correlation_id,
+        outcome_molecule_id=_outcome_molecule_id(outcome_molecule),
+        verdict_molecule_id=verdict_molecule_id,
+        grammar_event_ids=list(grammar_event_ids or outcome_molecule.grammar_event_ids),
+        surprise_unresolved=not outcome_molecule.surprise_resolved,
+    )
+    if publish_fn is not None:
+        await publish_fn(closure, channel=channel)
+    elif bus is not None:
+        from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+
+        envelope = BaseEnvelope(
+            kind="harness.post_turn.closure.v1",
+            source=ServiceRef(name="orion-harness-governor"),
+            correlation_id=uuid.UUID(correlation_id) if _is_uuid(correlation_id) else uuid.uuid4(),
+            payload=closure.model_dump(mode="json"),
+        )
+        await bus.publish(channel, envelope)
+    return closure

@@ -1,0 +1,46 @@
+services:
+  harness-governor:
+    build:
+      context: ../..
+      dockerfile: services/orion-harness-governor/Dockerfile
+    container_name: ${PROJECT}-harness-governor
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - SERVICE_NAME=${SERVICE_NAME:-orion-harness-governor}
+      - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
+      - NODE_NAME=${NODE_NAME}
+      - HARNESS_GOVERNOR_PORT=${HARNESS_GOVERNOR_PORT:-7156}
+      - ORION_BUS_ENABLED=${ORION_BUS_ENABLED:-true}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG:-false}
+      - ORION_BUS_URL=${ORION_BUS_URL}
+      - ORION_HARNESS_GOVERNOR_ENABLED=${ORION_HARNESS_GOVERNOR_ENABLED:-true}
+      - CHANNEL_HARNESS_RUN_REQUEST=${CHANNEL_HARNESS_RUN_REQUEST:-orion:harness:run:request}
+      - CHANNEL_HARNESS_RUN_ARTIFACT=${CHANNEL_HARNESS_RUN_ARTIFACT:-orion:harness:run:artifact}
+      - CHANNEL_HARNESS_RESULT_PREFIX=${CHANNEL_HARNESS_RESULT_PREFIX:-orion:harness:run:result:}
+      - CHANNEL_GRAMMAR_EVENT=${CHANNEL_GRAMMAR_EVENT:-orion:grammar:event}
+      - CHANNEL_CORTEX_EXEC_REQUEST=${CHANNEL_CORTEX_EXEC_REQUEST:-orion:cortex:exec:request}
+      - CHANNEL_CORTEX_EXEC_RESULT_PREFIX=${CHANNEL_CORTEX_EXEC_RESULT_PREFIX:-orion:exec:result}
+      - CHANNEL_FINALIZE_APPRAISAL_REQUEST=${CHANNEL_FINALIZE_APPRAISAL_REQUEST:-orion:substrate:finalize_appraisal:request}
+      - CHANNEL_FINALIZE_APPRAISAL_RESULT_PREFIX=${CHANNEL_FINALIZE_APPRAISAL_RESULT_PREFIX:-orion:substrate:finalize_appraisal:result:}
+      - CHANNEL_POST_TURN_CLOSURE=${CHANNEL_POST_TURN_CLOSURE:-orion:substrate:post_turn_closure}
+      - HARNESS_FCC_TIMEOUT_SEC=${HARNESS_FCC_TIMEOUT_SEC:-120}
+      - FINALIZE_REFLECT_TIMEOUT_SEC=${FINALIZE_REFLECT_TIMEOUT_SEC:-15}
+      - VOICE_FINALIZE_TIMEOUT_SEC=${VOICE_FINALIZE_TIMEOUT_SEC:-15}
+      - SUBSTRATE_FINALIZE_TIMEOUT_SEC=${SUBSTRATE_FINALIZE_TIMEOUT_SEC:-5}
+      - FINALIZE_QUICK_GATE_EPSILON=${FINALIZE_QUICK_GATE_EPSILON:-0.08}
+    networks:
+      - app-net
+    ports:
+      - "${HARNESS_GOVERNOR_PORT:-7156}:7156"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7156/health"]
+      start_period: 10s
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  app-net:
+    external: true

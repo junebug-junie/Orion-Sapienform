@@ -1,0 +1,78 @@
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+from dotenv import load_dotenv
+from pydantic import AliasChoices, Field
+from pydantic_settings import BaseSettings
+
+load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+
+logger = logging.getLogger("orion-harness-governor.settings")
+
+
+class HarnessGovernorSettings(BaseSettings):
+    service_name: str = Field("orion-harness-governor", alias="SERVICE_NAME")
+    service_version: str = Field("0.1.0", alias="SERVICE_VERSION")
+    node_name: str = Field("athena", alias="NODE_NAME")
+    port: int = Field(7156, alias="HARNESS_GOVERNOR_PORT")
+
+    orion_bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")
+    orion_bus_enforce_catalog: bool = Field(False, alias="ORION_BUS_ENFORCE_CATALOG")
+    orion_bus_url: str = Field("redis://100.x.x.x:6379/0", alias="ORION_BUS_URL")
+    orion_harness_governor_enabled: bool = Field(True, alias="ORION_HARNESS_GOVERNOR_ENABLED")
+
+    channel_harness_run_request: str = Field(
+        "orion:harness:run:request",
+        alias="CHANNEL_HARNESS_RUN_REQUEST",
+    )
+    channel_harness_run_artifact: str = Field(
+        "orion:harness:run:artifact",
+        alias="CHANNEL_HARNESS_RUN_ARTIFACT",
+    )
+    channel_harness_result_prefix: str = Field(
+        "orion:harness:run:result:",
+        alias="CHANNEL_HARNESS_RESULT_PREFIX",
+    )
+    channel_grammar_event: str = Field(
+        "orion:grammar:event",
+        alias="CHANNEL_GRAMMAR_EVENT",
+    )
+    channel_cortex_exec_request: str = Field(
+        "orion:cortex:exec:request",
+        validation_alias=AliasChoices("CHANNEL_CORTEX_EXEC_REQUEST", "CORTEX_EXEC_REQUEST_CHANNEL"),
+        alias="CHANNEL_CORTEX_EXEC_REQUEST",
+    )
+    channel_cortex_exec_result_prefix: str = Field(
+        "orion:exec:result",
+        validation_alias=AliasChoices("CHANNEL_CORTEX_EXEC_RESULT_PREFIX", "CORTEX_EXEC_RESULT_PREFIX"),
+        alias="CHANNEL_CORTEX_EXEC_RESULT_PREFIX",
+    )
+    channel_finalize_appraisal_request: str = Field(
+        "orion:substrate:finalize_appraisal:request",
+        alias="CHANNEL_FINALIZE_APPRAISAL_REQUEST",
+    )
+    channel_finalize_appraisal_result_prefix: str = Field(
+        "orion:substrate:finalize_appraisal:result:",
+        alias="CHANNEL_FINALIZE_APPRAISAL_RESULT_PREFIX",
+    )
+    channel_post_turn_closure: str = Field(
+        "orion:substrate:post_turn_closure",
+        alias="CHANNEL_POST_TURN_CLOSURE",
+    )
+
+    fcc_timeout_sec: float = Field(120.0, alias="HARNESS_FCC_TIMEOUT_SEC")
+    finalize_reflect_timeout_sec: float = Field(15.0, alias="FINALIZE_REFLECT_TIMEOUT_SEC")
+    voice_finalize_timeout_sec: float = Field(15.0, alias="VOICE_FINALIZE_TIMEOUT_SEC")
+    substrate_finalize_timeout_sec: float = Field(5.0, alias="SUBSTRATE_FINALIZE_TIMEOUT_SEC")
+    finalize_quick_gate_epsilon: float = Field(0.08, alias="FINALIZE_QUICK_GATE_EPSILON")
+
+
+settings = HarnessGovernorSettings()
+logger.info(
+    "Loaded orion-harness-governor settings service=%s v=%s port=%s",
+    settings.service_name,
+    settings.service_version,
+    settings.port,
+)

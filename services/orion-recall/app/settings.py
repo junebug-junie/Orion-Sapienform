@@ -91,6 +91,17 @@ class Settings(BaseSettings):
     RECALL_SQL_CHAT_CREATED_AT_COL: str = Field(
         default="created_at", validation_alias=AliasChoices("RECALL_SQL_CHAT_CREATED_AT_COL")
     )
+    RECALL_SQL_CHAT_ID_COL: str = Field(
+        default="id", validation_alias=AliasChoices("RECALL_SQL_CHAT_ID_COL")
+    )
+    # RDF chat-turn recall carries no usable graph timestamp (turns are written without one),
+    # so it ignored the per-profile time window and surfaced months-old turns into reflective
+    # recall. When enabled, RDF chat-turn candidates are joined back to chat_history_log and
+    # dropped when older than the profile's sql_since_minutes (giving them the same window the
+    # SQL chat/timeline backends already honor).
+    RECALL_RDF_CHAT_WINDOW_ENABLED: bool = Field(
+        default=True, validation_alias=AliasChoices("RECALL_RDF_CHAT_WINDOW_ENABLED")
+    )
 
     # Collapse mirror base + semantic fields
     RECALL_SQL_MIRROR_TABLE: str = Field(default="collapse_mirror", validation_alias=AliasChoices("RECALL_SQL_MIRROR_TABLE"))

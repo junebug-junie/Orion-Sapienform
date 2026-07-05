@@ -413,6 +413,18 @@ class Settings(BaseSettings):
         default=True,
         alias="ENABLE_REPAIR_PRESSURE_SPEECH_WIRING",
     )
+    # --- Unified Orion turn (orion-thought + harness governor) ---
+    ORION_UNIFIED_TURN_ENABLED: bool = Field(default=False, alias="ORION_UNIFIED_TURN_ENABLED")
+    ORION_HARNESS_GOVERNOR_ENABLED: bool = Field(default=False, alias="ORION_HARNESS_GOVERNOR_ENABLED")
+    CHANNEL_THOUGHT_REQUEST: str = Field(
+        default="orion:thought:request",
+        alias="CHANNEL_THOUGHT_REQUEST",
+    )
+    CHANNEL_THOUGHT_RESULT_PREFIX: str = Field(
+        default="orion:thought:result:",
+        alias="CHANNEL_THOUGHT_RESULT_PREFIX",
+    )
+
     ENABLE_PRE_TURN_APPRAISAL: bool = Field(default=False, alias="ENABLE_PRE_TURN_APPRAISAL")
     PRE_TURN_APPRAISAL_PARADIGMS: str = Field(default="repair_pressure", alias="PRE_TURN_APPRAISAL_PARADIGMS")
     PRE_TURN_APPRAISAL_TIMEOUT_MS: int = Field(default=60000, alias="PRE_TURN_APPRAISAL_TIMEOUT_MS")

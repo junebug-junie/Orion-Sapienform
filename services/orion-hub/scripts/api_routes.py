@@ -2195,6 +2195,23 @@ async def handle_chat_request(
             correlation_id=corr_id,
         )
 
+    if str(payload.get("mode") or "").strip().lower() == "orion" and settings.ORION_UNIFIED_TURN_ENABLED:
+        if not settings.ORION_HARNESS_GOVERNOR_ENABLED:
+            return {
+                "type": "turn_error",
+                "phase": "config",
+                "error": "harness_governor_disabled",
+            }
+        from .main import bus
+        from .unified_turn_stub import run_orion_unified_turn_stub
+
+        return await run_orion_unified_turn_stub(
+            bus=bus,
+            correlation_id=corr_id,
+            session_id=session_id,
+            user_message=user_prompt,
+        )
+
     # ─── Hub presence (best-effort, never blocks chat) ──────────────────
     # One timestamp per turn; mirrors a liveness snapshot for self-state.
     try:

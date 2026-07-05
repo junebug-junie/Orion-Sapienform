@@ -839,7 +839,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
                 continue
 
-            trace_id = str(uuid.uuid4())
             if no_write:
                 logger.info("NO_WRITE active (WS) sid=%s", session_id)
 
@@ -852,6 +851,32 @@ async def websocket_endpoint(websocket: WebSocket):
             # IMPORTANT: store the raw user message for next turn
             history.append({"role": "user", "content": transcript})
 
+
+            trace_id = str(uuid.uuid4())
+
+            if client_mode == "orion" and settings.ORION_UNIFIED_TURN_ENABLED:
+                if not settings.ORION_HARNESS_GOVERNOR_ENABLED:
+                    await websocket.send_json(
+                        await _with_biometrics(
+                            {
+                                "type": "turn_error",
+                                "phase": "config",
+                                "error": "harness_governor_disabled",
+                            },
+                            cache=biometrics_cache,
+                        )
+                    )
+                    continue
+                from scripts.unified_turn_stub import run_orion_unified_turn_stub
+
+                stub_frame = await run_orion_unified_turn_stub(
+                    bus=bus,
+                    correlation_id=trace_id,
+                    session_id=session_id,
+                    user_message=transcript,
+                )
+                await websocket.send_json(await _with_biometrics(stub_frame, cache=biometrics_cache))
+                continue
 
             # Build outbound chat request through shared builder to keep WS/HTTP identical
             inactive = validate_single_verb_override(data, node_name=settings.NODE_NAME, prompt=transcript)

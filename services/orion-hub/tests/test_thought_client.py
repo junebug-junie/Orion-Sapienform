@@ -10,9 +10,23 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 HUB_ROOT = Path(__file__).resolve().parents[1]
+_OTHER_SERVICES = tuple(
+    p
+    for p in REPO_ROOT.glob("services/orion-*")
+    if p.is_dir() and p.resolve() != HUB_ROOT.resolve()
+)
+for key in list(sys.modules):
+    if key == "scripts" or key.startswith("scripts."):
+        del sys.modules[key]
+    if key == "app" or key.startswith("app."):
+        del sys.modules[key]
+for candidate in (REPO_ROOT, HUB_ROOT, *_OTHER_SERVICES):
+    try:
+        sys.path.remove(str(candidate))
+    except ValueError:
+        pass
 for candidate in (REPO_ROOT, HUB_ROOT):
-    if str(candidate) not in sys.path:
-        sys.path.insert(0, str(candidate))
+    sys.path.insert(0, str(candidate))
 
 os.environ.setdefault("CHANNEL_VOICE_TRANSCRIPT", "orion:voice:transcript")
 os.environ.setdefault("CHANNEL_VOICE_LLM", "orion:voice:llm")

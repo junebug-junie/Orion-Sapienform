@@ -10,9 +10,18 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 HUB_ROOT = Path(__file__).resolve().parents[1]
+for key in list(sys.modules):
+    if key == "scripts" or key.startswith("scripts."):
+        del sys.modules[key]
+    if key == "app" or key.startswith("app."):
+        del sys.modules[key]
 for candidate in (REPO_ROOT, HUB_ROOT):
-    if str(candidate) not in sys.path:
-        sys.path.insert(0, str(candidate))
+    try:
+        sys.path.remove(str(candidate))
+    except ValueError:
+        pass
+for candidate in (REPO_ROOT, HUB_ROOT):
+    sys.path.insert(0, str(candidate))
 
 os.environ.setdefault("CHANNEL_VOICE_TRANSCRIPT", "orion:voice:transcript")
 os.environ.setdefault("CHANNEL_VOICE_LLM", "orion:voice:llm")
@@ -60,6 +69,49 @@ def _association() -> HubAssociationBundleV1:
     )
 
 
+def _ensure_hub_import_paths() -> None:
+    other_services = tuple(
+        p
+        for p in REPO_ROOT.glob("services/orion-*")
+        if p.is_dir() and p.resolve() != HUB_ROOT.resolve()
+    )
+    for key in list(sys.modules):
+        if key == "scripts" or key.startswith("scripts."):
+            del sys.modules[key]
+        if key == "app" or key.startswith("app."):
+            del sys.modules[key]
+    for candidate in (REPO_ROOT, HUB_ROOT, *other_services):
+        try:
+            sys.path.remove(str(candidate))
+        except ValueError:
+            pass
+    sys.path.insert(0, str(REPO_ROOT))
+    sys.path.insert(0, str(HUB_ROOT))
+
+
+def _hub_client_patches(*, thought: ThoughtEventV1, harness_run: HarnessRunV1 | AsyncMock):
+    _ensure_hub_import_paths()
+    import scripts.harness_governor_client as harness_governor_client
+    import scripts.thought_client as thought_client
+
+    return (
+        patch(
+            "orion.hub.turn_orchestrator.build_hub_association_bundle",
+            return_value=_association(),
+        ),
+        patch.object(
+            thought_client.ThoughtClient,
+            "react",
+            AsyncMock(return_value=thought),
+        ),
+        patch.object(
+            harness_governor_client.HarnessGovernorClient,
+            "run",
+            harness_run if isinstance(harness_run, AsyncMock) else AsyncMock(return_value=harness_run),
+        ),
+    )
+
+
 @pytest.mark.asyncio
 async def test_turn_orchestrator_never_publishes_draft_text() -> None:
     failed_run = HarnessRunV1(
@@ -72,16 +124,8 @@ async def test_turn_orchestrator_never_publishes_draft_text() -> None:
         grounding_status="motor_failed",
     )
     bus = MagicMock()
-    with patch(
-        "orion.hub.turn_orchestrator.build_hub_association_bundle",
-        return_value=_association(),
-    ), patch(
-        "scripts.thought_client.ThoughtClient.react",
-        AsyncMock(return_value=_thought()),
-    ), patch(
-        "scripts.harness_governor_client.HarnessGovernorClient.run",
-        AsyncMock(return_value=failed_run),
-    ):
+    patches = _hub_client_patches(thought=_thought(), harness_run=failed_run)
+    with patches[0], patches[1], patches[2]:
         frames = await execute_unified_turn(
             bus=bus,
             correlation_id=_CORR_ID,
@@ -107,16 +151,8 @@ async def test_turn_orchestrator_turn_error_on_harness_fail() -> None:
         grounding_status="substrate_timeout",
     )
     bus = MagicMock()
-    with patch(
-        "orion.hub.turn_orchestrator.build_hub_association_bundle",
-        return_value=_association(),
-    ), patch(
-        "scripts.thought_client.ThoughtClient.react",
-        AsyncMock(return_value=_thought()),
-    ), patch(
-        "scripts.harness_governor_client.HarnessGovernorClient.run",
-        AsyncMock(return_value=failed_run),
-    ):
+    patches = _hub_client_patches(thought=_thought(), harness_run=failed_run)
+    with patches[0], patches[1], patches[2]:
         frames = await execute_unified_turn(
             bus=bus,
             correlation_id=_CORR_ID,
@@ -134,16 +170,8 @@ async def test_turn_orchestrator_turn_error_on_harness_fail() -> None:
 async def test_turn_orchestrator_turn_deferred_on_stance_defer() -> None:
     bus = MagicMock()
     harness_run = AsyncMock()
-    with patch(
-        "orion.hub.turn_orchestrator.build_hub_association_bundle",
-        return_value=_association(),
-    ), patch(
-        "scripts.thought_client.ThoughtClient.react",
-        AsyncMock(return_value=_thought(disposition="defer")),
-    ), patch(
-        "scripts.harness_governor_client.HarnessGovernorClient.run",
-        harness_run,
-    ):
+    patches = _hub_client_patches(thought=_thought(disposition="defer"), harness_run=harness_run)
+    with patches[0], patches[1], patches[2]:
         frames = await execute_unified_turn(
             bus=bus,
             correlation_id=_CORR_ID,

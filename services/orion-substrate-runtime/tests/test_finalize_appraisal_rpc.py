@@ -1,29 +1,14 @@
 from __future__ import annotations
 
-import sys
 from datetime import datetime, timezone
-from pathlib import Path
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-SUBSTRATE_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-if str(SUBSTRATE_ROOT) not in sys.path:
-    sys.path.insert(0, str(SUBSTRATE_ROOT))
-
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.harness_finalize import GrammarReceiptV1, HarnessDraftMoleculeV1
 from orion.schemas.thought import CoalitionSnapshotV1, StanceHarnessSliceV1, ThoughtEventV1
-
-from app.finalize_appraisal_listener import (
-    _handle_bus_message,
-    handle_finalize_appraisal_request,
-)
-from app.settings import Settings
 
 
 def _sample_molecule(*, correlation_id: str = "c-1") -> HarnessDraftMoleculeV1:
@@ -60,6 +45,9 @@ def _sample_molecule(*, correlation_id: str = "c-1") -> HarnessDraftMoleculeV1:
 
 @pytest.mark.asyncio
 async def test_handle_finalize_appraisal_request_publishes_substrate_appraisal() -> None:
+    from app.finalize_appraisal_listener import handle_finalize_appraisal_request
+    from app.settings import Settings
+
     mol = _sample_molecule()
     bus = AsyncMock()
     settings = Settings(
@@ -86,6 +74,9 @@ async def test_handle_finalize_appraisal_request_publishes_substrate_appraisal()
 
 @pytest.mark.asyncio
 async def test_handle_bus_message_validates_harness_draft_molecule() -> None:
+    from app.finalize_appraisal_listener import _handle_bus_message
+    from app.settings import Settings
+
     corr_id = uuid4()
     corr = str(corr_id)
     mol = _sample_molecule(correlation_id=corr)
@@ -127,6 +118,9 @@ async def test_handle_bus_message_validates_harness_draft_molecule() -> None:
 
 @pytest.mark.asyncio
 async def test_handle_bus_message_invalid_payload_publishes_error() -> None:
+    from app.finalize_appraisal_listener import _handle_bus_message
+    from app.settings import Settings
+
     corr_id = uuid4()
     corr = str(corr_id)
     settings = Settings(

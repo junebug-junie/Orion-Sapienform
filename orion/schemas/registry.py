@@ -1192,9 +1192,17 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
         model=HubAssociationBundleV1,
         kind="hub.association.bundle.v1",
     ),
+    "ThoughtEventV1": SchemaRegistration(
+        model=ThoughtEventV1,
+        kind="thought.event.v1",
+    ),
     "StanceReactRequestV1": SchemaRegistration(
         model=StanceReactRequestV1,
         kind="stance.react.request.v1",
+    ),
+    "GrammarReceiptV1": SchemaRegistration(
+        model=GrammarReceiptV1,
+        kind="grammar.receipt.v1",
     ),
     "HarnessDraftMoleculeV1": SchemaRegistration(
         model=HarnessDraftMoleculeV1,

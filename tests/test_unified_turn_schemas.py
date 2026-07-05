@@ -72,9 +72,10 @@ def test_thought_event_evidence_refs_required_subset() -> None:
     assert thought.evidence_refs == ["node-a"]
 
 
-def test_thought_event_rejects_empty_evidence_refs() -> None:
-    with pytest.raises(ValidationError):
-        _thought(evidence_refs=[])
+def test_thought_event_allows_empty_evidence_refs_for_fail_closed_enforce() -> None:
+    """Cortex may emit empty evidence_refs; enforce_thought_stance_quality defers."""
+    thought = _thought(evidence_refs=[])
+    assert thought.evidence_refs == []
 
 
 def test_harness_run_finalize_ran_default_false() -> None:
@@ -257,6 +258,13 @@ def test_harness_run_roundtrip() -> None:
     restored = HarnessRunV1.model_validate(run.model_dump(mode="json"))
     assert restored.finalize_ran is True
     assert restored.draft_text == "Draft only."
+
+
+def test_registry_schema_kinds_include_thought_event() -> None:
+    from orion.schemas.registry import SCHEMA_REGISTRY
+
+    assert SCHEMA_REGISTRY["ThoughtEventV1"].kind == "thought.event.v1"
+    assert SCHEMA_REGISTRY["GrammarReceiptV1"].kind == "grammar.receipt.v1"
 
 
 @pytest.mark.parametrize(

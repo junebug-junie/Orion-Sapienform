@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
 from orion.schemas.pre_turn_appraisal import TurnAppraisalBundleV1
@@ -42,6 +42,8 @@ class HubAssociationBundleV1(BaseModel):
 
 
 class ThoughtEventV1(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     event_id: str
     correlation_id: str
     session_id: str | None
@@ -52,7 +54,8 @@ class ThoughtEventV1(BaseModel):
     tone: str = Field(max_length=200)
     strain_refs: list[str]
 
-    evidence_refs: list[str] = Field(min_length=1)
+    # Fail-closed defer when empty — enforced in stance_quality / policy_refusal, not at parse.
+    evidence_refs: list[str] = Field(default_factory=list)
     repair_pressure_level: float | None = None
     trust_rupture_score: float | None = None
 

@@ -10,8 +10,8 @@ from orion.schemas.pre_turn_appraisal import TurnAppraisalBundleV1
 from orion.schemas.thought import HubAssociationBundleV1
 from orion.substrate.felt_state_reader import (
     SubstrateFeltStateReader,
-    _database_url,
-    _max_age_sec,
+    substrate_felt_state_database_url,
+    substrate_felt_state_max_age_sec,
 )
 
 logger = logging.getLogger("orion.hub.association")
@@ -29,8 +29,8 @@ def _broadcast_enabled() -> bool:
 def _default_reader() -> SubstrateFeltStateReader:
     return SubstrateFeltStateReader(
         enabled=True,
-        database_url=_database_url(),
-        max_age_sec=_max_age_sec(),
+        database_url=substrate_felt_state_database_url(),
+        max_age_sec=substrate_felt_state_max_age_sec(),
     )
 
 
@@ -78,7 +78,7 @@ def build_hub_association_bundle(
     repair_bundle: TurnAppraisalBundleV1 | None,
     reader_factory: Callable[[], SubstrateFeltStateReader] | None = None,
 ) -> HubAssociationBundleV1:
-    max_age = _max_age_sec()
+    max_age = substrate_felt_state_max_age_sec()
 
     if not _broadcast_enabled():
         return HubAssociationBundleV1(

@@ -1,0 +1,242 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+from contextlib import suppress
+from typing import Any
+from uuid import UUID, uuid4
+
+from orion.cognition.plan_loader import build_plan_for_verb
+from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
+from orion.schemas.thought import StanceReactRequestV1, ThoughtEventV1
+from orion.thought.stance_react import apply_stance_react_pipeline, parse_stance_react_payload
+
+from .cortex_client import CortexExecClient
+from .settings import settings
+
+logger = logging.getLogger("orion-thought.bus")
+
+
+def _source() -> ServiceRef:
+    return ServiceRef(
+        name=settings.service_name,
+        node=settings.node_name,
+        version=settings.service_version,
+    )
+
+
+def _envelope_correlation_id(raw: str | None) -> UUID:
+    if raw:
+        try:
+            return UUID(str(raw))
+        except ValueError:
+            pass
+    return uuid4()
+
+
+def _coalition_projection(request: StanceReactRequestV1) -> dict[str, Any] | None:
+    broadcast = request.association.broadcast
+    if broadcast is None:
+        return None
+    return {
+        "attended_node_ids": list(broadcast.attended_node_ids),
+        "open_loop_ids": [loop.id for loop in broadcast.frame.open_loops],
+        "broadcast_stale": request.association.broadcast_stale,
+    }
+
+
+def build_stance_react_context(request: StanceReactRequestV1) -> dict[str, Any]:
+    return {
+        "user_message": request.user_message,
+        "stance_inputs": dict(request.stance_inputs),
+        "association": request.association.model_dump(mode="json"),
+        "repair_bundle": (
+            request.repair_bundle.model_dump(mode="json") if request.repair_bundle else None
+        ),
+        "coalition_projection": _coalition_projection(request),
+        "metadata": {
+            "correlation_id": request.correlation_id,
+            "session_id": request.session_id,
+            "llm_profile": request.llm_profile,
+            "mode": "brain",
+        },
+    }
+
+
+def build_stance_react_plan_request(request: StanceReactRequestV1) -> PlanExecutionRequest:
+    plan = build_plan_for_verb("stance_react", mode="brain")
+    return PlanExecutionRequest(
+        plan=plan,
+        args=PlanExecutionArgs(
+            request_id=request.correlation_id,
+            trigger_source=settings.service_name,
+            extra={
+                "llm_profile": request.llm_profile,
+                "mode": "brain",
+            },
+        ),
+        context=build_stance_react_context(request),
+    )
+
+
+def extract_stance_react_payload(result: dict[str, Any]) -> dict[str, Any] | str:
+    final_text = result.get("final_text")
+    if isinstance(final_text, str) and final_text.strip():
+        return final_text
+
+    steps = result.get("steps") or []
+    for step in reversed(steps):
+        if not isinstance(step, dict):
+            continue
+        step_result = step.get("result")
+        if not isinstance(step_result, dict):
+            continue
+        for key in ("structured", "json", "payload", "final_text", "text", "content"):
+            value = step_result.get(key)
+            if value is None:
+                continue
+            if isinstance(value, str) and not value.strip():
+                continue
+            return value
+
+    raise ValueError("stance_react exec result missing thought payload")
+
+
+async def run_stance_react(
+    request: StanceReactRequestV1,
+    *,
+    bus: OrionBusAsync,
+    cortex_client: CortexExecClient | None = None,
+) -> ThoughtEventV1:
+    client = cortex_client or CortexExecClient(bus)
+    plan_request = build_stance_react_plan_request(request)
+    exec_result = await client.execute_plan(
+        source=_source(),
+        req=plan_request,
+        correlation_id=request.correlation_id,
+        timeout_sec=settings.stance_react_timeout_sec,
+    )
+    raw_payload = extract_stance_react_payload(exec_result)
+    if isinstance(raw_payload, dict):
+        raw_payload.setdefault("correlation_id", request.correlation_id)
+        raw_payload.setdefault("session_id", request.session_id)
+    thought = parse_stance_react_payload(raw_payload)
+    return apply_stance_react_pipeline(thought, request)
+
+
+async def handle_stance_react_request(
+    bus: OrionBusAsync,
+    request: StanceReactRequestV1,
+    *,
+    reply_to: str,
+    correlation_id: str | None = None,
+    causality_chain: list[str] | None = None,
+) -> ThoughtEventV1:
+    corr = correlation_id or request.correlation_id or str(uuid4())
+    causality = list(causality_chain or [])
+    thought = await run_stance_react(request, bus=bus)
+    payload = thought.model_dump(mode="json")
+    envelope = BaseEnvelope(
+        kind="thought.event.v1",
+        source=_source(),
+        correlation_id=_envelope_correlation_id(corr),
+        causality_chain=causality,
+        payload=payload,
+    )
+    await bus.publish(reply_to, envelope)
+    await bus.publish(settings.channel_thought_artifact, envelope)
+    logger.info(
+        "stance_react complete corr=%s reply=%s artifact=%s disposition=%s",
+        corr,
+        reply_to,
+        settings.channel_thought_artifact,
+        thought.disposition,
+    )
+    return thought
+
+
+async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
+    if not settings.orion_bus_enabled:
+        logger.info("Bus disabled; worker not started")
+        return
+
+    bus = OrionBusAsync(url=settings.orion_bus_url)
+    channel = settings.channel_thought_request
+    await bus.connect()
+    logger.info("subscribed channel=%s", channel)
+
+    try:
+        async with bus.subscribe(channel) as pubsub:
+            while True:
+                if stop_event is not None and stop_event.is_set():
+                    break
+                try:
+                    msg = await asyncio.wait_for(
+                        pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
+                        timeout=1.2,
+                    )
+                except asyncio.TimeoutError:
+                    continue
+                if not msg or msg.get("type") not in ("message", "pmessage"):
+                    continue
+                try:
+                    await _handle_bus_message(bus, msg)
+                except Exception:
+                    logger.exception("unhandled bus worker error")
+    except asyncio.CancelledError:
+        raise
+    finally:
+        with suppress(Exception):
+            await bus.close()
+
+
+async def _handle_bus_message(bus: OrionBusAsync, raw_msg: dict[str, Any]) -> None:
+    decoded = bus.codec.decode(raw_msg.get("data"))
+    if not decoded.ok:
+        logger.warning("decode failed: %s", decoded.error)
+        return
+
+    env = decoded.envelope
+    reply_channel = env.reply_to or (env.payload or {}).get("reply_channel")
+    if not reply_channel:
+        logger.warning("missing reply_to corr=%s", env.correlation_id)
+        return
+
+    kind = env.kind or ""
+    if kind not in ("stance.react.request.v1", "legacy.message"):
+        logger.warning("unsupported kind=%s", kind)
+        return
+
+    corr = str(env.correlation_id or uuid4())
+    payload = env.payload or {}
+    causality = list(env.causality_chain or [])
+
+    try:
+        request = StanceReactRequestV1.model_validate(payload)
+        if not request.correlation_id:
+            request = request.model_copy(update={"correlation_id": corr})
+        await handle_stance_react_request(
+            bus,
+            request,
+            reply_to=reply_channel,
+            correlation_id=corr,
+            causality_chain=causality,
+        )
+    except Exception as exc:
+        logger.error("stance_react error corr=%s err=%s", corr, exc)
+        err_payload = {
+            "error": str(exc),
+            "correlation_id": corr,
+        }
+        await bus.publish(
+            reply_channel,
+            BaseEnvelope(
+                kind="thought.event.v1",
+                source=_source(),
+                correlation_id=_envelope_correlation_id(corr),
+                causality_chain=causality,
+                payload=err_payload,
+            ),
+        )

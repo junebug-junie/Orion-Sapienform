@@ -20,6 +20,10 @@ from .quarantine_ack import (
     validate_cursor_name as validate_quarantine_cursor_name,
     require_operator_token as require_quarantine_operator_token,
 )
+from .finalize_appraisal_listener import (
+    start_finalize_appraisal_listener,
+    stop_finalize_appraisal_listener,
+)
 from .settings import get_settings
 from .store import GRAMMAR_CURSOR_REGISTRY
 from .worker import BiometricsSubstrateWorker
@@ -28,14 +32,23 @@ _settings = get_settings()
 logging.basicConfig(level=getattr(logging, _settings.log_level.upper(), logging.INFO))
 
 worker = BiometricsSubstrateWorker()
+_finalize_listener_task = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _finalize_listener_task
     await worker.start()
+    if worker.bus is not None:
+        _finalize_listener_task = await start_finalize_appraisal_listener(
+            worker.bus,
+            worker.stop_event,
+        )
     try:
         yield
     finally:
+        await stop_finalize_appraisal_listener(_finalize_listener_task)
+        _finalize_listener_task = None
         await worker.stop()
 
 

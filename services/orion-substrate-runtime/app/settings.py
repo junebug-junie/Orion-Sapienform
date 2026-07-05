@@ -73,6 +73,14 @@ class Settings(BaseSettings):
     transport_grammar_batch_limit: int = Field(500, alias="TRANSPORT_GRAMMAR_BATCH_LIMIT")
     reducer_heartbeat_stale_sec: float = Field(120.0, alias="REDUCER_HEARTBEAT_STALE_SEC")
     reducer_poison_max_retries: int = Field(3, alias="REDUCER_POISON_MAX_RETRIES")
+    channel_finalize_appraisal_request: str = Field(
+        "orion:substrate:finalize_appraisal:request",
+        alias="CHANNEL_FINALIZE_APPRAISAL_REQUEST",
+    )
+    channel_finalize_appraisal_result_prefix: str = Field(
+        "orion:substrate:finalize_appraisal:result:",
+        alias="CHANNEL_FINALIZE_APPRAISAL_RESULT_PREFIX",
+    )
     grammar_event_channel: str = Field("orion:grammar:event", alias="GRAMMAR_EVENT_CHANNEL")
     accepted_pressure_grammar_channel: str = Field(
         "orion:grammar:accepted-pressure",

@@ -45,6 +45,7 @@ def test_enrich_evidence_includes_believed_tier() -> None:
     tracker = SceneBeliefTracker(vote_n=3, enter_votes=2, exit_votes=1)
     tracker.observe(frozenset({"door"}))
     tracker.observe(frozenset({"door"}))
+    tracker.observe(frozenset({"door"}))
     evidence = {
         "hard_labels": ["door"],
         "soft_labels": [],
@@ -59,7 +60,7 @@ def test_enrich_evidence_includes_believed_tier() -> None:
     assert enriched["belief"]["vote_n"] == 3
     assert enriched["belief"]["enter_votes"] == 2
     assert enriched["belief"]["exit_votes"] == 1
-    assert enriched["belief"]["observation_count"] == 2
+    assert enriched["belief"]["observation_count"] == 3
 
 
 def test_registry_isolates_streams() -> None:

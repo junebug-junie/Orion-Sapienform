@@ -38,11 +38,6 @@ class SceneBeliefTracker:
                 counts[label] = counts.get(label, 0) + 1
         return counts
 
-    def _labels_meeting_enter_votes(self) -> frozenset[str]:
-        return frozenset(
-            label for label, count in self._label_counts().items() if count >= self._enter_votes
-        )
-
     def observe(self, observed: frozenset[str]) -> BeliefObserveResult:
         if observed:
             self._last_nonempty = observed
@@ -79,7 +74,7 @@ class SceneBeliefTracker:
 
     def enrich_evidence(self, evidence: dict[str, Any]) -> dict[str, Any]:
         out = dict(evidence)
-        out["believed_hard_labels"] = sorted(self._labels_meeting_enter_votes())
+        out["believed_hard_labels"] = sorted(self._believed)
         out["belief"] = {
             "schema": "scene_belief.v1",
             "vote_n": self._vote_n,

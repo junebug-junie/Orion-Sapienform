@@ -81,6 +81,7 @@ async def ingest_episode(body: EpisodeIngestV1) -> dict:
             kind=body.kind,
             subject=body.subject,
             summary=body.summary,
+            links=[l.model_dump() for l in body.links],
         )
     return {
         "episode_id": episode_id,

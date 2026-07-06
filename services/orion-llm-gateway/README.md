@@ -65,6 +65,8 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `GET /v1/models` | Anthropic-compatible model list from configured route keys (FCC / Claude Code). |
 | `GET /v1/messages` | Anthropic Messages endpoint liveness (same as HEAD). |
 | `POST /v1/messages` | Anthropic Messages passthrough to upstream llama.cpp `/v1/messages` via route table. |
+| `POST /v1/chat/completions` | OpenAI chat passthrough to upstream `/v1/chat/completions` via route table (AI Town, OpenAI clients). |
+| `POST /v1/embeddings` | OpenAI embeddings passthrough to `orion-vector-host` `POST /embedding`. |
 | `HEAD /v1/messages` | Liveness probe for Anthropic Messages endpoint. |
 | `OPTIONS /v1/messages` | CORS/method discovery for Anthropic clients. |
 

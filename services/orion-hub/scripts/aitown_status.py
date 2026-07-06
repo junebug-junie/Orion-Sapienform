@@ -51,7 +51,12 @@ def fetch_aitown_status(settings: Any) -> Dict[str, Any]:
     try:
         req = urllib.request.Request(f"{base.rstrip('/')}/version", method="GET")
         with urllib.request.urlopen(req, timeout=5) as resp:
-            json.loads(resp.read().decode("utf-8"))
+            if resp.status >= 400:
+                raise urllib.error.HTTPError(
+                    base, resp.status, "version probe failed", resp.headers, None
+                )
+            # Self-hosted Convex returns plain text (e.g. "unknown"), not JSON.
+            resp.read()
         out["convex_reachable"] = True
     except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError) as exc:
         out["error"] = f"convex_unreachable: {exc}"
@@ -67,10 +72,10 @@ def fetch_aitown_status(settings: Any) -> Dict[str, Any]:
     except Exception:
         admin_key = ""
 
-    if world_id and admin_key:
+    if admin_key:
         try:
             payload = json.dumps(
-                {"path": "aiTown/world:status", "args": {"worldId": world_id}, "format": "json"}
+                {"path": "world:defaultWorldStatus", "args": {}, "format": "json"}
             ).encode("utf-8")
             req = urllib.request.Request(
                 f"{base.rstrip('/')}/api/query",
@@ -85,10 +90,16 @@ def fetch_aitown_status(settings: Any) -> Dict[str, Any]:
                 body = json.loads(resp.read().decode("utf-8"))
             value = body.get("value") if isinstance(body, dict) else body
             if isinstance(value, dict):
-                out["engine_running"] = bool(value.get("running") or value.get("engineRunning"))
+                out["engine_running"] = bool(
+                    value.get("running")
+                    or value.get("engineRunning")
+                    or value.get("status") == "running"
+                )
                 out["generation"] = value.get("generation")
                 out["player_count"] = int(value.get("playerCount") or value.get("players") or 0)
                 out["agent_count"] = int(value.get("agentCount") or value.get("agents") or 0)
+                if not world_id:
+                    world_id = str(value.get("worldId") or "").strip()
         except Exception:
             pass
 

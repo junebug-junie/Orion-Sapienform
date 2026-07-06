@@ -21,6 +21,7 @@ from orion.schemas.vector.schemas import VectorUpsertV1
 
 from .llm_backend import get_route_targets, run_llm_chat
 from .anthropic_passthrough import register_anthropic_passthrough_routes
+from .openai_passthrough import register_openai_passthrough_routes
 from .route_catalog import get_routes_payload
 from .embed_publish import publish_assistant_embedding
 from .models import ChatBody
@@ -30,6 +31,7 @@ logger = logging.getLogger("orion-llm-gateway")
 bus_handle: Optional[Any] = None
 app = FastAPI()
 app.include_router(register_anthropic_passthrough_routes())
+app.include_router(register_openai_passthrough_routes())
 
 
 def _thought_debug_enabled() -> bool:

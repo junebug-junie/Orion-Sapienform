@@ -56,6 +56,9 @@ SYNC_PREFIXES = (
     "HUB_AGENT_CLAUDE_",
     "HUB_AITOWN_",
     "HUB_FCC_",
+    "LLM_GATEWAY_OPENAI_",
+    "ORION_VECTOR_HOST_",
+    "VECTOR_HOST_",
     "HUB_CONTEXT_EXEC_",
     "CONTEXT_EXEC_",
     "CHANNEL_CONTEXT_EXEC_",
@@ -113,6 +116,7 @@ SYNC_EXACT = frozenset(
         "SQL_WRITER_EMIT_MEMORY_TURN_PERSISTED",
         "MEMORY_CONSOLIDATION_ENABLED",
         "LLM_LOGPROB_SUMMARY_ENABLED",
+        "LLM_GATEWAY_OPENAI_PASSTHROUGH_ENABLED",
         "HOST_PORT",
         # Reverie/dream weave — Phase F (orion-dream REM compaction, default-off).
         "ORION_DREAM_REM_ENABLED",
@@ -146,6 +150,8 @@ DEFAULT_SERVICES = (
     "orion-thought",
     "orion-harness-governor",
     "orion-dream",
+    "orion-llm-gateway",
+    "orion-vector-host",
 )
 
 

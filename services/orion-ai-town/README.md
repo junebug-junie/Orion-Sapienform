@@ -20,6 +20,7 @@ Mesh deployment wrapper for [a16z-infra/ai-town](https://github.com/a16z-infra/a
 cd services/orion-ai-town
 git clone --depth 1 --branch main https://github.com/a16z-infra/ai-town.git upstream
 # Or pin: git clone --depth 1 --branch <tag> ...
+bash scripts/apply_upstream_patches.sh
 ```
 
 ### 2. Env + compose
@@ -69,7 +70,37 @@ npx convex run init
 
 Capture `AITOWN_WORLD_ID` from output → `~/.fcc/.env`.
 
-### 6. Mesh LLM wiring
+## Mesh LLM wiring
+
+AI Town Convex actions call OpenAI-compatible HTTP. Point them at **orion-llm-gateway** so chat uses the same route table as cortex/FCC (→ Atlas llamacpp workers).
+
+```bash
+# After gateway OpenAI passthrough is enabled (default):
+bash services/orion-ai-town/scripts/wire_llm_gateway.sh
+```
+
+Defaults:
+
+| Convex env | Value | Meaning |
+|------------|-------|---------|
+| `LLM_API_URL` | `http://<mesh-ip>:8210` | Gateway base (no `/v1` suffix) |
+| `LLM_MODEL` | `chat` | Route key in `LLM_GATEWAY_ROUTE_TABLE_JSON` |
+| `LLM_EMBEDDING_MODEL` | `orion-vector-host` | Label only; gateway proxies to vector-host |
+| `EMBEDDING_DIMENSION` | `1024` | Must match `VECTOR_HOST_EMBEDDING_MODEL` (bge-large-en-v1.5) |
+
+Override: `AITOWN_LLM_GATEWAY_URL`, `AITOWN_LLM_CHAT_ROUTE`, `AITOWN_EMBEDDING_DIMENSION`.
+
+**Requires:** `LLM_GATEWAY_OPENAI_PASSTHROUGH_ENABLED=true` and `ORION_VECTOR_HOST_URL` on orion-llm-gateway.
+
+If you change vector-host embedding model/dimension, update `EMBEDDING_DIMENSION` and redeploy Convex (`npx convex dev --once`). Wipe AI Town memory tables if dimension changes on an existing world.
+
+Legacy direct Ollama (bypasses gateway):
+
+```bash
+npx convex env set OLLAMA_HOST http://<mesh-ollama-host>:11434
+```
+
+### 6. Wire LLM gateway (recommended)
 
 Point AI Town at mesh Ollama or FCC gateway (from `upstream/`):
 

@@ -1040,9 +1040,11 @@ loadDismissedIds();
     }
     if (aiTownPanel) {
       aiTownPanel.classList.toggle("hidden", !isAiTown);
-      if (isAiTown && window.OrionAitownPanel && typeof window.OrionAitownPanel.activate === "function") {
-        window.OrionAitownPanel.activate();
-      } else if (!isAiTown && window.OrionAitownPanel && typeof window.OrionAitownPanel.deactivate === "function") {
+      if (isAiTown) {
+        if (window.OrionAitownPanel && typeof window.OrionAitownPanel.activate === "function") {
+          window.OrionAitownPanel.activate();
+        }
+      } else if (window.OrionAitownPanel && typeof window.OrionAitownPanel.deactivate === "function") {
         window.OrionAitownPanel.deactivate();
       }
     }

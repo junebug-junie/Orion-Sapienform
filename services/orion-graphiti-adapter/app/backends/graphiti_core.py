@@ -76,7 +76,9 @@ async def ingest_episode(
     falkordb_uri: str,
     graph_name: str,
 ) -> dict[str, list[str]]:
-    del pool, summary, status, metadata  # prescribed MERGE only; no add_episode / LLM extraction
+    if metadata.get("sensitivity") == "intimate":
+        return {"edge_ids": [], "skipped": True, "reason": "intimate_sensitivity"}
+    del pool, summary, status  # prescribed MERGE only; no add_episode / LLM extraction
     driver = _falkor_driver(falkordb_uri, graph_name)
     entity_id = f"gent_{crystallization_id}"
     episode_id = f"gep_{crystallization_id}"

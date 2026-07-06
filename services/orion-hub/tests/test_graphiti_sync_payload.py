@@ -40,3 +40,4 @@ def test_sync_payload_includes_links():
     assert captured["json"]["links"] == [
         {"target_crystallization_id": "crys_b", "relation": "supports", "confidence": 0.8}
     ]
+    assert captured["json"]["metadata"]["sensitivity"] == "private"

@@ -95,7 +95,9 @@ async def project_crystallization(
             logger.warning("chroma_projection_failed id=%s error=%s", updated.crystallization_id, exc)
             result.errors.append(f"chroma_projection_failed:{exc}")
 
-    if project_graphiti and cfg.graphiti_enabled:
+    if updated.governance.sensitivity == "intimate":
+        result.errors.append("graphiti_projection_skipped:intimate_sensitivity")
+    elif project_graphiti and cfg.graphiti_enabled:
         try:
             adapter = GraphitiAdapter(enabled=True, url=cfg.graphiti_url, falkordb_uri=cfg.falkordb_uri)
             gresult = adapter.sync_crystallization(updated)

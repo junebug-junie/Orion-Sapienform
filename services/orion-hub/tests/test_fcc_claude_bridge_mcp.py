@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
+
+os.environ.setdefault("CHANNEL_VOICE_TRANSCRIPT", "orion:voice:transcript")
+os.environ.setdefault("CHANNEL_VOICE_LLM", "orion:voice:llm")
+os.environ.setdefault("CHANNEL_VOICE_TTS", "orion:voice:tts")
+os.environ.setdefault("CHANNEL_COLLAPSE_INTAKE", "orion:collapse:intake")
+os.environ.setdefault("CHANNEL_COLLAPSE_TRIAGE", "orion:collapse:triage")
 from typing import Any, List
 
 import pytest

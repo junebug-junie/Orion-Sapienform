@@ -75,12 +75,14 @@ SYNC_PREFIXES = (
     "CHANNEL_VISION_",
     "CHANNEL_EDGE_",
     "CHANNEL_THOUGHT_",
+    "CHANNEL_REVERIE_",
     "CHANNEL_HARNESS_",
     "CHANNEL_FINALIZE_",
     "CHANNEL_POST_TURN_",
     "ORION_UNIFIED_",
     "ORION_HARNESS_",
     "ORION_ATTENTION_",
+    "ORION_REVERIE_",
     "SUBSTRATE_FELT_STATE_",
     "STANCE_REACT_",
     "HARNESS_FCC_",
@@ -111,6 +113,14 @@ SYNC_EXACT = frozenset(
         "MEMORY_CONSOLIDATION_ENABLED",
         "LLM_LOGPROB_SUMMARY_ENABLED",
         "HOST_PORT",
+        # Reverie/dream weave — Phase F (orion-dream REM compaction, default-off).
+        "ORION_DREAM_REM_ENABLED",
+        "CHANNEL_DREAM_COMPACTION_DELTA",
+        "DREAM_REM_MAX_REQUESTS",
+        # Phase G (compaction applier — the hot gate, hard-off, mutates memory).
+        "ORION_DREAM_COMPACTION_APPLY_ENABLED",
+        "ORION_DREAM_COMPACTION_DOWNSCALE_ONLY",
+        "DREAM_COMPACTION_SNAPSHOT_DIR",
     }
 )
 
@@ -134,6 +144,7 @@ DEFAULT_SERVICES = (
     "orion-proposal-runtime",
     "orion-thought",
     "orion-harness-governor",
+    "orion-dream",
 )
 
 

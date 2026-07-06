@@ -55,6 +55,41 @@ class ThoughtSettings(BaseSettings):
         alias="CHANNEL_REVERIE_THOUGHT",
     )
 
+    # --- Reverie chain (Phase C, default-off) ---
+    reverie_chain_enabled: bool = Field(False, alias="ORION_REVERIE_CHAIN_ENABLED")
+    reverie_chain_max_steps: int = Field(4, alias="ORION_REVERIE_CHAIN_MAX_STEPS")
+    reverie_refractory_sec: float = Field(900.0, alias="ORION_REVERIE_REFRACTORY_SEC")
+    reverie_drift_temp: float = Field(0.7, alias="ORION_REVERIE_DRIFT_TEMP")
+    channel_reverie_chain: str = Field(
+        "orion:reverie:chain",
+        alias="CHANNEL_REVERIE_CHAIN",
+    )
+
+    # --- Reverie grounding (Phase D, default-off, read-only) ---
+    reverie_ground_consolidation: bool = Field(
+        False, alias="ORION_REVERIE_GROUND_CONSOLIDATION"
+    )
+
+    # --- Compaction request (Phase E, default-off, queue only) ---
+    reverie_compaction_request_enabled: bool = Field(
+        False, alias="ORION_REVERIE_COMPACTION_REQUEST_ENABLED"
+    )
+    channel_dream_compaction_request: str = Field(
+        "orion:dream:compaction-request",
+        alias="CHANNEL_DREAM_COMPACTION_REQUEST",
+    )
+
+    # --- Resonance tripwire (Phase H, default-off, observation only) ---
+    reverie_resonance_alert_enabled: bool = Field(
+        False, alias="ORION_REVERIE_RESONANCE_ALERT_ENABLED"
+    )
+    channel_reverie_resonance_alert: str = Field(
+        "orion:reverie:resonance-alert",
+        alias="CHANNEL_REVERIE_RESONANCE_ALERT",
+    )
+    # How many recent chain rows to scan for a runaway theme.
+    reverie_resonance_window: int = Field(200, alias="ORION_REVERIE_RESONANCE_WINDOW")
+
 
 settings = ThoughtSettings()
 logger.info(

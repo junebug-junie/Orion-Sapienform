@@ -111,3 +111,37 @@ async def run_dream_endpoint(mode: str = "standard"):
         ) from exc
     finally:
         await bus.close()
+
+
+@app.post("/dreams/rem-preview", summary="Stage a REM compaction delta (Phase F)")
+async def rem_preview_endpoint():
+    """Run one REM compaction pass — proposes what sleep *would* do to memory.
+
+    Staged and hard-gated: returns `{"status": "disabled"}` unless
+    ORION_DREAM_REM_ENABLED. Even when enabled it applies **nothing** — it emits a
+    proposal-marked MemoryCompactionDeltaV1 for the hub "what sleep would do"
+    panel and persists it to the staging table.
+    """
+    if not settings.ORION_DREAM_REM_ENABLED:
+        return {"status": "disabled", "reason": "ORION_DREAM_REM_ENABLED is false"}
+
+    from app.rem_compaction import run_rem_compaction_once
+
+    bus = OrionBusAsync(settings.ORION_BUS_URL) if settings.ORION_BUS_ENABLED else None
+    try:
+        if bus is not None:
+            await bus.connect()
+        delta = await run_rem_compaction_once(bus)
+    finally:
+        if bus is not None:
+            await bus.close()
+
+    if delta is None:
+        return {"status": "empty", "reason": "nothing settled to compact"}
+    return {
+        "status": "staged",
+        "delta_id": delta.delta_id,
+        "cards_out": delta.metrics.cards_out,
+        "proposal_marked": delta.proposal_marked,
+        "applied": False,
+    }

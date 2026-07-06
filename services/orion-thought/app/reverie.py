@@ -31,6 +31,7 @@ from orion.schemas.thought import CoalitionSnapshotV1
 from .bus_listener import extract_stance_react_payload
 from .cortex_client import CortexExecClient
 from .settings import settings
+from .store import persist_reverie_thought
 
 logger = logging.getLogger("orion-thought.reverie")
 
@@ -220,6 +221,7 @@ async def run_reverie_once(
     *,
     broadcast_reader: BroadcastReader | None = None,
     cortex_client: CortexExecClient | None = None,
+    chain_context: tuple[str, int] | None = None,
 ) -> SpontaneousThoughtV1 | None:
     """One spontaneous-thought tick. Returns the published thought, or None.
 
@@ -251,6 +253,25 @@ async def run_reverie_once(
             correlation_id=correlation_id,
             broadcast=broadcast,
         )
+        if chain_context is not None:
+            thought = thought.model_copy(
+                update={"chain_id": chain_context[0], "thought_index": chain_context[1]}
+            )
+        if settings.reverie_ground_consolidation:
+            from .grounding import (
+                collect_grounding,
+                default_episode_loader,
+                default_motif_loader,
+            )
+
+            motif_refs, episode_refs = collect_grounding(
+                motif_loader=default_motif_loader,
+                episode_loader=default_episode_loader,
+            )
+            if motif_refs or episode_refs:
+                thought = thought.model_copy(
+                    update={"motif_refs": motif_refs, "episode_summary_refs": episode_refs}
+                )
         if thought.hollow:
             logger.info(
                 "reverie tick dropped hollow thought corr=%s reason=%s",
@@ -274,6 +295,8 @@ async def run_reverie_once(
             payload=thought.model_dump(mode="json"),
         )
         await bus.publish(settings.channel_reverie_thought, envelope)
+        # Best-effort persistence for the hub panel — never breaks the tick.
+        persist_reverie_thought(thought)
     except Exception as exc:
         # A tick must never raise (hard constraint) — a bus/narration/parse
         # failure degrades to a dropped tick, not a crash.
@@ -293,6 +316,11 @@ async def run_reverie_worker(stop_event: asyncio.Event | None = None) -> None:
     """Self-driven reverie loop. Default-off; a no-op unless ORION_REVERIE_ENABLED."""
     if not settings.reverie_enabled:
         logger.info("reverie disabled; worker not started")
+        return
+    if settings.reverie_chain_enabled:
+        # Chain mode already drives run_reverie_once per step; running the
+        # standalone tick too would double-emit to the same channel/table.
+        logger.info("reverie chain enabled; standalone reverie worker superseded")
         return
     if not settings.orion_bus_enabled:
         logger.info("bus disabled; reverie worker not started")

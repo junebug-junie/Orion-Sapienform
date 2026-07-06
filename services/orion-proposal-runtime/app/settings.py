@@ -18,6 +18,13 @@ class Settings(BaseSettings):
     enable_proposal_runtime: bool = Field(True, alias="ENABLE_PROPOSAL_RUNTIME")
     enable_transport_proposals: bool = Field(False, alias="ENABLE_TRANSPORT_PROPOSALS")
     transport_proposal_mode: str = Field("read_only", alias="TRANSPORT_PROPOSAL_MODE")
+    # Phase B: incorporate spontaneous-thought (reverie) proposals into Layer 7.
+    # Default-off; candidates are operator_review-gated (never auto-dispatch).
+    reverie_propose_enabled: bool = Field(False, alias="ORION_REVERIE_PROPOSE_ENABLED")
+    # Phase B dispatch gate ("sends email"). Default-off. Recorded as an inspectable
+    # posture on the candidate; it NEVER lowers the operator_review gate — a human
+    # still gates any reverie action. Arming it only signals dispatch intent to L9.
+    reverie_autoaction_enabled: bool = Field(False, alias="ORION_REVERIE_AUTOACTION_ENABLED")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
 

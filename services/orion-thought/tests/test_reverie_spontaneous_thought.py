@@ -168,6 +168,35 @@ async def test_tick_publishes_grounded_thought():
 
 
 @pytest.mark.asyncio
+async def test_tick_persists_published_thought(monkeypatch):
+    from app import reverie
+
+    calls = []
+    monkeypatch.setattr(reverie, "persist_reverie_thought", lambda t: calls.append(t) or True)
+    bus = AsyncMock()
+    cortex = AsyncMock()
+    cortex.execute_plan = AsyncMock(return_value={
+        "final_text": json.dumps({"interpretation": GROUNDED_TEXT, "evidence_refs": ["ol-1"]}),
+    })
+    result = await reverie.run_reverie_once(
+        bus, broadcast_reader=lambda: _broadcast(), cortex_client=cortex,
+    )
+    assert result is not None
+    assert len(calls) == 1 and calls[0].thought_id == result.thought_id
+
+
+def test_persist_never_raises_on_bad_db(monkeypatch):
+    from app import store
+
+    # Force a fresh engine against an unroutable DB; persistence must swallow it.
+    monkeypatch.setattr(store, "_engine", None)
+    monkeypatch.setattr(store, "_database_url", lambda: "postgresql://x:x@127.0.0.1:1/nope")
+    t = SpontaneousThoughtV1(thought_id="t", correlation_id="c", coalition=_coalition(),
+                             interpretation=GROUNDED_TEXT, evidence_refs=["ol-1"]).marked_hollow()
+    assert store.persist_reverie_thought(t) is False  # returned, not raised
+
+
+@pytest.mark.asyncio
 async def test_tick_drops_hollow_thought():
     from app import reverie
 

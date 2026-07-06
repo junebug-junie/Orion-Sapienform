@@ -62,6 +62,18 @@ class SpontaneousThoughtV1(BaseModel):
     producer: str = "reverie_narrate_v1"
     model_id: str | None = None
 
+    # Phase C chain linkage — additive, optional; set only when emitted inside a
+    # chain. next_focus/drift are the LLM's forward pointer for the next step.
+    chain_id: str | None = None
+    thought_index: int | None = None
+    next_focus: str | None = None
+    drift: str | None = None
+
+    # Phase D grounding — read-only refs into Layer 11 motifs (consolidation
+    # frame ids) + rung-4 episode ids. Empty unless ORION_REVERIE_GROUND_CONSOLIDATION.
+    motif_refs: list[str] = Field(default_factory=list, max_length=MAX_EVIDENCE_REFS)
+    episode_summary_refs: list[str] = Field(default_factory=list, max_length=MAX_EVIDENCE_REFS)
+
     def grounding_ids(self) -> set[str]:
         """The set of coalition ids that legitimately anchor this thought."""
         if self.coalition is None:
@@ -101,3 +113,102 @@ class SpontaneousThoughtV1(BaseModel):
         """Return a copy with the hollow flag + reason stamped from the guard."""
         reason = self.hollow_reason_for()
         return self.model_copy(update={"hollow": reason is not None, "hollow_reason": reason})
+
+
+# --- Phase C: reverie chain ---------------------------------------------------
+
+# Cap the verbatim thought window per chain (§ cap-all-collections). The wide-n
+# memory is the lossy EMA, never a growing verbatim window.
+MAX_CHAIN_THOUGHTS = 50
+
+TerminalReason = Literal[
+    "pressure_discharged",
+    "max_steps",
+    "no_coalition",
+    "refractory",
+    "low_salience",
+]
+
+
+class ReverieRefractoryEntry(BaseModel):
+    """A resolved theme suppressed as a chain trigger until a cooldown expires."""
+
+    schema_version: Literal["reverie.refractory.entry.v1"] = "reverie.refractory.entry.v1"
+    theme_key: str
+    suppressed_until: datetime
+
+
+class ReverieChainTriggerV1(BaseModel):
+    pressure_kind: str = "unspecified"
+    magnitude: float = Field(default=0.0, ge=0.0, le=1.0)
+    evidence_payload: list[str] = Field(default_factory=list, max_length=MAX_EVIDENCE_REFS)
+
+
+class ReverieChainV1(BaseModel):
+    """Readout of one train of thought — successive climbs of the ladder.
+
+    Continuity is the last-n verbatim `thought_ids`; the wide-n memory is the
+    lossy `ema_salience` low-pass (never a verbatim wide window). A chain reads
+    coalitions and prior thoughts; it never reads a dream (ouroboros safety).
+    """
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    schema_version: Literal["reverie.chain.v1"] = "reverie.chain.v1"
+    chain_id: str
+    created_at: datetime = Field(default_factory=_utc_now)
+    theme_key: str | None = None
+    trigger: ReverieChainTriggerV1 | None = None
+    thought_ids: list[str] = Field(default_factory=list, max_length=MAX_CHAIN_THOUGHTS)
+    ema_salience: float = Field(default=0.0, ge=0.0, le=1.0)
+    ema_summary: str = ""
+    terminal_reason: TerminalReason = "max_steps"
+    committed_proposal_id: str | None = None
+
+
+# --- Phase E: compaction request (reverie → dream queue, applied by nothing) ---
+
+CompactionOpHint = Literal["consolidate", "downscale", "prune"]
+
+
+class CompactionRequestV1(BaseModel):
+    """A typed *ask* from the awake reverie (reasoning) to the offline dream
+    (storage): "this theme feels settled — consider compacting it." A request,
+    not an act — queued for a later, different process. Applied by nothing here.
+    """
+
+    schema_version: Literal["dream.compaction.request.v1"] = "dream.compaction.request.v1"
+    request_id: str
+    theme: str
+    reason: str = ""
+    op_hint: CompactionOpHint = "consolidate"
+    evidence_refs: list[str] = Field(default_factory=list, max_length=MAX_EVIDENCE_REFS)
+    origin_chain_id: str | None = None
+    created_at: datetime = Field(default_factory=_utc_now)
+
+
+# --- Phase H: resonance (the automated ouroboros tripwire) --------------------
+
+# Cap on the offending-timestamps sample carried on an alert (§cap-all-collections).
+MAX_RESONANCE_SAMPLES = 50
+
+
+class ResonanceAlertV1(BaseModel):
+    """A theme re-igniting faster than its refractory bound allows — a runaway
+    loop the habituation failed to damp (ouroboros risk). Observation only: the
+    alert never mutates anything; it is the automated guard that licenses (or
+    withholds licence for) turning the compaction applier's hot gate on.
+    """
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    schema_version: Literal["reverie.resonance.alert.v1"] = "reverie.resonance.alert.v1"
+    alert_id: str
+    theme_key: str
+    # Number of consecutive recurrences that breached the refractory cooldown.
+    violation_count: int = Field(default=0, ge=0)
+    refractory_sec: float = Field(default=0.0, ge=0.0)
+    min_gap_sec: float = Field(default=0.0, ge=0.0)
+    occurrences: int = Field(default=0, ge=0)
+    sample_ats: list[datetime] = Field(default_factory=list, max_length=MAX_RESONANCE_SAMPLES)
+    created_at: datetime = Field(default_factory=_utc_now)

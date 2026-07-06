@@ -518,7 +518,14 @@ from orion.schemas.harness_finalize import (
     HarnessVerdictMoleculeV1,
     SubstrateFinalizeAppraisalV1,
 )
-from orion.schemas.reverie import SpontaneousThoughtV1
+from orion.schemas.compaction import MemoryCompactionDeltaV1
+from orion.schemas.reverie import (
+    CompactionRequestV1,
+    ResonanceAlertV1,
+    ReverieChainV1,
+    ReverieRefractoryEntry,
+    SpontaneousThoughtV1,
+)
 from orion.schemas.thought import (
     CoalitionSnapshotV1,
     HubAssociationBundleV1,
@@ -1163,6 +1170,11 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "HubAssociationBundleV1": HubAssociationBundleV1,
     "ThoughtEventV1": ThoughtEventV1,
     "SpontaneousThoughtV1": SpontaneousThoughtV1,
+    "ReverieChainV1": ReverieChainV1,
+    "ReverieRefractoryEntry": ReverieRefractoryEntry,
+    "CompactionRequestV1": CompactionRequestV1,
+    "MemoryCompactionDeltaV1": MemoryCompactionDeltaV1,
+    "ResonanceAlertV1": ResonanceAlertV1,
     "StanceReactRequestV1": StanceReactRequestV1,
     "GrammarReceiptV1": GrammarReceiptV1,
     "HarnessDraftMoleculeV1": HarnessDraftMoleculeV1,
@@ -1203,6 +1215,26 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "SpontaneousThoughtV1": SchemaRegistration(
         model=SpontaneousThoughtV1,
         kind="reverie.thought.v1",
+    ),
+    "ReverieChainV1": SchemaRegistration(
+        model=ReverieChainV1,
+        kind="reverie.chain.v1",
+    ),
+    "ReverieRefractoryEntry": SchemaRegistration(
+        model=ReverieRefractoryEntry,
+        kind="reverie.refractory.entry.v1",
+    ),
+    "CompactionRequestV1": SchemaRegistration(
+        model=CompactionRequestV1,
+        kind="dream.compaction.request.v1",
+    ),
+    "MemoryCompactionDeltaV1": SchemaRegistration(
+        model=MemoryCompactionDeltaV1,
+        kind="dream.compaction.delta.v1",
+    ),
+    "ResonanceAlertV1": SchemaRegistration(
+        model=ResonanceAlertV1,
+        kind="reverie.resonance.alert.v1",
     ),
     "StanceReactRequestV1": SchemaRegistration(
         model=StanceReactRequestV1,

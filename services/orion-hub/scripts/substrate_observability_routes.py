@@ -106,6 +106,142 @@ def _attention_broadcast_section(engine) -> dict[str, Any] | None:
     }
 
 
+_REVERIE_LIMIT = 5
+
+
+def _reverie_section(engine) -> dict[str, Any] | None:
+    """Recent spontaneous thoughts (reverie Phase A). Read-only; empty until the
+    default-off producer runs."""
+    from sqlalchemy import text
+
+    sql = (
+        "SELECT thought_id, correlation_id, created_at, salience, interpretation, "
+        "thought_json FROM substrate_reverie_thought "
+        "ORDER BY created_at DESC LIMIT :limit"
+    )
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), {"limit": _REVERIE_LIMIT}).mappings().all()
+    if not rows:
+        return None
+    thoughts = []
+    for row in rows:
+        payload = _parse_json(row.get("thought_json")) or {}
+        coalition = payload.get("coalition") or {}
+        thoughts.append(
+            {
+                "thought_id": row.get("thought_id"),
+                "salience": row.get("salience"),
+                "interpretation": row.get("interpretation"),
+                "attended_node_ids": coalition.get("attended_node_ids", []),
+                "selected_open_loop_id": coalition.get("selected_open_loop_id"),
+                "created_at": _iso(row.get("created_at")),
+            }
+        )
+    return {"count": len(thoughts), "recent": thoughts}
+
+
+def _compaction_queue_section(engine) -> dict[str, Any] | None:
+    """Pending compaction requests (reverie Phase E). Queue only — applied by
+    nothing. Empty until the default-off producer runs."""
+    from sqlalchemy import text
+
+    sql = (
+        "SELECT request_id, theme, op_hint, reason, origin_chain_id, created_at, "
+        "consumed_at FROM dream_compaction_request_queue "
+        "WHERE consumed_at IS NULL ORDER BY created_at DESC LIMIT :limit"
+    )
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), {"limit": _REVERIE_LIMIT}).mappings().all()
+    if not rows:
+        return None
+    pending = [
+        {
+            "request_id": r.get("request_id"),
+            "theme": r.get("theme"),
+            "op_hint": r.get("op_hint"),
+            "reason": r.get("reason"),
+            "origin_chain_id": r.get("origin_chain_id"),
+            "created_at": _iso(r.get("created_at")),
+        }
+        for r in rows
+    ]
+    return {"pending_count": len(pending), "pending": pending}
+
+
+def _compaction_delta_section(engine) -> dict[str, Any] | None:
+    """"What sleep would do" — staged REM compaction deltas (Phase F).
+
+    Proposals only: every row is `proposal_marked` and `applied_at IS NULL`. The
+    hub previews them; nothing applies them (the applier is Phase G, gated off).
+    Empty until the default-off REM producer runs."""
+    from sqlalchemy import text
+
+    sql = (
+        "SELECT delta_id, dream_id, cards_out, edges_downscaled, rows_pruned, "
+        "bytes_reclaimed_est, proposal_marked, applied_at, created_at, delta_json "
+        "FROM dream_compaction_delta "
+        "WHERE applied_at IS NULL ORDER BY created_at DESC LIMIT :limit"
+    )
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), {"limit": _REVERIE_LIMIT}).mappings().all()
+    if not rows:
+        return None
+    deltas = []
+    for r in rows:
+        delta = _parse_json(r.get("delta_json"))
+        consolidate = delta.get("consolidate") if isinstance(delta, dict) else None
+        gist_cards = [
+            c.get("gist_card")
+            for c in (consolidate or [])
+            if isinstance(c, dict) and c.get("gist_card")
+        ][:_REVERIE_LIMIT]
+        deltas.append(
+            {
+                "delta_id": r.get("delta_id"),
+                "dream_id": r.get("dream_id"),
+                "cards_out": r.get("cards_out"),
+                "edges_downscaled": r.get("edges_downscaled"),
+                "rows_pruned": r.get("rows_pruned"),
+                "bytes_reclaimed_est": r.get("bytes_reclaimed_est"),
+                "proposal_marked": bool(r.get("proposal_marked")),
+                "applied": r.get("applied_at") is not None,
+                "gist_cards": gist_cards,
+                "created_at": _iso(r.get("created_at")),
+            }
+        )
+    return {"staged_count": len(deltas), "applied_any": False, "deltas": deltas}
+
+
+def _resonance_alert_section(engine) -> dict[str, Any] | None:
+    """Recent resonance alerts (Phase H) — themes that re-ignited inside their
+    refractory bound (ouroboros tripwire). Observation only. Empty until the
+    default-off tripwire fires."""
+    from sqlalchemy import text
+
+    sql = (
+        "SELECT alert_id, theme_key, violation_count, refractory_sec, min_gap_sec, "
+        "occurrences, created_at FROM substrate_reverie_resonance_alert "
+        "ORDER BY created_at DESC LIMIT :limit"
+    )
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), {"limit": _REVERIE_LIMIT}).mappings().all()
+    if not rows:
+        return None
+    alerts = [
+        {
+            "alert_id": r.get("alert_id"),
+            "theme_key": r.get("theme_key"),
+            "violation_count": r.get("violation_count"),
+            "refractory_sec": r.get("refractory_sec"),
+            "min_gap_sec": r.get("min_gap_sec"),
+            "occurrences": r.get("occurrences"),
+            "created_at": _iso(r.get("created_at")),
+        }
+        for r in rows
+    ]
+    return {"alert_count": len(alerts), "alerts": alerts}
+
+
 def _curiosity_section(engine) -> dict[str, Any] | None:
     row = _latest_row(
         engine,
@@ -186,12 +322,20 @@ async def observability_summary() -> dict[str, Any]:
         "self_state": None,
         "attention_broadcast": None,
         "curiosity": None,
+        "reverie": None,
+        "compaction_queue": None,
+        "compaction_delta": None,
+        "resonance_alert": None,
     }
     if engine is not None:
         for name, loader in (
             ("self_state", _self_state_section),
             ("attention_broadcast", _attention_broadcast_section),
             ("curiosity", _curiosity_section),
+            ("reverie", _reverie_section),
+            ("compaction_queue", _compaction_queue_section),
+            ("compaction_delta", _compaction_delta_section),
+            ("resonance_alert", _resonance_alert_section),
         ):
             try:
                 sections[name] = loader(engine)

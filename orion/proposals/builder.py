@@ -143,6 +143,7 @@ def build_proposal_frame(
     policy: ProposalPolicyV1,
     previous_frame: ProposalFrameV1 | None = None,
     now: datetime | None = None,
+    reverie_candidates: list[ProposalCandidateV1] | None = None,
 ) -> ProposalFrameV1:
     del previous_frame, field  # reserved for continuity in later revisions
     generated_at = now or datetime.now(timezone.utc)
@@ -163,6 +164,12 @@ def build_proposal_frame(
                 policy=policy,
             )
         )
+
+    # Phase B: incorporate flag-gated spontaneous-thought proposals. These carry
+    # source="reverie_thought" and an operator_review gate — they compete and are
+    # policy-gated exactly like builder-native candidates, never auto-dispatched.
+    for candidate in reverie_candidates or []:
+        built.append(candidate)
 
     built.sort(key=lambda c: (-c.priority_score, c.proposal_id))
     active: list[ProposalCandidateV1] = []

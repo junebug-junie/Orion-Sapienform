@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from .bus_listener import run_bus_worker
+from .chain import run_reverie_chain_worker
 from .reverie import run_reverie_worker
 from .settings import settings
 
@@ -31,10 +32,16 @@ async def lifespan(app: FastAPI):
     # Spontaneous-thought mode — no-op unless ORION_REVERIE_ENABLED (default off).
     app.state.reverie_stop_event = asyncio.Event()
     app.state.reverie_task = asyncio.create_task(run_reverie_worker(app.state.reverie_stop_event))
+    # Reverie chain mode — no-op unless ORION_REVERIE_CHAIN_ENABLED (default off).
+    app.state.reverie_chain_stop_event = asyncio.Event()
+    app.state.reverie_chain_task = asyncio.create_task(
+        run_reverie_chain_worker(app.state.reverie_chain_stop_event)
+    )
     yield
     app.state.bus_stop_event.set()
     app.state.reverie_stop_event.set()
-    for task in (app.state.bus_task, app.state.reverie_task):
+    app.state.reverie_chain_stop_event.set()
+    for task in (app.state.bus_task, app.state.reverie_task, app.state.reverie_chain_task):
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task

@@ -2053,6 +2053,16 @@ channels:
     stability: "experimental"
     since: "2026-07-06"
 
+  # --- Reverie chain (Phase C, default-off) ---
+  - name: "orion:reverie:chain"
+    kind: "event"
+    schema_id: "ReverieChainV1"
+    message_kind: "reverie.chain.v1"
+    producer_services: ["orion-thought"]
+    consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-07-06"
+
   - name: "orion:harness:run:request"
     kind: "request"
     schema_id: "HarnessRunRequestV1"

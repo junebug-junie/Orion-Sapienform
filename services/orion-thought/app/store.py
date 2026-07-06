@@ -76,3 +76,89 @@ def persist_reverie_thought(thought: "SpontaneousThoughtV1") -> bool:
     except Exception as exc:
         logger.warning("reverie thought persist failed id=%s err=%s", thought.thought_id, exc)
         return False
+
+
+def persist_reverie_chain(chain) -> bool:
+    """Insert one reverie chain readout. Never raises; idempotent on chain_id."""
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_reverie_chain
+                        (chain_id, created_at, theme_key, terminal_reason,
+                         ema_salience, committed_proposal_id, chain_json)
+                    VALUES
+                        (:chain_id, :created_at, :theme_key, :terminal_reason,
+                         :ema_salience, :committed_proposal_id, CAST(:chain_json AS jsonb))
+                    ON CONFLICT (chain_id) DO NOTHING
+                    """
+                ),
+                {
+                    "chain_id": chain.chain_id,
+                    "created_at": chain.created_at,
+                    "theme_key": chain.theme_key,
+                    "terminal_reason": chain.terminal_reason,
+                    "ema_salience": float(chain.ema_salience),
+                    "committed_proposal_id": chain.committed_proposal_id,
+                    "chain_json": json.dumps(chain.model_dump(mode="json")),
+                },
+            )
+        return True
+    except Exception as exc:
+        logger.warning("reverie chain persist failed id=%s err=%s", chain.chain_id, exc)
+        return False
+
+
+def reverie_refractory_is_suppressed(theme_key: str, now) -> bool:
+    """True if the theme is currently suppressed. Best-effort (False on error)."""
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        "SELECT suppressed_until FROM substrate_reverie_refractory "
+                        "WHERE theme_key = :k"
+                    ),
+                    {"k": theme_key},
+                )
+                .mappings()
+                .first()
+            )
+        if not row:
+            return False
+        until = row.get("suppressed_until")
+        return until is not None and until > now
+    except Exception:
+        return False
+
+
+def reverie_refractory_suppress(theme_key: str, until) -> bool:
+    """Upsert a refractory suppression window. Never raises."""
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_reverie_refractory (theme_key, suppressed_until)
+                    VALUES (:k, :until)
+                    ON CONFLICT (theme_key)
+                    DO UPDATE SET suppressed_until = EXCLUDED.suppressed_until,
+                                  updated_at = now()
+                    """
+                ),
+                {"k": theme_key, "until": until},
+            )
+        return True
+    except Exception as exc:
+        logger.warning("reverie refractory suppress failed theme=%s err=%s", theme_key, exc)
+        return False

@@ -221,6 +221,7 @@ async def run_reverie_once(
     *,
     broadcast_reader: BroadcastReader | None = None,
     cortex_client: CortexExecClient | None = None,
+    chain_context: tuple[str, int] | None = None,
 ) -> SpontaneousThoughtV1 | None:
     """One spontaneous-thought tick. Returns the published thought, or None.
 
@@ -252,6 +253,10 @@ async def run_reverie_once(
             correlation_id=correlation_id,
             broadcast=broadcast,
         )
+        if chain_context is not None:
+            thought = thought.model_copy(
+                update={"chain_id": chain_context[0], "thought_index": chain_context[1]}
+            )
         if thought.hollow:
             logger.info(
                 "reverie tick dropped hollow thought corr=%s reason=%s",

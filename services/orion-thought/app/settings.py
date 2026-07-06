@@ -55,6 +55,16 @@ class ThoughtSettings(BaseSettings):
         alias="CHANNEL_REVERIE_THOUGHT",
     )
 
+    # --- Reverie chain (Phase C, default-off) ---
+    reverie_chain_enabled: bool = Field(False, alias="ORION_REVERIE_CHAIN_ENABLED")
+    reverie_chain_max_steps: int = Field(4, alias="ORION_REVERIE_CHAIN_MAX_STEPS")
+    reverie_refractory_sec: float = Field(900.0, alias="ORION_REVERIE_REFRACTORY_SEC")
+    reverie_drift_temp: float = Field(0.7, alias="ORION_REVERIE_DRIFT_TEMP")
+    channel_reverie_chain: str = Field(
+        "orion:reverie:chain",
+        alias="CHANNEL_REVERIE_CHAIN",
+    )
+
 
 settings = ThoughtSettings()
 logger.info(

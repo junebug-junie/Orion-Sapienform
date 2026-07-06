@@ -47,6 +47,11 @@ class ThoughtClient:
         decoded = self.bus.codec.decode(msg.get("data"))
         if not decoded.ok:
             return None
+        if decoded.envelope.kind == "system.error":
+            payload = decoded.envelope.payload
+            detail = payload.get("details") if isinstance(payload, dict) else payload
+            logger.warning("[%s] thought RPC system.error detail=%s", correlation_id, detail)
+            return None
         payload = decoded.envelope.payload
         if isinstance(payload, dict) and payload.get("error"):
             logger.warning("[%s] thought RPC error payload=%s", correlation_id, payload.get("error"))

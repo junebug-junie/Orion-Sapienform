@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from orion.hub.association import build_hub_association_bundle
+from orion.thought.coalition import hub_turn_coalition_id
 from orion.schemas.attention_frame import (
     AttentionBroadcastProjectionV1,
     AttentionFrameV1,
@@ -54,7 +55,8 @@ def test_association_read_fail_closed_when_disabled(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("ORION_ATTENTION_BROADCAST_ENABLED", "false")
 
     bundle = build_hub_association_bundle(correlation_id="corr-off", repair_bundle=None)
-    assert bundle.broadcast is None
+    assert bundle.broadcast is not None
+    assert hub_turn_coalition_id("corr-off") in bundle.broadcast.attended_node_ids
     assert bundle.broadcast_stale is True
     assert bundle.read_source == "felt_state_reader"
 
@@ -78,7 +80,11 @@ def test_association_fresh_broadcast_not_stale(monkeypatch: pytest.MonkeyPatch) 
     )
     assert bundle.broadcast_stale is False
     assert bundle.broadcast is not None
-    assert bundle.broadcast.attended_node_ids == ["node-a", "node-b"]
+    assert bundle.broadcast.attended_node_ids == [
+        "node-a",
+        "node-b",
+        hub_turn_coalition_id("corr-fresh"),
+    ]
 
 
 def test_association_missing_projection_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -95,7 +101,8 @@ def test_association_missing_projection_fail_closed(monkeypatch: pytest.MonkeyPa
         repair_bundle=None,
         reader_factory=lambda: reader,
     )
-    assert bundle.broadcast is None
+    assert bundle.broadcast is not None
+    assert hub_turn_coalition_id("corr-missing") in bundle.broadcast.attended_node_ids
     assert bundle.broadcast_stale is True
     assert bundle.read_source == "felt_state_reader"
 

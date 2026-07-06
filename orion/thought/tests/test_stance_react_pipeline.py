@@ -78,7 +78,7 @@ def test_coalition_ids_from_association() -> None:
         broadcast_stale=False,
         read_source="felt_state_reader",
     )
-    assert coalition_ids_from_association(assoc) == {"node-a", "loop-1"}
+    assert coalition_ids_from_association(assoc) == {"hub:turn:c-1", "node-a", "loop-1"}
 
 
 def test_parse_stance_react_payload_from_dict() -> None:
@@ -92,6 +92,27 @@ def test_parse_stance_react_payload_from_json_string() -> None:
     raw = json.dumps(_thought().model_dump(mode="json"))
     parsed = parse_stance_react_payload(raw)
     assert parsed.imperative == "Answer directly."
+
+
+def test_parse_stance_react_payload_from_markdown_wrapped_json() -> None:
+    inner = _thought().model_dump(mode="json")
+    wrapped = f"Here is the stance JSON:\n```json\n{json.dumps(inner)}\n```"
+    parsed = parse_stance_react_payload(wrapped)
+    assert parsed.event_id == inner["event_id"]
+
+
+def test_parse_stance_react_payload_coerces_false_interaction_regime() -> None:
+    raw = _thought().model_dump(mode="json")
+    raw["stance_harness_slice"]["interaction_regime"] = False
+    parsed = parse_stance_react_payload(raw)
+    assert parsed.stance_harness_slice.interaction_regime is None
+
+
+def test_parse_stance_react_payload_coerces_null_event_id() -> None:
+    raw = _thought().model_dump(mode="json")
+    raw["event_id"] = None
+    parsed = parse_stance_react_payload(raw)
+    assert parsed.event_id
 
 
 def test_apply_stance_react_pipeline_proceed() -> None:
@@ -108,8 +129,8 @@ def test_apply_stance_react_pipeline_defer_missing_evidence() -> None:
     req = _request(broadcast_stale=True)
     thought = _thought(evidence_refs=[])
     result = apply_stance_react_pipeline(thought, req)
-    assert result.disposition == "defer"
-    assert "missing_evidence_refs" in result.disposition_reasons
+    assert result.disposition == "proceed"
+    assert result.evidence_refs == ["hub:turn:c-1"]
 
 
 def test_apply_stance_react_pipeline_defer_evidence_not_in_coalition() -> None:
@@ -117,8 +138,20 @@ def test_apply_stance_react_pipeline_defer_evidence_not_in_coalition() -> None:
     req = _request(broadcast=broadcast)
     thought = _thought(evidence_refs=["node-bad"], strain_refs=["node-a"])
     result = apply_stance_react_pipeline(thought, req)
-    assert result.disposition == "defer"
-    assert "evidence_refs_not_in_coalition" in result.disposition_reasons
+    assert result.disposition == "proceed"
+    assert result.evidence_refs == ["hub:turn:c-1"]
+
+
+def test_apply_stance_react_pipeline_snaps_invalid_evidence_to_hub_turn_anchor() -> None:
+    req = _request(broadcast_stale=True)
+    thought = _thought(
+        correlation_id="c-1",
+        evidence_refs=["made-up-node"],
+        strain_refs=[],
+    )
+    result = apply_stance_react_pipeline(thought, req)
+    assert result.disposition == "proceed"
+    assert result.evidence_refs == ["hub:turn:c-1"]
 
 
 def test_apply_stance_react_pipeline_refuse_trust_rupture() -> None:

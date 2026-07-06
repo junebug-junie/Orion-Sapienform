@@ -20,6 +20,8 @@ NEVER_SYNC_KEYS = frozenset(
     {
         "ORION_KNOWLEDGE_ROOT",
         "PUBLISH_CORTEX_EXEC_GRAMMAR",
+        # Host-specific Tailscale / mesh address — never overwrite from docker-oriented templates.
+        "ORION_BUS_URL",
     }
 )
 
@@ -76,6 +78,8 @@ SYNC_PREFIXES = (
     "CHANNEL_FINALIZE_",
     "ORION_UNIFIED_",
     "ORION_HARNESS_",
+    "ORION_ATTENTION_",
+    "SUBSTRATE_FELT_STATE_",
     "STANCE_REACT_",
     "HARNESS_FCC_",
     "HARNESS_GOVERNOR_",
@@ -89,7 +93,6 @@ SYNC_PREFIXES = (
     "VISION_VLM_",
     "COUNCIL_",
     "HOST_PORT",
-    "ORION_BUS_URL",
     "SQL_WRITER_EMIT_MEMORY_",
 )
 
@@ -106,7 +109,6 @@ SYNC_EXACT = frozenset(
         "MEMORY_CONSOLIDATION_ENABLED",
         "LLM_LOGPROB_SUMMARY_ENABLED",
         "HOST_PORT",
-        "ORION_BUS_URL",
     }
 )
 
@@ -143,6 +145,23 @@ def should_sync_key(key: str, *, all_keys: bool) -> bool:
     return any(key.startswith(p) for p in SYNC_PREFIXES)
 
 
+def example_value_is_host_placeholder(key: str, value: str) -> bool:
+    """Skip syncing template placeholders that must stay host-specific in local .env."""
+    v = value.strip().strip("'\"")
+    if key == "ORION_BUS_URL":
+        lowered = v.lower()
+        if "x.x.x" in lowered or "x.x.x.x" in lowered:
+            return True
+        if lowered in {
+            "redis://bus-core:6379/0",
+            "redis://localhost:6379/0",
+            "redis://redis:6379/0",
+            "${orion_bus_url}",
+        }:
+            return True
+    return False
+
+
 def parse_kv(path: Path) -> dict[str, str]:
     out: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -170,7 +189,7 @@ def sync_file(
     desired = {
         k: v
         for k, v in parse_kv(example_path).items()
-        if should_sync_key(k, all_keys=all_keys)
+        if should_sync_key(k, all_keys=all_keys) and not example_value_is_host_placeholder(k, v)
     }
     if not desired:
         return []

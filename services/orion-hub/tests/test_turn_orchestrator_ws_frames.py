@@ -113,6 +113,33 @@ def _hub_client_patches(*, thought: ThoughtEventV1, harness_run: HarnessRunV1 | 
 
 
 @pytest.mark.asyncio
+async def test_turn_orchestrator_defaults_fcc_model_label() -> None:
+    harness_run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="hello",
+        finalize_ran=True,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    bus = MagicMock()
+    harness_client_run = AsyncMock(return_value=harness_run)
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    with patches[0], patches[1], patches[2]:
+        await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="hello",
+            payload={},
+            emit_observation_fn=lambda **_kwargs: None,
+        )
+
+    harness_client_run.assert_awaited_once()
+    req = harness_client_run.await_args.args[0]
+    assert req.fcc_model_label == "MODEL_SONNET"
+
+
+@pytest.mark.asyncio
 async def test_turn_orchestrator_never_publishes_draft_text() -> None:
     failed_run = HarnessRunV1(
         correlation_id=_CORR_ID,

@@ -132,7 +132,7 @@
     panel.className = 'agent-live-trace claude-live-trace';
     const heading = (doc || document).createElement('div');
     heading.className = 'agent-live-trace__heading';
-    heading.textContent = 'Claude harness (live)';
+    heading.textContent = 'FCC harness (live)';
     panel.appendChild(heading);
     const steps = (doc || document).createElement('div');
     steps.className = 'agent-live-trace__steps';

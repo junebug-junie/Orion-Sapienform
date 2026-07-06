@@ -82,6 +82,7 @@ async def handle_harness_run_request(
     motor_runner = runner or HarnessRunner(
         bus,
         grammar_channel=settings.channel_grammar_event,
+        step_channel=settings.channel_harness_run_step,
         fcc_timeout_sec=settings.fcc_timeout_sec,
     )
     cortex = cortex_client or HarnessCortexClient(

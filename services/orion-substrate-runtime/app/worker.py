@@ -155,6 +155,7 @@ class BiometricsSubstrateWorker:
         self._stop = asyncio.Event()
         self._bus = None
         self._tasks: list[asyncio.Task[None]] = []
+        self._substrate_graph_store: Any = None
 
     @property
     def bus(self):
@@ -163,7 +164,6 @@ class BiometricsSubstrateWorker:
     @property
     def stop_event(self) -> asyncio.Event:
         return self._stop
-        self._substrate_graph_store: Any = None
 
     async def start(self) -> None:
         s = self._settings

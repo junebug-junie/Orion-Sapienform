@@ -32,6 +32,30 @@ async def _mock_fcc_runner(**_: Any) -> AsyncIterator[dict[str, Any]]:
 
 
 @pytest.mark.asyncio
+async def test_harness_runner_surfaces_fcc_error_code() -> None:
+    async def _error_runner(**_: Any) -> AsyncIterator[dict[str, Any]]:
+        yield {
+            "type": "error",
+            "error": "fcc turn timed out after 120.0s",
+            "error_code": "fcc_timeout",
+        }
+
+    request = HarnessRunRequestV1(
+        correlation_id="c-timeout",
+        thought_event=make_thought(),
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    runner = HarnessRunner(AsyncMock(), fcc_runner=_error_runner)
+    result = await runner.run(request)
+
+    assert result.draft_text == ""
+    assert result.compliance_verdict == "failed"
+    assert result.grounding_status == "fcc_timeout"
+
+
+@pytest.mark.asyncio
 async def test_harness_runner_collects_grammar_receipts_and_draft() -> None:
     thought = make_thought()
     request = HarnessRunRequestV1(

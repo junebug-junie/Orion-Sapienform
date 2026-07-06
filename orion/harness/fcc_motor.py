@@ -15,7 +15,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 logger = logging.getLogger("orion.harness.fcc_motor")
 
 DEFAULT_STREAM_READ_LIMIT = 8 * 1024 * 1024
-DEFAULT_FCC_MODEL_LABEL = "MODEL"
+DEFAULT_FCC_MODEL_LABEL = "MODEL_SONNET"
 
 
 def parse_stream_json_line(line: str) -> Optional[Dict[str, Any]]:

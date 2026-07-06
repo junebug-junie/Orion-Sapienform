@@ -44,7 +44,7 @@ class ThoughtSettings(BaseSettings):
         validation_alias=AliasChoices("CHANNEL_CORTEX_EXEC_RESULT_PREFIX", "CORTEX_EXEC_RESULT_PREFIX"),
         alias="CHANNEL_CORTEX_EXEC_RESULT_PREFIX",
     )
-    stance_react_timeout_sec: float = Field(12.0, alias="STANCE_REACT_TIMEOUT_SEC")
+    stance_react_timeout_sec: float = Field(120.0, alias="STANCE_REACT_TIMEOUT_SEC")
 
 
 settings = ThoughtSettings()

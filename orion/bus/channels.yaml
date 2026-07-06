@@ -130,7 +130,10 @@ channels:
   - name: "orion:cortex:exec:request"
     kind: "request"
     schema_id: "CortexExecRequestPayload"
-    producer_services: ["orion-cortex-orch"]
+    producer_services:
+      - orion-cortex-orch
+      - orion-harness-governor
+      - orion-thought
     consumer_services: ["orion-cortex-exec"]
     stability: "experimental"
     since: "2026-01-08"
@@ -233,8 +236,13 @@ channels:
   - name: "orion:exec:result:*"
     kind: "result"
     schema_id: "CortexExecResultPayload"
-    producer_services: ["*"]
-    consumer_services: ["*"]
+    producer_services: ["orion-cortex-exec", "*"]
+    consumer_services:
+      - orion-cortex-orch
+      - orion-harness-governor
+      - orion-thought
+      - orion-hub
+      - "*"
     stability: "experimental"
     since: "2026-01-08"
 
@@ -2058,6 +2066,15 @@ channels:
     message_kind: "harness.run.v1"
     producer_services: ["orion-harness-governor"]
     consumer_services: ["*"]
+    stability: "experimental"
+    since: "2026-07-05"
+
+  - name: "orion:harness:run:step"
+    kind: "event"
+    schema_id: "HarnessRunStepV1"
+    message_kind: "harness.run.step.v1"
+    producer_services: ["orion-harness-governor"]
+    consumer_services: ["orion-hub"]
     stability: "experimental"
     since: "2026-07-05"
 

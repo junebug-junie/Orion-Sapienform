@@ -11,7 +11,13 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.thought import StanceReactRequestV1, ThoughtEventV1
-from orion.thought.stance_react import apply_stance_react_pipeline, parse_stance_react_payload
+from orion.thought.stance_react import (
+    apply_stance_react_pipeline,
+    build_stance_react_failure_thought,
+    parse_stance_react_payload,
+    slim_association_for_prompt,
+    slim_repair_bundle_for_prompt,
+)
 
 from .cortex_client import CortexExecClient
 from .settings import settings
@@ -50,11 +56,9 @@ def _coalition_projection(request: StanceReactRequestV1) -> dict[str, Any] | Non
 def build_stance_react_context(request: StanceReactRequestV1) -> dict[str, Any]:
     return {
         "user_message": request.user_message,
-        "stance_inputs": dict(request.stance_inputs),
-        "association": request.association.model_dump(mode="json"),
-        "repair_bundle": (
-            request.repair_bundle.model_dump(mode="json") if request.repair_bundle else None
-        ),
+        "stance_inputs": {"user_message": request.user_message},
+        "association": slim_association_for_prompt(request.association),
+        "repair_bundle": slim_repair_bundle_for_prompt(request.repair_bundle),
         "coalition_projection": _coalition_projection(request),
         "metadata": {
             "correlation_id": request.correlation_id,
@@ -226,17 +230,21 @@ async def _handle_bus_message(bus: OrionBusAsync, raw_msg: dict[str, Any]) -> No
         )
     except Exception as exc:
         logger.error("stance_react error corr=%s err=%s", corr, exc)
-        err_payload = {
-            "error": str(exc),
-            "correlation_id": corr,
-        }
-        await bus.publish(
-            reply_channel,
-            BaseEnvelope(
-                kind="thought.event.v1",
-                source=_source(),
-                correlation_id=_envelope_correlation_id(corr),
-                causality_chain=causality,
-                payload=err_payload,
-            ),
+        session_id = None
+        try:
+            session_id = StanceReactRequestV1.model_validate(payload).session_id
+        except Exception:
+            if isinstance(payload, dict):
+                session_id = payload.get("session_id")
+        failure = build_stance_react_failure_thought(
+            correlation_id=corr,
+            session_id=session_id if isinstance(session_id, str) else None,
+            reason=f"stance_react_failed: {exc}",
         )
+        err_envelope = env.derive_child(
+            kind="thought.event.v1",
+            source=_source(),
+            payload=failure.model_dump(mode="json"),
+            reply_to=None,
+        )
+        await bus.publish(reply_channel, err_envelope)

@@ -115,6 +115,12 @@ def _parse_row(row: Dict[str, Any]) -> TimelineItem:
 def _epoch(ts_val: Any, default: Optional[float] = None) -> float:
     if ts_val is None:
         return default or datetime.utcnow().timestamp()
+    if isinstance(ts_val, datetime):
+        return ts_val.timestamp()
+    try:
+        return datetime.fromisoformat(str(ts_val).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return default or datetime.utcnow().timestamp()
 
 
 def _normalize_text(value: Any) -> str:
@@ -155,12 +161,6 @@ def _filter_excluded_rows(
     if suppressed:
         logger.info("sql_timeline self-hit suppression suppressed=%s", suppressed)
     return filtered
-    if isinstance(ts_val, datetime):
-        return ts_val.timestamp()
-    try:
-        return datetime.fromisoformat(str(ts_val)).timestamp()
-    except Exception:
-        return default or datetime.utcnow().timestamp()
 
 
 def _split_table_name(table: str) -> tuple[str, str]:
@@ -490,6 +490,7 @@ async def fetch_exact_fragments(
     node_id: Optional[str],
     limit: int,
     *,
+    since_minutes: Optional[int] = None,
     exclude_ids: Optional[List[str]] = None,
     exclude_text: Optional[str] = None,
 ) -> List[TimelineItem]:
@@ -520,6 +521,10 @@ async def fetch_exact_fragments(
                         term_filters.append(f"{response_col} ILIKE %s")
                         params.append(f"%{token}%")
                     filter_clause = " OR ".join(term_filters) if term_filters else "TRUE"
+                    time_clause = ""
+                    if since_minutes is not None and int(since_minutes) > 0:
+                        time_clause = f"AND {ts_col} >= NOW() - INTERVAL '%s minutes'"
+                        params.append(int(since_minutes))
                     params.append(limit)
                     cur.execute(
                         f"""
@@ -531,6 +536,7 @@ async def fetch_exact_fragments(
                             {ts_col} AS created_at
                         FROM {timeline_table}
                         WHERE ({filter_clause})
+                          {time_clause}
                           {memory_clause}
                         ORDER BY {ts_col} DESC
                         LIMIT %s
@@ -581,6 +587,12 @@ async def fetch_exact_fragments(
                 if node_id and settings.RECALL_SQL_TIMELINE_NODE_COL:
                     node_clause = f"AND {settings.RECALL_SQL_TIMELINE_NODE_COL} = %s"
                     params.append(node_id)
+                time_clause = ""
+                if since_minutes is not None and int(since_minutes) > 0:
+                    time_clause = (
+                        f"AND {settings.RECALL_SQL_TIMELINE_TS_COL} >= NOW() - INTERVAL '%s minutes'"
+                    )
+                    params.append(int(since_minutes))
                 params.append(limit)
                 cur.execute(
                     f"""
@@ -593,6 +605,7 @@ async def fetch_exact_fragments(
                     FROM {timeline_table}
                     WHERE ({filter_clause})
                       {node_clause}
+                      {time_clause}
                       {memory_clause}
                     ORDER BY {settings.RECALL_SQL_TIMELINE_TS_COL} DESC
                     LIMIT %s

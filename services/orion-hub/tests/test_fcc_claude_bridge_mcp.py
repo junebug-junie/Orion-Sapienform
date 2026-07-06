@@ -109,3 +109,35 @@ async def test_run_turn_omits_mcp_config_when_disabled(monkeypatch: pytest.Monke
 
     assert "--mcp-config" not in captured_argv
     assert "--allowedTools" not in captured_argv
+
+
+@pytest.mark.asyncio
+async def test_run_turn_surfaces_mcp_preflight_error_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts.fcc_mcp_config import McpPreflightError
+
+    def _raise_preflight(**_kwargs):
+        raise McpPreflightError(error_code="fcc_mcp_github_missing", message="Missing GITHUB_PAT in FCC env")
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProc:
+        raise AssertionError("should not spawn")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(bridge, "_preflight_fcc_server", lambda *a, **k: None)
+    monkeypatch.setattr(bridge, "_maybe_render_mcp_config", _raise_preflight)
+
+    events = []
+    async for ev in bridge.run_turn(
+        prompt="hello",
+        fcc_model_label="MODEL_HAIKU",
+        correlation_id="corr-preflight",
+        workspace="/tmp",
+        fcc_server_url="http://127.0.0.1:8082",
+        auth_token="tok",
+        claude_bin="claude",
+        timeout_sec=30.0,
+    ):
+        events.append(ev)
+
+    assert len(events) == 1
+    assert events[0]["type"] == "error"
+    assert events[0]["error_code"] == "fcc_mcp_github_missing"

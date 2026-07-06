@@ -9,9 +9,9 @@ from mcp.server.fastmcp import FastMCP
 
 from orion_aitown_mcp.client import (
     AitownClientError,
-    _default_agent_id,
     _default_player_id,
     _world_id,
+    convex_mutation,
     convex_query,
     fetch_version,
     send_input,
@@ -95,7 +95,7 @@ async def aitown_create_agent(description_index: int) -> str:
 async def aitown_stop_world() -> str:
   """Stop the simulation engine."""
   try:
-    result = send_input(name="stop", args={})
+    result = convex_mutation("testing:stop", {})
   except AitownClientError as exc:
     return _json({"error": str(exc)})
   return _json(result)
@@ -105,7 +105,7 @@ async def aitown_stop_world() -> str:
 async def aitown_resume_world() -> str:
   """Resume the simulation engine."""
   try:
-    result = send_input(name="resume", args={})
+    result = convex_mutation("testing:resume", {})
   except AitownClientError as exc:
     return _json({"error": str(exc)})
   return _json(result)
@@ -115,7 +115,7 @@ async def aitown_resume_world() -> str:
 async def aitown_kick_engine() -> str:
   """Kick the simulation engine loop."""
   try:
-    result = send_input(name="kick", args={})
+    result = convex_mutation("testing:kick", {})
   except AitownClientError as exc:
     return _json({"error": str(exc)})
   return _json(result)

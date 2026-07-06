@@ -161,20 +161,17 @@ def active_turns() -> list[dict]:
 
 def _maybe_render_mcp_config(*, correlation_id: str) -> Optional[Path]:
     from scripts.fcc_env_catalog import expand_env_path, load_fcc_env
-    from scripts.fcc_mcp_config import McpPreflightError, render_mcp_config
+    from scripts.fcc_mcp_config import render_mcp_config
     from scripts.settings import settings
 
     if not settings.HUB_AGENT_CLAUDE_MCP_ENABLED:
         return None
     env = load_fcc_env(expand_env_path(settings.HUB_FCC_ENV_PATH))
-    try:
-        return render_mcp_config(
-            correlation_id=correlation_id,
-            fcc_env=env,
-            include_aitown=bool(settings.HUB_AITOWN_ENABLED),
-        )
-    except McpPreflightError as exc:
-        raise RuntimeError(str(exc)) from exc
+    return render_mcp_config(
+        correlation_id=correlation_id,
+        fcc_env=env,
+        include_aitown=bool(settings.HUB_AITOWN_ENABLED),
+    )
 
 
 def _preflight_fcc_server(url: str, *, timeout_sec: float = 3.0) -> None:
@@ -269,9 +266,11 @@ async def run_turn(
 
     mcp_config_path: Optional[Path] = None
     try:
+        from scripts.fcc_mcp_config import McpPreflightError
+
         mcp_config_path = _maybe_render_mcp_config(correlation_id=correlation_id)
-    except RuntimeError as exc:
-        yield {"type": "error", "error": str(exc), "error_code": "fcc_mcp_preflight_failed"}
+    except McpPreflightError as exc:
+        yield {"type": "error", "error": str(exc), "error_code": exc.error_code}
         return
 
     argv = [
@@ -287,7 +286,8 @@ async def run_turn(
     if mcp_config_path is not None:
         argv.extend(["--mcp-config", str(mcp_config_path), "--allowedTools", "mcp__*"])
     if os.geteuid() != 0:
-        argv.insert(-2, "--dangerously-skip-permissions")
+        model_idx = argv.index("--model")
+        argv.insert(model_idx, "--dangerously-skip-permissions")
     started = time.monotonic()
     proc: Optional[asyncio.subprocess.Process] = None
     accumulated = ""

@@ -8,7 +8,9 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from orion.cognition.cortex_payload_extract import cortex_exec_failure_detail, extract_cortex_payload_text
 from orion.cognition.plan_loader import build_plan_for_verb
+from orion.core.llm_json import parse_json_object
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.harness_finalize import (
@@ -189,30 +191,18 @@ def build_finalize_reflect_plan_request(
 
 def parse_finalize_reflection_payload(raw: dict[str, Any] | str) -> FinalizeReflectionV1:
     if isinstance(raw, str):
-        raw = json.loads(raw)
+        raw = parse_json_object(raw)
     return FinalizeReflectionV1.model_validate(raw)
 
 
 def extract_finalize_reflection_payload(result: dict[str, Any]) -> dict[str, Any] | str:
-    final_text = result.get("final_text")
-    if isinstance(final_text, str) and final_text.strip():
-        return final_text
+    text = extract_cortex_payload_text(result)
+    if text:
+        return text
 
-    steps = result.get("steps") or []
-    for step in reversed(steps):
-        if not isinstance(step, dict):
-            continue
-        step_result = step.get("result")
-        if not isinstance(step_result, dict):
-            continue
-        for key in ("structured", "json", "payload", "final_text", "text", "content"):
-            value = step_result.get(key)
-            if value is None:
-                continue
-            if isinstance(value, str) and not value.strip():
-                continue
-            return value
-
+    detail = cortex_exec_failure_detail(result)
+    if detail:
+        raise ValueError(f"harness_finalize_reflect exec failed: {detail}")
     raise ValueError("harness_finalize_reflect exec result missing reflection payload")
 
 
@@ -379,22 +369,13 @@ def build_voice_finalize_plan_request(
 
 
 def extract_voice_finalize_text(result: dict[str, Any]) -> str:
-    final_text = result.get("final_text")
-    if isinstance(final_text, str) and final_text.strip():
-        return final_text.strip()
+    text = extract_cortex_payload_text(result)
+    if text:
+        return text
 
-    steps = result.get("steps") or []
-    for step in reversed(steps):
-        if not isinstance(step, dict):
-            continue
-        step_result = step.get("result")
-        if not isinstance(step_result, dict):
-            continue
-        for key in ("final_text", "text", "content"):
-            value = step_result.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-
+    detail = cortex_exec_failure_detail(result)
+    if detail:
+        raise ValueError(f"orion_voice_finalize exec failed: {detail}")
     raise ValueError("orion_voice_finalize exec result missing final_text")
 
 

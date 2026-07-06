@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from orion.harness.operator_brief import HARNESS_UNIFIED_OPERATOR_BRIEF
+from orion.harness.operator_brief import (
+    HARNESS_MOTOR_MAX_READ_LINES,
+    HARNESS_UNIFIED_OPERATOR_BRIEF,
+)
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import HarnessRepairOverlayV1
 from orion.schemas.thought import StanceHarnessSliceV1, ThoughtEventV1
@@ -30,7 +33,9 @@ def harness_motor_instruction(
     _ = answer_contract  # deprecated on unified motor path; kept for signature compat
     return (
         "Execute your imperative. Use tools when the turn requires verified facts "
-        "from the repo or runtime."
+        "from the repo or runtime. "
+        f"Do not Read whole files over {HARNESS_MOTOR_MAX_READ_LINES} lines — "
+        "use rg/Grep or Read offset/limit."
     )
 
 

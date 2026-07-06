@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from orion.harness.operator_brief import HARNESS_MOTOR_MAX_READ_LINES
 from orion.harness.prefix import compile_harness_prefix, harness_motor_instruction
 from orion.harness.tests.fixtures import make_thought
 from orion.schemas.cognition.answer_contract import AnswerContract
@@ -35,6 +36,7 @@ def test_compile_harness_prefix_imperative_first_unified_brief() -> None:
     assert "Answer contract:" not in prompt
     assert "Orion harness motor — repo/technical turn" not in prompt  # old gated brief
     assert "prefer rg/Grep" in prompt  # unified brief includes tool guidance
+    assert f"longer than {HARNESS_MOTOR_MAX_READ_LINES} lines" in prompt
 
 
 def test_compile_harness_prefix_ignores_answer_contract() -> None:
@@ -55,7 +57,6 @@ def test_compile_harness_prefix_ignores_answer_contract() -> None:
 def test_harness_motor_instruction_imperative_forward() -> None:
     thought = make_thought(imperative="Inspect docker logs for orion-hub.")
     instruction = harness_motor_instruction(thought=thought, answer_contract=None)
-    assert instruction == (
-        "Execute your imperative. Use tools when the turn requires verified facts "
-        "from the repo or runtime."
-    )
+    assert "Execute your imperative" in instruction
+    assert f"over {HARNESS_MOTOR_MAX_READ_LINES} lines" in instruction
+    assert "rg/Grep" in instruction

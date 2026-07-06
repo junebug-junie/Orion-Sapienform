@@ -118,6 +118,7 @@ async def test_turn_orchestrator_defaults_fcc_model_label() -> None:
         correlation_id=_CORR_ID,
         final_text="hello",
         finalize_ran=True,
+        step_count=1,
         compliance_verdict="completed",
         grounding_status="grounded",
     )
@@ -215,3 +216,36 @@ async def test_turn_orchestrator_turn_deferred_on_stance_defer() -> None:
         }
     ]
     harness_run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_turn_orchestrator_passes_empty_answer_contract_not_heuristic() -> None:
+    harness_run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="hello",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    bus = MagicMock()
+    harness_client_run = AsyncMock(return_value=harness_run)
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    with patches[0], patches[1], patches[2]:
+        await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="docker compose logs show traceback",
+            emit_observation_fn=lambda **_kwargs: None,
+        )
+
+    req = harness_client_run.await_args.args[0]
+    assert req.answer_contract.request_kind == "conceptual"
+    assert req.answer_contract.requires_repo_grounding is False
+    assert req.answer_contract.requires_runtime_grounding is False
+
+
+def test_turn_orchestrator_source_has_no_heuristic_answer_contract() -> None:
+    source = (REPO_ROOT / "orion/hub/turn_orchestrator.py").read_text(encoding="utf-8")
+    assert "heuristic_answer_contract" not in source

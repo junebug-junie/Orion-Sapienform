@@ -68,3 +68,14 @@ async def test_aitown_proxy_forwards_path(monkeypatch: pytest.MonkeyPatch) -> No
     resp = await hub_api_routes.aitown_proxy("assets/app.js", _request())
     assert resp.status_code == 200
     assert calls == ["assets/app.js"]
+
+
+def test_upstream_aitown_url_uses_vite_base() -> None:
+    assert (
+        hub_api_routes._upstream_aitown_url("http://127.0.0.1:5173", "")
+        == "http://127.0.0.1:5173/ai-town/"
+    )
+    assert (
+        hub_api_routes._upstream_aitown_url("http://127.0.0.1:5173", "@vite/client")
+        == "http://127.0.0.1:5173/ai-town/@vite/client"
+    )

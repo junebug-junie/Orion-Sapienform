@@ -5,6 +5,8 @@ services:
     build:
       context: ./upstream
       dockerfile: Dockerfile
+      args:
+        VITE_CONVEX_URL: ${URL_BASE:-http://127.0.0.1}:${PORT:-3210}
     ports:
       - "${FRONTEND_PORT:-5173}:5173"
     environment:

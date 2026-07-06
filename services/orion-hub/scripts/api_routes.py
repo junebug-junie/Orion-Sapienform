@@ -5,6 +5,7 @@ import logging
 import os
 import ipaddress
 import threading
+import asyncio
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from uuid import uuid4
@@ -13,7 +14,7 @@ from urllib.parse import urlparse
 import aiohttp
 from orion.core.bus.async_service import OrionBusAsync
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 import requests
@@ -1254,13 +1255,43 @@ async def proxy_world_pulse(path: str, request: Request) -> Response:
     return await _proxy_world_pulse_request(path, request)
 
 
+_AITOWN_VITE_BASE = "ai-town"
+
+
+def _aitown_convex_internal_url() -> str:
+    from scripts.aitown_status import _convex_base_from_settings
+
+    base = _convex_base_from_settings(settings).rstrip("/")
+    if base:
+        return base
+    return "http://127.0.0.1:3210"
+
+
+def _aitown_convex_ws_url(path: str) -> str:
+    parsed = urlparse(_aitown_convex_internal_url())
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if parsed.scheme == "https":
+        return f"wss://{host}:{port}/{path.lstrip('/')}"
+    return f"ws://{host}:{port}/{path.lstrip('/')}"
+
+
+def _upstream_aitown_url(base: str, path: str) -> str:
+    """Map Hub mount paths to upstream Vite dev server (base=/ai-town)."""
+    root = base.rstrip("/")
+    sub = path.lstrip("/")
+    if sub:
+        return f"{root}/{_AITOWN_VITE_BASE}/{sub}"
+    return f"{root}/{_AITOWN_VITE_BASE}/"
+
+
 async def _proxy_aitown_request(path: str, request: Request) -> Response:
     if not settings.HUB_AITOWN_ENABLED:
         raise HTTPException(status_code=404, detail="AI Town is not enabled")
     base = str(settings.HUB_AITOWN_UI_URL or "").rstrip("/")
     if not base:
         raise HTTPException(status_code=400, detail="HUB_AITOWN_UI_URL not configured")
-    url = f"{base}/{path.lstrip('/')}" if path else base + "/"
+    url = _upstream_aitown_url(base, path)
     headers = {key: value for key, value in request.headers.items() if key.lower() not in {"host", "content-length"}}
     body = await request.body()
     timeout = aiohttp.ClientTimeout(total=settings.TIMEOUT_SEC)
@@ -1286,6 +1317,96 @@ async def aitown_status() -> dict[str, Any]:
     from scripts.aitown_status import fetch_aitown_status
 
     return fetch_aitown_status(settings)
+
+
+@router.api_route("/aitown-convex/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+async def aitown_convex_proxy(path: str, request: Request) -> Response:
+    """Proxy Convex HTTP so Hub iframe clients only need the Hub port."""
+    if not settings.HUB_AITOWN_ENABLED:
+        raise HTTPException(status_code=404, detail="AI Town is not enabled")
+    base = _aitown_convex_internal_url()
+    url = f"{base}/{path.lstrip('/')}"
+    headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() not in {"host", "content-length", "connection"}
+    }
+    body = await request.body()
+    timeout = aiohttp.ClientTimeout(total=settings.TIMEOUT_SEC)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        try:
+            async with session.request(
+                request.method,
+                url,
+                params=dict(request.query_params),
+                data=body if body else None,
+                headers=headers,
+            ) as response:
+                payload = await response.read()
+                content_type = response.headers.get("content-type", "application/octet-stream")
+                return Response(content=payload, status_code=response.status, media_type=content_type)
+        except aiohttp.ClientError as exc:
+            logger.warning("AI Town Convex proxy error: %s", exc)
+            raise HTTPException(status_code=502, detail="AI Town Convex proxy failed") from exc
+
+
+@router.websocket("/aitown-convex/api/{version}/sync")
+async def aitown_convex_ws_proxy(websocket: WebSocket, version: str) -> None:
+    """Proxy Convex sync WebSocket through Hub (required for embedded iframe clients)."""
+    if not settings.HUB_AITOWN_ENABLED:
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
+    backend_url = _aitown_convex_ws_url(f"api/{version}/sync")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(backend_url, heartbeat=30) as backend_ws:
+
+                async def client_to_backend() -> None:
+                    try:
+                        while True:
+                            msg = await websocket.receive()
+                            if msg.get("type") == "websocket.disconnect":
+                                break
+                            if msg.get("text") is not None:
+                                await backend_ws.send_str(msg["text"])
+                            elif msg.get("bytes") is not None:
+                                await backend_ws.send_bytes(msg["bytes"])
+                    except WebSocketDisconnect:
+                        pass
+
+                async def backend_to_client() -> None:
+                    async for msg in backend_ws:
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            await websocket.send_text(msg.data)
+                        elif msg.type == aiohttp.WSMsgType.BINARY:
+                            await websocket.send_bytes(msg.data)
+                        elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                            break
+
+                await asyncio.gather(client_to_backend(), backend_to_client())
+    except Exception as exc:
+        logger.warning("AI Town Convex websocket proxy error: %s", exc)
+        try:
+            await websocket.close(code=1011)
+        except Exception:
+            pass
+
+
+@router.api_route("/assets/{path:path}", methods=["GET", "HEAD"])
+async def aitown_legacy_assets_proxy(path: str, request: Request) -> Response:
+    """Upstream CSS references /assets/* without the /ai-town vite base."""
+    return await _proxy_aitown_request(f"assets/{path}", request)
+
+
+@router.api_route("/ai-town/{path:path}", methods=["GET", "HEAD"])
+async def aitown_proxy_vite(path: str, request: Request) -> Response:
+    return await _proxy_aitown_request(path, request)
+
+
+@router.api_route("/ai-town", methods=["GET", "HEAD"])
+async def aitown_proxy_vite_root(request: Request) -> Response:
+    return await _proxy_aitown_request("", request)
 
 
 @router.api_route("/aitown/{path:path}", methods=["GET", "HEAD"])

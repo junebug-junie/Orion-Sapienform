@@ -1,0 +1,373 @@
+diff --git a/.dockerignore b/.dockerignore
+index 77d4d87..1f6f14d 100644
+--- a/.dockerignore
++++ b/.dockerignore
+@@ -1,46 +1,3 @@
+-# flyctl launch added from .gitignore
+-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+-
+-# dependencies
+ node_modules
+-**/game/node_modules
+-.pnp
+-**/.pnp.js
+-
+-# testing
+-coverage
+-
+-# next.js
+-.next
+-out
+-
+-# production
+-build
+-
+-# misc
+-**/.DS_Store
+-**/*.pem
+-
+-# debug
+-**/npm-debug.log*
+-**/yarn-debug.log*
+-**/yarn-error.log*
+-
+-# local env files
+-**/.env*.local
+-
+-# vercel
+-**/.vercel
+-
+-# typescript
+-**/*.tsbuildinfo
+-**/next-env.d.ts
+-**/.env
+-.env.prod
+-fly.toml
+-
+-# Vite build
+-**/dist
+-
+-**/convex-local*
+-**/convex_local*
++dist
++.env.local
+diff --git a/Dockerfile b/Dockerfile
+index 09ba4a5..0f50ff9 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -42,7 +42,12 @@ RUN npx update-browserslist-db@latest
+ # Copy application files
+ COPY . .
+ 
++ARG VITE_CONVEX_URL=http://127.0.0.1:3210
++ENV VITE_CONVEX_URL=${VITE_CONVEX_URL}
++
++RUN npm run build
++
+ # Expose necessary ports
+ EXPOSE 5173
+ 
+-CMD ["npx", "vite", "--host"]
++CMD ["npx", "vite", "preview", "--host", "0.0.0.0", "--port", "5173"]
+diff --git a/convex/util/llm.ts b/convex/util/llm.ts
+index a4285d6..c4fc2f9 100644
+--- a/convex/util/llm.ts
++++ b/convex/util/llm.ts
+@@ -4,6 +4,7 @@ const OPENAI_EMBEDDING_DIMENSION = 1536;
+ const TOGETHER_EMBEDDING_DIMENSION = 768;
+ const OLLAMA_EMBEDDING_DIMENSION = 1024;
+ 
++// Orion mesh: vector-host BAAI/bge-large-en-v1.5 (1024). Matches upstream Ollama/mxbai default.
+ export const EMBEDDING_DIMENSION: number = OLLAMA_EMBEDDING_DIMENSION;
+ 
+ export function detectMismatchedLLMProvider() {
+diff --git a/src/App.tsx b/src/App.tsx
+index 48d3662..52b15b4 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -8,20 +8,35 @@ import helpImg from '../assets/help.svg';
+ // import { UserButton } from '@clerk/clerk-react';
+ // import { Authenticated, Unauthenticated } from 'convex/react';
+ // import LoginButton from './components/buttons/LoginButton.tsx';
+-import { useState } from 'react';
++import { useEffect, useState } from 'react';
+ import ReactModal from 'react-modal';
++import clsx from 'clsx';
+ import MusicButton from './components/buttons/MusicButton.tsx';
+ import Button from './components/buttons/Button.tsx';
+ import InteractButton from './components/buttons/InteractButton.tsx';
+ import FreezeButton from './components/FreezeButton.tsx';
+ import { MAX_HUMAN_PLAYERS } from '../convex/constants.ts';
+ import PoweredByConvex from './components/PoweredByConvex.tsx';
++import { isHubEmbed } from './lib/hubEmbed.ts';
+ 
+ export default function Home() {
+   const [helpModalOpen, setHelpModalOpen] = useState(false);
++  const hubEmbed = isHubEmbed();
++
++  useEffect(() => {
++    if (!hubEmbed) return;
++    document.documentElement.classList.add('hub-embed');
++    return () => document.documentElement.classList.remove('hub-embed');
++  }, [hubEmbed]);
++
+   return (
+-    <main className="relative flex min-h-screen flex-col items-center justify-between font-body game-background">
+-      <PoweredByConvex />
++    <main
++      className={clsx(
++        'relative flex flex-col font-body game-background',
++        hubEmbed ? 'h-full min-h-0 overflow-hidden' : 'min-h-screen items-center justify-between',
++      )}
++    >
++      {!hubEmbed && <PoweredByConvex />}
+ 
+       <ReactModal
+         isOpen={helpModalOpen}
+@@ -72,25 +87,40 @@ export default function Home() {
+         </Unauthenticated>
+       </div> */}
+ 
+-      <div className="w-full lg:h-screen min-h-screen relative isolate overflow-hidden lg:p-8 shadow-2xl flex flex-col justify-start">
+-        <h1 className="mx-auto text-4xl p-3 sm:text-8xl lg:text-9xl font-bold font-display leading-none tracking-wide game-title w-full text-left sm:text-center sm:w-auto">
+-          AI Town
+-        </h1>
++      <div
++        className={clsx(
++          'w-full relative isolate shadow-2xl flex flex-col',
++          hubEmbed
++            ? 'hub-embed-shell flex-1 min-h-0 overflow-hidden p-1'
++            : 'lg:h-screen min-h-screen overflow-hidden lg:p-8 justify-start',
++        )}
++      >
++        {!hubEmbed && (
++          <h1 className="mx-auto text-4xl p-3 sm:text-8xl lg:text-9xl font-bold font-display leading-none tracking-wide game-title w-full text-left sm:text-center sm:w-auto">
++            AI Town
++          </h1>
++        )}
++
++        {!hubEmbed && (
++          <div className="max-w-xs md:max-w-xl lg:max-w-none mx-auto my-4 text-center text-base sm:text-xl md:text-2xl text-white leading-tight shadow-solid">
++            A virtual town where AI characters live, chat and socialize.
++          </div>
++        )}
+ 
+-        <div className="max-w-xs md:max-w-xl lg:max-w-none mx-auto my-4 text-center text-base sm:text-xl md:text-2xl text-white leading-tight shadow-solid">
+-          A virtual town where AI characters live, chat and socialize.
+-          {/* <Unauthenticated>
+-            <div className="my-1.5 sm:my-0" />
+-            Log in to join the town
+-            <br className="block sm:hidden" /> and the conversation!
+-          </Unauthenticated> */}
++        <div className={hubEmbed ? 'hub-embed-game flex-1 min-h-0 flex flex-col' : undefined}>
++          <Game hubEmbed={hubEmbed} />
+         </div>
+ 
+-        <Game />
+-
+-        <footer className="justify-end bottom-0 left-0 w-full flex items-center mt-4 gap-3 p-6 flex-wrap pointer-events-none">
+-          <div className="flex gap-4 flex-grow pointer-events-none">
+-            <FreezeButton />
++        <footer
++          className={clsx(
++            'w-full flex items-center gap-2 flex-wrap pointer-events-none',
++            hubEmbed
++              ? 'hub-embed-toolbar shrink-0 justify-start p-2 bg-gray-950/80 border-t border-gray-800'
++              : 'justify-end bottom-0 left-0 mt-4 gap-3 p-6',
++          )}
++        >
++          <div className="flex gap-2 sm:gap-4 flex-grow pointer-events-none flex-wrap">
++            <FreezeButton hubEmbed={hubEmbed} />
+             <MusicButton />
+             <Button href="https://github.com/a16z-infra/ai-town" imgUrl={starImg}>
+               Star
+@@ -100,12 +130,16 @@ export default function Home() {
+               Help
+             </Button>
+           </div>
+-          <a href="https://a16z.com">
+-            <img className="w-8 h-8 pointer-events-auto" src={a16zImg} alt="a16z" />
+-          </a>
+-          <a href="https://convex.dev/c/ai-town">
+-            <img className="w-20 h-8 pointer-events-auto" src={convexImg} alt="Convex" />
+-          </a>
++          {!hubEmbed && (
++            <>
++              <a href="https://a16z.com">
++                <img className="w-8 h-8 pointer-events-auto" src={a16zImg} alt="a16z" />
++              </a>
++              <a href="https://convex.dev/c/ai-town">
++                <img className="w-20 h-8 pointer-events-auto" src={convexImg} alt="Convex" />
++              </a>
++            </>
++          )}
+         </footer>
+         <ToastContainer position="bottom-right" autoClose={2000} closeOnClick theme="dark" />
+       </div>
+diff --git a/src/components/ConvexClientProvider.tsx b/src/components/ConvexClientProvider.tsx
+index 4ba83e1..d6ffad7 100644
+--- a/src/components/ConvexClientProvider.tsx
++++ b/src/components/ConvexClientProvider.tsx
+@@ -6,15 +6,21 @@ import { ConvexReactClient, ConvexProvider } from 'convex/react';
+ /**
+  * Determines the Convex deployment to use.
+  *
+- * We perform load balancing on the frontend, by randomly selecting one of the available instances.
+- * We use localStorage so that individual users stay on the same instance.
++ * When embedded in Orion Hub (iframe), route through the Hub Convex proxy so
++ * browsers only need the Hub port. Standalone uses VITE_CONVEX_URL.
+  */
+ function convexUrl(): string {
+-  const url = import.meta.env.VITE_CONVEX_URL as string;
+-  if (!url) {
++  const envUrl = import.meta.env.VITE_CONVEX_URL as string;
++  if (typeof window !== 'undefined' && window.self !== window.top) {
++    return `${window.location.origin}/aitown-convex`;
++  }
++  if (envUrl?.startsWith('/')) {
++    return `${window.location.origin}${envUrl}`;
++  }
++  if (!envUrl) {
+     throw new Error('Couldn’t find the Convex deployment URL.');
+   }
+-  return url;
++  return envUrl;
+ }
+ 
+ const convex = new ConvexReactClient(convexUrl(), { unsavedChangesWarning: false });
+diff --git a/src/components/FreezeButton.tsx b/src/components/FreezeButton.tsx
+index 2c168f9..0404338 100644
+--- a/src/components/FreezeButton.tsx
++++ b/src/components/FreezeButton.tsx
+@@ -1,8 +1,9 @@
+ import { useMutation, useQuery } from 'convex/react';
+ import { api } from '../../convex/_generated/api';
+ import Button from './buttons/Button';
++import starImg from '../../assets/star.svg';
+ 
+-export default function FreezeButton() {
++export default function FreezeButton({ hubEmbed = false }: { hubEmbed?: boolean }) {
+   const stopAllowed = useQuery(api.testing.stopAllowed) ?? false;
+   const defaultWorld = useQuery(api.world.defaultWorldStatus);
+ 
+@@ -25,9 +26,9 @@ export default function FreezeButton() {
+     <>
+       <Button
+         onClick={flipSwitch}
+-        className="hidden lg:block"
++        className={hubEmbed ? undefined : 'hidden lg:block'}
+         title="When freezing a world, the agents will take some time to stop what they are doing before they become frozen. "
+-        imgUrl="/assets/star.svg"
++        imgUrl={starImg}
+       >
+         {frozen ? 'Unfreeze' : 'Freeze'}
+       </Button>
+diff --git a/src/components/Game.tsx b/src/components/Game.tsx
+index 7cbb43d..6d13668 100644
+--- a/src/components/Game.tsx
++++ b/src/components/Game.tsx
+@@ -11,10 +11,15 @@ import { useHistoricalTime } from '../hooks/useHistoricalTime.ts';
+ import { DebugTimeManager } from './DebugTimeManager.tsx';
+ import { GameId } from '../../convex/aiTown/ids.ts';
+ import { useServerGame } from '../hooks/serverGame.ts';
++import clsx from 'clsx';
+ 
+ export const SHOW_DEBUG_UI = !!import.meta.env.VITE_SHOW_DEBUG_UI;
+ 
+-export default function Game() {
++type GameProps = {
++  hubEmbed?: boolean;
++};
++
++export default function Game({ hubEmbed = false }: GameProps) {
+   const convex = useConvex();
+   const [selectedElement, setSelectedElement] = useState<{
+     kind: 'player';
+@@ -42,7 +47,14 @@ export default function Game() {
+   return (
+     <>
+       {SHOW_DEBUG_UI && <DebugTimeManager timeManager={timeManager} width={200} height={100} />}
+-      <div className="mx-auto w-full max-w grid grid-rows-[240px_1fr] lg:grid-rows-[1fr] lg:grid-cols-[1fr_auto] lg:grow max-w-[1400px] min-h-[480px] game-frame">
++      <div
++        className={clsx(
++          'mx-auto w-full game-frame',
++          hubEmbed
++            ? 'h-full min-h-0 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_11rem] grid-rows-1'
++            : 'grid grid-rows-[240px_1fr] lg:grid-rows-[1fr] lg:grid-cols-[1fr_auto] lg:grow max-w-[1400px] min-h-[480px]',
++        )}
++      >
+         {/* Game area */}
+         <div className="relative overflow-hidden bg-brown-900" ref={gameWrapperRef}>
+           <div className="absolute inset-0">
+@@ -67,7 +79,12 @@ https://github.com/michalochman/react-pixi-fiber/issues/145#issuecomment-5315492
+         </div>
+         {/* Right column area */}
+         <div
+-          className="flex flex-col overflow-y-auto shrink-0 px-4 py-6 sm:px-6 lg:w-96 xl:pr-6 border-t-8 sm:border-t-0 sm:border-l-8 border-brown-900  bg-brown-800 text-brown-100"
++          className={clsx(
++            'flex flex-col overflow-y-auto shrink-0 bg-brown-800 text-brown-100 border-brown-900',
++            hubEmbed
++              ? 'px-2 py-2 lg:border-l-4 border-t-4 lg:border-t-0 text-xs'
++              : 'px-4 py-6 sm:px-6 lg:w-96 xl:pr-6 border-t-8 sm:border-t-0 sm:border-l-8',
++          )}
+           ref={scrollViewRef}
+         >
+           <PlayerDetails
+diff --git a/src/index.css b/src/index.css
+index dbed329..0f50db0 100644
+--- a/src/index.css
++++ b/src/index.css
+@@ -44,6 +44,28 @@ body {
+     rgb(var(--background-start-rgb));
+ }
+ 
++html.hub-embed,
++html.hub-embed body,
++html.hub-embed #root {
++  height: 100%;
++  min-height: 0;
++  overflow: hidden;
++}
++
++html.hub-embed .game-background {
++  background-attachment: scroll;
++}
++
++html.hub-embed .game-frame {
++  border-width: 20px;
++}
++
++@media screen and (min-width: 1024px) {
++  html.hub-embed .game-frame {
++    border-width: 28px;
++  }
++}
++
+ .game-background {
+   background: linear-gradient(rgba(41, 41, 41, 0.8), rgba(41, 41, 41, 0.8)),
+     url(../assets/background.webp);
+diff --git a/src/lib/hubEmbed.ts b/src/lib/hubEmbed.ts
+new file mode 100644
+index 0000000..8ee34b2
+--- /dev/null
++++ b/src/lib/hubEmbed.ts
+@@ -0,0 +1,6 @@
++/** True when AI Town runs inside Orion Hub (or ?hub_embed=1). */
++export function isHubEmbed(): boolean {
++  if (typeof window === 'undefined') return false;
++  if (window.self !== window.top) return true;
++  return new URLSearchParams(window.location.search).has('hub_embed');
++}
+diff --git a/vite.config.ts b/vite.config.ts
+index 04b9320..dc4185d 100644
+--- a/vite.config.ts
++++ b/vite.config.ts
+@@ -6,6 +6,7 @@ export default defineConfig({
+   base: '/ai-town',
+   plugins: [react()],
+   server: {
+-    allowedHosts: ['ai-town-your-app-name.fly.dev', 'localhost', '127.0.0.1'],
++    allowedHosts: true,
++    hmr: false,
+   },
+ });

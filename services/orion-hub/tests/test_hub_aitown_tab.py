@@ -37,6 +37,9 @@ def test_hub_aitown_tab_rendered_when_enabled() -> None:
     assert 'id="aiTownTabButton"' in nav
     assert 'id="ai-town"' in panel
     assert 'id="aitownFrame"' in panel
+    assert 'href="/ai-town/"' in panel
+    assert 'aitownFrameLoading' in panel
+    assert 'src="/ai-town/"' not in panel
 
 
 def test_hub_aitown_tab_hidden_when_disabled() -> None:

@@ -52,6 +52,10 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ORION_LLM_LLAMACPP_URL", "ORION_LLM_LLAMA_CPP_URL"),
     )
     llama_cola_url: Optional[str] = Field(None, alias="ORION_LLM_LLAMA_COLA_URL")
+    orion_vector_host_url: Optional[str] = Field(
+        "http://orion-athena-vector-host:8320",
+        alias="ORION_VECTOR_HOST_URL",
+    )
 
     # If false, the gateway will NOT attempt a secondary embedding call.
     # If true, and the backend response did not already include an embedding/vector,
@@ -108,6 +112,9 @@ class Settings(BaseSettings):
     )
     llm_gateway_anthropic_passthrough_timeout_sec: float = Field(
         900.0, alias="LLM_GATEWAY_ANTHROPIC_PASSTHROUGH_TIMEOUT_SEC"
+    )
+    llm_gateway_openai_passthrough_enabled: bool = Field(
+        True, alias="LLM_GATEWAY_OPENAI_PASSTHROUGH_ENABLED"
     )
     atlas_metacog_service_name: str = Field("atlas-worker-2", alias="ATLAS_METACOG_SERVICE_NAME")
     atlas_metacog_profile_name: Optional[str] = Field(None, alias="ATLAS_METACOG_PROFILE_NAME")

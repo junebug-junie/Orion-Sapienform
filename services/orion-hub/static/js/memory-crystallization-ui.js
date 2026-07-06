@@ -83,20 +83,25 @@
               <div><strong>${escapeHtml(row.subject)}</strong> <span class="text-gray-500">[${escapeHtml(row.kind)}]</span></div>
               <div>${escapeHtml(row.summary)}</div>
               <div class="text-gray-500">Status: ${escapeHtml(row.status)} · Confidence: ${escapeHtml(row.confidence)}</div>
-              <div class="text-gray-500">Projection refs: cards=${(row.projection_refs && row.projection_refs.memory_card_ids || []).length}, chroma=${(row.projection_refs && row.projection_refs.chroma_doc_ids || []).length}</div>
+              <div class="text-gray-500">Projection refs: cards=${(row.projection_refs && row.projection_refs.memory_card_ids || []).length}, chroma=${(row.projection_refs && row.projection_refs.chroma_doc_ids || []).length}, graphiti_eps=${((row.projection_refs && row.projection_refs.graphiti_episode_ids) || []).length}, graphiti_edges=${((row.projection_refs && row.projection_refs.graphiti_edge_ids) || []).length}</div>
               <div class="text-gray-500">Links: ${(links.items || []).length}</div>
               <div class="text-gray-500">Health: chroma=${escapeHtml(health.chroma_collection || "")}, graphiti=${health.graphiti_enabled ? "on" : "off"}</div>
               <div class="flex gap-2 mt-2">
                 <button type="button" data-act="approve" class="px-2 py-1 rounded border border-emerald-700 text-emerald-200">Approve</button>
                 <button type="button" data-act="reject" class="px-2 py-1 rounded border border-red-800 text-red-200">Reject</button>
                 <button type="button" data-act="validate" class="px-2 py-1 rounded border border-gray-600 text-gray-200">Validate</button>
+                <button type="button" data-act="sync-graphiti" class="px-2 py-1 rounded border border-sky-700 text-sky-200">Sync Graphiti</button>
               </div>
             </div>`;
             detailEl.querySelectorAll("button[data-act]").forEach((btn) => {
               btn.addEventListener("click", async () => {
                 const act = btn.getAttribute("data-act");
                 try {
-                  await apiFetch(`/api/memory/crystallizations/proposals/${row.crystallization_id}/${act}`, { method: "POST", body: act === "validate" ? undefined : "{}" });
+                  if (act === "sync-graphiti") {
+                    await apiFetch(`/api/memory/graphiti/sync/${row.crystallization_id}`, { method: "POST", body: "{}" });
+                  } else {
+                    await apiFetch(`/api/memory/crystallizations/proposals/${row.crystallization_id}/${act}`, { method: "POST", body: act === "validate" ? undefined : "{}" });
+                  }
                   setStatus(statusEl, `${act} ok`, false);
                   await loadInbox(listEl, statusEl, detailEl);
                 } catch (e) {

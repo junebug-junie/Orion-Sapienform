@@ -74,7 +74,7 @@ async def retrieve_active_packet(
             extra_crystallization_ids.add(str(cid))
 
     if graphiti_adapter and graphiti_adapter.enabled and seed_crystallization_id:
-        nb = graphiti_adapter.neighborhood(seed_crystallization_id)
+        nb = graphiti_adapter.neighborhood(seed_crystallization_id, depth=2)
         for node in nb.get("nodes") or []:
             nid = node.get("crystallization_id") or node.get("id")
             if nid:

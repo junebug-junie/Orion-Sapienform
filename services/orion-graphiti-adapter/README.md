@@ -13,3 +13,13 @@ Additive temporal graph projection service for `MemoryCrystallizationV1`.
 - `GET /health`
 
 Hub `GraphitiAdapter` calls this service when `GRAPHITI_URL` is set.
+
+## FalkorDB profile (optional)
+
+```bash
+docker compose --profile falkordb \
+  --env-file .env \
+  -f services/orion-graphiti-adapter/docker-compose.yml up -d
+```
+
+Set `FALKORDB_ENABLED=true` in `services/orion-graphiti-adapter/.env`.

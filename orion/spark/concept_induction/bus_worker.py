@@ -19,6 +19,8 @@ from .audit import build_drive_audit
 from .drives import DriveEngine, DriveMathConfig, drive_state_from_values
 from .dossier import build_evidence_items, build_source_event_ref, build_turn_dossier, extract_trace_id, extract_turn_id
 from orion.autonomy.goal_archive import maybe_archive_after_goal_publish
+from orion.autonomy.substrate_metabolism import metabolize_substrate_signals, metabolism_enabled
+from orion.schemas.world_pulse import WorldPulseRunResultV1
 
 from .goals import GoalProposalEngine
 from .identity import (
@@ -492,6 +494,29 @@ class ConceptWorker:
             await self._publish_tension_event(tension, env.correlation_id)
             published_artifacts.append(tension)
 
+        metabolism_tensions: List[TensionEventV1] = []
+        metabolism_curiosity_notes: List[str] = []
+        spawned_correlation_id: str | None = None
+        if env.kind == "world.pulse.run.result.v1":
+            try:
+                wp_result = WorldPulseRunResultV1.model_validate(self._payload_dict(env))
+                spawned_correlation_id = wp_result.run.run_id
+                if metabolism_enabled():
+                    metabolism = metabolize_substrate_signals(world_pulse_result=wp_result)
+                    metabolism_tensions = list(metabolism.tensions)
+                    metabolism_curiosity_notes = [
+                        str(sig.evidence_summary or "").strip()
+                        for sig in metabolism.curiosity_signals
+                        if str(sig.evidence_summary or "").strip()
+                    ]
+                    for tension in metabolism_tensions:
+                        await self._publish_tension_event(tension, env.correlation_id)
+                        published_artifacts.append(tension)
+            except Exception:
+                logger.warning("substrate_metabolism_failed kind=%s", env.kind, exc_info=True)
+
+        all_spark_tensions = spark_tensions + metabolism_tensions
+
         prior_drive_state = self.store.load_drive_state(subject)
         previous_ts = None
         if isinstance(prior_drive_state.get("updated_at"), str):
@@ -503,7 +528,7 @@ class ConceptWorker:
         pressures, activations = self.drive_engine.update(
             previous_pressures=prior_drive_state.get("pressures"),
             previous_activations=prior_drive_state.get("activations"),
-            tensions=spark_tensions,
+            tensions=all_spark_tensions,
             now=now,
             previous_ts=previous_ts,
         )
@@ -521,7 +546,7 @@ class ConceptWorker:
             await self._publish_tension_event(tension, env.correlation_id)
             published_artifacts.append(tension)
 
-        all_tensions = spark_tensions + pressure_tensions
+        all_tensions = all_spark_tensions + pressure_tensions
 
         trace_id = extract_trace_id(env)
         turn_id = extract_turn_id(env)
@@ -567,6 +592,11 @@ class ConceptWorker:
         published_artifacts.append(identity_snapshot)
 
         window_summary = evidence_items[0].summary if evidence_items else drive_state.provenance.evidence_summary
+        if metabolism_curiosity_notes:
+            gap_summary = "; ".join(metabolism_curiosity_notes)
+            window_summary = (
+                f"{window_summary}; {gap_summary}" if window_summary else gap_summary
+            )
         goal_decision = self.goal_engine.propose(
             env=env,
             intake_channel=intake_channel,
@@ -575,6 +605,7 @@ class ConceptWorker:
             store=self.store,
             dominant_drive=drive_audit.dominant_drive,
             window_summary=window_summary,
+            spawned_correlation_id=spawned_correlation_id,
         )
         suppressed_signatures: List[str] = []
         if goal_decision.proposal is not None:

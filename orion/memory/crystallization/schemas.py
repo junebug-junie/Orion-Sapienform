@@ -48,6 +48,7 @@ CrystallizationSourceKind = Literal[
     "rdf_memory_graph",
     "graphiti_episode",
     "operator_note",
+    "autonomy_episode",
 ]
 
 CrystallizationRelation = Literal[
@@ -201,6 +202,8 @@ class MemoryCrystallizationV1(BaseModel):
     links: list[CrystallizationLinkV1] = Field(default_factory=list)
     projection_refs: CrystallizationProjectionRefsV1 = Field(default_factory=CrystallizationProjectionRefsV1)
     governance: CrystallizationGovernanceV1
+
+    provenance: dict[str, Any] = Field(default_factory=dict)
 
     created_at: datetime
     updated_at: datetime

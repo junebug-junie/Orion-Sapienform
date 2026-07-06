@@ -8,6 +8,7 @@ import re
 import time
 from typing import Any, Dict, Iterable, List
 
+from orion.autonomy.action_outcomes import load_action_outcomes
 from orion.autonomy.fanout_policy import autonomy_subject_fanout_from_runtime_ctx
 from orion.autonomy.graph_gate import (
     AutonomyGraphReadPlan,
@@ -2224,7 +2225,7 @@ def _run_autonomy_reducer(ctx: Dict[str, Any], autonomy: Dict[str, Any]):
             subject=subject,
             previous_state=state_obj,
             evidence=evidence,
-            action_outcomes=[],
+            action_outcomes=load_action_outcomes(subject=subject),
         )
     )
 

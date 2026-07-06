@@ -38,6 +38,7 @@ class ConceptSettings(BaseSettings):
             "orion:cognition:trace",
             "orion:substrate:self_state",
             "orion:feedback:frame",
+            "orion:world_pulse:run:result",
         ],
         validation_alias=AliasChoices("BUS_INTAKE_CHANNELS", "CONCEPT_INTAKE_CHANNELS"),
     )
@@ -129,6 +130,10 @@ class ConceptSettings(BaseSettings):
     goal_proposal_cooldown_minutes: int = Field(180, alias="GOAL_PROPOSAL_COOLDOWN_MINUTES")
     goal_generation_mode: str = Field("evidence_rules", alias="GOAL_GENERATION_MODE")
     goal_drive_origin_source: str = Field("audit_dominant", alias="GOAL_DRIVE_ORIGIN_SOURCE")
+    substrate_autonomy_metabolism_enabled: bool = Field(
+        False,
+        alias="ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED",
+    )
 
     # Repository backend / Graph read model (Phase 2)
     concept_profile_repository_backend: str = Field(

@@ -6,6 +6,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from orion.core.schemas.drives import TensionEventV1
+from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
+
 AutonomyStateQuality = Literal[
     "healthy",
     "degraded_drives_timeout",
@@ -157,6 +160,14 @@ class ActionOutcomeRefV1(BaseModel):
     observed_at: datetime | None = None
 
 
+class MetabolismResultV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    drive_deltas: dict[str, float] = Field(default_factory=dict)
+    tensions: list[TensionEventV1] = Field(default_factory=list)
+    curiosity_signals: list[FrontierInvocationSignalV1] = Field(default_factory=list)
+
+
 class AutonomyStateDeltaV1(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -270,3 +281,35 @@ def upgrade_autonomy_state_v1_to_v2(v1: AutonomyStateV1) -> AutonomyStateV2:
         }
     )
     return AutonomyStateV2.model_validate(core)
+
+
+CapabilityDecisionOutcome = Literal["allowed", "denied", "requires_promote"]
+
+
+class CapabilityPolicyRuleV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    capability_id: str
+    side_effect_class: Literal["readonly", "write", "external"]
+    auto_execute: bool = False
+    requires_goal_status: str = "none"
+    required_drive_origins: list[str] = Field(default_factory=list)
+    required_signal_kinds: list[str] = Field(default_factory=list)
+    budget_per_cycle: int = 0
+
+
+class CapabilityPolicyV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    version: str = "v1"
+    rules: list[CapabilityPolicyRuleV1] = Field(default_factory=list)
+
+
+class CapabilityDecisionV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    capability_id: str
+    outcome: CapabilityDecisionOutcome
+    reason_code: str
+    auto_execute: bool = False
+    notes: list[str] = Field(default_factory=list)

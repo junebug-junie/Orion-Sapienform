@@ -20,7 +20,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
          docker-ce-cli \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && git config --global --add safe.directory /mnt/scripts/Orion-Sapienform \
+    && git config --global --add safe.directory '*'
 
 RUN pip3 install --no-cache-dir --upgrade pip
 

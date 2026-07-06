@@ -134,25 +134,56 @@ async def upsert_episode(
     return edge_ids
 
 
-async def neighborhood(pool: asyncpg.Pool, crystallization_id: str) -> dict[str, Any]:
+async def neighborhood(pool: asyncpg.Pool, crystallization_id: str, *, depth: int = 1) -> dict[str, Any]:
+    depth = max(1, min(int(depth), 2))
+    visited_nodes: dict[str, dict] = {}
+    visited_edges: dict[str, dict] = {}
+    frontier = {f"gent_{crystallization_id}", f"gep_{crystallization_id}"}
+
     async with pool.acquire() as conn:
+        for _ in range(depth + 1):
+            if not frontier:
+                break
+            node_ids = list(frontier)
+            frontier = set()
+            rows = await conn.fetch(
+                """
+                SELECT * FROM graphiti_edges
+                WHERE from_id = ANY($1::text[]) OR to_id = ANY($1::text[])
+                """,
+                node_ids,
+            )
+            for row in rows:
+                edge = dict(row)
+                visited_edges[edge["edge_id"]] = edge
+                for nid in (edge["from_id"], edge["to_id"]):
+                    if nid not in visited_nodes:
+                        frontier.add(nid)
+
+        crystallization_ids = {crystallization_id}
+        for edge in visited_edges.values():
+            for nid in (edge["from_id"], edge["to_id"]):
+                if nid.startswith("gent_"):
+                    crystallization_ids.add(nid.removeprefix("gent_"))
+                if nid.startswith("gep_"):
+                    crystallization_ids.add(nid.removeprefix("gep_"))
+
         episodes = await conn.fetch(
-            "SELECT * FROM graphiti_episodes WHERE crystallization_id = $1",
-            crystallization_id,
+            "SELECT * FROM graphiti_episodes WHERE crystallization_id = ANY($1::text[])",
+            list(crystallization_ids),
         )
         entities = await conn.fetch(
-            "SELECT * FROM graphiti_entities WHERE crystallization_id = $1",
-            crystallization_id,
+            "SELECT * FROM graphiti_entities WHERE crystallization_id = ANY($1::text[])",
+            list(crystallization_ids),
         )
-        edges = await conn.fetch(
-            """
-            SELECT * FROM graphiti_edges
-            WHERE from_id LIKE $1 OR to_id LIKE $1
-            """,
-            f"%{crystallization_id}%",
-        )
+
+    for row in list(entities) + list(episodes):
+        key = row["entity_id"] if "entity_id" in row else row["episode_id"]
+        visited_nodes[key] = dict(row)
+
     return {
         "crystallization_id": crystallization_id,
-        "nodes": [dict(e) for e in entities] + [dict(e) for e in episodes],
-        "edges": [dict(e) for e in edges],
+        "depth": depth,
+        "nodes": list(visited_nodes.values()),
+        "edges": list(visited_edges.values()),
     }

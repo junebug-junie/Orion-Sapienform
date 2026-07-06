@@ -51,9 +51,16 @@ def test_neighborhood_after_ingest(mock_pool):
     pool, conn = mock_pool
     conn.fetch = AsyncMock(
         side_effect=[
+            [
+                {
+                    "edge_id": "ged_crys_test001",
+                    "from_id": "gent_crys_test001",
+                    "to_id": "gep_crys_test001",
+                }
+            ],
+            [],
             [{"episode_id": "gep_crys_test001", "crystallization_id": "crys_test001"}],
             [{"entity_id": "gent_crys_test001", "crystallization_id": "crys_test001"}],
-            [{"edge_id": "ged_crys_test001", "from_id": "gent_crys_test001", "to_id": "gep_crys_test001"}],
         ]
     )
     with patch.object(main_mod, "pg_pool", pool):

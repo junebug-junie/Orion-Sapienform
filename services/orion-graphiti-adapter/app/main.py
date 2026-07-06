@@ -93,7 +93,7 @@ async def ingest_episode(body: EpisodeIngestV1) -> dict:
 
 
 @app.get("/v1/neighborhood/{crystallization_id}")
-async def get_neighborhood(crystallization_id: str) -> dict:
+async def get_neighborhood(crystallization_id: str, depth: int = 1) -> dict:
     if pg_pool is None:
         raise HTTPException(status_code=503, detail="store_unavailable")
-    return await neighborhood(pg_pool, crystallization_id)
+    return await neighborhood(pg_pool, crystallization_id, depth=depth)

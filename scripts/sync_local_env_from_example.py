@@ -113,6 +113,10 @@ SYNC_EXACT = frozenset(
         "MEMORY_CONSOLIDATION_ENABLED",
         "LLM_LOGPROB_SUMMARY_ENABLED",
         "HOST_PORT",
+        # Reverie/dream weave — Phase F (orion-dream REM compaction, default-off).
+        "ORION_DREAM_REM_ENABLED",
+        "CHANNEL_DREAM_COMPACTION_DELTA",
+        "DREAM_REM_MAX_REQUESTS",
     }
 )
 
@@ -136,6 +140,7 @@ DEFAULT_SERVICES = (
     "orion-proposal-runtime",
     "orion-thought",
     "orion-harness-governor",
+    "orion-dream",
 )
 
 

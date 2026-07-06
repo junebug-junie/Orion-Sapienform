@@ -2073,6 +2073,18 @@ channels:
     stability: "experimental"
     since: "2026-07-06"
 
+  # --- Compaction delta (Phase F, default-off, staged — applied by nothing) ---
+  # REM narration proposes what sleep *would* do to memory. The hub renders it as
+  # a "what sleep would do" preview; no service applies it (Phase G is gated off).
+  - name: "orion:dream:compaction-delta"
+    kind: "event"
+    schema_id: "MemoryCompactionDeltaV1"
+    message_kind: "dream.compaction.delta.v1"
+    producer_services: ["orion-dream"]
+    consumer_services: []
+    stability: "experimental"
+    since: "2026-07-06"
+
   - name: "orion:harness:run:request"
     kind: "request"
     schema_id: "HarnessRunRequestV1"

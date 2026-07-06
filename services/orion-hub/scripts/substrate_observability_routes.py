@@ -168,6 +168,50 @@ def _compaction_queue_section(engine) -> dict[str, Any] | None:
     return {"pending_count": len(pending), "pending": pending}
 
 
+def _compaction_delta_section(engine) -> dict[str, Any] | None:
+    """"What sleep would do" — staged REM compaction deltas (Phase F).
+
+    Proposals only: every row is `proposal_marked` and `applied_at IS NULL`. The
+    hub previews them; nothing applies them (the applier is Phase G, gated off).
+    Empty until the default-off REM producer runs."""
+    from sqlalchemy import text
+
+    sql = (
+        "SELECT delta_id, dream_id, cards_out, edges_downscaled, rows_pruned, "
+        "bytes_reclaimed_est, proposal_marked, applied_at, created_at, delta_json "
+        "FROM dream_compaction_delta "
+        "WHERE applied_at IS NULL ORDER BY created_at DESC LIMIT :limit"
+    )
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), {"limit": _REVERIE_LIMIT}).mappings().all()
+    if not rows:
+        return None
+    deltas = []
+    for r in rows:
+        delta = _parse_json(r.get("delta_json"))
+        consolidate = delta.get("consolidate") if isinstance(delta, dict) else None
+        gist_cards = [
+            c.get("gist_card")
+            for c in (consolidate or [])
+            if isinstance(c, dict) and c.get("gist_card")
+        ][:_REVERIE_LIMIT]
+        deltas.append(
+            {
+                "delta_id": r.get("delta_id"),
+                "dream_id": r.get("dream_id"),
+                "cards_out": r.get("cards_out"),
+                "edges_downscaled": r.get("edges_downscaled"),
+                "rows_pruned": r.get("rows_pruned"),
+                "bytes_reclaimed_est": r.get("bytes_reclaimed_est"),
+                "proposal_marked": bool(r.get("proposal_marked")),
+                "applied": r.get("applied_at") is not None,
+                "gist_cards": gist_cards,
+                "created_at": _iso(r.get("created_at")),
+            }
+        )
+    return {"staged_count": len(deltas), "applied_any": False, "deltas": deltas}
+
+
 def _curiosity_section(engine) -> dict[str, Any] | None:
     row = _latest_row(
         engine,
@@ -250,6 +294,7 @@ async def observability_summary() -> dict[str, Any]:
         "curiosity": None,
         "reverie": None,
         "compaction_queue": None,
+        "compaction_delta": None,
     }
     if engine is not None:
         for name, loader in (
@@ -258,6 +303,7 @@ async def observability_summary() -> dict[str, Any]:
             ("curiosity", _curiosity_section),
             ("reverie", _reverie_section),
             ("compaction_queue", _compaction_queue_section),
+            ("compaction_delta", _compaction_delta_section),
         ):
             try:
                 sections[name] = loader(engine)

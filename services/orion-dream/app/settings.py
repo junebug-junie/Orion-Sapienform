@@ -32,6 +32,15 @@ class Settings(BaseSettings):
     CHANNEL_DREAM_STATUS: str = Field(default="orion:dream:status")
     CHANNEL_BRAIN_INTAKE: str = Field(default="orion:brain:intake") # Legacy
 
+    # --- REM compaction (Phase F, default-off, staged — applies nothing) ---
+    # When on, REM narration reads the Phase-E compaction-request queue + recent
+    # episodes/motifs and emits a MemoryCompactionDeltaV1 (proposal_marked=true)
+    # on CHANNEL_DREAM_COMPACTION_DELTA. No service applies it; the hub previews it.
+    ORION_DREAM_REM_ENABLED: bool = Field(default=False)
+    CHANNEL_DREAM_COMPACTION_DELTA: str = Field(default="orion:dream:compaction-delta")
+    # Cap on requests drained per REM pass (§cap-all-collections).
+    DREAM_REM_MAX_REQUESTS: int = Field(default=50)
+
     CHANNEL_CORTEX_GATEWAY_REQUEST: str = Field(default="orion:cortex:gateway:request", alias="CORTEX_GATEWAY_REQUEST_CHANNEL")
     CHANNEL_DREAM_REPLY_PREFIX: str = Field(default="orion:dream:reply", alias="DREAM_REPLY_PREFIX")
     DREAM_VERB: str = Field(default="dream_cycle", alias="DREAM_VERB")
@@ -88,4 +97,9 @@ class Settings(BaseSettings):
 settings = Settings()
 
 if settings.DREAM_LOG_DIR:
-     os.makedirs(settings.DREAM_LOG_DIR, exist_ok=True)
+    # Best-effort: importing settings must not crash where the log dir isn't
+    # writable (tests, constrained hosts). The container mounts a writable path.
+    try:
+        os.makedirs(settings.DREAM_LOG_DIR, exist_ok=True)
+    except OSError:
+        pass

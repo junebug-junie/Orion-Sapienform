@@ -12,6 +12,7 @@ for candidate in (str(REPO_ROOT), str(HUB_ROOT)):
         sys.path.insert(0, candidate)
 
 from scripts.substrate_observability_routes import (
+    _compaction_delta_section,
     _compaction_queue_section,
     _reverie_section,
 )
@@ -101,3 +102,43 @@ def test_compaction_queue_section_shapes_rows():
 
 def test_compaction_queue_section_none_when_empty():
     assert _compaction_queue_section(_FakeEngine([])) is None
+
+
+def _delta_row(did="d-1", applied_at=None):
+    return {
+        "delta_id": did,
+        "dream_id": "dream-1",
+        "cards_out": 2,
+        "edges_downscaled": 0,
+        "rows_pruned": 0,
+        "bytes_reclaimed_est": 0,
+        "proposal_marked": True,
+        "applied_at": applied_at,
+        "created_at": datetime(2026, 7, 6, tzinfo=timezone.utc),
+        "delta_json": json.dumps(
+            {
+                "consolidate": [
+                    {"gist_card": "Consolidate theme 'loop:ol-1' from 2 settled episode(s)."},
+                    {"gist_card": "Consolidate theme 'loop:ol-2' from 1 settled episode(s)."},
+                ]
+            }
+        ),
+    }
+
+
+def test_compaction_delta_section_shapes_rows_as_proposals():
+    section = _compaction_delta_section(_FakeEngine([_delta_row("d-1"), _delta_row("d-2")]))
+    assert section is not None
+    assert section["staged_count"] == 2
+    assert section["applied_any"] is False
+    first = section["deltas"][0]
+    assert first["delta_id"] == "d-1"
+    assert first["proposal_marked"] is True
+    assert first["applied"] is False
+    assert first["cards_out"] == 2
+    assert len(first["gist_cards"]) == 2
+    assert first["created_at"].startswith("2026-07-06")
+
+
+def test_compaction_delta_section_none_when_empty():
+    assert _compaction_delta_section(_FakeEngine([])) is None

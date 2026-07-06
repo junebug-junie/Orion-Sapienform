@@ -229,3 +229,30 @@ class TestActivePacketFusion:
         )
         assert "card-1" in packet.card_refs
         assert packet.retrieval_trace.get("rails") == ["postgres_crystallizations", "postgres_memory_cards"]
+
+
+@pytest.mark.asyncio
+async def test_retriever_collects_linked_crystallization_from_graphiti_depth_two():
+    from unittest.mock import MagicMock
+    from orion.memory.crystallization.retriever import retrieve_active_packet
+
+    crys = _active_crystallization()
+    adapter = MagicMock()
+    adapter.enabled = True
+    adapter.neighborhood.return_value = {
+        "enabled": True,
+        "nodes": [
+            {"crystallization_id": crys.crystallization_id},
+            {"crystallization_id": "crys_linked"},
+        ],
+        "edges": [],
+    }
+
+    packet = await retrieve_active_packet(
+        query="test",
+        crystallizations=[crys],
+        graphiti_adapter=adapter,
+        seed_crystallization_id=crys.crystallization_id,
+    )
+    adapter.neighborhood.assert_called_once_with(crys.crystallization_id, depth=2)
+    assert "crys_linked" in packet.graphiti_refs

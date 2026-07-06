@@ -74,6 +74,8 @@ class ProposalRuntimeStore:
                 ts = created_at if created_at.tzinfo else created_at.replace(tzinfo=timezone.utc)
                 if (datetime.now(timezone.utc) - ts).total_seconds() > max_age_sec:
                     return None
+            else:
+                return None  # unknown freshness → treat as stale (defensive)
             payload = row["thought_json"]
             if isinstance(payload, str):
                 payload = json.loads(payload)

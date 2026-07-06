@@ -174,6 +174,17 @@ def test_chain_thought_ids_capped_by_schema():
         )
 
 
+@pytest.mark.asyncio
+async def test_standalone_reverie_superseded_when_chain_enabled(monkeypatch):
+    from app import reverie
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "reverie_enabled", True)
+    monkeypatch.setattr(settings, "reverie_chain_enabled", True)
+    # Returns before touching the bus — no double-emission with chain mode.
+    await reverie.run_reverie_worker(stop_event=None)
+
+
 def test_chain_module_never_reads_a_dream():
     import ast
     from pathlib import Path

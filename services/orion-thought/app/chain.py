@@ -28,6 +28,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
 from orion.schemas.reverie import (
     MAX_CHAIN_THOUGHTS,
+    MAX_EVIDENCE_REFS,
     CompactionRequestV1,
     ReverieChainV1,
     SpontaneousThoughtV1,
@@ -114,7 +115,7 @@ def build_compaction_request(chain: ReverieChainV1) -> CompactionRequestV1 | Non
         theme=chain.theme_key,
         reason=f"reverie_chain_{chain.terminal_reason}",
         op_hint="consolidate",
-        evidence_refs=list(chain.thought_ids)[:200],
+        evidence_refs=list(chain.thought_ids)[:MAX_EVIDENCE_REFS],  # track schema cap
         origin_chain_id=chain.chain_id,
     )
 
@@ -143,7 +144,11 @@ async def run_reverie_chain(
     refractory (suppressed re-trigger). Never raises.
     """
     reader = broadcast_reader or _default_broadcast_reader
-    coalition = reader()
+    try:
+        coalition = reader()
+    except Exception as exc:
+        logger.warning("reverie chain coalition read failed: %s", exc)
+        coalition = None
     if coalition is None:
         logger.info("reverie chain skipped: no coalition")
         return None
@@ -209,9 +214,9 @@ async def run_reverie_chain(
 
         # Phase E: a settled chain queues a compaction *request* (no consumer).
         if settings.reverie_compaction_request_enabled:
-            request = build_compaction_request(chain)
-            if request is not None:
-                with suppress(Exception):
+            with suppress(Exception):
+                request = build_compaction_request(chain)
+                if request is not None:
                     await bus.publish(
                         settings.channel_dream_compaction_request,
                         BaseEnvelope(
@@ -220,7 +225,7 @@ async def run_reverie_chain(
                             payload=request.model_dump(mode="json"),
                         ),
                     )
-                persist_compaction_request(request)
+                    persist_compaction_request(request)
 
     logger.info(
         "reverie chain complete chain=%s steps=%d terminal=%s theme=%s",

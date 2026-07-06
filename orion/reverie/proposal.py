@@ -46,7 +46,9 @@ def spontaneous_thought_to_candidate(
     if thought.salience < min_salience:
         return None
 
-    target_id = (thought.coalition.selected_open_loop_id if thought.coalition else None) or "self_state"
+    target_id = (
+        (thought.coalition.selected_open_loop_id if thought.coalition else None) or self_state_id
+    )
     evidence_refs = list(thought.evidence_refs)[:_MAX_EVIDENCE_REFS]
 
     return ProposalCandidateV1(

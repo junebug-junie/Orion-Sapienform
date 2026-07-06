@@ -317,6 +317,11 @@ async def run_reverie_worker(stop_event: asyncio.Event | None = None) -> None:
     if not settings.reverie_enabled:
         logger.info("reverie disabled; worker not started")
         return
+    if settings.reverie_chain_enabled:
+        # Chain mode already drives run_reverie_once per step; running the
+        # standalone tick too would double-emit to the same channel/table.
+        logger.info("reverie chain enabled; standalone reverie worker superseded")
+        return
     if not settings.orion_bus_enabled:
         logger.info("bus disabled; reverie worker not started")
         return

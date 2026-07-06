@@ -19,6 +19,7 @@ FrontierInvocationSignalTypeV1 = Literal[
     "unresolved_pressure_region",
     "explicit_operator_request",
     "curiosity_candidate",
+    "world_coverage_gap",
 ]
 
 FrontierInvocationOutcomeV1 = Literal["invoke", "defer", "noop", "blocked", "operator_only"]

@@ -6,6 +6,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from orion.core.schemas.drives import TensionEventV1
+from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
+
 AutonomyStateQuality = Literal[
     "healthy",
     "degraded_drives_timeout",
@@ -155,6 +158,14 @@ class ActionOutcomeRefV1(BaseModel):
     success: bool | None = None
     surprise: float = Field(default=0.0, ge=0.0, le=1.0)
     observed_at: datetime | None = None
+
+
+class MetabolismResultV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    drive_deltas: dict[str, float] = Field(default_factory=dict)
+    tensions: list[TensionEventV1] = Field(default_factory=list)
+    curiosity_signals: list[FrontierInvocationSignalV1] = Field(default_factory=list)
 
 
 class AutonomyStateDeltaV1(BaseModel):

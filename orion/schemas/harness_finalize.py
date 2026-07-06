@@ -121,6 +121,13 @@ class HarnessRunRequestV1(BaseModel):
     fcc_model_label: str | None = None
 
 
+class HarnessRunStepV1(BaseModel):
+    schema_version: Literal["harness.run.step.v1"] = "harness.run.step.v1"
+    correlation_id: str
+    step_index: int
+    step: dict[str, Any]
+
+
 class HarnessRunV1(BaseModel):
     schema_version: Literal["harness.run.v1"] = "harness.run.v1"
     correlation_id: str

@@ -284,6 +284,7 @@ def test_registry_schema_kinds_include_thought_event() -> None:
         "HarnessPostTurnClosureV1",
         "HarnessRepairOverlayV1",
         "HarnessRunRequestV1",
+        "HarnessRunStepV1",
         "HarnessRunV1",
     ],
 )

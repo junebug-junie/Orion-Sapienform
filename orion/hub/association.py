@@ -5,9 +5,10 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Callable, Literal
 
-from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
+from orion.schemas.attention_frame import AttentionBroadcastProjectionV1, AttentionFrameV1
 from orion.schemas.pre_turn_appraisal import TurnAppraisalBundleV1
 from orion.schemas.thought import HubAssociationBundleV1
+from orion.thought.coalition import hub_turn_coalition_id
 from orion.substrate.felt_state_reader import (
     SubstrateFeltStateReader,
     substrate_felt_state_database_url,
@@ -72,6 +73,23 @@ def _read_association_data(
     return broadcast, trajectory, _FELT_STATE_READER
 
 
+def with_hub_turn_coalition_anchor(bundle: HubAssociationBundleV1) -> HubAssociationBundleV1:
+    """Ensure the current Hub turn is always a coalition member for fail-closed evidence."""
+    anchor = hub_turn_coalition_id(bundle.correlation_id)
+    broadcast = bundle.broadcast
+    if broadcast is None:
+        broadcast = AttentionBroadcastProjectionV1(
+            generated_at=datetime.now(timezone.utc),
+            frame=AttentionFrameV1(open_loops=[]),
+            attended_node_ids=[anchor],
+        )
+    elif anchor not in broadcast.attended_node_ids:
+        broadcast = broadcast.model_copy(
+            update={"attended_node_ids": [*broadcast.attended_node_ids, anchor]}
+        )
+    return bundle.model_copy(update={"broadcast": broadcast})
+
+
 def build_hub_association_bundle(
     *,
     correlation_id: str,
@@ -81,13 +99,15 @@ def build_hub_association_bundle(
     max_age = substrate_felt_state_max_age_sec()
 
     if not _broadcast_enabled():
-        return HubAssociationBundleV1(
-            correlation_id=correlation_id,
-            broadcast=None,
-            broadcast_stale=True,
-            execution_trajectory_slice=None,
-            repair_bundle=repair_bundle,
-            read_source=_FELT_STATE_READER,
+        return with_hub_turn_coalition_anchor(
+            HubAssociationBundleV1(
+                correlation_id=correlation_id,
+                broadcast=None,
+                broadcast_stale=True,
+                execution_trajectory_slice=None,
+                repair_bundle=repair_bundle,
+                read_source=_FELT_STATE_READER,
+            )
         )
 
     broadcast: AttentionBroadcastProjectionV1 | None = None
@@ -100,11 +120,13 @@ def build_hub_association_bundle(
         broadcast = None
         trajectory = None
 
-    return HubAssociationBundleV1(
-        correlation_id=correlation_id,
-        broadcast=broadcast,
-        broadcast_stale=_broadcast_is_stale(broadcast, max_age_sec=max_age),
-        execution_trajectory_slice=trajectory,
-        repair_bundle=repair_bundle,
-        read_source=read_source,
+    return with_hub_turn_coalition_anchor(
+        HubAssociationBundleV1(
+            correlation_id=correlation_id,
+            broadcast=broadcast,
+            broadcast_stale=_broadcast_is_stale(broadcast, max_age_sec=max_age),
+            execution_trajectory_slice=trajectory,
+            repair_bundle=repair_bundle,
+            read_source=read_source,
+        )
     )

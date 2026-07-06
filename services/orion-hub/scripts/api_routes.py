@@ -705,9 +705,12 @@ def resolve_hub_autonomy_subject_display() -> str:
 @router.get("/")
 async def root():
     """Serves the main Hub UI (index.html)."""
-    from .main import html_content
+    from .main import app, render_hub_index_html
+
+    memory_pool_ok = getattr(app.state, "memory_pg_pool", None) is not None
+    page = render_hub_index_html(memory_pool_ok=memory_pool_ok)
     response = HTMLResponse(
-        content=html_content,
+        content=page,
         status_code=200,
         headers={
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",

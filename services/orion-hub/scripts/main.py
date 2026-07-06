@@ -115,6 +115,91 @@ def build_hub_ui_asset_version() -> str:
     return "dev"
 
 
+def _memory_store_banner(*, pool_ok: bool, dsn_configured: bool) -> tuple[str, str, str]:
+    if pool_ok:
+        return (
+            "true",
+            "border-emerald-800/60 bg-emerald-950/30 text-emerald-100",
+            "Memory store connected. Operator curation and /api/memory/* are available.",
+        )
+    if not dsn_configured:
+        return (
+            "false",
+            "border-amber-800/60 bg-amber-950/40 text-amber-100",
+            (
+                "Memory store unavailable: RECALL_PG_DSN is not set. "
+                "Set it to your conjourney Postgres URL (same DB recall uses), then restart Hub."
+            ),
+        )
+    return (
+        "false",
+        "border-amber-800/60 bg-amber-950/40 text-amber-100",
+        (
+            "Memory store unavailable: RECALL_PG_DSN is set but Postgres did not open a pool. "
+            "Check Hub logs, credentials, and database reachability."
+        ),
+    )
+
+
+def render_hub_index_html(*, memory_pool_ok: bool | None = None) -> str:
+    """Render Hub index.html from disk so volume-mounted template edits apply without stale cache."""
+    try:
+        rendered = (TEMPLATES_DIR / "index.html").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        logger.error("CRITICAL: 'templates/index.html' not found.")
+        return "<html><body><h1>UI template missing</h1></body></html>"
+
+    ui_asset_version = build_hub_ui_asset_version()
+    rendered = rendered.replace("{{NOTIFY_TOAST_SECONDS}}", str(settings.NOTIFY_TOAST_SECONDS))
+    rendered = rendered.replace("{{HUB_UI_ASSET_VERSION}}", ui_asset_version)
+
+    from scripts.memory_graph_suggest_timeout import hub_client_fetch_timeout_ms
+
+    mg_escalation = bool(getattr(settings, "MEMORY_GRAPH_SUGGEST_ENABLE_ESCALATION", True))
+    hub_cfg = {
+        "apiBaseOverride": settings.HUB_API_BASE_OVERRIDE or "",
+        "wsBaseOverride": settings.HUB_WS_BASE_OVERRIDE or "",
+        "autoDefaultEnabled": bool(settings.HUB_AUTO_DEFAULT_ENABLED),
+        "agentClaudeEnabled": bool(getattr(settings, "HUB_AGENT_CLAUDE_ENABLED", False)),
+        "worldPulseFixtureRunEnabled": bool(settings.WORLD_PULSE_UI_FIXTURE_RUN_ENABLED),
+        "memoryGraphSuggestFetchTimeoutMs": hub_client_fetch_timeout_ms(
+            settings, escalation_enabled=mg_escalation
+        ),
+    }
+    rendered = rendered.replace("{{HUB_CFG}}", json.dumps(hub_cfg))
+
+    if bool(getattr(settings, "HUB_AGENT_CLAUDE_ENABLED", False)):
+        agent_claude_mode_options = (
+            '<option value="agent_claude_opus">Agent Claude - Opus</option>'
+            '<option value="agent_claude_sonnet">Agent Claude - Sonnet</option>'
+            '<option value="agent_claude_haiku">Agent Claude - Haiku</option>'
+        )
+    else:
+        agent_claude_mode_options = ""
+    rendered = rendered.replace("{{HUB_AGENT_CLAUDE_MODE_OPTIONS}}", agent_claude_mode_options)
+
+    from scripts.api_routes import resolve_hub_autonomy_subject_display
+
+    rendered = rendered.replace(
+        "{{HUB_AUTONOMY_SUBJECT_DISPLAY}}",
+        resolve_hub_autonomy_subject_display(),
+    )
+
+    if "{{HUB_MEMORY_STORE_READY}}" in rendered:
+        if memory_pool_ok is None:
+            memory_pool_ok = False
+        dsn_configured = bool(str(getattr(settings, "RECALL_PG_DSN", "") or "").strip())
+        ready, banner_class, banner_text = _memory_store_banner(
+            pool_ok=memory_pool_ok,
+            dsn_configured=dsn_configured,
+        )
+        rendered = rendered.replace("{{HUB_MEMORY_STORE_READY}}", ready)
+        rendered = rendered.replace("{{HUB_MEMORY_STORE_BANNER_CLASS}}", banner_class)
+        rendered = rendered.replace("{{HUB_MEMORY_STORE_BANNER_TEXT}}", html.escape(banner_text))
+
+    return rendered
+
+
 # ───────────────────────────────────────────────────────────────
 # 🌐 FastAPI App & Shared Service Handles
 # ───────────────────────────────────────────────────────────────
@@ -339,58 +424,16 @@ async def startup_event():
 
 
     # ------------------------------------------------------------
-    # Load UI HTML Template
+    # Validate UI HTML Template (served fresh from disk on each GET /)
     # ------------------------------------------------------------
     try:
-        with open(TEMPLATES_DIR / "index.html", "r", encoding="utf-8") as f:
-            html_content = f.read()
-        ui_asset_version = build_hub_ui_asset_version()
-        html_content = html_content.replace(
-            "{{NOTIFY_TOAST_SECONDS}}",
-            str(settings.NOTIFY_TOAST_SECONDS),
+        html_content = render_hub_index_html(memory_pool_ok=False)
+        logger.info(
+            "UI template validated (ui_asset_version=%s).",
+            build_hub_ui_asset_version(),
         )
-        html_content = html_content.replace(
-            "{{HUB_UI_ASSET_VERSION}}",
-            ui_asset_version,
-        )
-        from scripts.memory_graph_suggest_timeout import hub_client_fetch_timeout_ms
-
-        mg_escalation = bool(getattr(settings, "MEMORY_GRAPH_SUGGEST_ENABLE_ESCALATION", True))
-        hub_cfg = {
-            "apiBaseOverride": settings.HUB_API_BASE_OVERRIDE or "",
-            "wsBaseOverride": settings.HUB_WS_BASE_OVERRIDE or "",
-            "autoDefaultEnabled": bool(settings.HUB_AUTO_DEFAULT_ENABLED),
-            "agentClaudeEnabled": bool(getattr(settings, "HUB_AGENT_CLAUDE_ENABLED", False)),
-            "worldPulseFixtureRunEnabled": bool(settings.WORLD_PULSE_UI_FIXTURE_RUN_ENABLED),
-            "memoryGraphSuggestFetchTimeoutMs": hub_client_fetch_timeout_ms(
-                settings, escalation_enabled=mg_escalation
-            ),
-        }
-        html_content = html_content.replace(
-            "{{HUB_CFG}}",
-            json.dumps(hub_cfg),
-        )
-        if bool(getattr(settings, "HUB_AGENT_CLAUDE_ENABLED", False)):
-            agent_claude_mode_options = (
-                '<option value="agent_claude_opus">Agent Claude - Opus</option>'
-                '<option value="agent_claude_sonnet">Agent Claude - Sonnet</option>'
-                '<option value="agent_claude_haiku">Agent Claude - Haiku</option>'
-            )
-        else:
-            agent_claude_mode_options = ""
-        html_content = html_content.replace(
-            "{{HUB_AGENT_CLAUDE_MODE_OPTIONS}}",
-            agent_claude_mode_options,
-        )
-        from scripts.api_routes import resolve_hub_autonomy_subject_display
-
-        html_content = html_content.replace(
-            "{{HUB_AUTONOMY_SUBJECT_DISPLAY}}",
-            resolve_hub_autonomy_subject_display(),
-        )
-        logger.info("UI template loaded successfully (ui_asset_version=%s).", ui_asset_version)
-    except FileNotFoundError:
-        logger.error("CRITICAL: 'templates/index.html' not found.")
+    except Exception as exc:
+        logger.error("CRITICAL: failed to render index.html: %s", exc)
         html_content = "<html><body><h1>UI template missing</h1></body></html>"
 
     dsn = str(getattr(settings, "RECALL_PG_DSN", "") or "").strip()
@@ -425,25 +468,13 @@ async def startup_event():
 
     pool_ok = getattr(app.state, "memory_pg_pool", None) is not None
     dsn_configured = bool(dsn)
+    html_content = render_hub_index_html(memory_pool_ok=pool_ok)
     if pool_ok:
-        banner_class = "border-emerald-800/60 bg-emerald-950/30 text-emerald-100"
-        banner_text = "Memory store connected. Operator curation and /api/memory/* are available."
+        logger.info("memory_store_banner=connected")
+    elif not dsn_configured:
+        logger.info("memory_store_banner=dsn_unset")
     else:
-        banner_class = "border-amber-800/60 bg-amber-950/40 text-amber-100"
-        if not dsn_configured:
-            banner_text = (
-                "Memory store unavailable: RECALL_PG_DSN is not set. "
-                "Set it to your conjourney Postgres URL (same DB recall uses), then restart Hub."
-            )
-        else:
-            banner_text = (
-                "Memory store unavailable: RECALL_PG_DSN is set but Postgres did not open a pool. "
-                "Check Hub logs, credentials, and database reachability."
-            )
-    if "{{HUB_MEMORY_STORE_READY}}" in html_content:
-        html_content = html_content.replace("{{HUB_MEMORY_STORE_READY}}", "true" if pool_ok else "false")
-        html_content = html_content.replace("{{HUB_MEMORY_STORE_BANNER_CLASS}}", banner_class)
-        html_content = html_content.replace("{{HUB_MEMORY_STORE_BANNER_TEXT}}", html.escape(banner_text))
+        logger.info("memory_store_banner=pool_unavailable")
 
     logger.info("Startup complete — Hub is ready.")
 

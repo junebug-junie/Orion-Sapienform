@@ -55,6 +55,16 @@ def test_hub_renders_mode_dropdown() -> None:
 def test_hub_mode_specs_include_orion_unified_turn() -> None:
     src = APP_JS.read_text(encoding="utf-8")
     assert "orion: { mode: 'orion'" in src
+    assert "fccModelLabel: 'MODEL_SONNET'" in src
+
+
+def test_render_hub_index_html_reads_template_from_disk() -> None:
+    import scripts.main as hub_main
+
+    rendered = hub_main.render_hub_index_html(memory_pool_ok=False)
+    assert 'id="hubModeSelect"' in rendered
+    assert '<option value="orion"' in rendered
+    assert "{{HUB_UI_ASSET_VERSION}}" not in rendered
 
 
 def test_hub_renders_compute_dropdown_not_chip_row() -> None:

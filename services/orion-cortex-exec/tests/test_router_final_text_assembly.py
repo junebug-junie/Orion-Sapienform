@@ -47,6 +47,15 @@ def test_structured_verb_recovers_json_after_reasoning_prose() -> None:
     assert diag["structured_output_sanitized"] is True
 
 
+def test_stance_react_structured_verb_extracts_json_object() -> None:
+    payload = '{"event_id":"t-1","correlation_id":"c-1","imperative":"hi","tone":"warm"}'
+    final_text, diag = _extract_final_text([
+        _step({"content": f"Stance react output:\\n```json\\n{payload}\\n```"})
+    ], verb_name="stance_react")
+    assert '"event_id":"t-1"' in final_text
+    assert diag["structured_json_extraction_attempted"] is True
+
+
 def test_structured_verb_uses_clean_final_answer_not_reasoning_fields() -> None:
     final_text, diag = _extract_final_text([
         _step(

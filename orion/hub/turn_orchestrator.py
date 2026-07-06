@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from typing import Any, Awaitable, Callable, Protocol
 
 from orion.cognition.answer_contract_normalize import heuristic_answer_contract
 from orion.hub.association import build_hub_association_bundle
+from orion.hub.harness_step_stream import relay_harness_run_steps
 from orion.hub.turn_request import build_orion_turn_request
 from orion.schemas.context_exec import ContextExecPermissionV1
 from orion.schemas.harness_finalize import HarnessRunRequestV1, HarnessRunV1
@@ -17,6 +20,8 @@ from orion.schemas.thought import StanceReactRequestV1, ThoughtEventV1
 from orion.substrate.appraisal.turn_window import build_turn_window
 
 logger = logging.getLogger("orion.hub.turn_orchestrator")
+
+DEFAULT_UNIFIED_TURN_FCC_MODEL_LABEL = "MODEL_SONNET"
 
 EmitObservationFn = Callable[..., Any]
 FrameSender = Callable[[dict[str, Any]], Awaitable[None]]
@@ -99,6 +104,8 @@ def _success_frames(run: HarnessRunV1, *, correlation_id: str) -> list[dict[str,
             "llm_response": run.final_text,
             "finalize_ran": run.finalize_ran,
             "finalize_changed": run.finalize_changed,
+            "harness_step_count": run.step_count,
+            "harness_grounding_status": run.grounding_status,
         }
     )
     return frames
@@ -145,6 +152,7 @@ async def execute_unified_turn(
     continuity_messages: list[dict[str, Any]] | None = None,
     emit_observation_fn: EmitObservationFn | None = None,
     settings: Any | None = None,
+    send_frame: FrameSender | None = None,
 ) -> list[dict[str, Any]]:
     """Run the unified Orion turn saga and return WS frames (never includes draft_text)."""
     from scripts.settings import settings as hub_settings
@@ -231,9 +239,29 @@ async def execute_unified_turn(
         ),
         answer_contract=heuristic_answer_contract(user_message),
         repair_pressure_contract=_repair_pressure_contract(repair_bundle),
-        fcc_model_label=payload.get("fcc_model_label"),
+        fcc_model_label=payload.get("fcc_model_label") or DEFAULT_UNIFIED_TURN_FCC_MODEL_LABEL,
     )
-    run = await HarnessGovernorClient(bus).run(harness_req, correlation_id=correlation_id)
+    step_stop = asyncio.Event()
+    step_task = None
+    if send_frame is not None and bus is not None:
+        step_channel = getattr(cfg, "CHANNEL_HARNESS_RUN_STEP", "orion:harness:run:step")
+        step_task = asyncio.create_task(
+            relay_harness_run_steps(
+                bus,
+                correlation_id=correlation_id,
+                channel=step_channel,
+                send_frame=send_frame,
+                stop_event=step_stop,
+            )
+        )
+    try:
+        run = await HarnessGovernorClient(bus).run(harness_req, correlation_id=correlation_id)
+    finally:
+        step_stop.set()
+        if step_task is not None:
+            step_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await step_task
     if run is None:
         return [
             {
@@ -262,6 +290,12 @@ async def run_unified_turn(
     biometrics_cache: Any = None,
 ) -> list[dict[str, Any]]:
     """Execute unified turn and emit WS frames."""
+    async def _send_live_frame(frame: dict[str, Any]) -> None:
+        outbound = frame
+        if with_biometrics is not None:
+            outbound = await with_biometrics(frame, cache=biometrics_cache)
+        await websocket.send_json(outbound)
+
     frames = await execute_unified_turn(
         bus=bus,
         correlation_id=correlation_id,
@@ -269,6 +303,7 @@ async def run_unified_turn(
         user_message=user_message,
         payload=payload,
         continuity_messages=continuity_messages,
+        send_frame=_send_live_frame,
     )
     for frame in frames:
         outbound = frame

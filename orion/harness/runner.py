@@ -16,8 +16,10 @@ from orion.harness.fcc_motor import (
     summarize_harness_step,
 )
 from orion.harness.grammar_publish import publish_harness_step_grammar
-from orion.harness.prefix import compile_harness_prefix
+from orion.harness.prefix import compile_harness_prefix, harness_motor_instruction
 from orion.harness.repair import map_repair_pressure_contract
+from orion.harness.step_stream import publish_harness_run_step
+from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import (
     GrammarReceiptV1,
     HarnessDraftMoleculeV1,
@@ -62,14 +64,20 @@ def build_harness_prompt(
     thought: ThoughtEventV1,
     user_message: str,
     repair_overlay: HarnessRepairOverlayV1,
+    answer_contract: AnswerContract | None = None,
 ) -> str:
     prefix = compile_harness_prefix(
         thought,
         repair_overlay=repair_overlay,
         user_message=user_message,
+        answer_contract=answer_contract,
+    )
+    instruction = harness_motor_instruction(
+        thought,
+        answer_contract=answer_contract,
     )
     if user_message.strip():
-        return f"{prefix}\n\nRespond to the user."
+        return f"{prefix}\n\n{instruction}"
     return prefix
 
 
@@ -129,11 +137,13 @@ class HarnessRunner:
         bus: Any,
         *,
         grammar_channel: str = "orion:grammar:event",
+        step_channel: str = "orion:harness:run:step",
         fcc_runner: FccRunner | None = None,
         fcc_timeout_sec: float = 120.0,
     ) -> None:
         self.bus = bus
         self.grammar_channel = grammar_channel
+        self.step_channel = step_channel
         self.fcc_runner = fcc_runner or default_fcc_runner
         self.fcc_timeout_sec = fcc_timeout_sec
 
@@ -152,6 +162,7 @@ class HarnessRunner:
             thought=thought,
             user_message=request.user_message,
             repair_overlay=overlay,
+            answer_contract=request.answer_contract,
         )
 
         receipts: list[GrammarReceiptV1] = []
@@ -185,6 +196,21 @@ class HarnessRunner:
                 )
                 receipts.append(receipt)
                 step_count += 1
+                try:
+                    await publish_harness_run_step(
+                        self.bus,
+                        correlation_id=request.correlation_id,
+                        step_index=step_count - 1,
+                        step=step,
+                        channel=self.step_channel,
+                    )
+                except Exception:
+                    logger.warning(
+                        "harness run step publish failed corr=%s index=%s",
+                        request.correlation_id,
+                        step_count - 1,
+                        exc_info=True,
+                    )
             elif etype == "final":
                 draft_text = str(event.get("llm_response") or "").strip()
                 meta = event.get("metadata")
@@ -194,13 +220,15 @@ class HarnessRunner:
                         exit_code = raw_exit
             elif etype == "error":
                 partial = str(event.get("llm_response") or "").strip()
+                error_code = str(event.get("error_code") or "").strip()
+                error_msg = str(event.get("error") or "").strip()
                 if partial:
                     draft_text = partial
                     compliance_verdict = "partial"
-                    grounding_status = "partial"
+                    grounding_status = error_code or "partial"
                 else:
                     compliance_verdict = "failed"
-                    grounding_status = "failed"
+                    grounding_status = error_code or error_msg or "failed"
                 logger.warning(
                     "fcc motor error corr=%s code=%s err=%s",
                     request.correlation_id,

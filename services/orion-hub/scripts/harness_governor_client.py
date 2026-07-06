@@ -26,7 +26,14 @@ class HarnessGovernorClient:
     ) -> HarnessRunV1 | None:
         correlation_id = correlation_id or request.correlation_id or str(uuid.uuid4())
         reply_to = f"{settings.CHANNEL_HARNESS_RESULT_PREFIX}{correlation_id}"
-        wait_sec = max(0.1, float(timeout_sec if timeout_sec is not None else settings.TIMEOUT_SEC))
+        wait_sec = max(
+            0.1,
+            float(
+                timeout_sec
+                if timeout_sec is not None
+                else settings.HUB_HARNESS_GOVERNOR_RPC_TIMEOUT_SEC
+            ),
+        )
         envelope = BaseEnvelope(
             kind="harness.run.request.v1",
             source=self._source,

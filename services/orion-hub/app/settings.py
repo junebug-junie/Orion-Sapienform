@@ -416,6 +416,11 @@ class Settings(BaseSettings):
     # --- Unified Orion turn (orion-thought + harness governor) ---
     ORION_UNIFIED_TURN_ENABLED: bool = Field(default=False, alias="ORION_UNIFIED_TURN_ENABLED")
     ORION_HARNESS_GOVERNOR_ENABLED: bool = Field(default=False, alias="ORION_HARNESS_GOVERNOR_ENABLED")
+    HUB_HARNESS_GOVERNOR_RPC_TIMEOUT_SEC: float = Field(
+        default=960.0,
+        alias="HUB_HARNESS_GOVERNOR_RPC_TIMEOUT_SEC",
+        description="Hub bus RPC wait for unified-turn harness governor (FCC motor + finalize chain).",
+    )
     CHANNEL_THOUGHT_REQUEST: str = Field(
         default="orion:thought:request",
         alias="CHANNEL_THOUGHT_REQUEST",
@@ -431,6 +436,10 @@ class Settings(BaseSettings):
     CHANNEL_HARNESS_RESULT_PREFIX: str = Field(
         default="orion:harness:run:result:",
         alias="CHANNEL_HARNESS_RESULT_PREFIX",
+    )
+    CHANNEL_HARNESS_RUN_STEP: str = Field(
+        default="orion:harness:run:step",
+        alias="CHANNEL_HARNESS_RUN_STEP",
     )
 
     ENABLE_PRE_TURN_APPRAISAL: bool = Field(default=False, alias="ENABLE_PRE_TURN_APPRAISAL")

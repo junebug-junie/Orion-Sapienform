@@ -9367,7 +9367,7 @@ loadDismissedIds();
   const hubComputeSelect = document.getElementById('hubComputeSelect');
   const HUB_MODE_SPECS = {
     auto: { mode: 'auto', verb: null, lane: null, label: 'Auto' },
-    orion: { mode: 'orion', verb: null, lane: 'orion', label: 'Orion' },
+    orion: { mode: 'orion', fccModelLabel: 'MODEL_SONNET', verb: null, lane: 'orion', label: 'Orion' },
     grounded_small: { mode: 'brain', verb: null, lane: 'grounded_small', label: 'Grounded Small' },
     brain: { mode: 'brain', verb: null, lane: 'brain', label: 'Brain' },
     quick: { mode: 'brain', verb: 'chat_quick', lane: 'quick', label: 'Quick' },
@@ -9390,6 +9390,12 @@ loadDismissedIds();
     payload.fcc_model_label = spec.fccModelLabel || 'MODEL_SONNET';
     payload.use_recall = false;
     payload.llm_route = null;
+  }
+
+  function applyOrionUnifiedPayloadFields(payload) {
+    const spec = hubModeSpec();
+    if (spec.mode !== 'orion') return;
+    payload.fcc_model_label = spec.fccModelLabel || 'MODEL_SONNET';
   }
 
   function applyHubModeSelection(modeKey, { silent = false } = {}) {
@@ -10500,6 +10506,20 @@ loadDismissedIds();
     socket.onmessage = (e) => {
       try {
           const d = JSON.parse(e.data);
+          if (d.type === 'turn_deferred') {
+            appendMessage(
+              'System',
+              `Turn deferred: ${d.reason || 'stance unavailable'}`,
+              'text-yellow-400',
+            );
+            return;
+          }
+          if (d.type === 'turn_error') {
+            const phase = d.phase ? ` (${d.phase})` : '';
+            const detail = d.error || d.grounding_status || 'turn failed';
+            appendMessage('System', `Turn error${phase}: ${detail}`, 'text-red-400');
+            return;
+          }
           const displayText = resolveAssistantDisplayText(d);
           if (d.transcript && !d.is_text_input) appendMessage('You', d.transcript);
           if (shouldAppendOrionWsPayload(d)) {
@@ -10851,6 +10871,7 @@ loadDismissedIds();
       payload.mode = requestMode;
     }
     applyAgentClaudePayloadFields(payload);
+    applyOrionUnifiedPayloadFields(payload);
     const optFromOpts = opts && opts.options && typeof opts.options === 'object' ? { ...opts.options } : {};
     if (isChatQuickSend) {
       payload.options = { ...optFromOpts, chat_quick_full_stance: chatQuickVariant === 'stance' };
@@ -11210,6 +11231,7 @@ loadDismissedIds();
             : null,
         };
         applyAgentClaudePayloadFields(audioPayload);
+        applyOrionUnifiedPayloadFields(audioPayload);
         const audioLaneVerbs = modeVerbOverride ? [modeVerbOverride] : selectedVerbs;
         const audioIsChatQuick =
           Array.isArray(audioLaneVerbs) &&

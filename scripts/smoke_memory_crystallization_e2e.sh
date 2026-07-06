@@ -55,4 +55,41 @@ PKT_CODE="$(echo "$PKT" | tail -n 1)"
 [[ "$PKT_CODE" == "200" ]] || { echo "FAIL active-packet HTTP $PKT_CODE"; exit 1; }
 echo "$PKT_BODY" | jq -c '{crystallization_refs, card_refs, chroma_refs, retrieval_trace}'
 
+echo "== projection health (graphiti flag) =="
+PROJ_HEALTH=$(curl -sS "${HDR[@]}" "${BASE}/api/memory/crystallizations/projection/health")
+echo "$PROJ_HEALTH" | jq -c .
+GRAPHITI_ON="$(echo "$PROJ_HEALTH" | jq -r '.graphiti_enabled // false')"
+
+_skip_graphiti() {
+  echo "WARN: skipping Graphiti steps ($1)"
+}
+
+if [[ "${GRAPHITI_SKIP:-0}" == "1" ]]; then
+  _skip_graphiti "GRAPHITI_SKIP=1"
+elif [[ "$GRAPHITI_ON" != "true" ]]; then
+  _skip_graphiti "graphiti_enabled=false"
+else
+  echo "== graphiti sync =="
+  SYNC=$(curl -sS -w "\n%{http_code}" -X POST "${BASE}/api/memory/graphiti/sync/${CID}" "${HDR[@]}" -d '{}')
+  SYNC_BODY="$(echo "$SYNC" | head -n -1)"
+  SYNC_CODE="$(echo "$SYNC" | tail -n 1)"
+  [[ "$SYNC_CODE" == "200" ]] || { echo "FAIL graphiti sync HTTP $SYNC_CODE body=$SYNC_BODY"; exit 1; }
+  EP_COUNT="$(echo "$SYNC_BODY" | jq -r '(.graphiti.episode_ids // []) | length')"
+  [[ "$EP_COUNT" -ge 1 ]] || { echo "FAIL graphiti sync returned no episode_ids"; exit 1; }
+
+  echo "== graphiti neighborhood =="
+  NB=$(curl -sS -w "\n%{http_code}" "${HDR[@]}" "${BASE}/api/memory/graphiti/neighborhood/${CID}")
+  NB_BODY="$(echo "$NB" | head -n -1)"
+  NB_CODE="$(echo "$NB" | tail -n 1)"
+  [[ "$NB_CODE" == "200" ]] || { echo "FAIL neighborhood HTTP $NB_CODE"; exit 1; }
+  NODE_COUNT="$(echo "$NB_BODY" | jq -r '(.nodes // []) | length')"
+  [[ "$NODE_COUNT" -ge 1 ]] || { echo "FAIL neighborhood nodes empty"; exit 1; }
+
+  echo "== graphiti health =="
+  GH=$(curl -sS "${HDR[@]}" "${BASE}/api/memory/graphiti/health")
+  echo "$GH" | jq -c .
+  [[ "$(echo "$GH" | jq -r '.enabled')" == "true" ]] || { echo "FAIL graphiti health enabled!=true"; exit 1; }
+  [[ "$(echo "$GH" | jq -r '.url_configured')" == "true" ]] || { echo "FAIL graphiti health url_configured!=true"; exit 1; }
+fi
+
 echo "PASS smoke_memory_crystallization_e2e crystallization_id=${CID}"

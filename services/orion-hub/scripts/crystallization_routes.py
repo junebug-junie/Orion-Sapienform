@@ -17,6 +17,7 @@ from orion.memory.crystallization.chroma_publish import publish_crystallization_
 from orion.memory.crystallization.governor import GovernorError, approve, quarantine, reject, supersede
 from orion.memory.crystallization.links import insert_link, list_links, neighborhood as link_neighborhood
 from orion.memory.crystallization.projection_cards import build_memory_card_projection
+from orion.memory.crystallization.graphiti_config import resolve_graphiti_adapter_url
 from orion.memory.crystallization.projection_graphiti import GraphitiAdapter
 from orion.memory.crystallization.projection_rdf import build_rdf_projection_hint
 from orion.memory.crystallization.projector import ProjectionConfig, project_crystallization
@@ -71,7 +72,7 @@ def _settings():
 
 def _graphiti(request: Request) -> GraphitiAdapter:
     settings = _settings()
-    adapter_url = (getattr(settings, "GRAPHITI_ADAPTER_URL", "") or getattr(settings, "GRAPHITI_URL", "") or "").strip()
+    adapter_url = resolve_graphiti_adapter_url(settings)
     return GraphitiAdapter(
         enabled=bool(getattr(settings, "GRAPHITI_ENABLED", False)) or bool(adapter_url),
         url=adapter_url or None,
@@ -81,13 +82,14 @@ def _graphiti(request: Request) -> GraphitiAdapter:
 
 def _projection_config() -> ProjectionConfig:
     s = _settings()
+    adapter_url = resolve_graphiti_adapter_url(s)
     return ProjectionConfig(
         collection=getattr(s, "CRYSTALLIZER_VECTOR_COLLECTION", "orion_memory_crystallizations"),
         embed_host_url=getattr(s, "CRYSTALLIZER_EMBED_HOST_URL", "") or "",
         embed_mode=getattr(s, "CRYSTALLIZER_EMBED_MODE", "http") or "http",
         embed_timeout_ms=int(getattr(s, "CRYSTALLIZER_EMBED_TIMEOUT_MS", 8000) or 8000),
-        graphiti_enabled=bool(getattr(s, "GRAPHITI_ENABLED", False)),
-        graphiti_url=getattr(s, "GRAPHITI_URL", "") or "",
+        graphiti_enabled=bool(getattr(s, "GRAPHITI_ENABLED", False)) or bool(adapter_url),
+        graphiti_url=adapter_url,
         falkordb_uri=getattr(s, "FALKORDB_URI", "") or "",
         service_name=getattr(s, "SERVICE_NAME", "orion-hub"),
         service_version=getattr(s, "SERVICE_VERSION", "0.1.0"),

@@ -161,12 +161,19 @@ def render_hub_index_html(*, memory_pool_ok: bool | None = None) -> str:
         "wsBaseOverride": settings.HUB_WS_BASE_OVERRIDE or "",
         "autoDefaultEnabled": bool(settings.HUB_AUTO_DEFAULT_ENABLED),
         "agentClaudeEnabled": bool(getattr(settings, "HUB_AGENT_CLAUDE_ENABLED", False)),
+        "aitownEnabled": bool(getattr(settings, "HUB_AITOWN_ENABLED", False)),
         "worldPulseFixtureRunEnabled": bool(settings.WORLD_PULSE_UI_FIXTURE_RUN_ENABLED),
         "memoryGraphSuggestFetchTimeoutMs": hub_client_fetch_timeout_ms(
             settings, escalation_enabled=mg_escalation
         ),
     }
     rendered = rendered.replace("{{HUB_CFG}}", json.dumps(hub_cfg))
+
+    from scripts.aitown_ui import render_aitown_tab_blocks
+
+    aitown_nav, aitown_panel = render_aitown_tab_blocks(settings)
+    rendered = rendered.replace("{{HUB_AITOWN_TAB_NAV}}", aitown_nav)
+    rendered = rendered.replace("{{HUB_AITOWN_PANEL}}", aitown_panel)
 
     if bool(getattr(settings, "HUB_AGENT_CLAUDE_ENABLED", False)):
         agent_claude_mode_options = (

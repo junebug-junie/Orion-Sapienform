@@ -124,3 +124,17 @@ seeds and propagates activation pressure from those `prediction_error` values.
 Only meaningful once `SUBSTRATE_WRITE_PREDICTION_ERROR_NODES=true` and
 `SUBSTRATE_STORE_BACKEND=sparql` (Fuseki) are set — with the in-memory default store the
 prediction-error nodes are process-local and this tick has nothing durable to consume.
+
+## Unified turn bus listeners
+
+Besides grammar poll reducers, substrate-runtime subscribes to RPC-style harness channels:
+
+| Listener | Channel | Env keys |
+|----------|---------|----------|
+| Finalize appraisal (5a) | `orion:substrate:finalize_appraisal:request` | `CHANNEL_FINALIZE_APPRAISAL_REQUEST`, `CHANNEL_FINALIZE_APPRAISAL_RESULT_PREFIX` |
+| Post-turn closure (step 7) | `orion:substrate:post_turn_closure` | `CHANNEL_POST_TURN_CLOSURE`, `ENABLE_POST_TURN_CLOSURE_LISTENER` |
+
+Post-turn closure logs `post_turn_closure received …` on ingest. When
+`surprise_unresolved=true`, it attempts a rung-1 prediction-error graph write only if
+`SUBSTRATE_WRITE_PREDICTION_ERROR_NODES=true` (logs `post_turn_closure_prediction_error_write`
+or `…_skipped` otherwise). Full Task 21 strain reducers are not implemented here.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
@@ -8,6 +9,8 @@ from orion.schemas.grammar import GrammarAtomV1, GrammarEventV1, GrammarProvenan
 from orion.schemas.harness_finalize import GrammarReceiptV1
 
 PublishFn = Callable[..., Awaitable[None]]
+
+logger = logging.getLogger("orion.harness.grammar_publish")
 
 
 def _build_harness_step_event(
@@ -69,6 +72,14 @@ async def publish_harness_step_grammar(
         await publish_grammar_event(
             bus, event, source_name="orion-harness-governor", channel=channel
         )
+    logger.info(
+        "harness_grammar_step_published corr=%s channel=%s step=%s tool=%s event_id=%s",
+        correlation_id,
+        channel,
+        step_index,
+        tool_name or "none",
+        event.event_id,
+    )
     return GrammarReceiptV1(
         step_index=step_index,
         tool_name=tool_name,

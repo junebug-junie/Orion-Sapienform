@@ -14,6 +14,7 @@ from orion.schemas.biometrics_projection import (
     NodeBiometricsProjectionV1,
 )
 from orion.schemas.grammar import GrammarEventV1
+from orion.schemas.harness_finalize import HarnessPostTurnClosureV1
 from orion.schemas.reduction_receipt import ReductionReceiptV1
 from orion.substrate.biometrics_loop.constants import (
     ACTIVE_NODE_PRESSURE_PROJECTION_ID,
@@ -66,6 +67,8 @@ logger = logging.getLogger("orion.substrate.runtime")
 
 _PREDICTION_ERROR_NODE_FLAG = "SUBSTRATE_WRITE_PREDICTION_ERROR_NODES"
 _TRUTHY = {"1", "true", "yes", "on"}
+# Fixed signal until HarnessPostTurnClosureV1 carries surprise_level_at_draft.
+_HARNESS_CLOSURE_UNRESOLVED_ERROR = 0.65
 
 
 def _prediction_error_nodes_enabled() -> bool:
@@ -643,6 +646,29 @@ class BiometricsSubstrateWorker:
                 node_id,
                 exc_info=True,
             )
+
+    def handle_post_turn_closure(self, closure: HarnessPostTurnClosureV1) -> None:
+        """Bridge unresolved harness surprise into durable prediction_error nodes."""
+        if not closure.surprise_unresolved:
+            return
+        if not _prediction_error_nodes_enabled():
+            logger.info(
+                "post_turn_closure_prediction_error_skipped corr=%s reason=SUBSTRATE_WRITE_PREDICTION_ERROR_NODES_disabled",
+                closure.correlation_id,
+            )
+            return
+        logger.info(
+            "post_turn_closure_prediction_error_write corr=%s node_id=%s error=%.2f",
+            closure.correlation_id,
+            f"harness_closure:{closure.correlation_id}",
+            _HARNESS_CLOSURE_UNRESOLVED_ERROR,
+        )
+        self._write_prediction_error_node(
+            node_id=f"harness_closure:{closure.correlation_id}",
+            error=_HARNESS_CLOSURE_UNRESOLVED_ERROR,
+            now=datetime.now(timezone.utc),
+            reducer_key="post_turn_closure",
+        )
 
     def _dynamics_tick(self) -> None:
         """Periodic pacemaker for the graph substrate (closes PR #766 rung-1 gap).

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import uuid
 from dataclasses import dataclass
@@ -27,6 +28,8 @@ from orion.thought.policy_refusal import TRUST_RUPTURE_DEFER_THRESHOLD
 CortexClientFn = Callable[[PlanExecutionRequest], Awaitable[dict[str, Any]]]
 SubstrateClientFn = Callable[[HarnessDraftMoleculeV1], Awaitable[SubstrateFinalizeAppraisalV1]]
 PublishFn = Callable[..., Awaitable[None]]
+
+logger = logging.getLogger("orion.harness.finalize")
 
 DEFAULT_QUICK_GATE_EPSILON = 0.08
 OPEN_LOOP_PRESSURE_MAX = 0.2
@@ -279,6 +282,12 @@ async def emit_verdict_molecule(
     )
     if publish_fn is not None:
         await publish_fn(molecule, channel=channel)
+        logger.info(
+            "harness_verdict_published corr=%s channel=%s alignment=%s",
+            correlation_id,
+            channel,
+            reflection.alignment_verdict,
+        )
     elif bus is not None:
         from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
@@ -289,6 +298,12 @@ async def emit_verdict_molecule(
             payload=molecule.model_dump(mode="json"),
         )
         await bus.publish(channel, envelope)
+        logger.info(
+            "harness_verdict_published corr=%s channel=%s alignment=%s",
+            correlation_id,
+            channel,
+            reflection.alignment_verdict,
+        )
     return molecule
 
 
@@ -500,6 +515,13 @@ async def emit_turn_outcome_molecule(
     )
     if publish_fn is not None:
         await publish_fn(molecule, channel=channel)
+        logger.info(
+            "harness_turn_outcome_published corr=%s channel=%s surprise_resolved=%s grammar_events=%d",
+            correlation_id,
+            channel,
+            surprise_resolved,
+            len(grammar_event_ids),
+        )
     elif bus is not None:
         from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
@@ -510,6 +532,13 @@ async def emit_turn_outcome_molecule(
             payload=molecule.model_dump(mode="json"),
         )
         await bus.publish(channel, envelope)
+        logger.info(
+            "harness_turn_outcome_published corr=%s channel=%s surprise_resolved=%s grammar_events=%d",
+            correlation_id,
+            channel,
+            surprise_resolved,
+            len(grammar_event_ids),
+        )
     return molecule
 
 
@@ -654,6 +683,13 @@ async def emit_post_turn_closure(
     )
     if publish_fn is not None:
         await publish_fn(closure, channel=channel)
+        logger.info(
+            "harness_post_turn_closure_published corr=%s channel=%s surprise_unresolved=%s grammar_events=%d",
+            correlation_id,
+            channel,
+            closure.surprise_unresolved,
+            len(closure.grammar_event_ids),
+        )
     elif bus is not None:
         from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 
@@ -664,4 +700,11 @@ async def emit_post_turn_closure(
             payload=closure.model_dump(mode="json"),
         )
         await bus.publish(channel, envelope)
+        logger.info(
+            "harness_post_turn_closure_published corr=%s channel=%s surprise_unresolved=%s grammar_events=%d",
+            correlation_id,
+            channel,
+            closure.surprise_unresolved,
+            len(closure.grammar_event_ids),
+        )
     return closure

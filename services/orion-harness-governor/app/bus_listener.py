@@ -151,13 +151,20 @@ async def handle_harness_run_request(
     )
     await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
 
-    await emit_post_turn_closure(
+    closure = await emit_post_turn_closure(
         correlation_id=corr,
         outcome_molecule=chain.outcome_molecule,
         verdict_molecule_id=chain.verdict_molecule_id,
         grammar_event_ids=run.grammar_event_ids,
         channel=settings.channel_post_turn_closure,
         bus=bus,
+    )
+    logger.info(
+        "harness_post_turn_closure_emitted corr=%s channel=%s surprise_unresolved=%s outcome_id=%s",
+        corr,
+        settings.channel_post_turn_closure,
+        closure.surprise_unresolved,
+        closure.outcome_molecule_id,
     )
     return run
 

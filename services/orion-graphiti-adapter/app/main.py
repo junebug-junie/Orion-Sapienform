@@ -14,6 +14,12 @@ logger = logging.getLogger(settings.SERVICE_NAME)
 pg_pool: Optional[asyncpg.Pool] = None
 
 
+class CrystallizationLinkIngestV1(BaseModel):
+    target_crystallization_id: str
+    relation: str
+    confidence: float = 0.5
+
+
 class EpisodeIngestV1(BaseModel):
     crystallization_id: str
     kind: str
@@ -21,6 +27,7 @@ class EpisodeIngestV1(BaseModel):
     summary: str
     status: str = "active"
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    links: list[CrystallizationLinkIngestV1] = Field(default_factory=list)
 
 
 @asynccontextmanager
@@ -54,7 +61,7 @@ async def ingest_episode(body: EpisodeIngestV1) -> dict:
     if pg_pool is None:
         raise HTTPException(status_code=503, detail="store_unavailable")
     episode_id = f"gep_{body.crystallization_id}"
-    await upsert_episode(
+    edge_ids = await upsert_episode(
         pg_pool,
         episode_id=episode_id,
         crystallization_id=body.crystallization_id,
@@ -63,6 +70,7 @@ async def ingest_episode(body: EpisodeIngestV1) -> dict:
         summary=body.summary,
         status=body.status,
         metadata=body.metadata,
+        links=[l.model_dump() for l in body.links],
     )
     falkor_result = None
     if settings.FALKORDB_ENABLED:
@@ -77,7 +85,8 @@ async def ingest_episode(body: EpisodeIngestV1) -> dict:
     return {
         "episode_id": episode_id,
         "entity_id": f"gent_{body.crystallization_id}",
-        "edge_id": f"ged_{body.crystallization_id}",
+        "edge_id": edge_ids[0] if edge_ids else f"ged_{body.crystallization_id}",
+        "edge_ids": edge_ids,
         "falkordb": falkor_result,
         "canonical_mutated": False,
     }

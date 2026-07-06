@@ -48,7 +48,9 @@ async def upsert_episode(
     summary: str,
     status: str,
     metadata: dict[str, Any],
-) -> None:
+    links: list[dict[str, Any]] | None = None,
+) -> list[str]:
+    edge_ids: list[str] = []
     async with pool.acquire() as conn:
         await conn.execute(
             """
@@ -96,6 +98,40 @@ async def upsert_episode(
             "has_episode",
             json.dumps({"crystallization_id": crystallization_id}),
         )
+        edge_ids.append(edge_id)
+
+        for link in links or []:
+            target_id = str(link["target_crystallization_id"])
+            relation = str(link["relation"])
+            confidence = float(link.get("confidence", 0.5))
+            target_entity_id = f"gent_{target_id}"
+            await conn.execute(
+                """
+                INSERT INTO graphiti_entities (entity_id, crystallization_id, name, metadata)
+                VALUES ($1, $2, $3, $4::jsonb)
+                ON CONFLICT (entity_id) DO NOTHING
+                """,
+                target_entity_id,
+                target_id,
+                f"stub:{target_id}",
+                json.dumps({"stub": True}),
+            )
+            from_entity_id = f"gent_{crystallization_id}"
+            link_edge_id = f"ged_{crystallization_id}_{target_id}_{relation}"
+            await conn.execute(
+                """
+                INSERT INTO graphiti_edges (edge_id, from_id, to_id, relation, metadata)
+                VALUES ($1, $2, $3, $4, $5::jsonb)
+                ON CONFLICT (edge_id) DO UPDATE SET metadata = EXCLUDED.metadata
+                """,
+                link_edge_id,
+                from_entity_id,
+                target_entity_id,
+                relation,
+                json.dumps({"confidence": confidence, "note": link.get("note")}),
+            )
+            edge_ids.append(link_edge_id)
+    return edge_ids
 
 
 async def neighborhood(pool: asyncpg.Pool, crystallization_id: str) -> dict[str, Any]:

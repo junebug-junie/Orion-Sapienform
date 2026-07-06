@@ -6,9 +6,11 @@ import asyncpg
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from app.backends import graphiti_core as core_backend
+from app.backends import orion_postgres as pg_backend
 from app.falkordb import sync_to_falkordb
 from app.settings import settings
-from app.store import apply_graphiti_schema, neighborhood, upsert_episode
+from app.store import apply_graphiti_schema
 
 logger = logging.getLogger(settings.SERVICE_NAME)
 pg_pool: Optional[asyncpg.Pool] = None
@@ -28,6 +30,16 @@ class EpisodeIngestV1(BaseModel):
     status: str = "active"
     metadata: Dict[str, Any] = Field(default_factory=dict)
     links: list[CrystallizationLinkIngestV1] = Field(default_factory=list)
+
+
+class SearchRequestV1(BaseModel):
+    query: str
+    seed_crystallization_id: str | None = None
+    limit: int = 10
+
+
+def _backend():
+    return core_backend if settings.GRAPHITI_BACKEND == "graphiti_core" else pg_backend
 
 
 @asynccontextmanager
@@ -53,36 +65,56 @@ async def health() -> dict:
         "service": settings.SERVICE_NAME,
         "postgres": pg_pool is not None,
         "falkordb_enabled": settings.FALKORDB_ENABLED,
+        "backend": settings.GRAPHITI_BACKEND,
     }
 
 
 @app.post("/v1/episodes")
 async def ingest_episode(body: EpisodeIngestV1) -> dict:
-    if pg_pool is None:
-        raise HTTPException(status_code=503, detail="store_unavailable")
+    backend = _backend()
     episode_id = f"gep_{body.crystallization_id}"
-    edge_ids = await upsert_episode(
-        pg_pool,
-        episode_id=episode_id,
-        crystallization_id=body.crystallization_id,
-        kind=body.kind,
-        subject=body.subject,
-        summary=body.summary,
-        status=body.status,
-        metadata=body.metadata,
-        links=[l.model_dump() for l in body.links],
-    )
+    link_payload = [l.model_dump() for l in body.links]
     falkor_result = None
-    if settings.FALKORDB_ENABLED:
-        falkor_result = sync_to_falkordb(
-            uri=settings.FALKORDB_URI,
-            graph_name=settings.FALKORDB_GRAPH,
+
+    if settings.GRAPHITI_BACKEND == "graphiti_core":
+        result = await backend.ingest_episode(
+            pg_pool,
             crystallization_id=body.crystallization_id,
             kind=body.kind,
             subject=body.subject,
             summary=body.summary,
-            links=[l.model_dump() for l in body.links],
+            status=body.status,
+            metadata=body.metadata,
+            links=link_payload,
+            falkordb_uri=settings.FALKORDB_URI,
+            graph_name=settings.FALKORDB_GRAPH,
         )
+    else:
+        if pg_pool is None:
+            raise HTTPException(status_code=503, detail="store_unavailable")
+        result = await backend.ingest_episode(
+            pg_pool,
+            episode_id=episode_id,
+            crystallization_id=body.crystallization_id,
+            kind=body.kind,
+            subject=body.subject,
+            summary=body.summary,
+            status=body.status,
+            metadata=body.metadata,
+            links=link_payload,
+        )
+        if settings.FALKORDB_ENABLED:
+            falkor_result = sync_to_falkordb(
+                uri=settings.FALKORDB_URI,
+                graph_name=settings.FALKORDB_GRAPH,
+                crystallization_id=body.crystallization_id,
+                kind=body.kind,
+                subject=body.subject,
+                summary=body.summary,
+                links=link_payload,
+            )
+
+    edge_ids = result["edge_ids"]
     return {
         "episode_id": episode_id,
         "entity_id": f"gent_{body.crystallization_id}",
@@ -97,4 +129,18 @@ async def ingest_episode(body: EpisodeIngestV1) -> dict:
 async def get_neighborhood(crystallization_id: str, depth: int = 1) -> dict:
     if pg_pool is None:
         raise HTTPException(status_code=503, detail="store_unavailable")
-    return await neighborhood(pg_pool, crystallization_id, depth=depth)
+    return await _backend().get_neighborhood(pg_pool, crystallization_id, depth=depth)
+
+
+@app.post("/v1/search")
+async def search_episodes(body: SearchRequestV1) -> dict:
+    if settings.GRAPHITI_BACKEND != "graphiti_core":
+        raise HTTPException(status_code=501, detail="search_requires_graphiti_core_backend")
+    return await core_backend.search(
+        body.query,
+        seed_crystallization_id=body.seed_crystallization_id or "",
+        limit=body.limit,
+        embed_url=settings.CRYSTALLIZER_EMBED_HOST_URL,
+        falkordb_uri=settings.FALKORDB_URI,
+        graph_name=settings.FALKORDB_GRAPH,
+    )

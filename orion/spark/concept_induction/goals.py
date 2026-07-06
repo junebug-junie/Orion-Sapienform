@@ -105,6 +105,7 @@ class GoalProposalEngine:
         store,
         dominant_drive: str | None = None,
         window_summary: str | None = None,
+        spawned_correlation_id: str | None = None,
     ) -> GoalDecision:
         tension_list = sorted(list(tensions), key=lambda tension: (-tension.magnitude, tension.kind))
         drive_origin = self._drive_origin(
@@ -170,6 +171,7 @@ class GoalProposalEngine:
                 "evidence_items": evidence_items,
                 "tension_refs": [tension.artifact_id for tension in tension_list],
                 "evidence_summary": evidence_items[0].summary if evidence_items else drive_state.provenance.evidence_summary,
+                "spawned_correlation_id": spawned_correlation_id,
             }),
             related_nodes=drive_state.related_nodes + [tension.artifact_id for tension in tension_list],
             goal_statement=goal_statement,

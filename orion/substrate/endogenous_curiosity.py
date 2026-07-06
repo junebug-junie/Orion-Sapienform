@@ -189,6 +189,38 @@ def _attention_loop_candidates(
     return candidates
 
 
+def _coverage_gap_candidates(
+    signals: Sequence[FrontierInvocationSignalV1],
+    *,
+    anchor_scope: str,
+    subject_ref: str | None,
+) -> list[FrontierInvocationSignalV1]:
+    out: list[FrontierInvocationSignalV1] = []
+    for sig in signals:
+        if str(sig.signal_type) != "world_coverage_gap":
+            continue
+        out.append(
+            FrontierInvocationSignalV1(
+                signal_type="curiosity_candidate",
+                anchor_scope=anchor_scope,
+                subject_ref=subject_ref,
+                target_zone="concept_graph",
+                task_type_candidate=sig.task_type_candidate,
+                focal_node_refs=list(sig.focal_node_refs[:8]),
+                signal_strength=_clamp01(sig.signal_strength),
+                evidence_summary=sig.evidence_summary,
+                confidence=_clamp01(sig.confidence),
+                notes=[
+                    "endogenous_seed",
+                    "world_coverage_gap",
+                    "source:world_coverage_gap",
+                    *list(sig.notes[:6]),
+                ],
+            )
+        )
+    return out
+
+
 def endogenous_curiosity_candidates(
     *,
     anchor_scope: str = "orion",
@@ -196,6 +228,7 @@ def endogenous_curiosity_candidates(
     nodes: Sequence[Any] = (),
     repair_appraisal: Any = None,
     attention_frame: Any = None,
+    coverage_gap_signals: Sequence[FrontierInvocationSignalV1] = (),
     config: EndogenousCuriosityConfig | None = None,
 ) -> list[FrontierInvocationSignalV1]:
     """Bounded set of self-seeded curiosity candidates; [] unless enabled.
@@ -222,6 +255,13 @@ def endogenous_curiosity_candidates(
     )
     if repair is not None:
         candidates.append(repair)
+    candidates.extend(
+        _coverage_gap_candidates(
+            coverage_gap_signals,
+            anchor_scope=anchor_scope,
+            subject_ref=subject_ref,
+        )
+    )
     candidates.extend(
         _attention_loop_candidates(
             attention_frame,

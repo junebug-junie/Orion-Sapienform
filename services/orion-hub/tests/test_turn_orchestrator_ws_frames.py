@@ -141,6 +141,73 @@ async def test_turn_orchestrator_defaults_fcc_model_label() -> None:
 
 
 @pytest.mark.asyncio
+async def test_turn_orchestrator_publishes_chat_history_on_success() -> None:
+    harness_run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="final answer",
+        finalize_ran=True,
+        step_count=2,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    bus = MagicMock()
+    bus.enabled = True
+    publish_history = AsyncMock()
+    publish_turn = AsyncMock()
+    publish_spark = AsyncMock()
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_run)
+    with patches[0], patches[1], patches[2], patch(
+        "scripts.chat_history.publish_chat_history", publish_history
+    ), patch(
+        "scripts.chat_history.publish_chat_turn", publish_turn
+    ), patch(
+        "scripts.spark_candidate.publish_spark_introspect_candidate", publish_spark
+    ):
+        frames = await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="user asks",
+            payload={},
+            emit_observation_fn=lambda **_kwargs: None,
+        )
+
+    assert frames[-1]["type"] == "final"
+    publish_history.assert_awaited_once()
+    publish_turn.assert_awaited_once()
+    publish_spark.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_turn_orchestrator_skips_chat_history_when_no_write() -> None:
+    harness_run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="final answer",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    bus = MagicMock()
+    bus.enabled = True
+    publish_turn = AsyncMock()
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_run)
+    with patches[0], patches[1], patches[2], patch(
+        "scripts.chat_history.publish_chat_turn", publish_turn
+    ):
+        await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="user asks",
+            payload={"no_write": True},
+            emit_observation_fn=lambda **_kwargs: None,
+        )
+
+    publish_turn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_turn_orchestrator_never_publishes_draft_text() -> None:
     failed_run = HarnessRunV1(
         correlation_id=_CORR_ID,

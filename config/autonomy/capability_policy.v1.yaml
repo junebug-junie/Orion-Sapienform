@@ -1,0 +1,30 @@
+version: v1
+rules:
+  - capability_id: web.fetch.readonly
+    side_effect_class: readonly
+    auto_execute: true
+    requires_goal_status: proposed
+    required_drive_origins: [predictive]
+    required_signal_kinds: [world_coverage_gap]
+    budget_per_cycle: 2
+  - capability_id: journal.compose.episode
+    side_effect_class: write
+    auto_execute: true
+    requires_goal_status: proposed
+    required_drive_origins: [predictive]
+    required_signal_kinds: []
+    budget_per_cycle: 1
+  - capability_id: world_pulse.run
+    side_effect_class: readonly
+    auto_execute: true
+    requires_goal_status: none
+    required_drive_origins: []
+    required_signal_kinds: []
+    budget_per_cycle: 1
+  - capability_id: web.fetch.write
+    side_effect_class: external
+    auto_execute: false
+    requires_goal_status: planned
+    required_drive_origins: []
+    required_signal_kinds: []
+    budget_per_cycle: 0

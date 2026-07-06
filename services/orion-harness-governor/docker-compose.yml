@@ -10,11 +10,12 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ../..:/repo:ro
-      - ../..:/mnt/scripts/Orion-Sapienform:ro
+      - ${HARNESS_REPO_MOUNT:-../..}:/repo:ro
+      - ${HARNESS_REPO_MOUNT:-../..}:/mnt/scripts/Orion-Sapienform:ro
       - ${HOME}/.fcc:/root/.fcc:ro
       - ${HOME}/.claude.json:/root/.claude.json:ro
       - ${HARNESS_FCC_CLAUDE_BIN_HOST:-${HOME}/.local/bin/claude}:/usr/local/bin/claude:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - SERVICE_NAME=${SERVICE_NAME:-orion-harness-governor}
       - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
@@ -44,6 +45,8 @@ services:
       - HARNESS_FCC_AUTH_TOKEN=${HARNESS_FCC_AUTH_TOKEN:-}
       - HARNESS_FCC_WORKSPACE=${HARNESS_FCC_WORKSPACE:-/mnt/scripts/Orion-Sapienform}
       - HARNESS_FCC_CLAUDE_BIN=${HARNESS_FCC_CLAUDE_BIN:-claude}
+      - HARNESS_FCC_MCP_ENABLED=${HARNESS_FCC_MCP_ENABLED:-false}
+      - HARNESS_AITOWN_ENABLED=${HARNESS_AITOWN_ENABLED:-false}
     networks:
       - app-net
     ports:

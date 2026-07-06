@@ -55,6 +55,7 @@ def stable_journal_entry_id_for_workflow_compose(
 
 
 _TRIGGER_TO_MODE: dict[str, JournalMode] = {
+    "autonomy_episode": "digest",
     "daily_summary": "daily",
     "collapse_response": "response",
     "metacog_digest": "digest",
@@ -62,6 +63,15 @@ _TRIGGER_TO_MODE: dict[str, JournalMode] = {
     "notify_summary": "daily",
     "world_pulse_digest": "digest",
 }
+
+_AUTONOMY_EPISODE_NARRATIVE_SECTIONS = (
+    "digest",
+    "gap",
+    "curiosity",
+    "fetch",
+    "learnings",
+    "next steps",
+)
 
 
 def journal_mode_for_trigger(trigger: JournalTriggerV1) -> JournalMode:
@@ -203,6 +213,52 @@ def build_world_pulse_prompt_seed(result: WorldPulseRunResultV1) -> str:
     return "\n".join(parts)
 
 
+def build_autonomy_episode_prompt_seed(
+    *,
+    goal_artifact_id: str,
+    spawned_correlation_id: str,
+    narrative_seed: str,
+) -> str:
+    parts = [
+        f"goal_artifact_id={goal_artifact_id}",
+        f"spawned_correlation_id={spawned_correlation_id}",
+    ]
+    seed = (narrative_seed or "").strip()
+    if seed:
+        parts.append(f"narrative_seed={seed}")
+    for section in _AUTONOMY_EPISODE_NARRATIVE_SECTIONS:
+        parts.append(f"## {section}")
+        if section == "gap" and seed:
+            parts.append(seed)
+        elif section == "digest":
+            parts.append(f"Autonomy episode for goal {goal_artifact_id} (spawned from {spawned_correlation_id}).")
+        else:
+            parts.append(f"Reflect on {section} for this autonomy episode.")
+    return "\n".join(parts)
+
+
+def build_autonomy_episode_trigger(
+    *,
+    goal_artifact_id: str,
+    spawned_correlation_id: str,
+    narrative_seed: str,
+) -> JournalTriggerV1:
+    seed = (narrative_seed or "").strip()
+    summary = seed or f"Autonomy episode for {goal_artifact_id}"
+    return JournalTriggerV1(
+        trigger_kind="autonomy_episode",
+        source_kind="autonomy_episode",
+        source_ref=goal_artifact_id,
+        summary=summary[:500],
+        prompt_seed=build_autonomy_episode_prompt_seed(
+            goal_artifact_id=goal_artifact_id,
+            spawned_correlation_id=spawned_correlation_id,
+            narrative_seed=narrative_seed,
+        ),
+        spawned_correlation_id=spawned_correlation_id,
+    )
+
+
 def build_world_pulse_reflective_trigger(result: WorldPulseRunResultV1) -> JournalTriggerV1:
     digest = result.digest
     if digest is not None:
@@ -255,6 +311,8 @@ def build_compose_request(
         "journal_trigger": trigger.model_dump(mode="json"),
         "journal_mode": journal_mode_for_trigger(trigger),
     }
+    if trigger.spawned_correlation_id:
+        metadata["spawned_correlation_id"] = trigger.spawned_correlation_id
     context = CortexClientContext(
         messages=[],
         raw_user_text=trigger.summary,
@@ -626,6 +684,7 @@ def build_write_payload(
         source_kind=trigger.source_kind,
         source_ref=trigger.source_ref,
         correlation_id=correlation_id,
+        spawned_correlation_id=trigger.spawned_correlation_id,
     )
 
 

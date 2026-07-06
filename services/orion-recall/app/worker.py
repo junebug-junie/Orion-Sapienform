@@ -622,6 +622,87 @@ async def _window_rdf_chatturn_candidates(
     return kept, dropped
 
 
+_SQL_CHAT_SOURCES = frozenset({"sql_timeline", "sql_chat"})
+
+
+def _sql_chat_row_id(candidate: Dict[str, Any]) -> Optional[str]:
+    raw = str(candidate.get("id") or "").strip()
+    if not raw:
+        return None
+    if _UUID_RE.match(raw):
+        return raw
+    if raw.startswith("chat_"):
+        return None
+    # chat_history_log rows sometimes use correlation_id-shaped ids
+    if _UUID_RE.match(raw.replace("_", "-")):
+        return raw.replace("_", "-")
+    return None
+
+
+async def _window_sql_chat_candidates(
+    candidates: List[Dict[str, Any]],
+    *,
+    since_minutes: int,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Drop SQL chat/timeline candidates outside ``since_minutes``.
+
+    Mirrors ``_window_rdf_chatturn_candidates``: anchor-exact SQL rails used
+    ``fetch_exact_fragments`` without a temporal filter, so old turns could surface
+    into journal/metacog recall when expansion tokens matched generic words.
+    Memory cards and non-SQL sources are untouched.
+    """
+    if since_minutes <= 0:
+        return candidates, 0
+
+    cutoff = time.time() - (int(since_minutes) * 60)
+    sql_indices: Dict[int, str] = {}
+    for idx, frag in enumerate(candidates):
+        if str(frag.get("source") or "") not in _SQL_CHAT_SOURCES:
+            continue
+        row_id = _sql_chat_row_id(frag)
+        if row_id is not None:
+            sql_indices[idx] = row_id
+
+    ts_map: Dict[str, float] = {}
+    if sql_indices:
+        try:
+            ts_map = await fetch_chat_turn_timestamps(list(set(sql_indices.values())), since_minutes)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("sql chat windowing skipped: %s", exc)
+            return candidates, 0
+
+    kept: List[Dict[str, Any]] = []
+    dropped = 0
+    for idx, frag in enumerate(candidates):
+        source = str(frag.get("source") or "")
+        if source not in _SQL_CHAT_SOURCES:
+            kept.append(frag)
+            continue
+
+        row_id = sql_indices.get(idx)
+        if row_id is not None:
+            ts = ts_map.get(row_id)
+            if ts is None:
+                dropped += 1
+                continue
+            frag = dict(frag)
+            frag["ts"] = ts
+            kept.append(frag)
+            continue
+
+        ts_val = frag.get("ts")
+        try:
+            ts_float = float(ts_val) if ts_val is not None else 0.0
+        except Exception:
+            ts_float = 0.0
+        if ts_float <= 0.0 or ts_float < cutoff:
+            dropped += 1
+            continue
+        kept.append(frag)
+
+    return kept, dropped
+
+
 async def _fetch_anchor_candidates(
     *,
     query_text: str,
@@ -639,6 +720,7 @@ async def _fetch_anchor_candidates(
     counts: Dict[str, int] = {}
     limit = max(3, min(10, int(profile.get("sql_top_k", settings.RECALL_SQL_TOP_K))))
     exclusion = exclusion or {}
+    since_minutes = int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES))
 
     try:
         sql_items = await fetch_exact_fragments(
@@ -646,6 +728,7 @@ async def _fetch_anchor_candidates(
             session_id=session_id,
             node_id=node_id,
             limit=limit,
+            since_minutes=since_minutes,
             exclude_ids=exclusion.get("active_turn_ids"),
             exclude_text=exclusion.get("active_turn_text"),
         )
@@ -1455,6 +1538,23 @@ async def process_recall(
                 rdf_chat_window_min,
                 rdf_chat_dropped,
             )
+
+    sql_chat_window_min = int(
+        profile.get("sql_chat_since_minutes")
+        or profile.get("sql_since_minutes")
+        or settings.RECALL_SQL_SINCE_MINUTES
+    )
+    candidates, sql_chat_dropped = await _window_sql_chat_candidates(
+        candidates, since_minutes=sql_chat_window_min
+    )
+    if sql_chat_dropped:
+        backend_counts_total["sql_chat_out_of_window_dropped"] = sql_chat_dropped
+        logger.info(
+            "sql chat windowing profile=%s window_min=%s dropped=%s",
+            profile.get("profile"),
+            sql_chat_window_min,
+            sql_chat_dropped,
+        )
 
     suppression_start = time.time()
     candidates, suppressed = _suppress_self_hits(

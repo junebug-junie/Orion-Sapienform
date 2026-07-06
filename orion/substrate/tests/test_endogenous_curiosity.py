@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 from orion.substrate.endogenous_curiosity import (
     HARD_BUDGET_CEILING,
     EndogenousCuriosityConfig,
@@ -144,3 +145,26 @@ def test_evaluator_decides_over_endogenous_signals_without_invocation_authority(
     )
     weak_decision = evaluator._decide(signals=weak_seeds)
     assert weak_decision.outcome == "noop"
+
+
+def test_world_coverage_gap_passes_through_as_curiosity_seed() -> None:
+    gap = FrontierInvocationSignalV1(
+        signal_type="world_coverage_gap",
+        anchor_scope="orion",
+        subject_ref="entity:orion",
+        target_zone="concept_graph",
+        task_type_candidate="concept_expand",
+        focal_node_refs=["section:hardware_compute_gpu"],
+        signal_strength=0.65,
+        evidence_summary="gpu section empty",
+        confidence=0.65,
+        notes=["run_id:wp-1"],
+    )
+    candidates = endogenous_curiosity_candidates(
+        coverage_gap_signals=[gap],
+        config=_enabled(),
+    )
+    assert len(candidates) == 1
+    assert candidates[0].signal_type == "curiosity_candidate"
+    assert "hardware_compute_gpu" in candidates[0].focal_node_refs[0]
+    assert "world_coverage_gap" in candidates[0].notes

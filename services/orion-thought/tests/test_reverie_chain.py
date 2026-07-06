@@ -185,6 +185,70 @@ async def test_standalone_reverie_superseded_when_chain_enabled(monkeypatch):
     await reverie.run_reverie_worker(stop_event=None)
 
 
+@pytest.mark.asyncio
+async def test_resonance_tripwire_disabled_is_noop(monkeypatch):
+    from app import chain
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "reverie_resonance_alert_enabled", False)
+    bus = AsyncMock()
+    await chain._maybe_emit_resonance_alert(bus)
+    bus.publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resonance_tripwire_fires_on_runaway(monkeypatch):
+    from app import chain
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "reverie_resonance_alert_enabled", True)
+    monkeypatch.setattr(settings, "reverie_refractory_sec", 900.0)
+    monkeypatch.setattr(settings, "reverie_resonance_window", 200)
+
+    # Recent chains: one theme re-igniting every 60s (inside the 900s bound).
+    events = [("loop:ol-1", NOW + timedelta(seconds=60 * i)) for i in range(5)]
+    monkeypatch.setattr(chain, "load_recent_chain_theme_events", lambda n: events)
+
+    persisted = []
+    monkeypatch.setattr(chain, "persist_resonance_alert", lambda a: persisted.append(a) or True)
+
+    bus = AsyncMock()
+    await chain._maybe_emit_resonance_alert(bus)
+    bus.publish.assert_awaited_once()
+    assert bus.publish.await_args.args[0] == settings.channel_reverie_resonance_alert
+    assert persisted and persisted[0].theme_key == "loop:ol-1"
+
+
+@pytest.mark.asyncio
+async def test_resonance_tripwire_silent_when_damped(monkeypatch):
+    from app import chain
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "reverie_resonance_alert_enabled", True)
+    monkeypatch.setattr(settings, "reverie_refractory_sec", 900.0)
+    # Every recurrence waited out the refractory bound.
+    events = [("loop:ol-1", NOW + timedelta(seconds=1000 * i)) for i in range(5)]
+    monkeypatch.setattr(chain, "load_recent_chain_theme_events", lambda n: events)
+
+    bus = AsyncMock()
+    await chain._maybe_emit_resonance_alert(bus)
+    bus.publish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resonance_tripwire_never_raises(monkeypatch):
+    from app import chain
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "reverie_resonance_alert_enabled", True)
+
+    def boom(n):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(chain, "load_recent_chain_theme_events", boom)
+    await chain._maybe_emit_resonance_alert(AsyncMock())  # degrades, no raise
+
+
 def test_chain_module_never_reads_a_dream():
     import ast
     from pathlib import Path

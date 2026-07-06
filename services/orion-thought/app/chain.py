@@ -38,7 +38,9 @@ from orion.schemas.reverie import (
 from .reverie import _default_broadcast_reader, _source, run_reverie_once
 from .settings import settings
 from .store import (
+    load_recent_chain_theme_events,
     persist_compaction_request,
+    persist_resonance_alert,
     persist_reverie_chain,
     reverie_refractory_is_suppressed,
     reverie_refractory_suppress,
@@ -122,6 +124,47 @@ def build_compaction_request(chain: ReverieChainV1) -> CompactionRequestV1 | Non
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+async def _maybe_emit_resonance_alert(bus: OrionBusAsync) -> None:
+    """Phase H tripwire: scan recent chains for a theme re-igniting inside its
+    refractory bound and, if found, publish + persist a ResonanceAlertV1.
+
+    Observation only — never mutates cognition. Default-off; best-effort; the
+    whole body is guarded so a tripwire pass never breaks the chain worker.
+    """
+    if not settings.reverie_resonance_alert_enabled:
+        return
+    try:
+        from orion.reverie.resonance import ThemeEvent, detect_resonance
+
+        rows = load_recent_chain_theme_events(settings.reverie_resonance_window)
+        events: list[ThemeEvent] = []
+        for theme_key, created_at in rows:
+            at = created_at
+            if isinstance(at, datetime) and at.tzinfo is None:
+                at = at.replace(tzinfo=timezone.utc)
+            if isinstance(at, datetime):
+                events.append(ThemeEvent(theme_key, at))
+        alert = detect_resonance(events, refractory_sec=settings.reverie_refractory_sec)
+        if alert is None:
+            return
+        with suppress(Exception):
+            await bus.publish(
+                settings.channel_reverie_resonance_alert,
+                BaseEnvelope(
+                    kind="reverie.resonance.alert.v1",
+                    source=_source(),
+                    payload=alert.model_dump(mode="json"),
+                ),
+            )
+        persist_resonance_alert(alert)
+        logger.warning(
+            "resonance alert theme=%s violations=%d min_gap=%.1fs refractory=%.0fs",
+            alert.theme_key, alert.violation_count, alert.min_gap_sec, alert.refractory_sec,
+        )
+    except Exception as exc:
+        logger.debug("resonance tripwire pass failed: %s", exc)
 
 
 async def run_reverie_chain(
@@ -226,6 +269,10 @@ async def run_reverie_chain(
                         ),
                     )
                     persist_compaction_request(request)
+
+        # Phase H: after persisting this chain, run the ouroboros tripwire over
+        # recent chains (default-off, observation only).
+        await _maybe_emit_resonance_alert(bus)
 
     logger.info(
         "reverie chain complete chain=%s steps=%d terminal=%s theme=%s",

@@ -521,6 +521,7 @@ from orion.schemas.harness_finalize import (
 from orion.schemas.compaction import MemoryCompactionDeltaV1
 from orion.schemas.reverie import (
     CompactionRequestV1,
+    ResonanceAlertV1,
     ReverieChainV1,
     ReverieRefractoryEntry,
     SpontaneousThoughtV1,
@@ -1173,6 +1174,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ReverieRefractoryEntry": ReverieRefractoryEntry,
     "CompactionRequestV1": CompactionRequestV1,
     "MemoryCompactionDeltaV1": MemoryCompactionDeltaV1,
+    "ResonanceAlertV1": ResonanceAlertV1,
     "StanceReactRequestV1": StanceReactRequestV1,
     "GrammarReceiptV1": GrammarReceiptV1,
     "HarnessDraftMoleculeV1": HarnessDraftMoleculeV1,
@@ -1229,6 +1231,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "MemoryCompactionDeltaV1": SchemaRegistration(
         model=MemoryCompactionDeltaV1,
         kind="dream.compaction.delta.v1",
+    ),
+    "ResonanceAlertV1": SchemaRegistration(
+        model=ResonanceAlertV1,
+        kind="reverie.resonance.alert.v1",
     ),
     "StanceReactRequestV1": SchemaRegistration(
         model=StanceReactRequestV1,

@@ -185,3 +185,30 @@ class CompactionRequestV1(BaseModel):
     evidence_refs: list[str] = Field(default_factory=list, max_length=MAX_EVIDENCE_REFS)
     origin_chain_id: str | None = None
     created_at: datetime = Field(default_factory=_utc_now)
+
+
+# --- Phase H: resonance (the automated ouroboros tripwire) --------------------
+
+# Cap on the offending-timestamps sample carried on an alert (§cap-all-collections).
+MAX_RESONANCE_SAMPLES = 50
+
+
+class ResonanceAlertV1(BaseModel):
+    """A theme re-igniting faster than its refractory bound allows — a runaway
+    loop the habituation failed to damp (ouroboros risk). Observation only: the
+    alert never mutates anything; it is the automated guard that licenses (or
+    withholds licence for) turning the compaction applier's hot gate on.
+    """
+
+    model_config = ConfigDict(protected_namespaces=())
+
+    schema_version: Literal["reverie.resonance.alert.v1"] = "reverie.resonance.alert.v1"
+    alert_id: str
+    theme_key: str
+    # Number of consecutive recurrences that breached the refractory cooldown.
+    violation_count: int = Field(default=0, ge=0)
+    refractory_sec: float = Field(default=0.0, ge=0.0)
+    min_gap_sec: float = Field(default=0.0, ge=0.0)
+    occurrences: int = Field(default=0, ge=0)
+    sample_ats: list[datetime] = Field(default_factory=list, max_length=MAX_RESONANCE_SAMPLES)
+    created_at: datetime = Field(default_factory=_utc_now)

@@ -212,6 +212,36 @@ def _compaction_delta_section(engine) -> dict[str, Any] | None:
     return {"staged_count": len(deltas), "applied_any": False, "deltas": deltas}
 
 
+def _resonance_alert_section(engine) -> dict[str, Any] | None:
+    """Recent resonance alerts (Phase H) — themes that re-ignited inside their
+    refractory bound (ouroboros tripwire). Observation only. Empty until the
+    default-off tripwire fires."""
+    from sqlalchemy import text
+
+    sql = (
+        "SELECT alert_id, theme_key, violation_count, refractory_sec, min_gap_sec, "
+        "occurrences, created_at FROM substrate_reverie_resonance_alert "
+        "ORDER BY created_at DESC LIMIT :limit"
+    )
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), {"limit": _REVERIE_LIMIT}).mappings().all()
+    if not rows:
+        return None
+    alerts = [
+        {
+            "alert_id": r.get("alert_id"),
+            "theme_key": r.get("theme_key"),
+            "violation_count": r.get("violation_count"),
+            "refractory_sec": r.get("refractory_sec"),
+            "min_gap_sec": r.get("min_gap_sec"),
+            "occurrences": r.get("occurrences"),
+            "created_at": _iso(r.get("created_at")),
+        }
+        for r in rows
+    ]
+    return {"alert_count": len(alerts), "alerts": alerts}
+
+
 def _curiosity_section(engine) -> dict[str, Any] | None:
     row = _latest_row(
         engine,
@@ -295,6 +325,7 @@ async def observability_summary() -> dict[str, Any]:
         "reverie": None,
         "compaction_queue": None,
         "compaction_delta": None,
+        "resonance_alert": None,
     }
     if engine is not None:
         for name, loader in (
@@ -304,6 +335,7 @@ async def observability_summary() -> dict[str, Any]:
             ("reverie", _reverie_section),
             ("compaction_queue", _compaction_queue_section),
             ("compaction_delta", _compaction_delta_section),
+            ("resonance_alert", _resonance_alert_section),
         ):
             try:
                 sections[name] = loader(engine)

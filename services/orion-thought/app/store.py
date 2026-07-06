@@ -148,6 +148,73 @@ def persist_compaction_request(request) -> bool:
         return False
 
 
+def load_recent_chain_theme_events(limit: int) -> list[tuple[str, object]]:
+    """Recent (theme_key, created_at) chain rows for the resonance detector.
+
+    Read-only, best-effort — returns [] on any miss so the tripwire degrades to
+    "no evidence" rather than raising. Skips null/unknown themes."""
+    limit = max(0, int(limit))
+    if limit == 0:
+        return []
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    text(
+                        "SELECT theme_key, created_at FROM substrate_reverie_chain "
+                        "WHERE theme_key IS NOT NULL AND theme_key <> 'unknown' "
+                        "ORDER BY created_at DESC LIMIT :limit"
+                    ),
+                    {"limit": limit},
+                )
+                .mappings()
+                .all()
+            )
+        return [(str(r["theme_key"]), r["created_at"]) for r in rows if r.get("created_at")]
+    except Exception as exc:
+        logger.debug("resonance chain-event load failed: %s", exc)
+        return []
+
+
+def persist_resonance_alert(alert) -> bool:
+    """Persist one resonance alert. Never raises; idempotent on alert_id."""
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_reverie_resonance_alert
+                        (alert_id, theme_key, violation_count, refractory_sec,
+                         min_gap_sec, occurrences, created_at, alert_json)
+                    VALUES
+                        (:alert_id, :theme_key, :violation_count, :refractory_sec,
+                         :min_gap_sec, :occurrences, :created_at, CAST(:alert_json AS jsonb))
+                    ON CONFLICT (alert_id) DO NOTHING
+                    """
+                ),
+                {
+                    "alert_id": alert.alert_id,
+                    "theme_key": alert.theme_key,
+                    "violation_count": int(alert.violation_count),
+                    "refractory_sec": float(alert.refractory_sec),
+                    "min_gap_sec": float(alert.min_gap_sec),
+                    "occurrences": int(alert.occurrences),
+                    "created_at": alert.created_at,
+                    "alert_json": json.dumps(alert.model_dump(mode="json")),
+                },
+            )
+        return True
+    except Exception as exc:
+        logger.warning("resonance alert persist failed id=%s err=%s", alert.alert_id, exc)
+        return False
+
+
 def reverie_refractory_is_suppressed(theme_key: str, now) -> bool:
     """True if the theme is currently suppressed. Best-effort (False on error)."""
     try:

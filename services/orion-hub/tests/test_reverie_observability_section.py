@@ -14,6 +14,7 @@ for candidate in (str(REPO_ROOT), str(HUB_ROOT)):
 from scripts.substrate_observability_routes import (
     _compaction_delta_section,
     _compaction_queue_section,
+    _resonance_alert_section,
     _reverie_section,
 )
 
@@ -142,3 +143,29 @@ def test_compaction_delta_section_shapes_rows_as_proposals():
 
 def test_compaction_delta_section_none_when_empty():
     assert _compaction_delta_section(_FakeEngine([])) is None
+
+
+def _alert_row(aid="a-1"):
+    return {
+        "alert_id": aid,
+        "theme_key": "loop:ol-1",
+        "violation_count": 3,
+        "refractory_sec": 900.0,
+        "min_gap_sec": 60.0,
+        "occurrences": 4,
+        "created_at": datetime(2026, 7, 6, tzinfo=timezone.utc),
+    }
+
+
+def test_resonance_alert_section_shapes_rows():
+    section = _resonance_alert_section(_FakeEngine([_alert_row("a-1"), _alert_row("a-2")]))
+    assert section is not None
+    assert section["alert_count"] == 2
+    first = section["alerts"][0]
+    assert first["theme_key"] == "loop:ol-1"
+    assert first["violation_count"] == 3
+    assert first["min_gap_sec"] == 60.0
+
+
+def test_resonance_alert_section_none_when_empty():
+    assert _resonance_alert_section(_FakeEngine([])) is None

@@ -79,6 +79,17 @@ class ThoughtSettings(BaseSettings):
         alias="CHANNEL_DREAM_COMPACTION_REQUEST",
     )
 
+    # --- Resonance tripwire (Phase H, default-off, observation only) ---
+    reverie_resonance_alert_enabled: bool = Field(
+        False, alias="ORION_REVERIE_RESONANCE_ALERT_ENABLED"
+    )
+    channel_reverie_resonance_alert: str = Field(
+        "orion:reverie:resonance-alert",
+        alias="CHANNEL_REVERIE_RESONANCE_ALERT",
+    )
+    # How many recent chain rows to scan for a runaway theme.
+    reverie_resonance_window: int = Field(200, alias="ORION_REVERIE_RESONANCE_WINDOW")
+
 
 settings = ThoughtSettings()
 logger.info(

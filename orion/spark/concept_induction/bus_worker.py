@@ -19,6 +19,8 @@ from .audit import build_drive_audit
 from .drives import DriveEngine, DriveMathConfig, drive_state_from_values
 from .dossier import build_evidence_items, build_source_event_ref, build_turn_dossier, extract_trace_id, extract_turn_id
 from orion.autonomy.goal_archive import maybe_archive_after_goal_publish
+from orion.autonomy.substrate_metabolism import metabolize_substrate_signals, metabolism_enabled
+from orion.schemas.world_pulse import WorldPulseRunResultV1
 
 from .goals import GoalProposalEngine
 from .identity import (
@@ -492,6 +494,20 @@ class ConceptWorker:
             await self._publish_tension_event(tension, env.correlation_id)
             published_artifacts.append(tension)
 
+        metabolism_tensions: List[TensionEventV1] = []
+        if metabolism_enabled() and env.kind == "world.pulse.run.result.v1":
+            try:
+                wp_result = WorldPulseRunResultV1.model_validate(self._payload_dict(env))
+                metabolism = metabolize_substrate_signals(world_pulse_result=wp_result)
+                metabolism_tensions = list(metabolism.tensions)
+                for tension in metabolism_tensions:
+                    await self._publish_tension_event(tension, env.correlation_id)
+                    published_artifacts.append(tension)
+            except Exception:
+                logger.warning("substrate_metabolism_failed kind=%s", env.kind, exc_info=True)
+
+        all_spark_tensions = spark_tensions + metabolism_tensions
+
         prior_drive_state = self.store.load_drive_state(subject)
         previous_ts = None
         if isinstance(prior_drive_state.get("updated_at"), str):
@@ -503,7 +519,7 @@ class ConceptWorker:
         pressures, activations = self.drive_engine.update(
             previous_pressures=prior_drive_state.get("pressures"),
             previous_activations=prior_drive_state.get("activations"),
-            tensions=spark_tensions,
+            tensions=all_spark_tensions,
             now=now,
             previous_ts=previous_ts,
         )
@@ -521,7 +537,7 @@ class ConceptWorker:
             await self._publish_tension_event(tension, env.correlation_id)
             published_artifacts.append(tension)
 
-        all_tensions = spark_tensions + pressure_tensions
+        all_tensions = all_spark_tensions + pressure_tensions
 
         trace_id = extract_trace_id(env)
         turn_id = extract_turn_id(env)

@@ -1,0 +1,26 @@
+name: reverie_narrate
+label: Reverie Narrate
+description: >
+  Spontaneous felt-layer narration of the current winning coalition, with no
+  user message. Produces SpontaneousThoughtV1 — the unprompted sibling of
+  stance_react's ThoughtEventV1. Reflection-shaped (interpretation/salience),
+  not reply-shaped (imperative/tone). Read-only; emits no action by itself.
+
+category: ExecutiveControl
+priority: normal
+
+requires_gpu: true
+requires_memory: false
+timeout_ms: 120000
+
+services:
+  - LLMGatewayService
+
+prompt_template: reverie_narrate.j2
+
+steps:
+  - name: llm_reverie_narrate
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: reverie_narrate.j2
+    requires_gpu: true

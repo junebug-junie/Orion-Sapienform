@@ -518,6 +518,7 @@ from orion.schemas.harness_finalize import (
     HarnessVerdictMoleculeV1,
     SubstrateFinalizeAppraisalV1,
 )
+from orion.schemas.reverie import SpontaneousThoughtV1
 from orion.schemas.thought import (
     CoalitionSnapshotV1,
     HubAssociationBundleV1,
@@ -1161,6 +1162,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "StanceHarnessSliceV1": StanceHarnessSliceV1,
     "HubAssociationBundleV1": HubAssociationBundleV1,
     "ThoughtEventV1": ThoughtEventV1,
+    "SpontaneousThoughtV1": SpontaneousThoughtV1,
     "StanceReactRequestV1": StanceReactRequestV1,
     "GrammarReceiptV1": GrammarReceiptV1,
     "HarnessDraftMoleculeV1": HarnessDraftMoleculeV1,
@@ -1197,6 +1199,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "ThoughtEventV1": SchemaRegistration(
         model=ThoughtEventV1,
         kind="thought.event.v1",
+    ),
+    "SpontaneousThoughtV1": SchemaRegistration(
+        model=SpontaneousThoughtV1,
+        kind="reverie.thought.v1",
     ),
     "StanceReactRequestV1": SchemaRegistration(
         model=StanceReactRequestV1,

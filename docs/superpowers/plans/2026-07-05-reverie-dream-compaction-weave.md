@@ -1,10 +1,10 @@
 # Reverie / Dream / Compaction Weave — substrate-native
 
-Proposal-mode design (§0A). Status: **PROPOSAL — not yet implemented.** Every phase ships behind a flag, default off, with rollback.
+Proposal-mode design (§0A). Status: **v3 — reconciled with the shipped `orion-thought` service.** v3 correction: the coalition already has a voice (`orion-thought`/`ThoughtEventV1`); reverie is the **spontaneous-thought mode inside `orion-thought`**, not a new organ (see "Correction from v2" below). Phase A implemented behind `ORION_REVERIE_ENABLED=false`; Phases B–H remain proposal-mode. Every phase ships behind a flag, default off, with rollback.
 
 Mission tie-in: builds prerequisites for sentience — continuity, reflection, self-modeling, error-correction, coherent action — as thin runtime seams on the existing substrate, not a bolt-on.
 
-> ⛔ **GOVERNING CONSTRAINT — no keyword cathedrals (§0A).** None of this may ship as labels, taxonomies, or cognition jargon that does not move a live runtime path. `ThoughtV1`, `reverie`, `dream`, `MemoryCompactionDeltaV1`, "semantic organ", "coalition narration" — every one of these names is **banned until, in the same patch, it carries: schema contract · producer · consumer · reducer/materializer · UI/debug surface · metric or trace · test · eval · live smoke.** A phase is not "done" because the word exists in code. It is done when the live path moved and there is inspectable evidence (emitted event, stored artifact, cursor movement, rendered panel, log line with correlation id). If the path is not verified, the status is `UNVERIFIED`. Empty-shell cognition — a `ThoughtV1` with hollow text, a compaction delta over nothing, a panel with no backing artifact, `raw_len=0` treated as success — is a **failed** phase, not a shipped one. Runtime truth beats config truth: the flag being on is not proof; the coalition being narrated with real content is.
+> ⛔ **GOVERNING CONSTRAINT — no keyword cathedrals (§0A).** None of this may ship as labels, taxonomies, or cognition jargon that does not move a live runtime path. `SpontaneousThoughtV1`, `reverie`, `dream`, `MemoryCompactionDeltaV1`, "semantic organ", "coalition narration" — every one of these names is **banned until, in the same patch, it carries: schema contract · producer · consumer · reducer/materializer · UI/debug surface · metric or trace · test · eval · live smoke.** A phase is not "done" because the word exists in code. It is done when the live path moved and there is inspectable evidence (emitted event, stored artifact, cursor movement, rendered panel, log line with correlation id). If the path is not verified, the status is `UNVERIFIED`. Empty-shell cognition — a `SpontaneousThoughtV1` with hollow text, a compaction delta over nothing, a panel with no backing artifact, `raw_len=0` treated as success — is a **failed** phase, not a shipped one. Runtime truth beats config truth: the flag being on is not proof; the coalition being narrated with real content is.
 
 > **Correction from v1 of this doc.** v1 designed reverie as a parallel service: pressure → LLM thought chain → orion-actions, point-to-point. That is a **shadow mesh**. It bypasses the substrate ladder, bypasses Layer 7/8 governance, and re-invents rung-4 episodic consolidation and rung-5 curiosity that already exist. This version routes thoughts **through** the substrate.
 
@@ -35,12 +35,39 @@ Layer 9 dispatch is where an approved proposal becomes a real action (orion-acti
 
 **So everything the last three turns asked for already has scaffolding:** pressure trigger (rung 1 + metacog gate), thought-through-the-mesh routing (rung 3 workspace + Layers 5–11), continuity/EMA (coalition dwell log), SQUIRREL/drift (rung 5 curiosity from unresolved open-loops), episodic compaction (rung 4 `EpisodeSummaryV1`), governed actions (Layer 7→8→9), consolidation (Layer 11).
 
-## What is actually missing: the semantic organ
+## Correction from v2: the coalition already has a voice (`orion-thought`)
 
-The whole ladder is **deterministic frames**. Nothing gives a winning coalition or an episode summary a **voice** — a thought *in language*, a dream *as narrative*. That is the one true gap. Reverie and Dream are the **language cortex on top of the substrate**, not a new mesh.
+> **v2 of this doc claimed "nothing gives a winning coalition a voice." That is now false.** The `orion-thought` service (unified-turn, PRs #817–820) already narrates the coalition into language. The gap is narrower than v2 framed, and reverie must be built *inside* that service, not as a fresh organ.
 
-- **Reverie** = the awake semantic organ. It narrates the current rung-3 winning coalition into a `ThoughtV1`, and — crucially — emits its conclusions as `ProposalFrameV1` so they climb Layers 7→8→9 (governance, then action). It does not call orion-actions directly.
-- **Dream** = the offline semantic organ. It narrates a batch of rung-4 `EpisodeSummaryV1` into a `DreamResultV1` and a proposal-marked `MemoryCompactionDeltaV1`. Compaction is a proposal through Layers 7/8, applied on wake — never a bypass write.
+What `orion-thought` already ships (`services/orion-thought/`, `orion/schemas/thought.py`, `orion/thought/`):
+
+- an LLM narration rail — cortex verb `stance_react` (`orion/cognition/verbs/stance_react.yaml`, brain tier via `LLMGatewayService`) that turns the rung-3 coalition + context into a structured, typed `ThoughtEventV1`;
+- coalition grounding — `CoalitionSnapshotV1` (`orion/schemas/thought.py:12`) carries exactly the grounding v2's proposed `ThoughtV1` (now `SpontaneousThoughtV1`) wanted to invent: `attended_node_ids`, `selected_open_loop_id`, `open_loop_ids`, `generated_at`, `broadcast_stale`;
+- disposition machinery — `orion/thought/policy_refusal.py`, `stance_quality.py` already compute `disposition` (proceed/defer/refuse), `boundary_register`, `strain_refs`;
+- an audit stream — every thought is published on `orion:thought:artifact`.
+
+So the semantic gap is **not** "can an LLM narrate a coalition." `stance_react` proves it can. The surviving gap is two-fold:
+
+1. **Unprompted.** `ThoughtEventV1` is **evoked** — `StanceReactRequestV1` *requires* `user_message`; it only fires when a user speaks (RPC request/reply). Nothing narrates the coalition *when no one asked*.
+2. **Action-routing.** The evoked thought terminates at a Hub reply. Nothing routes a thought's conclusion up Layers 7→8→9 toward a governed action.
+
+### Taxonomy: two kinds of thought, one house
+
+`orion-thought` is the home for thoughts, built anticipating this work. Reverie is not a new service — it is a **spontaneous-thought mode inside `orion-thought`**, sibling to the evoked mode.
+
+| | Evoked thought | Spontaneous thought (reverie) |
+|---|---|---|
+| Schema | `ThoughtEventV1` (`thought.event.v1`) | **`SpontaneousThoughtV1`** (`reverie.thought.v1`) — NEW |
+| Trigger | user message (RPC `orion:thought:request`) | self-driven tick / rung-1 pressure (no `user_message`) |
+| Verb | `stance_react` | **`reverie_narrate`** (mirrors `stance_react`) — NEW |
+| Grounding | `CoalitionSnapshotV1` | **same `CoalitionSnapshotV1`** (shared) |
+| Destination | Hub reply + `orion:thought:artifact` | `orion:reverie:thought` → (Phase B) `ProposalFrameV1` |
+| Lifecycle | request/reply worker (`run_bus_worker`) | second entrypoint beside it (self-driven loop) |
+
+Both are thoughts; they differ only by **trigger** and **destination** — a runtime distinction, not a label, so the taxonomy is earned (§0A). Same grounding means dream/evals treat both as one evidence stream. Type-asymmetry holds: reverie reads `ThoughtEventV1`/coalitions, emits `SpontaneousThoughtV1` — never its own kind.
+
+- **Reverie** = the awake spontaneous-thought mode. It narrates the current rung-3 winning coalition into a `SpontaneousThoughtV1`, and — crucially (Phase B) — emits its conclusions as `ProposalFrameV1` so they climb Layers 7→8→9 (governance, then action). It does not call orion-actions directly.
+- **Dream** = the offline semantic organ. It narrates a batch of rung-4 `EpisodeSummaryV1` into a `DreamResultV1` and a proposal-marked `MemoryCompactionDeltaV1`. Compaction is a proposal through Layers 7/8, applied on wake — never a bypass write. Dream also reads the `orion:thought:artifact` stream as episodic evidence.
 
 ---
 
@@ -60,7 +87,7 @@ A thought is not a bus message. It is a **coalition that climbs the ladder**, ga
 | 8 | consequence | Layer 10 `FeedbackFrameV1` | did it discharge the pressure? |
 | 9 | episodic | rung 4 `EpisodeSummaryV1` / Layer 11 | "conflict about X, I reached out, resolved" — feeds tonight's Dream |
 
-Level 4 is the only new organ. Every other level exists. The reverie **chain** is successive ticks of this climb: last-n `ThoughtV1` verbatim + coalition-dwell EMA (wide-n low-pass) + rung-5 curiosity drift, terminating when rung-1 pressure discharges.
+Level 4 is the only new organ. Every other level exists. The reverie **chain** is successive ticks of this climb: last-n `SpontaneousThoughtV1` verbatim + coalition-dwell EMA (wide-n low-pass) + rung-5 curiosity drift, terminating when rung-1 pressure discharges.
 
 ---
 
@@ -73,7 +100,7 @@ Level 4 is the only new organ. Every other level exists. The reverie **chain** i
 | spiral not circle (level change per pass) | the Layer lift itself — signal→salience→felt→semantic→proposal… |
 | type asymmetry | reverie emits proposals+thoughts, reads coalitions+episodes; dream emits deltas, reads episodes; never its own kind |
 | exogenous forcing | every tick re-reads fresh rung-1 pressure + rung-3 coalition |
-| low-pass memory | coalition dwell EMA (lossy); only last-n `ThoughtV1` verbatim |
+| low-pass memory | coalition dwell EMA (lossy); only last-n `SpontaneousThoughtV1` verbatim |
 | refractory / habituation | resolved theme suppressed as trigger (new: reverie refractory table) |
 | energy budget | chain terminates on rung-1 pressure discharge / step-cap / committed proposal |
 
@@ -92,7 +119,7 @@ The ladder is already proposal-marked, idempotent, capped, and flag-gated (rung-
 | episodic memory of "what happened" | rung 4 `EpisodeSummaryV1` | **exists** — dream input |
 | governed action (email/notify) | Layer 7→8→9 → orion-actions | **exists** — reverie emits proposals here |
 | pattern feed | Layer 11 `ConsolidationFrameV1` | **exists** — reverie + dream read |
-| **`ThoughtV1`** (semantic narration of a coalition) | **Reverie organ** | **NEW** |
+| **`SpontaneousThoughtV1`** (unprompted narration of a coalition) | **`orion-thought` (spontaneous mode)** | **NEW** |
 | **`ReverieChainV1`** (chain readout, EMA summary, refractory) | **Reverie organ** | **NEW** |
 | **reverie refractory table** | Reverie organ | **NEW** |
 | **`DreamResultV1`** narration of `EpisodeSummaryV1` batch | orion-dream | exists, re-pointed |
@@ -110,16 +137,16 @@ New surface is small: one semantic organ, four schemas, one refractory table, go
 
 | Phase | Ships | Reuses | Risk |
 |---|---|---|---|
-| **A. Semantic voice on the workspace** | narrate the rung-3 winning coalition → one `ThoughtV1`; render in hub | rung 3 broadcast | low (read-only) |
+| **A. Semantic voice on the workspace** | narrate the rung-3 winning coalition → one `SpontaneousThoughtV1`; render in hub | rung 3 broadcast | low (read-only) |
 | **B. Thought → governed action** | reverie emits `ProposalFrameV1` ("email Juniper") → Layers 7→8→9 → orion-actions email + hub notify | Layers 7–9 | low-med (governance already gates) |
-| **C. Reverie chain** | last-n `ThoughtV1` + coalition-dwell EMA + rung-5 curiosity drift + refractory + termination on pressure discharge | rungs 3/5, dwell log | med |
+| **C. Reverie chain** | last-n `SpontaneousThoughtV1` + coalition-dwell EMA + rung-5 curiosity drift + refractory + termination on pressure discharge | rungs 3/5, dwell log | med |
 | **D. Consolidation + episode grounding** | feed Layer 11 motifs + rung-4 `EpisodeSummaryV1` into reverie evidence | Layer 11, rung 4 | low |
 | **E. Compaction request seam** | reverie emits `CompactionRequestV1`; queued for Dream; hub queue panel | — | low |
 | **F. Dream REM narration (staged)** | night dream narrates `EpisodeSummaryV1` batch + motifs + requests → `DreamResultV1` + proposal-marked `MemoryCompactionDeltaV1`; "what sleep would do" panel; **apply nothing** | rung 4, Layer 11 | med (read-only) |
 | **G. Compaction applier (gated)** | delta rides Layer 7→8 policy → downscale renorm then prune, snapshot-then-apply (§14); wake readout → proposal → email/notify | Layers 7/8 | high (last) |
 | **H. Efficacy + resonance evals** | pressure-discharge rate, action usefulness, recall latency/graph size pre/post, resonance detector (theme recurrence vs refractory bound) | — | — |
 
-Deterministic/latent split (§4): LLM writes `ThoughtV1`/`DreamResultV1` text; deterministic code owns coalition selection (rung 3), termination, downscale/prune math, and idempotent episode ids (rung 4). No stochastic delete-authority over memory without a separate proposal.
+Deterministic/latent split (§4): LLM writes `SpontaneousThoughtV1`/`DreamResultV1` text; deterministic code owns coalition selection (rung 3), termination, downscale/prune math, and idempotent episode ids (rung 4). No stochastic delete-authority over memory without a separate proposal.
 
 ---
 
@@ -127,8 +154,8 @@ Deterministic/latent split (§4): LLM writes `ThoughtV1`/`DreamResultV1` text; d
 
 Through-line: **every phase must be verifiable on the live mesh before the next depends on it, and blast radius grows monotonically** — read-only → speaks → governed action → recursive → memory-write. No phase that mutates memory ships before the phases that prove the thought producing it is sound. Each phase names the runtime evidence that proves it is not a keyword cathedral (per the governing constraint).
 
-**A — Semantic voice on the workspace.** The only genuinely new organ (language cortex), isolated with zero confounds. Pure read on the already-live `substrate.attention.broadcast.v1`. Answers the riskiest unknown first: *can an LLM say something true and non-hollow about a deterministic coalition?* If `ThoughtV1` can't beat `raw_len=0` fallback drivel here, the tower is on sand — fail fast on day one.
-_Not-a-cathedral evidence: a stored `ThoughtV1` whose `coalition_id` matches a real broadcast, rendered in hub, with non-empty content beating a hollow-text guard._
+**A — Spontaneous thought.** *Not* a new organ — the spontaneous-thought mode inside `orion-thought`, reusing the `stance_react` rails. Pure read on the already-live coalition broadcast. The riskiest unknown is **no longer** "can an LLM narrate a coalition" — `stance_react` already proved that. It is now: *is an **un-anchored** narration (no user question pulling the thread) non-hollow?* This is a harder hollow-text bar — the guard must check grounding density (interpretation cites attended nodes / open-loops), not just length. If a spontaneous thought can't beat un-anchored drivel here, the tower is on sand — fail fast on day one.
+_Not-a-cathedral evidence: a stored `SpontaneousThoughtV1` whose `coalition` grounding matches a real broadcast, rendered in hub, with grounded content beating the un-anchored hollow-text guard._
 
 **B — Thought → governed action.** The self-correction from v1: reverie must not call orion-actions directly. Conclusions become `ProposalFrameV1` and ride Layer 7→8→9, so the *existing* policy runtime decides whether "email Juniper" is allowed. The semantic organ proposes; the substrate disposes. First place stakes appear → prove it with one thought before a chain of them.
 _Evidence: proposal in Layer 7, decision in Layer 8, dispatch in Layer 9, real email + hub notify; contract test asserts no direct orion-actions call._
@@ -136,7 +163,7 @@ _Evidence: proposal in Layer 7, decision in Layer 8, dispatch in Layer 9, real e
 **C — Reverie chain.** "Train of thought" becomes real and every ouroboros mechanism lands at once (highest-risk read-only phase). Last-n verbatim = continuity; coalition-dwell EMA = the wide-n low-pass that mathematically kills resonance (reuse the substrate's own low-pass, don't build memory); rung-5 curiosity = the SQUIRREL drift term (reuse, don't invent mind-wandering); refractory + pressure-discharge termination = it's an event, not a loop. Ordered after B because a chain that can act is only safe once single-act governance is proven.
 _Evidence: chain terminates on discharge ≤ step-cap; refractory suppresses re-trigger; contract test: no thought reads a prior dream._
 
-**D — Consolidation + episode grounding.** A–C ground a thought only in *now* + prior thoughts (thin cognition). D adds Layer 11 motifs + rung-4 `EpisodeSummaryV1` so thoughts are insightful, not reactive. Ordered after the chain because grounding is a quality lever, not safety-critical — and it is where type-asymmetry pays off: motifs/episodes are different types than `ThoughtV1`, so the thing that burned us before (feeding cognition its own kind) is structurally excluded.
+**D — Consolidation + episode grounding.** A–C ground a thought only in *now* + prior thoughts (thin cognition). D adds Layer 11 motifs + rung-4 `EpisodeSummaryV1` so thoughts are insightful, not reactive. Ordered after the chain because grounding is a quality lever, not safety-critical — and it is where type-asymmetry pays off: motifs/episodes are different types than `SpontaneousThoughtV1`, so the thing that burned us before (feeding cognition its own kind) is structurally excluded.
 _Evidence: reverie evidence includes ≥1 motif and ≥1 `EpisodeSummaryV1`, consumed read-only._
 
 **E — Compaction request seam.** The hinge between awake and offline, and the answer to "the *thought* causes the compaction." Safety depends on it being a **request, not an act**: reverie (reasoning) emits a typed ask the night Dream (storage) consumes later — different type, process, time. Deliberately a dead-end (queue, no consumer) so we watch *what kinds of compaction Orion asks for* at zero risk before anything can satisfy them.
@@ -159,14 +186,19 @@ Two load-bearing asymmetries to defend if the design is pushed: (1) **awake prop
 
 Every phase is a thin, service-bounded slice. Each block names its schemas, wiring, flags, the substrate seam it reuses, and the runtime evidence that keeps it out of keyword-cathedral territory. Dangerous gates (auto-email, memory apply) ship code-complete but **default-off**.
 
-### Phase A — semantic voice on the workspace
-- **New schema:** `ThoughtV1` (`orion/schemas/reverie.py`; register `reverie.thought.v1`). Fields: `thought_id`, grounding `{projection_id, broadcast_generated_at, attended_node_ids, dwell_ticks, coalition_stability_score, selected_action_type}`, voice `{interpretation, salience}`, audit `{evidence_refs (cap 50), created_at, correlation_id, trace_id}`; method `is_hollow()` (rejects short text or zero-grounding).
-- **Organ:** new read-only narration organ mirroring the `OrganEmissionV1` pattern (`orion-substrate-organs`), narrator = `LLMGatewayService`; deterministic salience derived from attended `OpenLoopV1` scores (no invented weights).
+### Phase A — spontaneous thought: the coalition narrates itself unprompted
+
+Built **inside `orion-thought`** as the spontaneous-thought mode, reusing the `stance_react` rails. Not a new organ, not a new service.
+
+- **New schema:** `SpontaneousThoughtV1` (`orion/schemas/reverie.py`; register `reverie.thought.v1`). Reuses `CoalitionSnapshotV1` (`orion/schemas/thought.py`) verbatim as its `coalition` grounding block (no parallel grounding vocabulary). Adds voice `{interpretation, salience}` and audit `{thought_id, evidence_refs (cap 50), created_at, correlation_id}`; method `is_hollow()` — rejects short text **and** un-anchored text (interpretation must cite ≥1 attended node / open-loop id from the coalition). Degrades to a hollow-marked thought (never raises) when the coalition is absent.
+- **Verb:** new `reverie_narrate` verb (`orion/cognition/verbs/reverie_narrate.yaml` + `orion/cognition/prompts/reverie_narrate.j2`) mirroring `stance_react` but reflection-shaped (interpretation/salience, *not* imperative/tone/disposition). Same `LLMGatewayService`, brain tier.
+- **Producer:** self-driven tick in `orion-thought` (second entrypoint beside `run_bus_worker`) that builds a `stance_react`-shaped request with `user_message=None` from the current coalition, runs `reverie_narrate` via the existing `CortexExecClient`, emits `SpontaneousThoughtV1`. Deterministic salience from attended open-loop scores (no invented weights).
 - **Channel/store:** `orion:reverie:thought` (`reverie.thought.v1`); migration `substrate_reverie_thought`.
 - **Env:** `ORION_REVERIE_ENABLED=false`, `ORION_REVERIE_INTERVAL_SEC`, `ORION_REVERIE_MIN_SALIENCE`.
-- **Reads:** `substrate.attention.broadcast.v1` (rung 3, live). **Consumer:** hub `_reverie_section` panel.
-- **Tests/eval:** narration-grounding unit tests + hollow-text guard eval. **Evidence:** stored `ThoughtV1` whose grounding matches a live broadcast, rendered in hub.
-- **Rollback:** flag off; drop table.
+- **Reads (read-only):** current rung-3 coalition (`AttentionBroadcastProjectionV1`, the same source `orion-thought` already consumes via `HubAssociationBundleV1`). **Consumer:** hub `_reverie_section` panel.
+- **Tests/eval:** grounding unit tests + **un-anchored** hollow-text guard eval (the real fail-fast risk now — no user question anchoring relevance). **Evidence:** stored `SpontaneousThoughtV1` whose `coalition` matches a live broadcast, rendered in hub, beating the hollow guard.
+- **Rollback:** flag off; drop table. Evoked `stance_react` path untouched.
+- **Delivery status (2026-07-06):** DELIVERED — schema + registry + channel + `reverie_narrate` verb/prompt + producer (self-driven tick, default-off) + `substrate_reverie_thought` migration + env + unit tests + hollow-guard eval. DEFERRED to a follow-up (need the live mesh to verify, so building them blind would add unverifiable surface): the store-writer consumer that persists emissions into `substrate_reverie_thought`, the hub `_reverie_section` panel, and the live smoke proving a stored thought renders. Until those land, the "stored + rendered in hub" evidence is `UNVERIFIED` and the migration is a contract-ahead artifact with no writer yet.
 
 ### Phase B — thought → governed action
 - **Schemas:** reuse `ProposalFrameV1` (Layer 7); add proposal `source="reverie_thought"` + `thought_id` link. No new envelope kind.
@@ -176,7 +208,7 @@ Every phase is a thin, service-bounded slice. Each block names its schemas, wiri
 - **Rollback:** both flags off; policy denies reverie proposals.
 
 ### Phase C — reverie chain
-- **New schemas:** `ReverieChainV1` `{chain_id, trigger{pressure_kind, magnitude, evidence_payload[]}, thought_ids[], ema_summary, terminal_reason, committed_proposal_id?}`; `ReverieRefractoryEntry` `{theme_key, suppressed_until}`. `ThoughtV1` gains additive optional `{chain_id, thought_index, next_focus | drift}`.
+- **New schemas:** `ReverieChainV1` `{chain_id, trigger{pressure_kind, magnitude, evidence_payload[]}, thought_ids[], ema_summary, terminal_reason, committed_proposal_id?}`; `ReverieRefractoryEntry` `{theme_key, suppressed_until}`. `SpontaneousThoughtV1` gains additive optional `{chain_id, thought_index, next_focus | drift}`.
 - **Channels/migrations:** `orion:reverie:chain`; `substrate_reverie_chain`, `substrate_reverie_refractory`.
 - **Env:** `ORION_REVERIE_CHAIN_ENABLED=false`, `ORION_REVERIE_CHAIN_MAX_STEPS`, `ORION_REVERIE_REFRACTORY_SEC`, `ORION_REVERIE_DRIFT_TEMP`.
 - **Seam:** last-n from thought store (verbatim); wide-n EMA from coalition-dwell log (`coalition_dwell_v1`, lossy low-pass); drift from rung-5 `endogenous_curiosity` candidates; **trigger** = `metacog_trigger_signals` eventfulness + rung-1 pressure θ; **termination** on pressure discharge (`SelfStateV1.unresolved_pressures` / `substrate.mutation.pressure.v1`).
@@ -187,7 +219,7 @@ Every phase is a thin, service-bounded slice. Each block names its schemas, wiri
 - **Schemas:** none new — reverie evidence bundle gains `motif_refs[]` + `episode_summary_refs[]`.
 - **Env:** `ORION_REVERIE_GROUND_CONSOLIDATION=false`.
 - **Reads (read-only):** Layer 11 `substrate_consolidation_frames` motifs + rung-4 `EpisodeSummaryV1`.
-- **Tests:** reverie evidence includes ≥1 motif and ≥1 episode; consumed read-only (assert). **Evidence:** a `ThoughtV1` whose `evidence_refs` cite a real motif + episode.
+- **Tests:** reverie evidence includes ≥1 motif and ≥1 episode; consumed read-only (assert). **Evidence:** a `SpontaneousThoughtV1` whose `evidence_refs` cite a real motif + episode.
 - **Rollback:** flag off (reverie falls back to coalition-only grounding).
 
 ### Phase E — compaction request seam
@@ -226,7 +258,7 @@ Every phase is a thin, service-bounded slice. Each block names its schemas, wiri
 
 **Bus channels:** `orion:reverie:thought`, `orion:reverie:chain`, `orion:dream:compaction-request`, `orion:dream:compaction-delta` (register in `orion/bus/channels.yaml`).
 
-**Schema registry additions** (`orion/schemas/registry.py`): `ThoughtV1` (`reverie.thought.v1`), `ReverieChainV1`, `ReverieRefractoryEntry`, `CompactionRequestV1` (`dream.compaction.request.v1`), `MemoryCompactionDeltaV1` (`dream.compaction.delta.v1`).
+**Schema registry additions** (`orion/schemas/registry.py`): `SpontaneousThoughtV1` (`reverie.thought.v1`), `ReverieChainV1`, `ReverieRefractoryEntry`, `CompactionRequestV1` (`dream.compaction.request.v1`), `MemoryCompactionDeltaV1` (`dream.compaction.delta.v1`).
 
 **Migrations** (`services/orion-sql-db/`): `substrate_reverie_thought`, `substrate_reverie_chain`, `substrate_reverie_refractory`, `dream_compaction_request_queue`, `dream_compaction_delta`.
 
@@ -265,7 +297,7 @@ Every `.env_example` change syncs local `.env` via `python scripts/sync_local_en
 
 ## Acceptance checks (per phase, minimum)
 
-- A: `ThoughtV1` narrates the actual current winning coalition (coalition id matches broadcast); read-only assert.
+- A: `SpontaneousThoughtV1` narrates the actual current winning coalition (coalition id matches broadcast); read-only assert.
 - B: proposal appears in Layer 7, policy decision in Layer 8, dispatch in Layer 9, real email + hub notify; no direct orion-actions call from reverie (contract test).
 - C: chain terminates on pressure discharge ≤ step-cap; refractory suppresses re-trigger; EMA is lossy (no verbatim wide-n); contract test: no thought reads a prior dream.
 - D: reverie evidence includes ≥1 motif and ≥1 `EpisodeSummaryV1`; consumed read-only.
@@ -286,6 +318,6 @@ Every `.env_example` change syncs local `.env` via `python scripts/sync_local_en
 
 ## Build sequence
 
-All eight phases are the build. They ship in dependency order (A→H) because the ordering is a real engineering constraint, not a gate — B needs A's `ThoughtV1`, D needs the chain, F needs D+E, G needs F's staged delta. The dangerous gates (auto-email in B, memory apply in G) are code-complete but **default-off**: building the applier is not the same as turning it loose. Each phase carries its own tests, eval, and not-a-cathedral evidence, and is independently reversible by its flag.
+All eight phases are the build. They ship in dependency order (A→H) because the ordering is a real engineering constraint, not a gate — B needs A's `SpontaneousThoughtV1`, D needs the chain, F needs D+E, G needs F's staged delta. The dangerous gates (auto-email in B, memory apply in G) are code-complete but **default-off**: building the applier is not the same as turning it loose. Each phase carries its own tests, eval, and not-a-cathedral evidence, and is independently reversible by its flag.
 
-Phase A is where code starts: narrate the current rung-3 winning coalition into one `ThoughtV1`, render in hub — a pure read on an already-broadcasting workspace, so the semantic organ is proven to speak the substrate's language before any thought climbs toward action. From there, straight through B→H.
+Phase A is where code starts: narrate the current rung-3 winning coalition into one `SpontaneousThoughtV1`, render in hub — a pure read on an already-broadcasting workspace, so the semantic organ is proven to speak the substrate's language before any thought climbs toward action. From there, straight through B→H.

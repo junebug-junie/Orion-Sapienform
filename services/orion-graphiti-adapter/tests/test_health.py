@@ -13,3 +13,4 @@ def test_health_without_postgres():
         data = resp.json()
         assert data["postgres"] is False
         assert data["service"] == "orion-graphiti-adapter"
+        assert data["backend"] == "orion_postgres"

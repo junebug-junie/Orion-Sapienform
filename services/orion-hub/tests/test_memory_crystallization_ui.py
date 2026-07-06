@@ -16,3 +16,9 @@ def test_crystallization_observatory_ui_wired() -> None:
     assert "OrionMemoryCrystallizationUI" in ui
     assert 'activateSubview("crystallizations")' in memory_js
     assert "memoryCrystallizationPanel" in memory_js
+
+
+def test_crystallization_ui_shows_graphiti_projection_and_sync() -> None:
+    ui = (HUB_ROOT / "static" / "js" / "memory-crystallization-ui.js").read_text(encoding="utf-8")
+    assert "graphiti_episode_ids" in ui
+    assert "/api/memory/graphiti/sync/" in ui

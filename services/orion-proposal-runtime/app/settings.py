@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     enable_proposal_runtime: bool = Field(True, alias="ENABLE_PROPOSAL_RUNTIME")
     enable_transport_proposals: bool = Field(False, alias="ENABLE_TRANSPORT_PROPOSALS")
     transport_proposal_mode: str = Field("read_only", alias="TRANSPORT_PROPOSAL_MODE")
+    # Phase B: incorporate spontaneous-thought (reverie) proposals into Layer 7.
+    # Default-off; candidates are operator_review-gated (never auto-dispatch).
+    reverie_propose_enabled: bool = Field(False, alias="ORION_REVERIE_PROPOSE_ENABLED")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
 

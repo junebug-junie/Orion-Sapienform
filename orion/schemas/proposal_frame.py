@@ -65,6 +65,11 @@ class ProposalCandidateV1(BaseModel):
 
     execution_intent: dict[str, str] = Field(default_factory=dict)
 
+    # Provenance for candidates injected from outside the deterministic builder
+    # (Phase B: spontaneous-thought proposals). None for builder-native candidates.
+    source: str | None = None
+    thought_id: str | None = None
+
 
 class ProposalFrameV1(BaseModel):
     model_config = ConfigDict(extra="forbid")

@@ -44,6 +44,44 @@ class ProposalRuntimeStore:
             payload = json.loads(payload)
         return SelfStateV1.model_validate(payload)
 
+    def load_recent_reverie_thought(self, *, max_age_sec: float = 300.0):
+        """Latest fresh non-hollow spontaneous thought, or None (Phase B).
+
+        Degrades to None on any error (missing table, bad payload) — a reverie
+        read must never break proposal generation.
+        """
+        from orion.schemas.reverie import SpontaneousThoughtV1
+
+        try:
+            with self._engine.connect() as conn:
+                row = (
+                    conn.execute(
+                        text(
+                            """
+                            SELECT thought_json, created_at FROM substrate_reverie_thought
+                            ORDER BY created_at DESC
+                            LIMIT 1
+                            """
+                        ),
+                    )
+                    .mappings()
+                    .first()
+                )
+            if not row:
+                return None
+            created_at = row.get("created_at")
+            if isinstance(created_at, datetime):
+                ts = created_at if created_at.tzinfo else created_at.replace(tzinfo=timezone.utc)
+                if (datetime.now(timezone.utc) - ts).total_seconds() > max_age_sec:
+                    return None
+            payload = row["thought_json"]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            thought = SpontaneousThoughtV1.model_validate(payload)
+            return None if thought.is_hollow() else thought
+        except Exception:
+            return None
+
     def load_attention_frame(self, frame_id: str) -> FieldAttentionFrameV1 | None:
         with self._engine.connect() as conn:
             row = (

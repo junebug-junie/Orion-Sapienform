@@ -65,12 +65,29 @@ class ProposalRuntimeWorker:
             return
 
         previous = self._store.load_latest_proposal_frame()
+
+        # Phase B: flag-gated spontaneous-thought proposals. Default-off → None →
+        # zero change. Reverie candidates carry an operator_review gate, so even
+        # when on they cannot auto-dispatch.
+        reverie_candidates = None
+        if getattr(self._settings, "reverie_propose_enabled", False):
+            thought = self._store.load_recent_reverie_thought()
+            if thought is not None:
+                from orion.reverie.proposal import spontaneous_thought_to_candidate
+
+                candidate = spontaneous_thought_to_candidate(
+                    thought, self_state_id=self_state.self_state_id
+                )
+                if candidate is not None:
+                    reverie_candidates = [candidate]
+
         frame = build_proposal_frame(
             self_state=self_state,
             attention=attention,
             field=field,
             policy=self._policy,
             previous_frame=previous,
+            reverie_candidates=reverie_candidates,
         )
         if not self._settings.enable_transport_proposals:
             filtered = [

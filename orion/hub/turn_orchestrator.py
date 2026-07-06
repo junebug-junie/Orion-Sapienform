@@ -158,7 +158,7 @@ async def execute_unified_turn(
     from scripts.settings import settings as hub_settings
 
     cfg = settings or hub_settings
-    payload = payload or {}
+    payload = dict(payload or {})
 
     if emit_observation_fn is not None:
         try:
@@ -274,7 +274,159 @@ async def execute_unified_turn(
         ]
     if not run.finalize_ran or not run.final_text:
         return [_harness_error_frame(run, correlation_id=correlation_id)]
+    await _publish_unified_turn_chat_history(
+        bus=bus,
+        correlation_id=correlation_id,
+        session_id=session_id,
+        user_message=user_message,
+        response_text=str(run.final_text),
+        payload=payload,
+        run=run,
+        source_label=str(payload.get("chat_history_source") or "hub_orion"),
+    )
     return _success_frames(run, correlation_id=correlation_id)
+
+
+async def _publish_unified_turn_chat_history(
+    *,
+    bus: Any,
+    correlation_id: str,
+    session_id: str | None,
+    user_message: str,
+    response_text: str,
+    payload: dict[str, Any],
+    run: HarnessRunV1,
+    source_label: str = "hub_orion",
+) -> None:
+    """Persist unified-turn chat to the bus so sql-writer lands chat_history_log rows."""
+    if bus is None:
+        return
+    if payload.get("no_write") or payload.get("x_no_write"):
+        return
+    if not str(response_text or "").strip():
+        return
+
+    from scripts.chat_history import (
+        build_chat_history_envelope,
+        build_chat_turn_envelope,
+        publish_chat_history,
+        publish_chat_turn,
+    )
+    from scripts.settings import settings as hub_settings
+    from scripts.spark_candidate import publish_spark_introspect_candidate
+
+    session = str(session_id or "anonymous")
+    user_id = payload.get("user_id")
+    mode_tag = "orion"
+    spark_meta = {
+        "mode": mode_tag,
+        "unified_turn": True,
+        "harness_step_count": run.step_count,
+        "harness_grounding_status": run.grounding_status,
+    }
+
+    reasoning_trace: dict[str, Any] | None = None
+    if run.reflection is not None:
+        reflection_bits = [
+            str(run.reflection.imperative or "").strip(),
+            *[str(note).strip() for note in (run.reflection.alignment_notes or []) if str(note).strip()],
+        ]
+        reflection_text = "\n".join(bit for bit in reflection_bits if bit)
+        if reflection_text:
+            reasoning_trace = {
+                "trace_role": "reflection",
+                "trace_stage": "post_answer",
+                "content": reflection_text,
+                "correlation_id": correlation_id,
+                "session_id": session,
+            }
+
+    envelopes = [
+        build_chat_history_envelope(
+            content=user_message,
+            role="user",
+            session_id=session,
+            correlation_id=correlation_id,
+            speaker=str(user_id or "user"),
+            tags=[mode_tag],
+            message_id=f"{correlation_id}:user",
+            memory_status="accepted",
+            memory_tier="ephemeral",
+        ),
+        build_chat_history_envelope(
+            content=response_text,
+            role="assistant",
+            session_id=session,
+            correlation_id=correlation_id,
+            speaker=hub_settings.SERVICE_NAME,
+            tags=[mode_tag],
+            message_id=f"{correlation_id}:assistant",
+            reasoning_trace=reasoning_trace,
+        ),
+    ]
+    await publish_chat_history(bus, envelopes)
+
+    env_turn = build_chat_turn_envelope(
+        prompt=user_message,
+        response=response_text,
+        session_id=session,
+        correlation_id=correlation_id,
+        user_id=str(user_id) if user_id else None,
+        source_label=source_label,
+        spark_meta=spark_meta,
+        turn_id=correlation_id,
+        memory_status="accepted",
+        memory_tier="ephemeral",
+        reasoning_trace=reasoning_trace,
+        thinking_source="orion_unified_turn",
+    )
+    await publish_chat_turn(bus, env_turn)
+
+    if hub_settings.PUBLISH_CHAT_HISTORY_LOG:
+        try:
+            await bus.publish(
+                hub_settings.chat_history_channel,
+                {
+                    "correlation_id": correlation_id,
+                    "source": source_label,
+                    "prompt": user_message,
+                    "response": response_text,
+                    "session_id": session,
+                    "mode": mode_tag,
+                    "spark_meta": spark_meta,
+                    "reasoning_trace": reasoning_trace,
+                },
+            )
+        except Exception:
+            logger.warning(
+                "unified_turn legacy chat_history publish failed corr=%s",
+                correlation_id,
+                exc_info=True,
+            )
+
+    try:
+        await publish_spark_introspect_candidate(
+            bus,
+            trace_id=correlation_id,
+            prompt=user_message,
+            response=response_text,
+            spark_meta=spark_meta,
+            source=source_label,
+            correlation_id=correlation_id,
+        )
+    except Exception:
+        logger.warning(
+            "unified_turn spark candidate publish failed corr=%s",
+            correlation_id,
+            exc_info=True,
+        )
+
+    logger.info(
+        "unified_turn chat_history published corr=%s session=%s source=%s",
+        correlation_id,
+        session,
+        source_label,
+    )
 
 
 async def run_unified_turn(

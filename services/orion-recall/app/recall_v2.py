@@ -151,11 +151,13 @@ async def run_recall_v2_shadow(
     }
 
     if plan.exact_anchor_tokens:
+        since_minutes = max(60, int(plan.time_window_days * 24 * 60))
         sql_exact = await fetch_exact_fragments(
             tokens=list(plan.exact_anchor_tokens),
             session_id=query.session_id,
             node_id=query.node_id,
             limit=10,
+            since_minutes=since_minutes,
         )
         backend_counts["sql_exact_anchor"] = len(sql_exact)
         for row in sql_exact:

@@ -138,3 +138,35 @@ async def test_run_fcc_turn_surfaces_mcp_preflight_error_code(monkeypatch: pytes
     assert len(events) == 1
     assert events[0]["type"] == "error"
     assert events[0]["error_code"] == "fcc_mcp_github_missing"
+
+
+def test_maybe_render_mcp_config_returns_none_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HARNESS_FCC_MCP_ENABLED", raising=False)
+    assert motor._maybe_render_mcp_config(correlation_id="corr-off") is None
+
+
+def test_maybe_render_mcp_config_wires_orion_fcc_render(monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    import orion.fcc.mcp_config as mcp_config
+
+    monkeypatch.setenv("HARNESS_FCC_MCP_ENABLED", "true")
+    monkeypatch.delenv("HARNESS_AITOWN_ENABLED", raising=False)
+    monkeypatch.setattr(
+        motor,
+        "load_fcc_env",
+        lambda _p: {"GITHUB_PAT": "ghp_motor_int", "FIRECRAWL_API_KEY": "fc_motor_int"},
+    )
+    monkeypatch.setattr(motor, "expand_env_path", lambda _p: Path("/fake/.fcc/.env"))
+    monkeypatch.setattr(mcp_config.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+
+    path = motor._maybe_render_mcp_config(correlation_id="corr-motor-render")
+    try:
+        assert path is not None
+        assert path.name == "corr-motor-render.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["mcpServers"]["github"]["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"] == "ghp_motor_int"
+        assert data["mcpServers"]["firecrawl"]["env"]["FIRECRAWL_API_KEY"] == "fc_motor_int"
+        assert "orion-aitown" not in data["mcpServers"]
+    finally:
+        mcp_config.cleanup_mcp_config(path)

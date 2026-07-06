@@ -46,6 +46,15 @@ class ThoughtSettings(BaseSettings):
     )
     stance_react_timeout_sec: float = Field(120.0, alias="STANCE_REACT_TIMEOUT_SEC")
 
+    # --- Reverie: spontaneous-thought mode (Phase A, default-off) ---
+    reverie_enabled: bool = Field(False, alias="ORION_REVERIE_ENABLED")
+    reverie_interval_sec: float = Field(90.0, alias="ORION_REVERIE_INTERVAL_SEC")
+    reverie_min_salience: float = Field(0.0, alias="ORION_REVERIE_MIN_SALIENCE")
+    channel_reverie_thought: str = Field(
+        "orion:reverie:thought",
+        alias="CHANNEL_REVERIE_THOUGHT",
+    )
+
 
 settings = ThoughtSettings()
 logger.info(

@@ -238,6 +238,14 @@ class HarnessRunner:
                 break
 
         if not draft_text:
+            logger.info(
+                "harness_motor_complete corr=%s steps=%s grammar_receipts=%s verdict=%s grounding=%s draft_len=0",
+                request.correlation_id,
+                step_count,
+                len(receipts),
+                compliance_verdict if compliance_verdict != "completed" else "failed",
+                grounding_status if grounding_status != "grounded" else "empty_draft",
+            )
             return HarnessMotorResult(
                 draft_text="",
                 grammar_receipts=receipts,
@@ -254,6 +262,15 @@ class HarnessRunner:
             grammar_receipts=receipts,
             coalition_snapshot=coalition,
             repair_overlay=overlay,
+        )
+        logger.info(
+            "harness_motor_complete corr=%s steps=%s grammar_receipts=%s verdict=%s grounding=%s draft_len=%s",
+            request.correlation_id,
+            step_count,
+            len(receipts),
+            compliance_verdict,
+            grounding_status,
+            len(draft_text),
         )
         return HarnessMotorResult(
             draft_text=draft_text,

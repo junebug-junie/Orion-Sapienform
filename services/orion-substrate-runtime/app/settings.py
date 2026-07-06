@@ -81,6 +81,14 @@ class Settings(BaseSettings):
         "orion:substrate:finalize_appraisal:result:",
         alias="CHANNEL_FINALIZE_APPRAISAL_RESULT_PREFIX",
     )
+    channel_post_turn_closure: str = Field(
+        "orion:substrate:post_turn_closure",
+        alias="CHANNEL_POST_TURN_CLOSURE",
+    )
+    enable_post_turn_closure_listener: bool = Field(
+        True,
+        alias="ENABLE_POST_TURN_CLOSURE_LISTENER",
+    )
     grammar_event_channel: str = Field("orion:grammar:event", alias="GRAMMAR_EVENT_CHANNEL")
     accepted_pressure_grammar_channel: str = Field(
         "orion:grammar:accepted-pressure",

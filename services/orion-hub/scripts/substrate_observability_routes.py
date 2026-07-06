@@ -106,6 +106,40 @@ def _attention_broadcast_section(engine) -> dict[str, Any] | None:
     }
 
 
+_REVERIE_LIMIT = 5
+
+
+def _reverie_section(engine) -> dict[str, Any] | None:
+    """Recent spontaneous thoughts (reverie Phase A). Read-only; empty until the
+    default-off producer runs."""
+    from sqlalchemy import text
+
+    sql = (
+        "SELECT thought_id, correlation_id, created_at, salience, interpretation, "
+        "thought_json FROM substrate_reverie_thought "
+        "ORDER BY created_at DESC LIMIT :limit"
+    )
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), {"limit": _REVERIE_LIMIT}).mappings().all()
+    if not rows:
+        return None
+    thoughts = []
+    for row in rows:
+        payload = _parse_json(row.get("thought_json")) or {}
+        coalition = payload.get("coalition") or {}
+        thoughts.append(
+            {
+                "thought_id": row.get("thought_id"),
+                "salience": row.get("salience"),
+                "interpretation": row.get("interpretation"),
+                "attended_node_ids": coalition.get("attended_node_ids", []),
+                "selected_open_loop_id": coalition.get("selected_open_loop_id"),
+                "created_at": _iso(row.get("created_at")),
+            }
+        )
+    return {"count": len(thoughts), "recent": thoughts}
+
+
 def _curiosity_section(engine) -> dict[str, Any] | None:
     row = _latest_row(
         engine,
@@ -186,12 +220,14 @@ async def observability_summary() -> dict[str, Any]:
         "self_state": None,
         "attention_broadcast": None,
         "curiosity": None,
+        "reverie": None,
     }
     if engine is not None:
         for name, loader in (
             ("self_state", _self_state_section),
             ("attention_broadcast", _attention_broadcast_section),
             ("curiosity", _curiosity_section),
+            ("reverie", _reverie_section),
         ):
             try:
                 sections[name] = loader(engine)

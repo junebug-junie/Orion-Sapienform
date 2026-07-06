@@ -31,6 +31,7 @@ from orion.schemas.thought import CoalitionSnapshotV1
 from .bus_listener import extract_stance_react_payload
 from .cortex_client import CortexExecClient
 from .settings import settings
+from .store import persist_reverie_thought
 
 logger = logging.getLogger("orion-thought.reverie")
 
@@ -274,6 +275,8 @@ async def run_reverie_once(
             payload=thought.model_dump(mode="json"),
         )
         await bus.publish(settings.channel_reverie_thought, envelope)
+        # Best-effort persistence for the hub panel — never breaks the tick.
+        persist_reverie_thought(thought)
     except Exception as exc:
         # A tick must never raise (hard constraint) — a bus/narration/parse
         # failure degrades to a dropped tick, not a crash.

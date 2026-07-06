@@ -162,16 +162,27 @@ def _env_truthy(key: str) -> bool:
     return os.environ.get(key, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _harness_aitown_env(fcc_env: Dict[str, str]) -> Dict[str, str]:
+    """Merge harness service overrides into FCC env for AI Town MCP probes."""
+    ae = dict(fcc_env)
+    override = str(os.environ.get("HARNESS_AITOWN_CONVEX_URL") or "").strip()
+    if override:
+        ae["AITOWN_CONVEX_URL"] = override
+    return ae
+
+
 def _maybe_render_mcp_config(*, correlation_id: str) -> Optional[Path]:
     from orion.fcc.mcp_config import render_mcp_config
 
     if not _env_truthy("HARNESS_FCC_MCP_ENABLED"):
         return None
     env = load_fcc_env(expand_env_path(os.environ.get("HARNESS_FCC_ENV_PATH", "~/.fcc/.env")))
+    include_aitown = _env_truthy("HARNESS_AITOWN_ENABLED")
     return render_mcp_config(
         correlation_id=correlation_id,
         fcc_env=env,
-        include_aitown=_env_truthy("HARNESS_AITOWN_ENABLED"),
+        include_aitown=include_aitown,
+        aitown_env=_harness_aitown_env(env) if include_aitown else None,
     )
 
 

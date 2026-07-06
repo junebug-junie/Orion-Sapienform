@@ -170,3 +170,11 @@ def test_maybe_render_mcp_config_wires_orion_fcc_render(monkeypatch: pytest.Monk
         assert "orion-aitown" not in data["mcpServers"]
     finally:
         mcp_config.cleanup_mcp_config(path)
+
+
+def test_harness_aitown_env_overrides_convex_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HARNESS_AITOWN_CONVEX_URL", "http://host.docker.internal:3210")
+    base = {"AITOWN_CONVEX_URL": "http://127.0.0.1:3210", "AITOWN_ADMIN_KEY": "k"}
+    merged = motor._harness_aitown_env(base)
+    assert merged["AITOWN_CONVEX_URL"] == "http://host.docker.internal:3210"
+    assert merged["AITOWN_ADMIN_KEY"] == "k"

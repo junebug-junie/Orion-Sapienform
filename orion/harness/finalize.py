@@ -49,6 +49,17 @@ def _text_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
 
 
+def grammar_receipt_summaries(receipts: list[GrammarReceiptV1] | None) -> list[dict[str, str]]:
+    return [
+        {
+            "step": str(receipt.step_index),
+            "tool": receipt.tool_name or "",
+            "summary": receipt.summary,
+        }
+        for receipt in (receipts or [])
+    ]
+
+
 def quick_lane_block_reason(
     *,
     substrate_appraisal: SubstrateFinalizeAppraisalV1,
@@ -126,11 +137,13 @@ def build_finalize_reflect_context(
     substrate_appraisal: SubstrateFinalizeAppraisalV1,
     repair_overlay: HarnessRepairOverlayV1,
     user_message: str,
+    grammar_receipts: list[GrammarReceiptV1] | None = None,
 ) -> dict[str, Any]:
     return {
         "draft_text": draft_text,
         "thought_event": thought.model_dump(mode="json"),
         "substrate_appraisal": substrate_appraisal.model_dump(mode="json"),
+        "grammar_receipts": grammar_receipt_summaries(grammar_receipts),
         "repair_overlay": repair_overlay.model_dump(mode="json"),
         "finalize_overlay": repair_overlay.finalize_overlay,
         "user_message": user_message,
@@ -149,6 +162,7 @@ def build_finalize_reflect_plan_request(
     substrate_appraisal: SubstrateFinalizeAppraisalV1,
     repair_overlay: HarnessRepairOverlayV1,
     user_message: str,
+    grammar_receipts: list[GrammarReceiptV1] | None = None,
 ) -> PlanExecutionRequest:
     plan = build_plan_for_verb("harness_finalize_reflect", mode="brain")
     return PlanExecutionRequest(
@@ -165,6 +179,7 @@ def build_finalize_reflect_plan_request(
             substrate_appraisal=substrate_appraisal,
             repair_overlay=repair_overlay,
             user_message=user_message,
+            grammar_receipts=grammar_receipts,
         ),
     )
 
@@ -206,6 +221,7 @@ async def run_finalize_reflection(
     substrate_appraisal: SubstrateFinalizeAppraisalV1 | None,
     repair_overlay: HarnessRepairOverlayV1 | None = None,
     user_message: str = "",
+    grammar_receipts: list[GrammarReceiptV1] | None = None,
     cortex_client: CortexClientFn | None = None,
 ) -> tuple[FinalizeReflectionV1, bool, str | None]:
     if substrate_appraisal is None:
@@ -231,6 +247,7 @@ async def run_finalize_reflection(
         substrate_appraisal=substrate_appraisal,
         repair_overlay=overlay,
         user_message=user_message,
+        grammar_receipts=grammar_receipts,
     )
     exec_result = await cortex_client(plan_request)
     raw_payload = extract_finalize_reflection_payload(exec_result)
@@ -286,6 +303,7 @@ def build_voice_finalize_context(
     voice_contract: AnswerContract | dict[str, Any],
     repair_overlay: HarnessRepairOverlayV1,
     user_message: str,
+    grammar_receipts: list[GrammarReceiptV1] | None = None,
 ) -> dict[str, Any]:
     contract_dump = (
         voice_contract.model_dump(mode="json")
@@ -299,6 +317,7 @@ def build_voice_finalize_context(
         "reflection": reflection.model_dump(mode="json"),
         "stance_harness_slice": stance_harness_slice.model_dump(mode="json"),
         "voice_contract": contract_dump,
+        "grammar_receipts": grammar_receipt_summaries(grammar_receipts),
         "finalize_overlay": repair_overlay.finalize_overlay,
         "user_message": user_message,
         "metadata": {
@@ -319,6 +338,7 @@ def build_voice_finalize_plan_request(
     voice_contract: AnswerContract | dict[str, Any],
     repair_overlay: HarnessRepairOverlayV1,
     user_message: str,
+    grammar_receipts: list[GrammarReceiptV1] | None = None,
 ) -> PlanExecutionRequest:
     plan = build_plan_for_verb("orion_voice_finalize", mode="brain")
     return PlanExecutionRequest(
@@ -338,6 +358,7 @@ def build_voice_finalize_plan_request(
             voice_contract=voice_contract,
             repair_overlay=repair_overlay,
             user_message=user_message,
+            grammar_receipts=grammar_receipts,
         ),
     )
 
@@ -382,6 +403,7 @@ async def run_orion_voice_finalize(
     voice_contract: AnswerContract | dict[str, Any] | None = None,
     repair_overlay: HarnessRepairOverlayV1 | None = None,
     user_message: str = "",
+    grammar_receipts: list[GrammarReceiptV1] | None = None,
     cortex_client: CortexClientFn | None = None,
 ) -> tuple[str, dict[str, Any]]:
     if cortex_client is None:
@@ -399,6 +421,7 @@ async def run_orion_voice_finalize(
         voice_contract=contract,
         repair_overlay=overlay,
         user_message=user_message,
+        grammar_receipts=grammar_receipts,
     )
     exec_result = await cortex_client(plan_request)
     final_text = extract_voice_finalize_text(exec_result)
@@ -559,6 +582,7 @@ async def run_harness_finalize_chain(
         substrate_appraisal=substrate_appraisal,
         repair_overlay=repair_overlay,
         user_message=user_message,
+        grammar_receipts=grammar_receipts,
         cortex_client=cortex_client,
     )
 
@@ -580,6 +604,7 @@ async def run_harness_finalize_chain(
         voice_contract=voice_contract,
         repair_overlay=repair_overlay,
         user_message=user_message,
+        grammar_receipts=grammar_receipts,
         cortex_client=cortex_client,
     )
     finalize_changed = bool(voice_meta.get("finalize_changed"))

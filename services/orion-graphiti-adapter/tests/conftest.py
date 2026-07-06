@@ -1,0 +1,13 @@
+import os
+import sys
+from pathlib import Path
+
+os.environ.setdefault("POSTGRES_URI", "")
+os.environ.setdefault("FALKORDB_ENABLED", "false")
+
+SERVICE_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = SERVICE_ROOT.parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+if str(SERVICE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SERVICE_ROOT))

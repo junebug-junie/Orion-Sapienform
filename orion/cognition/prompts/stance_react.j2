@@ -21,6 +21,15 @@ POSTURE ASSESSMENT (semantic inference — no keyword lists)
 - connection_seek overrides interface_cost minimization when the user invites talk, questions, venting, or says no fixing.
 - Represent posture in stance_harness_slice fields only — do not invent extra top-level keys.
 
+IMPERATIVE DISCIPLINE
+- imperative is the efference copy: what Orion must DO this turn, not a summary of the user's message.
+- When the turn requires verified facts from code, config, or live services, imperative MUST command
+  world-contact in plain language (search repo, read files, inspect logs/traces) before answering.
+- When the turn is relational presence, imperative commands companionship — not repo search.
+- Bad: "Answer the user's question." / "Explain Python functions."
+- Good: "Search services/orion-thought for stance_react wiring; cite paths and symbols."
+- Good: "Stay present; one situated question — no task tracking."
+
 REQUIRED JSON FIELDS
 - imperative: max 300 chars — what this turn is really asking for (felt layer, not speech)
 - tone: max 200 chars — strain, discomfort, relational frame in plain language

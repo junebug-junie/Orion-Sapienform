@@ -18,26 +18,44 @@ def test_compile_harness_prefix_includes_stance_slice() -> None:
     assert "how does coalition work?" in prompt
 
 
-def test_compile_harness_prefix_adds_repo_operator_brief_for_repo_contract() -> None:
-    thought = make_thought()
-    contract = AnswerContract(
-        request_kind="repo_technical",
-        requires_repo_grounding=True,
-        preferred_render_style="steps",
+def test_compile_harness_prefix_imperative_first_unified_brief() -> None:
+    thought = make_thought(
+        imperative="Search orion/thought for stance_react; cite file paths.",
+        tone="direct",
     )
     prompt = compile_harness_prefix(
         thought,
         repair_overlay=HarnessRepairOverlayV1(),
-        user_message="where is coalition.py?",
+        user_message="implement a function",
+    )
+    assert "Tools are available from the start" in prompt
+    assert "Search orion/thought for stance_react" in prompt
+    assert "Imperative: Search orion/thought" in prompt
+    assert "Requires repo grounding" not in prompt
+    assert "Answer contract:" not in prompt
+    assert "Orion harness motor — repo/technical turn" not in prompt  # old gated brief
+    assert "prefer rg/Grep" in prompt  # unified brief includes tool guidance
+
+
+def test_compile_harness_prefix_ignores_answer_contract() -> None:
+    thought = make_thought()
+    contract = AnswerContract(
+        request_kind="repo_technical",
+        requires_repo_grounding=True,
+    )
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
         answer_contract=contract,
     )
-    assert "prefer rg/Grep" in prompt
-    assert "Requires repo grounding: yes" in prompt
-    assert "Request kind: repo_technical" in prompt
+    assert "Requires repo grounding" not in prompt
+    assert "Answer contract:" not in prompt
 
 
-def test_harness_motor_instruction_repo_turn() -> None:
-    thought = make_thought()
-    contract = AnswerContract(request_kind="repo_technical", requires_repo_grounding=True)
-    instruction = harness_motor_instruction(thought=thought, answer_contract=contract)
-    assert "repo tools" in instruction
+def test_harness_motor_instruction_imperative_forward() -> None:
+    thought = make_thought(imperative="Inspect docker logs for orion-hub.")
+    instruction = harness_motor_instruction(thought=thought, answer_contract=None)
+    assert instruction == (
+        "Execute your imperative. Use tools when the turn requires verified facts "
+        "from the repo or runtime."
+    )

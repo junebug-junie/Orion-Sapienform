@@ -1,32 +1,9 @@
 from __future__ import annotations
 
-from orion.harness.operator_brief import HARNESS_REPO_OPERATOR_BRIEF, HARNESS_RUNTIME_OPERATOR_BRIEF
+from orion.harness.operator_brief import HARNESS_UNIFIED_OPERATOR_BRIEF
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import HarnessRepairOverlayV1
 from orion.schemas.thought import StanceHarnessSliceV1, ThoughtEventV1
-
-_TECH_TASK_MODES = frozenset({"technical_collaboration", "triage"})
-_TECH_FRAMES = frozenset({"technical", "planning"})
-
-
-def _needs_repo_operator_brief(
-    thought: ThoughtEventV1,
-    answer_contract: AnswerContract | None,
-) -> bool:
-    if answer_contract is not None and answer_contract.requires_repo_grounding:
-        return True
-    sl = thought.stance_harness_slice
-    return sl.task_mode in _TECH_TASK_MODES or sl.conversation_frame in _TECH_FRAMES
-
-
-def _needs_runtime_operator_brief(
-    thought: ThoughtEventV1,
-    answer_contract: AnswerContract | None,
-) -> bool:
-    if answer_contract is not None and answer_contract.requires_runtime_grounding:
-        return True
-    sl = thought.stance_harness_slice
-    return sl.task_mode == "triage" and sl.conversation_frame in _TECH_FRAMES
 
 
 def _format_stance_slice(sl: StanceHarnessSliceV1) -> list[str]:
@@ -44,39 +21,17 @@ def _format_stance_slice(sl: StanceHarnessSliceV1) -> list[str]:
     return lines
 
 
-def _format_answer_contract(contract: AnswerContract) -> list[str]:
-    lines = [
-        f"Request kind: {contract.request_kind}",
-        f"Preferred render: {contract.preferred_render_style}",
-    ]
-    if contract.requires_repo_grounding:
-        lines.append("Requires repo grounding: yes")
-    if contract.requires_runtime_grounding:
-        lines.append("Requires runtime grounding: yes")
-    if contract.asks_for_steps:
-        lines.append("Asks for steps: yes")
-    return lines
-
-
 def harness_motor_instruction(
     *,
     thought: ThoughtEventV1,
     answer_contract: AnswerContract | None,
 ) -> str:
-    if _needs_repo_operator_brief(thought, answer_contract):
-        return (
-            "Use repo tools to gather evidence, then answer with concrete paths, symbols, "
-            "and actionable steps. Preserve code snippets the user needs."
-        )
-    if _needs_runtime_operator_brief(thought, answer_contract):
-        return (
-            "Inspect runtime state with tools, then answer with exact services, commands, "
-            "and the next triage action."
-        )
-    sl = thought.stance_harness_slice
-    if sl.task_mode in _TECH_TASK_MODES:
-        return "Answer technically and concretely. Use tools when facts matter."
-    return "Respond to the user."
+    _ = thought
+    _ = answer_contract  # deprecated on unified motor path; kept for signature compat
+    return (
+        "Execute your imperative. Use tools when the turn requires verified facts "
+        "from the repo or runtime."
+    )
 
 
 def compile_harness_prefix(
@@ -86,13 +41,9 @@ def compile_harness_prefix(
     user_message: str = "",
     answer_contract: AnswerContract | None = None,
 ) -> str:
-    """Deterministic fcc system prefix from stance thought + repair overlay + contract."""
-    parts: list[str] = []
-
-    if _needs_repo_operator_brief(thought, answer_contract):
-        parts.append(HARNESS_REPO_OPERATOR_BRIEF.strip())
-    elif _needs_runtime_operator_brief(thought, answer_contract):
-        parts.append(HARNESS_RUNTIME_OPERATOR_BRIEF.strip())
+    """Deterministic fcc system prefix from stance thought + repair overlay."""
+    _ = answer_contract  # deprecated on unified motor path; kept for signature compat
+    parts: list[str] = [HARNESS_UNIFIED_OPERATOR_BRIEF.strip()]
 
     parts.extend(
         [
@@ -101,10 +52,6 @@ def compile_harness_prefix(
         ]
     )
     parts.extend(_format_stance_slice(thought.stance_harness_slice))
-
-    if answer_contract is not None:
-        parts.append("Answer contract:")
-        parts.extend(f"  - {line}" for line in _format_answer_contract(answer_contract))
 
     if thought.strain_refs:
         parts.append(f"Strain refs: {', '.join(thought.strain_refs)}")

@@ -73,7 +73,7 @@ def build_harness_prompt(
         answer_contract=answer_contract,
     )
     instruction = harness_motor_instruction(
-        thought,
+        thought=thought,
         answer_contract=answer_contract,
     )
     if user_message.strip():

@@ -13,3 +13,12 @@ HARNESS_RUNTIME_OPERATOR_BRIEF = """\
 Orion harness motor — runtime/debug turn.
 Verify live state with tools (logs, docker, bus traces) before diagnosing. Name exact services, channels, and commands.
 """
+
+HARNESS_UNIFIED_OPERATOR_BRIEF = """\
+Orion harness motor.
+Tools are available from the start. Your imperative states what this turn requires.
+When the imperative calls for facts from the codebase or live runtime, use tools before
+answering. Record each meaningful step. Do not guess repo structure or service state from memory.
+Before Read on any file: prefer rg/Grep with a path or pattern. For live failures, inspect logs,
+docker, and bus traces before diagnosing.
+"""

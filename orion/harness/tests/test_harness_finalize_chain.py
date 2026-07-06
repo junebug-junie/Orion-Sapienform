@@ -27,18 +27,25 @@ async def test_run_harness_finalize_chain_orchestrates_5a_through_6b() -> None:
         coalition_snapshot=coalition,
         repair_overlay=make_repair_overlay(),
     )
-    appraisal = make_appraisal()
+    appraisal = make_appraisal(surprise_level=0.5)
     reflection = make_reflection()
     verdict_calls: list[str] = []
     outcome_calls: list[str] = []
+    cortex_calls: list[object] = []
 
     async def substrate_client(_mol: object):
         return appraisal
 
-    async def cortex_client(_req: object):
+    async def cortex_client(req: object):
+        cortex_calls.append(req)
+        if len(cortex_calls) == 1:
+            return {
+                "final_text": reflection.model_dump(mode="json"),
+                "trace_id": "trace-1",
+            }
         return {
-            "final_text": reflection.model_dump(mode="json"),
-            "trace_id": "trace-1",
+            "final_text": "final for juniper",
+            "trace_id": "trace-2",
         }
 
     async def verdict_publish_fn(*_: object, **__: object) -> None:
@@ -75,6 +82,10 @@ async def test_run_harness_finalize_chain_orchestrates_5a_through_6b() -> None:
     assert chain.substrate_appraisal is appraisal
     assert verdict_calls == ["verdict"]
     assert outcome_calls == ["outcome"]
+    assert len(cortex_calls) == 2
+    for call in cortex_calls:
+        ctx = call.context  # type: ignore[attr-defined]
+        assert ctx["grammar_receipts"] == [{"step": "0", "tool": "", "summary": "step"}]
 
 
 @pytest.mark.asyncio

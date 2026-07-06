@@ -5,7 +5,7 @@ import contextlib
 import logging
 from typing import Any, Awaitable, Callable, Protocol
 
-from orion.cognition.answer_contract_normalize import heuristic_answer_contract
+from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.hub.association import build_hub_association_bundle
 from orion.hub.harness_step_stream import relay_harness_run_steps
 from orion.hub.turn_request import build_orion_turn_request
@@ -237,7 +237,7 @@ async def execute_unified_turn(
             read_runtime_logs=True,
             read_redis_traces=True,
         ),
-        answer_contract=heuristic_answer_contract(user_message),
+        answer_contract=AnswerContract(),
         repair_pressure_contract=_repair_pressure_contract(repair_bundle),
         fcc_model_label=payload.get("fcc_model_label") or DEFAULT_UNIFIED_TURN_FCC_MODEL_LABEL,
     )

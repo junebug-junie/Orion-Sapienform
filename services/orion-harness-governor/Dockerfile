@@ -34,7 +34,7 @@ COPY orion ./orion
 COPY services/orion-ai-town/mcp ./services/orion-ai-town/mcp
 RUN pip3 install --no-cache-dir ./services/orion-ai-town/mcp
 
-ENV PYTHONPATH=/app/services/orion-ai-town/mcp
+ENV PYTHONPATH=/app:/app/services/orion-ai-town/mcp
 
 EXPOSE 7156
 

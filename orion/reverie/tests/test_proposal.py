@@ -55,6 +55,18 @@ def test_candidate_always_requires_policy_gate_never_auto():
     assert c.proposed_effect == "prepare_for_policy_gate"
 
 
+def test_autoaction_posture_recorded_but_gate_unchanged():
+    # Arming ORION_REVERIE_AUTOACTION_ENABLED records an inspectable posture but
+    # must NOT lower the gate — the load-bearing Phase B safety property.
+    off = spontaneous_thought_to_candidate(_thought(), self_state_id="ss-1")
+    on = spontaneous_thought_to_candidate(_thought(), self_state_id="ss-1", autoaction_enabled=True)
+    assert "reverie_autoaction:off" in off.reasons
+    assert "reverie_autoaction:on" in on.reasons
+    # The gate is operator_review in BOTH cases — auto-action never auto-dispatches.
+    assert off.required_policy_gate == "operator_review"
+    assert on.required_policy_gate == "operator_review"
+
+
 def test_hollow_thought_yields_no_candidate():
     hollow = _thought(evidence=(), interpretation="x")  # short + no evidence
     assert spontaneous_thought_to_candidate(hollow, self_state_id="ss-1") is None

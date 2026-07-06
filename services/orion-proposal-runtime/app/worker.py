@@ -76,7 +76,11 @@ class ProposalRuntimeWorker:
                 from orion.reverie.proposal import spontaneous_thought_to_candidate
 
                 candidate = spontaneous_thought_to_candidate(
-                    thought, self_state_id=self_state.self_state_id
+                    thought,
+                    self_state_id=self_state.self_state_id,
+                    autoaction_enabled=getattr(
+                        self._settings, "reverie_autoaction_enabled", False
+                    ),
                 )
                 if candidate is not None:
                     reverie_candidates = [candidate]

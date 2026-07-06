@@ -35,11 +35,19 @@ def spontaneous_thought_to_candidate(
     *,
     self_state_id: str,
     min_salience: float = DEFAULT_MIN_PROPOSE_SALIENCE,
+    autoaction_enabled: bool = False,
 ) -> ProposalCandidateV1 | None:
     """Convert a thought into a review-gated proposal candidate, or None.
 
     Returns None (degrades, never raises) when the thought is hollow, absent, or
     below the salience floor — so a weak reverie never manufactures a proposal.
+
+    `autoaction_enabled` (the `ORION_REVERIE_AUTOACTION_ENABLED` gate) is recorded
+    as an inspectable *posture* on the candidate's reasons so a downstream Layer-9
+    dispatcher can see whether the operator has armed auto-dispatch. It NEVER
+    lowers `required_policy_gate`: the gate stays `operator_review` regardless, so
+    a reverie can never auto-dispatch on the propose side. Arming auto-action only
+    signals intent; a human still gates it at policy/dispatch.
     """
     if thought is None or thought.is_hollow():
         return None
@@ -66,7 +74,11 @@ def spontaneous_thought_to_candidate(
         risk_score=0.3,
         reversibility_score=1.0,
         evidence_refs=evidence_refs,
-        reasons=["spontaneous_thought", f"thought_id:{thought.thought_id}"],
+        reasons=[
+            "spontaneous_thought",
+            f"thought_id:{thought.thought_id}",
+            f"reverie_autoaction:{'on' if autoaction_enabled else 'off'}",
+        ],
         proposed_effect="prepare_for_policy_gate",
         required_policy_gate="operator_review",  # never none/read_only — cannot auto-dispatch
         source=REVERIE_PROPOSAL_SOURCE,

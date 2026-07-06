@@ -28,6 +28,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
 from orion.schemas.reverie import (
     MAX_CHAIN_THOUGHTS,
+    CompactionRequestV1,
     ReverieChainV1,
     SpontaneousThoughtV1,
     TerminalReason,
@@ -36,6 +37,7 @@ from orion.schemas.reverie import (
 from .reverie import _default_broadcast_reader, _source, run_reverie_once
 from .settings import settings
 from .store import (
+    persist_compaction_request,
     persist_reverie_chain,
     reverie_refractory_is_suppressed,
     reverie_refractory_suppress,
@@ -94,6 +96,27 @@ def update_ema(prev: float, salience: float, *, alpha: float) -> float:
     """Lossy low-pass. alpha in (0,1]; higher = more weight on the latest step."""
     a = max(0.0, min(1.0, alpha))
     return a * float(salience) + (1.0 - a) * float(prev)
+
+
+def build_compaction_request(chain: ReverieChainV1) -> CompactionRequestV1 | None:
+    """Deterministic ask from a *settled* chain (Phase E). None if not settled.
+
+    A discharged / capped chain means its theme feels resolved → hint the offline
+    dream to consolidate it. Never a downscale/prune from the awake path — those
+    are the dream's call. Applied by nothing; this only queues an ask.
+    """
+    if chain.terminal_reason not in ("pressure_discharged", "max_steps"):
+        return None
+    if not chain.theme_key or chain.theme_key == "unknown":
+        return None
+    return CompactionRequestV1(
+        request_id=f"compaction-request:{chain.chain_id}",
+        theme=chain.theme_key,
+        reason=f"reverie_chain_{chain.terminal_reason}",
+        op_hint="consolidate",
+        evidence_refs=list(chain.thought_ids)[:200],
+        origin_chain_id=chain.chain_id,
+    )
 
 
 def _now() -> datetime:
@@ -183,6 +206,21 @@ async def run_reverie_chain(
             )
             await bus.publish(settings.channel_reverie_chain, envelope)
         persist_reverie_chain(chain)
+
+        # Phase E: a settled chain queues a compaction *request* (no consumer).
+        if settings.reverie_compaction_request_enabled:
+            request = build_compaction_request(chain)
+            if request is not None:
+                with suppress(Exception):
+                    await bus.publish(
+                        settings.channel_dream_compaction_request,
+                        BaseEnvelope(
+                            kind="dream.compaction.request.v1",
+                            source=_source(),
+                            payload=request.model_dump(mode="json"),
+                        ),
+                    )
+                persist_compaction_request(request)
 
     logger.info(
         "reverie chain complete chain=%s steps=%d terminal=%s theme=%s",

@@ -164,3 +164,24 @@ class ReverieChainV1(BaseModel):
     ema_summary: str = ""
     terminal_reason: TerminalReason = "max_steps"
     committed_proposal_id: str | None = None
+
+
+# --- Phase E: compaction request (reverie → dream queue, applied by nothing) ---
+
+CompactionOpHint = Literal["consolidate", "downscale", "prune"]
+
+
+class CompactionRequestV1(BaseModel):
+    """A typed *ask* from the awake reverie (reasoning) to the offline dream
+    (storage): "this theme feels settled — consider compacting it." A request,
+    not an act — queued for a later, different process. Applied by nothing here.
+    """
+
+    schema_version: Literal["dream.compaction.request.v1"] = "dream.compaction.request.v1"
+    request_id: str
+    theme: str
+    reason: str = ""
+    op_hint: CompactionOpHint = "consolidate"
+    evidence_refs: list[str] = Field(default_factory=list, max_length=MAX_EVIDENCE_REFS)
+    origin_chain_id: str | None = None
+    created_at: datetime = Field(default_factory=_utc_now)

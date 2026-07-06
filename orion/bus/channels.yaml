@@ -2063,6 +2063,16 @@ channels:
     stability: "experimental"
     since: "2026-07-06"
 
+  # --- Compaction request (Phase E, default-off, queue only — no consumer) ---
+  - name: "orion:dream:compaction-request"
+    kind: "event"
+    schema_id: "CompactionRequestV1"
+    message_kind: "dream.compaction.request.v1"
+    producer_services: ["orion-thought"]
+    consumer_services: []
+    stability: "experimental"
+    since: "2026-07-06"
+
   - name: "orion:harness:run:request"
     kind: "request"
     schema_id: "HarnessRunRequestV1"

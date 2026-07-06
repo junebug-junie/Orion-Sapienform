@@ -519,6 +519,7 @@ from orion.schemas.harness_finalize import (
     SubstrateFinalizeAppraisalV1,
 )
 from orion.schemas.reverie import (
+    CompactionRequestV1,
     ReverieChainV1,
     ReverieRefractoryEntry,
     SpontaneousThoughtV1,
@@ -1169,6 +1170,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SpontaneousThoughtV1": SpontaneousThoughtV1,
     "ReverieChainV1": ReverieChainV1,
     "ReverieRefractoryEntry": ReverieRefractoryEntry,
+    "CompactionRequestV1": CompactionRequestV1,
     "StanceReactRequestV1": StanceReactRequestV1,
     "GrammarReceiptV1": GrammarReceiptV1,
     "HarnessDraftMoleculeV1": HarnessDraftMoleculeV1,
@@ -1217,6 +1219,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "ReverieRefractoryEntry": SchemaRegistration(
         model=ReverieRefractoryEntry,
         kind="reverie.refractory.entry.v1",
+    ),
+    "CompactionRequestV1": SchemaRegistration(
+        model=CompactionRequestV1,
+        kind="dream.compaction.request.v1",
     ),
     "StanceReactRequestV1": SchemaRegistration(
         model=StanceReactRequestV1,

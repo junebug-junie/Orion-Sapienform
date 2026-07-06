@@ -11,7 +11,10 @@ for candidate in (str(REPO_ROOT), str(HUB_ROOT)):
     if candidate not in sys.path:
         sys.path.insert(0, candidate)
 
-from scripts.substrate_observability_routes import _reverie_section
+from scripts.substrate_observability_routes import (
+    _compaction_queue_section,
+    _reverie_section,
+)
 
 
 class _FakeResult:
@@ -74,3 +77,27 @@ def test_reverie_section_shapes_rows():
 
 def test_reverie_section_none_when_empty():
     assert _reverie_section(_FakeEngine([])) is None
+
+
+def _queue_row(rid="r-1"):
+    return {
+        "request_id": rid,
+        "theme": "loop:ol-1",
+        "op_hint": "consolidate",
+        "reason": "reverie_chain_max_steps",
+        "origin_chain_id": "ch-1",
+        "created_at": datetime(2026, 7, 6, tzinfo=timezone.utc),
+        "consumed_at": None,
+    }
+
+
+def test_compaction_queue_section_shapes_rows():
+    section = _compaction_queue_section(_FakeEngine([_queue_row("r-1"), _queue_row("r-2")]))
+    assert section is not None
+    assert section["pending_count"] == 2
+    assert section["pending"][0]["op_hint"] == "consolidate"
+    assert section["pending"][0]["theme"] == "loop:ol-1"
+
+
+def test_compaction_queue_section_none_when_empty():
+    assert _compaction_queue_section(_FakeEngine([])) is None

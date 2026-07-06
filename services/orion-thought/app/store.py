@@ -113,6 +113,41 @@ def persist_reverie_chain(chain) -> bool:
         return False
 
 
+def persist_compaction_request(request) -> bool:
+    """Enqueue one compaction request (Phase E). Never raises; idempotent."""
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO dream_compaction_request_queue
+                        (request_id, theme, op_hint, reason, origin_chain_id,
+                         created_at, request_json)
+                    VALUES
+                        (:request_id, :theme, :op_hint, :reason, :origin_chain_id,
+                         :created_at, CAST(:request_json AS jsonb))
+                    ON CONFLICT (request_id) DO NOTHING
+                    """
+                ),
+                {
+                    "request_id": request.request_id,
+                    "theme": request.theme,
+                    "op_hint": request.op_hint,
+                    "reason": request.reason,
+                    "origin_chain_id": request.origin_chain_id,
+                    "created_at": request.created_at,
+                    "request_json": json.dumps(request.model_dump(mode="json")),
+                },
+            )
+        return True
+    except Exception as exc:
+        logger.warning("compaction request persist failed id=%s err=%s", request.request_id, exc)
+        return False
+
+
 def reverie_refractory_is_suppressed(theme_key: str, now) -> bool:
     """True if the theme is currently suppressed. Best-effort (False on error)."""
     try:

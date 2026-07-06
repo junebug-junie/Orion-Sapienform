@@ -70,6 +70,15 @@ class ThoughtSettings(BaseSettings):
         False, alias="ORION_REVERIE_GROUND_CONSOLIDATION"
     )
 
+    # --- Compaction request (Phase E, default-off, queue only) ---
+    reverie_compaction_request_enabled: bool = Field(
+        False, alias="ORION_REVERIE_COMPACTION_REQUEST_ENABLED"
+    )
+    channel_dream_compaction_request: str = Field(
+        "orion:dream:compaction-request",
+        alias="CHANNEL_DREAM_COMPACTION_REQUEST",
+    )
+
 
 settings = ThoughtSettings()
 logger.info(

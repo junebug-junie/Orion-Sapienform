@@ -140,6 +140,34 @@ def _reverie_section(engine) -> dict[str, Any] | None:
     return {"count": len(thoughts), "recent": thoughts}
 
 
+def _compaction_queue_section(engine) -> dict[str, Any] | None:
+    """Pending compaction requests (reverie Phase E). Queue only — applied by
+    nothing. Empty until the default-off producer runs."""
+    from sqlalchemy import text
+
+    sql = (
+        "SELECT request_id, theme, op_hint, reason, origin_chain_id, created_at, "
+        "consumed_at FROM dream_compaction_request_queue "
+        "WHERE consumed_at IS NULL ORDER BY created_at DESC LIMIT :limit"
+    )
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), {"limit": _REVERIE_LIMIT}).mappings().all()
+    if not rows:
+        return None
+    pending = [
+        {
+            "request_id": r.get("request_id"),
+            "theme": r.get("theme"),
+            "op_hint": r.get("op_hint"),
+            "reason": r.get("reason"),
+            "origin_chain_id": r.get("origin_chain_id"),
+            "created_at": _iso(r.get("created_at")),
+        }
+        for r in rows
+    ]
+    return {"pending_count": len(pending), "pending": pending}
+
+
 def _curiosity_section(engine) -> dict[str, Any] | None:
     row = _latest_row(
         engine,
@@ -221,6 +249,7 @@ async def observability_summary() -> dict[str, Any]:
         "attention_broadcast": None,
         "curiosity": None,
         "reverie": None,
+        "compaction_queue": None,
     }
     if engine is not None:
         for name, loader in (
@@ -228,6 +257,7 @@ async def observability_summary() -> dict[str, Any]:
             ("attention_broadcast", _attention_broadcast_section),
             ("curiosity", _curiosity_section),
             ("reverie", _reverie_section),
+            ("compaction_queue", _compaction_queue_section),
         ):
             try:
                 sections[name] = loader(engine)

@@ -34,3 +34,21 @@ def test_render_fails_without_github_pat(tmp_path: Path) -> None:
             include_aitown=False,
         )
     assert exc.value.error_code == "fcc_mcp_github_missing"
+
+
+def test_render_includes_aitown_when_enabled(tmp_path: Path) -> None:
+    out = render_mcp_config(
+        correlation_id="corr-3",
+        fcc_env={
+            "GITHUB_PAT": "ghp_test",
+            "FIRECRAWL_API_KEY": "fc_test",
+            "AITOWN_CONVEX_URL": "http://127.0.0.1:3210",
+            "AITOWN_ADMIN_KEY": "admin",
+            "AITOWN_WORLD_ID": "world-1",
+        },
+        tmp_dir=tmp_path,
+        include_aitown=True,
+    )
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert "orion-aitown" in data["mcpServers"]
+    assert data["mcpServers"]["orion-aitown"]["env"]["AITOWN_WORLD_ID"] == "world-1"

@@ -1,0 +1,111 @@
+"""Convex HTTP client for self-hosted AI Town backend."""
+from __future__ import annotations
+
+import json
+import os
+import urllib.error
+import urllib.request
+from typing import Any, Dict, Optional
+
+
+class AitownClientError(Exception):
+  def __init__(self, message: str, *, status: Optional[int] = None) -> None:
+    super().__init__(message)
+    self.status = status
+
+
+def _base_url() -> str:
+  return str(os.environ.get("AITOWN_CONVEX_URL") or "").rstrip("/")
+
+
+def _admin_key() -> str:
+  return str(os.environ.get("AITOWN_ADMIN_KEY") or "").strip()
+
+
+def _world_id() -> str:
+  return str(os.environ.get("AITOWN_WORLD_ID") or "").strip()
+
+
+def _default_player_id() -> str:
+  return str(os.environ.get("AITOWN_ORION_PLAYER_ID") or "").strip()
+
+
+def _default_agent_id() -> str:
+  return str(os.environ.get("AITOWN_ORION_AGENT_ID") or "").strip()
+
+
+def convex_request(
+    endpoint: str,
+    *,
+    path: str,
+    args: Optional[Dict[str, Any]] = None,
+) -> Any:
+  base = _base_url()
+  key = _admin_key()
+  if not base:
+    raise AitownClientError("AITOWN_CONVEX_URL is not set")
+  if not key:
+    raise AitownClientError("AITOWN_ADMIN_KEY is not set")
+
+  url = f"{base}/api/{endpoint.lstrip('/')}"
+  payload = json.dumps({"path": path, "args": args or {}, "format": "json"}).encode("utf-8")
+  req = urllib.request.Request(
+      url,
+      data=payload,
+      headers={
+          "Content-Type": "application/json",
+          "Authorization": f"Convex {key}",
+      },
+      method="POST",
+  )
+  try:
+    with urllib.request.urlopen(req, timeout=15) as resp:
+      body = resp.read().decode("utf-8")
+  except urllib.error.HTTPError as exc:
+    detail = exc.read().decode("utf-8", errors="replace")[:500]
+    raise AitownClientError(f"Convex HTTP {exc.code}: {detail}", status=exc.code) from exc
+  except urllib.error.URLError as exc:
+    raise AitownClientError(f"Convex unreachable: {exc.reason}") from exc
+
+  if not body.strip():
+    return None
+  parsed = json.loads(body)
+  if isinstance(parsed, dict) and parsed.get("status") == "error":
+    raise AitownClientError(str(parsed.get("errorMessage") or parsed))
+  if isinstance(parsed, dict) and "value" in parsed:
+    return parsed["value"]
+  return parsed
+
+
+def convex_query(path: str, args: Optional[Dict[str, Any]] = None) -> Any:
+  return convex_request("query", path=path, args=args)
+
+
+def convex_mutation(path: str, args: Optional[Dict[str, Any]] = None) -> Any:
+  return convex_request("mutation", path=path, args=args)
+
+
+def send_input(*, name: str, args: Dict[str, Any], world_id: Optional[str] = None) -> Any:
+  wid = str(world_id or _world_id()).strip()
+  if not wid:
+    raise AitownClientError("AITOWN_WORLD_ID is not set")
+  return convex_mutation(
+      "aiTown/main:sendInput",
+      {
+          "worldId": wid,
+          "name": name,
+          "args": args,
+      },
+  )
+
+
+def fetch_version() -> Dict[str, Any]:
+  base = _base_url()
+  if not base:
+    raise AitownClientError("AITOWN_CONVEX_URL is not set")
+  req = urllib.request.Request(f"{base}/version", method="GET")
+  try:
+    with urllib.request.urlopen(req, timeout=5) as resp:
+      return json.loads(resp.read().decode("utf-8"))
+  except urllib.error.URLError as exc:
+    raise AitownClientError(f"Convex unreachable: {exc.reason}") from exc

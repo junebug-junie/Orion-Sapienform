@@ -102,3 +102,4 @@ async def test_harness_runner_uses_compile_harness_prefix() -> None:
     assert "Imperative: Check logs first." in prompt
     assert "Tone: direct" in prompt
     assert "what broke?" in prompt
+    assert "Execute your imperative" in prompt

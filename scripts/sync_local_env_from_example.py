@@ -117,6 +117,10 @@ SYNC_EXACT = frozenset(
         "ORION_DREAM_REM_ENABLED",
         "CHANNEL_DREAM_COMPACTION_DELTA",
         "DREAM_REM_MAX_REQUESTS",
+        # Phase G (compaction applier — the hot gate, hard-off, mutates memory).
+        "ORION_DREAM_COMPACTION_APPLY_ENABLED",
+        "ORION_DREAM_COMPACTION_DOWNSCALE_ONLY",
+        "DREAM_COMPACTION_SNAPSHOT_DIR",
     }
 )
 

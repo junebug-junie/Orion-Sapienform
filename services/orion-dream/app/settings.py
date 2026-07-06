@@ -41,6 +41,18 @@ class Settings(BaseSettings):
     # Cap on requests drained per REM pass (§cap-all-collections).
     DREAM_REM_MAX_REQUESTS: int = Field(default=50)
 
+    # --- Compaction APPLIER (Phase G — the hot gate, hard-off) ---
+    # THIS MUTATES MEMORY. It stays off pending explicit proposal-mode sign-off +
+    # a live §14 backfill verification. Even when on it applies ONLY deltas whose
+    # proposal was policy-approved for execution (reverie proposals carry
+    # operator_review, so they require a human). Snapshot precedes every apply.
+    ORION_DREAM_COMPACTION_APPLY_ENABLED: bool = Field(default=False)
+    # Safer subset first: apply downscale-renormalize only; prune stays gated
+    # behind this flag being flipped false (never prune before downscale is trusted).
+    ORION_DREAM_COMPACTION_DOWNSCALE_ONLY: bool = Field(default=True)
+    # §14 snapshot destination (before/after + rollback artifact).
+    DREAM_COMPACTION_SNAPSHOT_DIR: str = Field(default="/tmp/dream-compaction-apply")
+
     CHANNEL_CORTEX_GATEWAY_REQUEST: str = Field(default="orion:cortex:gateway:request", alias="CORTEX_GATEWAY_REQUEST_CHANNEL")
     CHANNEL_DREAM_REPLY_PREFIX: str = Field(default="orion:dream:reply", alias="DREAM_REPLY_PREFIX")
     DREAM_VERB: str = Field(default="dream_cycle", alias="DREAM_VERB")

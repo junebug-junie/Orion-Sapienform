@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 JournalTriggerKind = Literal[
+    "autonomy_episode",
     "daily_summary",
     "collapse_response",
     "metacog_digest",
@@ -16,6 +17,7 @@ JournalTriggerKind = Literal[
     "world_pulse_digest",
 ]
 JournalSourceKind = Literal[
+    "autonomy_episode",
     "notify",
     "collapse_mirror",
     "metacog",
@@ -40,6 +42,7 @@ class JournalTriggerV1(BaseModel):
     source_ref: str | None = None
     summary: str
     prompt_seed: str | None = None
+    spawned_correlation_id: str | None = None
 
 
 class JournalEntryDraftV1(BaseModel):
@@ -62,6 +65,8 @@ class JournalEntryWriteV1(BaseModel):
     source_kind: JournalSourceKind | None = None
     source_ref: str | None = None
     correlation_id: str | None = None
+    spawned_correlation_id: str | None = None
+    episode_id: str | None = None
 
 
 class JournalEntryIndexV1(BaseModel):

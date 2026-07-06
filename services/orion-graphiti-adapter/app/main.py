@@ -38,6 +38,14 @@ class SearchRequestV1(BaseModel):
     limit: int = 10
 
 
+class RebuildItemV1(EpisodeIngestV1):
+    pass
+
+
+class RebuildRequestV1(BaseModel):
+    items: list[RebuildItemV1]
+
+
 def _backend():
     return core_backend if settings.GRAPHITI_BACKEND == "graphiti_core" else pg_backend
 
@@ -71,6 +79,9 @@ async def health() -> dict:
 
 @app.post("/v1/episodes")
 async def ingest_episode(body: EpisodeIngestV1) -> dict:
+    if body.metadata.get("sensitivity") == "intimate":
+        return {"skipped": True, "reason": "intimate_sensitivity", "canonical_mutated": False}
+
     backend = _backend()
     episode_id = f"gep_{body.crystallization_id}"
     link_payload = [l.model_dump() for l in body.links]
@@ -89,6 +100,8 @@ async def ingest_episode(body: EpisodeIngestV1) -> dict:
             falkordb_uri=settings.FALKORDB_URI,
             graph_name=settings.FALKORDB_GRAPH,
         )
+        if result.get("skipped"):
+            return {"skipped": True, "reason": result.get("reason", "intimate_sensitivity"), "canonical_mutated": False}
     else:
         if pg_pool is None:
             raise HTTPException(status_code=503, detail="store_unavailable")
@@ -121,6 +134,23 @@ async def ingest_episode(body: EpisodeIngestV1) -> dict:
         "edge_id": edge_ids[0] if edge_ids else f"ged_{body.crystallization_id}",
         "edge_ids": edge_ids,
         "falkordb": falkor_result,
+        "canonical_mutated": False,
+    }
+
+
+@app.post("/v1/rebuild")
+async def rebuild(body: RebuildRequestV1) -> dict:
+    results: list[dict] = []
+    skip_count = 0
+    for item in body.items:
+        result = await ingest_episode(item)
+        if result.get("skipped"):
+            skip_count += 1
+        else:
+            results.append(result)
+    return {
+        "ingested": len(results),
+        "skipped_intimate": skip_count,
         "canonical_mutated": False,
     }
 

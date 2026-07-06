@@ -2,8 +2,8 @@
 
 Best-effort writer for `SpontaneousThoughtV1` into `substrate_reverie_thought`
 (migration `manual_migration_substrate_reverie_thought.sql`). Backs the hub
-`_reverie_section` panel. Reuses the sqlalchemy engine pattern already pulled in
-by `felt_state_reader` — no new dependency.
+`_reverie_section` panel. Uses a direct sqlalchemy DSN (see `_database_url`) —
+never the heavy `orion.substrate` package this thin service does not ship.
 
 Discipline: persistence is best-effort. A DB failure degrades to a logged miss
 (returns False) and never breaks the reverie tick. Idempotent on `thought_id`.
@@ -25,11 +25,13 @@ _engine = None
 
 
 def _database_url() -> str:
-    # Prefer the URI the hub observability panel reads, so writes land where the
-    # panel looks; fall back to the substrate felt-state DB the reader uses.
-    from orion.substrate.felt_state_reader import substrate_felt_state_database_url
-
-    return os.getenv("POSTGRES_URI", "").strip() or substrate_felt_state_database_url()
+    # Direct DSN — deliberately NOT via orion.substrate.felt_state_reader, whose
+    # package __init__ drags the full graph engine (requests etc.) this thin
+    # service does not ship. Writes land where the hub panel reads (conjourney).
+    return (
+        os.getenv("POSTGRES_URI", "").strip()
+        or "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney"
+    )
 
 
 def _get_engine():

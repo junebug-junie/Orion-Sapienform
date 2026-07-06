@@ -58,24 +58,17 @@ def _source() -> ServiceRef:
 
 
 def _default_broadcast_reader() -> AttentionBroadcastProjectionV1 | None:
-    """Read the current coalition via the shared substrate felt-state reader.
+    """Read the current coalition directly from the broadcast projection table.
 
-    Mirrors orion/hub/association.py. Any failure degrades to None so a
-    reverie tick never raises on a missing/unavailable substrate.
+    Uses a minimal direct query (`app.broadcast_reader`) rather than the heavy
+    `orion.substrate.felt_state_reader`, which would drag the full graph engine
+    (`requests` etc.) that this thin bus service does not ship. Fail-open: any
+    failure degrades to None so a reverie tick never raises.
     """
     try:
-        # Public fail-open entrypoint — resolves enabled/url/max-age internally and
-        # never raises. Same coalition source the evoked stance_react path reads.
-        from orion.substrate.felt_state_reader import hydrate_felt_state_ctx
+        from .broadcast_reader import read_latest_broadcast
 
-        ctx: dict[str, Any] = {}
-        hydrate_felt_state_ctx(ctx)
-        raw = ctx.get("attention_broadcast")
-        if raw is None:
-            return None
-        if isinstance(raw, AttentionBroadcastProjectionV1):
-            return raw
-        return AttentionBroadcastProjectionV1.model_validate(raw)
+        return read_latest_broadcast()
     except Exception as exc:  # never raise out of a reverie tick
         logger.warning("reverie broadcast read failed: %s", exc)
         return None

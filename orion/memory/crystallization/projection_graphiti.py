@@ -51,6 +51,14 @@ class GraphitiAdapter:
                 "salience": crystallization.salience,
                 "confidence": crystallization.confidence,
             },
+            "links": [
+                {
+                    "target_crystallization_id": l.target_crystallization_id,
+                    "relation": l.relation,
+                    "confidence": l.confidence,
+                }
+                for l in crystallization.links
+            ],
         }
         try:
             async with httpx.AsyncClient(timeout=self.timeout_sec) as client:
@@ -82,6 +90,14 @@ class GraphitiAdapter:
             "summary": crystallization.summary,
             "status": crystallization.status,
             "metadata": {"scope": crystallization.scope, "salience": crystallization.salience},
+            "links": [
+                {
+                    "target_crystallization_id": l.target_crystallization_id,
+                    "relation": l.relation,
+                    "confidence": l.confidence,
+                }
+                for l in crystallization.links
+            ],
         }
         try:
             with httpx.Client(timeout=self.timeout_sec) as client:
@@ -101,12 +117,15 @@ class GraphitiAdapter:
             remote_response=data,
         )
 
-    def neighborhood(self, crystallization_id: str) -> dict[str, Any]:
+    def neighborhood(self, crystallization_id: str, *, depth: int = 1) -> dict[str, Any]:
         if not self.enabled or not self.url:
             return {"enabled": False, "nodes": [], "edges": []}
         try:
             with httpx.Client(timeout=self.timeout_sec) as client:
-                resp = client.get(f"{self.url}/v1/neighborhood/{crystallization_id}")
+                resp = client.get(
+                    f"{self.url}/v1/neighborhood/{crystallization_id}",
+                    params={"depth": depth},
+                )
                 resp.raise_for_status()
                 data = resp.json()
                 data["enabled"] = True

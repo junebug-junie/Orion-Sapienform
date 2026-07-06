@@ -38,6 +38,7 @@ class ConceptSettings(BaseSettings):
             "orion:cognition:trace",
             "orion:substrate:self_state",
             "orion:feedback:frame",
+            "orion:world_pulse:run:result",
         ],
         validation_alias=AliasChoices("BUS_INTAKE_CHANNELS", "CONCEPT_INTAKE_CHANNELS"),
     )

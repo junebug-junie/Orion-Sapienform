@@ -83,7 +83,7 @@ def _gaps_from_rollups(
         status = str(rollup.status or "missing")
         if status == "covered":
             continue
-        if status not in _GAP_STATUSES and status != "missing":
+        if status not in _GAP_STATUSES:
             continue
         section = str(rollup.section or "").strip()
         if not section:

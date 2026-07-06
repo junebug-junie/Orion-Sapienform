@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 
 from orion.autonomy.models import ActionOutcomeRefV1
@@ -12,6 +13,30 @@ _MAX_OUTCOMES = 12
 
 def _store_path() -> Path:
     return Path(os.getenv("ORION_ACTION_OUTCOME_STORE_PATH", DEFAULT_STORE_PATH))
+
+
+@contextmanager
+def _store_lock(path: Path):
+    """Exclusive lock for read-modify-write on the outcome store (best-effort)."""
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = lock_path.open("a+", encoding="utf-8")
+    try:
+        try:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            pass
+        yield
+    finally:
+        try:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        except (ImportError, OSError):
+            pass
+        lock_file.close()
 
 
 def _load_raw() -> dict[str, list[dict]]:
@@ -53,10 +78,12 @@ def load_action_outcomes(subject: str) -> list[ActionOutcomeRefV1]:
 
 
 def append_action_outcome(subject: str, outcome: ActionOutcomeRefV1) -> None:
-    data = _load_raw()
-    bucket = data.get(subject, [])
-    if not isinstance(bucket, list):
-        bucket = []
-    bucket.append(outcome.model_dump(mode="json"))
-    data[subject] = bucket[-_MAX_OUTCOMES:]
-    _save_raw(data)
+    path = _store_path()
+    with _store_lock(path):
+        data = _load_raw()
+        bucket = data.get(subject, [])
+        if not isinstance(bucket, list):
+            bucket = []
+        bucket.append(outcome.model_dump(mode="json"))
+        data[subject] = bucket[-_MAX_OUTCOMES:]
+        _save_raw(data)

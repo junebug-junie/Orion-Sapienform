@@ -495,16 +495,23 @@ class ConceptWorker:
             published_artifacts.append(tension)
 
         metabolism_tensions: List[TensionEventV1] = []
+        metabolism_curiosity_notes: List[str] = []
         spawned_correlation_id: str | None = None
-        if metabolism_enabled() and env.kind == "world.pulse.run.result.v1":
+        if env.kind == "world.pulse.run.result.v1":
             try:
                 wp_result = WorldPulseRunResultV1.model_validate(self._payload_dict(env))
                 spawned_correlation_id = wp_result.run.run_id
-                metabolism = metabolize_substrate_signals(world_pulse_result=wp_result)
-                metabolism_tensions = list(metabolism.tensions)
-                for tension in metabolism_tensions:
-                    await self._publish_tension_event(tension, env.correlation_id)
-                    published_artifacts.append(tension)
+                if metabolism_enabled():
+                    metabolism = metabolize_substrate_signals(world_pulse_result=wp_result)
+                    metabolism_tensions = list(metabolism.tensions)
+                    metabolism_curiosity_notes = [
+                        str(sig.evidence_summary or "").strip()
+                        for sig in metabolism.curiosity_signals
+                        if str(sig.evidence_summary or "").strip()
+                    ]
+                    for tension in metabolism_tensions:
+                        await self._publish_tension_event(tension, env.correlation_id)
+                        published_artifacts.append(tension)
             except Exception:
                 logger.warning("substrate_metabolism_failed kind=%s", env.kind, exc_info=True)
 
@@ -585,6 +592,11 @@ class ConceptWorker:
         published_artifacts.append(identity_snapshot)
 
         window_summary = evidence_items[0].summary if evidence_items else drive_state.provenance.evidence_summary
+        if metabolism_curiosity_notes:
+            gap_summary = "; ".join(metabolism_curiosity_notes)
+            window_summary = (
+                f"{window_summary}; {gap_summary}" if window_summary else gap_summary
+            )
         goal_decision = self.goal_engine.propose(
             env=env,
             intake_channel=intake_channel,

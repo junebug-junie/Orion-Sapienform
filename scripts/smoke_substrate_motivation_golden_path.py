@@ -118,8 +118,7 @@ def main() -> int:
     goal_id = "goal-gap-gpu"
 
     os.environ["ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED"] = "true"
-    # Single metabolism tick yields predictive delta 0.15; threshold must allow that.
-    os.environ["ORION_METABOLISM_MIN_PREDICTIVE_PRESSURE"] = "0.1"
+    os.environ["ORION_METABOLISM_MIN_PREDICTIVE_PRESSURE"] = "0.55"
     os.environ["ORION_METABOLISM_MIN_CURIOSITY_STRENGTH"] = "0.5"
 
     wp_result = _gpu_gap_result()
@@ -137,8 +136,10 @@ def main() -> int:
     assert "hardware_compute_gpu" in candidates[0].focal_node_refs[0]
 
     top_strength = max(c.signal_strength for c in candidates)
+    # Layer A uses post-metabolism drive pressure (prior baseline + delta), not delta alone.
+    predictive_pressure = min(1.0, 0.55 + metabolism.drive_deltas.get("predictive", 0.0))
     ctx = CapabilityEvaluationContext(
-        predictive_pressure=metabolism.drive_deltas.get("predictive", 0.0),
+        predictive_pressure=predictive_pressure,
         curiosity_strength=top_strength,
         signal_kinds=["world_coverage_gap"],
         goal=_goal(),

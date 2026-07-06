@@ -89,3 +89,43 @@ async def test_metabolism_enabled_merges_gap_tensions(monkeypatch) -> None:
 
     tensions = worker.drive_engine.update.call_args.kwargs["tensions"]
     assert any(getattr(t, "kind", "") == "substrate.world_coverage_gap" for t in tensions)
+
+
+@pytest.mark.asyncio
+async def test_world_pulse_run_id_lineage_when_metabolism_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED", "false")
+    cfg = ConceptSettings()
+    worker = ConceptWorker(cfg)
+    worker.store = MagicMock()
+    worker.store.load_drive_state.return_value = {}
+    worker.drive_engine.update = MagicMock(return_value=({"predictive": 0.2}, {"predictive": False}))
+    worker._publish_tension_event = AsyncMock(return_value=None)
+    worker._publish_drive_state = AsyncMock(return_value=None)
+    worker._publish_artifact = AsyncMock(return_value=None)
+    worker._publish_dossier = AsyncMock(return_value=None)
+    worker.goal_engine.propose = MagicMock(return_value=MagicMock(proposal=None, suppressed_signature=None))
+
+    await worker.handle_envelope(_world_pulse_envelope(), "orion:world_pulse:run:result")
+
+    assert worker.goal_engine.propose.call_args.kwargs["spawned_correlation_id"] == "wp-run-hook"
+
+
+@pytest.mark.asyncio
+async def test_metabolism_enriches_goal_window_summary(monkeypatch) -> None:
+    monkeypatch.setenv("ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED", "true")
+    cfg = ConceptSettings()
+    worker = ConceptWorker(cfg)
+    worker.store = MagicMock()
+    worker.store.load_drive_state.return_value = {}
+    worker.drive_engine.update = MagicMock(return_value=({"predictive": 0.2}, {"predictive": False}))
+    worker._publish_tension_event = AsyncMock(return_value=None)
+    worker._publish_drive_state = AsyncMock(return_value=None)
+    worker._publish_artifact = AsyncMock(return_value=None)
+    worker._publish_dossier = AsyncMock(return_value=None)
+    worker.goal_engine.propose = MagicMock(return_value=MagicMock(proposal=None, suppressed_signature=None))
+
+    await worker.handle_envelope(_world_pulse_envelope(), "orion:world_pulse:run:result")
+
+    summary = worker.goal_engine.propose.call_args.kwargs["window_summary"]
+    assert summary is not None
+    assert "hardware_compute_gpu" in summary

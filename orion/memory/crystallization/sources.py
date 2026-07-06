@@ -57,7 +57,7 @@ async def resolve_evidence_ref(pool: asyncpg.Pool, ref: CrystallizationEvidenceR
         return await resolve_memory_card_ref(pool, ref.source_id)
     if ref.source_kind == "grammar_event":
         return await resolve_grammar_event_ref(pool, ref.source_id)
-    if ref.source_kind in ("operator_note", "chat_turn", "tool_result", "service_trace", "repo_event"):
+    if ref.source_kind in ("operator_note", "chat_turn", "tool_result", "service_trace", "repo_event", "autonomy_episode"):
         return bool((ref.source_id or "").strip())
     if ref.source_kind in ("rdf_memory_graph", "graphiti_episode"):
         return bool((ref.source_id or "").strip())

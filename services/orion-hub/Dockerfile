@@ -35,6 +35,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
          docker-ce-cli \
          docker-buildx-plugin \
          docker-compose-plugin \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip

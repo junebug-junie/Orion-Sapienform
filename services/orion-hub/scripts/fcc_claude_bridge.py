@@ -8,6 +8,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from scripts.fcc_env_catalog import load_fcc_env, resolve_auth_token
@@ -158,6 +159,21 @@ def active_turns() -> list[dict]:
     return [{"correlation_id": cid} for cid in sorted(_ACTIVE.keys())]
 
 
+def _maybe_render_mcp_config(*, correlation_id: str) -> Optional[Path]:
+    from scripts.fcc_env_catalog import expand_env_path, load_fcc_env
+    from scripts.fcc_mcp_config import render_mcp_config
+    from scripts.settings import settings
+
+    if not settings.HUB_AGENT_CLAUDE_MCP_ENABLED:
+        return None
+    env = load_fcc_env(expand_env_path(settings.HUB_FCC_ENV_PATH))
+    return render_mcp_config(
+        correlation_id=correlation_id,
+        fcc_env=env,
+        include_aitown=bool(settings.HUB_AITOWN_ENABLED),
+    )
+
+
 def _preflight_fcc_server(url: str, *, timeout_sec: float = 3.0) -> None:
     health_url = str(url or "").rstrip("/") + "/health"
     try:
@@ -248,6 +264,15 @@ async def run_turn(
         yield {"type": "error", "error": str(exc), "error_code": "fcc_claude_spawn_failed"}
         return
 
+    mcp_config_path: Optional[Path] = None
+    try:
+        from scripts.fcc_mcp_config import McpPreflightError
+
+        mcp_config_path = _maybe_render_mcp_config(correlation_id=correlation_id)
+    except McpPreflightError as exc:
+        yield {"type": "error", "error": str(exc), "error_code": exc.error_code}
+        return
+
     argv = [
         claude_bin,
         "-p",
@@ -258,8 +283,11 @@ async def run_turn(
         "--model",
         model_id,
     ]
+    if mcp_config_path is not None:
+        argv.extend(["--mcp-config", str(mcp_config_path), "--allowedTools", "mcp__*"])
     if os.geteuid() != 0:
-        argv.insert(-2, "--dangerously-skip-permissions")
+        model_idx = argv.index("--model")
+        argv.insert(model_idx, "--dangerously-skip-permissions")
     started = time.monotonic()
     proc: Optional[asyncio.subprocess.Process] = None
     accumulated = ""
@@ -337,6 +365,10 @@ async def run_turn(
         return
     finally:
         _unregister_process(correlation_id)
+        if mcp_config_path is not None:
+            from scripts.fcc_mcp_config import cleanup_mcp_config
+
+            cleanup_mcp_config(mcp_config_path)
 
     stderr_snippet = ""
     stderr_stream = getattr(proc, "stderr", None) if proc is not None else None

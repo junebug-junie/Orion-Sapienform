@@ -139,6 +139,18 @@ class Settings(BaseSettings):
         default=1,
         alias="HUB_AGENT_CLAUDE_MAX_CONCURRENT",
     )
+    HUB_AGENT_CLAUDE_MCP_ENABLED: bool = Field(
+        default=False,
+        alias="HUB_AGENT_CLAUDE_MCP_ENABLED",
+    )
+    HUB_AITOWN_ENABLED: bool = Field(
+        default=False,
+        alias="HUB_AITOWN_ENABLED",
+    )
+    HUB_AITOWN_UI_URL: str = Field(
+        default="http://127.0.0.1:5173",
+        alias="HUB_AITOWN_UI_URL",
+    )
     HUB_AGENT_CLAUDE_STREAM_READ_LIMIT: int = Field(
         default=8 * 1024 * 1024,
         alias="HUB_AGENT_CLAUDE_STREAM_READ_LIMIT",

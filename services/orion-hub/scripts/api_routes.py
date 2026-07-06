@@ -1254,6 +1254,50 @@ async def proxy_world_pulse(path: str, request: Request) -> Response:
     return await _proxy_world_pulse_request(path, request)
 
 
+async def _proxy_aitown_request(path: str, request: Request) -> Response:
+    if not settings.HUB_AITOWN_ENABLED:
+        raise HTTPException(status_code=404, detail="AI Town is not enabled")
+    base = str(settings.HUB_AITOWN_UI_URL or "").rstrip("/")
+    if not base:
+        raise HTTPException(status_code=400, detail="HUB_AITOWN_UI_URL not configured")
+    url = f"{base}/{path.lstrip('/')}" if path else base + "/"
+    headers = {key: value for key, value in request.headers.items() if key.lower() not in {"host", "content-length"}}
+    body = await request.body()
+    timeout = aiohttp.ClientTimeout(total=settings.TIMEOUT_SEC)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        try:
+            async with session.request(
+                request.method,
+                url,
+                params=dict(request.query_params),
+                data=body if body else None,
+                headers=headers,
+            ) as response:
+                payload = await response.read()
+                content_type = response.headers.get("content-type", "application/octet-stream")
+                return Response(content=payload, status_code=response.status, media_type=content_type)
+        except aiohttp.ClientError as exc:
+            logger.warning("AI Town proxy error: %s", exc)
+            raise HTTPException(status_code=502, detail="AI Town proxy request failed") from exc
+
+
+@router.get("/api/aitown/status")
+async def aitown_status() -> dict[str, Any]:
+    from scripts.aitown_status import fetch_aitown_status
+
+    return fetch_aitown_status(settings)
+
+
+@router.api_route("/aitown/{path:path}", methods=["GET", "HEAD"])
+async def aitown_proxy(path: str, request: Request) -> Response:
+    return await _proxy_aitown_request(path, request)
+
+
+@router.api_route("/aitown", methods=["GET", "HEAD"])
+async def aitown_proxy_root(request: Request) -> Response:
+    return await _proxy_aitown_request("", request)
+
+
 @router.api_route("/api/knowledge/health", methods=["GET"])
 async def proxy_knowledge_forge_health(request: Request) -> Response:
     return await _proxy_knowledge_forge_request("health", request)

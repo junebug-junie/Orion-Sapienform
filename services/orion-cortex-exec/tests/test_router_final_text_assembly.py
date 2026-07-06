@@ -56,6 +56,19 @@ def test_stance_react_structured_verb_extracts_json_object() -> None:
     assert diag["structured_json_extraction_attempted"] is True
 
 
+def test_harness_finalize_reflect_structured_verb_extracts_json_object() -> None:
+    payload = (
+        '{"correlation_id":"c-1","thought_event_id":"t-1","substrate_appraisal_id":"a-1",'
+        '"draft_hash":"d-1","imperative":"x","tone":"y","strain_refs":[],"alignment_verdict":"aligned",'
+        '"alignment_notes":[],"strain_unresolved":false}'
+    )
+    final_text, diag = _extract_final_text([
+        _step({"content": f"Reflection:\\n```json\\n{payload}\\n```"})
+    ], verb_name="harness_finalize_reflect")
+    assert '"alignment_verdict":"aligned"' in final_text
+    assert diag["structured_json_extraction_attempted"] is True
+
+
 def test_structured_verb_uses_clean_final_answer_not_reasoning_fields() -> None:
     final_text, diag = _extract_final_text([
         _step(
@@ -101,7 +114,7 @@ def test_concept_induction_regression_strips_think_and_returns_json() -> None:
     assert final_text == '{"mode":"manual","title":"Synthesis","body":"Stable output."}'
 
 
-def test_structured_verb_keeps_scanning_candidates_after_rejecting_first() -> None:
+def test_structured_verb_recovers_json_from_sibling_payload_field() -> None:
     final_text, diag = _extract_final_text([
         _step(
             {
@@ -109,6 +122,17 @@ def test_structured_verb_keeps_scanning_candidates_after_rejecting_first() -> No
                 "text": '{"mode":"manual","title":"Recovered","body":"From text field."}',
             }
         )
+    ], verb_name="concept_induction_journal_synthesize")
+    assert final_text == '{"mode":"manual","title":"Recovered","body":"From text field."}'
+    assert diag["source_field"] == "text"
+    assert diag["candidate_count"] == 1
+    assert diag["rejected_candidate_count"] == 0
+
+
+def test_structured_verb_keeps_scanning_candidates_after_rejecting_first() -> None:
+    final_text, diag = _extract_final_text([
+        _step({"text": '{"mode":"manual","title":"Recovered","body":"From text field."}'}),
+        _step({"content": "not json at all"}),
     ], verb_name="concept_induction_journal_synthesize")
     assert final_text == '{"mode":"manual","title":"Recovered","body":"From text field."}'
     assert diag["source_field"] == "text"

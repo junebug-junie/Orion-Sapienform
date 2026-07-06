@@ -395,6 +395,10 @@ def _resolve_llm_chat_max_tokens(step: ExecutionStep, ctx: Dict[str, Any]) -> Tu
     if step.verb_name == "memory_graph_suggest" and step.step_name == "llm_memory_graph_suggest":
         return int(settings.llm_memory_graph_suggest_max_tokens), requested, "settings.llm_memory_graph_suggest_max_tokens"
 
+    # Unified turn 5b/5c return strict JSON; default 512 truncates mid-object (finish_reason=length).
+    if step.verb_name in {"harness_finalize_reflect", "orion_voice_finalize"}:
+        return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_harness_finalize"
+
     return int(settings.llm_chat_max_tokens_default), requested, "settings.llm_chat_max_tokens_default"
 
 
@@ -1603,6 +1607,8 @@ def _resolve_llm_max_tokens(*, ctx: Dict[str, Any], step: ExecutionStep) -> tupl
         return max(1, int(settings.llm_chat_general_max_tokens)), "general_default", requested
     if step.verb_name == "memory_graph_suggest" and step.step_name == "llm_memory_graph_suggest":
         return max(1, int(settings.llm_memory_graph_suggest_max_tokens)), "memory_graph_suggest_default", requested
+    if step.verb_name in {"harness_finalize_reflect", "orion_voice_finalize"}:
+        return max(1, int(settings.llm_chat_general_max_tokens)), "harness_finalize_default", requested
     return max(1, int(settings.llm_chat_fallback_max_tokens)), "fallback_default", requested
 
 

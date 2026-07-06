@@ -82,6 +82,7 @@ def _structured_output_expected(verb_name: str | None) -> bool:
         "concept_induction_journal_synthesize",
         "memory_graph_suggest",
         "stance_react",
+        "harness_finalize_reflect",
     }
 
 
@@ -308,13 +309,12 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
                         ("final_text", payload.get("final_text")),
                     )
                     json_text = _extract_first_json_object_text(cleaned)
-                    if not json_text and str(verb_name or "").strip().lower() == "memory_graph_suggest":
+                    if not json_text and provider_meta.get("finish_reason") == "length" and cleaned.lstrip().startswith("{"):
                         from orion.memory_graph.json_extract import salvage_truncated_json_object_text
 
-                        if provider_meta.get("finish_reason") == "length" and cleaned.lstrip().startswith("{"):
-                            json_text = salvage_truncated_json_object_text(cleaned)
-                            if json_text:
-                                diagnostics["structured_output_salvaged"] = True
+                        json_text = salvage_truncated_json_object_text(cleaned)
+                        if json_text:
+                            diagnostics["structured_output_salvaged"] = True
                     if not json_text:
                         for extra_field, extra_val in extra_fields:
                             if extra_field == field:
@@ -328,7 +328,7 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
                                 candidate_diag["raw_len"] = len(extra_val.strip())
                                 break
                     if json_text:
-                        diagnostics["source_field"] = field
+                        diagnostics["source_field"] = candidate_diag.get("field", field)
                         diagnostics["source_service"] = service_name
                         diagnostics["think_tags_detected"] = bool(think_diag["has_think_tags"])
                         diagnostics["think_stripping_applied"] = bool(think_diag["think_stripped"])

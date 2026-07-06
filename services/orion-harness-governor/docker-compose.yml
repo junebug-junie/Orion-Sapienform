@@ -10,8 +10,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ../..:/repo:ro
-      - ../..:/mnt/scripts/Orion-Sapienform:ro
+      - ${HARNESS_REPO_MOUNT:-../..}:/repo:ro
+      - ${HARNESS_REPO_MOUNT:-../..}:/mnt/scripts/Orion-Sapienform:ro
       - ${HOME}/.fcc:/root/.fcc:ro
       - ${HOME}/.claude.json:/root/.claude.json:ro
       - ${HARNESS_FCC_CLAUDE_BIN_HOST:-${HOME}/.local/bin/claude}:/usr/local/bin/claude:ro

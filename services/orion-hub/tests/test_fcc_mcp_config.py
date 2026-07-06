@@ -10,7 +10,7 @@ import pytest
 
 @pytest.fixture
 def mcp_config() -> Any:
-    import scripts.fcc_mcp_config as mod
+    import orion.fcc.mcp_config as mod
 
     return mod
 

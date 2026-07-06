@@ -50,7 +50,16 @@ class GraphitiAdapter:
                 "scope": crystallization.scope,
                 "salience": crystallization.salience,
                 "confidence": crystallization.confidence,
+                "sensitivity": crystallization.governance.sensitivity,
             },
+            "links": [
+                {
+                    "target_crystallization_id": l.target_crystallization_id,
+                    "relation": l.relation,
+                    "confidence": l.confidence,
+                }
+                for l in crystallization.links
+            ],
         }
         try:
             async with httpx.AsyncClient(timeout=self.timeout_sec) as client:
@@ -61,11 +70,18 @@ class GraphitiAdapter:
             logger.warning("graphiti_sync_failed id=%s error=%s", crystallization.crystallization_id, exc)
             return GraphitiProjectionResult()
 
+        if data.get("skipped"):
+            return GraphitiProjectionResult(
+                canonical_mutated=bool(data.get("canonical_mutated")),
+                remote_response=data,
+            )
+
         now = datetime.now(timezone.utc)
         return GraphitiProjectionResult(
             episode_ids=[str(data.get("episode_id"))] if data.get("episode_id") else [],
             entity_ids=[str(data.get("entity_id"))] if data.get("entity_id") else [],
-            edge_ids=[str(data.get("edge_id"))] if data.get("edge_id") else [],
+            edge_ids=[str(e) for e in (data.get("edge_ids") or [])]
+            or ([str(data.get("edge_id"))] if data.get("edge_id") else []),
             synced_at=now,
             canonical_mutated=bool(data.get("canonical_mutated")),
             remote_response=data,
@@ -81,7 +97,20 @@ class GraphitiAdapter:
             "subject": crystallization.subject,
             "summary": crystallization.summary,
             "status": crystallization.status,
-            "metadata": {"scope": crystallization.scope, "salience": crystallization.salience},
+            "metadata": {
+                "scope": crystallization.scope,
+                "salience": crystallization.salience,
+                "confidence": crystallization.confidence,
+                "sensitivity": crystallization.governance.sensitivity,
+            },
+            "links": [
+                {
+                    "target_crystallization_id": l.target_crystallization_id,
+                    "relation": l.relation,
+                    "confidence": l.confidence,
+                }
+                for l in crystallization.links
+            ],
         }
         try:
             with httpx.Client(timeout=self.timeout_sec) as client:
@@ -91,22 +120,70 @@ class GraphitiAdapter:
         except Exception as exc:
             logger.warning("graphiti_sync_failed id=%s error=%s", crystallization.crystallization_id, exc)
             return GraphitiProjectionResult()
+
+        if data.get("skipped"):
+            return GraphitiProjectionResult(
+                canonical_mutated=bool(data.get("canonical_mutated")),
+                remote_response=data,
+            )
+
         now = datetime.now(timezone.utc)
         return GraphitiProjectionResult(
             episode_ids=[str(data.get("episode_id"))] if data.get("episode_id") else [],
             entity_ids=[str(data.get("entity_id"))] if data.get("entity_id") else [],
-            edge_ids=[str(data.get("edge_id"))] if data.get("edge_id") else [],
+            edge_ids=[str(e) for e in (data.get("edge_ids") or [])]
+            or ([str(data.get("edge_id"))] if data.get("edge_id") else []),
             synced_at=now,
             canonical_mutated=bool(data.get("canonical_mutated")),
             remote_response=data,
         )
 
-    def neighborhood(self, crystallization_id: str) -> dict[str, Any]:
+    def health(self) -> dict[str, Any]:
+        if not self.enabled or not self.url:
+            return {"enabled": False, "backend": "unknown"}
+        try:
+            with httpx.Client(timeout=self.timeout_sec) as client:
+                resp = client.get(f"{self.url}/health")
+                resp.raise_for_status()
+                return resp.json()
+        except Exception as exc:
+            logger.warning("graphiti_health_failed error=%s", exc)
+            return {"enabled": True, "backend": "unknown", "error": str(exc)}
+
+    def search(
+        self,
+        query: str,
+        *,
+        seed_crystallization_id: str | None = None,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        if not self.enabled or not self.url:
+            return {"crystallization_ids": [], "trace": {}}
+        try:
+            with httpx.Client(timeout=self.timeout_sec) as client:
+                resp = client.post(
+                    f"{self.url}/v1/search",
+                    json={
+                        "query": query,
+                        "seed_crystallization_id": seed_crystallization_id,
+                        "limit": limit,
+                    },
+                )
+                resp.raise_for_status()
+                return resp.json()
+        except Exception as exc:
+            logger.warning("graphiti_search_failed query=%s error=%s", query, exc)
+            return {"crystallization_ids": [], "trace": {"error": str(exc)}}
+
+    def neighborhood(self, crystallization_id: str, *, depth: int = 1) -> dict[str, Any]:
         if not self.enabled or not self.url:
             return {"enabled": False, "nodes": [], "edges": []}
         try:
             with httpx.Client(timeout=self.timeout_sec) as client:
-                resp = client.get(f"{self.url}/v1/neighborhood/{crystallization_id}")
+                resp = client.get(
+                    f"{self.url}/v1/neighborhood/{crystallization_id}",
+                    params={"depth": depth},
+                )
                 resp.raise_for_status()
                 data = resp.json()
                 data["enabled"] = True

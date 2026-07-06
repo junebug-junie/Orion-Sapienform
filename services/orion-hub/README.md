@@ -531,6 +531,26 @@ PYTHONPATH=services/orion-hub:. python services/orion-hub/scripts/verify_agent_c
   --fcc-model-label MODEL_HAIKU
 ```
 
+### fcc-claude MCP (GitHub + Firecrawl + AI Town)
+
+When `HUB_AGENT_CLAUDE_MCP_ENABLED=true`, each agent-claude turn renders an ephemeral MCP config from `config/fcc_claude_mcp.template.json` and passes `--mcp-config` + `--allowedTools mcp__*` to `claude -p`. Secrets live in operator `~/.fcc/.env` (not Hub `.env`):
+
+| Key | Required | Purpose |
+|-----|----------|---------|
+| `GITHUB_PAT` | yes | GitHub MCP (`ghcr.io/github/github-mcp-server` via Docker) |
+| `FIRECRAWL_API_KEY` | yes | Firecrawl MCP (`npx firecrawl-mcp`; Hub image includes Node 20) |
+| `AITOWN_CONVEX_URL` | when AI Town enabled | Self-hosted Convex base URL |
+| `AITOWN_ADMIN_KEY` | when AI Town enabled | Convex admin key |
+| `AITOWN_WORLD_ID` | when AI Town enabled | World id from `npx convex run init` |
+| `AITOWN_ORION_PLAYER_ID` | optional | Default player for embodied tools |
+| `AITOWN_ORION_AGENT_ID` | optional | Default agent for embodied tools |
+
+**Rollout order:** (1) set `HUB_AGENT_CLAUDE_MCP_ENABLED=true` with GitHub + Firecrawl secrets, (2) bootstrap `services/orion-ai-town/` on mesh, (3) set `HUB_AITOWN_ENABLED=true` and AI Town secrets, (4) open Hub **AI Town** tab (`#ai-town`) for proxied visualization.
+
+Hub settings: `HUB_AGENT_CLAUDE_MCP_ENABLED`, `HUB_AITOWN_ENABLED`, `HUB_AITOWN_UI_URL` (default `http://127.0.0.1:5173`). Routes: `GET /api/aitown/status`, `GET /aitown/` reverse proxy.
+
+Preflight errors surface as `fcc_mcp_*` codes before spawn (e.g. `fcc_mcp_github_missing`, `fcc_mcp_aitown_config`).
+
 **Investigation v2 (epistemic pipeline):** When `CONTEXT_EXEC_INVESTIGATION_V2_ENABLED=true`, Hub Agent lane threads `answer_contract` from `answer_contract_draft` into context-exec, sends `mode=investigation_v2` with profile-derived permissions (`context_exec_permissions_for_llm_profile`), and receives **`final_text`** (finalize-rendered user voice) as `llm_response`. `InvestigationReportV2` remains an inspectable operator sidecar in `metadata.context_exec` (`operator_report_text`). Conceptual/personal turns do not trigger repo/trace sweeps. Default is `false` (legacy keyword mode inference preserved).
 
 **Denver memory correction vertical slice:** `ORION_PY=orion_dev/bin/python bash scripts/denver_memory_correction_vertical_smoke.sh` proves a Denver `memory_correction_proposal` reaches Pending Decisions read-only. Expected final line: `denver_memory_correction_vertical_smoke PASS`. Hub card shows current belief, proposed correction, rationale, evidence summary, risk/confidence, and safety flags. Hub review actions (approve/reject/request changes) are on the detail card when enabled — smoke does not exercise them; pytest covers review POST allowlist and no-execution invariants. No execution or memory mutation in smoke.

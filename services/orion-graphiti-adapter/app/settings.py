@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
@@ -14,6 +16,11 @@ class Settings(BaseSettings):
     FALKORDB_URI: str = Field(default="", alias="FALKORDB_URI")
     FALKORDB_GRAPH: str = Field(default="graphiti_temporal", alias="FALKORDB_GRAPH")
     FALKORDB_ENABLED: bool = Field(default=False, alias="FALKORDB_ENABLED")
+
+    GRAPHITI_BACKEND: Literal["orion_postgres", "graphiti_core"] = Field(
+        default="orion_postgres", alias="GRAPHITI_BACKEND"
+    )
+    CRYSTALLIZER_EMBED_HOST_URL: str = Field(default="", alias="CRYSTALLIZER_EMBED_HOST_URL")
 
     class Config:
         env_file = ".env"

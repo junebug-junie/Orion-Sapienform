@@ -676,6 +676,8 @@ loadDismissedIds();
   const pressurePanel = document.getElementById("pressure");
   const collapseMirrorTabButton = document.getElementById("collapseMirrorTabButton");
   const collapseMirrorPanel = document.getElementById("collapse-mirror");
+  const aiTownTabButton = document.getElementById("aiTownTabButton");
+  const aiTownPanel = document.getElementById("ai-town");
   const pressureAnalyticsFrame = document.getElementById("pressureAnalyticsFrame");
   const pressureAnalyticsRefresh = document.getElementById("pressureAnalyticsRefresh");
   const substrateLatticeTabButton = document.getElementById("substrateLatticeTabButton");
@@ -960,6 +962,9 @@ loadDismissedIds();
     if (tabKey === "collapse-mirror" && !collapseMirrorPanel) {
       effectiveTab = "hub";
     }
+    if (tabKey === "ai-town" && !aiTownPanel) {
+      effectiveTab = "hub";
+    }
     const isHub = effectiveTab === "hub";
     const isTopicStudio = effectiveTab === "topic-studio";
     const isServiceLogs = effectiveTab === "service-logs";
@@ -972,6 +977,7 @@ loadDismissedIds();
     const isSignals = effectiveTab === "signals";
     const isForge = effectiveTab === "forge";
     const isCollapseMirror = effectiveTab === "collapse-mirror";
+    const isAiTown = effectiveTab === "ai-town";
     hubTabPanel.classList.toggle("hidden", !isHub);
     topicStudioPanel.classList.toggle("hidden", !isTopicStudio);
     serviceLogsPanel.classList.toggle("hidden", !isServiceLogs);
@@ -1032,6 +1038,14 @@ loadDismissedIds();
     if (collapseMirrorPanel) {
       collapseMirrorPanel.classList.toggle("hidden", !isCollapseMirror);
     }
+    if (aiTownPanel) {
+      aiTownPanel.classList.toggle("hidden", !isAiTown);
+      if (isAiTown && window.OrionAitownPanel && typeof window.OrionAitownPanel.activate === "function") {
+        window.OrionAitownPanel.activate();
+      } else if (!isAiTown && window.OrionAitownPanel && typeof window.OrionAitownPanel.deactivate === "function") {
+        window.OrionAitownPanel.deactivate();
+      }
+    }
     styleTabButton(hubTabButton, isHub);
     styleTabButton(topicStudioTabButton, isTopicStudio);
     styleTabButton(serviceLogsTabButton, isServiceLogs);
@@ -1059,6 +1073,9 @@ loadDismissedIds();
     }
     if (collapseMirrorTabButton) {
       styleTabButton(collapseMirrorTabButton, isCollapseMirror);
+    }
+    if (aiTownTabButton) {
+      styleTabButton(aiTownTabButton, isAiTown);
     }
   }
 
@@ -1636,6 +1653,8 @@ loadDismissedIds();
       setActiveTab("forge");
     } else if (h === "#collapse-mirror" && collapseMirrorPanel && collapseMirrorTabButton) {
       setActiveTab("collapse-mirror");
+    } else if (h === "#ai-town" && aiTownPanel && aiTownTabButton) {
+      setActiveTab("ai-town");
     } else {
       if (
         h === "#pressure"
@@ -1646,6 +1665,7 @@ loadDismissedIds();
         || h === "#forge"
         || h === "#substrate-atlas"
         || h === "#collapse-mirror"
+        || h === "#ai-town"
       ) {
         history.replaceState(null, "", "#hub");
       }
@@ -11780,6 +11800,13 @@ loadDismissedIds();
         event.preventDefault();
         setActiveTab("collapse-mirror");
         history.replaceState(null, "", "#collapse-mirror");
+      });
+    }
+    if (aiTownTabButton && aiTownPanel) {
+      aiTownTabButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        setActiveTab("ai-town");
+        history.replaceState(null, "", "#ai-town");
       });
     }
     applyHashToTab();

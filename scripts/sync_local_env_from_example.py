@@ -90,6 +90,7 @@ SYNC_PREFIXES = (
     "SUBSTRATE_FELT_STATE_",
     "STANCE_REACT_",
     "HARNESS_FCC_",
+    "HARNESS_AITOWN_",
     "HARNESS_GOVERNOR_",
     "FINALIZE_REFLECT_",
     "VOICE_FINALIZE_",
@@ -118,6 +119,8 @@ SYNC_EXACT = frozenset(
         "LLM_LOGPROB_SUMMARY_ENABLED",
         "LLM_GATEWAY_OPENAI_PASSTHROUGH_ENABLED",
         "HOST_PORT",
+        "HARNESS_REPO_MOUNT",
+        "HARNESS_AITOWN_CONVEX_URL",
         # Reverie/dream weave — Phase F (orion-dream REM compaction, default-off).
         "ORION_DREAM_REM_ENABLED",
         "CHANNEL_DREAM_COMPACTION_DELTA",

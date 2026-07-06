@@ -495,9 +495,11 @@ class ConceptWorker:
             published_artifacts.append(tension)
 
         metabolism_tensions: List[TensionEventV1] = []
+        spawned_correlation_id: str | None = None
         if metabolism_enabled() and env.kind == "world.pulse.run.result.v1":
             try:
                 wp_result = WorldPulseRunResultV1.model_validate(self._payload_dict(env))
+                spawned_correlation_id = wp_result.run.run_id
                 metabolism = metabolize_substrate_signals(world_pulse_result=wp_result)
                 metabolism_tensions = list(metabolism.tensions)
                 for tension in metabolism_tensions:
@@ -591,6 +593,7 @@ class ConceptWorker:
             store=self.store,
             dominant_drive=drive_audit.dominant_drive,
             window_summary=window_summary,
+            spawned_correlation_id=spawned_correlation_id,
         )
         suppressed_signatures: List[str] = []
         if goal_decision.proposal is not None:

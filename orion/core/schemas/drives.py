@@ -52,6 +52,8 @@ class ArtifactProvenance(BaseModel):
     source_event_refs: List[ArtifactEventRef] = Field(default_factory=list)
     evidence_items: List[ArtifactEvidence] = Field(default_factory=list)
     tension_refs: List[str] = Field(default_factory=list)
+    spawned_correlation_id: Optional[str] = None
+    episode_id: Optional[str] = None
 
 
 class GraphReadyArtifact(BaseModel):

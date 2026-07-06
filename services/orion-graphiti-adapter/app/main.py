@@ -88,8 +88,11 @@ async def ingest_episode(body: EpisodeIngestV1) -> dict:
     falkor_result = None
 
     if settings.GRAPHITI_BACKEND == "graphiti_core":
+        if pg_pool is None:
+            raise HTTPException(status_code=503, detail="store_unavailable")
         result = await backend.ingest_episode(
             pg_pool,
+            episode_id=episode_id,
             crystallization_id=body.crystallization_id,
             kind=body.kind,
             subject=body.subject,

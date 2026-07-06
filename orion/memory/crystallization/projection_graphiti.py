@@ -80,7 +80,8 @@ class GraphitiAdapter:
         return GraphitiProjectionResult(
             episode_ids=[str(data.get("episode_id"))] if data.get("episode_id") else [],
             entity_ids=[str(data.get("entity_id"))] if data.get("entity_id") else [],
-            edge_ids=[str(data.get("edge_id"))] if data.get("edge_id") else [],
+            edge_ids=[str(e) for e in (data.get("edge_ids") or [])]
+            or ([str(data.get("edge_id"))] if data.get("edge_id") else []),
             synced_at=now,
             canonical_mutated=bool(data.get("canonical_mutated")),
             remote_response=data,
@@ -130,7 +131,8 @@ class GraphitiAdapter:
         return GraphitiProjectionResult(
             episode_ids=[str(data.get("episode_id"))] if data.get("episode_id") else [],
             entity_ids=[str(data.get("entity_id"))] if data.get("entity_id") else [],
-            edge_ids=[str(data.get("edge_id"))] if data.get("edge_id") else [],
+            edge_ids=[str(e) for e in (data.get("edge_ids") or [])]
+            or ([str(data.get("edge_id"))] if data.get("edge_id") else []),
             synced_at=now,
             canonical_mutated=bool(data.get("canonical_mutated")),
             remote_response=data,

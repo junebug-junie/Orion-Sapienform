@@ -283,6 +283,8 @@ async def test_retriever_uses_graphiti_search_when_backend_is_graphiti_core():
         "stance on memory",
         seed_crystallization_id=crys.crystallization_id,
     )
-    adapter.neighborhood.assert_not_called()
+    adapter.neighborhood.assert_called_once_with(crys.crystallization_id, depth=2)
     assert "crys_search_hit" in packet.graphiti_refs
-    assert "graphiti_search" in packet.retrieval_trace.get("rails", [])
+    rails = packet.retrieval_trace.get("rails", [])
+    assert "graphiti_search" in rails
+    assert "graphiti_neighborhood" in rails

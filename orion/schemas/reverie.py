@@ -69,6 +69,11 @@ class SpontaneousThoughtV1(BaseModel):
     next_focus: str | None = None
     drift: str | None = None
 
+    # Phase D grounding — read-only refs into Layer 11 motifs (consolidation
+    # frame ids) + rung-4 episode ids. Empty unless ORION_REVERIE_GROUND_CONSOLIDATION.
+    motif_refs: list[str] = Field(default_factory=list, max_length=MAX_EVIDENCE_REFS)
+    episode_summary_refs: list[str] = Field(default_factory=list, max_length=MAX_EVIDENCE_REFS)
+
     def grounding_ids(self) -> set[str]:
         """The set of coalition ids that legitimately anchor this thought."""
         if self.coalition is None:

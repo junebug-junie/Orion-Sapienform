@@ -65,6 +65,11 @@ class ThoughtSettings(BaseSettings):
         alias="CHANNEL_REVERIE_CHAIN",
     )
 
+    # --- Reverie grounding (Phase D, default-off, read-only) ---
+    reverie_ground_consolidation: bool = Field(
+        False, alias="ORION_REVERIE_GROUND_CONSOLIDATION"
+    )
+
 
 settings = ThoughtSettings()
 logger.info(

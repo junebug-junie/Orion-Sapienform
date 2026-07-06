@@ -198,6 +198,7 @@ Built **inside `orion-thought`** as the spontaneous-thought mode, reusing the `s
 - **Reads (read-only):** current rung-3 coalition (`AttentionBroadcastProjectionV1`, the same source `orion-thought` already consumes via `HubAssociationBundleV1`). **Consumer:** hub `_reverie_section` panel.
 - **Tests/eval:** grounding unit tests + **un-anchored** hollow-text guard eval (the real fail-fast risk now — no user question anchoring relevance). **Evidence:** stored `SpontaneousThoughtV1` whose `coalition` matches a live broadcast, rendered in hub, beating the hollow guard.
 - **Rollback:** flag off; drop table. Evoked `stance_react` path untouched.
+- **Delivery status (2026-07-06):** DELIVERED — schema + registry + channel + `reverie_narrate` verb/prompt + producer (self-driven tick, default-off) + `substrate_reverie_thought` migration + env + unit tests + hollow-guard eval. DEFERRED to a follow-up (need the live mesh to verify, so building them blind would add unverifiable surface): the store-writer consumer that persists emissions into `substrate_reverie_thought`, the hub `_reverie_section` panel, and the live smoke proving a stored thought renders. Until those land, the "stored + rendered in hub" evidence is `UNVERIFIED` and the migration is a contract-ahead artifact with no writer yet.
 
 ### Phase B — thought → governed action
 - **Schemas:** reuse `ProposalFrameV1` (Layer 7); add proposal `source="reverie_thought"` + `thought_id` link. No new envelope kind.

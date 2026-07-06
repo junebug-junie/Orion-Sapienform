@@ -63,18 +63,12 @@ def _default_broadcast_reader() -> AttentionBroadcastProjectionV1 | None:
     reverie tick never raises on a missing/unavailable substrate.
     """
     try:
-        from orion.substrate.felt_state_reader import (  # local import: optional dep at tick time
-            SubstrateFeltStateReader,
-            substrate_felt_state_database_url,
-            substrate_felt_state_max_age_sec,
-        )
+        # Public fail-open entrypoint — resolves enabled/url/max-age internally and
+        # never raises. Same coalition source the evoked stance_react path reads.
+        from orion.substrate.felt_state_reader import hydrate_felt_state_ctx
 
-        reader = SubstrateFeltStateReader(
-            database_url=substrate_felt_state_database_url(),
-            max_age_sec=substrate_felt_state_max_age_sec(),
-        )
         ctx: dict[str, Any] = {}
-        reader.hydrate(ctx)
+        hydrate_felt_state_ctx(ctx)
         raw = ctx.get("attention_broadcast")
         if raw is None:
             return None
@@ -250,39 +244,42 @@ async def run_reverie_once(
             timeout_sec=settings.stance_react_timeout_sec,
         )
         raw_payload = extract_stance_react_payload(exec_result)
+
+        thought = parse_reverie_payload(
+            raw_payload,
+            coalition=coalition,
+            correlation_id=correlation_id,
+            broadcast=broadcast,
+        )
+        if thought.hollow:
+            logger.info(
+                "reverie tick dropped hollow thought corr=%s reason=%s",
+                correlation_id,
+                thought.hollow_reason,
+            )
+            return None
+        if thought.salience < settings.reverie_min_salience:
+            logger.info(
+                "reverie tick below min salience corr=%s salience=%.3f min=%.3f",
+                correlation_id,
+                thought.salience,
+                settings.reverie_min_salience,
+            )
+            return None
+
+        envelope = BaseEnvelope(
+            kind="reverie.thought.v1",
+            source=_source(),
+            correlation_id=_envelope_correlation_id(correlation_id),
+            payload=thought.model_dump(mode="json"),
+        )
+        await bus.publish(settings.channel_reverie_thought, envelope)
     except Exception as exc:
-        logger.warning("reverie narration failed corr=%s err=%s", correlation_id, exc)
+        # A tick must never raise (hard constraint) — a bus/narration/parse
+        # failure degrades to a dropped tick, not a crash.
+        logger.warning("reverie tick failed corr=%s err=%s", correlation_id, exc)
         return None
 
-    thought = parse_reverie_payload(
-        raw_payload,
-        coalition=coalition,
-        correlation_id=correlation_id,
-        broadcast=broadcast,
-    )
-    if thought.hollow:
-        logger.info(
-            "reverie tick dropped hollow thought corr=%s reason=%s",
-            correlation_id,
-            thought.hollow_reason,
-        )
-        return None
-    if thought.salience < settings.reverie_min_salience:
-        logger.info(
-            "reverie tick below min salience corr=%s salience=%.3f min=%.3f",
-            correlation_id,
-            thought.salience,
-            settings.reverie_min_salience,
-        )
-        return None
-
-    envelope = BaseEnvelope(
-        kind="reverie.thought.v1",
-        source=_source(),
-        correlation_id=_envelope_correlation_id(correlation_id),
-        payload=thought.model_dump(mode="json"),
-    )
-    await bus.publish(settings.channel_reverie_thought, envelope)
     logger.info(
         "reverie thought published corr=%s salience=%.3f channel=%s",
         correlation_id,

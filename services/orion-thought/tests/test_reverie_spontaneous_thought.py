@@ -195,3 +195,55 @@ async def test_tick_swallows_narration_failure():
     )
     assert result is None  # degraded, not raised
     bus.publish.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_tick_swallows_publish_failure():
+    from app import reverie
+
+    bus = AsyncMock()
+    bus.publish = AsyncMock(side_effect=RuntimeError("bus down"))
+    cortex = AsyncMock()
+    cortex.execute_plan = AsyncMock(return_value={
+        "final_text": json.dumps({"interpretation": GROUNDED_TEXT, "evidence_refs": ["ol-1"]}),
+    })
+    # Must degrade to None, not raise, even though the thought was valid.
+    result = await reverie.run_reverie_once(
+        bus, broadcast_reader=lambda: _broadcast(), cortex_client=cortex,
+    )
+    assert result is None
+
+
+# --- default broadcast reader (real signature coverage, no live DB) ------------
+
+def test_default_broadcast_reader_hydrates_projection(monkeypatch):
+    """Covers the felt_state_reader wiring the mocked ticks skip."""
+    from app import reverie
+    import orion.substrate.felt_state_reader as fsr
+
+    def fake_hydrate(ctx):
+        ctx["attention_broadcast"] = _broadcast().model_dump(mode="json")
+
+    monkeypatch.setattr(fsr, "hydrate_felt_state_ctx", fake_hydrate)
+    result = reverie._default_broadcast_reader()
+    assert result is not None
+    assert result.attended_node_ids == ["n-1"]
+
+
+def test_default_broadcast_reader_none_on_empty(monkeypatch):
+    from app import reverie
+    import orion.substrate.felt_state_reader as fsr
+
+    monkeypatch.setattr(fsr, "hydrate_felt_state_ctx", lambda ctx: None)
+    assert reverie._default_broadcast_reader() is None
+
+
+def test_default_broadcast_reader_never_raises(monkeypatch):
+    from app import reverie
+    import orion.substrate.felt_state_reader as fsr
+
+    def boom(ctx):
+        raise RuntimeError("db unreachable")
+
+    monkeypatch.setattr(fsr, "hydrate_felt_state_ctx", boom)
+    assert reverie._default_broadcast_reader() is None  # swallowed

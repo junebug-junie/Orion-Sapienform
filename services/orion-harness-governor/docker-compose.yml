@@ -15,6 +15,7 @@ services:
       - ${HOME}/.fcc:/root/.fcc:ro
       - ${HOME}/.claude.json:/root/.claude.json:ro
       - ${HARNESS_FCC_CLAUDE_BIN_HOST:-${HOME}/.local/bin/claude}:/usr/local/bin/claude:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - SERVICE_NAME=${SERVICE_NAME:-orion-harness-governor}
       - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}

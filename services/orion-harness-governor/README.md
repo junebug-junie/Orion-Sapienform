@@ -39,3 +39,37 @@ docker compose \
 ## Health
 
 `GET http://localhost:7156/health`
+
+## FCC MCP (Orion mode)
+
+When `HARNESS_FCC_MCP_ENABLED=true`, harness turns spawn ephemeral MCP config (GitHub + Firecrawl; optional AI Town when `HARNESS_AITOWN_ENABLED=true`). The container image includes `docker`, `npx`, and the orion-aitown MCP package.
+
+### Required secrets
+
+Mount host `~/.fcc` (already wired in compose). In `~/.fcc/.env` (or path from `HARNESS_FCC_ENV_PATH`):
+
+| Key | Used by |
+|-----|---------|
+| `GITHUB_PAT` | GitHub MCP (`docker run ghcr.io/github/github-mcp-server`) |
+| `FIRECRAWL_API_KEY` | Firecrawl MCP (`npx firecrawl-mcp`) |
+
+When `HARNESS_AITOWN_ENABLED=true`, also set `AITOWN_CONVEX_URL`, `AITOWN_ADMIN_KEY`, and `AITOWN_WORLD_ID` (optional: `AITOWN_ORION_AGENT_ID`, `AITOWN_ORION_PLAYER_ID`).
+
+### Docker socket
+
+GitHub MCP runs sibling containers via the host Docker daemon. Compose mounts `/var/run/docker.sock:/var/run/docker.sock` (same pattern as orion-hub).
+
+### Enable and restart
+
+```bash
+# services/orion-harness-governor/.env
+HARNESS_FCC_MCP_ENABLED=true
+HARNESS_AITOWN_ENABLED=false   # optional
+
+docker compose \
+  --env-file services/orion-harness-governor/.env \
+  -f services/orion-harness-governor/docker-compose.yml \
+  up -d --build
+```
+
+Rebuild/restart after toggling MCP flags or changing `~/.fcc/.env` secrets.

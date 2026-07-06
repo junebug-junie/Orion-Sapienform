@@ -239,6 +239,7 @@ async def test_retriever_collects_linked_crystallization_from_graphiti_depth_two
     crys = _active_crystallization()
     adapter = MagicMock()
     adapter.enabled = True
+    adapter.health.return_value = {"backend": "orion_postgres"}
     adapter.neighborhood.return_value = {
         "enabled": True,
         "nodes": [
@@ -256,3 +257,32 @@ async def test_retriever_collects_linked_crystallization_from_graphiti_depth_two
     )
     adapter.neighborhood.assert_called_once_with(crys.crystallization_id, depth=2)
     assert "crys_linked" in packet.graphiti_refs
+
+
+@pytest.mark.asyncio
+async def test_retriever_uses_graphiti_search_when_backend_is_graphiti_core():
+    from unittest.mock import MagicMock
+    from orion.memory.crystallization.retriever import retrieve_active_packet
+
+    crys = _active_crystallization()
+    adapter = MagicMock()
+    adapter.enabled = True
+    adapter.health.return_value = {"backend": "graphiti_core"}
+    adapter.search.return_value = {
+        "crystallization_ids": [crys.crystallization_id, "crys_search_hit"],
+        "trace": {"backend": "graphiti_core"},
+    }
+
+    packet = await retrieve_active_packet(
+        query="stance on memory",
+        crystallizations=[crys],
+        graphiti_adapter=adapter,
+        seed_crystallization_id=crys.crystallization_id,
+    )
+    adapter.search.assert_called_once_with(
+        "stance on memory",
+        seed_crystallization_id=crys.crystallization_id,
+    )
+    adapter.neighborhood.assert_not_called()
+    assert "crys_search_hit" in packet.graphiti_refs
+    assert "graphiti_search" in packet.retrieval_trace.get("rails", [])

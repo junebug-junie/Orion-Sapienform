@@ -74,12 +74,23 @@ async def retrieve_active_packet(
             extra_crystallization_ids.add(str(cid))
 
     if graphiti_adapter and graphiti_adapter.enabled and seed_crystallization_id:
-        nb = graphiti_adapter.neighborhood(seed_crystallization_id, depth=2)
-        for node in nb.get("nodes") or []:
-            nid = node.get("crystallization_id") or node.get("id")
-            if nid:
-                graphiti_refs.append(str(nid))
-                extra_crystallization_ids.add(str(nid))
+        health = graphiti_adapter.health()
+        graphiti_rail = "graphiti_neighborhood"
+        if health.get("backend") == "graphiti_core":
+            graphiti_rail = "graphiti_search"
+            sr = graphiti_adapter.search(query, seed_crystallization_id=seed_crystallization_id)
+            for cid in sr.get("crystallization_ids") or []:
+                graphiti_refs.append(str(cid))
+                extra_crystallization_ids.add(str(cid))
+        else:
+            nb = graphiti_adapter.neighborhood(seed_crystallization_id, depth=2)
+            for node in nb.get("nodes") or []:
+                nid = node.get("crystallization_id") or node.get("id")
+                if nid:
+                    graphiti_refs.append(str(nid))
+                    extra_crystallization_ids.add(str(nid))
+    else:
+        graphiti_rail = None
 
     merged = {c.crystallization_id: c for c in crystallizations}
     packet = build_active_packet(
@@ -95,7 +106,11 @@ async def retrieve_active_packet(
     packet.chroma_refs = chroma_refs
     packet.graphiti_refs = graphiti_refs
     trace = dict(packet.retrieval_trace)
-    trace["rails"] = list(trace.get("rails") or []) + ["chroma_semantic", "graphiti_neighborhood"]
+    rails = list(trace.get("rails") or [])
+    rails.extend(["chroma_semantic"])
+    if graphiti_rail:
+        rails.append(graphiti_rail)
+    trace["rails"] = rails
     trace["chroma_hits"] = len(chroma_hits)
     trace["graphiti_refs"] = len(graphiti_refs)
     trace["extra_crystallization_ids_from_chroma"] = sorted(extra_crystallization_ids)

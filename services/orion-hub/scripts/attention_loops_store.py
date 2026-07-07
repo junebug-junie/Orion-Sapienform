@@ -40,10 +40,16 @@ def _database_url() -> str:
     )
 
 
-def _engine():
-    from sqlalchemy import create_engine
+_ENGINE = None
 
-    return create_engine(_database_url(), pool_pre_ping=True)
+
+def _engine():
+    global _ENGINE
+    if _ENGINE is None:
+        from sqlalchemy import create_engine
+
+        _ENGINE = create_engine(_database_url(), pool_pre_ping=True)
+    return _ENGINE
 
 
 def _top_features(features: dict[str, Any], *, limit: int = 3) -> list[str]:
@@ -121,7 +127,7 @@ def build_loop_outcome(
         verdict=verdict,  # type: ignore[arg-type]
         actor=actor,
         note=(note or "")[:500],
-        salience_at_close=float(salience_at_close),
+        salience_at_close=max(0.0, min(1.0, float(salience_at_close))),
         features_at_close=dict(features_at_close or {}),
     )
 

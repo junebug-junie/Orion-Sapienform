@@ -31,7 +31,8 @@ def recall_skip_gate(
 
     reasons.append("low_info_social")
 
-    novelty_score = appraisal.get("novelty_score") if appraisal else None
+    raw_novelty = (appraisal or {}).get("novelty_score")
+    novelty_score = float(raw_novelty) if isinstance(raw_novelty, (int, float)) else None
     shift_kind = str((appraisal or {}).get("shift_kind") or "NONE").upper()
 
     novelty_below_floor = novelty_score is None or novelty_score < max_novelty

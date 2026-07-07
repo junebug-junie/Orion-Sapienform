@@ -7,6 +7,7 @@ from orion.autonomy.capability_policy import CapabilityEvaluationContext, evalua
 from orion.autonomy.episode_fetch import EpisodeFetchRequest, execute_readonly_fetch
 from orion.autonomy.fetch_backend_resolve import resolve_fetch_backend
 from orion.autonomy.models import ActionOutcomeRefV1, CapabilityDecisionV1, SubstrateActResultV1, SubstrateEpisodeIntentV1
+from orion.autonomy.salience import gap_terms_from_signals
 from orion.core.schemas.drives import DriveStateV1, GoalProposalV1
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 
@@ -87,11 +88,13 @@ async def maybe_execute_readonly_fetch_after_goal(
         return decision, None
 
     query = build_readonly_fetch_query(curiosity_signals)
+    gap_terms = gap_terms_from_signals(curiosity_signals, fallback_query=query)
     req = EpisodeFetchRequest(
         subject=goal.subject,
         goal_artifact_id=goal.artifact_id,
         spawned_correlation_id=spawned_correlation_id,
         query=query,
+        gap_terms=tuple(sorted(gap_terms)),
     )
     if fetch_backend is None:
         fetch_backend = resolve_fetch_backend()
@@ -99,6 +102,67 @@ async def maybe_execute_readonly_fetch_after_goal(
     if budget_used is not None:
         budget_used[_READONLY_CAPABILITY] = budget_used.get(_READONLY_CAPABILITY, 0) + 1
     return decision, outcome
+
+
+_MAX_SEED_DESC_CHARS = 300
+
+
+def _gap_section_label(signals: Sequence[FrontierInvocationSignalV1]) -> str:
+    for sig in signals:
+        if sig.signal_type != _GAP_SIGNAL:
+            continue
+        for ref in sig.focal_node_refs:
+            section = str(ref or "").strip()
+            if section.startswith("section:"):
+                return section.split(":", 1)[1].replace("_", " ")
+    return ""
+
+
+def build_episode_narrative_seed(
+    goal: GoalProposalV1,
+    curiosity_signals: Sequence[FrontierInvocationSignalV1],
+    fetch_outcome: ActionOutcomeRefV1,
+) -> str:
+    """Structured multi-line compose seed: why + what + salience + satiation ask.
+
+    `goal` is part of the stable interface (spec contract + future goal_statement
+    enrichment seam) even though the current body does not read it.
+    """
+    del goal  # part of stable interface; not read yet
+    if not fetch_outcome.success:
+        return f"fetch failed: {fetch_outcome.summary}"
+
+    lines: list[str] = []
+    strength = curiosity_strength_from_signals(curiosity_signals)
+    section = _gap_section_label(curiosity_signals)
+    if section:
+        lines.append(f'Why: predictive coverage gap in "{section}" (strength {strength:.2f}).')
+    else:
+        lines.append(f"Why: predictive coverage gap (strength {strength:.2f}).")
+    if fetch_outcome.query:
+        lines.append(f'Query: "{fetch_outcome.query}"')
+
+    articles = fetch_outcome.articles
+    if articles:
+        lines.append(f"Fetched {len(articles)} article(s):")
+        any_scored = any(a.salience > 0.0 for a in articles)
+        for idx, art in enumerate(articles, start=1):
+            marker = f"salience {art.salience:.2f}" if any_scored else "unscored"
+            title = art.title or "(untitled)"
+            lines.append(f"  {idx}. [{marker}] {title} — {art.url}")
+            desc = (art.description or "").strip()
+            if desc:
+                if len(desc) > _MAX_SEED_DESC_CHARS:
+                    desc = desc[:_MAX_SEED_DESC_CHARS].rstrip() + "…"
+                lines.append(f"     {desc}")
+    else:
+        lines.append(f"fetch outcome: {fetch_outcome.summary}")
+
+    lines.append(
+        "Reflect: summarize each article and assess whether it closes the gap that "
+        "drove this fetch. Name what is still missing. Do not invent sources."
+    )
+    return "\n".join(lines)
 
 
 async def maybe_compose_autonomy_episode_after_fetch(
@@ -112,7 +176,6 @@ async def maybe_compose_autonomy_episode_after_fetch(
     budget_used: dict[str, int] | None = None,
 ) -> tuple[CapabilityDecisionV1, dict[str, Any] | None]:
     """Layer C gate + episode journal compose after successful readonly fetch."""
-    del curiosity_signals
     if fetch_outcome is None:
         decision = CapabilityDecisionV1(
             capability_id=_EPISODE_JOURNAL_CAPABILITY,
@@ -153,11 +216,7 @@ async def maybe_compose_autonomy_episode_after_fetch(
     if journal_dispatch is None:
         return decision, None
 
-    narrative_seed = (
-        f"fetch outcome: {fetch_outcome.summary}"
-        if fetch_outcome.success
-        else f"fetch failed: {fetch_outcome.summary}"
-    )
+    narrative_seed = build_episode_narrative_seed(goal, curiosity_signals, fetch_outcome)
     result = await journal_dispatch(
         goal_artifact_id=goal.artifact_id,
         spawned_correlation_id=spawned_correlation_id,

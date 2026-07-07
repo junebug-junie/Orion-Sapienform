@@ -143,6 +143,8 @@ async def test_policy_act_denied_when_pressure_low(monkeypatch) -> None:
 async def test_policy_act_dispatches_episode_journal_after_fetch(monkeypatch) -> None:
     monkeypatch.setenv("ORION_AUTONOMY_EPISODE_JOURNAL_ENABLED", "true")
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    from orion.autonomy.models import FetchedArticleRefV1
+
     fetch_outcome = ActionOutcomeRefV1(
         action_id="fetch-test",
         kind="web.fetch.readonly",
@@ -150,6 +152,11 @@ async def test_policy_act_dispatches_episode_journal_after_fetch(monkeypatch) ->
         success=True,
         surprise=0.0,
         observed_at=datetime.now(timezone.utc),
+        query="hardware compute gpu recent news coverage",
+        articles=[
+            FetchedArticleRefV1(url="https://example.com/a", title="GPU news", salience=0.67)
+        ],
+        salience=0.67,
     )
     journal_dispatch = AsyncMock(return_value={"write": {"entry_id": "entry-1"}})
     decision, result = await maybe_compose_autonomy_episode_after_fetch(
@@ -163,7 +170,9 @@ async def test_policy_act_dispatches_episode_journal_after_fetch(monkeypatch) ->
     assert decision.outcome == "allowed"
     assert result is not None
     journal_dispatch.assert_awaited_once()
-    assert journal_dispatch.await_args.kwargs["narrative_seed"].startswith("fetch outcome:")
+    seed = journal_dispatch.await_args.kwargs["narrative_seed"]
+    assert "hardware compute gpu" in seed
+    assert "GPU news" in seed
 
 
 @pytest.mark.asyncio
@@ -205,6 +214,87 @@ async def test_policy_act_composes_episode_journal_on_fetch_failure(monkeypatch)
     assert decision.outcome == "allowed"
     assert result is not None
     assert "fetch failed" in journal_dispatch.await_args.kwargs["narrative_seed"]
+
+
+def test_build_episode_narrative_seed_grounds_on_articles() -> None:
+    from orion.autonomy.models import FetchedArticleRefV1
+    from orion.autonomy.policy_act import build_episode_narrative_seed
+
+    outcome = ActionOutcomeRefV1(
+        action_id="fetch-1",
+        kind="web.fetch.readonly",
+        summary="fetched 2 article(s)",
+        success=True,
+        query="hardware compute gpu recent news coverage",
+        articles=[
+            FetchedArticleRefV1(
+                url="https://example.com/a",
+                title="New GPU cluster",
+                description="A big hardware compute launch.",
+                salience=0.67,
+            ),
+            FetchedArticleRefV1(url="https://example.com/b", title="Side note", salience=0.0),
+        ],
+        salience=0.67,
+    )
+    seed = build_episode_narrative_seed(_goal(), [_gap_signal()], outcome)
+
+    assert "hardware compute gpu" in seed          # the "why" (gap section)
+    assert "New GPU cluster" in seed               # a real article title (the "what")
+    assert "salience 0.67" in seed                 # salience marker
+    assert "https://example.com/a" in seed         # real source url
+    assert "Do not invent sources" in seed         # anti-confabulation ask
+    assert "closes the gap" in seed                # satiation-assessment ask
+
+
+def test_build_episode_narrative_seed_marks_unscored_when_no_gap_terms() -> None:
+    from orion.autonomy.models import FetchedArticleRefV1
+    from orion.autonomy.policy_act import build_episode_narrative_seed
+
+    outcome = ActionOutcomeRefV1(
+        action_id="fetch-1",
+        kind="web.fetch.readonly",
+        summary="fetched 1 article(s)",
+        success=True,
+        query="gpu news",
+        articles=[FetchedArticleRefV1(url="https://example.com/a", title="A", salience=0.0)],
+        salience=0.0,
+    )
+    seed = build_episode_narrative_seed(_goal(), [_gap_signal()], outcome)
+    assert "unscored" in seed
+
+
+def test_build_episode_narrative_seed_failure_branch_unchanged() -> None:
+    from orion.autonomy.policy_act import build_episode_narrative_seed
+
+    outcome = ActionOutcomeRefV1(
+        action_id="fetch-1",
+        kind="web.fetch.readonly",
+        summary="fetch failed: timeout",
+        success=False,
+        surprise=1.0,
+    )
+    seed = build_episode_narrative_seed(_goal(), [_gap_signal()], outcome)
+    assert seed == "fetch failed: fetch failed: timeout"
+
+
+def test_build_episode_narrative_seed_truncates_long_description() -> None:
+    from orion.autonomy.models import FetchedArticleRefV1
+    from orion.autonomy.policy_act import build_episode_narrative_seed
+
+    long_desc = "x" * 500
+    outcome = ActionOutcomeRefV1(
+        action_id="fetch-1",
+        kind="web.fetch.readonly",
+        summary="fetched 1 article(s)",
+        success=True,
+        query="gpu news",
+        articles=[FetchedArticleRefV1(url="https://example.com/a", title="A", description=long_desc, salience=0.5)],
+        salience=0.5,
+    )
+    seed = build_episode_narrative_seed(_goal(), [_gap_signal()], outcome)
+    assert "…" in seed
+    assert "x" * 500 not in seed
 
 
 def _intent() -> SubstrateEpisodeIntentV1:

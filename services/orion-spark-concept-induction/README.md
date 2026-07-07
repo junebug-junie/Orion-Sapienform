@@ -8,7 +8,7 @@ Bus-native Spark capability that consolidates recent Orion experience into conce
 docker compose -f services/orion-spark-concept-induction/docker-compose.yml --env-file .env up -d orion-spark-concept-induction
 ```
 
-Health check: http://localhost:8500/health
+Health check: http://localhost:8510/health
 
 ## Env lineage
 

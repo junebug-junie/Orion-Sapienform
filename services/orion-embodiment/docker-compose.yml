@@ -43,7 +43,7 @@ services:
       - EMBODIMENT_CHANNEL_INTENT=${EMBODIMENT_CHANNEL_INTENT:-orion:embodiment:intent}
       - EMBODIMENT_CHANNEL_OUTCOME=${EMBODIMENT_CHANNEL_OUTCOME:-orion:embodiment:outcome}
       - EMBODIMENT_CHANNEL_PERCEPTION=${EMBODIMENT_CHANNEL_PERCEPTION:-orion:embodiment:perception}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - EMBODIMENT_LOG_LEVEL=${EMBODIMENT_LOG_LEVEL:-INFO}
 
 networks:
   app-net:

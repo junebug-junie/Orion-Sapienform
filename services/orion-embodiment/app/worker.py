@@ -69,6 +69,9 @@ class EmbodimentWorker:
         self._last_move_at: Optional[datetime] = None
         self._last_idle_wander_at: Optional[datetime] = None
         self._last_social_attempt_at: Optional[datetime] = None
+        # Throttle for the loop heartbeat log so a healthy (silent) loop is still
+        # observable in `docker logs` without spamming on a tight perception interval.
+        self._last_heartbeat_log_at: Optional[datetime] = None
         # Serializes the two concurrent process_intent callers (consume loop +
         # idle-wander loop) so the move-cooldown read-then-write cannot double-fire.
         self._actuate_lock = asyncio.Lock()
@@ -551,6 +554,7 @@ class EmbodimentWorker:
             except Exception:
                 logger.exception("embodiment_perception_loop_failed")
                 perception = None
+            self._maybe_log_heartbeat(perception)
             if perception is not None and getattr(self._settings, "memory_enabled", False):
                 try:
                     await self._journal_from_perception(perception)
@@ -583,6 +587,33 @@ class EmbodimentWorker:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except asyncio.TimeoutError:
                 continue
+
+    def _maybe_log_heartbeat(self, perception: Optional[WorldPerceptionV1]) -> None:
+        """Emit a throttled INFO heartbeat summarizing the loop's current perception.
+
+        A healthy loop otherwise logs nothing (all loop logs are exception-only), so
+        `docker logs` looked dead even while working — which forced live DB probing to
+        diagnose the void bug. This is the smallest observability seam: one line every
+        ~30s with real perceived state, not fabricated cognition.
+        """
+        now = _utcnow()
+        last = self._last_heartbeat_log_at
+        if last is not None and (now - last).total_seconds() < 30.0:
+            return
+        self._last_heartbeat_log_at = now
+        if perception is None:
+            logger.info("embodiment_heartbeat perception=none")
+            return
+        convo = perception.active_conversation or {}
+        other = convo.get("other") or {}
+        logger.info(
+            "embodiment_heartbeat player=%s nearby=%d active_convo=%s status=%s partner=%s",
+            self._orion_player_id or "?",
+            len(perception.nearby_players or []),
+            convo.get("conversation_id") or "-",
+            convo.get("status") or "-",
+            other.get("player_id") or "-",
+        )
 
     async def _maybe_idle_wander(self, *, now: datetime) -> None:
         """Self-driven involuntary wander when no move has actuated within
@@ -710,6 +741,15 @@ class EmbodimentWorker:
 
         Input/mutation names follow the AI Town canonical schema (upstream not
         vendored here). See TODO on the input constants above.
+
+        CRITICAL (the "void" fix): the ``finishSendingMessage`` engine input is what
+        advances conversation state (``conversation.lastMessage`` + ``numMessages``),
+        which is what a partner agent's tick reads to decide it's their turn to
+        reply. Upstream's schema is ``{playerId, conversationId, timestamp}`` — NOT
+        ``messageUuid``. Sending the wrong args gets the input dropped, so Orion's
+        message rows land in the DB but the engine never registers that Orion spoke,
+        and the partner waits forever. Runtime evidence: a live conversation held 75
+        Orion message rows with ``numMessages=0``/``lastMessage=null`` until fixed.
         """
         message_uuid = str(uuid4())
         wid = self._world_id or None
@@ -731,6 +771,13 @@ class EmbodimentWorker:
         )
         aitown_client.send_input(
             name=FINISH_SENDING_MESSAGE_INPUT,
-            args={"playerId": own_player_id, "conversationId": conversation_id, "messageUuid": message_uuid},
+            # Upstream conversationInputs.finishSendingMessage expects a numeric
+            # `timestamp` (ms), not `messageUuid`. Wrong args -> input rejected ->
+            # numMessages/lastMessage never advance -> partner never hears Orion.
+            args={
+                "playerId": own_player_id,
+                "conversationId": conversation_id,
+                "timestamp": int(_utcnow().timestamp() * 1000),
+            },
             world_id=wid,
         )

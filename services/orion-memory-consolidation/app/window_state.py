@@ -27,6 +27,13 @@ class WindowStore:
     async def append_turn(self, turn: MemoryTurnPersistedV1, *, scores: dict[str, Any]) -> None:
         row = await self._get_open_window()
         phase_change = (turn.spark_meta.get("conversation_phase") or {}).get("phase_change")
+        appraisal = scores.get("turn_change_appraisal")
+        spark_meta: dict[str, Any] = {}
+        if isinstance(appraisal, dict):
+            spark_meta["turn_change_appraisal"] = appraisal
+        sig = scores.get("memory_significance_score")
+        if isinstance(sig, (int, float)):
+            spark_meta["memory_significance_score"] = float(sig)
         turn_entry = {
             "correlation_id": turn.correlation_id,
             "prompt": turn.prompt,
@@ -35,6 +42,7 @@ class WindowStore:
             "conversation_boundary_score": scores.get("conversation_boundary_score"),
             "phase_change": phase_change,
             "memory_classify_ts": scores.get("memory_classify_ts"),
+            "spark_meta": spark_meta,
         }
         if row is None:
             window_id = str(uuid4())

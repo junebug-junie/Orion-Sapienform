@@ -1,0 +1,36 @@
+services:
+  fcc:
+    build:
+      context: ../..
+      dockerfile: services/orion-fcc/Dockerfile
+    container_name: ${PROJECT}-fcc
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - PROJECT=${PROJECT}
+      - SERVICE_NAME=${SERVICE_NAME:-fcc}
+      - FCC_OPEN_BROWSER=${FCC_OPEN_BROWSER:-false}
+      - FCC_LOG_FILE=${FCC_LOG_FILE:-/tmp/fcc-server.log}
+      # Container-only upstream override (pydantic env beats ~/.fcc/.env). Secrets stay in ~/.fcc/.env.
+      - LLAMACPP_BASE_URL=${FCC_LLAMACPP_BASE_URL:-http://orion-llm-gateway:8210/v1}
+      - PORT=${FCC_INTERNAL_PORT:-8082}
+    volumes:
+      - ${FCC_CONFIG_DIR:-${HOME}/.fcc}:/root/.fcc:ro
+    ports:
+      - "${FCC_PORT:-8082}:${FCC_INTERNAL_PORT:-8082}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8082/health"]
+      start_period: 15s
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - app-net
+
+networks:
+  app-net:
+    external: true

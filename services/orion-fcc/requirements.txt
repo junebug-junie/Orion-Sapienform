@@ -1,0 +1,2 @@
+# Installed from upstream git (not on PyPI). Pin matches Athena uv tool receipt 2.4.4.
+free-claude-code @ git+https://github.com/Alishahryar1/free-claude-code.git@763333797246357f6678c1b4c67fe18ef247c2cb

@@ -92,6 +92,7 @@ SYNC_PREFIXES = (
     "HARNESS_FCC_",
     "HARNESS_AITOWN_",
     "HARNESS_GOVERNOR_",
+    "FCC_",
     "FINALIZE_REFLECT_",
     "VOICE_FINALIZE_",
     "SUBSTRATE_FINALIZE_",
@@ -154,6 +155,7 @@ DEFAULT_SERVICES = (
     "orion-harness-governor",
     "orion-dream",
     "orion-llm-gateway",
+    "orion-fcc",
     "orion-vector-host",
 )
 

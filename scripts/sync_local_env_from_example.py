@@ -110,6 +110,8 @@ SYNC_PREFIXES = (
     "COUNCIL_",
     "HOST_PORT",
     "SQL_WRITER_EMIT_MEMORY_",
+    # Embodiment (mind-to-sprite bridge, default-off)
+    "EMBODIMENT_",
 )
 
 SYNC_EXACT = frozenset(
@@ -164,6 +166,7 @@ DEFAULT_SERVICES = (
     "orion-llm-gateway",
     "orion-fcc",
     "orion-vector-host",
+    "orion-embodiment",
 )
 
 

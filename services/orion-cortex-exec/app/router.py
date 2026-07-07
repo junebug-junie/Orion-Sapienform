@@ -16,6 +16,7 @@ from .executor import (
     prepare_chat_quick_reply_context,
     run_recall_step,
 )
+from .pcr_chat_memory import CONTINUITY_PROFILE, run_pcr_phase0_and_1
 from .situation import mark_orion_turn
 from .recall_utils import (
     delivery_safe_recall_decision,
@@ -1034,8 +1035,61 @@ class PlanRunner:
         inline_recall = has_inline_recall(plan.steps)
         should_recall = bool(recall_policy["run_recall"])
         recall_reason = str(recall_policy["reason"])
+        use_pcr_pre_recall = (
+            settings.chat_pcr_enabled
+            and str(plan.verb_name or "").strip().lower() == "chat_general"
+            and should_recall
+            and not inline_recall
+        )
 
-        if should_recall and not inline_recall:
+        if use_pcr_pre_recall:
+            logger.info(
+                "PCR phase0+1 start corr=%s profile=%s gating=%s",
+                correlation_id,
+                selected_profile,
+                recall_reason,
+            )
+            _pcr_memory, recall_step, recall_debug = await run_pcr_phase0_and_1(
+                bus,
+                source=source,
+                ctx=ctx,
+                correlation_id=correlation_id,
+                recall_cfg=recall_cfg,
+            )
+            if recall_step is not None:
+                step_results.append(recall_step)
+                grammar_collector.record_step_started(
+                    order=0,
+                    step_name=recall_step.step_name or "pcr_continuity_recall",
+                    verb_name=recall_step.verb_name or "recall",
+                    services=["RecallService"],
+                )
+                if recall_step.status == "success":
+                    keys = sorted(recall_step.result.keys()) if isinstance(recall_step.result, dict) else []
+                    grammar_collector.record_step_completed(
+                        order=0,
+                        step_name=recall_step.step_name or "pcr_continuity_recall",
+                        latency_ms=recall_step.latency_ms,
+                        result_service_keys=keys,
+                    )
+                else:
+                    grammar_collector.record_step_failed(
+                        order=0,
+                        step_name=recall_step.step_name or "pcr_continuity_recall",
+                        error_kind=short_error_kind(recall_step.error),
+                    )
+            memory_used = recall_step is not None and recall_step.status == "success"
+            recall_count = 0
+            if recall_step is not None and isinstance(recall_step.result, dict):
+                recall_payload = recall_step.result.get("RecallService")
+                if isinstance(recall_payload, dict):
+                    recall_count = int(recall_payload.get("count") or 0)
+            if isinstance(recall_debug, dict):
+                recall_debug.setdefault("profile", CONTINUITY_PROFILE if recall_step else None)
+                recall_debug.setdefault("profile_source", "pcr")
+                recall_debug.setdefault("profile_override_source", recall_policy.get("profile_override_source"))
+                recall_debug.setdefault("recall_gating_reason", recall_policy.get("recall_gating_reason"))
+        elif should_recall and not inline_recall:
             logger.info(
                 "Recall resolved profile=%s source=%s gating=%s recall_gating_reason=%s",
                 selected_profile,

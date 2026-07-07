@@ -45,7 +45,8 @@ JOURNAL_TRIGGER_KIND = "orion.actions.trigger.journal.v1"
 # TODO(embodiment): confirm names/args against upstream when it is vendored.
 START_CONVERSATION_INPUT = "startConversation"
 START_TYPING_INPUT = "startTyping"
-FINISH_SENDING_MESSAGE_INPUT = "finishSendingMessage"
+# NOTE: the `finishSendingMessage` input is NOT sent directly — `messages:writeMessage`
+# enqueues it server-side with a numeric timestamp. See `_inject_utterance`.
 WRITE_MESSAGE_MUTATION = "messages:writeMessage"
 
 
@@ -69,6 +70,9 @@ class EmbodimentWorker:
         self._last_move_at: Optional[datetime] = None
         self._last_idle_wander_at: Optional[datetime] = None
         self._last_social_attempt_at: Optional[datetime] = None
+        # Throttle for the loop heartbeat log so a healthy (silent) loop is still
+        # observable in `docker logs` without spamming on a tight perception interval.
+        self._last_heartbeat_log_at: Optional[datetime] = None
         # Serializes the two concurrent process_intent callers (consume loop +
         # idle-wander loop) so the move-cooldown read-then-write cannot double-fire.
         self._actuate_lock = asyncio.Lock()
@@ -551,6 +555,7 @@ class EmbodimentWorker:
             except Exception:
                 logger.exception("embodiment_perception_loop_failed")
                 perception = None
+            self._maybe_log_heartbeat(perception)
             if perception is not None and getattr(self._settings, "memory_enabled", False):
                 try:
                     await self._journal_from_perception(perception)
@@ -583,6 +588,33 @@ class EmbodimentWorker:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except asyncio.TimeoutError:
                 continue
+
+    def _maybe_log_heartbeat(self, perception: Optional[WorldPerceptionV1]) -> None:
+        """Emit a throttled INFO heartbeat summarizing the loop's current perception.
+
+        A healthy loop otherwise logs nothing (all loop logs are exception-only), so
+        `docker logs` looked dead even while working — which forced live DB probing to
+        diagnose the void bug. This is the smallest observability seam: one line every
+        ~30s with real perceived state, not fabricated cognition.
+        """
+        now = _utcnow()
+        last = self._last_heartbeat_log_at
+        if last is not None and (now - last).total_seconds() < 30.0:
+            return
+        self._last_heartbeat_log_at = now
+        if perception is None:
+            logger.info("embodiment_heartbeat perception=none")
+            return
+        convo = perception.active_conversation or {}
+        other = convo.get("other") or {}
+        logger.info(
+            "embodiment_heartbeat player=%s nearby=%d active_convo=%s status=%s partner=%s",
+            self._orion_player_id or "?",
+            len(perception.nearby_players or []),
+            convo.get("conversation_id") or "-",
+            convo.get("status") or "-",
+            other.get("player_id") or "-",
+        )
 
     async def _maybe_idle_wander(self, *, now: datetime) -> None:
         """Self-driven involuntary wander when no move has actuated within
@@ -706,10 +738,24 @@ class EmbodimentWorker:
             return ""
 
     def _inject_utterance(self, own_player_id: str, conversation_id: str, text: str) -> None:
-        """Inject an utterance into the AI Town conversation (startTyping -> write -> finish).
+        """Inject an utterance into the AI Town conversation (startTyping -> writeMessage).
 
         Input/mutation names follow the AI Town canonical schema (upstream not
         vendored here). See TODO on the input constants above.
+
+        CRITICAL (the "void" fix): the engine only advances conversation state
+        (``conversation.lastMessage`` + ``numMessages``) — which a partner agent's
+        tick reads to decide it's their turn — on a valid ``finishSendingMessage``
+        input carrying a numeric ``timestamp`` (ms), NOT ``messageUuid``.
+
+        ``messages:writeMessage`` already enqueues that ``finishSendingMessage``
+        server-side with ``timestamp: Date.now()`` (see upstream ``convex/messages.ts``),
+        so we do NOT send a second one from here. Doing so previously (a) double-counted
+        ``numMessages`` for Orion's turns and, when sent with the wrong args
+        (``messageUuid`` and no ``timestamp``), (b) poisoned the shared engine: the
+        malformed input built ``lastMessage={author}`` with no timestamp, which fails
+        the ``serializedConversation`` validator in ``saveWorld`` and crashes every
+        ``runStep`` — freezing the whole town until the stale input backlog was purged.
         """
         message_uuid = str(uuid4())
         wid = self._world_id or None
@@ -718,6 +764,8 @@ class EmbodimentWorker:
             args={"playerId": own_player_id, "conversationId": conversation_id, "messageUuid": message_uuid},
             world_id=wid,
         )
+        # writeMessage writes the row AND enqueues the canonical finishSendingMessage
+        # (with a numeric timestamp) itself — this single call advances the turn.
         aitown_client.convex_mutation(
             WRITE_MESSAGE_MUTATION,
             {
@@ -728,9 +776,4 @@ class EmbodimentWorker:
                 "playerId": own_player_id,
                 "text": text,
             },
-        )
-        aitown_client.send_input(
-            name=FINISH_SENDING_MESSAGE_INPUT,
-            args={"playerId": own_player_id, "conversationId": conversation_id, "messageUuid": message_uuid},
-            world_id=wid,
         )

@@ -15,6 +15,10 @@ RUN pip install --no-cache-dir -r requirements.txt && python -m spacy download e
 # Copy shared Orion package
 COPY orion /app/orion
 
+# Runtime policy + world-pulse section config (substrate metabolism + capability act)
+COPY config/autonomy /app/config/autonomy
+COPY config/world_pulse /app/config/world_pulse
+
 # Copy service code
 COPY services/orion-spark-concept-induction /app
 

@@ -60,6 +60,17 @@ class Settings(BaseSettings):
     MEMORY_WINDOW_FALLBACK_GAP_SEC: int = Field(default=5400, alias="MEMORY_WINDOW_FALLBACK_GAP_SEC")
     MEMORY_FAILED_RETRY_INTERVAL_SEC: int = Field(default=1800, alias="MEMORY_FAILED_RETRY_INTERVAL_SEC")
     MEMORY_CLASSIFY_RETRY_INTERVAL_SEC: int = Field(default=120, alias="MEMORY_CLASSIFY_RETRY_INTERVAL_SEC")
+    MEMORY_CONSOLIDATION_OUTPUT: str = Field(
+        default="crystallization_propose", alias="MEMORY_CONSOLIDATION_OUTPUT"
+    )
+    MEMORY_CONSOLIDATION_MIN_NOVELTY: float = Field(default=0.35, alias="MEMORY_CONSOLIDATION_MIN_NOVELTY")
+    MEMORY_CONSOLIDATION_MIN_SIGNIFICANCE: float = Field(
+        default=0.40, alias="MEMORY_CONSOLIDATION_MIN_SIGNIFICANCE"
+    )
+    MEMORY_CONSOLIDATION_FETCH_GRAMMAR_EVIDENCE: bool = Field(
+        default=True, alias="MEMORY_CONSOLIDATION_FETCH_GRAMMAR_EVIDENCE"
+    )
+    MEMORY_CONSOLIDATION_GRAMMAR_DSN: str = Field(default="", alias="MEMORY_CONSOLIDATION_GRAMMAR_DSN")
 
     class Config:
         env_file = ".env"

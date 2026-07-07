@@ -20,6 +20,7 @@ logger = logging.getLogger(settings.SERVICE_NAME)
 
 bus_hunter: Optional[Hunter] = None
 pg_pool: Optional[asyncpg.Pool] = None
+grammar_pg_pool: Optional[asyncpg.Pool] = None
 bus_client: Optional[OrionBusAsync] = None
 _retry_task: Optional[asyncio.Task] = None
 _classify_retry_task: Optional[asyncio.Task] = None
@@ -39,17 +40,25 @@ def _cfg() -> ChassisConfig:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global bus_hunter, pg_pool, bus_client, _retry_task, _classify_retry_task
+    global bus_hunter, pg_pool, grammar_pg_pool, bus_client, _retry_task, _classify_retry_task
 
     dsn = (settings.POSTGRES_URI or "").strip()
     if dsn:
         pg_pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=4)
 
+    grammar_dsn = (settings.MEMORY_CONSOLIDATION_GRAMMAR_DSN or "").strip()
+    if grammar_dsn and grammar_dsn != dsn:
+        grammar_pg_pool = await asyncpg.create_pool(dsn=grammar_dsn, min_size=1, max_size=2)
+
     bus_client = OrionBusAsync(url=settings.ORION_BUS_URL, enabled=settings.ORION_BUS_ENABLED)
     await bus_client.connect()
 
     window_store = WindowStore(pg_pool) if pg_pool is not None else None
-    suggest_runner = ConsolidationSuggestRunner(pg_pool, window_store) if pg_pool and window_store else None
+    suggest_runner = (
+        ConsolidationSuggestRunner(pg_pool, window_store, grammar_pool=grammar_pg_pool or pg_pool)
+        if pg_pool and window_store
+        else None
+    )
 
     async def _handler(env: BaseEnvelope) -> None:
         if not settings.MEMORY_CONSOLIDATION_ENABLED:
@@ -102,6 +111,8 @@ async def lifespan(app: FastAPI):
         await bus_client.close()
     if pg_pool is not None:
         await pg_pool.close()
+    if grammar_pg_pool is not None:
+        await grammar_pg_pool.close()
 
 
 app = FastAPI(title="Orion Memory Consolidation", lifespan=lifespan)

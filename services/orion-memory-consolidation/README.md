@@ -1,6 +1,20 @@
 # Orion Memory Consolidation
 
-Subscribes to `orion:memory:turn:persisted` (sql-writer post-commit outbox), classifies each chat turn via LLM gateway quick lane logprobs, patches `chat_history_log.spark_meta`, tracks consolidation windows, and runs `memory_graph_suggest` on boundary closure.
+Subscribes to `orion:memory:turn:persisted` (sql-writer post-commit outbox), classifies each chat turn via LLM gateway quick lane logprobs, patches `chat_history_log.spark_meta`, tracks consolidation windows, and on boundary closure runs a **deterministic consolidation gate** (default) or legacy graph suggest.
+
+## Consolidation output modes
+
+| `MEMORY_CONSOLIDATION_OUTPUT` | Behavior |
+|-------------------------------|----------|
+| `crystallization_propose` (default) | Run `consolidation_memory_gate`; **skip** low-signal windows (`consolidation_status=skipped`) or **propose** `MemoryCrystallizationV1` for governor review |
+| `graph_draft` | Legacy path: LLM `memory_graph_suggest` + pending graph draft insert (manual bridge only) |
+| `skip_only` | Run gate for traceability; always mark window skipped — no crystallization or graph draft |
+
+Gate thresholds: `MEMORY_CONSOLIDATION_MIN_NOVELTY` (default `0.35`), `MEMORY_CONSOLIDATION_MIN_SIGNIFICANCE` (default `0.40`).
+
+Grammar repair evidence (read-only): `MEMORY_CONSOLIDATION_FETCH_GRAMMAR_EVIDENCE=true` queries `grammar_events` by `hub.chat:{NODE_NAME}:{correlation_id}` trace. Optional override DSN: `MEMORY_CONSOLIDATION_GRAMMAR_DSN`.
+
+**Note:** Proposed crystallization IDs are stored in `memory_consolidation_windows.draft_id` until a dedicated `crystallization_id` column migration lands.
 
 ## Channels
 
@@ -9,6 +23,7 @@ Subscribes to `orion:memory:turn:persisted` (sql-writer post-commit outbox), cla
 | In | `orion:memory:turn:persisted` |
 | Out | `orion:chat:history:spark_meta:patch` |
 | Out (threshold) | `orion:signals:memory_consolidation` (`signal.memory_consolidation.turn_change`) |
+| Out (propose) | `orion:memory:crystallization:proposed` (`memory.crystallization.proposed.v1`) |
 
 ## Turn change appraisal
 
@@ -34,6 +49,7 @@ Apply Postgres migration: `services/orion-sql-db/manual_migration_memory_consoli
 
 ```bash
 PYTHONPATH=. python scripts/smoke_memory_consolidation_pipeline.py
+bash scripts/smoke_memory_consolidation_gate.sh
 ```
 
-Requires live stack (bus, sql-writer, postgres, llm-gateway, cortex).
+Gate smoke runs deterministic unit tests (greeting skip + substantive propose). Pipeline smoke requires live stack (bus, sql-writer, postgres, llm-gateway, cortex).

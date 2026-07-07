@@ -95,13 +95,16 @@ def select_mind_coloring(result: MindRunResultV1, *, max_items: int = 3) -> dict
         }
         for m in selected
     ]
-    curiosity_threads = [_clip(m.summary) for m in selected if str(m.summary).strip()][:max_items]
+    curiosity_threads = [_clip(m.summary) for m in selected if str(m.summary).strip()]
 
     stance_payload = brief.stance_payload if isinstance(brief.stance_payload, dict) else {}
     reflective_themes = _str_list(stance_payload.get("reflective_themes"), max_items=max_items)
-    self_relevance = _clip(stance_payload.get("self_relevance")) if stance_payload.get("self_relevance") else None
-    identity_salience = stance_payload.get("identity_salience") or None
-    juniper_relevance = _clip(stance_payload.get("juniper_relevance")) if stance_payload.get("juniper_relevance") else None
+    _self_rel = stance_payload.get("self_relevance")
+    self_relevance = str(_self_rel).strip()[:_MAX_STR_CHARS] if _self_rel else None
+    _identity_sal = stance_payload.get("identity_salience")
+    identity_salience = str(_identity_sal) if _identity_sal else None
+    _juniper_rel = stance_payload.get("juniper_relevance")
+    juniper_relevance = str(_juniper_rel).strip()[:_MAX_STR_CHARS] if _juniper_rel else None
 
     # No empty-shell cognition: require at least one substantive signal.
     has_substance = bool(

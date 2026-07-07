@@ -144,39 +144,48 @@ async def _maybe_build_mind_coloring(
     *,
     bus: OrionBusAsync | None,
 ) -> dict[str, Any] | None:
-    """Run Mind and select advisory coloring. Fail-open: any None short-circuits."""
+    """Run Mind and select advisory coloring. Fail-open: any error/None short-circuits."""
     if not settings.mind_enrichment_enabled:
         return None
-    mind_req = build_light_mind_request(
-        request,
-        wall_time_ms=settings.mind_wall_ms,
-        router_profile=settings.mind_router_profile,
-    )
-    result = await run_mind_for_thought(
-        mind_req,
-        settings=settings,
-        correlation_id=request.correlation_id,
-    )
-    if result is None:
-        return None
-    coloring = select_mind_coloring(result, max_items=settings.mind_coloring_max_items)
-    if settings.mind_artifact_publish_enabled and bus is not None:
-        await publish_mind_run_artifact_for_thought(
-            bus,
-            source=_source(),
-            request=request,
-            mind_req=mind_req,
-            mind_res=result,
-            channel=settings.channel_mind_artifact,
+    try:
+        mind_req = build_light_mind_request(
+            request,
+            wall_time_ms=settings.mind_wall_ms,
+            router_profile=settings.mind_router_profile,
         )
-    logger.info(
-        "mind_enrichment corr=%s mind_run_id=%s quality=%s coloring=%s",
-        request.correlation_id,
-        result.mind_run_id,
-        result.brief.mind_quality,
-        "fired" if coloring else "skipped",
-    )
-    return coloring
+        result = await run_mind_for_thought(
+            mind_req,
+            settings=settings,
+            correlation_id=request.correlation_id,
+        )
+        if result is None:
+            return None
+        coloring = select_mind_coloring(result, max_items=settings.mind_coloring_max_items)
+        if settings.mind_artifact_publish_enabled and bus is not None:
+            await publish_mind_run_artifact_for_thought(
+                bus,
+                source=_source(),
+                request=request,
+                mind_req=mind_req,
+                mind_res=result,
+                channel=settings.channel_mind_artifact,
+            )
+        logger.info(
+            "mind_enrichment corr=%s mind_run_id=%s quality=%s coloring=%s",
+            request.correlation_id,
+            result.mind_run_id,
+            result.brief.mind_quality,
+            "fired" if coloring else "skipped",
+        )
+        return coloring
+    except Exception as exc:  # noqa: BLE001 — enrichment must never fail the turn
+        logger.warning(
+            "mind_enrichment_failed corr=%s reason=%s err=%s",
+            request.correlation_id,
+            type(exc).__name__,
+            exc,
+        )
+        return None
 
 
 async def run_stance_react(

@@ -112,3 +112,28 @@ async def test_enrichment_enabled_meaningful_injects_coloring(monkeypatch):
         "reflective_themes": ["continuity"],
     }
     assert thought.imperative == "Stay present with Juniper."
+
+
+@pytest.mark.asyncio
+async def test_enrichment_selector_raises_fails_open(monkeypatch):
+    monkeypatch.setenv("ORION_THOUGHT_MIND_ENRICHMENT_ENABLED", "true")
+    import app.settings as s
+    importlib.reload(s)
+    import app.mind_enrichment as me
+    importlib.reload(me)
+    import app.bus_listener as bl
+    importlib.reload(bl)
+
+    async def _mind(*_a, **_k):
+        return object()  # non-None so the selector is reached
+
+    def _boom_selector(*_a, **_k):
+        raise RuntimeError("selector blew up")
+
+    monkeypatch.setattr(bl, "run_mind_for_thought", _mind)
+    monkeypatch.setattr(bl, "select_mind_coloring", _boom_selector)
+
+    client = _FakeCortexClient({"final_text": _stance_json(), "metadata": {}})
+    thought = await bl.run_stance_react(_request(), bus=None, cortex_client=client)
+    assert thought.imperative == "Stay present with Juniper."
+    assert "mind_coloring" not in client.captured_context

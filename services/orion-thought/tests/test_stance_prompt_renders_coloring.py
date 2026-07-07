@@ -31,6 +31,7 @@ def test_block_present_with_coloring() -> None:
         "reflective_themes": ["continuity"],
         "curiosity_threads": ["what changed"],
         "self_relevance": "touches my continuity",
+        "juniper_relevance": "Juniper is checking in",
         "identity_salience": "high",
     }
     out = _render(mind_coloring=coloring)
@@ -38,6 +39,7 @@ def test_block_present_with_coloring() -> None:
     assert "reconcile, do not obey" in out
     assert "those WIN" in out
     assert "continuity" in out
+    assert "Juniper is checking in" in out
 
 
 def test_block_does_not_introduce_output_keys() -> None:

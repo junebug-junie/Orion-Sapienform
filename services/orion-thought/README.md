@@ -44,3 +44,16 @@ Set `ORION_REVERIE_SEMANTIC_LIFT_ENABLED=true` (default `false`) to lift coaliti
 `harness_closure:{corr}` pointers into human `ConcernCardV1` text from
 `substrate_turn_referent` before `reverie_narrate`. Requires referent rows from
 unresolved post-turn closures and routes narration through the background/metacog lane.
+
+## Computed salience v2 (shadow-first)
+
+Flags (default-off): `ORION_ATTENTION_SALIENCE_V2_ENABLED`,
+`ORION_ATTENTION_HABITUATION_ENABLED`, `ORION_ATTENTION_SALIENCE_WEIGHTS` (JSON override).
+
+Shared module: `orion/substrate/attention/salience.py`. When `SALIENCE_V2` is on,
+`score_loop`/`derive_salience` read the combiner salience and the reverie tick
+emits `AttentionSalienceTraceV1` on `orion:attention:salience:trace` (persisted to
+`attention_salience_trace`).
+
+Migrations (apply before enabling):
+`psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_attention_salience_trace.sql`

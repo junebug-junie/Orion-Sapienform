@@ -68,6 +68,21 @@ class Settings(BaseSettings):
     endogenous_curiosity_tick_interval_sec: float = Field(
         60.0, alias="ORION_ENDOGENOUS_CURIOSITY_TICK_INTERVAL_SEC"
     )
+    # Self-tab brain-EKG frame producer. Enabled by default (operator directive).
+    brain_frame_enabled: bool = Field(True, alias="SUBSTRATE_BRAIN_FRAME_ENABLED")
+    brain_frame_interval_sec: float = Field(5.0, alias="BRAIN_FRAME_INTERVAL_SEC")
+    brain_frame_retention_hours: int = Field(24, alias="BRAIN_FRAME_RETENTION_HOURS")
+    brain_frame_sample_nodes: int = Field(40, alias="BRAIN_FRAME_SAMPLE_NODES")
+    brain_frame_sample_edges: int = Field(60, alias="BRAIN_FRAME_SAMPLE_EDGES")
+    brain_frame_firing_threshold: float = Field(0.5, alias="BRAIN_FRAME_FIRING_THRESHOLD")
+    brain_frame_starving_threshold: float = Field(0.1, alias="BRAIN_FRAME_STARVING_THRESHOLD")
+    # A dimension renders stale when generated_at - as_of exceeds its cadence.
+    brain_frame_self_state_cadence_sec: float = Field(
+        30.0, alias="BRAIN_FRAME_SELF_STATE_CADENCE_SEC"
+    )
+    brain_frame_spotlight_cadence_sec: float = Field(
+        30.0, alias="BRAIN_FRAME_SPOTLIGHT_CADENCE_SEC"
+    )
     biometrics_grammar_batch_limit: int = Field(50, alias="BIOMETRICS_GRAMMAR_BATCH_LIMIT")
     execution_grammar_batch_limit: int = Field(100, alias="EXECUTION_GRAMMAR_BATCH_LIMIT")
     transport_grammar_batch_limit: int = Field(500, alias="TRANSPORT_GRAMMAR_BATCH_LIMIT")

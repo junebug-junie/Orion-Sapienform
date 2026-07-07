@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Self Brain</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .hatched { background-image: repeating-linear-gradient(45deg, rgba(148,163,184,.25) 0 4px, transparent 4px 8px); }
+  </style>
+</head>
+<body class="bg-gray-950 text-gray-200 min-h-screen p-3">
+  <div id="warmingBanner" class="hidden mb-2 px-3 py-1.5 rounded bg-amber-900/50 border border-amber-700 text-amber-200 text-xs">
+    Substrate warming — graph has no real activation yet.
+  </div>
+
+  <div class="flex flex-wrap items-center gap-2 mb-2 text-xs">
+    <span class="text-gray-400">Dimension:</span>
+    <div id="dimRail" class="flex flex-wrap gap-1"></div>
+    <span id="brainStatus" class="ml-auto text-gray-500"></span>
+  </div>
+
+  <div class="grid grid-cols-1 xl:grid-cols-3 gap-3">
+    <div class="xl:col-span-2 rounded-xl border border-gray-800 bg-gray-900/40 p-2">
+      <canvas id="brainCanvas" width="720" height="440" class="w-full"></canvas>
+    </div>
+    <div class="rounded-xl border border-gray-800 bg-gray-900/40 p-2">
+      <div class="text-[10px] uppercase tracking-wide text-gray-500 mb-1">Region EKG (loaded window)</div>
+      <canvas id="ekgCanvas" width="360" height="360" class="w-full"></canvas>
+      <div id="ekgLegend" class="mt-2 text-[11px] space-y-0.5"></div>
+    </div>
+  </div>
+
+  <div class="mt-3 rounded-xl border border-gray-800 bg-gray-900/40 p-2">
+    <div class="flex items-center gap-2 text-xs">
+      <button id="liveBtn" class="px-2 py-1 rounded border border-emerald-700 bg-emerald-900/40 text-emerald-200">● LIVE</button>
+      <input id="scrubber" type="range" min="0" max="1000" value="1000" class="flex-1" />
+      <span id="scrubLabel" class="text-gray-400 w-40 text-right">LIVE</span>
+    </div>
+  </div>
+
+  <script src="/static/js/self-brain.js"></script>
+</body>
+</html>

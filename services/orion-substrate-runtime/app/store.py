@@ -599,6 +599,114 @@ class BiometricsSubstrateStore:
                 ),
             )
 
+    def save_brain_frame(self, frame, retention_hours: int = 24) -> None:
+        """Append one brain-frame row per tick; prune rows beyond retention."""
+        now = datetime.now(timezone.utc)
+        payload = frame.model_dump(mode="json")
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_brain_frame_log (
+                        frame_id, tick_seq, generated_at, phase, frame_json, created_at
+                    ) VALUES (
+                        :frame_id, :tick_seq, :generated_at, :phase, :frame_json, :created_at
+                    )
+                    ON CONFLICT (frame_id) DO NOTHING
+                    """
+                ),
+                {
+                    "frame_id": frame.frame_id,
+                    "tick_seq": int(frame.tick_seq),
+                    "generated_at": frame.generated_at,
+                    "phase": frame.phase,
+                    "frame_json": Json(payload),
+                    "created_at": now,
+                },
+            )
+            conn.execute(
+                text(
+                    f"""
+                    DELETE FROM substrate_brain_frame_log
+                    WHERE generated_at < now() - interval '{int(retention_hours)} hours'
+                    """
+                ),
+            )
+
+    def load_brain_frames_tail(self, limit: int = 1) -> list[dict]:
+        """Return the most-recent N frame payloads, ascending by generated_at."""
+        limit = max(1, min(int(limit), 120))
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT frame_json FROM substrate_brain_frame_log
+                    ORDER BY generated_at DESC LIMIT :limit
+                    """
+                ),
+                {"limit": limit},
+            ).mappings().all()
+        frames = [self._coerce_frame_json(r["frame_json"]) for r in rows]
+        frames.reverse()
+        return frames
+
+    def load_brain_frames_range(self, start, end, max_frames: int = 240) -> list[dict]:
+        """Return frames in [start, end], downsampled to at most max_frames, ascending."""
+        max_frames = max(1, min(int(max_frames), 2000))
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT frame_json FROM substrate_brain_frame_log
+                    WHERE generated_at >= :start AND generated_at <= :end
+                    ORDER BY generated_at ASC
+                    """
+                ),
+                {"start": start, "end": end},
+            ).mappings().all()
+        frames = [self._coerce_frame_json(r["frame_json"]) for r in rows]
+        if len(frames) <= max_frames:
+            return frames
+        step = len(frames) / max_frames
+        return [frames[int(i * step)] for i in range(max_frames)]
+
+    def brain_frame_window(self) -> dict:
+        """Return retention bounds + earliest/latest frame ts + current phase."""
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT
+                      min(generated_at) AS earliest,
+                      max(generated_at) AS latest,
+                      count(*) AS n
+                    FROM substrate_brain_frame_log
+                    """
+                ),
+            ).mappings().first()
+            phase_row = conn.execute(
+                text(
+                    """
+                    SELECT phase FROM substrate_brain_frame_log
+                    ORDER BY generated_at DESC LIMIT 1
+                    """
+                ),
+            ).mappings().first()
+        earliest = row["earliest"] if row else None
+        latest = row["latest"] if row else None
+        return {
+            "earliest": earliest.isoformat() if hasattr(earliest, "isoformat") else earliest,
+            "latest": latest.isoformat() if hasattr(latest, "isoformat") else latest,
+            "frame_count": int(row["n"]) if row else 0,
+            "phase": (phase_row["phase"] if phase_row else None),
+        }
+
+    @staticmethod
+    def _coerce_frame_json(value):
+        if isinstance(value, str):
+            return json.loads(value)
+        return value
+
     def load_node_biometrics(self, projection_id: str) -> NodeBiometricsProjectionV1 | None:
         return self._load_projection(
             "substrate_node_biometrics_projection",

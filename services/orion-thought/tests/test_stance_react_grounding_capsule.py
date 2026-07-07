@@ -74,3 +74,16 @@ async def test_run_stance_react_no_capsule_when_metadata_absent() -> None:
         _request(), bus=None, cortex_client=_FakeCortexClient(exec_result)
     )
     assert thought.grounding_capsule is None
+
+
+@pytest.mark.asyncio
+async def test_run_stance_react_no_capsule_when_metadata_malformed() -> None:
+    exec_result = {
+        "final_text": _stance_json(),
+        "metadata": {"grounding_capsule": {"identity_summary": "not-a-list"}},
+        "request_id": "c-1",
+    }
+    thought = await run_stance_react(
+        _request(), bus=None, cortex_client=_FakeCortexClient(exec_result)
+    )
+    assert thought.grounding_capsule is None

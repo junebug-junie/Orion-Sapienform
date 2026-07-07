@@ -16,6 +16,11 @@ from orion.schemas.self_state import SelfStateV1
 from orion.schemas.vector.schemas import VectorWriteRequest
 
 from .audit import build_drive_audit
+from .drive_attribution import (
+    compute_tick_attribution,
+    dominant_drive_from_attribution,
+    select_lead_tension,
+)
 from .drives import DriveEngine, DriveMathConfig, drive_state_from_values
 from .dossier import build_evidence_items, build_source_event_ref, build_turn_dossier, extract_trace_id, extract_turn_id
 from orion.autonomy.episode_journal import dispatch_autonomy_episode_journal
@@ -533,6 +538,7 @@ class ConceptWorker:
             published_artifacts.append(tension)
 
         metabolism_tensions: List[TensionEventV1] = []
+        metabolism_drive_deltas: dict[str, float] = {}
         metabolism_curiosity_signals: List[FrontierInvocationSignalV1] = []
         metabolism_curiosity_notes: List[str] = []
         spawned_correlation_id: str | None = None
@@ -543,6 +549,7 @@ class ConceptWorker:
                 if metabolism_enabled():
                     metabolism = metabolize_substrate_signals(world_pulse_result=wp_result)
                     metabolism_tensions = list(metabolism.tensions)
+                    metabolism_drive_deltas = dict(metabolism.drive_deltas)
                     metabolism_curiosity_signals = list(metabolism.curiosity_signals)
                     metabolism_curiosity_notes = [
                         str(sig.evidence_summary or "").strip()
@@ -618,7 +625,23 @@ class ConceptWorker:
         )
         await self._publish_drive_state(drive_state, env.correlation_id)
 
-        drive_audit = build_drive_audit(env=env, intake_channel=intake_channel, drive_state=drive_state, tensions=all_tensions)
+        tick_attribution = compute_tick_attribution(
+            all_tensions,
+            metabolism_deltas=metabolism_drive_deltas or None,
+        )
+        lead_tension = select_lead_tension(all_tensions)
+        dominant_drive = dominant_drive_from_attribution(
+            tick_attribution,
+            lead_tension=lead_tension,
+        )
+        drive_audit = build_drive_audit(
+            env=env,
+            intake_channel=intake_channel,
+            drive_state=drive_state,
+            tensions=all_tensions,
+            tick_attribution=tick_attribution,
+            dominant_drive=dominant_drive,
+        )
         await self._publish_artifact(drive_audit, self.cfg.drive_audit_channel, env.correlation_id)
         published_artifacts.append(drive_audit)
 

@@ -531,7 +531,7 @@ PYTHONPATH=services/orion-hub:. python services/orion-hub/scripts/verify_agent_c
 
 ### fcc-claude MCP (GitHub + Firecrawl + AI Town)
 
-When `HUB_AGENT_CLAUDE_MCP_ENABLED=true`, each agent-claude turn renders an ephemeral MCP config from `config/fcc_claude_mcp.template.json` and passes `--mcp-config` + `--allowedTools mcp__*` to `claude -p`. Secrets live in operator `~/.fcc/.env` (not Hub `.env`):
+When `HUB_AGENT_CLAUDE_MCP_ENABLED=true`, each agent-claude turn renders an ephemeral MCP config from `config/fcc_claude_mcp.template.json` and passes `--mcp-config` + per-server `--allowedTools` (e.g. `mcp__github`, `mcp__firecrawl`) and `--disallowedTools Bash(gh *)` to `claude -p`. Secrets live in operator `~/.fcc/.env` (not Hub `.env`):
 
 | Key | Required | Purpose |
 |-----|----------|---------|

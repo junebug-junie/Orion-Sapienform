@@ -100,6 +100,9 @@ class HarnessPostTurnClosureV1(BaseModel):
     grammar_event_ids: list[str] = Field(default_factory=list)
     surprise_unresolved: bool
     closure_source: Literal["harness_post_turn_appraisal"] = "harness_post_turn_appraisal"
+    user_message_excerpt: str = Field(default="", max_length=300)
+    stance_imperative: str = Field(default="", max_length=300)
+    thought_event_id: str | None = None
 
 
 class HarnessRepairOverlayV1(BaseModel):

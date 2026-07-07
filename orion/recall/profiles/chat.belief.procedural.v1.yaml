@@ -1,0 +1,22 @@
+profile: chat.belief.procedural.v1
+enable_vector: false
+vector_top_k: 0
+rdf_top_k: 0
+enable_rdf: false
+cards_top_k: 6
+enable_sql_timeline: false
+sql_chat_top_k: 0
+max_per_source: 4
+max_total_items: 6
+render_budget_tokens: 96
+render_lane: belief
+filters:
+  prefer_tags:
+    - "procedure:"
+    - "kind:procedure"
+  prefer_tags_boost: 0.2
+relevance:
+  backend_weights:
+    active_packet: 1.0
+    cards: 0.65
+  enable_recency: false

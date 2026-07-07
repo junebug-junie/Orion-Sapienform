@@ -12,6 +12,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
+from orion.fcc.claude_spawn import claude_permission_argv, extend_mcp_argv
+
 logger = logging.getLogger("orion.harness.fcc_motor")
 
 DEFAULT_STREAM_READ_LIMIT = 8 * 1024 * 1024
@@ -259,10 +261,13 @@ async def run_fcc_turn(
         model_id,
     ]
     if mcp_config_path is not None:
-        argv.extend(["--mcp-config", str(mcp_config_path), "--allowedTools", "mcp__*"])
+        extend_mcp_argv(argv, mcp_config_path)
     if _should_skip_claude_permissions():
-        model_idx = argv.index("--model")
-        argv.insert(model_idx, "--dangerously-skip-permissions")
+        perm = claude_permission_argv(auto_approve=True)
+        if perm:
+            model_idx = argv.index("--model")
+            for offset, token in enumerate(perm):
+                argv.insert(model_idx + offset, token)
 
     started = time.monotonic()
     proc: Optional[asyncio.subprocess.Process] = None

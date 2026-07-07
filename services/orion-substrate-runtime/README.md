@@ -138,3 +138,8 @@ Post-turn closure logs `post_turn_closure received …` on ingest. When
 `surprise_unresolved=true`, it attempts a rung-1 prediction-error graph write only if
 `SUBSTRATE_WRITE_PREDICTION_ERROR_NODES=true` (logs `post_turn_closure_prediction_error_write`
 or `…_skipped` otherwise). Full Task 21 strain reducers are not implemented here.
+
+**Reverie semantic lift:** unresolved closures also upsert human referent rows into
+`substrate_turn_referent` via `turn_referent_store.persist_turn_referent`. Apply
+`services/orion-sql-db/manual_migration_substrate_turn_referent_v1.sql` before enabling
+`ORION_REVERIE_SEMANTIC_LIFT_ENABLED` on orion-thought.

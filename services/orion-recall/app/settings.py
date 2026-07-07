@@ -208,6 +208,40 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("RECALL_RENDER_BUDGET_INDICATOR"),
     )
 
+    # ── Purpose-conditioned recall (PCR) ──────────────────────────────
+    RECALL_PCR_ENABLED: bool = Field(default=True, validation_alias=AliasChoices("RECALL_PCR_ENABLED"))
+    RECALL_SKIP_MAX_NOVELTY: float = Field(
+        default=0.25, validation_alias=AliasChoices("RECALL_SKIP_MAX_NOVELTY")
+    )
+    RECALL_CONTINUITY_SQL_MINUTES: int = Field(
+        default=120, validation_alias=AliasChoices("RECALL_CONTINUITY_SQL_MINUTES")
+    )
+    RECALL_CONTINUITY_RENDER_BUDGET: int = Field(
+        default=96, validation_alias=AliasChoices("RECALL_CONTINUITY_RENDER_BUDGET")
+    )
+    RECALL_ACTIVE_PACKET_ENABLED: bool = Field(
+        default=True, validation_alias=AliasChoices("RECALL_ACTIVE_PACKET_ENABLED")
+    )
+    RECALL_BELIEF_RENDER_BUDGET: int = Field(
+        default=128, validation_alias=AliasChoices("RECALL_BELIEF_RENDER_BUDGET")
+    )
+    RECALL_GRAPHITI_IN_CHAT: bool = Field(
+        default=False, validation_alias=AliasChoices("RECALL_GRAPHITI_IN_CHAT")
+    )
+    RECALL_GRAPHITI_ADAPTER_URL: Optional[str] = Field(
+        default=None, validation_alias=AliasChoices("RECALL_GRAPHITI_ADAPTER_URL")
+    )
+    RECALL_GRAPHITI_FALKORDB_URI: Optional[str] = Field(
+        default=None, validation_alias=AliasChoices("RECALL_GRAPHITI_FALKORDB_URI")
+    )
+    RECALL_GRAPHITI_TIMEOUT_SEC: float = Field(
+        default=10.0, validation_alias=AliasChoices("RECALL_GRAPHITI_TIMEOUT_SEC")
+    )
+    RECALL_CRYSTALLIZATION_VECTOR_COLLECTION: str = Field(
+        default="orion_memory_crystallizations",
+        validation_alias=AliasChoices("RECALL_CRYSTALLIZATION_VECTOR_COLLECTION"),
+    )
+
     # ── RDF / GraphDB (recall-specific) ───────────────────────────────
     RECALL_RDF_ENDPOINT_URL: Optional[str] = Field(default=None, validation_alias=AliasChoices("RECALL_RDF_ENDPOINT_URL"))
     RECALL_RDF_QUERY_URL: Optional[str] = Field(default=None, validation_alias=AliasChoices("RECALL_RDF_QUERY_URL"))

@@ -8,6 +8,7 @@ _BACKGROUND_VERBS = frozenset(
         "dream_cycle",
         "dream_synthesis",
         "log_orion_metacognition",
+        "reverie_narrate",
     }
 )
 

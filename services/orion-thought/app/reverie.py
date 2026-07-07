@@ -23,9 +23,16 @@ from uuid import UUID, uuid4
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.reverie.referent_loader import default_referent_loader
+from orion.reverie.semantic_lift import (
+    coalition_audit_refs,
+    enforce_semantic_quality,
+    resolve_concern_cards,
+    reverie_semantic_gate,
+)
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
-from orion.schemas.reverie import SpontaneousThoughtV1
+from orion.schemas.reverie import ConcernCardV1, SpontaneousThoughtV1
 from orion.schemas.thought import CoalitionSnapshotV1
 
 from .bus_listener import extract_stance_react_payload
@@ -121,7 +128,22 @@ def _open_loops_for_prompt(broadcast: AttentionBroadcastProjectionV1) -> list[di
     ]
 
 
-def build_reverie_context(broadcast: AttentionBroadcastProjectionV1) -> dict[str, Any]:
+def build_reverie_context(
+    broadcast: AttentionBroadcastProjectionV1,
+    *,
+    concern_cards: list[ConcernCardV1] | None = None,
+) -> dict[str, Any]:
+    if concern_cards:
+        coalition_refs = coalition_audit_refs(broadcast)
+        return {
+            "user_message": None,
+            "concern_cards": [c.model_dump(mode="json") for c in concern_cards],
+            "coalition_refs": coalition_refs,
+            "metadata": {"mode": "metacog", "llm_profile": "metacog"},
+            "mode": "metacog",
+            "llm_route": "metacog",
+            "options": {"llm_lane": "background", "allow_chat_fallback": False},
+        }
     return {
         "user_message": None,  # the defining difference from stance_react
         "coalition_projection": {
@@ -143,16 +165,26 @@ def build_reverie_plan_request(
     broadcast: AttentionBroadcastProjectionV1,
     *,
     correlation_id: str,
+    concern_cards: list[ConcernCardV1] | None = None,
 ) -> PlanExecutionRequest:
-    plan = build_plan_for_verb("reverie_narrate", mode="brain")
+    use_lift = settings.reverie_semantic_lift_enabled and bool(concern_cards)
+    mode = "metacog" if use_lift else "brain"
+    plan = build_plan_for_verb("reverie_narrate", mode=mode)
+    extra: dict[str, Any] = {
+        "llm_profile": mode,
+        "mode": "metacog" if use_lift else "reverie",
+    }
+    if use_lift:
+        extra["llm_route"] = "metacog"
+        extra["execution_lane"] = "background"
     return PlanExecutionRequest(
         plan=plan,
         args=PlanExecutionArgs(
             request_id=correlation_id,
             trigger_source=settings.service_name,
-            extra={"llm_profile": "brain", "mode": "reverie"},
+            extra=extra,
         ),
-        context=build_reverie_context(broadcast),
+        context=build_reverie_context(broadcast, concern_cards=concern_cards),
     )
 
 
@@ -229,9 +261,28 @@ async def run_reverie_once(
         return None
 
     correlation_id = str(uuid4())
-    client = cortex_client or CortexExecClient(bus)
+    concern_cards: list[ConcernCardV1] | None = None
+    if settings.reverie_semantic_lift_enabled:
+        loader = default_referent_loader(max_age_hours=settings.reverie_referent_max_age_hours)
+        concern_cards = resolve_concern_cards(broadcast, referent_loader=loader)
+        if reverie_semantic_gate(concern_cards) == "skip":
+            logger.info("reverie tick skipped: reverie_skipped_no_semantic_referent")
+            return None
+
+    client = cortex_client or CortexExecClient(
+        bus,
+        request_channel=(
+            settings.channel_reverie_cortex_exec_request
+            if settings.reverie_semantic_lift_enabled
+            else settings.channel_cortex_exec_request
+        ),
+    )
     try:
-        plan_request = build_reverie_plan_request(broadcast, correlation_id=correlation_id)
+        plan_request = build_reverie_plan_request(
+            broadcast,
+            correlation_id=correlation_id,
+            concern_cards=concern_cards,
+        )
         exec_result = await client.execute_plan(
             source=_source(),
             req=plan_request,
@@ -246,6 +297,9 @@ async def run_reverie_once(
             correlation_id=correlation_id,
             broadcast=broadcast,
         )
+        if settings.reverie_semantic_lift_enabled and concern_cards:
+            thought = enforce_semantic_quality(thought, concern_cards)
+            thought = thought.model_copy(update={"llm_profile": "metacog"})
         if chain_context is not None:
             thought = thought.model_copy(
                 update={"chain_id": chain_context[0], "thought_index": chain_context[1]}

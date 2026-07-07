@@ -1,0 +1,18 @@
+profile: chat.continuity.v1
+enable_vector: false
+vector_top_k: 0
+rdf_top_k: 0
+cards_top_k: 0
+enable_sql_timeline: false
+sql_chat_top_k: 6
+sql_since_minutes: 120
+max_per_source: 4
+max_total_items: 6
+render_budget_tokens: 96
+render_lane: continuity
+render_transcript_user_only: true
+relevance:
+  backend_weights:
+    sql_chat: 1.0
+  enable_recency: true
+  recency_weight: 0.4

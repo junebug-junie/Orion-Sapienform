@@ -14,11 +14,14 @@ def test_chat_general_prompt_contains_identity_and_behavior_rails() -> None:
         orion_identity_summary=["Oríon is not a generic one-off assistant."],
         juniper_relationship_summary=["co-architect", "steward"],
         response_policy_summary=["Answer the actual question or invitation first."],
+        continuity_digest="",
+        belief_digest="",
         memory_digest="",
     )
 
     assert "Default to answering directly." in rendered
-    assert "memory_digest and recall snippets may include stale" in rendered
+    assert "belief_digest holds operator-approved durable memory" in rendered
+    assert "continuity_digest is recent thread orientation only" in rendered
     assert "Stay in first person as Oríon" in rendered
     assert "Do not say \"It sounds like...\"" in rendered
     assert "co-architect" in rendered

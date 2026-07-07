@@ -69,3 +69,43 @@ async def test_post_turn_closure_emits_prediction_error_signal() -> None:
     assert closure.surprise_unresolved is True
     assert closure.outcome_molecule_id
     assert closure.verdict_molecule_id == "verdict-2"
+
+
+def _excerpt(text: str, max_len: int = 300) -> str:
+    t = (text or "").strip()
+    return t[:max_len] if len(t) > max_len else t
+
+
+@pytest.mark.asyncio
+async def test_emit_post_turn_closure_includes_referent_excerpts_when_unresolved() -> None:
+    thought = make_thought()
+    thought = thought.model_copy(update={"imperative": "Hold the line on scope."})
+    appraisal = make_appraisal(surprise_level=0.9)
+    reflection = make_reflection(
+        alignment_verdict="misaligned",
+        strain_unresolved=True,
+        imperative="Hold the line on scope.",
+    )
+    verdict = await emit_verdict_molecule(correlation_id="c-ref", reflection=reflection)
+    outcome = await emit_turn_outcome_molecule(
+        correlation_id="c-ref",
+        thought=thought,
+        substrate_appraisal=appraisal,
+        reflection=reflection,
+        verdict_molecule=verdict,
+        draft_text="draft",
+        final_text="done",
+        finalize_changed=True,
+    )
+    closure = await emit_post_turn_closure(
+        correlation_id="c-ref",
+        outcome_molecule=outcome,
+        verdict_molecule_id="verdict-ref",
+        user_message="Can we ship Friday without cutting tests?",
+        thought_event=thought,
+        reflection_imperative=reflection.imperative,
+    )
+    assert closure.surprise_unresolved is True
+    assert closure.user_message_excerpt == _excerpt("Can we ship Friday without cutting tests?")
+    assert closure.stance_imperative == _excerpt("Hold the line on scope.")
+    assert closure.thought_event_id == thought.event_id

@@ -42,6 +42,13 @@ def test_dream_verb_background_lane() -> None:
     assert out["llm_lane"] == "background"
 
 
+def test_reverie_narrate_verb_background_lane() -> None:
+    step = SimpleNamespace(verb_name="reverie_narrate", step_name="llm_reverie_narrate")
+    out = resolve_llm_lane_for_step(step=step, ctx={}, settings=_settings())
+    assert out["llm_lane"] == "background"
+    assert out["allow_chat_fallback"] is False
+
+
 def test_spark_lane_allow_chat_fallback_from_options() -> None:
     step = SimpleNamespace(verb_name="introspect_spark", step_name="llm_introspect_spark")
     out = resolve_llm_lane_for_step(

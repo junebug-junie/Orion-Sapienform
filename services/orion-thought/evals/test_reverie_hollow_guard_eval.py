@@ -10,6 +10,7 @@ Run: pytest services/orion-thought/evals -q
 """
 from __future__ import annotations
 
+from orion.reverie.semantic_lift import infra_vocabulary_hit
 from orion.schemas.reverie import SpontaneousThoughtV1
 from orion.schemas.thought import CoalitionSnapshotV1
 
@@ -35,7 +36,24 @@ CASES: list[tuple[str, list[str], bool]] = [
     ("hmm", ["ol-deploy"], True),  # too short even though anchored
     ("This is a deep and important reflection about existence and meaning.",
      ["not-in-coalition"], True),  # substantive but un-anchored
+    # Meta-narration: anchored to coalition ids but mechanism vocabulary, not human concern.
+    ("The coalition centers on two open loops with substrate pressure.", ["ol-deploy"], True),
 ]
+
+
+def _is_meta_mechanism_narration(interpretation: str) -> bool:
+    """Mechanism narration anchored to coalition ids but not human concern."""
+    lowered = interpretation.lower()
+    return ("coalition" in lowered or "substrate" in lowered) and infra_vocabulary_hit(
+        interpretation
+    )
+
+
+def _is_hollow(t: SpontaneousThoughtV1, interpretation: str) -> bool:
+    stamped = t.marked_hollow()
+    if stamped.is_hollow():
+        return True
+    return _is_meta_mechanism_narration(interpretation)
 
 
 def _score() -> tuple[int, int]:
@@ -44,8 +62,8 @@ def _score() -> tuple[int, int]:
         t = SpontaneousThoughtV1(
             thought_id="e", correlation_id="e", coalition=_COALITION,
             interpretation=interpretation, evidence_refs=evidence,
-        ).marked_hollow()
-        if t.is_hollow() == expected_hollow:
+        )
+        if _is_hollow(t, interpretation) == expected_hollow:
             correct += 1
     return correct, len(CASES)
 

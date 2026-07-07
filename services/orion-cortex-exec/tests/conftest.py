@@ -65,3 +65,4 @@ def pytest_sessionstart(session):
     settings.llm_chat_quick_max_tokens = 384
     settings.llm_chat_general_max_tokens = 768
     settings.llm_chat_fallback_max_tokens = 512
+    settings.chat_pcr_enabled = False

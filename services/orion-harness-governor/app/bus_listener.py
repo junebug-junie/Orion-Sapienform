@@ -156,6 +156,9 @@ async def handle_harness_run_request(
         outcome_molecule=chain.outcome_molecule,
         verdict_molecule_id=chain.verdict_molecule_id,
         grammar_event_ids=run.grammar_event_ids,
+        user_message=request.user_message,
+        thought_event=request.thought_event,
+        reflection_imperative=chain.reflection.imperative,
         channel=settings.channel_post_turn_closure,
         bus=bus,
     )

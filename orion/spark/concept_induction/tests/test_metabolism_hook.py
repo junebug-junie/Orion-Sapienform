@@ -135,16 +135,10 @@ async def test_metabolism_enriches_goal_window_summary(monkeypatch) -> None:
 async def test_policy_fetch_runs_after_goal_publish(monkeypatch) -> None:
     monkeypatch.setenv("ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED", "true")
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
-    episode_mock = AsyncMock(return_value=(MagicMock(outcome="allowed", auto_execute=True), {"write": {}}))
-    fetch_outcome = MagicMock(success=True)
-    policy_mock = AsyncMock(return_value=(MagicMock(outcome="allowed", auto_execute=True), fetch_outcome))
+    substrate_act_mock = AsyncMock(return_value=MagicMock(fetch_attempted=True))
     monkeypatch.setattr(
-        "orion.spark.concept_induction.bus_worker.maybe_execute_readonly_fetch_after_goal",
-        policy_mock,
-    )
-    monkeypatch.setattr(
-        "orion.spark.concept_induction.bus_worker.maybe_compose_autonomy_episode_after_fetch",
-        episode_mock,
+        "orion.spark.concept_induction.bus_worker.maybe_execute_substrate_act_after_metabolism",
+        substrate_act_mock,
     )
     cfg = ConceptSettings()
     cfg.autonomy_episode_journal_enabled = True
@@ -174,8 +168,35 @@ async def test_policy_fetch_runs_after_goal_publish(monkeypatch) -> None:
 
     await worker.handle_envelope(_world_pulse_envelope(), "orion:world_pulse:run:result")
 
-    policy_mock.assert_awaited_once()
-    call_kwargs = policy_mock.await_args.kwargs
+    substrate_act_mock.assert_awaited_once()
+    call_kwargs = substrate_act_mock.await_args.kwargs
     assert call_kwargs["spawned_correlation_id"] == "wp-run-hook"
-    assert call_kwargs["goal"] is proposal
-    episode_mock.assert_awaited_once()
+    assert call_kwargs["episode_journal_enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_substrate_act_runs_when_goal_suppressed(monkeypatch) -> None:
+    monkeypatch.setenv("ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED", "true")
+    substrate_act_mock = AsyncMock(return_value=MagicMock(fetch_attempted=True))
+    monkeypatch.setattr(
+        "orion.spark.concept_induction.bus_worker.maybe_execute_substrate_act_after_metabolism",
+        substrate_act_mock,
+    )
+    cfg = ConceptSettings()
+    worker = ConceptWorker(cfg)
+    worker.store = MagicMock()
+    worker.store.load_drive_state.return_value = {}
+    worker.drive_engine.update = MagicMock(return_value=({"predictive": 0.2}, {"predictive": False}))
+    worker._publish_tension_event = AsyncMock(return_value=None)
+    worker._publish_drive_state = AsyncMock(return_value=None)
+    worker._publish_artifact = AsyncMock(return_value=None)
+    worker._publish_dossier = AsyncMock(return_value=None)
+    worker.goal_engine.propose = MagicMock(
+        return_value=MagicMock(proposal=None, suppressed_signature="sig-cooldown")
+    )
+
+    await worker.handle_envelope(_world_pulse_envelope(), "orion:world_pulse:run:result")
+
+    substrate_act_mock.assert_awaited_once()
+    call_kwargs = substrate_act_mock.await_args.kwargs
+    assert call_kwargs["spawned_correlation_id"] == "wp-run-hook"

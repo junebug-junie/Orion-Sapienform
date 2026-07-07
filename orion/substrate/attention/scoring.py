@@ -5,6 +5,7 @@ from typing import Any
 
 from orion.schemas.attention_frame import AttentionSignalV1, OpenLoopV1
 from orion.substrate.attention.common import bounded, compact, stable_id
+from orion.substrate.attention.salience import SalienceHistory, compute_salience
 
 _EMOTION_RE = re.compile(r"\b(frustrated|pissed|worried|excited|afraid|stuck|blocked|confused|love|hate|urgent)\b", re.I)
 _PLAN_RE = re.compile(r"\b(plan|planning|going to|tomorrow|next|later|schedule|deadline|future)\b", re.I)
@@ -76,6 +77,7 @@ def build_open_loops(
     generic_reversal: bool,
     stale_thread_active: bool,
     max_open: int,
+    history: "SalienceHistory | None" = None,
 ) -> list[OpenLoopV1]:
     user_text = compact(ctx.get("user_message") or ctx.get("raw_user_text") or "", 600)
     known = known_blob(inputs, ctx)
@@ -94,39 +96,48 @@ def build_open_loops(
         askability = 0.5 if direct_turn else 0.72
         if generic_reversal or stale_thread_active:
             askability = min(askability, 0.25)
-        loops.append(
-            OpenLoopV1(
-                id=stable_id("open-loop", phrase.lower()),
-                target_type=target_type,  # type: ignore[arg-type]
-                description=phrase,
-                source_text=user_text,
-                source_refs=list(signal.evidence_refs or ["ctx.user_message"]),
-                why_it_matters="novel or unresolved current-turn target with substrate pressure" if not already_known else "current-turn target overlaps known context",
-                novelty=bounded(novelty),
-                continuity_relevance=bounded(continuity),
-                relational_relevance=bounded(relational),
-                predictive_value=bounded(predictive),
-                concept_value=bounded(concept_value),
-                autonomy_value=autonomy_value,
-                emotional_charge=bounded(emotional),
-                already_known=already_known,
-                askability=bounded(askability),
-                confidence=bounded(max(signal.confidence, 0.58 if already_known else 0.72)),
-                provenance={
-                    "extractor": "attention_signal_pipeline_v1",
-                    "signal_id": signal.signal_id,
-                    "signal_source": signal.source,
-                    "signal_kind": signal.signal_kind,
-                    "belief_lineage": list(belief_lineage or [])[:8],
-                    "autonomy_signals": autonomy_signals,
-                    **dict(signal.provenance or {}),
-                },
-            )
+        loop = OpenLoopV1(
+            id=stable_id("open-loop", phrase.lower()),
+            target_type=target_type,  # type: ignore[arg-type]
+            description=phrase,
+            source_text=user_text,
+            source_refs=list(signal.evidence_refs or ["ctx.user_message"]),
+            why_it_matters="novel or unresolved current-turn target with substrate pressure" if not already_known else "current-turn target overlaps known context",
+            novelty=bounded(novelty),
+            continuity_relevance=bounded(continuity),
+            relational_relevance=bounded(relational),
+            predictive_value=bounded(predictive),
+            concept_value=bounded(concept_value),
+            autonomy_value=autonomy_value,
+            emotional_charge=bounded(emotional),
+            already_known=already_known,
+            askability=bounded(askability),
+            confidence=bounded(max(signal.confidence, 0.58 if already_known else 0.72)),
+            provenance={
+                "extractor": "attention_signal_pipeline_v1",
+                "signal_id": signal.signal_id,
+                "signal_source": signal.source,
+                "signal_kind": signal.signal_kind,
+                "belief_lineage": list(belief_lineage or [])[:8],
+                "autonomy_signals": autonomy_signals,
+                **dict(signal.provenance or {}),
+            },
         )
+        # Always compute + attach the evidence-derived salience features so shadow
+        # traces are real even when the v2 flag is off. score_loop decides whether
+        # to consume this value or the legacy weighted sum.
+        loop_history = history or SalienceHistory()
+        sal, feats = compute_salience(loop=loop, signals=[signal], history=loop_history)
+        loop = loop.model_copy(update={"salience": sal, "salience_features": feats.model_dump(mode="json")})
+        loops.append(loop)
     return loops
 
 
 def score_loop(loop: OpenLoopV1) -> float:
+    from orion.substrate.attention.salience import salience_v2_enabled
+
+    if salience_v2_enabled():
+        return bounded(float(loop.salience))
     raw = (
         loop.novelty * 0.2
         + loop.continuity_relevance * 0.13

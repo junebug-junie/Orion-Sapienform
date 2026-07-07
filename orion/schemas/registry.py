@@ -535,7 +535,12 @@ from orion.schemas.thought import (
     StanceReactRequestV1,
     ThoughtEventV1,
 )
-from orion.schemas.attention_frame import AttentionFrameV1, AttentionSignalV1
+from orion.schemas.attention_frame import AttentionFrameV1, AttentionSignalV1, SalienceFeaturesV1
+from orion.schemas.attention_salience import (
+    AttentionLoopOutcomeV1,
+    AttentionSalienceTraceV1,
+    PendingAttentionCardV1,
+)
 from orion.schemas.chat_stance import ChatStanceBrief
 from orion.schemas.situation import (
     AgendaContextV1,
@@ -759,6 +764,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "AutoDepthDecisionV1": AutoDepthDecisionV1,
     "AttentionFrameV1": AttentionFrameV1,
     "AttentionSignalV1": AttentionSignalV1,
+    "SalienceFeaturesV1": SalienceFeaturesV1,
+    "AttentionSalienceTraceV1": AttentionSalienceTraceV1,
+    "AttentionLoopOutcomeV1": AttentionLoopOutcomeV1,
+    "PendingAttentionCardV1": PendingAttentionCardV1,
     "ChatStanceBrief": ChatStanceBrief,
     "RequestorContextV1": RequestorContextV1,
     "PresenceCompanionV1": PresenceCompanionV1,
@@ -1291,6 +1300,18 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "ActionOutcomeEmitV1": SchemaRegistration(
         model=ActionOutcomeEmitV1,
         kind="action.outcome.emit.v1",
+    ),
+    "AttentionSalienceTraceV1": SchemaRegistration(
+        model=AttentionSalienceTraceV1,
+        kind="attention.salience.trace.v1",
+    ),
+    "AttentionLoopOutcomeV1": SchemaRegistration(
+        model=AttentionLoopOutcomeV1,
+        kind="attention.loop.outcome.v1",
+    ),
+    "PendingAttentionCardV1": SchemaRegistration(
+        model=PendingAttentionCardV1,
+        kind="attention.pending.card.v1",
     ),
 }
 

@@ -1092,3 +1092,13 @@ Proxy target is controlled by `TOPIC_FOUNDRY_BASE_URL` in Hub settings/env.
 ### Static JS cache/version notes
 - Template includes an explicit cache-busting query string on app bundle, e.g. `/static/js/app.js?v=1.0.56`.
 - If UI behavior does not match source, hard-refresh or bump the `v=` string in `templates/index.html` when deploying.
+
+## Pending Attention — cognitive loops
+
+Flag: `ORION_ATTENTION_PENDING_CARDS_ENABLED` (default-off). API:
+`GET /api/attention/loops`, `POST /api/attention/loops/{id}/resolve`,
+`POST /api/attention/loops/{id}/dismiss`. Resolve/Dismiss emit
+`AttentionLoopOutcomeV1` on `orion:attention:loop_outcome`, persist to
+`attention_loop_outcome`, and suppress the loop via `substrate_reverie_refractory`.
+
+Migration: `psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_attention_loop_outcome.sql`

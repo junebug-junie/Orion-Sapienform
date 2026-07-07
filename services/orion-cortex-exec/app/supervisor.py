@@ -1346,6 +1346,40 @@ class Supervisor:
         )
         return step_res
 
+    async def _maybe_run_pcr_phase3_after_stance(
+        self,
+        *,
+        source: ServiceRef,
+        ctx: Dict[str, Any],
+        correlation_id: str,
+        recall_cfg: Dict[str, Any],
+        verb_name: str,
+        stance_step: StepExecutionResult,
+        step_results: List[StepExecutionResult],
+        recall_debug: Dict[str, Any],
+    ) -> bool:
+        """Run PCR phase 3 after stance synthesis succeeds (mirrors router plan-step hook)."""
+        if not (
+            settings.chat_pcr_enabled
+            and settings.chat_pcr_post_stance_recall
+            and str(verb_name or "").strip().lower() == "chat_general"
+            and str(stance_step.step_name or "") == "synthesize_chat_stance_brief"
+            and stance_step.status == "success"
+        ):
+            return False
+        _pcr_phase3, phase3_recall_step, phase3_debug = await run_pcr_phase3(
+            self.bus,
+            source=source,
+            ctx=ctx,
+            correlation_id=correlation_id,
+            recall_cfg=recall_cfg,
+        )
+        if phase3_recall_step is not None:
+            step_results.append(phase3_recall_step)
+        if isinstance(phase3_debug, dict) and isinstance(recall_debug, dict):
+            recall_debug.update(phase3_debug)
+        return phase3_recall_step is not None and phase3_recall_step.status == "success"
+
     async def _council_checkpoint(
         self,
         *,
@@ -1884,25 +1918,6 @@ class Supervisor:
                 diagnostic=bool(ctx.get("diagnostic")),
             )
             step_results.append(direct_step)
-            if (
-                settings.chat_pcr_enabled
-                and settings.chat_pcr_post_stance_recall
-                and str(req.verb_name or "").strip().lower() == "chat_general"
-                and direct_step.status == "success"
-                and isinstance(ctx.get("chat_stance_brief"), dict)
-            ):
-                _pcr_phase3, phase3_recall_step, phase3_debug = await run_pcr_phase3(
-                    self.bus,
-                    source=source,
-                    ctx=ctx,
-                    correlation_id=correlation_id,
-                    recall_cfg=recall_cfg,
-                )
-                if phase3_recall_step is not None:
-                    step_results.append(phase3_recall_step)
-                    memory_used = phase3_recall_step.status == "success"
-                if isinstance(phase3_debug, dict) and isinstance(recall_debug, dict):
-                    recall_debug.update(phase3_debug)
             final_obs = _extract_observation(direct_step)
             return PlanExecutionResult(
                 verb_name=req.verb_name,
@@ -2104,6 +2119,17 @@ class Supervisor:
             )
             step_results.append(action_step)
             executed_steps.append(action_step.step_name)
+            if await self._maybe_run_pcr_phase3_after_stance(
+                source=source,
+                ctx=ctx,
+                correlation_id=correlation_id,
+                recall_cfg=recall_cfg,
+                verb_name=str(req.verb_name or ""),
+                stance_step=action_step,
+                step_results=step_results,
+                recall_debug=recall_debug,
+            ):
+                memory_used = True
             if action_step.status != "success" and str(action_step.error or "").startswith("inactive_verb:"):
                 return PlanExecutionResult(
                     verb_name=req.verb_name,

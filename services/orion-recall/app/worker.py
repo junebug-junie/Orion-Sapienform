@@ -1196,13 +1196,17 @@ async def process_recall(
     corr_id: str,
     diagnostic: bool = False,
 ) -> Tuple[MemoryBundleV1, RecallDecisionV1]:
+    recall_phase = getattr(q, "recall_phase", None)
     selected_profile = q.profile
     intent_payload: Dict[str, Any] | None = None
     if bool(getattr(settings, "RECALL_INTENT_ROUTING_ENABLED", True)):
         try:
             from .intent import classify_intent_v1, intent_telemetry_payload, resolve_profile_for_intent
 
-            profile_explicit = bool(getattr(q, "profile_explicit", False))
+            profile_explicit = bool(getattr(q, "profile_explicit", False)) or recall_phase in {
+                "continuity",
+                "purposeful",
+            }
             ic = classify_intent_v1(str(q.fragment or ""))
             if profile_explicit:
                 selected_profile = q.profile
@@ -1221,7 +1225,6 @@ async def process_recall(
 
     profile = get_profile(selected_profile)
     profile_name = str(profile.get("profile") or "")
-    recall_phase = getattr(q, "recall_phase", None)
     retrieval_intent = getattr(q, "retrieval_intent", None) or "semantic"
     pcr_backend_plan: dict[str, bool] = {}
     if settings.RECALL_PCR_ENABLED and recall_phase == "purposeful":

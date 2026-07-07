@@ -157,3 +157,69 @@ def test_worker_uses_purposeful_fusion_when_phase_purposeful(monkeypatch):
     assert decision.recall_debug["pcr"]["phase"] == "purposeful"
     assert decision.recall_debug["pcr"]["retrieval_intent"] == "semantic"
     assert "active_packet" in decision.recall_debug["pcr"]["backend_plan"]
+
+
+def test_pcr_phase_preserves_profile_against_intent_routing(monkeypatch):
+    """PCR continuity/purposeful phases must not lose their profile to intent routing."""
+    monkeypatch.setattr(worker.settings, "RECALL_PCR_ENABLED", True)
+    monkeypatch.setattr(worker.settings, "RECALL_CONTINUITY_SQL_MINUTES", 120)
+    monkeypatch.setattr(worker.settings, "RECALL_CONTINUITY_RENDER_BUDGET", 96)
+    monkeypatch.setattr(worker.settings, "RECALL_ENABLE_SQL_CHAT", True)
+    monkeypatch.setattr(worker.settings, "RECALL_ENABLE_SQL_TIMELINE", False)
+    monkeypatch.setattr(worker.settings, "RECALL_ENABLE_RDF", False)
+    monkeypatch.setattr(worker.settings, "RECALL_INTENT_ROUTING_ENABLED", True)
+
+    continuity_profile = {
+        "profile": "chat.continuity.v1",
+        "enable_query_expansion": False,
+        "enable_anchor_candidates": False,
+        "enable_sql_timeline": False,
+        "enable_sql_chat": True,
+        "sql_chat_top_k": 6,
+        "sql_since_minutes": 120,
+        "max_total_items": 6,
+        "render_budget_tokens": 96,
+        "render_lane": "continuity",
+    }
+    profile_calls: list[str] = []
+
+    def _track_profile(name):
+        profile_calls.append(str(name))
+        return dict(continuity_profile)
+
+    monkeypatch.setattr(worker, "get_profile", _track_profile)
+
+    async def _fetch_pairs(**kwargs):
+        return []
+
+    async def _fetch_msgs(**kwargs):
+        return []
+
+    async def _anchor(**kwargs):
+        return [], {}
+
+    def _mock_render(**kwargs):
+        return MemoryBundleV1(rendered="continuity ok", stats=MemoryBundleStatsV1()), []
+
+    monkeypatch.setattr(worker, "fetch_chat_history_pairs", _fetch_pairs)
+    monkeypatch.setattr(worker, "fetch_chat_messages", _fetch_msgs)
+    monkeypatch.setattr(worker, "_fetch_anchor_candidates", _anchor)
+    monkeypatch.setattr(worker, "render_continuity_bundle", _mock_render)
+
+    q = RecallQueryV1(
+        fragment="who am I",
+        profile="chat.continuity.v1",
+        recall_phase="continuity",
+        session_id="sess-1",
+    )
+
+    import asyncio
+
+    bundle, decision = asyncio.run(worker.process_recall(q, corr_id="corr-pcr-intent-guard", diagnostic=True))
+
+    assert bundle.rendered == "continuity ok"
+    assert decision.profile == "chat.continuity.v1"
+    assert profile_calls == ["chat.continuity.v1"]
+    intent_debug = decision.recall_debug.get("recall_intent") or {}
+    assert intent_debug.get("selected_profile") == "chat.continuity.v1"
+    assert intent_debug.get("profile_explicit") is True

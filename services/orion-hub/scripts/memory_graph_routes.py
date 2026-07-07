@@ -8,6 +8,8 @@ import requests
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import ValidationError
 
+from orion.core.storage import memory_cards as mc_dal
+from orion.memory.crystallization.bus_emit_memory_card import emit_memory_card_active_for_crystallizer
 from orion.memory_graph.approve import approve_memory_graph_draft, preview_validate_only
 from orion.memory_graph.consolidation_draft_hydrate import hydrate_consolidation_draft_dict
 from orion.memory_graph.dto import CardProjectionDefaultsV1, SuggestDraftV1
@@ -17,6 +19,23 @@ from .mutation_cognition_context import build_mutation_cognition_context
 from .session import ensure_session
 
 logger = logging.getLogger("orion-hub.memory_graph")
+
+
+async def _emit_approved_cards_for_crystallizer(pool, card_ids, *, settings) -> None:
+    from scripts.main import bus
+
+    for cid in card_ids:
+        card = await mc_dal.get_card(pool, str(cid))
+        if card is None:
+            continue
+        await emit_memory_card_active_for_crystallizer(
+            bus,
+            card,
+            service_name=getattr(settings, "SERVICE_NAME", "orion-hub"),
+            service_version=getattr(settings, "SERVICE_VERSION", "0.1.0"),
+            node_name=getattr(settings, "NODE_NAME", "hub"),
+        )
+
 
 router = APIRouter(tags=["memory-graph"])
 
@@ -212,6 +231,7 @@ async def memory_graph_approve(
 
     if not result.ok:
         return {"ok": False, "violations": result.violations, "card_ids": []}
+    await _emit_approved_cards_for_crystallizer(pool, result.card_ids, settings=settings)
     if consolidation_draft_id:
         consolidation_draft_marked = False
         try:

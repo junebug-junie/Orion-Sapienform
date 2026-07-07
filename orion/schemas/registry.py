@@ -17,6 +17,7 @@ from orion.core.bus.bus_schemas import (
     RecallRequestPayload,
     RecallResultPayload,
 )
+from orion.core.contracts.memory_cards import MemoryCardV1
 from orion.core.contracts.recall import (
     RecallAdapterDiagnosticsV1,
     RecallDebugV1,
@@ -1129,6 +1130,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "CompressionRegionV1": CompressionRegionV1,
     "CompressionStalenessMarkV1": CompressionStalenessMarkV1,
     "GraphCompressionRegionMaterializedV1": GraphCompressionRegionMaterializedV1,
+    "MemoryCardV1": MemoryCardV1,
     "MemoryCrystallizationV1": MemoryCrystallizationV1,
     "ActiveMemoryPacketV1": ActiveMemoryPacketV1,
     "MemoryTurnPersistedV1": MemoryTurnPersistedV1,

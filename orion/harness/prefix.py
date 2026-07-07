@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from orion.fcc.github_repo_context import github_mcp_brief_lines
+from orion.fcc.github_repo_context import append_github_mcp_harness_brief
 from orion.harness.operator_brief import (
     HARNESS_MOTOR_MAX_READ_LINES,
     HARNESS_UNIFIED_OPERATOR_BRIEF,
@@ -48,6 +48,7 @@ def compile_harness_prefix(
     repair_overlay: HarnessRepairOverlayV1,
     user_message: str = "",
     answer_contract: AnswerContract | None = None,
+    workspace: str | None = None,
 ) -> str:
     """Deterministic fcc system prefix from stance thought + repair overlay."""
     _ = answer_contract  # deprecated on unified motor path; kept for signature compat
@@ -76,13 +77,9 @@ def compile_harness_prefix(
     if repair_overlay.rule_lines:
         parts.append("Rules: " + "; ".join(repair_overlay.rule_lines))
 
-    if os.environ.get("HARNESS_FCC_MCP_ENABLED", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
-        github_lines = github_mcp_brief_lines()
-        parts.extend(github_lines)
+    append_github_mcp_harness_brief(
+        parts,
+        workspace=workspace or os.environ.get("HARNESS_FCC_WORKSPACE"),
+    )
 
     return "\n".join(parts)

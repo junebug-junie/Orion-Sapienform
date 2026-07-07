@@ -65,12 +65,14 @@ def build_harness_prompt(
     user_message: str,
     repair_overlay: HarnessRepairOverlayV1,
     answer_contract: AnswerContract | None = None,
+    workspace: str | None = None,
 ) -> str:
     prefix = compile_harness_prefix(
         thought,
         repair_overlay=repair_overlay,
         user_message=user_message,
         answer_contract=answer_contract,
+        workspace=workspace or os.environ.get("HARNESS_FCC_WORKSPACE"),
     )
     instruction = harness_motor_instruction(
         thought=thought,
@@ -163,6 +165,7 @@ class HarnessRunner:
             user_message=request.user_message,
             repair_overlay=overlay,
             answer_contract=request.answer_contract,
+            workspace=os.environ.get("HARNESS_FCC_WORKSPACE"),
         )
 
         receipts: list[GrammarReceiptV1] = []

@@ -2,14 +2,34 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import subprocess
 from pathlib import Path
 from typing import Tuple
 
+logger = logging.getLogger("orion.fcc.github_repo_context")
+
 _GIT_SSH = re.compile(r"^git@[^:]+:(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$")
 _GIT_HTTPS = re.compile(r"^https?://[^/]+/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$")
+
+
+def harness_mcp_enabled() -> bool:
+    return os.environ.get("HARNESS_FCC_MCP_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def default_harness_workspace() -> str:
+    return (
+        str(os.environ.get("HARNESS_FCC_WORKSPACE") or "").strip()
+        or str(os.environ.get("ORION_REPO_ROOT") or "").strip()
+        or os.getcwd()
+    )
 
 
 def parse_github_remote_url(url: str) -> Tuple[str, str] | None:
@@ -76,3 +96,24 @@ def github_mcp_brief_lines(*, workspace: Path | str | None = None) -> list[str]:
 def github_mcp_repo_brief_line(*, workspace: Path | str | None = None) -> str | None:
     lines = github_mcp_brief_lines(workspace=workspace)
     return "\n".join(lines) if lines else None
+
+
+def append_github_mcp_harness_brief(
+    parts: list[str],
+    *,
+    workspace: Path | str | None = None,
+) -> None:
+    """Append GitHub MCP operator lines when harness MCP is enabled."""
+    if not harness_mcp_enabled():
+        return
+    ws = workspace if workspace is not None else default_harness_workspace()
+    lines = github_mcp_brief_lines(workspace=ws)
+    if lines:
+        parts.extend(lines)
+        return
+    logger.warning(
+        "HARNESS_FCC_MCP_ENABLED but GitHub repo coordinate unresolved "
+        "(set ORION_GITHUB_OWNER and ORION_GITHUB_REPO, or ensure git remote "
+        "origin in workspace=%s)",
+        ws,
+    )

@@ -148,7 +148,7 @@ def build_salience_trace(
         return None
     from orion.core.ids import stable_hash_id
     from orion.substrate.attention.common import bounded
-    from orion.substrate.attention.salience import WEIGHTS_VERSION
+    from orion.substrate.attention.salience import default_combiner
 
     return AttentionSalienceTraceV1(
         trace_id=stable_hash_id("saltrace", [correlation_id, loop.id]),
@@ -157,7 +157,7 @@ def build_salience_trace(
         description=(loop.description or "")[:200],
         correlation_id=correlation_id,
         salience=bounded(float(loop.salience)),
-        weights_version=WEIGHTS_VERSION,
+        weights_version=default_combiner().weights_version,
         features=dict(loop.salience_features or {}),
         scope="reverie",
     )

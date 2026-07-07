@@ -11,6 +11,41 @@ from orion.schemas.attention_frame import AttentionBroadcastProjectionV1, Attent
 from orion.schemas.reverie import ConcernCardV1
 
 
+def test_importing_reverie_does_not_load_substrate_or_requests() -> None:
+    """The guardrail the reverie function-local imports exist to protect.
+
+    Importing `app.reverie` must not drag in `orion.substrate` (graph engine)
+    or `requests` at module scope. Run in a fresh interpreter so prior test
+    imports can't mask a regression.
+    """
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    service_root = Path(__file__).resolve().parents[1]  # services/orion-thought
+    repo_root = Path(__file__).resolve().parents[3]
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join([str(service_root), str(repo_root)])
+    code = (
+        "import app.reverie;"
+        "import sys;"
+        "sub=[m for m in sys.modules if m.startswith('orion.substrate')];"
+        "assert not sub, sub;"
+        "assert 'requests' not in sys.modules;"
+        "print('ok')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(service_root),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ok" in result.stdout
+
+
 def test_stable_hash_id_deterministic() -> None:
     from orion.core.ids import stable_hash_id
 

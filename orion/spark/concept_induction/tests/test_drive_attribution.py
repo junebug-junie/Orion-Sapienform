@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from orion.core.schemas.drives import TensionEventV1
 from orion.spark.concept_induction.drive_attribution import (
     DRIVE_KEYS,
@@ -76,3 +74,27 @@ def test_select_lead_tension_prefers_gap_on_magnitude_tie() -> None:
     lead = select_lead_tension([other, gap])
     assert lead is not None
     assert lead.kind == "substrate.world_coverage_gap"
+
+
+def test_dominant_drive_none_when_all_zero() -> None:
+    attribution = {key: 0.0 for key in DRIVE_KEYS}
+    assert dominant_drive_from_attribution(attribution, lead_tension=None) is None
+
+
+def test_dominant_drive_alphabetical_fallback_without_lead() -> None:
+    attribution = {key: 0.2 for key in DRIVE_KEYS}
+    dominant = dominant_drive_from_attribution(attribution, lead_tension=None)
+    assert dominant == "autonomy"
+
+
+def test_select_lead_tension_empty() -> None:
+    assert select_lead_tension([]) is None
+
+
+def test_select_lead_tension_highest_magnitude() -> None:
+    gap = _gap_tension()
+    other = _contradiction_tension()
+    lead = select_lead_tension([other, gap])
+    assert lead is not None
+    assert lead.kind == gap.kind
+    assert lead.magnitude >= other.magnitude

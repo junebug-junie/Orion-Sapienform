@@ -3,9 +3,8 @@ from __future__ import annotations
 from typing import Sequence
 
 from orion.core.schemas.drives import TensionEventV1
+from orion.spark.concept_induction.drives import DRIVE_KEYS
 from orion.spark.concept_induction.tensions import clamp01
-
-DRIVE_KEYS = ("coherence", "continuity", "capability", "relational", "predictive", "autonomy")
 
 _GAP_KIND = "substrate.world_coverage_gap"
 
@@ -63,7 +62,13 @@ def dominant_drive_from_attribution(
     *,
     lead_tension: TensionEventV1 | None = None,
 ) -> str | None:
-    """Argmax attribution; tie-break via primary_drive(lead_tension.kind)."""
+    """Argmax attribution; tie-break cascade when multiple drives share the max.
+
+    1. If ``lead_tension`` is set: ``primary_drive_for_tension_kind(lead_tension.kind)`` when
+       that drive is among the tied maxima.
+    2. Else among tied drives: highest ``lead_tension.drive_impacts`` weight (alphabetical on tie).
+    3. Else: first tied drive in alphabetical order (``lead_tension`` absent or inconclusive).
+    """
     tied = _tied_at_max(attribution)
     if not tied:
         return None

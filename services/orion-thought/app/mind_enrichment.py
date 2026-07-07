@@ -8,14 +8,28 @@ ThoughtEventV1 and reconciles this coloring. Everything fails open.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
+from uuid import UUID, uuid4
 
 import httpx
 
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.mind.constants import MIND_RUN_ARTIFACT_SCHEMA_ID
 from orion.mind.v1 import MindRunPolicyV1, MindRunRequestV1, MindRunResultV1
+from orion.schemas.mind.artifact import MindRunArtifactV1
 from orion.schemas.thought import StanceReactRequestV1
 
 logger = logging.getLogger("orion-thought.mind_enrichment")
+
+
+def _envelope_correlation_id(raw: str | None) -> UUID:
+    if raw:
+        try:
+            return UUID(str(raw))
+        except ValueError:
+            pass
+    return uuid4()
 
 # Strict allow-list of coloring keys. Any un-listed ChatStanceBrief / decision
 # field is absent by construction (no deny-list, no leakage of future fields).
@@ -177,9 +191,58 @@ def build_light_mind_request(
     )
 
 
-async def publish_mind_run_artifact_for_thought(*_args: Any, **_kwargs: Any) -> None:
-    """Placeholder — implemented in Task 7."""
-    return None
+async def publish_mind_run_artifact_for_thought(
+    bus: Any,
+    *,
+    source: "ServiceRef",
+    request: "StanceReactRequestV1",
+    mind_req: "MindRunRequestV1",
+    mind_res: MindRunResultV1,
+    channel: str,
+) -> None:
+    """Publish MindRunArtifactV1 for a unified-turn Mind run (mode='orion').
+
+    Log-and-continue: an artifact publish failure must never fail the stance stage.
+    """
+    try:
+        summary = {
+            "correlation_id": request.correlation_id,
+            "verb": "stance_react",
+            "mode": "orion",
+            "session_id": request.session_id,
+        }
+        artifact = MindRunArtifactV1(
+            mind_run_id=mind_res.mind_run_id,
+            correlation_id=request.correlation_id,
+            session_id=request.session_id,
+            trigger=mind_req.trigger,
+            ok=mind_res.ok,
+            error_code=mind_res.error_code,
+            snapshot_hash=mind_res.snapshot_hash,
+            router_profile_id=mind_req.policy.router_profile_id,
+            result_jsonb=mind_res.model_dump(mode="json"),
+            request_summary_jsonb=summary,
+            created_at_utc=datetime.now(timezone.utc),
+        )
+        env = BaseEnvelope(
+            kind=MIND_RUN_ARTIFACT_SCHEMA_ID,
+            source=source,
+            correlation_id=_envelope_correlation_id(request.correlation_id),
+            payload=artifact.model_dump(mode="json"),
+        )
+        await bus.publish(channel, env)
+        logger.info(
+            "mind_run_artifact_publish corr=%s mind_run_id=%s mode=orion ok=%s",
+            request.correlation_id,
+            artifact.mind_run_id,
+            artifact.ok,
+        )
+    except Exception as exc:  # noqa: BLE001 — observability must never fail the turn
+        logger.warning(
+            "mind_artifact_publish_failed corr=%s err=%s",
+            request.correlation_id,
+            exc,
+        )
 
 
 def _mind_transport() -> httpx.BaseTransport | None:

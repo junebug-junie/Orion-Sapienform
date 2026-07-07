@@ -62,6 +62,7 @@ def resolve_destination(
     locations: Optional[dict[str, dict[str, float]]] = None,
     wander_radius: float = 3.0,
     rng: Optional[random.Random] = None,
+    walkable: Optional[set[tuple[int, int]]] = None,
 ) -> ResolveResult:
     locations = locations or {}
     rng = rng or random.Random()
@@ -84,6 +85,20 @@ def resolve_destination(
     if intent.kind == "wander":
         orion = next((p for p in players if str(p.get("id")) == orion_player_id), None)
         origin = (_pos(orion) if orion else None) or {"x": 0.0, "y": 0.0}
+        if walkable is not None:
+            # Sample walkable integer tiles within radius. AI Town silently drops a
+            # moveTo to a blocked/unreachable tile, so an unconstrained offset makes
+            # Orion appear frozen. Give up to resolved_noop if nothing is reachable.
+            ox, oy = int(round(origin["x"])), int(round(origin["y"]))
+            reach = int(math.ceil(wander_radius))
+            for _ in range(32):
+                cx = ox + rng.randint(-reach, reach)
+                cy = oy + rng.randint(-reach, reach)
+                if (cx, cy) != (ox, oy) and (cx, cy) in walkable:
+                    return ResolveResult(
+                        "actuated", {"x": float(cx), "y": float(cy)}, None, "wander offset"
+                    )
+            return ResolveResult("resolved_noop", None, None, "no walkable wander tile")
         dx = rng.uniform(-wander_radius, wander_radius)
         dy = rng.uniform(-wander_radius, wander_radius)
         return ResolveResult(

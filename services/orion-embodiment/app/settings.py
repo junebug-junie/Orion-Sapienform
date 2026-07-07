@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     wander_radius: float = Field(3.0, alias="EMBODIMENT_WANDER_RADIUS")
     locations_json: str = Field("{}", alias="EMBODIMENT_LOCATIONS_JSON")
     idle_heartbeat_sec: float = Field(0.0, alias="EMBODIMENT_IDLE_HEARTBEAT_SEC")
+    # Keep the AI Town engine awake so queued inputs (moveTo) are processed. An
+    # `inactive` world silently drops all inputs. Off by default (keeping the town
+    # alive also runs the other town agents' LLM loops).
+    world_heartbeat_enabled: bool = Field(False, alias="EMBODIMENT_WORLD_HEARTBEAT_ENABLED")
     orion_sprite: str = Field("f1", alias="EMBODIMENT_ORION_SPRITE")
     self_state_url: str = Field("http://orion-self-state-runtime:8123", alias="EMBODIMENT_SELF_STATE_URL")
     perception_interval_sec: float = Field(0.0, alias="EMBODIMENT_PERCEPTION_INTERVAL_SEC")
@@ -38,6 +42,14 @@ class Settings(BaseSettings):
     cortex_request_channel: str = Field("orion:cortex:exec:request", alias="EMBODIMENT_CORTEX_REQUEST_CHANNEL")
     cortex_result_prefix: str = Field("orion:exec:result", alias="EMBODIMENT_CORTEX_RESULT_PREFIX")
     memory_enabled: bool = Field(False, alias="EMBODIMENT_MEMORY_ENABLED")
+
+    # Conversation engagement: accept invites, walk to the partner to reach
+    # `participating`, and opportunistically initiate with a nearby player. Orion
+    # has no town-AI agent, so nothing walks it into conversations unless this runs.
+    social_enabled: bool = Field(False, alias="EMBODIMENT_SOCIAL_ENABLED")
+    # Manhattan/euclidean tile distance under which Orion will initiate with a
+    # nearby player when idle and past the social cooldown. 0 = never self-initiate.
+    social_initiate_distance: float = Field(0.0, alias="EMBODIMENT_SOCIAL_INITIATE_DISTANCE")
 
     channel_intent: str = Field("orion:embodiment:intent", alias="EMBODIMENT_CHANNEL_INTENT")
     channel_outcome: str = Field("orion:embodiment:outcome", alias="EMBODIMENT_CHANNEL_OUTCOME")

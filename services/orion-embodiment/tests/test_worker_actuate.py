@@ -20,6 +20,8 @@ def _worker() -> EmbodimentWorker:
     w._move_cooldown_sec = 0.0
     w._last_conversation_start = None
     w._last_move_at = None
+    w._walkable = None
+    w._walkable_loaded = True
     return w
 
 

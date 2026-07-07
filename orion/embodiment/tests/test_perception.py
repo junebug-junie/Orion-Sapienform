@@ -18,3 +18,49 @@ def test_build_perception_computes_distances_and_nearby():
 def test_build_perception_none_when_orion_absent():
     assert build_perception(players=[{"id": "x", "position": {"x": 1, "y": 1}}],
                             orion_player_id="orion") is None
+
+
+def test_build_perception_shapes_active_conversation():
+    players = [
+        {"id": "orion", "position": {"x": 0.0, "y": 0.0}},
+        {"id": "p9", "name": "Juniper", "position": {"x": 1.0, "y": 0.0}},
+    ]
+    conversations = [
+        {"id": "c:1", "participants": [
+            {"playerId": "orion", "status": {"kind": "participating"}},
+            {"playerId": "p9", "status": {"kind": "participating"}},
+        ]},
+        {"id": "c:2", "participants": [{"playerId": "zz", "status": {"kind": "invited"}}]},
+    ]
+    messages = [{"author": "p9", "authorName": "Juniper", "text": "hey Orion"},
+                {"author": "p9", "text": "  "}]
+    perc = build_perception(players=players, orion_player_id="orion",
+                            conversations=conversations, messages=messages)
+    convo = perc.active_conversation
+    assert convo["conversation_id"] == "c:1"
+    assert convo["status"] == "participating"
+    assert set(convo["participants"]) == {"orion", "p9"}
+    assert convo["other"] == {"player_id": "p9", "name": "Juniper", "position": {"x": 1.0, "y": 0.0}}
+    # whitespace-only message dropped; author_id preserved for turn-taking
+    assert convo["messages"] == [{"author_id": "p9", "author": "Juniper", "text": "hey Orion"}]
+
+
+def test_build_perception_no_conversation_when_orion_not_member():
+    players = [{"id": "orion", "position": {"x": 0.0, "y": 0.0}}]
+    conversations = [{"id": "c:2", "participants": [{"playerId": "zz", "status": {"kind": "invited"}}]}]
+    perc = build_perception(players=players, orion_player_id="orion", conversations=conversations)
+    assert perc.active_conversation is None
+
+
+def test_build_perception_reports_invited_status():
+    players = [
+        {"id": "orion", "position": {"x": 0.0, "y": 0.0}},
+        {"id": "p9", "name": "Juniper", "position": {"x": 5.0, "y": 0.0}},
+    ]
+    conversations = [{"id": "c:9", "participants": [
+        {"playerId": "p9", "status": {"kind": "walkingOver"}},
+        {"playerId": "orion", "status": {"kind": "invited"}},
+    ]}]
+    perc = build_perception(players=players, orion_player_id="orion", conversations=conversations)
+    assert perc.active_conversation["status"] == "invited"
+    assert perc.active_conversation["other"]["player_id"] == "p9"

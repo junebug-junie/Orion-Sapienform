@@ -125,6 +125,12 @@ def list_players(world_id: Optional[str] = None) -> Any:
     return [{**p, "id": str(p.get("id")), "name": names.get(str(p.get("id")))} for p in players]
 
 
+def get_world_map(world_id: Optional[str] = None) -> Dict[str, Any]:
+    """Static map descriptor (dimensions + object/collision layers)."""
+    wm = _game_descriptions(world_id).get("worldMap")
+    return wm if isinstance(wm, dict) else {}
+
+
 def list_agents(world_id: Optional[str] = None) -> Any:
     world = _world_snapshot(world_id).get("world") or {}
     agents = world.get("agents") or []
@@ -138,6 +144,39 @@ def list_agents(world_id: Optional[str] = None) -> Any:
         d = desc.get(aid, {})
         out.append({**a, "id": aid, "identity": d.get("identity"), "plan": d.get("plan")})
     return out
+
+
+def list_conversations(world_id: Optional[str] = None) -> Any:
+    """Conversations from ``world:worldState`` (id/creator/participants[playerId,status])."""
+    world = _world_snapshot(world_id).get("world") or {}
+    return list(world.get("conversations") or [])
+
+
+def list_messages(conversation_id: str, world_id: Optional[str] = None) -> Any:
+    """Messages of a conversation (author/authorName/text)."""
+    wid = str(world_id or _world_id()).strip()
+    if not wid:
+        raise AitownClientError("AITOWN_WORLD_ID is not set")
+    msgs = convex_query("messages:listMessages", {"worldId": wid, "conversationId": conversation_id})
+    return list(msgs or [])
+
+
+def accept_invite(*, player_id: str, conversation_id: str, world_id: Optional[str] = None) -> Any:
+    """Accept a pending conversation invite (status invited -> walkingOver)."""
+    return send_input(
+        name="acceptInvite",
+        args={"playerId": player_id, "conversationId": conversation_id},
+        world_id=world_id,
+    )
+
+
+def start_conversation(*, player_id: str, invitee_id: str, world_id: Optional[str] = None) -> Any:
+    """Invite another player into a new conversation."""
+    return send_input(
+        name="startConversation",
+        args={"playerId": player_id, "invitee": invitee_id},
+        world_id=world_id,
+    )
 
 
 def move_to(*, player_id: str, x: float, y: float, world_id: Optional[str] = None) -> Any:

@@ -135,6 +135,10 @@ async def handle_harness_run_request(
         cortex_client=cortex,
         substrate_client=_substrate_client,
         bus=bus,
+        # v1 shortcut (default-off via EMBODIMENT_D_FINALIZE_ENABLED): treat every
+        # finalized turn as relational and approach the default human interlocutor.
+        # TODO(embodiment): derive `relational` + interlocutor from turn context
+        # (request.thought_event / answer_contract) before enabling in a multi-human town.
         embodiment_relational=True,
         embodiment_interlocutor_ref=DEFAULT_FINALIZE_INTERLOCUTOR,
     )

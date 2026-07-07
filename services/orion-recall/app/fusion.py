@@ -64,7 +64,7 @@ def _extract_transcript_parts(text: str) -> tuple[str, str]:
         lowered = line.lower()
         if lowered.startswith("user:"):
             user = line.split(":", 1)[1].strip()
-        elif lowered.startswith("orion:"):
+        elif lowered.startswith("orion:") or lowered.startswith("assistant:"):
             assistant = line.split(":", 1)[1].strip()
     return user, assistant
 
@@ -339,11 +339,16 @@ def _denial_patterns() -> List[re.Pattern[str]]:
 
 
 def _is_low_info_social_candidate(snippet: str) -> bool:
-    text = _normalize_whitespace(snippet).lower()
-    if not text:
+    raw = str(snippet or "")
+    if not _normalize_whitespace(raw):
         return True
-    user, assistant = _extract_transcript_parts(text)
-    candidate = _normalize_whitespace(f"{user} {assistant}" if (user or assistant) else text)
+    user, assistant = _extract_transcript_parts(raw)
+    if user or assistant:
+        if user and _shared_is_low_info_social(_normalize_whitespace(user)):
+            return True
+        if assistant and _shared_is_low_info_social(_normalize_whitespace(assistant)):
+            return True
+    candidate = _normalize_whitespace(f"{user} {assistant}" if (user or assistant) else raw).lower()
     return _shared_is_low_info_social(candidate)
 
 
@@ -675,4 +680,90 @@ def render_continuity_bundle(
     if bundle.stats:
         bundle.stats.profile = str(profile.get("profile") or "chat.continuity.v1")
     bundle.rendered = rendered.strip()
+    return bundle, ranking
+
+
+_BELIEF_SOURCE_ORDER = {
+    "active_packet": 0,
+    "cards": 1,
+    "rdf": 2,
+    "rdf_chat": 3,
+    "memory_graph_sparql": 4,
+    "graphiti": 5,
+}
+
+
+def _belief_source_rank(source: str) -> int:
+    src = str(source or "unknown")
+    if src.startswith("rdf"):
+        return _BELIEF_SOURCE_ORDER.get("rdf", 99)
+    return _BELIEF_SOURCE_ORDER.get(src, 99)
+
+
+def pcr_fuse_belief_candidates(
+    *,
+    candidates: Iterable[Dict[str, Any]],
+    profile: Dict[str, Any],
+    retrieval_intent: str,
+    query_text: str = "",
+    latency_ms: int = 0,
+) -> Tuple[MemoryBundleV1, List[Dict[str, Any]]]:
+    """PCR Phase 3: belief-lane fusion with active_packet priority."""
+    filtered = [
+        c
+        for c in candidates
+        if not _is_low_info_social_candidate(str(c.get("snippet") or c.get("text") or ""))
+    ]
+    filtered.sort(
+        key=lambda item: (
+            _belief_source_rank(str(item.get("source") or "")),
+            -float(item.get("score") or 0.0),
+            str(item.get("id") or ""),
+        )
+    )
+
+    narrowed = dict(profile)
+    narrowed.setdefault("max_total_items", 8)
+    narrowed["render_lane"] = "belief"
+    bundle, ranking = fuse_candidates(
+        candidates=filtered,
+        profile=narrowed,
+        latency_ms=latency_ms,
+        query_text=query_text,
+        substantive_query=True,
+        diagnostic=False,
+    )
+
+    reranked_items = sorted(
+        bundle.items,
+        key=lambda item: (
+            _belief_source_rank(str(item.source or "")),
+            -float(item.score or 0.0),
+            str(item.id or ""),
+        ),
+    )
+    bundle.items = reranked_items
+
+    header = f"[Durable beliefs — purposeful recall: {retrieval_intent}]\n"
+    rendered_body = bundle.rendered or ""
+    if rendered_body and not rendered_body.startswith("["):
+        bundle.rendered = header + rendered_body
+    elif reranked_items:
+        from .render import render_items
+
+        profile_name = profile.get("profile")
+        rendered_body, _budget_dropped = render_items(
+            reranked_items,
+            int(narrowed.get("render_budget_tokens", 128)),
+            profile_name=profile_name,
+            diagnostic=False,
+            budget_indicator=False,
+        )
+        bundle.rendered = header + rendered_body
+    else:
+        bundle.rendered = header.strip()
+
+    if bundle.stats:
+        bundle.stats.profile = str(profile.get("profile") or f"chat.belief.{retrieval_intent}.v1")
+    bundle.rendered = bundle.rendered.strip()
     return bundle, ranking

@@ -22,7 +22,9 @@ from orion.core.contracts.recall import (
 )
 
 try:
-    from .fusion import fuse_candidates, render_continuity_bundle
+    from .fusion import fuse_candidates, pcr_fuse_belief_candidates, render_continuity_bundle
+    from .pcr_collectors import apply_collector_plan, collectors_for_intent
+    from .collectors.active_packet import fetch_active_packet_fragments
     from .profiles import get_profile
     from .settings import settings
     from .source_policy import build_vector_policy
@@ -48,7 +50,9 @@ except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
     _IMPORT_ERROR = _e
     try:
         # Container/package-safe absolute imports
-        from app.fusion import fuse_candidates, render_continuity_bundle  # type: ignore
+        from app.fusion import fuse_candidates, pcr_fuse_belief_candidates, render_continuity_bundle  # type: ignore
+        from app.pcr_collectors import apply_collector_plan, collectors_for_intent  # type: ignore
+        from app.collectors.active_packet import fetch_active_packet_fragments  # type: ignore
         from app.profiles import get_profile  # type: ignore
         from app.settings import settings  # type: ignore
         from app.source_policy import build_vector_policy  # type: ignore
@@ -1217,6 +1221,13 @@ async def process_recall(
 
     profile = get_profile(selected_profile)
     profile_name = str(profile.get("profile") or "")
+    recall_phase = getattr(q, "recall_phase", None)
+    retrieval_intent = getattr(q, "retrieval_intent", None) or "semantic"
+    pcr_backend_plan: dict[str, bool] = {}
+    if settings.RECALL_PCR_ENABLED and recall_phase == "purposeful":
+        pcr_backend_plan = collectors_for_intent(retrieval_intent)
+        profile = apply_collector_plan(profile, pcr_backend_plan)
+        profile_name = str(profile.get("profile") or profile_name)
     query_targeting = _derive_chat_general_query(q.fragment, verb=q.verb, profile_name=profile_name)
     query_fragment = str(query_targeting.get("query_fragment") or q.fragment or "")
     if diagnostic and query_targeting.get("query_changed"):
@@ -1570,9 +1581,18 @@ async def process_recall(
             exclusion.get("active_turn_ids"),
             suppressed,
         )
+
+    if settings.RECALL_PCR_ENABLED and recall_phase == "purposeful":
+        if pcr_backend_plan.get("active_packet") and settings.RECALL_ACTIVE_PACKET_ENABLED:
+            try:
+                ap_frags = await fetch_active_packet_fragments(q, pool=_recall_pg_pool, settings=settings)
+                candidates.extend(ap_frags)
+                backend_counts_total["active_packet"] = len(ap_frags)
+            except Exception as exc:
+                logger.debug("active_packet collector skipped: %s", exc)
+
     latency_ms = int((time.time() - t0) * 1000)
     fuse_started = time.time()
-    recall_phase = getattr(q, "recall_phase", None)
     if settings.RECALL_PCR_ENABLED and recall_phase == "continuity":
         profile["sql_since_minutes"] = settings.RECALL_CONTINUITY_SQL_MINUTES
         profile["render_budget_tokens"] = settings.RECALL_CONTINUITY_RENDER_BUDGET
@@ -1582,6 +1602,16 @@ async def process_recall(
             query_text=query_fragment,
             latency_ms=latency_ms,
             session_id=effective_session_id,
+        )
+    elif settings.RECALL_PCR_ENABLED and recall_phase == "purposeful":
+        belief_budget = q.belief_digest_max_tokens or settings.RECALL_BELIEF_RENDER_BUDGET
+        profile["render_budget_tokens"] = belief_budget
+        bundle, ranking_debug = pcr_fuse_belief_candidates(
+            candidates=candidates,
+            profile=profile,
+            retrieval_intent=str(retrieval_intent),
+            query_text=query_fragment,
+            latency_ms=latency_ms,
         )
     else:
         bundle, ranking_debug = fuse_candidates(
@@ -1595,6 +1625,15 @@ async def process_recall(
         )
     timing_breakdown_ms["fusion"] = int((time.time() - fuse_started) * 1000)
     timing_breakdown_ms["total"] = latency_ms
+    pcr_debug: Dict[str, Any] | None = None
+    if settings.RECALL_PCR_ENABLED and recall_phase in {"continuity", "purposeful"}:
+        pcr_debug = {
+            "enabled": settings.RECALL_PCR_ENABLED,
+            "phase": recall_phase,
+            "retrieval_intent": retrieval_intent,
+            "intent_rule_id": (q.task_hints or {}).get("rule_id") if isinstance(q.task_hints, dict) else None,
+            "backend_plan": list(pcr_backend_plan.keys()) if pcr_backend_plan else [],
+        }
     decision = RecallDecisionV1(
         corr_id=corr_id or str(uuid4()),
         session_id=ignored_session_id,
@@ -1628,9 +1667,12 @@ async def process_recall(
                 },
                 "fusion": bundle.stats.diagnostic or {},
                 "selected_summary": _bounded_selected_summary(list(bundle.items)),
+                **({"pcr": pcr_debug} if pcr_debug else {}),
             }
             if diagnostic
-            else {"latency_breakdown_ms": timing_breakdown_ms}
+            else (
+                {"latency_breakdown_ms": timing_breakdown_ms, **({"pcr": pcr_debug} if pcr_debug else {})}
+            )
         ),
     )
     compare_summary: Dict[str, Any] = {}

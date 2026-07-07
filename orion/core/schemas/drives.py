@@ -104,6 +104,7 @@ class DriveAuditV1(GraphReadyArtifact):
     drive_activations: Dict[str, bool] = Field(default_factory=dict)
     active_drives: List[str] = Field(default_factory=list)
     dominant_drive: Optional[str] = None
+    tick_attribution: Dict[str, float] = Field(default_factory=dict)
     tension_kinds: List[str] = Field(default_factory=list)
     source_event_refs: List[ArtifactEventRef] = Field(default_factory=list)
     evidence_items: List[ArtifactEvidence] = Field(default_factory=list)

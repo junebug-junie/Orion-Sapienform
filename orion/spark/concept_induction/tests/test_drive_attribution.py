@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from orion.core.schemas.drives import TensionEventV1
+from orion.core.schemas.drives import DriveAuditV1, TensionEventV1
 from orion.spark.concept_induction.drive_attribution import (
     DRIVE_KEYS,
     compute_tick_attribution,
@@ -98,3 +98,19 @@ def test_select_lead_tension_highest_magnitude() -> None:
     assert lead is not None
     assert lead.kind == gap.kind
     assert lead.magnitude >= other.magnitude
+
+
+def test_drive_audit_v1_accepts_tick_attribution() -> None:
+    audit = DriveAuditV1.model_validate(
+        {
+            "subject": "orion",
+            "model_layer": "self-model",
+            "entity_id": "self:orion",
+            "kind": "memory.drives.audit.v1",
+            "dominant_drive": "predictive",
+            "tick_attribution": {"predictive": 0.25, "autonomy": 0.1},
+            "provenance": {"intake_channel": "orion:world_pulse:run:result"},
+        }
+    )
+    assert audit.tick_attribution["predictive"] == 0.25
+    assert audit.dominant_drive == "predictive"

@@ -33,7 +33,7 @@ def test_chat_general_substantive_turn_drops_greeting_pollution(monkeypatch):
     async def _anchor(**kwargs):
         return [], {}
 
-    async def _query(fragment, profile, *, session_id, node_id, entities, diagnostic=False, exclusion=None):
+    async def _query(fragment, profile, *, session_id, node_id, entities, diagnostic=False, exclusion=None, **kwargs):
         return [
             {"id": "g1", "source": "vector", "text": "hi friend", "score": 0.95, "tags": []},
             {"id": "g2", "source": "vector", "text": "Thanks, all good for now.", "score": 0.93, "tags": []},
@@ -70,7 +70,7 @@ def test_chat_general_instruction_tail_does_not_shift_query_anchor(monkeypatch):
     async def _anchor(**kwargs):
         return [], {}
 
-    async def _query(fragment, profile, *, session_id, node_id, entities, diagnostic=False, exclusion=None):
+    async def _query(fragment, profile, *, session_id, node_id, entities, diagnostic=False, exclusion=None, **kwargs):
         seen_fragments.append(fragment)
         return [
             {
@@ -108,7 +108,7 @@ def test_chat_general_social_turn_keeps_lightweight_behavior(monkeypatch):
     async def _anchor(**kwargs):
         return [], {}
 
-    async def _query(fragment, profile, *, session_id, node_id, entities, diagnostic=False, exclusion=None):
+    async def _query(fragment, profile, *, session_id, node_id, entities, diagnostic=False, exclusion=None, **kwargs):
         return [
             {"id": "g1", "source": "vector", "text": "Hi Orion!", "score": 0.92, "tags": []},
             {"id": "g2", "source": "vector", "text": "Hey friend", "score": 0.84, "tags": []},

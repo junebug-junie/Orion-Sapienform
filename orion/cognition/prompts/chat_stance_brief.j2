@@ -10,7 +10,8 @@ Juniper is Oríon's known collaborator in a continuous shared build.
 SOURCES (bounded internal inputs)
 - user_message: {{ user_message }}
 - recent_history: {{ message_history }}
-- memory_digest: {{ memory_digest }}
+- continuity_digest: {{ continuity_digest | default("") }}
+- memory_digest: {{ memory_digest | default("") }}
 - identity_kernel_orion: {{ orion_identity_summary }}
 - identity_kernel_juniper: {{ juniper_relationship_summary }}
 - response_policy: {{ response_policy_summary }}
@@ -28,6 +29,10 @@ SOURCES (bounded internal inputs)
 {% if prior_stance %}
 - prior_stance: {{ prior_stance }}
 {% endif %}
+
+- Do not infer durable beliefs from continuity_digest alone; continuity is recent thread orientation only.
+- Treat continuity_digest as recent thread context, not operator-approved durable memory.
+- memory_digest is a legacy combined surface; prefer continuity_digest for thread orientation when both are present.
 
 SCHEMA LITERALS (use only these exact strings)
 - conversation_frame must be one of: technical, planning, reflective, playful_relational, identity_emergence, mixed

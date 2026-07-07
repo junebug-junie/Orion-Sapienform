@@ -6,6 +6,8 @@ from uuid import uuid4
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
+from orion.schemas.recall_pcr import RecallPhaseV1, RetrievalIntentV1
+
 
 class MemoryItemV1(BaseModel):
     """A single retrieved memory item."""
@@ -64,6 +66,33 @@ class RecallQueryV1(BaseModel):
         description="Optional current-turn exclusion hints (ids/text/timestamps).",
     )
     reply_to: Optional[str] = None
+    recall_phase: Optional[RecallPhaseV1] = Field(
+        default=None,
+        description="PCR phase: skip, continuity, or purposeful.",
+    )
+    retrieval_intent: Optional[RetrievalIntentV1] = Field(
+        default=None,
+        description="Structural retrieval intent derived after stance (PCR).",
+    )
+    task_hints: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Optional stance/appraisal hints: task_mode, conversation_frame, "
+            "shift_kind, novelty_score, conversation_phase, open_loop_ids, hub_chat_lane."
+        ),
+    )
+    seed_crystallization_id: Optional[str] = Field(
+        default=None,
+        description="Optional crystallization seed for contradiction or open-loop recall.",
+    )
+    continuity_digest_max_tokens: Optional[int] = Field(
+        default=None,
+        description="Render budget override for phase-1 continuity digest.",
+    )
+    belief_digest_max_tokens: Optional[int] = Field(
+        default=None,
+        description="Render budget override for phase-3 belief digest.",
+    )
 
 
 class RecallReplyV1(BaseModel):

@@ -2336,6 +2336,11 @@ def build_chat_stance_inputs(ctx: Dict[str, Any]) -> Dict[str, Any]:
             ctx.pop("chat_attention_frame_debug", None)
 
     _inject_prior_stance_to_inputs(ctx, inputs)
+    continuity_digest = ctx.get("continuity_digest")
+    if not isinstance(continuity_digest, str):
+        continuity_digest = ""
+    ctx["continuity_digest"] = continuity_digest
+    inputs["continuity_digest"] = continuity_digest
     ctx["chat_stance_inputs"] = inputs
     ctx["chat_concept_summary"] = concept
     ctx["chat_social_summary"] = social
@@ -2468,6 +2473,12 @@ def build_chat_stance_debug_payload(
     )
 
     user_message = _compact(ctx.get("user_message") or "", limit=600)
+    continuity_digest = ctx.get("continuity_digest")
+    if not isinstance(continuity_digest, str):
+        continuity_digest = ""
+    belief_digest = ctx.get("belief_digest")
+    if not isinstance(belief_digest, str):
+        belief_digest = ""
     memory_digest = ctx.get("memory_digest")
     if not isinstance(memory_digest, str):
         memory_digest = ""
@@ -2492,6 +2503,8 @@ def build_chat_stance_debug_payload(
 
     final_prompt_contract = {
         "chat_stance_brief": final_brief,
+        "continuity_digest": continuity_digest,
+        "belief_digest": belief_digest,
         "memory_digest": memory_digest,
         "orion_identity_summary": list(ctx.get("orion_identity_summary") or []),
         "juniper_relationship_summary": list(ctx.get("juniper_relationship_summary") or []),
@@ -2526,6 +2539,8 @@ def build_chat_stance_debug_payload(
         },
         "source_inputs": {
             "user_message": user_message,
+            "continuity_digest": continuity_digest,
+            "belief_digest": belief_digest,
             "memory_digest": memory_digest,
             "identity_kernel": {
                 "orion_identity_summary": list(identity.get("orion") or []),

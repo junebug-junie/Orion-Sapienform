@@ -1,0 +1,18 @@
+profile: chat.belief.open_loop.v1
+enable_vector: false
+vector_top_k: 0
+rdf_top_k: 2
+cards_top_k: 6
+enable_sql_timeline: false
+sql_chat_top_k: 0
+max_per_source: 4
+max_total_items: 8
+render_budget_tokens: 128
+render_lane: belief
+relevance:
+  backend_weights:
+    active_packet: 1.0
+    cards: 0.6
+    rdf: 0.35
+    rdf_chat: 0.4
+  enable_recency: false

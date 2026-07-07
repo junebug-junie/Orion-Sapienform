@@ -8,6 +8,7 @@ import time
 from typing import Any, Dict, Iterable, List, Tuple
 
 from orion.core.contracts.recall import MemoryBundleStatsV1, MemoryBundleV1, MemoryItemV1
+from orion.memory.low_info_social import is_low_info_social as _shared_is_low_info_social
 
 try:
     from .render import render_items
@@ -63,7 +64,7 @@ def _extract_transcript_parts(text: str) -> tuple[str, str]:
         lowered = line.lower()
         if lowered.startswith("user:"):
             user = line.split(":", 1)[1].strip()
-        elif lowered.startswith("orion:"):
+        elif lowered.startswith("orion:") or lowered.startswith("assistant:"):
             assistant = line.split(":", 1)[1].strip()
     return user, assistant
 
@@ -338,50 +339,17 @@ def _denial_patterns() -> List[re.Pattern[str]]:
 
 
 def _is_low_info_social_candidate(snippet: str) -> bool:
-    text = _normalize_whitespace(snippet).lower()
-    if not text:
+    raw = str(snippet or "")
+    if not _normalize_whitespace(raw):
         return True
-    user, assistant = _extract_transcript_parts(text)
-    candidate = _normalize_whitespace(f"{user} {assistant}" if (user or assistant) else text)
-    if not candidate:
-        return True
-    normalized_candidate = re.sub(r"[^a-z0-9' ]+", " ", candidate)
-    tokens = re.findall(r"[a-z']{2,}", normalized_candidate)
-    if len(tokens) > 18:
-        return False
-    courtesy_patterns = [
-        r"^(hi|hey|hello|yo|sup|hiya|good (morning|afternoon|evening))( there| friend| orion| juniper)?[!. ]*$",
-        r"^(thanks|thank you|awesome|cool|nice|sounds good|all good|doing good|doing well|glad to hear)[!. ]*$",
-        r"^(how are you|how's it going|hope you're well|hope you are well)[?.! ]*$",
-    ]
-    if any(re.match(pattern, candidate, flags=re.I) for pattern in courtesy_patterns):
-        return True
-    if len(tokens) <= 6:
-        low_info_terms = {
-            "hi",
-            "hey",
-            "hello",
-            "thanks",
-            "thank",
-            "good",
-            "great",
-            "cool",
-            "nice",
-            "fine",
-            "well",
-            "friend",
-            "orion",
-            "juniper",
-            "all",
-            "doing",
-            "okay",
-            "ok",
-            "for",
-            "now",
-        }
-        if all(token in low_info_terms for token in tokens):
+    user, assistant = _extract_transcript_parts(raw)
+    if user or assistant:
+        if user and _shared_is_low_info_social(_normalize_whitespace(user)):
             return True
-    return False
+        if assistant and _shared_is_low_info_social(_normalize_whitespace(assistant)):
+            return True
+    candidate = _normalize_whitespace(f"{user} {assistant}" if (user or assistant) else raw).lower()
+    return _shared_is_low_info_social(candidate)
 
 
 def fuse_candidates(
@@ -683,3 +651,119 @@ def fuse_candidates(
         diagnostic=diag_payload,
     )
     return MemoryBundleV1(rendered=rendered, items=items, stats=stats), ranking_debug
+
+
+def render_continuity_bundle(
+    *,
+    candidates: Iterable[Dict[str, Any]],
+    profile: Dict[str, Any],
+    query_text: str | None = None,
+    latency_ms: int = 0,
+    session_id: str | None = None,
+) -> Tuple[MemoryBundleV1, List[Dict[str, Any]]]:
+    """PCR Phase 1: sql_chat-only transcript-shaped render."""
+    narrowed = dict(profile)
+    narrowed.setdefault("max_total_items", 6)
+    narrowed.setdefault("render_budget_tokens", 96)
+    narrowed["render_lane"] = "continuity"
+    bundle, ranking = fuse_candidates(
+        candidates=candidates,
+        profile=narrowed,
+        latency_ms=latency_ms,
+        query_text=query_text or "",
+        session_id=session_id,
+        substantive_query=False,
+        diagnostic=False,
+    )
+    header = "[Recent thread — continuity only]\n"
+    rendered = header + (bundle.rendered or "")
+    if bundle.stats:
+        bundle.stats.profile = str(profile.get("profile") or "chat.continuity.v1")
+    bundle.rendered = rendered.strip()
+    return bundle, ranking
+
+
+_BELIEF_SOURCE_ORDER = {
+    "active_packet": 0,
+    "cards": 1,
+    "rdf": 2,
+    "rdf_chat": 3,
+    "memory_graph_sparql": 4,
+    "graphiti": 5,
+}
+
+
+def _belief_source_rank(source: str) -> int:
+    src = str(source or "unknown")
+    if src.startswith("rdf"):
+        return _BELIEF_SOURCE_ORDER.get("rdf", 99)
+    return _BELIEF_SOURCE_ORDER.get(src, 99)
+
+
+def pcr_fuse_belief_candidates(
+    *,
+    candidates: Iterable[Dict[str, Any]],
+    profile: Dict[str, Any],
+    retrieval_intent: str,
+    query_text: str = "",
+    latency_ms: int = 0,
+) -> Tuple[MemoryBundleV1, List[Dict[str, Any]]]:
+    """PCR Phase 3: belief-lane fusion with active_packet priority."""
+    filtered = [
+        c
+        for c in candidates
+        if not _is_low_info_social_candidate(str(c.get("snippet") or c.get("text") or ""))
+    ]
+    filtered.sort(
+        key=lambda item: (
+            _belief_source_rank(str(item.get("source") or "")),
+            -float(item.get("score") or 0.0),
+            str(item.get("id") or ""),
+        )
+    )
+
+    narrowed = dict(profile)
+    narrowed.setdefault("max_total_items", 8)
+    narrowed["render_lane"] = "belief"
+    bundle, ranking = fuse_candidates(
+        candidates=filtered,
+        profile=narrowed,
+        latency_ms=latency_ms,
+        query_text=query_text,
+        substantive_query=True,
+        diagnostic=False,
+    )
+
+    reranked_items = sorted(
+        bundle.items,
+        key=lambda item: (
+            _belief_source_rank(str(item.source or "")),
+            -float(item.score or 0.0),
+            str(item.id or ""),
+        ),
+    )
+    bundle.items = reranked_items
+
+    header = f"[Durable beliefs — purposeful recall: {retrieval_intent}]\n"
+    rendered_body = bundle.rendered or ""
+    if rendered_body and not rendered_body.startswith("["):
+        bundle.rendered = header + rendered_body
+    elif reranked_items:
+        from .render import render_items
+
+        profile_name = profile.get("profile")
+        rendered_body, _budget_dropped = render_items(
+            reranked_items,
+            int(narrowed.get("render_budget_tokens", 128)),
+            profile_name=profile_name,
+            diagnostic=False,
+            budget_indicator=False,
+        )
+        bundle.rendered = header + rendered_body
+    else:
+        bundle.rendered = header.strip()
+
+    if bundle.stats:
+        bundle.stats.profile = str(profile.get("profile") or f"chat.belief.{retrieval_intent}.v1")
+    bundle.rendered = bundle.rendered.strip()
+    return bundle, ranking

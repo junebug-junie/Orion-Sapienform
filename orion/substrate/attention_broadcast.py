@@ -48,6 +48,10 @@ _transition_history: deque[dict[str, Any]] = deque(maxlen=10)
 _recent_selected_counts: dict[str, int] = {}
 _MAX_TRACKED_THEMES = 64
 
+# A theme selected at least this many times is "resonating" (stuck) — engage
+# the resonance term of habituation so inhibition-of-return can release it.
+_RESONANCE_MIN_COUNT = 3
+
 
 def _record_selection(loop_id: str | None) -> None:
     if not loop_id:
@@ -61,10 +65,17 @@ def _record_selection(loop_id: str | None) -> None:
 def _current_history(resonance_theme_keys: set[str] | None = None) -> "SalienceHistory":
     from orion.substrate.attention.salience import SalienceHistory
 
+    # A theme selected repeatedly IS resonating (stuck): engage the full
+    # habituation penalty so inhibition-of-return can eventually release it.
+    # Callers may still pass explicit keys (e.g. tests / other producers).
+    if resonance_theme_keys is None:
+        resonance_theme_keys = {
+            k for k, v in _recent_selected_counts.items() if v >= _RESONANCE_MIN_COUNT
+        }
     return SalienceHistory(
         dwell_ticks=_dwell_ticks,
         recent_theme_counts=dict(_recent_selected_counts),
-        resonance_theme_keys=set(resonance_theme_keys or set()),
+        resonance_theme_keys=set(resonance_theme_keys),
     )
 
 

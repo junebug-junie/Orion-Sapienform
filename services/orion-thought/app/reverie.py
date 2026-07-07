@@ -263,10 +263,18 @@ async def run_reverie_once(
     correlation_id = str(uuid4())
     concern_cards: list[ConcernCardV1] | None = None
     if settings.reverie_semantic_lift_enabled:
-        loader = default_referent_loader(max_age_hours=settings.reverie_referent_max_age_hours)
-        concern_cards = resolve_concern_cards(broadcast, referent_loader=loader)
-        if reverie_semantic_gate(concern_cards) == "skip":
-            logger.info("reverie tick skipped: reverie_skipped_no_semantic_referent")
+        try:
+            loader = default_referent_loader(max_age_hours=settings.reverie_referent_max_age_hours)
+            concern_cards = resolve_concern_cards(broadcast, referent_loader=loader)
+            if reverie_semantic_gate(concern_cards) == "skip":
+                logger.info("reverie tick skipped: reverie_skipped_no_semantic_referent")
+                return None
+        except Exception as exc:
+            logger.warning(
+                "reverie semantic lift failed corr=%s err=%s; tick skipped",
+                correlation_id,
+                exc,
+            )
             return None
 
     client = cortex_client or CortexExecClient(

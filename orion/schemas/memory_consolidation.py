@@ -34,7 +34,7 @@ class MemoryConsolidationWindowV1(BaseModel):
     turn_correlation_ids: List[str] = Field(default_factory=list)
     status: Literal["open", "closed", "consolidated", "failed"] = "open"
     phase_change_at_close: Optional[str] = None
-    consolidation_status: Optional[Literal["pending", "ok", "failed"]] = None
+    consolidation_status: Optional[Literal["pending", "ok", "failed", "skipped"]] = None
     draft_id: Optional[str] = None
     created_at: datetime
     closed_at: Optional[datetime] = None

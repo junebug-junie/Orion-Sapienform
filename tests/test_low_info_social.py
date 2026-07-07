@@ -11,3 +11,7 @@ def test_substantive_is_not_low_info():
 
 def test_thanks_is_low_info():
     assert is_low_info_social("thanks!") is True
+
+
+def test_anytime_is_low_info():
+    assert is_low_info_social("anytime") is True

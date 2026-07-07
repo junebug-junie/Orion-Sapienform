@@ -118,6 +118,7 @@ def test_enrich_spark_meta_patch_skips_degraded():
 
 @pytest.mark.asyncio
 async def test_consolidate_window_persists_draft(monkeypatch):
+    monkeypatch.setattr(worker.settings, "MEMORY_CONSOLIDATION_OUTPUT", "graph_draft")
     draft_data = json.loads(FIXTURE.read_text(encoding="utf-8"))
     pool = AsyncMock()
     window_store = AsyncMock()

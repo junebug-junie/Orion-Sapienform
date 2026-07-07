@@ -83,3 +83,61 @@ def test_load_tail_returns_ascending():
     store = _store_with(eng)
     frames = store.load_brain_frames_tail(limit=2)
     assert [f["tick_seq"] for f in frames] == [2, 3]  # reversed to ascending
+
+
+def test_load_range_downsamples_to_max_and_ascending():
+    ts = datetime(2026, 7, 7, tzinfo=timezone.utc)
+    start = datetime(2026, 7, 6, tzinfo=timezone.utc)
+    end = datetime(2026, 7, 8, tzinfo=timezone.utc)
+
+    big_rows = [{"frame_json": _frame(i, ts).model_dump(mode="json")} for i in range(1000)]
+    eng = _RecordingEngine(range_rows=big_rows)
+    store = _store_with(eng)
+    result = store.load_brain_frames_range(start, end, max_frames=240)
+    assert len(result) == 240
+    seqs = [f["tick_seq"] for f in result]
+    assert seqs == sorted(seqs)  # ascending
+    assert seqs[0] == 0  # index 0 always kept
+
+    small_rows = [{"frame_json": _frame(i, ts).model_dump(mode="json")} for i in range(10)]
+    eng_small = _RecordingEngine(range_rows=small_rows)
+    store_small = _store_with(eng_small)
+    result_small = store_small.load_brain_frames_range(start, end, max_frames=240)
+    assert [f["tick_seq"] for f in result_small] == list(range(10))
+
+
+class _WindowEngine:
+    """Fake engine returning queued ``.mappings().first()`` values in call order."""
+
+    def __init__(self, first_values):
+        self._first_values = list(first_values)
+
+    @contextmanager
+    def connect(self):
+        engine = self
+
+        def execute(stmt, params=None):
+            m = MagicMock()
+            m.mappings.return_value.first.return_value = engine._first_values.pop(0)
+            return m
+
+        conn = MagicMock()
+        conn.execute.side_effect = execute
+        yield conn
+
+
+def test_brain_frame_window_reports_bounds_and_phase():
+    earliest = datetime(2026, 7, 6, 1, 0, tzinfo=timezone.utc)
+    latest = datetime(2026, 7, 7, 2, 0, tzinfo=timezone.utc)
+    eng = _WindowEngine(
+        [
+            {"earliest": earliest, "latest": latest, "n": 5},
+            {"phase": "live"},
+        ]
+    )
+    store = _store_with(eng)
+    window = store.brain_frame_window()
+    assert window["earliest"] == earliest.isoformat()
+    assert window["latest"] == latest.isoformat()
+    assert window["frame_count"] == 5
+    assert window["phase"] == "live"

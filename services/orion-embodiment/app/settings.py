@@ -26,6 +26,10 @@ class Settings(BaseSettings):
 
     speech_enabled: bool = Field(False, alias="EMBODIMENT_SPEECH_ENABLED")
     speech_lane: str = Field("quick", alias="EMBODIMENT_SPEECH_LANE")
+    speech_verb: str = Field("chat_quick", alias="EMBODIMENT_SPEECH_VERB")
+    speech_timeout_sec: float = Field(30.0, alias="EMBODIMENT_SPEECH_TIMEOUT_SEC")
+    cortex_request_channel: str = Field("orion:cortex:exec:request", alias="EMBODIMENT_CORTEX_REQUEST_CHANNEL")
+    cortex_result_prefix: str = Field("orion:exec:result", alias="EMBODIMENT_CORTEX_RESULT_PREFIX")
     memory_enabled: bool = Field(False, alias="EMBODIMENT_MEMORY_ENABLED")
 
     channel_intent: str = Field("orion:embodiment:intent", alias="EMBODIMENT_CHANNEL_INTENT")

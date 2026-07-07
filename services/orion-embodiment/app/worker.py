@@ -19,6 +19,7 @@ from orion.embodiment import aitown_client
 from orion.embodiment.arbiter import ArbiterState, decide
 from orion.embodiment.perception import build_perception
 from orion.embodiment.resolver import resolve_destination
+from orion.embodiment.speech import build_speech_prompt, is_injectable, should_speak
 from orion.schemas.embodiment import (
     EMBODIMENT_OUTCOME_KIND,
     EMBODIMENT_PERCEPTION_KIND,
@@ -33,6 +34,9 @@ logger = logging.getLogger("orion.embodiment.worker")
 # NOT vendored in this checkout, so these follow the AI Town canonical schema.
 # TODO(embodiment): confirm names/args against upstream when it is vendored.
 START_CONVERSATION_INPUT = "startConversation"
+START_TYPING_INPUT = "startTyping"
+FINISH_SENDING_MESSAGE_INPUT = "finishSendingMessage"
+WRITE_MESSAGE_MUTATION = "messages:writeMessage"
 
 
 def _utcnow() -> datetime:
@@ -51,6 +55,7 @@ class EmbodimentWorker:
         self._wander_radius = self._settings.wander_radius
         self._social_cooldown_sec = self._settings.social_cooldown_sec
         self._last_conversation_start: Optional[datetime] = None
+        self._speaking_conversations: set[str] = set()
         self._load_fcc_env()
         self._orion_player_id = str(os.environ.get("AITOWN_ORION_PLAYER_ID") or "").strip()
         self._world_id = str(os.environ.get("AITOWN_WORLD_ID") or "").strip()
@@ -261,10 +266,121 @@ class EmbodimentWorker:
         interval = self._settings.perception_interval_sec
         while not self._stop.is_set():
             try:
-                await self._emit_perception_once()
+                perception = await self._emit_perception_once()
             except Exception:
                 logger.exception("embodiment_perception_loop_failed")
+                perception = None
+            if perception is not None and getattr(self._settings, "speech_enabled", False):
+                try:
+                    await self._speak_once(perception)
+                except Exception:
+                    logger.exception("embodiment_speech_loop_failed")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except asyncio.TimeoutError:
                 continue
+
+    # --- speech (cortex-generated town utterances) --------------------------
+    async def _speak_once(self, perception: WorldPerceptionV1) -> Optional[str]:
+        """Gated, fail-open speech pass. Own-agent only; one utterance per convo."""
+        if not getattr(self._settings, "speech_enabled", False):
+            return None
+        own = (self._orion_player_id or "").strip()
+        if not should_speak(perception, own):
+            return None
+        convo = perception.active_conversation or {}
+        convo_id = str(convo.get("conversation_id") or convo.get("id") or "")
+        if not convo_id or convo_id in self._speaking_conversations:
+            return None
+
+        prompt = build_speech_prompt(perception, own)
+        self._speaking_conversations.add(convo_id)
+        try:
+            reply = await self._request_utterance(prompt, correlation_id=str(uuid4()))
+        except Exception:
+            logger.exception("embodiment_speech_request_failed convo=%s", convo_id)
+            reply = ""
+        finally:
+            self._speaking_conversations.discard(convo_id)
+
+        if not is_injectable(reply):
+            logger.info("embodiment_speech_empty_reply_skipped convo=%s", convo_id)
+            return None
+
+        try:
+            await asyncio.to_thread(self._inject_utterance, own, convo_id, reply)
+        except Exception:
+            logger.exception("embodiment_speech_inject_failed convo=%s", convo_id)
+            return None
+        return reply
+
+    async def _request_utterance(self, prompt: str, *, correlation_id: str) -> str:
+        """Reuse the cortex exec rail to generate an utterance. Fail-open -> ''."""
+        from orion.cognition.cortex_payload_extract import extract_cortex_payload_text
+        from orion.cognition.plan_loader import build_plan_for_verb
+        from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
+
+        try:
+            plan = build_plan_for_verb(self._settings.speech_verb, mode=self._settings.speech_lane)
+            req = PlanExecutionRequest(
+                plan=plan,
+                args=PlanExecutionArgs(
+                    request_id=correlation_id,
+                    trigger_source=self._settings.service_name,
+                    extra={"lane": self._settings.speech_lane},
+                ),
+                context={"user_message": prompt, "metadata": {"correlation_id": correlation_id}},
+            )
+            reply_channel = f"{self._settings.cortex_result_prefix}:{uuid4()}"
+            env = BaseEnvelope(
+                kind=req.kind,
+                source=self._service_ref(),
+                correlation_id=correlation_id,
+                reply_to=reply_channel,
+                payload=req.model_dump(mode="json"),
+            )
+            msg = await self._bus.rpc_request(
+                self._settings.cortex_request_channel,
+                env,
+                reply_channel=reply_channel,
+                timeout_sec=float(self._settings.speech_timeout_sec),
+            )
+            decoded = self._bus.codec.decode(msg.get("data"))
+            if not decoded.ok:
+                return ""
+            payload = decoded.envelope.payload
+            result = payload.get("result") if isinstance(payload, dict) else None
+            text = extract_cortex_payload_text(result if isinstance(result, dict) else (payload or {}))
+            return str(text or "")
+        except Exception:
+            logger.exception("embodiment_speech_rpc_failed corr=%s", correlation_id)
+            return ""
+
+    def _inject_utterance(self, own_player_id: str, conversation_id: str, text: str) -> None:
+        """Inject an utterance into the AI Town conversation (startTyping -> write -> finish).
+
+        Input/mutation names follow the AI Town canonical schema (upstream not
+        vendored here). See TODO on the input constants above.
+        """
+        message_uuid = str(uuid4())
+        wid = self._world_id or None
+        aitown_client.send_input(
+            name=START_TYPING_INPUT,
+            args={"playerId": own_player_id, "conversationId": conversation_id, "messageUuid": message_uuid},
+            world_id=wid,
+        )
+        aitown_client.convex_mutation(
+            WRITE_MESSAGE_MUTATION,
+            {
+                "worldId": self._world_id,
+                "conversationId": conversation_id,
+                "messageUuid": message_uuid,
+                "author": own_player_id,
+                "text": text,
+            },
+        )
+        aitown_client.send_input(
+            name=FINISH_SENDING_MESSAGE_INPUT,
+            args={"playerId": own_player_id, "conversationId": conversation_id, "messageUuid": message_uuid},
+            world_id=wid,
+        )

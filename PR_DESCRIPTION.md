@@ -53,10 +53,10 @@ World-pulse computed section coverage but never acted on gaps; the reactive conc
 
 ```text
 # from repo root (worktree), main-checkout venv
-pytest services/orion-world-pulse/tests   -> 68 passed
+pytest services/orion-world-pulse/tests   -> 69 passed
 pytest orion/autonomy/tests               -> 125 passed
 pytest services/orion-spark-concept-induction/tests -> 5 passed (incl. new reuse-wiring test)
-# per-task TDD: schema(2), tokenize(3), settings(2), curiosity(7), pipeline(2), renderers(3),
+# per-task TDD: schema(2), tokenize(3), settings(2), curiosity(8), pipeline(2), renderers(3),
 #               curiosity_reuse(4), policy_act_prefetched(1)
 ```
 
@@ -78,6 +78,10 @@ docker run <img> import app.services.curiosity + load_capability_policy() -> IMP
 - **world-pulse image didn't ship `config/autonomy`** → enabling the feature in-container would miss the capability policy; the unguarded gate call could crash the run. Fix: `COPY config/autonomy` in the Dockerfile + wrap `_gate_open` so a policy load/eval failure degrades to `[]`. Evidence: in-image `load_capability_policy()` returns 4 rules; new `test_gate_evaluation_error_degrades_to_empty`.
 - **Highest-risk seam (worker reuse wiring) had no integration test.** Fix: `test_curiosity_reuse_wiring.py` drives a real `world.pulse.run.result.v1` envelope through `ConceptWorker.handle_envelope` with the real select/outcome/policy_act path; asserts fetch backend call count == 0 and emitted `action_id` == the followup's. settrace confirmed the new `bus_worker.py` lines execute.
 - **`build_digest` optional param redundant with attribute-attach** (both spec-requested) — kept as documented; harmless (Low).
+
+Second review pass (`fba23e9a..a04bbcf2`, verdict "Ready to merge — Yes"), Minor items fixed:
+- **Mapping error could still raise.** `CuriosityFollowupV1`/`CuriosityFindingV1` construction was just outside the per-section `try/except`. Fix: moved it inside so a schema-mapping failure also degrades to skipping the section (fully honors never-fail-the-run). Evidence: new `test_mapping_error_degrades_to_skip`.
+- **`budget_per_cycle` not enforced on the producer path.** The capability policy's `budget_per_cycle: 2` acts as an on/off gate here; per-run fetch cost is bounded by `max_sections` (<=9). Fix: documented in a code comment (intended per spec decision; no behavior change).
 
 ## Restart required
 
@@ -105,4 +109,4 @@ Not run: requires enabling billable Firecrawl fetches on the live deployment.
 
 ## Status
 
-DONE_WITH_CONCERNS (concerns are all Low, documented above). PR must be opened by an authenticated operator — see instructions below.
+DONE (two code reviews passed — final verdict "Ready to merge"; all Critical/Important = none; Minor findings fixed). Remaining concerns are Low and documented above. PR must be opened by an authenticated operator — see the create URL / `PR_DESCRIPTION.md` below.

@@ -1108,11 +1108,32 @@ class BiometricsSubstrateWorker:
                 break
 
     def _brain_frame_lane_health(self) -> dict:
-        """Fetch reducer lane health for lane regions. Fail-open to empty."""
-        try:
-            from app.grammar_truth import build_substrate_grammar_truth
+        """Fetch reducer lane health for lane regions, remapped to friendly lane keys.
 
-            return build_substrate_grammar_truth(self._store)
+        ``build_substrate_grammar_truth`` keys its lag/backlog/quarantine dicts by
+        cursor_name (e.g. ``execution_grammar_reducer``); the brain-frame producer
+        and UI expect the friendly reducer keys (e.g. ``execution_trajectory``).
+        Remap here so no phantom/mislabeled lanes reach the frame. Fail-open to {}.
+        """
+        try:
+            from app.grammar_truth import (
+                REDUCER_KEY_BY_CURSOR,
+                build_substrate_grammar_truth,
+            )
+
+            truth = build_substrate_grammar_truth(self._store)
+
+            def _remap(d):
+                out = {}
+                for k, v in (d or {}).items():
+                    out[REDUCER_KEY_BY_CURSOR.get(k, k)] = v
+                return out
+
+            return {
+                "cursor_lag_by_reducer": _remap(truth.get("cursor_lag_by_reducer")),
+                "pending_backlog_by_reducer": _remap(truth.get("pending_backlog_by_reducer")),
+                "quarantine_by_reducer": _remap(truth.get("quarantine_by_reducer")),
+            }
         except Exception:
             logger.exception("brain_frame_lane_health_failed")
             return {}

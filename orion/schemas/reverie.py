@@ -23,6 +23,8 @@ from orion.schemas.thought import CoalitionSnapshotV1
 
 # Minimum grounded interpretation length. Below this, a "thought" is drivel.
 MIN_INTERPRETATION_CHARS = 40
+# Cap on concern card human text (semantic lift v1).
+MAX_CONCERN_HUMAN_TEXT = 500
 # Cap on audit evidence refs (§ cap-all-collections).
 MAX_EVIDENCE_REFS = 50
 
@@ -113,6 +115,55 @@ class SpontaneousThoughtV1(BaseModel):
         """Return a copy with the hollow flag + reason stamped from the guard."""
         reason = self.hollow_reason_for()
         return self.model_copy(update={"hollow": reason is not None, "hollow_reason": reason})
+
+
+# --- Semantic lift: concern cards (v1) ----------------------------------------
+
+ConcernSourceKind = Literal["harness_turn"]
+
+
+class ConcernCardV1(BaseModel):
+    """Deterministic human referent lifted from coalition pointers for reverie."""
+
+    card_id: str
+    coalition_ref: str
+    source_kind: ConcernSourceKind = "harness_turn"
+    human_text: str = Field(max_length=MAX_CONCERN_HUMAN_TEXT)
+    thread_label: str = Field(default="", max_length=80)
+    freshness_sec: float = Field(default=0.0, ge=0.0)
+
+    @classmethod
+    def from_harness_turn(
+        cls,
+        *,
+        coalition_ref: str,
+        user_message_excerpt: str,
+        stance_imperative: str,
+        created_at: datetime,
+        now: datetime | None = None,
+    ) -> "ConcernCardV1 | None":
+        user = (user_message_excerpt or "").strip()
+        stance = (stance_imperative or "").strip()
+        if not user and not stance:
+            return None
+        human_text = (
+            f'You said: "{user}"\n'
+            f"I felt I should: {stance}\n"
+            "(Surprise still open from that turn.)"
+        )[:MAX_CONCERN_HUMAN_TEXT]
+        if len(human_text.strip()) < 40 and len(user) < 10 and len(stance) < 10:
+            return None
+        ref_now = now or datetime.now(timezone.utc)
+        age = max(0.0, (ref_now - created_at).total_seconds())
+        from orion.substrate.ids import stable_hash_id
+
+        return cls(
+            card_id=stable_hash_id("concern", [coalition_ref]),
+            coalition_ref=coalition_ref,
+            human_text=human_text,
+            thread_label=(user[:80] if user else stance[:80]),
+            freshness_sec=age,
+        )
 
 
 # --- Phase C: reverie chain ---------------------------------------------------

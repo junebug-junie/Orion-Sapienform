@@ -30,6 +30,24 @@ Mind-to-sprite bridge: gives Orion a persistent AI Town body driven by its own s
 
 Never hardcode `bus-core` / `redis://redis`. `ORION_BUS_URL` passes through from the root `.env`.
 
+## Town speech (unified vs quick)
+
+When `EMBODIMENT_SPEECH_ENABLED=true`, Orion generates town utterances via `_request_utterance`, a dispatcher with two lanes:
+
+- **Unified (default):** `POST {EMBODIMENT_HUB_CHAT_URL}` with `{"mode": "orion", "session_id": "<prefix>:<conversation_id>", "messages": [{"role": "user", "content": <prompt>}]}`. The hub runs the full unified-turn saga (full cognition pass) and returns a final frame; its `llm_response` becomes the town utterance. `session_id` uses `EMBODIMENT_UNIFIED_SESSION_PREFIX` + the active AI Town conversation id.
+- **Quick (fallback):** the legacy cortex-exec rail (`chat_quick` on lane `quick`) over the bus RPC channel `EMBODIMENT_CORTEX_REQUEST_CHANNEL`.
+
+The dispatcher tries unified first when `EMBODIMENT_SPEECH_UNIFIED_ENABLED=true`. On timeout, HTTP/JSON error, a non-`final` frame (`turn_deferred`/`turn_error`), or an empty `llm_response`, it logs one `embodiment_speech_unified_fallback reason=<...>` INFO line and falls back to the quick lane. With `EMBODIMENT_SPEECH_UNIFIED_ENABLED=false` it calls the quick lane directly (preserves legacy behavior).
+
+**Dependency:** the unified path only works if the hub at `EMBODIMENT_HUB_CHAT_URL` has `ORION_UNIFIED_TURN_ENABLED=true` **and** `ORION_HARNESS_GOVERNOR_ENABLED=true`. Otherwise the hub returns a deferred/error frame and Orion always falls back to the quick lane.
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `EMBODIMENT_SPEECH_UNIFIED_ENABLED` | `true` | Prefer the unified turn; `false` = quick-only legacy path |
+| `EMBODIMENT_HUB_CHAT_URL` | `http://orion-athena-hub:8080/api/chat` | Hub unified-turn endpoint (app-net) |
+| `EMBODIMENT_UNIFIED_TIMEOUT_SEC` | `120` | Unified turn HTTP timeout (sec) |
+| `EMBODIMENT_UNIFIED_SESSION_PREFIX` | `aitown` | Prefix for the unified `session_id` |
+
 ## Secrets (`~/.fcc/.env`)
 
 `AITOWN_CONVEX_URL`, `AITOWN_ADMIN_KEY`, `AITOWN_WORLD_ID`, `AITOWN_ORION_PLAYER_ID`, `AITOWN_ORION_AGENT_ID` are loaded from `~/.fcc/.env` (mounted read-only at `/root/.fcc/.env`), **not** from this service `.env`.

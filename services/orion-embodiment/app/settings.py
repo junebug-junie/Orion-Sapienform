@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     speech_timeout_sec: float = Field(30.0, alias="EMBODIMENT_SPEECH_TIMEOUT_SEC")
     cortex_request_channel: str = Field("orion:cortex:exec:request", alias="EMBODIMENT_CORTEX_REQUEST_CHANNEL")
     cortex_result_prefix: str = Field("orion:exec:result", alias="EMBODIMENT_CORTEX_RESULT_PREFIX")
+    # Unified turn for town speech: prefer the hub-only saga (POST /api/chat mode=orion)
+    # so town utterances get the full cognition pass; fall back to the quick cortex
+    # rail above on timeout/error. Set false to force the quick-only legacy behavior.
+    speech_unified_enabled: bool = Field(True, alias="EMBODIMENT_SPEECH_UNIFIED_ENABLED")
+    hub_chat_url: str = Field("http://orion-athena-hub:8080/api/chat", alias="EMBODIMENT_HUB_CHAT_URL")
+    unified_timeout_sec: float = Field(120.0, alias="EMBODIMENT_UNIFIED_TIMEOUT_SEC")
+    unified_session_prefix: str = Field("aitown", alias="EMBODIMENT_UNIFIED_SESSION_PREFIX")
     memory_enabled: bool = Field(False, alias="EMBODIMENT_MEMORY_ENABLED")
 
     # Conversation engagement: accept invites, walk to the partner to reach

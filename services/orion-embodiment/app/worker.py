@@ -668,7 +668,9 @@ class EmbodimentWorker:
         self._speaking_conversations.add(convo_id)
         try:
             try:
-                reply = await self._request_utterance(prompt, correlation_id=str(uuid4()))
+                reply = await self._request_utterance(
+                    prompt, correlation_id=str(uuid4()), convo_id=convo_id
+                )
             except Exception:
                 logger.exception("embodiment_speech_request_failed convo=%s", convo_id)
                 reply = ""
@@ -695,7 +697,67 @@ class EmbodimentWorker:
         finally:
             self._speaking_conversations.discard(convo_id)
 
-    async def _request_utterance(self, prompt: str, *, correlation_id: str) -> str:
+    async def _request_utterance(
+        self, prompt: str, *, correlation_id: str, convo_id: Optional[str] = None
+    ) -> str:
+        """Generate a town utterance. Dispatcher: prefer the unified turn (full
+        cognition pass over the hub saga); fall back to the quick cortex rail on
+        timeout/error/empty. Fail-open -> ''.
+
+        Set ``speech_unified_enabled`` false to force the legacy quick-only path.
+        """
+        if getattr(self._settings, "speech_unified_enabled", False):
+            session_id = f"{self._settings.unified_session_prefix}:{convo_id or 'orion'}"
+            try:
+                unified = await self._request_utterance_unified(
+                    prompt, correlation_id=correlation_id, session_id=session_id
+                )
+            except Exception as exc:
+                logger.info("embodiment_speech_unified_fallback reason=%s", type(exc).__name__)
+                unified = ""
+            if unified.strip():
+                return unified
+            logger.info("embodiment_speech_unified_fallback reason=empty")
+        return await self._request_utterance_quick(prompt, correlation_id=correlation_id)
+
+    async def _request_utterance_unified(
+        self, prompt: str, *, correlation_id: str, session_id: str
+    ) -> str:
+        """Route the utterance through the hub-only unified turn saga
+        (``POST /api/chat`` with ``mode=orion``). Returns the final text on success;
+        returns "" to signal fallback on any non-final frame. Network/JSON errors
+        propagate to the dispatcher, which logs one fallback line."""
+        import urllib.error
+        import urllib.request
+
+        body = json.dumps(
+            {
+                "mode": "orion",
+                "session_id": session_id,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+        ).encode("utf-8")
+
+        def _post() -> dict:
+            req = urllib.request.Request(
+                self._settings.hub_chat_url,
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(
+                req, timeout=float(self._settings.unified_timeout_sec)
+            ) as resp:
+                raw = resp.read().decode("utf-8")
+            return json.loads(raw)
+
+        frame = await asyncio.to_thread(_post)
+        if not isinstance(frame, dict) or frame.get("type") != "final":
+            return ""
+        text = str(frame.get("llm_response") or "").strip()
+        return text
+
+    async def _request_utterance_quick(self, prompt: str, *, correlation_id: str) -> str:
         """Reuse the cortex exec rail to generate an utterance. Fail-open -> ''."""
         from orion.cognition.cortex_payload_extract import extract_cortex_payload_text
         from orion.cognition.plan_loader import build_plan_for_verb

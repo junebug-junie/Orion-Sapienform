@@ -38,3 +38,12 @@ def test_card_features_rendered_in_words():
     )
     joined = " ".join(card.top_contributing_features).lower()
     assert "evidence" in joined or "recurr" in joined or "recency" in joined
+
+
+def test_card_age_handles_naive_now():
+    from datetime import datetime
+    card = build_pending_card(
+        _loop(), first_seen=datetime(2026, 1, 1, 0, 0), recurrence_count=1,
+        narrative="", now=datetime(2026, 1, 1, 1, 0),  # both naive
+    )
+    assert card.age_seconds == 3600.0

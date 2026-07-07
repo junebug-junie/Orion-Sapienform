@@ -68,6 +68,8 @@ def build_pending_card(
     now: datetime | None = None,
 ) -> PendingAttentionCardV1:
     now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     if first_seen.tzinfo is None:
         first_seen = first_seen.replace(tzinfo=timezone.utc)
     age = max(0.0, (now - first_seen).total_seconds())

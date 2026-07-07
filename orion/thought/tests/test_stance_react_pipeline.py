@@ -94,6 +94,19 @@ def test_parse_stance_react_payload_from_json_string() -> None:
     assert parsed.imperative == "Answer directly."
 
 
+def test_parse_stance_react_payload_injects_correlation_id_from_string_payload() -> None:
+    raw = _thought().model_dump(mode="json")
+    raw.pop("correlation_id", None)
+    raw.pop("session_id", None)
+    parsed = parse_stance_react_payload(
+        json.dumps(raw),
+        correlation_id="c-injected",
+        session_id="sess-injected",
+    )
+    assert parsed.correlation_id == "c-injected"
+    assert parsed.session_id == "sess-injected"
+
+
 def test_parse_stance_react_payload_from_markdown_wrapped_json() -> None:
     inner = _thought().model_dump(mode="json")
     wrapped = f"Here is the stance JSON:\n```json\n{json.dumps(inner)}\n```"

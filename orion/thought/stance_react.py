@@ -166,12 +166,21 @@ def slim_repair_bundle_for_prompt(bundle: TurnAppraisalBundleV1 | None) -> dict[
     return slim
 
 
-def parse_stance_react_payload(raw: dict[str, Any] | str) -> ThoughtEventV1:
+def parse_stance_react_payload(
+    raw: dict[str, Any] | str,
+    *,
+    correlation_id: str | None = None,
+    session_id: str | None = None,
+) -> ThoughtEventV1:
     """Validate JSON from cortex stance_react step into ThoughtEventV1."""
     if isinstance(raw, str):
         raw = decode_stance_react_json(raw)
     if not isinstance(raw, dict):
         raise TypeError("stance_react payload must be a JSON object")
+    if correlation_id:
+        raw.setdefault("correlation_id", correlation_id)
+    if session_id is not None:
+        raw.setdefault("session_id", session_id)
     return ThoughtEventV1.model_validate(normalize_stance_react_raw(raw))
 
 

@@ -15,12 +15,24 @@ Run: pytest services/orion-embodiment/evals -q
 """
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import patch
 
-from app.worker import EmbodimentWorker
-from orion.embodiment.arbiter import ArbiterState
-from orion.schemas.embodiment import EmbodimentIntentV1
+# Path bootstrap so `__main__` (standalone) execution resolves `app` and `orion`
+# without pytest's conftest. Mirrors evals/conftest.py; idempotent under pytest.
+_HERE = Path(__file__).resolve()
+_SERVICE_ROOT = _HERE.parents[1]
+_REPO_ROOT = _HERE.parents[3]
+if str(_SERVICE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SERVICE_ROOT))
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.append(str(_REPO_ROOT))
+
+from app.worker import EmbodimentWorker  # noqa: E402
+from orion.embodiment.arbiter import ArbiterState  # noqa: E402
+from orion.schemas.embodiment import EmbodimentIntentV1  # noqa: E402
 
 _T0 = datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc)
 _HOLD_SEC = 8.0

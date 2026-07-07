@@ -646,3 +646,33 @@ def fuse_candidates(
         diagnostic=diag_payload,
     )
     return MemoryBundleV1(rendered=rendered, items=items, stats=stats), ranking_debug
+
+
+def render_continuity_bundle(
+    *,
+    candidates: Iterable[Dict[str, Any]],
+    profile: Dict[str, Any],
+    query_text: str | None = None,
+    latency_ms: int = 0,
+    session_id: str | None = None,
+) -> Tuple[MemoryBundleV1, List[Dict[str, Any]]]:
+    """PCR Phase 1: sql_chat-only transcript-shaped render."""
+    narrowed = dict(profile)
+    narrowed.setdefault("max_total_items", 6)
+    narrowed.setdefault("render_budget_tokens", 96)
+    narrowed["render_lane"] = "continuity"
+    bundle, ranking = fuse_candidates(
+        candidates=candidates,
+        profile=narrowed,
+        latency_ms=latency_ms,
+        query_text=query_text or "",
+        session_id=session_id,
+        substantive_query=False,
+        diagnostic=False,
+    )
+    header = "[Recent thread — continuity only]\n"
+    rendered = header + (bundle.rendered or "")
+    if bundle.stats:
+        bundle.stats.profile = str(profile.get("profile") or "chat.continuity.v1")
+    bundle.rendered = rendered.strip()
+    return bundle, ranking

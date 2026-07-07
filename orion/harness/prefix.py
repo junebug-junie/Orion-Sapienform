@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+
+from orion.fcc.github_repo_context import github_mcp_repo_brief_line
 from orion.harness.operator_brief import (
     HARNESS_MOTOR_MAX_READ_LINES,
     HARNESS_UNIFIED_OPERATOR_BRIEF,
@@ -72,5 +75,15 @@ def compile_harness_prefix(
 
     if repair_overlay.rule_lines:
         parts.append("Rules: " + "; ".join(repair_overlay.rule_lines))
+
+    if os.environ.get("HARNESS_FCC_MCP_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        github_line = github_mcp_repo_brief_line()
+        if github_line:
+            parts.append(github_line)
 
     return "\n".join(parts)

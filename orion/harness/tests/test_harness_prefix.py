@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from orion.harness.operator_brief import HARNESS_MOTOR_MAX_READ_LINES
 from orion.harness.prefix import compile_harness_prefix, harness_motor_instruction
 from orion.harness.tests.fixtures import make_thought
@@ -52,6 +54,21 @@ def test_compile_harness_prefix_ignores_answer_contract() -> None:
     )
     assert "Requires repo grounding" not in prompt
     assert "Answer contract:" not in prompt
+
+
+def test_compile_harness_prefix_includes_github_repo_when_mcp_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HARNESS_FCC_MCP_ENABLED", "true")
+    monkeypatch.setenv("ORION_GITHUB_OWNER", "junebug-junie")
+    monkeypatch.setenv("ORION_GITHUB_REPO", "Orion-Sapienform")
+    thought = make_thought(imperative="List latest PR title.")
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+    )
+    assert "owner='junebug-junie'" in prompt
+    assert "repo='Orion-Sapienform'" in prompt
 
 
 def test_harness_motor_instruction_imperative_forward() -> None:

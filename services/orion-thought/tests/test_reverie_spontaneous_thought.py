@@ -245,34 +245,48 @@ async def test_tick_swallows_publish_failure():
 
 # --- default broadcast reader (real signature coverage, no live DB) ------------
 
-def test_default_broadcast_reader_hydrates_projection(monkeypatch):
-    """Covers the felt_state_reader wiring the mocked ticks skip."""
-    from app import reverie
-    import orion.substrate.felt_state_reader as fsr
+def test_default_broadcast_reader_returns_projection(monkeypatch):
+    """Covers the direct-DB reader wiring the mocked ticks skip."""
+    from app import broadcast_reader, reverie
 
-    def fake_hydrate(ctx):
-        ctx["attention_broadcast"] = _broadcast().model_dump(mode="json")
-
-    monkeypatch.setattr(fsr, "hydrate_felt_state_ctx", fake_hydrate)
+    monkeypatch.setattr(broadcast_reader, "read_latest_broadcast", lambda *a, **k: _broadcast())
     result = reverie._default_broadcast_reader()
     assert result is not None
     assert result.attended_node_ids == ["n-1"]
 
 
 def test_default_broadcast_reader_none_on_empty(monkeypatch):
-    from app import reverie
-    import orion.substrate.felt_state_reader as fsr
+    from app import broadcast_reader, reverie
 
-    monkeypatch.setattr(fsr, "hydrate_felt_state_ctx", lambda ctx: None)
+    monkeypatch.setattr(broadcast_reader, "read_latest_broadcast", lambda *a, **k: None)
     assert reverie._default_broadcast_reader() is None
 
 
 def test_default_broadcast_reader_never_raises(monkeypatch):
-    from app import reverie
-    import orion.substrate.felt_state_reader as fsr
+    from app import broadcast_reader, reverie
 
-    def boom(ctx):
+    def boom(*a, **k):
         raise RuntimeError("db unreachable")
 
-    monkeypatch.setattr(fsr, "hydrate_felt_state_ctx", boom)
+    monkeypatch.setattr(broadcast_reader, "read_latest_broadcast", boom)
     assert reverie._default_broadcast_reader() is None  # swallowed
+
+
+def test_broadcast_reader_none_when_no_row(monkeypatch):
+    """The direct reader itself is fail-open on an empty/absent table."""
+    from app import broadcast_reader
+
+    class _Conn:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, *a, **k):
+            class _R:
+                def mappings(self_): return self_
+                def first(self_): return None
+            return _R()
+
+    class _Engine:
+        def connect(self): return _Conn()
+
+    monkeypatch.setattr(broadcast_reader, "_get_engine", lambda: _Engine())
+    assert broadcast_reader.read_latest_broadcast() is None

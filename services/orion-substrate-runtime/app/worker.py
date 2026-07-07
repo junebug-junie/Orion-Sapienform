@@ -7,8 +7,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 from orion.biometrics.node_catalog import NodeCatalog
+from orion.core.schemas.drives import DriveStateV1
 from orion.schemas.biometrics_projection import (
     ActiveNodePressureProjectionV1,
     NodeBiometricsProjectionV1,
@@ -160,6 +162,9 @@ class BiometricsSubstrateWorker:
         self._tasks: list[asyncio.Task[None]] = []
         self._substrate_graph_store: Any = None
         self._sql_engine: Any = None
+        # Orion embodiment (C producer): latest drive state cached off the bus,
+        # mapped to one involuntary intent per dynamics tick. Default-off.
+        self._latest_drive_state: DriveStateV1 | None = None
 
     @property
     def bus(self):
@@ -191,6 +196,14 @@ class BiometricsSubstrateWorker:
                 self._endogenous_curiosity_loop(), name="substrate-endogenous-curiosity"
             ),
         ]
+        # Orion embodiment C producer: cache DriveStateV1 off the bus so the
+        # dynamics tick can map it to an involuntary intent. Gated + fail-open.
+        if self._bus is not None and s.embodiment_c_tick_enabled:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._drive_state_listener_loop(), name="substrate-embodiment-drive-listener"
+                )
+            )
 
     async def stop(self) -> None:
         self._stop.set()
@@ -745,12 +758,132 @@ class BiometricsSubstrateWorker:
                 await asyncio.to_thread(self._dynamics_tick)
             except Exception:
                 logger.exception("substrate_dynamics_tick_loop_failed")
+            # Orion embodiment C producer reuses the dynamics cadence (no new
+            # timer, real drive source). Gated + fail-open inside _emit_c_intent.
+            try:
+                await self._emit_c_intent()
+            except Exception:
+                logger.exception("substrate_embodiment_c_tick_loop_failed")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
                 break
+
+    def _service_ref(self):
+        from orion.core.bus.bus_schemas import ServiceRef
+
+        return ServiceRef(
+            name=self._settings.service_name,
+            version=self._settings.service_version,
+            node=self._settings.node_name,
+        )
+
+    def _build_c_intent(self) -> Any:
+        """Sync core of the C producer: map the cached drive state to one intent.
+
+        Returns an ``EmbodimentIntentV1`` (or ``None``). Fail-open: gated by
+        ``embodiment_c_tick_enabled``; returns ``None`` when disabled or when no
+        drive state has been observed yet, so a missing drive source never
+        forces movement.
+        """
+        if not self._settings.embodiment_c_tick_enabled:
+            return None
+        drive = self._latest_drive_state
+        if drive is None:
+            return None
+        from orion.embodiment.drive_map import map_drive_state_to_intent
+
+        return map_drive_state_to_intent(
+            drive,
+            correlation_id=f"substrate-c-tick:{uuid4().hex[:12]}",
+            in_conversation=False,
+        )
+
+    async def _emit_c_intent(self) -> None:
+        """Publish at most one involuntary embodiment intent per dynamics tick.
+
+        Gated + fail-open: builds the intent from the latest cached drive state
+        and publishes it as an ``embodiment.intent.v1`` envelope. Never raises.
+        """
+        if self._bus is None:
+            return
+        try:
+            intent = self._build_c_intent()
+        except Exception:
+            logger.exception("substrate_embodiment_c_intent_build_failed")
+            return
+        if intent is None:
+            return
+        try:
+            from orion.core.bus.bus_schemas import BaseEnvelope
+            from orion.core.bus.resilience import publish_with_reconnect
+            from orion.schemas.embodiment import EMBODIMENT_INTENT_KIND
+
+            env = BaseEnvelope(
+                kind=EMBODIMENT_INTENT_KIND,
+                source=self._service_ref(),
+                correlation_id=uuid4(),
+                payload=intent.model_dump(mode="json"),
+            )
+            await publish_with_reconnect(
+                self._bus,
+                self._settings.embodiment_channel_intent,
+                env,
+                log_label="substrate_embodiment_intent",
+            )
+            logger.info(
+                "substrate_embodiment_c_intent_published kind=%s source=%s reason=%s",
+                intent.kind,
+                intent.source,
+                intent.reason,
+            )
+        except Exception:
+            logger.exception("substrate_embodiment_c_intent_publish_failed")
+
+    async def _drive_state_listener_loop(self) -> None:
+        """Subscribe to the drive-state channel and cache the latest DriveStateV1.
+
+        Mirrors the post-turn-closure decode pattern. Gated at task-creation by
+        ``embodiment_c_tick_enabled``; fail-open on decode/validate errors.
+        """
+        channel = self._settings.drives_state_channel
+        logger.info("substrate_embodiment_drive_listener subscribing channel=%s", channel)
+        try:
+            async with self._bus.subscribe(channel) as pubsub:
+                while not self._stop.is_set():
+                    try:
+                        msg = await asyncio.wait_for(
+                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
+                            timeout=1.2,
+                        )
+                    except asyncio.TimeoutError:
+                        continue
+                    except asyncio.CancelledError:
+                        break
+                    if not msg or msg.get("type") not in ("message", "pmessage"):
+                        continue
+                    try:
+                        self._cache_drive_state_message(msg)
+                    except Exception:
+                        logger.exception("substrate_embodiment_drive_state_handle_failed")
+        except asyncio.CancelledError:
+            raise
+        finally:
+            logger.info("substrate_embodiment_drive_listener stopped channel=%s", channel)
+
+    def _cache_drive_state_message(self, raw_msg: dict[str, Any]) -> None:
+        decoded = self._bus.codec.decode(raw_msg.get("data"))
+        if not decoded.ok:
+            logger.warning("substrate_embodiment_drive_state_decode_failed: %s", decoded.error)
+            return
+        try:
+            drive = DriveStateV1.model_validate(decoded.envelope.payload or {})
+        except ValueError as exc:
+            logger.error("substrate_embodiment_drive_state_invalid err=%s", exc)
+            return
+        self._latest_drive_state = drive
 
     def _episodic_tick(self) -> None:
         """Rung 4: roll the last *completed* receipt window into an episode.

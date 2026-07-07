@@ -55,6 +55,18 @@ class ThoughtSettings(BaseSettings):
         alias="CHANNEL_REVERIE_THOUGHT",
     )
 
+    # --- Reverie semantic lift (v1, default-off) ---
+    reverie_semantic_lift_enabled: bool = Field(
+        False, alias="ORION_REVERIE_SEMANTIC_LIFT_ENABLED"
+    )
+    reverie_referent_max_age_hours: float = Field(
+        24.0, alias="ORION_REVERIE_REFERENT_MAX_AGE_HOURS"
+    )
+    channel_reverie_cortex_exec_request: str = Field(
+        "orion:cortex:exec:request:background",
+        alias="CHANNEL_REVERIE_CORTEX_EXEC_REQUEST",
+    )
+
     # --- Reverie chain (Phase C, default-off) ---
     reverie_chain_enabled: bool = Field(False, alias="ORION_REVERIE_CHAIN_ENABLED")
     reverie_chain_max_steps: int = Field(4, alias="ORION_REVERIE_CHAIN_MAX_STEPS")

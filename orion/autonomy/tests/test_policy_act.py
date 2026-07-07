@@ -267,3 +267,29 @@ async def test_substrate_act_denied_without_gap_signal(monkeypatch) -> None:
         fetch_backend=AsyncMock(),
     )
     assert result.fetch_attempted is False
+
+
+@pytest.mark.asyncio
+async def test_substrate_act_preserves_fetch_when_journal_dispatch_fails(monkeypatch, tmp_path) -> None:
+    """Regression: a journal-compose RPC failure (e.g. cortex-exec timeout) must NOT
+    discard an already-successful fetch outcome, so the caller can still persist it."""
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    monkeypatch.setenv("ORION_AUTONOMY_EPISODE_JOURNAL_ENABLED", "true")
+    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
+    backend = AsyncMock(return_value={"success": True, "urls": ["https://example.com/a"]})
+    journal_dispatch = AsyncMock(side_effect=TimeoutError("cortex journal rpc timed out"))
+    result = await maybe_execute_substrate_act_after_metabolism(
+        episode_intent=_intent(),
+        drive_state=_drive_state(),
+        curiosity_signals=[_gap_signal()],
+        fetch_backend=backend,
+        journal_dispatch=journal_dispatch,
+        episode_journal_enabled=True,
+    )
+    # Fetch still succeeded and is returned despite the journal failure.
+    assert result.fetch_attempted is True
+    assert result.fetch_outcome is not None
+    assert result.fetch_outcome.success is True
+    # Journal was attempted but failed, so no journal entry recorded.
+    assert result.journal_attempted is False
+    journal_dispatch.assert_awaited_once()

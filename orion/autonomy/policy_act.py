@@ -244,15 +244,27 @@ async def maybe_execute_substrate_act_after_metabolism(
     if not episode_journal_enabled or fetch_outcome is None:
         return result
 
-    journal_decision, journal_payload = await maybe_compose_autonomy_episode_after_fetch(
-        goal=synthetic_goal,
-        drive_state=drive_state,
-        curiosity_signals=curiosity_signals,
-        spawned_correlation_id=run_id,
-        fetch_outcome=fetch_outcome,
-        journal_dispatch=journal_dispatch,
-        budget_used=budget_used,
-    )
+    # The journal compose step issues an RPC (cortex-exec) that can time out. A journal
+    # failure must NOT discard an already-successful fetch outcome: isolate it so the
+    # caller still receives `result` (with fetch_outcome) and can persist the fetch.
+    try:
+        journal_decision, journal_payload = await maybe_compose_autonomy_episode_after_fetch(
+            goal=synthetic_goal,
+            drive_state=drive_state,
+            curiosity_signals=curiosity_signals,
+            spawned_correlation_id=run_id,
+            fetch_outcome=fetch_outcome,
+            journal_dispatch=journal_dispatch,
+            budget_used=budget_used,
+        )
+    except Exception:
+        logger.warning(
+            "substrate_episode_journal_failed goal=%s spawned=%s",
+            synthetic_goal.artifact_id,
+            run_id,
+            exc_info=True,
+        )
+        return result
     if journal_decision.outcome == "allowed" and journal_payload is not None:
         entry_id = None
         if isinstance(journal_payload.get("write"), dict):

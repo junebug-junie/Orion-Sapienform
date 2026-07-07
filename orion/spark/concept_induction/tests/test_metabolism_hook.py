@@ -256,3 +256,32 @@ async def test_substrate_act_runs_when_goal_suppressed(monkeypatch) -> None:
     substrate_act_mock.assert_awaited_once()
     call_kwargs = substrate_act_mock.await_args.kwargs
     assert call_kwargs["spawned_correlation_id"] == "wp-run-hook"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_uses_journal_timeout_not_cortex_timeout(monkeypatch) -> None:
+    # Guard against regressing bus_worker back to cfg.cortex_timeout_sec: the
+    # journal compose (~16s) must get the generous dedicated budget, not the tight
+    # generic cortex timeout, or the episode journal silently times out.
+    monkeypatch.setenv("CORTEX_TIMEOUT_SEC", "12")
+    monkeypatch.setenv("ORION_AUTONOMY_EPISODE_JOURNAL_TIMEOUT_SEC", "120")
+    cfg = ConceptSettings()
+    worker = ConceptWorker(cfg)
+
+    dispatch_mock = AsyncMock(return_value={"write": {"entry_id": "e1"}})
+    monkeypatch.setattr(
+        "orion.spark.concept_induction.bus_worker.dispatch_autonomy_episode_journal",
+        dispatch_mock,
+    )
+
+    await worker._dispatch_autonomy_episode_journal(
+        _world_pulse_envelope(),
+        goal_artifact_id="goal-x",
+        spawned_correlation_id="wp-run-hook",
+        narrative_seed="seed",
+    )
+
+    dispatch_mock.assert_awaited_once()
+    passed = dispatch_mock.await_args.kwargs["timeout_sec"]
+    assert passed == cfg.autonomy_episode_journal_timeout_sec == 120.0
+    assert passed != cfg.cortex_timeout_sec

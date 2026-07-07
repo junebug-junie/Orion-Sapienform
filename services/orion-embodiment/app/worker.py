@@ -19,7 +19,9 @@ from orion.embodiment import aitown_client
 from orion.embodiment.arbiter import ArbiterState, decide
 from orion.embodiment.perception import build_perception
 from orion.embodiment.resolver import resolve_destination
+from orion.embodiment.salience import SalienceState, evaluate_salience
 from orion.embodiment.speech import build_speech_prompt, is_injectable, should_speak
+from orion.journaler.schemas import JournalTriggerV1
 from orion.schemas.embodiment import (
     EMBODIMENT_OUTCOME_KIND,
     EMBODIMENT_PERCEPTION_KIND,
@@ -29,6 +31,12 @@ from orion.schemas.embodiment import (
 )
 
 logger = logging.getLogger("orion.embodiment.worker")
+
+# Fixed cross-service contract endpoint (owned by orion-actions). The channel is
+# `orion:actions:trigger:journal.v1` and the consumer routes on the dotted kind
+# below — this is not operator-tunable, so it lives as a constant, not an env key.
+JOURNAL_TRIGGER_CHANNEL = "orion:actions:trigger:journal.v1"
+JOURNAL_TRIGGER_KIND = "orion.actions.trigger.journal.v1"
 
 # AI Town canonical conversation inputs. The upstream convex/aiTown/inputs.ts is
 # NOT vendored in this checkout, so these follow the AI Town canonical schema.
@@ -56,6 +64,7 @@ class EmbodimentWorker:
         self._social_cooldown_sec = self._settings.social_cooldown_sec
         self._last_conversation_start: Optional[datetime] = None
         self._speaking_conversations: set[str] = set()
+        self._salience = SalienceState()
         self._load_fcc_env()
         self._orion_player_id = str(os.environ.get("AITOWN_ORION_PLAYER_ID") or "").strip()
         self._world_id = str(os.environ.get("AITOWN_WORLD_ID") or "").strip()
@@ -228,6 +237,49 @@ class EmbodimentWorker:
             )
         except Exception:
             logger.exception("embodiment_outcome_publish_failed")
+
+    # --- memory / journal ---------------------------------------------------
+    async def _maybe_journal_episode(self, event: dict) -> Optional[str]:
+        """Gated, deduped, fail-open journal emit for salient town episodes.
+
+        Off unless ``memory_enabled``. The pure salience gate (bounded/deduped by
+        ``self._salience``) decides whether the event is an episode and produces
+        the who/what summary. A salient event publishes exactly one
+        ``JournalTriggerV1`` (trigger_kind ``town_episode`` / source_kind
+        ``embodiment``) to the actions journal channel. Never crashes the worker.
+        """
+        if not getattr(self._settings, "memory_enabled", False):
+            return None
+        try:
+            evaluation = evaluate_salience(event, self._salience)
+        except Exception:
+            logger.exception("embodiment_salience_eval_failed")
+            return None
+        if not evaluation.salient:
+            return None
+        summary = (evaluation.summary or "").strip()
+        if not summary:
+            # No real who/what content -> refuse to emit an empty-shell episode.
+            logger.warning("embodiment_journal_skipped_empty_summary event_type=%s", event.get("type"))
+            return None
+        try:
+            trigger = JournalTriggerV1(
+                trigger_kind="town_episode",
+                source_kind="embodiment",
+                summary=summary,
+                source_ref=evaluation.source_ref,
+            )
+            env = BaseEnvelope(
+                kind=JOURNAL_TRIGGER_KIND, source=self._service_ref(),
+                correlation_id=uuid4(), payload=trigger.model_dump(mode="json"),
+            )
+            await publish_with_reconnect(
+                self._bus, JOURNAL_TRIGGER_CHANNEL, env, log_label="embodiment_journal"
+            )
+        except Exception:
+            logger.exception("embodiment_journal_publish_failed")
+            return None
+        return evaluation.source_ref or summary
 
     # --- perception ---------------------------------------------------------
     async def _emit_perception_once(self) -> Optional[WorldPerceptionV1]:

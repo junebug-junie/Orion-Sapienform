@@ -632,9 +632,8 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
-                "CREATE INDEX IF NOT EXISTS idx_action_outcomes_subject ON action_outcomes (subject);"
-            )
+            # Composite covers the read query (WHERE subject=? ORDER BY observed_at DESC);
+            # a standalone subject index would be redundant with this prefix.
             conn.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS idx_action_outcomes_subject_observed_at ON action_outcomes (subject, observed_at DESC);"
             )

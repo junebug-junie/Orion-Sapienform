@@ -11,7 +11,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import inspect
+from sqlalchemy import create_engine, inspect
+from sqlalchemy.orm import sessionmaker
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
@@ -67,6 +68,51 @@ def test_emit_data_constructs_action_outcome_sql_without_raising() -> None:
     assert row.subject == emit.subject
     assert row.success is True
     assert row.surprise == 0.0
+
+
+def test_merge_redelivery_upserts_one_row_and_preserves_created_at() -> None:
+    """Re-delivery of the same action_id must upsert (one row), not duplicate.
+
+    Mirrors the sql-writer generic write path (`sess.merge(Model(**filtered))`)
+    against in-memory SQLite. Asserts the idempotency claim in the model docstring
+    and that server-defaulted `created_at` survives a re-merge that omits it.
+    """
+    engine = create_engine("sqlite://")
+    ActionOutcomeSQL.__table__.create(bind=engine)
+    Session = sessionmaker(bind=engine)
+
+    def _merge(emit: ActionOutcomeEmitV1) -> None:
+        # Only payload-mapped columns are passed, exactly like _write_row filtering:
+        # created_at is never in the emit payload and relies on the server default.
+        sess = Session()
+        try:
+            sess.merge(ActionOutcomeSQL(**emit.model_dump()))
+            sess.commit()
+        finally:
+            sess.close()
+
+    _merge(_make_emit(summary="first delivery"))
+
+    sess = Session()
+    try:
+        first = sess.get(ActionOutcomeSQL, "fetch-abc-123")
+        original_created_at = first.created_at
+    finally:
+        sess.close()
+    assert original_created_at is not None
+
+    _merge(_make_emit(summary="second delivery", success=False))
+
+    sess = Session()
+    try:
+        rows = sess.query(ActionOutcomeSQL).all()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.summary == "second delivery"
+        assert row.success is False
+        assert row.created_at == original_created_at
+    finally:
+        sess.close()
 
 
 def test_emit_roundtrips_from_outcome() -> None:

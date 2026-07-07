@@ -72,7 +72,11 @@ def resolve_concern_cards(
             continue
         if corr:
             seen_corr.add(corr)
-        card = row.to_concern_card()
+        try:
+            card = row.to_concern_card()
+        except Exception as exc:
+            logger.warning("concern_card_build_failed ref=%s err=%s", ref, exc)
+            continue
         if card is not None:
             cards.append(card)
         if len(cards) >= MAX_CARDS_PER_TICK:

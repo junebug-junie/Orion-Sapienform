@@ -24,6 +24,9 @@ Configured via `SQL_WRITER_SUBSCRIBE_CHANNELS` (JSON list).
 | `orion:biometrics:induction` | `biometrics.induction.v1` | `BiometricsInductionSQL` |
 | `orion:spark:telemetry` | `spark.telemetry` | `SparkTelemetrySQL` |
 | `orion:vision:events:sql-write` | `vision.event.v1` | `VisionEventSQL` |
+| `orion:autonomy:action:outcome` | `action.outcome.emit.v1` | `ActionOutcomeSQL` |
+
+**Action outcome persistence:** `action.outcome.emit.v1` (produced by `orion-spark-concept-induction` after an autonomous readonly fetch) is projected into `action_outcomes` (PK `action_id`, idempotent upsert). `orion-cortex-exec` reads it back per-subject for chat-stance action feedback. DDL is applied on boot (`app/main.py` lifespan) and also lives in `services/orion-sql-db/manual_migration_action_outcomes_v1.sql`.
 
 ### Environment Variables
 Provenance: repo root `.env` (mesh globals: `ORION_BUS_URL`, `PROJECT`, `NET`, …) → service `.env_example` → `docker-compose.yml` → `settings.py`

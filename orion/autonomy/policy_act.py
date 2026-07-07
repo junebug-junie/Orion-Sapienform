@@ -233,7 +233,13 @@ async def maybe_execute_substrate_act_after_metabolism(
         budget_used=budget_used,
     )
     if fetch_decision.outcome == "allowed" and fetch_outcome is not None:
-        result = result.model_copy(update={"fetch_attempted": True, "fetch_outcome_id": fetch_outcome.action_id})
+        result = result.model_copy(
+            update={
+                "fetch_attempted": True,
+                "fetch_outcome_id": fetch_outcome.action_id,
+                "fetch_outcome": fetch_outcome,
+            }
+        )
 
     if not episode_journal_enabled or fetch_outcome is None:
         return result

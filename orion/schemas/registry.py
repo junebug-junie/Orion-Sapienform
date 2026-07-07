@@ -395,6 +395,7 @@ from orion.core.schemas.drives import (
     TensionEventV1,
     TurnDossierV1,
 )
+from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.schemas.telemetry.biometrics import (
     BiometricsPayload,
     BiometricsSampleV1,
@@ -996,6 +997,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "IdentitySnapshotV1": IdentitySnapshotV1,
     "GoalProposalV1": GoalProposalV1,
     "AutonomyGoalPlannedV1": AutonomyGoalPlannedV1,
+    "ActionOutcomeEmitV1": ActionOutcomeEmitV1,
     "TensionEventV1": TensionEventV1,
     "TurnDossierV1": TurnDossierV1,
     "BiometricsPayload": BiometricsPayload,
@@ -1285,6 +1287,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "HarnessRunV1": SchemaRegistration(
         model=HarnessRunV1,
         kind="harness.run.v1",
+    ),
+    "ActionOutcomeEmitV1": SchemaRegistration(
+        model=ActionOutcomeEmitV1,
+        kind="action.outcome.emit.v1",
     ),
 }
 

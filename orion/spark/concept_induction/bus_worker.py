@@ -26,6 +26,7 @@ from .dossier import build_evidence_items, build_source_event_ref, build_turn_do
 from orion.autonomy.episode_journal import dispatch_autonomy_episode_journal
 from orion.autonomy.fetch_backend_resolve import resolve_fetch_backend
 from orion.autonomy.goal_archive import maybe_archive_after_goal_publish
+from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.autonomy.policy_act import (
     maybe_execute_substrate_act_after_metabolism,
     resolve_episode_intent,
@@ -474,6 +475,17 @@ class ConceptWorker:
         )
         await self.bus.publish(self.cfg.turn_dossier_channel, env)
 
+    async def _publish_action_outcome(
+        self, emit: ActionOutcomeEmitV1, corr_id
+    ) -> None:
+        env = BaseEnvelope(
+            kind="action.outcome.emit.v1",
+            source=_service_ref(self.cfg),
+            correlation_id=corr_id,
+            payload=emit.model_dump(mode="json"),
+        )
+        await self.bus.publish(self.cfg.action_outcome_channel, env)
+
     @staticmethod
     def _payload_dict(env: BaseEnvelope) -> dict:
         payload = env.payload
@@ -690,7 +702,7 @@ class ConceptWorker:
                 async def _journal_dispatch(**kwargs):
                     return await self._dispatch_autonomy_episode_journal(env, **kwargs)
 
-                await maybe_execute_substrate_act_after_metabolism(
+                act_result = await maybe_execute_substrate_act_after_metabolism(
                     episode_intent=resolve_episode_intent(
                         store=self.store,
                         subject=subject,
@@ -704,6 +716,31 @@ class ConceptWorker:
                     budget_used=policy_budget,
                     episode_journal_enabled=self.cfg.autonomy_episode_journal_enabled,
                 )
+                if act_result.fetch_outcome is not None:
+                    try:
+                        # correlation_id traces back to the triggering world-pulse
+                        # envelope; the spawned autonomy run id is embedded in action_id.
+                        await self._publish_action_outcome(
+                            ActionOutcomeEmitV1.from_outcome(
+                                subject=subject,
+                                outcome=act_result.fetch_outcome,
+                            ),
+                            env.correlation_id,
+                        )
+                        logger.info(
+                            "action_outcome_emitted subject=%s action_id=%s success=%s spawned=%s",
+                            subject,
+                            act_result.fetch_outcome.action_id,
+                            act_result.fetch_outcome.success,
+                            spawned_correlation_id,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "action_outcome_emit_failed subject=%s spawned=%s",
+                            subject,
+                            spawned_correlation_id,
+                            exc_info=True,
+                        )
             except Exception:
                 logger.warning(
                     "substrate_act_after_metabolism_failed subject=%s spawned=%s",

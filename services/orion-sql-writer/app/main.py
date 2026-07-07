@@ -618,6 +618,30 @@ async def lifespan(app: FastAPI):
                 """
             )
             conn.exec_driver_sql(
+                """
+                CREATE TABLE IF NOT EXISTS action_outcomes (
+                    action_id TEXT PRIMARY KEY,
+                    subject TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    success BOOLEAN NULL,
+                    surprise DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+                    observed_at TIMESTAMPTZ NULL,
+                    correlation_id TEXT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_action_outcomes_subject ON action_outcomes (subject);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_action_outcomes_subject_observed_at ON action_outcomes (subject, observed_at DESC);"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_action_outcomes_correlation_id ON action_outcomes (correlation_id);"
+            )
+            conn.exec_driver_sql(
                 "ALTER TABLE bus_fallback_log ADD COLUMN IF NOT EXISTS created_at_ts TIMESTAMPTZ;"
             )
             conn.exec_driver_sql(

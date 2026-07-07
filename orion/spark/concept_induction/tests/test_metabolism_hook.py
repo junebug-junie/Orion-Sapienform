@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import pytest
 
+from orion.autonomy.models import ActionOutcomeRefV1, SubstrateActResultV1
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.spark.concept_induction.bus_worker import ConceptWorker
 from orion.spark.concept_induction.settings import ConceptSettings
@@ -172,6 +173,61 @@ async def test_policy_fetch_runs_after_goal_publish(monkeypatch) -> None:
     call_kwargs = substrate_act_mock.await_args.kwargs
     assert call_kwargs["spawned_correlation_id"] == "wp-run-hook"
     assert call_kwargs["episode_journal_enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_action_outcome_emitted_after_substrate_act(monkeypatch) -> None:
+    monkeypatch.setenv("ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED", "true")
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    outcome = ActionOutcomeRefV1(
+        action_id="fetch-wp-run-hook-abcd1234",
+        kind="web.fetch.readonly",
+        summary="fetched 2 article(s)",
+        success=True,
+        surprise=0.0,
+        observed_at=datetime(2026, 7, 6, 12, 0, tzinfo=timezone.utc),
+    )
+    substrate_act_mock = AsyncMock(
+        return_value=SubstrateActResultV1(
+            fetch_attempted=True,
+            fetch_outcome_id=outcome.action_id,
+            fetch_outcome=outcome,
+        )
+    )
+    monkeypatch.setattr(
+        "orion.spark.concept_induction.bus_worker.maybe_execute_substrate_act_after_metabolism",
+        substrate_act_mock,
+    )
+    cfg = ConceptSettings()
+    worker = ConceptWorker(cfg, fetch_backend=AsyncMock())
+    worker.store = MagicMock()
+    worker.store.load_drive_state.return_value = {
+        "pressures": {"predictive": 0.7, "coherence": 0.5, "continuity": 0.5, "capability": 0.5, "relational": 0.5, "autonomy": 0.5},
+        "activations": {"predictive": True},
+    }
+    worker.drive_engine.update = MagicMock(
+        return_value=(
+            {"predictive": 0.7, "coherence": 0.5, "continuity": 0.5, "capability": 0.5, "relational": 0.5, "autonomy": 0.5},
+            {"predictive": True},
+        )
+    )
+    worker._publish_tension_event = AsyncMock(return_value=None)
+    worker._publish_drive_state = AsyncMock(return_value=None)
+    worker._publish_artifact = AsyncMock(return_value=None)
+    worker._publish_dossier = AsyncMock(return_value=None)
+    worker._publish_action_outcome = AsyncMock(return_value=None)
+    worker.goal_engine.propose = MagicMock(
+        return_value=MagicMock(proposal=None, suppressed_signature=None)
+    )
+
+    await worker.handle_envelope(_world_pulse_envelope(), "orion:world_pulse:run:result")
+
+    worker._publish_action_outcome.assert_awaited_once()
+    emitted = worker._publish_action_outcome.await_args.args[0]
+    assert emitted.subject == "orion"
+    assert emitted.action_id == outcome.action_id
+    assert emitted.success is True
+    assert emitted.kind == "web.fetch.readonly"
 
 
 @pytest.mark.asyncio

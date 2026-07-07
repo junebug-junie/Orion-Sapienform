@@ -70,8 +70,8 @@ def build_curiosity_followups(
 
     Returns [] unless enabled, non-dry, there is at least one under-covered
     section, and the web.fetch.readonly capability gate allows. Each section is
-    fetched independently; a fetch error degrades to an empty followup and never
-    raises (so it can never fail the world-pulse run).
+    fetched independently; a fetch or mapping error degrades gracefully (empty
+    or skipped followup) and never raises (so it can never fail the run).
     """
     if not enabled or dry_run:
         return []
@@ -96,6 +96,9 @@ def build_curiosity_followups(
 
     backend = fetch_backend or resolve_fetch_backend()
     followups: list[CuriosityFollowupV1] = []
+    # Cost is bounded by max_sections (one fetch per under-covered section, up to
+    # max_sections). The capability policy's budget_per_cycle is an on/off gate
+    # here, not a per-run fetch-count limit; that bound is max_sections by design.
     for section in under_covered:
         label = section.replace("_", " ")
         query = f"{label} recent news coverage"
@@ -108,8 +111,28 @@ def build_curiosity_followups(
             max_articles=max(1, int(max_articles_per_section)),
             gap_terms=gap_terms,
         )
+        # The fetch AND the mapping into schema models are both guarded: any
+        # failure degrades to skipping this section, never failing the run.
         try:
             outcome = asyncio.run(execute_readonly_fetch(req, fetch_backend=backend))
+            followups.append(
+                CuriosityFollowupV1(
+                    section=section,
+                    driving_gap=section_coverage[section].status,
+                    query=query,
+                    articles=[
+                        CuriosityFindingV1(
+                            url=a.url,
+                            title=a.title,
+                            description=a.description,
+                            salience=a.salience,
+                        )
+                        for a in outcome.articles
+                    ],
+                    action_id=outcome.action_id,
+                    correlation_id=run_id,
+                )
+            )
         except Exception:
             logger.warning(
                 "world_pulse_curiosity_fetch_failed section=%s run_id=%s",
@@ -118,24 +141,6 @@ def build_curiosity_followups(
                 exc_info=True,
             )
             continue
-        followups.append(
-            CuriosityFollowupV1(
-                section=section,
-                driving_gap=section_coverage[section].status,
-                query=query,
-                articles=[
-                    CuriosityFindingV1(
-                        url=a.url,
-                        title=a.title,
-                        description=a.description,
-                        salience=a.salience,
-                    )
-                    for a in outcome.articles
-                ],
-                action_id=outcome.action_id,
-                correlation_id=run_id,
-            )
-        )
     logger.info(
         "world_pulse_curiosity_followups run_id=%s sections=%s articles=%s",
         run_id,

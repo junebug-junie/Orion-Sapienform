@@ -117,6 +117,36 @@ def test_backend_error_degrades_to_no_followup(monkeypatch):
     assert result[0].articles == []
 
 
+def test_mapping_error_degrades_to_skip(monkeypatch):
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+
+    class _BadArticle:
+        url = "https://ex/1"
+        title = "t"
+        description = "d"
+        salience = 5.0  # out of [0,1]; CuriosityFindingV1 validation will raise
+
+    class _Outcome:
+        action_id = "fetch-x"
+        articles = [_BadArticle()]
+
+    async def _fake_exec(req, *, fetch_backend):
+        return _Outcome()
+
+    monkeypatch.setattr(curiosity, "execute_readonly_fetch", _fake_exec)
+    result = curiosity.build_curiosity_followups(
+        run_id="r1",
+        section_coverage=_coverage(hardware_compute_gpu="missing"),
+        enabled=True,
+        dry_run=False,
+        max_articles_per_section=5,
+        max_sections=9,
+        fetch_backend=_fake_backend,
+    )
+    # A schema-mapping failure must be caught per-section and never fail the run.
+    assert result == []
+
+
 def test_gate_evaluation_error_degrades_to_empty(monkeypatch):
     def _boom_gate(run_id):
         raise FileNotFoundError("capability policy config missing")

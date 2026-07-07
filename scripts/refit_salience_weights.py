@@ -8,7 +8,7 @@ unchanged. When labels accumulate, replace `candidate_weights_from_labels` with 
 real fit (e.g. logistic regression: resolved=1, dismissed/decayed=0).
 
 Usage (read-only, safe):
-    python scripts/refit_salience_weights.py --dry-run
+    python -m scripts.refit_salience_weights --dry-run
 """
 
 from __future__ import annotations

@@ -37,13 +37,22 @@ async def firecrawl_search_backend(query: str, *, max_articles: int, api_key: st
 
         data = parsed.get("data") or []
         urls: list[str] = []
+        articles: list[dict] = []
         if isinstance(data, list):
             for item in data:
                 if isinstance(item, dict):
                     url = item.get("url")
                     if url:
-                        urls.append(str(url))
+                        url_str = str(url)
+                        urls.append(url_str)
+                        articles.append(
+                            {
+                                "url": url_str,
+                                "title": str(item.get("title") or ""),
+                                "description": str(item.get("description") or ""),
+                            }
+                        )
         success = bool(parsed.get("success")) and bool(urls)
-        return {"success": success, "urls": urls}
+        return {"success": success, "urls": urls, "articles": articles}
 
     return await asyncio.to_thread(_call)

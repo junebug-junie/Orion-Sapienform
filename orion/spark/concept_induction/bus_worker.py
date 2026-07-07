@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Dict, List, Optional, Set
@@ -9,6 +11,7 @@ from uuid import uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.work_queue import RedisStreamWorkQueue
 from orion.core.schemas.concept_induction import ConceptProfile, ConceptProfileDelta
 from orion.core.schemas.drives import ArtifactProvenance, GraphReadyArtifact, TensionEventV1, TurnDossierV1
 from orion.schemas.feedback_frame import FeedbackFrameV1
@@ -53,6 +56,7 @@ from .tensions import (
     extract_tensions_from_self_state,
 )
 from .rdf_materialization import build_concept_profile_rdf_request
+from .wp_stream_consumer import WorldPulseStreamConsumer, utcnow
 
 logger = logging.getLogger("orion.spark.concept.worker")
 
@@ -147,6 +151,46 @@ class ConceptWorker:
             subscribed_channels=list(cfg.intake_channels),
         )
         self._service_ref = service_ref
+        self._wp_stream_queue: RedisStreamWorkQueue | None = None
+        self._wp_stream_consumer: WorldPulseStreamConsumer | None = None
+        self._wp_stream_task: Optional[asyncio.Task] = None
+        if cfg.wp_run_result_stream_enabled:
+            self._wp_stream_queue = RedisStreamWorkQueue(cfg.orion_bus_url)
+            self._wp_stream_consumer = WorldPulseStreamConsumer(
+                queue=self._wp_stream_queue,
+                stream=cfg.wp_run_result_stream_key,
+                group=cfg.wp_run_result_stream_group,
+                consumer=f"{cfg.node_name}:{os.getpid()}",
+                dlq_stream=cfg.wp_run_result_dlq_key,
+                handler=self._handle_wp_stream_envelope,
+                is_processed=self.store.is_episode_run_processed,
+                mark_processed=lambda run_id: self.store.mark_episode_run_processed(
+                    run_id, processed_at=utcnow()
+                ),
+                max_attempts=cfg.wp_run_result_max_attempts,
+                block_ms=cfg.wp_run_result_block_ms,
+                autoclaim_idle_ms=cfg.wp_run_result_autoclaim_idle_ms,
+            )
+
+    async def _handle_wp_stream_envelope(self, envelope: BaseEnvelope) -> None:
+        """Handler for durable world-pulse run-result stream messages.
+
+        Routes through the same ``handle_envelope`` path the pub/sub loop uses; the
+        stream key stands in as the intake-channel label (the world_pulse branch keys
+        on ``env.kind``, not the channel).
+        """
+        await self.handle_envelope(envelope, self.cfg.wp_run_result_stream_key)
+
+    def _pubsub_patterns(self) -> List[str]:
+        """Pub/sub intake channels, minus any that are consumed via a durable stream.
+
+        When the run-result stream is enabled, drop ``orion:world_pulse:run:result``
+        from pub/sub so the event is processed exactly once (via the stream), not twice.
+        """
+        patterns = list(self.cfg.intake_channels)
+        if self.cfg.wp_run_result_stream_enabled:
+            patterns = [p for p in patterns if p != "orion:world_pulse:run:result"]
+        return patterns
 
     async def _dispatch_autonomy_episode_journal(
         self,
@@ -690,7 +734,29 @@ class ConceptWorker:
         elif goal_decision.suppressed_signature:
             suppressed_signatures.append(goal_decision.suppressed_signature)
 
+        # Idempotency backstop for the episode path (flag-gated so the flag-off path is
+        # byte-identical: nothing is ever marked, so is_episode_run_processed is always
+        # False). Guards the expensive substrate act (Firecrawl fetch + journal RPC)
+        # against at-least-once stream redelivery AND any accidental double-delivery via
+        # the pub/sub path (e.g. a glob intake pattern that _pubsub_patterns can't strip).
+        episode_dedup_enabled = self.cfg.wp_run_result_stream_enabled
+        episode_already_processed = (
+            episode_dedup_enabled
+            and bool(spawned_correlation_id)
+            and self.store.is_episode_run_processed(spawned_correlation_id)
+        )
         if (
+            env.kind == "world.pulse.run.result.v1"
+            and metabolism_enabled()
+            and metabolism_curiosity_signals
+            and spawned_correlation_id
+            and episode_already_processed
+        ):
+            logger.info(
+                "wp_run_result_episode_skip_duplicate run_id=%s (already processed)",
+                spawned_correlation_id,
+            )
+        elif (
             env.kind == "world.pulse.run.result.v1"
             and metabolism_enabled()
             and metabolism_curiosity_signals
@@ -747,6 +813,14 @@ class ConceptWorker:
                     subject,
                     spawned_correlation_id,
                     exc_info=True,
+                )
+            if episode_dedup_enabled and spawned_correlation_id:
+                # Mark after the attempt so a later redelivery does not re-run the fetch
+                # + journal RPC. The block swallows its own errors, so "attempted" is the
+                # dedup boundary; a mid-handler crash (before this line) leaves it unmarked
+                # and is safely re-attempted on the next stream redelivery.
+                self.store.mark_episode_run_processed(
+                    spawned_correlation_id, processed_at=utcnow()
                 )
 
         dossier = build_turn_dossier(
@@ -1026,7 +1100,24 @@ class ConceptWorker:
     async def start(self) -> None:
         logger.info("concept_induction_worker_starting")
         await self.bus.connect()
-        patterns = list(self.cfg.intake_channels)
+        if self._wp_stream_consumer is not None and self._wp_stream_queue is not None:
+            await self._wp_stream_queue.connect()
+            # Concurrency note: this runs the stream consumer as a SECOND task alongside
+            # the pub/sub loop in the same event loop. Both call into self.store
+            # (LocalProfileStore), whose load/save are synchronous with no await between a
+            # read and its paired write, so read-modify-write bursts (e.g. drive-state
+            # load->save) never interleave. Do NOT introduce an await inside a store
+            # read-modify-write without adding a lock, or the two tasks can lose updates.
+            self._wp_stream_task = asyncio.create_task(
+                self._wp_stream_consumer.run_forever(),
+                name="wp-run-result-stream-consumer",
+            )
+            logger.info(
+                "wp_run_result_stream_consumer_task_created stream=%s group=%s",
+                self.cfg.wp_run_result_stream_key,
+                self.cfg.wp_run_result_stream_group,
+            )
+        patterns = self._pubsub_patterns()
         uses_glob = any(any(ch in pattern for ch in "*?[") for pattern in patterns)
         self._liveness.subscribed_channels = list(patterns)
         self._liveness.bus_consumer_started = False
@@ -1098,4 +1189,13 @@ class ConceptWorker:
         if self._stopped:
             return
         self._stopped = True
+        if self._wp_stream_consumer is not None:
+            self._wp_stream_consumer.stop()
+        if self._wp_stream_task is not None:
+            self._wp_stream_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await self._wp_stream_task
+        if self._wp_stream_queue is not None:
+            with suppress(Exception):
+                await self._wp_stream_queue.close()
         await self.bus.close()

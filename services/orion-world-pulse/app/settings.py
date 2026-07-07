@@ -52,6 +52,22 @@ class Settings(BaseSettings):
         "orion:world_pulse:run:result",
         alias="WORLD_PULSE_RUN_RESULT_CHANNEL",
     )
+    # Durable Redis Stream mirror of the run-result pub/sub channel. When enabled, the
+    # run.result envelope is additionally XADD'd to a stream so consumer groups
+    # (orion-spark-concept-induction) get at-least-once delivery + replay. Pub/sub is
+    # unchanged for orion-hub / orion-actions.
+    wp_run_result_stream_enabled: bool = Field(
+        False,
+        alias="WP_RUN_RESULT_STREAM_ENABLED",
+    )
+    wp_run_result_stream_key: str = Field(
+        "orion:stream:world_pulse:run:result",
+        alias="WP_RUN_RESULT_STREAM_KEY",
+    )
+    wp_run_result_stream_maxlen: int = Field(
+        1000,
+        alias="WP_RUN_RESULT_STREAM_MAXLEN",
+    )
     world_pulse_digest_created_channel: str = Field(
         "orion:world_pulse:digest:created",
         alias="WORLD_PULSE_DIGEST_CREATED_CHANNEL",

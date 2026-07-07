@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from orion.fcc.github_repo_context import github_mcp_repo_brief_line
+from orion.fcc.github_repo_context import github_mcp_brief_lines
 
 # Operational contract for local llamacpp (~64k ctx). Not conversational stance routing.
 AGENT_CLAUDE_OPERATOR_BRIEF = """\
@@ -17,9 +17,9 @@ For GitHub PRs, issues, and repo metadata: use GitHub MCP tools (mcp__github). T
 def _operator_brief_for_workspace(workspace: str | None = None) -> str:
     brief = AGENT_CLAUDE_OPERATOR_BRIEF.strip()
     ws = workspace or os.environ.get("HUB_AGENT_CLAUDE_WORKSPACE")
-    github_line = github_mcp_repo_brief_line(workspace=ws)
-    if github_line:
-        brief = f"{brief}\n{github_line}"
+    github_lines = github_mcp_brief_lines(workspace=ws)
+    if github_lines:
+        brief = f"{brief}\n" + "\n".join(github_lines)
     return brief
 
 

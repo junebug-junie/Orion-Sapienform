@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from orion.fcc.github_repo_context import (
+    github_mcp_brief_lines,
     github_mcp_repo_brief_line,
     parse_github_remote_url,
     resolve_github_repo_coordinate,
@@ -28,11 +29,13 @@ def test_resolve_github_repo_coordinate_from_env(monkeypatch: pytest.MonkeyPatch
     assert resolve_github_repo_coordinate(workspace="/tmp") == ("env-owner", "env-repo")
 
 
-def test_github_mcp_repo_brief_line(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_github_mcp_brief_lines_include_narrow_pr_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("ORION_GITHUB_OWNER", "junebug-junie")
     monkeypatch.setenv("ORION_GITHUB_REPO", "Orion-Sapienform")
-    line = github_mcp_repo_brief_line(workspace=Path("/tmp"))
-    assert line is not None
-    assert "owner='junebug-junie'" in line
-    assert "repo='Orion-Sapienform'" in line
-    assert "list_pull_requests" in line
+    lines = github_mcp_brief_lines(workspace=Path("/tmp"))
+    assert len(lines) == 3
+    assert "perPage=1" in lines[1]
+    assert "search_pull_requests" in lines[1]
+    assert "never paste raw MCP JSON" in lines[2]

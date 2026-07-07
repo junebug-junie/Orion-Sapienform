@@ -69,6 +69,8 @@ def test_compile_harness_prefix_includes_github_repo_when_mcp_enabled(
     )
     assert "owner='junebug-junie'" in prompt
     assert "repo='Orion-Sapienform'" in prompt
+    assert "perPage=1" in prompt
+    assert "search_pull_requests" in prompt
 
 
 def test_harness_motor_instruction_imperative_forward() -> None:

@@ -55,12 +55,24 @@ def resolve_github_repo_coordinate(*, workspace: Path | str | None = None) -> Tu
     return parse_github_remote_url(url)
 
 
-def github_mcp_repo_brief_line(*, workspace: Path | str | None = None) -> str | None:
+def github_mcp_brief_lines(*, workspace: Path | str | None = None) -> list[str]:
     coord = resolve_github_repo_coordinate(workspace=workspace)
     if coord is None:
-        return None
+        return []
     owner, repo = coord
-    return (
-        f"GitHub MCP: pass owner={owner!r} and repo={repo!r} to list_pull_requests "
-        f"(both required; never use the repo name as owner)."
-    )
+    return [
+        (
+            f"GitHub MCP: pass owner={owner!r} and repo={repo!r} to list_pull_requests "
+            f"(both required; never use the repo name as owner)."
+        ),
+        (
+            "For latest PR title/number: list_pull_requests with perPage=1, sort=updated, "
+            "direction=desc — not search_pull_requests (returns hundreds of PRs and blows ~65k ctx)."
+        ),
+        "Answer with the PR title string only; never paste raw MCP JSON into the reply.",
+    ]
+
+
+def github_mcp_repo_brief_line(*, workspace: Path | str | None = None) -> str | None:
+    lines = github_mcp_brief_lines(workspace=workspace)
+    return "\n".join(lines) if lines else None

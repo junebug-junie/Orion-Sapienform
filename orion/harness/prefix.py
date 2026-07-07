@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from orion.fcc.github_repo_context import github_mcp_repo_brief_line
+from orion.fcc.github_repo_context import github_mcp_brief_lines
 from orion.harness.operator_brief import (
     HARNESS_MOTOR_MAX_READ_LINES,
     HARNESS_UNIFIED_OPERATOR_BRIEF,
@@ -82,8 +82,7 @@ def compile_harness_prefix(
         "yes",
         "on",
     }:
-        github_line = github_mcp_repo_brief_line()
-        if github_line:
-            parts.append(github_line)
+        github_lines = github_mcp_brief_lines()
+        parts.extend(github_lines)
 
     return "\n".join(parts)

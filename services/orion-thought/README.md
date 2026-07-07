@@ -57,3 +57,35 @@ emits `AttentionSalienceTraceV1` on `orion:attention:salience:trace` (persisted 
 
 Migrations (apply before enabling):
 `psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_attention_salience_trace.sql`
+
+## Mind stance enrichment (unified turn)
+
+Set `ORION_THOUGHT_MIND_ENRICHMENT_ENABLED=true` (default `false`) to run
+`orion-mind` before `stance_react` and inject an advisory self/attention
+`mind_coloring` block into the verb context. `stance_react` stays the sole
+author of `ThoughtEventV1` and reconciles the coloring (existing inputs win —
+it never forces chat framing on technical/agent turns).
+
+Module: `app/mind_enrichment.py` (snapshot builder, fail-open HTTP client,
+allow-list coloring selector, artifact publisher).
+
+Flags:
+
+| Env key | Default | Role |
+|---------|---------|------|
+| `ORION_THOUGHT_MIND_ENRICHMENT_ENABLED` | `false` | Master switch |
+| `ORION_MIND_BASE_URL` | `http://orion-mind:6611` | Mind endpoint |
+| `ORION_THOUGHT_MIND_TIMEOUT_SEC` | `15` | HTTP read timeout |
+| `ORION_THOUGHT_MIND_WALL_MS` | `12000` | Mind policy wall time |
+| `ORION_THOUGHT_MIND_ROUTER_PROFILE` | `default` | Mind router profile |
+| `ORION_THOUGHT_MIND_MAX_RESPONSE_BYTES` | `2000000` | Response body cap |
+| `ORION_THOUGHT_MIND_ARTIFACT_PUBLISH_ENABLED` | `false` | Publish `mind_runs` artifact (`mode=orion`) |
+| `ORION_THOUGHT_MIND_COLORING_MAX_ITEMS` | `3` | Coloring list cap |
+
+**Preconditions (silent no-op if unmet):**
+1. `orion-mind` must have `MIND_LLM_SYNTHESIS_ENABLED=true` — `meaningful_synthesis`
+   (the only quality that fires coloring) is produced only by Mind's LLM path.
+2. `orion-thought` must be able to reach `ORION_MIND_BASE_URL`.
+
+Everything fails open: Mind unconfigured / unreachable / slow / low-quality →
+byte-identical to today's stance behavior.

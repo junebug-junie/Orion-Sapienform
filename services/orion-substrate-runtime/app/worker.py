@@ -204,6 +204,17 @@ class BiometricsSubstrateWorker:
                     self._drive_state_listener_loop(), name="substrate-embodiment-drive-listener"
                 )
             )
+        # Orion embodiment perception ingest: fold town perception into the
+        # substrate graph. Gated + fail-open; perception cadence is slower than
+        # the drive tick and contributions are bounded, so this does not form a
+        # runaway feedback loop with the C producer (see embodiment CD spec).
+        if self._bus is not None and s.embodiment_perception_substrate_enabled:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._perception_ingest_loop(),
+                    name="substrate-embodiment-perception-ingest",
+                )
+            )
 
     async def stop(self) -> None:
         self._stop.set()
@@ -884,6 +895,83 @@ class BiometricsSubstrateWorker:
             logger.error("substrate_embodiment_drive_state_invalid err=%s", exc)
             return
         self._latest_drive_state = drive
+
+    async def _perception_ingest_loop(self) -> None:
+        """Subscribe to town perception and fold it into the substrate graph.
+
+        Gated at task-creation by ``embodiment_perception_substrate_enabled``;
+        fail-open on decode/validate/store errors.
+        """
+        channel = self._settings.embodiment_channel_perception
+        logger.info("substrate_embodiment_perception_ingest subscribing channel=%s", channel)
+        try:
+            async with self._bus.subscribe(channel) as pubsub:
+                while not self._stop.is_set():
+                    try:
+                        msg = await asyncio.wait_for(
+                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
+                            timeout=1.2,
+                        )
+                    except asyncio.TimeoutError:
+                        continue
+                    except asyncio.CancelledError:
+                        break
+                    if not msg or msg.get("type") not in ("message", "pmessage"):
+                        continue
+                    try:
+                        await asyncio.to_thread(self._ingest_perception_message, msg)
+                    except Exception:
+                        logger.exception("substrate_embodiment_perception_ingest_handle_failed")
+        except asyncio.CancelledError:
+            raise
+        finally:
+            logger.info("substrate_embodiment_perception_ingest stopped channel=%s", channel)
+
+    def _ingest_perception_message(self, raw_msg: dict[str, Any]) -> None:
+        from orion.schemas.embodiment import WorldPerceptionV1
+        from orion.substrate.relational.adapters import map_town_perception_to_substrate
+
+        decoded = self._bus.codec.decode(raw_msg.get("data"))
+        if not decoded.ok:
+            logger.warning("substrate_embodiment_perception_decode_failed: %s", decoded.error)
+            return
+        try:
+            perception = WorldPerceptionV1.model_validate(decoded.envelope.payload or {})
+        except ValueError as exc:
+            logger.error("substrate_embodiment_perception_invalid err=%s", exc)
+            return
+
+        record = map_town_perception_to_substrate({"perception": perception})
+        if record is None or not record.nodes:
+            return
+
+        store = self._get_substrate_graph_store(
+            log_label="substrate_embodiment_perception_store_init_failed"
+        )
+        if store is None:
+            logger.warning("substrate_embodiment_perception_skipped_no_store")
+            return
+
+        written = 0
+        for node in record.nodes:
+            player_id = str(node.metadata.get("player_id") or node.label)
+            try:
+                store.upsert_node(
+                    identity_key=f"town_perception|{player_id}",
+                    node=node,
+                )
+                written += 1
+            except Exception:
+                logger.warning(
+                    "substrate_embodiment_perception_node_upsert_failed player=%s",
+                    player_id,
+                    exc_info=True,
+                )
+        logger.info(
+            "substrate_embodiment_perception_ingested nodes=%d player_id=%s",
+            written,
+            perception.player_id,
+        )
 
     def _episodic_tick(self) -> None:
         """Rung 4: roll the last *completed* receipt window into an episode.

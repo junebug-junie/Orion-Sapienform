@@ -100,15 +100,15 @@ class ConsolidationSuggestRunner:
         corr_ids = window.get("turn_correlation_ids") or []
         output_mode = settings.MEMORY_CONSOLIDATION_OUTPUT
         if output_mode in ("crystallization_propose", "skip_only"):
-            from orion.memory.consolidation_gate import consolidation_memory_gate
-            from orion.memory.consolidation_grammar import fetch_grammar_evidence_for_window
-            from orion.memory.crystallization.bus_emit import emit_crystallization_lifecycle
-            from orion.memory.crystallization.intake_consolidation_window import (
-                build_crystallization_from_window,
-            )
-            from orion.memory.crystallization.repository import insert_crystallization
-
             try:
+                from orion.memory.consolidation_gate import consolidation_memory_gate
+                from orion.memory.consolidation_grammar import fetch_grammar_evidence_for_window
+                from orion.memory.crystallization.bus_emit import emit_crystallization_lifecycle
+                from orion.memory.crystallization.intake_consolidation_window import (
+                    build_crystallization_from_window,
+                )
+                from orion.memory.crystallization.repository import insert_crystallization
+
                 grammar_pool = self._grammar_pool or self._pool
                 repair, grammar_event_ids = await fetch_grammar_evidence_for_window(
                     grammar_pool,

@@ -270,21 +270,17 @@ async def maybe_execute_substrate_act_after_metabolism(
     fetch_backend: Callable[..., Awaitable[dict]] | None = None,
     journal_dispatch: Callable[..., Awaitable[dict[str, Any]]] | None = None,
     budget_used: dict[str, int] | None = None,
+    prefetched_outcome: ActionOutcomeRefV1 | None = None,
     episode_journal_enabled: bool = False,
 ) -> SubstrateActResultV1:
     run_id = spawned_correlation_id or episode_intent.spawned_correlation_id
     synthetic_goal = goal_proposal_from_episode_intent(episode_intent)
     result = SubstrateActResultV1()
 
-    fetch_decision, fetch_outcome = await maybe_execute_readonly_fetch_after_goal(
-        goal=synthetic_goal,
-        drive_state=drive_state,
-        curiosity_signals=curiosity_signals,
-        spawned_correlation_id=run_id,
-        fetch_backend=fetch_backend,
-        budget_used=budget_used,
-    )
-    if fetch_decision.outcome == "allowed" and fetch_outcome is not None:
+    if prefetched_outcome is not None:
+        # Single shared fetch: world-pulse already fetched this gap section and put
+        # the findings on the run result. Reuse them; do not call the backend again.
+        fetch_outcome = prefetched_outcome
         result = result.model_copy(
             update={
                 "fetch_attempted": True,
@@ -292,6 +288,23 @@ async def maybe_execute_substrate_act_after_metabolism(
                 "fetch_outcome": fetch_outcome,
             }
         )
+    else:
+        fetch_decision, fetch_outcome = await maybe_execute_readonly_fetch_after_goal(
+            goal=synthetic_goal,
+            drive_state=drive_state,
+            curiosity_signals=curiosity_signals,
+            spawned_correlation_id=run_id,
+            fetch_backend=fetch_backend,
+            budget_used=budget_used,
+        )
+        if fetch_decision.outcome == "allowed" and fetch_outcome is not None:
+            result = result.model_copy(
+                update={
+                    "fetch_attempted": True,
+                    "fetch_outcome_id": fetch_outcome.action_id,
+                    "fetch_outcome": fetch_outcome,
+                }
+            )
 
     if not episode_journal_enabled or fetch_outcome is None:
         return result

@@ -2,19 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
+from orion.core.ids import stable_hash_id
+
+__all__ = ["stable_hash_id", "stable_delta_id", "stable_receipt_id"]
 
 
 def _sorted_join(values: list[str]) -> str:
     return ",".join(sorted(v.strip() for v in values if v and str(v).strip()))
-
-
-def stable_hash_id(prefix: str, parts: list[str]) -> str:
-    """Return ``{prefix}_{sha256(preimage)[:24]}`` from ordered semantic parts."""
-    normalized = [str(p).strip() for p in parts if p is not None and str(p).strip()]
-    preimage = "|".join(normalized)
-    digest = hashlib.sha256(preimage.encode("utf-8")).hexdigest()[:24]
-    return f"{prefix}_{digest}"
 
 
 def stable_delta_id(

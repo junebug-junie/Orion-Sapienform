@@ -19,6 +19,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from orion.core.ids import stable_hash_id
 from orion.schemas.thought import CoalitionSnapshotV1
 
 # Minimum grounded interpretation length. Below this, a "thought" is drivel.
@@ -155,7 +156,6 @@ class ConcernCardV1(BaseModel):
             return None
         ref_now = now or datetime.now(timezone.utc)
         age = max(0.0, (ref_now - created_at).total_seconds())
-        from orion.substrate.ids import stable_hash_id
 
         return cls(
             card_id=stable_hash_id("concern", [coalition_ref]),

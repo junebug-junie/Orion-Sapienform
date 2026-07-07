@@ -4,13 +4,13 @@ import asyncio
 import logging
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Set
+from typing import Awaitable, Callable, Dict, List, Optional, Set
 from uuid import uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.schemas.concept_induction import ConceptProfile, ConceptProfileDelta
-from orion.core.schemas.drives import ArtifactProvenance, GraphReadyArtifact, TurnDossierV1
+from orion.core.schemas.drives import ArtifactProvenance, GraphReadyArtifact, TensionEventV1, TurnDossierV1
 from orion.schemas.feedback_frame import FeedbackFrameV1
 from orion.schemas.self_state import SelfStateV1
 from orion.schemas.vector.schemas import VectorWriteRequest
@@ -18,8 +18,11 @@ from orion.schemas.vector.schemas import VectorWriteRequest
 from .audit import build_drive_audit
 from .drives import DriveEngine, DriveMathConfig, drive_state_from_values
 from .dossier import build_evidence_items, build_source_event_ref, build_turn_dossier, extract_trace_id, extract_turn_id
+from orion.autonomy.episode_fetch import default_fetch_backend
 from orion.autonomy.goal_archive import maybe_archive_after_goal_publish
+from orion.autonomy.policy_act import maybe_execute_readonly_fetch_after_goal
 from orion.autonomy.substrate_metabolism import metabolize_substrate_signals, metabolism_enabled
+from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 from orion.schemas.world_pulse import WorldPulseRunResultV1
 
 from .goals import GoalProposalEngine
@@ -82,8 +85,14 @@ def _service_ref(cfg: ConceptSettings) -> ServiceRef:
 class ConceptWorker:
     """Manages windowed intake and triggers induction."""
 
-    def __init__(self, cfg: ConceptSettings) -> None:
+    def __init__(
+        self,
+        cfg: ConceptSettings,
+        *,
+        fetch_backend: Callable[..., Awaitable[dict]] | None = None,
+    ) -> None:
         self.cfg = cfg
+        self._fetch_backend = fetch_backend or default_fetch_backend
         self.bus = OrionBusAsync(
             cfg.orion_bus_url,
             enabled=cfg.orion_bus_enabled,
@@ -495,6 +504,7 @@ class ConceptWorker:
             published_artifacts.append(tension)
 
         metabolism_tensions: List[TensionEventV1] = []
+        metabolism_curiosity_signals: List[FrontierInvocationSignalV1] = []
         metabolism_curiosity_notes: List[str] = []
         spawned_correlation_id: str | None = None
         if env.kind == "world.pulse.run.result.v1":
@@ -504,9 +514,10 @@ class ConceptWorker:
                 if metabolism_enabled():
                     metabolism = metabolize_substrate_signals(world_pulse_result=wp_result)
                     metabolism_tensions = list(metabolism.tensions)
+                    metabolism_curiosity_signals = list(metabolism.curiosity_signals)
                     metabolism_curiosity_notes = [
                         str(sig.evidence_summary or "").strip()
-                        for sig in metabolism.curiosity_signals
+                        for sig in metabolism_curiosity_signals
                         if str(sig.evidence_summary or "").strip()
                     ]
                     for tension in metabolism_tensions:
@@ -612,6 +623,26 @@ class ConceptWorker:
             await self._publish_artifact(goal_decision.proposal, self.cfg.goal_proposal_channel, env.correlation_id)
             published_artifacts.append(goal_decision.proposal)
             maybe_archive_after_goal_publish(subject=subject)
+            if (
+                env.kind == "world.pulse.run.result.v1"
+                and metabolism_enabled()
+                and metabolism_curiosity_signals
+            ):
+                try:
+                    await maybe_execute_readonly_fetch_after_goal(
+                        goal=goal_decision.proposal,
+                        drive_state=drive_state,
+                        curiosity_signals=metabolism_curiosity_signals,
+                        spawned_correlation_id=spawned_correlation_id,
+                        fetch_backend=self._fetch_backend,
+                    )
+                except Exception:
+                    logger.warning(
+                        "substrate_policy_fetch_failed goal=%s spawned=%s",
+                        goal_decision.proposal.artifact_id,
+                        spawned_correlation_id,
+                        exc_info=True,
+                    )
         elif goal_decision.suppressed_signature:
             suppressed_signatures.append(goal_decision.suppressed_signature)
 

@@ -7,6 +7,7 @@ from app.grounding_capsule import (
     build_grounding_capsule,
     stance_slice_brief_from_step_text,
 )
+from app.settings import Settings
 
 
 def test_build_grounding_capsule_from_ctx() -> None:
@@ -88,3 +89,22 @@ async def test_assemble_ships_identity_only_capsule_when_pcr_raises(monkeypatch)
     assert capsule.identity_summary == ["I am Oríon."]
     assert capsule.provenance["pcr_ran"] is False
     assert capsule.memory_digest is None
+
+
+@pytest.mark.asyncio
+async def test_assemble_returns_none_when_flag_off() -> None:
+    cfg = Settings(ORION_UNIFIED_GROUNDING_ENABLED=False)
+    ctx: dict = {"orion_identity_summary": ["I am Oríon."]}
+    result = await assemble_stance_grounding(
+        bus=None,
+        source=None,
+        ctx=ctx,
+        correlation_id="c-1",
+        recall_cfg={},
+        stance_step_text="{}",
+        exec_settings=cfg,
+    )
+    assert result is None
+    # Flag off ⇒ short-circuit before any stance-brief / PCR side effect on ctx.
+    assert "grounding_capsule" not in ctx
+    assert "chat_stance_brief" not in ctx

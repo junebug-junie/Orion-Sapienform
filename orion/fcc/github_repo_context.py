@@ -86,8 +86,9 @@ def github_mcp_brief_lines(*, workspace: Path | str | None = None) -> list[str]:
             f"(both required; never use the repo name as owner)."
         ),
         (
-            "For latest PR title/number: list_pull_requests with perPage=1, sort=updated, "
-            "direction=desc — not search_pull_requests (returns hundreds of PRs and blows ~65k ctx)."
+            "For latest PR title/number: list_pull_requests with state=all, sort=updated, "
+            "direction=desc, perPage=1. Default state=open returns [] when nothing is open "
+            "(the newest PR is usually merged). Do not use search_pull_requests (blows ~65k ctx)."
         ),
         "Answer with the PR title string only; never paste raw MCP JSON into the reply.",
     ]

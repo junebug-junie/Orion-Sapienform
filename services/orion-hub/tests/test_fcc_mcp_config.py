@@ -39,6 +39,42 @@ def test_render_injects_github_and_firecrawl_secrets(mcp_config: Any, tmp_path: 
     assert "orion-aitown" not in data["mcpServers"]
 
 
+def test_render_defaults_github_toolsets_lean_and_read_only(mcp_config: Any, tmp_path: Path) -> None:
+    out = mcp_config.render_mcp_config(
+        correlation_id="corr-toolsets",
+        fcc_env={"GITHUB_PAT": "ghp_test", "FIRECRAWL_API_KEY": "fc_test"},
+        tmp_dir=tmp_path,
+        include_aitown=False,
+    )
+    data = json.loads(out.read_text(encoding="utf-8"))
+    github_env = data["mcpServers"]["github"]["env"]
+    assert github_env["GITHUB_TOOLSETS"] == "repos,pull_requests"
+    assert github_env["GITHUB_READ_ONLY"] == "1"
+    # -e passthrough must be present so the container actually receives the vars.
+    github_args = data["mcpServers"]["github"]["args"]
+    assert "GITHUB_TOOLSETS" in github_args
+    assert "GITHUB_READ_ONLY" in github_args
+
+
+def test_render_github_toolsets_override_from_env(mcp_config: Any, tmp_path: Path) -> None:
+    out = mcp_config.render_mcp_config(
+        correlation_id="corr-toolsets-override",
+        fcc_env={
+            "GITHUB_PAT": "ghp_test",
+            "FIRECRAWL_API_KEY": "fc_test",
+            "GITHUB_TOOLSETS": "repos,pull_requests,issues,actions",
+            "GITHUB_READ_ONLY": "",
+        },
+        tmp_dir=tmp_path,
+        include_aitown=False,
+    )
+    data = json.loads(out.read_text(encoding="utf-8"))
+    github_env = data["mcpServers"]["github"]["env"]
+    assert github_env["GITHUB_TOOLSETS"] == "repos,pull_requests,issues,actions"
+    # Empty override falls back to the read-only default (writes stay off unless explicitly widened).
+    assert github_env["GITHUB_READ_ONLY"] == "1"
+
+
 def test_render_fails_without_github_pat(mcp_config: Any, tmp_path: Path) -> None:
     with pytest.raises(mcp_config.McpPreflightError) as exc:
         mcp_config.render_mcp_config(

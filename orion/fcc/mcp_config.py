@@ -121,10 +121,17 @@ def render_mcp_config(
     _require_tool("docker", error_code="fcc_mcp_docker_missing")
     _require_tool("npx", error_code="fcc_mcp_node_missing")
 
+    # github-mcp-server loads all toolsets by default (~80 tools) which blows the
+    # llamacpp system-prompt budget. Restrict toolsets + read-only to keep init small.
+    github_toolsets = str(fcc_env.get("GITHUB_TOOLSETS") or "repos,pull_requests").strip()
+    github_read_only = str(fcc_env.get("GITHUB_READ_ONLY") or "1").strip()
+
     template = json.loads(_TEMPLATE_PATH.read_text(encoding="utf-8"))
     replacements = {
         "__GITHUB_PAT__": github_pat,
         "__FIRECRAWL_API_KEY__": firecrawl_key,
+        "__GITHUB_TOOLSETS__": github_toolsets,
+        "__GITHUB_READ_ONLY__": github_read_only,
     }
     rendered = _deep_replace(template, replacements)
 

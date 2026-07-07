@@ -41,6 +41,19 @@ class HubAssociationBundleV1(BaseModel):
     read_source: Literal["felt_state_reader", "hub_sql_fallback"]
 
 
+class GroundingCapsuleV1(BaseModel):
+    """Bounded self-context for the unified turn: identity + relationship + policy + PCR digests."""
+
+    schema_version: Literal["grounding.capsule.v1"] = "grounding.capsule.v1"
+    identity_summary: list[str] = Field(default_factory=list)
+    relationship_summary: list[str] = Field(default_factory=list)
+    response_policy_summary: list[str] = Field(default_factory=list)
+    continuity_digest: str | None = None
+    belief_digest: str | None = None
+    memory_digest: str | None = None
+    provenance: dict[str, Any] = Field(default_factory=dict)
+
+
 class ThoughtEventV1(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
@@ -64,6 +77,7 @@ class ThoughtEventV1(BaseModel):
     boundary_register: bool = False
 
     stance_harness_slice: StanceHarnessSliceV1
+    grounding_capsule: GroundingCapsuleV1 | None = None
 
     llm_profile: str = "brain"
     producer: str = "stance_react_v1"

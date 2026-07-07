@@ -530,6 +530,7 @@ from orion.schemas.reverie import (
 )
 from orion.schemas.thought import (
     CoalitionSnapshotV1,
+    GroundingCapsuleV1,
     HubAssociationBundleV1,
     StanceHarnessSliceV1,
     StanceReactRequestV1,
@@ -1188,6 +1189,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "StanceHarnessSliceV1": StanceHarnessSliceV1,
     "HubAssociationBundleV1": HubAssociationBundleV1,
     "ThoughtEventV1": ThoughtEventV1,
+    "GroundingCapsuleV1": GroundingCapsuleV1,
     "SpontaneousThoughtV1": SpontaneousThoughtV1,
     "ReverieChainV1": ReverieChainV1,
     "ReverieRefractoryEntry": ReverieRefractoryEntry,
@@ -1234,6 +1236,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "ThoughtEventV1": SchemaRegistration(
         model=ThoughtEventV1,
         kind="thought.event.v1",
+    ),
+    "GroundingCapsuleV1": SchemaRegistration(
+        model=GroundingCapsuleV1,
+        kind="grounding.capsule.v1",
     ),
     "SpontaneousThoughtV1": SchemaRegistration(
         model=SpontaneousThoughtV1,

@@ -223,6 +223,22 @@ def test_harness_post_turn_closure_roundtrip() -> None:
     assert restored.closure_source == "harness_post_turn_appraisal"
 
 
+def test_post_turn_closure_carries_referent_excerpts_when_unresolved() -> None:
+    closure = HarnessPostTurnClosureV1(
+        correlation_id="c-1",
+        outcome_molecule_id="out-1",
+        verdict_molecule_id="verd-1",
+        surprise_unresolved=True,
+        user_message_excerpt="What if the deploy slips again?",
+        stance_imperative="Name the risk plainly before offering a plan.",
+        thought_event_id="te-1",
+    )
+    restored = HarnessPostTurnClosureV1.model_validate(closure.model_dump(mode="json"))
+    assert restored.user_message_excerpt == "What if the deploy slips again?"
+    assert restored.stance_imperative.startswith("Name the risk")
+    assert restored.thought_event_id == "te-1"
+
+
 def test_harness_repair_overlay_roundtrip() -> None:
     overlay = HarnessRepairOverlayV1(
         mode="repair_concrete",

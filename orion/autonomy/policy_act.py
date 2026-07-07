@@ -5,7 +5,7 @@ from typing import Any, Awaitable, Callable, Sequence
 
 from orion.autonomy.capability_policy import CapabilityEvaluationContext, evaluate_capability
 from orion.autonomy.episode_fetch import EpisodeFetchRequest, execute_readonly_fetch
-from orion.autonomy.models import ActionOutcomeRefV1, CapabilityDecisionV1
+from orion.autonomy.models import ActionOutcomeRefV1, CapabilityDecisionV1, SubstrateActResultV1, SubstrateEpisodeIntentV1
 from orion.core.schemas.drives import DriveStateV1, GoalProposalV1
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 
@@ -166,3 +166,90 @@ async def maybe_compose_autonomy_episode_after_fetch(
     if budget_used is not None:
         budget_used[_EPISODE_JOURNAL_CAPABILITY] = budget_used.get(_EPISODE_JOURNAL_CAPABILITY, 0) + 1
     return decision, result
+
+
+def resolve_episode_intent(
+    *,
+    store,
+    subject: str,
+    run_id: str,
+    drive_origin: str = "predictive",
+) -> SubstrateEpisodeIntentV1:
+    slot = store.load_goal_slot(subject, drive_origin)
+    artifact_id = slot.get("artifact_id") if isinstance(slot, dict) else None
+    if isinstance(artifact_id, str) and artifact_id.strip():
+        return SubstrateEpisodeIntentV1(
+            goal_artifact_id=artifact_id.strip(),
+            drive_origin=drive_origin,
+            spawned_correlation_id=run_id,
+            subject=subject,
+        )
+    return SubstrateEpisodeIntentV1(
+        goal_artifact_id=f"episode-{run_id}",
+        drive_origin="predictive",
+        spawned_correlation_id=run_id,
+        subject=subject,
+    )
+
+
+def goal_proposal_from_episode_intent(intent: SubstrateEpisodeIntentV1) -> GoalProposalV1:
+    return GoalProposalV1.model_validate(
+        {
+            "artifact_id": intent.goal_artifact_id,
+            "subject": intent.subject,
+            "model_layer": "self-model",
+            "entity_id": f"self:{intent.subject}",
+            "kind": "memory.goals.proposed.v1",
+            "goal_statement": "Substrate episode intent (synthetic goal for policy).",
+            "proposal_signature": f"episode-{intent.spawned_correlation_id}",
+            "drive_origin": intent.drive_origin,
+            "proposal_status": "proposed",
+            "provenance": {"intake_channel": "orion:world_pulse:run:result"},
+        }
+    )
+
+
+async def maybe_execute_substrate_act_after_metabolism(
+    *,
+    episode_intent: SubstrateEpisodeIntentV1,
+    drive_state: DriveStateV1,
+    curiosity_signals: Sequence[FrontierInvocationSignalV1],
+    spawned_correlation_id: str | None = None,
+    fetch_backend: Callable[..., Awaitable[dict]] | None = None,
+    journal_dispatch: Callable[..., Awaitable[dict[str, Any]]] | None = None,
+    budget_used: dict[str, int] | None = None,
+    episode_journal_enabled: bool = False,
+) -> SubstrateActResultV1:
+    run_id = spawned_correlation_id or episode_intent.spawned_correlation_id
+    synthetic_goal = goal_proposal_from_episode_intent(episode_intent)
+    result = SubstrateActResultV1()
+
+    fetch_decision, fetch_outcome = await maybe_execute_readonly_fetch_after_goal(
+        goal=synthetic_goal,
+        drive_state=drive_state,
+        curiosity_signals=curiosity_signals,
+        spawned_correlation_id=run_id,
+        fetch_backend=fetch_backend,
+        budget_used=budget_used,
+    )
+    if fetch_decision.outcome == "allowed" and fetch_outcome is not None:
+        result = result.model_copy(update={"fetch_attempted": True, "fetch_outcome_id": fetch_outcome.action_id})
+
+    if not episode_journal_enabled or fetch_outcome is None:
+        return result
+
+    journal_decision, journal_payload = await maybe_compose_autonomy_episode_after_fetch(
+        goal=synthetic_goal,
+        drive_state=drive_state,
+        curiosity_signals=curiosity_signals,
+        spawned_correlation_id=run_id,
+        fetch_outcome=fetch_outcome,
+        journal_dispatch=journal_dispatch,
+        budget_used=budget_used,
+    )
+    if journal_decision.outcome == "allowed" and journal_payload is not None:
+        entry_id = None
+        if isinstance(journal_payload.get("write"), dict):
+            entry_id = journal_payload["write"].get("entry_id")
+        result = result.model_copy(update={"journal_attempted": True, "journal_entry_id": entry_id})
+    return result

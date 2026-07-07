@@ -6,12 +6,14 @@ from uuid import uuid4
 
 import pytest
 
+from orion.autonomy.models import ActionOutcomeRefV1, SubstrateEpisodeIntentV1
 from orion.autonomy.policy_act import (
     build_readonly_fetch_query,
     maybe_compose_autonomy_episode_after_fetch,
     maybe_execute_readonly_fetch_after_goal,
+    maybe_execute_substrate_act_after_metabolism,
+    resolve_episode_intent,
 )
-from orion.autonomy.models import ActionOutcomeRefV1
 from orion.core.schemas.drives import DriveStateV1, GoalProposalV1
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 
@@ -182,3 +184,62 @@ async def test_policy_act_composes_episode_journal_on_fetch_failure(monkeypatch)
     assert decision.outcome == "allowed"
     assert result is not None
     assert "fetch failed" in journal_dispatch.await_args.kwargs["narrative_seed"]
+
+
+def _intent() -> SubstrateEpisodeIntentV1:
+    return SubstrateEpisodeIntentV1(
+        goal_artifact_id="episode-wp-run-gap-gpu",
+        drive_origin="predictive",
+        spawned_correlation_id="wp-run-gap-gpu",
+        subject="orion",
+    )
+
+
+class _FakeStore:
+    def __init__(self, slot: dict | None = None) -> None:
+        self._slot = slot or {}
+
+    def load_goal_slot(self, subject: str, drive_origin: str) -> dict:
+        return dict(self._slot)
+
+
+def test_resolve_episode_intent_uses_predictive_slot() -> None:
+    store = _FakeStore({"artifact_id": "goal-predictive-slot", "signature": "sig"})
+    intent = resolve_episode_intent(store=store, subject="orion", run_id="wp-run-1")
+    assert intent.goal_artifact_id == "goal-predictive-slot"
+    assert intent.drive_origin == "predictive"
+
+
+def test_resolve_episode_intent_synthetic_when_slot_empty() -> None:
+    intent = resolve_episode_intent(store=_FakeStore(), subject="orion", run_id="wp-run-1")
+    assert intent.goal_artifact_id == "episode-wp-run-1"
+    assert intent.spawned_correlation_id == "wp-run-1"
+
+
+@pytest.mark.asyncio
+async def test_substrate_act_runs_when_goal_suppressed(monkeypatch, tmp_path) -> None:
+    """Spec acceptance 4: proposal=None path still executes fetch."""
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
+    backend = AsyncMock(return_value={"success": True, "urls": ["https://example.com/a"]})
+    result = await maybe_execute_substrate_act_after_metabolism(
+        episode_intent=_intent(),
+        drive_state=_drive_state(),
+        curiosity_signals=[_gap_signal()],
+        fetch_backend=backend,
+    )
+    assert result.fetch_attempted is True
+    backend.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_substrate_act_denied_without_gap_signal(monkeypatch) -> None:
+    """Spec acceptance 5."""
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    result = await maybe_execute_substrate_act_after_metabolism(
+        episode_intent=_intent(),
+        drive_state=_drive_state(),
+        curiosity_signals=[],
+        fetch_backend=AsyncMock(),
+    )
+    assert result.fetch_attempted is False

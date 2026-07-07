@@ -251,17 +251,40 @@ def test_build_episode_narrative_seed_marks_unscored_when_no_gap_terms() -> None
     from orion.autonomy.models import FetchedArticleRefV1
     from orion.autonomy.policy_act import build_episode_narrative_seed
 
+    # No section-derived gap terms and no query to fall back on -> there is nothing
+    # to score against, so the marker is honestly "unscored".
+    no_section = _gap_signal().model_copy(update={"focal_node_refs": ["node:not_a_section"]})
     outcome = ActionOutcomeRefV1(
         action_id="fetch-1",
         kind="web.fetch.readonly",
         summary="fetched 1 article(s)",
         success=True,
-        query="gpu news",
+        query=None,
         articles=[FetchedArticleRefV1(url="https://example.com/a", title="A", salience=0.0)],
         salience=0.0,
     )
-    seed = build_episode_narrative_seed(_goal(), [_gap_signal()], outcome)
+    seed = build_episode_narrative_seed(_goal(), [no_section], outcome)
     assert "unscored" in seed
+
+
+def test_build_episode_narrative_seed_shows_zero_salience_when_scored_but_irrelevant() -> None:
+    from orion.autonomy.models import FetchedArticleRefV1
+    from orion.autonomy.policy_act import build_episode_narrative_seed
+
+    # Gap terms exist (section) but the article overlaps none -> honestly
+    # "salience 0.00", NOT the misleading "unscored".
+    outcome = ActionOutcomeRefV1(
+        action_id="fetch-1",
+        kind="web.fetch.readonly",
+        summary="fetched 1 article(s)",
+        success=True,
+        query="hardware compute gpu recent news coverage",
+        articles=[FetchedArticleRefV1(url="https://example.com/a", title="Cooking recipes", salience=0.0)],
+        salience=0.0,
+    )
+    seed = build_episode_narrative_seed(_goal(), [_gap_signal()], outcome)
+    assert "salience 0.00" in seed
+    assert "unscored" not in seed
 
 
 def test_build_episode_narrative_seed_failure_branch_unchanged() -> None:

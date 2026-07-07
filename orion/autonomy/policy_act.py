@@ -7,7 +7,7 @@ from orion.autonomy.capability_policy import CapabilityEvaluationContext, evalua
 from orion.autonomy.episode_fetch import EpisodeFetchRequest, execute_readonly_fetch
 from orion.autonomy.fetch_backend_resolve import resolve_fetch_backend
 from orion.autonomy.models import ActionOutcomeRefV1, CapabilityDecisionV1, SubstrateActResultV1, SubstrateEpisodeIntentV1
-from orion.autonomy.salience import gap_terms_from_signals
+from orion.autonomy.salience import gap_terms_from_signals, iter_gap_section_labels
 from orion.core.schemas.drives import DriveStateV1, GoalProposalV1
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 
@@ -28,14 +28,9 @@ def signal_kinds_from_curiosity(signals: Sequence[FrontierInvocationSignalV1]) -
 
 
 def build_readonly_fetch_query(signals: Sequence[FrontierInvocationSignalV1]) -> str:
-    for sig in signals:
-        if sig.signal_type != _GAP_SIGNAL:
-            continue
-        for ref in sig.focal_node_refs:
-            section = str(ref or "").strip()
-            if section.startswith("section:"):
-                label = section.split(":", 1)[1].replace("_", " ")
-                return f"{label} recent news coverage"
+    label = next(iter_gap_section_labels(signals), None)
+    if label:
+        return f"{label} recent news coverage"
     return "world coverage gap research"
 
 
@@ -108,14 +103,7 @@ _MAX_SEED_DESC_CHARS = 300
 
 
 def _gap_section_label(signals: Sequence[FrontierInvocationSignalV1]) -> str:
-    for sig in signals:
-        if sig.signal_type != _GAP_SIGNAL:
-            continue
-        for ref in sig.focal_node_refs:
-            section = str(ref or "").strip()
-            if section.startswith("section:"):
-                return section.split(":", 1)[1].replace("_", " ")
-    return ""
+    return next(iter_gap_section_labels(signals), "")
 
 
 def build_episode_narrative_seed(
@@ -145,9 +133,14 @@ def build_episode_narrative_seed(
     articles = fetch_outcome.articles
     if articles:
         lines.append(f"Fetched {len(articles)} article(s):")
-        any_scored = any(a.salience > 0.0 for a in articles)
+        # "scored" iff the fetch had gap terms to score against (mirrors the
+        # gap_terms the fetch used). A genuine 0.0 overlap is honestly "salience
+        # 0.00", not "unscored"; "unscored" means there was nothing to score by.
+        scored = bool(
+            gap_terms_from_signals(curiosity_signals, fallback_query=fetch_outcome.query or "")
+        )
         for idx, art in enumerate(articles, start=1):
-            marker = f"salience {art.salience:.2f}" if any_scored else "unscored"
+            marker = f"salience {art.salience:.2f}" if scored else "unscored"
             title = art.title or "(untitled)"
             lines.append(f"  {idx}. [{marker}] {title} — {art.url}")
             desc = (art.description or "").strip()

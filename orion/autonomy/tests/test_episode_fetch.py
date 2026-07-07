@@ -85,6 +85,38 @@ async def test_execute_readonly_fetch_carries_articles_and_salience(tmp_path, mo
 
 
 @pytest.mark.asyncio
+async def test_execute_readonly_fetch_exception_after_success_marks_failure(tmp_path, monkeypatch) -> None:
+    """If scoring/parsing raises after the backend reported success, the stored
+    outcome must not be left as success=True with a 'fetch failed' summary."""
+    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("scorer exploded")
+
+    monkeypatch.setattr("orion.autonomy.episode_fetch.score_article_salience", _boom)
+    backend = AsyncMock(
+        return_value={
+            "success": True,
+            "urls": ["https://example.com/a"],
+            "articles": [{"url": "https://example.com/a", "title": "A", "description": "b"}],
+        }
+    )
+    req = EpisodeFetchRequest(
+        subject="orion",
+        goal_artifact_id="goal-gap-gpu",
+        spawned_correlation_id="wp-run-gap-gpu",
+        query="gpu news",
+        gap_terms=("gpu",),
+    )
+    outcome = await execute_readonly_fetch(req, fetch_backend=backend)
+    assert outcome.success is False
+    assert outcome.surprise == 1.0
+    assert outcome.articles == []
+    assert outcome.salience == 0.0
+    assert outcome.summary.startswith("fetch failed:")
+
+
+@pytest.mark.asyncio
 async def test_execute_readonly_fetch_backcompat_urls_only(tmp_path, monkeypatch) -> None:
     """Older backend returning only urls still yields article refs (salience 0)."""
     monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))

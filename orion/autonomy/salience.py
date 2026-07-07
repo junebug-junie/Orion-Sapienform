@@ -7,7 +7,7 @@ function over gap terms vs article text. Not a cognition architecture.
 from __future__ import annotations
 
 import re
-from typing import Sequence
+from typing import Iterator, Sequence
 
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 
@@ -20,6 +20,25 @@ def _tokenize(text: str) -> set[str]:
     return set(_TOKEN_RE.findall(text.lower()))
 
 
+def iter_gap_section_labels(
+    signals: Sequence[FrontierInvocationSignalV1],
+) -> Iterator[str]:
+    """Yield normalized section labels from `section:` focal refs across
+    world_coverage_gap signals, in signal/ref order.
+
+    Single source of truth for gap-section parsing (prefix stripped,
+    underscores -> spaces). Consumed by `gap_terms_from_signals` here and by the
+    query/seed builders in `policy_act.py` so the traversal does not drift.
+    """
+    for sig in signals:
+        if getattr(sig, "signal_type", None) != _GAP_SIGNAL:
+            continue
+        for ref in getattr(sig, "focal_node_refs", None) or []:
+            section = str(ref or "").strip()
+            if section.startswith(_SECTION_PREFIX):
+                yield section[len(_SECTION_PREFIX):].replace("_", " ")
+
+
 def gap_terms_from_signals(
     signals: Sequence[FrontierInvocationSignalV1],
     *,
@@ -30,14 +49,8 @@ def gap_terms_from_signals(
     Falls back to query tokens only when no section-derived terms are found.
     """
     terms: set[str] = set()
-    for sig in signals:
-        if getattr(sig, "signal_type", None) != _GAP_SIGNAL:
-            continue
-        for ref in getattr(sig, "focal_node_refs", None) or []:
-            section = str(ref or "").strip()
-            if section.startswith(_SECTION_PREFIX):
-                label = section[len(_SECTION_PREFIX):].replace("_", " ")
-                terms |= _tokenize(label)
+    for label in iter_gap_section_labels(signals):
+        terms |= _tokenize(label)
     if not terms and fallback_query:
         terms |= _tokenize(fallback_query)
     return terms

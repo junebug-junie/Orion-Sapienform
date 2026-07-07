@@ -90,6 +90,13 @@ async def execute_readonly_fetch(
         articles = _parse_articles(result, gap_terms=set(req.gap_terms))
         aggregate_salience = max((a.salience for a in articles), default=0.0)
     except Exception as exc:
+        # Reset every success-path field so a stored outcome can never claim
+        # success=True with a "fetch failed" summary if parsing/scoring raised
+        # after success was assigned.
+        success = False
+        surprise = 1.0
+        articles = []
+        aggregate_salience = 0.0
         summary = f"fetch failed: {exc}"
 
     outcome = ActionOutcomeRefV1(

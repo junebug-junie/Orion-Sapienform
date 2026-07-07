@@ -7,7 +7,6 @@ from typing import Any
 from uuid import UUID
 
 import asyncpg
-import psycopg2
 
 from orion.memory.crystallization.schemas import (
     CrystallizationClaimV1,
@@ -31,6 +30,8 @@ def _crystallizations_sql_path() -> Path:
 
 
 def apply_memory_crystallizations_schema(dsn: str) -> None:
+    import psycopg2
+
     sql_path = _crystallizations_sql_path()
     if not sql_path.is_file():
         raise FileNotFoundError(f"memory_crystallizations DDL not found at {sql_path}")

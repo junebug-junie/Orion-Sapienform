@@ -16,7 +16,7 @@ from .executor import (
     prepare_chat_quick_reply_context,
     run_recall_step,
 )
-from .pcr_chat_memory import CONTINUITY_PROFILE, run_pcr_phase0_and_1
+from .pcr_chat_memory import CONTINUITY_PROFILE, run_pcr_phase0_and_1, run_pcr_phase3
 from .situation import mark_orion_turn
 from .recall_utils import (
     delivery_safe_recall_decision,
@@ -1285,6 +1285,50 @@ class PlanRunner:
                 recall_debug = step_res.result.get("RecallService", {})
                 memory_used = step_res.status == "success"
                 ctx["memory_used"] = memory_used
+
+            if (
+                settings.chat_pcr_enabled
+                and settings.chat_pcr_post_stance_recall
+                and str(plan.verb_name or "").strip().lower() == "chat_general"
+                and step.step_name == "synthesize_chat_stance_brief"
+                and step_res.status == "success"
+            ):
+                _pcr_phase3, phase3_recall_step, phase3_debug = await run_pcr_phase3(
+                    bus,
+                    source=source,
+                    ctx=ctx,
+                    correlation_id=correlation_id,
+                    recall_cfg=recall_cfg,
+                )
+                if phase3_recall_step is not None:
+                    step_results.append(phase3_recall_step)
+                    grammar_collector.record_step_started(
+                        order=step.order,
+                        step_name=phase3_recall_step.step_name or "pcr_belief_recall",
+                        verb_name=phase3_recall_step.verb_name or "recall",
+                        services=["RecallService"],
+                    )
+                    if phase3_recall_step.status == "success":
+                        keys = (
+                            sorted(phase3_recall_step.result.keys())
+                            if isinstance(phase3_recall_step.result, dict)
+                            else []
+                        )
+                        grammar_collector.record_step_completed(
+                            order=step.order,
+                            step_name=phase3_recall_step.step_name or "pcr_belief_recall",
+                            latency_ms=phase3_recall_step.latency_ms,
+                            result_service_keys=keys,
+                        )
+                    else:
+                        grammar_collector.record_step_failed(
+                            order=step.order,
+                            step_name=phase3_recall_step.step_name or "pcr_belief_recall",
+                            error_kind=short_error_kind(phase3_recall_step.error),
+                        )
+                    memory_used = phase3_recall_step.status == "success"
+                if isinstance(phase3_debug, dict) and isinstance(recall_debug, dict):
+                    recall_debug.update(phase3_debug)
 
             if step_res.status != "success":
                 overall_status = "partial" if len(step_results) > 1 else "fail"

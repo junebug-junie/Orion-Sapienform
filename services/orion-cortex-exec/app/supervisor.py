@@ -47,6 +47,7 @@ from orion.schemas.context_exec import (
 
 from .clients import AgentChainClient, ContextExecClient, CouncilClient, LLMGatewayClient, PlannerReactClient
 from .executor import _last_user_message, call_step_services, run_recall_step
+from .pcr_chat_memory import CONTINUITY_PROFILE, run_pcr_phase0_and_1, run_pcr_phase3
 from .recall_utils import delivery_safe_recall_decision, has_inline_recall, hub_chat_lane_from_ctx
 from .settings import settings
 
@@ -1631,8 +1632,50 @@ class Supervisor:
         inline_recall = has_inline_recall(req.steps)
         should_recall = bool(recall_policy["run_recall"])
         recall_reason = str(recall_policy["reason"])
+        use_pcr_pre_recall = (
+            settings.chat_pcr_enabled
+            and str(req.verb_name or "").strip().lower() == "chat_general"
+            and should_recall
+            and not inline_recall
+        )
 
-        if should_recall and not inline_recall:
+        if use_pcr_pre_recall:
+            logger.info(
+                "Supervisor PCR phase0+1 start corr=%s profile=%s gating=%s",
+                correlation_id,
+                selected_profile,
+                recall_reason,
+            )
+            _pcr_memory, recall_step, recall_debug = await run_pcr_phase0_and_1(
+                self.bus,
+                source=source,
+                ctx=ctx,
+                correlation_id=correlation_id,
+                recall_cfg=recall_cfg,
+            )
+            if recall_step is not None:
+                step_results.append(recall_step)
+            memory_used = recall_step is not None and recall_step.status == "success"
+            if isinstance(recall_debug, dict):
+                recall_debug.setdefault("profile", CONTINUITY_PROFILE if recall_step else None)
+                recall_debug.setdefault("profile_source", "pcr")
+                recall_debug.setdefault("profile_override_source", recall_policy.get("profile_override_source"))
+                recall_debug.setdefault("recall_gating_reason", recall_policy.get("recall_gating_reason"))
+            if recall_required and recall_step is not None and recall_step.status != "success":
+                return PlanExecutionResult(
+                    verb_name=req.verb_name,
+                    request_id=correlation_id,
+                    status="fail",
+                    blocked=False,
+                    blocked_reason=None,
+                    steps=step_results,
+                    mode=ctx.get("mode") or req.metadata.get("mode") or "agent",
+                    final_text=None,
+                    memory_used=memory_used,
+                    recall_debug=recall_debug,
+                    error=recall_step.error,
+                )
+        elif should_recall and not inline_recall:
             logger.info(
                 "Supervisor recall resolved profile=%s source=%s override_source=%s gating=%s recall_gating_reason=%s",
                 selected_profile,
@@ -1841,6 +1884,25 @@ class Supervisor:
                 diagnostic=bool(ctx.get("diagnostic")),
             )
             step_results.append(direct_step)
+            if (
+                settings.chat_pcr_enabled
+                and settings.chat_pcr_post_stance_recall
+                and str(req.verb_name or "").strip().lower() == "chat_general"
+                and direct_step.status == "success"
+                and isinstance(ctx.get("chat_stance_brief"), dict)
+            ):
+                _pcr_phase3, phase3_recall_step, phase3_debug = await run_pcr_phase3(
+                    self.bus,
+                    source=source,
+                    ctx=ctx,
+                    correlation_id=correlation_id,
+                    recall_cfg=recall_cfg,
+                )
+                if phase3_recall_step is not None:
+                    step_results.append(phase3_recall_step)
+                    memory_used = phase3_recall_step.status == "success"
+                if isinstance(phase3_debug, dict) and isinstance(recall_debug, dict):
+                    recall_debug.update(phase3_debug)
             final_obs = _extract_observation(direct_step)
             return PlanExecutionResult(
                 verb_name=req.verb_name,

@@ -18,9 +18,13 @@ from orion.schemas.vector.schemas import VectorWriteRequest
 from .audit import build_drive_audit
 from .drives import DriveEngine, DriveMathConfig, drive_state_from_values
 from .dossier import build_evidence_items, build_source_event_ref, build_turn_dossier, extract_trace_id, extract_turn_id
-from orion.autonomy.episode_fetch import default_fetch_backend
+from orion.autonomy.episode_journal import dispatch_autonomy_episode_journal
+from orion.autonomy.fetch_backend_resolve import resolve_fetch_backend
 from orion.autonomy.goal_archive import maybe_archive_after_goal_publish
-from orion.autonomy.policy_act import maybe_execute_readonly_fetch_after_goal
+from orion.autonomy.policy_act import (
+    maybe_compose_autonomy_episode_after_fetch,
+    maybe_execute_readonly_fetch_after_goal,
+)
 from orion.autonomy.substrate_metabolism import metabolize_substrate_signals, metabolism_enabled
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 from orion.schemas.world_pulse import WorldPulseRunResultV1
@@ -92,7 +96,7 @@ class ConceptWorker:
         fetch_backend: Callable[..., Awaitable[dict]] | None = None,
     ) -> None:
         self.cfg = cfg
-        self._fetch_backend = fetch_backend or default_fetch_backend
+        self._fetch_backend = fetch_backend or resolve_fetch_backend()
         self.bus = OrionBusAsync(
             cfg.orion_bus_url,
             enabled=cfg.orion_bus_enabled,
@@ -135,6 +139,31 @@ class ConceptWorker:
         self._liveness = WorkerLivenessState(
             worker_initialized=True,
             subscribed_channels=list(cfg.intake_channels),
+        )
+        self._service_ref = service_ref
+
+    async def _dispatch_autonomy_episode_journal(
+        self,
+        parent: BaseEnvelope,
+        *,
+        goal_artifact_id: str,
+        spawned_correlation_id: str,
+        narrative_seed: str,
+    ) -> dict:
+        return await dispatch_autonomy_episode_journal(
+            bus=self.bus,
+            parent=parent,
+            source=self._service_ref,
+            goal_artifact_id=goal_artifact_id,
+            spawned_correlation_id=spawned_correlation_id,
+            narrative_seed=narrative_seed,
+            cortex_request_channel=self.cfg.cortex_request_channel,
+            cortex_result_prefix=self.cfg.cortex_result_prefix,
+            journal_write_channel=self.cfg.journal_write_channel,
+            timeout_sec=self.cfg.cortex_timeout_sec,
+            session_id=self.cfg.journal_session_id,
+            user_id=self.cfg.journal_user_id,
+            author=self.cfg.journal_author,
         )
 
     def _accepted_source_mapping(self) -> dict:
@@ -628,13 +657,16 @@ class ConceptWorker:
                 and metabolism_enabled()
                 and metabolism_curiosity_signals
             ):
+                policy_budget: dict[str, int] = {}
+                fetch_outcome = None
                 try:
-                    await maybe_execute_readonly_fetch_after_goal(
+                    _fetch_decision, fetch_outcome = await maybe_execute_readonly_fetch_after_goal(
                         goal=goal_decision.proposal,
                         drive_state=drive_state,
                         curiosity_signals=metabolism_curiosity_signals,
                         spawned_correlation_id=spawned_correlation_id,
                         fetch_backend=self._fetch_backend,
+                        budget_used=policy_budget,
                     )
                 except Exception:
                     logger.warning(
@@ -643,6 +675,28 @@ class ConceptWorker:
                         spawned_correlation_id,
                         exc_info=True,
                     )
+                if fetch_outcome is not None and self.cfg.autonomy_episode_journal_enabled:
+                    try:
+
+                        async def _journal_dispatch(**kwargs):
+                            return await self._dispatch_autonomy_episode_journal(env, **kwargs)
+
+                        await maybe_compose_autonomy_episode_after_fetch(
+                            goal=goal_decision.proposal,
+                            drive_state=drive_state,
+                            curiosity_signals=metabolism_curiosity_signals,
+                            spawned_correlation_id=spawned_correlation_id,
+                            fetch_outcome=fetch_outcome,
+                            budget_used=policy_budget,
+                            journal_dispatch=_journal_dispatch,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "substrate_policy_journal_failed goal=%s spawned=%s",
+                            goal_decision.proposal.artifact_id,
+                            spawned_correlation_id,
+                            exc_info=True,
+                        )
         elif goal_decision.suppressed_signature:
             suppressed_signatures.append(goal_decision.suppressed_signature)
 

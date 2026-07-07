@@ -17,6 +17,7 @@ from orion.core.schemas.drives import GoalProposalV1
 _TRUTHY = {"1", "true", "yes", "on"}
 _GOAL_STATUS_ORDER = {"none": 0, "proposed": 1, "planned": 2, "executing": 3}
 _PLANNED_STATUS_LEVEL = _GOAL_STATUS_ORDER["planned"]
+_EPISODE_JOURNAL_CAPABILITY = "journal.compose.episode"
 _DEFAULT_POLICY_PATH = (
     Path(__file__).resolve().parents[2] / "config" / "autonomy" / "capability_policy.v1.yaml"
 )
@@ -94,6 +95,17 @@ def _layer_a_readonly_auto_enabled(ctx: CapabilityEvaluationContext) -> tuple[bo
     return True, "layer_a_satisfied"
 
 
+def _layer_a_episode_journal_enabled(ctx: CapabilityEvaluationContext) -> tuple[bool, str]:
+    if not _env_bool("ORION_AUTONOMY_EPISODE_JOURNAL_ENABLED", default=False):
+        return False, "episode_journal_disabled"
+    if not _env_bool("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", default=False):
+        return False, "policy_auto_disabled"
+    min_pressure = _env_float("ORION_METABOLISM_MIN_PREDICTIVE_PRESSURE", 0.55)
+    if ctx.predictive_pressure < min_pressure:
+        return False, "predictive_pressure_insufficient"
+    return True, "layer_a_satisfied"
+
+
 def evaluate_capability(capability_id: str, ctx: CapabilityEvaluationContext) -> CapabilityDecisionV1:
     policy = load_capability_policy()
     rule = _find_rule(policy, capability_id)
@@ -121,13 +133,21 @@ def evaluate_capability(capability_id: str, ctx: CapabilityEvaluationContext) ->
         if _goal_status_level(ctx.goal.proposal_status) < required_level:
             return _decision(capability_id, outcome="denied", reason_code="goal_status_insufficient")
 
-    if rule.side_effect_class in {"write", "external"}:
+    if rule.side_effect_class == "external":
+        goal_level = _goal_status_level(ctx.goal.proposal_status) if ctx.goal is not None else 0
+        if goal_level < _PLANNED_STATUS_LEVEL:
+            return _decision(capability_id, outcome="requires_promote", reason_code="requires_promote")
+    elif rule.side_effect_class == "write" and capability_id != _EPISODE_JOURNAL_CAPABILITY:
         goal_level = _goal_status_level(ctx.goal.proposal_status) if ctx.goal is not None else 0
         if goal_level < _PLANNED_STATUS_LEVEL:
             return _decision(capability_id, outcome="requires_promote", reason_code="requires_promote")
 
     if rule.auto_execute and rule.side_effect_class == "readonly":
         ok, reason = _layer_a_readonly_auto_enabled(ctx)
+        if not ok:
+            return _decision(capability_id, outcome="denied", reason_code=reason)
+    elif rule.auto_execute and capability_id == _EPISODE_JOURNAL_CAPABILITY:
+        ok, reason = _layer_a_episode_journal_enabled(ctx)
         if not ok:
             return _decision(capability_id, outcome="denied", reason_code=reason)
 

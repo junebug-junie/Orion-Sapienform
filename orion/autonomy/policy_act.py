@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Awaitable, Callable, Sequence
+from typing import Any, Awaitable, Callable, Sequence
 
 from orion.autonomy.capability_policy import CapabilityEvaluationContext, evaluate_capability
 from orion.autonomy.episode_fetch import EpisodeFetchRequest, execute_readonly_fetch
@@ -12,6 +12,7 @@ from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 logger = logging.getLogger(__name__)
 
 _READONLY_CAPABILITY = "web.fetch.readonly"
+_EPISODE_JOURNAL_CAPABILITY = "journal.compose.episode"
 _GAP_SIGNAL = "world_coverage_gap"
 
 
@@ -98,3 +99,70 @@ async def maybe_execute_readonly_fetch_after_goal(
     if budget_used is not None:
         budget_used[_READONLY_CAPABILITY] = budget_used.get(_READONLY_CAPABILITY, 0) + 1
     return decision, outcome
+
+
+async def maybe_compose_autonomy_episode_after_fetch(
+    *,
+    goal: GoalProposalV1,
+    drive_state: DriveStateV1,
+    curiosity_signals: Sequence[FrontierInvocationSignalV1],
+    spawned_correlation_id: str | None,
+    fetch_outcome: ActionOutcomeRefV1 | None,
+    journal_dispatch: Callable[..., Awaitable[dict[str, Any]]] | None = None,
+    budget_used: dict[str, int] | None = None,
+) -> tuple[CapabilityDecisionV1, dict[str, Any] | None]:
+    """Layer C gate + episode journal compose after successful readonly fetch."""
+    del curiosity_signals
+    if fetch_outcome is None:
+        decision = CapabilityDecisionV1(
+            capability_id=_EPISODE_JOURNAL_CAPABILITY,
+            outcome="denied",
+            reason_code="fetch_outcome_missing",
+            auto_execute=False,
+        )
+        return decision, None
+
+    if not spawned_correlation_id:
+        decision = CapabilityDecisionV1(
+            capability_id=_EPISODE_JOURNAL_CAPABILITY,
+            outcome="denied",
+            reason_code="missing_spawned_correlation_id",
+            auto_execute=False,
+        )
+        return decision, None
+
+    ctx = CapabilityEvaluationContext(
+        predictive_pressure=float(drive_state.pressures.get("predictive", 0.0)),
+        curiosity_strength=0.0,
+        signal_kinds=[],
+        goal=goal,
+        budget_used=budget_used or {},
+    )
+    decision = evaluate_capability(_EPISODE_JOURNAL_CAPABILITY, ctx)
+    logger.info(
+        "substrate_policy_act capability=%s outcome=%s reason=%s auto_execute=%s goal=%s spawned=%s",
+        decision.capability_id,
+        decision.outcome,
+        decision.reason_code,
+        decision.auto_execute,
+        goal.artifact_id,
+        spawned_correlation_id,
+    )
+    if decision.outcome != "allowed" or not decision.auto_execute:
+        return decision, None
+    if journal_dispatch is None:
+        return decision, None
+
+    narrative_seed = (
+        f"fetch outcome: {fetch_outcome.summary}"
+        if fetch_outcome.success
+        else f"fetch failed: {fetch_outcome.summary}"
+    )
+    result = await journal_dispatch(
+        goal_artifact_id=goal.artifact_id,
+        spawned_correlation_id=spawned_correlation_id,
+        narrative_seed=narrative_seed,
+    )
+    if budget_used is not None:
+        budget_used[_EPISODE_JOURNAL_CAPABILITY] = budget_used.get(_EPISODE_JOURNAL_CAPABILITY, 0) + 1
+    return decision, result

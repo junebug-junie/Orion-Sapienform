@@ -135,12 +135,19 @@ async def test_metabolism_enriches_goal_window_summary(monkeypatch) -> None:
 async def test_policy_fetch_runs_after_goal_publish(monkeypatch) -> None:
     monkeypatch.setenv("ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED", "true")
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
-    policy_mock = AsyncMock(return_value=(MagicMock(outcome="allowed", auto_execute=True), MagicMock(success=True)))
+    episode_mock = AsyncMock(return_value=(MagicMock(outcome="allowed", auto_execute=True), {"write": {}}))
+    fetch_outcome = MagicMock(success=True)
+    policy_mock = AsyncMock(return_value=(MagicMock(outcome="allowed", auto_execute=True), fetch_outcome))
     monkeypatch.setattr(
         "orion.spark.concept_induction.bus_worker.maybe_execute_readonly_fetch_after_goal",
         policy_mock,
     )
+    monkeypatch.setattr(
+        "orion.spark.concept_induction.bus_worker.maybe_compose_autonomy_episode_after_fetch",
+        episode_mock,
+    )
     cfg = ConceptSettings()
+    cfg.autonomy_episode_journal_enabled = True
     worker = ConceptWorker(cfg, fetch_backend=AsyncMock())
     worker.store = MagicMock()
     worker.store.load_drive_state.return_value = {
@@ -171,3 +178,4 @@ async def test_policy_fetch_runs_after_goal_publish(monkeypatch) -> None:
     call_kwargs = policy_mock.await_args.kwargs
     assert call_kwargs["spawned_correlation_id"] == "wp-run-hook"
     assert call_kwargs["goal"] is proposal
+    episode_mock.assert_awaited_once()

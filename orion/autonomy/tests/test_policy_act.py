@@ -8,8 +8,10 @@ import pytest
 
 from orion.autonomy.policy_act import (
     build_readonly_fetch_query,
+    maybe_compose_autonomy_episode_after_fetch,
     maybe_execute_readonly_fetch_after_goal,
 )
+from orion.autonomy.models import ActionOutcomeRefV1
 from orion.core.schemas.drives import DriveStateV1, GoalProposalV1
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 
@@ -112,3 +114,71 @@ async def test_policy_act_denied_when_pressure_low(monkeypatch) -> None:
     assert decision.outcome == "denied"
     assert decision.reason_code == "predictive_pressure_insufficient"
     assert outcome is None
+
+
+@pytest.mark.asyncio
+async def test_policy_act_dispatches_episode_journal_after_fetch(monkeypatch) -> None:
+    monkeypatch.setenv("ORION_AUTONOMY_EPISODE_JOURNAL_ENABLED", "true")
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    fetch_outcome = ActionOutcomeRefV1(
+        action_id="fetch-test",
+        kind="web.fetch.readonly",
+        summary="fetched 2 article(s)",
+        success=True,
+        surprise=0.0,
+        observed_at=datetime.now(timezone.utc),
+    )
+    journal_dispatch = AsyncMock(return_value={"write": {"entry_id": "entry-1"}})
+    decision, result = await maybe_compose_autonomy_episode_after_fetch(
+        goal=_goal(),
+        drive_state=_drive_state(),
+        curiosity_signals=[_gap_signal()],
+        spawned_correlation_id="wp-run-gap-gpu",
+        fetch_outcome=fetch_outcome,
+        journal_dispatch=journal_dispatch,
+    )
+    assert decision.outcome == "allowed"
+    assert result is not None
+    journal_dispatch.assert_awaited_once()
+    assert journal_dispatch.await_args.kwargs["narrative_seed"].startswith("fetch outcome:")
+
+
+@pytest.mark.asyncio
+async def test_policy_act_skips_episode_journal_when_fetch_missing(monkeypatch) -> None:
+    monkeypatch.setenv("ORION_AUTONOMY_EPISODE_JOURNAL_ENABLED", "true")
+    decision, result = await maybe_compose_autonomy_episode_after_fetch(
+        goal=_goal(),
+        drive_state=_drive_state(),
+        curiosity_signals=[_gap_signal()],
+        spawned_correlation_id="wp-run-gap-gpu",
+        fetch_outcome=None,
+        journal_dispatch=AsyncMock(),
+    )
+    assert decision.reason_code == "fetch_outcome_missing"
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_policy_act_composes_episode_journal_on_fetch_failure(monkeypatch) -> None:
+    monkeypatch.setenv("ORION_AUTONOMY_EPISODE_JOURNAL_ENABLED", "true")
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    fetch_outcome = ActionOutcomeRefV1(
+        action_id="fetch-test",
+        kind="web.fetch.readonly",
+        summary="fetch failed: timeout",
+        success=False,
+        surprise=1.0,
+        observed_at=datetime.now(timezone.utc),
+    )
+    journal_dispatch = AsyncMock(return_value={"write": {"entry_id": "entry-1"}})
+    decision, result = await maybe_compose_autonomy_episode_after_fetch(
+        goal=_goal(),
+        drive_state=_drive_state(),
+        curiosity_signals=[_gap_signal()],
+        spawned_correlation_id="wp-run-gap-gpu",
+        fetch_outcome=fetch_outcome,
+        journal_dispatch=journal_dispatch,
+    )
+    assert decision.outcome == "allowed"
+    assert result is not None
+    assert "fetch failed" in journal_dispatch.await_args.kwargs["narrative_seed"]

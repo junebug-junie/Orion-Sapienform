@@ -15,6 +15,10 @@ class Settings(BaseSettings):
 
     enabled: bool = Field(False, alias="ORION_EMBODIMENT_ENABLED")
     fcc_env_path: str = Field("/root/.fcc/.env", alias="EMBODIMENT_FCC_ENV_PATH")
+    # Optional override for the Convex URL loaded from ~/.fcc/.env. Needed when the
+    # bridge container cannot reach the host-oriented URL (e.g. set to
+    # http://host.docker.internal:3210). Empty = use the ~/.fcc/.env value as-is.
+    aitown_convex_url: str = Field("", alias="EMBODIMENT_AITOWN_CONVEX_URL")
     deliberate_hold_sec: float = Field(8.0, alias="EMBODIMENT_DELIBERATE_HOLD_SEC")
     wander_radius: float = Field(3.0, alias="EMBODIMENT_WANDER_RADIUS")
     locations_json: str = Field("{}", alias="EMBODIMENT_LOCATIONS_JSON")
@@ -23,6 +27,9 @@ class Settings(BaseSettings):
     self_state_url: str = Field("http://orion-self-state-runtime:8123", alias="EMBODIMENT_SELF_STATE_URL")
     perception_interval_sec: float = Field(0.0, alias="EMBODIMENT_PERCEPTION_INTERVAL_SEC")
     social_cooldown_sec: float = Field(120.0, alias="EMBODIMENT_SOCIAL_COOLDOWN_SEC")
+    # Debounce competing move actuations (approach/wander/go_to) when multiple
+    # producers are enabled at once. 0 = off (no debounce).
+    move_cooldown_sec: float = Field(0.0, alias="EMBODIMENT_MOVE_COOLDOWN_SEC")
 
     speech_enabled: bool = Field(False, alias="EMBODIMENT_SPEECH_ENABLED")
     speech_lane: str = Field("quick", alias="EMBODIMENT_SPEECH_LANE")

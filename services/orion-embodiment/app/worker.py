@@ -62,7 +62,9 @@ class EmbodimentWorker:
         self._hold_sec = self._settings.deliberate_hold_sec
         self._wander_radius = self._settings.wander_radius
         self._social_cooldown_sec = self._settings.social_cooldown_sec
+        self._move_cooldown_sec = self._settings.move_cooldown_sec
         self._last_conversation_start: Optional[datetime] = None
+        self._last_move_at: Optional[datetime] = None
         self._speaking_conversations: set[str] = set()
         self._salience = SalienceState()
         # Conversation-completion tracking for the journal gate (perception delta).
@@ -80,6 +82,10 @@ class EmbodimentWorker:
     def _load_fcc_env(self) -> None:
         for k, v in load_fcc_env(expand_env_path(self._settings.fcc_env_path)).items():
             os.environ.setdefault(k, v)
+        # Explicit override wins over the ~/.fcc/.env value (bridge reachability).
+        override = self._settings.aitown_convex_url.strip()
+        if override:
+            os.environ["AITOWN_CONVEX_URL"] = override
 
     def _service_ref(self) -> ServiceRef:
         return ServiceRef(
@@ -162,10 +168,26 @@ class EmbodimentWorker:
                     player_id=player_id, resolved_destination=result.destination,
                 )
             self._last_conversation_start = now
+            self._last_move_at = now
             return EmbodimentOutcomeV1(
                 intent_correlation_id=intent.correlation_id, source=intent.source,
                 status="actuated", reason=f"start_conversation ({result.reason})",
                 player_id=player_id, resolved_destination=result.destination, send_input_ok=True,
+            )
+
+        # Debounce competing move actuations (multiple deliberate/involuntary
+        # producers can each resolve a different destination) to avoid sprite thrash.
+        if (
+            self._move_cooldown_sec > 0
+            and self._last_move_at is not None
+            and (now - self._last_move_at) < timedelta(seconds=float(self._move_cooldown_sec))
+        ):
+            remaining = float(self._move_cooldown_sec) - (now - self._last_move_at).total_seconds()
+            return EmbodimentOutcomeV1(
+                intent_correlation_id=intent.correlation_id, source=intent.source,
+                status="resolved_noop",
+                reason=f"move cooldown active {remaining:.1f}s remaining",
+                player_id=player_id, resolved_destination=result.destination,
             )
 
         try:
@@ -180,6 +202,7 @@ class EmbodimentWorker:
                 player_id=player_id, resolved_destination=result.destination,
             )
 
+        self._last_move_at = now
         return EmbodimentOutcomeV1(
             intent_correlation_id=intent.correlation_id, source=intent.source,
             status="actuated", reason=result.reason, player_id=player_id,

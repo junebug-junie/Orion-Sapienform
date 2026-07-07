@@ -17,7 +17,9 @@ def _worker() -> EmbodimentWorker:
     w._wander_radius = 3.0
     w._locations = {}
     w._social_cooldown_sec = 120.0
+    w._move_cooldown_sec = 0.0
     w._last_conversation_start = None
+    w._last_move_at = None
     return w
 
 

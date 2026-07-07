@@ -17,7 +17,9 @@ def _worker() -> EmbodimentWorker:
     w._wander_radius = 3.0
     w._locations = {}
     w._social_cooldown_sec = 120.0
+    w._move_cooldown_sec = 0.0
     w._last_conversation_start = None
+    w._last_move_at = None
     return w
 
 
@@ -67,3 +69,23 @@ def test_convex_error_becomes_error_outcome():
         outcome = w.process_intent(intent, now=datetime(2026, 7, 7, tzinfo=timezone.utc))
     assert outcome.status == "error"
     assert outcome.send_input_ok is False
+
+
+def test_move_cooldown_debounces_rapid_moves():
+    w = _worker()
+    w._move_cooldown_sec = 6.0
+    players = [{"id": "orion", "position": {"x": 0.0, "y": 0.0}}]
+    intent = EmbodimentIntentV1(kind="wander", source="involuntary", reason="r", correlation_id="c",
+                                player_id="orion")
+    with patch("app.worker.aitown_client.list_players", return_value=players), \
+         patch("app.worker.aitown_client.move_to") as mv:
+        first = w.process_intent(intent, now=datetime(2026, 7, 7, 0, 0, 0, tzinfo=timezone.utc))
+        # A second move 2s later is within the 6s cooldown -> no actuation.
+        second = w.process_intent(intent, now=datetime(2026, 7, 7, 0, 0, 2, tzinfo=timezone.utc))
+        # A third move past the cooldown actuates again.
+        third = w.process_intent(intent, now=datetime(2026, 7, 7, 0, 0, 10, tzinfo=timezone.utc))
+    assert first.status == "actuated"
+    assert second.status == "resolved_noop"
+    assert "move cooldown" in (second.reason or "")
+    assert third.status == "actuated"
+    assert mv.call_count == 2

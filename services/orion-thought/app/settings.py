@@ -102,6 +102,10 @@ class ThoughtSettings(BaseSettings):
     # How many recent chain rows to scan for a runaway theme.
     reverie_resonance_window: int = Field(200, alias="ORION_REVERIE_RESONANCE_WINDOW")
 
+    # --- Computed salience v2 (shadow-first, default-off) ---
+    attention_salience_v2_enabled: bool = Field(False, alias="ORION_ATTENTION_SALIENCE_V2_ENABLED")
+    attention_habituation_enabled: bool = Field(False, alias="ORION_ATTENTION_HABITUATION_ENABLED")
+
 
 settings = ThoughtSettings()
 logger.info(

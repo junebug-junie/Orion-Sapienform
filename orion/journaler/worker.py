@@ -62,6 +62,7 @@ _TRIGGER_TO_MODE: dict[str, JournalMode] = {
     "manual": "manual",
     "notify_summary": "daily",
     "world_pulse_digest": "digest",
+    "town_episode": "digest",
 }
 
 _AUTONOMY_EPISODE_NARRATIVE_SECTIONS = (

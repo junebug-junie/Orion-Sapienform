@@ -735,6 +735,40 @@ async def handle_trace(env: BaseEnvelope) -> None:
         logger.warning(f"Failed to cache trace: {e}")
 
 
+async def handle_embodiment_perception(env: BaseEnvelope) -> None:
+    """Gated + fail-open ingest of town perception into the latest-wins cache."""
+    try:
+        from .embodiment_background import ingest_perception_payload
+
+        raw = env.payload if isinstance(env.payload, dict) else {}
+        ingest_perception_payload(raw)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Failed to ingest embodiment perception: %s", e)
+
+
+async def _embodiment_background_loop() -> None:
+    """Gated background (D) emit loop from the cached perception. Fail-open."""
+    from .embodiment_background import maybe_emit_background_intent
+
+    interval = max(float(settings.embodiment_background_interval_sec), 1.0)
+    player_id = str(settings.embodiment_orion_player_id or "").strip()
+    if not player_id:
+        logger.info("embodiment_background_loop_skipped reason=missing_AITOWN_ORION_PLAYER_ID")
+        return
+    while True:
+        try:
+            await maybe_emit_background_intent(
+                bus=svc.bus,
+                source=_source(),
+                player_id=player_id,
+                enabled=settings.embodiment_d_background_enabled,
+                channel=settings.embodiment_channel_intent,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("embodiment_background_loop_iteration_failed", exc_info=True)
+        await asyncio.sleep(interval)
+
+
 async def handle_core_event(env: BaseEnvelope) -> None:
     try:
         raw = env.payload if isinstance(env.payload, dict) else {}
@@ -892,6 +926,13 @@ else:
     logger.info("exec_verb_listener_disabled lane=%s (direct exec lane intake only)", settings.exec_lane)
 trace_listener = Hunter(_cfg(), handler=handle_trace, patterns=["orion:cognition:trace"])
 core_event_listener = Hunter(_cfg(), handler=handle_core_event, patterns=[settings.channel_core_events])
+embodiment_perception_listener: Hunter | None = None
+if settings.embodiment_perception_cortex_enabled:
+    embodiment_perception_listener = Hunter(
+        _cfg(),
+        handler=handle_embodiment_perception,
+        patterns=[settings.embodiment_channel_perception],
+    )
 
 
 async def main() -> None:
@@ -941,6 +982,19 @@ async def main() -> None:
             await verb_listener.start_background()
         await trace_listener.start_background()
         await core_event_listener.start_background()
+        if embodiment_perception_listener is not None:
+            await embodiment_perception_listener.start_background()
+            logger.info(
+                "embodiment_perception_listener_started channel=%s",
+                settings.embodiment_channel_perception,
+            )
+        if settings.embodiment_d_background_enabled:
+            asyncio.create_task(_embodiment_background_loop(), name="embodiment-background")
+            logger.info(
+                "embodiment_background_loop_started interval=%ss channel=%s",
+                settings.embodiment_background_interval_sec,
+                settings.embodiment_channel_intent,
+            )
         starters: list[Any] = [svc.start(), health_task]
         if settings.enable_pre_turn_appraisal_handler:
             starters.insert(1, pre_turn_appraisal_svc.start())

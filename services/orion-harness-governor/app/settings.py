@@ -75,6 +75,10 @@ class HarnessGovernorSettings(BaseSettings):
     harness_fcc_mcp_enabled: bool = Field(False, alias="HARNESS_FCC_MCP_ENABLED")
     harness_aitown_enabled: bool = Field(False, alias="HARNESS_AITOWN_ENABLED")
 
+    # (D) embodiment: publish a deliberate approach intent on the turn correlation_id
+    # after a finalized relational turn. Default-off, fail-open (never breaks a turn).
+    embodiment_d_finalize_enabled: bool = Field(False, alias="EMBODIMENT_D_FINALIZE_ENABLED")
+
 
 settings = HarnessGovernorSettings()
 logger.info(

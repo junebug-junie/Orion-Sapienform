@@ -276,6 +276,22 @@ class Settings(BaseSettings):
     )
     health_http_port: int = Field(8070, alias="HEALTH_HTTP_PORT")
 
+    # --- Embodiment (D) background emit + perception read-model (default-off, fail-open) ---
+    embodiment_perception_cortex_enabled: bool = Field(
+        False, alias="EMBODIMENT_PERCEPTION_CORTEX_ENABLED"
+    )
+    embodiment_d_background_enabled: bool = Field(False, alias="EMBODIMENT_D_BACKGROUND_ENABLED")
+    embodiment_channel_perception: str = Field(
+        "orion:embodiment:perception", alias="EMBODIMENT_CHANNEL_PERCEPTION"
+    )
+    embodiment_channel_intent: str = Field(
+        "orion:embodiment:intent", alias="EMBODIMENT_CHANNEL_INTENT"
+    )
+    embodiment_background_interval_sec: float = Field(
+        30.0, alias="EMBODIMENT_BACKGROUND_INTERVAL_SEC"
+    )
+    embodiment_orion_player_id: str = Field("", alias="AITOWN_ORION_PLAYER_ID")
+
     @field_validator("orion_situation_weather_lat", "orion_situation_weather_lon", mode="before")
     @classmethod
     def _blank_env_float_to_none(cls, value: object) -> object:

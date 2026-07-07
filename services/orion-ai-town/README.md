@@ -132,6 +132,12 @@ docker compose config
 curl -fsS http://127.0.0.1:3210/version
 ```
 
+## Orion embodiment
+
+Orion's persistent body uses a dedicated `"Orion"` character slot added to AI Town's `Descriptions` by `patches/orion-character.patch` (applied by `scripts/apply_upstream_patches.sh` alongside the embed patch). The body itself is created/updated — and its persona projected from Orion's live self-model — by `services/orion-embodiment/scripts/bootstrap_orion_agent.py` (dry-run by default; `--write` persists `AITOWN_ORION_*` to `~/.fcc/.env`).
+
+> Note: `patches/orion-character.patch` is generated from a real diff against the cloned `upstream/`. On a node where `upstream/` is not yet cloned, the apply script skips the patch (with a message) rather than failing; generate the patch on a node that has `upstream/` before relying on the character slot.
+
 ## MCP integration
 
 Gameplay MCP lives in `mcp/orion_aitown_mcp/`. Hub fcc-claude includes it when `HUB_AITOWN_ENABLED=true` and MCP is enabled.

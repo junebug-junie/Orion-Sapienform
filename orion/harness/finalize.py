@@ -11,6 +11,8 @@ from typing import Any, Awaitable, Callable
 from orion.cognition.cortex_payload_extract import cortex_exec_failure_detail, extract_cortex_payload_text
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.llm_json import parse_json_object
+from orion.embodiment.intents import build_intent
+from orion.schemas.embodiment import EmbodimentIntentV1
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.harness_finalize import (
@@ -40,6 +42,11 @@ REPAIR_PRESSURE_MAX = 0.3
 VERDICT_CHANNEL = "orion:harness:verdict:artifact"
 OUTCOME_CHANNEL = "orion:substrate:turn_outcome"
 POST_TURN_CLOSURE_CHANNEL = "orion:substrate:post_turn_closure"
+EMBODIMENT_INTENT_CHANNEL = "orion:embodiment:intent"
+
+# Interlocutor the finalized (relational) turn should approach in the town when
+# EMBODIMENT_D_FINALIZE_ENABLED is set. Juniper is Orion's default human player.
+DEFAULT_FINALIZE_INTERLOCUTOR = "Juniper"
 
 
 def _quick_gate_epsilon() -> float:
@@ -48,6 +55,81 @@ def _quick_gate_epsilon() -> float:
         return float(raw)
     except ValueError:
         return DEFAULT_QUICK_GATE_EPSILON
+
+
+def _embodiment_d_finalize_enabled() -> bool:
+    raw = os.environ.get("EMBODIMENT_D_FINALIZE_ENABLED", "false")
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def build_finalize_embodiment_intent(
+    *,
+    correlation_id: str,
+    interlocutor_ref: str | None,
+    relational: bool,
+) -> EmbodimentIntentV1 | None:
+    """Pure (D) intent for a finalized relational turn.
+
+    A relational turn with a known interlocutor produces a ``deliberate``
+    ``approach_player`` intent carrying the turn ``correlation_id`` so the town
+    body drifts toward whoever Orion just spoke with. Non-relational turns (no
+    interlocutor / not relational) produce no intent.
+    """
+    if not relational or not interlocutor_ref:
+        return None
+    return build_intent(
+        kind="approach_player",
+        source="deliberate",
+        reason=f"finalized relational turn -> approach {interlocutor_ref}",
+        correlation_id=correlation_id,
+        ref=interlocutor_ref,
+    )
+
+
+async def emit_finalize_embodiment_intent(
+    *,
+    correlation_id: str,
+    interlocutor_ref: str | None,
+    relational: bool,
+    channel: str = EMBODIMENT_INTENT_CHANNEL,
+    publish_fn: PublishFn | None = None,
+    bus: Any = None,
+) -> EmbodimentIntentV1 | None:
+    """Gated, fail-open emit of the finalize (D) intent. Never breaks a turn."""
+    if not _embodiment_d_finalize_enabled():
+        return None
+    try:
+        intent = build_finalize_embodiment_intent(
+            correlation_id=correlation_id,
+            interlocutor_ref=interlocutor_ref,
+            relational=relational,
+        )
+        if intent is None:
+            return None
+        if publish_fn is not None:
+            await publish_fn(intent, channel=channel)
+        elif bus is not None:
+            from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+
+            envelope = BaseEnvelope(
+                kind="embodiment.intent.v1",
+                source=ServiceRef(name="orion-harness-governor"),
+                correlation_id=uuid.UUID(correlation_id) if _is_uuid(correlation_id) else uuid.uuid4(),
+                payload=intent.model_dump(mode="json"),
+            )
+            await bus.publish(channel, envelope)
+        else:
+            return intent
+        logger.info(
+            "embodiment_finalize_intent_published corr=%s channel=%s ref=%s",
+            correlation_id,
+            channel,
+            interlocutor_ref,
+        )
+        return intent
+    except Exception:
+        logger.warning("embodiment_finalize_intent_emit_failed corr=%s", correlation_id, exc_info=True)
+        return None
 
 
 def _text_hash(text: str) -> str:
@@ -604,6 +686,9 @@ async def run_harness_finalize_chain(
     bus: Any = None,
     verdict_publish_fn: PublishFn | None = None,
     outcome_publish_fn: PublishFn | None = None,
+    embodiment_relational: bool = False,
+    embodiment_interlocutor_ref: str | None = None,
+    embodiment_publish_fn: PublishFn | None = None,
 ) -> HarnessFinalizeChainResult:
     """Orchestrate finalize beats 5a → 5b → 5c → 6b."""
     substrate_appraisal = await run_substrate_finalize_appraisal(
@@ -656,6 +741,15 @@ async def run_harness_finalize_chain(
         finalize_changed=finalize_changed,
         grammar_receipts=grammar_receipts,
         publish_fn=outcome_publish_fn,
+        bus=bus,
+    )
+
+    # (D) deliberate embodiment intent on the turn correlation_id — gated + fail-open.
+    await emit_finalize_embodiment_intent(
+        correlation_id=correlation_id,
+        interlocutor_ref=embodiment_interlocutor_ref,
+        relational=embodiment_relational,
+        publish_fn=embodiment_publish_fn,
         bus=bus,
     )
 

@@ -130,6 +130,21 @@ class Settings(BaseSettings):
     )
     receipt_disk_critical_pct: float = Field(85.0, alias="ORION_RECEIPT_DISK_CRITICAL_PCT")
 
+    # Orion embodiment (mind-to-sprite) hooks — all default off / empty-safe.
+    embodiment_c_tick_enabled: bool = Field(False, alias="EMBODIMENT_C_TICK_ENABLED")
+    embodiment_perception_substrate_enabled: bool = Field(
+        False, alias="EMBODIMENT_PERCEPTION_SUBSTRATE_ENABLED"
+    )
+    embodiment_channel_intent: str = Field(
+        "orion:embodiment:intent", alias="EMBODIMENT_CHANNEL_INTENT"
+    )
+    embodiment_channel_perception: str = Field(
+        "orion:embodiment:perception", alias="EMBODIMENT_CHANNEL_PERCEPTION"
+    )
+    drives_state_channel: str = Field(
+        "orion:memory:drives:state", alias="EMBODIMENT_DRIVES_STATE_CHANNEL"
+    )
+
 
 _settings: Settings | None = None
 

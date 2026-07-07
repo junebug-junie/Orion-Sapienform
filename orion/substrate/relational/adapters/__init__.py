@@ -6,6 +6,7 @@ from .social import map_social_ctx_to_substrate
 from .autonomy_ctx import map_autonomy_ctx_to_substrate
 from .concept_induction_ctx import map_concept_induction_ctx_to_substrate
 from .spark_ctx import map_spark_ctx_to_substrate
+from .town_perception_ctx import map_town_perception_to_substrate
 
 __all__ = [
     "map_identity_yaml_to_substrate",
@@ -16,4 +17,5 @@ __all__ = [
     "map_autonomy_ctx_to_substrate",
     "map_concept_induction_ctx_to_substrate",
     "map_spark_ctx_to_substrate",
+    "map_town_perception_to_substrate",
 ]

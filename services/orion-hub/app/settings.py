@@ -239,6 +239,15 @@ class Settings(BaseSettings):
     )
     COGNITION_TRACE_API_DEBUG: bool = Field(default=False, alias="COGNITION_TRACE_API_DEBUG")
 
+    # --- Embodiment outcome trace (mind-to-sprite bridge; default-off, fail-open) ---
+    EMBODIMENT_OUTCOME_TRACE_ENABLED: bool = Field(
+        default=False, alias="EMBODIMENT_OUTCOME_TRACE_ENABLED"
+    )
+    EMBODIMENT_OUTCOME_CHANNEL: str = Field(
+        default="orion:embodiment:outcome", alias="EMBODIMENT_CHANNEL_OUTCOME"
+    )
+    EMBODIMENT_OUTCOME_CACHE_MAX: int = Field(default=200, alias="EMBODIMENT_OUTCOME_CACHE_MAX")
+
     # --- OpenTelemetry / Grafana (operator deep links; spec Phase 1) ---
     HUB_OTEL_GRAFANA_BASE_URL: str = Field(
         default="",

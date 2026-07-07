@@ -15,6 +15,7 @@ JournalTriggerKind = Literal[
     "manual",
     "notify_summary",
     "world_pulse_digest",
+    "town_episode",
 ]
 JournalSourceKind = Literal[
     "autonomy_episode",
@@ -26,6 +27,7 @@ JournalSourceKind = Literal[
     "self_study",
     "self_reflection",
     "world_pulse",
+    "embodiment",
 ]
 JournalMode = Literal["daily", "response", "digest", "manual"]
 

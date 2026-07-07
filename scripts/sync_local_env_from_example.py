@@ -110,6 +110,8 @@ SYNC_PREFIXES = (
     "COUNCIL_",
     "HOST_PORT",
     "SQL_WRITER_EMIT_MEMORY_",
+    # Embodiment (mind-to-sprite bridge, default-off)
+    "EMBODIMENT_",
 )
 
 SYNC_EXACT = frozenset(
@@ -128,6 +130,8 @@ SYNC_EXACT = frozenset(
         "HOST_PORT",
         "HARNESS_REPO_MOUNT",
         "HARNESS_AITOWN_CONVEX_URL",
+        # Embodiment master switch (prefix is EMBODIMENT_, so the ORION_ master flag needs an exact entry).
+        "ORION_EMBODIMENT_ENABLED",
         # Reverie/dream weave — Phase F (orion-dream REM compaction, default-off).
         "ORION_DREAM_REM_ENABLED",
         "CHANNEL_DREAM_COMPACTION_DELTA",
@@ -166,6 +170,7 @@ DEFAULT_SERVICES = (
     "orion-llm-gateway",
     "orion-fcc",
     "orion-vector-host",
+    "orion-embodiment",
 )
 
 

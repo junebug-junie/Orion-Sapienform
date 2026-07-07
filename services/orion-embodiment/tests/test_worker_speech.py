@@ -72,6 +72,26 @@ def test_injectable_reply_is_injected():
     assert si.call_count >= 1
 
 
+def test_worker_does_not_send_finish_sending_message_directly():
+    """The 'void' regression, corrected: the worker must NOT send `finishSendingMessage`
+    itself. `messages:writeMessage` already enqueues it server-side with a numeric
+    timestamp. Sending a second one double-counted numMessages, and the pre-fix version
+    (messageUuid, no timestamp) poisoned the shared engine — a malformed lastMessage
+    that crashed every saveWorld/runStep and froze the whole town. writeMessage is the
+    single source of the turn advance."""
+    w = _worker()
+    with patch.object(w, "_request_utterance", new=AsyncMock(return_value="Hi Juniper!")), \
+         patch("app.worker.aitown_client.send_input", return_value={"ok": True}) as si, \
+         patch("app.worker.aitown_client.convex_mutation", return_value={"ok": True}) as cm:
+        asyncio.run(w._speak_once(_perception_in_convo()))
+    finish_calls = [c for c in si.call_args_list if c.kwargs.get("name") == "finishSendingMessage"]
+    assert not finish_calls, "worker must not send finishSendingMessage directly (writeMessage enqueues it)"
+    # startTyping is still sent; writeMessage carries the message + turn advance.
+    typing_calls = [c for c in si.call_args_list if c.kwargs.get("name") == "startTyping"]
+    assert typing_calls, "startTyping should still be sent"
+    assert cm.called and cm.call_args.args[0] == "messages:writeMessage"
+
+
 def test_no_speech_when_orion_spoke_last():
     # Turn-taking: if the last message is Orion's, wait for a reply (no self-echo).
     w = _worker()
@@ -152,3 +172,22 @@ def test_speech_disabled_short_circuits():
     assert result is None
     req.assert_not_awaited()
     si.assert_not_called()
+
+
+def test_heartbeat_logs_once_then_throttles():
+    """Observability seam: a healthy loop (all other logs exception-only) must still
+    emit one INFO heartbeat, and it must throttle so a tight perception interval
+    doesn't spam. This is the gap that forced live DB probing to diagnose the void bug."""
+    w = _worker()
+    w._orion_player_id = "orion"
+    w._last_heartbeat_log_at = None
+    perc = _perception_in_convo()
+    with patch("app.worker.logger.info") as info:
+        w._maybe_log_heartbeat(perc)
+        first = info.call_count
+        w._maybe_log_heartbeat(perc)  # immediate second call -> throttled
+        second = info.call_count
+    assert first == 1, "first heartbeat must log"
+    assert second == 1, "second immediate heartbeat must be throttled"
+    msg = info.call_args_list[0].args[0]
+    assert "embodiment_heartbeat" in msg

@@ -9,6 +9,10 @@ class Settings(BaseSettings):
     service_name: str = Field("orion-embodiment", alias="SERVICE_NAME")
     service_version: str = Field("0.1.0", alias="SERVICE_VERSION")
     node_name: str = Field("athena", alias="NODE_NAME")
+    # Root log level for the worker loop. Without an explicit handler the loop's
+    # decisions/speech never surface in `docker logs` (only uvicorn access lines),
+    # which forced live DB probing to diagnose the void bug. Configured at boot.
+    log_level: str = Field("INFO", alias="EMBODIMENT_LOG_LEVEL")
 
     bus_url: str = Field(default="redis://100.92.216.81:6379/0", alias="ORION_BUS_URL")
     bus_enabled: bool = Field(True, alias="ORION_BUS_ENABLED")

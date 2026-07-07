@@ -24,9 +24,12 @@ def _engine():
     uri = os.getenv("POSTGRES_URI", "").strip()
     if not uri:
         return None
-    from sqlalchemy import create_engine
+    try:
+        from sqlalchemy import create_engine
 
-    return create_engine(uri, pool_pre_ping=True)
+        return create_engine(uri, pool_pre_ping=True)
+    except Exception:
+        return None
 
 
 def _coerce(value: Any) -> dict | None:

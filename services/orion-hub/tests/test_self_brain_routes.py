@@ -67,3 +67,15 @@ def test_router_is_read_only(client):
     for route in routes:
         if str(route.path).startswith("/api/self-brain"):
             assert route.methods <= {"GET", "HEAD"}, route.path
+
+
+def test_tail_degrades_to_200_when_create_engine_raises(client, monkeypatch):
+    import sqlalchemy
+
+    def boom(*a, **k):
+        raise RuntimeError("bad dsn")
+
+    monkeypatch.setattr(sqlalchemy, "create_engine", boom)
+    r = client.get("/api/self-brain/frames/tail")
+    assert r.status_code == 200
+    assert r.json()["frames"] == []

@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import uuid4
 
@@ -28,6 +28,11 @@ from orion.schemas.embodiment import (
 )
 
 logger = logging.getLogger("orion.embodiment.worker")
+
+# AI Town canonical conversation inputs. The upstream convex/aiTown/inputs.ts is
+# NOT vendored in this checkout, so these follow the AI Town canonical schema.
+# TODO(embodiment): confirm names/args against upstream when it is vendored.
+START_CONVERSATION_INPUT = "startConversation"
 
 
 def _utcnow() -> datetime:
@@ -102,6 +107,47 @@ class EmbodimentWorker:
             return EmbodimentOutcomeV1(
                 intent_correlation_id=intent.correlation_id, source=intent.source,
                 status="denied", reason=result.reason, player_id=player_id,
+            )
+
+        if intent.kind == "start_conversation":
+            # Enforce social cooldown before any actuation so repeated invites
+            # (deliberate or involuntary) cannot spam conversation starts.
+            last = self._last_conversation_start
+            if last is not None and (now - last) < timedelta(seconds=float(self._social_cooldown_sec)):
+                remaining = float(self._social_cooldown_sec) - (now - last).total_seconds()
+                return EmbodimentOutcomeV1(
+                    intent_correlation_id=intent.correlation_id, source=intent.source,
+                    status="denied",
+                    reason=f"social cooldown active {remaining:.1f}s remaining",
+                    player_id=player_id, resolved_destination=result.destination,
+                )
+            if not result.ref_player_id:
+                return EmbodimentOutcomeV1(
+                    intent_correlation_id=intent.correlation_id, source=intent.source,
+                    status="denied", reason="start_conversation target has no player id",
+                    player_id=player_id, resolved_destination=result.destination,
+                )
+            try:
+                aitown_client.move_to(
+                    player_id=player_id, x=result.destination["x"], y=result.destination["y"],
+                    world_id=self._world_id or None,
+                )
+                aitown_client.send_input(
+                    name=START_CONVERSATION_INPUT,
+                    args={"playerId": player_id, "invitee": result.ref_player_id},
+                    world_id=self._world_id or None,
+                )
+            except aitown_client.AitownClientError as exc:
+                return EmbodimentOutcomeV1(
+                    intent_correlation_id=intent.correlation_id, source=intent.source,
+                    status="error", reason=f"send_input failed: {exc}",
+                    player_id=player_id, resolved_destination=result.destination,
+                )
+            self._last_conversation_start = now
+            return EmbodimentOutcomeV1(
+                intent_correlation_id=intent.correlation_id, source=intent.source,
+                status="actuated", reason=f"start_conversation ({result.reason})",
+                player_id=player_id, resolved_destination=result.destination, send_input_ok=True,
             )
 
         try:

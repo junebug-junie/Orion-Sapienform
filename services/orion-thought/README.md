@@ -37,3 +37,10 @@ docker compose \
 ## Health
 
 `GET http://localhost:7155/health`
+
+## Reverie semantic lift
+
+Set `ORION_REVERIE_SEMANTIC_LIFT_ENABLED=true` (default `false`) to lift coalition
+`harness_closure:{corr}` pointers into human `ConcernCardV1` text from
+`substrate_turn_referent` before `reverie_narrate`. Requires referent rows from
+unresolved post-turn closures and routes narration through the background/metacog lane.

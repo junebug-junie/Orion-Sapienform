@@ -306,7 +306,11 @@ async def run_reverie_once(
             broadcast=broadcast,
         )
         if settings.reverie_semantic_lift_enabled and concern_cards:
-            thought = enforce_semantic_quality(thought, concern_cards)
+            thought = enforce_semantic_quality(
+                thought,
+                concern_cards,
+                allowed_refs=coalition_audit_refs(broadcast),
+            )
             thought = thought.model_copy(update={"llm_profile": "metacog"})
         if chain_context is not None:
             thought = thought.model_copy(

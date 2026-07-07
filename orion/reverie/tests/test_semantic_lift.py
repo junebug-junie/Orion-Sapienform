@@ -137,3 +137,28 @@ def test_enforce_semantic_quality_stamps_infra_vocabulary_hollow() -> None:
     )
     out = enforce_semantic_quality(thought, [card])
     assert out.hollow and out.hollow_reason == "infra_vocabulary"
+
+
+def test_enforce_semantic_quality_accepts_audit_ref_evidence() -> None:
+    card = ConcernCardV1.from_harness_turn(
+        coalition_ref="harness_closure:corr-2",
+        user_message_excerpt="What's my last PR title?",
+        stance_imperative="Search PR metadata for the most recent pull request title.",
+        created_at=datetime(2026, 7, 7, tzinfo=timezone.utc),
+    )
+    assert card is not None
+    thought = SpontaneousThoughtV1(
+        thought_id="t",
+        correlation_id="c",
+        coalition=_COALITION,
+        interpretation="I keep circling the request for the latest PR title and whether it resolved.",
+        evidence_refs=["harness_closure:corr-2"],
+    )
+    # harness_closure:corr-2 is a non-selected loop source_ref: in the audit list
+    # but NOT in grounding_ids() — must be accepted when passed as allowed_refs.
+    dropped = enforce_semantic_quality(thought, [card])
+    assert dropped.hollow and dropped.hollow_reason == "unanchored_evidence_outside_coalition"
+    kept = enforce_semantic_quality(
+        thought, [card], allowed_refs=["ol-1", "harness_closure:corr-2"]
+    )
+    assert not kept.hollow

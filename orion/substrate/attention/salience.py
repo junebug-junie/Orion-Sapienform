@@ -12,13 +12,16 @@ learned when `refit_salience_weights.py` emits a new `weights_version`.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Sequence
+from typing import Sequence
 
 from orion.schemas.attention_frame import AttentionSignalV1, OpenLoopV1, SalienceFeaturesV1
 from orion.substrate.attention.common import bounded
+
+logger = logging.getLogger("orion.substrate.attention.salience")
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -93,7 +96,7 @@ def default_combiner() -> LinearSalienceCombiner:
             merged.update({str(k): float(v) for k, v in override.items()})
             return LinearSalienceCombiner(merged, weights_version=f"{WEIGHTS_VERSION}+override")
     except (ValueError, TypeError):
-        pass
+        logger.warning("Ignoring malformed %s override: %r", WEIGHTS_OVERRIDE_ENV, raw)
     return LinearSalienceCombiner()
 
 
@@ -101,6 +104,8 @@ def _recency(theme_key: str, history: SalienceHistory, now: datetime) -> float:
     first = history.first_seen_at.get(theme_key)
     if first is None:
         return 1.0  # never seen before → maximally fresh
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     if first.tzinfo is None:
         first = first.replace(tzinfo=timezone.utc)
     age_hours = max(0.0, (now - first).total_seconds() / 3600.0)

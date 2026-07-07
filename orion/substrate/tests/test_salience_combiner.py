@@ -4,6 +4,7 @@ from orion.schemas.attention_frame import AttentionSignalV1, OpenLoopV1, Salienc
 from orion.substrate.attention.salience import (
     SalienceHistory,
     LinearSalienceCombiner,
+    SEED_WEIGHTS,
     compute_salience,
     default_combiner,
 )
@@ -87,3 +88,51 @@ def test_breadth_rises_with_distinct_detectors():
         history=SalienceHistory(), now=None,
     )
     assert many.evidence_breadth > one.evidence_breadth
+
+
+def test_default_combiner_valid_override(monkeypatch):
+    monkeypatch.setenv("ORION_ATTENTION_SALIENCE_WEIGHTS", '{"evidence_strength": 0.9}')
+    combiner = default_combiner()
+    assert combiner.weights["evidence_strength"] == 0.9
+    assert combiner.weights_version == "seed-v1+override"
+
+
+def test_default_combiner_malformed_override_falls_back(monkeypatch):
+    monkeypatch.setenv("ORION_ATTENTION_SALIENCE_WEIGHTS", "{not json")
+    combiner = default_combiner()
+    assert combiner.weights == SEED_WEIGHTS
+    assert combiner.weights_version == "seed-v1"
+
+
+def test_default_combiner_nondict_override_falls_back(monkeypatch):
+    monkeypatch.setenv("ORION_ATTENTION_SALIENCE_WEIGHTS", "[1, 2, 3]")
+    combiner = default_combiner()
+    assert combiner.weights == SEED_WEIGHTS
+
+
+def test_default_combiner_bad_value_override_falls_back(monkeypatch):
+    monkeypatch.setenv("ORION_ATTENTION_SALIENCE_WEIGHTS", '{"evidence_strength": "abc"}')
+    combiner = default_combiner()
+    assert combiner.weights == SEED_WEIGHTS
+
+
+def test_recency_decays_with_age():
+    from datetime import datetime, timedelta, timezone
+    from orion.substrate.attention.salience import compute_features
+    loop = _loop()
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    hist = SalienceHistory(first_seen_at={loop.id: now - timedelta(hours=6)})
+    feats = compute_features(loop=loop, signals=[_signal(0.8, 0.8)], history=hist, now=now)
+    assert 0.45 <= feats.recency <= 0.55  # ~0.5 at one half-life
+
+
+def test_apply_habituation_toggle_changes_score():
+    loop = _loop()
+    hist = SalienceHistory(dwell_ticks=6, recent_theme_counts={loop.id: 5},
+                           resonance_theme_keys={loop.id})
+    with_hab, _ = compute_salience(loop=loop, signals=[_signal(0.9, 0.9)],
+                                   history=hist, apply_habituation=True)
+    without_hab, feats = compute_salience(loop=loop, signals=[_signal(0.9, 0.9)],
+                                          history=hist, apply_habituation=False)
+    assert without_hab > with_hab  # penalty applied only when enabled
+    assert feats.habituation > 0.0  # returned features keep the real value

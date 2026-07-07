@@ -944,6 +944,10 @@ class BiometricsSubstrateWorker:
             logger.info("substrate_embodiment_perception_ingest stopped channel=%s", channel)
 
     def _ingest_perception_message(self, raw_msg: dict[str, Any]) -> None:
+        # Defense-in-depth gate (the loop is only spawned when enabled, but keep
+        # the flag check here too, mirroring the C-hook and self-state consumers).
+        if not self._settings.embodiment_perception_substrate_enabled:
+            return
         from orion.schemas.embodiment import WorldPerceptionV1
         from orion.substrate.relational.adapters import map_town_perception_to_substrate
 

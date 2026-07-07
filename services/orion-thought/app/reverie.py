@@ -97,11 +97,15 @@ def build_coalition_snapshot(
 
 
 def derive_salience(broadcast: AttentionBroadcastProjectionV1 | None) -> float:
-    """Deterministic salience from existing OpenLoopV1 scores — no invented weights.
+    """Salience of the selected coalition.
 
-    Takes the max pre-computed score of the selected open loop; falls back to the
-    coalition's own stability score. A max (not a hand-tuned weighted sum) keeps
-    this out of keyword-cathedral territory.
+    v2 (`ORION_ATTENTION_SALIENCE_V2_ENABLED`): read the loop's precomputed
+    `salience` (same combiner used by selection — one source of salience truth).
+    Legacy: max of the seven constant score fields, else stability score.
+
+    The `orion.substrate.attention` imports are local: importing that package at
+    module scope drags the graph engine (`requests` etc.), which this thin bus
+    service must not load (see `test_reverie_thin_import_boundary`).
     """
     if broadcast is None:
         return 0.0
@@ -112,6 +116,12 @@ def derive_salience(broadcast: AttentionBroadcastProjectionV1 | None) -> float:
     )
     if loop is None:
         return fallback
+    from orion.substrate.attention.salience import salience_v2_enabled
+
+    if salience_v2_enabled():
+        from orion.substrate.attention.common import bounded
+
+        return bounded(float(loop.salience)) if loop.salience else fallback
     scores = [float(getattr(loop, field, 0.0)) for field in _OPEN_LOOP_SCORE_FIELDS]
     return max(scores) if scores else fallback
 

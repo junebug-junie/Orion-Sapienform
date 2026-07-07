@@ -96,18 +96,21 @@ def _success_frames(run: HarnessRunV1, *, correlation_id: str) -> list[dict[str,
                 "reflection": run.reflection.model_dump(mode="json"),
             }
         )
-    frames.append(
-        {
-            "type": "final",
-            "correlation_id": correlation_id,
-            "mode": "orion",
-            "llm_response": run.final_text,
-            "finalize_ran": run.finalize_ran,
-            "finalize_changed": run.finalize_changed,
-            "harness_step_count": run.step_count,
-            "harness_grounding_status": run.grounding_status,
-        }
-    )
+    final_frame: dict[str, Any] = {
+        "type": "final",
+        "correlation_id": correlation_id,
+        "mode": "orion",
+        "llm_response": run.final_text,
+        "finalize_ran": run.finalize_ran,
+        "finalize_changed": run.finalize_changed,
+        "harness_step_count": run.step_count,
+        "harness_grounding_status": run.grounding_status,
+    }
+    if run.recall_debug is not None:
+        final_frame["recall_debug"] = run.recall_debug
+    if run.memory_digest:
+        final_frame["memory_digest"] = run.memory_digest
+    frames.append(final_frame)
     return frames
 
 

@@ -50,11 +50,14 @@ FINALIZE OVERLAY
 {% if grounding_capsule and grounding_capsule.identity_summary %}
 WHO YOU ARE
 {% for item in grounding_capsule.identity_summary %}- {{ item }}
-{% endfor %}{% if grounding_capsule.relationship_summary %}RELATIONSHIP
+{% endfor %}{% if grounding_capsule.relationship_summary %}
+RELATIONSHIP
 {% for item in grounding_capsule.relationship_summary %}- {{ item }}
-{% endfor %}{% endif %}{% if grounding_capsule.memory_digest %}DURABLE MEMORY
-{{ grounding_capsule.memory_digest }}
-{% endif %}{% if grounding_capsule.response_policy_summary %}RESPONSE POLICY
+{% endfor %}{% endif %}{% set memory_line = grounding_capsule.memory_digest or grounding_capsule.continuity_digest %}{% if memory_line %}
+DURABLE MEMORY
+{{ memory_line }}
+{% endif %}{% if grounding_capsule.response_policy_summary %}
+RESPONSE POLICY
 {% for item in grounding_capsule.response_policy_summary %}- {{ item }}
 {% endfor %}{% endif %}
 {% endif %}

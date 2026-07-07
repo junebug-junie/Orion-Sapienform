@@ -94,6 +94,17 @@ def test_parse_stance_react_payload_from_json_string() -> None:
     assert parsed.imperative == "Answer directly."
 
 
+def test_parse_stance_react_payload_strips_model_supplied_grounding_capsule() -> None:
+    raw = _thought().model_dump(mode="json")
+    raw["grounding_capsule"] = {
+        "identity_summary": ["I am a confabulated self the LLM invented."],
+        "provenance": {"identity_source": "llm_hallucination"},
+    }
+    parsed = parse_stance_react_payload(raw)
+    # The capsule is only ever set from deterministic cortex-exec metadata, never the LLM.
+    assert parsed.grounding_capsule is None
+
+
 def test_parse_stance_react_payload_injects_correlation_id_from_string_payload() -> None:
     raw = _thought().model_dump(mode="json")
     raw.pop("correlation_id", None)

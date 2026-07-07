@@ -30,6 +30,7 @@ from scripts.notification_cache import NotificationCache
 from scripts.agent_step_relay import AgentStepRelay
 from scripts.signals_inspect_cache import SignalsInspectCache
 from scripts.cognition_trace_cache import CognitionTraceCache
+from scripts.embodiment_outcome_cache import EmbodimentOutcomeCache
 
 from orion.core.bus.async_service import OrionBusAsync
 from scripts.bus_clients.cortex_client import CortexGatewayClient
@@ -227,6 +228,7 @@ notification_cache: Optional[NotificationCache] = None
 agent_step_relay: Optional[AgentStepRelay] = None
 signals_inspect_cache: Optional[SignalsInspectCache] = None
 cognition_trace_cache: Optional[CognitionTraceCache] = None
+embodiment_outcome_cache: Optional[EmbodimentOutcomeCache] = None
 presence_state: Optional["PresenceState"] = None
 presence_context_store: Optional["PresenceContextStore"] = None
 substrate_autonomy_task: Optional[asyncio.Task] = None
@@ -302,7 +304,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, agent_step_relay, signals_inspect_cache, cognition_trace_cache, presence_state, presence_context_store, substrate_autonomy_task
+    global bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, agent_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task
 
     # ------------------------------------------------------------
     # Orion Bus Initialization
@@ -387,6 +389,24 @@ async def startup_event():
                     except Exception:
                         pass
                 cognition_trace_cache = None
+
+            eoc: Optional[EmbodimentOutcomeCache] = None
+            try:
+                eoc = EmbodimentOutcomeCache(
+                    enabled=settings.EMBODIMENT_OUTCOME_TRACE_ENABLED,
+                    channel=settings.EMBODIMENT_OUTCOME_CHANNEL,
+                    max_entries=settings.EMBODIMENT_OUTCOME_CACHE_MAX,
+                )
+                await eoc.start(bus)
+                embodiment_outcome_cache = eoc
+            except Exception as exc:
+                logger.warning("embodiment_outcome_cache_start_failed error=%s", exc)
+                if eoc is not None:
+                    try:
+                        await eoc.stop()
+                    except Exception:
+                        pass
+                embodiment_outcome_cache = None
 
         except Exception as e:
             logger.error(f"Failed to initialize OrionBus: {e}")
@@ -488,7 +508,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global bus, rpc_bus, biometrics_cache, notification_cache, agent_step_relay, signals_inspect_cache, cognition_trace_cache, substrate_autonomy_task
+    global bus, rpc_bus, biometrics_cache, notification_cache, agent_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task
     pool = getattr(app.state, "memory_pg_pool", None)
     if pool is not None:
         try:
@@ -517,6 +537,11 @@ async def shutdown_event() -> None:
         await signals_inspect_cache.stop()
     if cognition_trace_cache is not None:
         await cognition_trace_cache.stop()
+    if embodiment_outcome_cache is not None:
+        try:
+            await embodiment_outcome_cache.stop()
+        except Exception:
+            pass
     if rpc_bus is not None:
         try:
             await rpc_bus.close()

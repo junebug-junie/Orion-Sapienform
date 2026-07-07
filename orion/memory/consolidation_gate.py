@@ -100,6 +100,21 @@ def consolidation_memory_gate(
             window_significance_max=significance_max,
         )
 
+    has_substantive_text = any(
+        not is_low_info_social(str(t.get("prompt") or ""))
+        or not is_low_info_social(str(t.get("response") or ""))
+        for t in turns
+    ) if turns else False
+    if has_substantive_text:
+        return ConsolidationGateResult(
+            action="propose",
+            reasons=["substantive_text"],
+            dominant_shift=dominant_shift,
+            grammar_event_ids=list(grammar_event_ids or []),
+            window_novelty_max=novelty_max,
+            window_significance_max=significance_max,
+        )
+
     all_low_info = all(
         is_low_info_social(str(t.get("prompt") or ""))
         and is_low_info_social(str(t.get("response") or ""))

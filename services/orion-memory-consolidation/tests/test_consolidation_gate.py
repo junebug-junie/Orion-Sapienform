@@ -52,3 +52,15 @@ def test_gate_proposes_on_repair_signal():
         min_significance=0.40,
     )
     assert result.action == "propose"
+
+
+def test_gate_proposes_substantive_text_below_floors():
+    turns = [_turn("still drowning in move logistics alone", "ok", novelty=0.1, significance=0.2)]
+    result = consolidation_memory_gate(
+        turns=turns,
+        grammar_repair_signal=False,
+        min_novelty=0.35,
+        min_significance=0.40,
+    )
+    assert result.action == "propose"
+    assert "substantive_text" in result.reasons

@@ -203,6 +203,29 @@ async def run_pcr_phase3(
     cfg = exec_settings or settings
     prior = _pcr_from_ctx(ctx)
     continuity_text = (ctx.get("continuity_digest") or (prior.continuity_digest if prior else "") or "").strip()
+    hub_lane = hub_chat_lane_from_ctx(ctx)
+    if hub_lane == "quick" and not cfg.chat_pcr_quick_phase3:
+        pcr = PcrChatMemoryV1(
+            phase="continuity",
+            retrieval_intent="continuity",
+            continuity_digest=continuity_text,
+            belief_digest="",
+            memory_digest=continuity_text,
+            skip_reasons=list(prior.skip_reasons) if prior and prior.phase == "skip" else [],
+            recall_debug={
+                "pcr_phase": "phase3_skipped",
+                "retrieval_intent": "continuity",
+                "rule_id": "quick_lane_disabled",
+            },
+        )
+        _apply_pcr_to_ctx(ctx, pcr)
+        logger.info(
+            "pcr_phase3_skip corr_id=%s reason=quick_lane_disabled lane=%s",
+            correlation_id,
+            hub_lane,
+        )
+        return pcr, None, {"pcr_phase": "phase3_skipped", "rule_id": "quick_lane_disabled"}
+
     skip_gate = _skip_gate_from_ctx(ctx)
     stance_brief = _stance_brief_from_ctx(ctx)
     attention_frame = _attention_frame_from_ctx(ctx)

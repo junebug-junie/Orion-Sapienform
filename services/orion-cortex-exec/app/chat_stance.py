@@ -2476,6 +2476,9 @@ def build_chat_stance_debug_payload(
     continuity_digest = ctx.get("continuity_digest")
     if not isinstance(continuity_digest, str):
         continuity_digest = ""
+    belief_digest = ctx.get("belief_digest")
+    if not isinstance(belief_digest, str):
+        belief_digest = ""
     memory_digest = ctx.get("memory_digest")
     if not isinstance(memory_digest, str):
         memory_digest = ""
@@ -2501,6 +2504,7 @@ def build_chat_stance_debug_payload(
     final_prompt_contract = {
         "chat_stance_brief": final_brief,
         "continuity_digest": continuity_digest,
+        "belief_digest": belief_digest,
         "memory_digest": memory_digest,
         "orion_identity_summary": list(ctx.get("orion_identity_summary") or []),
         "juniper_relationship_summary": list(ctx.get("juniper_relationship_summary") or []),
@@ -2536,6 +2540,7 @@ def build_chat_stance_debug_payload(
         "source_inputs": {
             "user_message": user_message,
             "continuity_digest": continuity_digest,
+            "belief_digest": belief_digest,
             "memory_digest": memory_digest,
             "identity_kernel": {
                 "orion_identity_summary": list(identity.get("orion") or []),

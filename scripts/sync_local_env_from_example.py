@@ -112,6 +112,8 @@ SYNC_PREFIXES = (
     "SQL_WRITER_EMIT_MEMORY_",
     # Embodiment (mind-to-sprite bridge, default-off)
     "EMBODIMENT_",
+    # Durable world-pulse run-result stream (producer dual-write + consumer group)
+    "WP_RUN_RESULT_",
 )
 
 SYNC_EXACT = frozenset(
@@ -158,6 +160,7 @@ DEFAULT_SERVICES = (
     "orion-actions",
     "orion-spark-concept-induction",
     "orion-spark-introspector",
+    "orion-world-pulse",
     # Transport substrate stack (M3–M7)
     "orion-substrate-runtime",
     "orion-field-digester",

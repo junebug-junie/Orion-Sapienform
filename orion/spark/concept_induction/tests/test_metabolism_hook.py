@@ -258,6 +258,106 @@ async def test_substrate_act_runs_when_goal_suppressed(monkeypatch) -> None:
     assert call_kwargs["spawned_correlation_id"] == "wp-run-hook"
 
 
+def _drive_state_ready() -> dict:
+    return {
+        "pressures": {"predictive": 0.7, "coherence": 0.5, "continuity": 0.5, "capability": 0.5, "relational": 0.5, "autonomy": 0.5},
+        "activations": {"predictive": True},
+    }
+
+
+@pytest.mark.asyncio
+async def test_episode_skipped_when_run_already_processed(monkeypatch) -> None:
+    # Idempotency backstop: with the stream flag on, a run already marked processed must
+    # NOT re-run the substrate act (no duplicate Firecrawl fetch / journal RPC).
+    monkeypatch.setenv("ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED", "true")
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    monkeypatch.setenv("WP_RUN_RESULT_STREAM_ENABLED", "true")
+    substrate_act_mock = AsyncMock(return_value=MagicMock(fetch_attempted=True, fetch_outcome=None))
+    monkeypatch.setattr(
+        "orion.spark.concept_induction.bus_worker.maybe_execute_substrate_act_after_metabolism",
+        substrate_act_mock,
+    )
+    cfg = ConceptSettings()
+    cfg.autonomy_episode_journal_enabled = True
+    worker = ConceptWorker(cfg, fetch_backend=AsyncMock())
+    worker.store = MagicMock()
+    worker.store.load_drive_state.return_value = _drive_state_ready()
+    worker.store.is_episode_run_processed.return_value = True
+    worker.drive_engine.update = MagicMock(return_value=(_drive_state_ready()["pressures"], {"predictive": True}))
+    worker._publish_tension_event = AsyncMock(return_value=None)
+    worker._publish_drive_state = AsyncMock(return_value=None)
+    worker._publish_artifact = AsyncMock(return_value=None)
+    worker._publish_dossier = AsyncMock(return_value=None)
+    worker.goal_engine.propose = MagicMock(return_value=MagicMock(proposal=None, suppressed_signature=None))
+
+    await worker.handle_envelope(_world_pulse_envelope(), "orion:world_pulse:run:result")
+
+    substrate_act_mock.assert_not_awaited()
+    worker.store.mark_episode_run_processed.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_episode_marks_run_processed_when_stream_enabled(monkeypatch) -> None:
+    # Positive path: first delivery runs the act, then marks the run so a redelivery is
+    # deduped.
+    monkeypatch.setenv("ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED", "true")
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    monkeypatch.setenv("WP_RUN_RESULT_STREAM_ENABLED", "true")
+    substrate_act_mock = AsyncMock(return_value=MagicMock(fetch_attempted=True, fetch_outcome=None))
+    monkeypatch.setattr(
+        "orion.spark.concept_induction.bus_worker.maybe_execute_substrate_act_after_metabolism",
+        substrate_act_mock,
+    )
+    cfg = ConceptSettings()
+    cfg.autonomy_episode_journal_enabled = True
+    worker = ConceptWorker(cfg, fetch_backend=AsyncMock())
+    worker.store = MagicMock()
+    worker.store.load_drive_state.return_value = _drive_state_ready()
+    worker.store.is_episode_run_processed.return_value = False
+    worker.drive_engine.update = MagicMock(return_value=(_drive_state_ready()["pressures"], {"predictive": True}))
+    worker._publish_tension_event = AsyncMock(return_value=None)
+    worker._publish_drive_state = AsyncMock(return_value=None)
+    worker._publish_artifact = AsyncMock(return_value=None)
+    worker._publish_dossier = AsyncMock(return_value=None)
+    worker.goal_engine.propose = MagicMock(return_value=MagicMock(proposal=None, suppressed_signature=None))
+
+    await worker.handle_envelope(_world_pulse_envelope(), "orion:world_pulse:run:result")
+
+    substrate_act_mock.assert_awaited_once()
+    worker.store.mark_episode_run_processed.assert_called_once()
+    assert worker.store.mark_episode_run_processed.call_args.args[0] == "wp-run-hook"
+
+
+@pytest.mark.asyncio
+async def test_episode_not_marked_when_stream_disabled(monkeypatch) -> None:
+    # Flag-off path must be byte-identical: no dedup read, no mark.
+    monkeypatch.setenv("ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED", "true")
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    monkeypatch.setenv("WP_RUN_RESULT_STREAM_ENABLED", "false")
+    substrate_act_mock = AsyncMock(return_value=MagicMock(fetch_attempted=True, fetch_outcome=None))
+    monkeypatch.setattr(
+        "orion.spark.concept_induction.bus_worker.maybe_execute_substrate_act_after_metabolism",
+        substrate_act_mock,
+    )
+    cfg = ConceptSettings()
+    cfg.autonomy_episode_journal_enabled = True
+    worker = ConceptWorker(cfg, fetch_backend=AsyncMock())
+    worker.store = MagicMock()
+    worker.store.load_drive_state.return_value = _drive_state_ready()
+    worker.drive_engine.update = MagicMock(return_value=(_drive_state_ready()["pressures"], {"predictive": True}))
+    worker._publish_tension_event = AsyncMock(return_value=None)
+    worker._publish_drive_state = AsyncMock(return_value=None)
+    worker._publish_artifact = AsyncMock(return_value=None)
+    worker._publish_dossier = AsyncMock(return_value=None)
+    worker.goal_engine.propose = MagicMock(return_value=MagicMock(proposal=None, suppressed_signature=None))
+
+    await worker.handle_envelope(_world_pulse_envelope(), "orion:world_pulse:run:result")
+
+    substrate_act_mock.assert_awaited_once()
+    worker.store.is_episode_run_processed.assert_not_called()
+    worker.store.mark_episode_run_processed.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_dispatch_uses_journal_timeout_not_cortex_timeout(monkeypatch) -> None:
     # Guard against regressing bus_worker back to cfg.cortex_timeout_sec: the

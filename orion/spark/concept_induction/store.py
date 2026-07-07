@@ -137,3 +137,27 @@ class LocalProfileStore:
             "artifact_id": artifact_id,
         }
         self._save_raw(data)
+
+    def is_episode_run_processed(self, run_id: str) -> bool:
+        """True if an autonomy episode has already been composed for this world-pulse run.
+
+        Idempotency guard for at-least-once stream delivery (and the manual replay
+        script): a redelivered / replayed run.result must not compose a duplicate
+        episode journal or re-run the Firecrawl fetch.
+        """
+        if not run_id:
+            return False
+        data = self._load_raw()
+        processed = data.get("episode_runs_processed")
+        return isinstance(processed, dict) and run_id in processed
+
+    def mark_episode_run_processed(self, run_id: str, *, processed_at: datetime) -> None:
+        if not run_id:
+            return
+        data = self._load_raw()
+        processed = data.get("episode_runs_processed")
+        if not isinstance(processed, dict):
+            processed = {}
+        processed[run_id] = {"processed_at": processed_at.isoformat()}
+        data["episode_runs_processed"] = processed
+        self._save_raw(data)

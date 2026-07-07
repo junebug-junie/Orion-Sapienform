@@ -149,6 +149,31 @@ class ConceptSettings(BaseSettings):
         120.0,
         alias="ORION_AUTONOMY_EPISODE_JOURNAL_TIMEOUT_SEC",
     )
+    # Durable world-pulse run-result consumption (Redis Stream + consumer group).
+    # When enabled, orion:world_pulse:run:result is consumed from the durable stream
+    # instead of pub/sub so a busy/restarting worker never loses the episode trigger.
+    wp_run_result_stream_enabled: bool = Field(
+        False,
+        alias="WP_RUN_RESULT_STREAM_ENABLED",
+    )
+    wp_run_result_stream_key: str = Field(
+        "orion:stream:world_pulse:run:result",
+        alias="WP_RUN_RESULT_STREAM_KEY",
+    )
+    wp_run_result_stream_group: str = Field(
+        "cg:concept-induction",
+        alias="WP_RUN_RESULT_STREAM_GROUP",
+    )
+    wp_run_result_dlq_key: str = Field(
+        "orion:stream:world_pulse:run:result:dlq",
+        alias="WP_RUN_RESULT_DLQ_KEY",
+    )
+    wp_run_result_block_ms: int = Field(5000, alias="WP_RUN_RESULT_BLOCK_MS")
+    wp_run_result_max_attempts: int = Field(5, alias="WP_RUN_RESULT_MAX_ATTEMPTS")
+    wp_run_result_autoclaim_idle_ms: int = Field(
+        120000,
+        alias="WP_RUN_RESULT_AUTOCLAIM_IDLE_MS",
+    )
     episode_fetch_backend: str = Field("auto", alias="ORION_EPISODE_FETCH_BACKEND")
     orion_fcc_env_path: str = Field("~/.fcc/.env", alias="ORION_FCC_ENV_PATH")
     firecrawl_api_key: str = Field("", alias="FIRECRAWL_API_KEY")

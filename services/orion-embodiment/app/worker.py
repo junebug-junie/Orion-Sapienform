@@ -714,9 +714,12 @@ class EmbodimentWorker:
                 )
                 if unified.strip():
                     return unified
-                logger.info("embodiment_speech_unified_fallback reason=empty")
+                # A non-final/empty frame already logged its discriminating reason.
             except Exception as exc:
-                logger.info("embodiment_speech_unified_fallback reason=%s", type(exc).__name__)
+                logger.info(
+                    "embodiment_speech_unified_fallback reason=%s corr=%s",
+                    type(exc).__name__, correlation_id,
+                )
         return await self._request_utterance_quick(prompt, correlation_id=correlation_id)
 
     async def _request_utterance_unified(
@@ -724,8 +727,11 @@ class EmbodimentWorker:
     ) -> str:
         """Route the utterance through the hub-only unified turn saga
         (``POST /api/chat`` with ``mode=orion``). Returns the final text on success;
-        returns "" to signal fallback on any non-final frame. Network/JSON errors
-        propagate to the dispatcher, which logs one fallback line."""
+        returns "" to signal fallback on any non-final/empty frame, logging a
+        discriminating ``reason`` (``turn_error`` vs ``turn_deferred`` vs
+        ``non_final:<type>`` vs ``empty``) so an operator can tell a real cognition
+        failure from a benign quiet turn. Network/JSON errors propagate to the
+        dispatcher, which logs one fallback line."""
         import urllib.request
 
         body = json.dumps(
@@ -750,9 +756,18 @@ class EmbodimentWorker:
             return json.loads(raw)
 
         frame = await asyncio.to_thread(_post)
-        if not isinstance(frame, dict) or frame.get("type") != "final":
+        frame_type = frame.get("type") if isinstance(frame, dict) else None
+        if frame_type != "final":
+            reason = frame_type if frame_type in ("turn_error", "turn_deferred") else f"non_final:{frame_type}"
+            logger.info(
+                "embodiment_speech_unified_fallback reason=%s corr=%s", reason, correlation_id
+            )
             return ""
         text = str(frame.get("llm_response") or "").strip()
+        if not text:
+            logger.info(
+                "embodiment_speech_unified_fallback reason=empty corr=%s", correlation_id
+            )
         return text
 
     async def _request_utterance_quick(self, prompt: str, *, correlation_id: str) -> str:

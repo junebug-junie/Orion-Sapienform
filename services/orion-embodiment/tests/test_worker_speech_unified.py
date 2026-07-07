@@ -148,6 +148,32 @@ def test_unified_bad_json_falls_back_to_quick():
     quick.assert_awaited_once()
 
 
+def test_unified_fallback_logs_distinguishable_reason():
+    """A hub cognition failure (turn_error) must be logged with a reason distinct
+    from a benign empty reply, so an operator can tell them apart (anti silent-failure)."""
+    w = _worker(unified=True)
+    quick = AsyncMock(return_value="Quick fallback reply")
+    with patch.object(w, "_request_utterance_quick", new=quick), \
+         patch("urllib.request.urlopen", return_value=_FakeResp({"type": "turn_error"})), \
+         patch("app.worker.aitown_client.send_input", return_value={"ok": True}), \
+         patch("app.worker.aitown_client.convex_mutation", return_value={"ok": True}), \
+         patch("app.worker.logger.info") as info:
+        asyncio.run(w._speak_once(_perception_in_convo()))
+    reasons = [c for c in info.call_args_list if "embodiment_speech_unified_fallback" in str(c.args[0])]
+    assert reasons, "expected a fallback log line"
+    assert any("turn_error" in str(c.args) for c in reasons), "turn_error must be logged as its own reason, not collapsed to empty"
+
+    w2 = _worker(unified=True)
+    with patch.object(w2, "_request_utterance_quick", new=AsyncMock(return_value="q")), \
+         patch("urllib.request.urlopen", return_value=_FakeResp(_final_frame("   "))), \
+         patch("app.worker.aitown_client.send_input", return_value={"ok": True}), \
+         patch("app.worker.aitown_client.convex_mutation", return_value={"ok": True}), \
+         patch("app.worker.logger.info") as info2:
+        asyncio.run(w2._speak_once(_perception_in_convo()))
+    empty_reasons = [c for c in info2.call_args_list if "embodiment_speech_unified_fallback" in str(c.args[0])]
+    assert any("empty" in str(c.args) for c in empty_reasons), "empty final reply must log reason=empty"
+
+
 def test_unified_disabled_uses_quick_directly():
     w = _worker(unified=False)
     quick = AsyncMock(return_value="Quick direct reply")

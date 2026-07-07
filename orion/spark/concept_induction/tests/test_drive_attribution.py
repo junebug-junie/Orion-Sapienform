@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from orion.core.schemas.drives import DriveAuditV1, TensionEventV1
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.schemas.drives import DriveAuditV1, DriveStateV1, TensionEventV1
+from orion.spark.concept_induction.audit import build_drive_audit
 from orion.spark.concept_induction.drive_attribution import (
     DRIVE_KEYS,
     compute_tick_attribution,
@@ -113,4 +118,39 @@ def test_drive_audit_v1_accepts_tick_attribution() -> None:
         }
     )
     assert audit.tick_attribution["predictive"] == 0.25
+    assert audit.dominant_drive == "predictive"
+
+
+def test_audit_emits_tick_attribution() -> None:
+    """Spec acceptance 6."""
+    gap = _gap_tension()
+    env = BaseEnvelope(
+        kind="world.pulse.run.result.v1",
+        source=ServiceRef(name="test", version="0"),
+        correlation_id=uuid4(),
+        payload={},
+    )
+    drive_state = DriveStateV1.model_validate(
+        {
+            "subject": "orion",
+            "model_layer": "self-model",
+            "entity_id": "self:orion",
+            "kind": "memory.drives.state.v1",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "pressures": {k: 0.73 for k in DRIVE_KEYS},
+            "activations": {k: True for k in DRIVE_KEYS},
+            "provenance": {"intake_channel": "orion:world_pulse:run:result"},
+        }
+    )
+    attribution = compute_tick_attribution([gap], metabolism_deltas={"predictive": 0.15})
+    dominant = dominant_drive_from_attribution(attribution, lead_tension=gap)
+    audit = build_drive_audit(
+        env=env,
+        intake_channel="orion:world_pulse:run:result",
+        drive_state=drive_state,
+        tensions=[gap],
+        tick_attribution=attribution,
+        dominant_drive=dominant,
+    )
+    assert audit.tick_attribution["predictive"] > 0.0
     assert audit.dominant_drive == "predictive"

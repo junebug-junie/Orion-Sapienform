@@ -44,6 +44,8 @@ docker compose \
 
 When `HARNESS_FCC_MCP_ENABLED=true`, harness turns spawn ephemeral MCP config (GitHub + Firecrawl; optional AI Town when `HARNESS_AITOWN_ENABLED=true`). The container image includes `docker`, `npx`, and the orion-aitown MCP package.
 
+`HARNESS_FCC_SKIP_PERMISSIONS=true` (default in compose) passes `--dangerously-skip-permissions` to `claude -p` even when the governor runs as root — otherwise Bash/MCP steps stall on approval prompts with no operator in Orion mode.
+
 ### Required secrets
 
 Mount host `~/.fcc` (already wired in compose). In `~/.fcc/.env` (or path from `HARNESS_FCC_ENV_PATH`):

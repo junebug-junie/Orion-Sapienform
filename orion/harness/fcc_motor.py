@@ -162,6 +162,21 @@ def _env_truthy(key: str) -> bool:
     return os.environ.get(key, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _should_skip_claude_permissions() -> bool:
+    """Whether to pass --dangerously-skip-permissions to claude -p.
+
+    Docker harness runs as root; HARNESS_FCC_SKIP_PERMISSIONS=true (default in
+    governor compose) avoids blocking Bash/MCP on approval prompts with no operator.
+    When unset, preserve legacy host-dev behavior: skip only for non-root euid.
+    """
+    raw = os.environ.get("HARNESS_FCC_SKIP_PERMISSIONS", "").strip().lower()
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    if _env_truthy("HARNESS_FCC_SKIP_PERMISSIONS"):
+        return True
+    return os.geteuid() != 0
+
+
 def _harness_aitown_env(fcc_env: Dict[str, str]) -> Dict[str, str]:
     """Merge harness service overrides into FCC env for AI Town MCP probes."""
     ae = dict(fcc_env)
@@ -245,7 +260,7 @@ async def run_fcc_turn(
     ]
     if mcp_config_path is not None:
         argv.extend(["--mcp-config", str(mcp_config_path), "--allowedTools", "mcp__*"])
-    if os.geteuid() != 0:
+    if _should_skip_claude_permissions():
         model_idx = argv.index("--model")
         argv.insert(model_idx, "--dangerously-skip-permissions")
 

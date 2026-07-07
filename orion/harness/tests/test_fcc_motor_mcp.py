@@ -178,3 +178,45 @@ def test_harness_aitown_env_overrides_convex_url(monkeypatch: pytest.MonkeyPatch
     merged = motor._harness_aitown_env(base)
     assert merged["AITOWN_CONVEX_URL"] == "http://host.docker.internal:3210"
     assert merged["AITOWN_ADMIN_KEY"] == "k"
+
+
+@pytest.mark.asyncio
+async def test_run_fcc_turn_skip_permissions_when_env_true_as_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_argv: list = []
+
+    async def fake_exec(*args: Any, **kwargs: Any) -> _FakeProc:
+        captured_argv.extend(args)
+        return _FakeProc([
+            '{"type":"result","result":"Done.","session_id":"s1"}',
+        ])
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(motor, "_preflight_fcc_server", lambda *a, **k: None)
+    monkeypatch.setattr(motor, "load_fcc_env", _fake_fcc_env)
+    monkeypatch.setattr(motor.os, "geteuid", lambda: 0)
+    monkeypatch.setenv("HARNESS_FCC_SKIP_PERMISSIONS", "true")
+
+    async for _ in motor.run_fcc_turn(
+        prompt="hello",
+        fcc_model_label="MODEL_HAIKU",
+        correlation_id="corr-skip",
+        workspace="/tmp",
+        fcc_server_url="http://127.0.0.1:8082",
+        auth_token="tok",
+        claude_bin="claude",
+        timeout_sec=30.0,
+    ):
+        pass
+
+    assert "--dangerously-skip-permissions" in captured_argv
+
+
+def test_should_skip_claude_permissions_env_false_overrides_non_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(motor.os, "geteuid", lambda: 1000)
+    monkeypatch.setenv("HARNESS_FCC_SKIP_PERMISSIONS", "false")
+    assert motor._should_skip_claude_permissions() is False
+

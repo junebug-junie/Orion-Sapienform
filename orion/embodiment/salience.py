@@ -21,12 +21,16 @@ from datetime import datetime, timezone
 class SalienceState:
     """Cross-event memory for the salience gate.
 
-    ``seen_players`` dedupes first-encounter salience. ``last_journaled`` records
-    the last time we emitted for a given source ref, so callers can extend the
-    gate with time-based cooldowns without changing the evaluate signature.
+    ``seen_players`` dedupes first-encounter salience.
+    ``journaled_conversations`` dedupes completed-conversation salience so a
+    conversation that flickers in/out of perception cannot journal twice.
+    ``last_journaled`` records the last time we emitted for a given source ref,
+    so callers can extend the gate with time-based cooldowns without changing the
+    evaluate signature.
     """
 
     seen_players: set[str] = field(default_factory=set)
+    journaled_conversations: set[str] = field(default_factory=set)
     last_journaled: dict[str, datetime] = field(default_factory=dict)
 
 
@@ -68,10 +72,14 @@ def evaluate_salience(event: dict, state: SalienceState) -> SalienceEvaluation:
         if utterances <= 0:
             return SalienceEvaluation(salient=False, summary="", source_ref=None)
         source_ref = str(event.get("conversation_id") or event.get("player_id") or who)
+        # Dedupe: a conversation that flickers in/out of perception journals once.
+        if source_ref in state.journaled_conversations:
+            return SalienceEvaluation(salient=False, summary="", source_ref=source_ref)
         summary = (
             f"Conversation with {who} in the town ({utterances} utterance"
             f"{'s' if utterances != 1 else ''} exchanged)."
         )
+        state.journaled_conversations.add(source_ref)
         state.last_journaled[source_ref] = _utcnow()
         return SalienceEvaluation(salient=True, summary=summary, source_ref=source_ref)
 

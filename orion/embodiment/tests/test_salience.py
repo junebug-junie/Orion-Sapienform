@@ -24,6 +24,16 @@ def test_bare_proximity_not_salient():
     assert ev.salient is False
 
 
+def test_completed_conversation_deduped_by_conversation_id():
+    state = SalienceState()
+    ev = {"type": "conversation_completed", "with": "Juniper", "utterances": 2,
+          "conversation_id": "c1"}
+    first = evaluate_salience(ev, state)
+    second = evaluate_salience(ev, state)
+    assert first.salient is True
+    assert second.salient is False  # same conversation, journaled once
+
+
 def test_zero_utterance_conversation_not_salient():
     ev = evaluate_salience(
         {"type": "conversation_completed", "with": "Juniper", "utterances": 0},

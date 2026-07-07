@@ -65,6 +65,10 @@ class EmbodimentWorker:
         self._last_conversation_start: Optional[datetime] = None
         self._speaking_conversations: set[str] = set()
         self._salience = SalienceState()
+        # Conversation-completion tracking for the journal gate (perception delta).
+        self._active_conversation_id: Optional[str] = None
+        self._active_conversation_partner: Optional[str] = None
+        self._active_conversation_utterances: int = 0
         self._load_fcc_env()
         self._orion_player_id = str(os.environ.get("AITOWN_ORION_PLAYER_ID") or "").strip()
         self._world_id = str(os.environ.get("AITOWN_WORLD_ID") or "").strip()
@@ -281,6 +285,73 @@ class EmbodimentWorker:
             return None
         return evaluation.source_ref or summary
 
+    @staticmethod
+    def _conversation_partner_name(perception: WorldPerceptionV1, convo: dict) -> Optional[str]:
+        """Best-effort human name of Orion's conversation partner.
+
+        Prefers an explicit partner name/id on the conversation frame; falls back
+        to the nearest perceived player. Returns ``None`` if nothing is known so
+        the summary carries "someone" rather than a fabricated name.
+        """
+        for key in ("with", "partner", "partner_name", "invitee", "other_player_name"):
+            val = convo.get(key)
+            if val:
+                return str(val)
+        nearby = perception.nearby_players or []
+        if nearby:
+            first = nearby[0]
+            return str(first.get("name") or first.get("player_id") or "") or None
+        return None
+
+    async def _journal_from_perception(self, perception: WorldPerceptionV1) -> None:
+        """Derive salient episodes from a perception tick and journal them.
+
+        Two signals, both bounded/deduped downstream by the pure salience gate:
+          - conversation completion: the conversation Orion was in is no longer
+            active -> emit a ``conversation_completed`` event carrying the partner
+            and the count of utterances Orion contributed (0 utterances is not
+            salient, so silent fly-bys are dropped by the gate).
+          - encounters: each perceived player is offered as an ``encounter``; the
+            gate journals only the first sighting of each player and dedupes the
+            rest via ``SalienceState.seen_players``.
+
+        Fail-open: never raises into the perception loop.
+        """
+        if not getattr(self._settings, "memory_enabled", False):
+            return
+        try:
+            convo = perception.active_conversation or {}
+            convo_id = str(convo.get("conversation_id") or convo.get("id") or "").strip() or None
+            prev_id = self._active_conversation_id
+            if prev_id and prev_id != convo_id:
+                # Only journal if we know who Orion talked to — a who-less episode
+                # would be empty-shell content, so drop it rather than emit "someone".
+                if self._active_conversation_partner:
+                    await self._maybe_journal_episode({
+                        "type": "conversation_completed",
+                        "with": self._active_conversation_partner,
+                        "utterances": self._active_conversation_utterances,
+                        "conversation_id": prev_id,
+                    })
+                self._active_conversation_partner = None
+                self._active_conversation_utterances = 0
+            if convo_id and convo_id != prev_id:
+                self._active_conversation_partner = self._conversation_partner_name(perception, convo)
+                self._active_conversation_utterances = 0
+            self._active_conversation_id = convo_id
+
+            for np_ in perception.nearby_players or []:
+                player_id = str(np_.get("player_id") or "").strip()
+                if not player_id:
+                    continue
+                await self._maybe_journal_episode({
+                    "type": "encounter",
+                    "player_id": player_id,
+                    "name": np_.get("name"),
+                })
+        except Exception:
+            logger.exception("embodiment_journal_from_perception_failed")
+
     # --- perception ---------------------------------------------------------
     async def _emit_perception_once(self) -> Optional[WorldPerceptionV1]:
         player_id = (self._orion_player_id or "").strip()
@@ -322,6 +393,11 @@ class EmbodimentWorker:
             except Exception:
                 logger.exception("embodiment_perception_loop_failed")
                 perception = None
+            if perception is not None and getattr(self._settings, "memory_enabled", False):
+                try:
+                    await self._journal_from_perception(perception)
+                except Exception:
+                    logger.exception("embodiment_memory_loop_failed")
             if perception is not None and getattr(self._settings, "speech_enabled", False):
                 try:
                     await self._speak_once(perception)
@@ -365,6 +441,12 @@ class EmbodimentWorker:
             except Exception:
                 logger.exception("embodiment_speech_inject_failed convo=%s", convo_id)
                 return None
+            # Record Orion's contribution so the journal gate sees a real exchange
+            # when this conversation later completes.
+            if convo_id == getattr(self, "_active_conversation_id", None):
+                self._active_conversation_utterances = (
+                    getattr(self, "_active_conversation_utterances", 0) + 1
+                )
             return reply
         finally:
             self._speaking_conversations.discard(convo_id)

@@ -78,7 +78,7 @@ services:
       - ORION_METABOLISM_MIN_CURIOSITY_STRENGTH=${ORION_METABOLISM_MIN_CURIOSITY_STRENGTH:-0.5}
       - ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED=${ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED:-false}
       - ORION_EPISODE_FETCH_BACKEND=${ORION_EPISODE_FETCH_BACKEND:-auto}
-      - ORION_FCC_ENV_PATH=${ORION_FCC_ENV_PATH:-~/.fcc/.env}
+      - ORION_FCC_ENV_PATH=/root/.fcc/.env
       - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY:-}
       - ORION_AUTONOMY_EPISODE_JOURNAL_ENABLED=${ORION_AUTONOMY_EPISODE_JOURNAL_ENABLED:-false}
       - JOURNAL_WRITE_CHANNEL=${JOURNAL_WRITE_CHANNEL:-orion:journal:write}
@@ -87,6 +87,7 @@ services:
       - JOURNAL_AUTHOR=${JOURNAL_AUTHOR:-orion}
     volumes:
       - ${ORION_DATA_ROOT:-/mnt/graphdb}/orion/concepts:/data
+      - ${HOME}/.fcc:/root/.fcc:ro
     env_file:
       - .env
     ports:

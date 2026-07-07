@@ -134,6 +134,17 @@ class ConceptSettings(BaseSettings):
         False,
         alias="ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED",
     )
+    autonomy_episode_journal_enabled: bool = Field(
+        False,
+        alias="ORION_AUTONOMY_EPISODE_JOURNAL_ENABLED",
+    )
+    episode_fetch_backend: str = Field("auto", alias="ORION_EPISODE_FETCH_BACKEND")
+    orion_fcc_env_path: str = Field("~/.fcc/.env", alias="ORION_FCC_ENV_PATH")
+    firecrawl_api_key: str = Field("", alias="FIRECRAWL_API_KEY")
+    journal_write_channel: str = Field("orion:journal:write", alias="JOURNAL_WRITE_CHANNEL")
+    journal_session_id: str = Field("orion", alias="JOURNAL_SESSION_ID")
+    journal_user_id: str = Field("juniper", alias="JOURNAL_USER_ID")
+    journal_author: str = Field("orion", alias="JOURNAL_AUTHOR")
 
     # Repository backend / Graph read model (Phase 2)
     concept_profile_repository_backend: str = Field(

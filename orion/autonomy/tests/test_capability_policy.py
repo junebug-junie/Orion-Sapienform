@@ -63,3 +63,34 @@ def test_capability_policy_denies_when_auto_readonly_disabled(monkeypatch) -> No
     decision = evaluate_capability("web.fetch.readonly", ctx)
     assert decision.outcome == "denied"
     assert decision.reason_code == "policy_auto_disabled"
+
+
+def test_capability_policy_allows_episode_journal_at_proposed(monkeypatch) -> None:
+    monkeypatch.setenv("ORION_AUTONOMY_EPISODE_JOURNAL_ENABLED", "true")
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    monkeypatch.setenv("ORION_METABOLISM_MIN_PREDICTIVE_PRESSURE", "0.55")
+    ctx = CapabilityEvaluationContext(
+        predictive_pressure=0.7,
+        curiosity_strength=0.0,
+        signal_kinds=[],
+        goal=_goal(),
+        budget_used={},
+    )
+    decision = evaluate_capability("journal.compose.episode", ctx)
+    assert decision.outcome == "allowed"
+    assert decision.auto_execute is True
+
+
+def test_capability_policy_denies_episode_journal_when_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("ORION_AUTONOMY_EPISODE_JOURNAL_ENABLED", "false")
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    ctx = CapabilityEvaluationContext(
+        predictive_pressure=0.7,
+        curiosity_strength=0.0,
+        signal_kinds=[],
+        goal=_goal(),
+        budget_used={},
+    )
+    decision = evaluate_capability("journal.compose.episode", ctx)
+    assert decision.outcome == "denied"
+    assert decision.reason_code == "episode_journal_disabled"

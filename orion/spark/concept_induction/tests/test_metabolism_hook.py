@@ -129,3 +129,53 @@ async def test_metabolism_enriches_goal_window_summary(monkeypatch) -> None:
     summary = worker.goal_engine.propose.call_args.kwargs["window_summary"]
     assert summary is not None
     assert "hardware_compute_gpu" in summary
+
+
+@pytest.mark.asyncio
+async def test_policy_fetch_runs_after_goal_publish(monkeypatch) -> None:
+    monkeypatch.setenv("ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED", "true")
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    episode_mock = AsyncMock(return_value=(MagicMock(outcome="allowed", auto_execute=True), {"write": {}}))
+    fetch_outcome = MagicMock(success=True)
+    policy_mock = AsyncMock(return_value=(MagicMock(outcome="allowed", auto_execute=True), fetch_outcome))
+    monkeypatch.setattr(
+        "orion.spark.concept_induction.bus_worker.maybe_execute_readonly_fetch_after_goal",
+        policy_mock,
+    )
+    monkeypatch.setattr(
+        "orion.spark.concept_induction.bus_worker.maybe_compose_autonomy_episode_after_fetch",
+        episode_mock,
+    )
+    cfg = ConceptSettings()
+    cfg.autonomy_episode_journal_enabled = True
+    worker = ConceptWorker(cfg, fetch_backend=AsyncMock())
+    worker.store = MagicMock()
+    worker.store.load_drive_state.return_value = {
+        "pressures": {"predictive": 0.7, "coherence": 0.5, "continuity": 0.5, "capability": 0.5, "relational": 0.5, "autonomy": 0.5},
+        "activations": {"predictive": True},
+    }
+    worker.drive_engine.update = MagicMock(
+        return_value=(
+            {"predictive": 0.7, "coherence": 0.5, "continuity": 0.5, "capability": 0.5, "relational": 0.5, "autonomy": 0.5},
+            {"predictive": True},
+        )
+    )
+    worker._publish_tension_event = AsyncMock(return_value=None)
+    worker._publish_drive_state = AsyncMock(return_value=None)
+    worker._publish_artifact = AsyncMock(return_value=None)
+    worker._publish_dossier = AsyncMock(return_value=None)
+
+    proposal = MagicMock()
+    proposal.artifact_id = "goal-gap-gpu"
+    proposal.subject = "orion"
+    proposal.drive_origin = "predictive"
+    proposal.proposal_status = "proposed"
+    worker.goal_engine.propose = MagicMock(return_value=MagicMock(proposal=proposal, suppressed_signature=None))
+
+    await worker.handle_envelope(_world_pulse_envelope(), "orion:world_pulse:run:result")
+
+    policy_mock.assert_awaited_once()
+    call_kwargs = policy_mock.await_args.kwargs
+    assert call_kwargs["spawned_correlation_id"] == "wp-run-hook"
+    assert call_kwargs["goal"] is proposal
+    episode_mock.assert_awaited_once()

@@ -25,6 +25,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.reverie.referent_loader import default_referent_loader
 from orion.reverie.semantic_lift import (
+    coalition_audit_refs,
     enforce_semantic_quality,
     resolve_concern_cards,
     reverie_semantic_gate,
@@ -133,8 +134,7 @@ def build_reverie_context(
     concern_cards: list[ConcernCardV1] | None = None,
 ) -> dict[str, Any]:
     if concern_cards:
-        coalition_refs = list(broadcast.attended_node_ids)
-        coalition_refs.extend(loop.id for loop in broadcast.frame.open_loops)
+        coalition_refs = coalition_audit_refs(broadcast)
         return {
             "user_message": None,
             "concern_cards": [c.model_dump(mode="json") for c in concern_cards],
@@ -299,6 +299,7 @@ async def run_reverie_once(
         )
         if settings.reverie_semantic_lift_enabled and concern_cards:
             thought = enforce_semantic_quality(thought, concern_cards)
+            thought = thought.model_copy(update={"llm_profile": "metacog"})
         if chain_context is not None:
             thought = thought.model_copy(
                 update={"chain_id": chain_context[0], "thought_index": chain_context[1]}

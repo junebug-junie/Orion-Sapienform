@@ -66,6 +66,8 @@ class SqlReferentLoader:
         created = rec.get("created_at")
         if not isinstance(created, datetime):
             return None
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
         now = datetime.now(timezone.utc)
         age_h = (now - created).total_seconds() / 3600.0
         if age_h > self.max_age_hours:

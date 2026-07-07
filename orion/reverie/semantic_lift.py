@@ -36,12 +36,17 @@ def _collect_coalition_refs(broadcast: AttentionBroadcastProjectionV1) -> list[s
             for ref in loop.source_refs:
                 _add(ref)
     for loop in broadcast.frame.open_loops:
+        _add(loop.id)
         for ref in loop.source_refs:
-            parse_harness_closure_ref(ref)
             _add(ref)
     for node_id in broadcast.attended_node_ids:
         _add(node_id)
     return refs
+
+
+def coalition_audit_refs(broadcast: AttentionBroadcastProjectionV1) -> list[str]:
+    """Coalition ids the LLM may cite in evidence_refs (audit-only, not for narration)."""
+    return _collect_coalition_refs(broadcast)
 
 
 def resolve_concern_cards(
@@ -54,7 +59,9 @@ def resolve_concern_cards(
 
     for ref in _collect_coalition_refs(broadcast):
         corr = parse_harness_closure_ref(ref)
-        if corr and corr in seen_corr:
+        if not corr:
+            continue
+        if corr in seen_corr:
             continue
         try:
             row = referent_loader.load_by_coalition_ref(ref)

@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 
 from orion.reverie.referent_loader import TurnReferentRow, parse_harness_closure_ref
 from orion.reverie.semantic_lift import (
+    coalition_audit_refs,
     enforce_semantic_quality,
     infra_vocabulary_hit,
     referent_overlap,
@@ -58,6 +59,12 @@ def _broadcast_with_harness_ref(corr: str = "corr-1") -> AttentionBroadcastProje
         selected_open_loop_id="ol-1",
         coalition_stability_score=0.5,
     )
+
+
+def test_coalition_audit_refs_includes_loop_and_harness_closure() -> None:
+    refs = coalition_audit_refs(_broadcast_with_harness_ref())
+    assert "ol-1" in refs
+    assert "harness_closure:corr-1" in refs
 
 
 def test_resolve_concern_cards_from_selected_loop_source_ref() -> None:

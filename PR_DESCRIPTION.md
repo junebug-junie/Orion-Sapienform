@@ -1,112 +1,70 @@
-# feat(world-pulse): Orion went looking — curiosity followups in the digest
-
 ## Summary
 
-- World-pulse now does an inline **gap-fill web fetch** for under-covered digest sections (reusing the existing `web.fetch.readonly` capability policy + `execute_readonly_fetch`) and attaches results to the digest as `curiosity_followups`, rendered as an **"Orion went looking"** block.
-- Findings ride the **existing** `world.pulse.run.result.v1` event (no new bus event) via `WorldPulseRunResultV1.digest`.
-- The concept-induction worker **reuses** a matching followup instead of doing a second Firecrawl call: `select_reusable_followup` + `outcome_from_followup` → `prefetched_outcome` on `maybe_execute_substrate_act_after_metabolism`. Live fetch remains the fallback.
-- Disabled by default; effective on/off = `WORLD_PULSE_CURIOSITY_FETCH_ENABLED` **AND** `ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED`. Skipped on dry runs. Builder never raises.
+- Restores the Hub inspect modal's **Recall** tab on the default "orion" (unified turn) path, which regressed to empty.
+- Root cause was a plumbing gap, not missing recall: recall runs via PCR phase-3 inside cortex-exec's `stance_react` step and its content already rides to the harness governor as `request.thought_event.grounding_capsule`, but `HarnessRunV1` had no field to carry it out and the unified `final` WS frame never emitted it.
+- Adds `recall_debug`/`memory_digest` to `HarnessRunV1`, populates them in the governor from the grounding capsule, and emits them on the unified `final` frame (the browser already reads them).
+- No new recall wiring — surfaces already-available data (Approach A).
 
 ## Outcome moved
 
-Single shared fetch: an under-covered section is fetched **once** (by world-pulse) and reused downstream by the reactive episode-journal loop, eliminating a duplicate billable Firecrawl call and surfacing the gap-fill findings to the human in the digest.
+Unified-turn replies now carry recalled-memory content to the Hub inspect modal Recall tab, so the operator no longer has to vibe the correlation ID to see what memory grounded a turn.
 
-## Current architecture (before)
+## Current architecture
 
-World-pulse computed section coverage but never acted on gaps; the reactive concept-induction loop independently ran its own readonly fetch when reacting to `world.pulse.run.result.v1`.
+Default "orion" mode runs the unified turn (`orion/hub/turn_orchestrator.py` -> harness governor -> `HarnessRunner` FCC motor + finalize chain). Recall executes in cortex-exec's stance step (PCR phase-3) and is threaded onto `thought.grounding_capsule` (committed to `main` in `d096a6e8`). The `read_recall` permission on the harness request is dead code; the FCC motor (`fcc_motor.py`, a `claude` subprocess) emits no recall. Previously `HarnessRunV1` dropped the capsule's recalled content, so the modal's Recall tab was empty on this path (the classic chat lane still populated it via `PlanExecutionResult.recall_debug`).
 
 ## Architecture touched
 
-- Producer: `orion-world-pulse` pipeline gains a gated, dry-run-skipped inline fetch writing `DailyWorldPulseV1.curiosity_followups`.
-- Contract: additive field on `DailyWorldPulseV1` (already registry-registered by class reference; no registry edit).
-- Consumer: `orion-spark-concept-induction` bus worker reads matching followups and passes `prefetched_outcome` into the substrate-act path.
-- Shared: `orion/autonomy` gains `tokenize_terms`, `curiosity_reuse.py`, and a `prefetched_outcome` param on `policy_act`.
+- Shared schema: `HarnessRunV1` (additive optional fields).
+- Service `orion-harness-governor`: populates recall fields at all four run-construction sites.
+- `orion/hub` unified turn: emits recall fields on the `final` frame. No JS change (browser already reads `d.recall_debug`/`d.memory_digest`).
 
 ## Files changed
 
-- `orion/schemas/world_pulse.py`: `CuriosityFindingV1`, `CuriosityFollowupV1`, `DailyWorldPulseV1.curiosity_followups`.
-- `orion/autonomy/salience.py`: public `tokenize_terms` wrapper.
-- `orion/autonomy/curiosity_reuse.py` (new): `select_reusable_followup`, `outcome_from_followup`.
-- `orion/autonomy/policy_act.py`: `prefetched_outcome` short-circuit (None-path byte-identical).
-- `orion/spark/concept_induction/bus_worker.py`: reuse wiring in the `world.pulse.run.result.v1` act branch.
-- `services/orion-world-pulse/app/services/curiosity.py` (new): `build_curiosity_followups` (capability gate + per-section fetch + map; gate guarded so it never fails the run).
-- `services/orion-world-pulse/app/services/{digest,pipeline,renderers}.py`: passthrough, wiring, and the "Orion went looking" block.
-- `services/orion-world-pulse/app/settings.py` + `.env_example`: 3 `WORLD_PULSE_CURIOSITY_*` flags (off/5/9).
-- `services/orion-world-pulse/Dockerfile`: copies `config/autonomy` so the runtime capability gate can load its policy.
-- Tests added across all touched packages, incl. a worker-level reuse-wiring integration test.
+- `orion/schemas/harness_finalize.py`: add `recall_debug: dict|None` + `memory_digest: str|None` to `HarnessRunV1` (default None, backward compatible).
+- `services/orion-harness-governor/app/bus_listener.py`: `_recall_fields_from_thought()` derives recall fields from `thought.grounding_capsule` (returns `(None, None)` when no capsule or no real content — no-empty-shell); wired into refusal/motor-fail/success/error `HarnessRunV1(...)` sites; explicit `request` sentinel guard on the error path.
+- `orion/hub/turn_orchestrator.py`: `_success_frames` conditionally emits `recall_debug`/`memory_digest` on the `final` frame.
+- `services/orion-harness-governor/tests/test_harness_governor_rpc.py`: recall coverage across success/refusal/motor-fail/no-capsule + both error-path branches.
+- `tests/test_unified_turn_schemas.py`: schema default-None + round-trip.
+- `services/orion-hub/tests/test_turn_orchestrator_ws_frames.py`: final-frame present/absent emission.
 
 ## Schema / bus / API changes
 
-- Added: `CuriosityFindingV1`, `CuriosityFollowupV1`, `DailyWorldPulseV1.curiosity_followups` (default `[]`).
+- Added: `HarnessRunV1.recall_debug: dict|None`, `HarnessRunV1.memory_digest: str|None`.
 - Removed / Renamed: none.
-- Behavior changed: `build_digest` gained an optional `curiosity_followups` param; `maybe_execute_substrate_act_after_metabolism` gained an optional `prefetched_outcome` kwarg. Both backward-compatible (defaulted).
-- Compatibility: additive; `world.pulse.run.result.v1` payload unchanged except the new digest field. No registry edit needed (class-reference registration).
+- Behavior changed: unified `final` WS frame gains optional `recall_debug`/`memory_digest` keys (only when populated).
+- Compatibility: fully backward compatible; older payloads/consumers unaffected; new frame keys appear only when recall content exists.
 
 ## Env/config changes
 
-- Added keys: `WORLD_PULSE_CURIOSITY_FETCH_ENABLED` (false), `WORLD_PULSE_CURIOSITY_MAX_ARTICLES_PER_SECTION` (5), `WORLD_PULSE_CURIOSITY_MAX_SECTIONS` (9).
-- `.env_example` updated: yes.
-- local `.env` sync: `scripts/sync_local_env_from_example.py` skips the worktree (no local `.env` there). The keys were added to the operator `.env` at `services/orion-world-pulse/.env` (main checkout) with safe defaults. **After merge, re-run `python scripts/sync_local_env_from_example.py` from the main checkout to formalize.**
-- Skipped keys requiring operator action: none new. (Repo's `check_env_template_parity.py` / `check_schema_registry.py` / `check_bus_channels.py` do not exist in this repo; env sync + import checks were used instead.)
+None. No `.env_example` change, nothing to sync.
 
 ## Tests run
 
 ```text
-# from repo root (worktree), main-checkout venv
-pytest services/orion-world-pulse/tests   -> 69 passed
-pytest orion/autonomy/tests               -> 125 passed
-pytest services/orion-spark-concept-induction/tests -> 5 passed (incl. new reuse-wiring test)
-# per-task TDD: schema(2), tokenize(3), settings(2), curiosity(8), pipeline(2), renderers(3),
-#               curiosity_reuse(4), policy_act_prefetched(1)
-```
-
-Pre-existing (not regressions), verified identical on baseline:
-- `test_world_pulse_pipeline.py::{test_run_world_pulse_with_fixture_fetch,test_pipeline_fixture_mode_without_network}` fail only from the service dir (cwd-relative `config/world_pulse/sources.yaml`); pass from repo root.
-- `test_graph_profile_repository.py::TestGraphReadModel::{test_shadow_parity_logs_graph_unavailable_reason,test_shadow_parity_logs_expected_mismatch_fields}` fail only under the large combined run (cross-test ordering); pass in isolation.
-
-## Docker/build/smoke checks
-
-```text
-docker compose config (world-pulse)          -> world-pulse-config-ok
-docker compose config (concept-induction)    -> concept-induction-config-ok
-docker build world-pulse image (from branch) -> success
-docker run <img> import app.services.curiosity + load_capability_policy() -> IMPORT_OK, CAPABILITY_POLICY_LOADED rules=4
+pytest services/orion-harness-governor/tests/test_harness_governor_rpc.py \
+       services/orion-hub/tests/test_turn_orchestrator_ws_frames.py \
+       tests/test_unified_turn_schemas.py -q
+-> 53 passed
 ```
 
 ## Review findings fixed
 
-- **world-pulse image didn't ship `config/autonomy`** → enabling the feature in-container would miss the capability policy; the unguarded gate call could crash the run. Fix: `COPY config/autonomy` in the Dockerfile + wrap `_gate_open` so a policy load/eval failure degrades to `[]`. Evidence: in-image `load_capability_policy()` returns 4 rules; new `test_gate_evaluation_error_degrades_to_empty`.
-- **Highest-risk seam (worker reuse wiring) had no integration test.** Fix: `test_curiosity_reuse_wiring.py` drives a real `world.pulse.run.result.v1` envelope through `ConceptWorker.handle_envelope` with the real select/outcome/policy_act path; asserts fetch backend call count == 0 and emitted `action_id` == the followup's. settrace confirmed the new `bus_worker.py` lines execute.
-- **`build_digest` optional param redundant with attribute-attach** (both spec-requested) — kept as documented; harmless (Low).
-
-Second review pass (`fba23e9a..a04bbcf2`, verdict "Ready to merge — Yes"), Minor items fixed:
-- **Mapping error could still raise.** `CuriosityFollowupV1`/`CuriosityFindingV1` construction was just outside the per-section `try/except`. Fix: moved it inside so a schema-mapping failure also degrades to skipping the section (fully honors never-fail-the-run). Evidence: new `test_mapping_error_degrades_to_skip`.
-- **`budget_per_cycle` not enforced on the producer path.** The capability policy's `budget_per_cycle: 2` acts as an on/off gate here; per-run fetch cost is bounded by `max_sections` (<=9). Fix: documented in a code comment (intended per spec decision; no behavior change).
+- Finding: error-path recall population untested (only success path covered).
+  - Fix: added `_handle_bus_message` tests locking in both guard branches (capsule-present raise -> recall carried; validation-fail -> recall None).
+  - Evidence: `test_handle_bus_message_error_path_carries_recall_from_capsule`, `test_handle_bus_message_error_path_recall_none_when_request_unbound`.
+- Finding: opaque `locals().get("request")` idiom on the error path.
+  - Fix: replaced with explicit `request: HarnessRunRequestV1 | None = None` sentinel.
+  - Evidence: `services/orion-harness-governor/app/bus_listener.py` except-handler.
 
 ## Restart required
 
-Run from the **main checkout** after merge (do not skip the env sync):
-
 ```bash
-python scripts/sync_local_env_from_example.py
-docker compose --env-file .env --env-file services/orion-world-pulse/.env -f services/orion-world-pulse/docker-compose.yml up -d --build
-docker compose --env-file .env --env-file services/orion-spark-concept-induction/.env -f services/orion-spark-concept-induction/docker-compose.yml up -d --build
+sudo docker compose --env-file .env --env-file services/orion-harness-governor/.env -f services/orion-harness-governor/docker-compose.yml up -d --build
+sudo docker compose --env-file .env --env-file services/orion-hub/.env -f services/orion-hub/docker-compose.yml up -d --build
 ```
-
-To exercise the feature (billable): set `WORLD_PULSE_CURIOSITY_FETCH_ENABLED=true`, `ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED=true`, ensure `FIRECRAWL_API_KEY` present, and `ORION_AUTONOMY_EPISODE_JOURNAL_ENABLED=true` on the consumer.
-
-## Live smoke (Task 11 — operator-run, NOT executed here)
-
-Not run: requires enabling billable Firecrawl fetches on the live deployment.
-1. `curl -sS -X POST http://localhost:8628/api/world-pulse/run -H 'content-type: application/json' -d '{"dry_run": false, "requested_by":"manual"}'` → expect >=1 followup with >=1 article and an `action_id`.
-2. Concept-induction logs: expect `wp_curiosity_followup_reused ... action_id=<X>` matching a followup, then journal-compose/episode-journal/action-outcome lines, and **no** `web.fetch.readonly` execution for that reused section.
 
 ## Risks / concerns
 
-- Low — Reuse matches only the **first** gap-section label; a mismatch yields a second live fetch (graceful fallback, billable miss).
-- Low — `append_action_outcome` runs producer-side but not on the reused consumer path. Shared SQL store → one row; per-container file store → audit row only in world-pulse. `ActionOutcomeEmitV1` bus emit fires on both paths (source of truth). Ensure `ORION_ACTION_OUTCOME_STORE_PATH` writable in world-pulse.
-- Low — `build_curiosity_followups` uses `asyncio.run` per section; safe because `run_world_pulse` is synchronous.
-
-## Status
-
-DONE (two code reviews passed — final verdict "Ready to merge"; all Critical/Important = none; Minor findings fixed). Remaining concerns are Low and documented above. PR must be opened by an authenticated operator — see the create URL / `PR_DESCRIPTION.md` below.
+- Severity: low. Recall shows only when PCR ran (capsule has digests); an identity-only degraded capsule leaves the tab empty (accurate, not a bug).
+- Follow-up (Approach B): the rich per-item `recall_debug` (classic-lane object) is still discarded on the unified path — cortex-exec throws away PCR's `_debug`. Surfacing it would need a thin cortex-exec + orion-thought change.

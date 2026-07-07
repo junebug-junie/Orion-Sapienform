@@ -712,12 +712,11 @@ class EmbodimentWorker:
                 unified = await self._request_utterance_unified(
                     prompt, correlation_id=correlation_id, session_id=session_id
                 )
+                if unified.strip():
+                    return unified
+                logger.info("embodiment_speech_unified_fallback reason=empty")
             except Exception as exc:
                 logger.info("embodiment_speech_unified_fallback reason=%s", type(exc).__name__)
-                unified = ""
-            if unified.strip():
-                return unified
-            logger.info("embodiment_speech_unified_fallback reason=empty")
         return await self._request_utterance_quick(prompt, correlation_id=correlation_id)
 
     async def _request_utterance_unified(

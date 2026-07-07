@@ -96,6 +96,84 @@ class ConsolidationSuggestRunner:
     async def consolidate_window(self, window: dict[str, Any], *, bus: OrionBusAsync) -> None:
         window_id = window["memory_window_id"]
         turns = window.get("turns") or []
+        corr_ids = window.get("turn_correlation_ids") or []
+        output_mode = settings.MEMORY_CONSOLIDATION_OUTPUT
+        if output_mode in ("crystallization_propose", "skip_only"):
+            from orion.memory.consolidation_gate import consolidation_memory_gate
+            from orion.memory.consolidation_grammar import fetch_grammar_evidence_for_window
+            from orion.memory.crystallization.bus_emit import emit_crystallization_lifecycle
+            from orion.memory.crystallization.intake_consolidation_window import (
+                build_crystallization_from_window,
+            )
+            from orion.memory.crystallization.repository import insert_crystallization
+
+            try:
+                repair, grammar_event_ids = await fetch_grammar_evidence_for_window(
+                    self._pool,
+                    turns=turns,
+                    node_id=settings.NODE_NAME,
+                    enabled=settings.MEMORY_CONSOLIDATION_FETCH_GRAMMAR_EVIDENCE,
+                )
+                gate = consolidation_memory_gate(
+                    turns=turns,
+                    grammar_repair_signal=repair,
+                    grammar_event_ids=grammar_event_ids,
+                    min_novelty=settings.MEMORY_CONSOLIDATION_MIN_NOVELTY,
+                    min_significance=settings.MEMORY_CONSOLIDATION_MIN_SIGNIFICANCE,
+                )
+                if gate.action == "skip" or output_mode == "skip_only":
+                    await self._window_store.mark_consolidated_skipped(
+                        window_id,
+                        reasons=gate.reasons,
+                    )
+                    for corr in corr_ids:
+                        await publish_spark_meta_patch(
+                            bus,
+                            corr,
+                            {
+                                "consolidation_gate": {
+                                    "action": "skip",
+                                    "reasons": gate.reasons,
+                                }
+                            },
+                        )
+                    return
+
+                crystallization = build_crystallization_from_window(
+                    memory_window_id=window_id,
+                    turns=turns,
+                    gate=gate,
+                )
+                cid = await insert_crystallization(self._pool, crystallization)
+                await self._window_store.mark_crystallization_proposed(
+                    window_id,
+                    crystallization_id=cid,
+                )
+                await emit_crystallization_lifecycle(
+                    bus,
+                    lifecycle="proposed",
+                    crystallization=crystallization,
+                    service_name=settings.SERVICE_NAME,
+                    service_version=settings.SERVICE_VERSION,
+                    node_name=settings.NODE_NAME,
+                )
+                for corr in corr_ids:
+                    await publish_spark_meta_patch(
+                        bus,
+                        corr,
+                        {
+                            "consolidation_gate": {
+                                "action": "propose",
+                                "crystallization_id": cid,
+                            }
+                        },
+                    )
+                return
+            except Exception:
+                logger.exception("memory_consolidation_gate_failed window_id=%s", window_id)
+                await self._window_store.mark_failed(window_id)
+                return
+
         transcript = build_window_transcript(turns)
         try:
             budget_config = suggest_token_budget_config_from_mapping(settings)

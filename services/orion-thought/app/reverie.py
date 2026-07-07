@@ -15,7 +15,9 @@ Discipline (§0A / hard constraints):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 from contextlib import suppress
 from typing import Any, Callable
 from uuid import UUID, uuid4
@@ -97,16 +99,50 @@ def build_coalition_snapshot(
     )
 
 
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _salience_v2_enabled() -> bool:
+    """Thin-service read of the salience-v2 flag.
+
+    Deliberately does NOT import `orion.substrate.attention.salience`: importing
+    any `orion.substrate` submodule runs `orion/substrate/__init__.py`, which
+    eagerly loads the graph engine (`requests` etc.) that this thin bus service
+    does not install. Mirrors `salience_v2_enabled()` in that module.
+    """
+    return os.getenv("ORION_ATTENTION_SALIENCE_V2_ENABLED", "false").strip().lower() in _TRUTHY
+
+
+def _bounded(value: float) -> float:
+    """Clamp to [0,1] — local copy of `orion.substrate.attention.common.bounded`
+    to keep reverie off the `orion.substrate` import graph (no `requests`)."""
+    return max(0.0, min(1.0, float(value)))
+
+
+def _weights_version() -> str:
+    """Provenance string mirroring `default_combiner().weights_version` without
+    importing the combiner (thin service: no `orion.substrate` at runtime)."""
+    raw = os.getenv("ORION_ATTENTION_SALIENCE_WEIGHTS", "").strip()
+    if raw:
+        try:
+            if isinstance(json.loads(raw), dict):
+                return "seed-v1+override"
+        except (ValueError, TypeError):
+            pass
+    return "seed-v1"
+
+
 def derive_salience(broadcast: AttentionBroadcastProjectionV1 | None) -> float:
     """Salience of the selected coalition.
 
     v2 (`ORION_ATTENTION_SALIENCE_V2_ENABLED`): read the loop's precomputed
-    `salience` (same combiner used by selection — one source of salience truth).
-    Legacy: max of the seven constant score fields, else stability score.
+    `salience` (computed upstream by the same combiner selection uses — one
+    source of salience truth). Legacy: max of the seven constant score fields,
+    else stability score.
 
-    The `orion.substrate.attention` imports are local: importing that package at
-    module scope drags the graph engine (`requests` etc.), which this thin bus
-    service must not load (see `test_reverie_thin_import_boundary`).
+    Uses only thin local helpers (no `orion.substrate` import): importing that
+    package drags the graph engine (`requests`), which this thin bus service must
+    not load (see `test_reverie_thin_import_boundary`).
     """
     if broadcast is None:
         return 0.0
@@ -117,12 +153,8 @@ def derive_salience(broadcast: AttentionBroadcastProjectionV1 | None) -> float:
     )
     if loop is None:
         return fallback
-    from orion.substrate.attention.salience import salience_v2_enabled
-
-    if salience_v2_enabled():
-        from orion.substrate.attention.common import bounded
-
-        return bounded(float(loop.salience)) if loop.salience else fallback
+    if _salience_v2_enabled():
+        return _bounded(float(loop.salience)) if loop.salience else fallback
     scores = [float(getattr(loop, field, 0.0)) for field in _OPEN_LOOP_SCORE_FIELDS]
     return max(scores) if scores else fallback
 
@@ -134,9 +166,10 @@ def build_salience_trace(
 ) -> AttentionSalienceTraceV1 | None:
     """Trace the selected loop's feature vector + salience. None if no selection.
 
-    Local imports (`stable_hash_id`, `WEIGHTS_VERSION`, `bounded`) keep the thin
-    bus service off `orion.substrate.__init__`'s graph engine at module scope —
-    same discipline as `derive_salience` (see `test_reverie_thin_import_boundary`).
+    Reads the loop's precomputed salience/features (computed upstream) and packages
+    them — reverie does not recompute, so it needs no combiner. Uses thin local
+    helpers only (no `orion.substrate` import; that would drag `requests`). Only
+    `orion.core.ids` is imported locally, which is light.
     """
     if broadcast is None or not broadcast.selected_open_loop_id:
         return None
@@ -147,8 +180,6 @@ def build_salience_trace(
     if loop is None:
         return None
     from orion.core.ids import stable_hash_id
-    from orion.substrate.attention.common import bounded
-    from orion.substrate.attention.salience import default_combiner
 
     return AttentionSalienceTraceV1(
         trace_id=stable_hash_id("saltrace", [correlation_id, loop.id]),
@@ -156,8 +187,8 @@ def build_salience_trace(
         theme_key=loop.id,
         description=(loop.description or "")[:200],
         correlation_id=correlation_id,
-        salience=bounded(float(loop.salience)),
-        weights_version=default_combiner().weights_version,
+        salience=_bounded(float(loop.salience)),
+        weights_version=_weights_version(),
         features=dict(loop.salience_features or {}),
         scope="reverie",
     )

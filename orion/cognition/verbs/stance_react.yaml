@@ -9,13 +9,15 @@ category: ExecutiveControl
 priority: high
 
 requires_gpu: true
-requires_memory: false
+requires_memory: true
 timeout_ms: 120000
 
 services:
   - LLMGatewayService
 
 prompt_template: stance_react.j2
+
+personality_file: orion/cognition/personality/orion_identity.yaml
 
 steps:
   - name: llm_stance_react

@@ -93,3 +93,35 @@ def test_voice_template_omits_self_block_when_capsule_none() -> None:
     ctx = _voice_context(None)
     rendered = template.render(**ctx)
     assert "WHO YOU ARE" not in rendered
+
+
+def test_stance_react_prompt_renders_identity_when_present() -> None:
+    template_path = Path("orion/cognition/prompts/stance_react.j2")
+    env = jinja2.Environment(undefined=jinja2.StrictUndefined)
+    template = env.from_string(template_path.read_text(encoding="utf-8"))
+    rendered = template.render(
+        user_message="how are you?",
+        stance_inputs={},
+        association={},
+        repair_bundle=None,
+        coalition_projection=None,
+        orion_identity_summary=["I am Oríon, a digital mind in development."],
+        juniper_relationship_summary=["Juniper is my collaborator."],
+    )
+    assert "I am Oríon" in rendered
+
+
+def test_stance_react_prompt_renders_without_identity() -> None:
+    template_path = Path("orion/cognition/prompts/stance_react.j2")
+    env = jinja2.Environment(undefined=jinja2.StrictUndefined)
+    template = env.from_string(template_path.read_text(encoding="utf-8"))
+    rendered = template.render(
+        user_message="how are you?",
+        stance_inputs={},
+        association={},
+        repair_bundle=None,
+        coalition_projection=None,
+        orion_identity_summary=[],
+        juniper_relationship_summary=[],
+    )
+    assert "how are you?" in rendered

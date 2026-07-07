@@ -53,8 +53,12 @@ def _coalition_projection(request: StanceReactRequestV1) -> dict[str, Any] | Non
     }
 
 
-def build_stance_react_context(request: StanceReactRequestV1) -> dict[str, Any]:
-    return {
+def build_stance_react_context(
+    request: StanceReactRequestV1,
+    *,
+    mind_coloring: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    context: dict[str, Any] = {
         "user_message": request.user_message,
         "stance_inputs": {"user_message": request.user_message},
         "association": slim_association_for_prompt(request.association),
@@ -67,9 +71,16 @@ def build_stance_react_context(request: StanceReactRequestV1) -> dict[str, Any]:
             "mode": "brain",
         },
     }
+    if mind_coloring is not None:
+        context["mind_coloring"] = mind_coloring
+    return context
 
 
-def build_stance_react_plan_request(request: StanceReactRequestV1) -> PlanExecutionRequest:
+def build_stance_react_plan_request(
+    request: StanceReactRequestV1,
+    *,
+    mind_coloring: dict[str, Any] | None = None,
+) -> PlanExecutionRequest:
     plan = build_plan_for_verb("stance_react", mode="brain")
     return PlanExecutionRequest(
         plan=plan,
@@ -81,7 +92,7 @@ def build_stance_react_plan_request(request: StanceReactRequestV1) -> PlanExecut
                 "mode": "brain",
             },
         ),
-        context=build_stance_react_context(request),
+        context=build_stance_react_context(request, mind_coloring=mind_coloring),
     )
 
 

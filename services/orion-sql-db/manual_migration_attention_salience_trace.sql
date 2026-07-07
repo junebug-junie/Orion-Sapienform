@@ -18,6 +18,9 @@ create table if not exists attention_salience_trace (
     enqueued_at timestamptz not null default now()
 );
 
+-- Backfill for existing deployments (create table above is a no-op if table exists).
+alter table attention_salience_trace add column if not exists description text not null default '';
+
 create index if not exists idx_attention_salience_trace_created_at
     on attention_salience_trace (created_at desc);
 

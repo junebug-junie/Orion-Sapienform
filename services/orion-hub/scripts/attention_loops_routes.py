@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import os
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from scripts.attention_loops_store import (
@@ -64,6 +64,8 @@ def list_loops(limit: int = 50):
 
 
 def _close(loop_id: str, verdict: str, note: str):
+    if not _cards_enabled():
+        raise HTTPException(status_code=404, detail="pending attention cards disabled")
     outcome = build_loop_outcome(
         loop_id=loop_id, theme_key=loop_id, verdict=verdict, actor="juniper",
         note=note, salience_at_close=0.0, features_at_close={},

@@ -180,6 +180,65 @@ def test_maybe_render_mcp_config_wires_orion_fcc_render(monkeypatch: pytest.Monk
         mcp_config.cleanup_mcp_config(path)
 
 
+def test_maybe_render_mcp_config_passes_github_toolsets_from_fcc_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    import orion.fcc.mcp_config as mcp_config
+
+    monkeypatch.setenv("HARNESS_FCC_MCP_ENABLED", "true")
+    monkeypatch.delenv("HARNESS_AITOWN_ENABLED", raising=False)
+    monkeypatch.setattr(
+        motor,
+        "load_fcc_env",
+        lambda _p: {
+            "GITHUB_PAT": "ghp_motor_ts",
+            "FIRECRAWL_API_KEY": "fc_motor_ts",
+            "GITHUB_TOOLSETS": "repos,pull_requests,issues",
+            "GITHUB_READ_ONLY": "0",
+        },
+    )
+    monkeypatch.setattr(motor, "expand_env_path", lambda _p: Path("/fake/.fcc/.env"))
+    monkeypatch.setattr(mcp_config.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+
+    path = motor._maybe_render_mcp_config(correlation_id="corr-motor-toolsets")
+    try:
+        assert path is not None
+        github_env = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["github"]["env"]
+        assert github_env["GITHUB_TOOLSETS"] == "repos,pull_requests,issues"
+        assert github_env["GITHUB_READ_ONLY"] == "0"
+    finally:
+        mcp_config.cleanup_mcp_config(path)
+
+
+def test_maybe_render_mcp_config_defaults_github_toolsets_when_env_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    import orion.fcc.mcp_config as mcp_config
+
+    monkeypatch.setenv("HARNESS_FCC_MCP_ENABLED", "true")
+    monkeypatch.delenv("HARNESS_AITOWN_ENABLED", raising=False)
+    monkeypatch.setattr(
+        motor,
+        "load_fcc_env",
+        lambda _p: {"GITHUB_PAT": "ghp_motor_def", "FIRECRAWL_API_KEY": "fc_motor_def"},
+    )
+    monkeypatch.setattr(motor, "expand_env_path", lambda _p: Path("/fake/.fcc/.env"))
+    monkeypatch.setattr(mcp_config.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+
+    path = motor._maybe_render_mcp_config(correlation_id="corr-motor-toolset-default")
+    try:
+        assert path is not None
+        github_env = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["github"]["env"]
+        assert github_env["GITHUB_TOOLSETS"] == "repos,pull_requests"
+        assert github_env["GITHUB_READ_ONLY"] == "1"
+    finally:
+        mcp_config.cleanup_mcp_config(path)
+
+
 def test_harness_aitown_env_overrides_convex_url(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HARNESS_AITOWN_CONVEX_URL", "http://host.docker.internal:3210")
     base = {"AITOWN_CONVEX_URL": "http://127.0.0.1:3210", "AITOWN_ADMIN_KEY": "k"}

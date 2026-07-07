@@ -6,10 +6,14 @@
       "args": [
         "run", "-i", "--rm",
         "-e", "GITHUB_PERSONAL_ACCESS_TOKEN",
+        "-e", "GITHUB_TOOLSETS",
+        "-e", "GITHUB_READ_ONLY",
         "ghcr.io/github/github-mcp-server"
       ],
       "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "__GITHUB_PAT__"
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "__GITHUB_PAT__",
+        "GITHUB_TOOLSETS": "__GITHUB_TOOLSETS__",
+        "GITHUB_READ_ONLY": "__GITHUB_READ_ONLY__"
       }
     },
     "firecrawl": {

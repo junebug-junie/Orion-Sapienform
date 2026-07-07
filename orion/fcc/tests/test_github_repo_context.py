@@ -37,6 +37,7 @@ def test_github_mcp_brief_lines_include_narrow_pr_guidance(
     lines = github_mcp_brief_lines(workspace=Path("/tmp"))
     assert len(lines) == 3
     assert "perPage=1" in lines[1]
+    assert "state=all" in lines[1]
     assert "search_pull_requests" in lines[1]
     assert "never paste raw MCP JSON" in lines[2]
 

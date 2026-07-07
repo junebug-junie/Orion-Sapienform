@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import httpx
+
 from orion.mind.v1 import MindRunPolicyV1, MindRunRequestV1, MindRunResultV1
 from orion.schemas.thought import StanceReactRequestV1
 
@@ -173,3 +175,52 @@ def build_light_mind_request(
             router_profile_id=router_profile or "default",
         ),
     )
+
+
+def _mind_transport() -> httpx.BaseTransport | None:
+    """Seam for tests to inject an httpx.MockTransport. Returns None in prod
+    so AsyncClient uses its default transport.
+    """
+    return None
+
+
+async def run_mind_for_thought(
+    req: "MindRunRequestV1",
+    *,
+    settings: Any,
+    correlation_id: str,
+) -> "MindRunResultV1 | None":
+    """POST the Mind request; return the parsed result or None (fail-open)."""
+    base = (getattr(settings, "mind_base_url", "") or "").rstrip("/")
+    if not base:
+        logger.warning("mind_enrichment_failed corr=%s reason=unconfigured_base_url", correlation_id)
+        return None
+    url = f"{base}/v1/mind/run"
+    timeout_sec = float(getattr(settings, "mind_timeout_sec", 15.0))
+    timeout = httpx.Timeout(
+        connect=min(10.0, timeout_sec),
+        read=timeout_sec,
+        write=min(30.0, timeout_sec),
+        pool=5.0,
+    )
+    max_body = int(getattr(settings, "mind_max_response_bytes", 2_000_000))
+    transport = _mind_transport()
+    client_kwargs: dict[str, Any] = {"timeout": timeout}
+    if transport is not None:
+        client_kwargs["transport"] = transport
+    try:
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            resp = await client.post(url, json=req.model_dump(mode="json"))
+            resp.raise_for_status()
+            raw = resp.content
+            if len(raw) > max_body:
+                raise RuntimeError(f"mind_response_too_large:{len(raw)}")
+            return MindRunResultV1.model_validate(resp.json())
+    except Exception as exc:  # noqa: BLE001 — fail-open by contract
+        logger.warning(
+            "mind_enrichment_failed corr=%s reason=%s err=%s",
+            correlation_id,
+            type(exc).__name__,
+            exc,
+        )
+        return None

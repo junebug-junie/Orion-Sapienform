@@ -10,6 +10,8 @@ INPUTS
 - thought_event: {{ thought_event }}
 - substrate_appraisal: {{ substrate_appraisal }}
 - grammar_receipts: {{ grammar_receipts }}
+- tool_execution (deterministic — tool calls executed this turn):
+{{ tool_execution }}
 - repair_overlay: {{ repair_overlay }}
 {% if finalize_overlay %}
 - finalize_overlay: {{ finalize_overlay }}
@@ -21,6 +23,7 @@ INTEGRATIVE CHECK
 - Decide whether the draft aligns with felt stance and substrate interoception.
 - When substrate hints conflict with draft, prefer misaligned or uncertain — do not hand-wave.
 - When imperative required world-contact but grammar_receipts is empty, lean misaligned or uncertain.
+- When tool_execution lists executed calls, world-contact DID happen: verify the draft against the returned data in grammar_receipts. Do not rule misaligned for "no world contact" or treat a tool-derived answer as ungrounded confabulation when the tool result supports it.
 
 REQUIRED JSON FIELDS
 - imperative: max 300 chars — felt imperative for this turn

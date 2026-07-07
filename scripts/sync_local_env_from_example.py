@@ -141,6 +141,8 @@ SYNC_EXACT = frozenset(
         "ORION_DREAM_COMPACTION_DOWNSCALE_ONLY",
         "DREAM_COMPACTION_SNAPSHOT_DIR",
         "GOAL_DRIVE_ORIGIN_SOURCE",
+        # Worker log level (stdlib->loguru bridge) — must stay in sync so traces are visible.
+        "LOG_LEVEL",
     }
 )
 

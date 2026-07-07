@@ -150,6 +150,15 @@ class InhibitedImpulseV1(BaseModel):
     evidence_refs: list[str] = Field(default_factory=list)
 
 
+class FetchedArticleRefV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    url: str
+    title: str = ""
+    description: str = ""
+    salience: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
 class ActionOutcomeRefV1(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -159,6 +168,9 @@ class ActionOutcomeRefV1(BaseModel):
     success: bool | None = None
     surprise: float = Field(default=0.0, ge=0.0, le=1.0)
     observed_at: datetime | None = None
+    query: str | None = None
+    articles: list[FetchedArticleRefV1] = Field(default_factory=list)
+    salience: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
 class ActionOutcomeEmitV1(BaseModel):

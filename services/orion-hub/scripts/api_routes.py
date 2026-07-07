@@ -153,6 +153,7 @@ from .grammar_atlas_routes import router as grammar_atlas_router
 from .substrate_biometrics_routes import router as substrate_biometrics_router
 from .substrate_field_routes import router as substrate_field_router
 from .substrate_attention_routes import router as substrate_attention_router
+from .attention_loops_routes import router as attention_loops_router
 from .substrate_self_state_routes import router as substrate_self_state_router
 from .substrate_observability_routes import router as substrate_observability_router
 from .substrate_proposal_routes import router as substrate_proposal_router
@@ -165,6 +166,7 @@ router.include_router(grammar_atlas_router)
 router.include_router(substrate_biometrics_router)
 router.include_router(substrate_field_router)
 router.include_router(substrate_attention_router)
+router.include_router(attention_loops_router)
 router.include_router(substrate_self_state_router)
 router.include_router(substrate_observability_router)
 router.include_router(substrate_proposal_router)

@@ -142,6 +142,13 @@ class ConceptSettings(BaseSettings):
         False,
         alias="ORION_AUTONOMY_EPISODE_JOURNAL_ENABLED",
     )
+    # Journal compose is an LLM RPC to cortex-exec (~16s observed). The generic
+    # cortex_timeout_sec (12s) is too tight and silently drops the episode journal,
+    # so give the compose its own generous budget.
+    autonomy_episode_journal_timeout_sec: float = Field(
+        120.0,
+        alias="ORION_AUTONOMY_EPISODE_JOURNAL_TIMEOUT_SEC",
+    )
     episode_fetch_backend: str = Field("auto", alias="ORION_EPISODE_FETCH_BACKEND")
     orion_fcc_env_path: str = Field("~/.fcc/.env", alias="ORION_FCC_ENV_PATH")
     firecrawl_api_key: str = Field("", alias="FIRECRAWL_API_KEY")
@@ -216,6 +223,9 @@ class ConceptSettings(BaseSettings):
 
     # Heartbeat
     heartbeat_interval_sec: float = Field(10.0, alias="HEARTBEAT_INTERVAL_SEC")
+
+    # Logging
+    log_level: str = Field("INFO", alias="LOG_LEVEL")
 
     class Config:
         env_file = ".env"

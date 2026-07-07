@@ -44,6 +44,40 @@ _dwell_ticks: int = 0
 # AttentionBroadcastProjectionV1.coalition_history (schema caps at 10).
 _transition_history: deque[dict[str, Any]] = deque(maxlen=10)
 
+# Recent selected-loop counts for habituation (inhibition-of-return). Capped.
+_recent_selected_counts: dict[str, int] = {}
+_MAX_TRACKED_THEMES = 64
+
+# A theme selected at least this many times is "resonating" (stuck) — engage
+# the resonance term of habituation so inhibition-of-return can release it.
+_RESONANCE_MIN_COUNT = 3
+
+
+def _record_selection(loop_id: str | None) -> None:
+    if not loop_id:
+        return
+    _recent_selected_counts[loop_id] = _recent_selected_counts.get(loop_id, 0) + 1
+    if len(_recent_selected_counts) > _MAX_TRACKED_THEMES:
+        drop = min(_recent_selected_counts, key=_recent_selected_counts.get)
+        _recent_selected_counts.pop(drop, None)
+
+
+def _current_history(resonance_theme_keys: set[str] | None = None) -> "SalienceHistory":
+    from orion.substrate.attention.salience import SalienceHistory
+
+    # A theme selected repeatedly IS resonating (stuck): engage the full
+    # habituation penalty so inhibition-of-return can eventually release it.
+    # Callers may still pass explicit keys (e.g. tests / other producers).
+    if resonance_theme_keys is None:
+        resonance_theme_keys = {
+            k for k, v in _recent_selected_counts.items() if v >= _RESONANCE_MIN_COUNT
+        }
+    return SalienceHistory(
+        dwell_ticks=_dwell_ticks,
+        recent_theme_counts=dict(_recent_selected_counts),
+        resonance_theme_keys=set(resonance_theme_keys),
+    )
+
 
 def attention_broadcast_enabled() -> bool:
     return str(os.getenv(BROADCAST_FLAG, "false")).strip().lower() in _TRUTHY
@@ -125,9 +159,12 @@ def build_substrate_attention_frame(
     are then demoted to ``watch``, so the selected coalition is the top loop
     without any question generation.
     """
+    from orion.substrate.attention.salience import habituation_enabled
+
     lineage = list(belief_lineage or [])
     signals = substrate_pressure_signals(nodes, min_salience=min_salience, limit=max_signals)
     merged = merge_signals(signals, limit=max_open * 3)
+    history = _current_history() if habituation_enabled() else None
     open_loops = build_open_loops(
         signals=merged,
         ctx={},
@@ -137,6 +174,7 @@ def build_substrate_attention_frame(
         generic_reversal=False,
         stale_thread_active=False,
         max_open=max_open,
+        history=history,
     )
     actions, selected, suppressions, deferred = select_actions(
         open_loops=open_loops,
@@ -218,6 +256,8 @@ def broadcast_projection_from_frame(frame: AttentionFrameV1) -> AttentionBroadca
         stability_score = 0.6
     else:
         stability_score = 0.3
+
+    _record_selection(selected.open_loop_id if selected is not None else None)
 
     return AttentionBroadcastProjectionV1(
         generated_at=frame.generated_at,

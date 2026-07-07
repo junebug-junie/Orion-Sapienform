@@ -48,10 +48,13 @@ async def test_dispatch_autonomy_episode_journal_publishes_write() -> None:
             cortex_request_channel="orion:cortex:request",
             cortex_result_prefix="orion:cortex:result",
             journal_write_channel="orion:journal:write",
-            timeout_sec=12.0,
+            timeout_sec=120.0,
         )
 
     bus.rpc_request.assert_awaited_once()
+    # The compose RPC (~16s observed) must honor the caller's timeout budget, not
+    # a hard-coded value; a too-tight timeout silently drops the episode journal.
+    assert bus.rpc_request.await_args.kwargs["timeout_sec"] == 120.0
     bus.publish.assert_awaited_once()
     publish_channel, publish_env = bus.publish.await_args.args
     assert publish_channel == "orion:journal:write"

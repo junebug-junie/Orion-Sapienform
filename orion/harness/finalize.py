@@ -147,6 +147,30 @@ def grammar_receipt_summaries(receipts: list[GrammarReceiptV1] | None) -> list[d
     ]
 
 
+def tools_called_this_turn(receipts: list[GrammarReceiptV1] | None) -> list[dict[str, str]]:
+    """Deterministic list of tool calls executed this turn (from grammar receipts)."""
+    return [
+        {"step": str(r.step_index), "tool": r.tool_name}
+        for r in (receipts or [])
+        if r.tool_name
+    ]
+
+
+def format_tool_execution_digest(receipts: list[GrammarReceiptV1] | None) -> str:
+    """Human-readable tool-execution digest for finalize prompts.
+
+    Surfaces the deterministic fact that world-contact happened this turn so the
+    reflect/voice passes cannot confabulate "no tool call succeeded" when one did.
+    """
+    calls = tools_called_this_turn(receipts)
+    if not calls:
+        return "none — no tools were called this turn"
+    return "\n".join(
+        f"- step {c['step']}: {c['tool']} (executed; results are in grammar_receipts)"
+        for c in calls
+    )
+
+
 def quick_lane_block_reason(
     *,
     substrate_appraisal: SubstrateFinalizeAppraisalV1,
@@ -231,6 +255,7 @@ def build_finalize_reflect_context(
         "thought_event": thought.model_dump(mode="json"),
         "substrate_appraisal": substrate_appraisal.model_dump(mode="json"),
         "grammar_receipts": grammar_receipt_summaries(grammar_receipts),
+        "tool_execution": format_tool_execution_digest(grammar_receipts),
         "repair_overlay": repair_overlay.model_dump(mode="json"),
         "finalize_overlay": repair_overlay.finalize_overlay,
         "user_message": user_message,
@@ -405,6 +430,7 @@ def build_voice_finalize_context(
         "stance_harness_slice": stance_harness_slice.model_dump(mode="json"),
         "voice_contract": contract_dump,
         "grammar_receipts": grammar_receipt_summaries(grammar_receipts),
+        "tool_execution": format_tool_execution_digest(grammar_receipts),
         "finalize_overlay": repair_overlay.finalize_overlay,
         "user_message": user_message,
         "metadata": {

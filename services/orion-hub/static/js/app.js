@@ -8669,6 +8669,74 @@ loadDismissedIds();
     }
   }
 
+  async function loadCognitiveLoops() {
+    const list = document.getElementById('cognitiveLoopsList');
+    const count = document.getElementById('cognitiveLoopsCount');
+    if (!list) return;
+    try {
+      const resp = await fetch(`${API_BASE_URL}/api/attention/loops?limit=50`);
+      if (!resp.ok) return;
+      const cards = await resp.json();
+      if (count) count.textContent = String(cards.length);
+      list.innerHTML = '';
+      if (!Array.isArray(cards) || cards.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'text-xs text-gray-500 italic';
+        empty.textContent = 'No cognitive loops need attention';
+        list.appendChild(empty);
+        return;
+      }
+      cards.forEach((card) => list.appendChild(renderCognitiveLoopCard(card)));
+    } catch (err) {
+      /* best-effort panel */
+    }
+  }
+
+  function renderCognitiveLoopCard(card) {
+    const el = document.createElement('div');
+    el.className = 'p-2 rounded border border-purple-800 bg-gray-900';
+    const title = document.createElement('div');
+    title.className = 'text-xs font-semibold text-purple-200';
+    title.textContent = card.title;
+    const why = document.createElement('div');
+    why.className = 'text-[11px] text-gray-400 mt-1';
+    why.textContent = card.why_it_matters;
+    const feats = document.createElement('div');
+    feats.className = 'text-[10px] text-gray-500 mt-1';
+    feats.textContent = (card.top_contributing_features || []).join(' \u00b7 ');
+    const actions = document.createElement('div');
+    actions.className = 'flex gap-2 mt-2';
+    const resolveBtn = document.createElement('button');
+    resolveBtn.className = 'px-2 py-0.5 text-[10px] rounded bg-green-700 text-white';
+    resolveBtn.textContent = 'Resolve';
+    resolveBtn.onclick = () => closeCognitiveLoop(card.loop_id, 'resolve');
+    const dismissBtn = document.createElement('button');
+    dismissBtn.className = 'px-2 py-0.5 text-[10px] rounded bg-gray-700 text-gray-200';
+    dismissBtn.textContent = 'Dismiss';
+    dismissBtn.onclick = () => closeCognitiveLoop(card.loop_id, 'dismiss');
+    actions.appendChild(resolveBtn);
+    actions.appendChild(dismissBtn);
+    el.appendChild(title);
+    el.appendChild(why);
+    el.appendChild(feats);
+    el.appendChild(actions);
+    return el;
+  }
+
+  async function closeCognitiveLoop(loopId, verdict) {
+    if (!loopId) return;
+    try {
+      await fetch(`${API_BASE_URL}/api/attention/loops/${loopId}/${verdict}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note: '' }),
+      });
+      loadCognitiveLoops();
+    } catch (err) {
+      /* best-effort */
+    }
+  }
+
   async function loadPendingAttention() {
     try {
       const resp = await fetch(`${API_BASE_URL}/api/attention?status=pending&limit=50`);
@@ -11503,6 +11571,7 @@ loadDismissedIds();
       await loadNotifications();
       await loadChatMessages();
       await loadPendingAttention();
+      loadCognitiveLoops();
       await loadWorldPulseLatest();
       if (messagesToggle) {
         messagesToggle.addEventListener('click', toggleMessagesPanel);

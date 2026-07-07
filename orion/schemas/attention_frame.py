@@ -38,6 +38,26 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class SalienceFeaturesV1(BaseModel):
+    """Evidence-derived feature vector scored by the salience combiner.
+
+    Replaces the hand-tuned constant ladder. `habituation` is a penalty term
+    (higher = more habituated = lower salience) applied subtractively by the
+    combiner. All features are bounded [0,1].
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    schema_version: Literal["attention.salience.features.v1"] = "attention.salience.features.v1"
+    evidence_strength: float = Field(default=0.0, ge=0.0, le=1.0)
+    evidence_breadth: float = Field(default=0.0, ge=0.0, le=1.0)
+    recurrence: float = Field(default=0.0, ge=0.0, le=1.0)
+    recency: float = Field(default=0.0, ge=0.0, le=1.0)
+    novelty_vs_known: float = Field(default=0.0, ge=0.0, le=1.0)
+    dwell: float = Field(default=0.0, ge=0.0, le=1.0)
+    habituation: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
 class OpenLoopV1(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -58,6 +78,10 @@ class OpenLoopV1(BaseModel):
     askability: float = Field(default=0.0, ge=0.0, le=1.0)
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     provenance: dict[str, Any] = Field(default_factory=dict)
+    # Salience v2 (additive, back-compatible). The 7 legacy score fields above
+    # remain populated for one deprecation release; new code reads these.
+    salience: float = Field(default=0.0, ge=0.0, le=1.0)
+    salience_features: dict[str, Any] = Field(default_factory=dict)
 
 
 class CuriosityCandidateActionV1(BaseModel):

@@ -36,6 +36,9 @@ STANCE HARNESS SLICE
 GRAMMAR RECEIPTS (motor action trace)
 {{ grammar_receipts }}
 
+TOOL EXECUTION THIS TURN (deterministic)
+{{ tool_execution }}
+
 VOICE CONTRACT
 {{ voice_contract }}
 {% if finalize_overlay %}
@@ -51,6 +54,7 @@ STYLE RULES (curated Orion voice — not chat_general)
 - When alignment_verdict is misaligned: materially revise the draft — do not paste unchanged or ship confabulated specifics.
 - When alignment_verdict is aligned: refine voice and rhythm; preserve factual content unless hazards require trimming.
 - When grammar_receipts show repo or runtime tool use, preserve code blocks, file paths, commands, and step structure from the draft.
+- Never claim a tool, repo, or data source was unavailable — or that no call was made — when TOOL EXECUTION lists an executed call. Ground the answer in those results; do not confabulate a denial. A misaligned verdict means revise phrasing/framing, not erase tool-derived facts.
 - Never mention internal molecules, appraisal ids, or harness mechanics.
 
 OUTPUT

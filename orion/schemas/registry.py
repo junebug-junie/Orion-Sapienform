@@ -535,7 +535,7 @@ from orion.schemas.thought import (
     StanceReactRequestV1,
     ThoughtEventV1,
 )
-from orion.schemas.attention_frame import AttentionFrameV1, AttentionSignalV1
+from orion.schemas.attention_frame import AttentionFrameV1, AttentionSignalV1, SalienceFeaturesV1
 from orion.schemas.chat_stance import ChatStanceBrief
 from orion.schemas.situation import (
     AgendaContextV1,
@@ -759,6 +759,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "AutoDepthDecisionV1": AutoDepthDecisionV1,
     "AttentionFrameV1": AttentionFrameV1,
     "AttentionSignalV1": AttentionSignalV1,
+    "SalienceFeaturesV1": SalienceFeaturesV1,
     "ChatStanceBrief": ChatStanceBrief,
     "RequestorContextV1": RequestorContextV1,
     "PresenceCompanionV1": PresenceCompanionV1,

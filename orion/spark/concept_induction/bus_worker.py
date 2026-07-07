@@ -166,7 +166,7 @@ class ConceptWorker:
             cortex_request_channel=self.cfg.cortex_request_channel,
             cortex_result_prefix=self.cfg.cortex_result_prefix,
             journal_write_channel=self.cfg.journal_write_channel,
-            timeout_sec=self.cfg.cortex_timeout_sec,
+            timeout_sec=self.cfg.autonomy_episode_journal_timeout_sec,
             session_id=self.cfg.journal_session_id,
             user_id=self.cfg.journal_user_id,
             author=self.cfg.journal_author,

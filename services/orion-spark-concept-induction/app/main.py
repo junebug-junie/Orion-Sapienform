@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -10,8 +11,43 @@ from orion.spark.concept_induction.bus_worker import ConceptWorker
 from .settings import settings
 
 
+class _InterceptHandler(logging.Handler):
+    """Route stdlib logging records into loguru.
+
+    The worker (`orion.spark.concept_induction.*`, `orion.autonomy.*`) logs via
+    stdlib `logging`, while this service logs via loguru. Without this bridge the
+    stdlib loggers have no handler and INFO records fall through to stdlib's
+    WARNING-only lastResort handler, silently dropping worker traces such as
+    `substrate_policy_act`.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+        frame, depth = logging.currentframe(), 2
+        while frame is not None and frame.f_code.co_filename == logging.__file__:
+            frame = frame.f_back
+            depth += 1
+        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+
+
+def _install_stdlib_logging_bridge(level: str = "INFO") -> None:
+    log_level = logging.getLevelName(str(level).strip().upper())
+    if not isinstance(log_level, int):
+        log_level = logging.INFO
+    logging.basicConfig(handlers=[_InterceptHandler()], level=log_level, force=True)
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "orion", "orion.autonomy"):
+        std_logger = logging.getLogger(name)
+        std_logger.handlers = [_InterceptHandler()]
+        std_logger.propagate = False
+        std_logger.setLevel(log_level)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _install_stdlib_logging_bridge(settings.log_level)
     worker = ConceptWorker(settings)
     app.state.worker = worker
     app.state.concept_worker = worker

@@ -34,6 +34,21 @@ def test_move_to_builds_send_input(monkeypatch):
     )
 
 
+def test_get_world_map_returns_map(monkeypatch):
+    monkeypatch.setenv("AITOWN_WORLD_ID", "w1")
+    gd = {"worldMap": {"width": 2, "height": 2, "objectTiles": []}}
+    with patch.object(aitown_client, "convex_query", return_value=gd) as q:
+        wm = aitown_client.get_world_map()
+    assert q.call_args_list[0][0][0] == "world:gameDescriptions"
+    assert wm == {"width": 2, "height": 2, "objectTiles": []}
+
+
+def test_get_world_map_empty_when_missing(monkeypatch):
+    monkeypatch.setenv("AITOWN_WORLD_ID", "w1")
+    with patch.object(aitown_client, "convex_query", return_value={}):
+        assert aitown_client.get_world_map() == {}
+
+
 def test_heartbeat_world_calls_mutation(monkeypatch):
     monkeypatch.setenv("AITOWN_WORLD_ID", "w1")
     with patch.object(aitown_client, "convex_mutation", return_value=None) as m:

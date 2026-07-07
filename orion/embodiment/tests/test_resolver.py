@@ -60,6 +60,23 @@ def test_wander_offsets_within_radius():
     assert abs(r.destination["x"]) <= 3.0 and abs(r.destination["y"]) <= 3.0
 
 
+def test_wander_constrained_to_walkable_tiles():
+    # All 8 neighbors walkable, origin (0,0) excluded -> any accepted tile is a neighbor.
+    walkable = {(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)} - {(0, 0)}
+    r = resolve_destination(_intent("wander"), orion_player_id="orion", players=PLAYERS,
+                            wander_radius=1.0, rng=random.Random(1), walkable=walkable)
+    assert r.status == "actuated"
+    tile = (int(r.destination["x"]), int(r.destination["y"]))
+    assert tile in walkable and tile != (0, 0)
+
+
+def test_wander_noop_when_no_walkable_tile():
+    r = resolve_destination(_intent("wander"), orion_player_id="orion", players=PLAYERS,
+                            wander_radius=3.0, rng=random.Random(1), walkable=set())
+    assert r.status == "resolved_noop"
+    assert "walkable" in r.reason
+
+
 def test_start_conversation_resolves_target():
     r = resolve_destination(_intent("start_conversation", ref="Juniper"), orion_player_id="orion", players=PLAYERS)
     assert r.status == "actuated"

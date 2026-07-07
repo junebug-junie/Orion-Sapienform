@@ -17,6 +17,8 @@ from orion.core.bus.codec import OrionCodec
 from orion.core.bus.resilience import publish_with_reconnect
 from orion.embodiment import aitown_client
 from orion.embodiment.arbiter import ArbiterState, decide
+from orion.embodiment.intents import build_intent
+from orion.embodiment.worldmap import walkable_tiles
 from orion.embodiment.perception import build_perception
 from orion.embodiment.resolver import resolve_destination
 from orion.embodiment.salience import SalienceState, evaluate_salience
@@ -65,6 +67,10 @@ class EmbodimentWorker:
         self._move_cooldown_sec = self._settings.move_cooldown_sec
         self._last_conversation_start: Optional[datetime] = None
         self._last_move_at: Optional[datetime] = None
+        self._last_idle_wander_at: Optional[datetime] = None
+        # Serializes the two concurrent process_intent callers (consume loop +
+        # idle-wander loop) so the move-cooldown read-then-write cannot double-fire.
+        self._actuate_lock = asyncio.Lock()
         self._speaking_conversations: set[str] = set()
         self._salience = SalienceState()
         # Conversation-completion tracking for the journal gate (perception delta).
@@ -78,6 +84,23 @@ class EmbodimentWorker:
             self._locations = json.loads(self._settings.locations_json or "{}")
         except json.JSONDecodeError:
             self._locations = {}
+        # Lazily-loaded, cached walkable tile set (static map). None = not-yet-tried
+        # or unavailable -> resolver falls back to unconstrained wander.
+        self._walkable: Optional[set[tuple[int, int]]] = None
+        self._walkable_loaded = False
+
+    def _walkable_tiles(self) -> Optional[set[tuple[int, int]]]:
+        """Fail-open, cached walkable set from the AI Town map. Fetched once."""
+        if self._walkable_loaded:
+            return self._walkable
+        self._walkable_loaded = True
+        try:
+            tiles = walkable_tiles(aitown_client.get_world_map(self._world_id or None))
+            self._walkable = tiles or None
+        except Exception:
+            logger.debug("embodiment_worldmap_load_failed", exc_info=True)
+            self._walkable = None
+        return self._walkable
 
     def _load_fcc_env(self) -> None:
         for k, v in load_fcc_env(expand_env_path(self._settings.fcc_env_path)).items():
@@ -121,6 +144,7 @@ class EmbodimentWorker:
         result = resolve_destination(
             intent, orion_player_id=player_id, players=players,
             locations=self._locations, wander_radius=self._wander_radius,
+            walkable=self._walkable_tiles(),
         )
         if result.status == "resolved_noop":
             return EmbodimentOutcomeV1(
@@ -250,8 +274,15 @@ class EmbodimentWorker:
         except ValueError as exc:
             logger.error("embodiment_invalid_intent err=%s", exc)
             return
-        outcome = await asyncio.to_thread(self.process_intent, intent, now=_utcnow())
+        await self._actuate(intent, now=_utcnow())
+
+    async def _actuate(self, intent: EmbodimentIntentV1, *, now: datetime) -> EmbodimentOutcomeV1:
+        """Serialized actuate+publish. The lock keeps the cooldown check and the
+        ``_last_move_at`` write atomic across the consume and idle-wander loops."""
+        async with self._actuate_lock:
+            outcome = await asyncio.to_thread(self.process_intent, intent, now=now)
         await self._publish_outcome(outcome)
+        return outcome
 
     async def _publish_outcome(self, outcome: EmbodimentOutcomeV1) -> None:
         env = BaseEnvelope(
@@ -380,6 +411,12 @@ class EmbodimentWorker:
         player_id = (self._orion_player_id or "").strip()
         if not player_id:
             return None
+        if getattr(self._settings, "world_heartbeat_enabled", False):
+            # Wake/keep the engine running so actuation lands (inactive worlds drop inputs).
+            try:
+                await asyncio.to_thread(aitown_client.heartbeat_world, self._world_id or None)
+            except Exception:
+                logger.debug("embodiment_world_heartbeat_failed", exc_info=True)
         try:
             players = await asyncio.to_thread(
                 aitown_client.list_players, world_id=self._world_id or None
@@ -427,9 +464,33 @@ class EmbodimentWorker:
                 except Exception:
                     logger.exception("embodiment_speech_loop_failed")
             try:
+                await self._maybe_idle_wander(now=_utcnow())
+            except Exception:
+                logger.exception("embodiment_idle_wander_failed")
+            try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except asyncio.TimeoutError:
                 continue
+
+    async def _maybe_idle_wander(self, *, now: datetime) -> None:
+        """Self-driven involuntary wander when no move has actuated within
+        ``idle_heartbeat_sec``. Off when the setting is 0. Keeps Orion alive when
+        no external producer (C/D) is emitting, without fabricating cognition."""
+        hb = float(getattr(self._settings, "idle_heartbeat_sec", 0.0) or 0.0)
+        if hb <= 0 or not (self._orion_player_id or "").strip():
+            return
+        # Idle = no actuated move AND no wander attempt within the window. Gating on
+        # the attempt (not just actuation) stops a non-actuated wander (noop/preempted)
+        # from re-firing every perception tick and spamming the outcome channel.
+        recent = max([t for t in (self._last_move_at, self._last_idle_wander_at) if t], default=None)
+        if recent is not None and (now - recent).total_seconds() < hb:
+            return
+        self._last_idle_wander_at = now
+        intent = build_intent(
+            kind="wander", source="involuntary", reason="idle heartbeat wander",
+            correlation_id=str(uuid4()), player_id=self._orion_player_id or None,
+        )
+        await self._actuate(intent, now=now)
 
     # --- speech (cortex-generated town utterances) --------------------------
     async def _speak_once(self, perception: WorldPerceptionV1) -> Optional[str]:

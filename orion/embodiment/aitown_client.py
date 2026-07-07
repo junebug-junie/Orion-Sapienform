@@ -125,6 +125,12 @@ def list_players(world_id: Optional[str] = None) -> Any:
     return [{**p, "id": str(p.get("id")), "name": names.get(str(p.get("id")))} for p in players]
 
 
+def get_world_map(world_id: Optional[str] = None) -> Dict[str, Any]:
+    """Static map descriptor (dimensions + object/collision layers)."""
+    wm = _game_descriptions(world_id).get("worldMap")
+    return wm if isinstance(wm, dict) else {}
+
+
 def list_agents(world_id: Optional[str] = None) -> Any:
     world = _world_snapshot(world_id).get("world") or {}
     agents = world.get("agents") or []

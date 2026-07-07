@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     wander_radius: float = Field(3.0, alias="EMBODIMENT_WANDER_RADIUS")
     locations_json: str = Field("{}", alias="EMBODIMENT_LOCATIONS_JSON")
     idle_heartbeat_sec: float = Field(0.0, alias="EMBODIMENT_IDLE_HEARTBEAT_SEC")
+    # Keep the AI Town engine awake so queued inputs (moveTo) are processed. An
+    # `inactive` world silently drops all inputs. Off by default (keeping the town
+    # alive also runs the other town agents' LLM loops).
+    world_heartbeat_enabled: bool = Field(False, alias="EMBODIMENT_WORLD_HEARTBEAT_ENABLED")
     orion_sprite: str = Field("f1", alias="EMBODIMENT_ORION_SPRITE")
     self_state_url: str = Field("http://orion-self-state-runtime:8123", alias="EMBODIMENT_SELF_STATE_URL")
     perception_interval_sec: float = Field(0.0, alias="EMBODIMENT_PERCEPTION_INTERVAL_SEC")

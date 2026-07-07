@@ -124,6 +124,32 @@ class WindowStore:
             draft_id,
         )
 
+    async def mark_consolidated_skipped(self, memory_window_id: str, *, reasons: list[str]) -> None:
+        await self._pool.execute(
+            """
+            UPDATE memory_consolidation_windows
+            SET status = 'consolidated', consolidation_status = 'skipped'
+            WHERE memory_window_id = $1
+            """,
+            memory_window_id,
+        )
+
+    async def mark_crystallization_proposed(
+        self,
+        memory_window_id: str,
+        *,
+        crystallization_id: str,
+    ) -> None:
+        await self._pool.execute(
+            """
+            UPDATE memory_consolidation_windows
+            SET status = 'consolidated', consolidation_status = 'ok', draft_id = $2
+            WHERE memory_window_id = $1
+            """,
+            memory_window_id,
+            crystallization_id,
+        )
+
     async def mark_failed(self, memory_window_id: str) -> None:
         await self._pool.execute(
             """

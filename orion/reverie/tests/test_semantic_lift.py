@@ -2,9 +2,16 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 from orion.reverie.referent_loader import TurnReferentRow, parse_harness_closure_ref
-from orion.reverie.semantic_lift import resolve_concern_cards, reverie_semantic_gate
+from orion.reverie.semantic_lift import (
+    enforce_semantic_quality,
+    infra_vocabulary_hit,
+    referent_overlap,
+    resolve_concern_cards,
+    reverie_semantic_gate,
+)
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1, AttentionFrameV1, OpenLoopV1
-from orion.schemas.reverie import ConcernCardV1
+from orion.schemas.reverie import ConcernCardV1, SpontaneousThoughtV1
+from orion.schemas.thought import CoalitionSnapshotV1
 
 
 def test_concern_card_harness_turn_template() -> None:
@@ -81,3 +88,45 @@ def test_reverie_semantic_gate_proceeds_when_card_substantive() -> None:
     )
     assert card is not None
     assert reverie_semantic_gate([card]) == "proceed"
+
+
+_COALITION = CoalitionSnapshotV1(
+    attended_node_ids=["harness_closure:corr-1"],
+    selected_open_loop_id="ol-1",
+    open_loop_ids=["ol-1"],
+    generated_at="2026-07-07T00:00:00Z",
+)
+
+
+def test_infra_vocabulary_detects_mechanism_narration() -> None:
+    assert infra_vocabulary_hit("The coalition centers on two open loops with substrate pressure.")
+
+
+def test_referent_overlap_requires_shared_tokens() -> None:
+    card = ConcernCardV1.from_harness_turn(
+        coalition_ref="harness_closure:corr-1",
+        user_message_excerpt="I'm worried the deploy will slip again.",
+        stance_imperative="Name the slip risk plainly.",
+        created_at=datetime(2026, 7, 7, tzinfo=timezone.utc),
+    )
+    assert card is not None
+    assert referent_overlap("I keep worrying the deploy will slip again.", [card])
+
+
+def test_enforce_semantic_quality_stamps_infra_vocabulary_hollow() -> None:
+    card = ConcernCardV1.from_harness_turn(
+        coalition_ref="harness_closure:corr-1",
+        user_message_excerpt="I'm worried the deploy will slip again.",
+        stance_imperative="Name the slip risk plainly.",
+        created_at=datetime(2026, 7, 7, tzinfo=timezone.utc),
+    )
+    assert card is not None
+    thought = SpontaneousThoughtV1(
+        thought_id="t",
+        correlation_id="c",
+        coalition=_COALITION,
+        interpretation="Two open loops dominate the coalition stability score this tick.",
+        evidence_refs=["ol-1"],
+    )
+    out = enforce_semantic_quality(thought, [card])
+    assert out.hollow and out.hollow_reason == "infra_vocabulary"

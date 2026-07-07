@@ -48,6 +48,52 @@ def build_step_frame(raw: Dict[str, Any]) -> Dict[str, Any]:
     return {"type": str(raw.get("type") or "unknown"), "raw": raw}
 
 
+def _tool_result_body_text(body: Any) -> str:
+    if isinstance(body, str):
+        return body
+    if isinstance(body, list):
+        parts = [
+            str(b.get("text"))
+            for b in body
+            if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
+        ]
+        return "\n".join(parts)
+    return ""
+
+
+def _summarize_content_blocks(
+    content: Any,
+    *,
+    text_cap: int = 2000,
+    tool_result_cap: int = 600,
+) -> str:
+    """Compact summary of a claude message's content blocks (text/tool_use/tool_result)."""
+    if not isinstance(content, list):
+        return ""
+    parts: List[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = str(block.get("type") or "")
+        if btype == "text" and isinstance(block.get("text"), str) and block["text"].strip():
+            parts.append(block["text"].strip()[:text_cap])
+        elif btype == "tool_use":
+            name = str(block.get("name") or "tool")
+            args = block.get("input")
+            arg_str = ""
+            if isinstance(args, dict) and args:
+                bits = [f"{k}={str(v)[:60]}" for k, v in list(args.items())[:4]]
+                arg_str = "(" + ", ".join(bits) + ")"
+            parts.append(f"tool_use {name}{arg_str}")
+        elif btype == "tool_result":
+            text = _tool_result_body_text(block.get("content"))
+            err = " [error]" if block.get("is_error") else ""
+            size = f" ({len(text)} chars)" if text else ""
+            snippet = f": {text.strip()[:tool_result_cap]}" if text.strip() else ""
+            parts.append(f"tool_result{err}{size}{snippet}")
+    return " | ".join(p for p in parts if p)
+
+
 def summarize_harness_step(step: Dict[str, Any], *, index: int) -> str:
     """One-line summary of a harness step for chat history / thought_process."""
     if not isinstance(step, dict):
@@ -56,16 +102,22 @@ def summarize_harness_step(step: Dict[str, Any], *, index: int) -> str:
     raw = step.get("raw") if isinstance(step.get("raw"), dict) else step
     if not isinstance(raw, dict):
         return f"[{index}] {stype}"
+    rtype = str(raw.get("type") or stype)
 
-    if stype == "assistant" or raw.get("type") == "assistant":
-        text = _text_blocks_from_assistant(raw)
-        if text.strip():
-            return f"[{index}] assistant: {text.strip()[:2000]}"
-    if stype == "result" or raw.get("type") == "result":
+    if rtype in ("assistant", "user"):
+        message = raw.get("message") if isinstance(raw.get("message"), dict) else raw
+        summary = _summarize_content_blocks(message.get("content"))
+        if summary:
+            return f"[{index}] {rtype}: {summary}"
+        return f"[{index}] {rtype}"
+    if rtype == "result":
         result = raw.get("result")
         if isinstance(result, str) and result.strip():
             return f"[{index}] result: {result.strip()[:500]}"
-    return f"[{index}] {stype}"
+    if rtype == "system":
+        subtype = raw.get("subtype") or raw.get("system_subtype")
+        return f"[{index}] system {subtype}" if subtype else f"[{index}] system"
+    return f"[{index}] {rtype}"
 
 
 def summarize_harness_steps_for_history(steps: List[Dict[str, Any]]) -> str:

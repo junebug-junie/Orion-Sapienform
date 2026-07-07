@@ -104,6 +104,27 @@ async def test_policy_act_executes_fetch_when_allowed(monkeypatch, tmp_path) -> 
 
 
 @pytest.mark.asyncio
+async def test_policy_act_resolves_fetch_backend_when_omitted(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
+    monkeypatch.setenv("ORION_ACTION_OUTCOME_STORE_PATH", str(tmp_path / "outcomes.json"))
+    backend = AsyncMock(return_value={"success": True, "urls": ["https://example.com/a"]})
+    monkeypatch.setattr(
+        "orion.autonomy.policy_act.resolve_fetch_backend",
+        lambda: backend,
+    )
+    decision, outcome = await maybe_execute_readonly_fetch_after_goal(
+        goal=_goal(),
+        drive_state=_drive_state(),
+        curiosity_signals=[_gap_signal()],
+        spawned_correlation_id="wp-run-gap-gpu",
+    )
+    assert decision.outcome == "allowed"
+    assert outcome is not None
+    assert outcome.success is True
+    backend.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_policy_act_denied_when_pressure_low(monkeypatch) -> None:
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
     decision, outcome = await maybe_execute_readonly_fetch_after_goal(

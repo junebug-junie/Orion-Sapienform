@@ -5,6 +5,7 @@ from typing import Any, Awaitable, Callable, Sequence
 
 from orion.autonomy.capability_policy import CapabilityEvaluationContext, evaluate_capability
 from orion.autonomy.episode_fetch import EpisodeFetchRequest, execute_readonly_fetch
+from orion.autonomy.fetch_backend_resolve import resolve_fetch_backend
 from orion.autonomy.models import ActionOutcomeRefV1, CapabilityDecisionV1, SubstrateActResultV1, SubstrateEpisodeIntentV1
 from orion.core.schemas.drives import DriveStateV1, GoalProposalV1
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
@@ -93,9 +94,8 @@ async def maybe_execute_readonly_fetch_after_goal(
         query=query,
     )
     if fetch_backend is None:
-        outcome = await execute_readonly_fetch(req)
-    else:
-        outcome = await execute_readonly_fetch(req, fetch_backend=fetch_backend)
+        fetch_backend = resolve_fetch_backend()
+    outcome = await execute_readonly_fetch(req, fetch_backend=fetch_backend)
     if budget_used is not None:
         budget_used[_READONLY_CAPABILITY] = budget_used.get(_READONLY_CAPABILITY, 0) + 1
     return decision, outcome

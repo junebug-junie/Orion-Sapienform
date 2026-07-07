@@ -1037,7 +1037,7 @@ class PlanRunner:
         recall_reason = str(recall_policy["reason"])
         use_pcr_pre_recall = (
             settings.chat_pcr_enabled
-            and str(plan.verb_name or "").strip().lower() == "chat_general"
+            and str(plan.verb_name or "").strip().lower() in ("chat_general", "chat_quick")
             and should_recall
             and not inline_recall
         )
@@ -1289,7 +1289,7 @@ class PlanRunner:
             if (
                 settings.chat_pcr_enabled
                 and settings.chat_pcr_post_stance_recall
-                and str(plan.verb_name or "").strip().lower() == "chat_general"
+                and str(plan.verb_name or "").strip().lower() in ("chat_general", "chat_quick")
                 and step.step_name == "synthesize_chat_stance_brief"
                 and step_res.status == "success"
             ):

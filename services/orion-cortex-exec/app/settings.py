@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     chat_pcr_post_stance_recall: bool = Field(True, alias="CHAT_PCR_POST_STANCE_RECALL")
     chat_pcr_skip_on_low_info: bool = Field(True, alias="CHAT_PCR_SKIP_ON_LOW_INFO")
     chat_pcr_quick_phase3: bool = Field(False, alias="CHAT_PCR_QUICK_PHASE3")
+    chat_pcr_skip_max_novelty: float = Field(0.25, alias="CHAT_PCR_SKIP_MAX_NOVELTY")
+    chat_pcr_skip_shift_novelty_floor: float = Field(0.35, alias="CHAT_PCR_SKIP_SHIFT_NOVELTY_FLOOR")
     channel_agent_chain_intake: str = Field("orion:exec:request:AgentChainService", alias="CHANNEL_AGENT_CHAIN_INTAKE")
     channel_context_exec_intake: str = Field(
         "orion:exec:request:ContextExecService",

@@ -90,6 +90,30 @@ def _graphiti_adapter(settings: Any, *, intent: str) -> GraphitiAdapter | None:
     )
 
 
+def _pick_seed_crystallization(active_items: list[Any], fragment: str, seed_id: str) -> str:
+    if seed_id:
+        return seed_id
+    fragment_lower = str(fragment or "").strip().lower()
+    best_id = ""
+    best_score = -1.0
+    for item in active_items:
+        cid = str(getattr(item, "crystallization_id", "") or "")
+        if not cid:
+            continue
+        summary = str(getattr(item, "summary", "") or getattr(item, "subject", "") or "").lower()
+        try:
+            salience = float(getattr(item, "salience", None) or 0.5)
+        except Exception:
+            salience = 0.5
+        score = salience
+        if fragment_lower and fragment_lower in summary:
+            score += 0.5
+        if score > best_score:
+            best_score = score
+            best_id = cid
+    return best_id
+
+
 async def fetch_active_packet_fragments(
     query: Any,
     *,
@@ -117,7 +141,7 @@ async def fetch_active_packet_fragments(
 
     seed_id = str(getattr(query, "seed_crystallization_id", None) or "").strip()
     if not seed_id and active_items:
-        seed_id = active_items[0].crystallization_id
+        seed_id = _pick_seed_crystallization(active_items, fragment, seed_id)
 
     graphiti = _graphiti_adapter(settings, intent=intent)
     packet = await retrieve_active_packet(

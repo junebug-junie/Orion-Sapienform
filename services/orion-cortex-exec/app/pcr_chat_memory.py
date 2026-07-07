@@ -141,6 +141,8 @@ async def run_pcr_phase0_and_1(
             user_message=user_message,
             appraisal=_extract_turn_change_appraisal(ctx),
             has_repair_grammar_signal=_has_repair_grammar_signal(ctx),
+            max_novelty=cfg.chat_pcr_skip_max_novelty,
+            shift_novelty_floor=cfg.chat_pcr_skip_shift_novelty_floor,
         )
     else:
         from orion.memory.recall_skip_gate import RecallSkipGateResult
@@ -238,6 +240,8 @@ async def run_pcr_phase3(
         appraisal=_extract_turn_change_appraisal(ctx),
         hub_chat_lane=hub_chat_lane_from_ctx(ctx),
         user_message=user_message,
+        shift_novelty_floor=cfg.chat_pcr_skip_shift_novelty_floor,
+        seed_crystallization_id=str(ctx.get("seed_crystallization_id") or "").strip() or None,
     )
 
     if intent in ("none", "continuity"):
@@ -262,6 +266,22 @@ async def run_pcr_phase3(
 
     profile = PROFILE_FOR_INTENT[str(intent)]
     task_mode = str(stance_brief.get("task_mode") or "").strip()
+    conversation_frame = str(stance_brief.get("conversation_frame") or "").strip()
+    appraisal = _extract_turn_change_appraisal(ctx) or {}
+    task_hints = {
+        "task_mode": task_mode,
+        "conversation_frame": conversation_frame,
+        "rule_id": rule_id,
+        "shift_kind": str(appraisal.get("shift_kind") or "NONE"),
+        "novelty_score": appraisal.get("novelty_score"),
+        "hub_chat_lane": hub_chat_lane_from_ctx(ctx),
+        "open_loop_ids": [
+            str(loop.get("id"))
+            for loop in (attention_frame or {}).get("open_loops") or []
+            if isinstance(loop, dict) and loop.get("id")
+        ],
+    }
+    seed_id = str(ctx.get("seed_crystallization_id") or "").strip() or None
     recall_step, recall_debug, belief_digest = await run_recall_step(
         bus,
         source=source,
@@ -273,7 +293,8 @@ async def run_pcr_phase3(
         step_order=-1,
         recall_phase="purposeful",
         retrieval_intent=str(intent),
-        task_hints={"task_mode": task_mode, "rule_id": rule_id},
+        task_hints=task_hints,
+        seed_crystallization_id=seed_id,
     )
     belief_text = (belief_digest or "").strip()
     memory_digest = _merge_memory_digest(continuity_text, belief_text)

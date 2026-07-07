@@ -272,3 +272,60 @@ def test_chat_pcr_disabled_uses_legacy_pre_recall(monkeypatch):
     assert recall_call_count["n"] == 1
     assert captured["profile"] == "chat.general.v1"
     assert captured.get("phase") is None
+
+
+def test_supervisor_pcr_phase3_after_stance(monkeypatch):
+    from app.supervisor import Supervisor
+    from orion.schemas.recall_pcr import PcrChatMemoryV1
+
+    phase3_calls: list[dict] = []
+
+    async def _fake_phase3(*args, **kwargs):
+        phase3_calls.append(kwargs)
+        pcr = PcrChatMemoryV1(
+            phase="purposeful",
+            retrieval_intent="semantic",
+            continuity_digest="cont",
+            belief_digest="belief",
+            memory_digest="cont\n\nbelief",
+        )
+        return pcr, None, {"pcr_phase": "purposeful", "retrieval_intent": "semantic"}
+
+    monkeypatch.setattr("app.supervisor.run_pcr_phase3", _fake_phase3)
+
+    supervisor = Supervisor(object())
+    ctx = {
+        "chat_stance_brief": {"task_mode": "instrumental"},
+        "continuity_digest": "cont",
+        "turn_change_appraisal": {"shift_kind": "TOPIC", "novelty_score": 0.7},
+        "messages": [{"role": "user", "content": "move logistics"}],
+    }
+    stance_step = StepExecutionResult(
+        status="success",
+        verb_name="chat_general",
+        step_name="synthesize_chat_stance_brief",
+        order=1,
+        result={},
+        latency_ms=1,
+        node="n",
+        logs=[],
+    )
+    step_results: list[StepExecutionResult] = []
+    recall_debug: dict = {}
+
+    ran = asyncio.run(
+        supervisor._maybe_run_pcr_phase3_after_stance(
+            source=ServiceRef(name="x", version="0", node="n"),
+            ctx=ctx,
+            correlation_id="corr-sup",
+            recall_cfg={"enabled": True},
+            verb_name="chat_general",
+            stance_step=stance_step,
+            step_results=step_results,
+            recall_debug=recall_debug,
+        )
+    )
+
+    assert ran is False  # no recall step returned (mock returns None step)
+    assert len(phase3_calls) == 1
+    assert phase3_calls[0]["correlation_id"] == "corr-sup"

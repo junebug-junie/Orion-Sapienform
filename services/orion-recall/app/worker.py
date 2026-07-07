@@ -1630,12 +1630,28 @@ async def process_recall(
     timing_breakdown_ms["total"] = latency_ms
     pcr_debug: Dict[str, Any] | None = None
     if settings.RECALL_PCR_ENABLED and recall_phase in {"continuity", "purposeful"}:
+        continuity_count = sum(1 for i in bundle.items if recall_phase == "continuity")
+        belief_count = sum(1 for i in bundle.items if recall_phase == "purposeful")
+        active_refs = [i.id for i in bundle.items if str(i.source) == "active_packet"]
         pcr_debug = {
             "enabled": settings.RECALL_PCR_ENABLED,
             "phase": recall_phase,
             "retrieval_intent": retrieval_intent,
             "intent_rule_id": (q.task_hints or {}).get("rule_id") if isinstance(q.task_hints, dict) else None,
+            "skip_reasons": list((q.task_hints or {}).get("skip_reasons") or []) if isinstance(q.task_hints, dict) else [],
             "backend_plan": list(pcr_backend_plan.keys()) if pcr_backend_plan else [],
+            "continuity_item_count": continuity_count if recall_phase == "continuity" else 0,
+            "belief_item_count": belief_count if recall_phase == "purposeful" else len(bundle.items),
+            "active_packet_refs": active_refs,
+            "render_budget": {
+                "continuity": settings.RECALL_CONTINUITY_RENDER_BUDGET if recall_phase == "continuity" else 0,
+                "belief": (
+                    q.belief_digest_max_tokens
+                    or settings.RECALL_BELIEF_RENDER_BUDGET
+                    if recall_phase == "purposeful"
+                    else 0
+                ),
+            },
         }
     decision = RecallDecisionV1(
         corr_id=corr_id or str(uuid4()),

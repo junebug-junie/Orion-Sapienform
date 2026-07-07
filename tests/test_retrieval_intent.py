@@ -52,3 +52,32 @@ def test_derive_retrieval_intent_continuity_only():
     )
     assert intent == "continuity"
     assert rule_id == "continuity_only"
+
+
+def test_derive_retrieval_intent_entity_query():
+    intent, rule_id = derive_retrieval_intent(
+        skip_gate=RecallSkipGateResult(skip=False),
+        stance_brief={"task_mode": "direct_response"},
+        attention_frame={},
+        appraisal={"shift_kind": "NONE", "novelty_score": 0.1},
+        hub_chat_lane=None,
+        user_message="What did we decide about GPU migration?",
+        shift_novelty_floor=0.35,
+    )
+    assert intent == "semantic"
+    assert rule_id == "entity_query"
+
+
+def test_derive_retrieval_intent_contradiction_seed():
+    intent, rule_id = derive_retrieval_intent(
+        skip_gate=RecallSkipGateResult(skip=False),
+        stance_brief={"task_mode": "direct_response"},
+        attention_frame={"contradiction_refs": ["crys_abc"]},
+        appraisal={"shift_kind": "NONE", "novelty_score": 0.1},
+        hub_chat_lane=None,
+        user_message="ok",
+        shift_novelty_floor=0.35,
+        seed_crystallization_id="crys_xyz",
+    )
+    assert intent == "contradiction"
+    assert rule_id == "contradiction_seed"

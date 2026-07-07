@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from orion.memory.recall_skip_gate import RecallSkipGateResult
+
+_ENTITY_QUERY_RE = re.compile(
+    r"[A-Z][A-Za-z0-9_]+(?:\s+[A-Z][A-Za-z0-9_]+)?"
+)
 
 _RELATIONAL_TASK_MODES = frozenset({"reflective_dialogue", "playful_exchange"})
 _RELATIONAL_CONVERSATION_FRAMES = frozenset({"reflective", "playful_relational"})
@@ -58,6 +63,33 @@ def _is_instrumental_mode(stance_brief: Any) -> bool:
     return task_mode == "instrumental" or interaction_regime == "instrumental"
 
 
+def _has_entity_query(user_message: str) -> bool:
+    """Capitalized entity / anchor token in user message (existing recall anchor pattern)."""
+    text = str(user_message or "").strip()
+    if not text:
+        return False
+    entities = [m.strip() for m in _ENTITY_QUERY_RE.findall(text) if m.strip()]
+    if entities:
+        return True
+    return bool(re.findall(r"\b[A-Za-z][A-Za-z0-9_]*\d+\b", text))
+
+
+def _has_contradiction_seed(
+    *,
+    seed_crystallization_id: str | None,
+    attention_frame: dict | None,
+) -> bool:
+    if str(seed_crystallization_id or "").strip():
+        return True
+    if not isinstance(attention_frame, dict):
+        return False
+    for key in ("contradiction_refs", "contradiction_crystallization_ids"):
+        refs = attention_frame.get(key)
+        if isinstance(refs, list) and refs:
+            return True
+    return False
+
+
 def _has_planning_like_priority(stance_brief: Any) -> bool:
     if _stance_field(stance_brief, "conversation_frame") == "planning":
         return True
@@ -77,10 +109,10 @@ def derive_retrieval_intent(
     hub_chat_lane: str | None,
     user_message: str,
     shift_novelty_floor: float = 0.35,
+    seed_crystallization_id: str | None = None,
 ) -> tuple[str, str]:
     """Derive PCR retrieval intent from stance, appraisal, and attention signals."""
     _ = hub_chat_lane
-    _ = user_message
 
     if skip_gate.skip:
         return "none", "phase0_skip"
@@ -98,10 +130,19 @@ def derive_retrieval_intent(
     if shift_kind == "STANCE" and _novelty_meets_floor(appraisal, shift_novelty_floor):
         return "relational", "stance_shift"
 
+    if _has_contradiction_seed(
+        seed_crystallization_id=seed_crystallization_id,
+        attention_frame=attention_frame,
+    ):
+        return "contradiction", "contradiction_seed"
+
     if _is_instrumental_mode(stance_brief) and _has_planning_like_priority(stance_brief):
         return "procedural", "procedural_mode"
 
     if shift_kind == "TOPIC" and _novelty_meets_floor(appraisal, shift_novelty_floor):
         return "semantic", "topic_shift"
+
+    if _has_entity_query(user_message):
+        return "semantic", "entity_query"
 
     return "continuity", "continuity_only"

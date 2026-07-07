@@ -2107,6 +2107,7 @@ async def run_recall_step(
     recall_phase: str | None = None,
     retrieval_intent: str | None = None,
     task_hints: Dict[str, Any] | None = None,
+    seed_crystallization_id: str | None = None,
 ) -> Tuple[StepExecutionResult, Dict[str, Any], str]:
     """RecallService bus RPC. If ``rpc_timeout_sec`` is omitted, wait is ``min(STEP_TIMEOUT_MS, lane cap)``:
     ``CHAT_QUICK_RECALL_TIMEOUT_SEC`` for ``ctx['verb']`` in fast single-pass chat verbs, else ``RECALL_RPC_TIMEOUT_SEC``.
@@ -2149,7 +2150,7 @@ async def run_recall_step(
     lane_val = recall_cfg.get("lane")
     if lane_val is not None:
         lane_val = str(lane_val).strip() or None
-    profile_explicit = bool(recall_cfg.get("profile_explicit"))
+    profile_explicit = bool(recall_cfg.get("profile_explicit")) or bool(recall_phase)
     req = RecallQueryV1(
         fragment=fragment_text,
         verb=str(ctx.get("verb") or recall_cfg.get("verb") or "unknown"),
@@ -2168,6 +2169,7 @@ async def run_recall_step(
         recall_phase=recall_phase,
         retrieval_intent=retrieval_intent,
         task_hints=task_hints,
+        seed_crystallization_id=seed_crystallization_id,
     )
 
     logs: List[str] = [f"rpc -> RecallService (profile={req.profile})"]

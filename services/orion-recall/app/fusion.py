@@ -8,6 +8,7 @@ import time
 from typing import Any, Dict, Iterable, List, Tuple
 
 from orion.core.contracts.recall import MemoryBundleStatsV1, MemoryBundleV1, MemoryItemV1
+from orion.memory.low_info_social import is_low_info_social as _shared_is_low_info_social
 
 try:
     from .render import render_items
@@ -338,50 +339,12 @@ def _denial_patterns() -> List[re.Pattern[str]]:
 
 
 def _is_low_info_social_candidate(snippet: str) -> bool:
-    text = _normalize_whitespace(snippet).lower()
+    text = _normalize_whitespace(snippet)
     if not text:
         return True
     user, assistant = _extract_transcript_parts(text)
     candidate = _normalize_whitespace(f"{user} {assistant}" if (user or assistant) else text)
-    if not candidate:
-        return True
-    normalized_candidate = re.sub(r"[^a-z0-9' ]+", " ", candidate)
-    tokens = re.findall(r"[a-z']{2,}", normalized_candidate)
-    if len(tokens) > 18:
-        return False
-    courtesy_patterns = [
-        r"^(hi|hey|hello|yo|sup|hiya|good (morning|afternoon|evening))( there| friend| orion| juniper)?[!. ]*$",
-        r"^(thanks|thank you|awesome|cool|nice|sounds good|all good|doing good|doing well|glad to hear)[!. ]*$",
-        r"^(how are you|how's it going|hope you're well|hope you are well)[?.! ]*$",
-    ]
-    if any(re.match(pattern, candidate, flags=re.I) for pattern in courtesy_patterns):
-        return True
-    if len(tokens) <= 6:
-        low_info_terms = {
-            "hi",
-            "hey",
-            "hello",
-            "thanks",
-            "thank",
-            "good",
-            "great",
-            "cool",
-            "nice",
-            "fine",
-            "well",
-            "friend",
-            "orion",
-            "juniper",
-            "all",
-            "doing",
-            "okay",
-            "ok",
-            "for",
-            "now",
-        }
-        if all(token in low_info_terms for token in tokens):
-            return True
-    return False
+    return _shared_is_low_info_social(candidate)
 
 
 def fuse_candidates(

@@ -4,6 +4,7 @@ pydantic>=2.6.0
 pydantic-settings>=2.2.0
 python-dotenv>=1.0.0
 redis>=5.0.0
+httpx>=0.27
 PyYAML>=6.0.0
 # Reverie reads the attention-broadcast projection + persists reverie tables via a
 # direct DSN (no heavy orion.substrate package). Matches sibling service pins.

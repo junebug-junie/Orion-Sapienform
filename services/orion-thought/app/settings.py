@@ -110,6 +110,22 @@ class ThoughtSettings(BaseSettings):
         alias="CHANNEL_ATTENTION_SALIENCE_TRACE",
     )
 
+    # --- Mind stance enrichment (unified turn; default-off) ---
+    # Runs orion-mind before stance_react and injects an advisory self/attention
+    # coloring. Silent no-op unless orion-mind has MIND_LLM_SYNTHESIS_ENABLED=true
+    # (a separate service — not visible to this service's env-parity check).
+    mind_enrichment_enabled: bool = Field(False, alias="ORION_THOUGHT_MIND_ENRICHMENT_ENABLED")
+    mind_base_url: str = Field("http://orion-mind:6611", alias="ORION_MIND_BASE_URL")
+    mind_timeout_sec: float = Field(15.0, alias="ORION_THOUGHT_MIND_TIMEOUT_SEC")
+    mind_wall_ms: int = Field(12_000, alias="ORION_THOUGHT_MIND_WALL_MS")
+    mind_router_profile: str = Field("default", alias="ORION_THOUGHT_MIND_ROUTER_PROFILE")
+    mind_max_response_bytes: int = Field(2_000_000, alias="ORION_THOUGHT_MIND_MAX_RESPONSE_BYTES")
+    mind_artifact_publish_enabled: bool = Field(
+        False, alias="ORION_THOUGHT_MIND_ARTIFACT_PUBLISH_ENABLED"
+    )
+    mind_coloring_max_items: int = Field(3, alias="ORION_THOUGHT_MIND_COLORING_MAX_ITEMS")
+    channel_mind_artifact: str = Field("orion:mind:artifact", alias="CHANNEL_MIND_ARTIFACT")
+
 
 settings = ThoughtSettings()
 logger.info(

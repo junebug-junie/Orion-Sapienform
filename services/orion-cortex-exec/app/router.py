@@ -16,6 +16,7 @@ from .executor import (
     prepare_chat_quick_reply_context,
     run_recall_step,
 )
+from .grounding_capsule import assemble_stance_grounding
 from .pcr_chat_memory import CONTINUITY_PROFILE, run_pcr_phase0_and_1, run_pcr_phase3
 from .situation import mark_orion_turn
 from .recall_utils import (
@@ -1330,6 +1331,24 @@ class PlanRunner:
                 if isinstance(phase3_debug, dict) and isinstance(recall_debug, dict):
                     recall_debug.update(phase3_debug)
 
+            if (
+                settings.orion_unified_grounding_enabled
+                and str(plan.verb_name or "").strip().lower() == "stance_react"
+                and step.step_name == "llm_stance_react"
+                and step_res.status == "success"
+            ):
+                stance_text, _ = _extract_final_text([step_res], verb_name=plan.verb_name)
+                grounding_capsule = await assemble_stance_grounding(
+                    bus,
+                    source=source,
+                    ctx=ctx,
+                    correlation_id=correlation_id,
+                    recall_cfg=recall_cfg,
+                    stance_step_text=stance_text or "",
+                )
+                if grounding_capsule is not None:
+                    ctx["grounding_capsule"] = grounding_capsule.model_dump(mode="json")
+
             if step_res.status != "success":
                 overall_status = "partial" if len(step_results) > 1 else "fail"
                 break
@@ -1518,6 +1537,8 @@ class PlanRunner:
             metadata["structured_output_rejected"] = True
             if final_text_diag.get("structured_rejection_preview"):
                 metadata["structured_rejection_preview"] = str(final_text_diag["structured_rejection_preview"])[:500]
+        if isinstance(ctx.get("grounding_capsule"), dict):
+            metadata["grounding_capsule"] = ctx["grounding_capsule"]
         mark_orion_turn(str(ctx.get("session_id") or "global"))
 
         record_assembled_grammar(

@@ -7,7 +7,7 @@ from orion.schemas.harness_finalize import (
     HarnessRepairOverlayV1,
     SubstrateFinalizeAppraisalV1,
 )
-from orion.schemas.thought import StanceHarnessSliceV1, ThoughtEventV1
+from orion.schemas.thought import GroundingCapsuleV1, StanceHarnessSliceV1, ThoughtEventV1
 
 
 def make_thought(**overrides: object) -> ThoughtEventV1:
@@ -71,3 +71,17 @@ def make_reflection(
     }
     base.update(overrides)
     return FinalizeReflectionV1.model_validate(base)
+
+
+def make_grounding_capsule(**overrides: object) -> GroundingCapsuleV1:
+    base = {
+        "identity_summary": ["I am Oríon, a digital mind in development."],
+        "relationship_summary": ["Juniper is my collaborator and steward."],
+        "response_policy_summary": ["Speak plainly; no generic-assistant framing."],
+        "continuity_digest": "We were mid-way through the grounding refactor.",
+        "belief_digest": "Orion values continuity and self-coherence.",
+        "memory_digest": "We were mid-way through the grounding refactor.\n\nOrion values continuity and self-coherence.",
+        "provenance": {"identity_source": "configured_yaml", "pcr_ran": True},
+    }
+    base.update(overrides)
+    return GroundingCapsuleV1.model_validate(base)

@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     chat_pcr_quick_phase3: bool = Field(False, alias="CHAT_PCR_QUICK_PHASE3")
     chat_pcr_skip_max_novelty: float = Field(0.25, alias="CHAT_PCR_SKIP_MAX_NOVELTY")
     chat_pcr_skip_shift_novelty_floor: float = Field(0.35, alias="CHAT_PCR_SKIP_SHIFT_NOVELTY_FLOOR")
+    orion_unified_grounding_enabled: bool = Field(True, alias="ORION_UNIFIED_GROUNDING_ENABLED")
     channel_agent_chain_intake: str = Field("orion:exec:request:AgentChainService", alias="CHANNEL_AGENT_CHAIN_INTAKE")
     channel_context_exec_intake: str = Field(
         "orion:exec:request:ContextExecService",

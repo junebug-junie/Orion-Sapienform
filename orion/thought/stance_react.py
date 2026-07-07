@@ -177,6 +177,10 @@ def parse_stance_react_payload(
         raw = decode_stance_react_json(raw)
     if not isinstance(raw, dict):
         raise TypeError("stance_react payload must be a JSON object")
+    # The grounding capsule is assembled deterministically in cortex-exec and mapped
+    # on from result metadata — never authored by the stance LLM. Drop any model-supplied
+    # value so a hallucinated capsule cannot masquerade as grounded self-context.
+    raw.pop("grounding_capsule", None)
     if correlation_id:
         raw.setdefault("correlation_id", correlation_id)
     if session_id is not None:

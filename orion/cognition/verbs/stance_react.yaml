@@ -17,6 +17,8 @@ services:
 
 prompt_template: stance_react.j2
 
+personality_file: orion/cognition/personality/orion_identity.yaml
+
 steps:
   - name: llm_stance_react
     order: 0

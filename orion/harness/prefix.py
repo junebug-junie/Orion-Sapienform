@@ -9,7 +9,7 @@ from orion.harness.operator_brief import (
 )
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import HarnessRepairOverlayV1
-from orion.schemas.thought import StanceHarnessSliceV1, ThoughtEventV1
+from orion.schemas.thought import GroundingCapsuleV1, StanceHarnessSliceV1, ThoughtEventV1
 
 
 def _format_stance_slice(sl: StanceHarnessSliceV1) -> list[str]:
@@ -24,6 +24,24 @@ def _format_stance_slice(sl: StanceHarnessSliceV1) -> list[str]:
         lines.append(f"Response priorities: {', '.join(sl.response_priorities)}")
     if sl.response_hazards:
         lines.append(f"Response hazards: {', '.join(sl.response_hazards)}")
+    return lines
+
+
+def _format_grounding_self_block(capsule: GroundingCapsuleV1) -> list[str]:
+    """Compact motor self block: identity + relationship + continuity/memory only.
+
+    Response policy is intentionally excluded here — it is reserved for the voice
+    finalize pass to respect the motor single-context-window budget.
+    """
+    lines: list[str] = ["WHO YOU ARE"]
+    lines.extend(f"- {item}" for item in capsule.identity_summary)
+    if capsule.relationship_summary:
+        lines.append("RELATIONSHIP")
+        lines.extend(f"- {item}" for item in capsule.relationship_summary)
+    digest = (capsule.memory_digest or capsule.continuity_digest or "").strip()
+    if digest:
+        lines.append("DURABLE MEMORY / CONTINUITY")
+        lines.append(digest)
     return lines
 
 
@@ -53,6 +71,9 @@ def compile_harness_prefix(
     """Deterministic fcc system prefix from stance thought + repair overlay."""
     _ = answer_contract  # deprecated on unified motor path; kept for signature compat
     parts: list[str] = [HARNESS_UNIFIED_OPERATOR_BRIEF.strip()]
+
+    if thought.grounding_capsule is not None and thought.grounding_capsule.identity_summary:
+        parts.extend(_format_grounding_self_block(thought.grounding_capsule))
 
     parts.extend(
         [

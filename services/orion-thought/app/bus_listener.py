@@ -10,7 +10,7 @@ from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
-from orion.schemas.thought import StanceReactRequestV1, ThoughtEventV1
+from orion.schemas.thought import GroundingCapsuleV1, StanceReactRequestV1, ThoughtEventV1
 from orion.thought.stance_react import (
     apply_stance_react_pipeline,
     build_stance_react_failure_thought,
@@ -108,6 +108,20 @@ def extract_stance_react_payload(result: dict[str, Any]) -> dict[str, Any] | str
     raise ValueError("stance_react exec result missing thought payload")
 
 
+def _extract_grounding_capsule(exec_result: dict[str, Any]) -> GroundingCapsuleV1 | None:
+    metadata = exec_result.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    raw = metadata.get("grounding_capsule")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return GroundingCapsuleV1.model_validate(raw)
+    except Exception:
+        logger.warning("grounding_capsule_parse_failed corr=%s", exec_result.get("request_id"))
+        return None
+
+
 async def run_stance_react(
     request: StanceReactRequestV1,
     *,
@@ -128,7 +142,11 @@ async def run_stance_react(
         correlation_id=request.correlation_id,
         session_id=request.session_id,
     )
-    return apply_stance_react_pipeline(thought, request)
+    enriched = apply_stance_react_pipeline(thought, request)
+    capsule = _extract_grounding_capsule(exec_result)
+    if capsule is not None:
+        enriched = enriched.model_copy(update={"grounding_capsule": capsule})
+    return enriched
 
 
 async def handle_stance_react_request(

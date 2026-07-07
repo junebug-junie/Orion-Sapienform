@@ -192,3 +192,76 @@ async def test_graph_draft_legacy_mode_still_inserts_draft(monkeypatch):
     suggest_mock.assert_awaited_once()
     insert_draft_mock.assert_awaited_once()
     window_store.mark_consolidated.assert_awaited_once_with("win-legacy", draft_id="draft-legacy")
+
+
+@pytest.mark.asyncio
+async def test_skip_only_skips_even_when_gate_proposes(monkeypatch):
+    monkeypatch.setattr(worker.settings, "MEMORY_CONSOLIDATION_OUTPUT", "skip_only")
+    gate = ConsolidationGateResult(
+        action="propose",
+        reasons=["substantive_shift"],
+        dominant_shift="TOPIC",
+    )
+    pool = AsyncMock()
+    grammar_pool = AsyncMock()
+    window_store = AsyncMock()
+    runner = ConsolidationSuggestRunner(pool, window_store, grammar_pool=grammar_pool)
+    bus = AsyncMock()
+    bus.publish = AsyncMock()
+
+    fetch_mock = AsyncMock(return_value=(False, []))
+    with patch(
+        "orion.memory.consolidation_grammar.fetch_grammar_evidence_for_window",
+        new=fetch_mock,
+    ) as fetch_fn, patch(
+        "orion.memory.consolidation_gate.consolidation_memory_gate",
+        return_value=gate,
+    ), patch(
+        "orion.memory.crystallization.repository.insert_crystallization",
+        new=AsyncMock(),
+    ) as insert_crys_mock:
+        window = {
+            "memory_window_id": "win-skip-only",
+            "turn_correlation_ids": [str(uuid4())],
+            "turns": [{"correlation_id": "c", "prompt": "topic", "response": "r", "spark_meta": {}}],
+        }
+        window["turns"][0]["correlation_id"] = window["turn_correlation_ids"][0]
+        await runner.consolidate_window(window, bus=bus)
+
+    fetch_fn.assert_awaited_once()
+    assert fetch_fn.await_args.args[0] is grammar_pool
+    window_store.mark_consolidated_skipped.assert_awaited_once()
+    insert_crys_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_append_turn_persists_turn_change_appraisal_in_spark_meta():
+    import json
+    from datetime import datetime, timezone
+
+    from orion.schemas.memory_consolidation import MemoryTurnPersistedV1
+
+    pool = AsyncMock()
+    pool.fetchrow = AsyncMock(return_value=None)
+    pool.execute = AsyncMock()
+    store = WindowStore(pool)
+    turn = MemoryTurnPersistedV1(
+        correlation_id="corr-appraisal",
+        prompt="move logistics alone",
+        response="that sounds heavy",
+        spark_meta={},
+        created_at=datetime.now(timezone.utc),
+    )
+    scores = {
+        "memory_significance_score": 0.55,
+        "turn_change_appraisal": {
+            "turn_change_status": "ok",
+            "novelty_score": 0.72,
+            "shift_kind": "TOPIC",
+        },
+    }
+    await store.append_turn(turn, scores=scores)
+    turns_json = pool.execute.await_args.args[2]
+    turns = json.loads(turns_json)
+    assert turns[0]["spark_meta"]["turn_change_appraisal"]["shift_kind"] == "TOPIC"
+    assert turns[0]["spark_meta"]["memory_significance_score"] == 0.55

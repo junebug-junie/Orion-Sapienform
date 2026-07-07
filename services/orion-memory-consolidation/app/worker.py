@@ -89,8 +89,9 @@ async def publish_spark_meta_patch(
 
 
 class ConsolidationSuggestRunner:
-    def __init__(self, pool, window_store: WindowStore):
+    def __init__(self, pool, window_store: WindowStore, *, grammar_pool=None):
         self._pool = pool
+        self._grammar_pool = grammar_pool
         self._window_store = window_store
 
     async def consolidate_window(self, window: dict[str, Any], *, bus: OrionBusAsync) -> None:
@@ -108,8 +109,9 @@ class ConsolidationSuggestRunner:
             from orion.memory.crystallization.repository import insert_crystallization
 
             try:
+                grammar_pool = self._grammar_pool or self._pool
                 repair, grammar_event_ids = await fetch_grammar_evidence_for_window(
-                    self._pool,
+                    grammar_pool,
                     turns=turns,
                     node_id=settings.NODE_NAME,
                     enabled=settings.MEMORY_CONSOLIDATION_FETCH_GRAMMAR_EVIDENCE,

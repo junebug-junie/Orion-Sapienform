@@ -42,7 +42,6 @@ def build_crystallization_from_window(
     memory_window_id: str,
     turns: list[dict[str, Any]],
     gate: ConsolidationGateResult,
-    grammar_events: list[dict[str, Any]] | None = None,
 ) -> MemoryCrystallizationV1:
     now = _utc_now()
     summary = _window_summary(turns)

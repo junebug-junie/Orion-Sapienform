@@ -23,6 +23,13 @@ def _ensure_thought_paths() -> None:
     sys.path.insert(0, str(_THOUGHT_ROOT))
 
 
+def pytest_configure() -> None:
+    # Runs before collection, so module-top ``import orion...``/``import app...``
+    # in test files resolve. The autouse fixture below only fires at test
+    # execution, which is too late for collection-time imports.
+    _ensure_thought_paths()
+
+
 @pytest.fixture(autouse=True)
 def _thought_service_isolation() -> None:
     _ensure_thought_paths()

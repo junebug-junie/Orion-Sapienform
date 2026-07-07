@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -36,6 +37,7 @@ def _make_worker(monkeypatch, *, c_tick_enabled: bool) -> BiometricsSubstrateWor
     worker._settings = settings_mod.get_settings()
     worker._bus = MagicMock()
     worker._latest_drive_state = None
+    worker._latest_drive_state_at = None
     return worker
 
 
@@ -53,6 +55,7 @@ def _drive(pressures: dict[str, float]) -> DriveStateV1:
 def test_flag_on_publishes_one_involuntary_intent(monkeypatch):
     worker = _make_worker(monkeypatch, c_tick_enabled=True)
     worker._latest_drive_state = _drive({"social": 0.6, "predictive": 0.1})
+    worker._latest_drive_state_at = datetime.now(timezone.utc)
 
     pub = AsyncMock()
     with patch("orion.core.bus.resilience.publish_with_reconnect", pub):
@@ -68,6 +71,7 @@ def test_flag_on_publishes_one_involuntary_intent(monkeypatch):
 def test_flag_off_publishes_nothing(monkeypatch):
     worker = _make_worker(monkeypatch, c_tick_enabled=False)
     worker._latest_drive_state = _drive({"social": 0.6})
+    worker._latest_drive_state_at = datetime.now(timezone.utc)
 
     pub = AsyncMock()
     with patch("orion.core.bus.resilience.publish_with_reconnect", pub):
@@ -85,3 +89,43 @@ def test_no_drive_state_publishes_nothing(monkeypatch):
         asyncio.run(worker._emit_c_intent())
 
     pub.assert_not_awaited()
+
+
+def test_stale_drive_state_publishes_nothing(monkeypatch):
+    from app.worker import _DRIVE_STATE_MAX_AGE_SEC
+
+    worker = _make_worker(monkeypatch, c_tick_enabled=True)
+    worker._latest_drive_state = _drive({"social": 0.6})
+    worker._latest_drive_state_at = datetime.now(timezone.utc) - timedelta(
+        seconds=_DRIVE_STATE_MAX_AGE_SEC + 1
+    )
+
+    pub = AsyncMock()
+    with patch("orion.core.bus.resilience.publish_with_reconnect", pub):
+        asyncio.run(worker._emit_c_intent())
+
+    pub.assert_not_awaited()
+
+
+def test_emit_fails_open_when_publish_raises(monkeypatch):
+    worker = _make_worker(monkeypatch, c_tick_enabled=True)
+    worker._latest_drive_state = _drive({"social": 0.6})
+    worker._latest_drive_state_at = datetime.now(timezone.utc)
+
+    pub = AsyncMock(side_effect=RuntimeError("bus down"))
+    with patch("orion.core.bus.resilience.publish_with_reconnect", pub):
+        # Must not raise — the C tick fails open.
+        asyncio.run(worker._emit_c_intent())
+
+    assert pub.await_count == 1
+
+
+def test_cache_drive_state_fails_open_on_bad_decode(monkeypatch):
+    worker = _make_worker(monkeypatch, c_tick_enabled=True)
+    bus = MagicMock()
+    bus.codec.decode.return_value = MagicMock(ok=False, error="boom")
+    worker._bus = bus
+
+    # Must not raise and must not cache anything.
+    worker._cache_drive_state_message({"data": b"garbage"})
+    assert worker._latest_drive_state is None

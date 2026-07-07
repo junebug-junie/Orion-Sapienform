@@ -254,7 +254,10 @@ class SelfStateRuntimeWorker:
         hub_presence = self._store.load_hub_presence()
 
         # Fold the embodied "I am near X" grounding signal into hub_presence so
-        # it threads through build_self_state without touching the shared builder.
+        # it threads through build_self_state (and is persisted onto
+        # SelfStateV1.hub_presence as an inspectable projection field) without
+        # touching the shared builder. It does not yet drive any dimension score
+        # or condition — this is the first observable seam, not felt-state input.
         # Gated + age-gated inside perception_input; None when absent/disabled.
         perception_input = self.perception_input()
         if perception_input is not None:

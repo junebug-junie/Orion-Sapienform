@@ -9,7 +9,9 @@ in ``test_store_observability_loaders.py`` (age gate + graceful None).
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
 
+import app.worker as worker_mod
 from app.worker import SelfStateRuntimeWorker, _PERCEPTION_MAX_AGE_SEC
 
 from orion.schemas.embodiment import WorldPerceptionV1
@@ -68,3 +70,15 @@ def test_stale_perception_is_age_gated(monkeypatch):
 
     assert worker.cache_perception(_perception(), now=stale) is True
     assert worker.perception_input(now=now) is None
+
+
+def test_handle_message_fails_open_on_bad_decode(monkeypatch):
+    worker = _make_worker(monkeypatch, enabled=True)
+    bus = MagicMock()
+    bus.codec.decode.return_value = MagicMock(ok=False, error="boom")
+    monkeypatch.setattr(worker_mod, "_bus", bus)
+
+    # Must not raise and must not cache anything.
+    worker._handle_perception_message({"data": b"garbage"})
+    assert worker._latest_perception is None
+    assert worker.perception_input(now=datetime.now(timezone.utc)) is None

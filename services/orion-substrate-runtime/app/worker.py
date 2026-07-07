@@ -69,6 +69,10 @@ logger = logging.getLogger("orion.substrate.runtime")
 
 _PREDICTION_ERROR_NODE_FLAG = "SUBSTRATE_WRITE_PREDICTION_ERROR_NODES"
 _TRUTHY = {"1", "true", "yes", "on"}
+# Staleness gate for the cached drive state: a stalled drive publisher must not
+# keep forcing involuntary movement forever off a frozen snapshot. Fail-open
+# toward *not* moving.
+_DRIVE_STATE_MAX_AGE_SEC = 300.0
 # Fixed signal until HarnessPostTurnClosureV1 carries surprise_level_at_draft.
 _HARNESS_CLOSURE_UNRESOLVED_ERROR = 0.65
 
@@ -165,6 +169,7 @@ class BiometricsSubstrateWorker:
         # Orion embodiment (C producer): latest drive state cached off the bus,
         # mapped to one involuntary intent per dynamics tick. Default-off.
         self._latest_drive_state: DriveStateV1 | None = None
+        self._latest_drive_state_at: datetime | None = None
 
     @property
     def bus(self):
@@ -795,15 +800,25 @@ class BiometricsSubstrateWorker:
         """Sync core of the C producer: map the cached drive state to one intent.
 
         Returns an ``EmbodimentIntentV1`` (or ``None``). Fail-open: gated by
-        ``embodiment_c_tick_enabled``; returns ``None`` when disabled or when no
-        drive state has been observed yet, so a missing drive source never
-        forces movement.
+        ``embodiment_c_tick_enabled``; returns ``None`` when disabled, when no
+        drive state has been observed yet, or when the cached drive state is
+        stale — so neither a missing nor a stalled drive source forces movement.
         """
         if not self._settings.embodiment_c_tick_enabled:
             return None
         drive = self._latest_drive_state
         if drive is None:
             return None
+        observed_at = self._latest_drive_state_at
+        if observed_at is not None:
+            if observed_at.tzinfo is None:
+                observed_at = observed_at.replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - observed_at).total_seconds()
+            if age > _DRIVE_STATE_MAX_AGE_SEC:
+                logger.info(
+                    "substrate_embodiment_c_intent_skipped_stale age_sec=%.1f", age
+                )
+                return None
         from orion.embodiment.drive_map import map_drive_state_to_intent
 
         return map_drive_state_to_intent(
@@ -895,6 +910,7 @@ class BiometricsSubstrateWorker:
             logger.error("substrate_embodiment_drive_state_invalid err=%s", exc)
             return
         self._latest_drive_state = drive
+        self._latest_drive_state_at = datetime.now(timezone.utc)
 
     async def _perception_ingest_loop(self) -> None:
         """Subscribe to town perception and fold it into the substrate graph.

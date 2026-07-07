@@ -2194,3 +2194,31 @@ channels:
     consumer_services: ["orion-substrate-runtime"]
     stability: "experimental"
     since: "2026-07-05"
+
+  # --- Embodiment (mind-to-sprite bridge, default-off) ---
+  - name: "orion:embodiment:intent"
+    kind: "event"
+    schema_id: "EmbodimentIntentV1"
+    message_kind: "embodiment.intent.v1"
+    producer_services: ["orion-substrate-runtime", "orion-harness-governor", "orion-cortex-exec"]
+    consumer_services: ["orion-embodiment"]
+    stability: "experimental"
+    since: "2026-07-07"
+
+  - name: "orion:embodiment:outcome"
+    kind: "event"
+    schema_id: "EmbodimentOutcomeV1"
+    message_kind: "embodiment.outcome.v1"
+    producer_services: ["orion-embodiment"]
+    consumer_services: ["orion-hub"]
+    stability: "experimental"
+    since: "2026-07-07"
+
+  - name: "orion:embodiment:perception"
+    kind: "event"
+    schema_id: "WorldPerceptionV1"
+    message_kind: "embodiment.perception.v1"
+    producer_services: ["orion-embodiment"]
+    consumer_services: ["orion-substrate-runtime", "orion-self-state-runtime", "orion-cortex-exec"]
+    stability: "experimental"
+    since: "2026-07-07"

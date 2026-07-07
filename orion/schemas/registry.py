@@ -633,6 +633,12 @@ from orion.schemas.world_pulse import (
     WorthReadingItemV1,
     WorthWatchingItemV1,
 )
+from orion.schemas.embodiment import (
+    EmbodimentIntentV1,
+    EmbodimentOutcomeV1,
+    OrionTownPersonaV1,
+    WorldPerceptionV1,
+)
 
 _REGISTRY: Dict[str, Type[BaseModel]] = {
     "GenericPayloadV1": GenericPayloadV1,
@@ -1191,6 +1197,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "HarnessRunRequestV1": HarnessRunRequestV1,
     "HarnessRunStepV1": HarnessRunStepV1,
     "HarnessRunV1": HarnessRunV1,
+    "EmbodimentIntentV1": EmbodimentIntentV1,
+    "EmbodimentOutcomeV1": EmbodimentOutcomeV1,
+    "WorldPerceptionV1": WorldPerceptionV1,
+    "OrionTownPersonaV1": OrionTownPersonaV1,
 
 }
 
@@ -1291,6 +1301,18 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "ActionOutcomeEmitV1": SchemaRegistration(
         model=ActionOutcomeEmitV1,
         kind="action.outcome.emit.v1",
+    ),
+    "EmbodimentIntentV1": SchemaRegistration(
+        model=EmbodimentIntentV1, kind="embodiment.intent.v1"
+    ),
+    "EmbodimentOutcomeV1": SchemaRegistration(
+        model=EmbodimentOutcomeV1, kind="embodiment.outcome.v1"
+    ),
+    "WorldPerceptionV1": SchemaRegistration(
+        model=WorldPerceptionV1, kind="embodiment.perception.v1"
+    ),
+    "OrionTownPersonaV1": SchemaRegistration(
+        model=OrionTownPersonaV1, kind="embodiment.persona.v1"
     ),
 }
 

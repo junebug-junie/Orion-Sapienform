@@ -80,8 +80,10 @@ async def test_run_turn_adds_mcp_config_when_enabled(monkeypatch: pytest.MonkeyP
     assert "/tmp/fake-mcp.json" in [str(x) for x in captured_argv]
     assert "--allowedTools" in captured_argv
     idx = captured_argv.index("--allowedTools")
-    assert captured_argv[idx + 1] == "mcp__github__*"
-    assert captured_argv[idx + 2] == "mcp__firecrawl__*"
+    assert captured_argv[idx + 1] == "mcp__github"
+    assert captured_argv[idx + 2] == "mcp__firecrawl"
+    dis_idx = captured_argv.index("--disallowedTools")
+    assert captured_argv[dis_idx + 1] == "Bash(gh *)"
 
 
 @pytest.mark.asyncio

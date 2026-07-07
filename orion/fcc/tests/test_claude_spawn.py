@@ -10,7 +10,12 @@ from orion.fcc import claude_spawn
 
 def test_mcp_allowed_tool_patterns_per_server() -> None:
     patterns = claude_spawn.mcp_allowed_tool_patterns({"github": {}, "firecrawl": {}})
-    assert patterns == ["mcp__github__*", "mcp__firecrawl__*"]
+    assert patterns == ["mcp__github", "mcp__firecrawl"]
+
+
+def test_mcp_disallowed_blocks_gh_when_github_present() -> None:
+    blocked = claude_spawn.mcp_disallowed_tool_patterns({"github": {}, "firecrawl": {}})
+    assert blocked == ["Bash(gh *)"]
 
 
 def test_extend_mcp_argv_uses_per_server_patterns(tmp_path: Path) -> None:
@@ -28,8 +33,10 @@ def test_extend_mcp_argv_uses_per_server_patterns(tmp_path: Path) -> None:
         "--mcp-config",
         str(cfg),
         "--allowedTools",
-        "mcp__github__*",
-        "mcp__firecrawl__*",
+        "mcp__github",
+        "mcp__firecrawl",
+        "--disallowedTools",
+        "Bash(gh *)",
     ]
 
 

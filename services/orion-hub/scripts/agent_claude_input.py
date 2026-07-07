@@ -7,6 +7,7 @@ from dataclasses import dataclass
 AGENT_CLAUDE_OPERATOR_BRIEF = """\
 Hub agent-claude runs against a local gateway with a finite context window (~64k tokens).
 Before Read on any file: prefer rg/Grep with a path or pattern. For large files (e.g. orion/bus/channels.yaml), use Read offset/limit in chunks — never load whole contract YAML in one read.
+For GitHub PRs, issues, and repo metadata: use GitHub MCP tools (mcp__github). The gh CLI is not installed in the Hub container.
 """
 
 

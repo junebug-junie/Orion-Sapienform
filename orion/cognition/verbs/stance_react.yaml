@@ -9,7 +9,7 @@ category: ExecutiveControl
 priority: high
 
 requires_gpu: true
-requires_memory: true
+requires_memory: false
 timeout_ms: 120000
 
 services:

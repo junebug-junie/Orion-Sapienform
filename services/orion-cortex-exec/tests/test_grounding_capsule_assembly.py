@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from app.grounding_capsule import (
+    assemble_stance_grounding,
     build_grounding_capsule,
     stance_slice_brief_from_step_text,
 )
@@ -54,3 +57,34 @@ def test_stance_slice_brief_from_step_text_extracts_mode_and_frame() -> None:
 def test_stance_slice_brief_from_step_text_tolerates_garbage() -> None:
     assert stance_slice_brief_from_step_text("not json") == {}
     assert stance_slice_brief_from_step_text("") == {}
+
+
+@pytest.mark.asyncio
+async def test_assemble_ships_identity_only_capsule_when_pcr_raises(monkeypatch) -> None:
+    from app import grounding_capsule as gc
+    from app.settings import Settings
+
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError("pcr down")
+
+    monkeypatch.setattr(gc, "run_pcr_phase3", _boom)
+    cfg = Settings(ORION_UNIFIED_GROUNDING_ENABLED=True, CHAT_PCR_ENABLED=True)
+    ctx: dict = {
+        "orion_identity_summary": ["I am Oríon."],
+        "juniper_relationship_summary": ["Juniper is my collaborator."],
+        "response_policy_summary": ["Speak plainly."],
+        "identity_kernel_source": "configured_yaml",
+    }
+    capsule = await assemble_stance_grounding(
+        bus=None,
+        source=None,
+        ctx=ctx,
+        correlation_id="c-1",
+        recall_cfg={},
+        stance_step_text='{"stance_harness_slice":{"task_mode":"reflective_dialogue","conversation_frame":"reflective"}}',
+        exec_settings=cfg,
+    )
+    assert capsule is not None
+    assert capsule.identity_summary == ["I am Oríon."]
+    assert capsule.provenance["pcr_ran"] is False
+    assert capsule.memory_digest is None

@@ -259,6 +259,12 @@ def build_finalize_reflect_context(
         "repair_overlay": repair_overlay.model_dump(mode="json"),
         "finalize_overlay": repair_overlay.finalize_overlay,
         "user_message": user_message,
+        # Route the 5b integrative reflection off the saturated `chat` worker onto the
+        # background/metacog lane (unsaturated, long read timeout). This is an internal
+        # reflection pass (not user-visible speech), so the lighter lane is acceptable.
+        # allow_chat_fallback keeps resilience if the metacog route is ever absent.
+        "llm_lane": "background",
+        "allow_chat_fallback": True,
         "metadata": {
             "correlation_id": correlation_id,
             "mode": "brain",

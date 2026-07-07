@@ -79,3 +79,16 @@ def test_chat_lane_allow_chat_fallback_can_be_false() -> None:
     )
     assert out["llm_lane"] == "chat"
     assert out["allow_chat_fallback"] is False
+
+
+def test_finalize_reflect_ctx_llm_lane_resolves_background() -> None:
+    """Mirror the finalize_reflect context (top-level llm_lane) as cortex-exec merges it
+    into ctx; the 5b reflection must resolve to the background/metacog lane, not chat."""
+    step = SimpleNamespace(verb_name="harness_finalize_reflect", step_name="llm_harness_finalize_reflect")
+    out = resolve_llm_lane_for_step(
+        step=step,
+        ctx={"llm_lane": "background", "allow_chat_fallback": True, "metadata": {"mode": "brain"}},
+        settings=_settings(),
+    )
+    assert out["llm_lane"] == "background"
+    assert out["allow_chat_fallback"] is True

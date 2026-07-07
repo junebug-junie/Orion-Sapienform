@@ -28,6 +28,7 @@ def client(monkeypatch):
         published["outcome"] = outcome
 
     monkeypatch.setattr(routes, "load_pending_loops", _fake_loops)
+    monkeypatch.setattr(routes, "latest_salience_for_theme", lambda k: (0.6, {"evidence_strength": 0.8}))
     monkeypatch.setattr(routes, "persist_loop_outcome", lambda o: True)
     monkeypatch.setattr(routes, "suppress_loop", lambda k: True)
     monkeypatch.setattr(routes, "publish_loop_outcome", _fake_publish)

@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from scripts.attention_loops_store import (
     build_loop_outcome,
     build_pending_card,
+    latest_salience_for_theme,
     load_pending_loops,
     persist_loop_outcome,
     suppress_loop,
@@ -66,9 +67,10 @@ def list_loops(limit: int = 50):
 def _close(loop_id: str, verdict: str, note: str):
     if not _cards_enabled():
         raise HTTPException(status_code=404, detail="pending attention cards disabled")
+    salience, features = latest_salience_for_theme(loop_id)
     outcome = build_loop_outcome(
         loop_id=loop_id, theme_key=loop_id, verdict=verdict, actor="juniper",
-        note=note, salience_at_close=0.0, features_at_close={},
+        note=note, salience_at_close=salience, features_at_close=features,
     )
     persist_loop_outcome(outcome)
     suppress_loop(loop_id)

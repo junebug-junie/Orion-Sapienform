@@ -259,3 +259,38 @@ def load_pending_loops(limit: int = 50) -> list[tuple[OpenLoopV1, datetime, int,
         )
         out.append((loop, first_seen, int(r["recurrence_count"] or 1), ""))
     return out
+
+
+def latest_salience_for_theme(theme_key: str) -> tuple[float, dict[str, Any]]:
+    """Most-recent (salience, features) for a theme from the trace table.
+
+    Best-effort: returns (0.0, {}) on any miss so closing a loop never fails.
+    """
+    try:
+        from sqlalchemy import text
+
+        with _engine().connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT salience, features
+                    FROM attention_salience_trace
+                    WHERE theme_key = :k
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """
+                ),
+                {"k": theme_key},
+            ).mappings().first()
+    except Exception as exc:
+        logger.warning("latest_salience_for_theme failed theme=%s err=%s", theme_key, exc)
+        return (0.0, {})
+    if not row:
+        return (0.0, {})
+    features = row["features"]
+    if isinstance(features, str):
+        try:
+            features = json.loads(features or "{}")
+        except Exception:
+            features = {}
+    return (float(row["salience"] or 0.0), dict(features or {}))

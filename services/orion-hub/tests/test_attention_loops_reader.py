@@ -13,6 +13,9 @@ class _Result:
     def all(self):
         return self._rows
 
+    def first(self):
+        return self._rows[0] if self._rows else None
+
 
 class _Conn:
     def __init__(self, rows):
@@ -76,3 +79,24 @@ def test_load_pending_loops_falls_back_to_theme_key(monkeypatch):
     out = store.load_pending_loops()
     assert len(out) == 1
     assert out[0][0].description == "t-fallback"  # fell back to theme_key
+
+
+def test_latest_salience_for_theme_dict_features(monkeypatch):
+    rows = [{"salience": 0.75, "features": {"evidence_strength": 0.9}}]
+    monkeypatch.setattr(store, "_engine", lambda: _Engine(rows))
+    salience, features = store.latest_salience_for_theme("t1")
+    assert salience == 0.75
+    assert features == {"evidence_strength": 0.9}
+
+
+def test_latest_salience_for_theme_string_features(monkeypatch):
+    rows = [{"salience": 0.5, "features": '{"recurrence": 0.4}'}]
+    monkeypatch.setattr(store, "_engine", lambda: _Engine(rows))
+    salience, features = store.latest_salience_for_theme("t2")
+    assert salience == 0.5
+    assert features == {"recurrence": 0.4}
+
+
+def test_latest_salience_for_theme_no_row(monkeypatch):
+    monkeypatch.setattr(store, "_engine", lambda: _Engine([]))
+    assert store.latest_salience_for_theme("missing") == (0.0, {})

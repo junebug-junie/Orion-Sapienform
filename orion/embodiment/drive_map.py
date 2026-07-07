@@ -31,7 +31,7 @@ def map_drive_state_to_intent(
         return None
     social = float(pressures.get(t.social_key, 0.0) or 0.0)
     curio = float(pressures.get(t.curiosity_key, 0.0) or 0.0)
-    dominant = max(pressures, key=lambda k: pressures.get(k, 0.0))
+    dominant = max(pressures, key=lambda k: float(pressures.get(k, 0.0) or 0.0))
 
     if social >= t.social_high and not in_conversation:
         return build_intent(kind="start_conversation", source="involuntary", correlation_id=correlation_id,

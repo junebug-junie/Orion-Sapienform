@@ -130,6 +130,8 @@ SYNC_EXACT = frozenset(
         "HOST_PORT",
         "HARNESS_REPO_MOUNT",
         "HARNESS_AITOWN_CONVEX_URL",
+        # Embodiment master switch (prefix is EMBODIMENT_, so the ORION_ master flag needs an exact entry).
+        "ORION_EMBODIMENT_ENABLED",
         # Reverie/dream weave — Phase F (orion-dream REM compaction, default-off).
         "ORION_DREAM_REM_ENABLED",
         "CHANNEL_DREAM_COMPACTION_DELTA",

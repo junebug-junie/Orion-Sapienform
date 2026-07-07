@@ -73,7 +73,13 @@ def _load_from_sql(subject: str) -> list[ActionOutcomeRefV1]:
                     observed_at=row["observed_at"],
                 )
             )
-        except Exception:
+        except Exception as exc:
+            logger.debug(
+                "action_outcome_row_skipped subject=%s action_id=%s error=%s",
+                subject,
+                row.get("action_id"),
+                exc,
+            )
             continue
     return out
 

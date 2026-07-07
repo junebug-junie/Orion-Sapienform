@@ -298,6 +298,7 @@ async def _handle_bus_message(bus: OrionBusAsync, raw_msg: dict[str, Any]) -> No
     payload = env.payload or {}
     causality = list(env.causality_chain or [])
 
+    request: HarnessRunRequestV1 | None = None
     try:
         request = HarnessRunRequestV1.model_validate(payload)
         if not request.correlation_id:
@@ -311,10 +312,8 @@ async def _handle_bus_message(bus: OrionBusAsync, raw_msg: dict[str, Any]) -> No
         )
     except Exception as exc:
         logger.error("harness run error corr=%s err=%s", corr, exc)
-        recall_debug, memory_digest = (None, None)
-        thought = getattr(locals().get("request"), "thought_event", None)
-        if thought is not None:
-            recall_debug, memory_digest = _recall_fields_from_thought(thought)
+        thought = request.thought_event if request is not None else None
+        recall_debug, memory_digest = _recall_fields_from_thought(thought)
         err_run = HarnessRunV1(
             correlation_id=corr,
             final_text=None,

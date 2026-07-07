@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from uuid import uuid4
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.codec import OrionCodec
 from orion.harness.finalize import HarnessFinalizeChainResult
 from orion.harness.runner import HarnessMotorResult, build_draft_molecule, build_coalition_snapshot
 from orion.harness.tests.fixtures import (
@@ -244,6 +247,76 @@ async def test_harness_run_recall_empty_without_capsule() -> None:
 
     assert run.recall_debug is None
     assert run.memory_digest is None
+
+
+def _raw_bus_message(*, kind: str, reply_to: str, payload: dict) -> dict:
+    """Build a codec-encoded raw pubsub message that _handle_bus_message can decode."""
+    envelope = BaseEnvelope(
+        kind=kind,
+        source=ServiceRef(name="test-producer"),
+        correlation_id=uuid4(),
+        reply_to=reply_to,
+        payload=payload,
+    )
+    return {"type": "message", "data": OrionCodec().encode(envelope)}
+
+
+@pytest.mark.asyncio
+async def test_handle_bus_message_error_path_carries_recall_from_capsule() -> None:
+    from app import bus_listener
+
+    capsule = make_grounding_capsule()
+    thought = make_thought().model_copy(update={"grounding_capsule": capsule})
+    req = HarnessRunRequestV1(
+        correlation_id="c-err",
+        thought_event=thought,
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    raw_msg = _raw_bus_message(
+        kind="harness.run.request.v1",
+        reply_to="orion:harness:run:result:c-err",
+        payload=req.model_dump(mode="json"),
+    )
+
+    bus = AsyncMock()
+    bus.codec = OrionCodec()
+    with patch.object(
+        bus_listener,
+        "handle_harness_run_request",
+        AsyncMock(side_effect=RuntimeError("boom")),
+    ):
+        await bus_listener._handle_bus_message(bus, raw_msg)
+
+    assert bus.publish.await_count == 2
+    err_payload = bus.publish.await_args_list[0].args[1].payload
+    assert err_payload["compliance_verdict"] == "failed"
+    assert err_payload["memory_digest"] == (capsule.memory_digest or capsule.continuity_digest)
+    assert err_payload["recall_debug"] is not None
+    assert err_payload["recall_debug"]["pcr_ran"] == bool(capsule.provenance.get("pcr_ran"))
+
+
+@pytest.mark.asyncio
+async def test_handle_bus_message_error_path_recall_none_when_request_unbound() -> None:
+    from app import bus_listener
+
+    # Payload fails HarnessRunRequestV1.model_validate, so `request` stays None.
+    raw_msg = _raw_bus_message(
+        kind="harness.run.request.v1",
+        reply_to="orion:harness:run:result:c-bad",
+        payload={"not": "a valid request"},
+    )
+
+    bus = AsyncMock()
+    bus.codec = OrionCodec()
+    await bus_listener._handle_bus_message(bus, raw_msg)
+
+    assert bus.publish.await_count == 2
+    err_payload = bus.publish.await_args_list[0].args[1].payload
+    assert err_payload["compliance_verdict"] == "failed"
+    assert err_payload["recall_debug"] is None
+    assert err_payload["memory_digest"] is None
 
 
 @pytest.mark.asyncio

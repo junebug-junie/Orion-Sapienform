@@ -83,7 +83,7 @@ def resolve_destination(
 
     if intent.kind == "wander":
         orion = next((p for p in players if str(p.get("id")) == orion_player_id), None)
-        origin = _pos(orion) if orion else {"x": 0.0, "y": 0.0}
+        origin = (_pos(orion) if orion else None) or {"x": 0.0, "y": 0.0}
         dx = rng.uniform(-wander_radius, wander_radius)
         dy = rng.uniform(-wander_radius, wander_radius)
         return ResolveResult(

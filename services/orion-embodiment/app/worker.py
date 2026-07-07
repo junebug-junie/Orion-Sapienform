@@ -45,7 +45,8 @@ JOURNAL_TRIGGER_KIND = "orion.actions.trigger.journal.v1"
 # TODO(embodiment): confirm names/args against upstream when it is vendored.
 START_CONVERSATION_INPUT = "startConversation"
 START_TYPING_INPUT = "startTyping"
-FINISH_SENDING_MESSAGE_INPUT = "finishSendingMessage"
+# NOTE: the `finishSendingMessage` input is NOT sent directly — `messages:writeMessage`
+# enqueues it server-side with a numeric timestamp. See `_inject_utterance`.
 WRITE_MESSAGE_MUTATION = "messages:writeMessage"
 
 
@@ -737,19 +738,24 @@ class EmbodimentWorker:
             return ""
 
     def _inject_utterance(self, own_player_id: str, conversation_id: str, text: str) -> None:
-        """Inject an utterance into the AI Town conversation (startTyping -> write -> finish).
+        """Inject an utterance into the AI Town conversation (startTyping -> writeMessage).
 
         Input/mutation names follow the AI Town canonical schema (upstream not
         vendored here). See TODO on the input constants above.
 
-        CRITICAL (the "void" fix): the ``finishSendingMessage`` engine input is what
-        advances conversation state (``conversation.lastMessage`` + ``numMessages``),
-        which is what a partner agent's tick reads to decide it's their turn to
-        reply. Upstream's schema is ``{playerId, conversationId, timestamp}`` — NOT
-        ``messageUuid``. Sending the wrong args gets the input dropped, so Orion's
-        message rows land in the DB but the engine never registers that Orion spoke,
-        and the partner waits forever. Runtime evidence: a live conversation held 75
-        Orion message rows with ``numMessages=0``/``lastMessage=null`` until fixed.
+        CRITICAL (the "void" fix): the engine only advances conversation state
+        (``conversation.lastMessage`` + ``numMessages``) — which a partner agent's
+        tick reads to decide it's their turn — on a valid ``finishSendingMessage``
+        input carrying a numeric ``timestamp`` (ms), NOT ``messageUuid``.
+
+        ``messages:writeMessage`` already enqueues that ``finishSendingMessage``
+        server-side with ``timestamp: Date.now()`` (see upstream ``convex/messages.ts``),
+        so we do NOT send a second one from here. Doing so previously (a) double-counted
+        ``numMessages`` for Orion's turns and, when sent with the wrong args
+        (``messageUuid`` and no ``timestamp``), (b) poisoned the shared engine: the
+        malformed input built ``lastMessage={author}`` with no timestamp, which fails
+        the ``serializedConversation`` validator in ``saveWorld`` and crashes every
+        ``runStep`` — freezing the whole town until the stale input backlog was purged.
         """
         message_uuid = str(uuid4())
         wid = self._world_id or None
@@ -758,6 +764,8 @@ class EmbodimentWorker:
             args={"playerId": own_player_id, "conversationId": conversation_id, "messageUuid": message_uuid},
             world_id=wid,
         )
+        # writeMessage writes the row AND enqueues the canonical finishSendingMessage
+        # (with a numeric timestamp) itself — this single call advances the turn.
         aitown_client.convex_mutation(
             WRITE_MESSAGE_MUTATION,
             {
@@ -768,16 +776,4 @@ class EmbodimentWorker:
                 "playerId": own_player_id,
                 "text": text,
             },
-        )
-        aitown_client.send_input(
-            name=FINISH_SENDING_MESSAGE_INPUT,
-            # Upstream conversationInputs.finishSendingMessage expects a numeric
-            # `timestamp` (ms), not `messageUuid`. Wrong args -> input rejected ->
-            # numMessages/lastMessage never advance -> partner never hears Orion.
-            args={
-                "playerId": own_player_id,
-                "conversationId": conversation_id,
-                "timestamp": int(_utcnow().timestamp() * 1000),
-            },
-            world_id=wid,
         )

@@ -72,25 +72,24 @@ def test_injectable_reply_is_injected():
     assert si.call_count >= 1
 
 
-def test_finish_sending_message_uses_numeric_timestamp_not_uuid():
-    """The 'void' regression: finishSendingMessage must carry a numeric `timestamp`
-    (upstream schema) so the engine advances numMessages/lastMessage and the partner
-    can perceive Orion's turn. `messageUuid` here gets the input dropped."""
+def test_worker_does_not_send_finish_sending_message_directly():
+    """The 'void' regression, corrected: the worker must NOT send `finishSendingMessage`
+    itself. `messages:writeMessage` already enqueues it server-side with a numeric
+    timestamp. Sending a second one double-counted numMessages, and the pre-fix version
+    (messageUuid, no timestamp) poisoned the shared engine — a malformed lastMessage
+    that crashed every saveWorld/runStep and froze the whole town. writeMessage is the
+    single source of the turn advance."""
     w = _worker()
     with patch.object(w, "_request_utterance", new=AsyncMock(return_value="Hi Juniper!")), \
          patch("app.worker.aitown_client.send_input", return_value={"ok": True}) as si, \
-         patch("app.worker.aitown_client.convex_mutation", return_value={"ok": True}):
+         patch("app.worker.aitown_client.convex_mutation", return_value={"ok": True}) as cm:
         asyncio.run(w._speak_once(_perception_in_convo()))
-    finish_calls = [
-        c for c in si.call_args_list
-        if c.kwargs.get("name") == "finishSendingMessage"
-    ]
-    assert finish_calls, "finishSendingMessage input was never sent"
-    args = finish_calls[-1].kwargs["args"]
-    assert "messageUuid" not in args, "finishSendingMessage must not carry messageUuid"
-    assert isinstance(args.get("timestamp"), int) and args["timestamp"] > 0
-    assert args["playerId"] == "orion"
-    assert args["conversationId"] == "conv1"
+    finish_calls = [c for c in si.call_args_list if c.kwargs.get("name") == "finishSendingMessage"]
+    assert not finish_calls, "worker must not send finishSendingMessage directly (writeMessage enqueues it)"
+    # startTyping is still sent; writeMessage carries the message + turn advance.
+    typing_calls = [c for c in si.call_args_list if c.kwargs.get("name") == "startTyping"]
+    assert typing_calls, "startTyping should still be sent"
+    assert cm.called and cm.call_args.args[0] == "messages:writeMessage"
 
 
 def test_no_speech_when_orion_spoke_last():

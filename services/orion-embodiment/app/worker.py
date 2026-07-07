@@ -17,11 +17,14 @@ from orion.core.bus.codec import OrionCodec
 from orion.core.bus.resilience import publish_with_reconnect
 from orion.embodiment import aitown_client
 from orion.embodiment.arbiter import ArbiterState, decide
+from orion.embodiment.perception import build_perception
 from orion.embodiment.resolver import resolve_destination
 from orion.schemas.embodiment import (
     EMBODIMENT_OUTCOME_KIND,
+    EMBODIMENT_PERCEPTION_KIND,
     EmbodimentIntentV1,
     EmbodimentOutcomeV1,
+    WorldPerceptionV1,
 )
 
 logger = logging.getLogger("orion.embodiment.worker")
@@ -126,6 +129,8 @@ class EmbodimentWorker:
             return
         await self._bus.connect()
         asyncio.create_task(self._consume_loop(), name="embodiment-consume")
+        if self._settings.perception_interval_sec > 0:
+            asyncio.create_task(self._perception_loop(), name="embodiment-perception")
 
     async def stop(self) -> None:
         self._stop.set()
@@ -172,3 +177,48 @@ class EmbodimentWorker:
             )
         except Exception:
             logger.exception("embodiment_outcome_publish_failed")
+
+    # --- perception ---------------------------------------------------------
+    async def _emit_perception_once(self) -> Optional[WorldPerceptionV1]:
+        player_id = (self._orion_player_id or "").strip()
+        if not player_id:
+            return None
+        try:
+            players = await asyncio.to_thread(
+                aitown_client.list_players, world_id=self._world_id or None
+            )
+        except Exception:
+            logger.exception("embodiment_perception_list_players_failed")
+            return None
+        try:
+            perception = build_perception(players=players or [], orion_player_id=player_id)
+        except Exception:
+            logger.exception("embodiment_perception_build_failed")
+            return None
+        if perception is None:
+            return None
+        env = BaseEnvelope(
+            kind=EMBODIMENT_PERCEPTION_KIND, source=self._service_ref(),
+            correlation_id=uuid4(), payload=perception.model_dump(mode="json"),
+        )
+        try:
+            await publish_with_reconnect(
+                self._bus, self._settings.channel_perception, env,
+                log_label="embodiment_perception",
+            )
+        except Exception:
+            logger.exception("embodiment_perception_publish_failed")
+            return None
+        return perception
+
+    async def _perception_loop(self) -> None:
+        interval = self._settings.perception_interval_sec
+        while not self._stop.is_set():
+            try:
+                await self._emit_perception_once()
+            except Exception:
+                logger.exception("embodiment_perception_loop_failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue

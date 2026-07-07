@@ -88,6 +88,12 @@ SYNC_PREFIXES = (
     "ORION_ATTENTION_",
     "ORION_REVERIE_",
     "SUBSTRATE_FELT_STATE_",
+    # Drive attribution + substrate act (PR drive-attribution-substrate-act)
+    "ORION_SUBSTRATE_",
+    "ORION_AUTONOMY_",
+    "ORION_METABOLISM_",
+    "ORION_CAPABILITY_POLICY_",
+    "ORION_EPISODE_",
     "STANCE_REACT_",
     "HARNESS_FCC_",
     "HARNESS_AITOWN_",
@@ -130,6 +136,7 @@ SYNC_EXACT = frozenset(
         "ORION_DREAM_COMPACTION_APPLY_ENABLED",
         "ORION_DREAM_COMPACTION_DOWNSCALE_ONLY",
         "DREAM_COMPACTION_SNAPSHOT_DIR",
+        "GOAL_DRIVE_ORIGIN_SOURCE",
     }
 )
 

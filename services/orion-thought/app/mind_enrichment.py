@@ -177,6 +177,11 @@ def build_light_mind_request(
     )
 
 
+async def publish_mind_run_artifact_for_thought(*_args: Any, **_kwargs: Any) -> None:
+    """Placeholder — implemented in Task 7."""
+    return None
+
+
 def _mind_transport() -> httpx.BaseTransport | None:
     """Seam for tests to inject an httpx.MockTransport. Returns None in prod
     so AsyncClient uses its default transport.

@@ -20,6 +20,12 @@ from orion.thought.stance_react import (
 )
 
 from .cortex_client import CortexExecClient
+from .mind_enrichment import (
+    build_light_mind_request,
+    publish_mind_run_artifact_for_thought,
+    run_mind_for_thought,
+    select_mind_coloring,
+)
 from .settings import settings
 
 logger = logging.getLogger("orion-thought.bus")
@@ -133,6 +139,46 @@ def _extract_grounding_capsule(exec_result: dict[str, Any]) -> GroundingCapsuleV
         return None
 
 
+async def _maybe_build_mind_coloring(
+    request: StanceReactRequestV1,
+    *,
+    bus: OrionBusAsync | None,
+) -> dict[str, Any] | None:
+    """Run Mind and select advisory coloring. Fail-open: any None short-circuits."""
+    if not settings.mind_enrichment_enabled:
+        return None
+    mind_req = build_light_mind_request(
+        request,
+        wall_time_ms=settings.mind_wall_ms,
+        router_profile=settings.mind_router_profile,
+    )
+    result = await run_mind_for_thought(
+        mind_req,
+        settings=settings,
+        correlation_id=request.correlation_id,
+    )
+    if result is None:
+        return None
+    coloring = select_mind_coloring(result, max_items=settings.mind_coloring_max_items)
+    if settings.mind_artifact_publish_enabled and bus is not None:
+        await publish_mind_run_artifact_for_thought(
+            bus,
+            source=_source(),
+            request=request,
+            mind_req=mind_req,
+            mind_res=result,
+            channel=settings.channel_mind_artifact,
+        )
+    logger.info(
+        "mind_enrichment corr=%s mind_run_id=%s quality=%s coloring=%s",
+        request.correlation_id,
+        result.mind_run_id,
+        result.brief.mind_quality,
+        "fired" if coloring else "skipped",
+    )
+    return coloring
+
+
 async def run_stance_react(
     request: StanceReactRequestV1,
     *,
@@ -140,7 +186,8 @@ async def run_stance_react(
     cortex_client: CortexExecClient | None = None,
 ) -> ThoughtEventV1:
     client = cortex_client or CortexExecClient(bus)
-    plan_request = build_stance_react_plan_request(request)
+    mind_coloring = await _maybe_build_mind_coloring(request, bus=bus)
+    plan_request = build_stance_react_plan_request(request, mind_coloring=mind_coloring)
     exec_result = await client.execute_plan(
         source=_source(),
         req=plan_request,

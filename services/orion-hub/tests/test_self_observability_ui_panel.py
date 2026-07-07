@@ -29,8 +29,12 @@ def test_template_declares_self_observability_tab_and_panel() -> None:
     assert 'id="selfObservabilityTabButton"' in template
     assert 'data-hash-target="#self-observability"' in template
     assert '<section id="self-observability" data-panel="self-observability"' in template
-    for element_id in PANEL_ELEMENT_IDS:
-        assert f'id="{element_id}"' in template, element_id
+    # Self-tab body is now a self-brain iframe (cards migrated to the standalone
+    # brain page); the section retains its status line and refresh control.
+    assert 'id="selfObsStatus"' in template
+    assert 'id="selfObsRefresh"' in template
+    assert 'id="selfBrainFrame"' in template
+    assert '/static/self-brain.html?v={{HUB_UI_ASSET_VERSION}}' in template
 
 
 def test_template_includes_cache_busted_panel_script() -> None:

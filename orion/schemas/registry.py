@@ -578,6 +578,13 @@ from orion.schemas.consolidation_frame import (
     SparseTensorSliceV1,
 )
 from orion.schemas.feedback_frame import FeedbackFrameV1, OutcomeObservationV1
+from orion.schemas.brain_frame import (
+    BrainEdgeSampleV1,
+    BrainNodeSampleV1,
+    BrainRegionV1,
+    BrainSpotlightV1,
+    SubstrateBrainFrameV1,
+)
 from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1
 from orion.schemas.proposal_frame import ProposalCandidateV1, ProposalFrameV1
 from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
@@ -1110,6 +1117,11 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SchemaCandidateV1": SchemaCandidateV1,
     "FeedbackFrameV1": FeedbackFrameV1,
     "OutcomeObservationV1": OutcomeObservationV1,
+    "SubstrateBrainFrameV1": SubstrateBrainFrameV1,
+    "BrainRegionV1": BrainRegionV1,
+    "BrainSpotlightV1": BrainSpotlightV1,
+    "BrainNodeSampleV1": BrainNodeSampleV1,
+    "BrainEdgeSampleV1": BrainEdgeSampleV1,
     "EvidenceUnitV1": EvidenceUnitV1,
     "EvidenceQueryV1": EvidenceQueryV1,
     "EvidenceQueryResultItemV1": EvidenceQueryResultItemV1,
@@ -1340,6 +1352,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "PendingAttentionCardV1": SchemaRegistration(
         model=PendingAttentionCardV1,
         kind="attention.pending.card.v1",
+    ),
+    "SubstrateBrainFrameV1": SchemaRegistration(
+        model=SubstrateBrainFrameV1,
+        kind="substrate.brain_frame.v1",
     ),
 }
 

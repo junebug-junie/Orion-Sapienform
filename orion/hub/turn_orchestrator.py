@@ -96,18 +96,21 @@ def _success_frames(run: HarnessRunV1, *, correlation_id: str) -> list[dict[str,
                 "reflection": run.reflection.model_dump(mode="json"),
             }
         )
-    frames.append(
-        {
-            "type": "final",
-            "correlation_id": correlation_id,
-            "mode": "orion",
-            "llm_response": run.final_text,
-            "finalize_ran": run.finalize_ran,
-            "finalize_changed": run.finalize_changed,
-            "harness_step_count": run.step_count,
-            "harness_grounding_status": run.grounding_status,
-        }
-    )
+    final_frame: dict[str, Any] = {
+        "type": "final",
+        "correlation_id": correlation_id,
+        "mode": "orion",
+        "llm_response": run.final_text,
+        "finalize_ran": run.finalize_ran,
+        "finalize_changed": run.finalize_changed,
+        "harness_step_count": run.step_count,
+        "harness_grounding_status": run.grounding_status,
+    }
+    if run.recall_debug is not None:
+        final_frame["recall_debug"] = run.recall_debug
+    if run.memory_digest:
+        final_frame["memory_digest"] = run.memory_digest
+    frames.append(final_frame)
     return frames
 
 
@@ -462,4 +465,12 @@ async def run_unified_turn(
         if with_biometrics is not None:
             outbound = await with_biometrics(frame, cache=biometrics_cache)
         await websocket.send_json(outbound)
+    # Mirror the classic lane contract (websocket_handler emits {"state": "idle"} at end of
+    # turn): the Hub status line is set to "Sent..." on send and only resets to "Ready." when
+    # a frame carries state 'idle'. The unified terminal frames omit state, so emit a trailing
+    # idle-state frame to unstick the status after the turn completes.
+    idle_frame: dict[str, Any] = {"state": "idle"}
+    if with_biometrics is not None:
+        idle_frame = await with_biometrics(idle_frame, cache=biometrics_cache)
+    await websocket.send_json(idle_frame)
     return frames

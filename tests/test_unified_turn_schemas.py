@@ -276,6 +276,36 @@ def test_harness_run_roundtrip() -> None:
     assert restored.draft_text == "Draft only."
 
 
+def test_harness_run_recall_fields_default_none() -> None:
+    run = HarnessRunV1(
+        correlation_id="c-1",
+        final_text=None,
+        finalize_ran=False,
+        step_count=0,
+        compliance_verdict="partial",
+        grounding_status="unknown",
+    )
+    assert run.recall_debug is None
+    assert run.memory_digest is None
+
+
+def test_harness_run_recall_fields_roundtrip() -> None:
+    run = HarnessRunV1(
+        correlation_id="c-1",
+        final_text="Done.",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded_complete",
+        recall_debug={"source": "pcr_phase3", "pcr_ran": True},
+        memory_digest="We were mid-way through the grounding refactor.",
+    )
+    dumped = run.model_dump(mode="json")
+    restored = HarnessRunV1.model_validate(dumped)
+    assert restored.recall_debug == {"source": "pcr_phase3", "pcr_ran": True}
+    assert restored.memory_digest == "We were mid-way through the grounding refactor."
+
+
 def test_registry_schema_kinds_include_thought_event() -> None:
     from orion.schemas.registry import SCHEMA_REGISTRY
 

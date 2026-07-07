@@ -1,0 +1,83 @@
+diff --git a/convex/testing.ts b/convex/testing.ts
+index 106f186..e64590e 100644
+--- a/convex/testing.ts
++++ b/convex/testing.ts
+@@ -59,6 +59,78 @@ export const kick = internalMutation({
+   },
+ });
+ 
++// Read-only diagnostic: dump the default world's conversations and the tail of
++// the engine input queue so we can see exactly which unactioned input poisons
++// the step (produces a `lastMessage` with no numeric `timestamp`).
++export const debugEngineState = internalMutation({
++  handler: async (ctx) => {
++    const { worldStatus, engine } = await getDefaultWorld(ctx.db);
++    const world = await ctx.db.get(worldStatus.worldId);
++    const processed = engine.processedInputNumber ?? -1;
++    const pending = await ctx.db
++      .query('inputs')
++      .withIndex('byInputNumber', (q) => q.eq('engineId', engine._id))
++      .filter((q) => q.gt(q.field('number'), processed))
++      .collect();
++    const byName: Record<string, number> = {};
++    for (const i of pending) byName[i.name] = (byName[i.name] ?? 0) + 1;
++    console.log(
++      `debugEngineState: processedInputNumber=${processed} pending=${pending.length} byName=${JSON.stringify(byName)}`,
++    );
++    console.log(
++      `conversations=${JSON.stringify((world?.conversations ?? []).map((c: any) => ({ id: c.id, numMessages: c.numMessages, lastMessage: c.lastMessage })))}`,
++    );
++    console.log(`firstPending=${JSON.stringify(pending.slice(0, 5).map((i) => ({ n: i.number, name: i.name, args: i.args })))}`);
++    return { processed, pending: pending.length, byName };
++  },
++});
++
++// One-off recovery for a frozen engine. Orion (an externally-driven player)
++// left a backlog of stale, unactioned inputs from before the worker's
++// `finishSendingMessage` fix. Replaying them each step produces a conversation
++// `lastMessage` with no numeric `timestamp`, which fails the
++// `serializedConversation` validator in `saveWorld` — so every `runStep` throws,
++// nothing is persisted, `processedInputNumber` never advances, and the whole
++// town freezes. Delete those unactioned inputs (nothing past
++// `processedInputNumber` then remains to replay) and scrub any malformed `lastMessage` from
++// the stored world so the step loop can resume. New (post-fix) inputs are clean.
++export const recoverFrozenEngine = internalMutation({
++  handler: async (ctx) => {
++    const { worldStatus, engine } = await getDefaultWorld(ctx.db);
++    const world = await ctx.db.get(worldStatus.worldId);
++    if (!world) {
++      throw new Error(`No world for ${worldStatus.worldId}`);
++    }
++    // 1. Scrub any malformed lastMessage from the stored world.
++    let scrubbed = 0;
++    const conversations = (world.conversations as any[]).map((c) => {
++      if (c.lastMessage && typeof c.lastMessage.timestamp !== 'number') {
++        scrubbed++;
++        const { lastMessage, ...rest } = c;
++        return rest;
++      }
++      return c;
++    });
++    await ctx.db.patch(world._id, { conversations } as any);
++
++    // 2. Delete all unactioned inputs (the stale pre-fix backlog) so nothing bad
++    //    replays. They are stale because the town has been frozen.
++    const processed = engine.processedInputNumber ?? -1;
++    const pending = await ctx.db
++      .query('inputs')
++      .withIndex('byInputNumber', (q) => q.eq('engineId', engine._id))
++      .filter((q) => q.gt(q.field('number'), processed))
++      .collect();
++    for (const i of pending) {
++      await ctx.db.delete(i._id);
++    }
++    console.log(
++      `recoverFrozenEngine: scrubbed ${scrubbed} lastMessage(s), deleted ${pending.length} unactioned inputs (processedInputNumber=${processed})`,
++    );
++    return { scrubbed, deletedInputs: pending.length };
++  },
++});
++
+ export const stopAllowed = query({
+   handler: async () => {
+     return !process.env.STOP_NOT_ALLOWED;

@@ -208,6 +208,18 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("RECALL_RENDER_BUDGET_INDICATOR"),
     )
 
+    # ── Purpose-conditioned recall (PCR) ──────────────────────────────
+    RECALL_PCR_ENABLED: bool = Field(default=True, validation_alias=AliasChoices("RECALL_PCR_ENABLED"))
+    RECALL_SKIP_MAX_NOVELTY: float = Field(
+        default=0.25, validation_alias=AliasChoices("RECALL_SKIP_MAX_NOVELTY")
+    )
+    RECALL_CONTINUITY_SQL_MINUTES: int = Field(
+        default=120, validation_alias=AliasChoices("RECALL_CONTINUITY_SQL_MINUTES")
+    )
+    RECALL_CONTINUITY_RENDER_BUDGET: int = Field(
+        default=96, validation_alias=AliasChoices("RECALL_CONTINUITY_RENDER_BUDGET")
+    )
+
     # ── RDF / GraphDB (recall-specific) ───────────────────────────────
     RECALL_RDF_ENDPOINT_URL: Optional[str] = Field(default=None, validation_alias=AliasChoices("RECALL_RDF_ENDPOINT_URL"))
     RECALL_RDF_QUERY_URL: Optional[str] = Field(default=None, validation_alias=AliasChoices("RECALL_RDF_QUERY_URL"))

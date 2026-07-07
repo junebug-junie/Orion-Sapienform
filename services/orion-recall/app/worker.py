@@ -22,7 +22,7 @@ from orion.core.contracts.recall import (
 )
 
 try:
-    from .fusion import fuse_candidates
+    from .fusion import fuse_candidates, render_continuity_bundle
     from .profiles import get_profile
     from .settings import settings
     from .source_policy import build_vector_policy
@@ -48,7 +48,7 @@ except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
     _IMPORT_ERROR = _e
     try:
         # Container/package-safe absolute imports
-        from app.fusion import fuse_candidates  # type: ignore
+        from app.fusion import fuse_candidates, render_continuity_bundle  # type: ignore
         from app.profiles import get_profile  # type: ignore
         from app.settings import settings  # type: ignore
         from app.source_policy import build_vector_policy  # type: ignore
@@ -1572,15 +1572,27 @@ async def process_recall(
         )
     latency_ms = int((time.time() - t0) * 1000)
     fuse_started = time.time()
-    bundle, ranking_debug = fuse_candidates(
-        candidates=candidates,
-        profile=profile,
-        latency_ms=latency_ms,
-        query_text=query_fragment,
-        session_id=effective_session_id,
-        diagnostic=diagnostic,
-        substantive_query=str(query_targeting.get("turn_type")) == "substantive",
-    )
+    recall_phase = getattr(q, "recall_phase", None)
+    if settings.RECALL_PCR_ENABLED and recall_phase == "continuity":
+        profile["sql_since_minutes"] = settings.RECALL_CONTINUITY_SQL_MINUTES
+        profile["render_budget_tokens"] = settings.RECALL_CONTINUITY_RENDER_BUDGET
+        bundle, ranking_debug = render_continuity_bundle(
+            candidates=candidates,
+            profile=profile,
+            query_text=query_fragment,
+            latency_ms=latency_ms,
+            session_id=effective_session_id,
+        )
+    else:
+        bundle, ranking_debug = fuse_candidates(
+            candidates=candidates,
+            profile=profile,
+            latency_ms=latency_ms,
+            query_text=query_fragment,
+            session_id=effective_session_id,
+            diagnostic=diagnostic,
+            substantive_query=str(query_targeting.get("turn_type")) == "substantive",
+        )
     timing_breakdown_ms["fusion"] = int((time.time() - fuse_started) * 1000)
     timing_breakdown_ms["total"] = latency_ms
     decision = RecallDecisionV1(

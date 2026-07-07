@@ -82,7 +82,16 @@ def build_curiosity_followups(
     ][: max(0, int(max_sections))]
     if not under_covered:
         return []
-    if not _gate_open(run_id):
+    try:
+        if not _gate_open(run_id):
+            return []
+    except Exception:
+        # A capability-policy load/eval failure (e.g. missing policy config in a
+        # stripped-down image) must never fail the world-pulse run: degrade to
+        # no followups.
+        logger.warning(
+            "world_pulse_curiosity_gate_error run_id=%s", run_id, exc_info=True
+        )
         return []
 
     backend = fetch_backend or resolve_fetch_backend()

@@ -115,3 +115,20 @@ def test_backend_error_degrades_to_no_followup(monkeypatch):
     # (success=False, no articles); we still record the followup with empty articles.
     assert len(result) == 1
     assert result[0].articles == []
+
+
+def test_gate_evaluation_error_degrades_to_empty(monkeypatch):
+    def _boom_gate(run_id):
+        raise FileNotFoundError("capability policy config missing")
+
+    monkeypatch.setattr(curiosity, "_gate_open", _boom_gate)
+    result = curiosity.build_curiosity_followups(
+        run_id="r1",
+        section_coverage=_coverage(hardware_compute_gpu="missing"),
+        enabled=True,
+        dry_run=False,
+        max_articles_per_section=5,
+        max_sections=9,
+        fetch_backend=_fake_backend,
+    )
+    assert result == []

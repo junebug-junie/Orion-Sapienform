@@ -1322,6 +1322,7 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     ),
     "OrionTownPersonaV1": SchemaRegistration(
         model=OrionTownPersonaV1, kind="embodiment.persona.v1"
+    ),
     "AttentionSalienceTraceV1": SchemaRegistration(
         model=AttentionSalienceTraceV1,
         kind="attention.salience.trace.v1",

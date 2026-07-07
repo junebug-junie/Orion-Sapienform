@@ -80,7 +80,10 @@ class ProposalRuntimeStore:
             if isinstance(payload, str):
                 payload = json.loads(payload)
             thought = SpontaneousThoughtV1.model_validate(payload)
-            return None if thought.is_hollow() else thought
+            # Trust the stamped hollow decision persisted at generation (incl.
+            # semantic-lift audit-ref grounding); recomputing here would lose that
+            # context and falsely drop a valid thought.
+            return None if thought.hollow else thought
         except Exception:
             return None
 

@@ -34,6 +34,41 @@ def test_move_to_builds_send_input(monkeypatch):
     )
 
 
+def test_list_conversations_from_world_state(monkeypatch):
+    monkeypatch.setenv("AITOWN_WORLD_ID", "w1")
+    ws = {"world": {"conversations": [{"id": "c:1", "participants": []}]}}
+    with patch.object(aitown_client, "convex_query", return_value=ws):
+        convos = aitown_client.list_conversations()
+    assert convos == [{"id": "c:1", "participants": []}]
+
+
+def test_list_messages_queries_convex(monkeypatch):
+    monkeypatch.setenv("AITOWN_WORLD_ID", "w1")
+    with patch.object(aitown_client, "convex_query", return_value=[{"text": "hi"}]) as q:
+        msgs = aitown_client.list_messages("c:1")
+    assert q.call_args.args[0] == "messages:listMessages"
+    assert q.call_args.args[1] == {"worldId": "w1", "conversationId": "c:1"}
+    assert msgs == [{"text": "hi"}]
+
+
+def test_accept_invite_sends_input(monkeypatch):
+    monkeypatch.setenv("AITOWN_WORLD_ID", "w1")
+    with patch.object(aitown_client, "send_input", return_value=None) as s:
+        aitown_client.accept_invite(player_id="p:1", conversation_id="c:1")
+    s.assert_called_once_with(
+        name="acceptInvite", args={"playerId": "p:1", "conversationId": "c:1"}, world_id=None
+    )
+
+
+def test_start_conversation_sends_input(monkeypatch):
+    monkeypatch.setenv("AITOWN_WORLD_ID", "w1")
+    with patch.object(aitown_client, "send_input", return_value=None) as s:
+        aitown_client.start_conversation(player_id="p:1", invitee_id="p:2")
+    s.assert_called_once_with(
+        name="startConversation", args={"playerId": "p:1", "invitee": "p:2"}, world_id=None
+    )
+
+
 def test_get_world_map_returns_map(monkeypatch):
     monkeypatch.setenv("AITOWN_WORLD_ID", "w1")
     gd = {"worldMap": {"width": 2, "height": 2, "objectTiles": []}}

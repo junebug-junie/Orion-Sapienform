@@ -68,10 +68,16 @@ class EmbodimentWorker:
         self._last_conversation_start: Optional[datetime] = None
         self._last_move_at: Optional[datetime] = None
         self._last_idle_wander_at: Optional[datetime] = None
+        self._last_social_attempt_at: Optional[datetime] = None
         # Serializes the two concurrent process_intent callers (consume loop +
         # idle-wander loop) so the move-cooldown read-then-write cannot double-fire.
         self._actuate_lock = asyncio.Lock()
         self._speaking_conversations: set[str] = set()
+        # Conversations Orion has already opened (spoken first in). Guards the
+        # "no messages yet -> open" speech path so a persistently failing message
+        # fetch (which looks like an empty transcript) can't re-trigger an opener
+        # every tick and spam the conversation.
+        self._opened_conversations: set[str] = set()
         self._salience = SalienceState()
         # Conversation-completion tracking for the journal gate (perception delta).
         self._active_conversation_id: Optional[str] = None
@@ -424,8 +430,29 @@ class EmbodimentWorker:
         except Exception:
             logger.exception("embodiment_perception_list_players_failed")
             return None
+        conversations: list = []
         try:
-            perception = build_perception(players=players or [], orion_player_id=player_id)
+            conversations = await asyncio.to_thread(
+                aitown_client.list_conversations, world_id=self._world_id or None
+            ) or []
+        except Exception:
+            logger.debug("embodiment_perception_list_conversations_failed", exc_info=True)
+        # Only fetch the transcript for the conversation Orion is actually
+        # participating in (avoids a query per unrelated town conversation).
+        messages: list = []
+        cid = self._orion_conversation_id(conversations, player_id, want_status="participating")
+        if cid:
+            try:
+                messages = await asyncio.to_thread(
+                    aitown_client.list_messages, cid, world_id=self._world_id or None
+                ) or []
+            except Exception:
+                logger.debug("embodiment_perception_list_messages_failed", exc_info=True)
+        try:
+            perception = build_perception(
+                players=players or [], orion_player_id=player_id,
+                conversations=conversations, messages=messages,
+            )
         except Exception:
             logger.exception("embodiment_perception_build_failed")
             return None
@@ -445,6 +472,77 @@ class EmbodimentWorker:
             return None
         return perception
 
+    @staticmethod
+    def _orion_conversation_id(
+        conversations: list, player_id: str, *, want_status: Optional[str] = None
+    ) -> Optional[str]:
+        for cv in conversations or []:
+            for p in cv.get("participants") or []:
+                if str(p.get("playerId")) == player_id:
+                    status = (p.get("status") or {}).get("kind")
+                    if want_status is None or status == want_status:
+                        return str(cv.get("id"))
+        return None
+
+    # --- conversation engagement --------------------------------------------
+    async def _engage_conversation(self, perception: WorldPerceptionV1) -> None:
+        """Drive Orion into conversations (Orion has no town-AI to do it):
+        accept invites, physically walk to the partner to reach `participating`,
+        and opportunistically initiate with a nearby player when idle. Fail-open."""
+        own = (self._orion_player_id or "").strip()
+        if not own:
+            return
+        convo = perception.active_conversation
+        if convo:
+            status = convo.get("status")
+            cid = str(convo.get("conversation_id") or "")
+            other = convo.get("other") or {}
+            if status == "invited" and cid:
+                try:
+                    await asyncio.to_thread(
+                        aitown_client.accept_invite,
+                        player_id=own, conversation_id=cid, world_id=self._world_id or None,
+                    )
+                except Exception:
+                    logger.debug("embodiment_accept_invite_failed", exc_info=True)
+                return
+            if status == "walkingOver" and other.get("player_id"):
+                # Move onto the partner; AI Town paths us adjacent, which trips the
+                # walkingOver -> participating transition once we're within range.
+                intent = build_intent(
+                    kind="approach_player", source="involuntary",
+                    reason="walk to conversation partner", correlation_id=str(uuid4()),
+                    player_id=own, ref=str(other.get("player_id")),
+                )
+                await self._actuate(intent, now=_utcnow())
+            # `participating` needs no engagement action here; speech is driven by
+            # the turn-taking gate in `_speak_once`.
+            return
+        await self._maybe_initiate_conversation(perception)
+
+    async def _maybe_initiate_conversation(self, perception: WorldPerceptionV1) -> None:
+        dist = float(getattr(self._settings, "social_initiate_distance", 0.0) or 0.0)
+        if dist <= 0:
+            return
+        now = _utcnow()
+        last = self._last_social_attempt_at
+        if last is not None and (now - last).total_seconds() < float(self._social_cooldown_sec):
+            return
+        candidates = [
+            n for n in (perception.nearby_players or [])
+            if n.get("player_id") and float(n.get("distance", 1e9)) <= dist
+        ]
+        if not candidates:
+            return
+        self._last_social_attempt_at = now
+        target = candidates[0]
+        intent = build_intent(
+            kind="start_conversation", source="involuntary",
+            reason="approach nearby player", correlation_id=str(uuid4()),
+            player_id=self._orion_player_id or None, ref=str(target.get("player_id")),
+        )
+        await self._actuate(intent, now=now)
+
     async def _perception_loop(self) -> None:
         interval = self._settings.perception_interval_sec
         while not self._stop.is_set():
@@ -458,15 +556,29 @@ class EmbodimentWorker:
                     await self._journal_from_perception(perception)
                 except Exception:
                     logger.exception("embodiment_memory_loop_failed")
+            if perception is not None and getattr(self._settings, "social_enabled", False):
+                try:
+                    await self._engage_conversation(perception)
+                except Exception:
+                    logger.exception("embodiment_social_loop_failed")
             if perception is not None and getattr(self._settings, "speech_enabled", False):
                 try:
                     await self._speak_once(perception)
                 except Exception:
                     logger.exception("embodiment_speech_loop_failed")
-            try:
-                await self._maybe_idle_wander(now=_utcnow())
-            except Exception:
-                logger.exception("embodiment_idle_wander_failed")
+            # Don't wander off while engaging a conversation — but only when social
+            # engagement is enabled. With it off, a town-initiated invite would
+            # otherwise freeze Orion (suppressed wander + no engagement).
+            in_conversation = (
+                getattr(self._settings, "social_enabled", False)
+                and perception is not None
+                and perception.active_conversation is not None
+            )
+            if not in_conversation:
+                try:
+                    await self._maybe_idle_wander(now=_utcnow())
+                except Exception:
+                    logger.exception("embodiment_idle_wander_failed")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except asyncio.TimeoutError:
@@ -501,8 +613,21 @@ class EmbodimentWorker:
         if not should_speak(perception, own):
             return None
         convo = perception.active_conversation or {}
+        # Only speak once actually participating (not while invited/walkingOver).
+        if (convo.get("status") or "") != "participating":
+            return None
         convo_id = str(convo.get("conversation_id") or convo.get("id") or "")
         if not convo_id or convo_id in self._speaking_conversations:
+            return None
+        # Turn-taking: speak only when it's Orion's turn — the last message is from
+        # someone else, or the conversation is empty and Orion hasn't opened it yet.
+        # Speaking when Orion already spoke last (or re-opening an already-opened
+        # convo whose transcript we failed to read) causes self-echo flood loops.
+        messages = convo.get("messages") or []
+        if messages:
+            if str(messages[-1].get("author_id") or "") == own:
+                return None
+        elif convo_id in self._opened_conversations:
             return None
 
         prompt = build_speech_prompt(perception, own)
@@ -525,6 +650,9 @@ class EmbodimentWorker:
             except Exception:
                 logger.exception("embodiment_speech_inject_failed convo=%s", convo_id)
                 return None
+            if not messages:
+                # Opened the conversation; don't re-open on a later empty transcript.
+                self._opened_conversations.add(convo_id)
             # Record Orion's contribution so the journal gate sees a real exchange
             # when this conversation later completes.
             if convo_id == getattr(self, "_active_conversation_id", None):
@@ -596,7 +724,8 @@ class EmbodimentWorker:
                 "worldId": self._world_id,
                 "conversationId": conversation_id,
                 "messageUuid": message_uuid,
-                "author": own_player_id,
+                # Deployed messages:writeMessage validator requires `playerId` (not `author`).
+                "playerId": own_player_id,
                 "text": text,
             },
         )

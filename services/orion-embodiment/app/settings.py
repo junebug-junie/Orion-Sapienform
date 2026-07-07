@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     cortex_result_prefix: str = Field("orion:exec:result", alias="EMBODIMENT_CORTEX_RESULT_PREFIX")
     memory_enabled: bool = Field(False, alias="EMBODIMENT_MEMORY_ENABLED")
 
+    # Conversation engagement: accept invites, walk to the partner to reach
+    # `participating`, and opportunistically initiate with a nearby player. Orion
+    # has no town-AI agent, so nothing walks it into conversations unless this runs.
+    social_enabled: bool = Field(False, alias="EMBODIMENT_SOCIAL_ENABLED")
+    # Manhattan/euclidean tile distance under which Orion will initiate with a
+    # nearby player when idle and past the social cooldown. 0 = never self-initiate.
+    social_initiate_distance: float = Field(0.0, alias="EMBODIMENT_SOCIAL_INITIATE_DISTANCE")
+
     channel_intent: str = Field("orion:embodiment:intent", alias="EMBODIMENT_CHANNEL_INTENT")
     channel_outcome: str = Field("orion:embodiment:outcome", alias="EMBODIMENT_CHANNEL_OUTCOME")
     channel_perception: str = Field("orion:embodiment:perception", alias="EMBODIMENT_CHANNEL_PERCEPTION")

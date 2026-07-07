@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from orion.harness.operator_brief import HARNESS_MOTOR_MAX_READ_LINES
 from orion.harness.prefix import compile_harness_prefix, harness_motor_instruction
 from orion.harness.tests.fixtures import make_thought
@@ -52,6 +56,43 @@ def test_compile_harness_prefix_ignores_answer_contract() -> None:
     )
     assert "Requires repo grounding" not in prompt
     assert "Answer contract:" not in prompt
+
+
+def test_compile_harness_prefix_includes_github_repo_when_mcp_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HARNESS_FCC_MCP_ENABLED", "true")
+    monkeypatch.setenv("ORION_GITHUB_OWNER", "junebug-junie")
+    monkeypatch.setenv("ORION_GITHUB_REPO", "Orion-Sapienform")
+    thought = make_thought(imperative="List latest PR title.")
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+    )
+    assert "owner='junebug-junie'" in prompt
+    assert "repo='Orion-Sapienform'" in prompt
+    assert "perPage=1" in prompt
+    assert "search_pull_requests" in prompt
+
+
+def test_compile_harness_prefix_resolves_github_repo_from_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root = Path("/mnt/scripts/Orion-Sapienform")
+    if not (repo_root / ".git").is_dir():
+        pytest.skip("workspace git metadata unavailable")
+    monkeypatch.setenv("HARNESS_FCC_MCP_ENABLED", "true")
+    monkeypatch.delenv("ORION_GITHUB_OWNER", raising=False)
+    monkeypatch.delenv("ORION_GITHUB_REPO", raising=False)
+    monkeypatch.delenv("HARNESS_FCC_WORKSPACE", raising=False)
+    thought = make_thought(imperative="List latest PR title.")
+    prompt = compile_harness_prefix(
+        thought,
+        repair_overlay=HarnessRepairOverlayV1(),
+        workspace=str(repo_root),
+    )
+    assert "owner='junebug-junie'" in prompt
+    assert "repo='Orion-Sapienform'" in prompt
 
 
 def test_harness_motor_instruction_imperative_forward() -> None:

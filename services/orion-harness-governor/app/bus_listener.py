@@ -9,7 +9,11 @@ from uuid import UUID, uuid4
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.harness.cortex_client import HarnessCortexClient
-from orion.harness.finalize import emit_post_turn_closure, run_harness_finalize_chain
+from orion.harness.finalize import (
+    DEFAULT_FINALIZE_INTERLOCUTOR,
+    emit_post_turn_closure,
+    run_harness_finalize_chain,
+)
 from orion.harness.repair import map_repair_pressure_contract
 from orion.harness.runner import HarnessRunner
 from orion.harness.substrate_client import HarnessSubstrateClient
@@ -131,6 +135,8 @@ async def handle_harness_run_request(
         cortex_client=cortex,
         substrate_client=_substrate_client,
         bus=bus,
+        embodiment_relational=True,
+        embodiment_interlocutor_ref=DEFAULT_FINALIZE_INTERLOCUTOR,
     )
 
     run = HarnessRunV1(

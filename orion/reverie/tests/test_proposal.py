@@ -87,6 +87,25 @@ def test_evidence_refs_capped():
     assert len(c.evidence_refs) <= 200
 
 
+def test_semantic_lift_audit_ref_thought_survives_proposal_path():
+    # A semantic-lift thought cites an audit ref (a loop source_ref) that is NOT
+    # in strict grounding_ids(). It was stamped non-hollow via extra_grounding.
+    # The proposal path must trust that stamp, not recompute strictly and drop it.
+    t = SpontaneousThoughtV1(
+        thought_id="th-2", correlation_id="c-2",
+        coalition=_coalition(),
+        interpretation=GROUNDED,
+        salience=0.8,
+        evidence_refs=["harness_closure:corr-2"],  # outside strict grounding_ids()
+    ).marked_hollow(extra_grounding={"harness_closure:corr-2"})
+    assert not t.hollow
+    # Sanity: without the stamp's extra_grounding, a strict recompute would drop it.
+    assert t.hollow_reason_for() == "unanchored_evidence_outside_coalition"
+    c = spontaneous_thought_to_candidate(t, self_state_id="ss-1")
+    assert c is not None
+    assert c.thought_id == "th-2"
+
+
 # --- contract: the reverie proposal path must never touch orion-actions --------
 
 def test_reverie_proposal_never_imports_orion_actions():

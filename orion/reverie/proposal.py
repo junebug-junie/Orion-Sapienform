@@ -49,7 +49,10 @@ def spontaneous_thought_to_candidate(
     a reverie can never auto-dispatch on the propose side. Arming auto-action only
     signals intent; a human still gates it at policy/dispatch.
     """
-    if thought is None or thought.is_hollow():
+    # Trust the stamped hollow decision (set by the guard at generation with the
+    # correct grounding context, incl. semantic-lift audit refs). Recomputing via
+    # is_hollow() here would lose that context and falsely drop valid thoughts.
+    if thought is None or thought.hollow:
         return None
     if thought.salience < min_salience:
         return None

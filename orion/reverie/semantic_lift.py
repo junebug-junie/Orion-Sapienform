@@ -131,11 +131,21 @@ def referent_overlap(interpretation: str, cards: list[ConcernCardV1]) -> bool:
 def enforce_semantic_quality(
     thought: SpontaneousThoughtV1,
     cards: list[ConcernCardV1],
+    *,
+    allowed_refs: list[str] | None = None,
 ) -> SpontaneousThoughtV1:
+    """Stamp the hollow guard for the semantic-lift path.
+
+    `allowed_refs` are the coalition audit refs the concern-card prompt authorized
+    the LLM to cite (loop ids + `source_refs`). They widen the base hollow guard's
+    evidence anchor set so a thought citing the concern's own `harness_closure`
+    ref is not falsely dropped as `unanchored_evidence_outside_coalition`.
+    """
     if infra_vocabulary_hit(thought.interpretation):
         return thought.model_copy(update={"hollow": True, "hollow_reason": "infra_vocabulary"})
     if not referent_overlap(thought.interpretation, cards):
         return thought.model_copy(
             update={"hollow": True, "hollow_reason": "unanchored_no_referent_overlap"}
         )
-    return thought.marked_hollow()
+    extra = set(allowed_refs) if allowed_refs else None
+    return thought.marked_hollow(extra_grounding=extra)

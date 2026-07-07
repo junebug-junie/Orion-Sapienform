@@ -98,12 +98,14 @@ class SpontaneousThoughtV1(BaseModel):
         """
         return self.hollow_reason_for() is not None
 
-    def hollow_reason_for(self) -> str | None:
+    def hollow_reason_for(self, extra_grounding: set[str] | None = None) -> str | None:
         if self.coalition is None:
             return "absent_coalition"
         if len(self.interpretation.strip()) < MIN_INTERPRETATION_CHARS:
             return "interpretation_too_short"
         grounding = self.grounding_ids()
+        if extra_grounding:
+            grounding = grounding | set(extra_grounding)
         if not grounding:
             return "zero_grounding"
         if not self.evidence_refs:
@@ -112,9 +114,15 @@ class SpontaneousThoughtV1(BaseModel):
             return "unanchored_evidence_outside_coalition"
         return None
 
-    def marked_hollow(self) -> "SpontaneousThoughtV1":
-        """Return a copy with the hollow flag + reason stamped from the guard."""
-        reason = self.hollow_reason_for()
+    def marked_hollow(self, extra_grounding: set[str] | None = None) -> "SpontaneousThoughtV1":
+        """Return a copy with the hollow flag + reason stamped from the guard.
+
+        `extra_grounding` widens the accepted evidence anchor set. The semantic-
+        lift path passes the coalition audit refs the prompt authorizes (loop
+        `source_refs` / non-selected loops), which the base `grounding_ids()`
+        deliberately excludes for the legacy coalition-narration path.
+        """
+        reason = self.hollow_reason_for(extra_grounding)
         return self.model_copy(update={"hollow": reason is not None, "hollow_reason": reason})
 
 

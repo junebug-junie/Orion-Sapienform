@@ -89,14 +89,13 @@ def _drive_state(trace_id: str) -> DriveStateV1:
     })
 
 
-def test_drive_origin_from_audit_dominant():
-    engine = GoalProposalEngine(cooldown_minutes=0)
-    drive_state = DriveStateV1.model_validate({
+def _drive_state_with_pressures(pressures: dict[str, float]) -> DriveStateV1:
+    return DriveStateV1.model_validate({
         "subject": "orion",
         "model_layer": "self-model",
         "entity_id": "self:orion",
         "kind": "memory.drives.state.v1",
-        "pressures": {"autonomy": 0.95, "relational": 0.4},
+        "pressures": pressures,
         "activations": {},
         "updated_at": datetime.now(timezone.utc),
         "provenance": {
@@ -106,8 +105,28 @@ def test_drive_origin_from_audit_dominant():
             "tension_refs": [],
         },
     })
+
+
+def test_drive_origin_from_audit_dominant():
+    engine = GoalProposalEngine(cooldown_minutes=0)
+    drive_state = _drive_state_with_pressures({"autonomy": 0.95, "relational": 0.4})
     origin = engine._drive_origin(drive_state, dominant_drive="relational", source="audit_dominant")
     assert origin == "relational"
+
+
+def test_drive_origin_from_tick_attribution_dominant():
+    engine = GoalProposalEngine(cooldown_minutes=0)
+    drive_state = _drive_state_with_pressures({"autonomy": 0.95, "relational": 0.4})
+    origin = engine._drive_origin(drive_state, dominant_drive="relational", source="tick_attribution")
+    assert origin == "relational"
+
+
+def test_audit_dominant_alias_maps_to_tick_attribution():
+    engine = GoalProposalEngine(cooldown_minutes=0)
+    drive_state = _drive_state_with_pressures({"autonomy": 0.95, "relational": 0.4})
+    tick_origin = engine._drive_origin(drive_state, dominant_drive="Relational", source="tick_attribution")
+    audit_origin = engine._drive_origin(drive_state, dominant_drive="Relational", source="audit_dominant")
+    assert tick_origin == audit_origin == "relational"
 
 
 def test_signature_stable_when_trace_changes():

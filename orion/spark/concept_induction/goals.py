@@ -32,13 +32,21 @@ class GoalProposalEngine:
         self.cooldown = timedelta(minutes=max(0, cooldown_minutes))
 
     @staticmethod
+    def _normalize_drive_origin_source(source: str) -> str:
+        normalized = source.strip().lower()
+        if normalized == "audit_dominant":
+            return "tick_attribution"
+        return normalized
+
+    @staticmethod
     def _drive_origin(
         drive_state: DriveStateV1,
         *,
         dominant_drive: str | None = None,
         source: str = "pressures",
     ) -> str:
-        if source == "audit_dominant" and dominant_drive:
+        normalized_source = GoalProposalEngine._normalize_drive_origin_source(source)
+        if normalized_source == "tick_attribution" and dominant_drive:
             return dominant_drive.strip().lower()
         if not drive_state.pressures:
             return "continuity"

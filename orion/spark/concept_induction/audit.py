@@ -19,11 +19,23 @@ def build_drive_audit(
     intake_channel: str,
     drive_state: DriveStateV1,
     tensions: Iterable[TensionEventV1],
+    tick_attribution: dict[str, float] | None = None,
+    dominant_drive: str | None = None,
 ) -> DriveAuditV1:
     tension_list = list(tensions)
-    dominant_drive = None
-    if drive_state.pressures:
-        dominant_drive = max(sorted(drive_state.pressures), key=lambda key: drive_state.pressures.get(key, 0.0))
+    if dominant_drive is None:
+        if tick_attribution:
+            from .drive_attribution import dominant_drive_from_attribution, select_lead_tension
+
+            dominant_drive = dominant_drive_from_attribution(
+                tick_attribution,
+                lead_tension=select_lead_tension(tension_list),
+            )
+        elif drive_state.pressures:
+            dominant_drive = max(
+                sorted(drive_state.pressures),
+                key=lambda key: drive_state.pressures.get(key, 0.0),
+            )
     active_drives = [key for key, active in sorted(drive_state.activations.items()) if active]
     evidence_items = build_evidence_items(env, intake_channel, drive_state.provenance.evidence_text)
     source_event_ref = build_source_event_ref(env, intake_channel)
@@ -53,6 +65,7 @@ def build_drive_audit(
         drive_activations=drive_state.activations,
         active_drives=active_drives,
         dominant_drive=dominant_drive,
+        tick_attribution=dict(tick_attribution or {}),
         tension_kinds=tension_kinds,
         source_event_refs=[source_event_ref],
         evidence_items=evidence_items,

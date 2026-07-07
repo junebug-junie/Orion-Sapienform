@@ -16,14 +16,19 @@ from orion.schemas.self_state import SelfStateV1
 from orion.schemas.vector.schemas import VectorWriteRequest
 
 from .audit import build_drive_audit
+from .drive_attribution import (
+    compute_tick_attribution,
+    dominant_drive_from_attribution,
+    select_lead_tension,
+)
 from .drives import DriveEngine, DriveMathConfig, drive_state_from_values
 from .dossier import build_evidence_items, build_source_event_ref, build_turn_dossier, extract_trace_id, extract_turn_id
 from orion.autonomy.episode_journal import dispatch_autonomy_episode_journal
 from orion.autonomy.fetch_backend_resolve import resolve_fetch_backend
 from orion.autonomy.goal_archive import maybe_archive_after_goal_publish
 from orion.autonomy.policy_act import (
-    maybe_compose_autonomy_episode_after_fetch,
-    maybe_execute_readonly_fetch_after_goal,
+    maybe_execute_substrate_act_after_metabolism,
+    resolve_episode_intent,
 )
 from orion.autonomy.substrate_metabolism import metabolize_substrate_signals, metabolism_enabled
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
@@ -533,6 +538,7 @@ class ConceptWorker:
             published_artifacts.append(tension)
 
         metabolism_tensions: List[TensionEventV1] = []
+        metabolism_drive_deltas: dict[str, float] = {}
         metabolism_curiosity_signals: List[FrontierInvocationSignalV1] = []
         metabolism_curiosity_notes: List[str] = []
         spawned_correlation_id: str | None = None
@@ -543,6 +549,7 @@ class ConceptWorker:
                 if metabolism_enabled():
                     metabolism = metabolize_substrate_signals(world_pulse_result=wp_result)
                     metabolism_tensions = list(metabolism.tensions)
+                    metabolism_drive_deltas = dict(metabolism.drive_deltas)
                     metabolism_curiosity_signals = list(metabolism.curiosity_signals)
                     metabolism_curiosity_notes = [
                         str(sig.evidence_summary or "").strip()
@@ -618,7 +625,23 @@ class ConceptWorker:
         )
         await self._publish_drive_state(drive_state, env.correlation_id)
 
-        drive_audit = build_drive_audit(env=env, intake_channel=intake_channel, drive_state=drive_state, tensions=all_tensions)
+        tick_attribution = compute_tick_attribution(
+            all_tensions,
+            metabolism_deltas=metabolism_drive_deltas or None,
+        )
+        lead_tension = select_lead_tension(all_tensions)
+        dominant_drive = dominant_drive_from_attribution(
+            tick_attribution,
+            lead_tension=lead_tension,
+        )
+        drive_audit = build_drive_audit(
+            env=env,
+            intake_channel=intake_channel,
+            drive_state=drive_state,
+            tensions=all_tensions,
+            tick_attribution=tick_attribution,
+            dominant_drive=dominant_drive,
+        )
         await self._publish_artifact(drive_audit, self.cfg.drive_audit_channel, env.correlation_id)
         published_artifacts.append(drive_audit)
 
@@ -652,53 +675,42 @@ class ConceptWorker:
             await self._publish_artifact(goal_decision.proposal, self.cfg.goal_proposal_channel, env.correlation_id)
             published_artifacts.append(goal_decision.proposal)
             maybe_archive_after_goal_publish(subject=subject)
-            if (
-                env.kind == "world.pulse.run.result.v1"
-                and metabolism_enabled()
-                and metabolism_curiosity_signals
-            ):
-                policy_budget: dict[str, int] = {}
-                fetch_outcome = None
-                try:
-                    _fetch_decision, fetch_outcome = await maybe_execute_readonly_fetch_after_goal(
-                        goal=goal_decision.proposal,
-                        drive_state=drive_state,
-                        curiosity_signals=metabolism_curiosity_signals,
-                        spawned_correlation_id=spawned_correlation_id,
-                        fetch_backend=self._fetch_backend,
-                        budget_used=policy_budget,
-                    )
-                except Exception:
-                    logger.warning(
-                        "substrate_policy_fetch_failed goal=%s spawned=%s",
-                        goal_decision.proposal.artifact_id,
-                        spawned_correlation_id,
-                        exc_info=True,
-                    )
-                if fetch_outcome is not None and self.cfg.autonomy_episode_journal_enabled:
-                    try:
-
-                        async def _journal_dispatch(**kwargs):
-                            return await self._dispatch_autonomy_episode_journal(env, **kwargs)
-
-                        await maybe_compose_autonomy_episode_after_fetch(
-                            goal=goal_decision.proposal,
-                            drive_state=drive_state,
-                            curiosity_signals=metabolism_curiosity_signals,
-                            spawned_correlation_id=spawned_correlation_id,
-                            fetch_outcome=fetch_outcome,
-                            budget_used=policy_budget,
-                            journal_dispatch=_journal_dispatch,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "substrate_policy_journal_failed goal=%s spawned=%s",
-                            goal_decision.proposal.artifact_id,
-                            spawned_correlation_id,
-                            exc_info=True,
-                        )
         elif goal_decision.suppressed_signature:
             suppressed_signatures.append(goal_decision.suppressed_signature)
+
+        if (
+            env.kind == "world.pulse.run.result.v1"
+            and metabolism_enabled()
+            and metabolism_curiosity_signals
+            and spawned_correlation_id
+        ):
+            policy_budget: dict[str, int] = {}
+            try:
+
+                async def _journal_dispatch(**kwargs):
+                    return await self._dispatch_autonomy_episode_journal(env, **kwargs)
+
+                await maybe_execute_substrate_act_after_metabolism(
+                    episode_intent=resolve_episode_intent(
+                        store=self.store,
+                        subject=subject,
+                        run_id=spawned_correlation_id,
+                    ),
+                    drive_state=drive_state,
+                    curiosity_signals=metabolism_curiosity_signals,
+                    spawned_correlation_id=spawned_correlation_id,
+                    fetch_backend=self._fetch_backend,
+                    journal_dispatch=_journal_dispatch,
+                    budget_used=policy_budget,
+                    episode_journal_enabled=self.cfg.autonomy_episode_journal_enabled,
+                )
+            except Exception:
+                logger.warning(
+                    "substrate_act_after_metabolism_failed subject=%s spawned=%s",
+                    subject,
+                    spawned_correlation_id,
+                    exc_info=True,
+                )
 
         dossier = build_turn_dossier(
             env=env,

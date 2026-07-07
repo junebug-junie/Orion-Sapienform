@@ -129,7 +129,7 @@ class ConceptSettings(BaseSettings):
     drive_activation_off: float = Field(0.42, alias="DRIVE_ACTIVATION_OFF")
     goal_proposal_cooldown_minutes: int = Field(180, alias="GOAL_PROPOSAL_COOLDOWN_MINUTES")
     goal_generation_mode: str = Field("evidence_rules", alias="GOAL_GENERATION_MODE")
-    goal_drive_origin_source: str = Field("audit_dominant", alias="GOAL_DRIVE_ORIGIN_SOURCE")
+    goal_drive_origin_source: str = Field("tick_attribution", alias="GOAL_DRIVE_ORIGIN_SOURCE")
     substrate_autonomy_metabolism_enabled: bool = Field(
         False,
         alias="ORION_SUBSTRATE_AUTONOMY_METABOLISM_ENABLED",

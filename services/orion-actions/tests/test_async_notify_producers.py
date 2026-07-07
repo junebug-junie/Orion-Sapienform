@@ -8,6 +8,7 @@ from app.main import (
     ACTION_DAILY_PULSE_V1,
     _build_post_persist_journal_email_request,
     _build_post_persist_journal_message_payload,
+    _should_email_persisted_journal,
     _daily_notify_request,
     _build_scheduler_daily_journal_email_request,
     _build_scheduler_daily_journal_message_payload,
@@ -281,6 +282,43 @@ def test_post_persist_journal_helpers_build_message_and_email_request() -> None:
     assert email_req.channels_requested == ["email"]
     assert email_req.dedupe_key == "actions:journal:persisted:entry-post-1"
     assert email_req.body_text == message_payload["full_text"]
+
+
+def test_post_persist_email_gate_excludes_embodiment_source_kind() -> None:
+    excluded = {"embodiment"}
+    town = JournalEntryWriteV1(
+        entry_id="entry-town-1",
+        author="orion",
+        mode="digest",
+        title="Town episode",
+        body="Conversation with Alice in the town.",
+        source_kind="embodiment",
+        source_ref="c:1234",
+        correlation_id="corr-town-1",
+    )
+    manual = JournalEntryWriteV1(
+        entry_id="entry-manual-1",
+        author="orion",
+        mode="manual",
+        title="Manual entry",
+        body="Captured insight text.",
+        source_kind="manual",
+        source_ref="manual-1",
+        correlation_id="corr-manual-1",
+    )
+    # Town/embodiment episodes are journaled but NOT emailed.
+    assert _should_email_persisted_journal(entry=town, excluded_source_kinds=excluded) is False
+    # Non-excluded source kinds still email.
+    assert _should_email_persisted_journal(entry=manual, excluded_source_kinds=excluded) is True
+    # Empty exclusion set emails everything (the shipped default excludes "embodiment").
+    assert _should_email_persisted_journal(entry=town, excluded_source_kinds=set()) is True
+
+
+def test_post_persist_email_excluded_source_kinds_parses_csv() -> None:
+    parsed = settings.__class__(
+        ACTIONS_JOURNAL_POST_PERSIST_EMAIL_EXCLUDE_SOURCE_KINDS="Embodiment, world_pulse ,"
+    ).post_persist_email_excluded_source_kinds()
+    assert parsed == {"embodiment", "world_pulse"}
 
 
 def test_send_pending_attention_routes_to_attention_request() -> None:

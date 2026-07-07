@@ -796,6 +796,19 @@ def _build_post_persist_journal_message_payload(
     }
 
 
+def _should_email_persisted_journal(
+    *, entry: JournalEntryWriteV1, excluded_source_kinds: set[str]
+) -> bool:
+    """Pure gate: should a persisted journal entry be emailed?
+
+    The email is suppressed when the entry's ``source_kind`` is in the configured
+    exclusion set (e.g. ``embodiment`` town episodes). In-app notification and the
+    journal write itself are unaffected — this only governs the email channel.
+    """
+    source_kind = str(entry.source_kind or "").strip().lower()
+    return source_kind not in excluded_source_kinds
+
+
 def _build_post_persist_journal_email_request(
     *,
     entry: JournalEntryWriteV1,
@@ -1657,23 +1670,37 @@ async def lifespan(app: FastAPI):
                     getattr(in_app_result, "detail", None),
                 )
 
-            email_req = _build_post_persist_journal_email_request(entry=entry, correlation_id=correlation_id)
-            email_result = await asyncio.to_thread(notify.send, email_req)
-            email_ok = bool(getattr(email_result, "ok", False))
-            if email_ok:
+            # Gate the EMAIL only (not in-app, not the journal write) by source_kind.
+            # Town/embodiment episodes journal + show in-app but must not email-flood.
+            if not _should_email_persisted_journal(
+                entry=entry,
+                excluded_source_kinds=settings.post_persist_email_excluded_source_kinds(),
+            ):
+                email_ok = True  # not required -> don't block dedupe completion
                 logger.info(
-                    "journal_post_persist_email_sent correlation_id=%s entry_id=%s notification_id=%s",
+                    "journal_post_persist_email_skipped correlation_id=%s entry_id=%s source_kind=%s reason=source_kind_excluded",
                     correlation_id,
                     entry.entry_id,
-                    getattr(email_result, "notification_id", None),
+                    str(entry.source_kind or ""),
                 )
             else:
-                logger.warning(
-                    "journal_post_persist_email_failed correlation_id=%s entry_id=%s detail=%s",
-                    correlation_id,
-                    entry.entry_id,
-                    getattr(email_result, "detail", None),
-                )
+                email_req = _build_post_persist_journal_email_request(entry=entry, correlation_id=correlation_id)
+                email_result = await asyncio.to_thread(notify.send, email_req)
+                email_ok = bool(getattr(email_result, "ok", False))
+                if email_ok:
+                    logger.info(
+                        "journal_post_persist_email_sent correlation_id=%s entry_id=%s notification_id=%s",
+                        correlation_id,
+                        entry.entry_id,
+                        getattr(email_result, "notification_id", None),
+                    )
+                else:
+                    logger.warning(
+                        "journal_post_persist_email_failed correlation_id=%s entry_id=%s detail=%s",
+                        correlation_id,
+                        entry.entry_id,
+                        getattr(email_result, "detail", None),
+                    )
 
             if in_app_ok and email_ok:
                 journal_post_persist_deduper.mark_done(dedupe_key)

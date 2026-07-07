@@ -144,6 +144,12 @@ class Settings(BaseSettings):
     actions_journal_write_channel: str = Field("orion:journal:write", alias="ACTIONS_JOURNAL_WRITE_CHANNEL")
     actions_journal_created_channel: str = Field("orion:journal:created", alias="ACTIONS_JOURNAL_CREATED_CHANNEL")
     actions_journal_post_persist_notify_enabled: bool = Field(True, alias="ACTIONS_JOURNAL_POST_PERSIST_NOTIFY_ENABLED")
+    # Journal source_kinds excluded from the post-persist EMAIL only (in-app + the
+    # journal write itself are unaffected). Town/embodiment episodes journal and
+    # show in-app, but must not flood Juniper's inbox. Comma-separated.
+    actions_journal_post_persist_email_exclude_source_kinds: str = Field(
+        "embodiment", alias="ACTIONS_JOURNAL_POST_PERSIST_EMAIL_EXCLUDE_SOURCE_KINDS"
+    )
 
     actions_workflow_schedule_store_path: str = Field("/tmp/orion-actions/workflow_schedules.json", alias="ACTIONS_WORKFLOW_SCHEDULE_STORE_PATH")
     actions_scheduler_cursor_store_path: str = Field("", alias="ACTIONS_SCHEDULER_CURSOR_STORE_PATH")
@@ -199,6 +205,10 @@ class Settings(BaseSettings):
         if self.actions_subscribe_channel and self.actions_subscribe_channel not in values:
             values.append(self.actions_subscribe_channel)
         return values
+
+    def post_persist_email_excluded_source_kinds(self) -> set[str]:
+        raw = self.actions_journal_post_persist_email_exclude_source_kinds or ""
+        return {v.strip().lower() for v in str(raw).split(",") if v.strip()}
 
 
 @lru_cache(maxsize=1)

@@ -143,6 +143,8 @@ SYNC_EXACT = frozenset(
         "ORION_DREAM_COMPACTION_DOWNSCALE_ONLY",
         "DREAM_COMPACTION_SNAPSHOT_DIR",
         "GOAL_DRIVE_ORIGIN_SOURCE",
+        # Keep town/embodiment journals out of Juniper's inbox (email gate, keeps journaling).
+        "ACTIONS_JOURNAL_POST_PERSIST_EMAIL_EXCLUDE_SOURCE_KINDS",
         # Worker log level (stdlib->loguru bridge) — must stay in sync so traces are visible.
         "LOG_LEVEL",
     }

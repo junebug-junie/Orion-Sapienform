@@ -147,3 +147,5 @@ class HarnessRunV1(BaseModel):
     compliance_verdict: Literal["completed", "partial", "failed", "refused"]
     grounding_status: str
     grammar_event_ids: list[str] = Field(default_factory=list)
+    recall_debug: dict[str, Any] | None = None
+    memory_digest: str | None = None

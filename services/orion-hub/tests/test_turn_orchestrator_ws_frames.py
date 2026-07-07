@@ -29,7 +29,7 @@ os.environ.setdefault("CHANNEL_VOICE_TTS", "orion:voice:tts")
 os.environ.setdefault("CHANNEL_COLLAPSE_INTAKE", "orion:collapse:intake")
 os.environ.setdefault("CHANNEL_COLLAPSE_TRIAGE", "orion:collapse:triage")
 
-from orion.hub.turn_orchestrator import execute_unified_turn
+from orion.hub.turn_orchestrator import _success_frames, execute_unified_turn
 from orion.schemas.harness_finalize import HarnessRunV1
 from orion.schemas.thought import (
     HubAssociationBundleV1,
@@ -316,3 +316,42 @@ async def test_turn_orchestrator_passes_empty_answer_contract_not_heuristic() ->
 def test_turn_orchestrator_source_has_no_heuristic_answer_contract() -> None:
     source = (REPO_ROOT / "orion/hub/turn_orchestrator.py").read_text(encoding="utf-8")
     assert "heuristic_answer_contract" not in source
+
+
+def test_success_frames_final_includes_recall_when_present() -> None:
+    recall_debug = {
+        "source": "pcr_phase3",
+        "pcr_ran": True,
+        "memory_digest": "recalled: prior turn about X",
+    }
+    run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="answer",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+        recall_debug=recall_debug,
+        memory_digest="recalled: prior turn about X",
+    )
+    frames = _success_frames(run, correlation_id="corr-1")
+    final_frame = next(frame for frame in frames if frame["type"] == "final")
+    assert final_frame["recall_debug"] == run.recall_debug
+    assert final_frame["memory_digest"] == "recalled: prior turn about X"
+
+
+def test_success_frames_final_omits_recall_when_absent() -> None:
+    run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="answer",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+        recall_debug=None,
+        memory_digest=None,
+    )
+    frames = _success_frames(run, correlation_id="corr-1")
+    final_frame = next(frame for frame in frames if frame["type"] == "final")
+    assert "recall_debug" not in final_frame
+    assert "memory_digest" not in final_frame

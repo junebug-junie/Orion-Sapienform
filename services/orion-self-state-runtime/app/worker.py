@@ -11,6 +11,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.resilience import publish_with_reconnect
 from orion.identity.snapshot import build_identity_snapshot
+from orion.schemas.embodiment import WorldPerceptionV1
 from orion.schemas.self_state import SelfStateV1
 from orion.self_state.builder import build_self_state
 from orion.self_state.policy import load_self_state_policy
@@ -27,6 +28,9 @@ logger = logging.getLogger("orion.self_state.runtime")
 
 _bus: Optional[OrionBusAsync] = None
 _IDENTITY_SNAPSHOT_EVERY_N = 10
+# Age gate for the embodied-perception grounding input: stale perception must
+# not keep asserting "I am near X" long after the town view went quiet.
+_PERCEPTION_MAX_AGE_SEC = 600.0
 
 
 def set_publisher_bus(bus: OrionBusAsync) -> None:
@@ -45,10 +49,24 @@ class SelfStateRuntimeWorker:
         self._policy = load_self_state_policy(Path(self._settings.self_state_policy_path))
         self._stop = asyncio.Event()
         self._tick_count = 0
+        # Latest embodied town perception cached off the bus (best-effort,
+        # age-gated observability input). Default-off; None until observed.
+        self._latest_perception: Optional[WorldPerceptionV1] = None
+        self._latest_perception_at: Optional[datetime] = None
 
     async def start(self) -> None:
         asyncio.create_task(self._poll_loop(), name="self-state-runtime-poll")
         asyncio.create_task(self._prune_loop(), name="self-state-runtime-prune")
+        # Gated + fail-open: only subscribe to town perception when enabled and
+        # the publisher bus is live.
+        if (
+            self._settings.embodiment_perception_selfstate_enabled
+            and _bus is not None
+            and _bus.enabled
+        ):
+            asyncio.create_task(
+                self._perception_listener_loop(), name="self-state-runtime-perception"
+            )
 
     async def stop(self) -> None:
         self._stop.set()
@@ -98,6 +116,83 @@ class SelfStateRuntimeWorker:
                 continue
             except asyncio.CancelledError:
                 break
+
+    def cache_perception(
+        self, perception: WorldPerceptionV1, *, now: Optional[datetime] = None
+    ) -> bool:
+        """Cache the latest town perception as a best-effort observability input.
+
+        Gated by ``embodiment_perception_selfstate_enabled``; when disabled the
+        perception is ignored (returns ``False``). Fail-open by construction.
+        """
+        if not self._settings.embodiment_perception_selfstate_enabled:
+            return False
+        self._latest_perception = perception
+        self._latest_perception_at = now or datetime.now(timezone.utc)
+        return True
+
+    def perception_input(self, *, now: Optional[datetime] = None) -> Optional[dict]:
+        """Return the age-gated embodied-perception grounding signal, or ``None``.
+
+        Mirrors the ``hub_presence``/``attention_broadcast`` observability inputs:
+        returns ``None`` when disabled, unset, or stale so ``build_self_state``
+        degrades to defaults.
+        """
+        if not self._settings.embodiment_perception_selfstate_enabled:
+            return None
+        perception = self._latest_perception
+        observed_at = self._latest_perception_at
+        if perception is None or observed_at is None:
+            return None
+        ref = now or datetime.now(timezone.utc)
+        if observed_at.tzinfo is None:
+            observed_at = observed_at.replace(tzinfo=timezone.utc)
+        if (ref - observed_at).total_seconds() > _PERCEPTION_MAX_AGE_SEC:
+            return None
+        return {
+            "player_id": perception.player_id,
+            "position": dict(perception.position or {}),
+            "nearby_count": len(perception.nearby_players or []),
+            "as_of": observed_at.isoformat(),
+        }
+
+    async def _perception_listener_loop(self) -> None:
+        channel = self._settings.embodiment_channel_perception
+        logger.info("self_state_embodiment_perception subscribing channel=%s", channel)
+        try:
+            async with _bus.subscribe(channel) as pubsub:
+                while not self._stop.is_set():
+                    try:
+                        msg = await asyncio.wait_for(
+                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
+                            timeout=1.2,
+                        )
+                    except asyncio.TimeoutError:
+                        continue
+                    except asyncio.CancelledError:
+                        break
+                    if not msg or msg.get("type") not in ("message", "pmessage"):
+                        continue
+                    try:
+                        self._handle_perception_message(msg)
+                    except Exception:
+                        logger.exception("self_state_embodiment_perception_handle_failed")
+        except asyncio.CancelledError:
+            raise
+        finally:
+            logger.info("self_state_embodiment_perception stopped channel=%s", channel)
+
+    def _handle_perception_message(self, raw_msg: dict) -> None:
+        decoded = _bus.codec.decode(raw_msg.get("data"))
+        if not decoded.ok:
+            logger.warning("self_state_embodiment_perception_decode_failed: %s", decoded.error)
+            return
+        try:
+            perception = WorldPerceptionV1.model_validate(decoded.envelope.payload or {})
+        except ValueError as exc:
+            logger.error("self_state_embodiment_perception_invalid err=%s", exc)
+            return
+        self.cache_perception(perception)
 
     async def _publish_self_state(self, state: SelfStateV1) -> None:
         envelope = BaseEnvelope(
@@ -157,6 +252,14 @@ class SelfStateRuntimeWorker:
         # None when absent/stale, so build_self_state degrades to defaults.
         attention_broadcast = self._store.load_latest_attention_broadcast()
         hub_presence = self._store.load_hub_presence()
+
+        # Fold the embodied "I am near X" grounding signal into hub_presence so
+        # it threads through build_self_state without touching the shared builder.
+        # Gated + age-gated inside perception_input; None when absent/disabled.
+        perception_input = self.perception_input()
+        if perception_input is not None:
+            hub_presence = dict(hub_presence or {})
+            hub_presence["embodiment"] = perception_input
 
         state = build_self_state(
             field=field,

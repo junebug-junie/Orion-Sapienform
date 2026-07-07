@@ -35,6 +35,16 @@ class Settings(BaseSettings):
         alias="CHANNEL_SUBSTRATE_SELF_STATE",
     )
 
+    # Orion embodiment perception grounding — default off / empty-safe.
+    # When enabled, cache the latest WorldPerceptionV1 off the bus and fold an
+    # "I am embodied near X" signal into hub_presence-style grounding.
+    embodiment_perception_selfstate_enabled: bool = Field(
+        False, alias="EMBODIMENT_PERCEPTION_SELFSTATE_ENABLED"
+    )
+    embodiment_channel_perception: str = Field(
+        "orion:embodiment:perception", alias="EMBODIMENT_CHANNEL_PERCEPTION"
+    )
+
 
 _settings: Settings | None = None
 

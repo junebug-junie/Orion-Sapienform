@@ -73,6 +73,16 @@ PROGRESS_PATH = OUTPUT_DIR / "progress.log"
 
 DEFAULT_POSTGRES_URI = "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney"
 
+# Durable drive co-activation source. DriveAuditV1 is ephemeral on the bus
+# (redis pub/sub, no history), but orion-rdf-writer persists every audit to
+# Fuseki with one `orion:highlightsActiveDrive` triple per active drive — so
+# COUNT(highlightsActiveDrive) per audit == len(active_drives). We read that
+# durable time-series instead of the un-replayable pub/sub channel.
+ORION_NS = "http://conjourney.net/orion#"
+AUTONOMY_DRIVES_GRAPH = "http://conjourney.net/graph/autonomy/drives"
+DEFAULT_FUSEKI_QUERY_URL = "http://orion-athena-fuseki:3030/orion/query"
+FUSEKI_TIMEOUT_SEC = 30.0
+
 
 # ===========================================================================
 # Normalized in-memory records (pure layer boundary types)
@@ -321,6 +331,56 @@ def compute_drive_stats(records: list[DriveAuditRecord]) -> DriveStats:
     )
 
 
+def build_drive_audit_sparql(since: datetime, graph_uri: str = AUTONOMY_DRIVES_GRAPH) -> str:
+    """SPARQL SELECT: active-drive count per DriveAudit artifact since ``since``.
+
+    ``COUNT(DISTINCT highlightsActiveDrive)`` for an audit equals that audit's
+    ``len(active_drives)`` because orion-rdf-writer emits exactly one
+    ``orion:highlightsActiveDrive`` triple per active drive. Pure (returns a
+    string) so it is unit-testable without a SPARQL endpoint.
+    """
+
+    since_iso = _as_utc(since).isoformat()
+    return (
+        f"PREFIX orion: <{ORION_NS}>\n"
+        "PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>\n"
+        "SELECT ?audit ?ts (COUNT(DISTINCT ?d) AS ?activeCount) WHERE {\n"
+        f"  GRAPH <{graph_uri}> {{\n"
+        "    ?audit a orion:DriveAudit ;\n"
+        "           orion:timestamp ?ts .\n"
+        "    OPTIONAL { ?audit orion:highlightsActiveDrive ?d . }\n"
+        f'    FILTER (?ts >= "{since_iso}"^^xsd:dateTime)\n'
+        "  }\n"
+        "} GROUP BY ?audit ?ts ORDER BY ?ts"
+    )
+
+
+def parse_sparql_drive_bindings(bindings: Iterable[dict]) -> list[DriveAuditRecord]:
+    """Parse SPARQL-results-JSON bindings into DriveAuditRecords.
+
+    Each binding carries ``ts`` (dateTime literal) and ``activeCount`` (integer
+    literal). Rows without a parseable timestamp are skipped; a missing/bad
+    count degrades to 0. Never raises. Pure + unit-testable.
+    """
+
+    out: list[DriveAuditRecord] = []
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            continue
+        ts_node = binding.get("ts")
+        ts = _coerce_dt(ts_node.get("value")) if isinstance(ts_node, dict) else None
+        if ts is None:
+            continue
+        cnt_node = binding.get("activeCount")
+        raw_cnt = cnt_node.get("value") if isinstance(cnt_node, dict) else None
+        try:
+            active_count = int(raw_cnt)
+        except (TypeError, ValueError):
+            active_count = 0
+        out.append(DriveAuditRecord(ts=ts, active_count=max(0, active_count)))
+    return out
+
+
 def verdict_drift(silent: SelfStateMetrics, busy: SelfStateMetrics) -> str:
     """Verdict (a): GO iff silent-bucket self-state genuinely drifts.
 
@@ -508,86 +568,57 @@ def fetch_receipt_timestamps(conn, since: datetime, max_rows: int = MAX_ROWS) ->
     return out, len(rows) >= max_rows
 
 
-def _extract_drive_audit(entry_fields: dict) -> Optional[DriveAuditRecord]:
-    """Best-effort decode of one XRANGE entry into a DriveAuditRecord."""
-
-    data = entry_fields.get("data") or entry_fields.get(b"data")
-    if data is None:
-        # Some producers store the raw payload fields directly.
-        data = entry_fields
-    if isinstance(data, (bytes, bytearray)):
-        data = data.decode("utf-8", "ignore")
-    if isinstance(data, str):
-        try:
-            data = json.loads(data)
-        except Exception:
-            return None
-    if not isinstance(data, dict):
-        return None
-    payload = data.get("payload") if data.get("schema") == "orion.envelope" else data
-    if not isinstance(payload, dict):
-        payload = data
-    active = payload.get("active_drives")
-    active_count = len(active) if isinstance(active, list) else 0
-    ts = _coerce_dt(payload.get("ts") or payload.get("generated_at") or payload.get("updated_at"))
-    if ts is None:
-        return None
-    return DriveAuditRecord(ts=ts, active_count=active_count)
-
-
 def fetch_drive_audit_records(
-    bus_url: str,
-    channel: str,
+    query_url: str,
     since: datetime,
-    max_rows: int = MAX_ROWS,
+    graph_uri: str = AUTONOMY_DRIVES_GRAPH,
+    timeout_sec: float = FUSEKI_TIMEOUT_SEC,
 ) -> tuple[list[DriveAuditRecord], str]:
-    """Replay the drive-audit stream via read-only XRANGE.
+    """Read durable drive co-activation history from Fuseki via read-only SPARQL.
 
-    Returns (records, coverage_note). Degrades to ([], note) whenever redis is
-    unavailable, the stream key is absent/trimmed, or nothing parses.
+    The bus audit channel (``orion:memory:drives:audit``) is redis pub/sub with
+    no replayable history, so it is useless for a backward-looking measurement.
+    orion-rdf-writer, however, persists every DriveAuditV1 to the Fuseki
+    autonomy/drives graph as a timestamped artifact with one
+    ``orion:highlightsActiveDrive`` triple per active drive — a real historical
+    time-series. We SPARQL-COUNT those to recover per-audit co-activation.
+
+    Read-only SPARQL SELECT (no UPDATE). Returns (records, coverage_note);
+    degrades to ([], note) on any endpoint/parse failure — never raises.
     """
 
+    if not query_url:
+        return [], "drive co-activation unavailable: no AUTONOMY_GRAPH_QUERY_URL configured"
+
+    import urllib.error  # lazy imports keep module import I/O-free for tests
+    import urllib.parse
+    import urllib.request
+
+    sparql = build_drive_audit_sparql(since, graph_uri)
+    body = urllib.parse.urlencode({"query": sparql}).encode("utf-8")
+    req = urllib.request.Request(
+        query_url,
+        data=body,
+        headers={
+            "Accept": "application/sparql-results+json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        method="POST",
+    )
     try:
-        import redis  # lazy import so tests import this module without redis
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
     except Exception:
-        return [], "drive stream unavailable: redis client not importable"
+        logger.error("drive-audit SPARQL query failed", exc_info=True)
+        return [], f"drive co-activation unavailable: SPARQL query to {query_url} failed"
 
-    try:
-        client = redis.from_url(bus_url)
-    except Exception:
-        return [], f"drive stream unavailable: bad bus url {bus_url!r}"
+    bindings = (((payload or {}).get("results") or {}).get("bindings")) or []
+    records = parse_sparql_drive_bindings(bindings)
+    if not records:
+        return [], f"drive co-activation: Fuseki returned no DriveAudit rows since {since.isoformat()}"
 
-    # Redis stream ids are millisecond-epoch prefixed; bound the scan by `since`.
-    start_id = f"{int(since.timestamp() * 1000)}-0"
-    try:
-        entries = client.xrange(channel, min=start_id, max="+", count=max_rows)
-    except Exception:
-        return [], "drive stream unavailable: XRANGE failed (channel may be pub/sub-only, not a stream)"
-    finally:
-        try:
-            client.close()
-        except Exception:
-            pass
-
-    if not entries:
-        return [], f"drive stream empty for channel {channel!r} since {since.isoformat()}"
-
-    out: list[DriveAuditRecord] = []
-    for _entry_id, fields in entries:
-        decoded_fields: dict = {}
-        if isinstance(fields, dict):
-            for k, v in fields.items():
-                key = k.decode() if isinstance(k, (bytes, bytearray)) else k
-                decoded_fields[key] = v
-        rec = _extract_drive_audit(decoded_fields)
-        if rec is not None:
-            out.append(rec)
-
-    if not out:
-        return [], f"drive stream present but no parseable audit records for {channel!r}"
-
-    span_days = (max(r.ts for r in out) - min(r.ts for r in out)).total_seconds() / 86400.0
-    return out, f"drive stream coverage: {len(out)} records spanning {span_days:.2f} days"
+    span_days = (max(r.ts for r in records) - min(r.ts for r in records)).total_seconds() / 86400.0
+    return records, f"drive co-activation: {len(records)} DriveAudit rows spanning {span_days:.2f} days (Fuseki)"
 
 
 # ===========================================================================
@@ -723,8 +754,7 @@ def run(window_days: int) -> int:
     now = datetime.now(timezone.utc)
     window_start = now - timedelta(days=window_days)
     dsn = os.environ.get("POSTGRES_URI", DEFAULT_POSTGRES_URI)
-    bus_url = os.environ.get("ORION_BUS_URL", "")
-    drive_channel = os.environ.get("CHANNEL_MEMORY_DRIVES_AUDIT", "orion:memory:drives:audit")
+    fuseki_url = os.environ.get("AUTONOMY_GRAPH_QUERY_URL", DEFAULT_FUSEKI_QUERY_URL)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     progress = ProgressLog(PROGRESS_PATH)
@@ -757,7 +787,7 @@ def run(window_days: int) -> int:
     turn_timestamps: list[datetime] = []
     caveats.append("turns unavailable, turn_count=0 (no turn store wired into this measurement)")
 
-    drive_records, coverage_note = fetch_drive_audit_records(bus_url, drive_channel, window_start)
+    drive_records, coverage_note = fetch_drive_audit_records(fuseki_url, window_start)
     caveats.append(coverage_note)
     if not drive_records:
         anomalies += 1

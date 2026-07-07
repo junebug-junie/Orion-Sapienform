@@ -10,7 +10,7 @@
 
 **Architecture:** A single read-only analysis worker queries durable Postgres history (`substrate_self_state`, `substrate_field_state`) and replays the drive-audit bus stream (or its projection), buckets time into windows, classifies each window as *silent* vs *busy* from receipt/turn activity, and computes drift/co-activation/resource-pressure statistics per class. Output is `/tmp/autonomy-gate/report.md` plus `before_after.csv`, following the §14 read-only-analysis + monitoring protocol (no data snapshot needed; progress log required).
 
-**Tech Stack:** Python 3.12, psycopg2 (read-only), `OrionBusAsync` (stream replay, read-only `XRANGE`), pandas or stdlib statistics. No new dependencies if stdlib `statistics` suffices.
+**Tech Stack:** Python 3.12, psycopg2 (read-only), stdlib `urllib` (read-only Fuseki SPARQL SELECT), stdlib `statistics`/`csv`. No new dependencies.
 
 **Related specs (gated by this plan):**
 - `docs/superpowers/specs/2026-07-07-endogenous-drive-origination-design.md` (Step 1 — gated by verdict a)
@@ -31,7 +31,7 @@ cd ../Orion-Sapienform-autonomy-gate
 
 - **`substrate_self_state`** — durable `SelfStateV1` rows (`services/orion-self-state-runtime/app/store.py:54`, pruned by `self_state_id`). Carries `dimensions{…}.score`, `dimension_trajectory`, `trajectory_condition`, `overall_surprise`, `generated_at`, and `source_field_tick_id`.
 - **`substrate_field_state`** — field ticks (`services/orion-field-digester/app/store.py`). Since the heartbeat pacemaker, ticks mint even in silence, so tick presence ≠ activity; use **reduction-receipt counts** (`fetch_new_receipts`) as the true "was there exogenous input" signal.
-- **Drive activity** — bus channels `orion:memory:drives:state` (`DriveStateV1.activations: Dict[str,bool]`) and `orion:memory:drives:audit` (`DriveAuditV1.active_drives: list[str]`, `dominant_drive`). `active_drives` length is the direct co-activation metric.
+- **Drive activity (durable source)** — the bus audit channel `orion:memory:drives:audit` is redis **pub/sub with no replayable history**, so it is useless for a backward-looking measurement. `orion-rdf-writer` (`app/autonomy.py::_handle_drive_audit`) persists **every** `DriveAuditV1` to the Fuseki graph `http://conjourney.net/graph/autonomy/drives` as a timestamped `orion:DriveAudit` artifact with one `orion:highlightsActiveDrive` triple per active drive — a real historical time-series. Co-activation is `COUNT(DISTINCT highlightsActiveDrive)` per audit, read via a read-only SPARQL SELECT against `AUTONOMY_GRAPH_QUERY_URL` (default `http://orion-athena-fuseki:3030/orion/query`).
 - **`resource_pressure`** — `substrate_self_state.dimensions['resource_pressure'].score`, computed real in `orion/self_state/builder.py:194-203` (not stubbed; defaults 0.0).
 - **DSN** — `POSTGRES_URI=postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney`. **Read-only**: connection opened with `SET default_transaction_read_only = on`.
 
@@ -85,7 +85,7 @@ Thresholds are the seed decision boundary; the report prints the raw numbers so 
 - [ ] **Step 1:** Open a **read-only** psycopg2 connection (`SET default_transaction_read_only = on`) to `POSTGRES_URI`. Fail loudly if the session is not read-only.
 - [ ] **Step 2:** Load `substrate_self_state` rows for the window ordered by `generated_at`; parse `dimensions`, `dimension_trajectory`, `trajectory_condition`, `overall_surprise`, `resource_pressure`.
 - [ ] **Step 3:** Load reduction-receipt timestamps and (if available) turn timestamps for the window; build the silent/busy bucket map (`WINDOW_SEC`).
-- [ ] **Step 4:** Replay `orion:memory:drives:audit` via read-only `XRANGE` over the window; extract `len(active_drives)` per event. If the stream is trimmed shorter than the window, fall back to whatever SQL projection exists and record the actual coverage in the report.
+- [ ] **Step 4:** Query the durable Fuseki drives graph via read-only SPARQL SELECT (`build_drive_audit_sparql`): per `orion:DriveAudit` artifact since the window start, `COUNT(DISTINCT ?highlightsActiveDrive)` = that audit's active-drive count. Parse results-JSON bindings (`parse_sparql_drive_bindings`) into `DriveAuditRecord`s; record actual coverage span in the report. Degrade to empty + note if the endpoint is unreachable.
 - [ ] **Step 5:** Compute all Q(a) and Q(b) metrics; apply the verdict rules.
 - [ ] **Step 6:** Write `/tmp/autonomy-gate/report.md` (verdicts + numbers + coverage caveats), `/tmp/autonomy-gate/before_after.csv` (silent-vs-busy per-metric rows), and stream progress to `/tmp/autonomy-gate/progress.log` (§14: event title, % done, rows processed/total, rate, anomalies).
 

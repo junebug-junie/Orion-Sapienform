@@ -209,3 +209,53 @@ def test_percentile_and_median():
     assert stats.median == 0.3
     assert stats.p90 == pytest.approx(0.7, abs=1e-9)
     assert stats.frac_gt_level == pytest.approx(3 / 5)
+
+
+# ---------------------------------------------------------------------------
+# 7. Durable drive-audit source (Fuseki SPARQL) — pure query + parse layer
+# ---------------------------------------------------------------------------
+def test_build_drive_audit_sparql_shape():
+    q = mod.build_drive_audit_sparql(BASE)
+    assert mod.AUTONOMY_DRIVES_GRAPH in q
+    assert "orion:DriveAudit" in q
+    assert "orion:highlightsActiveDrive" in q
+    assert "COUNT(DISTINCT ?d)" in q
+    assert "orion:timestamp ?ts" in q
+    assert BASE.isoformat() in q  # window bound is applied
+    assert "FILTER" in q
+
+
+def _binding(ts_iso: str, count: str) -> dict:
+    return {
+        "audit": {"type": "uri", "value": f"http://x/{ts_iso}"},
+        "ts": {"type": "literal", "value": ts_iso},
+        "activeCount": {"type": "literal", "value": count},
+    }
+
+
+def test_parse_sparql_drive_bindings_happy():
+    bindings = [
+        _binding("2026-07-01T00:00:00+00:00", "2"),
+        _binding("2026-07-01T00:05:00+00:00", "0"),
+        _binding("2026-07-01T00:10:00+00:00", "3"),
+    ]
+    recs = mod.parse_sparql_drive_bindings(bindings)
+    assert [r.active_count for r in recs] == [2, 0, 3]
+    # Feeds the existing pure drive-stats path unchanged.
+    stats = mod.compute_drive_stats(recs)
+    assert stats.coactivation_frac == pytest.approx(2 / 3)
+
+
+def test_parse_sparql_drive_bindings_degrades():
+    bindings = [
+        {"activeCount": {"value": "2"}},               # no ts -> skipped
+        _binding("2026-07-01T00:00:00+00:00", "notint"),  # bad count -> 0
+        "not-a-dict",                                    # skipped
+        {"ts": {"value": "garbage"}, "activeCount": {"value": "1"}},  # bad ts -> skipped
+    ]
+    recs = mod.parse_sparql_drive_bindings(bindings)
+    assert len(recs) == 1
+    assert recs[0].active_count == 0
+
+    # Empty bindings -> empty, no raise.
+    assert mod.parse_sparql_drive_bindings([]) == []

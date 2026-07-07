@@ -188,6 +188,16 @@ def test_harness_aitown_env_overrides_convex_url(monkeypatch: pytest.MonkeyPatch
     assert merged["AITOWN_ADMIN_KEY"] == "k"
 
 
+def test_build_subprocess_env_sets_context_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HARNESS_FCC_MAX_CONTEXT_TOKENS", "65536")
+    monkeypatch.setenv("HARNESS_FCC_FILE_READ_MAX_TOKENS", "8192")
+    monkeypatch.setenv("HARNESS_FCC_AUTOCOMPACT_PCT_OVERRIDE", "70")
+    env = motor._build_subprocess_env(fcc_server_url="http://127.0.0.1:8082", auth_token="tok")
+    assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "65536"
+    assert env["CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS"] == "8192"
+    assert env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] == "70"
+
+
 @pytest.mark.asyncio
 async def test_run_fcc_turn_root_uses_dont_ask_permission_mode(
     monkeypatch: pytest.MonkeyPatch,

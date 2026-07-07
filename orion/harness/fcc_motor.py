@@ -203,12 +203,28 @@ def _maybe_render_mcp_config(*, correlation_id: str) -> Optional[Path]:
     )
 
 
+def _fcc_context_env(env: dict[str, str]) -> None:
+    """Align llamacpp context ceiling + auto-compact with hub agent-claude."""
+    max_ctx = int(os.environ.get("HARNESS_FCC_MAX_CONTEXT_TOKENS", "65536") or "65536")
+    read_max = int(os.environ.get("HARNESS_FCC_FILE_READ_MAX_TOKENS", "8192") or "8192")
+    autocompact_pct = float(os.environ.get("HARNESS_FCC_AUTOCOMPACT_PCT_OVERRIDE", "70") or "70")
+    if max_ctx > 0:
+        env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(max_ctx)
+        env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(max_ctx)
+    if read_max > 0:
+        env["CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS"] = str(read_max)
+    if 0 < autocompact_pct <= 100:
+        pct = int(autocompact_pct) if autocompact_pct == int(autocompact_pct) else autocompact_pct
+        env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = str(pct)
+
+
 def _build_subprocess_env(*, fcc_server_url: str, auth_token: str) -> Dict[str, str]:
     env = os.environ.copy()
     env["ANTHROPIC_BASE_URL"] = str(fcc_server_url).rstrip("/")
     env["ANTHROPIC_AUTH_TOKEN"] = auth_token
     env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
     env["TERM"] = "dumb"
+    _fcc_context_env(env)
     env.pop("DISABLE_COMPACT", None)
     env.pop("DISABLE_AUTO_COMPACT", None)
     return env

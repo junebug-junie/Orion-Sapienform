@@ -1,4 +1,8 @@
+import pytest
+from unittest.mock import AsyncMock
+
 from orion.memory.consolidation_gate import consolidation_memory_gate
+from orion.memory.consolidation_grammar import fetch_grammar_evidence_for_window
 
 
 def _turn(prompt, response, novelty=0.1, shift="NONE", significance=0.2):
@@ -64,3 +68,34 @@ def test_gate_proposes_substantive_text_below_floors():
     )
     assert result.action == "propose"
     assert "substantive_text" in result.reasons
+
+
+@pytest.mark.asyncio
+async def test_fetch_collects_repair_signal_event_ids():
+    pool = AsyncMock()
+    pool.fetch = AsyncMock(
+        return_value=[
+            {
+                "event_id": "evt-1",
+                "event_json": {"atom": {"semantic_role": "repair_signal"}},
+            }
+        ]
+    )
+    turns = [{"correlation_id": "corr-1"}]
+    repair, event_ids = await fetch_grammar_evidence_for_window(
+        pool,
+        turns=turns,
+        node_id="athena",
+        enabled=True,
+    )
+    assert repair is True
+    assert event_ids == ["evt-1"]
+    pool.fetch.assert_awaited_once_with(
+        """
+            SELECT event_id, event_json
+            FROM grammar_events
+            WHERE trace_id = $1
+            ORDER BY created_at ASC
+            """,
+        "hub.chat:athena:corr-1",
+    )

@@ -26,6 +26,7 @@ from .drive_attribution import (
 )
 from .drives import DriveEngine, DriveMathConfig, drive_state_from_values
 from .dossier import build_evidence_items, build_source_event_ref, build_turn_dossier, extract_trace_id, extract_turn_id
+from orion.autonomy.curiosity_reuse import outcome_from_followup, select_reusable_followup
 from orion.autonomy.episode_journal import dispatch_autonomy_episode_journal
 from orion.autonomy.fetch_backend_resolve import resolve_fetch_backend
 from orion.autonomy.goal_archive import maybe_archive_after_goal_publish
@@ -598,6 +599,7 @@ class ConceptWorker:
         metabolism_curiosity_signals: List[FrontierInvocationSignalV1] = []
         metabolism_curiosity_notes: List[str] = []
         spawned_correlation_id: str | None = None
+        wp_result: WorldPulseRunResultV1 | None = None
         if env.kind == "world.pulse.run.result.v1":
             try:
                 wp_result = WorldPulseRunResultV1.model_validate(self._payload_dict(env))
@@ -768,6 +770,28 @@ class ConceptWorker:
                 async def _journal_dispatch(**kwargs):
                     return await self._dispatch_autonomy_episode_journal(env, **kwargs)
 
+                prefetched_outcome = None
+                if (
+                    wp_result is not None
+                    and wp_result.digest is not None
+                    and wp_result.digest.curiosity_followups
+                ):
+                    reusable = select_reusable_followup(
+                        wp_result.digest.curiosity_followups,
+                        metabolism_curiosity_signals,
+                    )
+                    if reusable is not None:
+                        prefetched_outcome = outcome_from_followup(
+                            reusable, run_id=spawned_correlation_id
+                        )
+                        logger.info(
+                            "wp_curiosity_followup_reused run_id=%s section=%s action_id=%s articles=%s",
+                            spawned_correlation_id,
+                            reusable.section,
+                            prefetched_outcome.action_id,
+                            len(prefetched_outcome.articles),
+                        )
+
                 act_result = await maybe_execute_substrate_act_after_metabolism(
                     episode_intent=resolve_episode_intent(
                         store=self.store,
@@ -781,6 +805,7 @@ class ConceptWorker:
                     journal_dispatch=_journal_dispatch,
                     budget_used=policy_budget,
                     episode_journal_enabled=self.cfg.autonomy_episode_journal_enabled,
+                    prefetched_outcome=prefetched_outcome,
                 )
                 if act_result.fetch_outcome is not None:
                     try:

@@ -21,6 +21,15 @@ class Settings(BaseSettings):
     world_pulse_enabled: bool = Field(False, alias="WORLD_PULSE_ENABLED")
     world_pulse_dry_run: bool = Field(True, alias="WORLD_PULSE_DRY_RUN")
     world_pulse_fetch_enabled: bool = Field(True, alias="WORLD_PULSE_FETCH_ENABLED")
+    world_pulse_curiosity_fetch_enabled: bool = Field(
+        False, alias="WORLD_PULSE_CURIOSITY_FETCH_ENABLED"
+    )
+    world_pulse_curiosity_max_articles_per_section: int = Field(
+        5, alias="WORLD_PULSE_CURIOSITY_MAX_ARTICLES_PER_SECTION"
+    )
+    world_pulse_curiosity_max_sections: int = Field(
+        9, alias="WORLD_PULSE_CURIOSITY_MAX_SECTIONS"
+    )
     world_pulse_sql_enabled: bool = Field(True, alias="WORLD_PULSE_SQL_ENABLED")
     world_pulse_graph_enabled: bool = Field(False, alias="WORLD_PULSE_GRAPH_ENABLED")
     world_pulse_graph_dry_run: bool = Field(True, alias="WORLD_PULSE_GRAPH_DRY_RUN")

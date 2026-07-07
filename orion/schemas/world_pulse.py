@@ -465,6 +465,22 @@ class SectionRollupV1(_WPBase):
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
 
 
+class CuriosityFindingV1(_WPBase):
+    url: str
+    title: str = ""
+    description: str = ""
+    salience: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class CuriosityFollowupV1(_WPBase):
+    section: str
+    driving_gap: SectionCoverageState = "missing"
+    query: str = ""
+    articles: list[CuriosityFindingV1] = Field(default_factory=list)
+    action_id: str | None = None
+    correlation_id: str | None = None
+
+
 class DailyWorldPulseV1(_WPBase):
     run_id: str
     date: str
@@ -481,6 +497,7 @@ class DailyWorldPulseV1(_WPBase):
     coverage_status: CoverageStatus = "empty"
     section_coverage: dict[str, SectionCoverageV1] = Field(default_factory=dict)
     section_rollups: list[SectionRollupV1] = Field(default_factory=list)
+    curiosity_followups: list[CuriosityFollowupV1] = Field(default_factory=list)
     accepted_article_count: int = 0
     article_cluster_count: int = 0
     max_digest_items_total: int = 0

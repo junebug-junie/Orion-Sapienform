@@ -23,6 +23,7 @@ from app.services.capsule import build_world_context_capsule
 from app.services.classify import classify_article
 from app.services.cluster import build_article_clusters
 from app.services.corroboration import apply_corroboration
+from app.services.curiosity import build_curiosity_followups
 from app.services.dedupe import dedupe_articles
 from app.services.digest import build_digest, build_section_rollups, curate_digest_items
 from app.services.emit_graph import build_graph_delta
@@ -452,6 +453,14 @@ def run_world_pulse(
         digest_items=items,
     )
     section_rollups = build_section_rollups(section_coverage=section_coverage, digest_items=curated_items)
+    digest.curiosity_followups = build_curiosity_followups(
+        run_id=rid,
+        section_coverage=section_coverage,
+        enabled=settings.world_pulse_curiosity_fetch_enabled,
+        dry_run=dry,
+        max_articles_per_section=settings.world_pulse_curiosity_max_articles_per_section,
+        max_sections=settings.world_pulse_curiosity_max_sections,
+    )
     _finalize_digest_aggregates(
         digest=digest,
         run=run,

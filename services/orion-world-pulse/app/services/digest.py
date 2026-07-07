@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from orion.schemas.world_pulse import (
+    CuriosityFollowupV1,
     DailyWorldPulseItemV1,
     DailyWorldPulseSectionsV1,
     DailyWorldPulseV1,
@@ -18,6 +19,7 @@ def build_digest(
     items: list[DailyWorldPulseItemV1],
     worth_reading: list[WorthReadingItemV1],
     worth_watching: list[WorthWatchingItemV1],
+    curiosity_followups: list[CuriosityFollowupV1] | None = None,
 ) -> DailyWorldPulseV1:
     now = datetime.now(timezone.utc)
     section_map: dict[str, list[str]] = {
@@ -45,6 +47,7 @@ def build_digest(
         items=items,
         things_worth_reading=worth_reading,
         things_worth_watching=worth_watching,
+        curiosity_followups=curiosity_followups or [],
         orion_analysis_layer="Compared against previous situation briefs and captured deterministic changes.",
         source_notes=[],
         confidence_summary="Working confidence based on trust tiers and corroboration.",

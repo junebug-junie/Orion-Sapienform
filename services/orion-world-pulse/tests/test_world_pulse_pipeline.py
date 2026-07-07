@@ -579,3 +579,92 @@ def test_cluster_diagnostics_are_reported(monkeypatch):
     assert "singleton_cluster_count" in result.run.metrics
     assert "multi_article_cluster_count" in result.run.metrics
     assert "average_articles_per_cluster" in result.run.metrics
+
+
+def _install_stub_source(monkeypatch):
+    """Deterministic single-source registry + fetch so the pipeline reaches the
+    digest/curiosity-attach stage without network access."""
+    now = datetime.now(timezone.utc)
+    registry = SourceRegistryV1(
+        sources=[
+            WorldPulseSourceV1(
+                source_id="stub",
+                name="Stub",
+                type="rss",
+                strategy="rss",
+                url="https://example.com/rss",
+                domains=["example.com"],
+                categories=["ai_technology"],
+                trust_tier=1,
+                enabled=True,
+                approved=True,
+                allowed_uses=WorldPulseAllowedUsesV1(),
+                created_at=now,
+            )
+        ]
+    )
+    monkeypatch.setattr(pipeline, "load_source_registry", lambda path: registry)
+    monkeypatch.setattr(
+        pipeline,
+        "fetch_source_candidates",
+        lambda source, timeout_seconds: [
+            type(
+                "Candidate",
+                (),
+                {
+                    "model_dump": lambda self, mode="python": {
+                        "title": "Stub AI story",
+                        "url": "https://example.com/stub",
+                        "summary": "summary",
+                        "published_at": now,
+                    }
+                },
+            )()
+        ],
+    )
+
+
+def test_curiosity_followups_skipped_on_dry_run(monkeypatch):
+    import app.services.pipeline as pipeline
+
+    _install_stub_source(monkeypatch)
+    called = {"count": 0}
+
+    def _spy(**kwargs):
+        called["count"] += 1
+        return []
+
+    monkeypatch.setattr(pipeline, "build_curiosity_followups", _spy)
+    result = pipeline.run_world_pulse(run_id="cur-dry", requested_by="test", dry_run=True)
+    assert result.digest is not None
+    assert result.digest.curiosity_followups == []
+    # dry run must never call the fetch builder's real path; builder returns []
+    assert called["count"] == 1  # called, but with dry_run=True it self-skips
+
+
+def test_curiosity_followups_attached_when_builder_returns(monkeypatch):
+    import app.services.pipeline as pipeline
+    from orion.schemas.world_pulse import CuriosityFindingV1, CuriosityFollowupV1
+
+    _install_stub_source(monkeypatch)
+    # world_pulse_enabled defaults False; a non-dry run would early-return "disabled"
+    # before reaching the digest. Enable it so the attach path is exercised.
+    monkeypatch.setattr(pipeline.settings, "world_pulse_enabled", True)
+
+    def _fake(**kwargs):
+        return [
+            CuriosityFollowupV1(
+                section="hardware_compute_gpu",
+                driving_gap="missing",
+                query="hardware compute gpu recent news coverage",
+                articles=[CuriosityFindingV1(url="https://ex/1", title="t", salience=0.4)],
+                action_id="fetch-x",
+                correlation_id="cur-attached",
+            )
+        ]
+
+    monkeypatch.setattr(pipeline, "build_curiosity_followups", _fake)
+    result = pipeline.run_world_pulse(run_id="cur-attached", requested_by="test", dry_run=False)
+    assert result.digest is not None
+    assert len(result.digest.curiosity_followups) == 1
+    assert result.digest.curiosity_followups[0].section == "hardware_compute_gpu"

@@ -20,6 +20,12 @@ def _tokenize(text: str) -> set[str]:
     return set(_TOKEN_RE.findall(text.lower()))
 
 
+def tokenize_terms(text: str) -> set[str]:
+    """Public term tokenizer (lowercase alphanumeric). Reused by producers that
+    need gap terms from a plain section label without a signal object."""
+    return _tokenize(text)
+
+
 def iter_gap_section_labels(
     signals: Sequence[FrontierInvocationSignalV1],
 ) -> Iterator[str]:

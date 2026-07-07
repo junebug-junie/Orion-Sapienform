@@ -55,6 +55,11 @@ async def test_run_fcc_turn_adds_mcp_config_when_enabled(monkeypatch: pytest.Mon
     monkeypatch.setattr(motor, "load_fcc_env", _fake_fcc_env)
     monkeypatch.setattr(motor, "_maybe_render_mcp_config", lambda **k: Path("/tmp/fake-mcp.json"))
     monkeypatch.setenv("HARNESS_FCC_MCP_ENABLED", "true")
+    fake_cfg = Path("/tmp/fake-mcp.json")
+    fake_cfg.write_text(
+        '{"mcpServers":{"github":{},"firecrawl":{}}}',
+        encoding="utf-8",
+    )
 
     async for _ in motor.run_fcc_turn(
         prompt="hello",
@@ -72,7 +77,8 @@ async def test_run_fcc_turn_adds_mcp_config_when_enabled(monkeypatch: pytest.Mon
     assert "/tmp/fake-mcp.json" in [str(x) for x in captured_argv]
     assert "--allowedTools" in captured_argv
     idx = captured_argv.index("--allowedTools")
-    assert captured_argv[idx + 1] == "mcp__*"
+    assert captured_argv[idx + 1] == "mcp__github__*"
+    assert captured_argv[idx + 2] == "mcp__firecrawl__*"
 
 
 @pytest.mark.asyncio
@@ -181,7 +187,7 @@ def test_harness_aitown_env_overrides_convex_url(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
-async def test_run_fcc_turn_skip_permissions_when_env_true_as_root(
+async def test_run_fcc_turn_root_uses_dont_ask_permission_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured_argv: list = []
@@ -201,7 +207,7 @@ async def test_run_fcc_turn_skip_permissions_when_env_true_as_root(
     async for _ in motor.run_fcc_turn(
         prompt="hello",
         fcc_model_label="MODEL_HAIKU",
-        correlation_id="corr-skip",
+        correlation_id="corr-dontask",
         workspace="/tmp",
         fcc_server_url="http://127.0.0.1:8082",
         auth_token="tok",
@@ -210,7 +216,9 @@ async def test_run_fcc_turn_skip_permissions_when_env_true_as_root(
     ):
         pass
 
-    assert "--dangerously-skip-permissions" in captured_argv
+    assert "--permission-mode" in captured_argv
+    assert "dontAsk" in captured_argv
+    assert "--dangerously-skip-permissions" not in captured_argv
 
 
 def test_should_skip_claude_permissions_env_false_overrides_non_root(

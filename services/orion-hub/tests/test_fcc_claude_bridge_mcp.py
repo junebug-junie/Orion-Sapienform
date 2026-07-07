@@ -59,6 +59,10 @@ async def test_run_turn_adds_mcp_config_when_enabled(monkeypatch: pytest.MonkeyP
 
     from scripts.settings import settings
     monkeypatch.setattr(settings, "HUB_AGENT_CLAUDE_MCP_ENABLED", True, raising=False)
+    Path("/tmp/fake-mcp.json").write_text(
+        '{"mcpServers":{"github":{},"firecrawl":{}}}',
+        encoding="utf-8",
+    )
 
     async for _ in bridge.run_turn(
         prompt="hello",
@@ -76,7 +80,8 @@ async def test_run_turn_adds_mcp_config_when_enabled(monkeypatch: pytest.MonkeyP
     assert "/tmp/fake-mcp.json" in [str(x) for x in captured_argv]
     assert "--allowedTools" in captured_argv
     idx = captured_argv.index("--allowedTools")
-    assert captured_argv[idx + 1] == "mcp__*"
+    assert captured_argv[idx + 1] == "mcp__github__*"
+    assert captured_argv[idx + 2] == "mcp__firecrawl__*"
 
 
 @pytest.mark.asyncio

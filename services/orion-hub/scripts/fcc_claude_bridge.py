@@ -13,6 +13,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from scripts.fcc_env_catalog import load_fcc_env, resolve_auth_token
 from scripts.fcc_model_mapping import DEFAULT_FCC_MODEL_LABEL, label_to_claude_model_id
+from orion.fcc.claude_spawn import auto_approve_from_env, claude_permission_argv, extend_mcp_argv
 
 logger = logging.getLogger("orion-hub.fcc_claude_bridge")
 
@@ -284,10 +285,14 @@ async def run_turn(
         model_id,
     ]
     if mcp_config_path is not None:
-        argv.extend(["--mcp-config", str(mcp_config_path), "--allowedTools", "mcp__*"])
-    if os.geteuid() != 0:
+        extend_mcp_argv(argv, mcp_config_path)
+    perm = claude_permission_argv(
+        auto_approve=auto_approve_from_env("HUB_AGENT_CLAUDE_SKIP_PERMISSIONS")
+    )
+    if perm:
         model_idx = argv.index("--model")
-        argv.insert(model_idx, "--dangerously-skip-permissions")
+        for offset, token in enumerate(perm):
+            argv.insert(model_idx + offset, token)
     started = time.monotonic()
     proc: Optional[asyncio.subprocess.Process] = None
     accumulated = ""

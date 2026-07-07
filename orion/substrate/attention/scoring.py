@@ -77,6 +77,7 @@ def build_open_loops(
     generic_reversal: bool,
     stale_thread_active: bool,
     max_open: int,
+    history: "SalienceHistory | None" = None,
 ) -> list[OpenLoopV1]:
     user_text = compact(ctx.get("user_message") or ctx.get("raw_user_text") or "", 600)
     known = known_blob(inputs, ctx)
@@ -125,7 +126,8 @@ def build_open_loops(
         # Always compute + attach the evidence-derived salience features so shadow
         # traces are real even when the v2 flag is off. score_loop decides whether
         # to consume this value or the legacy weighted sum.
-        sal, feats = compute_salience(loop=loop, signals=[signal], history=SalienceHistory())
+        loop_history = history or SalienceHistory()
+        sal, feats = compute_salience(loop=loop, signals=[signal], history=loop_history)
         loop = loop.model_copy(update={"salience": sal, "salience_features": feats.model_dump(mode="json")})
         loops.append(loop)
     return loops

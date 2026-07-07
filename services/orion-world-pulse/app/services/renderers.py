@@ -63,6 +63,17 @@ def render_plaintext_digest(digest: DailyWorldPulseV1) -> str:
         lines.extend(["Worth reading:", *[f"- {w.title} ({w.url or 'no-url'})" for w in digest.things_worth_reading], ""])
     if digest.things_worth_watching:
         lines.extend(["Things worth watching:", *[f"- {w.title}: {w.watch_condition}" for w in digest.things_worth_watching], ""])
+    if digest.curiosity_followups:
+        lines.append("Orion went looking (gaps our sources missed):")
+        for followup in digest.curiosity_followups:
+            label = followup.section.replace("_", " ")
+            lines.append(f"- {label} — \"{followup.query}\"")
+            if not followup.articles:
+                lines.append("  (looked, found nothing)")
+            for art in followup.articles:
+                title = art.title or "(untitled)"
+                lines.append(f"  • [{art.salience:.2f}] {title} — {art.url}")
+        lines.append("")
     return "\n".join(lines).strip()
 
 

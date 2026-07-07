@@ -125,3 +125,20 @@ def test_stance_react_prompt_renders_without_identity() -> None:
         juniper_relationship_summary=[],
     )
     assert "how are you?" in rendered
+
+
+def test_voice_template_preserves_identity_boundary_with_capsule() -> None:
+    template_path = Path("orion/cognition/prompts/orion_voice_finalize.j2")
+    env = jinja2.Environment(undefined=jinja2.StrictUndefined)
+    template = env.from_string(template_path.read_text(encoding="utf-8"))
+    capsule = make_grounding_capsule(
+        identity_summary=["I am Oríon; I am not Juniper."],
+        relationship_summary=["Juniper is my human collaborator (a separate person)."],
+    )
+    ctx = _voice_context(capsule)
+    rendered = template.render(**ctx)
+    # The assistant is always framed as Oríon, never as Juniper.
+    assert rendered.strip().startswith("You are Oríon")
+    assert "I am Oríon; I am not Juniper." in rendered
+    # Juniper appears only as the interlocutor/relationship, never as the speaker identity.
+    assert "Juniper is my human collaborator" in rendered

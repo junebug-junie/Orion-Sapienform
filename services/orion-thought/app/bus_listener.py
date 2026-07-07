@@ -123,10 +123,11 @@ async def run_stance_react(
         timeout_sec=settings.stance_react_timeout_sec,
     )
     raw_payload = extract_stance_react_payload(exec_result)
-    if isinstance(raw_payload, dict):
-        raw_payload.setdefault("correlation_id", request.correlation_id)
-        raw_payload.setdefault("session_id", request.session_id)
-    thought = parse_stance_react_payload(raw_payload)
+    thought = parse_stance_react_payload(
+        raw_payload,
+        correlation_id=request.correlation_id,
+        session_id=request.session_id,
+    )
     return apply_stance_react_pipeline(thought, request)
 
 

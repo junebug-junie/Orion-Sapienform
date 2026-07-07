@@ -154,6 +154,7 @@ def build_salience_trace(
         trace_id=stable_hash_id("saltrace", [correlation_id, loop.id]),
         loop_id=loop.id,
         theme_key=loop.id,
+        description=loop.description,
         correlation_id=correlation_id,
         salience=bounded(float(loop.salience)),
         weights_version=WEIGHTS_VERSION,

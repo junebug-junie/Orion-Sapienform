@@ -22,6 +22,7 @@ def test_build_salience_trace_from_selected_loop():
     trace = build_salience_trace(_broadcast(loop), correlation_id="corr-1")
     assert trace is not None
     assert trace.loop_id == "loop-a"
+    assert trace.description == "a"
     assert trace.salience == 0.72
     assert trace.features == {"evidence_strength": 0.8}
     assert trace.scope == "reverie"

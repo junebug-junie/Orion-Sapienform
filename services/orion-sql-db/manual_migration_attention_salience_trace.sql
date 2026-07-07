@@ -8,6 +8,7 @@ create table if not exists attention_salience_trace (
     trace_id text primary key,
     loop_id text not null,
     theme_key text not null,
+    description text not null default '',
     correlation_id text,
     salience double precision not null default 0,
     weights_version text not null default 'seed-v1',

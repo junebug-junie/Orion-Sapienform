@@ -197,3 +197,65 @@ def suppress_loop(theme_key: str, *, cooldown_sec: float = 86400.0) -> bool:
     except Exception as exc:
         logger.warning("suppress_loop failed theme=%s err=%s", theme_key, exc)
         return False
+
+
+SURFACE_MIN_SALIENCE = 0.5
+SURFACE_MIN_AGE_SEC = 300.0
+
+
+def load_pending_loops(limit: int = 50) -> list[tuple[OpenLoopV1, datetime, int, str]]:
+    """Return (loop, first_seen, recurrence_count, narrative) worth a human's time.
+
+    Surfacing policy (quiet panel): salience >= SURFACE_MIN_SALIENCE and age >=
+    SURFACE_MIN_AGE_SEC, excluding themes already suppressed (resolved/dismissed).
+    Reads the salience trace table; best-effort -> [] on any miss.
+    """
+    try:
+        from sqlalchemy import text
+
+        with _engine().connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT DISTINCT ON (t.theme_key)
+                        t.theme_key, t.loop_id, t.salience, t.features, t.description,
+                        t.created_at,
+                        (SELECT count(*) FROM attention_salience_trace t2
+                         WHERE t2.theme_key = t.theme_key) AS recurrence_count,
+                        (SELECT min(created_at) FROM attention_salience_trace t3
+                         WHERE t3.theme_key = t.theme_key) AS first_seen
+                    FROM attention_salience_trace t
+                    WHERE t.salience >= :min_sal
+                      AND NOT EXISTS (
+                        SELECT 1 FROM substrate_reverie_refractory r
+                        WHERE r.theme_key = t.theme_key AND r.suppressed_until > now()
+                      )
+                    ORDER BY t.theme_key, t.created_at DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"min_sal": SURFACE_MIN_SALIENCE, "limit": limit},
+            ).mappings().all()
+    except Exception as exc:
+        logger.warning("load_pending_loops failed: %s", exc)
+        return []
+
+    out: list[tuple[OpenLoopV1, datetime, int, str]] = []
+    now = datetime.now(timezone.utc)
+    for r in rows:
+        features = r["features"]
+        if isinstance(features, str):
+            features = json.loads(features or "{}")
+        first_seen = r["first_seen"] or r["created_at"]
+        fs = first_seen if first_seen.tzinfo else first_seen.replace(tzinfo=timezone.utc)
+        if (now - fs).total_seconds() < SURFACE_MIN_AGE_SEC:
+            continue
+        description = (r["description"] or "").strip() or str(r["theme_key"])
+        loop = OpenLoopV1(
+            id=str(r["loop_id"]),
+            description=description,
+            salience=float(r["salience"]),
+            salience_features=features or {},
+        )
+        out.append((loop, first_seen, int(r["recurrence_count"] or 1), ""))
+    return out

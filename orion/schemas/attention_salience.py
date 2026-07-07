@@ -32,6 +32,7 @@ class AttentionSalienceTraceV1(BaseModel):
     trace_id: str
     loop_id: str
     theme_key: str
+    description: str = Field(default="", max_length=200)
     correlation_id: str | None = None
     salience: float = Field(default=0.0, ge=0.0, le=1.0)
     weights_version: str = "seed-v1"

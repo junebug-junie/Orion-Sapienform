@@ -1313,6 +1313,15 @@ channels:
     stability: "experimental"
     since: "2026-01-16"
 
+  - name: "orion:memory:cards:active"
+    kind: "event"
+    schema_id: "MemoryCardV1"
+    message_kind: "memory.card.active.v1"
+    producer_services: ["orion-hub"]
+    consumer_services: ["orion-memory-crystallizer"]
+    stability: "experimental"
+    since: "2026-07-06"
+
   - name: "orion:memory:crystallization:proposed"
     kind: "event"
     schema_id: "MemoryCrystallizationV1"

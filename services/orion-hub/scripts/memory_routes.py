@@ -12,8 +12,10 @@ from orion.core.contracts.memory_cards import (
     MemoryCardEdgeCreateV1,
     MemoryCardPatchV1,
     MemoryCardStatusChangeV1,
+    MemoryCardV1,
 )
 from orion.core.storage import memory_cards as mc_dal
+from orion.memory.crystallization.bus_emit_memory_card import emit_memory_card_active_for_crystallizer
 
 from .session import ensure_session
 
@@ -64,6 +66,29 @@ async def _need_session(x_orion_session_id: Optional[str]) -> str:
     return await ensure_session(x_orion_session_id, bus)
 
 
+async def _bus():
+    from .main import bus
+
+    return bus
+
+
+def _settings():
+    from scripts.settings import settings
+
+    return settings
+
+
+async def _maybe_emit_card_for_crystallizer(card: MemoryCardV1) -> None:
+    s = _settings()
+    await emit_memory_card_active_for_crystallizer(
+        await _bus(),
+        card,
+        service_name=getattr(s, "SERVICE_NAME", "orion-hub"),
+        service_version=getattr(s, "SERVICE_VERSION", "0.1.0"),
+        node_name=getattr(s, "NODE_NAME", "hub"),
+    )
+
+
 def _parse_csv(value: Optional[str]) -> Optional[List[str]]:
     if value is None or not str(value).strip():
         return None
@@ -104,6 +129,7 @@ async def memory_create_card(
     row = await mc_dal.get_card(pool, str(cid))
     if not row:
         raise HTTPException(status_code=500, detail="create_missing_row")
+    await _maybe_emit_card_for_crystallizer(row)
     return row.model_dump(mode="json")
 
 
@@ -191,6 +217,7 @@ async def memory_patch_card(
         raise HTTPException(status_code=500, detail="patch_failed") from exc
     if not updated:
         raise HTTPException(status_code=404, detail="card_not_found")
+    await _maybe_emit_card_for_crystallizer(updated)
     return updated.model_dump(mode="json")
 
 
@@ -216,6 +243,7 @@ async def memory_change_status(
         raise
     if not updated:
         raise HTTPException(status_code=404, detail="card_not_found")
+    await _maybe_emit_card_for_crystallizer(updated)
     return updated.model_dump(mode="json")
 
 

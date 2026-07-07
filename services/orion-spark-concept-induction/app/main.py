@@ -71,4 +71,4 @@ async def concept_induction_debug():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8500)
+    uvicorn.run(app, host="0.0.0.0", port=8510)

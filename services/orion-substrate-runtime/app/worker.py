@@ -170,6 +170,7 @@ class BiometricsSubstrateWorker:
         # mapped to one involuntary intent per dynamics tick. Default-off.
         self._latest_drive_state: DriveStateV1 | None = None
         self._latest_drive_state_at: datetime | None = None
+        self._brain_frame_seq: int = 0
 
     @property
     def bus(self):
@@ -200,6 +201,7 @@ class BiometricsSubstrateWorker:
             asyncio.create_task(
                 self._endogenous_curiosity_loop(), name="substrate-endogenous-curiosity"
             ),
+            asyncio.create_task(self._brain_frame_loop(), name="substrate-brain-frame"),
         ]
         # Orion embodiment C producer: cache DriveStateV1 off the bus so the
         # dynamics tick can map it to an involuntary intent. Gated + fail-open.
@@ -1098,6 +1100,140 @@ class BiometricsSubstrateWorker:
                 await asyncio.to_thread(self._attention_broadcast_tick)
             except Exception:
                 logger.exception("substrate_attention_broadcast_loop_failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                break
+
+    def _brain_frame_lane_health(self) -> dict:
+        """Fetch reducer lane health for lane regions. Fail-open to empty."""
+        try:
+            from app.grammar_truth import build_substrate_grammar_truth
+
+            return build_substrate_grammar_truth(self._store)
+        except Exception:
+            logger.exception("brain_frame_lane_health_failed")
+            return {}
+
+    def _brain_frame_self_state(self) -> dict | None:
+        """Latest self-state row payload (dict) or None. Fail-open."""
+        try:
+            from sqlalchemy import text
+
+            engine = self._get_sql_engine()
+            if engine is None:
+                return None
+            with engine.connect() as conn:
+                row = conn.execute(
+                    text(
+                        """
+                        SELECT self_state_json FROM substrate_self_state
+                        ORDER BY generated_at DESC LIMIT 1
+                        """
+                    )
+                ).mappings().first()
+            if not row:
+                return None
+            payload = row["self_state_json"]
+            if isinstance(payload, str):
+                import json as _json
+
+                payload = _json.loads(payload)
+            return payload if isinstance(payload, dict) else None
+        except Exception:
+            logger.exception("brain_frame_self_state_load_failed")
+            return None
+
+    def _brain_frame_tick(self):
+        """Assemble + persist one brain frame. Returns the frame or None."""
+        s = self._settings
+        if not s.brain_frame_enabled:
+            return None
+        try:
+            from app.brain_frame_producer import assemble_brain_frame
+
+            store = self._get_substrate_graph_store(
+                log_label="brain_frame_graph_store_init_failed"
+            )
+            nodes: list[Any] = []
+            edges: list[Any] = []
+            if store is not None:
+                try:
+                    state = store.snapshot()
+                    nodes = list(state.nodes.values())
+                    edges = list(getattr(state, "edges", []) or [])
+                except Exception:
+                    logger.exception("brain_frame_snapshot_failed")
+
+            attention = None
+            try:
+                attention = self._store.load_attention_broadcast()
+            except Exception:
+                logger.exception("brain_frame_attention_load_failed")
+
+            now = datetime.now(timezone.utc)
+            frame = assemble_brain_frame(
+                nodes=nodes,
+                edges=edges,
+                lane_health=self._brain_frame_lane_health(),
+                self_state=self._brain_frame_self_state(),
+                attention=attention,
+                settings=s,
+                now=now,
+                tick_seq=self._brain_frame_seq,
+            )
+            self._brain_frame_seq += 1
+            try:
+                self._store.save_brain_frame(
+                    frame, retention_hours=int(s.brain_frame_retention_hours)
+                )
+            except Exception:
+                logger.exception("brain_frame_persist_failed")
+            logger.info(
+                "brain_frame_tick_completed phase=%s regions=%d nodes=%d frame_id=%s",
+                frame.phase,
+                len(frame.regions),
+                len(frame.nodes),
+                frame.frame_id,
+            )
+            return frame
+        except Exception:
+            logger.exception("brain_frame_tick_failed")
+            return None
+
+    async def _publish_brain_frame(self, frame) -> None:
+        if self._bus is None or frame is None:
+            return
+        try:
+            from orion.core.bus.bus_schemas import BaseEnvelope
+            from orion.core.bus.resilience import publish_with_reconnect
+            from orion.schemas.brain_frame import SUBSTRATE_BRAIN_FRAME_KIND
+
+            env = BaseEnvelope(
+                kind=SUBSTRATE_BRAIN_FRAME_KIND,
+                source=self._service_ref(),
+                correlation_id=uuid4(),
+                payload=frame.model_dump(mode="json"),
+            )
+            await publish_with_reconnect(
+                self._bus,
+                "orion:substrate:brain_frame",
+                env,
+                log_label="substrate_brain_frame",
+            )
+        except Exception:
+            logger.exception("brain_frame_publish_failed")
+
+    async def _brain_frame_loop(self) -> None:
+        interval = float(self._settings.brain_frame_interval_sec)
+        while not self._stop.is_set():
+            try:
+                frame = await asyncio.to_thread(self._brain_frame_tick)
+                await self._publish_brain_frame(frame)
+            except Exception:
+                logger.exception("substrate_brain_frame_loop_failed")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except asyncio.TimeoutError:

@@ -9,17 +9,34 @@ from typing import Any, List, Mapping
 
 
 def mcp_allowed_tool_patterns(mcp_servers: Mapping[str, Any]) -> List[str]:
-    """Per-server allow patterns for Claude Code 2.1+ (``mcp__*`` is rejected)."""
-    return [f"mcp__{name}__*" for name in mcp_servers]
+    """Per-server allow patterns for Claude Code 2.1+ MCP pre-approval.
+
+    Use ``mcp__<server>`` (not ``mcp__<server>__*`` or bare ``mcp__*``).
+    See Claude Code IAM docs + anthropics/claude-code#5004.
+    """
+    return [f"mcp__{name}" for name in mcp_servers]
+
+
+def mcp_disallowed_tool_patterns(mcp_servers: Mapping[str, Any]) -> List[str]:
+    """Block Bash fallbacks that fail in headless Hub (gh not installed)."""
+    blocked: List[str] = []
+    if "github" in mcp_servers:
+        blocked.append("Bash(gh *)")
+    return blocked
 
 
 def extend_mcp_argv(argv: List[str], mcp_config_path: Path) -> None:
     data = json.loads(mcp_config_path.read_text(encoding="utf-8"))
-    patterns = mcp_allowed_tool_patterns(data.get("mcpServers") or {})
+    servers = data.get("mcpServers") or {}
+    patterns = mcp_allowed_tool_patterns(servers)
     argv.extend(["--mcp-config", str(mcp_config_path)])
     if patterns:
         argv.append("--allowedTools")
         argv.extend(patterns)
+    disallowed = mcp_disallowed_tool_patterns(servers)
+    if disallowed:
+        argv.append("--disallowedTools")
+        argv.extend(disallowed)
 
 
 def claude_permission_argv(*, auto_approve: bool) -> List[str]:

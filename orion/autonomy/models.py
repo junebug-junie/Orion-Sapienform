@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
@@ -166,6 +167,23 @@ class MetabolismResultV1(BaseModel):
     drive_deltas: dict[str, float] = Field(default_factory=dict)
     tensions: list[TensionEventV1] = Field(default_factory=list)
     curiosity_signals: list[FrontierInvocationSignalV1] = Field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SubstrateEpisodeIntentV1:
+    goal_artifact_id: str
+    drive_origin: str
+    spawned_correlation_id: str
+    subject: str
+
+
+class SubstrateActResultV1(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    fetch_attempted: bool = False
+    journal_attempted: bool = False
+    fetch_outcome_id: str | None = None
+    journal_entry_id: str | None = None
 
 
 class AutonomyStateDeltaV1(BaseModel):

@@ -645,22 +645,41 @@ async def run_harness_finalize_chain(
     )
 
 
+def _excerpt(text: str, max_len: int = 300) -> str:
+    t = (text or "").strip()
+    return t[:max_len] if len(t) > max_len else t
+
+
 async def emit_post_turn_closure(
     *,
     correlation_id: str,
     outcome_molecule: HarnessTurnOutcomeMoleculeV1,
     verdict_molecule_id: str,
     grammar_event_ids: list[str] | None = None,
+    user_message: str = "",
+    thought_event: ThoughtEventV1 | None = None,
+    reflection_imperative: str = "",
     channel: str = POST_TURN_CLOSURE_CHANNEL,
     publish_fn: PublishFn | None = None,
     bus: Any = None,
 ) -> HarnessPostTurnClosureV1:
+    surprise_unresolved = not outcome_molecule.surprise_resolved
+    referent_fields: dict[str, Any] = {}
+    if surprise_unresolved:
+        referent_fields = {
+            "user_message_excerpt": _excerpt(user_message),
+            "stance_imperative": _excerpt(
+                reflection_imperative or (thought_event.imperative if thought_event else "")
+            ),
+            "thought_event_id": thought_event.event_id if thought_event else None,
+        }
     closure = HarnessPostTurnClosureV1(
         correlation_id=correlation_id,
         outcome_molecule_id=_outcome_molecule_id(outcome_molecule),
         verdict_molecule_id=verdict_molecule_id,
         grammar_event_ids=list(grammar_event_ids or outcome_molecule.grammar_event_ids),
-        surprise_unresolved=not outcome_molecule.surprise_resolved,
+        surprise_unresolved=surprise_unresolved,
+        **referent_fields,
     )
     if publish_fn is not None:
         await publish_fn(closure, channel=channel)

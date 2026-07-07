@@ -55,6 +55,29 @@ def _grammar_event_ids(receipts: list[Any]) -> list[str]:
     return [r.grammar_event_id for r in receipts if getattr(r, "grammar_event_id", None)]
 
 
+def _recall_fields_from_thought(thought: Any) -> tuple[dict[str, Any] | None, str | None]:
+    """Derive Hub inspect-modal recall fields from the PCR-sourced grounding capsule.
+
+    Returns (recall_debug, memory_digest). Returns (None, None) when there is no capsule or
+    no actual recalled content, so the modal Recall tab stays empty rather than a hollow shell
+    (no empty-shell cognition)."""
+    capsule = getattr(thought, "grounding_capsule", None)
+    if capsule is None:
+        return None, None
+    memory_digest = capsule.memory_digest or capsule.continuity_digest
+    if not (memory_digest or capsule.belief_digest):
+        return None, None
+    provenance = capsule.provenance or {}
+    recall_debug = {
+        "source": "pcr_phase3",
+        "pcr_ran": bool(provenance.get("pcr_ran")),
+        "continuity_digest": capsule.continuity_digest,
+        "belief_digest": capsule.belief_digest,
+        "memory_digest": capsule.memory_digest,
+    }
+    return recall_debug, memory_digest
+
+
 async def handle_harness_run_request(
     bus: OrionBusAsync,
     request: HarnessRunRequestV1,
@@ -68,6 +91,7 @@ async def handle_harness_run_request(
 ) -> HarnessRunV1:
     corr = correlation_id or request.correlation_id or str(uuid4())
     causality = list(causality_chain or [])
+    recall_debug, memory_digest = _recall_fields_from_thought(request.thought_event)
 
     refusal = validate_harness_run_request(request)
     if refusal is not None:
@@ -78,6 +102,8 @@ async def handle_harness_run_request(
             step_count=0,
             compliance_verdict="refused",
             grounding_status=refusal,
+            recall_debug=recall_debug,
+            memory_digest=memory_digest,
         )
         await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
         return run
@@ -116,6 +142,8 @@ async def handle_harness_run_request(
             compliance_verdict=motor.compliance_verdict if motor.compliance_verdict != "completed" else "failed",
             grounding_status=motor.grounding_status,
             grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
+            recall_debug=recall_debug,
+            memory_digest=memory_digest,
         )
         await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
         return run
@@ -158,6 +186,8 @@ async def handle_harness_run_request(
         compliance_verdict=motor.compliance_verdict,
         grounding_status=motor.grounding_status,
         grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
+        recall_debug=recall_debug,
+        memory_digest=memory_digest,
     )
     await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
 
@@ -281,6 +311,10 @@ async def _handle_bus_message(bus: OrionBusAsync, raw_msg: dict[str, Any]) -> No
         )
     except Exception as exc:
         logger.error("harness run error corr=%s err=%s", corr, exc)
+        recall_debug, memory_digest = (None, None)
+        thought = getattr(locals().get("request"), "thought_event", None)
+        if thought is not None:
+            recall_debug, memory_digest = _recall_fields_from_thought(thought)
         err_run = HarnessRunV1(
             correlation_id=corr,
             final_text=None,
@@ -288,6 +322,8 @@ async def _handle_bus_message(bus: OrionBusAsync, raw_msg: dict[str, Any]) -> No
             step_count=0,
             compliance_verdict="failed",
             grounding_status=str(exc),
+            recall_debug=recall_debug,
+            memory_digest=memory_digest,
         )
         await _reply_and_artifact(
             bus,

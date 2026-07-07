@@ -122,7 +122,13 @@ function drawEkg() {
     ctx.lineWidth = 1.5;
     ctx.stroke();
     const label = id.split(":").slice(1).join(":") || id;
-    legend.insertAdjacentHTML("beforeend", `<div><span style="color:${color}">■</span> ${label}</div>`);
+    const row = document.createElement("div");
+    const swatch = document.createElement("span");
+    swatch.style.color = color;
+    swatch.textContent = "■ ";
+    row.appendChild(swatch);
+    row.append(label);
+    legend.appendChild(row);
   });
 }
 

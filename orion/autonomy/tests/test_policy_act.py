@@ -250,6 +250,9 @@ async def test_substrate_act_runs_when_goal_suppressed(monkeypatch, tmp_path) ->
         fetch_backend=backend,
     )
     assert result.fetch_attempted is True
+    assert result.fetch_outcome is not None
+    assert result.fetch_outcome.action_id == result.fetch_outcome_id
+    assert result.fetch_outcome.kind == "web.fetch.readonly"
     backend.assert_awaited_once()
 
 

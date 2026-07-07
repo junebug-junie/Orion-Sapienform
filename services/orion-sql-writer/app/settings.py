@@ -71,6 +71,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "grammar.event.v1": "GrammarEventSQL",
     "chat.history.spark_meta.patch.v1": "__patch_chat_history__",
     "vision.event.v1": "VisionEventSQL",
+    "action.outcome.emit.v1": "ActionOutcomeSQL",
 }
 
 
@@ -153,6 +154,7 @@ class Settings(BaseSettings):
             "orion:mind:artifact",
             "orion:grammar:event",
             "orion:chat:history:spark_meta:patch",
+            "orion:autonomy:action:outcome",
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )
@@ -238,6 +240,11 @@ class Settings(BaseSettings):
             channels = [c for c in channels if c != "orion:grammar:event"]
         if self.sql_writer_enable_spark_snapshot_channel and "orion:spark:state:snapshot" not in channels:
             channels.append("orion:spark:state:snapshot")
+        # action.outcome.emit.v1 is a code-default route with no feature toggle; guarantee its
+        # channel is always subscribed so a stale operator env list cannot silently drop the
+        # autonomy feedback lane before it can even reach the fallback log.
+        if "orion:autonomy:action:outcome" not in channels:
+            channels.append("orion:autonomy:action:outcome")
         return channels
 
     @property

@@ -71,8 +71,10 @@ from app.models import (
     WorldPulseWorthWatchingSQL,
     MindRunSQL,
     VisionEventSQL,
+    ActionOutcomeSQL,
     GrammarEventSQL,
 )
+from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.evidence_index import build_evidence_units
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
@@ -417,6 +419,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "ChatResponseFeedbackSQL": (ChatResponseFeedbackSQL, ChatResponseFeedbackV1),
     "GrammarEventSQL": (GrammarEventSQL, GrammarEventV1),
     "VisionEventSQL": (VisionEventSQL, VisionEventBundleItem),
+    "ActionOutcomeSQL": (ActionOutcomeSQL, ActionOutcomeEmitV1),
 }
 
 

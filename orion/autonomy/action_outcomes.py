@@ -1,18 +1,81 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from contextlib import contextmanager
 from pathlib import Path
 
 from orion.autonomy.models import ActionOutcomeRefV1
 
+logger = logging.getLogger("orion.autonomy.action_outcomes")
+
 DEFAULT_STORE_PATH = "/tmp/orion-action-outcomes.json"
 _MAX_OUTCOMES = 12
+
+# Process-level engine cache keyed by database URL (SQLAlchemy engines are pooled).
+_ENGINE_CACHE: dict[str, object] = {}
 
 
 def _store_path() -> Path:
     return Path(os.getenv("ORION_ACTION_OUTCOME_STORE_PATH", DEFAULT_STORE_PATH))
+
+
+def _db_url() -> str | None:
+    url = os.getenv("ORION_ACTION_OUTCOME_DB_URL", "").strip()
+    return url or None
+
+
+def _get_engine(url: str):
+    from sqlalchemy import create_engine
+
+    engine = _ENGINE_CACHE.get(url)
+    if engine is None:
+        # setdefault keeps the cache race-free if two callers build concurrently:
+        # the first inserted engine wins and any extra is discarded.
+        engine = _ENGINE_CACHE.setdefault(url, create_engine(url, pool_pre_ping=True))
+    return engine
+
+
+def _load_from_sql(subject: str) -> list[ActionOutcomeRefV1]:
+    """Read the most recent outcomes for a subject from the shared SQL store.
+
+    Returns chronological order (oldest first) to match the file-backed store.
+    """
+    from sqlalchemy import text
+
+    url = _db_url()
+    if not url:
+        raise RuntimeError("ORION_ACTION_OUTCOME_DB_URL is not set")
+    engine = _get_engine(url)
+    query = text(
+        """
+        SELECT action_id, kind, summary, success, surprise, observed_at
+        FROM action_outcomes
+        WHERE subject = :subject
+        ORDER BY observed_at DESC NULLS LAST, created_at DESC
+        LIMIT :limit
+        """
+    )
+    with engine.connect() as conn:
+        rows = conn.execute(query, {"subject": subject, "limit": _MAX_OUTCOMES}).mappings().all()
+
+    out: list[ActionOutcomeRefV1] = []
+    for row in reversed(rows):  # oldest-first, matching append semantics
+        try:
+            out.append(
+                ActionOutcomeRefV1(
+                    action_id=row["action_id"],
+                    kind=row["kind"],
+                    summary=row["summary"],
+                    success=row["success"],
+                    surprise=row["surprise"] if row["surprise"] is not None else 0.0,
+                    observed_at=row["observed_at"],
+                )
+            )
+        except Exception:
+            continue
+    return out
 
 
 @contextmanager
@@ -64,6 +127,15 @@ def _save_raw(data: dict[str, list[dict]]) -> None:
 
 
 def load_action_outcomes(subject: str) -> list[ActionOutcomeRefV1]:
+    if _db_url():
+        try:
+            return _load_from_sql(subject)
+        except Exception as exc:
+            logger.warning(
+                "action_outcome_sql_read_failed subject=%s error=%s; falling back to file store",
+                subject,
+                exc,
+            )
     raw = _load_raw()
     bucket = raw.get(subject, [])
     out: list[ActionOutcomeRefV1] = []

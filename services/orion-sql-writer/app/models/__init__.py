@@ -56,6 +56,7 @@ from .world_pulse import (
 )
 from .mind_run import MindRunSQL
 from .vision_event import VisionEventSQL
+from .action_outcome import ActionOutcomeSQL
 from .grammar_trace import (
     GrammarAtomSQL,
     GrammarCompactionSQL,
@@ -117,6 +118,7 @@ __all__ = [
     "WorldPulsePublishStatusSQL",
     "MindRunSQL",
     "VisionEventSQL",
+    "ActionOutcomeSQL",
     "GrammarTraceSQL",
     "GrammarEventSQL",
     "GrammarAtomSQL",

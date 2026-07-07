@@ -87,6 +87,10 @@ class ConceptSettings(BaseSettings):
         "orion:debug:turn:dossier",
         alias="BUS_TURN_DOSSIER_OUT",
     )
+    action_outcome_channel: str = Field(
+        "orion:autonomy:action:outcome",
+        alias="BUS_ACTION_OUTCOME_OUT",
+    )
 
     # Windowing
     window_max_events: int = Field(200, alias="CONCEPT_WINDOW_MAX_EVENTS")

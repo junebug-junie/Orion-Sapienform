@@ -161,6 +161,46 @@ class ActionOutcomeRefV1(BaseModel):
     observed_at: datetime | None = None
 
 
+class ActionOutcomeEmitV1(BaseModel):
+    """Bus payload carrying an action outcome for durable persistence via sql-writer.
+
+    Flat shape (subject + outcome fields) so sql-writer's generic row mapper can
+    project directly to `action_outcomes` columns.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    subject: str
+    action_id: str
+    kind: str
+    summary: str
+    success: bool | None = None
+    surprise: float = Field(default=0.0, ge=0.0, le=1.0)
+    observed_at: datetime | None = None
+
+    @classmethod
+    def from_outcome(cls, *, subject: str, outcome: ActionOutcomeRefV1) -> "ActionOutcomeEmitV1":
+        return cls(
+            subject=subject,
+            action_id=outcome.action_id,
+            kind=outcome.kind,
+            summary=outcome.summary,
+            success=outcome.success,
+            surprise=outcome.surprise,
+            observed_at=outcome.observed_at,
+        )
+
+    def to_outcome(self) -> ActionOutcomeRefV1:
+        return ActionOutcomeRefV1(
+            action_id=self.action_id,
+            kind=self.kind,
+            summary=self.summary,
+            success=self.success,
+            surprise=self.surprise,
+            observed_at=self.observed_at,
+        )
+
+
 class MetabolismResultV1(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
@@ -184,6 +224,9 @@ class SubstrateActResultV1(BaseModel):
     journal_attempted: bool = False
     fetch_outcome_id: str | None = None
     journal_entry_id: str | None = None
+    # Full outcome carried up to the worker so it can emit action.outcome.emit.v1
+    # onto the bus for durable, cross-service persistence.
+    fetch_outcome: ActionOutcomeRefV1 | None = None
 
 
 class AutonomyStateDeltaV1(BaseModel):

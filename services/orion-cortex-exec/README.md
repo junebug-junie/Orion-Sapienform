@@ -86,6 +86,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `CHANNEL_AGENT_CHAIN_INTAKE` | ... | Agent Chain worker channel. |
 | `CHANNEL_COUNCIL_INTAKE` | ... | Council worker channel. |
 | `ORION_REPO_ROOT` | auto-detected | Optional override for self-study repo-root resolution when the container layout differs from local dev. |
+| `ORION_ACTION_OUTCOME_DB_URL` | `postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney` | Shared SQL store for autonomous action outcomes. When set, chat-stance `load_action_outcomes` reads the `action_outcomes` table (written by sql-writer from `action.outcome.emit.v1`); when blank it falls back to the per-container JSON file `ORION_ACTION_OUTCOME_STORE_PATH`. |
 
 ### Turn effect and drive tensions (bus)
 

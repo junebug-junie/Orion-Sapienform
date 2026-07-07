@@ -1764,6 +1764,33 @@ channels:
     stability: "experimental"
     since: "2026-04-26"
 
+  # Durable Redis Stream mirror of orion:world_pulse:run:result. The pub/sub channel
+  # above stays for orion-hub / orion-actions (fire-and-forget). This stream carries
+  # the same WorldPulseRunResultV1 envelope with at-least-once delivery + replay so
+  # orion-spark-concept-induction never silently loses the rare (once-per-run) event
+  # that drives the autonomy episode journal. Written via XADD (RedisStreamWorkQueue),
+  # not bus.publish, so it does not go through the pub/sub catalog enforcer.
+  - name: "orion:stream:world_pulse:run:result"
+    kind: "stream"
+    schema_id: "WorldPulseRunResultV1"
+    message_kind: "world.pulse.run.result.v1"
+    producer_services: ["orion-world-pulse"]
+    consumer_services: ["orion-spark-concept-induction"]
+    stability: "experimental"
+    since: "2026-07-07"
+
+  # Dead-letter stream for run-result envelopes that repeatedly fail handling in
+  # concept-induction (poison messages). Prevents a single bad run from blocking the
+  # consumer group's PEL forever.
+  - name: "orion:stream:world_pulse:run:result:dlq"
+    kind: "stream"
+    schema_id: "WorldPulseRunResultV1"
+    message_kind: "world.pulse.run.result.v1"
+    producer_services: ["orion-spark-concept-induction"]
+    consumer_services: []
+    stability: "experimental"
+    since: "2026-07-07"
+
   - name: "orion:world_pulse:digest:created"
     kind: "event"
     schema_id: "DailyWorldPulseV1"

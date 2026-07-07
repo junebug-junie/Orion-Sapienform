@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import ServiceRef
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.work_queue import RedisStreamWorkQueue
 from orion.schemas.world_pulse import (
     ClaimRecordV1,
     EntityRecordV1,
@@ -17,9 +19,50 @@ from orion.schemas.world_pulse import (
 from app.services.emit_sql import build_sql_envelopes
 from app.settings import settings
 
+logger = logging.getLogger("orion-world-pulse.emit")
+
 
 def _source_ref() -> ServiceRef:
     return ServiceRef(name=settings.service_name, node=settings.node_name, version=settings.service_version)
+
+
+async def _enqueue_run_result_stream(envelopes: list[tuple[str, BaseEnvelope]]) -> None:
+    """Dual-write the run.result envelope to a durable stream (best-effort).
+
+    Additive to the pub/sub publish; a stream failure must never fail the run, so it is
+    isolated here. Mirrors exactly the pub/sub run.result (same gating: non-dry-run,
+    SQL-enabled emit path).
+    """
+    run_result_env = next(
+        (env for channel, env in envelopes if channel == settings.world_pulse_run_result_channel),
+        None,
+    )
+    if run_result_env is None:
+        return
+    queue = RedisStreamWorkQueue(settings.orion_bus_url)
+    try:
+        await queue.connect()
+        message_id = await queue.enqueue(
+            settings.wp_run_result_stream_key,
+            run_result_env,
+            maxlen=settings.wp_run_result_stream_maxlen,
+        )
+        logger.info(
+            "world_pulse_run_result_stream_enqueued stream=%s message_id=%s",
+            settings.wp_run_result_stream_key,
+            message_id,
+        )
+    except Exception:
+        logger.warning(
+            "world_pulse_run_result_stream_enqueue_failed stream=%s",
+            settings.wp_run_result_stream_key,
+            exc_info=True,
+        )
+    finally:
+        try:
+            await queue.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 async def _publish_envelopes(run_result: WorldPulseRunResultV1) -> int:
@@ -51,6 +94,8 @@ async def _publish_envelopes(run_result: WorldPulseRunResultV1) -> int:
             await bus.publish(channel, envelope)
     finally:
         await bus.close()
+    if settings.wp_run_result_stream_enabled:
+        await _enqueue_run_result_stream(envelopes)
     return len(envelopes)
 
 

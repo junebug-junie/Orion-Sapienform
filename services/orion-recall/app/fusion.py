@@ -339,7 +339,7 @@ def _denial_patterns() -> List[re.Pattern[str]]:
 
 
 def _is_low_info_social_candidate(snippet: str) -> bool:
-    text = _normalize_whitespace(snippet)
+    text = _normalize_whitespace(snippet).lower()
     if not text:
         return True
     user, assistant = _extract_transcript_parts(text)

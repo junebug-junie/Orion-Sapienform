@@ -8,6 +8,7 @@ def _normalize_whitespace(text: str) -> str:
 
 
 def is_low_info_social(text: str) -> bool:
+    """True for greetings, thanks, and other low-information social turns."""
     candidate = _normalize_whitespace(text).lower()
     if not candidate:
         return True

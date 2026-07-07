@@ -31,6 +31,7 @@ from orion.reverie.semantic_lift import (
     reverie_semantic_gate,
 )
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
+from orion.schemas.attention_salience import AttentionSalienceTraceV1
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.reverie import ConcernCardV1, SpontaneousThoughtV1
 from orion.schemas.thought import CoalitionSnapshotV1
@@ -38,7 +39,7 @@ from orion.schemas.thought import CoalitionSnapshotV1
 from .bus_listener import extract_stance_react_payload
 from .cortex_client import CortexExecClient
 from .settings import settings
-from .store import persist_reverie_thought
+from .store import persist_reverie_thought, persist_salience_trace
 
 logger = logging.getLogger("orion-thought.reverie")
 
@@ -124,6 +125,41 @@ def derive_salience(broadcast: AttentionBroadcastProjectionV1 | None) -> float:
         return bounded(float(loop.salience)) if loop.salience else fallback
     scores = [float(getattr(loop, field, 0.0)) for field in _OPEN_LOOP_SCORE_FIELDS]
     return max(scores) if scores else fallback
+
+
+def build_salience_trace(
+    broadcast: AttentionBroadcastProjectionV1 | None,
+    *,
+    correlation_id: str,
+) -> AttentionSalienceTraceV1 | None:
+    """Trace the selected loop's feature vector + salience. None if no selection.
+
+    Local imports (`stable_hash_id`, `WEIGHTS_VERSION`, `bounded`) keep the thin
+    bus service off `orion.substrate.__init__`'s graph engine at module scope —
+    same discipline as `derive_salience` (see `test_reverie_thin_import_boundary`).
+    """
+    if broadcast is None or not broadcast.selected_open_loop_id:
+        return None
+    loop = next(
+        (l for l in broadcast.frame.open_loops if l.id == broadcast.selected_open_loop_id),
+        None,
+    )
+    if loop is None:
+        return None
+    from orion.core.ids import stable_hash_id
+    from orion.substrate.attention.common import bounded
+    from orion.substrate.attention.salience import WEIGHTS_VERSION
+
+    return AttentionSalienceTraceV1(
+        trace_id=stable_hash_id("saltrace", [correlation_id, loop.id]),
+        loop_id=loop.id,
+        theme_key=loop.id,
+        correlation_id=correlation_id,
+        salience=bounded(float(loop.salience)),
+        weights_version=WEIGHTS_VERSION,
+        features=dict(loop.salience_features or {}),
+        scope="reverie",
+    )
 
 
 def _open_loops_for_prompt(broadcast: AttentionBroadcastProjectionV1) -> list[dict[str, Any]]:
@@ -366,6 +402,20 @@ async def run_reverie_once(
         await bus.publish(settings.channel_reverie_thought, envelope)
         # Best-effort persistence for the hub panel — never breaks the tick.
         persist_reverie_thought(thought)
+        if settings.attention_salience_v2_enabled:
+            trace = build_salience_trace(broadcast, correlation_id=correlation_id)
+            if trace is not None:
+                with suppress(Exception):
+                    await bus.publish(
+                        settings.channel_attention_salience_trace,
+                        BaseEnvelope(
+                            kind="attention.salience.trace.v1",
+                            source=_source(),
+                            correlation_id=_envelope_correlation_id(correlation_id),
+                            payload=trace.model_dump(mode="json"),
+                        ),
+                    )
+                persist_salience_trace(trace)
     except Exception as exc:
         # A tick must never raise (hard constraint) — a bus/narration/parse
         # failure degrades to a dropped tick, not a crash.

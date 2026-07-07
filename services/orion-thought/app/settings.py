@@ -105,6 +105,10 @@ class ThoughtSettings(BaseSettings):
     # --- Computed salience v2 (shadow-first, default-off) ---
     attention_salience_v2_enabled: bool = Field(False, alias="ORION_ATTENTION_SALIENCE_V2_ENABLED")
     attention_habituation_enabled: bool = Field(False, alias="ORION_ATTENTION_HABITUATION_ENABLED")
+    channel_attention_salience_trace: str = Field(
+        "orion:attention:salience:trace",
+        alias="CHANNEL_ATTENTION_SALIENCE_TRACE",
+    )
 
 
 settings = ThoughtSettings()

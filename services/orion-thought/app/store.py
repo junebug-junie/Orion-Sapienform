@@ -80,6 +80,43 @@ def persist_reverie_thought(thought: "SpontaneousThoughtV1") -> bool:
         return False
 
 
+def persist_salience_trace(trace) -> bool:
+    """Persist one salience trace row. Never raises; idempotent on trace_id."""
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO attention_salience_trace
+                        (trace_id, loop_id, theme_key, correlation_id, salience,
+                         weights_version, scope, features, created_at)
+                    VALUES
+                        (:trace_id, :loop_id, :theme_key, :correlation_id, :salience,
+                         :weights_version, :scope, CAST(:features AS jsonb), :created_at)
+                    ON CONFLICT (trace_id) DO NOTHING
+                    """
+                ),
+                {
+                    "trace_id": trace.trace_id,
+                    "loop_id": trace.loop_id,
+                    "theme_key": trace.theme_key,
+                    "correlation_id": trace.correlation_id,
+                    "salience": float(trace.salience),
+                    "weights_version": trace.weights_version,
+                    "scope": trace.scope,
+                    "features": json.dumps(trace.features),
+                    "created_at": trace.created_at,
+                },
+            )
+        return True
+    except Exception as exc:
+        logger.warning("salience trace persist failed id=%s err=%s", trace.trace_id, exc)
+        return False
+
+
 def persist_reverie_chain(chain) -> bool:
     """Insert one reverie chain readout. Never raises; idempotent on chain_id."""
     try:

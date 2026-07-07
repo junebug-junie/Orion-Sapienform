@@ -727,7 +727,6 @@ class EmbodimentWorker:
         (``POST /api/chat`` with ``mode=orion``). Returns the final text on success;
         returns "" to signal fallback on any non-final frame. Network/JSON errors
         propagate to the dispatcher, which logs one fallback line."""
-        import urllib.error
         import urllib.request
 
         body = json.dumps(

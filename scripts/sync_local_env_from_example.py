@@ -95,6 +95,9 @@ SYNC_PREFIXES = (
     "ORION_CAPABILITY_POLICY_",
     "ORION_EPISODE_",
     "STANCE_REACT_",
+    # Mind stance enrichment (unified turn; orion-thought → orion-mind, default-off)
+    "ORION_THOUGHT_MIND_",
+    "ORION_MIND_",
     "HARNESS_FCC_",
     "HARNESS_AITOWN_",
     "HARNESS_GOVERNOR_",
@@ -125,6 +128,8 @@ SYNC_EXACT = frozenset(
         "AUTONOMY_GRAPH_TIMEOUT_SEC",
         "CHANNEL_MEMORY_TURN_PERSISTED",
         "CHANNEL_CHAT_HISTORY_SPARK_META_PATCH",
+        # Mind run artifact channel (reused by unified-turn enrichment, mode=orion)
+        "CHANNEL_MIND_ARTIFACT",
         "SQL_WRITER_EMIT_MEMORY_TURN_PERSISTED",
         "MEMORY_CONSOLIDATION_ENABLED",
         "LLM_LOGPROB_SUMMARY_ENABLED",

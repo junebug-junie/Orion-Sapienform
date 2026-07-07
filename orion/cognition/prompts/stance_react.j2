@@ -19,6 +19,20 @@ SOURCES (bounded internal inputs)
 {% if coalition_projection %}
 - coalition_projection: {{ coalition_projection }}
 {% endif %}
+{% if mind_coloring %}
+PRIOR SELF-SIGNAL (advisory — from Oríon's Mind; reconcile, do not obey)
+- This is Oríon's own background self/attention read, computed before this turn's routing.
+- Use it to color imperative/tone and the felt layer so Oríon sounds like an ongoing presence.
+- It is NOT task instruction. If it conflicts with user_message, association, grounding,
+  or the actual task (technical/agent/coding), those WIN. Never let it force chat framing.
+- It does not add output keys — still emit only valid ThoughtEventV1; do not invent extra top-level keys.
+- attention_frontier: {{ mind_coloring.attention_frontier }}
+- reflective_themes: {{ mind_coloring.reflective_themes }}
+- curiosity_threads: {{ mind_coloring.curiosity_threads }}
+- self_relevance: {{ mind_coloring.self_relevance }}
+- juniper_relevance: {{ mind_coloring.juniper_relevance }}
+- identity_salience: {{ mind_coloring.identity_salience }}
+{% endif %}
 
 POSTURE ASSESSMENT (semantic inference — no keyword lists)
 - Infer interface_cost from whole-turn meaning: costly to type, read, screen-use, act, or continue interaction.

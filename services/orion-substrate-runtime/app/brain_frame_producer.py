@@ -9,7 +9,7 @@ node/edge samples are best-effort decoration with no continuity guarantee.
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
 from orion.schemas.brain_frame import (
@@ -59,14 +59,19 @@ def _node_dormant(node: Any) -> bool:
 
 
 def _parse_dt(value: Any) -> datetime | None:
+    dt: datetime | None = None
     if isinstance(value, datetime):
-        return value
-    if isinstance(value, str):
+        dt = value
+    elif isinstance(value, str):
         try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
         except ValueError:
             return None
-    return None
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def _node_kind_regions(nodes, now, firing, starving) -> list[BrainRegionV1]:
@@ -183,7 +188,10 @@ def _samples(nodes, edges, max_nodes, max_edges) -> tuple[list[BrainNodeSampleV1
     ]
     kept_ids = {s.node_id for s in node_samples}
     edge_samples: list[BrainEdgeSampleV1] = []
+    max_e = max(0, int(max_edges))
     for e in edges or []:
+        if len(edge_samples) >= max_e:
+            break
         src = str(getattr(e, "src", None) or getattr(e, "source", "") or "")
         dst = str(getattr(e, "dst", None) or getattr(e, "target", "") or "")
         if not src or not dst or src not in kept_ids or dst not in kept_ids:
@@ -191,8 +199,6 @@ def _samples(nodes, edges, max_nodes, max_edges) -> tuple[list[BrainNodeSampleV1
         edge_samples.append(
             BrainEdgeSampleV1(src=src, dst=dst, weight=_clamp01(getattr(e, "weight", 0.0) or 0.0))
         )
-        if len(edge_samples) >= max(0, int(max_edges)):
-            break
     return node_samples, edge_samples
 
 

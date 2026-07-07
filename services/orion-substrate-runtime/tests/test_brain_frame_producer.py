@@ -146,3 +146,65 @@ def test_self_state_region_marked_stale_when_old():
     ss = {r.region_id: r for r in frame.regions if r.dimension == "self_state"}
     assert ss["self_state:execution_pressure"].stale is True
     assert ss["self_state:execution_pressure"].intensity == 0.8
+
+
+def test_naive_datetimes_do_not_crash_and_compute_staleness():
+    from datetime import datetime, timezone
+
+    from app.brain_frame_producer import assemble_brain_frame
+
+    now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
+    # tz-NAIVE ISO string (no offset) 120s in the past -> should be treated as UTC and stale.
+    self_state = {
+        "generated_at": "2026-07-07T11:58:00",
+        "dimensions": {"coherence": {"score": 0.5, "confidence": 0.6}},
+    }
+    # tz-NAIVE attention generated_at, 5s in the past -> fresh (not stale).
+    attention = SimpleNamespace(
+        generated_at="2026-07-07T11:59:55",
+        attended_node_ids=["t1"],
+        dwell_ticks=2,
+        coalition_stability_score=0.9,
+        selected_description="focus",
+    )
+    frame = assemble_brain_frame(
+        nodes=[_node("t1", "tension", 0.9, 0.9)],
+        edges=[],
+        lane_health={"cursor_lag_by_reducer": {}, "pending_backlog_by_reducer": {}, "quarantine_by_reducer": {}},
+        self_state=self_state,
+        attention=attention,
+        settings=_settings(),
+        now=now,
+        tick_seq=4,
+    )
+    ss = {r.region_id: r for r in frame.regions if r.dimension == "self_state"}
+    assert ss["self_state:coherence"].stale is True  # 120s > 30s cadence
+    assert frame.spotlight is not None
+    assert frame.spotlight.stale is False  # 5s < 30s cadence
+    assert frame.spotlight.attended_node_ids == ["t1"]
+
+
+def test_edge_sample_cap_zero_yields_no_edges():
+    from datetime import datetime, timezone
+
+    from app.brain_frame_producer import assemble_brain_frame
+
+    now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
+    settings = _settings()
+    settings.brain_frame_sample_edges = 0
+    nodes = [
+        _node("a1", "concept", activation=0.9),
+        _node("a2", "concept", activation=0.8),
+    ]
+    edges = [SimpleNamespace(src="a1", dst="a2", weight=0.7)]
+    frame = assemble_brain_frame(
+        nodes=nodes,
+        edges=edges,
+        lane_health={"cursor_lag_by_reducer": {}, "pending_backlog_by_reducer": {}, "quarantine_by_reducer": {}},
+        self_state=None,
+        attention=None,
+        settings=settings,
+        now=now,
+        tick_seq=5,
+    )
+    assert frame.edges == []

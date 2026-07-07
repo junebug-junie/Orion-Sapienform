@@ -2104,6 +2104,9 @@ async def run_recall_step(
     step_order: int = -1,
     diagnostic: bool = False,
     rpc_timeout_sec: float | None = None,
+    recall_phase: str | None = None,
+    retrieval_intent: str | None = None,
+    task_hints: Dict[str, Any] | None = None,
 ) -> Tuple[StepExecutionResult, Dict[str, Any], str]:
     """RecallService bus RPC. If ``rpc_timeout_sec`` is omitted, wait is ``min(STEP_TIMEOUT_MS, lane cap)``:
     ``CHAT_QUICK_RECALL_TIMEOUT_SEC`` for ``ctx['verb']`` in fast single-pass chat verbs, else ``RECALL_RPC_TIMEOUT_SEC``.
@@ -2162,6 +2165,9 @@ async def run_recall_step(
             "active_turn_ts": time.time(),
         },
         reply_to=reply_channel,
+        recall_phase=recall_phase,
+        retrieval_intent=retrieval_intent,
+        task_hints=task_hints,
     )
 
     logs: List[str] = [f"rpc -> RecallService (profile={req.profile})"]

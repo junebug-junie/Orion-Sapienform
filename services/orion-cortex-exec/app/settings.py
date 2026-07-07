@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     # Default recall profile for chat_quick when the client did not set profile_explicit (vector-light; see orion/recall/profiles).
     chat_quick_recall_profile: str = Field("assist.light.v1", alias="CHAT_QUICK_RECALL_PROFILE")
     chat_kids_story_recall_profile: str = Field("chat.story.kids.v1", alias="CHAT_KIDS_STORY_RECALL_PROFILE")
+    chat_pcr_enabled: bool = Field(True, alias="CHAT_PCR_ENABLED")
+    chat_pcr_post_stance_recall: bool = Field(True, alias="CHAT_PCR_POST_STANCE_RECALL")
+    chat_pcr_skip_on_low_info: bool = Field(True, alias="CHAT_PCR_SKIP_ON_LOW_INFO")
+    chat_pcr_quick_phase3: bool = Field(False, alias="CHAT_PCR_QUICK_PHASE3")
     channel_agent_chain_intake: str = Field("orion:exec:request:AgentChainService", alias="CHANNEL_AGENT_CHAIN_INTAKE")
     channel_context_exec_intake: str = Field(
         "orion:exec:request:ContextExecService",

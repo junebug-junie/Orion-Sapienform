@@ -58,6 +58,20 @@ def _clip(value: Any) -> Any:
     return value
 
 
+def _clip_str_or_none(value: Any) -> str | None:
+    """Coerce a scalar to a stripped, length-bounded str; None otherwise.
+
+    Non-scalar values (dict/list/etc.) are dropped rather than stringified, so a
+    nested structure can never inject its keys/values into the coloring — this
+    preserves the strict no-nested-leak property even for future schema drift.
+    These fields are semantically scalars (a short str / Literal) in ChatStanceBrief.
+    """
+    if not isinstance(value, (str, int, float, bool)):
+        return None
+    text = str(value).strip()[:_MAX_STR_CHARS]
+    return text or None
+
+
 def _str_list(value: Any, *, max_items: int) -> list[str]:
     if not isinstance(value, (list, tuple)):
         return []
@@ -99,12 +113,9 @@ def select_mind_coloring(result: MindRunResultV1, *, max_items: int = 3) -> dict
 
     stance_payload = brief.stance_payload if isinstance(brief.stance_payload, dict) else {}
     reflective_themes = _str_list(stance_payload.get("reflective_themes"), max_items=max_items)
-    _self_rel = stance_payload.get("self_relevance")
-    self_relevance = str(_self_rel).strip()[:_MAX_STR_CHARS] if _self_rel else None
-    _identity_sal = stance_payload.get("identity_salience")
-    identity_salience = str(_identity_sal) if _identity_sal else None
-    _juniper_rel = stance_payload.get("juniper_relevance")
-    juniper_relevance = str(_juniper_rel).strip()[:_MAX_STR_CHARS] if _juniper_rel else None
+    self_relevance = _clip_str_or_none(stance_payload.get("self_relevance"))
+    identity_salience = _clip_str_or_none(stance_payload.get("identity_salience"))
+    juniper_relevance = _clip_str_or_none(stance_payload.get("juniper_relevance"))
 
     # No empty-shell cognition: require at least one substantive signal.
     has_substance = bool(

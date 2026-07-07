@@ -130,3 +130,48 @@ def test_empty_substance_returns_none() -> None:
         mind_quality="meaningful_synthesis",
     )
     assert select_mind_coloring(empty, max_items=3) is None
+
+
+def _result_with_payload(payload: dict) -> MindRunResultV1:
+    return MindRunResultV1(
+        mind_run_id=uuid4(),
+        ok=True,
+        snapshot_hash="deadbeef",
+        brief=MindHandoffBriefV1(
+            mind_quality="meaningful_synthesis",
+            active_frontier=None,
+            stance_payload=payload,
+        ),
+        mind_quality="meaningful_synthesis",
+    )
+
+
+def test_scalar_fields_clipped_and_no_nested_leak() -> None:
+    # Defense-in-depth: scalar fields are length-bounded; a non-scalar value
+    # (e.g. a dict carrying task-control keys) is DROPPED, never stringified,
+    # so nested keys can never leak into the coloring blob.
+    import json
+
+    payload = {
+        "self_relevance": "x" * 1000,
+        "identity_salience": {"task_mode": "reflective_dialogue", "leak": "z" * 1000},
+        "juniper_relevance": "Juniper matters",
+    }
+    coloring = select_mind_coloring(_result_with_payload(payload), max_items=3)
+    assert coloring is not None
+    assert isinstance(coloring["self_relevance"], str)
+    assert len(coloring["self_relevance"]) <= 240
+    # Non-scalar identity_salience is dropped entirely, not stringified.
+    assert coloring["identity_salience"] is None
+    blob = json.dumps(coloring)
+    assert "task_mode" not in blob
+
+
+def test_whitespace_only_scalar_normalizes_to_none() -> None:
+    payload = {
+        "self_relevance": "   ",
+        "reflective_themes": ["continuity"],  # provide real substance so coloring fires
+    }
+    coloring = select_mind_coloring(_result_with_payload(payload), max_items=3)
+    assert coloring is not None
+    assert coloring["self_relevance"] is None

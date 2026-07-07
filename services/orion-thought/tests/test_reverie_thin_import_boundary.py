@@ -46,6 +46,55 @@ def test_importing_reverie_does_not_load_substrate_or_requests() -> None:
     assert "ok" in result.stdout
 
 
+def test_calling_reverie_tick_helpers_does_not_load_substrate() -> None:
+    """Real teeth: the tick path (`derive_salience`, `build_salience_trace`) must
+    not import `orion.substrate` at CALL time either.
+
+    The prior module-scope-only check passed in a venv that has `requests`, but in
+    the thin `orion-thought` container (no `requests`) a call-time
+    `from orion.substrate.attention...` crashed every reverie tick. This exercises
+    both the v2-on and v2-off branches and asserts `orion.substrate` never loads.
+    """
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    service_root = Path(__file__).resolve().parents[1]
+    repo_root = Path(__file__).resolve().parents[3]
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join([str(service_root), str(repo_root)])
+    env["ORION_ATTENTION_SALIENCE_V2_ENABLED"] = "true"
+    code = (
+        "import sys\n"
+        "from datetime import datetime, timezone\n"
+        "from orion.schemas.attention_frame import ("
+        " AttentionBroadcastProjectionV1, AttentionFrameV1, OpenLoopV1)\n"
+        "import app.reverie as r\n"
+        "loop = OpenLoopV1(id='ol-1', description='x', salience=0.7,"
+        " salience_features={'evidence_strength': 0.8})\n"
+        "b = AttentionBroadcastProjectionV1("
+        " frame=AttentionFrameV1(open_loops=[loop]),"
+        " selected_open_loop_id='ol-1', coalition_stability_score=0.4)\n"
+        "assert r.derive_salience(b) > 0\n"
+        "t = r.build_salience_trace(b, correlation_id='c1')\n"
+        "assert t is not None and t.weights_version == 'seed-v1'\n"
+        "sub=[m for m in sys.modules if m.startswith('orion.substrate')]\n"
+        "assert not sub, sub\n"
+        "assert 'requests' not in sys.modules\n"
+        "print('ok')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(service_root),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ok" in result.stdout
+
+
 def test_stable_hash_id_deterministic() -> None:
     from orion.core.ids import stable_hash_id
 

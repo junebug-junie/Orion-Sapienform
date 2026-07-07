@@ -51,8 +51,9 @@ def test_distinct_coalitions_get_distinct_salience():
     assert strong - weak > 0.15, f"salience did not discriminate: {strong=} {weak=}"
 
 
-def test_legacy_constant_ladder_fails_discrimination():
+def test_legacy_constant_ladder_fails_discrimination(monkeypatch):
     """Evidence the old path was broken: two plan loops collapse to one score."""
+    monkeypatch.delenv("ORION_ATTENTION_SALIENCE_V2_ENABLED", raising=False)
     from orion.substrate.attention.scoring import score_loop
 
     a = OpenLoopV1(id="a", target_type="plan", description="a", predictive_value=0.72,

@@ -3,7 +3,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 UPSTREAM="${ROOT}/upstream"
-PATCHES=("orion-hub-embed.patch" "orion-character.patch")
+PATCHES=("orion-hub-embed.patch" "orion-character.patch" "orion-engine-recovery.patch")
 
 if [[ ! -d "${UPSTREAM}/.git" ]]; then
   echo "Missing ${UPSTREAM} — clone upstream first (see README.md)" >&2
@@ -17,11 +17,14 @@ for name in "${PATCHES[@]}"; do
     echo "Skipping ${name} (not present)"
     continue
   fi
-  if git apply --check "${PATCH}" 2>/dev/null; then
+  # Check "already applied" (reverse) FIRST: additive patches (pure insertions)
+  # always pass a forward --check even when already present, so a forward-first
+  # order would double-apply them and duplicate the inserted code.
+  if git apply --reverse --check "${PATCH}" 2>/dev/null; then
+    echo "${name} already applied"
+  elif git apply --check "${PATCH}" 2>/dev/null; then
     git apply "${PATCH}"
     echo "Applied ${name}"
-  elif git apply --reverse --check "${PATCH}" 2>/dev/null; then
-    echo "${name} already applied"
   else
     echo "${name} does not apply cleanly — resolve upstream drift manually" >&2
     exit 1

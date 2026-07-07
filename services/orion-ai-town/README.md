@@ -138,6 +138,24 @@ Orion's persistent body uses a dedicated `"Orion"` character slot added to AI To
 
 > Note: `patches/orion-character.patch` is generated from a real diff against the cloned `upstream/`. On a node where `upstream/` is not yet cloned, the apply script skips the patch (with a message) rather than failing; generate the patch on a node that has `upstream/` before relying on the character slot.
 
+### Engine recovery (`patches/orion-engine-recovery.patch`)
+
+Adds two internal Convex functions to `convex/testing.ts`:
+
+- `testing:debugEngineState` — dumps `processedInputNumber`, the pending (unactioned) input backlog by name, and each conversation's `lastMessage`. Read-only diagnostic.
+- `testing:recoverFrozenEngine` — drops the unactioned input backlog and scrubs any malformed `lastMessage` from the stored world.
+
+These recover a **frozen engine**: an externally-driven player (Orion) can enqueue a `finishSendingMessage` without a numeric `timestamp`, which builds `lastMessage={author}` and fails the `serializedConversation` validator in `saveWorld`. That crashes every `runStep`, so `processedInputNumber` never advances and the whole town freezes until the poisoned input is purged. Recover with:
+
+```bash
+cd upstream
+npx convex run testing:debugEngineState      # inspect the backlog
+npx convex run testing:recoverFrozenEngine    # purge stale inputs + scrub
+npx convex run testing:stop && npx convex run testing:resume
+```
+
+The embodiment worker no longer sends `finishSendingMessage` itself (`messages:writeMessage` enqueues a well-formed one), so this poison cannot recur; the patch is kept for operator recovery and diagnosis.
+
 ## MCP integration
 
 Gameplay MCP lives in `mcp/orion_aitown_mcp/`. Hub fcc-claude includes it when `HUB_AITOWN_ENABLED=true` and MCP is enabled.

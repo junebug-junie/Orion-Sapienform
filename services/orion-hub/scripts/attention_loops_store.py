@@ -95,3 +95,99 @@ def build_pending_card(
         top_contributing_features=_top_features(loop.salience_features or {}),
         status="pending",
     )
+
+
+_VALID_VERDICTS = {"resolved", "dismissed", "decayed_unattended"}
+
+
+def build_loop_outcome(
+    *,
+    loop_id: str,
+    theme_key: str,
+    verdict: str,
+    actor: str,
+    note: str,
+    salience_at_close: float,
+    features_at_close: dict[str, Any],
+) -> AttentionLoopOutcomeV1:
+    if verdict not in _VALID_VERDICTS:
+        raise ValueError(f"invalid verdict: {verdict}")
+    from orion.core.ids import stable_hash_id
+
+    return AttentionLoopOutcomeV1(
+        outcome_id=stable_hash_id("loopoutcome", [loop_id, verdict, actor]),
+        loop_id=loop_id,
+        theme_key=theme_key,
+        verdict=verdict,  # type: ignore[arg-type]
+        actor=actor,
+        note=(note or "")[:500],
+        salience_at_close=float(salience_at_close),
+        features_at_close=dict(features_at_close or {}),
+    )
+
+
+def persist_loop_outcome(outcome: AttentionLoopOutcomeV1) -> bool:
+    """Write one outcome label. Never raises; idempotent on outcome_id."""
+    try:
+        from sqlalchemy import text
+
+        with _engine().begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO attention_loop_outcome
+                        (outcome_id, loop_id, theme_key, verdict, actor, note,
+                         salience_at_close, weights_version, features_at_close, created_at)
+                    VALUES
+                        (:outcome_id, :loop_id, :theme_key, :verdict, :actor, :note,
+                         :salience_at_close, :weights_version, CAST(:features AS jsonb), :created_at)
+                    ON CONFLICT (outcome_id) DO NOTHING
+                    """
+                ),
+                {
+                    "outcome_id": outcome.outcome_id,
+                    "loop_id": outcome.loop_id,
+                    "theme_key": outcome.theme_key,
+                    "verdict": outcome.verdict,
+                    "actor": outcome.actor,
+                    "note": outcome.note,
+                    "salience_at_close": float(outcome.salience_at_close),
+                    "weights_version": outcome.weights_version,
+                    "features": json.dumps(outcome.features_at_close),
+                    "created_at": outcome.created_at,
+                },
+            )
+        return True
+    except Exception as exc:
+        logger.warning("loop outcome persist failed id=%s err=%s", outcome.outcome_id, exc)
+        return False
+
+
+def suppress_loop(theme_key: str, *, cooldown_sec: float = 86400.0) -> bool:
+    """Suppress a closed loop so it exits the coalition (reuse refractory table).
+
+    Resolves rather than pauses: the theme is refractory-suppressed for a long
+    cooldown so it won't re-ignite. Never raises.
+    """
+    try:
+        from datetime import timedelta
+
+        from sqlalchemy import text
+
+        until = datetime.now(timezone.utc) + timedelta(seconds=cooldown_sec)
+        with _engine().begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO substrate_reverie_refractory (theme_key, suppressed_until)
+                    VALUES (:k, :until)
+                    ON CONFLICT (theme_key)
+                    DO UPDATE SET suppressed_until = EXCLUDED.suppressed_until, updated_at = now()
+                    """
+                ),
+                {"k": theme_key, "until": until},
+            )
+        return True
+    except Exception as exc:
+        logger.warning("suppress_loop failed theme=%s err=%s", theme_key, exc)
+        return False

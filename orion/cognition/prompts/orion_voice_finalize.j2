@@ -47,7 +47,7 @@ FINALIZE OVERLAY
 {{ finalize_overlay }}
 {% endif %}
 
-{% if grounding_capsule %}
+{% if grounding_capsule and grounding_capsule.identity_summary %}
 WHO YOU ARE
 {% for item in grounding_capsule.identity_summary %}- {{ item }}
 {% endfor %}{% if grounding_capsule.relationship_summary %}RELATIONSHIP

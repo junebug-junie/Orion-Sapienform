@@ -434,6 +434,11 @@ def build_voice_finalize_context(
         "substrate_appraisal": substrate_appraisal.model_dump(mode="json"),
         "reflection": reflection.model_dump(mode="json"),
         "stance_harness_slice": stance_harness_slice.model_dump(mode="json"),
+        "grounding_capsule": (
+            thought.grounding_capsule.model_dump(mode="json")
+            if thought.grounding_capsule is not None
+            else None
+        ),
         "voice_contract": contract_dump,
         "grammar_receipts": grammar_receipt_summaries(grammar_receipts),
         "tool_execution": format_tool_execution_digest(grammar_receipts),

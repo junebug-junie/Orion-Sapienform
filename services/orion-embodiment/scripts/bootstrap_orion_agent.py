@@ -104,17 +104,18 @@ def _player_resolves(player_id: str) -> bool:
 
 
 def _poll_new_body(timeout: float = 30.0) -> tuple[Optional[str], Optional[str]]:
+    """Wait for the player named "Orion" to appear. ``join`` creates a player (no
+    town-AI agent), so a missing agent id is expected — Orion is driven externally."""
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
+            aitown_client.heartbeat_world()  # keep the engine running so join is processed
             players = aitown_client.list_players() or []
-            agents = aitown_client.list_agents() or []
         except aitown_client.AitownClientError:
-            players, agents = [], []
+            players = []
         player = next((p for p in players if str(p.get("name") or "").lower() == "orion"), None)
-        agent = next((a for a in agents if str(a.get("character") or "").lower() == "orion"), None)
         if player is not None:
-            return str(player.get("id")), (str(agent.get("id")) if agent else None)
+            return str(player.get("id")), None
         time.sleep(2.0)
     return None, None
 
@@ -151,38 +152,31 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if player_id and _player_resolves(player_id) and not args.force:
         if args.resync_identity:
-            persona = _build_persona(self_state_url, spritesheet)
-            try:
-                aitown_client.send_input(
-                    name="createAgent",
-                    args={
-                        "character": "Orion",
-                        "identity": persona.identity_blurb,
-                        "plan": persona.plan,
-                        "spritesheet": persona.spritesheet,
-                    },
-                )
-            except aitown_client.AitownClientError as exc:
-                print(f"resync failed: {exc}")
-                return 1
-            print(f"resynced identity for player={player_id} agent={agent_id or '?'}")
+            # This deployment (monolithic world:* layout) has no input to update an
+            # existing player's description; identity is set at join time. Rebuild the
+            # persona for inspection but do not mutate the live body (avoids duplicates).
+            _build_persona(self_state_url, spritesheet)
+            print(
+                f"resync unsupported on this town: player={player_id} already embodied; "
+                "recreate with --force to apply a new persona"
+            )
             return 0
         print(f"already embodied: player={player_id} agent={agent_id or '?'}")
         return 0
 
     persona = _build_persona(self_state_url, spritesheet)
     try:
-        aitown_client.send_input(
-            name="createAgent",
-            args={
-                "character": "Orion",
-                "identity": persona.identity_blurb,
-                "plan": persona.plan,
-                "spritesheet": persona.spritesheet,
-            },
+        aitown_client.heartbeat_world()  # wake an inactive world before queuing the join
+        # `join` spawns a named player driven externally by Orion's mind (no town-AI
+        # agent). `createAgent` only clones a canned Descriptions[] character, so it
+        # cannot produce an "Orion" identity on this deployment.
+        aitown_client.join_player(
+            name="Orion",
+            character=persona.spritesheet,
+            description=persona.identity_blurb,
         )
     except aitown_client.AitownClientError as exc:
-        print(f"createAgent failed: {exc}")
+        print(f"join failed: {exc}")
         return 1
 
     new_player_id, new_agent_id = _poll_new_body()

@@ -78,12 +78,66 @@ def send_input(*, name: str, args: Dict[str, Any], world_id: Optional[str] = Non
     return convex_mutation("aiTown/main:sendInput", {"worldId": wid, "name": name, "args": args})
 
 
+def heartbeat_world(world_id: Optional[str] = None) -> Any:
+    """Wake/keep-alive the town engine. An `inactive` world drops all queued inputs
+    (join/moveTo) until restarted, so callers that actuate must heartbeat first."""
+    wid = str(world_id or _world_id()).strip()
+    if not wid:
+        raise AitownClientError("AITOWN_WORLD_ID is not set")
+    return convex_mutation("world:heartbeatWorld", {"worldId": wid})
+
+
+def join_player(*, name: str, character: str, description: str, world_id: Optional[str] = None) -> Any:
+    """Spawn a named, externally-driven player (no town-AI agent) via the ``join`` input."""
+    return send_input(
+        name="join",
+        args={"name": name, "character": character, "description": description},
+        world_id=world_id,
+    )
+
+
+def _world_snapshot(world_id: Optional[str] = None) -> Dict[str, Any]:
+    wid = str(world_id or _world_id()).strip()
+    if not wid:
+        raise AitownClientError("AITOWN_WORLD_ID is not set")
+    ws = convex_query("world:worldState", {"worldId": wid})
+    return ws if isinstance(ws, dict) else {}
+
+
+def _game_descriptions(world_id: Optional[str] = None) -> Dict[str, Any]:
+    wid = str(world_id or _world_id()).strip()
+    gd = convex_query("world:gameDescriptions", {"worldId": wid})
+    return gd if isinstance(gd, dict) else {}
+
+
 def list_players(world_id: Optional[str] = None) -> Any:
-    return convex_query("aiTown/world:players", {"worldId": str(world_id or _world_id()).strip()})
+    """Players from ``world:worldState`` enriched with names from ``world:gameDescriptions``.
+
+    This deployment exposes the monolithic ``world:*`` layout, not ``aiTown/world:*``.
+    Returned dicts keep the raw player fields (id/position/human/...) plus ``name``.
+    """
+    world = _world_snapshot(world_id).get("world") or {}
+    players = world.get("players") or []
+    names = {
+        str(d.get("playerId")): d.get("name")
+        for d in (_game_descriptions(world_id).get("playerDescriptions") or [])
+    }
+    return [{**p, "id": str(p.get("id")), "name": names.get(str(p.get("id")))} for p in players]
 
 
 def list_agents(world_id: Optional[str] = None) -> Any:
-    return convex_query("aiTown/world:agents", {"worldId": str(world_id or _world_id()).strip()})
+    world = _world_snapshot(world_id).get("world") or {}
+    agents = world.get("agents") or []
+    desc = {
+        str(d.get("agentId")): d
+        for d in (_game_descriptions(world_id).get("agentDescriptions") or [])
+    }
+    out = []
+    for a in agents:
+        aid = str(a.get("id"))
+        d = desc.get(aid, {})
+        out.append({**a, "id": aid, "identity": d.get("identity"), "plan": d.get("plan")})
+    return out
 
 
 def move_to(*, player_id: str, x: float, y: float, world_id: Optional[str] = None) -> Any:

@@ -294,25 +294,28 @@ class EmbodimentWorker:
             return None
 
         prompt = build_speech_prompt(perception, own)
+        # Hold the conversation as in-flight through both the utterance request AND
+        # the injection so a later perception tick cannot double-inject.
         self._speaking_conversations.add(convo_id)
         try:
-            reply = await self._request_utterance(prompt, correlation_id=str(uuid4()))
-        except Exception:
-            logger.exception("embodiment_speech_request_failed convo=%s", convo_id)
-            reply = ""
+            try:
+                reply = await self._request_utterance(prompt, correlation_id=str(uuid4()))
+            except Exception:
+                logger.exception("embodiment_speech_request_failed convo=%s", convo_id)
+                reply = ""
+
+            if not is_injectable(reply):
+                logger.info("embodiment_speech_empty_reply_skipped convo=%s", convo_id)
+                return None
+
+            try:
+                await asyncio.to_thread(self._inject_utterance, own, convo_id, reply)
+            except Exception:
+                logger.exception("embodiment_speech_inject_failed convo=%s", convo_id)
+                return None
+            return reply
         finally:
             self._speaking_conversations.discard(convo_id)
-
-        if not is_injectable(reply):
-            logger.info("embodiment_speech_empty_reply_skipped convo=%s", convo_id)
-            return None
-
-        try:
-            await asyncio.to_thread(self._inject_utterance, own, convo_id, reply)
-        except Exception:
-            logger.exception("embodiment_speech_inject_failed convo=%s", convo_id)
-            return None
-        return reply
 
     async def _request_utterance(self, prompt: str, *, correlation_id: str) -> str:
         """Reuse the cortex exec rail to generate an utterance. Fail-open -> ''."""

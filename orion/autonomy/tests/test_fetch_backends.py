@@ -36,6 +36,38 @@ async def test_firecrawl_search_backend_parses_urls() -> None:
 
 
 @pytest.mark.asyncio
+async def test_firecrawl_search_backend_parses_articles() -> None:
+    response_body = json.dumps(
+        {
+            "success": True,
+            "data": [
+                {"url": "https://example.com/a", "title": "A", "description": "desc a"},
+                {"url": "https://example.com/b", "title": "B"},
+            ],
+        }
+    )
+
+    def _fake_urlopen(req, timeout=30.0):  # noqa: ARG001
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = response_body.encode("utf-8")
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        return mock_resp
+
+    with patch("orion.autonomy.fetch_backends.urllib.request.urlopen", side_effect=_fake_urlopen):
+        result = await firecrawl_search_backend("gpu news", max_articles=2, api_key="test-key")
+
+    assert result["success"] is True
+    # urls preserved for back-compat
+    assert result["urls"] == ["https://example.com/a", "https://example.com/b"]
+    # articles carry title + description (missing description defaults to "")
+    assert result["articles"] == [
+        {"url": "https://example.com/a", "title": "A", "description": "desc a"},
+        {"url": "https://example.com/b", "title": "B", "description": ""},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_firecrawl_search_backend_http_error() -> None:
     import urllib.error
 

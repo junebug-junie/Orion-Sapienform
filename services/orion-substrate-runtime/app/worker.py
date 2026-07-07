@@ -159,6 +159,7 @@ class BiometricsSubstrateWorker:
         self._bus = None
         self._tasks: list[asyncio.Task[None]] = []
         self._substrate_graph_store: Any = None
+        self._sql_engine: Any = None
 
     @property
     def bus(self):
@@ -572,6 +573,25 @@ class BiometricsSubstrateWorker:
             logger.exception(log_label)
             return None
 
+    def _get_sql_engine(self):
+        """Return a cached SQLAlchemy engine for direct Postgres writes.
+
+        Graph substrate store does not expose ``.engine``; turn referent persistence
+        uses ``settings.postgres_uri`` like the orion-thought store pattern.
+        Fail-open: returns None on init error.
+        """
+        try:
+            engine = self._sql_engine
+            if engine is None:
+                from sqlalchemy import create_engine
+
+                engine = create_engine(self._settings.postgres_uri, pool_pre_ping=True)
+                self._sql_engine = engine
+            return engine
+        except Exception:
+            logger.exception("turn_referent_sql_engine_init_failed")
+            return None
+
     def _write_prediction_error_node(
         self,
         *,
@@ -651,24 +671,40 @@ class BiometricsSubstrateWorker:
         """Bridge unresolved harness surprise into durable prediction_error nodes."""
         if not closure.surprise_unresolved:
             return
-        if not _prediction_error_nodes_enabled():
+        if _prediction_error_nodes_enabled():
+            logger.info(
+                "post_turn_closure_prediction_error_write corr=%s node_id=%s error=%.2f",
+                closure.correlation_id,
+                f"harness_closure:{closure.correlation_id}",
+                _HARNESS_CLOSURE_UNRESOLVED_ERROR,
+            )
+            self._write_prediction_error_node(
+                node_id=f"harness_closure:{closure.correlation_id}",
+                error=_HARNESS_CLOSURE_UNRESOLVED_ERROR,
+                now=datetime.now(timezone.utc),
+                reducer_key="post_turn_closure",
+            )
+        else:
             logger.info(
                 "post_turn_closure_prediction_error_skipped corr=%s reason=SUBSTRATE_WRITE_PREDICTION_ERROR_NODES_disabled",
                 closure.correlation_id,
             )
-            return
-        logger.info(
-            "post_turn_closure_prediction_error_write corr=%s node_id=%s error=%.2f",
-            closure.correlation_id,
-            f"harness_closure:{closure.correlation_id}",
-            _HARNESS_CLOSURE_UNRESOLVED_ERROR,
-        )
-        self._write_prediction_error_node(
-            node_id=f"harness_closure:{closure.correlation_id}",
-            error=_HARNESS_CLOSURE_UNRESOLVED_ERROR,
-            now=datetime.now(timezone.utc),
-            reducer_key="post_turn_closure",
-        )
+
+        try:
+            from .turn_referent_store import persist_turn_referent
+
+            store = self._get_substrate_graph_store(log_label="turn_referent_store_init_failed")
+            engine = getattr(store, "engine", None) if store is not None else None
+            if engine is None:
+                engine = self._get_sql_engine()
+            if engine is not None:
+                persist_turn_referent(closure, engine=engine)
+        except Exception:
+            logger.warning(
+                "turn_referent_persist_failed corr=%s",
+                closure.correlation_id,
+                exc_info=True,
+            )
 
     def _dynamics_tick(self) -> None:
         """Periodic pacemaker for the graph substrate (closes PR #766 rung-1 gap).

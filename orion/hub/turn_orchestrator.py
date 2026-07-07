@@ -465,4 +465,12 @@ async def run_unified_turn(
         if with_biometrics is not None:
             outbound = await with_biometrics(frame, cache=biometrics_cache)
         await websocket.send_json(outbound)
+    # Mirror the classic lane contract (websocket_handler emits {"state": "idle"} at end of
+    # turn): the Hub status line is set to "Sent..." on send and only resets to "Ready." when
+    # a frame carries state 'idle'. The unified terminal frames omit state, so emit a trailing
+    # idle-state frame to unstick the status after the turn completes.
+    idle_frame: dict[str, Any] = {"state": "idle"}
+    if with_biometrics is not None:
+        idle_frame = await with_biometrics(idle_frame, cache=biometrics_cache)
+    await websocket.send_json(idle_frame)
     return frames

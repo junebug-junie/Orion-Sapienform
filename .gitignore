@@ -6,6 +6,7 @@
 MONITOR
 **/tmp/
 scripts/.state/
+.superpowers/
 
 # Local git worktrees (feature isolation)
 .worktrees/

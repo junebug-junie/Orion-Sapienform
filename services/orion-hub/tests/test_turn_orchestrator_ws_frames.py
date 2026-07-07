@@ -355,3 +355,35 @@ def test_success_frames_final_omits_recall_when_absent() -> None:
     final_frame = next(frame for frame in frames if frame["type"] == "final")
     assert "recall_debug" not in final_frame
     assert "memory_digest" not in final_frame
+
+
+@pytest.mark.asyncio
+async def test_run_unified_turn_emits_trailing_idle_state_frame() -> None:
+    """Regression: the Hub status line is set to 'Sent...' on send and only resets when a
+    frame carries state 'idle' (classic lane sends one). The unified terminal frames omit
+    state, so run_unified_turn must emit a trailing {'state': 'idle'} to unstick the status."""
+    from orion.hub.turn_orchestrator import run_unified_turn
+
+    sent: list[dict] = []
+
+    class _FakeWS:
+        async def send_json(self, frame: dict) -> None:
+            sent.append(frame)
+
+    frames = [
+        {"type": "final", "correlation_id": _CORR_ID, "mode": "orion", "llm_response": "hi"},
+    ]
+    with patch(
+        "orion.hub.turn_orchestrator.execute_unified_turn",
+        AsyncMock(return_value=frames),
+    ):
+        await run_unified_turn(
+            _FakeWS(),
+            bus=MagicMock(),
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="hello",
+        )
+
+    assert any(f.get("type") == "final" for f in sent), "final frame must still be sent"
+    assert sent[-1] == {"state": "idle"}, "must end with an idle-state frame so status resets to Ready"

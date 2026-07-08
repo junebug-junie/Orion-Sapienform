@@ -4,6 +4,7 @@ from app.router import (
     _extract_final_text,
     _extract_reasoning_payload,
     _should_fail_empty_runtime_skill_output,
+    _structured_output_expected,
 )
 from orion.schemas.cortex.schemas import StepExecutionResult
 
@@ -105,6 +106,26 @@ def test_journal_compose_regression_prefers_structured_json_fragment() -> None:
         _step({"content": "I will now return JSON.\n{\"mode\":\"manual\",\"title\":\"Grounded Arc\",\"body\":\"Kept going.\"}"})
     ], verb_name="journal.compose")
     assert final_text == '{"mode":"manual","title":"Grounded Arc","body":"Kept going."}'
+
+
+def test_router_allows_github_compactor_digest_v1() -> None:
+    assert _structured_output_expected("github_compactor_digest_v1") is True
+
+
+def test_github_compactor_digest_regression_strips_think_and_returns_json() -> None:
+    final_text, _ = _extract_final_text([
+        _step({
+            "content": (
+                '<think>check format</think>\n'
+                '{"card_summary":"Hub polish.","journal_title":"Repo day",'
+                '"journal_body":"Merged #9 for hub UI.","pr_refs":["#9"]}'
+            )
+        })
+    ], verb_name="github_compactor_digest_v1")
+    assert final_text == (
+        '{"card_summary":"Hub polish.","journal_title":"Repo day",'
+        '"journal_body":"Merged #9 for hub UI.","pr_refs":["#9"]}'
+    )
 
 
 def test_concept_induction_regression_strips_think_and_returns_json() -> None:

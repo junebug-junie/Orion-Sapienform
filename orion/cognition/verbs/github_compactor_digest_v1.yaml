@@ -1,0 +1,23 @@
+name: github_compactor_digest_v1
+label: GitHub Compactor Digest
+description: >
+  Compact merged PR descriptions into bounded card + journal digest JSON.
+  Uses only github_compactor_input payload passed in metadata.
+
+category: Generative
+priority: high
+
+requires_gpu: true
+requires_memory: false
+timeout_ms: 90000
+
+services:
+  - LLMGatewayService
+
+prompt_template: github_compactor_digest_v1.j2
+
+steps:
+  - name: github_compactor_digest_v1
+    order: 0
+    services: [LLMGatewayService]
+    prompt_template: github_compactor_digest_v1.j2

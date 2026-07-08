@@ -82,6 +82,7 @@ def _structured_output_expected(verb_name: str | None) -> bool:
     return str(verb_name or "").strip().lower() in {
         "journal.compose",
         "concept_induction_journal_synthesize",
+        "github_compactor_digest_v1",
         "memory_graph_suggest",
         "stance_react",
         "harness_finalize_reflect",

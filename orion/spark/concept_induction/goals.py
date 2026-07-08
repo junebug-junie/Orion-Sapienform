@@ -44,7 +44,12 @@ class GoalProposalEngine:
         *,
         dominant_drive: str | None = None,
         source: str = "pressures",
+        lead_origin: str = "exogenous",
     ) -> str:
+        # An endogenously-originated want carries its origin through to the goal,
+        # so capability policy can gate on required_drive_origins: [endogenous].
+        if lead_origin == "endogenous":
+            return "endogenous"
         normalized_source = GoalProposalEngine._normalize_drive_origin_source(source)
         if normalized_source == "tick_attribution" and dominant_drive:
             return dominant_drive.strip().lower()
@@ -116,10 +121,12 @@ class GoalProposalEngine:
         spawned_correlation_id: str | None = None,
     ) -> GoalDecision:
         tension_list = sorted(list(tensions), key=lambda tension: (-tension.magnitude, tension.kind))
+        lead_origin = getattr(tension_list[0], "origin", "exogenous") if tension_list else "exogenous"
         drive_origin = self._drive_origin(
             drive_state,
             dominant_drive=dominant_drive,
             source=settings.goal_drive_origin_source,
+            lead_origin=lead_origin,
         )
         generation_mode = settings.goal_generation_mode
         if generation_mode not in ("template", "evidence_rules", "llm"):

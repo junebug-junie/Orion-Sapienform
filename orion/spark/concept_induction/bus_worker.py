@@ -13,6 +13,7 @@ from orion.autonomy.deviation_gate import DeviationGate
 from orion.autonomy.signal_drive_map import load_signal_drive_map
 from orion.autonomy.signal_tension import SignalTensionSource
 from orion.autonomy.tension_ratelimit import TensionRateLimiter
+from orion.autonomy.endogenous_origination import OriginationConfig, OriginationEngine
 from orion.signals.models import OrionSignalV1
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -131,6 +132,21 @@ class ConceptWorker:
         # Homeostatic tension source: deviation-gated OrionSignal/failure/health
         # -> TensionEventV1. Gated on cfg.homeostatic_drives_enabled at the call
         # site; constructed always so state persists across ticks.
+        # Endogenous origination (default-off): a bounded ring of SelfStateV1
+        # from which a spontaneous want can arise in exogenous silence. State
+        # persists across ticks, so it is constructed once here.
+        self.origination_engine = OriginationEngine(
+            OriginationConfig(
+                window=cfg.origination_window,
+                threshold=cfg.origination_threshold,
+                cooldown_sec=cfg.origination_cooldown_sec,
+                mag_cap=cfg.endogenous_mag_cap,
+                w_drift=cfg.origination_w_drift,
+                w_dwell=cfg.origination_w_dwell,
+                w_agency=cfg.origination_w_agency,
+                exogenous_floor=cfg.origination_exogenous_floor,
+            )
+        )
         self.signal_tension_source = SignalTensionSource(
             gate=DeviationGate(
                 alpha=cfg.deviation_ewma_alpha,
@@ -596,6 +612,31 @@ class ConceptWorker:
             previous_self_state=self._previous_self_state,
         )
         self._previous_self_state = self_state
+
+        # Endogenous origination (default-off, proposal mode): observe every
+        # self-state into the ring, and — only in exogenous silence — let a want
+        # arise from Orion's own internal dynamics. The endogenous tension is an
+        # ordinary TensionEventV1 (origin=endogenous) merged here, so it flows
+        # through the unchanged publish -> DriveEngine -> goals path. The exogenous
+        # tension count for this tick is the count already produced above, so a
+        # tick that carried real turn-effect deltas suppresses endogeny.
+        if self.cfg.endogenous_origination_enabled:
+            try:
+                self.origination_engine.observe(self_state)
+                endogenous = self.origination_engine.maybe_originate(
+                    exogenous_tension_count=len(tensions),
+                    now=datetime.now(timezone.utc),
+                )
+                if endogenous is not None:
+                    logger.info(
+                        "endogenous_origination_fired drive_impacts=%s signal=%s",
+                        endogenous.drive_impacts,
+                        self.origination_engine.last_signal,
+                    )
+                    tensions = list(tensions) + [endogenous]
+            except Exception:
+                logger.warning("endogenous_origination_failed", exc_info=True)
+
         return tensions
 
     def _tensions_from_feedback(self, env: BaseEnvelope, intake_channel: str) -> List[TensionEventV1]:

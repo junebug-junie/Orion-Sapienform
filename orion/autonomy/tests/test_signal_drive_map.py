@@ -29,6 +29,26 @@ def test_unmapped_kind_returns_empty() -> None:
     m = load_signal_drive_map()
     assert m.rules_for("scene_state") == []
     assert m.rules_for("totally_unknown_kind") == []
+    assert m.match("scene_state", "salience") is None
+
+
+def test_exact_match_wins() -> None:
+    m = load_signal_drive_map()
+    rule = m.match("spark_signal", "coherence")
+    assert rule is not None and rule.worse == "down"
+    assert "coherence" in rule.drives
+
+
+def test_suffix_match_for_dynamic_biometric_dims() -> None:
+    """Real biometrics dims are '<metric>_level' — suffix rule must catch them."""
+    m = load_signal_drive_map()
+    rule = m.match("biometrics_state", "heart_rate_level")
+    assert rule is not None and rule.worse == "down"
+    assert "capability" in rule.drives
+    vol = m.match("biometrics_state", "hrv_volatility")
+    assert vol is not None and vol.worse == "up"
+    # A dimension with no matching suffix maps nothing.
+    assert m.match("biometrics_state", "confidence") is None
 
 
 def test_rejects_unknown_drive(tmp_path: Path) -> None:

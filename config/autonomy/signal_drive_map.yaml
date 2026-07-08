@@ -9,17 +9,23 @@
 # worse: "down" -> a fall below baseline impulses; "up" -> a rise impulses.
 # drives: weight in [0,1] per canonical drive. Drives must be one of:
 #   coherence, continuity, capability, relational, predictive, autonomy
+#
+# A dimension key beginning with "*" is a SUFFIX rule matching the normalized
+# envelope naming convention (e.g. biometrics emits "<metric>_level",
+# "<metric>_volatility"). This is structural — it matches the typed dimension
+# suffix, not any natural-language content. Exact keys win over suffix rules.
 version: 1
 
 signal_kinds:
+  # Biometrics emit per-metric dimensions "<metric>_level|_trend|_volatility".
+  # A metric falling below its own learned baseline, or getting more volatile,
+  # is somatic strain -> capability/continuity. The deviation gate tracks each
+  # metric's baseline independently (keyed by full dimension name).
   biometrics_state:
-    homeostasis:
+    "*_level":
       worse: down
       drives: {capability: 0.4, continuity: 0.3}
-    strain:
-      worse: up
-      drives: {capability: 0.4, continuity: 0.2}
-    thermal:
+    "*_volatility":
       worse: up
       drives: {capability: 0.3, continuity: 0.2}
 

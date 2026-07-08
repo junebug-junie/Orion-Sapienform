@@ -38,6 +38,26 @@ class SignalDriveMap:
         """Dimension rules for a signal_kind; empty list if unmapped."""
         return self._rules.get(signal_kind, [])
 
+    def match(self, signal_kind: str, dimension: str) -> DimensionRule | None:
+        """Resolve a concrete (signal_kind, dimension) to its rule, if any.
+
+        Exact dimension keys win; a ``*<suffix>`` rule matches when the dimension
+        ends with ``<suffix>`` (the normalized envelope naming convention).
+        Returns None for unmapped kinds/dimensions — never raises.
+        """
+        rules = self._rules.get(signal_kind)
+        if not rules:
+            return None
+        suffix_match: DimensionRule | None = None
+        for rule in rules:
+            if rule.dimension == dimension:
+                return rule
+            if rule.dimension.startswith("*") and dimension.endswith(rule.dimension[1:]):
+                # Keep the longest suffix (most specific) if several match.
+                if suffix_match is None or len(rule.dimension) > len(suffix_match.dimension):
+                    suffix_match = rule
+        return suffix_match
+
     def signal_kinds(self) -> List[str]:
         return sorted(self._rules.keys())
 

@@ -43,6 +43,23 @@ def _state_for(intensity: float, firing: float, starving: float) -> str:
     return "steady"
 
 
+def _node_activation(node: Any) -> float:
+    """Real activation lives at ``node.signals.activation.activation`` (nested).
+
+    ``BaseSubstrateNodeV1`` forbids extra fields and has no flat ``activation``
+    attribute, so reading ``node.activation`` always yields the 0.0 default and
+    makes every node look dormant. Read the nested bundle; only fall back to a
+    flat ``activation`` attr for foreign/legacy shapes that lack ``signals``.
+    """
+    signals = getattr(node, "signals", None)
+    if signals is not None:
+        activation_bundle = getattr(signals, "activation", None)
+        val = getattr(activation_bundle, "activation", None)
+        if val is not None:
+            return _clamp01(val)
+    return _clamp01(getattr(node, "activation", 0.0) or 0.0)
+
+
 def _node_pressure(node: Any) -> float:
     md = getattr(node, "metadata", None) or {}
     val = md.get("dynamic_pressure")
@@ -55,7 +72,7 @@ def _node_dormant(node: Any) -> bool:
     md = getattr(node, "metadata", None) or {}
     if md.get("dormant") is True:
         return True
-    return _clamp01(getattr(node, "activation", 0.0)) <= 0.0
+    return _node_activation(node) <= 0.0
 
 
 def _parse_dt(value: Any) -> datetime | None:
@@ -78,7 +95,7 @@ def _node_kind_regions(nodes, now, firing, starving) -> list[BrainRegionV1]:
     buckets: dict[str, list[float]] = {}
     for node in nodes:
         kind = str(getattr(node, "node_kind", "") or "unknown")
-        buckets.setdefault(kind, []).append(_clamp01(getattr(node, "activation", 0.0)))
+        buckets.setdefault(kind, []).append(_node_activation(node))
     regions: list[BrainRegionV1] = []
     for kind, activations in sorted(buckets.items()):
         intensity = max(activations) if activations else 0.0
@@ -173,12 +190,12 @@ def _spotlight(attention, now, cadence_sec) -> BrainSpotlightV1 | None:
 
 
 def _samples(nodes, edges, max_nodes, max_edges) -> tuple[list[BrainNodeSampleV1], list[BrainEdgeSampleV1]]:
-    ranked = sorted(nodes, key=lambda n: _clamp01(getattr(n, "activation", 0.0)), reverse=True)
+    ranked = sorted(nodes, key=_node_activation, reverse=True)
     node_samples = [
         BrainNodeSampleV1(
             node_id=str(getattr(n, "node_id", "") or ""),
             node_kind=str(getattr(n, "node_kind", "") or "unknown"),
-            activation=_clamp01(getattr(n, "activation", 0.0)),
+            activation=_node_activation(n),
             pressure=_node_pressure(n),
             dormant=_node_dormant(n),
             label=str(getattr(n, "label", "") or "")[:120],
@@ -226,7 +243,7 @@ def assemble_brain_frame(
         nodes, list(edges), settings.brain_frame_sample_nodes, settings.brain_frame_sample_edges
     )
 
-    max_activation = max((_clamp01(getattr(n, "activation", 0.0)) for n in nodes), default=0.0)
+    max_activation = max((_node_activation(n) for n in nodes), default=0.0)
     phase = "live" if max_activation > 0.0 else "warming"
 
     frame_id = hashlib.sha256(f"{now.isoformat()}|{tick_seq}".encode("utf-8")).hexdigest()[:24]

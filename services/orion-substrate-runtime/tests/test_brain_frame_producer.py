@@ -42,11 +42,16 @@ from types import SimpleNamespace
 
 
 def _node(node_id, kind, activation, pressure=0.0, dormant=False):
+    # Mirror the real BaseSubstrateNodeV1 shape: activation is nested at
+    # signals.activation.activation (there is NO flat `activation` attribute).
     return SimpleNamespace(
         node_id=node_id,
         node_kind=kind,
         label=f"{kind}:{node_id}",
-        activation=activation,
+        signals=SimpleNamespace(
+            salience=activation,
+            activation=SimpleNamespace(activation=activation),
+        ),
         metadata={"dynamic_pressure": pressure, "dormant": dormant},
     )
 
@@ -208,3 +213,65 @@ def test_edge_sample_cap_zero_yields_no_edges():
         tick_seq=5,
     )
     assert frame.edges == []
+
+
+def test_activation_read_from_nested_signals_not_flat_attr():
+    """Regression: activation must come from signals.activation.activation.
+
+    Real SubstrateNodeV1 nodes have no flat ``activation`` attribute, so reading
+    ``node.activation`` yields 0.0 and stalls the frame at phase=warming with
+    every node_kind starving. This node carries a MISLEADING flat activation=0.9
+    but a real nested activation of 0.9; if the producer ever regresses to the
+    flat read, dropping the nested bundle would flip these assertions.
+    """
+    from datetime import datetime, timezone
+
+    from app.brain_frame_producer import assemble_brain_frame
+
+    now = datetime(2026, 7, 7, 12, 0, 0, tzinfo=timezone.utc)
+
+    # Nested-only active node (no flat attr): must fire + drive phase live.
+    active = SimpleNamespace(
+        node_id="t1",
+        node_kind="tension",
+        label="tension:t1",
+        signals=SimpleNamespace(
+            salience=0.9,
+            activation=SimpleNamespace(activation=0.9),
+        ),
+        metadata={"dynamic_pressure": 0.8},
+    )
+    # Node whose FLAT activation lies high (0.95) but nested says dormant (0.0):
+    # the producer must honor the nested 0.0 and treat it as starving.
+    flat_liar = SimpleNamespace(
+        node_id="c1",
+        node_kind="concept",
+        label="concept:c1",
+        activation=0.95,  # must be ignored
+        signals=SimpleNamespace(
+            salience=0.0,
+            activation=SimpleNamespace(activation=0.0),
+        ),
+        metadata={"dynamic_pressure": 0.0},
+    )
+    frame = assemble_brain_frame(
+        nodes=[active, flat_liar],
+        edges=[],
+        lane_health={"cursor_lag_by_reducer": {}, "pending_backlog_by_reducer": {}, "quarantine_by_reducer": {}},
+        self_state=None,
+        attention=None,
+        settings=_settings(),
+        now=now,
+        tick_seq=9,
+    )
+    assert frame.phase == "live"  # nested activation present, not flat-attr driven
+    kinds = {r.region_id: r for r in frame.regions if r.dimension == "node_kind"}
+    assert kinds["node_kind:tension"].state == "firing"
+    assert kinds["node_kind:tension"].intensity == 0.9
+    # Flat-attr liar is honored as dormant via nested 0.0.
+    assert kinds["node_kind:concept"].state == "starving"
+    assert kinds["node_kind:concept"].intensity == 0.0
+    samples = {n.node_id: n for n in frame.nodes}
+    assert samples["t1"].activation == 0.9
+    assert samples["c1"].activation == 0.0
+    assert samples["c1"].dormant is True

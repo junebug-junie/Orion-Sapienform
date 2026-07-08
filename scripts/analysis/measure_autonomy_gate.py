@@ -20,9 +20,9 @@ Design contract (see AGENTS.md / task brief):
   exercise. Window classification, metric computation, and the verdict rules
   all live here.
 * I/O ADAPTERS (this module's bottom half) fetch rows over a read-only psycopg2
-  session and replay the drive-audit bus stream via read-only XRANGE. Every
-  adapter degrades gracefully to empty / None on absent input and NEVER raises
-  on missing data or columns.
+  session and read the durable drive-audit time-series via a read-only Fuseki
+  SPARQL SELECT. Every adapter degrades gracefully to empty / None on absent
+  input and NEVER raises on missing data or columns.
 
 Run:
     python scripts/analysis/measure_autonomy_gate.py --window-days 7
@@ -75,8 +75,9 @@ DEFAULT_POSTGRES_URI = "postgresql://postgres:postgres@orion-athena-sql-db:5432/
 
 # Durable drive co-activation source. DriveAuditV1 is ephemeral on the bus
 # (redis pub/sub, no history), but orion-rdf-writer persists every audit to
-# Fuseki with one `orion:highlightsActiveDrive` triple per active drive — so
-# COUNT(highlightsActiveDrive) per audit == len(active_drives). We read that
+# Fuseki as a `orion:DriveAudit` with one `orion:hasDriveAssessment` per drive,
+# each assessment carrying a boolean `orion:driveActive`. An audit's active-drive
+# count == number of its assessments with driveActive == true. We read that
 # durable time-series instead of the un-replayable pub/sub channel.
 ORION_NS = "http://conjourney.net/orion#"
 AUTONOMY_DRIVES_GRAPH = "http://conjourney.net/graph/autonomy/drives"
@@ -334,21 +335,23 @@ def compute_drive_stats(records: list[DriveAuditRecord]) -> DriveStats:
 def build_drive_audit_sparql(since: datetime, graph_uri: str = AUTONOMY_DRIVES_GRAPH) -> str:
     """SPARQL SELECT: active-drive count per DriveAudit artifact since ``since``.
 
-    ``COUNT(DISTINCT highlightsActiveDrive)`` for an audit equals that audit's
-    ``len(active_drives)`` because orion-rdf-writer emits exactly one
-    ``orion:highlightsActiveDrive`` triple per active drive. Pure (returns a
-    string) so it is unit-testable without a SPARQL endpoint.
+    An audit's ``?activeCount`` is the number of its ``orion:hasDriveAssessment``
+    assessments whose ``orion:driveActive`` is boolean ``true``. The assessment
+    join is OPTIONAL and the count uses ``SUM(IF(?act = true, 1, 0))`` so audits
+    with zero active drives (or no assessments at all) still return a row with
+    ``?activeCount = 0``. Pure (returns a string) so it is unit-testable without
+    a SPARQL endpoint.
     """
 
     since_iso = _as_utc(since).isoformat()
     return (
         f"PREFIX orion: <{ORION_NS}>\n"
         "PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>\n"
-        "SELECT ?audit ?ts (COUNT(DISTINCT ?d) AS ?activeCount) WHERE {\n"
+        "SELECT ?audit ?ts (SUM(IF(?act = true, 1, 0)) AS ?activeCount) WHERE {\n"
         f"  GRAPH <{graph_uri}> {{\n"
         "    ?audit a orion:DriveAudit ;\n"
         "           orion:timestamp ?ts .\n"
-        "    OPTIONAL { ?audit orion:highlightsActiveDrive ?d . }\n"
+        "    OPTIONAL { ?audit orion:hasDriveAssessment ?da . ?da orion:driveActive ?act . }\n"
         f'    FILTER (?ts >= "{since_iso}"^^xsd:dateTime)\n'
         "  }\n"
         "} GROUP BY ?audit ?ts ORDER BY ?ts"
@@ -358,9 +361,10 @@ def build_drive_audit_sparql(since: datetime, graph_uri: str = AUTONOMY_DRIVES_G
 def parse_sparql_drive_bindings(bindings: Iterable[dict]) -> list[DriveAuditRecord]:
     """Parse SPARQL-results-JSON bindings into DriveAuditRecords.
 
-    Each binding carries ``ts`` (dateTime literal) and ``activeCount`` (integer
-    literal). Rows without a parseable timestamp are skipped; a missing/bad
-    count degrades to 0. Never raises. Pure + unit-testable.
+    Each binding carries ``ts`` (dateTime literal) and ``activeCount`` (a SUM
+    result, which Fuseki may return as an integer or decimal literal, e.g.
+    ``"2"`` or ``"2.0"``). Rows without a parseable timestamp are skipped; a
+    missing/bad count degrades to 0. Never raises. Pure + unit-testable.
     """
 
     out: list[DriveAuditRecord] = []
@@ -374,7 +378,7 @@ def parse_sparql_drive_bindings(bindings: Iterable[dict]) -> list[DriveAuditReco
         cnt_node = binding.get("activeCount")
         raw_cnt = cnt_node.get("value") if isinstance(cnt_node, dict) else None
         try:
-            active_count = int(raw_cnt)
+            active_count = int(float(raw_cnt))
         except (TypeError, ValueError):
             active_count = 0
         out.append(DriveAuditRecord(ts=ts, active_count=max(0, active_count)))
@@ -579,9 +583,10 @@ def fetch_drive_audit_records(
     The bus audit channel (``orion:memory:drives:audit``) is redis pub/sub with
     no replayable history, so it is useless for a backward-looking measurement.
     orion-rdf-writer, however, persists every DriveAuditV1 to the Fuseki
-    autonomy/drives graph as a timestamped artifact with one
-    ``orion:highlightsActiveDrive`` triple per active drive — a real historical
-    time-series. We SPARQL-COUNT those to recover per-audit co-activation.
+    autonomy/drives graph as a timestamped ``orion:DriveAudit`` with one
+    ``orion:hasDriveAssessment`` per drive, each carrying a boolean
+    ``orion:driveActive`` — a real historical time-series. We SPARQL-SUM the
+    ``driveActive = true`` assessments to recover per-audit co-activation.
 
     Read-only SPARQL SELECT (no UPDATE). Returns (records, coverage_note);
     degrades to ([], note) on any endpoint/parse failure — never raises.

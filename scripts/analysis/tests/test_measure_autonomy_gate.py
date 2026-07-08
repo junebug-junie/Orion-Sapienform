@@ -218,11 +218,23 @@ def test_build_drive_audit_sparql_shape():
     q = mod.build_drive_audit_sparql(BASE)
     assert mod.AUTONOMY_DRIVES_GRAPH in q
     assert "orion:DriveAudit" in q
-    assert "orion:highlightsActiveDrive" in q
-    assert "COUNT(DISTINCT ?d)" in q
+    assert "orion:hasDriveAssessment" in q
+    assert "orion:driveActive" in q
     assert "orion:timestamp ?ts" in q
     assert BASE.isoformat() in q  # window bound is applied
     assert "FILTER" in q
+
+
+def test_build_drive_audit_sparql_uses_real_predicates():
+    q = mod.build_drive_audit_sparql(BASE)
+    # Real graph shape: hasDriveAssessment -> driveActive (boolean true).
+    assert "hasDriveAssessment" in q
+    assert "driveActive" in q
+    # The stale/nonexistent predicate must be gone.
+    assert "highlightsActiveDrive" not in q
+    # Still bounds the window on a typed dateTime and groups per audit.
+    assert f'FILTER (?ts >= "{BASE.isoformat()}"^^xsd:dateTime)' in q
+    assert "GROUP BY ?audit ?ts" in q
 
 
 def _binding(ts_iso: str, count: str) -> dict:
@@ -259,3 +271,18 @@ def test_parse_sparql_drive_bindings_degrades():
 
     # Empty bindings -> empty, no raise.
     assert mod.parse_sparql_drive_bindings([]) == []
+
+
+def test_parse_sparql_drive_bindings_handles_sum_literals():
+    # Shaped like real SPARQL-results-JSON from the SUM(IF(driveActive=true,...))
+    # query: counts may come back as integer OR decimal literals.
+    bindings = [
+        {"ts": {"value": "2026-06-19T07:06:29+00:00"}, "activeCount": {"value": "2"}},
+        {"ts": {"value": "2026-06-19T07:07:29+00:00"}, "activeCount": {"value": "0"}},
+        {"ts": {"value": "2026-06-19T07:08:29+00:00"}, "activeCount": {"value": "3.0"}},
+        # Garbage/missing count degrades to 0 (must not crash).
+        {"ts": {"value": "2026-06-19T07:09:29+00:00"}, "activeCount": {"value": "junk"}},
+        {"ts": {"value": "2026-06-19T07:10:29+00:00"}},
+    ]
+    recs = mod.parse_sparql_drive_bindings(bindings)
+    assert [r.active_count for r in recs] == [2, 0, 3, 0, 0]

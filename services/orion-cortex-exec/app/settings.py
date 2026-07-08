@@ -130,7 +130,7 @@ class Settings(BaseSettings):
         description="MetacogEnrichService: trim metacog_biometrics_cue then spark_state_json when prompt exceeds worker ctx char budget.",
     )
 
-    publish_cortex_exec_grammar: bool = Field(False, alias="PUBLISH_CORTEX_EXEC_GRAMMAR")
+    publish_cortex_exec_grammar: bool = Field(True, alias="PUBLISH_CORTEX_EXEC_GRAMMAR")
     grammar_event_channel: str = Field("orion:grammar:event", alias="GRAMMAR_EVENT_CHANNEL")
 
     diagnostic_mode: bool = Field(False, alias="DIAGNOSTIC_MODE")

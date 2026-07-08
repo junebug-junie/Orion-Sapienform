@@ -117,7 +117,6 @@ edges:
     weight: 0.70
     channel_map:
       transport_pressure: transport_pressure
-      contract_pressure: reliability_pressure
 
   # capability→capability: inference unavailability raises orchestration pressure
   - source_id: capability:llm_inference

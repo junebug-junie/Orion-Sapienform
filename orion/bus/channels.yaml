@@ -656,6 +656,15 @@ channels:
     stability: "experimental"
     since: "2026-01-08"
 
+  - name: "orion:self:inner_features"
+    kind: "telemetry"
+    schema_id: "InnerStateFeaturesV1"
+    message_kind: "self.inner_features.v1"
+    producer_services: ["orion-spark-introspector"]
+    consumer_services: ["orion-hub", "orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-07-07"
+
   - name: "orion:rdf:enqueue"
     kind: "request"
     schema_id: "RdfWriteRequest"

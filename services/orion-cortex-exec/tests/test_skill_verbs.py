@@ -30,6 +30,8 @@ assert spec and spec.loader
 sys.modules[spec.name] = verb_adapters
 spec.loader.exec_module(verb_adapters)
 
+_GITHUB_RECENT_PRS_EXECUTE = verb_adapters.GithubRecentPullRequestsVerb.execute
+
 REPO_ROOT = SERVICE_DIR.parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -415,6 +417,11 @@ def test_mesh_ops_round_happy_path_with_journal_write():
 
 
 def test_github_recent_prs_includes_truncated_body(monkeypatch):
+    monkeypatch.setattr(
+        verb_adapters.GithubRecentPullRequestsVerb,
+        "execute",
+        _GITHUB_RECENT_PRS_EXECUTE,
+    )
     sample_prs = [
         {
             "number": 42,

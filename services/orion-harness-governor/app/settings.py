@@ -40,7 +40,7 @@ class HarnessGovernorSettings(BaseSettings):
         alias="CHANNEL_GRAMMAR_EVENT",
     )
     channel_cortex_exec_request: str = Field(
-        "orion:cortex:exec:request",
+        "orion:cortex:exec:request:background",
         validation_alias=AliasChoices("CHANNEL_CORTEX_EXEC_REQUEST", "CORTEX_EXEC_REQUEST_CHANNEL"),
         alias="CHANNEL_CORTEX_EXEC_REQUEST",
     )

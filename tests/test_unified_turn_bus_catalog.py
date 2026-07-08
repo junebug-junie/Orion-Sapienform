@@ -44,9 +44,11 @@ def test_unified_turn_channels_exist_with_registry_schema_ids() -> None:
 
 def test_harness_governor_produces_cortex_exec_requests() -> None:
     channels = _channel_index()
-    entry = channels["orion:cortex:exec:request"]
+    entry = channels["orion:cortex:exec:request:background"]
     assert "orion-harness-governor" in entry["producer_services"]
-    assert "orion-thought" in entry["producer_services"]
+    legacy = channels["orion:cortex:exec:request"]
+    assert "orion-harness-governor" not in legacy["producer_services"]
+    assert "orion-thought" in legacy["producer_services"]
 
 
 def test_harness_governor_consumes_cortex_exec_results() -> None:

@@ -97,5 +97,17 @@ exceed `WALL_MS/1000` so Mind's own fail-open result is returned instead of the
 client aborting. `orion-thought` logs a `mind_enrichment_config` warning at boot
 if either invariant is violated while enrichment is enabled.
 
+The min-viable wall is derived from `MIND_LLM_TIMEOUT_SEC_ASSUMED` (25s) in
+`app/settings.py`. That mirrors `orion-mind`'s `MIND_LLM_TIMEOUT_SEC` (a separate
+service, not readable from here) — if you change the per-phase timeout on
+`orion-mind`, re-derive `MIND_ENRICHMENT_MIN_VIABLE_WALL_MS` and the wall default
+here, or the boot warning will under-fire.
+
+**Latency caveat:** enrichment runs synchronously before `stance_react`. A stuck
+Mind LLM now fails open after ~3×25s of phase clamping (bounded by the 100s HTTP
+read) rather than the old ~12s, i.e. up to ~75–90s added to a live user turn in
+the worst case. Pair any rollout (`ORION_THOUGHT_MIND_ENRICHMENT_ENABLED=true`)
+with a turn-level budget/circuit-breaker on the caller.
+
 Everything fails open: Mind unconfigured / unreachable / slow / low-quality →
 byte-identical to today's stance behavior.

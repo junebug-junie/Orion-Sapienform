@@ -22,6 +22,7 @@ from orion.schemas.platform import CoreEventV1
 from orion.schemas.self_state import SelfStateV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.inner_state import InnerStateFeaturesV1
+from orion.schemas.telemetry.phi_encoder import PhiIntrinsicRewardV1
 from orion.schemas.telemetry.spark import SparkTelemetryPayload, SparkStateSnapshotV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from orion.schemas.telemetry.turn_effect import (
@@ -44,6 +45,7 @@ from .inner_state import (
     build_inner_state_features,
 )
 from .inner_state_sink import InnerStateCorpusSink
+from .phi_encoder import PhiEncoderRuntime
 from .substrate_reads import (
     cognitive_lane_dark,
     fetch_execution_trajectory,
@@ -107,6 +109,10 @@ _INNER_PREV_HEADLINE = None
 _INNER_DEGENERATE_STREAK = 0
 _INNER_LAST_HEADLINE: Optional[float] = None  # honest headline for WS reads
 _INNER_SINK = InnerStateCorpusSink(getattr(settings, "inner_features_corpus_path", "") or "")
+
+_PHI_ENCODER: PhiEncoderRuntime | None = None
+_PHI_PREV_PHI: float | None = None
+_PHI_PREV_RECON: float | None = None
 
 
 def set_latest_self_state(ss: SelfStateV1) -> None:
@@ -218,6 +224,26 @@ class SparkStateSnapshotEnvelope(Envelope[SparkStateSnapshotV1]):
 
 class InnerStateFeaturesEnvelope(Envelope[InnerStateFeaturesV1]):
     kind: str = Field("self.inner_features.v1", frozen=True)
+
+
+class PhiIntrinsicRewardEnvelope(Envelope[PhiIntrinsicRewardV1]):
+    kind: str = Field("self.phi_reward.v1", frozen=True)
+
+
+def _load_phi_encoder() -> PhiEncoderRuntime | None:
+    global _PHI_ENCODER
+    if _PHI_ENCODER is not None:
+        return _PHI_ENCODER
+    weights_path = (getattr(settings, "orion_phi_encoder_weights", "") or "").strip()
+    if not weights_path:
+        return None
+    enc = PhiEncoderRuntime.load(
+        Path(weights_path),
+        expected_features_version=settings.inner_features_version,
+    )
+    if enc is not None:
+        _PHI_ENCODER = enc
+    return enc
 
 
 class SparkCandidatePayload(BaseModel):
@@ -2272,7 +2298,7 @@ async def handle_signal(env: BaseEnvelope) -> None:
 
 
 async def handle_self_state(env: BaseEnvelope) -> None:
-    global _PREV_PHI
+    global _PREV_PHI, _PHI_PREV_PHI, _PHI_PREV_RECON
     payload = env.payload if isinstance(env.payload, dict) else {}
     try:
         ss = SelfStateV1.model_validate(payload)
@@ -2312,6 +2338,51 @@ async def handle_self_state(env: BaseEnvelope) -> None:
             degenerate_streak=_INNER_DEGENERATE_STREAK,
             degenerate_limit=int(settings.phi_degenerate_streak),
         )
+        if (
+            settings.orion_phi_encoder_enabled
+            and inner.phi_health == "ok"
+            and not inner.grammar_truth_degraded
+        ):
+            enc = _load_phi_encoder()
+            if enc is not None:
+                x = enc.feature_vector_from_inner(inner)
+                out = enc.forward(x)
+                inner.headline = round(out.phi, 4)
+                inner.headline_source = "encoder"
+                inner.metadata.update({
+                    "recon_error": out.recon_error,
+                    "latent": out.latent,
+                    "encoder_version": enc.encoder_version,
+                })
+                delta_phi = 0.0 if _PHI_PREV_PHI is None else out.phi - _PHI_PREV_PHI
+                delta_recon = 0.0 if _PHI_PREV_RECON is None else out.recon_error - _PHI_PREV_RECON
+                reward = PhiIntrinsicRewardV1(
+                    generated_at=inner.generated_at,
+                    self_state_id=inner.self_state_id,
+                    encoder_version=enc.encoder_version,
+                    features_version=inner.features_version,
+                    phi=out.phi,
+                    delta_phi=delta_phi,
+                    recon_error=out.recon_error,
+                    delta_recon_error=delta_recon,
+                    latent=out.latent,
+                    attribution_top=out.attribution_top,
+                    grammar_truth_degraded=inner.grammar_truth_degraded,
+                )
+                if _pub_bus and _pub_bus.enabled:
+                    try:
+                        await _pub_bus.publish(
+                            settings.channel_phi_reward,
+                            PhiIntrinsicRewardEnvelope(
+                                source=_svc_ref(),
+                                correlation_id=uuid4(),
+                                payload=reward,
+                            ),
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to publish phi_reward: %s", exc)
+                _PHI_PREV_PHI = out.phi
+                _PHI_PREV_RECON = out.recon_error
         _INNER_PREV_HEADLINE = inner.headline
         _INNER_LAST_HEADLINE = inner.headline
         try:

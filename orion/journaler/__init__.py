@@ -18,7 +18,9 @@ from .worker import (
     build_write_payload,
     cooldown_key_for_trigger,
     draft_from_cortex_result,
+    format_world_pulse_curiosity_block,
     journal_mode_for_trigger,
+    merge_world_pulse_curiosity_into_draft,
 )
 
 __all__ = [
@@ -43,6 +45,8 @@ __all__ = [
     "build_write_payload",
     "cooldown_key_for_trigger",
     "draft_from_cortex_result",
+    "format_world_pulse_curiosity_block",
     "journal_mode_for_trigger",
+    "merge_world_pulse_curiosity_into_draft",
     "build_journal_entry_index_payload",
 ]

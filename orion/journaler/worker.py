@@ -13,7 +13,7 @@ from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorS
 from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, RecallDirective
 from orion.schemas.notify import NotificationRecord
 from orion.schemas.telemetry.metacog_trigger import MetacogTriggerV1
-from orion.schemas.world_pulse import WorldPulseRunResultV1
+from orion.schemas.world_pulse import CuriosityFollowupV1, WorldPulseRunResultV1
 
 from .schemas import JournalEntryDraftV1, JournalEntryWriteV1, JournalMode, JournalTriggerV1
 
@@ -298,6 +298,46 @@ def build_world_pulse_reflective_trigger(result: WorldPulseRunResultV1) -> Journ
         summary=summary[:500],
         prompt_seed=build_world_pulse_prompt_seed(result),
     )
+
+
+def format_world_pulse_curiosity_block(followups: list[CuriosityFollowupV1]) -> str:
+    """Deterministic gap-fill section for journal body (not LLM-dependent)."""
+    if not followups:
+        return ""
+    lines = ["## Orion went looking", "", "Gaps our sources missed:"]
+    for followup in followups[:6]:
+        label = followup.section.replace("_", " ")
+        lines.append(f'- {label} — "{followup.query}" (gap: {followup.driving_gap})')
+        if not followup.articles:
+            lines.append("  (looked, found nothing)")
+        for art in followup.articles[:5]:
+            title = art.title or "(untitled)"
+            lines.append(f"  • [{art.salience:.2f}] {title} — {art.url}")
+    return "\n".join(lines).strip()
+
+
+def merge_world_pulse_curiosity_into_draft(
+    draft: JournalEntryDraftV1,
+    result: WorldPulseRunResultV1,
+) -> JournalEntryDraftV1:
+    """Append concrete gap-fill findings when compose omitted them from the body."""
+    digest = result.digest
+    if digest is None or not digest.curiosity_followups:
+        return draft
+    followups = digest.curiosity_followups
+    body = str(draft.body or "").strip()
+    urls = [str(a.url).strip() for f in followups for a in f.articles if str(a.url or "").strip()]
+    if urls:
+        if all(url in body for url in urls):
+            return draft
+    elif all(not f.articles for f in followups):
+        if "looked, found nothing" in body.lower():
+            return draft
+    block = format_world_pulse_curiosity_block(followups)
+    if not block:
+        return draft
+    merged = f"{body}\n\n{block}".strip()
+    return draft.model_copy(update={"body": merged})
 
 
 def build_metacog_trigger(trigger: MetacogTriggerV1) -> JournalTriggerV1:

@@ -3,10 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from orion.journaler import (
+    JournalEntryDraftV1,
     build_compose_request,
     build_world_pulse_reflective_trigger,
     cooldown_key_for_trigger,
     journal_mode_for_trigger,
+    merge_world_pulse_curiosity_into_draft,
 )
 from orion.schemas.world_pulse import (
     CuriosityFindingV1,
@@ -147,3 +149,46 @@ def test_world_pulse_compose_request_carries_trigger_metadata() -> None:
     assert req.verb == "journal.compose"
     assert req.context.metadata["journal_mode"] == "digest"
     assert req.context.metadata["journal_trigger"]["trigger_kind"] == "world_pulse_digest"
+
+
+def test_merge_world_pulse_curiosity_appends_missing_urls() -> None:
+    followups = [
+        CuriosityFollowupV1(
+            section="hardware_compute_gpu",
+            driving_gap="missing",
+            query="hardware compute gpu recent news coverage",
+            articles=[
+                CuriosityFindingV1(
+                    url="https://nvidianews.nvidia.com/news/nvidia-blackwell",
+                    title="NVIDIA Blackwell Platform",
+                    salience=0.67,
+                )
+            ],
+        )
+    ]
+    result = _sample_run_result(curiosity_followups=followups)
+    vague = JournalEntryDraftV1(
+        mode="digest",
+        title="Journal Pass",
+        body="Orion looked and found some NVIDIA-related content, but details were vague.",
+    )
+    merged = merge_world_pulse_curiosity_into_draft(vague, result)
+    assert "https://nvidianews.nvidia.com/news/nvidia-blackwell" in merged.body
+    assert "NVIDIA Blackwell Platform" in merged.body
+    assert "## Orion went looking" in merged.body
+
+
+def test_merge_world_pulse_curiosity_noop_when_urls_already_present() -> None:
+    followups = [
+        CuriosityFollowupV1(
+            section="hardware_compute_gpu",
+            driving_gap="missing",
+            query="gpu",
+            articles=[CuriosityFindingV1(url="https://ex/1", title="Fab", salience=0.5)],
+        )
+    ]
+    result = _sample_run_result(curiosity_followups=followups)
+    body = "Already included https://ex/1 in prose."
+    draft = JournalEntryDraftV1(mode="digest", title="Journal Pass", body=body)
+    merged = merge_world_pulse_curiosity_into_draft(draft, result)
+    assert merged.body == body

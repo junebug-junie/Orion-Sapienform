@@ -1,0 +1,129 @@
+diff --git a/convex/aiTown/agent.ts b/convex/aiTown/agent.ts
+index ae49157..b34c57b 100644
+--- a/convex/aiTown/agent.ts
++++ b/convex/aiTown/agent.ts
+@@ -10,6 +10,7 @@ import {
+   CONVERSATION_DISTANCE,
+   INVITE_ACCEPT_PROBABILITY,
+   INVITE_TIMEOUT,
++  MAX_INVITE_DISTANCE,
+   MAX_CONVERSATION_DURATION,
+   MAX_CONVERSATION_MESSAGES,
+   MESSAGE_COOLDOWN,
+@@ -109,6 +110,11 @@ export class Agent {
+       )!;
+       const otherPlayer = game.world.players.get(otherPlayerId)!;
+       if (member.status.kind === 'invited') {
++        if (member.invited + INVITE_TIMEOUT < now) {
++          console.log(`Agent ${player.id} timing out stale invite from ${otherPlayer.id}`);
++          conversation.rejectInvite(game, now, player);
++          return;
++        }
+         // Accept a conversation with another agent with some probability and with
+         // a human unconditionally.
+         if (otherPlayer.human || Math.random() < INVITE_ACCEPT_PROBABILITY) {
+@@ -125,9 +131,13 @@ export class Agent {
+         return;
+       }
+       if (member.status.kind === 'walkingOver') {
+-        // Leave a conversation if we've been waiting for too long.
+-        if (member.invited + INVITE_TIMEOUT < now) {
+-          console.log(`Giving up on invite to ${otherPlayer.id}`);
++        // Only abandon if the other player never accepted. Once both are
++        // walkingOver, the accepted invite is a contract to meet and chat.
++        if (
++          otherMember.status.kind === 'invited' &&
++          member.invited + INVITE_TIMEOUT < now
++        ) {
++          console.log(`Giving up on unanswered invite to ${otherPlayer.id}`);
+           conversation.leave(game, now, player);
+           return;
+         }
+@@ -358,11 +368,15 @@ export const findConversationCandidate = internalQuery({
+           continue;
+         }
+       }
+-      candidates.push({ id: otherPlayer.id, position });
++      const d = distance(otherPlayer.position, position);
++      if (d > MAX_INVITE_DISTANCE) {
++        continue;
++      }
++      candidates.push({ id: otherPlayer.id, position, distance: d });
+     }
+ 
+     // Sort by distance and take the nearest candidate.
+-    candidates.sort((a, b) => distance(a.position, position) - distance(b.position, position));
++    candidates.sort((a, b) => a.distance - b.distance);
+     return candidates[0]?.id;
+   },
+ });
+diff --git a/convex/aiTown/conversation.ts b/convex/aiTown/conversation.ts
+index fc93d56..9cd6c9a 100644
+--- a/convex/aiTown/conversation.ts
++++ b/convex/aiTown/conversation.ts
+@@ -4,7 +4,7 @@ import { conversationId, playerId } from './ids';
+ import { Player } from './player';
+ import { inputHandler } from './inputHandler';
+ 
+-import { TYPING_TIMEOUT, CONVERSATION_DISTANCE } from '../constants';
++import { TYPING_TIMEOUT, CONVERSATION_DISTANCE, MAX_INVITE_DISTANCE, MIDPOINT_THRESHOLD } from '../constants';
+ import { distance, normalize, vector } from '../util/geometry';
+ import { Point } from '../util/types';
+ import { Game } from './game';
+@@ -134,6 +134,12 @@ export class Conversation {
+       console.log(reason);
+       return { error: reason };
+     }
++    const inviteDistance = distance(player.position, invitee.position);
++    if (inviteDistance > MAX_INVITE_DISTANCE) {
++      const reason = `Players too far apart to start a conversation (${inviteDistance.toFixed(1)} > ${MAX_INVITE_DISTANCE})`;
++      console.log(reason);
++      return { error: reason };
++    }
+     const conversationId = game.allocId('conversations');
+     console.log(`Creating conversation ${conversationId}`);
+     game.world.conversations.set(
+@@ -149,6 +155,18 @@ export class Conversation {
+         ],
+       }),
+     );
++    // Nudge the initiator toward the invitee immediately so both players visibly
++    // walk up before participating (not only on the next agent tick).
++    if (inviteDistance >= CONVERSATION_DISTANCE) {
++      const destination =
++        inviteDistance < MIDPOINT_THRESHOLD
++          ? { x: Math.floor(invitee.position.x), y: Math.floor(invitee.position.y) }
++          : {
++              x: Math.floor((player.position.x + invitee.position.x) / 2),
++              y: Math.floor((player.position.y + invitee.position.y) / 2),
++            };
++      movePlayer(game, now, player, destination);
++    }
+     return { conversationId };
+   }
+ 
+diff --git a/convex/constants.ts b/convex/constants.ts
+index 4e84750..9700211 100644
+--- a/convex/constants.ts
++++ b/convex/constants.ts
+@@ -11,6 +11,10 @@ export const STEP_INTERVAL = 1000;
+ export const PATHFINDING_TIMEOUT = 60 * 1000;
+ export const PATHFINDING_BACKOFF = 1000;
+ export const CONVERSATION_DISTANCE = 1.3;
++// Max tile distance for starting/accepting a conversation invite. Prevents NPCs
++// (and humans) from locking the whole town into cross-map chats. Aligns with
++// Orion embodiment EMBODIMENT_SOCIAL_INITIATE_DISTANCE default (6).
++export const MAX_INVITE_DISTANCE = 6;
+ export const MIDPOINT_THRESHOLD = 4;
+ export const TYPING_TIMEOUT = 15 * 1000;
+ export const COLLISION_THRESHOLD = 0.75;
+@@ -30,7 +34,7 @@ export const PLAYER_CONVERSATION_COOLDOWN = 60000;
+ // Invite 80% of invites that come from other agents.
+ export const INVITE_ACCEPT_PROBABILITY = 0.8;
+ 
+-// Wait for 1m for invites to be accepted.
++// Pending invites (status invited) expire after this window. walkingOver does not.
+ export const INVITE_TIMEOUT = 60000;
+ 
+ // Wait for another player to say something before jumping in.
+ export const AWKWARD_CONVERSATION_TIMEOUT = 60_000; // more time locally

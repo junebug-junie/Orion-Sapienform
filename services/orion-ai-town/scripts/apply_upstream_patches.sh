@@ -3,7 +3,14 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 UPSTREAM="${ROOT}/upstream"
-PATCHES=("orion-hub-embed.patch" "orion-character.patch" "orion-human-juniper.patch" "orion-engine-recovery.patch")
+PATCHES=(
+  "orion-hub-embed.patch"
+  "orion-character.patch"
+  "orion-human-juniper.patch"
+  "orion-engine-recovery.patch"
+  "orion-conversation-proximity.patch"
+  "orion-town-chat-turns.patch"
+)
 
 if [[ ! -d "${UPSTREAM}/.git" ]]; then
   echo "Missing ${UPSTREAM} — clone upstream first (see README.md)" >&2

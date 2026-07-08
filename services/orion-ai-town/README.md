@@ -188,6 +188,27 @@ npx convex run testing:stop && npx convex run testing:resume
 
 The embodiment worker no longer sends `finishSendingMessage` itself (`messages:writeMessage` enqueues a well-formed one), so this poison cannot recur; the patch is kept for operator recovery and diagnosis.
 
+### Conversation proximity (`patches/orion-conversation-proximity.patch`)
+
+Stock AI Town picks the **nearest free player on the entire map** as a conversation invitee, so NPCs lock each other (and humans) into cross-map chats. This patch:
+
+- Adds `MAX_INVITE_DISTANCE = 6` (aligned with Orion embodiment `EMBODIMENT_SOCIAL_INITIATE_DISTANCE`)
+- Filters `findConversationCandidate` to players within that range
+- Rejects `Conversation.start` when initiator and invitee are too far apart
+- Nudges the initiator toward the invitee immediately on invite (stock engine only walked on the next agent tick)
+- **`INVITE_TIMEOUT` applies only to pending `invited` status** — once a player accepts (`walkingOver`), agents keep walking until they're in range; accepted invites no longer expire mid-walk
+
+### Town chat turns (`patches/orion-town-chat-turns.patch`)
+
+Fixes NPC-human chats where agents talk over the human, narrate scene prose instead of replying, or auto-leave mid-conversation:
+
+- NPCs **wait for the human's first line** (no synthetic `start` message over Juniper)
+- Replies are **in-character dialogue** with `clampTownReply` (no observation-lounge narration)
+- NPCs **do not auto-leave** human conversations (message cap / duration only applies NPC-NPC)
+- **3 minute grace** after an NPC speaks before it considers speaking again (`HUMAN_REPLY_GRACE_MS`)
+
+Orion's external embodiment worker already walks on `walkingOver` via `approach_player` intents in `services/orion-embodiment/app/worker.py`.
+
 ## MCP integration
 
 Gameplay MCP lives in `mcp/orion_aitown_mcp/`. Hub fcc-claude includes it when `HUB_AITOWN_ENABLED=true` and MCP is enabled.

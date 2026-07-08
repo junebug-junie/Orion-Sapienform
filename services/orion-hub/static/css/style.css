@@ -2,6 +2,25 @@ body {
   font-family: 'Inter', sans-serif;
 }
 
+.hub-tab-nav {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(75, 85, 99, 0.8) transparent;
+}
+
+.hub-tab-nav::-webkit-scrollbar {
+  height: 4px;
+}
+
+.hub-tab-nav::-webkit-scrollbar-thumb {
+  background: rgba(75, 85, 99, 0.8);
+  border-radius: 9999px;
+}
+
+.hub-tab-nav a {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .pulse {
   animation: pulse-animation 1.5s infinite;
 }

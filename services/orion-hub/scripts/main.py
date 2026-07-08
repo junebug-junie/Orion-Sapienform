@@ -164,6 +164,7 @@ def render_hub_index_html(*, memory_pool_ok: bool | None = None) -> str:
         "agentClaudeEnabled": bool(getattr(settings, "HUB_AGENT_CLAUDE_ENABLED", False)),
         "aitownEnabled": bool(getattr(settings, "HUB_AITOWN_ENABLED", False)),
         "worldPulseFixtureRunEnabled": bool(settings.WORLD_PULSE_UI_FIXTURE_RUN_ENABLED),
+        "proposalReviewEnabled": bool(getattr(settings, "HUB_PROPOSAL_REVIEW_ENABLED", False)),
         "memoryGraphSuggestFetchTimeoutMs": hub_client_fetch_timeout_ms(
             settings, escalation_enabled=mg_escalation
         ),
@@ -185,6 +186,37 @@ def render_hub_index_html(*, memory_pool_ok: bool | None = None) -> str:
     else:
         agent_claude_mode_options = ""
     rendered = rendered.replace("{{HUB_AGENT_CLAUDE_MODE_OPTIONS}}", agent_claude_mode_options)
+
+    proposal_review_panel = ""
+    proposal_review_script = ""
+    if bool(getattr(settings, "HUB_PROPOSAL_REVIEW_ENABLED", False)):
+        proposal_review_panel = """
+      <div class="w-full bg-gray-900 rounded-2xl shadow-lg p-5 space-y-3" id="proposalReviewPanel">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 class="text-lg font-semibold text-white">Pending Decisions</h3>
+            <div class="text-[11px] text-gray-400">Agent proposals from context-exec that need human approve/reject before anything can run.</div>
+          </div>
+          <div class="flex items-center gap-2">
+            <select id="proposalReviewFilter" class="hidden bg-gray-800 text-gray-200 rounded border border-gray-700 px-2 py-1 text-xs">
+              <option value="pending_review" selected>Pending review</option>
+              <option value="blocked">Blocked</option>
+              <option value="stored">Stored</option>
+              <option value="approved">Approved history</option>
+              <option value="rejected">Rejected history</option>
+            </select>
+            <button id="proposalReviewRefreshButton" type="button" class="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 rounded-lg px-3 py-1 border border-gray-700">Refresh</button>
+          </div>
+        </div>
+        <div id="proposalReviewStatus" class="text-xs text-gray-500">Loading…</div>
+        <div id="proposalReviewList" class="space-y-2 max-h-56 overflow-y-auto text-xs"></div>
+        <div id="proposalReviewDetail" class="hidden rounded-xl border border-gray-700 bg-gray-900/50 p-3 text-[11px] space-y-2 text-gray-300"></div>
+      </div>"""
+        proposal_review_script = (
+            f'<script src="/static/js/proposal-review-ui.js?v={ui_asset_version}" defer></script>'
+        )
+    rendered = rendered.replace("{{HUB_PROPOSAL_REVIEW_PANEL}}", proposal_review_panel)
+    rendered = rendered.replace("{{HUB_PROPOSAL_REVIEW_SCRIPT}}", proposal_review_script)
 
     from scripts.api_routes import resolve_hub_autonomy_subject_display
 

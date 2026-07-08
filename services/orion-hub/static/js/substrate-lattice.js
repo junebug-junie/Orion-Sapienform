@@ -19,6 +19,14 @@ const API_BASE = "";
 
 let _lastSimThresholds = null;
 
+function _asList(value) {
+  if (value == null) return [];
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string") return value.trim() ? [value] : [];
+  if (typeof value === "object") return Object.keys(value);
+  return [String(value)];
+}
+
 function _esc(v) {
   if (v === null || v === undefined) return "—";
   return String(v)
@@ -110,7 +118,8 @@ async function _post(path, body) {
 function _renderProducerLanes(lanes) {
   const container = document.getElementById("producerLaneList");
   if (!container) return;
-  container.innerHTML = lanes
+  const laneList = Array.isArray(lanes) ? lanes : (lanes && Array.isArray(lanes.lanes) ? lanes.lanes : []);
+  container.innerHTML = laneList
     .map((lane) => {
       const isLive = lane.status === "live";
       const dot = isLive
@@ -132,8 +141,8 @@ function _renderTargetList(targets, sectionLabel) {
   const rows = targets
     .map((t) => {
       const isCapTransport = t.target_id === "capability:transport";
-      const chs = (t.dominant_channels || []).join(", ") || "—";
-      const reasons = (t.reasons || []).join("; ") || "—";
+      const chs = _asList(t.dominant_channels).join(", ") || "—";
+      const reasons = _asList(t.reasons).join("; ") || "—";
       return `
         <div class="border border-gray-700 rounded p-1.5 flex flex-col gap-0.5 ${isCapTransport ? "border-emerald-700 bg-emerald-950/20" : ""}">
           <div class="flex items-center gap-1">
@@ -282,8 +291,8 @@ function _renderProofChain(chain) {
           const recurrence = m.recurrence_count ? ` ×${m.recurrence_count}` : "";
           const ts = m.timestamp ? ` (${_ts(m.timestamp)})` : "";
           const evid =
-            m.evidence && m.evidence.length
-              ? ` [${m.evidence.map(_esc).join(", ")}]`
+            m.evidence && _asList(m.evidence).length
+              ? ` [${_asList(m.evidence).map(_esc).join(", ")}]`
               : "";
           return `<span class="bg-gray-800 rounded px-1">${_esc(m.label || m.motif_id)}</span>${strength}${recurrence}${ts}${evid}`;
         })

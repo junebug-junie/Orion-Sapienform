@@ -48,15 +48,11 @@
   document.addEventListener("DOMContentLoaded", () => {
     const selectEl = document.getElementById("serviceLogsServiceSelect");
     const statusEl = document.getElementById("serviceLogsStatus");
-    const masterEl = document.getElementById("serviceLogsMasterTerminal");
     const terminalsGrid = document.getElementById("serviceLogsTerminals");
 
-    if (!selectEl || !statusEl || !masterEl || !terminalsGrid) {
+    if (!selectEl || !statusEl || !terminalsGrid) {
       return;
     }
-
-    const masterState = createTerminalState(masterEl);
-    bindTerminalScroll(masterState);
 
     const terminalStates = new Map();
     let socket = null;
@@ -74,7 +70,7 @@
       }
 
       const card = document.createElement("section");
-      card.className = "bg-gray-900 rounded-xl border border-gray-800 p-3 flex flex-col gap-2 min-h-[14rem]";
+      card.className = "w-full bg-gray-900 rounded-xl border border-gray-800 p-3 flex flex-col gap-2 min-h-[14rem]";
       card.dataset.serviceName = serviceName;
 
       const heading = document.createElement("div");
@@ -153,11 +149,9 @@
       return hints.join(" | ");
     }
 
-    function appendLog(serviceName, line, stream) {
+    function appendLog(serviceName, line) {
       const entry = ensureServiceTerminal(serviceName);
       queueLine(entry.state, line);
-      const prefixed = `[${serviceName}${stream === "stderr" ? ":stderr" : ""}] ${line}`;
-      queueLine(masterState, prefixed);
     }
 
     async function loadInventory() {
@@ -212,7 +206,7 @@
             return;
           }
           if (payload.type === "log_line" && payload.service && typeof payload.line === "string") {
-            appendLog(payload.service, payload.line, payload.stream || "stdout");
+            appendLog(payload.service, payload.line);
             return;
           }
           if (payload.type === "error") {

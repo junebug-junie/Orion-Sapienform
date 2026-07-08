@@ -552,9 +552,11 @@ def test_hub_pending_decisions_shows_denver_memory_correction(monkeypatch: pytes
     assert inner.get("supporting_evidence") or inner.get("missing_evidence")
 
     template = (HUB_ROOT / "templates" / "index.html").read_text(encoding="utf-8")
+    main_py = (HUB_ROOT / "scripts" / "main.py").read_text(encoding="utf-8")
     ui = (HUB_ROOT / "static" / "js" / "proposal-review-ui.js").read_text(encoding="utf-8")
-    assert "Pending Decisions" in template
-    assert 'id="proposalReviewPanel"' in template
+    assert "Pending Decisions" in main_py
+    assert 'id="proposalReviewPanel"' in main_py
+    assert "{{HUB_PROPOSAL_REVIEW_PANEL}}" in template
     for token in (
         "Current belief:",
         "Proposed correction:",
@@ -571,7 +573,7 @@ def test_hub_pending_decisions_shows_denver_memory_correction(monkeypatch: pytes
     assert "/api/proposal-review/proposals/" in ui
     assert "/review" in ui
     assert "/triage" not in ui.lower()
-    assert "execute" not in ui.lower()
+    assert "/execute" not in ui.lower()
     assert "fetch(" in ui
     ui_lower = ui.lower()
     for token in ('type="submit"',):

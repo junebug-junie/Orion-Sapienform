@@ -127,6 +127,18 @@ def _layer_meta(payload: dict | None, source_table: str, timestamp_str: str | No
     }
 
 
+def _coerce_str_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if item is not None and str(item).strip()]
+    if isinstance(value, dict):
+        return [str(key) for key in value.keys() if str(key).strip()]
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    return [str(value)]
+
+
 def _normalize_targets(targets_raw: list, bucket_name: str) -> list[dict]:
     """Normalize a list of attention targets — strings or dicts — to a consistent object shape."""
     result = []
@@ -146,8 +158,8 @@ def _normalize_targets(targets_raw: list, bucket_name: str) -> list[dict]:
                 "bucket": bucket_name,
                 "salience_score": t.get("salience_score"),
                 "suggested_observation_mode": t.get("suggested_observation_mode"),
-                "dominant_channels": t.get("dominant_channels") or [],
-                "reasons": t.get("reasons") or [],
+                "dominant_channels": _coerce_str_list(t.get("dominant_channels")),
+                "reasons": _coerce_str_list(t.get("reasons")),
             })
     return result
 

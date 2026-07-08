@@ -68,10 +68,8 @@ SAME_CORR_LOG_KEYS = [
     "verb_runtime_result",
     "orch_verb_runtime_result",
     "gateway_publish_hub_result",
-    "[planner-react] intake",
-    "[planner-react] replied",
-    "[agent-chain] intake",
-    "[agent-chain] replied",
+    "[context-exec] intake",
+    "[context-exec] replied",
     "agent_runtime_stop",
 ]
 
@@ -84,6 +82,8 @@ BUS_HOP_LABELS = {
     "agent.planner.result": "planner_to_exec_result",
     "agent.chain.request": "exec_to_agent_chain_request",
     "agent.chain.result": "agent_chain_to_exec_result",
+    "context.exec.request": "exec_to_context_exec_request",
+    "context.exec.result": "context_exec_to_exec_result",
     "cortex.gateway.chat.result": "gateway_to_hub_result",
 }
 
@@ -448,7 +448,7 @@ def _summarize_live_result(raw: Dict[str, Any], *, scenario_name: str) -> Dict[s
         finalize_invoked = answer_depth.get("finalize_response_invoked")
         quality_rewrite = answer_depth.get("quality_evaluator_rewrite")
     else:
-        # Fallback: extract from steps[i].result.AgentChainService.runtime_debug
+        # Fallback: extract from steps[i].result ContextExecService or legacy AgentChainService runtime_debug
         live_runtime_debug = _extract(cortex_result, "steps")
         runtime_debug_guess = None
         if isinstance(live_runtime_debug, list):
@@ -457,11 +457,14 @@ def _summarize_live_result(raw: Dict[str, Any], *, scenario_name: str) -> Dict[s
                     continue
                 result = step.get("result") or {}
                 if isinstance(result, dict):
-                    ac = result.get("AgentChainService")
-                    if isinstance(ac, dict):
-                        runtime_debug_guess = ac.get("runtime_debug")
-                        if runtime_debug_guess:
-                            break
+                    for service_key in ("ContextExecService", "AgentChainService"):
+                        payload = result.get(service_key)
+                        if isinstance(payload, dict):
+                            runtime_debug_guess = payload.get("runtime_debug")
+                            if runtime_debug_guess:
+                                break
+                    if runtime_debug_guess:
+                        break
         if isinstance(runtime_debug_guess, dict):
             output_mode = runtime_debug_guess.get("output_mode")
             response_profile = runtime_debug_guess.get("response_profile")
@@ -487,7 +490,7 @@ def _summarize_live_result(raw: Dict[str, Any], *, scenario_name: str) -> Dict[s
     unavailable: Dict[str, str] = {}
     if output_mode is None and response_profile is None and packs is None and resolved_tool_ids is None:
         if not isinstance(answer_depth, dict):
-            unavailable["runtime_debug"] = "metadata.answer_depth and AgentChain runtime_debug not present."
+            unavailable["runtime_debug"] = "metadata.answer_depth and delegate runtime_debug not present."
 
     tool_sequence = None
 
@@ -505,6 +508,7 @@ def _summarize_live_result(raw: Dict[str, Any], *, scenario_name: str) -> Dict[s
     saw_verb_result = any(e.get("kind") == "verb.result" for e in events)
     saw_planner = any(e.get("kind") == "agent.planner.request" for e in events)
     saw_agent_chain = any(e.get("kind") == "agent.chain.request" for e in events)
+    saw_context_exec = any(e.get("kind") == "context.exec.request" for e in events)
     saw_llm = any(e.get("kind") == "llm.chat.request" for e in events)
     saw_gateway_result = any(e.get("kind") == "cortex.gateway.chat.result" for e in events)
     dedicated_verb_result = any(
@@ -512,8 +516,9 @@ def _summarize_live_result(raw: Dict[str, Any], *, scenario_name: str) -> Dict[s
         and str(e.get("channel") or "").startswith(f"orion:verb:result:{raw.get('correlation_id')}:")
         for e in events
     )
-    # Orch->verb->exec is internal; we require orch + planner + llm + agent_chain for live path proof.
-    real_orch_path = saw_orch and saw_verb_req and (saw_planner or saw_agent_chain) and saw_llm
+    # Orch->verb->exec is internal; accept legacy planner/agent-chain or context-exec delegate path.
+    delegate_observed = saw_context_exec or saw_planner or saw_agent_chain
+    real_orch_path = saw_orch and saw_verb_req and delegate_observed and (saw_llm or saw_context_exec)
 
     pass_checks = {
         "real_orch_path_observed": real_orch_path,
@@ -521,6 +526,7 @@ def _summarize_live_result(raw: Dict[str, Any], *, scenario_name: str) -> Dict[s
         "gateway_result_observed": saw_gateway_result,
         "plannerreact_bus_observed": saw_planner,
         "agent_chain_bus_observed": saw_agent_chain,
+        "context_exec_bus_observed": saw_context_exec,
         "verb_result_bus_observed": saw_verb_result,
         "llm_bus_observed": saw_llm,
         "output_mode_expected": output_mode == "implementation_guide" if output_mode is not None else None,
@@ -544,8 +550,8 @@ def _summarize_live_result(raw: Dict[str, Any], *, scenario_name: str) -> Dict[s
         and pass_checks["real_orch_path_observed"] is True
         and pass_checks["dedicated_verb_result_observed"] is True
         and pass_checks["gateway_result_observed"] is True
-        and pass_checks["plannerreact_bus_observed"] is True
-        and pass_checks["llm_bus_observed"] is True
+        and (pass_checks["context_exec_bus_observed"] is True or pass_checks["plannerreact_bus_observed"] is True)
+        and (pass_checks["context_exec_bus_observed"] is True or pass_checks["llm_bus_observed"] is True)
         and quality["overall_pass"] is True
     )
 
@@ -587,6 +593,7 @@ def _summarize_live_result(raw: Dict[str, Any], *, scenario_name: str) -> Dict[s
             "verb_request_kind": saw_verb_req,
             "planner_request_kind": saw_planner,
             "agent_chain_request_kind": saw_agent_chain,
+            "context_exec_request_kind": saw_context_exec,
             "llm_request_kind": saw_llm,
         },
         "probe_events_excerpt": events[:120],

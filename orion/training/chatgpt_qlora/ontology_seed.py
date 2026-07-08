@@ -29,8 +29,6 @@ SEED_CONCEPTS: tuple[SeedConcept, ...] = (
     SeedConcept("schema registry", "architecture_orchestration_control", "contracts", "schema"),
     SeedConcept("sql writer", "architecture_orchestration_control", "persistence", "service"),
     SeedConcept("vector writer", "architecture_orchestration_control", "persistence", "service"),
-    SeedConcept("planner-react", "planning_agency_tooling", "planning", "workflow"),
-    SeedConcept("agent-chain", "planning_agency_tooling", "planning", "workflow"),
     SeedConcept("langgraph", "planning_agency_tooling", "planning", "workflow"),
     SeedConcept("durable planning", "planning_agency_tooling", "planning", "workflow"),
     SeedConcept("tool schema", "planning_agency_tooling", "tooling", "schema"),

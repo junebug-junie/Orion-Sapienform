@@ -62,12 +62,12 @@ _DIRECT_VERB_TRIGGERS = {
 }
 
 def build_agent_plan(verb_name: str | None) -> ExecutionPlan:
-    """Two-step agent plan: planner-react followed by agent chain."""
+    """Agent plan: delegate depth work to context-exec (planner-react/agent-chain removed)."""
     resolved_verb = verb_name or "agent_runtime"
     return ExecutionPlan(
         verb_name=resolved_verb,
         label=f"{resolved_verb}-agent",
-        description="Agent chain execution via planner-react",
+        description="Agent execution via ContextExecService",
         category="agentic",
         priority="normal",
         interruptible=True,
@@ -77,21 +77,10 @@ def build_agent_plan(verb_name: str | None) -> ExecutionPlan:
         steps=[
             ExecutionStep(
                 verb_name=resolved_verb,
-                step_name="planner_react",
-                description="Delegate planning to PlannerReactService",
-                order=-1,
-                services=["PlannerReactService"],
-                prompt_template=None,
-                requires_gpu=False,
-                requires_memory=True,
-                timeout_ms=120000,
-            ),
-            ExecutionStep(
-                verb_name=resolved_verb,
-                step_name="agent_chain",
-                description="Delegate to AgentChainService (ReAct)",
+                step_name="context_exec",
+                description="Delegate to ContextExecService",
                 order=0,
-                services=["AgentChainService"],
+                services=["ContextExecService"],
                 prompt_template=None,
                 requires_gpu=False,
                 requires_memory=True,

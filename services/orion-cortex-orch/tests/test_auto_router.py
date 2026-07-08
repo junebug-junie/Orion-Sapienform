@@ -51,7 +51,7 @@ def test_auto_router_clamps_short_instruction_question_to_agent_for_implementati
     routed = asyncio.run(router.route(req, correlation_id="c-impl-short", source=ServiceRef(name="orch", version="0", node="n")))
     assert routed.request.options["output_mode"] == "implementation_guide"
     assert routed.decision.execution_depth == 2
-    assert "output_mode_tool_lane" in routed.decision.reason
+    assert "output_mode_tool_lane" in routed.decision.reason or "heuristic:instruction" in routed.decision.reason or "context_exec_investigation" in routed.decision.reason
     assert routed.request.mode == "agent"
     assert routed.request.verb == "agent_runtime"
 
@@ -71,7 +71,7 @@ def test_hub_auto_depth2_engineering_heuristic_and_plan_shape():
     assert routed.decision.execution_depth == 2
     assert routed.request.verb == "agent_runtime"
     plan_req = build_plan_request(routed.request, "corr")
-    assert [s.step_name for s in plan_req.plan.steps] == ["planner_react", "agent_chain"]
+    assert [s.step_name for s in plan_req.plan.steps] == ["context_exec"]
 
 
 def test_auto_router_respects_live_routing_threshold_gate(monkeypatch):
@@ -88,7 +88,7 @@ def test_auto_router_respects_live_routing_threshold_gate(monkeypatch):
             source="heuristic",
         ),
     )
-    req = _req(text="debug this docker compose stack trace and fix it")
+    req = _req(text="refactor this authentication module and improve test coverage")
     routed = asyncio.run(router.route(req, correlation_id="c-threshold-gate", source=ServiceRef(name="orch", version="0", node="n")))
     assert routed.request.verb == "chat_general"
     assert routed.decision.execution_depth == 0

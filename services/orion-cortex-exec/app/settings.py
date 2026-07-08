@@ -56,7 +56,6 @@ class Settings(BaseSettings):
     chat_pcr_skip_max_novelty: float = Field(0.25, alias="CHAT_PCR_SKIP_MAX_NOVELTY")
     chat_pcr_skip_shift_novelty_floor: float = Field(0.35, alias="CHAT_PCR_SKIP_SHIFT_NOVELTY_FLOOR")
     orion_unified_grounding_enabled: bool = Field(True, alias="ORION_UNIFIED_GROUNDING_ENABLED")
-    channel_agent_chain_intake: str = Field("orion:exec:request:AgentChainService", alias="CHANNEL_AGENT_CHAIN_INTAKE")
     channel_context_exec_intake: str = Field(
         "orion:exec:request:ContextExecService",
         alias="CHANNEL_CONTEXT_EXEC_INTAKE",
@@ -68,8 +67,6 @@ class Settings(BaseSettings):
     context_exec_enabled: bool = Field(False, alias="CONTEXT_EXEC_ENABLED")
     context_exec_timeout_sec: float = Field(60.0, alias="CONTEXT_EXEC_TIMEOUT_SEC")
     context_exec_depth2_default: bool = Field(False, alias="CONTEXT_EXEC_DEPTH2_DEFAULT")
-    context_exec_legacy_fallback: bool = Field(True, alias="CONTEXT_EXEC_LEGACY_FALLBACK")
-    channel_planner_intake: str = Field("orion:exec:request:PlannerReactService", alias="CHANNEL_PLANNER_INTAKE")
     channel_council_intake: str = Field("orion:agent-council:intake", alias="CHANNEL_COUNCIL_INTAKE")
     channel_council_reply_prefix: str = Field("orion:council:reply", alias="CHANNEL_COUNCIL_REPLY_PREFIX")
     channel_cognition_trace_pub: str = Field("orion:cognition:trace", alias="CHANNEL_COGNITION_TRACE_PUB")

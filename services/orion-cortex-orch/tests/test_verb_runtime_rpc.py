@@ -55,7 +55,7 @@ def test_build_verb_request_uses_dedicated_reply_channel() -> None:
             can_interrupt_others=False,
             timeout_ms=1000,
             max_recursion_depth=1,
-            steps=[ExecutionStep(verb_name="agent_runtime", step_name="planner_react", order=0, services=["PlannerReactService"])],
+            steps=[ExecutionStep(verb_name="agent_runtime", step_name="context_exec", order=0, services=["ContextExecService"])],
             metadata={"mode": "agent"},
         ),
         args=PlanExecutionArgs(request_id="trace-1", extra={"mode": "agent"}),
@@ -74,11 +74,11 @@ def test_build_verb_request_uses_dedicated_reply_channel() -> None:
     assert env.kind == "verb.request"
 
 
-def test_no_recall_agent_request_still_builds_planner_and_agent_chain_steps() -> None:
+def test_no_recall_agent_request_still_builds_context_exec_step() -> None:
     plan_req = build_plan_request(_client_request(), "corr-no-recall-shape")
 
     assert plan_req.plan.verb_name == "agent_runtime"
-    assert [step.step_name for step in plan_req.plan.steps] == ["planner_react", "agent_chain"]
+    assert [step.step_name for step in plan_req.plan.steps] == ["context_exec"]
     assert plan_req.args.extra["supervised"] is True
     assert plan_req.args.extra["recall"]["enabled"] is False
 
@@ -151,7 +151,7 @@ def test_call_verb_runtime_waits_on_dedicated_reply_channel(monkeypatch) -> None
             can_interrupt_others=False,
             timeout_ms=1000,
             max_recursion_depth=1,
-            steps=[ExecutionStep(verb_name="agent_runtime", step_name="planner_react", order=0, services=["PlannerReactService"])],
+            steps=[ExecutionStep(verb_name="agent_runtime", step_name="context_exec", order=0, services=["ContextExecService"])],
             metadata={"mode": "agent"},
         ),
         args=PlanExecutionArgs(request_id="trace-1", extra={"mode": "agent", "supervised": True}),

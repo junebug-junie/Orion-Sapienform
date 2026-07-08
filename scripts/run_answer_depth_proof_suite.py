@@ -20,20 +20,11 @@ PASS2_CORE_TESTS = [
     REPO_ROOT / "orion" / "cognition" / "tests" / "test_finalize_payload.py",
     REPO_ROOT / "orion" / "cognition" / "tests" / "test_quality_evaluator.py",
     REPO_ROOT / "tests" / "test_answer_depth_pass2_wiring.py",
-]
-
-PASS2_AGENT_CHAIN_TESTS = [
-    # Agent-chain runtime guards (import local `app` package)
-    REPO_ROOT / "services" / "orion-agent-chain" / "tests" / "test_delivery_verbs.py",
-    REPO_ROOT / "services" / "orion-agent-chain" / "tests" / "test_triage_gating.py",
-    REPO_ROOT / "services" / "orion-agent-chain" / "tests" / "test_step_cap_finalization.py",
-    REPO_ROOT / "services" / "orion-agent-chain" / "tests" / "test_agent_chain_delegate_loop.py",
-    REPO_ROOT / "services" / "orion-agent-chain" / "tests" / "test_meta_plan_rewrite_pass2.py",
-    REPO_ROOT / "services" / "orion-agent-chain" / "tests" / "test_repeated_plan_action_pass2.py",
+    REPO_ROOT / "services" / "orion-cortex-exec" / "tests" / "test_bound_capability_full_path.py",
+    REPO_ROOT / "services" / "orion-cortex-exec" / "tests" / "test_operational_semantic_harness.py",
 ]
 
 PASS3_TESTS = [
-    REPO_ROOT / "tests" / "test_answer_depth_pass3_golden_path_discord.py",
     REPO_ROOT / "tests" / "test_answer_depth_pass3_supervisor_meta_plan_proof.py",
 ]
 
@@ -91,12 +82,9 @@ def main() -> int:
         print("Running:", " ".join(cmd))
         subprocess.check_call(cmd, cwd=str(REPO_ROOT), env=env_run)
 
-    # Critical: avoid `app` package collisions by isolating service roots.
-    # - agent-chain tests require `services/orion-agent-chain` to be on PYTHONPATH, but not cortex-exec.
-    # - pass3 tests dynamically import both services and clear `sys.modules['app']`, so they can run with repo root only.
-    _run(PASS2_CORE_TESTS, python_path=[REPO_ROOT])
-    _run(PASS2_AGENT_CHAIN_TESTS, python_path=[REPO_ROOT, REPO_ROOT / "services" / "orion-agent-chain"])
-    _run(PASS3_TESTS, python_path=[REPO_ROOT])
+    # Critical: avoid `app` package collisions by isolating service roots when needed.
+    _run(PASS2_CORE_TESTS, python_path=[REPO_ROOT, REPO_ROOT / "services" / "orion-cortex-exec"])
+    _run(PASS3_TESTS, python_path=[REPO_ROOT, REPO_ROOT / "services" / "orion-cortex-exec"])
     return 0
 
 

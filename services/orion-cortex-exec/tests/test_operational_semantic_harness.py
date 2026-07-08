@@ -7,7 +7,7 @@ from uuid import uuid4
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.codec import OrionCodec
 from orion.core.bus.enforce import enforcer
-from orion.schemas.agents.schemas import AgentChainRequest, AgentChainResult, PlannerRequest, PlannerResponse
+from orion.schemas.cortex.contracts import CortexClientResult
 from orion.schemas.cortex.schemas import ExecutionPlan
 
 from app.supervisor import Supervisor
@@ -26,6 +26,7 @@ class HarnessBus:
         self.codec = OrionCodec()
         self.handlers: dict[str, Any] = {}
         self.events: list[HarnessEvent] = []
+        self.cortex_fail = False
 
     async def connect(self):
         return
@@ -43,6 +44,8 @@ class HarnessBus:
 
     async def rpc_request(self, request_channel: str, envelope: BaseEnvelope, *, reply_channel: str, timeout_sec: float = 60.0):
         enforcer.validate(request_channel)
+        if request_channel not in self.handlers:
+            raise RuntimeError(f"no handler for {request_channel}")
         response_env = await self.handlers[request_channel](envelope)
         return {"type": "message", "channel": reply_channel, "data": self.codec.encode(response_env)}
 
@@ -53,31 +56,41 @@ class OperationalSemanticHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.bus = HarnessBus()
         self.supervisor = Supervisor(self.bus)
 
-        async def planner_handler(env: BaseEnvelope) -> BaseEnvelope:
-            req = PlannerRequest.model_validate(env.payload)
-            planner_resp = PlannerResponse(
-                request_id=req.request_id,
-                status="ok",
-                stop_reason="delegate",
-                trace=[{"step_index": 0, "thought": "generic-first", "action": {"tool_id": "generate_code_scaffold", "input": {"request": req.goal}}, "observation": {}}],
-                usage={"steps": 1, "tokens_reason": 0, "tokens_answer": 0, "tools_called": ["generate_code_scaffold"], "duration_ms": 1},
+        async def cortex_handler(env: BaseEnvelope) -> BaseEnvelope:
+            payload = env.payload if isinstance(env.payload, dict) else {}
+            metadata = payload.get("context", {}).get("metadata", {}) if isinstance(payload, dict) else {}
+            selected_verb = str(metadata.get("requested_verb") or "")
+            selected_skill = str(payload.get("verb") or "")
+            if self.bus.cortex_fail:
+                result = CortexClientResult(
+                    ok=False,
+                    mode="brain",
+                    verb=selected_skill,
+                    status="fail",
+                    final_text="Bound capability execution failed: induced timeout",
+                    memory_used=False,
+                    recall_debug={},
+                    steps=[],
+                )
+            else:
+                result = CortexClientResult(
+                    ok=True,
+                    mode="brain",
+                    verb=selected_skill,
+                    status="success",
+                    final_text=f"executed:{selected_verb}",
+                    memory_used=False,
+                    recall_debug={},
+                    steps=[],
+                )
+            return BaseEnvelope(
+                kind="cortex.orch.result",
+                source=ServiceRef(name="cortex-orch", version="test", node="test"),
+                correlation_id=env.correlation_id,
+                payload=result.model_dump(mode="json"),
             )
-            return BaseEnvelope(kind="agent.planner.result", source=ServiceRef(name="planner-react", version="test", node="test"), correlation_id=env.correlation_id, payload=planner_resp.model_dump(mode="json"))
 
-        async def agent_handler(env: BaseEnvelope) -> BaseEnvelope:
-            req = AgentChainRequest.model_validate(env.payload)
-            selected = req.bound_capability_execution.selected_verb if req.bound_capability_execution else "unknown"
-            result = AgentChainResult(
-                mode=req.mode,
-                text=f"executed:{selected}",
-                structured={"bound_capability": {"selected_verb": selected, "path": "bound_direct_success"}},
-                planner_raw={"status": "ok"},
-                runtime_debug={"bound_capability_terminal_path": "bound_direct_success"},
-            )
-            return BaseEnvelope(kind="agent.chain.result", source=ServiceRef(name="agent-chain", version="test", node="test"), correlation_id=env.correlation_id, payload=result.model_dump(mode="json"))
-
-        self.bus.register("orion:exec:request:PlannerReactService", planner_handler)
-        self.bus.register("orion:exec:request:AgentChainService", agent_handler)
+        self.bus.register("orion:cortex:request", cortex_handler)
 
     async def _run(self, ask: str):
         corr = str(uuid4())
@@ -111,24 +124,12 @@ class OperationalSemanticHarnessTests(unittest.IsolatedAsyncioTestCase):
         }
         for ask, expected in cases.items():
             res = await self._run(ask)
-            agent_step = next(step for step in res.steps if step.step_name == "agent_chain")
-            selected = agent_step.result["AgentChainService"]["structured"]["bound_capability"]["selected_verb"]
+            cap_step = next(step for step in res.steps if step.step_name == "bound_capability_execution")
+            selected = cap_step.result["ContextExecService"]["structured"]["bound_capability"]["selected_verb"]
             self.assertEqual(selected, expected)
 
     async def test_truthful_failure_is_preserved(self):
-        async def failing_agent(env: BaseEnvelope) -> BaseEnvelope:
-            req = AgentChainRequest.model_validate(env.payload)
-            selected = req.bound_capability_execution.selected_verb if req.bound_capability_execution else "unknown"
-            result = AgentChainResult(
-                mode=req.mode,
-                text="Bound capability execution failed: induced timeout",
-                structured={"bound_capability": {"selected_verb": selected, "path": "bound_direct_timeout", "reason": "capability_executor_unavailable"}},
-                planner_raw={"status": "error"},
-                runtime_debug={"bound_capability_terminal_path": "bound_direct_timeout"},
-            )
-            return BaseEnvelope(kind="agent.chain.result", source=ServiceRef(name="agent-chain", version="test", node="test"), correlation_id=env.correlation_id, payload=result.model_dump(mode="json"))
-
-        self.bus.register("orion:exec:request:AgentChainService", failing_agent)
+        self.bus.cortex_fail = True
         res = await self._run("Dry-run cleanup of stopped containers.")
         self.assertIn("Bound capability execution failed", res.final_text or "")
 

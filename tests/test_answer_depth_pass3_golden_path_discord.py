@@ -12,6 +12,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+pytestmark = pytest.mark.skip(reason="orion-planner-react and orion-agent-chain removed; use bound_capability_exec path tests instead")
+
 from orion.schemas.agents.schemas import AgentChainRequest
 from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.cortex.types import StepExecutionResult

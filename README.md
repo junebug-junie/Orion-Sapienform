@@ -214,8 +214,6 @@ Cortex is where an event becomes deliberate work.
 |---|---|
 | `orion-cortex-orch` | Receives intent, validates request shape, chooses mode/verb/workflow, builds the plan, and decides which cognitive lane is active. |
 | `orion-cortex-exec` | Executes the plan, calls services, preserves correlation IDs, aggregates step results, and returns structured output. |
-| `orion-planner-react` | Produces bounded planner/ReAct guidance for agent work. |
-| `orion-agent-chain` | Runs tool-using agent chains under the execution spine. |
 | `orion-agent-council` | Runs plural/council deliberation paths. |
 | `orion-actions` | Turns schedules, triggers, daily workflows, journal requests, and durable intentions into Cortex-invoked work. |
 
@@ -818,8 +816,6 @@ Interface / ingress:
 Cortex / execution / agent:
   orion-cortex-orch
   orion-cortex-exec
-  orion-planner-react
-  orion-agent-chain
   orion-agent-council
   orion-actions
 

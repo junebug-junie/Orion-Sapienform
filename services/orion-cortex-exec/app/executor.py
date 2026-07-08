@@ -26,7 +26,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
 from orion.core.contracts.recall import RecallQueryV1
 
-from orion.schemas.agents.schemas import AgentChainRequest, DeliberationRequest
+from orion.schemas.agents.schemas import DeliberationRequest
 from orion.core.verbs import VerbResultV1
 from orion.schemas.collapse_mirror import (
     CollapseMirrorEntryV2,
@@ -58,7 +58,7 @@ from orion.schemas.platform import CoreEventV1
 
 from orion.cognition.personality.identity_context import build_identity_context, load_identity_file
 from .settings import settings
-from .clients import AgentChainClient, LLMGatewayClient, RecallClient, PlannerReactClient
+from .clients import ContextExecClient, LLMGatewayClient, RecallClient
 from .pageindex_client import JournalPageIndexClient
 from orion.cognition.fast_chat_verbs import FAST_SINGLE_PASS_CHAT_VERBS
 
@@ -2650,8 +2650,7 @@ async def call_step_services(
     effective_timeout = step_timeout_sec
 
     llm_client = LLMGatewayClient(bus)
-    planner_client = PlannerReactClient(bus)
-    agent_client = AgentChainClient(bus)
+    context_exec_client = ContextExecClient(bus)
 
     def _record_scoped_step(
         status: str,
@@ -4297,49 +4296,23 @@ async def call_step_services(
                         spark_vector = _sv
                 logs.append(f"ok <- {service}")
 
-            elif service == "AgentChainService":
-                memory_digest = (ctx.get("memory_digest") or "").strip()
-                prompt = _append_memory_digest(prompt, memory_digest)
-                hop_msgs = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
+            elif service in {"AgentChainService", "PlannerReactService"}:
+                err = f"removed_service:{service}"
+                logs.append(f"fail <- {err}")
+                merged_result["error"] = {"message": err, "service": service}
+                _record_scoped_step("fail", err, merged_result, logs)
+                return StepExecutionResult(
+                    status="fail",
+                    verb_name=step.verb_name,
+                    step_name=step.step_name,
+                    order=step.order,
+                    result=merged_result,
+                    latency_ms=int((time.time() - t0) * 1000),
+                    node=settings.node_name,
+                    logs=logs,
+                    error=err,
+                )
 
-                agent_req = AgentChainRequest(
-                    text=_last_user_message(ctx),
-                    mode=ctx.get("mode") or "agent",
-                    session_id=ctx.get("session_id"),
-                    user_id=ctx.get("user_id"),
-                    messages=[LLMMessage(**m) if not isinstance(m, LLMMessage) else m for m in (hop_msgs or [])],
-                    packs=ctx.get("packs") or [],
-                )
-                logs.append(f"rpc -> AgentChainService (reply={reply_channel}, timeout={effective_timeout}s)")
-                agent_res = await agent_client.run_chain(
-                    source=source,
-                    req=agent_req,
-                    correlation_id=correlation_id,
-                    reply_to=reply_channel,
-                    timeout_sec=effective_timeout,
-                )
-                merged_result[service] = agent_res.model_dump(mode="json")
-                logs.append("ok <- AgentChainService")
-
-            elif service == "PlannerReactService":
-                planner_req = PlannerRequest(
-                    request_id=str(correlation_id),
-                    caller="cortex-exec",
-                    goal=Goal(description=_last_user_message(ctx), metadata={"verb": step.verb_name}),
-                    context=ContextBlock(conversation_history=[LLMMessage(**m) for m in (ctx.get("messages") or [])]),
-                    toolset=[],
-                )
-                logs.append(f"rpc -> PlannerReactService (timeout={effective_timeout}s)")
-                planner_res = await planner_client.plan(
-                    source=source,
-                    req=planner_req,
-                    correlation_id=correlation_id,
-                    reply_to=reply_channel,
-                    timeout_sec=effective_timeout,
-                )
-                merged_result[service] = planner_res.model_dump(mode="json")
-                logs.append("ok <- PlannerReactService")
-                ctx.setdefault("planner_trace", planner_res.model_dump(mode="json"))
 
             elif service == "CouncilService":
                 council_req = DeliberationRequest(

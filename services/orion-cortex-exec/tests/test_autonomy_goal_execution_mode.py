@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
 from app.router import _autonomy_payload_from_ctx
 from app.supervisor import Supervisor, _autonomy_goal_execution_allowed, _is_autonomy_goal_execute_action
 from orion.core.bus.bus_schemas import ServiceRef
-from orion.schemas.agents.schemas import FinalAnswer
 from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionArgs, PlanExecutionRequest, StepExecutionResult
 
 CORR_UNPROMOTED = "00000000-0000-4000-8000-000000000001"
@@ -109,27 +108,9 @@ def test_promoted_goal_execution_allowed_after_operator_promote(monkeypatch: pyt
 
 def test_supervisor_blocks_unpromoted_goal_execute(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUTONOMY_GOAL_EXECUTION_ENABLED", "true")
-
-    async def _fake_planner_step(**kwargs):
-        action = {
-            "tool_id": "autonomy.goal.execute.v1",
-            "input": {"goal_artifact_id": "goal-abc", "autonomy_goal_execute": True},
-        }
-        planner_step = StepExecutionResult(
-            status="success",
-            verb_name="agent_runtime",
-            step_name="planner_react",
-            order=-1,
-            result={"PlannerReactService": {"status": "ok", "trace": [{"action": action}]}},
-            latency_ms=1,
-            node="n",
-            logs=[],
-            error=None,
-        )
-        return object(), planner_step, None, action
+    monkeypatch.setattr("app.settings.settings.context_exec_enabled", False)
 
     supervisor = Supervisor(object())
-    monkeypatch.setattr(supervisor, "_planner_step", _fake_planner_step)
     monkeypatch.setattr(
         supervisor,
         "_execute_action",
@@ -180,25 +161,8 @@ def test_supervisor_blocks_unpromoted_goal_execute(monkeypatch: pytest.MonkeyPat
 
 def test_supervisor_e2e_promote_plan_execute_complete(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AUTONOMY_GOAL_EXECUTION_ENABLED", "true")
+    monkeypatch.setattr("app.settings.settings.context_exec_enabled", False)
     execute_calls: list[str] = []
-
-    async def _fake_planner_step(**kwargs):
-        action = {
-            "tool_id": "autonomy.goal.execute.v1",
-            "input": {"goal_artifact_id": "goal-abc", "autonomy_goal_execute": True},
-        }
-        planner_step = StepExecutionResult(
-            status="success",
-            verb_name="agent_runtime",
-            step_name="planner_react",
-            order=-1,
-            result={"PlannerReactService": {"status": "ok", "trace": [{"action": action}]}},
-            latency_ms=1,
-            node="n",
-            logs=[],
-            error=None,
-        )
-        return object(), planner_step, FinalAnswer(content="planned"), action
 
     async def _fake_execute_action(**kwargs):
         execute_calls.append(str((kwargs.get("action") or {}).get("tool_id")))
@@ -207,7 +171,7 @@ def test_supervisor_e2e_promote_plan_execute_complete(monkeypatch: pytest.Monkey
             verb_name="autonomy.goal.execute.v1",
             step_name="autonomy_goal_execute",
             order=0,
-            result={"AgentChainService": {"text": "Goal task completed"}},
+            result={"ContextExecService": {"text": "Goal task completed"}},
             latency_ms=1,
             node="n",
             logs=[],
@@ -215,7 +179,6 @@ def test_supervisor_e2e_promote_plan_execute_complete(monkeypatch: pytest.Monkey
         )
 
     supervisor = Supervisor(object())
-    monkeypatch.setattr(supervisor, "_planner_step", _fake_planner_step)
     monkeypatch.setattr(supervisor, "_execute_action", _fake_execute_action)
     monkeypatch.setattr(
         "app.supervisor.run_recall_step",
@@ -234,23 +197,6 @@ def test_supervisor_e2e_promote_plan_execute_complete(monkeypatch: pytest.Monkey
                 ),
                 {},
                 None,
-            )
-        ),
-    )
-    monkeypatch.setattr(
-        supervisor,
-        "_agent_chain_escalation",
-        AsyncMock(
-            return_value=StepExecutionResult(
-                status="success",
-                verb_name="agent_chain",
-                step_name="agent_chain",
-                order=100,
-                result={"AgentChainService": {"text": "unused"}},
-                latency_ms=1,
-                node="n",
-                logs=[],
-                error=None,
             )
         ),
     )

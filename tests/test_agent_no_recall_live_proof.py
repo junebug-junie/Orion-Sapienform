@@ -44,7 +44,7 @@ def test_live_proof_summary_records_same_corr_hops_for_disabled_recall() -> None
                         "quality_evaluator_rewrite": True,
                     }
                 },
-                "steps": [{"step_name": "planner_react"}, {"step_name": "agent_chain"}],
+                "steps": [{"step_name": "context_exec"}],
             },
             "final_text": "Create the Discord Developer Portal app, add the bot, copy the DISCORD_BOT_TOKEN, configure OAuth invite intents, deploy with Docker, and verify the bot joins.",
         },
@@ -52,9 +52,7 @@ def test_live_proof_summary_records_same_corr_hops_for_disabled_recall() -> None
             {"kind": "cortex.gateway.chat.request", "channel": "orion:cortex:gateway:request", "correlation_id": corr, "reply_to": f"orion:cortex:gateway:result:{corr}", "source_service": "answer-depth-live-proof"},
             {"kind": "cortex.orch.request", "channel": "orion:cortex:request", "correlation_id": corr, "reply_to": f"orion:cortex:result:{corr}", "source_service": "cortex-gateway"},
             {"kind": "verb.request", "channel": "orion:verb:request", "correlation_id": corr, "reply_to": f"orion:verb:result:{corr}:req-1", "source_service": "cortex-orch"},
-            {"kind": "agent.planner.request", "channel": "orion:exec:request:PlannerReactService", "correlation_id": corr, "reply_to": f"orion:exec:result:PlannerReactService:{corr}", "source_service": "cortex-exec"},
-            {"kind": "agent.chain.request", "channel": "orion:exec:request:AgentChainService", "correlation_id": corr, "reply_to": f"orion:exec:result:AgentChainService:{corr}", "source_service": "cortex-exec"},
-            {"kind": "llm.chat.request", "channel": "orion:exec:request:LLMGatewayService", "correlation_id": corr, "reply_to": f"orion:llm:reply:{corr}", "source_service": "planner-react"},
+            {"kind": "context.exec.request", "channel": "orion:exec:request:ContextExecService", "correlation_id": corr, "reply_to": f"orion:exec:result:ContextExecService:{corr}", "source_service": "cortex-exec"},
             {"kind": "verb.result", "channel": f"orion:verb:result:{corr}:req-1", "correlation_id": corr, "reply_to": None, "source_service": "cortex-exec"},
             {"kind": "cortex.gateway.chat.result", "channel": f"orion:cortex:gateway:result:{corr}", "correlation_id": corr, "reply_to": None, "source_service": "cortex-gateway"},
         ],
@@ -67,8 +65,7 @@ def test_live_proof_summary_records_same_corr_hops_for_disabled_recall() -> None
     assert evidence["request_recall"]["enabled"] is False
     assert evidence["pass_checks"]["dedicated_verb_result_observed"] is True
     assert evidence["pass_checks"]["gateway_result_observed"] is True
-    assert evidence["pass_checks"]["plannerreact_bus_observed"] is True
-    assert evidence["pass_checks"]["agent_chain_bus_observed"] is True
+    assert evidence["pass_checks"]["context_exec_bus_observed"] is True
     assert evidence["ordered_hops"][0]["label"] == "hub_to_gateway_request"
     assert any(h["label"] == "orch_to_exec_verb_request" for h in evidence["ordered_hops"])
     assert any(h["label"] == "exec_to_orch_verb_result" for h in evidence["ordered_hops"])
@@ -93,7 +90,7 @@ def test_live_proof_md_includes_same_corr_artifacts(tmp_path) -> None:
         "response_profile": "technical_delivery",
         "packs": ["executive_pack", "delivery_pack"],
         "resolved_tool_ids": ["write_guide", "finalize_response"],
-        "tool_sequence": ["planner_react", "agent_chain"],
+        "tool_sequence": ["context_exec"],
         "triage_blocked_post_step0": True,
         "repeated_plan_action_escalation": True,
         "finalize_response_invoked": True,

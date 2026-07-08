@@ -269,7 +269,7 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         service="orion library (orion/journaler/)",
         signal_kinds=["journal_entry", "recall_event"],
         canonical_dimensions=["level", "novelty", "valence"],
-        causal_parent_organs=["collapse_mirror", "chat_stance", "agent_chain"],
+        causal_parent_organs=["collapse_mirror", "chat_stance"],
         bus_channels=[
             "orion:chat:history:log",
             "orion:chat:history:turn",
@@ -301,36 +301,6 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
             "orion:collapse:sql-write",
         ],
         notes=[]
-    ),
-    "agent_chain": OrionOrganRegistryEntry(
-        organ_id="agent_chain",
-        organ_class=OrganClass.endogenous,
-        service="orion-agent-chain",
-        signal_kinds=["action_outcome", "tool_execution", "capability_event"],
-        canonical_dimensions=["level", "success", "surprise"],
-        causal_parent_organs=["planner", "autonomy", "chat_stance"],
-        bus_channels=[
-            "orion:exec:request:AgentChainService",
-            "orion:exec:result:AgentChainService",
-        ],
-        notes=[]
-    ),
-    "planner": OrionOrganRegistryEntry(
-        organ_id="planner",
-        organ_class=OrganClass.endogenous,
-        service="orion-planner-react",
-        signal_kinds=["plan_state", "goal_progress"],
-        canonical_dimensions=["level", "confidence", "surprise"],
-        # agent_chain omitted to keep static DAG acyclic (agent_chain already lists planner as parent).
-        causal_parent_organs=["autonomy"],
-        bus_channels=[
-            "orion:exec:request:PlannerReactService",
-            "orion:exec:result:PlannerReactService",
-        ],
-        notes=[
-            "agent_chain is not listed as a causal parent to avoid a planner↔agent_chain cycle in static "
-            "DAG validation; execution outcomes still reach planner via autonomy and bus contracts."
-        ],
     ),
     "topic_foundry": OrionOrganRegistryEntry(
         organ_id="topic_foundry",

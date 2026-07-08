@@ -423,11 +423,11 @@ async def handle(env: BaseEnvelope) -> BaseEnvelope:
             if route_meta:
                 final_meta["auto_route"] = route_meta
 
-        # Answer-depth: surface agent-chain runtime_debug for live proof evidence
+        # Answer-depth: surface runtime_debug from context-exec or legacy agent-chain payloads
         for s in steps:
             if not isinstance(s.result, dict):
                 continue
-            ac = s.result.get("AgentChainService")
+            ac = s.result.get("ContextExecService") or s.result.get("AgentChainService")
             if isinstance(ac, dict) and ac.get("runtime_debug"):
                 rd = ac["runtime_debug"]
                 if isinstance(final_meta, dict):

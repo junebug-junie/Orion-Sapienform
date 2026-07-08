@@ -27,9 +27,8 @@ require_match "Gateway intake + orch handoff" "services/orion-cortex-gateway/app
 require_match "Orch handle + verb runtime handoff" "services/orion-cortex-orch/app/main.py" "async def handle\(|call_verb_runtime\(" || status=1
 require_match "Orch->Exec publish/wait" "services/orion-cortex-orch/app/orchestrator.py" "async def call_verb_runtime|orion:verb:request|orch_publish_verb_runtime|orch_wait_verb_runtime" || status=1
 require_match "Exec verb request entry" "services/orion-cortex-exec/app/main.py" "async def handle_verb_request|verb_runtime_intake|verb_runtime_result" || status=1
-require_match "Exec supervisor path + AgentChainService" "services/orion-cortex-exec/app/supervisor.py" "bound_capability_request_received|dispatch_action.*AgentChainService|selected_verb_preserved" || status=1
-require_match "Agent-chain bound execution + preserved selected_verb" "services/orion-agent-chain/app/api.py" "bound_capability_direct_execute=1|selected_verb_preserved=1|bound_capability_execution_timeout" || status=1
-require_match "Agent-chain concrete skills.runtime invocation" "services/orion-agent-chain/app/tool_executor.py" "_execute_capability_backed_verb|decision\.selected_skill|orion:cortex:request|skills\.runtime" || status=1
+require_match "Exec supervisor bound capability dispatch" "services/orion-cortex-exec/app/supervisor.py" "bound_capability_request_received|dispatch_action.*bound_capability|selected_verb_preserved" || status=1
+require_match "Exec nested cortex RPC for bound capability" "services/orion-cortex-exec/app/bound_capability_exec.py" "bound_capability_nested_cortex|orion:cortex:request|resolve_capability_decision" || status=1
 require_match "Concrete runtime skill implementation" "services/orion-cortex-exec/app/verb_adapters.py" "@verb\(\"skills\.runtime\.docker_prune_stopped_containers\.v1\"\)" || status=1
 
 echo "=== Most likely live trigger command ==="

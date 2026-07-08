@@ -24,7 +24,6 @@ from orion.schemas.agents.schemas import (
     Preferences,
     ToolDef,
     TraceStep,
-    AgentChainRequest,
 )
 from orion.schemas.cortex.schemas import ExecutionPlan, ExecutionStep, PlanExecutionResult, StepExecutionResult
 from orion.cognition.verb_activation import is_active
@@ -45,7 +44,8 @@ from orion.schemas.context_exec import (
     ContextExecRequestV1,
 )
 
-from .clients import AgentChainClient, ContextExecClient, CouncilClient, LLMGatewayClient, PlannerReactClient
+from .clients import ContextExecClient, CouncilClient, LLMGatewayClient
+from .bound_capability_exec import execute_bound_capability
 from .executor import _last_user_message, call_step_services, run_recall_step
 from .pcr_chat_memory import CONTINUITY_PROFILE, run_pcr_phase0_and_1, run_pcr_phase3
 from .recall_utils import delivery_safe_recall_decision, has_inline_recall, hub_chat_lane_from_ctx
@@ -125,7 +125,7 @@ def _blocked_unpromoted_goal_step_result(
         step_name="autonomy_goal_execution_blocked",
         order=0,
         result={
-            "AgentChainService": {
+            "ContextExecService": {
                 "text": text,
                 "runtime_debug": {
                     "autonomy_goal_execution_blocked": True,
@@ -138,6 +138,25 @@ def _blocked_unpromoted_goal_step_result(
         logs=["blocked <- unpromoted autonomy goal execution"],
         error=None,
     )
+
+
+def _autonomy_goal_action_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any] | None:
+    if not _autonomy_goal_execution_enabled():
+        return None
+    user_text = _last_user_message(ctx).lower()
+    if "execute" not in user_text and "autonomy.goal.execute" not in user_text:
+        return None
+    goals = _active_autonomy_goals_from_ctx(ctx)
+    if not goals:
+        return None
+    goal = sorted(goals, key=lambda g: float(g.get("priority") or 0), reverse=True)[0]
+    artifact_id = str(goal.get("artifact_id") or "").strip()
+    if not artifact_id:
+        return None
+    return {
+        "tool_id": "autonomy.goal.execute.v1",
+        "input": {"goal_artifact_id": artifact_id, "autonomy_goal_execute": True},
+    }
 
 
 def _merge_agent_findings_into_ctx(ctx: Dict[str, Any], agent_payload: Any) -> None:
@@ -209,22 +228,6 @@ def _extract_observation(step_res: StepExecutionResult) -> Dict[str, Any]:
         if payload.get("text"):
             return {"llm_output": payload.get("text"), "raw": payload}
     return {"raw": step_res.result}
-
-
-def _extract_latest_planner_thought(planner_result: Any) -> Optional[str]:
-    if not isinstance(planner_result, dict):
-        return None
-    planner_payload = planner_result.get("PlannerReactService", {})
-    if not isinstance(planner_payload, dict):
-        return None
-    trace = planner_payload.get("trace")
-    if not isinstance(trace, list) or not trace:
-        return None
-    last = trace[-1]
-    if not isinstance(last, dict):
-        return None
-    thought = last.get("thought")
-    return str(thought) if thought is not None else None
 
 
 def _truncate_text(value: Any, limit: int = 240) -> str:
@@ -519,7 +522,7 @@ def _extract_bound_failure_signal(step_results: List[StepExecutionResult]) -> Di
         return {}
 
     for step in reversed(step_results or []):
-        payload = (step.result or {}).get("AgentChainService") if isinstance(step.result, dict) else None
+        payload = (step.result or {}).get("ContextExecService") if isinstance(step.result, dict) else None
         if not isinstance(payload, dict):
             continue
         bound = _bound_payload(payload)
@@ -548,7 +551,7 @@ def _enrich_final_text_with_bound_skill_output(
     if not final_text or not str(final_text).strip():
         return final_text
     for step in reversed(step_results or []):
-        payload = (step.result or {}).get("AgentChainService") if isinstance(step.result, dict) else None
+        payload = (step.result or {}).get("ContextExecService") if isinstance(step.result, dict) else None
         if not isinstance(payload, dict):
             continue
         structured = payload.get("structured")
@@ -585,7 +588,7 @@ def _bound_capability_succeeded(step_results: List[StepExecutionResult]) -> bool
         return {}
 
     for step in reversed(step_results or []):
-        payload = (step.result or {}).get("AgentChainService") if isinstance(step.result, dict) else None
+        payload = (step.result or {}).get("ContextExecService") if isinstance(step.result, dict) else None
         if not isinstance(payload, dict):
             continue
         bound = _bound_payload(payload)
@@ -692,7 +695,7 @@ def _blocked_bound_step_result(*, tool_id: str, tool_input: Dict[str, Any], corr
         step_name="bound_capability_pre_dispatch_blocked",
         order=0,
         result={
-            "AgentChainService": {
+            "ContextExecService": {
                 "text": text,
                 "bound_capability": {
                     "status": "fail",
@@ -914,58 +917,6 @@ def _extract_council_debug(result_payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _normalize_planner_decision(
-    *,
-    planner_step: StepExecutionResult,
-    planner_final: FinalAnswer | None,
-    action: Dict[str, Any] | None,
-) -> Dict[str, Any]:
-    payload = planner_step.result.get("PlannerReactService", {}) if isinstance(planner_step.result, dict) else {}
-    raw_stop_reason = payload.get("stop_reason") if isinstance(payload, dict) else None
-    continue_reason = payload.get("continue_reason") if isinstance(payload, dict) else None
-
-    if raw_stop_reason in {"final_answer", "delegate", "continue", "error"}:
-        stop_reason = raw_stop_reason
-    elif planner_step.status != "success":
-        stop_reason = "error"
-    elif action:
-        stop_reason = "delegate"
-    elif planner_final and planner_final.content:
-        stop_reason = "final_answer"
-    else:
-        stop_reason = "continue"
-
-    if not continue_reason and action:
-        continue_reason = "action_present"
-
-    final_present = bool(planner_final and planner_final.content)
-    action_present = bool(action)
-    will_continue = planner_step.status == "success" and action_present
-
-    return {
-        "stop_reason": stop_reason,
-        "continue_reason": continue_reason,
-        "final_present": final_present,
-        "action_present": action_present,
-        "will_continue": will_continue,
-    }
-
-
-
-def _ensure_agent_chain_tool(toolset: List[ToolDef]) -> List[ToolDef]:
-    if any((t.tool_id or "") == "agent_chain" for t in toolset):
-        return toolset
-    return [
-        *toolset,
-        ToolDef(
-            tool_id="agent_chain",
-            description="Escalate to AgentChainService for multi-step runtime execution.",
-            input_schema={},
-            output_schema={},
-        ),
-    ]
-
-
 _CONTEXT_EXEC_ARTIFACT_BY_MODE = {
     "belief_provenance": "BeliefProvenanceReportV1",
     "trace_autopsy": "TraceAutopsyReportV1",
@@ -981,15 +932,18 @@ def _context_exec_options(ctx: Dict[str, Any]) -> Dict[str, Any]:
 def _should_use_context_exec(ctx: Dict[str, Any], *, bound_execution: Any = None) -> bool:
     if not settings.context_exec_enabled:
         return False
-    if bound_execution is not None and isinstance(bound_execution, dict):
+    if bool(ctx.get("operational_intent_detected")):
         return False
-    if isinstance(ctx.get("__bound_execution"), dict):
+    if isinstance(ctx.get("__bound_execution"), dict) or isinstance(bound_execution, dict):
         return False
     options = _context_exec_options(ctx)
-    return (
+    if (
         str(options.get("agent_runtime_engine") or "") == "context_exec"
         or bool(options.get("context_exec_mode"))
-    )
+    ):
+        return True
+    mode = str(ctx.get("mode") or "").lower()
+    return mode in {"agent", "council"}
 
 
 def _context_exec_mode_from_options(options: Dict[str, Any]) -> str:
@@ -1043,7 +997,7 @@ def _build_context_exec_request(
 
 def _extract_agent_escalation_payload(step: StepExecutionResult) -> Dict[str, Any]:
     result = step.result if isinstance(step.result, dict) else {}
-    for key in ("ContextExecService", "AgentChainService"):
+    for key in ("ContextExecService",):
         payload = result.get(key)
         if isinstance(payload, dict):
             return payload
@@ -1069,8 +1023,6 @@ class Supervisor:
         self.registry = VerbRegistry(VERBS_DIR)
         self.pack_manager = PackManager(ORION_PKG_DIR / "cognition")
         self.llm_client = LLMGatewayClient(bus)
-        self.planner_client = PlannerReactClient(bus)
-        self.agent_client = AgentChainClient(bus)
         self.context_exec_client = ContextExecClient(bus)
         self.council_client = CouncilClient(bus)
 
@@ -1112,100 +1064,6 @@ class Supervisor:
 
 
 
-    async def _planner_step(
-        self,
-        *,
-        source: ServiceRef,
-        goal_text: str,
-        toolset: List[ToolDef],
-        trace: List[TraceStep],
-        ctx: Dict[str, Any],
-        correlation_id: str,
-        diagnostic: bool = False,
-    ) -> Tuple[PlannerRequest, StepExecutionResult, FinalAnswer | None, Dict[str, Any] | None]:
-        logger.info(
-            "grounding_snapshot component=planner_react corr_id=%s trace_id=%s session_id=%s text_source=goal text_head=%r prior_step_results_count=%s recall_included=%s scaffolding_markers=%s",
-            correlation_id,
-            ctx.get("trace_id"),
-            ctx.get("session_id"),
-            _truncate_text(goal_text, 220),
-            len(ctx.get("prior_step_results") or []) if isinstance(ctx.get("prior_step_results"), list) else len(ctx.get("prior_step_results") or {}) if isinstance(ctx.get("prior_step_results"), dict) else 0,
-            bool(ctx.get("memory_digest")),
-            _detect_scaffolding_markers(goal_text),
-        )
-        ext_facts = {"text": ctx.get("memory_digest", "")}
-        if ctx.get("output_mode"):
-            ext_facts["output_mode"] = ctx["output_mode"]
-        if ctx.get("response_profile"):
-            ext_facts["response_profile"] = ctx["response_profile"]
-        for key in ("delivery_grounding_mode", "grounding_context", "anti_generic_drift"):
-            if ctx.get(key):
-                ext_facts[key] = ctx[key]
-        ext_facts["no_write_active"] = bool(ctx.get("no_write_active"))
-        ext_facts["execution_blocked_reason"] = ctx.get("execution_blocked_reason")
-        ext_facts["operational_intent_detected"] = bool(ctx.get("operational_intent_detected"))
-        ext_facts["available_operational_tools"] = list(ctx.get("available_operational_tools") or [])
-        history_msgs = [LLMMessage(**m) if not isinstance(m, LLMMessage) else m for m in (ctx.get("messages") or [])]
-        sanitized_history, history_filter_meta = _sanitize_operational_history(history_msgs, user_text=goal_text)
-        ext_facts["operational_history_filter"] = history_filter_meta
-        planner_req = PlannerRequest(
-            request_id=correlation_id,
-            caller="cortex-exec",
-            goal=Goal(description=goal_text, metadata={"verb": ctx.get("verb")}),
-            context=ContextBlock(
-                conversation_history=sanitized_history,
-                external_facts=ext_facts,
-            ),
-            toolset=toolset,
-            trace=trace,
-            limits=Limits(max_steps=1, timeout_seconds=int(settings.step_timeout_ms / 1000)),
-            preferences=Preferences(plan_only=True, return_trace=True, delegate_tool_execution=True),
-        )
-        reply_channel = f"{settings.exec_result_prefix}:PlannerReactService:{correlation_id}"
-        t0 = time.time()
-        logs = [f"rpc -> PlannerReactService (plan_only) reply={reply_channel}"]
-        planner_timeout = float(
-            ctx.get("planner_timeout_sec")
-            or (settings.step_timeout_ms / 1000.0)
-        )
-        if diagnostic:
-            planner_timeout = min(planner_timeout, float(settings.diagnostic_agent_timeout_sec))
-        planner_res = await self.planner_client.plan(
-            source=source,
-            req=planner_req,
-            correlation_id=correlation_id,
-            reply_to=reply_channel,
-            timeout_sec=planner_timeout,
-        )
-        logs.append(f"ok <- PlannerReactService status={planner_res.status}")
-        logger.info(
-            "grounding_snapshot component=planner_react_result corr_id=%s trace_id=%s session_id=%s text_source=planner_final text_head=%r prior_step_results_count=%s recall_included=%s scaffolding_markers=%s",
-            correlation_id,
-            ctx.get("trace_id"),
-            ctx.get("session_id"),
-            _truncate_text((planner_res.final_answer.content if planner_res.final_answer else ""), 220),
-            len(trace),
-            bool(ctx.get("memory_digest")),
-            _detect_scaffolding_markers(planner_res.final_answer.content if planner_res.final_answer else ""),
-        )
-
-        step_res = StepExecutionResult(
-            status="success" if planner_res.status == "ok" else "fail",
-            verb_name=ctx.get("verb") or "unknown",
-            step_name="planner_react",
-            order=-1,
-            result={"PlannerReactService": planner_res.model_dump(mode="json")},
-            latency_ms=int((time.time() - t0) * 1000),
-            node=settings.node_name,
-            logs=logs,
-            error=None if planner_res.status == "ok" else (planner_res.error or {}).get("message"),
-        )
-        final = planner_res.final_answer
-        action: Dict[str, Any] | None = None
-        if planner_res.trace:
-            last = planner_res.trace[-1]
-            action = last.action
-        return planner_req, step_res, final, action
 
     async def _execute_action(
         self,
@@ -1230,10 +1088,10 @@ class Supervisor:
             bool(ctx.get("memory_digest")),
             _detect_scaffolding_markers(tool_input),
         )
-        if str(tool_id) == "agent_chain":
-            logger.info("dispatch_action corr_id=%s mode=%s step=agent_chain route=AgentChainService", correlation_id, mode)
+        if str(tool_id) in {"agent_chain", "context_exec"}:
+            logger.info("dispatch_action corr_id=%s mode=%s step=context_exec route=ContextExecService", correlation_id, mode)
             chain_ctx = {**ctx, **tool_input}
-            return await self._agent_chain_escalation(
+            return await self._context_exec_escalation(
                 source=source,
                 correlation_id=correlation_id,
                 ctx=chain_ctx,
@@ -1273,7 +1131,7 @@ class Supervisor:
                     policy_state=policy_state,
                 )
             logger.info(
-                "dispatch_action corr_id=%s mode=%s step=%s route=AgentChainService(bound_capability)",
+                "dispatch_action corr_id=%s mode=%s step=%s route=bound_capability(cortex_nested)",
                 correlation_id,
                 mode,
                 tool_id,
@@ -1301,13 +1159,14 @@ class Supervisor:
                     detail="supervisor_bound_allow_planner_fallback_on_miss",
                 ),
             )
-            chain_ctx = {**ctx, "__bound_execution": bound_execution.model_dump(mode="json")}
             try:
-                return await self._agent_chain_escalation(
+                return await execute_bound_capability(
+                    self.bus,
                     source=source,
+                    bound=bound_execution,
+                    ctx=ctx,
                     correlation_id=correlation_id,
-                    ctx=chain_ctx,
-                    packs=packs,
+                    verb_cfg=verb_cfg,
                 )
             except Exception as exc:
                 logger.error(
@@ -1444,7 +1303,7 @@ class Supervisor:
             logs=logs,
         )
 
-    async def _agent_chain_escalation(
+    async def _context_exec_escalation(
         self,
         *,
         source: ServiceRef,
@@ -1535,15 +1394,6 @@ class Supervisor:
                     "runtime_debug": runtime_debug,
                     "mode": agent_req.get("mode"),
                 }
-                if ce_run.status not in {"ok"} and settings.context_exec_legacy_fallback:
-                    logs.append(f"context_exec_status={ce_run.status} fallback=legacy_agent_chain")
-                    context_exec_fallback_debug = {
-                        "context_exec_attempted": True,
-                        "context_exec_status": ce_run.status,
-                        "context_exec_fallback": "legacy_agent_chain",
-                        "context_exec_failure_modes": ce_run.failure_modes,
-                    }
-                    raise RuntimeError(f"context_exec_{ce_run.status}")
                 return StepExecutionResult(
                     status="success" if ce_run.status == "ok" else "fail",
                     verb_name="context_exec",
@@ -1555,75 +1405,46 @@ class Supervisor:
                     logs=logs,
                 )
             except Exception as exc:
-                if not settings.context_exec_legacy_fallback:
-                    logs.append(f"fail <- ContextExecService: {exc}")
-                    return StepExecutionResult(
-                        status="fail",
-                        verb_name="context_exec",
-                        step_name="context_exec",
-                        order=100,
-                        result={
-                            "ContextExecService": {
-                                "final_text": "Insufficient grounding: context-exec failed before acquiring evidence.",
-                                "text": "Insufficient grounding: context-exec failed before acquiring evidence.",
-                                "runtime_debug": {
-                                    "context_exec_attempted": True,
-                                    "context_exec_status": "error",
-                                    "error": str(exc),
-                                },
-                            }
-                        },
-                        latency_ms=int((time.time() - t0) * 1000),
-                        node=settings.node_name,
-                        logs=logs,
-                    )
-                if context_exec_fallback_debug is None:
-                    status_label = "timeout" if isinstance(exc, TimeoutError) else "error"
-                    context_exec_fallback_debug = {
-                        "context_exec_attempted": True,
-                        "context_exec_status": status_label,
-                        "context_exec_fallback": "legacy_agent_chain",
-                        "error": str(exc),
-                    }
-                logs.append(f"context_exec_fallback agent_chain err={exc}")
+                logs.append(f"fail <- ContextExecService: {exc}")
+                return StepExecutionResult(
+                    status="fail",
+                    verb_name="context_exec",
+                    step_name="context_exec",
+                    order=100,
+                    result={
+                        "ContextExecService": {
+                            "final_text": "Insufficient grounding: context-exec failed before acquiring evidence.",
+                            "text": "Insufficient grounding: context-exec failed before acquiring evidence.",
+                            "runtime_debug": {
+                                "context_exec_attempted": True,
+                                "context_exec_status": "error",
+                                "error": str(exc),
+                            },
+                        }
+                    },
+                    latency_ms=int((time.time() - t0) * 1000),
+                    node=settings.node_name,
+                    logs=logs,
+                )
 
-        reply_channel = f"{settings.exec_result_prefix}:AgentChainService:{correlation_id}"
-        t0 = time.time()
-        logs = [f"rpc -> AgentChainService reply={reply_channel}"]
-        agent_res = await self.agent_client.run_chain(
-            source=source,
-            req=AgentChainRequest(**agent_req),
-            correlation_id=correlation_id,
-            reply_to=reply_channel,
-            timeout_sec=float(settings.step_timeout_ms) / 1000.0,
-        )
-        logs.append("ok <- AgentChainService")
-        logger.info(
-            "grounding_snapshot component=agent_chain_exit corr_id=%s trace_id=%s session_id=%s text_source=agent_result text_head=%r prior_step_results_count=%s recall_included=%s scaffolding_markers=%s",
-            correlation_id,
-            ctx.get("trace_id"),
-            ctx.get("session_id"),
-            _truncate_text(agent_res.text, 220),
-            len(ctx.get("prior_step_results") or []) if isinstance(ctx.get("prior_step_results"), list) else len(ctx.get("prior_step_results") or {}) if isinstance(ctx.get("prior_step_results"), dict) else 0,
-            bool(ctx.get("memory_digest")),
-            _detect_scaffolding_markers(agent_res.text),
-        )
-        agent_payload = agent_res.model_dump(mode="json")
-        if context_exec_fallback_debug:
-            existing_rd = agent_payload.get("runtime_debug")
-            runtime_debug = dict(existing_rd) if isinstance(existing_rd, dict) else {}
-            runtime_debug.update(context_exec_fallback_debug)
-            agent_payload["runtime_debug"] = runtime_debug
         return StepExecutionResult(
-            status="success",
-            verb_name="agent_chain",
-            step_name="agent_chain",
+            status="fail",
+            verb_name="context_exec",
+            step_name="context_exec",
             order=100,
-            result={"AgentChainService": agent_payload},
-            latency_ms=int((time.time() - t0) * 1000),
+            result={
+                "ContextExecService": {
+                    "final_text": "Context-exec is disabled; legacy planner/agent-chain organs were removed.",
+                    "text": "Context-exec is disabled; legacy planner/agent-chain organs were removed.",
+                    "runtime_debug": {"context_exec_attempted": False, "context_exec_status": "disabled"},
+                }
+            },
+            latency_ms=0,
             node=settings.node_name,
-            logs=logs,
+            logs=["fail <- context_exec disabled"],
+            error="context_exec_disabled",
         )
+
 
     async def execute(
         self,
@@ -1788,39 +1609,6 @@ class Supervisor:
             [t.tool_id for t in tools[:30]],
         )
         mode = ctx.get("mode") or req.metadata.get("mode") or "agent"
-        if _should_use_context_exec(ctx):
-            logger.info(
-                "context_exec_early_dispatch corr_id=%s mode=%s verb=%s ctx_mode=%s",
-                correlation_id,
-                mode,
-                req.verb_name,
-                _context_exec_mode_from_options(_context_exec_options(ctx)),
-            )
-            agent_step = await self._agent_chain_escalation(
-                source=source,
-                correlation_id=correlation_id,
-                ctx=ctx,
-                packs=packs,
-            )
-            step_results.append(agent_step)
-            agent_payload = _extract_agent_escalation_payload(agent_step)
-            if agent_payload:
-                _merge_agent_findings_into_ctx(ctx, agent_payload)
-            return PlanExecutionResult(
-                verb_name=req.verb_name,
-                request_id=correlation_id,
-                status="success" if agent_step.status == "success" else "fail",
-                blocked=False,
-                blocked_reason=None,
-                steps=step_results,
-                mode=mode,
-                final_text=_extract_agent_escalation_text(agent_step),
-                memory_used=memory_used,
-                recall_debug=recall_debug,
-                error=agent_step.error,
-            )
-        if mode in {"agent", "council"}:
-            tools = _ensure_agent_chain_tool(tools)
         if mode == "auto":
             logger.warning(
                 "Supervisor received unexpected mode=auto corr_id=%s; preserving deterministic execution path",
@@ -1891,6 +1679,146 @@ class Supervisor:
                 ],
             )
 
+        selected_tool_would_have_been = preferred_operational_tool.tool_id if preferred_operational_tool else None
+        semantic_execution_validated = False
+        executed_steps: List[str] = [s.step_name for s in step_results]
+
+        autonomy_action = _autonomy_goal_action_from_ctx(ctx)
+        if autonomy_action and mode == "agent":
+            if not _autonomy_goal_execution_allowed(ctx, autonomy_action):
+                blocked_step = _blocked_unpromoted_goal_step_result(
+                    action=autonomy_action,
+                    correlation_id=correlation_id,
+                )
+                step_results.append(blocked_step)
+                executed_steps.append(blocked_step.step_name)
+                _sync_autonomy_execution_mode_from_ctx(ctx)
+                from .router import _autonomy_payload_from_ctx
+
+                return PlanExecutionResult(
+                    verb_name=req.verb_name,
+                    request_id=correlation_id,
+                    status="success",
+                    blocked=False,
+                    blocked_reason=None,
+                    steps=step_results,
+                    mode=mode,
+                    final_text=(blocked_step.result or {}).get("ContextExecService", {}).get("text"),
+                    memory_used=memory_used,
+                    recall_debug=recall_debug,
+                    metadata=_autonomy_payload_from_ctx(ctx),
+                    error=None,
+                )
+            ctx["chat_autonomy_execution_mode"] = "executing"
+            action_step = await self._execute_action(
+                source=source,
+                action=autonomy_action,
+                ctx=ctx,
+                correlation_id=correlation_id,
+                mode=mode,
+                packs=packs or [],
+            )
+            step_results.append(action_step)
+            executed_steps.append(action_step.step_name)
+            obs = _extract_observation(action_step)
+            final_text = obs.get("llm_output") or _extract_agent_escalation_text(action_step)
+            _sync_autonomy_execution_mode_from_ctx(ctx)
+            from .router import _autonomy_payload_from_ctx
+
+            return PlanExecutionResult(
+                verb_name=req.verb_name,
+                request_id=correlation_id,
+                status="success" if action_step.status == "success" else "fail",
+                blocked=False,
+                blocked_reason=None,
+                steps=step_results,
+                mode=mode,
+                final_text=final_text,
+                memory_used=memory_used,
+                recall_debug=recall_debug,
+                metadata=_autonomy_payload_from_ctx(ctx),
+                error=action_step.error,
+            )
+
+        if operational_intent_detected and preferred_operational_tool is not None:
+            action = {"tool_id": preferred_operational_tool.tool_id, "input": {"text": user_text}}
+            action_step = await self._execute_action(
+                source=source,
+                action=action,
+                ctx=ctx,
+                correlation_id=correlation_id,
+                mode=mode,
+                packs=packs or [],
+            )
+            step_results.append(action_step)
+            executed_steps.append(action_step.step_name)
+            if _is_capability_backed_cfg(self.registry.get(preferred_operational_tool.tool_id)):
+                semantic_execution_validated = action_step.status == "success"
+            obs = _extract_observation(action_step)
+            final_text = obs.get("llm_output") or _extract_agent_escalation_text(action_step)
+            agent_payload = _extract_agent_escalation_payload(action_step)
+            if agent_payload:
+                _merge_agent_findings_into_ctx(ctx, agent_payload)
+        elif _should_use_context_exec(ctx):
+            logger.info(
+                "context_exec_dispatch corr_id=%s mode=%s verb=%s ctx_mode=%s",
+                correlation_id,
+                mode,
+                req.verb_name,
+                _context_exec_mode_from_options(_context_exec_options(ctx)),
+            )
+            agent_step = await self._context_exec_escalation(
+                source=source,
+                correlation_id=correlation_id,
+                ctx=ctx,
+                packs=packs,
+            )
+            step_results.append(agent_step)
+            executed_steps.append(agent_step.step_name)
+            agent_payload = _extract_agent_escalation_payload(agent_step)
+            if agent_payload:
+                _merge_agent_findings_into_ctx(ctx, agent_payload)
+            final_text = _extract_agent_escalation_text(agent_step)
+        else:
+            final_text = None
+
+        if operational_intent_detected and preferred_operational_tool is not None:
+            bound_failure_signal = _extract_bound_failure_signal(step_results)
+            preserve_bound_capability_text = _bound_capability_succeeded(step_results)
+            overall_status = "success" if step_results and all(s.status == "success" for s in step_results) else "partial"
+            overall_error = step_results[-1].error if overall_status != "success" and step_results else None
+            if bound_failure_signal is not None:
+                overall_status = "fail"
+                overall_error = bound_failure_signal.get("detail") or bound_failure_signal.get("reason")
+            return PlanExecutionResult(
+                verb_name=req.verb_name,
+                request_id=correlation_id,
+                status=overall_status,
+                blocked=False,
+                blocked_reason=None,
+                steps=step_results,
+                mode=mode,
+                final_text=final_text,
+                memory_used=memory_used,
+                recall_debug=recall_debug,
+                error=overall_error,
+            )
+
+        if _should_use_context_exec(ctx) and final_text is not None:
+            return PlanExecutionResult(
+                verb_name=req.verb_name,
+                request_id=correlation_id,
+                status="success" if step_results and step_results[-1].status == "success" else "fail",
+                blocked=False,
+                blocked_reason=None,
+                steps=step_results,
+                mode=mode,
+                final_text=final_text,
+                memory_used=memory_used,
+                recall_debug=recall_debug,
+                error=step_results[-1].error if step_results else None,
+            )
+
         if not self._should_use_react(mode, tools):
             logger.info("Supervisor: using direct LLM path")
             if not is_active(req.verb_name, node_name=settings.node_name):
@@ -1933,273 +1861,24 @@ class Supervisor:
                 error=direct_step.error,
             )
 
+        logger.info(
+            "supervisor_react_path_removed corr_id=%s mode=%s verb=%s route=context_exec",
+            correlation_id,
+            mode,
+            req.verb_name,
+        )
+        agent_step = await self._context_exec_escalation(
+            source=source,
+            correlation_id=correlation_id,
+            ctx=ctx,
+            packs=packs or [],
+        )
+        step_results.append(agent_step)
+        agent_payload = _extract_agent_escalation_payload(agent_step)
+        if agent_payload:
+            _merge_agent_findings_into_ctx(ctx, agent_payload)
+        final_text = _extract_agent_escalation_text(agent_step)
         trace: List[TraceStep] = []
-        max_steps = int(ctx.get("max_steps") or 3)
-        final_text: Optional[str] = None
-        planner_thought: Optional[str] = None
-        executed_steps: List[str] = [s.step_name for s in step_results]
-        semantic_execution_validated = False
-        selected_tool_would_have_been = preferred_operational_tool.tool_id if preferred_operational_tool else None
-
-        for loop_index in range(max_steps):
-            goal_text = _last_user_message(ctx)
-            planner_req, planner_step, planner_final, action = await self._planner_step(
-                source=source,
-                goal_text=goal_text,
-                toolset=tools,
-                trace=trace,
-                ctx=ctx,
-                correlation_id=correlation_id,
-            )
-            step_results.append(planner_step)
-            executed_steps.append(planner_step.step_name)
-
-            planner_thought = _extract_latest_planner_thought(planner_step.result)
-            decision = _normalize_planner_decision(
-                planner_step=planner_step,
-                planner_final=planner_final,
-                action=action,
-            )
-
-            if planner_final and planner_final.content:
-                final_text = planner_final.content
-
-            logger.info(
-                "planner_decision corr_id=%s mode=%s verb=%s step=%s stop_reason=%s continue_reason=%s action_present=%s final_present=%s will_continue=%s remaining_steps=%s",
-                correlation_id,
-                mode,
-                req.verb_name,
-                planner_step.step_name,
-                decision["stop_reason"],
-                decision["continue_reason"],
-                decision["action_present"],
-                decision["final_present"],
-                decision["will_continue"],
-                max(0, max_steps - (loop_index + 1)),
-            )
-
-            tool_id = (action or {}).get("tool_id") if isinstance(action, dict) else None
-            logger.info("planner_action corr_id=%s tool_id=%s lane=%s", correlation_id, tool_id, "depth2")
-            if operational_intent_detected and preferred_operational_tool and mode in {"agent", "council"}:
-                should_override, override_diag = _should_override_planner_operational_action(
-                    planner_tool_id=str(tool_id or ""),
-                    preferred_tool_id=preferred_operational_tool.tool_id,
-                    override_scores=override_scores,
-                )
-                if canonical_operational_tool is not None and str(tool_id or "") != canonical_operational_tool.tool_id:
-                    should_override = True
-                    override_diag = {
-                        **override_diag,
-                        "forced_by": "canonical_operational_rail",
-                        "preferred_tool_id": canonical_operational_tool.tool_id,
-                    }
-                ctx.setdefault("debug", {})["semantic_override_decision"] = override_diag
-                if should_override and action:
-                    logger.info(
-                        "semantic_tool_override_applied corr_id=%s planner_tool=%s planner_score=%s preferred_tool=%s preferred_score=%s score_gap=%s",
-                        correlation_id,
-                        override_diag.get("planner_tool_id"),
-                        override_diag.get("planner_score"),
-                        override_diag.get("preferred_tool_id"),
-                        override_diag.get("preferred_score"),
-                        override_diag.get("score_gap"),
-                    )
-                    action = {
-                        **action,
-                        "tool_id": preferred_operational_tool.tool_id,
-                    }
-                    tool_id = preferred_operational_tool.tool_id
-
-            if decision["stop_reason"] == "final_answer" and not decision["action_present"]:
-                forced_delegate = False
-                if operational_intent_detected and preferred_operational_tool and mode in {"agent", "council"}:
-                    logger.info(
-                        "semantic_tool_preferred corr_id=%s chosen_path=%s selected_tool=%s no_write_active=%s reason=%s",
-                        correlation_id,
-                        "blocked_explanation" if no_write_active else "delegate",
-                        preferred_operational_tool.tool_id,
-                        no_write_active,
-                        "operational_intent_with_semantic_tool_available",
-                    )
-                    ctx.setdefault("debug", {})["selected_tool_would_have_been"] = preferred_operational_tool.tool_id
-                    if no_write_active:
-                        ctx.setdefault("debug", {})["no_write_downgrade"] = True
-                        ctx.setdefault("debug", {})["downgraded_to_explanation"] = True
-                        final_text = _build_blocked_execution_explanation(
-                            selected_tool=preferred_operational_tool.tool_id,
-                            no_write_active=True,
-                        )
-                        logger.info(
-                            "no_write_downgrade corr_id=%s selected_tool_would_have_been=%s blocked_execution_explanation_emitted=true",
-                            correlation_id,
-                            preferred_operational_tool.tool_id,
-                        )
-                        break
-                    action = {
-                        "tool_id": preferred_operational_tool.tool_id,
-                        "input": {"text": goal_text},
-                    }
-                    decision["action_present"] = True
-                    decision["stop_reason"] = "delegate"
-                    decision["continue_reason"] = "operational_semantic_tool_preferred"
-                    forced_delegate = True
-                if decision["action_present"]:
-                    logger.info(
-                        "planner_final_answer_overridden corr_id=%s chosen_path=delegate selected_tool=%s",
-                        correlation_id,
-                        (action or {}).get("tool_id"),
-                    )
-                    final_text = None
-                if forced_delegate:
-                    pass
-                elif not trace:
-                    trace.append(
-                        TraceStep(
-                            step_index=0,
-                            thought=planner_thought,
-                            action=None,
-                            observation={"llm_output": final_text},
-                        )
-                    )
-                if not forced_delegate:
-                    logger.info(
-                        "agent_runtime_stop corr_id=%s mode=%s verb=%s reason=%s final_len=%s action_present=%s executed_steps=%s skipped_steps=%s",
-                        correlation_id,
-                        mode,
-                        req.verb_name,
-                        decision["stop_reason"],
-                        len(final_text or ""),
-                        decision["action_present"],
-                        executed_steps,
-                        ["agent_chain"],
-                    )
-                    break
-
-            if planner_step.status != "success":
-                logger.info(
-                    "agent_runtime_stop corr_id=%s mode=%s verb=%s reason=planner_step_%s final_len=%s action_present=%s executed_steps=%s skipped_steps=%s",
-                    correlation_id,
-                    mode,
-                    req.verb_name,
-                    planner_step.status,
-                    len(final_text or ""),
-                    decision["action_present"],
-                    executed_steps,
-                    ["agent_chain"],
-                )
-                break
-
-            if not action:
-                logger.info("planner_action_ambiguous corr_id=%s default=agent_chain", correlation_id)
-                action = {"tool_id": "agent_chain", "input": {}}
-
-            if _is_autonomy_goal_execute_action(action) and not _autonomy_goal_execution_allowed(ctx, action):
-                blocked_step = _blocked_unpromoted_goal_step_result(action=action, correlation_id=correlation_id)
-                step_results.append(blocked_step)
-                executed_steps.append(blocked_step.step_name)
-                final_text = (
-                    (blocked_step.result or {}).get("AgentChainService", {}).get("text")
-                    if isinstance(blocked_step.result, dict)
-                    else None
-                )
-                break
-
-            if _is_autonomy_goal_execute_action(action) and _autonomy_goal_execution_allowed(ctx, action):
-                ctx["chat_autonomy_execution_mode"] = "executing"
-            elif _planned_autonomy_task_active(ctx):
-                ctx["chat_autonomy_execution_mode"] = "executing"
-
-            action_step = await self._execute_action(
-                source=source,
-                action=action,
-                ctx=ctx,
-                correlation_id=correlation_id,
-                mode=mode,
-                packs=packs or [],
-            )
-            step_results.append(action_step)
-            executed_steps.append(action_step.step_name)
-            if await self._maybe_run_pcr_phase3_after_stance(
-                source=source,
-                ctx=ctx,
-                correlation_id=correlation_id,
-                recall_cfg=recall_cfg,
-                verb_name=str(req.verb_name or ""),
-                stance_step=action_step,
-                step_results=step_results,
-                recall_debug=recall_debug,
-            ):
-                memory_used = True
-            if action_step.status != "success" and str(action_step.error or "").startswith("inactive_verb:"):
-                return PlanExecutionResult(
-                    verb_name=req.verb_name,
-                    request_id=correlation_id,
-                    status="fail",
-                    blocked=False,
-                    blocked_reason=None,
-                    steps=step_results,
-                    mode=mode,
-                    final_text=f"Verb '{action.get('tool_id')}' is inactive on node {settings.node_name}.",
-                    memory_used=memory_used,
-                    recall_debug=recall_debug,
-                    error=action_step.error,
-                )
-            obs = _extract_observation(action_step)
-            trace.append(
-                TraceStep(
-                    step_index=len(trace),
-                    thought=None,
-                    action=action,
-                    observation=obs,
-                )
-            )
-            if obs.get("llm_output"):
-                final_text = obs.get("llm_output")
-
-            try:
-                agent_payload = (action_step.result or {}).get("AgentChainService", {})
-                _merge_agent_findings_into_ctx(ctx, agent_payload)
-                if isinstance(agent_payload, dict):
-                    bound_payload = agent_payload.get("bound_capability")
-                    if not isinstance(bound_payload, dict):
-                        structured_payload = agent_payload.get("structured")
-                        if isinstance(structured_payload, dict):
-                            bound_payload = structured_payload.get("bound_capability")
-                    if isinstance(bound_payload, dict) and str(bound_payload.get("path") or "").startswith("blocked_"):
-                        ctx.setdefault("debug", {})["downgraded_to_explanation"] = True
-                        ctx.setdefault("debug", {})["no_write_downgrade"] = True
-            except Exception:
-                pass
-
-            selected_tool = str((action or {}).get("tool_id") or "")
-            selected_cfg = None
-            if selected_tool and selected_tool not in {"agent_chain", "tool_chain"}:
-                try:
-                    selected_cfg = self.registry.get(selected_tool)
-                except Exception:
-                    selected_cfg = None
-            selected_is_capability = _is_capability_backed_cfg(selected_cfg) if selected_cfg else False
-            if selected_tool and selected_tool not in {"agent_chain", "tool_chain"}:
-                if selected_is_capability:
-                    semantic_execution_validated = True
-                if selected_is_capability:
-                    logger.info(
-                        "agent_runtime_stop corr_id=%s mode=%s verb=%s reason=capability_bound_executed tool_id=%s",
-                        correlation_id,
-                        mode,
-                        req.verb_name,
-                        selected_tool,
-                    )
-                    break
-                logger.info(
-                    "agent_runtime_continue corr_id=%s mode=%s verb=%s reason=delegate_then_agent_chain tool_id=%s",
-                    correlation_id,
-                    mode,
-                    req.verb_name,
-                    selected_tool,
-                )
-                final_text = None
-                break
 
         # Council checkpoint (opt-in unless explicit mode=council)
         council_step: Optional[StepExecutionResult] = None
@@ -2228,42 +1907,6 @@ class Supervisor:
                     if isinstance(compact_debug, dict):
                         ctx.setdefault("debug", {})["council"] = compact_debug
                         recall_debug["council_debug"] = compact_debug
-            except Exception:
-                pass
-
-        if ctx.get("force_agent_chain"):
-            logger.info(
-                "agent_runtime_continue corr_id=%s mode=%s verb=%s reason=force_agent_chain",
-                correlation_id,
-                mode,
-                req.verb_name,
-            )
-            final_text = None
-
-        # Escalate to agent chain if still no final text
-        if not final_text:
-            logger.info(
-                "agent_runtime_continue corr_id=%s mode=%s verb=%s reason=needs_chain step=agent_chain",
-                correlation_id,
-                mode,
-                req.verb_name,
-            )
-            agent_step = await self._agent_chain_escalation(
-                source=source,
-                correlation_id=correlation_id,
-                ctx=ctx,
-                packs=packs or [],
-            )
-            step_results.append(agent_step)
-            try:
-                agent_payload = _extract_agent_escalation_payload(agent_step)
-                if agent_payload:
-                    _merge_agent_findings_into_ctx(ctx, agent_payload)
-                    final_text = (
-                        agent_payload.get("final_text")
-                        or agent_payload.get("text")
-                        or final_text
-                    )
             except Exception:
                 pass
 

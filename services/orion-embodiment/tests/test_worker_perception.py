@@ -73,6 +73,27 @@ def test_emit_perception_once_fail_open_on_malformed_row():
     pub.assert_not_awaited()
 
 
+def test_refresh_aitown_runtime_picks_up_updated_fcc_world_id(tmp_path, monkeypatch):
+    w = _worker()
+    w._walkable_loaded = True
+    w._walkable = {(1, 1)}
+    fcc = tmp_path / ".fcc.env"
+    fcc.write_text(
+        "AITOWN_WORLD_ID=new-world\nAITOWN_ORION_PLAYER_ID=p:99\n",
+        encoding="utf-8",
+    )
+    w._settings.fcc_env_path = str(fcc)
+    w._world_id = "old-world"
+    w._orion_player_id = "p:1"
+
+    w._refresh_aitown_runtime()
+
+    assert w._world_id == "new-world"
+    assert w._orion_player_id == "p:99"
+    assert w._walkable_loaded is False
+    assert w._walkable is None
+
+
 def test_emit_perception_once_fail_open_on_publish_error():
     w = _worker()
     players = [{"id": "orion", "position": {"x": 0.0, "y": 0.0}}]

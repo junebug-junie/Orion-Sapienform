@@ -118,11 +118,31 @@ class EmbodimentWorker:
 
     def _load_fcc_env(self) -> None:
         for k, v in load_fcc_env(expand_env_path(self._settings.fcc_env_path)).items():
-            os.environ.setdefault(k, v)
+            # AITOWN_* keys must track ~/.fcc/.env updates (world wipe/bootstrap)
+            # without requiring a container restart.
+            if k.startswith("AITOWN_"):
+                os.environ[k] = v
+            else:
+                os.environ.setdefault(k, v)
         # Explicit override wins over the ~/.fcc/.env value (bridge reachability).
         override = self._settings.aitown_convex_url.strip()
         if override:
             os.environ["AITOWN_CONVEX_URL"] = override
+
+    def _refresh_aitown_runtime(self) -> None:
+        """Re-read AI Town ids from the mounted FCC env each perception tick."""
+        prev_world = self._world_id
+        self._load_fcc_env()
+        self._world_id = str(os.environ.get("AITOWN_WORLD_ID") or "").strip()
+        self._orion_player_id = str(os.environ.get("AITOWN_ORION_PLAYER_ID") or "").strip()
+        if self._world_id != prev_world:
+            self._walkable_loaded = False
+            self._walkable = None
+            logger.info(
+                "embodiment_aitown_runtime_refresh world_id=%s player_id=%s",
+                self._world_id,
+                self._orion_player_id,
+            )
 
     def _service_ref(self) -> ServiceRef:
         return ServiceRef(
@@ -597,6 +617,7 @@ class EmbodimentWorker:
     async def _perception_loop(self) -> None:
         interval = self._settings.perception_interval_sec
         while not self._stop.is_set():
+            self._refresh_aitown_runtime()
             try:
                 perception = await self._emit_perception_once()
             except Exception:
@@ -614,10 +635,10 @@ class EmbodimentWorker:
                 except Exception:
                     logger.exception("embodiment_social_loop_failed")
             if perception is not None and getattr(self._settings, "speech_enabled", False):
-                try:
-                    await self._speak_once(perception)
-                except Exception:
-                    logger.exception("embodiment_speech_loop_failed")
+                asyncio.create_task(
+                    self._speak_once_safe(perception),
+                    name=f"embodiment-speech-{uuid4()}",
+                )
             # Don't wander off while engaging a conversation — but only when social
             # engagement is enabled. With it off, a town-initiated invite would
             # otherwise freeze Orion (suppressed wander + no engagement).
@@ -684,6 +705,13 @@ class EmbodimentWorker:
         )
         await self._actuate(intent, now=now)
 
+    async def _speak_once_safe(self, perception: WorldPerceptionV1) -> None:
+        """Fire-and-forget wrapper so a slow utterance RPC cannot stall perception."""
+        try:
+            await self._speak_once(perception)
+        except Exception:
+            logger.exception("embodiment_speech_loop_failed")
+
     # --- speech (cortex-generated town utterances) --------------------------
     async def _speak_once(self, perception: WorldPerceptionV1) -> Optional[str]:
         """Gated, fail-open speech pass. Own-agent only; one utterance per convo."""
@@ -748,75 +776,85 @@ class EmbodimentWorker:
     async def _request_utterance(
         self, prompt: str, *, correlation_id: str, convo_id: Optional[str] = None
     ) -> str:
-        """Generate a town utterance. Dispatcher: prefer the unified turn (full
-        cognition pass over the hub saga); fall back to the quick cortex rail on
-        timeout/error/empty. Fail-open -> ''.
+        """Generate a town utterance. Dispatcher: prefer grounded_small on the chat
+        cortex rail; fall back to quick on timeout/error/empty. Fail-open -> ''.
 
-        Set ``speech_unified_enabled`` false to force the legacy quick-only path.
+        Hub HTTP is intentionally avoided here — ``mode=orion`` on the hub often
+        falls through to the full brain/appraisal stack and can block town turns
+        for minutes.
         """
         if getattr(self._settings, "speech_unified_enabled", False):
-            session_id = f"{self._settings.unified_session_prefix}:{convo_id or 'orion'}"
             try:
-                unified = await self._request_utterance_unified(
-                    prompt, correlation_id=correlation_id, session_id=session_id
+                grounded = await self._request_utterance_cortex(
+                    prompt,
+                    correlation_id=correlation_id,
+                    verb="chat_general",
+                    lane=str(getattr(self._settings, "speech_hub_llm_route", "chat") or "chat"),
+                    hub_chat_lane="grounded_small",
+                    timeout_sec=float(self._settings.unified_timeout_sec),
                 )
-                if unified.strip():
-                    return unified
-                # A non-final/empty frame already logged its discriminating reason.
+                if grounded.strip():
+                    return grounded
             except Exception as exc:
                 logger.info(
-                    "embodiment_speech_unified_fallback reason=%s corr=%s",
+                    "embodiment_speech_grounded_fallback reason=%s corr=%s",
                     type(exc).__name__, correlation_id,
                 )
         return await self._request_utterance_quick(prompt, correlation_id=correlation_id)
 
-    async def _request_utterance_unified(
-        self, prompt: str, *, correlation_id: str, session_id: str
+    async def _request_utterance_cortex(
+        self,
+        prompt: str,
+        *,
+        correlation_id: str,
+        verb: str,
+        lane: str,
+        hub_chat_lane: str,
+        timeout_sec: float,
     ) -> str:
-        """Route the utterance through the hub-only unified turn saga
-        (``POST /api/chat`` with ``mode=orion``). Returns the final text on success;
-        returns "" to signal fallback on any non-final/empty frame, logging a
-        discriminating ``reason`` (``turn_error`` vs ``turn_deferred`` vs
-        ``non_final:<type>`` vs ``empty``) so an operator can tell a real cognition
-        failure from a benign quiet turn. Network/JSON errors propagate to the
-        dispatcher, which logs one fallback line."""
-        import urllib.request
+        """Cortex-exec RPC for town speech with grounded_small surface context."""
+        from orion.cognition.cortex_payload_extract import extract_cortex_payload_text
+        from orion.cognition.plan_loader import build_plan_for_verb
+        from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 
-        body = json.dumps(
-            {
-                "mode": "orion",
-                "session_id": session_id,
-                "messages": [{"role": "user", "content": prompt}],
-            }
-        ).encode("utf-8")
-
-        def _post() -> dict:
-            req = urllib.request.Request(
-                self._settings.hub_chat_url,
-                data=body,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(
-                req, timeout=float(self._settings.unified_timeout_sec)
-            ) as resp:
-                raw = resp.read().decode("utf-8")
-            return json.loads(raw)
-
-        frame = await asyncio.to_thread(_post)
-        frame_type = frame.get("type") if isinstance(frame, dict) else None
-        if frame_type != "final":
-            reason = frame_type if frame_type in ("turn_error", "turn_deferred") else f"non_final:{frame_type}"
-            logger.info(
-                "embodiment_speech_unified_fallback reason=%s corr=%s", reason, correlation_id
-            )
+        plan = build_plan_for_verb(verb, mode=lane)
+        req = PlanExecutionRequest(
+            plan=plan,
+            args=PlanExecutionArgs(
+                request_id=correlation_id,
+                trigger_source=self._settings.service_name,
+                extra={"lane": lane, "llm_route": lane},
+            ),
+            context={
+                "user_message": prompt,
+                "metadata": {"correlation_id": correlation_id, "mind_enabled": True},
+                "surface_context": {
+                    "hub_chat_lane": hub_chat_lane,
+                    "surface": "aitown",
+                },
+            },
+        )
+        reply_channel = f"{self._settings.cortex_result_prefix}:{uuid4()}"
+        env = BaseEnvelope(
+            kind=req.kind,
+            source=self._service_ref(),
+            correlation_id=correlation_id,
+            reply_to=reply_channel,
+            payload=req.model_dump(mode="json"),
+        )
+        msg = await self._bus.rpc_request(
+            self._settings.cortex_request_channel,
+            env,
+            reply_channel=reply_channel,
+            timeout_sec=timeout_sec,
+        )
+        decoded = self._bus.codec.decode(msg.get("data"))
+        if not decoded.ok:
             return ""
-        text = str(frame.get("llm_response") or "").strip()
-        if not text:
-            logger.info(
-                "embodiment_speech_unified_fallback reason=empty corr=%s", correlation_id
-            )
-        return text
+        payload = decoded.envelope.payload
+        result = payload.get("result") if isinstance(payload, dict) else None
+        text = extract_cortex_payload_text(result if isinstance(result, dict) else (payload or {}))
+        return str(text or "")
 
     async def _request_utterance_quick(self, prompt: str, *, correlation_id: str) -> str:
         """Reuse the cortex exec rail to generate an utterance. Fail-open -> ''."""

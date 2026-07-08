@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -9,10 +10,26 @@ from httpx import ASGITransport, AsyncClient
 from orion.schemas.execution_projection import ExecutionRunStateV1, ExecutionTrajectoryProjectionV1
 from orion.substrate.execution_loop.constants import EXECUTION_TRAJECTORY_PROJECTION_ID
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _import_main(monkeypatch):
+    monkeypatch.setenv("POSTGRES_URI", "postgresql://unused:5432/unused")
+    monkeypatch.setenv(
+        "NODE_CATALOG_PATH",
+        str(REPO_ROOT / "config" / "biometrics" / "node_catalog.yaml"),
+    )
+    import app.settings as settings_mod
+
+    settings_mod._settings = None
+    import app.main as main
+
+    return main
+
 
 @pytest.mark.asyncio
 async def test_execution_trajectory_endpoint_returns_projection(monkeypatch) -> None:
-    import app.main as main
+    main = _import_main(monkeypatch)
 
     now = datetime(2026, 7, 8, 12, 0, tzinfo=timezone.utc)
     proj = ExecutionTrajectoryProjectionV1(
@@ -49,7 +66,7 @@ async def test_execution_trajectory_endpoint_returns_projection(monkeypatch) -> 
 
 @pytest.mark.asyncio
 async def test_execution_trajectory_endpoint_no_projection(monkeypatch) -> None:
-    import app.main as main
+    main = _import_main(monkeypatch)
 
     store = MagicMock()
     store.load_execution_trajectory.return_value = None

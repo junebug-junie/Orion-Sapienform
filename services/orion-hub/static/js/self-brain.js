@@ -42,12 +42,108 @@ function stateColor(regionState, intensity) {
   return `rgba(96,165,250,${0.35 + 0.5 * intensity})`;
 }
 
+let spotlightPulseRAF = null;
+
+function drawSpotlight(ctx, canvas, frame) {
+  const sp = frame.spotlight;
+  ctx.textAlign = "left";
+  if (!sp) {
+    ctx.fillStyle = "#94a3b8";
+    ctx.font = "13px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("No active spotlight (no coalition selected yet).", canvas.width / 2, canvas.height / 2);
+    return;
+  }
+  const stability = Math.max(0, Math.min(1, sp.coalition_stability));
+  const stabPct = (stability * 100) | 0;
+  ctx.fillStyle = "#f0abfc";
+  ctx.font = "13px sans-serif";
+  ctx.fillText(
+    `Spotlight · ${sp.attended_node_ids.length} nodes · dwell ${sp.dwell_ticks} · stability ${stabPct}%${sp.stale ? " (held)" : ""}`,
+    12, 20,
+  );
+  if (sp.description) {
+    ctx.fillStyle = "#cbd5e1";
+    ctx.font = "12px sans-serif";
+    ctx.fillText(String(sp.description).slice(0, 96), 12, 38);
+  }
+
+  const ids = sp.attended_node_ids || [];
+  if (!ids.length) {
+    ctx.fillStyle = "#94a3b8";
+    ctx.font = "13px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("Coalition present but no attended nodes.", canvas.width / 2, canvas.height / 2);
+    return;
+  }
+
+  const byId = new Map((frame.nodes || []).map((n) => [n.node_id, n]));
+  const top = 54;
+  const areaH = canvas.height - top - 8;
+  const cols = Math.ceil(Math.sqrt(ids.length));
+  const rows = Math.ceil(ids.length / cols) || 1;
+  const cw = canvas.width / cols;
+  const chh = areaH / rows;
+  const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 380); // 0..1
+
+  ids.forEach((id, i) => {
+    const cx = (i % cols) * cw + cw / 2;
+    const cy = top + Math.floor(i / cols) * chh + chh / 2;
+    const node = byId.get(id);
+    const act = node ? Math.max(0, Math.min(1, node.activation)) : 0.4;
+    const baseR = Math.min(cw, chh) * (0.16 + 0.16 * act);
+    // Coalition-stability halo: larger, softer ring when the coalition holds.
+    const haloR = baseR + 6 + 12 * stability * (0.6 + 0.4 * pulse);
+    ctx.beginPath();
+    ctx.arc(cx, cy, haloR, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(240,171,252,${0.05 + 0.15 * stability})`;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(cx, cy, baseR, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(232,121,249,${0.45 + 0.45 * act})`;
+    ctx.fill();
+    ctx.strokeStyle = `rgba(240,171,252,${0.45 + 0.5 * pulse})`;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    const label = node && node.label ? node.label : (id.split(":").slice(-1)[0] || id);
+    ctx.fillStyle = "#e5e7eb";
+    ctx.font = "10px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(String(label).slice(0, 24), cx, cy + baseR + 12);
+  });
+}
+
+function startSpotlightPulse() {
+  if (spotlightPulseRAF) return;
+  const loop = () => {
+    if (state.dim !== "spotlight") { spotlightPulseRAF = null; return; }
+    const canvas = document.getElementById("brainCanvas");
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const frame = state.frames[state.frames.length - 1];
+    if (frame) drawSpotlight(ctx, canvas, frame);
+    else setStatus("no frames");
+    spotlightPulseRAF = requestAnimationFrame(loop);
+  };
+  spotlightPulseRAF = requestAnimationFrame(loop);
+}
+
+function stopSpotlightPulse() {
+  if (spotlightPulseRAF) { cancelAnimationFrame(spotlightPulseRAF); spotlightPulseRAF = null; }
+}
+
 function drawBrain() {
   const canvas = document.getElementById("brainCanvas");
   const ctx = canvas.getContext("2d");
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   const frame = state.frames[state.frames.length - 1];
   if (!frame) { setStatus("no frames"); return; }
+
+  if (state.dim === "spotlight") {
+    drawSpotlight(ctx, canvas, frame);
+    setStatus(`${frame.phase} · tick ${frame.tick_seq} · spotlight`);
+    return;
+  }
 
   const regions = regionsFor(frame, state.dim);
   // Fixed grid layout = stable, always-labeled anatomical zones.
@@ -79,17 +175,6 @@ function drawBrain() {
     ctx.fillText(`${(r.intensity * 100) | 0}%${ageTxt}`, cx, cy + 4);
   });
 
-  // Spotlight overlay: dashed hull label if present + spotlight dim selected.
-  if (state.dim === "spotlight" && frame.spotlight) {
-    ctx.fillStyle = "#f0abfc";
-    ctx.font = "13px sans-serif";
-    ctx.textAlign = "left";
-    ctx.fillText(
-      `Spotlight: ${frame.spotlight.attended_node_ids.length} nodes, dwell ${frame.spotlight.dwell_ticks}, stability ${(frame.spotlight.coalition_stability * 100 | 0)}%${frame.spotlight.stale ? " (held)" : ""}`,
-      12, 24,
-    );
-    if (frame.spotlight.description) ctx.fillText(frame.spotlight.description, 12, 44);
-  }
   setStatus(`${frame.phase} · tick ${frame.tick_seq} · ${regions.length} regions`);
 }
 
@@ -99,7 +184,31 @@ function drawEkg() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   const legend = document.getElementById("ekgLegend");
   legend.innerHTML = "";
-  if (state.dim === "spotlight") { legend.textContent = "Select a region dimension for EKG."; return; }
+  if (state.dim === "spotlight") {
+    // Coalition-stability sparkline over the loaded window.
+    const pts = state.frames.map((f) => (f.spotlight ? Math.max(0, Math.min(1, f.spotlight.coalition_stability)) : null));
+    if (!pts.some((v) => v !== null)) { legend.textContent = "No spotlight history in window."; return; }
+    const n2 = Math.max(1, pts.length - 1);
+    ctx.beginPath();
+    let started = false;
+    pts.forEach((v, xi) => {
+      if (v === null) return;
+      const x = (xi / n2) * canvas.width;
+      const y = canvas.height - v * (canvas.height - 8) - 4;
+      if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = "#f0abfc";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    const row = document.createElement("div");
+    const sw = document.createElement("span");
+    sw.style.color = "#f0abfc";
+    sw.textContent = "■ ";
+    row.appendChild(sw);
+    row.append("coalition stability");
+    legend.appendChild(row);
+    return;
+  }
 
   // Build per-region series over the loaded window (regions are the stable series).
   const ids = new Set();
@@ -199,6 +308,7 @@ function buildDimRail() {
     btn.addEventListener("click", () => {
       state.dim = d.key;
       [...rail.children].forEach((c) => c.classList.toggle("bg-indigo-800", c.dataset.key === d.key));
+      if (d.key === "spotlight") startSpotlightPulse(); else stopSpotlightPulse();
       render();
     });
     rail.appendChild(btn);

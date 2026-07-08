@@ -20,14 +20,15 @@
     <span id="brainStatus" class="ml-auto text-gray-500"></span>
   </div>
 
-  <div class="grid grid-cols-1 xl:grid-cols-3 gap-3">
-    <div class="xl:col-span-2 rounded-xl border border-gray-800 bg-gray-900/40 p-2">
+  <div class="flex flex-col gap-3">
+    <div class="rounded-xl border border-gray-800 bg-gray-900/40 p-2">
+      <div class="text-[10px] uppercase tracking-wide text-gray-500 mb-1">Brain map</div>
       <canvas id="brainCanvas" width="720" height="440" class="w-full"></canvas>
     </div>
     <div class="rounded-xl border border-gray-800 bg-gray-900/40 p-2">
       <div class="text-[10px] uppercase tracking-wide text-gray-500 mb-1">Region EKG (loaded window)</div>
-      <canvas id="ekgCanvas" width="360" height="360" class="w-full"></canvas>
-      <div id="ekgLegend" class="mt-2 text-[11px] space-y-0.5"></div>
+      <canvas id="ekgCanvas" width="720" height="240" class="w-full"></canvas>
+      <div id="ekgLegend" class="mt-2 text-[11px] flex flex-wrap gap-x-4 gap-y-0.5"></div>
     </div>
   </div>
 

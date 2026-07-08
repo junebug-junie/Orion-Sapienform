@@ -16,9 +16,14 @@ from app.worker import BiometricsSubstrateWorker
 
 
 def _node(node_id, kind, activation, pressure=0.0):
+    # Real node shape: activation nested at signals.activation.activation.
     return SimpleNamespace(
         node_id=node_id, node_kind=kind, label=kind,
-        activation=activation, metadata={"dynamic_pressure": pressure},
+        signals=SimpleNamespace(
+            salience=activation,
+            activation=SimpleNamespace(activation=activation),
+        ),
+        metadata={"dynamic_pressure": pressure},
     )
 
 

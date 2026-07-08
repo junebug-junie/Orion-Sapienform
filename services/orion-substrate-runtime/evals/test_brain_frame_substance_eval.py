@@ -16,9 +16,14 @@ from app.brain_frame_producer import assemble_brain_frame
 
 
 def _node(node_id, kind, activation, pressure=0.0):
+    # Real node shape: activation nested at signals.activation.activation.
     return SimpleNamespace(
         node_id=node_id, node_kind=kind, label=f"{kind}:{node_id}",
-        activation=activation, metadata={"dynamic_pressure": pressure},
+        signals=SimpleNamespace(
+            salience=activation,
+            activation=SimpleNamespace(activation=activation),
+        ),
+        metadata={"dynamic_pressure": pressure},
     )
 
 

@@ -1,4 +1,4 @@
-"""Static-content tests for the Hub Self-Observability panel (self-observability v2)."""
+"""Static-content tests for the Hub Self tab (self-brain iframe)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -7,7 +7,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 TEMPLATE_PATH = REPO_ROOT / "services" / "orion-hub" / "templates" / "index.html"
 PANEL_JS_PATH = REPO_ROOT / "services" / "orion-hub" / "static" / "js" / "self_observability.js"
 
-PANEL_ELEMENT_IDS = (
+# DOM hooks + endpoint from the legacy 4-card summary body. These were migrated
+# to the standalone brain page; if the panel script or template references any
+# of them again it will crash at runtime (the elements no longer exist).
+REMOVED_SUMMARY_IDS = (
     "selfObsStatus",
     "selfObsRefresh",
     "selfObsAttentionType",
@@ -21,20 +24,25 @@ PANEL_ELEMENT_IDS = (
     "selfObsLastTurnAge",
     "selfObsTurnsPerMin",
 )
+LEGACY_SUMMARY_ENDPOINT = "/api/substrate/observability/summary"
 
 
-def test_template_declares_self_observability_tab_and_panel() -> None:
+def test_template_declares_self_tab_and_brain_iframe() -> None:
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
 
     assert 'id="selfObservabilityTabButton"' in template
     assert 'data-hash-target="#self-observability"' in template
     assert '<section id="self-observability" data-panel="self-observability"' in template
-    # Self-tab body is now a self-brain iframe (cards migrated to the standalone
-    # brain page); the section retains its status line and refresh control.
-    assert 'id="selfObsStatus"' in template
-    assert 'id="selfObsRefresh"' in template
     assert 'id="selfBrainFrame"' in template
     assert '/static/self-brain.html?v={{HUB_UI_ASSET_VERSION}}' in template
+
+
+def test_template_dropped_legacy_summary_cards() -> None:
+    template = TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    assert LEGACY_SUMMARY_ENDPOINT not in template
+    for element_id in REMOVED_SUMMARY_IDS:
+        assert f'id="{element_id}"' not in template, element_id
 
 
 def test_template_includes_cache_busted_panel_script() -> None:
@@ -46,15 +54,16 @@ def test_template_includes_cache_busted_panel_script() -> None:
     )
 
 
-def test_panel_js_fetches_summary_and_renders_all_cards() -> None:
+def test_panel_js_is_tab_controller_only() -> None:
     panel_js = PANEL_JS_PATH.read_text(encoding="utf-8")
 
-    assert '"/api/substrate/observability/summary"' in panel_js
-    for element_id in PANEL_ELEMENT_IDS:
-        assert f'"{element_id}"' in panel_js, element_id
-    # Null-degrading sections and tab lifecycle.
-    assert "no data yet" in panel_js
+    # Tab lifecycle retained (app.js does not route #self-observability).
     assert "function activatePanel()" in panel_js
     assert "function deactivatePanel()" in panel_js
-    assert "startAutoRefresh" in panel_js
-    assert "stopAutoRefresh" in panel_js
+    assert "#self-observability" in panel_js
+
+    # No dead summary fetch / card rendering that would crash against the
+    # removed DOM elements.
+    assert LEGACY_SUMMARY_ENDPOINT not in panel_js
+    for element_id in REMOVED_SUMMARY_IDS:
+        assert element_id not in panel_js, element_id

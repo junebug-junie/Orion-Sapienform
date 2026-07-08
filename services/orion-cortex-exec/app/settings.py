@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     # Intake channel (hub or orch -> exec)
     channel_exec_request: str = Field("orion:cortex:exec:request", alias="CHANNEL_EXEC_REQUEST")
     exec_lane: str = Field("legacy", alias="EXEC_LANE")
+    # Allow parallel plan execution on this lane (harness finalize must not queue behind chat_general).
+    exec_concurrent_handlers: bool = Field(True, alias="EXEC_CONCURRENT_HANDLERS")
 
     # Downstream routing (exec -> step services)
     exec_request_prefix: str = Field("orion:exec:request", alias="EXEC_REQUEST_PREFIX")

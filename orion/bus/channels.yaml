@@ -132,7 +132,6 @@ channels:
     schema_id: "CortexExecRequestPayload"
     producer_services:
       - orion-cortex-orch
-      - orion-harness-governor
       - orion-thought
     consumer_services: ["orion-cortex-exec"]
     stability: "experimental"
@@ -157,7 +156,7 @@ channels:
   - name: "orion:cortex:exec:request:background"
     kind: "request"
     schema_id: "CortexExecRequestPayload"
-    producer_services: ["orion-cortex-orch", "orion-actions"]
+    producer_services: ["orion-cortex-orch", "orion-actions", "orion-harness-governor"]
     consumer_services: ["orion-cortex-exec"]
     stability: "experimental"
     since: "2026-05-13"

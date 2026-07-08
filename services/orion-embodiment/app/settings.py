@@ -43,12 +43,16 @@ class Settings(BaseSettings):
     speech_lane: str = Field("quick", alias="EMBODIMENT_SPEECH_LANE")
     speech_verb: str = Field("chat_quick", alias="EMBODIMENT_SPEECH_VERB")
     speech_timeout_sec: float = Field(30.0, alias="EMBODIMENT_SPEECH_TIMEOUT_SEC")
-    cortex_request_channel: str = Field("orion:cortex:exec:request", alias="EMBODIMENT_CORTEX_REQUEST_CHANNEL")
+    # Town speech must stay on the chat exec lane — the legacy intake queue is
+    # shared with heavy chat_general / harness work and starves AI Town turns.
+    cortex_request_channel: str = Field(
+        "orion:cortex:exec:request:chat", alias="EMBODIMENT_CORTEX_REQUEST_CHANNEL"
+    )
     cortex_result_prefix: str = Field("orion:exec:result", alias="EMBODIMENT_CORTEX_RESULT_PREFIX")
-    # Unified turn for town speech: prefer the hub-only saga (POST /api/chat mode=orion)
-    # so town utterances get the full cognition pass; fall back to the quick cortex
-    # rail above on timeout/error. Set false to force the quick-only legacy behavior.
-    speech_unified_enabled: bool = Field(True, alias="EMBODIMENT_SPEECH_UNIFIED_ENABLED")
+    # Optional grounded_small pass via cortex chat_general before chat_quick fallback.
+    # Off by default: full chat_general stance stack exceeds town turn budgets.
+    speech_unified_enabled: bool = Field(False, alias="EMBODIMENT_SPEECH_UNIFIED_ENABLED")
+    speech_hub_llm_route: str = Field("chat", alias="EMBODIMENT_SPEECH_HUB_LLM_ROUTE")
     # The hub runs `network_mode: host`, so the Docker service DNS name does NOT resolve
     # from this app-net container. Reach it at the node's host-reachable (Tailscale) IP,
     # mirroring ORION_BUS_URL. Override per node if the hub lives elsewhere.

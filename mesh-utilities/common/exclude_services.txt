@@ -11,9 +11,7 @@ orion-llama-cola-host
 orion-gdb-client
 # for testing
 orion-llamacpp-host
-orion-agent-chain
 #orion-agent-council
-orion-planner-react
 #orion-power-guard 
 #orion-recall               
 #orion-gpu-cluster-power

@@ -85,6 +85,9 @@ _EXPLICIT_TOOL_TAXONOMY: Dict[str, _ToolTaxonomy] = {
     "RecallService": _ToolTaxonomy(tool_family="recall", action_kind="retrieve", effect_kind="read_only"),
     "agent_chain": _ToolTaxonomy(tool_family="orchestration", action_kind="delegate", effect_kind="read_only"),
     "AgentChainService": _ToolTaxonomy(tool_family="orchestration", action_kind="delegate", effect_kind="read_only"),
+    "context_exec": _ToolTaxonomy(tool_family="orchestration", action_kind="delegate", effect_kind="read_only"),
+    "ContextExecService": _ToolTaxonomy(tool_family="orchestration", action_kind="delegate", effect_kind="read_only"),
+    "bound_capability_execution": _ToolTaxonomy(tool_family="runtime", action_kind="execute", effect_kind="external_io"),
     "council_checkpoint": _ToolTaxonomy(tool_family="communication", action_kind="delegate", effect_kind="read_only"),
     "CouncilService": _ToolTaxonomy(tool_family="communication", action_kind="delegate", effect_kind="read_only"),
     "triage": _ToolTaxonomy(tool_family="reasoning", action_kind="inspect", effect_kind="read_only"),
@@ -152,11 +155,42 @@ def _taxonomy_for(tool_id: str | None, *, step_name: str | None = None) -> _Tool
 # Exec steps sometimes carry extra keys (e.g. metadata) before the service payload; never use
 # ``next(iter(step.result.keys()))`` — that mis-labels the row and skips AgentChain failure overrides.
 _SERVICE_RESULT_KEYS: tuple[str, ...] = (
+    "ContextExecService",
     "AgentChainService",
     "PlannerReactService",
     "RecallService",
     "CouncilService",
 )
+
+
+def _agent_delegate_payload(step: StepExecutionResult) -> Dict[str, Any] | None:
+    if not isinstance(step.result, dict):
+        return None
+    for key in ("ContextExecService", "AgentChainService"):
+        payload = step.result.get(key)
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def _agent_delegate_service_key(step: StepExecutionResult) -> str | None:
+    if not isinstance(step.result, dict):
+        return None
+    for key in ("ContextExecService", "AgentChainService"):
+        if key in step.result:
+            return key
+    return None
+
+
+def _delegate_tool_id(step: StepExecutionResult, service_key: str | None) -> str:
+    sn = str(step.step_name or "").strip()
+    if sn == "bound_capability_execution":
+        return "bound_capability_execution"
+    if sn == "context_exec":
+        return "context_exec"
+    if service_key in {"AgentChainService", "ContextExecService"} or sn == "agent_chain":
+        return "agent_chain" if service_key == "AgentChainService" or sn == "agent_chain" else "context_exec"
+    return str(step.verb_name or service_key or sn or "delegate")
 
 
 def _step_service_key(step: StepExecutionResult) -> str | None:
@@ -165,6 +199,8 @@ def _step_service_key(step: StepExecutionResult) -> str | None:
     sn = str(step.step_name or "").strip()
     if sn == "agent_chain" and "AgentChainService" in step.result:
         return "AgentChainService"
+    if sn in {"context_exec", "bound_capability_execution"} and "ContextExecService" in step.result:
+        return "ContextExecService"
     if sn == "planner_react" and "PlannerReactService" in step.result:
         return "PlannerReactService"
     if sn in {"recall", "recall_step"} and "RecallService" in step.result:
@@ -340,8 +376,8 @@ def _step_summary(step: StepExecutionResult, tool_id: str | None) -> str:
                 return f"Recall retrieved {count} memory item(s) with profile {profile}."
             return f"Recall retrieved {count} memory item(s)."
         return "Recall retrieved memory context."
-    if service_key == "AgentChainService":
-        agent_payload = step.result.get("AgentChainService") if isinstance(step.result, dict) else {}
+    if service_key in {"AgentChainService", "ContextExecService"}:
+        agent_payload = _agent_delegate_payload(step) or {}
         bound_payload = _bound_capability_payload(agent_payload) if isinstance(agent_payload, dict) else {}
         if isinstance(bound_payload, dict):
             bound_status = str(bound_payload.get("status") or "").strip().lower()
@@ -374,7 +410,7 @@ def _step_summary(step: StepExecutionResult, tool_id: str | None) -> str:
 def _nested_agent_trace_steps(step: StepExecutionResult, *, start_index: int) -> List[AgentTraceStepV1]:
     if not isinstance(step.result, dict):
         return []
-    agent_payload = step.result.get("AgentChainService")
+    agent_payload = _agent_delegate_payload(step)
     if not isinstance(agent_payload, dict):
         return []
     failure = _agent_chain_failure_signals(agent_payload)
@@ -455,9 +491,9 @@ def _normalized_steps(steps: Iterable[StepExecutionResult]) -> List[AgentTraceSt
             raw_tool_id = "planner_react"
         elif service_key == "RecallService":
             raw_tool_id = "recall"
-        elif service_key == "AgentChainService":
+        elif service_key in {"AgentChainService", "ContextExecService"}:
             event_type = "delegate"
-            raw_tool_id = "agent_chain"
+            raw_tool_id = _delegate_tool_id(step, service_key)
         elif service_key == "CouncilService":
             event_type = "delegate"
             raw_tool_id = "council_checkpoint"
@@ -467,8 +503,8 @@ def _normalized_steps(steps: Iterable[StepExecutionResult]) -> List[AgentTraceSt
         summary_tool_id = str(raw_tool_id) if raw_tool_id else None
         step_status = step.status or "unknown"
         step_summary = _step_summary(step, summary_tool_id)
-        if service_key == "AgentChainService" and isinstance(step.result, dict):
-            agent_payload = step.result.get("AgentChainService")
+        if service_key in {"AgentChainService", "ContextExecService"} and isinstance(step.result, dict):
+            agent_payload = _agent_delegate_payload(step)
             if isinstance(agent_payload, dict):
                 bound_payload = _bound_capability_payload(agent_payload)
                 if bound_payload:
@@ -500,7 +536,7 @@ def _normalized_steps(steps: Iterable[StepExecutionResult]) -> List[AgentTraceSt
             )
         )
         next_index += 1
-        if service_key == "AgentChainService":
+        if service_key in {"AgentChainService", "ContextExecService"}:
             nested = _nested_agent_trace_steps(step, start_index=next_index)
             normalized.extend(nested)
             next_index += len(nested)

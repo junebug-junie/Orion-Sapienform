@@ -24,8 +24,7 @@ SERVICE_BINDINGS = {
     # --- Core Execution Services (Identity Mappings) ---
     # Required for other verbs that use direct service names
     "RecallService":         "RecallService",
-    "AgentChainService":     "AgentChainService",
-    "PlannerReactService":   "PlannerReactService",
+    "ContextExecService":    "ContextExecService",
     "CouncilService":        "CouncilService",
     "LLMGatewayService":     "LLMGatewayService",
     "VerbRequestService":    "VerbRequestService",

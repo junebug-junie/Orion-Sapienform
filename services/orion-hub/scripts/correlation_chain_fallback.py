@@ -15,8 +15,6 @@ _SERVICE_PREFIX_ORGAN = [
     ("Mind", "mind"),
     ("LLMGatewayService", "llm_gateway"),
     ("MetacogContextService", "graph_cognition"),
-    ("AgentChainService", "agent_chain"),
-    ("PlannerReactService", "planner"),
 ]
 
 

@@ -17,8 +17,6 @@ from .world_pulse import WorldPulseAdapter
 from .social_memory import SocialMemoryAdapter
 from .social_room_bridge import SocialRoomBridgeAdapter
 from .vision import VisionAdapter
-from .agent_chain import AgentChainAdapter
-from .planner import PlannerAdapter
 from .dream import DreamAdapter
 from .state_journaler import StateJournalerAdapter
 from .topic_foundry import TopicFoundryAdapter
@@ -47,8 +45,6 @@ ADAPTERS: List[OrionSignalAdapter] = [
     SocialMemoryAdapter(),
     SocialRoomBridgeAdapter(),
     VisionAdapter(),
-    AgentChainAdapter(),
-    PlannerAdapter(),
     DreamAdapter(),
     StateJournalerAdapter(),
     TopicFoundryAdapter(),
@@ -81,8 +77,6 @@ __all__ = [
     "SocialMemoryAdapter",
     "SocialRoomBridgeAdapter",
     "VisionAdapter",
-    "AgentChainAdapter",
-    "PlannerAdapter",
     "DreamAdapter",
     "StateJournalerAdapter",
     "TopicFoundryAdapter",

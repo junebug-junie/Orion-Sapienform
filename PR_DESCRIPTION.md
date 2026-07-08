@@ -1,62 +1,145 @@
-# fix(memory-crystallization): make consolidated stance proposals approvable
-
 ## Summary
 
-- Consolidation-intake `stance` crystallizations were **structurally un-approvable**: `build_crystallization_from_window()` never set `planning_effects`/`retrieval_affordances`, which the validator hard-requires for `stance`/`procedure`/`decision`. Clicking **Approve** in the hub returned **HTTP 400** (`GovernorError` from `can_activate` → `validate_proposal`).
-- `build_crystallization_from_window()` now populates content-grounded `planning_effects` and a kind-keyed `retrieve_when:<intent>` `retrieval_affordances` for those kinds, so proposals pass `validate_proposal()` and can be approved.
-- Single source of truth (`_RETRIEVAL_INTENT_FOR_KIND`) with an import-time invariant against `STANCE_PROCEDURE_DECISION_KINDS`; other kinds (episode/semantic/open_loop) unchanged.
-- Added regression + direct helper unit tests (TDD: reproduction test failed before, passes after).
+- Deleted `orion-planner-react` and `orion-agent-chain` services (~10.7k lines) and removed mesh/bus/signals wiring for both organs.
+- Agent/council depth routing now uses a single `ContextExecService` plan step in cortex-orch; cortex-exec supervisor delegates via `_context_exec_escalation()`.
+- Operational bound-capability verbs execute in-process via new `bound_capability_exec.py` (nested `orion:cortex:request` RPC); capability bridge + actions skill registry moved into cortex-exec.
+- Ported `autonomy.goal.execute.v1` into cortex-exec (`autonomy_goal_execute.py`) so promoted goal execution and `autonomy.goal.planned` bus publish survive planner-react removal.
+- Updated agent-trace normalizer, live-proof scripts, orch/exec tests, and README for the context-exec + bound-capability path.
 
 ## Outcome moved
 
-Operators can now Approve consolidated `stance` memories instead of hitting a permanent HTTP 400. Auto-proposed stances are no longer empty-shell (they carry a real planning effect + retrieval affordance).
+- Dead planner-react / agent-chain containers and bus channels are gone; agent depth work has one delegate organ (`ContextExecService`).
+- Bound operational verbs (mesh/storage/PR/housekeep) no longer require a separate agent-chain hop.
+- Autonomy goal execute path remains callable when `AUTONOMY_GOAL_EXECUTION_ENABLED=true` (flag still defaults off).
+
+## Current architecture
+
+Before: Hub → gateway → orch → cortex-exec → planner-react → agent-chain → nested cortex skills.
+
+After: Hub → gateway → orch → cortex-exec → context-exec (agent/council depth) **or** in-process bound-capability nested cortex RPC (operational verbs).
 
 ## Architecture touched
 
-- `orion/memory/crystallization/intake_consolidation_window.py` — intake producer only. Validator/governor untouched; contract unchanged.
+- **Deleted:** `services/orion-planner-react/`, `services/orion-agent-chain/`
+- **Contracts:** `orion/bus/channels.yaml`, `orion/signals/registry.py`, `orion/normalizers/agent_trace.py`
+- **Routing:** `services/orion-cortex-orch/app/orchestrator.py`, `services/orion-cortex-exec/app/supervisor.py`
+- **New seams:** `bound_capability_exec.py`, `capability_bridge.py`, `actions_skill_registry.py`, `autonomy_goal_execute.py`
+- **Hub:** removed `AGENT_CHAIN_*` env/compose surfaces
+- **Scripts:** `locate-bound-capability-live-path.sh`, `verify-bound-capability-live.sh`, `run_answer_depth_proof_suite.py`, `run_answer_depth_live_proof.py`
 
 ## Files changed
 
-- `orion/memory/crystallization/intake_consolidation_window.py`: enrich stance/procedure/decision at intake.
-- `services/orion-memory-consolidation/tests/test_intake_consolidation_window.py`: reproduction test asserting `validate_proposal(...).valid is True` for a stance window, non-stance-stays-empty test, and direct helper tests.
+- `services/orion-cortex-exec/app/supervisor.py`: removed planner/agent-chain escalation; context-exec + bound-capability + autonomy goal dispatch
+- `services/orion-cortex-exec/app/bound_capability_exec.py`: operational verb execution via nested cortex RPC
+- `services/orion-cortex-exec/app/autonomy_goal_execute.py`: ported autonomy goal execute + planned event publish
+- `services/orion-cortex-orch/app/orchestrator.py`: `build_agent_plan()` → single `context_exec` step
+- `orion/bus/channels.yaml`: removed planner/agent-chain channels; repointed autonomy goal planned producer to cortex-exec
+- Tests/scripts/docs updated across cortex-exec, cortex-orch, and root `tests/`
 
 ## Schema / bus / API changes
 
-None.
+- **Removed channels:** planner-react intake/result, agent-chain intake/result/capability reply patterns
+- **Removed signal organs:** `planner`, `agent_chain`
+- **Behavior changed:** `AgentChainService` / `PlannerReactService` verb plan steps fail closed with `removed_service:*`
+- **Producer changed:** `orion:autonomy:goal:planned` → `orion-cortex-exec` (now has real publisher in `autonomy_goal_execute.py`)
+- **Compatibility:** context-exec HTTP `/agent/chain/run` compat shim intentionally retained
 
 ## Env/config changes
 
-None.
+- **Removed keys:** `CHANNEL_PLANNER_INTAKE`, `CHANNEL_AGENT_CHAIN_INTAKE`, hub `AGENT_CHAIN_*`
+- **Added keys:** none required (uses existing `CONTEXT_EXEC_*` + `ORION_BUS_URL`)
+- `.env_example` updated: hub, cortex-exec
+- local `.env` synced: UNVERIFIED in agent session (operator should run `python scripts/sync_local_env_from_example.py`)
 
 ## Tests run
 
-```
-PYTHONPATH=. .venv/bin/python -m pytest services/orion-memory-consolidation/tests/test_intake_consolidation_window.py -q
-# 6 passed
+```text
+# cortex-exec + contracts (25 passed)
+PYTHONPATH=.:services/orion-cortex-exec pytest -q \
+  services/orion-cortex-exec/tests/test_autonomy_goal_execute.py \
+  services/orion-cortex-exec/tests/test_autonomy_goal_execution_mode.py \
+  services/orion-cortex-exec/tests/test_operational_semantic_harness.py \
+  services/orion-cortex-exec/tests/test_bound_capability_full_path.py \
+  services/orion-cortex-exec/tests/test_context_exec_depth2_routing.py \
+  tests/test_autonomy_goals_bus_catalog.py \
+  tests/test_exec_result_channel_catalog_specificity.py \
+  tests/test_agent_no_recall_live_proof.py
 
-PYTHONPATH=. .venv/bin/python -m pytest tests/test_memory_crystallization.py -q
-# 23 passed, 1 failed (TestMemoryCardBackwardCompat::test_memory_card_v1_unchanged_in_registry_gap)
-# ^ pre-existing on main, unrelated to this change (not in this diff)
+# cortex-orch (28 passed)
+PYTHONPATH=.:services/orion-cortex-orch pytest -q \
+  services/orion-cortex-orch/tests/test_auto_router.py \
+  services/orion-cortex-orch/tests/test_verb_runtime_rpc.py \
+  services/orion-cortex-orch/tests/test_agent_trace_bound_failure_summary.py
+```
+
+## Evals run
+
+```text
+Not run — no periodic eval harness for this cross-service removal. Gate tests above cover routing contracts.
+```
+
+## Docker/build/smoke checks
+
+```text
+Not run in agent environment. Compose config should be validated after merge:
+docker compose --env-file .env --env-file services/orion-cortex-exec/.env \
+  -f services/orion-cortex-exec/docker-compose.yml config
+docker compose --env-file .env --env-file services/orion-cortex-orch/.env \
+  -f services/orion-cortex-orch/docker-compose.yml config
 ```
 
 ## Review findings fixed
 
-- Finding (Minor): dual source of truth + dead `if intent else []` fallback.
-  - Fix: gate on `_RETRIEVAL_INTENT_FOR_KIND` membership; import-time assert it equals `STANCE_PROCEDURE_DECISION_KINDS`.
-  - Evidence: commit c291a1a0.
-- Finding (Minor): procedure/decision helper branches untested.
-  - Fix: added direct `_planning_and_retrieval_for_kind` unit tests.
-  - Evidence: commit c291a1a0, 6 passed.
+- Finding: `autonomy.goal.execute.v1` deleted with planner but supervisor still dispatched it
+  - Fix: ported `autonomy_goal_execute.py` + `_execute_autonomy_goal_action()` in supervisor
+  - Evidence: `test_autonomy_goal_execute.py`, updated `test_autonomy_goal_execution_mode.py`
+
+- Finding: `autonomy.goal.planned` catalog producer lied (no publisher)
+  - Fix: `_publish_goal_planned_supervisor_event()` in cortex-exec
+  - Evidence: `test_execute_autonomy_goal_v1_publishes_planned_event`
+
+- Finding: orch `build_agent_plan` metadata validation error (`metadata.options` dict in string map)
+  - Fix: metadata reverted to `{"mode": "agent"}` only
+  - Evidence: `test_verb_runtime_rpc.py` passes
+
+- Finding: agent-trace / live-proof scripts still assumed agent-chain path
+  - Fix: `ContextExecService` support in `agent_trace.py`, script updates, test rewrites
+  - Evidence: `test_agent_trace_bound_failure_summary.py`, `test_agent_no_recall_live_proof.py`
+
+- Finding: broad `"execute"` autonomy trigger
+  - Fix: require `"goal"` in user text (or explicit `autonomy.goal.execute`)
+  - Evidence: `test_supervisor_blocks_unpromoted_goal_execute` still passes
 
 ## Restart required
 
-The running `orion-memory-consolidation` service must be rebuilt/restarted to pick up the intake change (existing rows created before this are unaffected; already-approved ones stay active):
-
 ```bash
-docker compose --env-file .env --env-file services/orion-memory-consolidation/.env -f services/orion-memory-consolidation/docker-compose.yml up -d --build
+# Stop removed services (if still running)
+docker stop orion-athena-planner-react orion-athena-agent-chain 2>/dev/null || true
+
+# Rebuild routing services
+docker compose --env-file .env --env-file services/orion-cortex-exec/.env \
+  -f services/orion-cortex-exec/docker-compose.yml up -d --build
+docker compose --env-file .env --env-file services/orion-cortex-orch/.env \
+  -f services/orion-cortex-orch/docker-compose.yml up -d --build
+docker compose --env-file .env --env-file services/orion-hub/.env \
+  -f services/orion-hub/docker-compose.yml up -d --build
 ```
 
 ## Risks / concerns
 
-- Severity: low. Salience stays `0.5` at intake (bypasses `apply_salience`, unlike the operator `/propose` path which yields `0.85` for stance). Not the cause of the 400; suggested as a separate follow-up.
-- Severity: low. Pre-existing unrelated failure `TestMemoryCardBackwardCompat::test_memory_card_v1_unchanged_in_registry_gap` on main; separate issue.
+- Severity: medium
+- Concern: `AUTONOMY_GOAL_EXECUTION_ENABLED=true` requires graph DB configured; without it execute returns `graph_not_configured`
+- Mitigation: flag defaults false in compose; operator promotes via hub API as before
+
+- Severity: low
+- Concern: `force_agent_chain` option still propagated from hub but ignored by supervisor
+- Mitigation: follow-up cleanup PR
+
+- Severity: low
+- Concern: legacy tests (`test_answer_depth_pass3_golden_path_discord.py`) skipped — golden path needs context-exec rewrite
+- Mitigation: `run_answer_depth_proof_suite.py` updated to cortex-exec harness tests
+
+## PR link
+
+Branch pushed: `chore/kill-planner-agent-chain` — open PR with:
+`gh pr create --base main --head chore/kill-planner-agent-chain`

@@ -6,7 +6,6 @@ from typing import Any
 from uuid import uuid4
 
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.schemas.agents.schemas import AgentChainRequest, PlannerRequest, PlannerResponse
 from orion.schemas.cortex.contracts import CortexClientResult
 from orion.schemas.cortex.schemas import ExecutionPlan
 
@@ -57,18 +56,21 @@ class _CapabilityBridgeBus:
             correlation_id=env.correlation_id,
             payload=result.model_dump(mode="json"),
         )
-        return {"type": "message", "channel": reply_channel, "data": env.model_copy(update={"payload": response.payload})}
+        return {"type": "message", "channel": reply_channel, "data": response.model_dump(mode="json")}
 
 
 class _Codec:
     def decode(self, data: Any):
-        return type("D", (), {"ok": True, "envelope": BaseEnvelope(kind="cortex.orch.result", source=ServiceRef(name="cortex-orch"), correlation_id=str(uuid4()), payload=data), "error": None})
+        if isinstance(data, dict):
+            env = BaseEnvelope.model_validate(data)
+        else:
+            env = data
+        return type("D", (), {"ok": True, "envelope": env, "error": None})
 
 
 class _HarnessBus:
     def __init__(self):
         self.codec = _Codec()
-        self.handlers: dict[str, Any] = {}
         self.capability_hops: list[CapabilityHop] = []
 
     async def connect(self):
@@ -77,82 +79,13 @@ class _HarnessBus:
     async def close(self):
         return
 
-    def register(self, channel: str, handler):
-        self.handlers[channel] = handler
-
-    async def publish(self, channel: str, msg: BaseEnvelope | dict[str, Any]):
-        return
-
-    async def rpc_request(self, request_channel: str, envelope: BaseEnvelope, *, reply_channel: str, timeout_sec: float = 60.0):
-        response_env = await self.handlers[request_channel](envelope)
-        return {"type": "message", "channel": reply_channel, "data": response_env.payload}
-
-
-async def _agent_handler(env: BaseEnvelope, *, capability_hops: list[CapabilityHop]) -> BaseEnvelope:
-    req = AgentChainRequest.model_validate(env.payload)
-    selected_verb = req.bound_capability_execution.selected_verb if req.bound_capability_execution else "housekeep_runtime"
-    rpc_bus = _CapabilityBridgeBus(capability_hops)
-    bridge_env = BaseEnvelope(
-        kind="cortex.orch.request",
-        source=ServiceRef(name="agent-chain", version="test", node="test"),
-        correlation_id=env.correlation_id,
-        payload={
-            "verb": "skills.runtime.docker_prune_stopped_containers.v1",
-            "context": {"metadata": {"requested_verb": selected_verb}},
-        },
-    )
-    bridge_msg = await rpc_bus.rpc_request("orion:cortex:request", bridge_env, reply_channel=f"orion:cortex:result:{env.correlation_id}")
-    bridge_payload = bridge_msg["data"].payload if isinstance(bridge_msg["data"], BaseEnvelope) else {}
-    concrete_text = str((bridge_payload or {}).get("final_text") or "")
-    result_payload = {
-        "mode": req.mode,
-        "text": concrete_text,
-        "structured": {
-            "finalization_reason": "bound_capability_execution",
-            "bound_capability": {
-                "selected_verb": selected_verb,
-                "selected_skill": "skills.runtime.docker_prune_stopped_containers.v1",
-                "execution_path": "direct_execute",
-            },
-        },
-        "planner_raw": {"status": "ok"},
-        "runtime_debug": {"bound_capability_terminal_path": "bound_direct_success"},
-    }
-    return BaseEnvelope(
-        kind="agent.chain.result",
-        source=ServiceRef(name="agent-chain", version="test", node="test"),
-        correlation_id=env.correlation_id,
-        payload=result_payload,
-    )
+    async def rpc_request(self, channel: str, env: BaseEnvelope, *, reply_channel: str, timeout_sec: float = 60.0):
+        rpc_bus = _CapabilityBridgeBus(self.capability_hops)
+        return await rpc_bus.rpc_request(channel, env, reply_channel=reply_channel, timeout_sec=timeout_sec)
 
 
 def test_bound_capability_full_runtime_path_emits_non_empty_result_without_timeout():
     bus = _HarnessBus()
-
-    async def planner_handler(env: BaseEnvelope) -> BaseEnvelope:
-        req = PlannerRequest.model_validate(env.payload)
-        planner_resp = PlannerResponse(
-            request_id=req.request_id,
-            status="ok",
-            stop_reason="delegate",
-            trace=[
-                {
-                    "step_index": 0,
-                    "thought": "select semantic runtime tool",
-                    "action": {"tool_id": "housekeep_runtime", "input": {"text": req.goal}},
-                    "observation": {"selected_semantic_tool": "housekeep_runtime"},
-                }
-            ],
-            usage={"steps": 1, "tokens_reason": 0, "tokens_answer": 0, "tools_called": ["housekeep_runtime"], "duration_ms": 1},
-        )
-        return BaseEnvelope(kind="agent.planner.result", source=ServiceRef(name="planner-react", version="test", node="test"), correlation_id=env.correlation_id, payload=planner_resp.model_dump(mode="json"))
-
-    async def agent_handler(env: BaseEnvelope) -> BaseEnvelope:
-        return await _agent_handler(env, capability_hops=bus.capability_hops)
-
-    bus.register("orion:exec:request:PlannerReactService", planner_handler)
-    bus.register("orion:exec:request:AgentChainService", agent_handler)
-
     supervisor = Supervisor(bus)
 
     corr = str(uuid4())
@@ -179,8 +112,8 @@ def test_bound_capability_full_runtime_path_emits_non_empty_result_without_timeo
         )
     )
 
-    agent_step = next(step for step in result.steps if step.step_name == "agent_chain")
-    agent_payload = agent_step.result["AgentChainService"]
+    cap_step = next(step for step in result.steps if step.step_name == "bound_capability_execution")
+    agent_payload = cap_step.result["ContextExecService"]
     bound = agent_payload["structured"]["bound_capability"]
 
     assert bound["selected_verb"] == "housekeep_runtime"

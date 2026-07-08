@@ -5,8 +5,6 @@ REQUEST_TEXT='Dry-run cleanup of stopped containers.'
 SERVICES=(
   orion-athena-cortex-orch
   orion-athena-cortex-exec
-  orion-athena-agent-chain
-  orion-athena-planner-react
 )
 
 TMP_DIR="${TMP_DIR:-$(mktemp -d /tmp/orion-live-verify.XXXXXX)}"
@@ -83,8 +81,8 @@ find_line() {
 E1="$(find_line "${TMP_DIR}/orion-athena-cortex-exec.corr.log" 'bound_capability_request_received.*selected_verb=housekeep_runtime')"
 [[ -n "$E1" ]] || fail "missing evidence #1 (supervisor selected housekeep_runtime)"
 
-E2="$(find_line "${TMP_DIR}/orion-athena-agent-chain.corr.log" 'bound_capability_direct_execute=1.*selected_verb=housekeep_runtime.*selected_verb_preserved=1')"
-[[ -n "$E2" ]] || fail "missing evidence #2 (selected_verb preserved into agent-chain)"
+E2="$(find_line "${TMP_DIR}/orion-athena-cortex-exec.corr.log" 'bound_capability_nested_cortex.*housekeep_runtime')"
+[[ -n "$E2" ]] || fail "missing evidence #2 (nested cortex RPC for bound capability)"
 
 E3="$(find_line "${TMP_DIR}/orion-athena-cortex-orch.corr.log" 'orch_publish_verb_runtime.*skills\.runtime\.')"
 [[ -n "$E3" ]] || fail "missing evidence #3 (downstream concrete skills.runtime.* invocation)"
@@ -92,8 +90,8 @@ E3="$(find_line "${TMP_DIR}/orion-athena-cortex-orch.corr.log" 'orch_publish_ver
 E4="$(find_line "${TMP_DIR}/orion-athena-cortex-exec.corr.log" 'final_text_assembly .*verb=skills\.runtime\..*final_len=[1-9]')"
 [[ -n "$E4" ]] || fail "missing evidence #4 (non-empty terminal output for concrete runtime skill)"
 
-if grep -E 'bound_capability_execution_timeout' "${TMP_DIR}/orion-athena-agent-chain.corr.log" >/dev/null 2>&1; then
-  fail "evidence #5 failed (bound_capability_execution_timeout present)"
+if grep -E 'bound_capability_execution_timeout|capability_executor_unavailable' "${TMP_DIR}/orion-athena-cortex-exec.corr.log" >/dev/null 2>&1; then
+  fail "evidence #5 failed (bound capability timeout/unavailable present)"
 fi
 
 TIMINGS_JSON="${TMP_DIR}/timings.json"
@@ -116,8 +114,7 @@ def first_ts(pattern):
     return None, None
 
 pairs = {
-  'planner_react': (r'rpc -> PlannerReactService', r'ok <- PlannerReactService'),
-  'agent_chain': (r'rpc -> AgentChainService', r'ok <- AgentChainService'),
+  'bound_capability': (r'bound_capability_nested_cortex', r'bound_direct_success|final_text_assembly .*verb=skills\.runtime\.'),
   'concrete_skill': (r'verb_runtime_intake .*trigger=legacy\.plan', r'final_text_assembly .*verb=skills\.runtime\.'),
 }
 for k,(s,e) in pairs.items():
@@ -139,5 +136,5 @@ echo "Evidence #1: $E1"
 echo "Evidence #2: $E2"
 echo "Evidence #3: $E3"
 echo "Evidence #4: $E4"
-echo "Evidence #5: no bound_capability_execution_timeout in agent-chain logs"
+echo "Evidence #5: no bound_capability timeout/unavailable in cortex-exec logs"
 echo "Evidence #6 timings: $(cat "$TIMINGS_JSON")"

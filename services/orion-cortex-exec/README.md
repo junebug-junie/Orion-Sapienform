@@ -70,8 +70,7 @@ Exec sends requests to these channels and listens for replies on ephemeral `repl
 | :--- | :--- | :--- | :--- |
 | **LLM Gateway** | `CHANNEL_LLM_INTAKE` | `orion-exec:request:LLMGatewayService` | `llm.chat.request` |
 | **Recall** | `CHANNEL_RECALL_INTAKE` | `orion-exec:request:RecallService` | `recall.query.request` |
-| **Planner** | `CHANNEL_PLANNER_INTAKE` | `orion-exec:request:PlannerReactService` | `agent.planner.request` |
-| **Agent Chain** | `CHANNEL_AGENT_CHAIN_INTAKE` | `orion-exec:request:AgentChainService` | `agent.chain.request` |
+| **Context Exec** | `CHANNEL_CONTEXT_EXEC_INTAKE` | `orion:exec:request:ContextExecService` | `context.exec.request` |
 | **Council** | `CHANNEL_COUNCIL_INTAKE` | `orion:agent-council:intake` | `council.request` |
 
 ### Environment Variables
@@ -82,8 +81,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `CHANNEL_EXEC_REQUEST` | `orion-cortex-exec:request` | Main input. |
 | `CHANNEL_LLM_INTAKE` | ... | LLM worker channel. |
 | `CHANNEL_RECALL_INTAKE` | ... | Recall worker channel. |
-| `CHANNEL_PLANNER_INTAKE` | ... | Planner worker channel. |
-| `CHANNEL_AGENT_CHAIN_INTAKE` | ... | Agent Chain worker channel. |
+| `CHANNEL_CONTEXT_EXEC_INTAKE` | ... | Context-exec delegate channel (replaces planner-react + agent-chain). |
 | `CHANNEL_COUNCIL_INTAKE` | ... | Council worker channel. |
 | `ORION_REPO_ROOT` | auto-detected | Optional override for self-study repo-root resolution when the container layout differs from local dev. |
 | `ORION_ACTION_OUTCOME_DB_URL` | `postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney` | Shared SQL store for autonomous action outcomes. When set, chat-stance `load_action_outcomes` reads the `action_outcomes` table (written by sql-writer from `action.outcome.emit.v1`); when blank it falls back to the per-container JSON file `ORION_ACTION_OUTCOME_STORE_PATH`. |

@@ -61,7 +61,7 @@ def test_autonomy_goal_planned_schema_and_channel_cataloged() -> None:
     entry = _channel_entry("orion:autonomy:goal:planned")
     assert entry["schema_id"] == "AutonomyGoalPlannedV1"
     assert entry["message_kind"] == "autonomy.goal.planned.v1"
-    assert "orion-planner-react" in (entry.get("producer_services") or [])
+    assert "orion-cortex-exec" in (entry.get("producer_services") or [])
 
     planned = AutonomyGoalPlannedV1.model_validate(
         {

@@ -335,14 +335,6 @@ class Settings(BaseSettings):
     CHANNEL_LLM_REPLY_PREFIX: str = Field(default="orion:llm:reply:", alias="CHANNEL_LLM_REPLY_PREFIX")
     CORTEX_ORCH_REQUEST_CHANNEL: str = Field(default="orion:cortex:request", alias="CORTEX_REQUEST_CHANNEL")
     CORTEX_ORCH_RESULT_PREFIX: str = Field(default="orion:cortex:result", alias="CORTEX_RESULT_PREFIX")
-    CHANNEL_AGENT_CHAIN_INTAKE: str = Field(
-        default="orion:exec:request:AgentChainService",
-        alias="AGENT_CHAIN_REQUEST_CHANNEL",
-    )
-    CHANNEL_AGENT_CHAIN_REPLY_PREFIX: str = Field(
-        default="orion:exec:result:AgentChainService",
-        alias="AGENT_CHAIN_RESULT_PREFIX",
-    )
 
     # --- Legacy Recall Integration ---
     CHANNEL_RECALL_REQUEST: str = Field(default="orion:exec:request:RecallService", alias="CHANNEL_RECALL_REQUEST")

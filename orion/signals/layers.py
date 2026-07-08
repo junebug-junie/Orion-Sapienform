@@ -47,9 +47,6 @@ ORGAN_LAYER: Dict[str, str] = {
     "vision": "vision",
     # World / environment hybrid
     "world_pulse": "vision",
-    # Planning / action
-    "planner": "cognition",
-    "agent_chain": "runtime",
     # Persistence writers (Milestone B5)
     "sql_writer": "persistence",
     "rdf_writer": "persistence",

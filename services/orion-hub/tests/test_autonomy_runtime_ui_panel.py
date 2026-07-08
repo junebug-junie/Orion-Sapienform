@@ -305,21 +305,18 @@ def test_template_and_js_include_recall_canary_controls_without_unsafe_actions()
     assert "'X-Orion-Operator-Token': operatorToken" not in app_js
 
 
-def test_template_and_js_include_compact_messages_and_world_pulse_sections() -> None:
+def test_template_and_js_include_world_pulse_section() -> None:
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
     app_js = APP_JS_PATH.read_text(encoding="utf-8")
 
-    assert 'id="messagesToggle"' in template
-    assert 'id="messagesCaret"' in template
-    assert 'id="messagesBody" class="hidden' in template
+    assert 'id="messagesToggle"' not in template
+    assert 'id="messagesBody"' not in template
     assert 'id="worldPulseToggle"' in template
     assert 'id="worldPulseCaret"' in template
     assert 'id="worldPulseBody" class="hidden' in template
-    assert "function toggleMessagesPanel()" in app_js
+    assert "toggleMessagesPanel" not in app_js
     assert "function toggleWorldPulsePanel()" in app_js
-    assert "messagesToggle.addEventListener('click', toggleMessagesPanel);" in app_js
     assert "worldPulseToggle.addEventListener('click', toggleWorldPulsePanel);" in app_js
-    assert "messageFilter.addEventListener('click', (event) => event.stopPropagation());" in app_js
 
 
 def test_template_and_js_include_cognitive_review_panel_without_unsafe_actions() -> None:

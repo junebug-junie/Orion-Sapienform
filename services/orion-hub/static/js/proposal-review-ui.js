@@ -217,39 +217,58 @@
     }
   }
 
+  function setProposalReviewPanelVisible(visible) {
+    const panel = document.getElementById("proposalReviewPanel");
+    if (!panel) return;
+    panel.classList.toggle("hidden", !visible);
+  }
+
   async function loadPendingDecisions(listEl, statusEl, detailEl, filterEl) {
     listEl.innerHTML = "";
     if (detailEl) {
       detailEl.classList.add("hidden");
       detailEl.innerHTML = "";
     }
+
+    const enabledInCfg = Boolean((window.__HUB_CFG__ || {}).proposalReviewEnabled);
+    if (!enabledInCfg) {
+      setProposalReviewPanelVisible(false);
+      return;
+    }
+
     setStatus(statusEl, "Loading…", false);
 
     const filter = (filterEl && filterEl.value) || "pending_review";
     try {
       const health = await apiFetch("/api/proposal-review/health");
       if (!health.enabled) {
+        setProposalReviewPanelVisible(false);
         setStatus(statusEl, "", false);
         listEl.innerHTML = "";
         return;
       }
       if (!health.available) {
+        setProposalReviewPanelVisible(false);
         setStatus(statusEl, "Proposal review API unavailable.", false);
         return;
       }
 
       const data = await apiFetch(`/api/proposal-review/pending?status=${encodeURIComponent(filter)}`);
       if (!data.available) {
+        setProposalReviewPanelVisible(false);
         setStatus(statusEl, "Proposal review API unavailable.", false);
         return;
       }
 
       const items = (data && data.proposals) || [];
       if (!items.length) {
-        setStatus(statusEl, "No pending decisions.", false);
+        setProposalReviewPanelVisible(false);
+        setStatus(statusEl, "", false);
+        listEl.innerHTML = "";
         return;
       }
 
+      setProposalReviewPanelVisible(true);
       setStatus(statusEl, `${items.length} decision-worthy proposal(s)`, false);
       const reloadList = () => loadPendingDecisions(listEl, statusEl, detailEl, filterEl);
       items.forEach((item) => {
@@ -258,6 +277,7 @@
         );
       });
     } catch (e) {
+      setProposalReviewPanelVisible(false);
       setStatus(statusEl, "Proposal review API unavailable.", false);
     }
   }

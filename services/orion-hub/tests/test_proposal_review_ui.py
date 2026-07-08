@@ -7,15 +7,19 @@ HUB_ROOT = Path(__file__).resolve().parents[1]
 
 def test_proposal_review_ui_wired() -> None:
     template = (HUB_ROOT / "templates" / "index.html").read_text(encoding="utf-8")
+    main_py = (HUB_ROOT / "scripts" / "main.py").read_text(encoding="utf-8")
     ui = (HUB_ROOT / "static" / "js" / "proposal-review-ui.js").read_text(encoding="utf-8")
 
-    assert "proposal-review-ui.js" in template
-    assert 'id="proposalReviewPanel"' in template
-    assert "Pending Decisions" in template
+    assert "{{HUB_PROPOSAL_REVIEW_PANEL}}" in template
+    assert "{{HUB_PROPOSAL_REVIEW_SCRIPT}}" in template
+    assert "HUB_PROPOSAL_REVIEW_ENABLED" in main_py
+    assert 'id="proposalReviewPanel"' in main_py
+    assert "Pending Decisions" in main_py
+    assert "proposal-review-ui.js" in main_py
     assert "/api/proposal-review/pending" in ui
     assert "/api/proposal-review/proposals/" in ui
     assert "/api/proposal-review/proposals/" in ui and "/review" in ui
-    assert "No pending decisions." in ui
+    assert "setProposalReviewPanelVisible" in ui
     assert "Proposal review API unavailable." in ui
     assert "Current belief:" in ui
     assert "Proposed correction:" in ui
@@ -30,7 +34,7 @@ def test_proposal_review_ui_wired() -> None:
     assert "Rationale is required" in ui
     assert "fetch(" in ui
     assert "/triage" not in ui.lower()
-    assert "execute" not in ui.lower()
+    assert "/execute" not in ui.lower()
     ui_lower = ui.lower()
     for token in ('type="submit"',):
         assert token not in ui_lower

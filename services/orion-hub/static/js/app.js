@@ -24,6 +24,24 @@ function resolveHubWebSocketUrl() {
   return `${proto}//${window.location.host}/ws`;
 }
 
+const HUB_LOCAL_TIMEZONE = 'America/Denver';
+
+function formatHubLocalTime(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleString('en-US', {
+    timeZone: HUB_LOCAL_TIMEZONE,
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+    timeZoneName: 'short',
+  });
+}
+
 const URL_PREFIX = '';
 const API_BASE_URL = resolveHubApiBaseUrl();
 const HUB_WEBSOCKET_URL = resolveHubWebSocketUrl();
@@ -69,10 +87,8 @@ let selectedBiometricsNode = "cluster";
 let lastBiometricsPayload = null;
 let notifications = [];
 let pendingAttention = [];
-let chatMessages = [];
 const seenMessageIds = new Set();
 const openedMessageIds = new Set();
-const dismissedMessageIds = new Set();
 const NOTIFICATION_MAX = 200;
 let notificationToastSeconds = 8;
 
@@ -89,6 +105,7 @@ const RECIPIENT_GROUP = "juniper_primary";
 let latestSocialInspectionState = null;
 const socialInspectionCache = new Map();
 let workflowSchedules = [];
+let lastScheduleInventoryMeta = null;
 let selectedSchedule = null;
 const submittedFeedbackTargets = new Set();
 
@@ -96,38 +113,6 @@ document.addEventListener("DOMContentLoaded", () => {
   console.log("[Main] DOM Content Loaded - Initializing UI...");
   const hubUiVersion = (window.__HUB_UI_VERSION__ || document.body?.dataset?.uiVersion || "unknown").trim() || "unknown";
   console.log(`[HubUI] version=${hubUiVersion}`);
-
-// --- 0. Local persistence for message dismissals ---
-// Backend may not reflect receipts into /api/chat/messages yet; this prevents dismissed items from reappearing.
-const DISMISSED_STORAGE_KEY = "orion_chat_dismissed_ids_v1";
-function loadDismissedIds() {
-  try {
-    const raw = localStorage.getItem(DISMISSED_STORAGE_KEY);
-    if (!raw) return;
-    const arr = JSON.parse(raw);
-    if (Array.isArray(arr)) arr.forEach((id) => dismissedMessageIds.add(String(id)));
-  } catch (e) {
-    console.warn("[Messages] Failed to load dismissed ids", e);
-  }
-}
-function persistDismissedIds() {
-  try {
-    localStorage.setItem(DISMISSED_STORAGE_KEY, JSON.stringify(Array.from(dismissedMessageIds)));
-  } catch (e) {
-    console.warn("[Messages] Failed to persist dismissed ids", e);
-  }
-}
-function markDismissed(messageId) {
-  if (!messageId) return;
-  dismissedMessageIds.add(String(messageId));
-  persistDismissedIds();
-}
-function isDismissed(messageId) {
-  if (!messageId) return false;
-  return dismissedMessageIds.has(String(messageId));
-}
-
-loadDismissedIds();
 
   // --- 1. Element References ---
   const recordButton = document.getElementById('recordButton');
@@ -398,11 +383,6 @@ loadDismissedIds();
   const notificationFilter = document.getElementById('notificationFilter');
   const attentionList = document.getElementById('attentionList');
   const attentionCount = document.getElementById('attentionCount');
-  const messagesToggle = document.getElementById('messagesToggle');
-  const messagesCaret = document.getElementById('messagesCaret');
-  const messagesBody = document.getElementById('messagesBody');
-  const messageList = document.getElementById('messageList');
-  const messageFilter = document.getElementById('messageFilter');
   const worldPulseToggle = document.getElementById('worldPulseToggle');
   const worldPulseCaret = document.getElementById('worldPulseCaret');
   const worldPulseBody = document.getElementById('worldPulseBody');
@@ -535,7 +515,7 @@ loadDismissedIds();
   const copyButton = document.getElementById('copyButton');
 
   // Settings
-  const settingsToggle = document.getElementById('settingsToggle');
+  const settingsOpenButton = document.getElementById('settingsOpenButton');
   const settingsPanel = document.getElementById('settingsPanel');
   const settingsClose = document.getElementById('settingsClose');
   const notifyDisplayName = document.getElementById('notifyDisplayName');
@@ -4757,13 +4737,6 @@ loadDismissedIds();
     if (recallCanaryCaret) recallCanaryCaret.textContent = nextHidden ? '▾' : '▴';
   }
 
-  function toggleMessagesPanel() {
-    if (!messagesBody) return;
-    const nextHidden = !messagesBody.classList.contains('hidden');
-    messagesBody.classList.toggle('hidden', nextHidden);
-    if (messagesCaret) messagesCaret.textContent = nextHidden ? '▾' : '▴';
-  }
-
   function toggleWorldPulsePanel() {
     if (!worldPulseBody) return;
     const nextHidden = !worldPulseBody.classList.contains('hidden');
@@ -5572,7 +5545,7 @@ loadDismissedIds();
 
       const meta = document.createElement('div');
       meta.className = 'text-[10px] text-gray-400';
-      const createdAt = item.created_at ? new Date(item.created_at).toLocaleString() : null;
+      const createdAt = item.created_at ? formatHubLocalTime(item.created_at) : null;
       const source = item.source_service || 'unknown';
       meta.textContent = createdAt ? `${createdAt} • ${source}` : source;
 
@@ -5963,6 +5936,12 @@ loadDismissedIds();
     const payload = await res.json();
     const schedules = Array.isArray(payload.schedules) ? payload.schedules : [];
     workflowSchedules = schedules.map((item) => normalizeSchedule(item)).filter(Boolean);
+    lastScheduleInventoryMeta = {
+      ok: payload.ok,
+      message: payload.message || null,
+      error_code: payload.error_code || null,
+      count: workflowSchedules.length,
+    };
     if (scheduleInventoryMeta) scheduleInventoryMeta.textContent = `${workflowSchedules.length} schedule(s) loaded`;
     return payload;
   }
@@ -6168,7 +6147,22 @@ loadDismissedIds();
     const items = filteredSchedules().slice().sort((a, b) => String(a.next_run_at || '').localeCompare(String(b.next_run_at || '')));
     scheduleInventoryList.innerHTML = '';
     if (!items.length) {
-      scheduleInventoryList.innerHTML = '<div class="text-gray-500 text-xs">No schedules for this filter.</div>';
+      let emptyMsg = 'No schedules for this filter.';
+      if (workflowSchedules.length === 0) {
+        const meta = lastScheduleInventoryMeta || {};
+        if (meta.error_code === 'invalid_management_payload') {
+          emptyMsg = 'Schedule inventory unavailable — cortex did not return schedule data. Confirm cortex-orch is running and workflow schedule management is wired.';
+        } else if (meta.message && meta.message !== 'No schedule response payload.') {
+          emptyMsg = String(meta.message);
+        } else {
+          emptyMsg = 'No durable schedules registered yet. Schedules appear when workflows are scheduled via Actions.';
+        }
+      }
+      scheduleInventoryList.innerHTML = '';
+      const empty = document.createElement('div');
+      empty.className = 'text-gray-500 text-xs';
+      empty.textContent = emptyMsg;
+      scheduleInventoryList.appendChild(empty);
       return;
     }
     items.forEach((item) => {
@@ -6259,179 +6253,6 @@ loadDismissedIds();
     );
   }
 
-  function normalizeChatMessage(notification) {
-    if (!notification) return null;
-    const msgId = notification.message_id || notification.messageId;
-    if (!msgId) return null;
-    const agentTrace = agentTraceApi.extractAgentTrace
-      ? agentTraceApi.extractAgentTrace(notification)
-      : (notification.agent_trace || notification.agentTrace || null);
-    const rawMessage = {
-      ...notification,
-      metadata: notification.metadata || (notification.raw && notification.raw.metadata) || {},
-      context: notification.context || {},
-    };
-    const workflow = workflowUiApi.extractWorkflow ? workflowUiApi.extractWorkflow(rawMessage) : null;
-    return {
-      message_id: msgId,
-      session_id: notification.session_id || notification.sessionId,
-      created_at: notification.created_at || notification.createdAt,
-      correlation_id: notification.correlation_id || notification.correlationId,
-      severity: notification.severity || 'info',
-      title: notification.title || 'New message from Orion',
-      preview_text: notification.body_text || notification.preview_text || notification.previewText || '',
-      full_text: notification.full_text || notification.fullText || notification.body_text || '',
-      agent_trace: agentTrace,
-      workflow: workflow,
-      status: (notification.status || 'unread').toLowerCase(),
-      silent: Boolean(notification.silent),
-      raw: rawMessage,
-    };
-  }
-
-  function upsertChatMessage(item) {
-    if (!item || !item.message_id) return;
-    // Never re-insert locally dismissed messages (backend may still report them as unread)
-    if (isDismissed(item.message_id)) return;
-    const idx = chatMessages.findIndex((m) => m.message_id === item.message_id);
-    if (idx >= 0) {
-      chatMessages[idx] = { ...chatMessages[idx], ...item };
-    } else {
-      chatMessages.unshift(item);
-    }
-    renderChatMessages();
-  }
-
-  function updateChatMessageStatus(messageId, status) {
-    const idx = chatMessages.findIndex((m) => m.message_id === messageId);
-    if (idx >= 0) {
-      chatMessages[idx].status = status;
-      renderChatMessages();
-    }
-  }
-
-  function renderChatMessages() {
-    if (!messageList) return;
-    const filter = messageFilter ? messageFilter.value : 'unread';
-    // Filter out dismissed regardless of unread/all
-    const visible = chatMessages.filter((m) => !isDismissed(m.message_id));
-    const filtered =
-      filter === 'all' ? visible : visible.filter((m) => (m.status || '').toLowerCase() === 'unread');
-
-    messageList.innerHTML = '';
-    if (filtered.length === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'text-xs text-gray-500 italic';
-      empty.textContent = 'No messages';
-      messageList.appendChild(empty);
-      return;
-    }
-
-    const grouped = filtered.reduce((acc, item) => {
-      const key = item.session_id || 'unknown';
-      acc[key] = acc[key] || [];
-      acc[key].push(item);
-      return acc;
-    }, {});
-
-    Object.entries(grouped).forEach(([sessionId, items]) => {
-      const groupHeader = document.createElement('div');
-      groupHeader.className = 'text-[10px] text-gray-500 uppercase tracking-wide';
-      groupHeader.textContent = `Session ${sessionId} (${items.length})`;
-      messageList.appendChild(groupHeader);
-
-      items.forEach((item) => {
-        const details = document.createElement('details');
-        details.className = 'bg-gray-900/60 border border-gray-700 rounded-lg p-2';
-
-        const summary = document.createElement('summary');
-        summary.className = 'cursor-pointer list-none space-y-1';
-
-        const headerRow = document.createElement('div');
-        headerRow.className = 'flex items-center justify-between gap-2';
-
-        const title = document.createElement('div');
-        title.className = 'text-gray-100 font-semibold text-xs';
-        title.textContent = item.title || 'Message';
-
-        const meta = document.createElement('div');
-        meta.className = 'text-[10px] text-gray-400';
-        meta.textContent = item.created_at ? new Date(item.created_at).toLocaleString() : '--';
-
-        headerRow.appendChild(title);
-        headerRow.appendChild(meta);
-
-        const preview = document.createElement('div');
-        preview.className = 'text-[11px] text-gray-300 line-clamp-2';
-        preview.textContent = item.preview_text || '';
-
-        summary.appendChild(headerRow);
-        if (item.workflow) summary.appendChild(renderBadgeRow(buildWorkflowMetaBadges(item.workflow)));
-        summary.appendChild(preview);
-
-        const body = document.createElement('div');
-        body.className = 'mt-2 space-y-2';
-
-        const bodyText = document.createElement('div');
-        bodyText.className = 'text-[11px] text-gray-300 whitespace-pre-wrap';
-        bodyText.textContent = item.full_text || item.preview_text || '';
-
-        const actions = document.createElement('div');
-        actions.className = 'flex items-center gap-2 text-[10px]';
-
-        const openBtn = document.createElement('button');
-        openBtn.className = 'px-2 py-1 rounded bg-indigo-600/80 hover:bg-indigo-500 text-white';
-        openBtn.textContent = 'Open chat';
-        openBtn.addEventListener('click', (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          setSessionId(item.session_id);
-          focusChatInput();
-        });
-
-        const dismissBtn = document.createElement('button');
-        dismissBtn.className = 'px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-200';
-        dismissBtn.textContent = 'Dismiss';
-        dismissBtn.addEventListener('click', (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          if (item && item.message_id) {
-            // Make dismiss visibly do something even if backend doesn't change message status yet
-            markDismissed(item.message_id);
-            chatMessages = chatMessages.filter((m) => m.message_id !== item.message_id);
-            renderChatMessages();
-          }
-          if (!item._synthetic_id) handleChatMessageReceipt(item.message_id, item.session_id, 'dismissed');
-        });
-
-        actions.appendChild(openBtn);
-        actions.appendChild(dismissBtn);
-
-        body.appendChild(bodyText);
-        const workflowPanel = createWorkflowPanel(item.workflow, {
-          status: item.status,
-          onRunAgain: async (workflow) => submitExplicitChatText(workflow.rerun_prompt),
-        });
-        if (workflowPanel) body.appendChild(workflowPanel);
-        const tracePanel = createAgentTracePanel(item.agent_trace, { correlationId: item.correlation_id });
-        if (tracePanel) body.appendChild(tracePanel);
-        body.appendChild(actions);
-
-        details.appendChild(summary);
-        details.appendChild(body);
-        details.addEventListener('toggle', () => {
-          if (!details.open) return;
-          if (!item || !item.message_id || item._synthetic_id) return;
-          if (openedMessageIds.has(item.message_id)) return;
-          openedMessageIds.add(item.message_id);
-          handleChatMessageReceipt(item.message_id, item.session_id, 'opened');
-        });
-
-        messageList.appendChild(details);
-      });
-    });
-  }
-
   function addNotification(notification) {
     notifications.unshift(notification);
     if (notifications.length > NOTIFICATION_MAX) notifications = notifications.slice(0, NOTIFICATION_MAX);
@@ -6441,11 +6262,9 @@ loadDismissedIds();
       upsertPendingAttention(item);
     }
     if (isChatMessageNotification(notification)) {
-      const item = normalizeChatMessage(notification);
-      upsertChatMessage(item);
-      if (item && !seenMessageIds.has(item.message_id)) {
-        seenMessageIds.add(item.message_id);
-        handleChatMessageReceipt(item.message_id, item.session_id, 'seen');
+      if (notification.message_id && !seenMessageIds.has(notification.message_id)) {
+        seenMessageIds.add(notification.message_id);
+        handleChatMessageReceipt(notification.message_id, notification.session_id, 'seen');
       }
     }
     showToast(notification);
@@ -6548,8 +6367,8 @@ loadDismissedIds();
       meta.className = 'text-[10px] text-gray-400';
       meta.title =
         'Notifications reflect server recent events; refresh reloads the Hub cache, not full history.';
-      const createdAt = n.created_at ? new Date(n.created_at).toLocaleString() : null;
-      const receivedAt = n.received_at ? new Date(n.received_at).toLocaleString() : null;
+      const createdAt = n.created_at ? formatHubLocalTime(n.created_at) : null;
+      const receivedAt = n.received_at ? formatHubLocalTime(n.received_at) : null;
       const timeParts = [];
       if (createdAt) timeParts.push(`Created ${createdAt}`);
       if (receivedAt) timeParts.push(`Received ${receivedAt}`);
@@ -6631,9 +6450,6 @@ loadDismissedIds();
         body: JSON.stringify({ session_id: sessionId, receipt_type: receiptType }),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      if (receiptType === 'dismissed' || receiptType === 'opened' || receiptType === 'seen') {
-        updateChatMessageStatus(messageId, 'seen');
-      }
     } catch (err) {
       console.warn('Failed to send chat message receipt', err);
     } finally {
@@ -8643,32 +8459,6 @@ loadDismissedIds();
     }
   }
 
-  async function loadChatMessages() {
-    try {
-      const filter = messageFilter ? messageFilter.value : 'unread';
-      const statusParam = filter === 'all' ? '' : 'unread';
-      const resp = await fetch(`${API_BASE_URL}/api/chat/messages?limit=50&status=${statusParam}`);
-      if (!resp.ok) return;
-      const data = await resp.json();
-      if (Array.isArray(data)) {
-        chatMessages = data
-          .map((item) => normalizeChatMessage(item))
-          .filter((m) => m && m.session_id && m.message_id)
-          .filter((m) => !isDismissed(m.message_id));
-        renderChatMessages();
-        chatMessages.forEach((item) => {
-          if (isDismissed(item.message_id)) return;
-          if ((item.status || '').toLowerCase() === 'unread' && !seenMessageIds.has(item.message_id)) {
-            seenMessageIds.add(item.message_id);
-            handleChatMessageReceipt(item.message_id, item.session_id, 'seen');
-          }
-        });
-      }
-    } catch (err) {
-      console.warn('Failed to load chat messages', err);
-    }
-  }
-
   async function loadCognitiveLoops() {
     const list = document.getElementById('cognitiveLoopsList');
     const count = document.getElementById('cognitiveLoopsCount');
@@ -8703,7 +8493,7 @@ loadDismissedIds();
     why.textContent = card.why_it_matters;
     const feats = document.createElement('div');
     feats.className = 'text-[10px] text-gray-500 mt-1';
-    feats.textContent = (card.top_contributing_features || []).join(' \u00b7 ');
+    feats.textContent = (Array.isArray(card.top_contributing_features) ? card.top_contributing_features : []).join(' \u00b7 ');
     const actions = document.createElement('div');
     actions.className = 'flex gap-2 mt-2';
     const resolveBtn = document.createElement('button');
@@ -9470,15 +9260,16 @@ loadDismissedIds();
     });
   }
 
+  function openSettingsPanel() {
+    if (!settingsPanel) return;
+    settingsPanel.classList.remove('translate-x-full');
+    settingsPanel.classList.add('translate-x-0');
+    loadNotifySettings();
+  }
+
   // UI Toggles
-  if (settingsToggle && settingsPanel) {
-    settingsToggle.addEventListener('click', () => {
-      settingsPanel.classList.toggle('translate-x-full');
-      settingsPanel.classList.toggle('translate-x-0');
-      if (settingsPanel.classList.contains('translate-x-0')) {
-        loadNotifySettings();
-      }
-    });
+  if (settingsOpenButton && settingsPanel) {
+    settingsOpenButton.addEventListener('click', () => openSettingsPanel());
   }
   if (settingsClose && settingsPanel) {
     settingsClose.addEventListener('click', () => {
@@ -11627,24 +11418,11 @@ loadDismissedIds();
         if (!Number.isNaN(parsed)) notificationToastSeconds = parsed;
       }
       await loadNotifications();
-      await loadChatMessages();
       await loadPendingAttention();
       loadCognitiveLoops();
       await loadWorldPulseLatest();
-      if (messagesToggle) {
-        messagesToggle.addEventListener('click', toggleMessagesPanel);
-      }
-      if (messageFilter) {
-        messageFilter.addEventListener('click', (event) => event.stopPropagation());
-      }
       if (notificationFilter) {
         notificationFilter.addEventListener('change', renderNotifications);
-      }
-      if (messageFilter) {
-        messageFilter.addEventListener('change', () => {
-          renderChatMessages();
-          loadChatMessages();
-        });
       }
       if (worldPulseToggle) {
         worldPulseToggle.addEventListener('click', toggleWorldPulsePanel);

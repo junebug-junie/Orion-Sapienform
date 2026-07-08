@@ -24,12 +24,15 @@ _KIND_FOR_SHIFT = {
 # Retrieval intent keyed off the crystallization kind. The validator requires
 # non-empty planning_effects for stance/procedure/decision, and additionally
 # non-empty retrieval_affordances for stance. These derive real affordances
-# from the resolved kind rather than emitting hollow placeholders.
+# from the resolved kind rather than emitting hollow placeholders. This mapping
+# is the single source of truth for which kinds get enriched at intake; its
+# keys must match the validator's STANCE_PROCEDURE_DECISION_KINDS.
 _RETRIEVAL_INTENT_FOR_KIND = {
     "stance": "relational",
     "procedure": "procedural",
     "decision": "semantic",
 }
+assert set(_RETRIEVAL_INTENT_FOR_KIND) == set(STANCE_PROCEDURE_DECISION_KINDS)
 
 
 def _planning_and_retrieval_for_kind(kind: str, summary: str) -> tuple[list[str], list[str]]:
@@ -39,12 +42,11 @@ def _planning_and_retrieval_for_kind(kind: str, summary: str) -> tuple[list[str]
     validator hard-requires it for). All other kinds return empty lists so
     their behavior is unchanged.
     """
-    if kind not in STANCE_PROCEDURE_DECISION_KINDS:
+    if kind not in _RETRIEVAL_INTENT_FOR_KIND:
         return [], []
     grounded = summary.strip()[:120]
     planning_effects = [f"Carry forward this {kind} when planning: {grounded}"]
-    intent = _RETRIEVAL_INTENT_FOR_KIND.get(kind)
-    retrieval_affordances = [f"retrieve_when:{intent}"] if intent else []
+    retrieval_affordances = [f"retrieve_when:{_RETRIEVAL_INTENT_FOR_KIND[kind]}"]
     return planning_effects, retrieval_affordances
 
 

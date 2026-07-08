@@ -1,6 +1,29 @@
 from orion.memory.consolidation_gate import ConsolidationGateResult
-from orion.memory.crystallization.intake_consolidation_window import build_crystallization_from_window
+from orion.memory.crystallization.intake_consolidation_window import (
+    _planning_and_retrieval_for_kind,
+    build_crystallization_from_window,
+)
 from orion.memory.crystallization.validator import validate_proposal
+
+
+def test_planning_and_retrieval_for_kind_procedure():
+    planning_effects, retrieval_affordances = _planning_and_retrieval_for_kind(
+        "procedure", "some summary"
+    )
+    assert planning_effects
+    assert retrieval_affordances == ["retrieve_when:procedural"]
+
+
+def test_planning_and_retrieval_for_kind_decision():
+    planning_effects, retrieval_affordances = _planning_and_retrieval_for_kind(
+        "decision", "some summary"
+    )
+    assert planning_effects
+    assert retrieval_affordances == ["retrieve_when:semantic"]
+
+
+def test_planning_and_retrieval_for_kind_semantic_is_empty():
+    assert _planning_and_retrieval_for_kind("semantic", "x") == ([], [])
 
 
 def test_builds_proposed_semantic_crystallization():

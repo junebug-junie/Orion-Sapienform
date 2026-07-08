@@ -7,6 +7,8 @@ services:
     restart: unless-stopped
     networks:
       - app-net
+    env_file:
+      - .env
     ports:
       - "${PROPOSAL_RUNTIME_PORT:-8119}:8119"
     environment:
@@ -20,6 +22,8 @@ services:
       - ENABLE_TRANSPORT_PROPOSALS=${ENABLE_TRANSPORT_PROPOSALS:-false}
       - TRANSPORT_PROPOSAL_MODE=${TRANSPORT_PROPOSAL_MODE:-read_only}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ORION_REVERIE_PROPOSE_ENABLED=${ORION_REVERIE_PROPOSE_ENABLED:-false}
+      - ORION_REVERIE_AUTOACTION_ENABLED=${ORION_REVERIE_AUTOACTION_ENABLED:-false}
 
 networks:
   app-net:

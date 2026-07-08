@@ -10,6 +10,7 @@ import asyncpg
 
 from orion.memory.crystallization.schemas import (
     CrystallizationClaimV1,
+    CrystallizationDynamicsV1,
     CrystallizationEvidenceRefV1,
     CrystallizationGovernanceV1,
     CrystallizationLinkV1,
@@ -66,6 +67,7 @@ def _row_to_crystallization(
     gov_raw = _parse_jsonb(row["governance"]) or {}
     proj_raw = _parse_jsonb(row["projection_refs"]) or {}
     grammar_raw = _parse_jsonb(row["grammar_envelope"]) or {}
+    dynamics_raw = _parse_jsonb(row.get("dynamics")) or {}
 
     return MemoryCrystallizationV1(
         crystallization_id=str(row["crystallization_id"]),
@@ -75,6 +77,7 @@ def _row_to_crystallization(
         status=row["status"],
         confidence=row["confidence"],
         salience=float(row["salience"]),
+        dynamics=CrystallizationDynamicsV1.model_validate(dynamics_raw),
         scope=list(row["scope"] or []),
         tags=list(row["tags"] or []),
         claims=claims,
@@ -177,14 +180,14 @@ async def insert_crystallization(pool: asyncpg.Pool, crystallization: MemoryCrys
                     """
                     INSERT INTO memory_crystallizations (
                         crystallization_id, kind, subject, summary, status, confidence, salience,
-                        scope, tags, grammar_envelope, planning_effects, retrieval_affordances,
+                        dynamics, scope, tags, grammar_envelope, planning_effects, retrieval_affordances,
                         governance, projection_refs, source_card_ids, source_grammar_event_ids,
                         source_atom_ids, created_at, updated_at
                     ) VALUES (
                         $1::uuid, $2, $3, $4, $5, $6, $7,
-                        $8, $9, $10::jsonb, $11, $12,
-                        $13::jsonb, $14::jsonb, $15, $16,
-                        $17, $18, $19
+                        $8::jsonb, $9, $10, $11::jsonb, $12, $13,
+                        $14::jsonb, $15::jsonb, $16, $17,
+                        $18, $19, $20
                     )
                     RETURNING crystallization_id
                     """,
@@ -195,6 +198,7 @@ async def insert_crystallization(pool: asyncpg.Pool, crystallization: MemoryCrys
                     crystallization.status,
                     crystallization.confidence,
                     crystallization.salience,
+                    _jsonb(crystallization.dynamics.model_dump(mode="json")),
                     crystallization.scope,
                     crystallization.tags,
                     _jsonb(crystallization.grammar_envelope.model_dump(mode="json")),
@@ -213,14 +217,14 @@ async def insert_crystallization(pool: asyncpg.Pool, crystallization: MemoryCrys
                     """
                     INSERT INTO memory_crystallizations (
                         kind, subject, summary, status, confidence, salience,
-                        scope, tags, grammar_envelope, planning_effects, retrieval_affordances,
+                        dynamics, scope, tags, grammar_envelope, planning_effects, retrieval_affordances,
                         governance, projection_refs, source_card_ids, source_grammar_event_ids,
                         source_atom_ids, created_at, updated_at
                     ) VALUES (
                         $1, $2, $3, $4, $5, $6,
-                        $7, $8, $9::jsonb, $10, $11,
-                        $12::jsonb, $13::jsonb, $14, $15,
-                        $16, $17, $18
+                        $7::jsonb, $8, $9, $10::jsonb, $11, $12,
+                        $13::jsonb, $14::jsonb, $15, $16,
+                        $17, $18, $19
                     )
                     RETURNING crystallization_id
                     """,
@@ -230,6 +234,7 @@ async def insert_crystallization(pool: asyncpg.Pool, crystallization: MemoryCrys
                     crystallization.status,
                     crystallization.confidence,
                     crystallization.salience,
+                    _jsonb(crystallization.dynamics.model_dump(mode="json")),
                     crystallization.scope,
                     crystallization.tags,
                     _jsonb(crystallization.grammar_envelope.model_dump(mode="json")),
@@ -312,10 +317,11 @@ async def update_crystallization(pool: asyncpg.Pool, crystallization: MemoryCrys
             """
             UPDATE memory_crystallizations SET
                 kind = $2, subject = $3, summary = $4, status = $5, confidence = $6,
-                salience = $7, scope = $8, tags = $9, grammar_envelope = $10::jsonb,
-                planning_effects = $11, retrieval_affordances = $12, governance = $13::jsonb,
-                projection_refs = $14::jsonb, source_card_ids = $15,
-                source_grammar_event_ids = $16, source_atom_ids = $17, updated_at = $18
+                salience = $7, dynamics = $8::jsonb, scope = $9, tags = $10,
+                grammar_envelope = $11::jsonb, planning_effects = $12,
+                retrieval_affordances = $13, governance = $14::jsonb,
+                projection_refs = $15::jsonb, source_card_ids = $16,
+                source_grammar_event_ids = $17, source_atom_ids = $18, updated_at = $19
             WHERE crystallization_id = $1::uuid
             """,
             cid,
@@ -325,6 +331,7 @@ async def update_crystallization(pool: asyncpg.Pool, crystallization: MemoryCrys
             crystallization.status,
             crystallization.confidence,
             crystallization.salience,
+            _jsonb(crystallization.dynamics.model_dump(mode="json")),
             crystallization.scope,
             crystallization.tags,
             _jsonb(crystallization.grammar_envelope.model_dump(mode="json")),

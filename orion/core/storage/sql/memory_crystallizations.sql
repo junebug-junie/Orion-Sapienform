@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS memory_crystallizations (
     status text NOT NULL DEFAULT 'proposed',
     confidence text NOT NULL DEFAULT 'likely',
     salience numeric NOT NULL DEFAULT 0.5,
+    dynamics jsonb NOT NULL DEFAULT '{}'::jsonb,
     scope text[] NOT NULL DEFAULT '{}',
     tags text[] NOT NULL DEFAULT '{}',
     grammar_envelope jsonb NOT NULL DEFAULT '{}'::jsonb,

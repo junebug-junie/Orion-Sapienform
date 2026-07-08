@@ -1425,7 +1425,7 @@ async def handle_trace(env: BaseEnvelope) -> None:
                     "correlation_id": corr_id,
                     "timestamp": iso_ts,
                     "stats": {
-                        "phi": telem.phi,
+                        "phi": _headline_stat(phi_stats),
                         "novelty": display_novelty,
                         "valence": valence,
                         "arousal": arousal,

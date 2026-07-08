@@ -130,3 +130,67 @@ async def test_handle_self_state_emits_inner_features_and_honest_phi(monkeypatch
     tissue = [b for b in broadcasts if b.get("type") == "tissue.update"]
     assert tissue, "expected a tissue.update broadcast"
     assert tissue[-1]["stats"]["phi"] > 0.5
+
+
+@pytest.mark.asyncio
+async def test_handle_trace_ws_phi_uses_honest_headline(monkeypatch, tmp_path) -> None:
+    """The main-path trace EKG frame (handle_trace, non-heartbeat) must show the
+    honest headline, not the geometric-coherence floor carried by telem.phi."""
+    published = []
+    broadcasts = []
+
+    class _Bus:
+        enabled = True
+
+        async def publish(self, channel, env):
+            published.append((channel, env))
+
+    async def _capture_broadcast(payload):
+        broadcasts.append(payload)
+
+    monkeypatch.setattr(worker, "_pub_bus", _Bus(), raising=False)
+    monkeypatch.setattr(worker.manager, "broadcast", _capture_broadcast, raising=False)
+    monkeypatch.setattr(worker.settings, "inner_features_corpus_path", str(tmp_path / "c.jsonl"), raising=False)
+    # fresh module state
+    monkeypatch.setattr(worker, "_INNER_SCALER", worker._new_inner_scaler(), raising=False)
+    monkeypatch.setattr(worker, "_INNER_PREV_FELT", None, raising=False)
+    monkeypatch.setattr(worker, "_INNER_PREV_HEADLINE", None, raising=False)
+    monkeypatch.setattr(worker, "_INNER_DEGENERATE_STREAK", 0, raising=False)
+    monkeypatch.setattr(worker, "_INNER_LAST_HEADLINE", None, raising=False)
+
+    # Drive a real self-state tick first: this populates _INNER_LAST_HEADLINE
+    # (~0.70 honest headline) and _LATEST_SELF_STATE (source for _get_phi_stats).
+    ss_env = BaseEnvelope(
+        kind="substrate.self_state.v1",
+        source=ServiceRef(name="substrate-runtime", node="athena"),
+        payload=_self_state_payload(),
+    )
+    await worker.handle_self_state(ss_env)
+    assert worker._INNER_LAST_HEADLINE is not None and worker._INNER_LAST_HEADLINE > 0.5
+
+    # Non-heartbeat trace; spark_meta appraisal makes display_novelty non-None so
+    # the 1428 tissue.update frame actually broadcasts.
+    trace_payload = {
+        "mode": "reasoning",
+        "verb": "respond",
+        "correlation_id": "trace-corr-ekg",
+        "steps": [],
+        "metadata": {
+            "spark_meta": {
+                "turn_change_appraisal": {"turn_change_status": "ok", "novelty_score": 0.3}
+            }
+        },
+    }
+    trace_env = BaseEnvelope(
+        kind="cognition.trace.v1",
+        source=ServiceRef(name="cortex-exec", node="athena"),
+        payload=trace_payload,
+    )
+    await worker.handle_trace(trace_env)
+
+    trace_frames = [
+        b for b in broadcasts
+        if b.get("type") == "tissue.update" and b.get("correlation_id") == "trace-corr-ekg"
+    ]
+    assert trace_frames, "expected a trace-path tissue.update broadcast"
+    assert trace_frames[-1]["stats"]["phi"] > 0.5

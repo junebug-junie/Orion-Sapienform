@@ -89,7 +89,11 @@ _PREV_PHI: Optional[Dict[str, float]] = None
 
 
 def _new_inner_scaler() -> RollingRobustScaler:
-    return RollingRobustScaler(maxlen=int(getattr(settings, "inner_features_scaler_maxlen", 256)))
+    window_sec = int(getattr(settings, "inner_features_scaler_window_sec", 900))
+    maxlen_cap = int(getattr(settings, "inner_features_scaler_maxlen", 256))
+    # substrate self-state ticks ~every 2s; window_sec bounds history in tick count
+    maxlen = max(2, min(maxlen_cap, window_sec // 2))
+    return RollingRobustScaler(maxlen=maxlen)
 
 
 _INNER_SCALER: RollingRobustScaler = _new_inner_scaler()

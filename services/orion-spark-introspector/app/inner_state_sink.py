@@ -11,8 +11,6 @@ from orion.schemas.telemetry.inner_state import InnerStateFeaturesV1
 class InnerStateCorpusSink:
     def __init__(self, path: str) -> None:
         self._path: Optional[Path] = Path(path) if path else None
-        if self._path is not None:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
 
     @property
     def enabled(self) -> bool:
@@ -21,6 +19,7 @@ class InnerStateCorpusSink:
     def append(self, payload: InnerStateFeaturesV1) -> None:
         if self._path is None:
             return
+        self._path.parent.mkdir(parents=True, exist_ok=True)
         line = json.dumps(payload.model_dump(mode="json"), separators=(",", ":"))
         # flush (not fsync) per tick: this is re-derivable training data, and the
         # self-state tick runs ~every 2s — a per-line fsync is needless I/O.

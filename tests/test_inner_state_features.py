@@ -193,3 +193,19 @@ def test_corpus_sink_disabled_when_no_path() -> None:
     from datetime import datetime, timezone
     from orion.schemas.telemetry.inner_state import InnerStateFeaturesV1
     sink.append(InnerStateFeaturesV1(generated_at=datetime(2026, 7, 7, tzinfo=timezone.utc)))  # no-op, no raise
+
+
+def test_corpus_sink_init_does_not_mkdir() -> None:
+    import importlib.util as _u
+    from pathlib import Path as _P
+    spec = _u.spec_from_file_location(
+        "spark_inner_sink3",
+        _P(__file__).resolve().parents[1]
+        / "services" / "orion-spark-introspector" / "app" / "inner_state_sink.py",
+    )
+    sink_mod = _u.module_from_spec(spec)
+    spec.loader.exec_module(sink_mod)
+    deep = _P("/tmp/orion_phi_sink_init_test/deep/nested/corpus.jsonl")
+    sink = sink_mod.InnerStateCorpusSink(str(deep))
+    assert sink.enabled is True
+    assert not deep.parent.exists()

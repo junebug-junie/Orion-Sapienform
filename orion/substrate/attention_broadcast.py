@@ -219,15 +219,22 @@ def _apply_voluntary_attention(
     re-point ``selected_action`` to the combined winner, and record the
     ``voluntary_override`` trace.
     """
-    from orion.substrate.attention.top_down import (
-        TopDownBiasCombiner,
-        TopDownConfig,
-        top_down_enabled,
-    )
-    from orion.substrate.attention.goal_context import get_active_goal
-
     try:
+        from orion.substrate.attention.top_down import (
+            TopDownBiasCombiner,
+            TopDownConfig,
+            top_down_enabled,
+        )
+        from orion.substrate.attention.goal_context import get_active_goal
+        from orion.substrate.attention.salience import salience_v2_enabled
+
         if not top_down_enabled():
+            return frame
+        # The bottom-up basis here is loop.salience (the v2 combined-salience
+        # output). With salience_v2 OFF, select_actions ranks by a legacy weighted
+        # sum, so our bottom-up winner could disagree with the real selection —
+        # only layer top-down when v2 is the active selection basis (spec target).
+        if not salience_v2_enabled():
             return frame
         goal = get_active_goal()
         if goal is None or not frame.open_loops:
@@ -244,14 +251,16 @@ def _apply_voluntary_attention(
                 loop.combined_salience = score.combined_salience
         frame.effort_budget_used = result.effort_used
         if result.override is not None:
-            frame.voluntary_override = result.override
-            # Re-point the selected action to the combined winner when it has one.
-            winner = result.winner_loop_id
+            # Only record the override when the winner actually has an action to
+            # re-point to — otherwise the frame would claim an override it can't
+            # enact (chosen_loop_id disagreeing with selected_action).
             winner_action = next(
-                (a for a in frame.candidate_actions if getattr(a, "open_loop_id", None) == winner),
+                (a for a in frame.candidate_actions
+                 if getattr(a, "open_loop_id", None) == result.winner_loop_id),
                 None,
             )
             if winner_action is not None:
+                frame.voluntary_override = result.override
                 frame.selected_action = winner_action
         return frame
     except Exception:

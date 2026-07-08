@@ -33,10 +33,18 @@ class GoalContextStore:
 
     def update_from_goal(self, goal: GoalProposalV1) -> None:
         """Adopt this goal as the current active context (latest active wins).
-        Non-active statuses are ignored; malformed input is a no-op."""
+
+        A terminal/inactive status for the *currently held* goal CLEARS the store
+        (so a completed/failed goal stops steering attention); other non-active
+        statuses are ignored. Malformed input is a no-op."""
         try:
             status = str(getattr(goal, "proposal_status", "proposed"))
+            artifact_id = getattr(goal, "artifact_id", None)
             if status not in _ACTIVE_STATES:
+                # If the goal that just went terminal is the one we're holding,
+                # clear it — otherwise it would bias attention forever.
+                if self._current is not None and self._current.goal_artifact_id == artifact_id:
+                    self._current = None
                 return
             drive_origin = getattr(goal, "drive_origin", None)
             if not drive_origin:
@@ -44,7 +52,7 @@ class GoalContextStore:
             self._current = GoalContext(
                 drive_origin=str(drive_origin),
                 priority=max(0.0, min(1.0, float(getattr(goal, "priority", 0.0) or 0.0))),
-                goal_artifact_id=getattr(goal, "artifact_id", None),
+                goal_artifact_id=artifact_id,
             )
         except Exception:
             return

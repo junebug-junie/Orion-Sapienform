@@ -2280,7 +2280,10 @@ async def handle_self_state(env: BaseEnvelope) -> None:
         )
         _INNER_PREV_HEADLINE = inner.headline
         _INNER_LAST_HEADLINE = inner.headline
-        _INNER_SINK.append(inner)
+        try:
+            _INNER_SINK.append(inner)
+        except OSError as exc:
+            logger.warning("Failed to append inner-state corpus: %s", exc)
         if _pub_bus and _pub_bus.enabled:
             try:
                 await _pub_bus.publish(

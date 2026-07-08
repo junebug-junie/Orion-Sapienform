@@ -338,12 +338,15 @@ def build_drive_coactivation_histogram_sparql(
     The inner query reduces per audit: each ``?audit``'s ``?activeCount`` is the
     number of its ``orion:hasDriveAssessment`` assessments whose
     ``orion:driveActive`` is boolean ``true``. The assessment join is OPTIONAL
-    and the count uses ``SUM(IF(?act = true, 1, 0))`` so audits with zero active
-    drives (or no assessments at all) still contribute ``activeCount = 0``. The
-    outer query bins those per-audit counts into a histogram, so Fuseki returns
-    only ~7 rows regardless of window size — no per-audit transfer of hundreds
-    of thousands of rows, no timeout. Pure (returns a string) so it is
-    unit-testable without a SPARQL endpoint.
+    and the count uses ``SUM(IF(BOUND(?act) && ?act = true, 1, 0))``. The
+    ``BOUND(?act)`` guard is required: for an audit whose OPTIONAL matched no
+    assessments, ``?act`` is unbound and a bare ``IF(?act = true, ...)`` makes
+    the SUM itself unbound (Jena/Fuseki), which would drop the audit from the
+    histogram and shrink the denominator. With the guard such audits yield an
+    explicit ``activeCount = 0``. The outer query bins those per-audit counts
+    into a histogram, so Fuseki returns only ~7 rows regardless of window size —
+    no per-audit transfer of hundreds of thousands of rows, no timeout. Pure
+    (returns a string) so it is unit-testable without a SPARQL endpoint.
     """
 
     since_iso = _as_utc(since).isoformat()
@@ -351,7 +354,7 @@ def build_drive_coactivation_histogram_sparql(
         f"PREFIX orion: <{ORION_NS}>\n"
         "PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>\n"
         "SELECT ?activeCount (COUNT(*) AS ?audits) WHERE {\n"
-        "  SELECT ?audit (SUM(IF(?act = true, 1, 0)) AS ?activeCount) WHERE {\n"
+        "  SELECT ?audit (SUM(IF(BOUND(?act) && ?act = true, 1, 0)) AS ?activeCount) WHERE {\n"
         f"    GRAPH <{graph_uri}> {{\n"
         "      ?audit a orion:DriveAudit ;\n"
         "             orion:timestamp ?ts .\n"

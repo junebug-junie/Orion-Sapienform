@@ -217,7 +217,10 @@ def test_build_drive_coactivation_histogram_sparql_shape():
     # Assessment-level boolean shape.
     assert "hasDriveAssessment" in q
     assert "driveActive" in q
-    assert "SUM(IF(?act = true" in q
+    # BOUND guard: assessment-less audits must yield activeCount=0, not unbound
+    # (otherwise the audit drops from the histogram and biases coactivation_frac).
+    assert "SUM(IF(BOUND(?act) && ?act = true" in q
+    assert "BOUND(?act)" in q
     # Nested aggregation: inner reduces per audit, outer bins into a histogram.
     assert "GROUP BY ?audit" in q
     assert "GROUP BY ?activeCount" in q
@@ -243,6 +246,21 @@ def test_parse_sparql_histogram_bindings_happy():
     stats = mod.drive_stats_from_histogram(hist)
     assert stats.record_count == 444785
     assert stats.coactivation_frac == pytest.approx(51 / 444785)
+
+
+def test_parse_sparql_histogram_bindings_retains_zero_bucket():
+    # The query now emits an explicit bound 0 bucket for assessment-less audits
+    # (BOUND(?act) guard) rather than dropping them; lock in that the parser
+    # keeps a bound-0 row so those audits stay in the record_count denominator.
+    bindings = [
+        {"activeCount": {"value": "0"}, "audits": {"value": "5"}},
+        {"activeCount": {"value": "2"}, "audits": {"value": "3"}},
+    ]
+    hist = mod.parse_sparql_histogram_bindings(bindings)
+    assert hist == {0: 5, 2: 3}
+    stats = mod.drive_stats_from_histogram(hist)
+    assert stats.record_count == 8  # the 5 zero-active audits are counted
+    assert stats.coactivation_frac == pytest.approx(3 / 8)
 
 
 def test_parse_sparql_histogram_bindings_degrades():

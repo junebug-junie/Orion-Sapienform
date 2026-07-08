@@ -1,0 +1,186 @@
+diff --git a/convex/agent/conversation.ts b/convex/agent/conversation.ts
+index 7ab0ad1..0ca01dd 100644
+--- a/convex/agent/conversation.ts
++++ b/convex/agent/conversation.ts
+@@ -10,6 +10,21 @@ import { NUM_MEMORIES_TO_SEARCH } from '../constants';
+ 
+ const selfInternal = internal.agent.conversation;
+ 
++const TOWN_REPLY_MAX_CHARS = 320;
++
++function clampTownReply(text: string, maxChars: number = TOWN_REPLY_MAX_CHARS): string {
++  const trimmed = text.trim();
++  if (trimmed.length <= maxChars) {
++    return trimmed;
++  }
++  const cut = trimmed.slice(0, maxChars);
++  const lastStop = Math.max(cut.lastIndexOf('.'), cut.lastIndexOf('?'), cut.lastIndexOf('!'));
++  if (lastStop > maxChars * 0.5) {
++    return cut.slice(0, lastStop + 1).trim();
++  }
++  return `${cut.trim()}…`;
++}
++
+ export async function startConversationMessage(
+   ctx: ActionCtx,
+   worldId: Id<'worlds'>,
+@@ -43,6 +58,9 @@ export async function startConversationMessage(
+   );
+   const prompt = [
+     `You are ${player.name}, and you just started a conversation with ${otherPlayer.name}.`,
++    `You are in a small pixel-art town. Speak in first person as ${player.name}.`,
++    `Give a short in-character greeting (1-2 sentences, under 220 characters).`,
++    `No scene description, narration, stage directions, or markdown.`,
+   ];
+   prompt.push(...agentPrompts(otherPlayer, agent, otherAgent ?? null));
+   prompt.push(...previousConversationPrompt(otherPlayer, lastConversation));
+@@ -62,10 +80,10 @@ export async function startConversationMessage(
+         content: prompt.join('\n'),
+       },
+     ],
+-    max_tokens: 300,
++    max_tokens: 120,
+     stop: stopWords(otherPlayer.name, player.name),
+   });
+-  return trimContentPrefx(content, lastPrompt);
++  return clampTownReply(trimContentPrefx(content, lastPrompt));
+ }
+ 
+ function trimContentPrefx(content: string, prompt: string) {
+@@ -106,7 +124,9 @@ export async function continueConversationMessage(
+   prompt.push(...relatedMemoriesPrompt(memories));
+   prompt.push(
+     `Below is the current chat history between you and ${otherPlayer.name}.`,
+-    `DO NOT greet them again. Do NOT use the word "Hey" too often. Your response should be brief and within 200 characters.`,
++    `Respond directly to what they just said. Speak in first person as ${player.name}.`,
++    `Short in-character reply only: 1-3 sentences, under 220 characters.`,
++    `No scene description, narration, stage directions, or markdown. Do NOT greet again.`,
+   );
+ 
+   const llmMessages: LLMMessage[] = [
+@@ -127,10 +147,10 @@ export async function continueConversationMessage(
+ 
+   const { content } = await chatCompletion({
+     messages: llmMessages,
+-    max_tokens: 300,
++    max_tokens: 120,
+     stop: stopWords(otherPlayer.name, player.name),
+   });
+-  return trimContentPrefx(content, lastPrompt);
++  return clampTownReply(trimContentPrefx(content, lastPrompt));
+ }
+ 
+ export async function leaveConversationMessage(
+@@ -151,12 +171,12 @@ export async function leaveConversationMessage(
+   );
+   const prompt = [
+     `You are ${player.name}, and you're currently in a conversation with ${otherPlayer.name}.`,
+-    `You've decided to leave the question and would like to politely tell them you're leaving the conversation.`,
++    `You've decided to leave and want to politely say goodbye.`,
+   ];
+   prompt.push(...agentPrompts(otherPlayer, agent, otherAgent ?? null));
+   prompt.push(
+     `Below is the current chat history between you and ${otherPlayer.name}.`,
+-    `How would you like to tell them that you're leaving? Your response should be brief and within 200 characters.`,
++    `One short goodbye line in first person, under 220 characters. No narration.`,
+   );
+   const llmMessages: LLMMessage[] = [
+     {
+@@ -176,10 +196,10 @@ export async function leaveConversationMessage(
+ 
+   const { content } = await chatCompletion({
+     messages: llmMessages,
+-    max_tokens: 300,
++    max_tokens: 80,
+     stop: stopWords(otherPlayer.name, player.name),
+   });
+-  return trimContentPrefx(content, lastPrompt);
++  return clampTownReply(trimContentPrefx(content, lastPrompt));
+ }
+ 
+ function agentPrompts(
+diff --git a/convex/aiTown/agent.ts b/convex/aiTown/agent.ts
+index b34c57b..66786ec 100644
+--- a/convex/aiTown/agent.ts
++++ b/convex/aiTown/agent.ts
+@@ -7,6 +7,7 @@ import {
+   AWKWARD_CONVERSATION_TIMEOUT,
+   CONVERSATION_COOLDOWN,
+   CONVERSATION_DISTANCE,
++  HUMAN_REPLY_GRACE_MS,
+   INVITE_ACCEPT_PROBABILITY,
+   INVITE_TIMEOUT,
+   MAX_INVITE_DISTANCE,
+@@ -175,6 +176,10 @@ export class Agent {
+           return;
+         }
+         if (!conversation.lastMessage) {
++          // Humans speak through the UI. Never talk over them with a synthetic opener.
++          if (otherPlayer.human) {
++            return;
++          }
+           const isInitiator = conversation.creator === player.id;
+           const awkwardDeadline = started + AWKWARD_CONVERSATION_TIMEOUT;
+           // Send the first message if we're the initiator or if we've been waiting for too long.
+@@ -198,26 +203,31 @@ export class Agent {
+             return;
+           }
+         }
+-        // See if the conversation has been going on too long and decide to leave.
+-        const tooLongDeadline = started + MAX_CONVERSATION_DURATION;
+-        if (tooLongDeadline < now || conversation.numMessages > MAX_CONVERSATION_MESSAGES) {
+-          console.log(`${player.id} leaving conversation with ${otherPlayer.id}.`);
+-          const messageUuid = crypto.randomUUID();
+-          conversation.setIsTyping(now, player, messageUuid);
+-          this.startOperation(game, now, 'agentGenerateMessage', {
+-            worldId: game.worldId,
+-            playerId: player.id,
+-            agentId: this.id,
+-            conversationId: conversation.id,
+-            otherPlayerId: otherPlayer.id,
+-            messageUuid,
+-            type: 'leave',
+-          });
+-          return;
++        // NPC-NPC chats wind down on their own. With a human partner, stay until they leave.
++        if (!otherPlayer.human) {
++          const tooLongDeadline = started + MAX_CONVERSATION_DURATION;
++          if (tooLongDeadline < now || conversation.numMessages > MAX_CONVERSATION_MESSAGES) {
++            console.log(`${player.id} leaving conversation with ${otherPlayer.id}.`);
++            const messageUuid = crypto.randomUUID();
++            conversation.setIsTyping(now, player, messageUuid);
++            this.startOperation(game, now, 'agentGenerateMessage', {
++              worldId: game.worldId,
++              playerId: player.id,
++              agentId: this.id,
++              conversationId: conversation.id,
++              otherPlayerId: otherPlayer.id,
++              messageUuid,
++              type: 'leave',
++            });
++            return;
++          }
+         }
+         // Wait for the awkward deadline if we sent the last message.
+         if (conversation.lastMessage.author === player.id) {
+-          const awkwardDeadline = conversation.lastMessage.timestamp + AWKWARD_CONVERSATION_TIMEOUT;
++          const awkwardTimeout = otherPlayer.human
++            ? HUMAN_REPLY_GRACE_MS
++            : AWKWARD_CONVERSATION_TIMEOUT;
++          const awkwardDeadline = conversation.lastMessage.timestamp + awkwardTimeout;
+           if (now < awkwardDeadline) {
+             return;
+           }
+diff --git a/convex/constants.ts b/convex/constants.ts
+index 9700211..98c8d79 100644
+--- a/convex/constants.ts
++++ b/convex/constants.ts
+@@ -38,6 +38,8 @@ export const INVITE_TIMEOUT = 60000;
+ // Wait for another player to say something before jumping in.
+ export const AWKWARD_CONVERSATION_TIMEOUT = 60_000; // more time locally
+ // export const AWKWARD_CONVERSATION_TIMEOUT = 20_000;
++// After an NPC speaks in a human conversation, wait longer before speaking again.
++export const HUMAN_REPLY_GRACE_MS = 3 * 60_000;
+ 
+ // Leave a conversation after participating too long.
+ export const MAX_CONVERSATION_DURATION = 10 * 60_000; // more time locally

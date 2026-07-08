@@ -207,6 +207,21 @@ def build_world_pulse_prompt_seed(result: WorldPulseRunResultV1) -> str:
             parts.append("worth_reading:")
             for reading in digest.things_worth_reading[:5]:
                 parts.append(f"  - {reading.title}")
+        if digest.curiosity_followups:
+            # Fold the autonomy gap-fill ("Orion went looking") into this single
+            # world-pulse journal so it narrates both the news read AND what Orion
+            # chased on its own. This is why the standalone autonomy_episode journal
+            # is retired (ORION_AUTONOMY_EPISODE_JOURNAL_ENABLED=false) — one run,
+            # one grounded journal, one email.
+            parts.append("orion_went_looking (autonomy gap-fill — gaps our sources missed):")
+            for followup in digest.curiosity_followups[:6]:
+                label = followup.section.replace("_", " ")
+                parts.append(f'  - {label} — gap={followup.driving_gap} query="{followup.query}"')
+                if not followup.articles:
+                    parts.append("    (looked, found nothing)")
+                for art in followup.articles[:4]:
+                    title = art.title or "(untitled)"
+                    parts.append(f"    - [{art.salience:.2f}] {title} — {art.url}")
     capsule = result.capsule
     if capsule is not None:
         for topic in capsule.salient_topics[:8]:

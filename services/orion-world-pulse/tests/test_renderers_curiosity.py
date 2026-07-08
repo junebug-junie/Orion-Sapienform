@@ -56,3 +56,13 @@ def test_hub_structured_payload_carries_followups():
     hub = render_hub_digest(_digest([followup]))
     assert hub.structured_payload["curiosity_followups"][0]["section"] == "hardware_compute_gpu"
     assert "Orion went looking" in hub.rendered_markdown
+    # Combined digest: curiosity rides on the single hub message as a structured field
+    # (alongside cards), not just buried in rendered_markdown/structured_payload.
+    assert len(hub.curiosity_followups) == 1
+    assert hub.curiosity_followups[0].section == "hardware_compute_gpu"
+    assert hub.curiosity_followups[0].articles[0].url == "https://ex/1"
+
+
+def test_hub_curiosity_field_empty_when_no_followups():
+    hub = render_hub_digest(_digest([]))
+    assert hub.curiosity_followups == []

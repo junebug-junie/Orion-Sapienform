@@ -562,6 +562,7 @@ class HubWorldPulseMessageV1(_WPBase):
     cards: list[DailyWorldPulseItemV1] = Field(default_factory=list)
     worth_reading: list[WorthReadingItemV1] = Field(default_factory=list)
     worth_watching: list[WorthWatchingItemV1] = Field(default_factory=list)
+    curiosity_followups: list[CuriosityFollowupV1] = Field(default_factory=list)
     rendered_markdown: str = ""
     structured_payload: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime

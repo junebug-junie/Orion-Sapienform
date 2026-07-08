@@ -13,6 +13,7 @@ from orion.autonomy.deviation_gate import DeviationGate
 from orion.autonomy.signal_drive_map import load_signal_drive_map
 from orion.autonomy.signal_tension import SignalTensionSource
 from orion.autonomy.tension_ratelimit import TensionRateLimiter
+from orion.signals.models import OrionSignalV1
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.work_queue import RedisStreamWorkQueue
@@ -212,7 +213,30 @@ class ConceptWorker:
         patterns = list(self.cfg.intake_channels)
         if self.cfg.wp_run_result_stream_enabled:
             patterns = [p for p in patterns if p != "orion:world_pulse:run:result"]
+        if self.cfg.homeostatic_drives_enabled:
+            # Specific organ/failure/health channels only (never the signals
+            # wildcard). Deduped against intake so we never subscribe twice.
+            for extra in self._homeostatic_channels():
+                if extra not in patterns:
+                    patterns.append(extra)
         return patterns
+
+    def _homeostatic_channels(self) -> List[str]:
+        return [
+            *self.cfg.homeostatic_signal_channels,
+            *self.cfg.homeostatic_failure_channels,
+        ]
+
+    def _homeostatic_source(self, intake_channel: str) -> Optional[str]:
+        """Classify a channel as a homeostatic source: 'signal' | 'failure', or
+        None if it is a normal concept-induction intake. Health degradation
+        arrives as a mesh_health OrionSignal on the 'signal' rail, so there is no
+        separate equilibrium branch."""
+        if intake_channel in self.cfg.homeostatic_signal_channels:
+            return "signal"
+        if intake_channel in self.cfg.homeostatic_failure_channels:
+            return "failure"
+        return None
 
     async def _dispatch_autonomy_episode_journal(
         self,
@@ -586,7 +610,135 @@ class ConceptWorker:
             feedback_frame=frame,
         )
 
+    def _parse_signal(self, env: BaseEnvelope) -> Optional[OrionSignalV1]:
+        try:
+            return OrionSignalV1.model_validate(self._payload_dict(env))
+        except Exception:
+            return None
+
+    async def _handle_signal_drive_tick(
+        self, env: BaseEnvelope, intake_channel: str, source: str
+    ) -> None:
+        """Thin drive-only rail for homeostatic sources: mint deviation tensions,
+        update + publish drive state/audit, and return. No concept induction, no
+        goals, no identity snapshot. Degrades to a no-op (never raises)."""
+        subject = "orion"
+        model_layer = model_layer_for_subject(subject)
+        entity_id = entity_id_for_subject(subject, model_layer)
+        now = datetime.now(timezone.utc)
+        now_mono = now.timestamp()
+
+        tensions: List[TensionEventV1] = []
+        try:
+            if source == "signal":
+                sig = self._parse_signal(env)
+                if sig is not None:
+                    tensions = self.signal_tension_source.from_signal(
+                        sig, now=now_mono, channel=intake_channel
+                    )
+            elif source == "failure":
+                tensions = self.signal_tension_source.from_failure(
+                    severity=self.cfg.homeostatic_failure_severity,
+                    now=now_mono,
+                    channel=intake_channel,
+                    correlation_id=str(env.correlation_id),
+                    summary=env.kind or "failure_event",
+                )
+        except Exception:
+            logger.warning(
+                "homeostatic_signal_tick_failed channel=%s source=%s",
+                intake_channel, source, exc_info=True,
+            )
+            return
+
+        if not tensions:
+            # No deviation this tick. The leaky integrator decays on wall-clock
+            # elapsed at the next update, so skipping here loses no decay.
+            return
+
+        # The whole drive-update/publish section is guarded: this rail runs at
+        # ~1/s and the bus loop re-raises, so a single bad prior state (e.g. a
+        # tz-naive updated_at) must degrade to a no-op, never tear down the worker.
+        try:
+            for tension in tensions:
+                await self._publish_tension_event(tension, env.correlation_id)
+
+            prior = self.store.load_drive_state(subject)
+            previous_ts: Optional[datetime] = None
+            if isinstance(prior.get("updated_at"), str):
+                try:
+                    previous_ts = datetime.fromisoformat(prior["updated_at"])
+                    if previous_ts.tzinfo is None:
+                        previous_ts = previous_ts.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    previous_ts = None
+
+            pressures, activations = self.drive_engine.update(
+                previous_pressures=prior.get("pressures"),
+                previous_activations=prior.get("activations"),
+                tensions=tensions,
+                now=now,
+                previous_ts=previous_ts,
+            )
+            self.store.save_drive_state(
+                subject, pressures=pressures, activations=activations, updated_at=now
+            )
+
+            trace_id = extract_trace_id(env)
+            turn_id = extract_turn_id(env)
+            drive_state = drive_state_from_values(
+                subject=subject,
+                model_layer=model_layer,
+                entity_id=entity_id,
+                ts=now,
+                pressures=pressures,
+                activations=activations,
+                confidence=0.72,
+                correlation_id=str(env.correlation_id),
+                trace_id=trace_id,
+                turn_id=turn_id,
+                provenance=ArtifactProvenance(
+                    intake_channel=intake_channel,
+                    correlation_id=str(env.correlation_id),
+                    trace_id=trace_id,
+                    turn_id=turn_id,
+                    tension_refs=[t.artifact_id for t in tensions],
+                ),
+                related_nodes=[f"subject:{subject}"] + [t.artifact_id for t in tensions],
+            )
+            await self._publish_drive_state(drive_state, env.correlation_id)
+
+            tick_attribution = compute_tick_attribution(tensions)
+            lead_tension = select_lead_tension(tensions)
+            dominant_drive = dominant_drive_from_attribution(
+                tick_attribution, lead_tension=lead_tension
+            )
+            drive_audit = build_drive_audit(
+                env=env,
+                intake_channel=intake_channel,
+                drive_state=drive_state,
+                tensions=tensions,
+                tick_attribution=tick_attribution,
+                dominant_drive=dominant_drive,
+            )
+            await self._publish_artifact(drive_audit, self.cfg.drive_audit_channel, env.correlation_id)
+        except Exception:
+            logger.warning(
+                "homeostatic_drive_update_failed channel=%s source=%s",
+                intake_channel, source, exc_info=True,
+            )
+            return
+
     async def handle_envelope(self, env: BaseEnvelope, intake_channel: str) -> None:
+        # Homeostatic sources ride a thin drive-only rail: they update drives and
+        # return BEFORE concept induction, so a 1/s biometrics tick never triggers
+        # windowing/induction. Gated on the flag; unmapped content mints nothing.
+        if self.cfg.homeostatic_drives_enabled:
+            source = self._homeostatic_source(intake_channel)
+            if source is not None:
+                await self._handle_signal_drive_tick(env, intake_channel, source)
+                return
+
         text = self._extract_text(env)
 
         if env.kind == "substrate.self_state.v1":

@@ -1957,7 +1957,11 @@ channels:
     kind: "event"
     schema_id: "OrionSignalV1"
     producer_services: ["orion-signal-gateway"]
-    consumer_services: ["orion-hub", "orion-cortex-exec", "*"]
+    # concept-induction is registered here (the per-organ sub-channels are not
+    # individually catalogued), but at runtime it subscribes ONLY to the specific
+    # organ channels (orion:signals:biometrics|spark|equilibrium) for homeostatic
+    # drives — never this wildcard, so the scene_state flood is excluded.
+    consumer_services: ["orion-hub", "orion-cortex-exec", "orion-spark-concept-induction", "*"]
     stability: "experimental"
     since: "2026-05-02"
 

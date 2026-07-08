@@ -138,6 +138,51 @@ def failure_to_tension(
         return None
 
 
+class SignalTensionSource:
+    """Stateful coordinator: holds the deviation gate, structural map, and rate
+    limiter so their state persists across ticks. The worker calls the ``from_*``
+    methods and merges the returned (already rate-limited) tensions into the tick.
+
+    Every method degrades to ``[]`` (never raises) so a malformed event can never
+    stall the drive loop.
+    """
+
+    def __init__(
+        self,
+        *,
+        gate: DeviationGate,
+        sdm: SignalDriveMap,
+        ratelimiter,
+    ) -> None:
+        self._gate = gate
+        self._sdm = sdm
+        self._rl = ratelimiter
+
+    def _bounded(self, tension: Optional[TensionEventV1], now: float) -> list[TensionEventV1]:
+        if tension is None:
+            return []
+        return self._rl.bounded([tension], now=now)
+
+    def from_signal(self, sig: OrionSignalV1, *, now: float, channel: str = "orion:signals") -> list[TensionEventV1]:
+        return self._bounded(signal_to_tension(sig, self._gate, self._sdm, channel=channel), now)
+
+    def from_failure(self, *, severity: float, now: float, channel: str,
+                     correlation_id: Optional[str] = None, summary: str = "failure_event") -> list[TensionEventV1]:
+        return self._bounded(
+            failure_to_tension(severity=severity, sdm=self._sdm, channel=channel,
+                               correlation_id=correlation_id, summary=summary),
+            now,
+        )
+
+    def from_equilibrium(self, *, healthy: bool, prev_healthy: Optional[bool], now: float,
+                         correlation_id: Optional[str] = None) -> list[TensionEventV1]:
+        return self._bounded(
+            equilibrium_to_tension(healthy=healthy, prev_healthy=prev_healthy, sdm=self._sdm,
+                                   correlation_id=correlation_id),
+            now,
+        )
+
+
 def equilibrium_to_tension(
     *,
     healthy: bool,

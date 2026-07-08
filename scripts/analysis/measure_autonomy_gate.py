@@ -437,7 +437,7 @@ def verdict_economy(drive: DriveStats, pressure: ResourcePressureStats) -> str:
 
 
 # ===========================================================================
-# I/O LAYER — psycopg2 read-only + bus XRANGE. Never exercised by unit tests.
+# I/O LAYER — psycopg2 read-only + Fuseki SPARQL SELECT. Never exercised by unit tests.
 # Every adapter degrades to empty / None on absent input; none raise on
 # missing data or columns.
 # ===========================================================================

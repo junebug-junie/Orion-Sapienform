@@ -56,6 +56,8 @@ SYNC_PREFIXES = (
     "HUB_AGENT_CLAUDE_",
     "HUB_AITOWN_",
     "HUB_FCC_",
+    "SIGNALS_",
+    "SIGNAL_GATEWAY_",
     "LLM_GATEWAY_OPENAI_",
     "ORION_VECTOR_HOST_",
     "VECTOR_HOST_",
@@ -181,6 +183,7 @@ DEFAULT_SERVICES = (
     "orion-fcc",
     "orion-vector-host",
     "orion-embodiment",
+    "orion-signals",
 )
 
 

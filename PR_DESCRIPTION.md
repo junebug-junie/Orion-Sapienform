@@ -1,57 +1,106 @@
-# AI Town: Orion unified-turn speech + facing guarantee + Juniper human + fresh 8-NPC cast
-
-Branch: `feat/aitown-orion-unified-cast` → `main`
-Open PR: https://github.com/junebug-junie/Orion-Sapienform/pull/new/feat/aitown-orion-unified-cast
+# fix(world-pulse): derive Firecrawl key from FCC mount, not .env
 
 ## Summary
 
-- **Orion town speech → full unified turn.** `orion-embodiment` now generates Orion's AI-Town utterances via the hub's unified-turn saga (`POST /api/chat` `mode=orion`) instead of the lightweight `chat_quick` cortex rail, with automatic **fallback to the quick lane** on timeout/error/`turn_error`/`turn_deferred`/empty. NPCs are unchanged (still on the `chat` lane via Convex `LLM_MODEL`).
-- **Facing guarantee + inspectability.** `WorldPerceptionV1` now exposes Orion's own `facing`/`pathfinding`; perception computes `facing_partner`; the worker issues a single zero-length stop when Orion is `participating` with residual pathfinding, so the engine's `Conversation.tick` orients Orion toward its partner.
-- **Juniper Feld is the human player** (`DEFAULT_NAME` + join description) via a tracked upstream patch.
-- **Fresh 8-NPC town cast** (Mara Vale, Nico Sable, Dr. Elian Cross, Juno Park, Tessa Quinn, Vale Moreno, Sofia Bell, Cam Lin) via a tracked upstream patch; Orion joins externally and Juniper is the human (neither is in `Descriptions`).
+- World-pulse's "Orion went looking" curiosity readonly fetch needs a Firecrawl key, but the service compose had **no FCC mount** and no key wiring.
+- On a real/CI deploy (or after any `up_all_services_batched.sh` restart) world-pulse would silently fall back to the stub backend and fetch nothing — or force an operator to paste a raw secret into the gitignored `.env`, which is not portable and drifts.
+- This patch mirrors `orion-spark-concept-induction`: bind-mount host `~/.fcc` read-only and derive the key via `ORION_FCC_ENV_PATH`. `FIRECRAWL_API_KEY` stays **blank** in `.env` / `.env_example` — no secret in the repo or in env files.
+- Result: `up_all_services_batched.sh` brings world-pulse up with a working curiosity fetch and zero secret duplication, independent of any other container.
+
+## Outcome moved
+
+Failure mode fixed: world-pulse curiosity fetch no longer requires a raw secret in `.env` and no longer regresses to the stub backend on a clean/batched bring-up. The Firecrawl key now resolves from the same single source of truth (`~/.fcc/.env`) the rest of the mesh uses.
+
+## Current architecture
+
+- `services/orion-world-pulse/app/services/curiosity.py` calls `resolve_fetch_backend()` → `resolve_firecrawl_api_key()` (`orion/autonomy/fetch_backend_resolve.py`), which checks `FIRECRAWL_API_KEY` env first, then falls back to `ORION_FCC_ENV_PATH` (default `~/.fcc/.env`).
+- `orion-spark-concept-induction` already mounts `${HOME}/.fcc:/root/.fcc:ro` and sets `ORION_FCC_ENV_PATH=/root/.fcc/.env`.
+- `orion-world-pulse/docker-compose.yml` had **no** `volumes:` block, so the FCC file was never present in the container → key never resolved → stub backend.
+
+## Architecture touched
+
+- world-pulse runtime packaging only. No bus/schema/API contract changes.
+
+## Files changed
+
+- `services/orion-world-pulse/docker-compose.yml`: add read-only `${HOME}/.fcc:/root/.fcc:ro` volume mount (mirrors concept-induction).
+- `services/orion-world-pulse/.env_example`: document `ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED` (default `false`), `ORION_EPISODE_FETCH_BACKEND=auto`, `ORION_FCC_ENV_PATH=/root/.fcc/.env`, and a blank `FIRECRAWL_API_KEY=` (secret derived from mount, never stored).
+
+## Schema / bus / API changes
+
+- Added: none
+- Removed: none
+- Renamed: none
+- Behavior changed: none
+- Compatibility notes: purely additive compose volume + env template docs.
 
 ## Env/config changes
 
-- Added (orion-embodiment): `EMBODIMENT_SPEECH_UNIFIED_ENABLED=true`, `EMBODIMENT_HUB_CHAT_URL=http://100.92.216.81:8080/api/chat`, `EMBODIMENT_UNIFIED_TIMEOUT_SEC=120`, `EMBODIMENT_UNIFIED_SESSION_PREFIX=aitown`.
-- `.env_example` updated; `python scripts/sync_local_env_from_example.py` ran → `skip orion-embodiment: no .env` (no local env on this box).
+- Added keys (documented in `.env_example`): `ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED`, `ORION_EPISODE_FETCH_BACKEND`, `ORION_FCC_ENV_PATH`, `FIRECRAWL_API_KEY` (blank placeholder).
+- `.env_example` updated: yes
+- local `.env` synced: operator `.env` updated in place (raw key removed; set `ORION_FCC_ENV_PATH=/root/.fcc/.env`, `ORION_EPISODE_FETCH_BACKEND=auto`, blank `FIRECRAWL_API_KEY=`). `.env` remains gitignored.
+- skipped keys requiring operator action: none. Host must have `~/.fcc/.env` containing `FIRECRAWL_API_KEY` (already present on the athena node and used by concept-induction).
 
-## Tests
+## Tests run
 
+```text
+docker compose --env-file .env --env-file services/orion-world-pulse/.env \
+  -f services/orion-world-pulse/docker-compose.yml config
+# -> config OK; volumes source=/home/athena/.fcc target=/root/.fcc (ro); ORION_FCC_ENV_PATH resolved
 ```
-.venv/bin/python -m pytest services/orion-embodiment/tests orion/embodiment/tests -q  →  122 passed
+
+## Evals run
+
+```text
+No eval harness change. Curiosity behavior covered by the merged feature's
+services/orion-world-pulse/tests/test_curiosity.py (unchanged).
 ```
-Deterministic AI Town checks: upstream patches reverse-check clean; `apply_upstream_patches.sh` idempotent (exit 0); `tsc --noEmit` on `data/characters.ts` exit 0.
+
+## Docker/build/smoke checks (live, athena node)
+
+```text
+# env key blank, mount present, key derived:
+ENV_FIRECRAWL_LEN=0
+FCC_PATH=/root/.fcc/.env
+FCC_FILE_KEY_LEN=35
+resolve_firecrawl_api_key() -> len 35 ; backend = firecrawl_search_backend
+
+# producer run 8332fa96 (non-dry):
+world_pulse_curiosity_gate outcome=allowed reason=allowed auto_execute=True
+world_pulse_curiosity_followups sections=1 articles=5
+digest section=hardware_compute_gpu articles=5 (real GPU titles)
+
+# consumer reuse (single-shared-fetch, no second fetch):
+wp_curiosity_followup_reused run_id=8332fa96 section=hardware_compute_gpu action_id=fetch-8332fa96...-85246d3d articles=5
+substrate_policy_act capability=journal.compose.episode outcome=allowed
+substrate_episode_journal_dispatched ; action_outcome_emitted success=True ; wp_stream_processed
+```
 
 ## Review findings fixed
 
-- Task 1 spec: double fallback log → single line.
-- Task 1 quality: fallback reason now discriminates `turn_error`/`turn_deferred`/`non_final:<t>`/`empty` (+corr id, +test) — anti silent-failure.
-- Task 2 quality: stop now targets exact current position (zero-length) instead of tile-center micro-move.
-- Final review: `EMBODIMENT_HUB_CHAT_URL` default fixed to host-reachable Tailscale IP (hub is `network_mode: host`, Docker DNS name would not resolve → silent quick-only); dead `import math` removed; README facing/log wording corrected.
+- Finding: raw Firecrawl secret was copied into gitignored `services/orion-world-pulse/.env` to make the feature run.
+  - Fix: reverted; switched to read-only FCC mount + `ORION_FCC_ENV_PATH` derivation, key blank everywhere.
+  - Evidence: `ENV_FIRECRAWL_LEN=0` in the container while `resolve_firecrawl_api_key()` returns len 35 from the mount; live run fetched 5 real articles.
 
-## Restart / operator commands
+## Restart required
 
-On the node running orion-embodiment (only when `ORION_EMBODIMENT_ENABLED=true`):
+After merging to `main` and pulling into the checkout you run the batched script from:
+
 ```bash
-python scripts/sync_local_env_from_example.py
-# set EMBODIMENT_HUB_CHAT_URL to this node's host-reachable hub IP if not the default
-docker compose --env-file .env --env-file services/orion-embodiment/.env \
-  -f services/orion-embodiment/docker-compose.yml up -d --build
+docker compose --env-file .env --env-file services/orion-world-pulse/.env \
+  -f services/orion-world-pulse/docker-compose.yml up -d --force-recreate
+# or simply:
+./mesh-utilities/common/up_all_services_batched.sh
 ```
-Fresh game (destructive; node with `upstream/` cloned):
-```bash
-cd services/orion-ai-town && bash scripts/apply_upstream_patches.sh
-cd upstream && npx convex dev --once
-npx convex run testing:stop
-npx convex run testing:wipeAllTables
-npx convex run init
-npx convex run testing:resume
-cd ../../.. && python services/orion-embodiment/scripts/bootstrap_orion_agent.py --write
-```
+
+Until this branch is merged + pulled, the live container is running with an ad-hoc override providing the same mount; a batched restart from an unpatched checkout would drop the mount and regress curiosity to the stub backend.
 
 ## Risks / concerns
 
-- Medium — **UNVERIFIED at runtime**: live town + hub run on a mesh node; unified town speech and Orion's visual facing not observed end-to-end. 122 unit tests + deterministic checks pass. Operator should confirm (1) a town utterance with hub correlation and no fallback spam, (2) Orion visibly faces its partner.
-- Low — hub URL default assumes hub at athena Tailscale IP (`100.92.216.81:8080`); override per node. Requires hub `ORION_UNIFIED_TURN_ENABLED=true` + `ORION_HARNESS_GOVERNOR_ENABLED=true`, else always falls back to quick.
-- Low — unified town speech publishes into Orion's main cognition rail; `aitown:` session prefix keeps it separable from Juniper↔Orion continuity.
-- Note — AI Town conversations are hard 2-party; no group-chat facing case.
+- Severity: low
+- Concern: host `~/.fcc/.env` must exist on any node running world-pulse with curiosity enabled (same precondition concept-induction already has).
+- Mitigation: with no key resolvable, `resolve_fetch_backend()` degrades to the stub and `build_curiosity_followups()` degrades to empty — the run never fails.
+
+## PR link
+
+https://github.com/junebug-junie/Orion-Sapienform/pull/new/fix/world-pulse-fcc-mount

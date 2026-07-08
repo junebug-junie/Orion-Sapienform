@@ -1,8 +1,10 @@
 # φ as Intrinsic Reward + Value Learning — preferences that are earned, not installed
 
-> **Status:** Design proposal (proposal mode — self-modification of the motivation loop). Single-scope spec: full mechanism, no phased future versions.
+> **Status:** Design proposal (proposal mode — self-modification of the motivation loop). **Step 3b** — deferred behind Plan 2 encoder + Step 3a consumer (`docs/superpowers/specs/2026-07-08-phi-intrinsic-reward-value-learning-design.md`).
 >
 > **Research area 3 of 4** in the "move the origin of wanting inside" arc. Siblings: endogenous origination, internal economy, voluntary attention override.
+>
+> **Supersession note:** This spec defines autonomy-episode `θ` learning (`ValueUpdateV1`, goals.py priority bias). Step 3a (07-08) defines the continuous `PhiIntrinsicRewardV1` trace + episode reducer that **feeds** this spec once Plan 2 encoder is live. Do not implement 3b before 3a producer traces exist.
 
 ## Build sequence & gate
 
@@ -11,10 +13,10 @@ Four-area arc; build order de-risks foundational-first and gates the two empiric
 - **Step 0 — Measurement gate** (read-only): (a) does `SelfStateV1` drift in exogenous silence? (b) do ≥2 drives co-activate often and does `resource_pressure` rise? Gates Steps 1 and 4.
 - **Step 1 — Endogenous drive origination** — keystone; needs no φ, no goal-wire, no scarcity.
 - **Step 2 — Voluntary attention override** (+ goal→attention wire); independent of φ/reward.
-- **Step 3 — φ intrinsic reward + value learning** *(this spec)* — reward re-founded on substrate self-state.
+- **Step 3 — φ intrinsic reward + value learning** *(Step 3a: `docs/superpowers/specs/2026-07-08-phi-intrinsic-reward-value-learning-design.md`; Step 3b deferred: `docs/superpowers/specs/2026-07-07-phi-intrinsic-reward-value-learning-design.md`)* — reward re-founded on substrate self-state.
 - **Step 4 — Internal economy** (last; only if 0(b) shows scarcity binds; depends on this spec's value-biased bids).
 
-**This spec = Step 3.** **Gate:** reward must be re-founded on the continuous `SelfStateV1` coherence/agency delta — the 4-D harness φ (`phi_before/after`) is **turn-scoped** (`orion/spark/strategies.py`, `orion/schemas/telemetry/turn_effect.py`) and has **no source for off-turn autonomy episodes**; harness φ is used only when a turn coincides. The anti-hacking guard must be **intrinsic** (per-drive action-rate cap), not outsourced to Step 4. Credit assigns to the episode's own `drive_origin`, not a per-tick split. Benefits from Step 1's richer episode stream, so build after it.
+**This spec = Step 3.** **Gate — now RESOLVED by the merged `phi-inner-state-truthful` (PR #888):** the reward source no longer needs improvising. That work shipped `InnerStateFeaturesV1` — a continuous, decontaminated felt+cognitive vector emitted per self-state tick with an `honest_headline` scalar — which is exactly the off-turn coherence signal this spec's reward requires. The 4-D harness φ (`phi_before/after`) remains **turn-scoped** (`orion/spark/strategies.py`, `orion/schemas/telemetry/turn_effect.py`) and is now used only as a *corroborating* turn-coincident signal, not the primary source. **φ source is two-phase:** cold-start `InnerStateFeaturesV1.headline` (live today) → the self-supervised encoder's reconstruction-error φ (`ORION_PHI_ENCODER_ENABLED`, pending corpus). Because `θ` is versioned (`value_weights_version`, salience-refit precedent), the headline→encoder swap is a re-fit, not a rewrite. The anti-hacking guard must be **intrinsic** (per-drive action-rate cap), not outsourced to Step 4. Credit assigns to the episode's own `drive_origin`, not a per-tick split. **Two live prerequisites before building:** Step 1 (endogenous origination) must be *enabled* (gated on measurement 0(a)) so autonomy episodes actually flow for Δφ to measure, and enough non-degenerate corpus must accrue for the encoder phase. Build after both.
 
 ## Arsonist summary
 
@@ -43,7 +45,7 @@ if all(k in spark_meta for k in ("phi_before", "phi_post_after")):
 So a **four-dimensional φ with before/after deltas already flows** at turn finalize. Today those deltas are used only to *build tensions* (pressure), never as a *reward to learn from*.
 
 ### A second φ-like signal exists in the substrate
-`orion/schemas/self_state.py::SelfStateV1` carries `dimensions.coherence.score`, `dimensions.agency_readiness.score`, `trajectory_condition ∈ {improving,degrading,stable}`, `dimension_trajectory`, and `overall_surprise`. This is a substrate-side coherence/agency signal broadcast continuously. Either signal can source reward; the harness φ vector is the sharper, action-aligned one.
+`orion/schemas/self_state.py::SelfStateV1` carries `dimensions.coherence.score`, `dimensions.agency_readiness.score`, `trajectory_condition`, `dimension_trajectory`, `overall_surprise` — broadcast continuously. **But do not read raw `SelfStateV1` for reward.** PR #888 (`phi-inner-state-truthful`) already did the hygiene: a signal-veracity audit dropped the proven-dead fields (`policy_pressure` = hardcoded `0.0`; `uncertainty` = structurally saturated), quarantined infra signals (`reliability_pressure`, `catalog_drift`, bus health) into an `infra` sub-vector that **φ must never read**, and fixed the builder so config-drift can no longer bleed into a felt dimension. The clean product is `orion/schemas/telemetry/inner_state.py::InnerStateFeaturesV1` (felt+cognitive `features` + `honest_headline` + `phi_health` GIGO guard), emitted on `orion:self:inner_features` by `orion-spark-introspector`. **This is the canonical reward source** — sourcing reward from raw `SelfStateV1` would re-import the exact contamination #888 removed. The harness φ vector remains the sharper *turn-coincident* corroborator.
 
 ### Preferences are installed constants
 - `orion/spark/concept_induction/drives.py::DriveMathConfig`: `activate_threshold=0.62`, `deactivate_threshold=0.42`, `saturation_gain=1.8`, `decay_tau_sec=1800`. Constants.
@@ -71,14 +73,24 @@ Orion has a genuine intrinsic signal (φ) and a proven mechanism for learned ver
 ## The mechanism
 
 ### Intrinsic reward
-For an autonomy episode with a captured φ-before and φ-after:
+For an autonomy episode, capture `InnerStateFeaturesV1` at episode-open and
+episode-close (nearest tick within the window). The **primary reward is the
+headline delta**:
 ```
-r = w_c·Δcoherence + w_v·Δvalence + w_a·Δagency_readiness − w_n·|Δnovelty_overshoot|
-    (seed: w_c=0.5, w_v=0.25, w_a=0.25, w_n=0.1)
+r = Δφ = headline_after − headline_before        # InnerStateFeaturesV1.honest_headline (→ encoder recon-error φ in phase 2)
 ```
-- `Δcoherence, Δvalence` from the harness φ vector (`phi_post_after − phi_before`).
-- `Δagency_readiness` from `SelfStateV1` before/after the episode window (substrate-side).
-- Novelty is rewarded up to a point then penalized past an overshoot band (curiosity that shatters coherence is not free). `r` is clamped to `[−1, 1]`.
+Optionally corroborate with harness φ *when a turn coincides* with the episode:
+```
+r = Δφ + w_turn·(Δcoherence_harness)             # w_turn small, seed 0.25; only when phi_before/phi_post_after present
+```
+- `Δφ` is the decontaminated headline delta — the only always-available, off-turn
+  signal. Phase 2 swaps `honest_headline` for the encoder's reconstruction-error φ
+  with **no change to this rule** (same scalar contract).
+- Refuse the reward if `phi_health != "ok"` (degenerate/frozen) or
+  `grammar_truth_degraded` — a GIGO episode earns no value update (skip, don't
+  fabricate a reward). Novelty overshoot is penalised by the encoder's own
+  recon-error in phase 2; in cold-start it is not separately modelled.
+- `r` is clamped to `[−1, 1]`.
 
 ### Learned value vector
 `θ: dict[drive → float]`, initialized to `0.0` (seed = neutral), bounded `[−VALUE_CLAMP, +VALUE_CLAMP]` (seed `0.5`). Update after each episode:
@@ -106,10 +118,12 @@ class ValueUpdateV1(BaseModel):
     kind: Literal["autonomy.value.update.v1"] = "autonomy.value.update.v1"
     episode_id: str
     drive_origin: str
-    phi_before: dict[str, float]      # {coherence,valence,novelty,energy}
-    phi_after: dict[str, float]
-    agency_before: float
-    agency_after: float
+    headline_before: float            # InnerStateFeaturesV1.honest_headline (→ encoder φ, phase 2)
+    headline_after: float
+    phi_health: str                   # ok | degenerate | frozen (episode dropped unless "ok")
+    features_version: str             # provenance of the InnerStateFeaturesV1 read
+    phi_before: dict[str, float] | None = None   # harness 4-D, only when a turn coincided
+    phi_after: dict[str, float] | None = None
     reward: float = Field(ge=-1.0, le=1.0)
     eta: float
     weight_before: float
@@ -128,9 +142,10 @@ class ValueUpdateV1(BaseModel):
 
 ```text
 autonomy episode executes (existing loop)
-  → capture φ_before (harness turn-effect / self_state) at episode open
-  → action runs; capture φ_after at episode close
-  → compute r = Δφ  (intrinsic_reward.py)
+  → capture InnerStateFeaturesV1.headline_before at episode open (consume orion:self:inner_features)
+  → action runs; capture headline_after at episode close (nearest tick in window)
+  → if phi_health != ok or grammar_truth_degraded: skip (no fabricated reward)
+  → compute r = Δφ = headline_after − headline_before  (intrinsic_reward.py)
   → credit-assign to drive_origin; update θ (value_learner.py, bounded η)
   → persist θ + emit ValueUpdateV1  (autonomy_value_weights table + bus)
   → next GoalProposalEngine cycle: priority ×= (1 + θ[drive_origin])
@@ -165,8 +180,8 @@ After edit: `python scripts/sync_local_env_from_example.py`.
 
 ## Tests (gate — deterministic, <2s)
 `orion/autonomy/tests/test_intrinsic_reward.py` + `test_value_learner.py` + `test_goal_priority_value_bias.py`:
-1. `r` computation: positive Δcoherence → positive reward; novelty past overshoot band → penalized.
-2. `r` clamps to `[−1,1]` under adversarial deltas.
+1. `r` computation: positive `Δheadline` → positive reward; a coincident harness turn adds its small corroborating term.
+2. `r` clamps to `[−1,1]` under adversarial deltas; an episode with `phi_health != "ok"` or `grammar_truth_degraded` yields **no** ValueUpdate (skipped, not zero-rewarded).
 3. Bounded update: single episode moves θ by ≤ `VALUE_LR_CAP`.
 4. Decaying η: 100th visit step < 1st visit step.
 5. θ clamps to `±VALUE_CLAMP` under repeated same-sign reward.

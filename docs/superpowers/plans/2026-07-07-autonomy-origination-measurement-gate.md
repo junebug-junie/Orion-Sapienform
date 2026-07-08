@@ -15,7 +15,7 @@
 **Related specs (gated by this plan):**
 - `docs/superpowers/specs/2026-07-07-endogenous-drive-origination-design.md` (Step 1 — gated by verdict a)
 - `docs/superpowers/specs/2026-07-07-internal-economy-scarcity-allocation-design.md` (Step 4 — gated by verdict b)
-- Siblings not gated by this plan: `…-phi-intrinsic-reward-value-learning-design.md` (Step 3), `…-voluntary-attention-override-design.md` (Step 2).
+- Siblings not gated by this plan: `docs/superpowers/specs/2026-07-08-phi-intrinsic-reward-value-learning-design.md` (Step 3a), `docs/superpowers/specs/2026-07-07-phi-intrinsic-reward-value-learning-design.md` (Step 3b deferred), `…-voluntary-attention-override-design.md` (Step 2).
 
 **Branch / worktree:**
 ```bash

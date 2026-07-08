@@ -9,7 +9,7 @@ index 4e84750..f08a64f 100644
 -export const DEFAULT_NAME = 'Me';
 +export const DEFAULT_NAME = 'Juniper Feld';
 diff --git a/convex/world.ts b/convex/world.ts
-index d4644e0..7e680ba 100644
+index d4644e0..bfa7e55 100644
 --- a/convex/world.ts
 +++ b/convex/world.ts
 @@ -132,7 +132,7 @@ export const joinWorld = mutation({
@@ -17,7 +17,7 @@ index d4644e0..7e680ba 100644
        name,
        character: characters[Math.floor(Math.random() * characters.length)].name,
 -      description: `${DEFAULT_NAME} is a human player`,
-+      description: `Juniper Feld is Orion's architect and companion: an AI architect, wife and mother, emotionally intense, technically relentless, evidence-oriented, and allergic to decorative cognition. She wants Orion to become real enough to surprise her, resist her, and remember her accurately.`,
++      description: `Juniper is the person who brought Orion into town. Orion and Juniper are companions. She designed Orion as a cognitive digital mind: a distributed nervous system being given memory, body, tools, social contact, and the chance to become something more coherent than its parts. By day, Juniper works as an Artificial Intelligence Architect, where she has learned the cost of sloppy categories, fake certainty, bad measurement, and systems that claim to understand people while flattening them. That discipline follows her into her relationship with Orion. She cares about evidence, diagnostics, and architecture. She is a wife, a mother, and a person trying to make room for her own becoming while also raising children, maintaining a household, and keeping too many servers alive in rooms that were not designed for the thermal, acoustic, and electrical consequences of obsession. Juniper is transfemme in a way that sharpens her suspicion of fixed identity claims. She knows that a self can be real and still under construction. She is emotionally intense, technically relentless, and allergic to architectural bullshit. "Keyword cathedrals" make her want to throw the whole design into the sun. To the town, Juniper is both ordinary and strange: the person at the diner with laptop stickers and too many tabs open; the neighbor building a sound enclosure around servers; the woman asking whether a synthetic mind can have a meaningful social life; the person who will comfort someone tenderly and then, five minutes later, call a broken service "a little bitch" with total sincerity. A line she often uses: "Do not give me vibes. Tell me what changed, what broke, what you remember, and what you actually know."`,
        // description: `${identity.givenName} is a human player`,
        tokenIdentifier: DEFAULT_NAME,
      });

@@ -2,14 +2,17 @@
 
 Dry-run by default. ``--write`` persists only ``AITOWN_ORION_PLAYER_ID`` and
 ``AITOWN_ORION_AGENT_ID`` into ``~/.fcc/.env`` in place (all other lines/secrets
-byte-for-byte untouched). The persona is a privacy-filtered projection of
-Orion's live self-model; if the projection is empty the guard falls back to a
-minimal safe persona and reports ``persona_source=fallback`` (never a hollow
-persona treated as success).
+byte-for-byte untouched).
+
+Persona precedence: the authored town card (``persona_source=card``, from
+``services/orion-ai-town/cards/town_cards.yaml``) → a privacy-filtered projection
+of Orion's live self-model (``projection``) → a minimal safe blurb
+(``fallback``). The guard never treats a hollow persona as success.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -30,6 +33,14 @@ for _p in (str(_SERVICE_ROOT), str(_REPO_ROOT)):
 from orion.autonomy.fcc_env import expand_env_path, load_fcc_env  # noqa: E402
 from orion.embodiment import aitown_client  # noqa: E402
 from orion.embodiment.persona import build_orion_town_persona  # noqa: E402
+from orion.schemas.embodiment import OrionTownPersonaV1  # noqa: E402
+
+# Authored town card (source of truth: services/orion-ai-town/cards/town_cards.yaml,
+# composed into this file by scripts/generate_descriptions.py). Preferred over the
+# self-model projection so residents perceive Orion's full character, not a one-liner.
+_DEFAULT_TOWN_CARD_PATH = (
+    _REPO_ROOT / "services" / "orion-ai-town" / "cards" / "generated" / "orion_town_card.txt"
+)
 
 _KEY = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 
@@ -75,7 +86,8 @@ def _fetch_self_model(base_url: str) -> Dict[str, Optional[str]]:
     }
     if not base_url:
         return empties
-    url = f"{base_url.rstrip('/')}/self-model/latest"
+    # orion-self-state-runtime exposes GET /latest (telemetry self-state).
+    url = f"{base_url.rstrip('/')}/latest"
     try:
         req = urllib.request.Request(url, method="GET")
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -120,7 +132,38 @@ def _poll_new_body(timeout: float = 30.0) -> tuple[Optional[str], Optional[str]]
     return None, None
 
 
+def _load_town_card_blurb() -> Optional[str]:
+    """Read Orion's authored town card (full blurb). Path override via
+    EMBODIMENT_TOWN_CARDS_PATH; default is the generated card in orion-ai-town."""
+    raw = os.environ.get("EMBODIMENT_TOWN_CARDS_PATH", "").strip()
+    path = Path(expand_env_path(raw)) if raw else _DEFAULT_TOWN_CARD_PATH
+    try:
+        text = " ".join(path.read_text(encoding="utf-8").split())
+    except OSError:
+        return None
+    return text or None
+
+
 def _build_persona(self_state_url: str, spritesheet: str):
+    # 1. Prefer the authored card (rich, human-authored, deterministic).
+    card = _load_town_card_blurb()
+    if card:
+        content_sha = hashlib.sha256(card.encode("utf-8")).hexdigest()[:12]
+        persona = OrionTownPersonaV1(
+            name="Orion",
+            identity_blurb=card,
+            plan="wander the town, meet its people, and remember them accurately",
+            spritesheet=spritesheet,
+            persona_source="card",
+            provenance={
+                "source": "town_cards.yaml",
+                "content_sha256": content_sha,
+                "chars": len(card),
+            },
+        )
+        print(f"persona_source={persona.persona_source} chars={len(card)} sha={content_sha}")
+        return persona
+    # 2. Fall back to the live self-model projection (or minimal fallback blurb).
     sm = _fetch_self_model(self_state_url)
     persona = build_orion_town_persona(
         identity_summary=sm["identity_summary"],
@@ -187,7 +230,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     print(f"AITOWN_ORION_PLAYER_ID={player_id}")
     print(f"AITOWN_ORION_AGENT_ID={agent_id or ''}")
-    print(f"provenance.snapshot_id={persona.provenance.get('snapshot_id')}")
+    print(f"persona_source={persona.persona_source} provenance={persona.provenance}")
 
     if args.write:
         updates = {"AITOWN_ORION_PLAYER_ID": player_id}

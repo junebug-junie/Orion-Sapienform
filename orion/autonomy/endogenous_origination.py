@@ -110,7 +110,8 @@ class OriginationEngine:
         # unresolved pressures (bounded copy of strings)
         unresolved_raw = getattr(self_state, "unresolved_pressures", None)
         if isinstance(unresolved_raw, (list, tuple)):
-            unresolved = tuple(str(p) for p in unresolved_raw)
+            # Local cap so the per-snapshot copy is bounded regardless of upstream.
+            unresolved = tuple(str(p) for p in unresolved_raw[:16])
         else:
             unresolved = tuple()
 

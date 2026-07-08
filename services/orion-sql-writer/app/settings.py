@@ -72,6 +72,7 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "chat.history.spark_meta.patch.v1": "__patch_chat_history__",
     "vision.event.v1": "VisionEventSQL",
     "action.outcome.emit.v1": "ActionOutcomeSQL",
+    "self.phi_reward.v1": "PhiRewardSQL",
 }
 
 
@@ -155,6 +156,7 @@ class Settings(BaseSettings):
             "orion:grammar:event",
             "orion:chat:history:spark_meta:patch",
             "orion:autonomy:action:outcome",
+            "orion:self:phi_reward",
         ],
         alias="SQL_WRITER_SUBSCRIBE_CHANNELS"
     )

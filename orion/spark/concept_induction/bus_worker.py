@@ -9,6 +9,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Dict, List, Optional, Set
 from uuid import uuid4
 
+from orion.autonomy.deviation_gate import DeviationGate
+from orion.autonomy.signal_drive_map import load_signal_drive_map
+from orion.autonomy.signal_tension import SignalTensionSource
+from orion.autonomy.tension_ratelimit import TensionRateLimiter
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.work_queue import RedisStreamWorkQueue
@@ -120,7 +124,24 @@ class ConceptWorker:
                 saturation_gain=cfg.drive_saturation_gain,
                 activate_threshold=cfg.drive_activation_on,
                 deactivate_threshold=cfg.drive_activation_off,
+                leaky_math_enabled=cfg.drive_leaky_math_enabled,
             )
+        )
+        # Homeostatic tension source: deviation-gated OrionSignal/failure/health
+        # -> TensionEventV1. Gated on cfg.homeostatic_drives_enabled at the call
+        # site; constructed always so state persists across ticks.
+        self.signal_tension_source = SignalTensionSource(
+            gate=DeviationGate(
+                alpha=cfg.deviation_ewma_alpha,
+                z_threshold=cfg.deviation_z_threshold,
+                sigma_floor=cfg.deviation_sigma_floor,
+                impulse_k=cfg.signal_tension_impulse_k,
+            ),
+            sdm=load_signal_drive_map(),
+            ratelimiter=TensionRateLimiter(
+                cap=cfg.signal_tension_cap_per_window,
+                window_sec=float(cfg.signal_tension_window_sec),
+            ),
         )
         self.goal_engine = GoalProposalEngine(cfg.goal_proposal_cooldown_minutes)
         self.last_run: Dict[str, datetime] = {}

@@ -111,13 +111,16 @@ compose_up() {
     exit 1
   fi
 
-  local -a cmd=(
-    docker compose
-    --env-file "${service_env}"
-    --env-file "${ENV_FILE}"
-    -f "${compose_file}"
-    up -d
-  )
+  local -a cmd=(docker compose)
+  if [[ -f "${service_env}" ]]; then
+    cmd+=(--env-file "${service_env}")
+  else
+    echo "WARN: missing ${service_env} — run scripts/sync_local_env_from_example.py or copy .env_example" >&2
+  fi
+  if [[ -f "${ENV_FILE}" ]]; then
+    cmd+=(--env-file "${ENV_FILE}")
+  fi
+  cmd+=(-f "${compose_file}" up -d)
   cmd+=("${services[@]}")
 
   echo "→ docker compose -f services/${compose_dir}/docker-compose.yml up -d ${services[*]}"
@@ -139,12 +142,20 @@ for line in "${SERVICE_LINES[@]}"; do
     else
       compose_up "${compose_dir}" otel-tempo
       compose_up "${compose_dir}" otel-collector otel-grafana
-      docker compose \
-        --env-file "${REPO_ROOT}/services/${compose_dir}/.env" \
-        --env-file "${ENV_FILE}" \
-        -f "${REPO_ROOT}/services/${compose_dir}/docker-compose.yml" \
-        up -d --no-deps orion-signal-gateway
+      gateway_env="${REPO_ROOT}/services/${compose_dir}/.env"
+      gateway_compose="${REPO_ROOT}/services/${compose_dir}/docker-compose.yml"
+      gateway_cmd=(docker compose)
+      if [[ -f "${gateway_env}" ]]; then
+        gateway_cmd+=(--env-file "${gateway_env}")
+      else
+        echo "WARN: missing ${gateway_env} — run scripts/sync_local_env_from_example.py or copy .env_example" >&2
+      fi
+      if [[ -f "${ENV_FILE}" ]]; then
+        gateway_cmd+=(--env-file "${ENV_FILE}")
+      fi
+      gateway_cmd+=(-f "${gateway_compose}" up -d --no-deps orion-signal-gateway)
       echo "→ docker compose -f services/${compose_dir}/docker-compose.yml up -d --no-deps orion-signal-gateway"
+      "${gateway_cmd[@]}"
       STARTED+=("orion-signal-gateway (+ otel stack, no bundled redis)")
     fi
   else

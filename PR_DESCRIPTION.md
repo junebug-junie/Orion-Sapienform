@@ -1,145 +1,104 @@
 ## Summary
 
-- Deleted `orion-planner-react` and `orion-agent-chain` services (~10.7k lines) and removed mesh/bus/signals wiring for both organs.
-- Agent/council depth routing now uses a single `ContextExecService` plan step in cortex-orch; cortex-exec supervisor delegates via `_context_exec_escalation()`.
-- Operational bound-capability verbs execute in-process via new `bound_capability_exec.py` (nested `orion:cortex:request` RPC); capability bridge + actions skill registry moved into cortex-exec.
-- Ported `autonomy.goal.execute.v1` into cortex-exec (`autonomy_goal_execute.py`) so promoted goal execution and `autonomy.goal.planned` bus publish survive planner-react removal.
-- Updated agent-trace normalizer, live-proof scripts, orch/exec tests, and README for the context-exec + bound-capability path.
+- Add `services/orion-signals/` — thin mesh launcher for the organ-signal causal spine (not a runtime service).
+- Machine-readable `roster.v1.yaml` with tiers: `core`, `tier1`, `tier2`, `routing`, `full`.
+- Deterministic `up.sh` / `down.sh` / `smoke.sh` scripts with Redis dedupe when `bus-core` is already running.
+- 13 gate tests validating roster compose paths, service names, and script contracts.
+- Register `orion-signals` in `scripts/sync_local_env_from_example.py` for env parity.
 
 ## Outcome moved
 
-- Dead planner-react / agent-chain containers and bus channels are gone; agent depth work has one delegate organ (`ContextExecService`).
-- Bound operational verbs (mesh/storage/PR/housekeep) no longer require a separate agent-chain hop.
-- Autonomy goal execute path remains callable when `AUTONOMY_GOAL_EXECUTION_ENABLED=true` (flag still defaults off).
+Operators can bring up the organ-signal mesh (bus + gateway + tier1 producers + homeostatic consumer) with one command instead of ad-hoc per-service compose invocations.
 
 ## Current architecture
 
-Before: Hub → gateway → orch → cortex-exec → planner-react → agent-chain → nested cortex skills.
-
-After: Hub → gateway → orch → cortex-exec → context-exec (agent/council depth) **or** in-process bound-capability nested cortex RPC (operational verbs).
+Each organ producer had its own `docker-compose.yml` and `.env`. There was no tiered roster or cumulative launcher for the `orion:signals:*` causal spine around `orion-signal-gateway`.
 
 ## Architecture touched
 
-- **Deleted:** `services/orion-planner-react/`, `services/orion-agent-chain/`
-- **Contracts:** `orion/bus/channels.yaml`, `orion/signals/registry.py`, `orion/normalizers/agent_trace.py`
-- **Routing:** `services/orion-cortex-orch/app/orchestrator.py`, `services/orion-cortex-exec/app/supervisor.py`
-- **New seams:** `bound_capability_exec.py`, `capability_bridge.py`, `actions_skill_registry.py`, `autonomy_goal_execute.py`
-- **Hub:** removed `AGENT_CHAIN_*` env/compose surfaces
-- **Scripts:** `locate-bound-capability-live-path.sh`, `verify-bound-capability-live.sh`, `run_answer_depth_proof_suite.py`, `run_answer_depth_live_proof.py`
+- `services/orion-signals/` — new orchestration seam (roster + scripts + tests + README)
+- `scripts/sync_local_env_from_example.py` — `orion-signals` in `DEFAULT_SERVICES`
+- Root `README.md` — cross-link to orion-signals operator guide
 
 ## Files changed
 
-- `services/orion-cortex-exec/app/supervisor.py`: removed planner/agent-chain escalation; context-exec + bound-capability + autonomy goal dispatch
-- `services/orion-cortex-exec/app/bound_capability_exec.py`: operational verb execution via nested cortex RPC
-- `services/orion-cortex-exec/app/autonomy_goal_execute.py`: ported autonomy goal execute + planned event publish
-- `services/orion-cortex-orch/app/orchestrator.py`: `build_agent_plan()` → single `context_exec` step
-- `orion/bus/channels.yaml`: removed planner/agent-chain channels; repointed autonomy goal planned producer to cortex-exec
-- Tests/scripts/docs updated across cortex-exec, cortex-orch, and root `tests/`
+- `services/orion-signals/roster.v1.yaml`: tier → compose service mapping with organ_ids
+- `services/orion-signals/scripts/up.sh`: cumulative tier launcher; optional `--env-file`; gateway `--no-deps` redis dedupe
+- `services/orion-signals/scripts/down.sh`: reverse-order stop with optional env files
+- `services/orion-signals/scripts/smoke.sh`: bus-core ping + gateway HTTP checks
+- `services/orion-signals/.env_example`: operator contract (`ORION_BUS_URL`, `SIGNALS_TIER`, `SIGNALS_USE_BUNDLED_REDIS`)
+- `services/orion-signals/README.md`: operator guide
+- `services/orion-signals/tests/`: roster + script gate tests
+- `scripts/sync_local_env_from_example.py`: include orion-signals in default sync
+- `README.md`: pointer to orion-signals README
 
 ## Schema / bus / API changes
 
-- **Removed channels:** planner-react intake/result, agent-chain intake/result/capability reply patterns
-- **Removed signal organs:** `planner`, `agent_chain`
-- **Behavior changed:** `AgentChainService` / `PlannerReactService` verb plan steps fail closed with `removed_service:*`
-- **Producer changed:** `orion:autonomy:goal:planned` → `orion-cortex-exec` (now has real publisher in `autonomy_goal_execute.py`)
-- **Compatibility:** context-exec HTTP `/agent/chain/run` compat shim intentionally retained
+- Added: none
+- Removed: none
+- Renamed: none
+- Behavior changed: none (launcher only)
+- Compatibility notes: Hub remains external (host network); start separately for Organ Signals UI
 
 ## Env/config changes
 
-- **Removed keys:** `CHANNEL_PLANNER_INTAKE`, `CHANNEL_AGENT_CHAIN_INTAKE`, hub `AGENT_CHAIN_*`
-- **Added keys:** none required (uses existing `CONTEXT_EXEC_*` + `ORION_BUS_URL`)
-- `.env_example` updated: hub, cortex-exec
-- local `.env` synced: UNVERIFIED in agent session (operator should run `python scripts/sync_local_env_from_example.py`)
+- Added keys: `SIGNALS_TIER`, `SIGNALS_USE_BUNDLED_REDIS` in `services/orion-signals/.env_example`
+- Removed keys: none
+- Renamed keys: none
+- `.env_example` updated: yes (`services/orion-signals/.env_example`)
+- local `.env` synced with `python scripts/sync_local_env_from_example.py`: yes
+- skipped keys requiring operator action: `ORION_BUS_URL` (host-specific Tailscale IP — set manually)
 
 ## Tests run
 
 ```text
-# cortex-exec + contracts (25 passed)
-PYTHONPATH=.:services/orion-cortex-exec pytest -q \
-  services/orion-cortex-exec/tests/test_autonomy_goal_execute.py \
-  services/orion-cortex-exec/tests/test_autonomy_goal_execution_mode.py \
-  services/orion-cortex-exec/tests/test_operational_semantic_harness.py \
-  services/orion-cortex-exec/tests/test_bound_capability_full_path.py \
-  services/orion-cortex-exec/tests/test_context_exec_depth2_routing.py \
-  tests/test_autonomy_goals_bus_catalog.py \
-  tests/test_exec_result_channel_catalog_specificity.py \
-  tests/test_agent_no_recall_live_proof.py
-
-# cortex-orch (28 passed)
-PYTHONPATH=.:services/orion-cortex-orch pytest -q \
-  services/orion-cortex-orch/tests/test_auto_router.py \
-  services/orion-cortex-orch/tests/test_verb_runtime_rpc.py \
-  services/orion-cortex-orch/tests/test_agent_trace_bound_failure_summary.py
+bash -n services/orion-signals/scripts/*.sh  → OK
+PYTHONPATH=. orion_dev/bin/python -m pytest services/orion-signals/tests -q  → 13 passed
 ```
 
 ## Evals run
 
 ```text
-Not run — no periodic eval harness for this cross-service removal. Gate tests above cover routing contracts.
+None (orchestration/operator tooling; no eval harness for this seam)
 ```
 
 ## Docker/build/smoke checks
 
 ```text
-Not run in agent environment. Compose config should be validated after merge:
-docker compose --env-file .env --env-file services/orion-cortex-exec/.env \
-  -f services/orion-cortex-exec/docker-compose.yml config
-docker compose --env-file .env --env-file services/orion-cortex-orch/.env \
-  -f services/orion-cortex-orch/docker-compose.yml config
+Not run in CI agent session (requires live bus + per-service .env on operator host).
+Operator smoke: ./services/orion-signals/scripts/smoke.sh
 ```
 
 ## Review findings fixed
 
-- Finding: `autonomy.goal.execute.v1` deleted with planner but supervisor still dispatched it
-  - Fix: ported `autonomy_goal_execute.py` + `_execute_autonomy_goal_action()` in supervisor
-  - Evidence: `test_autonomy_goal_execute.py`, updated `test_autonomy_goal_execution_mode.py`
-
-- Finding: `autonomy.goal.planned` catalog producer lied (no publisher)
-  - Fix: `_publish_goal_planned_supervisor_event()` in cortex-exec
-  - Evidence: `test_execute_autonomy_goal_v1_publishes_planned_event`
-
-- Finding: orch `build_agent_plan` metadata validation error (`metadata.options` dict in string map)
-  - Fix: metadata reverted to `{"mode": "agent"}` only
-  - Evidence: `test_verb_runtime_rpc.py` passes
-
-- Finding: agent-trace / live-proof scripts still assumed agent-chain path
-  - Fix: `ContextExecService` support in `agent_trace.py`, script updates, test rewrites
-  - Evidence: `test_agent_trace_bound_failure_summary.py`, `test_agent_no_recall_live_proof.py`
-
-- Finding: broad `"execute"` autonomy trigger
-  - Fix: require `"goal"` in user text (or explicit `autonomy.goal.execute`)
-  - Evidence: `test_supervisor_blocks_unpromoted_goal_execute` still passes
+- Finding: `docker compose --env-file` fails when per-service `.env` missing
+  - Fix: up.sh/down.sh only pass `--env-file` when file exists; warn otherwise
+  - Evidence: `test_compose_helpers_skip_missing_env_file`, manual review
+- Finding: duplicate log line after gateway `--no-deps` bring-up
+  - Fix: echo before command only (consistent with `compose_up`)
+  - Evidence: up.sh review
+- Finding: `orion-signals` absent from env sync default list
+  - Fix: added to `DEFAULT_SERVICES` + `SIGNALS_`/`SIGNAL_GATEWAY_` sync prefixes
+  - Evidence: sync script diff
 
 ## Restart required
 
-```bash
-# Stop removed services (if still running)
-docker stop orion-athena-planner-react orion-athena-agent-chain 2>/dev/null || true
-
-# Rebuild routing services
-docker compose --env-file .env --env-file services/orion-cortex-exec/.env \
-  -f services/orion-cortex-exec/docker-compose.yml up -d --build
-docker compose --env-file .env --env-file services/orion-cortex-orch/.env \
-  -f services/orion-cortex-orch/docker-compose.yml up -d --build
-docker compose --env-file .env --env-file services/orion-hub/.env \
-  -f services/orion-hub/docker-compose.yml up -d --build
+```text
+No restart required for merge itself.
+After deploy, bring up mesh:
+  cp services/orion-signals/.env_example services/orion-signals/.env
+  # Set ORION_BUS_URL=redis://<tailscale-node-ip>:6379/0
+  python scripts/sync_local_env_from_example.py
+  ./services/orion-signals/scripts/up.sh tier1
+  ./services/orion-signals/scripts/smoke.sh
 ```
 
 ## Risks / concerns
 
-- Severity: medium
-- Concern: `AUTONOMY_GOAL_EXECUTION_ENABLED=true` requires graph DB configured; without it execute returns `graph_not_configured`
-- Mitigation: flag defaults false in compose; operator promotes via hub API as before
-
 - Severity: low
-- Concern: `force_agent_chain` option still propagated from hub but ignored by supervisor
-- Mitigation: follow-up cleanup PR
-
-- Severity: low
-- Concern: legacy tests (`test_answer_depth_pass3_golden_path_discord.py`) skipped — golden path needs context-exec rewrite
-- Mitigation: `run_answer_depth_proof_suite.py` updated to cortex-exec harness tests
+- Concern: Per-service `.env` files must exist (sync script or manual copy) before `up.sh` can substitute variables
+- Mitigation: WARN logs + README prerequisites; optional env-file handling prevents hard fail on missing launcher `.env`
 
 ## PR link
 
-Branch pushed: `chore/kill-planner-agent-chain` — open PR with:
-`gh pr create --base main --head chore/kill-planner-agent-chain`
+(filled after push)

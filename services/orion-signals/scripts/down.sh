@@ -97,13 +97,16 @@ compose_down() {
     return 0
   fi
 
-  local -a cmd=(
-    docker compose
-    --env-file "${service_env}"
-    --env-file "${ENV_FILE}"
-    -f "${compose_file}"
-    stop
-  )
+  local -a cmd=(docker compose)
+  if [[ -f "${service_env}" ]]; then
+    cmd+=(--env-file "${service_env}")
+  else
+    echo "WARN: missing ${service_env} — run scripts/sync_local_env_from_example.py or copy .env_example" >&2
+  fi
+  if [[ -f "${ENV_FILE}" ]]; then
+    cmd+=(--env-file "${ENV_FILE}")
+  fi
+  cmd+=(-f "${compose_file}" stop)
   cmd+=("${services[@]}")
 
   echo "→ docker compose -f services/${compose_dir}/docker-compose.yml stop ${services[*]}"

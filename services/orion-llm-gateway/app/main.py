@@ -420,7 +420,12 @@ async def _probe_route_targets() -> None:
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="[LLM-GW] %(levelname)s - %(message)s")
     cfg = _cfg()
-    chat_svc = Rabbit(cfg, request_channel=settings.channel_llm_intake, handler=handle_chat)
+    chat_svc = Rabbit(
+        cfg,
+        request_channel=settings.channel_llm_intake,
+        handler=handle_chat,
+        concurrent_handlers=settings.llm_gateway_concurrent_handlers,
+    )
     global bus_handle
     bus_handle = chat_svc.bus
     route_targets = get_route_targets()

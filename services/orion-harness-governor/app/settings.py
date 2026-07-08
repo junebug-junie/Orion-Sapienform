@@ -68,7 +68,7 @@ class HarnessGovernorSettings(BaseSettings):
 
     fcc_timeout_sec: float = Field(900.0, alias="HARNESS_FCC_TIMEOUT_SEC")
     finalize_reflect_timeout_sec: float = Field(180.0, alias="FINALIZE_REFLECT_TIMEOUT_SEC")
-    voice_finalize_timeout_sec: float = Field(180.0, alias="VOICE_FINALIZE_TIMEOUT_SEC")
+    voice_finalize_timeout_sec: float = Field(300.0, alias="VOICE_FINALIZE_TIMEOUT_SEC")
     substrate_finalize_timeout_sec: float = Field(5.0, alias="SUBSTRATE_FINALIZE_TIMEOUT_SEC")
     finalize_quick_gate_epsilon: float = Field(0.08, alias="FINALIZE_QUICK_GATE_EPSILON")
 

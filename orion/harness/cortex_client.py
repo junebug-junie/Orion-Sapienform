@@ -22,12 +22,14 @@ class HarnessCortexClient:
         result_prefix: str,
         source_name: str = "orion-harness-governor",
         timeout_sec: float = 15.0,
+        voice_finalize_timeout_sec: float | None = None,
     ) -> None:
         self.bus = bus
         self.request_channel = request_channel
         self.result_prefix = result_prefix
         self.source_name = source_name
         self.timeout_sec = timeout_sec
+        self.voice_finalize_timeout_sec = voice_finalize_timeout_sec
 
     async def execute_plan(
         self,
@@ -71,4 +73,13 @@ class HarnessCortexClient:
 
     async def __call__(self, req: PlanExecutionRequest) -> dict[str, Any]:
         correlation_id = str(req.args.request_id or uuid4())
-        return await self.execute_plan(req, correlation_id=correlation_id)
+        verb = req.plan.verb_name
+        if verb == "orion_voice_finalize":
+            timeout_sec = self.voice_finalize_timeout_sec or self.timeout_sec
+        else:
+            timeout_sec = self.timeout_sec
+        return await self.execute_plan(
+            req,
+            correlation_id=correlation_id,
+            timeout_sec=timeout_sec,
+        )

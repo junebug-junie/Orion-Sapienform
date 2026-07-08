@@ -58,21 +58,53 @@ def _thought_deferred_frame(thought: ThoughtEventV1, *, correlation_id: str) -> 
     return frame
 
 
+_PARTIAL_DRAFT_MAX_LEN = 2000
+
+
+def _partial_draft_from_run(run: HarnessRunV1) -> str | None:
+    draft = run.draft_text
+    if not draft:
+        return None
+    if len(draft) <= _PARTIAL_DRAFT_MAX_LEN:
+        return draft
+    return draft[:_PARTIAL_DRAFT_MAX_LEN]
+
+
+def _finalize_phase_error(run: HarnessRunV1) -> bool:
+    if not run.draft_text:
+        return False
+    if run.finalize_ran and run.final_text:
+        return False
+    if run.substrate_appraisal is not None or run.reflection is not None:
+        return True
+    return "orion_voice_finalize" in (run.grounding_status or "")
+
+
 def _harness_error_frame(run: HarnessRunV1, *, correlation_id: str) -> dict[str, Any]:
     base: dict[str, Any] = {
         "type": "turn_error",
         "correlation_id": correlation_id,
         "finalize_ran": bool(run.finalize_ran),
     }
-    if run.draft_text and run.substrate_appraisal is None:
+    if run.draft_text and run.substrate_appraisal is None and not _finalize_phase_error(run):
         base["phase"] = "substrate_appraisal"
         return base
-    if run.substrate_appraisal is not None and (run.reflection is None or not run.final_text):
+    if _finalize_phase_error(run) or (
+        run.substrate_appraisal is not None and (run.reflection is None or not run.final_text)
+    ):
         base["phase"] = "finalize"
+        partial = _partial_draft_from_run(run)
+        if partial:
+            base["partial_draft"] = partial
+        if run.grounding_status:
+            base["error"] = run.grounding_status
         return base
     base["phase"] = "harness"
     if run.step_count:
         base["partial"] = run.step_count
+    partial = _partial_draft_from_run(run)
+    if partial:
+        base["partial_draft"] = partial
     if run.grounding_status:
         base["error"] = run.grounding_status
     return base

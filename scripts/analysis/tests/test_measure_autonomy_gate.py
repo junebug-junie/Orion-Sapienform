@@ -251,9 +251,9 @@ def test_parse_sparql_histogram_bindings_happy():
 
 
 def test_parse_sparql_histogram_bindings_retains_zero_bucket():
-    # The query now emits an explicit bound 0 bucket for assessment-less audits
-    # (BOUND(?act) guard) rather than dropping them; lock in that the parser
-    # keeps a bound-0 row so those audits stay in the record_count denominator.
+    # The query emits an explicit 0 bucket for assessment-less / all-inactive
+    # audits (OPTIONAL + COUNT(DISTINCT ?activeDa) yields 0, not unbound); lock
+    # in that the parser keeps a 0 row so those audits stay in the denominator.
     bindings = [
         {"activeCount": {"value": "0"}, "audits": {"value": "5"}},
         {"activeCount": {"value": "2"}, "audits": {"value": "3"}},

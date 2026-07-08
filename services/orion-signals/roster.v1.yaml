@@ -1,0 +1,77 @@
+schema_version: orion_signals_roster.v1
+
+core:
+  - id: orion-bus
+    compose_dir: orion-bus
+    compose_service: bus-core
+    required: true
+
+  - id: orion-signal-gateway
+    compose_dir: orion-signal-gateway
+    compose_service: orion-signal-gateway
+    required: true
+
+tier1:
+  - id: orion-biometrics
+    compose_dir: orion-biometrics
+    compose_service: biometrics
+    organ_ids: [biometrics]
+    required: true
+
+  - id: orion-equilibrium-service
+    compose_dir: orion-equilibrium-service
+    compose_service: equilibrium-service
+    organ_ids: [equilibrium]
+    required: true
+
+  - id: orion-collapse-mirror
+    compose_dir: orion-collapse-mirror
+    compose_service: collapse-mirror
+    organ_ids: [collapse_mirror]
+    required: true
+
+  - id: orion-cortex-exec
+    compose_dir: orion-cortex-exec
+    compose_service: cortex-exec
+    organ_ids: [cortex_exec, autonomy, chat_stance]
+    required: true
+
+  - id: orion-recall
+    compose_dir: orion-recall
+    compose_service: recall
+    organ_ids: [recall]
+    required: true
+
+  - id: orion-spark-introspector
+    compose_dir: orion-spark-introspector
+    compose_service: spark-introspector
+    organ_ids: [spark_introspector]
+    required: true
+
+  - id: orion-memory-consolidation
+    compose_dir: orion-memory-consolidation
+    compose_service: memory-consolidation
+    organ_ids: [memory_consolidation]
+    required: true
+
+tier2:
+  - id: orion-spark-concept-induction
+    compose_dir: orion-spark-concept-induction
+    compose_service: spark-concept-induction
+    required: true
+
+routing:
+  - id: orion-cortex-gateway
+    compose_dir: orion-cortex-gateway
+    compose_service: cortex-gateway
+    required: true
+
+  - id: orion-cortex-orch
+    compose_dir: orion-cortex-orch
+    compose_service: cortex-orchestrator
+    required: true
+
+  - id: orion-llm-gateway
+    compose_dir: orion-llm-gateway
+    compose_service: llm-gateway
+    required: true

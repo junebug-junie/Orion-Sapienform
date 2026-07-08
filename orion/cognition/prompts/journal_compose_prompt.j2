@@ -35,6 +35,7 @@ Rules:
 {% endif %}
 {% if _jt.get("trigger_kind") == "world_pulse_digest" %}
 - World Pulse reflective journal: metabolize the Daily World Pulse digest already produced upstream — do not invent new wire stories or geography. Use only facts present in Summary or Prompt seed (run metadata, executive summary, section rollups, digest items, salient topics).
+- When the Prompt seed contains `orion_went_looking`, you MUST weave the specific gap-fill findings into the body: section name, query, article titles, URLs, and salience scores. Do not merely note that a section is missing — include what Orion actually found (or explicitly state "looked, found nothing" if the seed says so).
 - Focus on what shifted, what matters for Orion's lab and continuity, and honest uncertainty where coverage is partial or sparse.
 - Do not restate the full digest card schema; write reflective prose, not a news brief.
 {% endif %}

@@ -82,15 +82,17 @@ def github_mcp_brief_lines(*, workspace: Path | str | None = None) -> list[str]:
     owner, repo = coord
     return [
         (
-            f"GitHub MCP: pass owner={owner!r} and repo={repo!r} to list_pull_requests "
-            f"(both required; never use the repo name as owner)."
+            f"GitHub MCP is available (owner={owner!r}, repo={repo!r}). "
+            "Use it only when this turn's imperative needs PR/issue/repo facts and you judge "
+            "it appropriate — do not fetch GitHub data for unrelated turns."
         ),
         (
-            "For latest PR title/number: list_pull_requests with state=all, sort=updated, "
-            "direction=desc, perPage=1. Default state=open returns [] when nothing is open "
-            "(the newest PR is usually merged). Do not use search_pull_requests (blows ~65k ctx)."
+            "If you do query PRs: list_pull_requests requires both owner and repo (never use "
+            "the repo name as owner). For the latest PR, pass state=all, sort=updated, "
+            "direction=desc, perPage=1 (default state=open returns [] when nothing is open). "
+            "Avoid search_pull_requests (blows ~65k ctx). Report the PR title only; never paste "
+            "raw MCP JSON into the reply."
         ),
-        "Answer with the PR title string only; never paste raw MCP JSON into the reply.",
     ]
 
 

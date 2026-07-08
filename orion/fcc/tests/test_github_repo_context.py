@@ -29,17 +29,24 @@ def test_resolve_github_repo_coordinate_from_env(monkeypatch: pytest.MonkeyPatch
     assert resolve_github_repo_coordinate(workspace="/tmp") == ("env-owner", "env-repo")
 
 
-def test_github_mcp_brief_lines_include_narrow_pr_guidance(
+def test_github_mcp_brief_lines_are_passive_and_optional(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ORION_GITHUB_OWNER", "junebug-junie")
     monkeypatch.setenv("ORION_GITHUB_REPO", "Orion-Sapienform")
     lines = github_mcp_brief_lines(workspace=Path("/tmp"))
-    assert len(lines) == 3
-    assert "perPage=1" in lines[1]
-    assert "state=all" in lines[1]
-    assert "search_pull_requests" in lines[1]
-    assert "never paste raw MCP JSON" in lines[2]
+    assert len(lines) == 2
+    # First line frames the tool as an optional capability, not a directive to run it.
+    capability = lines[0]
+    assert "available" in capability
+    assert "only when" in capability
+    assert "unrelated turns" in capability
+    # Operational guardrails are preserved for the case where the model does use it.
+    guardrail = lines[1]
+    assert "perPage=1" in guardrail
+    assert "state=all" in guardrail
+    assert "search_pull_requests" in guardrail
+    assert "never paste raw MCP JSON" in guardrail
 
 
 def test_append_github_mcp_harness_brief_warns_when_unresolved(

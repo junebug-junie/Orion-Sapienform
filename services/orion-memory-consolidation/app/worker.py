@@ -26,6 +26,23 @@ from orion.schemas.memory_consolidation import (
 logger = logging.getLogger(__name__)
 
 _MAX_TURNS_FOR_SUGGEST = 3
+
+
+def _projection_config_from_settings(s: Any) -> "ProjectionConfig":
+    from orion.memory.crystallization.projector import ProjectionConfig
+
+    return ProjectionConfig(
+        collection=getattr(s, "CRYSTALLIZER_VECTOR_COLLECTION", "orion_memory_crystallizations"),
+        embed_host_url=getattr(s, "CRYSTALLIZER_EMBED_HOST_URL", "") or "",
+        embed_mode=getattr(s, "CRYSTALLIZER_EMBED_MODE", "http") or "http",
+        embed_timeout_ms=int(getattr(s, "CRYSTALLIZER_EMBED_TIMEOUT_MS", 8000) or 8000),
+        graphiti_enabled=bool(getattr(s, "GRAPHITI_ENABLED", False)),
+        graphiti_url=getattr(s, "GRAPHITI_ADAPTER_URL", "") or "",
+        falkordb_uri=getattr(s, "FALKORDB_URI", "") or "",
+        service_name=s.SERVICE_NAME,
+        service_version=s.SERVICE_VERSION,
+        node_name=s.NODE_NAME,
+    )
 _MAX_TURN_FIELD_CHARS = 800
 
 
@@ -103,11 +120,10 @@ class ConsolidationSuggestRunner:
             try:
                 from orion.memory.consolidation_gate import consolidation_memory_gate
                 from orion.memory.consolidation_grammar import fetch_grammar_evidence_for_window
-                from orion.memory.crystallization.bus_emit import emit_crystallization_lifecycle
                 from orion.memory.crystallization.intake_consolidation_window import (
                     build_crystallization_from_window,
                 )
-                from orion.memory.crystallization.repository import insert_crystallization
+                from orion.memory.crystallization.intake_pipeline import process_consolidation_crystallization
 
                 grammar_pool = self._grammar_pool or self._pool
                 repair, grammar_event_ids = await fetch_grammar_evidence_for_window(
@@ -146,18 +162,16 @@ class ConsolidationSuggestRunner:
                     turns=turns,
                     gate=gate,
                 )
-                cid = await insert_crystallization(self._pool, crystallization)
+                cid, _final_row, outcome = await process_consolidation_crystallization(
+                    self._pool,
+                    bus,
+                    crystallization=crystallization,
+                    settings=settings,
+                    project_config=_projection_config_from_settings(settings),
+                )
                 await self._window_store.mark_crystallization_proposed(
                     window_id,
                     crystallization_id=cid,
-                )
-                await emit_crystallization_lifecycle(
-                    bus,
-                    lifecycle="proposed",
-                    crystallization=crystallization,
-                    service_name=settings.SERVICE_NAME,
-                    service_version=settings.SERVICE_VERSION,
-                    node_name=settings.NODE_NAME,
                 )
                 for corr in corr_ids:
                     await publish_spark_meta_patch(
@@ -167,6 +181,7 @@ class ConsolidationSuggestRunner:
                             "consolidation_gate": {
                                 "action": "propose",
                                 "crystallization_id": cid,
+                                "formation_outcome": outcome,
                             }
                         },
                     )

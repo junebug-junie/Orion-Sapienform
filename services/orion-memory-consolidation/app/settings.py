@@ -71,6 +71,12 @@ class Settings(BaseSettings):
         default=True, alias="MEMORY_CONSOLIDATION_FETCH_GRAMMAR_EVIDENCE"
     )
     MEMORY_CONSOLIDATION_GRAMMAR_DSN: str = Field(default="", alias="MEMORY_CONSOLIDATION_GRAMMAR_DSN")
+    MEMORY_FORMATION_AUTO_ACTIVATE_ENABLED: bool = Field(
+        default=False, alias="MEMORY_FORMATION_AUTO_ACTIVATE_ENABLED"
+    )
+    MEMORY_FORMATION_AUTO_ENCODE_ACTIVATION_RATIO: float = Field(
+        default=0.4, alias="MEMORY_FORMATION_AUTO_ENCODE_ACTIVATION_RATIO"
+    )
 
     class Config:
         env_file = ".env"

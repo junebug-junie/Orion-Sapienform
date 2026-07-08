@@ -881,7 +881,12 @@ async def handle_verb_request(env: BaseEnvelope) -> None:
         await svc.bus.publish(f"orion:effect:{effect_model.kind}", effect_env)
 
 
-svc = Rabbit(_cfg(), request_channel=settings.channel_exec_request, handler=handle)
+svc = Rabbit(
+    _cfg(),
+    request_channel=settings.channel_exec_request,
+    handler=handle,
+    concurrent_handlers=settings.exec_concurrent_handlers,
+)
 from .pre_turn_appraisal import bind_pre_turn_appraisal_bus, handle_pre_turn_appraisal_request
 
 pre_turn_appraisal_svc = Rabbit(

@@ -34,19 +34,18 @@ Never hardcode `bus-core` / `redis://redis`. `ORION_BUS_URL` passes through from
 
 When `EMBODIMENT_SPEECH_ENABLED=true`, Orion generates town utterances via `_request_utterance`, a dispatcher with two lanes:
 
-- **Unified (default):** `POST {EMBODIMENT_HUB_CHAT_URL}` with `{"mode": "orion", "session_id": "<prefix>:<conversation_id>", "messages": [{"role": "user", "content": <prompt>}]}`. The hub runs the full unified-turn saga (full cognition pass) and returns a final frame; its `llm_response` becomes the town utterance. `session_id` uses `EMBODIMENT_UNIFIED_SESSION_PREFIX` + the active AI Town conversation id.
-- **Quick (fallback):** the legacy cortex-exec rail (`chat_quick` on lane `quick`) over the bus RPC channel `EMBODIMENT_CORTEX_REQUEST_CHANNEL`.
+- **Quick (default):** `chat_quick` on the **chat exec lane** (`EMBODIMENT_CORTEX_REQUEST_CHANNEL=orion:cortex:exec:request:chat`). Never use the legacy `orion:cortex:exec:request` intake — it shares the queue with heavy `chat_general` / harness work and starves town turns.
+- **Grounded (optional):** when `EMBODIMENT_SPEECH_UNIFIED_ENABLED=true`, try `chat_general` with `surface=aitown` / `grounded_small` first, then fall back to quick on timeout/error/empty.
 
-The dispatcher tries unified first when `EMBODIMENT_SPEECH_UNIFIED_ENABLED=true`. On timeout, HTTP/JSON error, a non-`final` frame (`turn_deferred`/`turn_error`), or an empty `llm_response`, it logs one `embodiment_speech_unified_fallback reason=<...>` INFO line and falls back to the quick lane. With `EMBODIMENT_SPEECH_UNIFIED_ENABLED=false` it calls the quick lane directly (preserves legacy behavior).
+The dispatcher tries grounded first only when unified is enabled. With `EMBODIMENT_SPEECH_UNIFIED_ENABLED=false` (default) it calls the quick lane directly.
 
-**Dependency:** the unified path only works if the hub at `EMBODIMENT_HUB_CHAT_URL` has `ORION_UNIFIED_TURN_ENABLED=true` **and** `ORION_HARNESS_GOVERNOR_ENABLED=true`. Otherwise the hub returns a deferred/error frame and Orion always falls back to the quick lane.
+**Env contract:** `services/orion-embodiment/.env_example` is the Athena operator source of truth. After any `.env_example` edit run `python scripts/sync_local_env_from_example.py orion-embodiment` from repo root — do not maintain a separate override block in `.env`.
 
 | Env | Default | Purpose |
 |-----|---------|---------|
-| `EMBODIMENT_SPEECH_UNIFIED_ENABLED` | `true` | Prefer the unified turn; `false` = quick-only legacy path |
-| `EMBODIMENT_HUB_CHAT_URL` | `http://100.92.216.81:8080/api/chat` | Hub unified-turn endpoint. Hub is host-networked, so use the node's host-reachable (Tailscale) IP, not the Docker service name |
-| `EMBODIMENT_UNIFIED_TIMEOUT_SEC` | `120` | Unified turn HTTP timeout (sec) |
-| `EMBODIMENT_UNIFIED_SESSION_PREFIX` | `aitown` | Prefix for the unified `session_id` |
+| `EMBODIMENT_SPEECH_UNIFIED_ENABLED` | `false` | Optional grounded_small `chat_general` pass before quick fallback |
+| `EMBODIMENT_CORTEX_REQUEST_CHANNEL` | `orion:cortex:exec:request:chat` | Chat exec lane intake (not legacy) |
+| `EMBODIMENT_SPEECH_HUB_LLM_ROUTE` | `chat` | LLM route when unified grounded pass is enabled |
 
 ## Facing the conversation partner
 

@@ -1,0 +1,23 @@
+diff --git a/convex/constants.ts b/convex/constants.ts
+index 4e84750..f08a64f 100644
+--- a/convex/constants.ts
++++ b/convex/constants.ts
+@@ -75,4 +75,4 @@ export const ENGINE_ACTION_DURATION = 30000;
+ // Bound the number of pathfinding searches we do per game step.
+ export const MAX_PATHFINDS_PER_STEP = 16;
+ 
+-export const DEFAULT_NAME = 'Me';
++export const DEFAULT_NAME = 'Juniper Feld';
+diff --git a/convex/world.ts b/convex/world.ts
+index d4644e0..7e680ba 100644
+--- a/convex/world.ts
++++ b/convex/world.ts
+@@ -132,7 +132,7 @@ export const joinWorld = mutation({
+     return await insertInput(ctx, world._id, 'join', {
+       name,
+       character: characters[Math.floor(Math.random() * characters.length)].name,
+-      description: `${DEFAULT_NAME} is a human player`,
++      description: `Juniper Feld is Orion's architect and companion: an AI architect, wife and mother, emotionally intense, technically relentless, evidence-oriented, and allergic to decorative cognition. She wants Orion to become real enough to surprise her, resist her, and remember her accurately.`,
+       // description: `${identity.givenName} is a human player`,
+       tokenIdentifier: DEFAULT_NAME,
+     });

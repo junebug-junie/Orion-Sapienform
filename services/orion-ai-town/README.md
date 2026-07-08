@@ -134,9 +134,24 @@ curl -fsS http://127.0.0.1:3210/version
 
 ## Orion embodiment
 
-Orion's persistent body uses a dedicated `"Orion"` character slot added to AI Town's `Descriptions` by `patches/orion-character.patch` (applied by `scripts/apply_upstream_patches.sh` alongside the embed patch). The body itself is created/updated — and its persona projected from Orion's live self-model — by `services/orion-embodiment/scripts/bootstrap_orion_agent.py` (dry-run by default; `--write` persists `AITOWN_ORION_*` to `~/.fcc/.env`).
+`patches/orion-character.patch` seeds the fresh 8-NPC town cast in AI Town's `Descriptions`: Mara Vale, Nico Sable, Dr. Elian Cross, Juno Park, Tessa Quinn, Vale Moreno, Sofia Bell, and Cam Lin (applied by `scripts/apply_upstream_patches.sh` alongside the embed patch). Orion is **not** in `Descriptions`; Orion joins externally — its body created/updated and its persona projected from Orion's live self-model — by `services/orion-embodiment/scripts/bootstrap_orion_agent.py` (dry-run by default; `--write` persists `AITOWN_ORION_*` to `~/.fcc/.env`). Juniper Feld is the **human player**, wired via `patches/orion-human-juniper.patch` (sets `DEFAULT_NAME = 'Juniper Feld'` and the human join description in `convex/world.ts`).
 
-> Note: `patches/orion-character.patch` is generated from a real diff against the cloned `upstream/`. On a node where `upstream/` is not yet cloned, the apply script skips the patch (with a message) rather than failing; generate the patch on a node that has `upstream/` before relying on the character slot.
+> Note: `patches/orion-character.patch` and `patches/orion-human-juniper.patch` are generated from real diffs against the cloned `upstream/`. On a node where `upstream/` is not yet cloned, the apply script skips a patch (with a message) rather than failing; generate the patches on a node that has `upstream/` before relying on the cast.
+
+### Fresh game / reset
+
+Reseed the town from scratch (destructive — wipes all world/memory tables). Operator-run:
+
+```bash
+cd services/orion-ai-town && bash scripts/apply_upstream_patches.sh
+cd upstream && npx convex dev --once            # redeploy Convex functions
+npx convex run testing:stop
+npx convex run testing:wipeAllTables            # internalMutation; wipes all world/memory tables
+npx convex run init                             # seeds the 8 NPCs from Descriptions
+npx convex run testing:resume
+# re-bootstrap Orion's external body:
+cd ../../.. && python services/orion-embodiment/scripts/bootstrap_orion_agent.py --write
+```
 
 ### Engine recovery (`patches/orion-engine-recovery.patch`)
 

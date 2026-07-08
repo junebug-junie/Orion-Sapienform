@@ -302,6 +302,8 @@ async def supersede_and_insert_compactor_card(
                 SELECT card_id FROM memory_cards
                 WHERE status = 'active'
                   AND subschema ->> 'compactor_slot' = $1
+                ORDER BY updated_at DESC
+                LIMIT 1
                 FOR UPDATE
                 """,
                 key,

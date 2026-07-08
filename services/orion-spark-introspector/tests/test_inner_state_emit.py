@@ -81,3 +81,13 @@ async def test_handle_self_state_uuid_crash_fixed(monkeypatch) -> None:
     assert isinstance(snap_env.correlation_id, UUID)
     # ...while the human-readable id is preserved in the payload.
     assert snap_env.payload.correlation_id == "self.state:tick_abc:policy.v1"
+
+
+def test_inner_features_settings_defaults() -> None:
+    from app.settings import Settings
+    s = Settings()
+    assert s.inner_features_enabled is True
+    assert s.inner_features_version == "seed-v1"
+    assert s.channel_inner_features == "orion:self:inner_features"
+    assert s.phi_degenerate_streak == 20
+    assert s.orion_phi_encoder_enabled is False

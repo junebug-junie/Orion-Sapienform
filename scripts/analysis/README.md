@@ -75,10 +75,18 @@ for Fuseki), as shown in the host command above.
   `silent` (no receipts and no turns) or `busy`.
 - **Fuseki drives graph** `http://conjourney.net/graph/autonomy/drives` — read
   via a read-only SPARQL `SELECT`. `orion-rdf-writer` persists every
-  `DriveAudit` with one `orion:highlightsActiveDrive` triple per active drive,
-  so `COUNT(DISTINCT ?d)` per audit == `len(active_drives)`. The bus audit
-  channel is redis pub/sub with no replayable history, which is why the durable
-  Fuseki time-series is queried instead.
+  `DriveAudit` with the active signal at the assessment level:
+  `DriveAudit --orion:hasDriveAssessment--> DriveAssessment --orion:driveActive-> true`,
+  so an audit's active-drive count == number of its assessments with
+  `driveActive = true`. (An older `orion:highlightsActiveDrive` projection is
+  equivalent — one triple per active drive — but the assessment-level boolean is
+  the primary schema.) The query aggregates this **server-side** into a
+  co-activation histogram via a nested `GROUP BY` (inner: per-audit `SUM`; outer:
+  bin by active-count), so Fuseki returns only ~7 rows regardless of window size
+  rather than transferring hundreds of thousands of per-audit rows (which timed
+  out on large windows). The bus audit channel is redis pub/sub with no
+  replayable history, which is why the durable Fuseki time-series is queried
+  instead.
 
 ### Caveats
 

@@ -7,6 +7,7 @@ from uuid import UUID
 import pytest
 
 import app.worker as worker
+from app.substrate_reads import ExecutionTrajectorySnapshot, GrammarTruthSnapshot
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.self_state import SelfStateDimensionV1, SelfStateV1
 
@@ -53,6 +54,26 @@ def _self_state_payload() -> dict:
     return _self_state().model_dump(mode="json")
 
 
+def _mock_healthy_substrate_reads(monkeypatch) -> None:
+    monkeypatch.setattr(
+        worker,
+        "fetch_grammar_truth",
+        AsyncMock(
+            return_value=GrammarTruthSnapshot(
+                degraded=False,
+                degraded_reasons=[],
+                enabled_reducers={"execution_trajectory": True},
+                reducer_health_by_name={"execution_trajectory": {"classification": "healthy"}},
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        worker,
+        "fetch_execution_trajectory",
+        AsyncMock(return_value=ExecutionTrajectorySnapshot(ok=True, projection=None)),
+    )
+
+
 @pytest.mark.asyncio
 async def test_handle_self_state_uuid_crash_fixed(monkeypatch) -> None:
     captured = {}
@@ -66,6 +87,7 @@ async def test_handle_self_state_uuid_crash_fixed(monkeypatch) -> None:
 
     monkeypatch.setattr(worker, "_pub_bus", _Bus(), raising=False)
     monkeypatch.setattr(worker.manager, "broadcast", AsyncMock(), raising=False)
+    _mock_healthy_substrate_reads(monkeypatch)
 
     env = BaseEnvelope(
         kind="substrate.self_state.v1",
@@ -87,7 +109,7 @@ def test_inner_features_settings_defaults() -> None:
     from app.settings import Settings
     s = Settings()
     assert s.inner_features_enabled is True
-    assert s.inner_features_version == "seed-v1"
+    assert s.inner_features_version == "seed-v2"
     assert s.channel_inner_features == "orion:self:inner_features"
     assert s.phi_degenerate_streak == 20
     assert s.orion_phi_encoder_enabled is False
@@ -115,6 +137,7 @@ async def test_handle_self_state_emits_inner_features_and_honest_phi(monkeypatch
     monkeypatch.setattr(worker, "_INNER_PREV_FELT", None, raising=False)
     monkeypatch.setattr(worker, "_INNER_PREV_HEADLINE", None, raising=False)
     monkeypatch.setattr(worker, "_INNER_DEGENERATE_STREAK", 0, raising=False)
+    _mock_healthy_substrate_reads(monkeypatch)
 
     env = BaseEnvelope(
         kind="substrate.self_state.v1",
@@ -157,6 +180,7 @@ async def test_handle_trace_ws_phi_uses_honest_headline(monkeypatch, tmp_path) -
     monkeypatch.setattr(worker, "_INNER_PREV_HEADLINE", None, raising=False)
     monkeypatch.setattr(worker, "_INNER_DEGENERATE_STREAK", 0, raising=False)
     monkeypatch.setattr(worker, "_INNER_LAST_HEADLINE", None, raising=False)
+    _mock_healthy_substrate_reads(monkeypatch)
 
     # Drive a real self-state tick first: this populates _INNER_LAST_HEADLINE
     # (~0.70 honest headline) and _LATEST_SELF_STATE (source for _get_phi_stats).
@@ -194,3 +218,105 @@ async def test_handle_trace_ws_phi_uses_honest_headline(monkeypatch, tmp_path) -
     ]
     assert trace_frames, "expected a trace-path tissue.update broadcast"
     assert trace_frames[-1]["stats"]["phi"] > 0.5
+
+
+@pytest.mark.asyncio
+async def test_handle_self_state_grammar_truth_freeze(monkeypatch) -> None:
+    monkeypatch.setattr(
+        worker,
+        "fetch_grammar_truth",
+        AsyncMock(
+            return_value=GrammarTruthSnapshot(
+                degraded=True,
+                degraded_reasons=["cursor_lag:execution_grammar_reducer"],
+                enabled_reducers={"execution_trajectory": True},
+                reducer_health_by_name={},
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        worker,
+        "fetch_execution_trajectory",
+        AsyncMock(return_value=ExecutionTrajectorySnapshot(ok=False, projection=None)),
+    )
+    captured = {}
+
+    class _Bus:
+        enabled = True
+
+        async def publish(self, channel, env):
+            if channel == worker.settings.channel_inner_features:
+                captured["payload"] = env.payload
+
+    monkeypatch.setattr(worker, "_pub_bus", _Bus(), raising=False)
+    monkeypatch.setattr(worker, "_INNER_SCALER", worker._new_inner_scaler(), raising=False)
+    monkeypatch.setattr(worker, "_INNER_PREV_FELT", None, raising=False)
+    monkeypatch.setattr(worker, "_INNER_PREV_HEADLINE", None, raising=False)
+    monkeypatch.setattr(worker, "_INNER_DEGENERATE_STREAK", 0, raising=False)
+    env = BaseEnvelope(
+        kind="substrate.self_state.v1",
+        source=ServiceRef(name="substrate-runtime", node="athena"),
+        payload=_self_state_payload(),
+    )
+    await worker.handle_self_state(env)
+    assert captured["payload"].phi_health == "frozen"
+
+
+@pytest.mark.asyncio
+async def test_handle_self_state_includes_cognitive_features(monkeypatch) -> None:
+    now = _NOW
+    monkeypatch.setattr(
+        worker,
+        "fetch_grammar_truth",
+        AsyncMock(
+            return_value=GrammarTruthSnapshot(
+                degraded=False,
+                degraded_reasons=[],
+                enabled_reducers={"execution_trajectory": True},
+                reducer_health_by_name={"execution_trajectory": {"classification": "healthy"}},
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        worker,
+        "fetch_execution_trajectory",
+        AsyncMock(
+            return_value=ExecutionTrajectorySnapshot(
+                ok=True,
+                projection={
+                    "runs": {
+                        "a": {
+                            "reasoning_present": True,
+                            "recall_observed": True,
+                            "step_count": 4,
+                            "failed_step_count": 0,
+                            "pressure_hints": {},
+                            "last_updated_at": now.isoformat(),
+                        }
+                    }
+                },
+            )
+        ),
+    )
+    captured = {}
+
+    class _Bus:
+        enabled = True
+
+        async def publish(self, channel, env):
+            if channel == worker.settings.channel_inner_features:
+                captured["payload"] = env.payload
+
+    monkeypatch.setattr(worker, "_pub_bus", _Bus(), raising=False)
+    monkeypatch.setattr(worker, "_INNER_SCALER", worker._new_inner_scaler(), raising=False)
+    monkeypatch.setattr(worker, "_INNER_PREV_FELT", None, raising=False)
+    monkeypatch.setattr(worker, "_INNER_PREV_HEADLINE", None, raising=False)
+    monkeypatch.setattr(worker, "_INNER_DEGENERATE_STREAK", 0, raising=False)
+    env = BaseEnvelope(
+        kind="substrate.self_state.v1",
+        source=ServiceRef(name="substrate-runtime", node="athena"),
+        payload=_self_state_payload(),
+    )
+    await worker.handle_self_state(env)
+    names = {f.name for f in captured["payload"].features}
+    assert "reasoning_present" in names

@@ -44,6 +44,11 @@ from .inner_state import (
     build_inner_state_features,
 )
 from .inner_state_sink import InnerStateCorpusSink
+from .substrate_reads import (
+    cognitive_lane_dark,
+    fetch_execution_trajectory,
+    fetch_grammar_truth,
+)
 from .queue_jobs import (
     SparkIntrospectionJobV1,
     build_idempotency_key,
@@ -497,6 +502,16 @@ def _cola_http_client() -> httpx.AsyncClient:
     if _COLA_HTTP_CLIENT is None or _COLA_HTTP_CLIENT.is_closed:
         _COLA_HTTP_CLIENT = httpx.AsyncClient(timeout=float(settings.cola_understand_timeout_sec))
     return _COLA_HTTP_CLIENT
+
+
+_SUBSTRATE_HTTP_CLIENT: Optional[httpx.AsyncClient] = None
+
+
+def _substrate_http_client() -> httpx.AsyncClient:
+    global _SUBSTRATE_HTTP_CLIENT
+    if _SUBSTRATE_HTTP_CLIENT is None or _SUBSTRATE_HTTP_CLIENT.is_closed:
+        _SUBSTRATE_HTTP_CLIENT = httpx.AsyncClient(timeout=float(settings.substrate_read_timeout_sec))
+    return _SUBSTRATE_HTTP_CLIENT
 
 
 async def _fetch_cola_understanding(text: str, *, doc_id: str) -> Optional[np.ndarray]:
@@ -2272,11 +2287,26 @@ async def handle_self_state(env: BaseEnvelope) -> None:
 
     global _INNER_PREV_FELT, _INNER_PREV_HEADLINE, _INNER_DEGENERATE_STREAK, _INNER_LAST_HEADLINE
     if settings.inner_features_enabled:
+        substrate_base = settings.substrate_runtime_url.rstrip("/")
+        gt = await fetch_grammar_truth(
+            _substrate_http_client(),
+            f"{substrate_base}/grammar/truth",
+        )
+        traj = await fetch_execution_trajectory(
+            _substrate_http_client(),
+            f"{substrate_base}/projections/execution_trajectory",
+        )
+        grammar_degraded = gt.degraded or cognitive_lane_dark(gt)
+        projection = traj.projection if traj.ok else None
+
         inner, _INNER_PREV_FELT, _INNER_DEGENERATE_STREAK = build_inner_state_features(
             ss,
             _INNER_SCALER,
             features_version=settings.inner_features_version,
-            grammar_degraded=False,  # Plan 2: wire cross-service grammar-truth gate
+            grammar_degraded=grammar_degraded,
+            degraded_reasons=gt.degraded_reasons,
+            trajectory_projection=projection,
+            exec_trajectory_max_age_sec=int(settings.exec_trajectory_max_age_sec),
             prev_felt=_INNER_PREV_FELT,
             prev_headline=_INNER_PREV_HEADLINE,
             degenerate_streak=_INNER_DEGENERATE_STREAK,

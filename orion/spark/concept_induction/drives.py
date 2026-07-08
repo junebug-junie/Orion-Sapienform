@@ -16,6 +16,12 @@ class DriveMathConfig:
     saturation_gain: float = 1.8
     activate_threshold: float = 0.62
     deactivate_threshold: float = 0.42
+    # When True (ORION_DRIVE_LEAKY_MATH_ENABLED), pressure is a wall-clock leaky
+    # integrator that rests at zero and is cadence-invariant. When False, the
+    # legacy soft-saturate path is used (kept for rollback). The legacy path has
+    # a non-zero fixed point (~0.731 at gain=1.8) that pins every drive under
+    # frequent ticks — a cadence artifact, not cognition.
+    leaky_math_enabled: bool = True
 
 
 class DriveEngine:
@@ -63,8 +69,17 @@ class DriveEngine:
         pressures: Dict[str, float] = {}
         activations: Dict[str, bool] = {}
         for drive in DRIVE_KEYS:
-            raw = prev_p[drive] * decay + impact_sum[drive]
-            pressures[drive] = self._soft_saturate(raw)
+            base = prev_p[drive] * decay
+            if self.cfg.leaky_math_enabled:
+                # Leaky integrator: pressure decays toward 0 with no input, and each
+                # impulse pushes it a fraction of the remaining headroom (1 - base).
+                # No fixed point: with impulse=0, pressure=base < prev; the 55/s
+                # scene_state flood mints impulse≈0, so it cannot inflate anything.
+                impulse = self._clamp01(impact_sum[drive])
+                pressures[drive] = self._clamp01(base + impulse * (1.0 - base))
+            else:
+                raw = base + impact_sum[drive]
+                pressures[drive] = self._soft_saturate(raw)
 
             if prev_a[drive]:
                 activations[drive] = pressures[drive] >= self.cfg.deactivate_threshold

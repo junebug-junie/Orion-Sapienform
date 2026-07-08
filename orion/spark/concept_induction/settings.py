@@ -131,6 +131,17 @@ class ConceptSettings(BaseSettings):
     drive_saturation_gain: float = Field(1.8, alias="DRIVE_SATURATION_GAIN")
     drive_activation_on: float = Field(0.62, alias="DRIVE_ACTIVATION_ON")
     drive_activation_off: float = Field(0.42, alias="DRIVE_ACTIVATION_OFF")
+    # Homeostatic drives (spec 2026-07-07). Leaky math replaces the soft-saturate
+    # fixed point (~0.731 pin); the source path mints deviation-triggered tensions
+    # from the signal/failure/health bus. Both default true (Juniper-authorized).
+    drive_leaky_math_enabled: bool = Field(True, alias="ORION_DRIVE_LEAKY_MATH_ENABLED")
+    homeostatic_drives_enabled: bool = Field(True, alias="ORION_HOMEOSTATIC_DRIVES_ENABLED")
+    deviation_ewma_alpha: float = Field(0.1, alias="DEVIATION_EWMA_ALPHA")
+    deviation_z_threshold: float = Field(1.5, alias="DEVIATION_Z_THRESHOLD")
+    deviation_sigma_floor: float = Field(0.02, alias="DEVIATION_SIGMA_FLOOR")
+    signal_tension_impulse_k: float = Field(0.25, alias="SIGNAL_TENSION_IMPULSE_K")
+    signal_tension_cap_per_window: int = Field(3, alias="SIGNAL_TENSION_CAP_PER_WINDOW")
+    signal_tension_window_sec: int = Field(60, alias="SIGNAL_TENSION_WINDOW_SEC")
     goal_proposal_cooldown_minutes: int = Field(180, alias="GOAL_PROPOSAL_COOLDOWN_MINUTES")
     goal_generation_mode: str = Field("evidence_rules", alias="GOAL_GENERATION_MODE")
     goal_drive_origin_source: str = Field("tick_attribution", alias="GOAL_DRIVE_ORIGIN_SOURCE")

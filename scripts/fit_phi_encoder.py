@@ -119,6 +119,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--legacy-corpus", action="store_true", help="seed-v1 felt-only rows (no cognitive features)")
     parser.add_argument("--min-rows", type=int, default=DEFAULT_MIN_ROWS)
     parser.add_argument("--min-hours", type=float, default=DEFAULT_MIN_HOURS)
+    parser.add_argument("--variance-fraction", type=float, default=DEFAULT_VARIANCE_FRACTION)
+    parser.add_argument("--variance-eps", type=float, default=DEFAULT_VARIANCE_EPS)
     parser.add_argument("--hidden-dim", type=int, default=DEFAULT_HIDDEN_DIM)
     parser.add_argument("--latent-dim", type=int, default=DEFAULT_LATENT_DIM)
     parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
@@ -516,7 +518,12 @@ def cmd_train(args: argparse.Namespace) -> int:
     raw_rows = _load_jsonl(args.corpus)
     loaded, excluded = _filter_training_rows(raw_rows, feature_names=feature_names)
     matrix = np.stack([r.x for r in loaded], axis=0) if loaded else np.zeros((0, len(feature_names)))
-    gate_cfg = CorpusGateConfig(min_rows=args.min_rows, min_hours=args.min_hours)
+    gate_cfg = CorpusGateConfig(
+        min_rows=args.min_rows,
+        min_hours=args.min_hours,
+        variance_fraction=args.variance_fraction,
+        variance_eps=args.variance_eps,
+    )
     check_corpus_gates(loaded, matrix, cfg=gate_cfg)
 
     train_cfg = TrainConfig(

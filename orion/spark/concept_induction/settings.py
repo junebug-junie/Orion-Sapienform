@@ -142,6 +142,27 @@ class ConceptSettings(BaseSettings):
     signal_tension_impulse_k: float = Field(0.25, alias="SIGNAL_TENSION_IMPULSE_K")
     signal_tension_cap_per_window: int = Field(3, alias="SIGNAL_TENSION_CAP_PER_WINDOW")
     signal_tension_window_sec: int = Field(60, alias="SIGNAL_TENSION_WINDOW_SEC")
+    # Homeostatic consumer subscription: SPECIFIC organ/failure channels only —
+    # never the orion:signals:* wildcard, so the 55/s scene_state flood is
+    # excluded at the subscription. These route to a drive-only tick that does
+    # NOT trigger concept induction.
+    homeostatic_signal_channels: List[str] = Field(
+        default_factory=lambda: [
+            "orion:signals:biometrics",
+            "orion:signals:spark",
+            "orion:signals:equilibrium",
+        ],
+        validation_alias=AliasChoices("HOMEOSTATIC_SIGNAL_CHANNELS"),
+    )
+    homeostatic_failure_channels: List[str] = Field(
+        default_factory=lambda: [
+            "orion:system:error",
+            "orion:rdf:error",
+            "orion:vision:edge:error",
+        ],
+        validation_alias=AliasChoices("HOMEOSTATIC_FAILURE_CHANNELS"),
+    )
+    homeostatic_failure_severity: float = Field(0.8, alias="HOMEOSTATIC_FAILURE_SEVERITY")
     goal_proposal_cooldown_minutes: int = Field(180, alias="GOAL_PROPOSAL_COOLDOWN_MINUTES")
     goal_generation_mode: str = Field("evidence_rules", alias="GOAL_GENERATION_MODE")
     goal_drive_origin_source: str = Field("tick_attribution", alias="GOAL_DRIVE_ORIGIN_SOURCE")

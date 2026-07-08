@@ -616,6 +616,15 @@ channels:
     stability: "experimental"
     since: "2026-07-07"
 
+  - name: "orion:self:phi_reward"
+    kind: "telemetry"
+    schema_id: "PhiIntrinsicRewardV1"
+    message_kind: "self.phi_reward.v1"
+    producer_services: ["orion-spark-introspector"]
+    consumer_services: ["orion-substrate-runtime", "orion-sql-writer", "orion-hub"]
+    stability: "experimental"
+    since: "2026-07-08"
+
   - name: "orion:rdf:enqueue"
     kind: "request"
     schema_id: "RdfWriteRequest"

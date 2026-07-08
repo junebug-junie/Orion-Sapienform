@@ -110,6 +110,17 @@ def test_world_pulse_seed_folds_in_autonomy_gap_fill_when_present() -> None:
     assert "https://ex/1" in seed
 
 
+def test_world_pulse_seed_marks_coverage_gaps_when_no_followups() -> None:
+    result = _sample_run_result()
+    result.digest.section_rollups.append(
+        SectionRollupV1(section="hardware_compute_gpu", status="missing", article_count=0, digest_item_count=0)
+    )
+    seed = build_world_pulse_reflective_trigger(result).prompt_seed or ""
+    assert "coverage_gaps" in seed
+    assert "hardware_compute_gpu" in seed
+    assert "orion_went_looking" not in seed
+
+
 def test_world_pulse_seed_marks_empty_gap_fill_and_renders_salience() -> None:
     followups = [
         CuriosityFollowupV1(section="policy_regulation", driving_gap="no_articles", query="tariff rule", articles=[]),

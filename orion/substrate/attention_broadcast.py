@@ -15,6 +15,7 @@ action is taken from the broadcast (that is rung 5's governed territory).
 
 from __future__ import annotations
 
+import logging
 import os
 from collections import deque
 from datetime import datetime, timezone
@@ -184,7 +185,7 @@ def build_substrate_attention_frame(
         generic_reversal=False,
         stale_thread_active=False,
     )
-    return AttentionFrameV1(
+    frame = AttentionFrameV1(
         generated_at=now or datetime.now(timezone.utc),
         open_loops=open_loops,
         live_unknowns=[loop.description for loop in open_loops if not loop.already_known],
@@ -201,6 +202,61 @@ def build_substrate_attention_frame(
             "belief_lineage": lineage[:8],
         },
     )
+    return _apply_voluntary_attention(frame)
+
+
+logger = logging.getLogger(__name__)
+
+
+def _apply_voluntary_attention(
+    frame: AttentionFrameV1, agency_readiness: float = 1.0
+) -> AttentionFrameV1:
+    """Layer top-down goal bias onto the bottom-up frame (spec Step 2).
+
+    Default-off and never-raises: when the flag is off or there is no active goal,
+    the frame is returned byte-identical to bottom-up selection. When an active
+    goal flips the winner, fill each loop's top_down_bias/combined_salience,
+    re-point ``selected_action`` to the combined winner, and record the
+    ``voluntary_override`` trace.
+    """
+    from orion.substrate.attention.top_down import (
+        TopDownBiasCombiner,
+        TopDownConfig,
+        top_down_enabled,
+    )
+    from orion.substrate.attention.goal_context import get_active_goal
+
+    try:
+        if not top_down_enabled():
+            return frame
+        goal = get_active_goal()
+        if goal is None or not frame.open_loops:
+            return frame
+        bottom_up = {loop.id: float(loop.salience) for loop in frame.open_loops}
+        result = TopDownBiasCombiner(TopDownConfig.from_env()).apply(
+            goal=goal, loops=frame.open_loops, bottom_up=bottom_up,
+            agency_readiness=agency_readiness,
+        )
+        for loop in frame.open_loops:
+            score = result.per_loop.get(loop.id)
+            if score is not None:
+                loop.top_down_bias = score.top_down_bias
+                loop.combined_salience = score.combined_salience
+        frame.effort_budget_used = result.effort_used
+        if result.override is not None:
+            frame.voluntary_override = result.override
+            # Re-point the selected action to the combined winner when it has one.
+            winner = result.winner_loop_id
+            winner_action = next(
+                (a for a in frame.candidate_actions if getattr(a, "open_loop_id", None) == winner),
+                None,
+            )
+            if winner_action is not None:
+                frame.selected_action = winner_action
+        return frame
+    except Exception:
+        logger.warning("voluntary_attention_apply_failed", exc_info=True)
+        return frame
 
 
 def broadcast_projection_from_frame(frame: AttentionFrameV1) -> AttentionBroadcastProjectionV1:

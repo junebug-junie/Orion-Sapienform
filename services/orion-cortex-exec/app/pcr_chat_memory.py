@@ -86,6 +86,21 @@ def _pcr_from_ctx(ctx: Dict[str, Any]) -> PcrChatMemoryV1 | None:
     return None
 
 
+def pcr_phase01_complete(ctx: Dict[str, Any]) -> bool:
+    """True when phase 0+1 continuity recall (or skip) already ran for this turn."""
+    pcr = _pcr_from_ctx(ctx)
+    if pcr is not None and pcr.phase in ("skip", "continuity", "belief"):
+        return True
+    if isinstance(ctx.get("continuity_digest"), str) and str(ctx.get("continuity_digest")).strip():
+        return True
+    debug = ctx.get("debug")
+    if isinstance(debug, dict):
+        pcr_debug = debug.get("pcr")
+        if isinstance(pcr_debug, dict) and pcr_debug.get("phase") in ("skip", "continuity", "belief"):
+            return True
+    return False
+
+
 def _skip_gate_from_ctx(ctx: Dict[str, Any]) -> RecallSkipGateResult:
     pcr = _pcr_from_ctx(ctx)
     if pcr is not None and pcr.phase == "skip":

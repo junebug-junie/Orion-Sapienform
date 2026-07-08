@@ -1038,7 +1038,8 @@ class PlanRunner:
         recall_reason = str(recall_policy["reason"])
         use_pcr_pre_recall = (
             settings.chat_pcr_enabled
-            and str(plan.verb_name or "").strip().lower() in ("chat_general", "chat_quick")
+            and str(plan.verb_name or "").strip().lower()
+            in ("chat_general", "chat_quick", "stance_react")
             and should_recall
             and not inline_recall
         )

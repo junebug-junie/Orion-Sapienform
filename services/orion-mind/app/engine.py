@@ -284,8 +284,20 @@ def _projection_starvation_machine_keys(build_diag: dict[str, Any], resolution: 
     return keys
 
 
-def _projection_starvation_summary(build_diag: dict[str, Any], item_count: int, resolution: dict[str, Any] | None = None) -> str:
+def _projection_starvation_summary(
+    build_diag: dict[str, Any],
+    item_count: int,
+    resolution: dict[str, Any] | None = None,
+    *,
+    present: bool = True,
+) -> str:
     if item_count > 0:
+        return ""
+    # Light Mind paths (e.g. orion-thought enrichment) intentionally send no
+    # cognitive projection. Do not claim an "Orch preflight starvation" that never
+    # applied — that message misdirects root-causing. Only emit when a projection
+    # was actually present/expected.
+    if not present:
         return ""
     resolution = resolution if isinstance(resolution, dict) else {}
     path = resolution.get("resolution_path") or build_diag.get("resolution_path")
@@ -582,7 +594,12 @@ def run_mind_deterministic(
     if shadow_synthesis is not None:
         machine["mind.shadow_projection_refs_used"] = list(shadow_synthesis.projection_refs_used)
         machine["mind.shadow_confidence"] = shadow_synthesis.confidence
-    starvation_summary = _projection_starvation_summary(build_diag, item_count, resolution)
+    starvation_summary = _projection_starvation_summary(
+        build_diag,
+        item_count,
+        resolution,
+        present=bool(cognitive_projection_debug.get("present")),
+    )
     brief = MindHandoffBriefV1(
         summary_one_paragraph=(
             "Shadow synthesis candidate produced from CognitiveProjectionV1; not authorized for stance skip."

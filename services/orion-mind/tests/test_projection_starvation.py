@@ -81,6 +81,28 @@ def test_mind_run_emits_projection_starvation_diagnostics(client: TestClient) ->
     assert "Degraded Mind" in (body.get("brief", {}).get("summary_one_paragraph") or "")
 
 
+def test_light_path_without_projection_does_not_claim_orch_starvation(client: TestClient) -> None:
+    """Regression for fix/mind-enrichment-wall-budget: a light Mind run that sends NO
+    cognitive projection (e.g. the orion-thought enrichment path) must not surface a
+    misleading 'projection starved at Orch preflight' summary — that message
+    misdirected root-causing away from the real wall-budget cause."""
+    r = client.post(
+        "/v1/mind/run",
+        json={
+            "correlation_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "snapshot_inputs": {"user_text": "just learned my stepdad died today"},
+            "policy": {"n_loops_max": 1, "wall_time_ms_max": 60000, "router_profile_id": "default"},
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    summary = body.get("brief", {}).get("summary_one_paragraph") or ""
+    assert "Orch preflight" not in summary
+    assert "projection starved" not in summary
+    machine = body.get("brief", {}).get("machine_contract") or {}
+    assert machine.get("mind.projection_starved") is not True
+
+
 def test_rich_projection_cannot_become_zero_items_without_diagnostics(client: TestClient) -> None:
     """Regression: populated projection must not downgrade to starved fallback silently."""
     rich = {

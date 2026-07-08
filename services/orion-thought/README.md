@@ -75,8 +75,8 @@ Flags:
 |---------|---------|------|
 | `ORION_THOUGHT_MIND_ENRICHMENT_ENABLED` | `false` | Master switch |
 | `ORION_MIND_BASE_URL` | `http://orion-mind:6611` | Mind endpoint |
-| `ORION_THOUGHT_MIND_TIMEOUT_SEC` | `15` | HTTP read timeout |
-| `ORION_THOUGHT_MIND_WALL_MS` | `12000` | Mind policy wall time |
+| `ORION_THOUGHT_MIND_TIMEOUT_SEC` | `100` | HTTP read timeout (must exceed `WALL_MS/1000`) |
+| `ORION_THOUGHT_MIND_WALL_MS` | `90000` | Mind policy wall time (must be ≥ `3 × MIND_LLM_TIMEOUT_SEC × 1000`) |
 | `ORION_THOUGHT_MIND_ROUTER_PROFILE` | `default` | Mind router profile |
 | `ORION_THOUGHT_MIND_MAX_RESPONSE_BYTES` | `2000000` | Response body cap |
 | `ORION_THOUGHT_MIND_ARTIFACT_PUBLISH_ENABLED` | `false` | Publish `mind_runs` artifact (`mode=orion`) |
@@ -86,6 +86,28 @@ Flags:
 1. `orion-mind` must have `MIND_LLM_SYNTHESIS_ENABLED=true` — `meaningful_synthesis`
    (the only quality that fires coloring) is produced only by Mind's LLM path.
 2. `orion-thought` must be able to reach `ORION_MIND_BASE_URL`.
+
+**Budget invariant:** `orion-mind` runs 3 sequential LLM phases, each capped by
+`MIND_LLM_TIMEOUT_SEC` (default 25s on the `orion-mind` service). If
+`ORION_THOUGHT_MIND_WALL_MS` is below ~`3 × MIND_LLM_TIMEOUT_SEC × 1000` (75000)
+synthesis is cut off mid-pipeline and the Mind always degrades to `contract_only`
+(the coloring never fires) — an empty-shell no-op. The default `90000` leaves
+headroom for all three phases; `ORION_THOUGHT_MIND_TIMEOUT_SEC` (HTTP read) must
+exceed `WALL_MS/1000` so Mind's own fail-open result is returned instead of the
+client aborting. `orion-thought` logs a `mind_enrichment_config` warning at boot
+if either invariant is violated while enrichment is enabled.
+
+The min-viable wall is derived from `MIND_LLM_TIMEOUT_SEC_ASSUMED` (25s) in
+`app/settings.py`. That mirrors `orion-mind`'s `MIND_LLM_TIMEOUT_SEC` (a separate
+service, not readable from here) — if you change the per-phase timeout on
+`orion-mind`, re-derive `MIND_ENRICHMENT_MIN_VIABLE_WALL_MS` and the wall default
+here, or the boot warning will under-fire.
+
+**Latency caveat:** enrichment runs synchronously before `stance_react`. A stuck
+Mind LLM now fails open after ~3×25s of phase clamping (bounded by the 100s HTTP
+read) rather than the old ~12s, i.e. up to ~75–90s added to a live user turn in
+the worst case. Pair any rollout (`ORION_THOUGHT_MIND_ENRICHMENT_ENABLED=true`)
+with a turn-level budget/circuit-breaker on the caller.
 
 Everything fails open: Mind unconfigured / unreachable / slow / low-quality →
 byte-identical to today's stance behavior.

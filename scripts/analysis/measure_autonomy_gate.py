@@ -335,18 +335,31 @@ def build_drive_coactivation_histogram_sparql(
 ) -> str:
     """SPARQL: co-activation histogram (active-count -> #audits) since ``since``.
 
-    The inner query reduces per audit: each ``?audit``'s ``?activeCount`` is the
-    number of its ``orion:hasDriveAssessment`` assessments whose
-    ``orion:driveActive`` is boolean ``true``. The assessment join is OPTIONAL
-    and the count uses ``SUM(IF(BOUND(?act) && ?act = true, 1, 0))``. The
-    ``BOUND(?act)`` guard is required: for an audit whose OPTIONAL matched no
-    assessments, ``?act`` is unbound and a bare ``IF(?act = true, ...)`` makes
-    the SUM itself unbound (Jena/Fuseki), which would drop the audit from the
-    histogram and shrink the denominator. With the guard such audits yield an
-    explicit ``activeCount = 0``. The outer query bins those per-audit counts
-    into a histogram, so Fuseki returns only ~7 rows regardless of window size —
-    no per-audit transfer of hundreds of thousands of rows, no timeout. Pure
-    (returns a string) so it is unit-testable without a SPARQL endpoint.
+    The inner query reduces per audit: each ``?audit``'s ``?activeCount`` is
+    ``COUNT(DISTINCT ?activeDa)`` where ``?activeDa`` is bound ONLY to that
+    audit's active assessments — the pattern matches the boolean literal
+    directly (``?activeDa orion:driveActive true``), so no per-assessment IF is
+    needed and the count is bounded by the number of drive keys (max 6).
+
+    Two subtleties, both verified live against Jena/Fuseki:
+
+    * ``orion:timestamp`` is MULTI-VALUED (up to 8 per audit). It MUST NOT be
+      bound in the aggregation group: binding ``?ts`` alongside the assessment
+      join cross-products (5 timestamps x 6 active assessments = 30 counted),
+      producing impossible active counts and inflating co-activation. Instead
+      the window is applied with ``FILTER EXISTS { ?audit orion:timestamp ?ts .
+      FILTER(?ts >= since) }`` — an audit is in-window iff ANY of its timestamps
+      is ``>= since``, which is correct for a multi-valued timestamp and cannot
+      fan out the count.
+    * The assessment join is OPTIONAL, so an assessment-less / all-inactive
+      audit has ``?activeDa`` unbound and ``COUNT(DISTINCT ?activeDa) = 0``,
+      landing it in the ``activeCount = 0`` bucket. ``COUNT(DISTINCT ...)`` also
+      dedupes any duplicate assessment edges.
+
+    The outer query bins the per-audit counts into a histogram, so Fuseki
+    returns only ~7 rows regardless of window size — no per-audit transfer of
+    hundreds of thousands of rows, no timeout. Pure (returns a string) so it is
+    unit-testable without a SPARQL endpoint.
     """
 
     since_iso = _as_utc(since).isoformat()
@@ -354,12 +367,11 @@ def build_drive_coactivation_histogram_sparql(
         f"PREFIX orion: <{ORION_NS}>\n"
         "PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>\n"
         "SELECT ?activeCount (COUNT(*) AS ?audits) WHERE {\n"
-        "  SELECT ?audit (SUM(IF(BOUND(?act) && ?act = true, 1, 0)) AS ?activeCount) WHERE {\n"
+        "  SELECT ?audit (COUNT(DISTINCT ?activeDa) AS ?activeCount) WHERE {\n"
         f"    GRAPH <{graph_uri}> {{\n"
-        "      ?audit a orion:DriveAudit ;\n"
-        "             orion:timestamp ?ts .\n"
-        "      OPTIONAL { ?audit orion:hasDriveAssessment ?da . ?da orion:driveActive ?act . }\n"
-        f'      FILTER (?ts >= "{since_iso}"^^xsd:dateTime)\n'
+        "      ?audit a orion:DriveAudit .\n"
+        f'      FILTER EXISTS {{ ?audit orion:timestamp ?ts . FILTER(?ts >= "{since_iso}"^^xsd:dateTime) }}\n'
+        "      OPTIONAL { ?audit orion:hasDriveAssessment ?activeDa . ?activeDa orion:driveActive true . }\n"
         "    }\n"
         "  } GROUP BY ?audit\n"
         "} GROUP BY ?activeCount ORDER BY ?activeCount"

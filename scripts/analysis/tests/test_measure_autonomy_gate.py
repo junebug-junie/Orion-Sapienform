@@ -214,19 +214,21 @@ def test_build_drive_coactivation_histogram_sparql_shape():
     q = mod.build_drive_coactivation_histogram_sparql(BASE)
     assert mod.AUTONOMY_DRIVES_GRAPH in q
     assert "orion:DriveAudit" in q
-    # Assessment-level boolean shape.
+    # Assessment-level boolean shape, counted DISTINCT (bounded by drive keys).
     assert "hasDriveAssessment" in q
-    assert "driveActive" in q
-    # BOUND guard: assessment-less audits must yield activeCount=0, not unbound
-    # (otherwise the audit drops from the histogram and biases coactivation_frac).
-    assert "SUM(IF(BOUND(?act) && ?act = true" in q
-    assert "BOUND(?act)" in q
+    assert "orion:driveActive true" in q
+    assert "COUNT(DISTINCT ?activeDa)" in q
+    # ts is multi-valued -> windowed via FILTER EXISTS so it cannot fan out the
+    # assessment count. ?ts must NOT be bound in the aggregation group.
+    assert "FILTER EXISTS" in q
+    assert "orion:timestamp" in q
+    assert f'FILTER(?ts >= "{BASE.isoformat()}"^^xsd:dateTime)' in q
     # Nested aggregation: inner reduces per audit, outer bins into a histogram.
     assert "GROUP BY ?audit" in q
     assert "GROUP BY ?activeCount" in q
-    # Window bound applied on a typed dateTime.
-    assert f'FILTER (?ts >= "{BASE.isoformat()}"^^xsd:dateTime)' in q
-    # Stale / per-audit-transfer shapes must be gone.
+    # Old markers (fan-out / unbound-SUM / stale predicate) must be gone.
+    assert "SUM(IF" not in q
+    assert "BOUND(?act)" not in q
     assert "highlightsActiveDrive" not in q
     assert "COUNT(DISTINCT ?d)" not in q
 

@@ -11,6 +11,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.harness.cortex_client import HarnessCortexClient
 from orion.harness.finalize import (
     DEFAULT_FINALIZE_INTERLOCUTOR,
+    HarnessFinalizeFailedError,
     emit_post_turn_closure,
     run_harness_finalize_chain,
 )
@@ -171,7 +172,32 @@ async def handle_harness_run_request(
             # (request.thought_event / answer_contract) before enabling in a multi-human town.
             embodiment_relational=True,
             embodiment_interlocutor_ref=DEFAULT_FINALIZE_INTERLOCUTOR,
+            closure_channel=settings.channel_post_turn_closure,
+            system_error_channel=settings.channel_system_error,
         )
+    except HarnessFinalizeFailedError as exc:
+        logger.error("harness finalize chain error corr=%s err=%s", corr, exc)
+        partial = exc.partial
+        run = HarnessRunV1(
+            correlation_id=corr,
+            final_text=None,
+            draft_text=motor.draft_text,
+            substrate_appraisal=partial.substrate_appraisal,
+            reflection=partial.reflection,
+            verdict_molecule_id=partial.verdict_molecule_id,
+            finalize_ran=False,
+            finalize_changed=False,
+            quick_lane_skipped_5b=partial.quick_lane_skipped_5b,
+            step_count=motor.step_count,
+            exit_code=motor.exit_code,
+            compliance_verdict="failed",
+            grounding_status=str(exc),
+            grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
+            recall_debug=recall_debug,
+            memory_digest=memory_digest,
+        )
+        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
+        return run
     except Exception as exc:
         logger.error("harness finalize chain error corr=%s err=%s", corr, exc)
         run = HarnessRunV1(

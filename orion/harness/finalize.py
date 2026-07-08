@@ -42,6 +42,7 @@ REPAIR_PRESSURE_MAX = 0.3
 VERDICT_CHANNEL = "orion:harness:verdict:artifact"
 OUTCOME_CHANNEL = "orion:substrate:turn_outcome"
 POST_TURN_CLOSURE_CHANNEL = "orion:substrate:post_turn_closure"
+SYSTEM_ERROR_CHANNEL = "orion:system:error"
 EMBODIMENT_INTENT_CHANNEL = "orion:embodiment:intent"
 
 # Interlocutor the finalized (relational) turn should approach in the town when
@@ -585,6 +586,8 @@ async def emit_turn_outcome_molecule(
     final_text: str,
     finalize_changed: bool,
     grammar_receipts: list[GrammarReceiptV1] | None = None,
+    finalize_failed: bool = False,
+    failure_reason: str | None = None,
     channel: str = OUTCOME_CHANNEL,
     publish_fn: PublishFn | None = None,
     bus: Any = None,
@@ -594,7 +597,8 @@ async def emit_turn_outcome_molecule(
         receipt.grammar_event_id for receipt in receipts if receipt.grammar_event_id
     ]
     surprise_resolved = (
-        reflection.alignment_verdict == "aligned"
+        not finalize_failed
+        and reflection.alignment_verdict == "aligned"
         and not reflection.strain_unresolved
         and (finalize_changed or substrate_appraisal.surprise_level < _quick_gate_epsilon())
     )
@@ -612,14 +616,18 @@ async def emit_turn_outcome_molecule(
         surprise_resolved=surprise_resolved,
         grammar_event_ids=grammar_event_ids,
         final_text=final_text,
+        finalize_failed=finalize_failed,
+        failure_reason=failure_reason,
+        draft_text_excerpt=_excerpt(draft_text) if finalize_failed else None,
     )
     if publish_fn is not None:
         await publish_fn(molecule, channel=channel)
         logger.info(
-            "harness_turn_outcome_published corr=%s channel=%s surprise_resolved=%s grammar_events=%d",
+            "harness_turn_outcome_published corr=%s channel=%s surprise_resolved=%s finalize_failed=%s grammar_events=%d",
             correlation_id,
             channel,
             surprise_resolved,
+            finalize_failed,
             len(grammar_event_ids),
         )
     elif bus is not None:
@@ -633,10 +641,11 @@ async def emit_turn_outcome_molecule(
         )
         await bus.publish(channel, envelope)
         logger.info(
-            "harness_turn_outcome_published corr=%s channel=%s surprise_resolved=%s grammar_events=%d",
+            "harness_turn_outcome_published corr=%s channel=%s surprise_resolved=%s finalize_failed=%s grammar_events=%d",
             correlation_id,
             channel,
             surprise_resolved,
+            finalize_failed,
             len(grammar_event_ids),
         )
     return molecule
@@ -682,6 +691,143 @@ class HarnessFinalizeChainResult:
     verdict_molecule_id: str
 
 
+@dataclass
+class HarnessFinalizePartialState:
+    substrate_appraisal: SubstrateFinalizeAppraisalV1
+    reflection: FinalizeReflectionV1
+    verdict_molecule: HarnessVerdictMoleculeV1
+    outcome_molecule: HarnessTurnOutcomeMoleculeV1
+    quick_lane_skipped_5b: bool
+    verdict_molecule_id: str
+
+
+class HarnessFinalizeFailedError(Exception):
+    """Voice finalize (5c) failed after substrate appraisal + reflection completed."""
+
+    def __init__(self, message: str, *, partial: HarnessFinalizePartialState) -> None:
+        super().__init__(message)
+        self.partial = partial
+
+
+async def emit_harness_finalize_system_error(
+    *,
+    correlation_id: str,
+    error: str,
+    phase: str = "orion_voice_finalize",
+    channel: str = SYSTEM_ERROR_CHANNEL,
+    publish_fn: PublishFn | None = None,
+    bus: Any = None,
+) -> None:
+    payload = {
+        "error": error,
+        "phase": phase,
+        "source": "orion-harness-governor",
+        "correlation_id": correlation_id,
+    }
+    if publish_fn is not None:
+        await publish_fn(payload, channel=channel)
+        logger.info(
+            "harness_finalize_system_error_published corr=%s channel=%s phase=%s",
+            correlation_id,
+            channel,
+            phase,
+        )
+    elif bus is not None:
+        from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+
+        envelope = BaseEnvelope(
+            kind="system.error.v1",
+            source=ServiceRef(name="orion-harness-governor"),
+            correlation_id=uuid.UUID(correlation_id) if _is_uuid(correlation_id) else uuid.uuid4(),
+            payload=payload,
+        )
+        await bus.publish(channel, envelope)
+        logger.info(
+            "harness_finalize_system_error_published corr=%s channel=%s phase=%s",
+            correlation_id,
+            channel,
+            phase,
+        )
+    else:
+        logger.warning(
+            "harness_finalize_system_error_skipped corr=%s reason=no_bus_or_publish_fn phase=%s",
+            correlation_id,
+            phase,
+        )
+
+
+async def emit_finalize_failure_artifacts(
+    *,
+    correlation_id: str,
+    error: str,
+    draft_text: str,
+    thought: ThoughtEventV1,
+    substrate_appraisal: SubstrateFinalizeAppraisalV1,
+    reflection: FinalizeReflectionV1,
+    verdict_molecule: HarnessVerdictMoleculeV1,
+    verdict_molecule_id: str,
+    grammar_receipts: list[GrammarReceiptV1] | None,
+    user_message: str,
+    quick_lane_skipped_5b: bool,
+    bus: Any = None,
+    outcome_publish_fn: PublishFn | None = None,
+    closure_channel: str = POST_TURN_CLOSURE_CHANNEL,
+    closure_publish_fn: PublishFn | None = None,
+    system_error_channel: str = SYSTEM_ERROR_CHANNEL,
+    system_error_publish_fn: PublishFn | None = None,
+) -> HarnessFinalizePartialState:
+    """Emit degraded 6b outcome + 7 closure + homeostatic system error on 5c failure."""
+    outcome_molecule = await emit_turn_outcome_molecule(
+        correlation_id=correlation_id,
+        thought=thought,
+        substrate_appraisal=substrate_appraisal,
+        reflection=reflection,
+        verdict_molecule=verdict_molecule,
+        draft_text=draft_text,
+        final_text="",
+        finalize_changed=False,
+        grammar_receipts=grammar_receipts,
+        finalize_failed=True,
+        failure_reason=_excerpt(error, max_len=500),
+        publish_fn=outcome_publish_fn,
+        bus=bus,
+    )
+    closure = await emit_post_turn_closure(
+        correlation_id=correlation_id,
+        outcome_molecule=outcome_molecule,
+        verdict_molecule_id=verdict_molecule_id,
+        grammar_event_ids=outcome_molecule.grammar_event_ids,
+        user_message=user_message,
+        thought_event=thought,
+        reflection_imperative=reflection.imperative,
+        channel=closure_channel,
+        publish_fn=closure_publish_fn,
+        bus=bus,
+    )
+    logger.info(
+        "harness_post_turn_closure_emitted corr=%s channel=%s surprise_unresolved=%s outcome_id=%s finalize_failed=true",
+        correlation_id,
+        closure_channel,
+        closure.surprise_unresolved,
+        closure.outcome_molecule_id,
+    )
+    await emit_harness_finalize_system_error(
+        correlation_id=correlation_id,
+        error=error,
+        channel=system_error_channel,
+        publish_fn=system_error_publish_fn,
+        bus=bus,
+    )
+    return HarnessFinalizePartialState(
+        substrate_appraisal=substrate_appraisal,
+        reflection=reflection,
+        verdict_molecule=verdict_molecule,
+        outcome_molecule=outcome_molecule,
+        quick_lane_skipped_5b=quick_lane_skipped_5b,
+        verdict_molecule_id=verdict_molecule_id,
+    )
+
+
 async def run_harness_finalize_chain(
     *,
     correlation_id: str,
@@ -700,6 +846,10 @@ async def run_harness_finalize_chain(
     embodiment_relational: bool = False,
     embodiment_interlocutor_ref: str | None = None,
     embodiment_publish_fn: PublishFn | None = None,
+    closure_channel: str = POST_TURN_CLOSURE_CHANNEL,
+    closure_publish_fn: PublishFn | None = None,
+    system_error_channel: str = SYSTEM_ERROR_CHANNEL,
+    system_error_publish_fn: PublishFn | None = None,
 ) -> HarnessFinalizeChainResult:
     """Orchestrate finalize beats 5a → 5b → 5c → 6b."""
     substrate_appraisal = await run_substrate_finalize_appraisal(
@@ -727,18 +877,40 @@ async def run_harness_finalize_chain(
     )
     verdict_molecule_id = _verdict_molecule_id(verdict_molecule)
 
-    final_text, voice_meta = await run_orion_voice_finalize(
-        correlation_id=correlation_id,
-        draft_text=draft_text,
-        thought=thought,
-        substrate_appraisal=substrate_appraisal,
-        reflection=reflection,
-        voice_contract=voice_contract,
-        repair_overlay=repair_overlay,
-        user_message=user_message,
-        grammar_receipts=grammar_receipts,
-        cortex_client=cortex_client,
-    )
+    try:
+        final_text, voice_meta = await run_orion_voice_finalize(
+            correlation_id=correlation_id,
+            draft_text=draft_text,
+            thought=thought,
+            substrate_appraisal=substrate_appraisal,
+            reflection=reflection,
+            voice_contract=voice_contract,
+            repair_overlay=repair_overlay,
+            user_message=user_message,
+            grammar_receipts=grammar_receipts,
+            cortex_client=cortex_client,
+        )
+    except Exception as exc:
+        partial = await emit_finalize_failure_artifacts(
+            correlation_id=correlation_id,
+            error=str(exc),
+            draft_text=draft_text,
+            thought=thought,
+            substrate_appraisal=substrate_appraisal,
+            reflection=reflection,
+            verdict_molecule=verdict_molecule,
+            verdict_molecule_id=verdict_molecule_id,
+            grammar_receipts=grammar_receipts,
+            user_message=user_message,
+            quick_lane_skipped_5b=quick_lane_skipped_5b,
+            bus=bus,
+            outcome_publish_fn=outcome_publish_fn,
+            closure_channel=closure_channel,
+            closure_publish_fn=closure_publish_fn,
+            system_error_channel=system_error_channel,
+            system_error_publish_fn=system_error_publish_fn,
+        )
+        raise HarnessFinalizeFailedError(str(exc), partial=partial) from exc
     finalize_changed = bool(voice_meta.get("finalize_changed"))
 
     outcome_molecule = await emit_turn_outcome_molecule(

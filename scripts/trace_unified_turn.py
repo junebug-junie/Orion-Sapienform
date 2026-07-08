@@ -62,7 +62,9 @@ _HOP_PATTERNS: dict[str, re.Pattern[str]] = {
         re.I,
     ),
     "outcome": re.compile(
-        r"harness_turn_outcome_published\s+corr=.*surprise_resolved=(?P<surprise_resolved>\S+).*grammar_events=(?P<grammar_events>\d+)",
+        r"harness_turn_outcome_published\s+corr=.*surprise_resolved=(?P<surprise_resolved>\S+)"
+        r"(?:\s+finalize_failed=(?P<finalize_failed>\S+))?"
+        r".*grammar_events=(?P<grammar_events>\d+)",
         re.I,
     ),
     "harness_complete": re.compile(
@@ -70,7 +72,12 @@ _HOP_PATTERNS: dict[str, re.Pattern[str]] = {
         re.I,
     ),
     "closure_publish": re.compile(
-        r"harness_post_turn_closure_(?:published|emitted)\s+corr=.*surprise_unresolved=(?P<surprise_unresolved>\S+)",
+        r"harness_post_turn_closure_(?:published|emitted)\s+corr=.*surprise_unresolved=(?P<surprise_unresolved>\S+)"
+        r"(?:.*finalize_failed=(?P<finalize_failed>\S+))?",
+        re.I,
+    ),
+    "system_error": re.compile(
+        r"harness_finalize_system_error_published\s+corr=.*channel=(?P<channel>\S+)\s+phase=(?P<phase>\S+)",
         re.I,
     ),
     "closure_received": re.compile(
@@ -133,6 +140,7 @@ class TurnTrace:
             "verdict",
             "cortex_5c",
             "outcome",
+            "system_error",
             "harness_complete",
             "closure_publish",
             "closure_received",
@@ -324,6 +332,7 @@ def format_turn_trace(trace: TurnTrace, *, verbose: bool = False) -> str:
         "verdict": "5b. Verdict molecule",
         "cortex_5c": "5c. Orion voice",
         "outcome": "6b. Outcome molecule",
+        "system_error": "Homeostatic system error (finalize failure)",
         "harness_complete": "HarnessRunV1 reply",
         "closure_publish": "7. Post-turn closure (publish)",
         "closure_received": "7. Post-turn closure (substrate)",

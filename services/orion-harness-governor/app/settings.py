@@ -61,6 +61,11 @@ class HarnessGovernorSettings(BaseSettings):
         "orion:substrate:post_turn_closure",
         alias="CHANNEL_POST_TURN_CLOSURE",
     )
+    channel_system_error: str = Field(
+        "orion:system:error",
+        validation_alias=AliasChoices("CHANNEL_SYSTEM_ERROR", "ORION_ERROR_CHANNEL"),
+        alias="CHANNEL_SYSTEM_ERROR",
+    )
     channel_harness_run_step: str = Field(
         "orion:harness:run:step",
         alias="CHANNEL_HARNESS_RUN_STEP",

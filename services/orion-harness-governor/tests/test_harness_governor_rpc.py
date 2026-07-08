@@ -114,8 +114,14 @@ async def test_harness_run_artifact_published() -> None:
 
 
 @pytest.mark.asyncio
-async def test_harness_finalize_chain_failure_preserves_draft() -> None:
+async def test_harness_finalize_chain_failure_preserves_draft_and_partial_finalize() -> None:
     from app import bus_listener
+    from orion.harness.finalize import (
+        HarnessFinalizeFailedError,
+        HarnessFinalizePartialState,
+        emit_turn_outcome_molecule,
+        emit_verdict_molecule,
+    )
 
     thought = make_thought()
     req = HarnessRunRequestV1(
@@ -126,6 +132,29 @@ async def test_harness_finalize_chain_failure_preserves_draft() -> None:
         answer_contract=AnswerContract(),
     )
     motor = _motor_result(thought)
+    appraisal = make_appraisal()
+    reflection = make_reflection()
+    verdict = await emit_verdict_molecule(correlation_id="c-finalize-fail", reflection=reflection)
+    outcome = await emit_turn_outcome_molecule(
+        correlation_id="c-finalize-fail",
+        thought=thought,
+        substrate_appraisal=appraisal,
+        reflection=reflection,
+        verdict_molecule=verdict,
+        draft_text=motor.draft_text,
+        final_text="",
+        finalize_changed=False,
+        finalize_failed=True,
+        failure_reason="RPC timeout",
+    )
+    partial = HarnessFinalizePartialState(
+        substrate_appraisal=appraisal,
+        reflection=reflection,
+        verdict_molecule=verdict,
+        outcome_molecule=outcome,
+        quick_lane_skipped_5b=True,
+        verdict_molecule_id="verdict-fail",
+    )
 
     bus = AsyncMock()
     with patch.object(
@@ -136,8 +165,9 @@ async def test_harness_finalize_chain_failure_preserves_draft() -> None:
         bus_listener,
         "run_harness_finalize_chain",
         AsyncMock(
-            side_effect=ValueError(
-                "orion_voice_finalize exec failed: LLMGatewayService: RPC timeout"
+            side_effect=HarnessFinalizeFailedError(
+                "orion_voice_finalize exec failed: LLMGatewayService: RPC timeout",
+                partial=partial,
             )
         ),
     ):
@@ -151,6 +181,10 @@ async def test_harness_finalize_chain_failure_preserves_draft() -> None:
     assert run.final_text is None
     assert run.draft_text == "internal draft"
     assert run.step_count == 1
+    assert run.substrate_appraisal is appraisal
+    assert run.reflection is reflection
+    assert run.verdict_molecule_id == "verdict-fail"
+    assert run.quick_lane_skipped_5b is True
     assert "orion_voice_finalize" in (run.grounding_status or "")
 
 

@@ -50,7 +50,10 @@ def build_active_packet(
     active = [c for c in crystallizations if c.status == "active"]
     if project_id:
         active = [c for c in active if project_id in c.scope or c.scope == []]
-    active.sort(key=lambda c: c.salience + _task_boost(c.kind, task_type), reverse=True)
+    active.sort(
+        key=lambda c: (c.dynamics.activation or 0.0) * (c.salience or 0.5) + _task_boost(c.kind, task_type),
+        reverse=True,
+    )
 
     cards = list(active_cards or [])
     card_ref_ids = list(card_refs or [])

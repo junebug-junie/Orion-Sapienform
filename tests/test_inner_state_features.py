@@ -151,3 +151,45 @@ def test_grammar_degraded_forces_frozen() -> None:
     )
     assert payload.phi_health == "frozen"
     assert payload.headline == 0.62
+
+
+def test_corpus_sink_appends_jsonl(tmp_path) -> None:
+    import importlib.util as _u
+    from pathlib import Path as _P
+    spec = _u.spec_from_file_location(
+        "spark_inner_sink",
+        _P(__file__).resolve().parents[1]
+        / "services" / "orion-spark-introspector" / "app" / "inner_state_sink.py",
+    )
+    sink_mod = _u.module_from_spec(spec)
+    spec.loader.exec_module(sink_mod)
+
+    from datetime import datetime, timezone
+    from orion.schemas.telemetry.inner_state import InnerStateFeaturesV1
+
+    path = tmp_path / "corpus.jsonl"
+    sink = sink_mod.InnerStateCorpusSink(str(path))
+    p = InnerStateFeaturesV1(generated_at=datetime(2026, 7, 7, tzinfo=timezone.utc), headline=0.5)
+    sink.append(p)
+    sink.append(p)
+    lines = path.read_text().strip().splitlines()
+    assert len(lines) == 2
+    import json
+    assert json.loads(lines[0])["headline"] == 0.5
+
+
+def test_corpus_sink_disabled_when_no_path() -> None:
+    import importlib.util as _u
+    from pathlib import Path as _P
+    spec = _u.spec_from_file_location(
+        "spark_inner_sink2",
+        _P(__file__).resolve().parents[1]
+        / "services" / "orion-spark-introspector" / "app" / "inner_state_sink.py",
+    )
+    sink_mod = _u.module_from_spec(spec)
+    spec.loader.exec_module(sink_mod)
+    sink = sink_mod.InnerStateCorpusSink("")
+    assert sink.enabled is False
+    from datetime import datetime, timezone
+    from orion.schemas.telemetry.inner_state import InnerStateFeaturesV1
+    sink.append(InnerStateFeaturesV1(generated_at=datetime(2026, 7, 7, tzinfo=timezone.utc)))  # no-op, no raise

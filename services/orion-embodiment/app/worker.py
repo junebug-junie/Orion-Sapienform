@@ -82,6 +82,10 @@ class EmbodimentWorker:
         # fetch (which looks like an empty transcript) can't re-trigger an opener
         # every tick and spam the conversation.
         self._opened_conversations: set[str] = set()
+        # Conversations for which Orion has already issued the one-shot stop that
+        # clears its lingering path so the engine (Conversation.tick) orients it
+        # toward the partner. Bounded per-convo so we don't fight the engine.
+        self._faced_conversations: set[str] = set()
         self._salience = SalienceState()
         # Conversation-completion tracking for the journal gate (perception delta).
         self._active_conversation_id: Optional[str] = None
@@ -519,10 +523,53 @@ class EmbodimentWorker:
                     player_id=own, ref=str(other.get("player_id")),
                 )
                 await self._actuate(intent, now=_utcnow())
-            # `participating` needs no engagement action here; speech is driven by
-            # the turn-taking gate in `_speak_once`.
+            elif status == "participating":
+                # The engine's Conversation.tick only orients participants who are
+                # NOT pathfinding. If Orion reached `participating` still carrying a
+                # lingering path, it never faces the partner. Issue one stop (moveTo
+                # own current tile) per conversation so the next tick orients Orion.
+                # Speech itself is driven by the turn-taking gate in `_speak_once`.
+                await self._face_partner_if_pathfinding(perception, own, cid)
             return
         await self._maybe_initiate_conversation(perception)
+
+    async def _face_partner_if_pathfinding(
+        self, perception: WorldPerceptionV1, own: str, cid: str
+    ) -> None:
+        """Clear Orion's lingering path exactly once per conversation so the engine
+        orients it toward the partner.
+
+        Fires only when ``perception.pathfinding`` is truthy — issuing a stop when
+        Orion is already stopped would fight the engine's own post-transition move
+        and spam inputs.         Guarded per-conversation via ``_faced_conversations``. The
+        stop is a ``moveTo`` to Orion's own *current* position — a zero-length path
+        the engine resolves to an immediate stop (no micro-move that would keep
+        ``pathfinding`` truthy), after which the next ``Conversation.tick`` sets
+        ``facing``. Fail-open: never raises into the perception loop.
+        """
+        if not cid or cid in self._faced_conversations:
+            return
+        if not getattr(perception, "pathfinding", False):
+            return
+        pos = perception.position or {}
+        try:
+            tx = float(pos["x"])
+            ty = float(pos["y"])
+        except (KeyError, TypeError, ValueError):
+            return
+        # Mark before actuating so a transient failure still can't re-fire every tick
+        # (we prefer under-facing once over spamming stops at the shared engine).
+        self._faced_conversations.add(cid)
+        try:
+            await asyncio.to_thread(
+                aitown_client.move_to,
+                player_id=own, x=tx, y=ty, world_id=self._world_id or None,
+            )
+            logger.info(
+                "embodiment_face_partner_stop convo=%s pos=(%.2f,%.2f)", cid, tx, ty
+            )
+        except Exception:
+            logger.exception("embodiment_face_partner_stop_failed convo=%s", cid)
 
     async def _maybe_initiate_conversation(self, perception: WorldPerceptionV1) -> None:
         dist = float(getattr(self._settings, "social_initiate_distance", 0.0) or 0.0)
@@ -608,12 +655,13 @@ class EmbodimentWorker:
         convo = perception.active_conversation or {}
         other = convo.get("other") or {}
         logger.info(
-            "embodiment_heartbeat player=%s nearby=%d active_convo=%s status=%s partner=%s",
+            "embodiment_heartbeat player=%s nearby=%d active_convo=%s status=%s partner=%s facing_partner=%s",
             self._orion_player_id or "?",
             len(perception.nearby_players or []),
             convo.get("conversation_id") or "-",
             convo.get("status") or "-",
             other.get("player_id") or "-",
+            convo.get("facing_partner"),
         )
 
     async def _maybe_idle_wander(self, *, now: datetime) -> None:
@@ -668,7 +716,9 @@ class EmbodimentWorker:
         self._speaking_conversations.add(convo_id)
         try:
             try:
-                reply = await self._request_utterance(prompt, correlation_id=str(uuid4()))
+                reply = await self._request_utterance(
+                    prompt, correlation_id=str(uuid4()), convo_id=convo_id
+                )
             except Exception:
                 logger.exception("embodiment_speech_request_failed convo=%s", convo_id)
                 reply = ""
@@ -695,7 +745,80 @@ class EmbodimentWorker:
         finally:
             self._speaking_conversations.discard(convo_id)
 
-    async def _request_utterance(self, prompt: str, *, correlation_id: str) -> str:
+    async def _request_utterance(
+        self, prompt: str, *, correlation_id: str, convo_id: Optional[str] = None
+    ) -> str:
+        """Generate a town utterance. Dispatcher: prefer the unified turn (full
+        cognition pass over the hub saga); fall back to the quick cortex rail on
+        timeout/error/empty. Fail-open -> ''.
+
+        Set ``speech_unified_enabled`` false to force the legacy quick-only path.
+        """
+        if getattr(self._settings, "speech_unified_enabled", False):
+            session_id = f"{self._settings.unified_session_prefix}:{convo_id or 'orion'}"
+            try:
+                unified = await self._request_utterance_unified(
+                    prompt, correlation_id=correlation_id, session_id=session_id
+                )
+                if unified.strip():
+                    return unified
+                # A non-final/empty frame already logged its discriminating reason.
+            except Exception as exc:
+                logger.info(
+                    "embodiment_speech_unified_fallback reason=%s corr=%s",
+                    type(exc).__name__, correlation_id,
+                )
+        return await self._request_utterance_quick(prompt, correlation_id=correlation_id)
+
+    async def _request_utterance_unified(
+        self, prompt: str, *, correlation_id: str, session_id: str
+    ) -> str:
+        """Route the utterance through the hub-only unified turn saga
+        (``POST /api/chat`` with ``mode=orion``). Returns the final text on success;
+        returns "" to signal fallback on any non-final/empty frame, logging a
+        discriminating ``reason`` (``turn_error`` vs ``turn_deferred`` vs
+        ``non_final:<type>`` vs ``empty``) so an operator can tell a real cognition
+        failure from a benign quiet turn. Network/JSON errors propagate to the
+        dispatcher, which logs one fallback line."""
+        import urllib.request
+
+        body = json.dumps(
+            {
+                "mode": "orion",
+                "session_id": session_id,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+        ).encode("utf-8")
+
+        def _post() -> dict:
+            req = urllib.request.Request(
+                self._settings.hub_chat_url,
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(
+                req, timeout=float(self._settings.unified_timeout_sec)
+            ) as resp:
+                raw = resp.read().decode("utf-8")
+            return json.loads(raw)
+
+        frame = await asyncio.to_thread(_post)
+        frame_type = frame.get("type") if isinstance(frame, dict) else None
+        if frame_type != "final":
+            reason = frame_type if frame_type in ("turn_error", "turn_deferred") else f"non_final:{frame_type}"
+            logger.info(
+                "embodiment_speech_unified_fallback reason=%s corr=%s", reason, correlation_id
+            )
+            return ""
+        text = str(frame.get("llm_response") or "").strip()
+        if not text:
+            logger.info(
+                "embodiment_speech_unified_fallback reason=empty corr=%s", correlation_id
+            )
+        return text
+
+    async def _request_utterance_quick(self, prompt: str, *, correlation_id: str) -> str:
         """Reuse the cortex exec rail to generate an utterance. Fail-open -> ''."""
         from orion.cognition.cortex_payload_extract import extract_cortex_payload_text
         from orion.cognition.plan_loader import build_plan_for_verb

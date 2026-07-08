@@ -64,3 +64,75 @@ def test_build_perception_reports_invited_status():
     perc = build_perception(players=players, orion_player_id="orion", conversations=conversations)
     assert perc.active_conversation["status"] == "invited"
     assert perc.active_conversation["other"]["player_id"] == "p9"
+
+
+def test_build_perception_exposes_own_facing_and_pathfinding():
+    players = [
+        {"id": "orion", "position": {"x": 2.0, "y": 3.0},
+         "facing": {"dx": 1.0, "dy": 0.0},
+         "pathfinding": {"destination": {"x": 9, "y": 9}, "started": 1, "state": {"kind": "moving"}}},
+    ]
+    perc = build_perception(players=players, orion_player_id="orion")
+    assert perc.facing == {"dx": 1.0, "dy": 0.0}
+    assert perc.pathfinding is True
+
+
+def test_build_perception_pathfinding_false_when_stopped():
+    players = [
+        {"id": "orion", "position": {"x": 0.0, "y": 0.0}, "facing": {"dx": 0.0, "dy": -1.0}},
+    ]
+    perc = build_perception(players=players, orion_player_id="orion")
+    assert perc.facing == {"dx": 0.0, "dy": -1.0}
+    assert perc.pathfinding is False
+
+
+def test_facing_partner_true_when_oriented_toward_partner():
+    players = [
+        {"id": "orion", "position": {"x": 0.0, "y": 0.0}, "facing": {"dx": 1.0, "dy": 0.0}},
+        {"id": "p9", "name": "Juniper", "position": {"x": 5.0, "y": 0.0}},
+    ]
+    conversations = [{"id": "c:1", "participants": [
+        {"playerId": "orion", "status": {"kind": "participating"}},
+        {"playerId": "p9", "status": {"kind": "participating"}},
+    ]}]
+    perc = build_perception(players=players, orion_player_id="orion", conversations=conversations)
+    assert perc.active_conversation["facing_partner"] is True
+
+
+def test_facing_partner_false_when_facing_away():
+    players = [
+        {"id": "orion", "position": {"x": 0.0, "y": 0.0}, "facing": {"dx": -1.0, "dy": 0.0}},
+        {"id": "p9", "name": "Juniper", "position": {"x": 5.0, "y": 0.0}},
+    ]
+    conversations = [{"id": "c:1", "participants": [
+        {"playerId": "orion", "status": {"kind": "participating"}},
+        {"playerId": "p9", "status": {"kind": "participating"}},
+    ]}]
+    perc = build_perception(players=players, orion_player_id="orion", conversations=conversations)
+    assert perc.active_conversation["facing_partner"] is False
+
+
+def test_facing_partner_none_when_facing_unknown():
+    players = [
+        {"id": "orion", "position": {"x": 0.0, "y": 0.0}},
+        {"id": "p9", "name": "Juniper", "position": {"x": 5.0, "y": 0.0}},
+    ]
+    conversations = [{"id": "c:1", "participants": [
+        {"playerId": "orion", "status": {"kind": "participating"}},
+        {"playerId": "p9", "status": {"kind": "participating"}},
+    ]}]
+    perc = build_perception(players=players, orion_player_id="orion", conversations=conversations)
+    assert perc.active_conversation["facing_partner"] is None
+
+
+def test_facing_partner_none_when_not_participating():
+    players = [
+        {"id": "orion", "position": {"x": 0.0, "y": 0.0}, "facing": {"dx": 1.0, "dy": 0.0}},
+        {"id": "p9", "name": "Juniper", "position": {"x": 5.0, "y": 0.0}},
+    ]
+    conversations = [{"id": "c:1", "participants": [
+        {"playerId": "orion", "status": {"kind": "walkingOver"}},
+        {"playerId": "p9", "status": {"kind": "participating"}},
+    ]}]
+    perc = build_perception(players=players, orion_player_id="orion", conversations=conversations)
+    assert perc.active_conversation["facing_partner"] is None

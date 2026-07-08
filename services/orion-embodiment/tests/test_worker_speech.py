@@ -21,6 +21,12 @@ def _worker() -> EmbodimentWorker:
         speech_timeout_sec=30.0,
         cortex_request_channel="orion:cortex:exec:request",
         cortex_result_prefix="orion:exec:result",
+        # Unified town speech defaults to OFF in tests so the existing quick-path
+        # cases exercise the legacy lane unchanged; unified cases opt in explicitly.
+        speech_unified_enabled=False,
+        hub_chat_url="http://orion-athena-hub:8080/api/chat",
+        unified_timeout_sec=120.0,
+        unified_session_prefix="aitown",
     )
     return w
 

@@ -64,6 +64,12 @@ class WorldPerceptionV1(BaseModel):
 
     player_id: str
     position: dict[str, float]
+    # Orion's own orientation ({dx,dy}) and whether the engine is currently
+    # moving Orion along a path. The engine only orients stopped participants
+    # toward each other (Conversation.tick), so surfacing pathfinding lets the
+    # worker guarantee the `!pathfinding` precondition and makes facing inspectable.
+    facing: Optional[dict[str, float]] = None
+    pathfinding: bool = False
     nearby_players: list[dict[str, Any]] = Field(default_factory=list)
     active_conversation: Optional[dict[str, Any]] = None
     world_generation: Optional[int] = None

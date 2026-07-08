@@ -438,6 +438,7 @@ from orion.schemas.self_study import (
     SelfSnapshotV1,
     SelfWritebackStatusV1,
 )
+from orion.schemas.telemetry.inner_state import InnerFeatureV1, InnerStateFeaturesV1
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1, SparkTelemetryPayload
 from orion.schemas.telemetry.spark_ack import SparkStateSnapshotAckV1
 from orion.schemas.telemetry.spark_candidate import SparkCandidateV1
@@ -706,6 +707,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "MetacogTriggerV1": MetacogTriggerV1,
     "MetacogDraftTextPatchV1": MetacogDraftTextPatchV1,
     "MetacogEnrichScorePatchV1": MetacogEnrichScorePatchV1,
+    "InnerStateFeaturesV1": InnerStateFeaturesV1,
+    "InnerFeatureV1": InnerFeatureV1,
     "SparkCandidateV1": SparkCandidateV1,
     "SparkSignalV1": SparkSignalV1,
     "SparkStateSnapshotAckV1": SparkStateSnapshotAckV1,
@@ -1229,6 +1232,10 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
 
 # Incremental kind lookup for new schemas; runtime validation still uses resolve() / _REGISTRY.
 SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
+    "InnerStateFeaturesV1": SchemaRegistration(
+        model=InnerStateFeaturesV1,
+        kind="self.inner_features.v1",
+    ),
     "VisionEdgeActivityPayload": SchemaRegistration(
         model=VisionEdgeActivityPayload,
         kind="vision.edge.activity.v1",

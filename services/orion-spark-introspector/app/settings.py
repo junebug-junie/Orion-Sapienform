@@ -110,6 +110,18 @@ class Settings(BaseSettings):
     # Freshness semantics (for read-model)
     spark_state_valid_for_ms: int = Field(15000, alias="SPARK_STATE_VALID_FOR_MS")
 
+    # --- Honest inner-state features (phi Plan 1) ---
+    inner_features_enabled: bool = Field(True, alias="INNER_FEATURES_ENABLED")
+    inner_features_version: str = Field("seed-v1", alias="INNER_FEATURES_VERSION")
+    inner_features_scaler_window_sec: int = Field(900, alias="INNER_FEATURES_SCALER_WINDOW_SEC")
+    inner_features_scaler_maxlen: int = Field(256, alias="INNER_FEATURES_SCALER_MAXLEN")
+    channel_inner_features: str = Field("orion:self:inner_features", alias="CHANNEL_INNER_FEATURES")
+    inner_features_corpus_path: str = Field("", alias="INNER_FEATURES_CORPUS_PATH")
+    phi_degenerate_streak: int = Field(20, alias="PHI_DEGENERATE_STREAK")
+    # Encoder (Plan 2) — default-off placeholders for env parity only.
+    orion_phi_encoder_enabled: bool = Field(False, alias="ORION_PHI_ENCODER_ENABLED")
+    orion_phi_encoder_weights: str = Field("", alias="ORION_PHI_ENCODER_WEIGHTS")
+
     # CoLA-derived novelty signal (Inverse Dynamics branch of orion-llama-cola-host).
     # Off by default: the host isn't in default deploy tooling yet, and calling an
     # unreachable/absent host per turn would just add log noise. Flip on once the

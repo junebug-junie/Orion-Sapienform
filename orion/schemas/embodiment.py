@@ -83,5 +83,5 @@ class OrionTownPersonaV1(BaseModel):
     identity_blurb: str
     plan: str
     spritesheet: str
-    persona_source: Literal["projection", "fallback"] = "projection"
+    persona_source: Literal["projection", "fallback", "card"] = "projection"
     provenance: dict[str, Any] = Field(default_factory=dict)

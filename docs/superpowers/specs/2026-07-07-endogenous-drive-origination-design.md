@@ -14,7 +14,7 @@ Four-area arc; build order de-risks foundational-first and gates the two empiric
 - **Step 3 — φ intrinsic reward + value learning** (reward re-founded on substrate self-state); wants Step 1's richer episode stream.
 - **Step 4 — Internal economy** (last; only if 0(b) shows scarcity binds; depends on Step 3's value-biased bids).
 
-**This spec = Step 1** (first cognition change). **Gate:** blocked on **Step 0(a)** — if `SelfStateV1` does not measurably drift during exogenous silence, the origination signal is inert and the mechanism must instead source dynamics from unresolved-pressure persistence. Do not write code until 0(a) passes. **Known behavior:** a single endogenous tension cannot activate a drive from rest (`soft_saturate(0.5)=0.593 < 0.62` activate threshold); origination is deliberately **accumulative** (≥2 firings ~15 min apart) — make the cap-vs-threshold interaction a tuned parameter with a test asserting the accumulation curve.
+**This spec = Step 1** (first cognition change). **Gate:** blocked on **Step 0(a)** — if `SelfStateV1` does not measurably drift during exogenous silence, the origination signal is inert and the mechanism must instead source dynamics from unresolved-pressure persistence. Do not write code until 0(a) passes. **Known behavior (leaky math, verified against the merged `DriveEngine` 2026-07-08):** a single endogenous tension at `ENDOGENOUS_MAG_CAP=0.5` moves a rested drive to exactly `0.500 < 0.62` — it cannot activate alone. Origination is deliberately **accumulative**, and under the leaky integrator the accumulation is a **closed form coupled to the cooldown**: firing every `Δt` at magnitude `m` from rest reaches `p₂ = m + m(1−m)·e^(−Δt/τ)` on the second firing and plateaus at `p* = m / (1 − e^(−Δt/τ)(1−m))`. See *Origination dynamics under leaky math* below — the load-bearing consequence is that **`ORIGINATION_COOLDOWN_SEC` must stay well under ~22 min or endogenous drives can never activate**; the seed `900s` is chosen for this, not arbitrary.
 
 ## Arsonist summary
 
@@ -31,7 +31,7 @@ This resolves the catch-22 that makes drive-selected self-experiments circular: 
 ### Drive dynamics — real math, exogenous inputs
 `orion/spark/concept_induction/drives.py::DriveEngine`:
 - Six canonical drives: `coherence, continuity, capability, relational, predictive, autonomy` (`DRIVE_KEYS`).
-- Per-tick update: `raw = prev_pressure * decay + Σ(tension.magnitude × drive_impacts[d])`, then soft-saturate `1 − exp(−gain·v)`, then hysteresis activation (`activate ≥ 0.62`, `deactivate < 0.42`). Live config: `DRIVE_DECAY_TAU_SEC=1800`, `DRIVE_SATURATION_GAIN=1.8`.
+- Per-tick update (leaky integrator, merged 2026-07-08 — `[[project_homeostatic_drives_real_tensions]]`): `base = prev_pressure · e^(−Δt_wall/τ)`, then `pressure = clamp01(base + impulse·(1 − base))` where `impulse = clamp01(Σ tension.magnitude × drive_impacts[d])`, then hysteresis activation (`activate ≥ 0.62`, `deactivate < 0.42`). Live config: `DRIVE_DECAY_TAU_SEC=1800`, `ORION_DRIVE_LEAKY_MATH_ENABLED=true`. **The old `soft_saturate 1−exp(−gain·v)` path is legacy-only** (`ORION_DRIVE_LEAKY_MATH_ENABLED=false`); do not design against it. The leaky form rests at 0, is cadence-invariant, and has **no fixed point** — so accumulation dynamics are a clean closed form (see *Origination dynamics under leaky math* below).
 - **Input is `Iterable[TensionEventV1]` only.** The engine is origin-agnostic; it just sums impacts. Nothing about it assumes exogeneity — the gap is purely on the *producer* side.
 
 ### Tension producers — all exogenous
@@ -90,6 +90,31 @@ Map the dominant contributing sub-signal to a drive, deterministically (no LLM, 
 - if `dimensions.continuity_pressure` top → `continuity`
 
 `magnitude = min(ENDOGENOUS_MAG_CAP (0.5), P)`. Impact weight = 1.0 on the mapped drive. The cap ensures endogenous wants are *nudges*, never as loud as a real-world crisis.
+
+### Origination dynamics under leaky math
+
+Verified by replaying the merged `DriveEngine` (leaky, τ=1800s, activate 0.62 / deactivate 0.42) with magnitude at the cap (0.5), one drive:
+
+| firing @ cadence | p₁ | p₂ | p₃ | plateau p* | activates? |
+|---|---|---|---|---|---|
+| every 900s (cooldown seed) | 0.500 | **0.652** | 0.698 | 0.718 | yes, on 2nd firing |
+| every 1321s (~22 min) | 0.500 | **0.620** | 0.649 | 0.658 | yes, exactly at threshold on 2nd |
+| every 1800s (30 min) | 0.500 | 0.592 | 0.609 | 0.613 | **never** (plateau < 0.62) |
+| every 2400s (40 min) | 0.500 | 0.566 | 0.575 | 0.576 | **never** |
+
+Closed form (rest start, constant cadence Δt, magnitude m, `a=e^(−Δt/τ)`):
+```
+p₂ (second firing)  = m + m(1−m)·a
+plateau  p*         = m / (1 − a(1−m))
+two-firing activation window:  p₂ ≥ activate  ⇔  Δt ≤ τ·ln( m(1−m) / (activate − m) )
+                                              = 1800·ln(0.25/0.12) ≈ 1321s ≈ 22 min   (m=0.5)
+```
+
+Three load-bearing consequences the legacy soft-saturate spec did not surface:
+
+1. **Cooldown is coupled to the activation threshold.** With `m=0.5`, endogenous origination can only reach activation if firings land **≤ ~22 min apart**. `ORIGINATION_COOLDOWN_SEC=900` (15 min) is inside that window by design; a value ≥ 1800s would make endogenous drives *silently un-activatable*. Any future retune of the cap, τ, or the activate threshold must re-check `Δt ≤ τ·ln(m(1−m)/(activate−m))`.
+2. **Single firing is a true no-op for activation** (0.500 vs 0.62), and the plateau at the 900s cadence is `0.718` — bounded well below saturation, so endogenous wants never runaway even under maximal cadence (the cap does the bounding, not a fixed point).
+3. **Cooldown spans the decay tail.** After a second firing at 0.652, with no further firing the drive decays below the 0.42 deactivate threshold in `τ·ln(0.652/0.42) ≈ 791s ≈ 13.2 min` — inside the 900s cooldown. So a drive that activated endogenously has fully relaxed before the next endogenous firing is even permitted, which is what closes the self-referential-loop failure mode (below) under leaky math.
 
 ### Origin tagging
 Add an explicit `origin` to `TensionEventV1` (default `exogenous`, back-compatible) and set `origin="endogenous"` here. `goals.py::_drive_origin` gains a branch: if the lead tension for a tick is `origin=endogenous`, the goal's `drive_origin="endogenous"`.
@@ -157,7 +182,7 @@ After edit: `python scripts/sync_local_env_from_example.py`.
 2. Non-empty exogenous window (world present) → **suppressed** regardless of P.
 3. Within cooldown → suppressed; after cooldown → fires.
 4. Sub-signal dominance mapping table (drift→coherence, dwell→autonomy, agency→capability, social_pressure→relational, continuity_pressure→continuity).
-5. Fired tension passes through real `DriveEngine.update` and moves the mapped drive's pressure by the expected soft-saturated amount.
+5. Fired tension passes through real `DriveEngine.update` (leaky) and moves the mapped drive from rest to exactly `min(cap,P)` on one firing (0.500 at cap) — **not** active; a second firing within the cooldown crosses `activate` per the closed form. Assert the two-firing accumulation curve and that a firing cadence ≥ 1800s never activates.
 6. `goals.py::_drive_origin` returns `endogenous` when lead tension origin is endogenous.
 7. Magnitude cap holds under adversarial P=1.0.
 8. Back-compat: a `TensionEventV1` without `origin` deserializes as `exogenous`.
@@ -168,8 +193,8 @@ After edit: `python scripts/sync_local_env_from_example.py`.
 ## Failure modes & mitigations
 - **Runaway want-storm** → cooldown + magnitude cap + exogenous-quiet gate + rate counters.
 - **Timer-in-disguise** → threshold is on a real self-state-derived `P`; test 2/3 prove it is state- and context-gated, not clock-gated.
-- **Saturation masking** (the drive-attribution known issue) → endogenous magnitude is capped below world-crisis levels so it never dominates a saturated flat-pressure state; drive-attribution records origin for post-hoc audit.
-- **Self-referential loop** (endogenous want → self-state change → more endogenous want) → the exogenous-quiet gate does not fire while the drive is active/decaying above `deactivate_threshold`; cooldown spans the decay tail.
+- **Saturation masking** — *largely resolved by the leaky migration.* The flat-0.731 pin the soft-saturate engine produced is gone (leaky rests at 0, no fixed point), so endogenous nudges are no longer masked by a saturated state. The magnitude cap (0.5) still keeps endogenous wants below world-crisis loudness; drive-attribution records origin for post-hoc audit.
+- **Self-referential loop** (endogenous want → self-state change → more endogenous want) → the exogenous-quiet gate does not fire while the drive is active/decaying above `deactivate_threshold`, and — verified under leaky math — the 0.42 decay tail (13.2 min from a 0.65 activation) sits **inside** the 900s cooldown, so the drive relaxes before another endogenous firing is permitted. The cooldown-vs-decay-tail ordering is now a checkable invariant, not a hope.
 
 ## Privacy / safety
 Endogenous tensions reference self-state dimension ids, not raw private traces. No new exposure surface. Proposal-mode disable: set `ORION_ENDOGENOUS_ORIGINATION_ENABLED=false` — producer emits nothing, engine reverts to exogenous-only behavior with zero residue.

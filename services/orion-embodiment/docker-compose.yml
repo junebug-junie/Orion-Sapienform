@@ -11,6 +11,11 @@ services:
       - "${EMBODIMENT_PORT:-8130}:8130"
     volumes:
       - ${HOME}/.fcc:/root/.fcc:ro
+      # Orion's authored town card (read-only), so an in-container bootstrap can
+      # READ the full card when joining. Note: `--write` persists AITOWN_ORION_*
+      # to ~/.fcc/.env, which is mounted :ro above — run `--write` from the host.
+      # Source: orion-ai-town cards.
+      - ../orion-ai-town/cards/generated:/app/town_cards:ro
     environment:
       - PROJECT=${PROJECT}
       - NODE_NAME=${NODE_NAME:-athena}
@@ -27,7 +32,8 @@ services:
       - EMBODIMENT_IDLE_HEARTBEAT_SEC=${EMBODIMENT_IDLE_HEARTBEAT_SEC:-0}
       - EMBODIMENT_WORLD_HEARTBEAT_ENABLED=${EMBODIMENT_WORLD_HEARTBEAT_ENABLED:-false}
       - EMBODIMENT_ORION_SPRITE=${EMBODIMENT_ORION_SPRITE:-f1}
-      - EMBODIMENT_SELF_STATE_URL=${EMBODIMENT_SELF_STATE_URL:-http://orion-self-state-runtime:8123}
+      - EMBODIMENT_SELF_STATE_URL=${EMBODIMENT_SELF_STATE_URL:-http://orion-self-state-runtime:8118}
+      - EMBODIMENT_TOWN_CARDS_PATH=${EMBODIMENT_TOWN_CARDS_PATH:-/app/town_cards/orion_town_card.txt}
       - EMBODIMENT_PERCEPTION_INTERVAL_SEC=${EMBODIMENT_PERCEPTION_INTERVAL_SEC:-0}
       - EMBODIMENT_SOCIAL_COOLDOWN_SEC=${EMBODIMENT_SOCIAL_COOLDOWN_SEC:-120}
       - EMBODIMENT_MOVE_COOLDOWN_SEC=${EMBODIMENT_MOVE_COOLDOWN_SEC:-0}

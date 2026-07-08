@@ -106,7 +106,7 @@ class WSClient {
         
         // Logic for diagnostics
         const p = state.targetPhi;
-        updateRow('phi', p, p > 0.5 ? "HIGH" : "LOW", p > 0.5 ? "Integrated / Coherent" : "Fragmented / Noisy");
+        updateRow('phi', p, p > 0.5 ? "HIGH" : "LOW", p > 0.5 ? "Integrated / Resourced" : "Loaded / Fragmented");
         
         const n = state.targetNovelty;
         updateRow('nov', n, n > 0.5 ? "HIGH" : "LOW", n > 0.5 ? "Surprising / New" : "Routine / Known");

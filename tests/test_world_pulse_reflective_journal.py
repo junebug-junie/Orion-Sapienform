@@ -9,6 +9,8 @@ from orion.journaler import (
     journal_mode_for_trigger,
 )
 from orion.schemas.world_pulse import (
+    CuriosityFindingV1,
+    CuriosityFollowupV1,
     DailyWorldPulseItemV1,
     DailyWorldPulseSectionsV1,
     DailyWorldPulseV1,
@@ -18,7 +20,9 @@ from orion.schemas.world_pulse import (
 )
 
 
-def _sample_run_result(*, dry_run: bool = False) -> WorldPulseRunResultV1:
+def _sample_run_result(
+    *, dry_run: bool = False, curiosity_followups: list[CuriosityFollowupV1] | None = None
+) -> WorldPulseRunResultV1:
     run_id = "wp-run-1"
     now = datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc)
     digest = DailyWorldPulseV1(
@@ -45,6 +49,7 @@ def _sample_run_result(*, dry_run: bool = False) -> WorldPulseRunResultV1:
         section_rollups=[
             SectionRollupV1(section="infrastructure", status="covered", article_count=3, digest_item_count=1)
         ],
+        curiosity_followups=curiosity_followups or [],
         created_at=now,
     )
     return WorldPulseRunResultV1(
@@ -74,6 +79,55 @@ def test_world_pulse_cooldown_key_uses_run_id() -> None:
     trigger = build_world_pulse_reflective_trigger(_sample_run_result())
     key = cooldown_key_for_trigger(trigger)
     assert key == "actions:journal:world_pulse_digest:world_pulse:wp-run-1"
+
+
+def test_world_pulse_seed_folds_in_autonomy_gap_fill_when_present() -> None:
+    # Consolidation: the "Orion went looking" autonomy gap-fill narrative is folded
+    # into the single world-pulse journal seed so the standalone autonomy_episode
+    # journal (and its duplicate email) can be retired.
+    followups = [
+        CuriosityFollowupV1(
+            section="hardware_compute_gpu",
+            driving_gap="missing",
+            query="new datacenter GPU supply",
+            articles=[
+                CuriosityFindingV1(
+                    url="https://ex/1",
+                    title="Fab ramps output",
+                    description="capacity note",
+                    salience=0.71,
+                )
+            ],
+            action_id="goal-afe6211f",
+        )
+    ]
+    trigger = build_world_pulse_reflective_trigger(_sample_run_result(curiosity_followups=followups))
+    seed = trigger.prompt_seed or ""
+    assert "orion_went_looking" in seed
+    assert "hardware compute gpu" in seed
+    assert "new datacenter GPU supply" in seed
+    assert "Fab ramps output" in seed
+    assert "https://ex/1" in seed
+
+
+def test_world_pulse_seed_marks_empty_gap_fill_and_renders_salience() -> None:
+    followups = [
+        CuriosityFollowupV1(section="policy_regulation", driving_gap="no_articles", query="tariff rule", articles=[]),
+        CuriosityFollowupV1(
+            section="hardware_compute_gpu",
+            driving_gap="missing",
+            query="gpu supply",
+            articles=[CuriosityFindingV1(url="https://ex/2", title="Fab note", salience=0.5)],
+        ),
+    ]
+    seed = build_world_pulse_reflective_trigger(_sample_run_result(curiosity_followups=followups)).prompt_seed or ""
+    assert "(looked, found nothing)" in seed
+    assert "[0.50] Fab note" in seed
+
+
+def test_world_pulse_seed_omits_gap_fill_section_when_no_followups() -> None:
+    trigger = build_world_pulse_reflective_trigger(_sample_run_result())
+    assert "orion_went_looking" not in (trigger.prompt_seed or "")
 
 
 def test_world_pulse_compose_request_carries_trigger_metadata() -> None:

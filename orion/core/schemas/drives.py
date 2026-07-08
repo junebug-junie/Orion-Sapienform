@@ -84,6 +84,13 @@ class GraphReadyArtifact(BaseModel):
 class TensionEventV1(GraphReadyArtifact):
     magnitude: float = Field(ge=0.0, le=1.0)
     drive_impacts: Dict[str, float] = Field(default_factory=dict)
+    # Origin of the want. Default exogenous keeps every existing producer and
+    # serialized tension back-compatible. "endogenous" is set only by the
+    # endogenous-origination path (SelfStateV1-derived, no external cause).
+    origin: Literal["exogenous", "endogenous"] = "exogenous"
+    # For endogenous tensions: the sub-signals that caused it {drift,dwell,agency,P}.
+    # Empty for exogenous. Bounded (≤ ~4 keys) — no unbounded growth.
+    origination_signal: Dict[str, float] = Field(default_factory=dict)
 
 
 class DriveStateV1(GraphReadyArtifact):

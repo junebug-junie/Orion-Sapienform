@@ -204,7 +204,7 @@ profiles:
       device_ids: [0]
       max_model_len: 16384
       max_batch_tokens: 512
-      max_concurrent_requests: 4
+      max_concurrent_requests: 1
       gpu_memory_fraction: 0.88
 
     llamacpp:

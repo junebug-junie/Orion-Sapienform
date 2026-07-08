@@ -91,3 +91,42 @@ def test_inner_features_settings_defaults() -> None:
     assert s.channel_inner_features == "orion:self:inner_features"
     assert s.phi_degenerate_streak == 20
     assert s.orion_phi_encoder_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_handle_self_state_emits_inner_features_and_honest_phi(monkeypatch, tmp_path) -> None:
+    published = []
+    broadcasts = []
+
+    class _Bus:
+        enabled = True
+
+        async def publish(self, channel, env):
+            published.append((channel, env))
+
+    async def _capture_broadcast(payload):
+        broadcasts.append(payload)
+
+    monkeypatch.setattr(worker, "_pub_bus", _Bus(), raising=False)
+    monkeypatch.setattr(worker.manager, "broadcast", _capture_broadcast, raising=False)
+    monkeypatch.setattr(worker.settings, "inner_features_corpus_path", str(tmp_path / "c.jsonl"), raising=False)
+    # fresh module state
+    monkeypatch.setattr(worker, "_INNER_SCALER", worker._new_inner_scaler(), raising=False)
+    monkeypatch.setattr(worker, "_INNER_PREV_FELT", None, raising=False)
+    monkeypatch.setattr(worker, "_INNER_PREV_HEADLINE", None, raising=False)
+    monkeypatch.setattr(worker, "_INNER_DEGENERATE_STREAK", 0, raising=False)
+
+    env = BaseEnvelope(
+        kind="substrate.self_state.v1",
+        source=ServiceRef(name="substrate-runtime", node="athena"),
+        payload=_self_state_payload(),
+    )
+    await worker.handle_self_state(env)
+
+    channels = [c for c, _ in published]
+    assert worker.settings.channel_inner_features in channels
+
+    # the tissue.update carries the HONEST headline (>0.5), not the 0.01 floor
+    tissue = [b for b in broadcasts if b.get("type") == "tissue.update"]
+    assert tissue, "expected a tissue.update broadcast"
+    assert tissue[-1]["stats"]["phi"] > 0.5

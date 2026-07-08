@@ -21,6 +21,7 @@ from orion.core.bus.work_queue import RedisStreamWorkQueue
 from orion.schemas.platform import CoreEventV1
 from orion.schemas.self_state import SelfStateV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
+from orion.schemas.telemetry.inner_state import InnerStateFeaturesV1
 from orion.schemas.telemetry.spark import SparkTelemetryPayload, SparkStateSnapshotV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from orion.schemas.telemetry.turn_effect import (
@@ -38,6 +39,11 @@ from orion.spark.surface_encoding import SurfaceEncoding
 from orion.spark.introspection_metadata import build_introspection_context
 
 from . import introspection_guard as ig
+from .inner_state import (
+    RollingRobustScaler,
+    build_inner_state_features,
+)
+from .inner_state_sink import InnerStateCorpusSink
 from .queue_jobs import (
     SparkIntrospectionJobV1,
     build_idempotency_key,
@@ -80,6 +86,18 @@ _VALENCE_ANCHORS_EXPIRES_AT: float = 0.0
 
 _LATEST_SELF_STATE: Optional[SelfStateV1] = None
 _PREV_PHI: Optional[Dict[str, float]] = None
+
+
+def _new_inner_scaler() -> RollingRobustScaler:
+    return RollingRobustScaler(maxlen=int(getattr(settings, "inner_features_scaler_maxlen", 256)))
+
+
+_INNER_SCALER: RollingRobustScaler = _new_inner_scaler()
+_INNER_PREV_FELT = None
+_INNER_PREV_HEADLINE = None
+_INNER_DEGENERATE_STREAK = 0
+_INNER_LAST_HEADLINE: Optional[float] = None  # honest headline for WS reads
+_INNER_SINK = InnerStateCorpusSink(getattr(settings, "inner_features_corpus_path", "") or "")
 
 
 def set_latest_self_state(ss: SelfStateV1) -> None:
@@ -154,6 +172,13 @@ def _get_phi_stats() -> Dict[str, float]:
     return {k: float(v) for k, v in (TISSUE.phi() or {}).items()}
 
 
+def _headline_stat(phi_stats: Dict[str, float]) -> float:
+    """Honest inner-state headline for WS EKG; falls back to legacy coherence."""
+    if _INNER_LAST_HEADLINE is not None:
+        return float(_INNER_LAST_HEADLINE)
+    return float(phi_stats.get("coherence", 0.0))
+
+
 def set_publisher_bus(bus: OrionBusAsync):
     global _pub_bus
     _pub_bus = bus
@@ -180,6 +205,10 @@ class SparkTelemetryEnvelope(Envelope[SparkTelemetryPayload]):
 
 class SparkStateSnapshotEnvelope(Envelope[SparkStateSnapshotV1]):
     kind: str = Field("spark.state.snapshot.v1", frozen=True)
+
+
+class InnerStateFeaturesEnvelope(Envelope[InnerStateFeaturesV1]):
+    kind: str = Field("self.inner_features.v1", frozen=True)
 
 
 class SparkCandidatePayload(BaseModel):
@@ -1071,7 +1100,7 @@ async def _broadcast_tissue_update(
         "correlation_id": correlation_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "stats": {
-            "phi": float(phi_stats.get("coherence", 0.0)),
+            "phi": _headline_stat(phi_stats),
             "novelty": float(novelty),
             "valence": valence,
             "arousal": arousal,
@@ -1263,7 +1292,7 @@ async def handle_trace(env: BaseEnvelope) -> None:
                     "correlation_id": corr_id,
                     "timestamp": iso_ts,
                     "stats": {
-                        "phi": float(phi_stats.get("coherence", 0.0)),
+                        "phi": _headline_stat(phi_stats),
                         "novelty": float(phi_stats.get("novelty", 0.0)),
                         "valence": valence,
                         "arousal": arousal,
@@ -1546,7 +1575,7 @@ async def handle_semantic_upsert(env: BaseEnvelope) -> None:
             "correlation_id": str(env.correlation_id or upsert.doc_id),
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "stats": {
-                "phi": coherence_stat,
+                "phi": _headline_stat(phi_stats),
                 "novelty": tissue_novelty,
                 "valence": tissue_valence,
                 "arousal": arousal_display,
@@ -2237,6 +2266,30 @@ async def handle_self_state(env: BaseEnvelope) -> None:
     _PREV_PHI = phi_now
     set_latest_self_state(ss)
 
+    global _INNER_PREV_FELT, _INNER_PREV_HEADLINE, _INNER_DEGENERATE_STREAK, _INNER_LAST_HEADLINE
+    if settings.inner_features_enabled:
+        inner, _INNER_PREV_FELT, _INNER_DEGENERATE_STREAK = build_inner_state_features(
+            ss,
+            _INNER_SCALER,
+            features_version=settings.inner_features_version,
+            grammar_degraded=False,  # Plan 2: wire cross-service grammar-truth gate
+            prev_felt=_INNER_PREV_FELT,
+            prev_headline=_INNER_PREV_HEADLINE,
+            degenerate_streak=_INNER_DEGENERATE_STREAK,
+            degenerate_limit=int(settings.phi_degenerate_streak),
+        )
+        _INNER_PREV_HEADLINE = inner.headline
+        _INNER_LAST_HEADLINE = inner.headline
+        _INNER_SINK.append(inner)
+        if _pub_bus and _pub_bus.enabled:
+            try:
+                await _pub_bus.publish(
+                    settings.channel_inner_features,
+                    InnerStateFeaturesEnvelope(source=_svc_ref(), correlation_id=uuid4(), payload=inner),
+                )
+            except Exception as exc:
+                logger.warning("Failed to publish inner_features: %s", exc)
+
     # Compute real inter-tick delta — two genuinely time-separated substrate snapshots.
     turn_effect: Optional[Dict[str, float]] = None
     if phi_prev is not None:
@@ -2303,7 +2356,7 @@ async def handle_self_state(env: BaseEnvelope) -> None:
             "correlation_id": ss.self_state_id,
             "timestamp": ss.generated_at.isoformat(),
             "stats": {
-                "phi": float(phi_now.get("coherence", 0.5)),
+                "phi": float(_INNER_LAST_HEADLINE if _INNER_LAST_HEADLINE is not None else phi_now.get("coherence", 0.5)),
                 "novelty": float(phi_now.get("novelty", 0.0)),
                 "valence": float(phi_now.get("valence", 0.0)),
                 "arousal": float(phi_now.get("energy", 0.5)),

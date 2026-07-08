@@ -48,6 +48,20 @@ The dispatcher tries unified first when `EMBODIMENT_SPEECH_UNIFIED_ENABLED=true`
 | `EMBODIMENT_UNIFIED_TIMEOUT_SEC` | `120` | Unified turn HTTP timeout (sec) |
 | `EMBODIMENT_UNIFIED_SESSION_PREFIX` | `aitown` | Prefix for the unified `session_id` |
 
+## Facing the conversation partner
+
+The AI Town engine (`convex/aiTown/conversation.ts` `Conversation.tick`) orients **both** participants toward each other on every tick — but **only for a participant that is NOT pathfinding** (`if (!player.pathfinding) player.facing = v`). Orion is an externally-driven "join" player with no town-AI agent, so if it reaches `participating` still carrying a lingering movement path, the engine never turns it to face the partner.
+
+This service guarantees the `!pathfinding` precondition for Orion:
+
+- **Perception surfaces own state.** `WorldPerceptionV1` now carries Orion's own `facing` ({dx,dy}) and `pathfinding` (bool), read from the raw serialized player (`convex/aiTown/player.ts` `serialize()`: `facing`, optional `pathfinding`). When Orion is `participating`, `active_conversation.facing_partner` reports whether Orion's `facing` vector aligns (dot product ≥ 0.7) with the direction to the partner — `True`/`False`, or `None` when facing/positions are unknown.
+- **Worker clears the lingering path.** In `_engage_conversation`, when the active conversation is `participating` **and** `perception.pathfinding` is truthy, the worker issues **one** stop per conversation id — a `moveTo` to Orion's own current tile center (`floor(pos)+0.5`) — which replaces the old path so the engine's next `Conversation.tick` orients Orion. It is guarded by `_faced_conversations` (fires at most once per conversation) and does **not** fire when `pathfinding` is falsy, to avoid fighting the engine's own post-transition move / spamming inputs at the shared engine. Fail-open (logged, never crashes the loop).
+- **Observability.** The `~30s` `embodiment_heartbeat` INFO line includes `facing_partner=<True|False|None>`, and a one-shot `embodiment_face_partner_stop convo=<id> tile=(x,y)` line records each stop.
+
+**Group chat is N/A** — this engine's conversations are strictly 2-party, so there is no multi-party orientation case to handle.
+
+> **UNVERIFIED at runtime.** The live town is not runnable in CI, so the visual confirmation that Orion actually turns to face its partner is deferred to the operator. The logic (perception fields, `facing_partner`, the one-shot stop, and the heartbeat/log surfaces) is covered by unit tests, but "Orion visibly faces the partner in the live world" has not been observed by this change.
+
 ## Secrets (`~/.fcc/.env`)
 
 `AITOWN_CONVEX_URL`, `AITOWN_ADMIN_KEY`, `AITOWN_WORLD_ID`, `AITOWN_ORION_PLAYER_ID`, `AITOWN_ORION_AGENT_ID` are loaded from `~/.fcc/.env` (mounted read-only at `/root/.fcc/.env`), **not** from this service `.env`.

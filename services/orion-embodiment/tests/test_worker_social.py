@@ -15,13 +15,15 @@ def _worker(initiate_distance=0.0, last_social=None, cooldown=120.0):
     w._world_id = "w1"
     w._social_cooldown_sec = cooldown
     w._last_social_attempt_at = last_social
+    w._faced_conversations = set()
     w._settings = SimpleNamespace(social_initiate_distance=initiate_distance)
     return w
 
 
-def _perc(active=None, nearby=None):
+def _perc(active=None, nearby=None, pathfinding=False, position=None):
     return WorldPerceptionV1(
-        player_id="orion", position={"x": 0.0, "y": 0.0},
+        player_id="orion", position=position or {"x": 0.0, "y": 0.0},
+        pathfinding=pathfinding,
         nearby_players=nearby or [], active_conversation=active,
     )
 
@@ -93,3 +95,27 @@ def test_initiate_off_when_distance_zero():
     with patch.object(w, "_actuate", new=AsyncMock()) as act:
         asyncio.run(w._engage_conversation(perc))
     act.assert_not_awaited()
+
+
+def test_engage_stops_once_to_face_partner_when_pathfinding():
+    w = _worker()
+    active = {"conversation_id": "c:3", "status": "participating",
+              "other": {"player_id": "p9", "position": {"x": 5.0, "y": 0.0}}}
+    perc = _perc(active=active, pathfinding=True, position={"x": 2.3, "y": 3.8})
+    with patch("app.worker.aitown_client.move_to") as mv:
+        asyncio.run(w._engage_conversation(perc))
+        # Second tick for the same conversation must NOT re-issue the stop.
+        asyncio.run(w._engage_conversation(perc))
+    mv.assert_called_once_with(player_id="orion", x=2.5, y=3.5, world_id="w1")
+    assert "c:3" in w._faced_conversations
+
+
+def test_engage_does_not_stop_when_not_pathfinding():
+    w = _worker()
+    active = {"conversation_id": "c:4", "status": "participating",
+              "other": {"player_id": "p9", "position": {"x": 5.0, "y": 0.0}}}
+    perc = _perc(active=active, pathfinding=False, position={"x": 2.0, "y": 3.0})
+    with patch("app.worker.aitown_client.move_to") as mv:
+        asyncio.run(w._engage_conversation(perc))
+    mv.assert_not_called()
+    assert "c:4" not in w._faced_conversations

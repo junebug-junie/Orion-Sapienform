@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -82,6 +83,10 @@ class EmbodimentWorker:
         # fetch (which looks like an empty transcript) can't re-trigger an opener
         # every tick and spam the conversation.
         self._opened_conversations: set[str] = set()
+        # Conversations for which Orion has already issued the one-shot stop that
+        # clears its lingering path so the engine (Conversation.tick) orients it
+        # toward the partner. Bounded per-convo so we don't fight the engine.
+        self._faced_conversations: set[str] = set()
         self._salience = SalienceState()
         # Conversation-completion tracking for the journal gate (perception delta).
         self._active_conversation_id: Optional[str] = None
@@ -519,10 +524,52 @@ class EmbodimentWorker:
                     player_id=own, ref=str(other.get("player_id")),
                 )
                 await self._actuate(intent, now=_utcnow())
-            # `participating` needs no engagement action here; speech is driven by
-            # the turn-taking gate in `_speak_once`.
+            elif status == "participating":
+                # The engine's Conversation.tick only orients participants who are
+                # NOT pathfinding. If Orion reached `participating` still carrying a
+                # lingering path, it never faces the partner. Issue one stop (moveTo
+                # own current tile) per conversation so the next tick orients Orion.
+                # Speech itself is driven by the turn-taking gate in `_speak_once`.
+                await self._face_partner_if_pathfinding(perception, own, cid)
             return
         await self._maybe_initiate_conversation(perception)
+
+    async def _face_partner_if_pathfinding(
+        self, perception: WorldPerceptionV1, own: str, cid: str
+    ) -> None:
+        """Clear Orion's lingering path exactly once per conversation so the engine
+        orients it toward the partner.
+
+        Fires only when ``perception.pathfinding`` is truthy — issuing a stop when
+        Orion is already stopped would fight the engine's own post-transition move
+        and spam inputs. Guarded per-conversation via ``_faced_conversations``. The
+        stop is a ``moveTo`` to Orion's own current tile center, which replaces the
+        old path; the engine's next ``Conversation.tick`` then sets ``facing``.
+        Fail-open: never raises into the perception loop.
+        """
+        if not cid or cid in self._faced_conversations:
+            return
+        if not getattr(perception, "pathfinding", False):
+            return
+        pos = perception.position or {}
+        try:
+            tx = math.floor(float(pos["x"])) + 0.5
+            ty = math.floor(float(pos["y"])) + 0.5
+        except (KeyError, TypeError, ValueError):
+            return
+        # Mark before actuating so a transient failure still can't re-fire every tick
+        # (we prefer under-facing once over spamming stops at the shared engine).
+        self._faced_conversations.add(cid)
+        try:
+            await asyncio.to_thread(
+                aitown_client.move_to,
+                player_id=own, x=tx, y=ty, world_id=self._world_id or None,
+            )
+            logger.info(
+                "embodiment_face_partner_stop convo=%s tile=(%.1f,%.1f)", cid, tx, ty
+            )
+        except Exception:
+            logger.exception("embodiment_face_partner_stop_failed convo=%s", cid)
 
     async def _maybe_initiate_conversation(self, perception: WorldPerceptionV1) -> None:
         dist = float(getattr(self._settings, "social_initiate_distance", 0.0) or 0.0)
@@ -608,12 +655,13 @@ class EmbodimentWorker:
         convo = perception.active_conversation or {}
         other = convo.get("other") or {}
         logger.info(
-            "embodiment_heartbeat player=%s nearby=%d active_convo=%s status=%s partner=%s",
+            "embodiment_heartbeat player=%s nearby=%d active_convo=%s status=%s partner=%s facing_partner=%s",
             self._orion_player_id or "?",
             len(perception.nearby_players or []),
             convo.get("conversation_id") or "-",
             convo.get("status") or "-",
             other.get("player_id") or "-",
+            convo.get("facing_partner"),
         )
 
     async def _maybe_idle_wander(self, *, now: datetime) -> None:

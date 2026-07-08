@@ -113,6 +113,28 @@ async def test_failure_channel_mints_tension() -> None:
 
 
 @pytest.mark.asyncio
+async def test_never_raises_when_drive_update_breaks() -> None:
+    """A bad prior state / store fault in the drive-update section must degrade to
+    a no-op, not tear down the bus loop (which re-raises)."""
+    worker = _worker()
+    # tz-naive updated_at is the concrete raise path the reviewer flagged.
+    worker.store.load_drive_state.return_value = {
+        "pressures": {}, "activations": {}, "updated_at": "2026-07-08T00:00:00",  # naive
+    }
+    worker.store.save_drive_state = MagicMock(side_effect=RuntimeError("store down"))
+    # Must not raise.
+    await worker.handle_envelope(
+        BaseEnvelope(
+            id=uuid4(), kind="system.error.v1", correlation_id=uuid4(),
+            created_at=datetime.now(timezone.utc),
+            source=ServiceRef(name="orion-x", version="0.1.0", node="athena"),
+            payload={"error": "boom"},
+        ),
+        "orion:system:error",
+    )
+
+
+@pytest.mark.asyncio
 async def test_disabled_flag_falls_through_to_concept_path(monkeypatch) -> None:
     monkeypatch.setenv("ORION_HOMEOSTATIC_DRIVES_ENABLED", "false")
     worker = ConceptWorker(ConceptSettings())

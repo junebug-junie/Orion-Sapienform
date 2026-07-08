@@ -656,66 +656,78 @@ class ConceptWorker:
             # elapsed at the next update, so skipping here loses no decay.
             return
 
-        for tension in tensions:
-            await self._publish_tension_event(tension, env.correlation_id)
+        # The whole drive-update/publish section is guarded: this rail runs at
+        # ~1/s and the bus loop re-raises, so a single bad prior state (e.g. a
+        # tz-naive updated_at) must degrade to a no-op, never tear down the worker.
+        try:
+            for tension in tensions:
+                await self._publish_tension_event(tension, env.correlation_id)
 
-        prior = self.store.load_drive_state(subject)
-        previous_ts: Optional[datetime] = None
-        if isinstance(prior.get("updated_at"), str):
-            try:
-                previous_ts = datetime.fromisoformat(prior["updated_at"])
-            except ValueError:
-                previous_ts = None
+            prior = self.store.load_drive_state(subject)
+            previous_ts: Optional[datetime] = None
+            if isinstance(prior.get("updated_at"), str):
+                try:
+                    previous_ts = datetime.fromisoformat(prior["updated_at"])
+                    if previous_ts.tzinfo is None:
+                        previous_ts = previous_ts.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    previous_ts = None
 
-        pressures, activations = self.drive_engine.update(
-            previous_pressures=prior.get("pressures"),
-            previous_activations=prior.get("activations"),
-            tensions=tensions,
-            now=now,
-            previous_ts=previous_ts,
-        )
-        self.store.save_drive_state(
-            subject, pressures=pressures, activations=activations, updated_at=now
-        )
+            pressures, activations = self.drive_engine.update(
+                previous_pressures=prior.get("pressures"),
+                previous_activations=prior.get("activations"),
+                tensions=tensions,
+                now=now,
+                previous_ts=previous_ts,
+            )
+            self.store.save_drive_state(
+                subject, pressures=pressures, activations=activations, updated_at=now
+            )
 
-        trace_id = extract_trace_id(env)
-        turn_id = extract_turn_id(env)
-        drive_state = drive_state_from_values(
-            subject=subject,
-            model_layer=model_layer,
-            entity_id=entity_id,
-            ts=now,
-            pressures=pressures,
-            activations=activations,
-            confidence=0.72,
-            correlation_id=str(env.correlation_id),
-            trace_id=trace_id,
-            turn_id=turn_id,
-            provenance=ArtifactProvenance(
-                intake_channel=intake_channel,
+            trace_id = extract_trace_id(env)
+            turn_id = extract_turn_id(env)
+            drive_state = drive_state_from_values(
+                subject=subject,
+                model_layer=model_layer,
+                entity_id=entity_id,
+                ts=now,
+                pressures=pressures,
+                activations=activations,
+                confidence=0.72,
                 correlation_id=str(env.correlation_id),
                 trace_id=trace_id,
                 turn_id=turn_id,
-                tension_refs=[t.artifact_id for t in tensions],
-            ),
-            related_nodes=[f"subject:{subject}"] + [t.artifact_id for t in tensions],
-        )
-        await self._publish_drive_state(drive_state, env.correlation_id)
+                provenance=ArtifactProvenance(
+                    intake_channel=intake_channel,
+                    correlation_id=str(env.correlation_id),
+                    trace_id=trace_id,
+                    turn_id=turn_id,
+                    tension_refs=[t.artifact_id for t in tensions],
+                ),
+                related_nodes=[f"subject:{subject}"] + [t.artifact_id for t in tensions],
+            )
+            await self._publish_drive_state(drive_state, env.correlation_id)
 
-        tick_attribution = compute_tick_attribution(tensions)
-        lead_tension = select_lead_tension(tensions)
-        dominant_drive = dominant_drive_from_attribution(
-            tick_attribution, lead_tension=lead_tension
-        )
-        drive_audit = build_drive_audit(
-            env=env,
-            intake_channel=intake_channel,
-            drive_state=drive_state,
-            tensions=tensions,
-            tick_attribution=tick_attribution,
-            dominant_drive=dominant_drive,
-        )
-        await self._publish_artifact(drive_audit, self.cfg.drive_audit_channel, env.correlation_id)
+            tick_attribution = compute_tick_attribution(tensions)
+            lead_tension = select_lead_tension(tensions)
+            dominant_drive = dominant_drive_from_attribution(
+                tick_attribution, lead_tension=lead_tension
+            )
+            drive_audit = build_drive_audit(
+                env=env,
+                intake_channel=intake_channel,
+                drive_state=drive_state,
+                tensions=tensions,
+                tick_attribution=tick_attribution,
+                dominant_drive=dominant_drive,
+            )
+            await self._publish_artifact(drive_audit, self.cfg.drive_audit_channel, env.correlation_id)
+        except Exception:
+            logger.warning(
+                "homeostatic_drive_update_failed channel=%s source=%s",
+                intake_channel, source, exc_info=True,
+            )
+            return
 
     async def handle_envelope(self, env: BaseEnvelope, intake_channel: str) -> None:
         # Homeostatic sources ride a thin drive-only rail: they update drives and

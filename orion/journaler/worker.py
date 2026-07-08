@@ -201,6 +201,14 @@ def build_world_pulse_prompt_seed(result: WorldPulseRunResultV1) -> str:
                 f"section_rollup: {rollup.section} status={rollup.status} "
                 f"articles={rollup.article_count} digest_items={rollup.digest_item_count}"
             )
+        uncovered = [
+            r.section for r in digest.section_rollups if r.status != "covered"
+        ][:6]
+        if uncovered and not digest.curiosity_followups:
+            parts.append(
+                "coverage_gaps (no gap-fill fetch results on this run): "
+                + ", ".join(uncovered)
+            )
         for item in digest.items[:10]:
             parts.append(f"digest_item: [{item.category}] {item.title} — {item.summary[:240]}")
         if digest.things_worth_reading:

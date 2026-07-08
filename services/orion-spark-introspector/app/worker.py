@@ -2287,9 +2287,10 @@ async def handle_self_state(env: BaseEnvelope) -> None:
         vector_present=False,
         metadata=meta,
     )
+    snap_corr = uuid5(NAMESPACE_URL, f"orion:spark:self_state:{ss.self_state_id}")
     snap_env = SparkStateSnapshotEnvelope(
         source=_svc_ref(),
-        correlation_id=ss.self_state_id,
+        correlation_id=snap_corr,
         causality_chain=env.causality_chain,
         payload=snap,
     )

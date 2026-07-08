@@ -75,14 +75,20 @@ DEFAULT_POSTGRES_URI = "postgresql://postgres:postgres@orion-athena-sql-db:5432/
 
 # Durable drive co-activation source. DriveAuditV1 is ephemeral on the bus
 # (redis pub/sub, no history), but orion-rdf-writer persists every audit to
-# Fuseki as a `orion:DriveAudit` with one `orion:hasDriveAssessment` per drive,
-# each assessment carrying a boolean `orion:driveActive`. An audit's active-drive
-# count == number of its assessments with driveActive == true. We read that
-# durable time-series instead of the un-replayable pub/sub channel.
+# Fuseki as a `orion:DriveAudit` whose active-drive signal lives at the
+# assessment level: DriveAudit --orion:hasDriveAssessment--> DriveAssessment,
+# each assessment carrying a boolean `orion:driveActive`. An audit's
+# active-drive count == number of its assessments with driveActive == true.
+# (An older `orion:highlightsActiveDrive` projection is equivalent — one triple
+# per active drive — but we read the assessment-level boolean as the primary
+# schema.) We aggregate this server-side into a co-activation histogram so
+# Fuseki returns ~7 rows regardless of window size, instead of transferring
+# hundreds of thousands of per-audit rows (which timed out on large windows).
 ORION_NS = "http://conjourney.net/orion#"
 AUTONOMY_DRIVES_GRAPH = "http://conjourney.net/graph/autonomy/drives"
 DEFAULT_FUSEKI_QUERY_URL = "http://orion-athena-fuseki:3030/orion/query"
-FUSEKI_TIMEOUT_SEC = 30.0
+# Server-side aggregation measured ~16s over full history; 60s gives headroom.
+FUSEKI_TIMEOUT_SEC = 60.0
 
 
 # ===========================================================================
@@ -100,14 +106,6 @@ class SelfStateRecord:
     trajectory_condition: str
     overall_surprise: float
     resource_pressure: float
-
-
-@dataclass
-class DriveAuditRecord:
-    """A normalized drive-audit event: timestamp + count of active drives."""
-
-    ts: datetime
-    active_count: int
 
 
 @dataclass
@@ -314,74 +312,80 @@ def compute_resource_pressure_stats(
     )
 
 
-def compute_drive_stats(records: list[DriveAuditRecord]) -> DriveStats:
-    """Q(b) drive co-activation stats. Empty -> zeros."""
+def drive_stats_from_histogram(hist: dict[int, int]) -> DriveStats:
+    """Build Q(b) drive co-activation stats from an active-count histogram.
 
-    if not records:
+    ``hist`` maps active-drive-count -> number of audits with that count. Empty
+    histogram -> all-zero DriveStats. Pure + unit-testable.
+    """
+
+    record_count = sum(hist.values())
+    if record_count == 0:
         return DriveStats()
-    hist: dict[int, int] = {}
-    coactive = 0
-    for rec in records:
-        hist[rec.active_count] = hist.get(rec.active_count, 0) + 1
-        if rec.active_count >= 2:
-            coactive += 1
+    coactive = sum(n for k, n in hist.items() if k >= 2)
     return DriveStats(
-        record_count=len(records),
-        coactivation_frac=coactive / len(records),
-        concurrent_active_hist=hist,
+        record_count=record_count,
+        coactivation_frac=coactive / record_count,
+        concurrent_active_hist=dict(hist),
     )
 
 
-def build_drive_audit_sparql(since: datetime, graph_uri: str = AUTONOMY_DRIVES_GRAPH) -> str:
-    """SPARQL SELECT: active-drive count per DriveAudit artifact since ``since``.
+def build_drive_coactivation_histogram_sparql(
+    since: datetime, graph_uri: str = AUTONOMY_DRIVES_GRAPH
+) -> str:
+    """SPARQL: co-activation histogram (active-count -> #audits) since ``since``.
 
-    An audit's ``?activeCount`` is the number of its ``orion:hasDriveAssessment``
-    assessments whose ``orion:driveActive`` is boolean ``true``. The assessment
-    join is OPTIONAL and the count uses ``SUM(IF(?act = true, 1, 0))`` so audits
-    with zero active drives (or no assessments at all) still return a row with
-    ``?activeCount = 0``. Pure (returns a string) so it is unit-testable without
-    a SPARQL endpoint.
+    The inner query reduces per audit: each ``?audit``'s ``?activeCount`` is the
+    number of its ``orion:hasDriveAssessment`` assessments whose
+    ``orion:driveActive`` is boolean ``true``. The assessment join is OPTIONAL
+    and the count uses ``SUM(IF(?act = true, 1, 0))`` so audits with zero active
+    drives (or no assessments at all) still contribute ``activeCount = 0``. The
+    outer query bins those per-audit counts into a histogram, so Fuseki returns
+    only ~7 rows regardless of window size — no per-audit transfer of hundreds
+    of thousands of rows, no timeout. Pure (returns a string) so it is
+    unit-testable without a SPARQL endpoint.
     """
 
     since_iso = _as_utc(since).isoformat()
     return (
         f"PREFIX orion: <{ORION_NS}>\n"
         "PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>\n"
-        "SELECT ?audit ?ts (SUM(IF(?act = true, 1, 0)) AS ?activeCount) WHERE {\n"
-        f"  GRAPH <{graph_uri}> {{\n"
-        "    ?audit a orion:DriveAudit ;\n"
-        "           orion:timestamp ?ts .\n"
-        "    OPTIONAL { ?audit orion:hasDriveAssessment ?da . ?da orion:driveActive ?act . }\n"
-        f'    FILTER (?ts >= "{since_iso}"^^xsd:dateTime)\n'
-        "  }\n"
-        "} GROUP BY ?audit ?ts ORDER BY ?ts"
+        "SELECT ?activeCount (COUNT(*) AS ?audits) WHERE {\n"
+        "  SELECT ?audit (SUM(IF(?act = true, 1, 0)) AS ?activeCount) WHERE {\n"
+        f"    GRAPH <{graph_uri}> {{\n"
+        "      ?audit a orion:DriveAudit ;\n"
+        "             orion:timestamp ?ts .\n"
+        "      OPTIONAL { ?audit orion:hasDriveAssessment ?da . ?da orion:driveActive ?act . }\n"
+        f'      FILTER (?ts >= "{since_iso}"^^xsd:dateTime)\n'
+        "    }\n"
+        "  } GROUP BY ?audit\n"
+        "} GROUP BY ?activeCount ORDER BY ?activeCount"
     )
 
 
-def parse_sparql_drive_bindings(bindings: Iterable[dict]) -> list[DriveAuditRecord]:
-    """Parse SPARQL-results-JSON bindings into DriveAuditRecords.
+def parse_sparql_histogram_bindings(bindings: Iterable[dict]) -> dict[int, int]:
+    """Parse SPARQL-results-JSON histogram bindings into ``{activeCount: audits}``.
 
-    Each binding carries ``ts`` (dateTime literal) and ``activeCount`` (a SUM
-    result, which Fuseki may return as an integer or decimal literal, e.g.
-    ``"2"`` or ``"2.0"``). Rows without a parseable timestamp are skipped; a
-    missing/bad count degrades to 0. Never raises. Pure + unit-testable.
+    Each binding carries ``activeCount`` and ``audits``, both SUM/COUNT literals
+    Fuseki may return as integer or decimal strings (e.g. ``"2"`` or ``"2.0"``).
+    Malformed rows (missing/garbage values) are skipped; never raises. Pure +
+    unit-testable.
     """
 
-    out: list[DriveAuditRecord] = []
+    out: dict[int, int] = {}
     for binding in bindings:
         if not isinstance(binding, dict):
             continue
-        ts_node = binding.get("ts")
-        ts = _coerce_dt(ts_node.get("value")) if isinstance(ts_node, dict) else None
-        if ts is None:
-            continue
         cnt_node = binding.get("activeCount")
+        aud_node = binding.get("audits")
         raw_cnt = cnt_node.get("value") if isinstance(cnt_node, dict) else None
+        raw_aud = aud_node.get("value") if isinstance(aud_node, dict) else None
         try:
             active_count = int(float(raw_cnt))
-        except (TypeError, ValueError):
-            active_count = 0
-        out.append(DriveAuditRecord(ts=ts, active_count=max(0, active_count)))
+            audits = int(float(raw_aud))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        out[max(0, active_count)] = max(0, audits)
     return out
 
 
@@ -572,34 +576,37 @@ def fetch_receipt_timestamps(conn, since: datetime, max_rows: int = MAX_ROWS) ->
     return out, len(rows) >= max_rows
 
 
-def fetch_drive_audit_records(
+def fetch_drive_stats(
     query_url: str,
     since: datetime,
     graph_uri: str = AUTONOMY_DRIVES_GRAPH,
     timeout_sec: float = FUSEKI_TIMEOUT_SEC,
-) -> tuple[list[DriveAuditRecord], str]:
-    """Read durable drive co-activation history from Fuseki via read-only SPARQL.
+) -> tuple[DriveStats, str]:
+    """Read durable drive co-activation stats from Fuseki via read-only SPARQL.
 
     The bus audit channel (``orion:memory:drives:audit``) is redis pub/sub with
     no replayable history, so it is useless for a backward-looking measurement.
     orion-rdf-writer, however, persists every DriveAuditV1 to the Fuseki
-    autonomy/drives graph as a timestamped ``orion:DriveAudit`` with one
-    ``orion:hasDriveAssessment`` per drive, each carrying a boolean
-    ``orion:driveActive`` — a real historical time-series. We SPARQL-SUM the
-    ``driveActive = true`` assessments to recover per-audit co-activation.
+    autonomy/drives graph as a timestamped ``orion:DriveAudit`` whose active
+    signal lives at the assessment level: ``orion:hasDriveAssessment`` ->
+    ``DriveAssessment`` with a boolean ``orion:driveActive`` — a real historical
+    time-series. We aggregate ``driveActive = true`` counts per audit into a
+    co-activation histogram *server-side*, so Fuseki returns ~7 rows regardless
+    of window size (transferring all per-audit rows blows the timeout on large
+    windows).
 
-    Read-only SPARQL SELECT (no UPDATE). Returns (records, coverage_note);
-    degrades to ([], note) on any endpoint/parse failure — never raises.
+    Read-only SPARQL SELECT (no UPDATE). Returns (DriveStats, coverage_note);
+    degrades to (DriveStats(), note) on any endpoint/parse failure — never raises.
     """
 
     if not query_url:
-        return [], "drive co-activation unavailable: no AUTONOMY_GRAPH_QUERY_URL configured"
+        return DriveStats(), "drive co-activation unavailable: no AUTONOMY_GRAPH_QUERY_URL configured"
 
     import urllib.error  # lazy imports keep module import I/O-free for tests
     import urllib.parse
     import urllib.request
 
-    sparql = build_drive_audit_sparql(since, graph_uri)
+    sparql = build_drive_coactivation_histogram_sparql(since, graph_uri)
     body = urllib.parse.urlencode({"query": sparql}).encode("utf-8")
     req = urllib.request.Request(
         query_url,
@@ -615,15 +622,18 @@ def fetch_drive_audit_records(
             payload = json.loads(resp.read().decode("utf-8"))
     except Exception:
         logger.error("drive-audit SPARQL query failed", exc_info=True)
-        return [], f"drive co-activation unavailable: SPARQL query to {query_url} failed"
+        return DriveStats(), f"drive co-activation unavailable: SPARQL query to {query_url} failed"
 
     bindings = (((payload or {}).get("results") or {}).get("bindings")) or []
-    records = parse_sparql_drive_bindings(bindings)
-    if not records:
-        return [], f"drive co-activation: Fuseki returned no DriveAudit rows since {since.isoformat()}"
+    hist = parse_sparql_histogram_bindings(bindings)
+    stats = drive_stats_from_histogram(hist)
+    if stats.record_count == 0:
+        return stats, f"drive co-activation: Fuseki returned no DriveAudit rows since {since.isoformat()}"
 
-    span_days = (max(r.ts for r in records) - min(r.ts for r in records)).total_seconds() / 86400.0
-    return records, f"drive co-activation: {len(records)} DriveAudit rows spanning {span_days:.2f} days (Fuseki)"
+    return stats, (
+        f"drive co-activation: {stats.record_count} DriveAudit rows since "
+        f"{since.isoformat()} (Fuseki histogram)"
+    )
 
 
 # ===========================================================================
@@ -792,12 +802,16 @@ def run(window_days: int) -> int:
     turn_timestamps: list[datetime] = []
     caveats.append("turns unavailable, turn_count=0 (no turn store wired into this measurement)")
 
-    drive_records, coverage_note = fetch_drive_audit_records(fuseki_url, window_start)
+    drive_stats, coverage_note = fetch_drive_stats(fuseki_url, window_start)
     caveats.append(coverage_note)
-    if not drive_records:
+    if drive_stats.record_count == 0:
         anomalies += 1
     progress.emit(
-        "drive audit loaded", percent=80.0, processed=len(drive_records), total=len(drive_records), anomalies=anomalies
+        "drive audit loaded",
+        percent=80.0,
+        processed=drive_stats.record_count,
+        total=drive_stats.record_count,
+        anomalies=anomalies,
     )
 
     if conn is not None:
@@ -816,7 +830,6 @@ def run(window_days: int) -> int:
     silent_metrics = compute_self_state_metrics(silent_rows)
     busy_metrics = compute_self_state_metrics(busy_rows)
     pressure = compute_resource_pressure_stats(self_states)
-    drive_stats = compute_drive_stats(drive_records)
 
     verdict_a = verdict_drift(silent_metrics, busy_metrics)
     verdict_b = verdict_economy(drive_stats, pressure)
@@ -840,11 +853,12 @@ def run(window_days: int) -> int:
     except Exception:
         logger.error("failed to write report", exc_info=True)
 
+    total_rows = len(self_states) + len(receipts) + drive_stats.record_count
     progress.emit(
         "done",
         percent=100.0,
-        processed=len(self_states) + len(receipts) + len(drive_records),
-        total=len(self_states) + len(receipts) + len(drive_records),
+        processed=total_rows,
+        total=total_rows,
         anomalies=anomalies,
     )
     progress.close()

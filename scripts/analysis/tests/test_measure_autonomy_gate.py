@@ -97,10 +97,9 @@ def test_verdict_a_busy_zero_variance_passes_when_silent_moves():
 # 3. Rare co-activation + flat pressure -> verdict (b) NO-GO
 # ---------------------------------------------------------------------------
 def test_verdict_b_rare_coactivation_is_no_go():
-    drive_records = [mod.DriveAuditRecord(ts=BASE + timedelta(seconds=i), active_count=1) for i in range(20)]
-    drive_records.append(mod.DriveAuditRecord(ts=BASE + timedelta(seconds=99), active_count=2))
+    # 20 audits with 1 active drive, 1 audit with 2 -> 1/21 < 10% co-active.
+    drive = mod.drive_stats_from_histogram({1: 20, 2: 1})
     pressure_rows = [_self_state(i, {"resource_pressure": 0.05}, {}) for i in range(20)]
-    drive = mod.compute_drive_stats(drive_records)
     pressure = mod.compute_resource_pressure_stats(pressure_rows)
     assert drive.coactivation_frac < mod.COACTIVATION_MIN_FRAC
     assert pressure.frac_gt_level < mod.RESOURCE_PRESSURE_MIN_FRAC
@@ -111,32 +110,29 @@ def test_verdict_b_rare_coactivation_is_no_go():
 # 4. Frequent co-activation + real pressure -> verdict (b) GO
 # ---------------------------------------------------------------------------
 def test_verdict_b_frequent_coactivation_is_go():
-    drive_records = []
-    for i in range(20):
-        drive_records.append(mod.DriveAuditRecord(ts=BASE + timedelta(seconds=i), active_count=2 if i % 2 == 0 else 1))
-    # 50% co-active >= 10%.
+    # 10 audits with 2 active drives, 10 with 1 -> 50% co-active >= 10%.
+    drive = mod.drive_stats_from_histogram({2: 10, 1: 10})
     # Resource pressure: 3 of 20 >= 0.3 -> 15% >= 5%.
     pressure_rows = [
         _self_state(i, {"resource_pressure": 0.5 if i < 3 else 0.1}, {})
         for i in range(20)
     ]
-    drive = mod.compute_drive_stats(drive_records)
     pressure = mod.compute_resource_pressure_stats(pressure_rows)
     assert drive.coactivation_frac >= mod.COACTIVATION_MIN_FRAC
     assert pressure.frac_gt_level >= mod.RESOURCE_PRESSURE_MIN_FRAC
     assert mod.verdict_economy(drive, pressure) == "GO"
 
 
-def test_drive_histogram_counts():
-    drive_records = [
-        mod.DriveAuditRecord(ts=BASE, active_count=0),
-        mod.DriveAuditRecord(ts=BASE, active_count=1),
-        mod.DriveAuditRecord(ts=BASE, active_count=1),
-        mod.DriveAuditRecord(ts=BASE, active_count=3),
-    ]
-    stats = mod.compute_drive_stats(drive_records)
-    assert stats.concurrent_active_hist == {0: 1, 1: 2, 3: 1}
-    assert stats.coactivation_frac == 0.25
+def test_drive_stats_from_histogram():
+    stats = mod.drive_stats_from_histogram({0: 100, 2: 5, 3: 5})
+    assert stats.record_count == 110
+    assert stats.coactivation_frac == pytest.approx(10 / 110)
+    assert stats.concurrent_active_hist == {0: 100, 2: 5, 3: 5}
+
+    empty = mod.drive_stats_from_histogram({})
+    assert empty.record_count == 0
+    assert empty.coactivation_frac == 0.0
+    assert empty.concurrent_active_hist == {}
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +185,7 @@ def test_empty_metrics_do_not_raise():
     assert pressure.p90 is None
     assert pressure.frac_gt_level == 0.0
 
-    drive = mod.compute_drive_stats([])
+    drive = mod.drive_stats_from_histogram({})
     assert drive.record_count == 0
     assert drive.coactivation_frac == 0.0
     assert drive.concurrent_active_hist == {}
@@ -214,75 +210,41 @@ def test_percentile_and_median():
 # ---------------------------------------------------------------------------
 # 7. Durable drive-audit source (Fuseki SPARQL) — pure query + parse layer
 # ---------------------------------------------------------------------------
-def test_build_drive_audit_sparql_shape():
-    q = mod.build_drive_audit_sparql(BASE)
+def test_build_drive_coactivation_histogram_sparql_shape():
+    q = mod.build_drive_coactivation_histogram_sparql(BASE)
     assert mod.AUTONOMY_DRIVES_GRAPH in q
     assert "orion:DriveAudit" in q
-    assert "orion:hasDriveAssessment" in q
-    assert "orion:driveActive" in q
-    assert "orion:timestamp ?ts" in q
-    assert BASE.isoformat() in q  # window bound is applied
-    assert "FILTER" in q
-
-
-def test_build_drive_audit_sparql_uses_real_predicates():
-    q = mod.build_drive_audit_sparql(BASE)
-    # Real graph shape: hasDriveAssessment -> driveActive (boolean true).
+    # Assessment-level boolean shape.
     assert "hasDriveAssessment" in q
     assert "driveActive" in q
-    # The stale/nonexistent predicate must be gone.
-    assert "highlightsActiveDrive" not in q
-    # Still bounds the window on a typed dateTime and groups per audit.
+    assert "SUM(IF(?act = true" in q
+    # Nested aggregation: inner reduces per audit, outer bins into a histogram.
+    assert "GROUP BY ?audit" in q
+    assert "GROUP BY ?activeCount" in q
+    # Window bound applied on a typed dateTime.
     assert f'FILTER (?ts >= "{BASE.isoformat()}"^^xsd:dateTime)' in q
-    assert "GROUP BY ?audit ?ts" in q
+    # Stale / per-audit-transfer shapes must be gone.
+    assert "highlightsActiveDrive" not in q
+    assert "COUNT(DISTINCT ?d)" not in q
 
 
-def _binding(ts_iso: str, count: str) -> dict:
-    return {
-        "audit": {"type": "uri", "value": f"http://x/{ts_iso}"},
-        "ts": {"type": "literal", "value": ts_iso},
-        "activeCount": {"type": "literal", "value": count},
-    }
-
-
-def test_parse_sparql_drive_bindings_happy():
+def test_parse_sparql_histogram_bindings_happy():
     bindings = [
-        _binding("2026-07-01T00:00:00+00:00", "2"),
-        _binding("2026-07-01T00:05:00+00:00", "0"),
-        _binding("2026-07-01T00:10:00+00:00", "3"),
+        {"activeCount": {"value": "0"}, "audits": {"value": "444734"}},
+        {"activeCount": {"value": "2"}, "audits": {"value": "20"}},
+        {"activeCount": {"value": "3.0"}, "audits": {"value": "31"}},
+        "not-a-dict",  # skipped, no crash
+        {"activeCount": {"value": "junk"}, "audits": {"value": "5"}},  # bad count -> skipped
+        {"activeCount": {"value": "1"}},  # missing audits -> skipped
     ]
-    recs = mod.parse_sparql_drive_bindings(bindings)
-    assert [r.active_count for r in recs] == [2, 0, 3]
-    # Feeds the existing pure drive-stats path unchanged.
-    stats = mod.compute_drive_stats(recs)
-    assert stats.coactivation_frac == pytest.approx(2 / 3)
+    hist = mod.parse_sparql_histogram_bindings(bindings)
+    assert hist == {0: 444734, 2: 20, 3: 31}
+    # Feeds the pure drive-stats path.
+    stats = mod.drive_stats_from_histogram(hist)
+    assert stats.record_count == 444785
+    assert stats.coactivation_frac == pytest.approx(51 / 444785)
 
 
-def test_parse_sparql_drive_bindings_degrades():
-    bindings = [
-        {"activeCount": {"value": "2"}},               # no ts -> skipped
-        _binding("2026-07-01T00:00:00+00:00", "notint"),  # bad count -> 0
-        "not-a-dict",                                    # skipped
-        {"ts": {"value": "garbage"}, "activeCount": {"value": "1"}},  # bad ts -> skipped
-    ]
-    recs = mod.parse_sparql_drive_bindings(bindings)
-    assert len(recs) == 1
-    assert recs[0].active_count == 0
-
-    # Empty bindings -> empty, no raise.
-    assert mod.parse_sparql_drive_bindings([]) == []
-
-
-def test_parse_sparql_drive_bindings_handles_sum_literals():
-    # Shaped like real SPARQL-results-JSON from the SUM(IF(driveActive=true,...))
-    # query: counts may come back as integer OR decimal literals.
-    bindings = [
-        {"ts": {"value": "2026-06-19T07:06:29+00:00"}, "activeCount": {"value": "2"}},
-        {"ts": {"value": "2026-06-19T07:07:29+00:00"}, "activeCount": {"value": "0"}},
-        {"ts": {"value": "2026-06-19T07:08:29+00:00"}, "activeCount": {"value": "3.0"}},
-        # Garbage/missing count degrades to 0 (must not crash).
-        {"ts": {"value": "2026-06-19T07:09:29+00:00"}, "activeCount": {"value": "junk"}},
-        {"ts": {"value": "2026-06-19T07:10:29+00:00"}},
-    ]
-    recs = mod.parse_sparql_drive_bindings(bindings)
-    assert [r.active_count for r in recs] == [2, 0, 3, 0, 0]
+def test_parse_sparql_histogram_bindings_degrades():
+    # Empty bindings -> empty dict, no raise.
+    assert mod.parse_sparql_histogram_bindings([]) == {}

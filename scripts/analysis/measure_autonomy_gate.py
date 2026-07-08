@@ -339,7 +339,9 @@ def build_drive_coactivation_histogram_sparql(
     ``COUNT(DISTINCT ?activeDa)`` where ``?activeDa`` is bound ONLY to that
     audit's active assessments — the pattern matches the boolean literal
     directly (``?activeDa orion:driveActive true``), so no per-assessment IF is
-    needed and the count is bounded by the number of drive keys (max 6).
+    needed. Strictly this counts distinct active *assessment nodes*; that equals
+    the number of active drive keys while the writer emits at most one assessment
+    per drive per audit (live max=6 confirms 1:1 today).
 
     Two subtleties, both verified live against Jena/Fuseki:
 

@@ -1,0 +1,45 @@
+# Structural signal -> drive map (spec 2026-07-07 §The unified model.3).
+#
+# This is the WHOLE mapping surface. It is typed and closed: a signal_kind's
+# dimension declares which direction is "worse" and which drives its deviation
+# impulses. There is deliberately NO free text, NO keyword lists, NO regex.
+# An unmapped (signal_kind, dimension) contributes nothing — the map cannot be
+# grown by prose, only by adding a typed entry here with a producer + test.
+#
+# worse: "down" -> a fall below baseline impulses; "up" -> a rise impulses.
+# drives: weight in [0,1] per canonical drive. Drives must be one of:
+#   coherence, continuity, capability, relational, predictive, autonomy
+version: 1
+
+signal_kinds:
+  biometrics_state:
+    homeostasis:
+      worse: down
+      drives: {capability: 0.4, continuity: 0.3}
+    strain:
+      worse: up
+      drives: {capability: 0.4, continuity: 0.2}
+    thermal:
+      worse: up
+      drives: {capability: 0.3, continuity: 0.2}
+
+  mesh_health:
+    level:
+      worse: down
+      drives: {capability: 0.5, continuity: 0.3}
+
+  spark_signal:
+    coherence:
+      worse: down
+      drives: {coherence: 0.5}
+    valence:
+      worse: down
+      drives: {relational: 0.4}
+    novelty:
+      worse: up
+      drives: {predictive: 0.4}
+
+  failure_event:
+    severity:
+      worse: up
+      drives: {capability: 0.5, coherence: 0.3}

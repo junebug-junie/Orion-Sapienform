@@ -144,8 +144,9 @@ def _autonomy_goal_action_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any] | None
     if not _autonomy_goal_execution_enabled():
         return None
     user_text = _last_user_message(ctx).lower()
-    if "execute" not in user_text and "autonomy.goal.execute" not in user_text:
-        return None
+    if "autonomy.goal.execute" not in user_text:
+        if "execute" not in user_text or "goal" not in user_text:
+            return None
     goals = _active_autonomy_goals_from_ctx(ctx)
     if not goals:
         return None
@@ -1062,7 +1063,65 @@ class Supervisor:
             return False
         return bool(tools)
 
+    async def _execute_autonomy_goal_action(
+        self,
+        *,
+        source: ServiceRef,
+        action: Dict[str, Any],
+        ctx: Dict[str, Any],
+        correlation_id: str,
+    ) -> StepExecutionResult:
+        from .autonomy_goal_execute import AUTONOMY_GOAL_EXECUTE_VERB, AutonomyGoalExecuteInputV1, execute_autonomy_goal_v1
 
+        tool_input = action.get("input") if isinstance(action.get("input"), dict) else {}
+        artifact_id = str(tool_input.get("goal_artifact_id") or "").strip()
+        goals = _active_autonomy_goals_from_ctx(ctx)
+        goal_row = next(
+            (g for g in goals if str(g.get("artifact_id") or "").strip() == artifact_id),
+            goals[0] if goals else {},
+        )
+        payload = AutonomyGoalExecuteInputV1(
+            goal_artifact_id=artifact_id,
+            goal_statement=str(goal_row.get("headline") or goal_row.get("goal_statement") or ""),
+            drive_origin=str(goal_row.get("drive_origin") or "supervisor"),
+        )
+        try:
+            out = await execute_autonomy_goal_v1(payload, bus=self.bus, correlation_id=correlation_id)
+            text = f"Autonomy goal {out.goal_artifact_id} executing as task {out.task_id}."
+            return StepExecutionResult(
+                status="success",
+                verb_name=AUTONOMY_GOAL_EXECUTE_VERB,
+                step_name="autonomy_goal_execute",
+                order=0,
+                result={
+                    "ContextExecService": {
+                        "text": text,
+                        "structured": {"autonomy_goal_execute": out.model_dump(mode="json")},
+                    }
+                },
+                latency_ms=0,
+                node=settings.node_name,
+                logs=["ok <- autonomy.goal.execute.v1"],
+                error=None,
+            )
+        except ValueError as exc:
+            detail = str(exc)
+            return StepExecutionResult(
+                status="fail",
+                verb_name=AUTONOMY_GOAL_EXECUTE_VERB,
+                step_name="autonomy_goal_execute",
+                order=0,
+                result={
+                    "ContextExecService": {
+                        "text": f"Autonomy goal execution failed: {detail}",
+                        "structured": {"autonomy_goal_execute_error": detail},
+                    }
+                },
+                latency_ms=0,
+                node=settings.node_name,
+                logs=[f"fail <- autonomy.goal.execute.v1: {detail}"],
+                error=detail,
+            )
 
 
     async def _execute_action(
@@ -1088,6 +1147,13 @@ class Supervisor:
             bool(ctx.get("memory_digest")),
             _detect_scaffolding_markers(tool_input),
         )
+        if str(tool_id) in _AUTONOMY_GOAL_EXECUTE_TOOLS:
+            return await self._execute_autonomy_goal_action(
+                source=source,
+                action={"tool_id": tool_id, "input": tool_input},
+                ctx=ctx,
+                correlation_id=correlation_id,
+            )
         if str(tool_id) in {"agent_chain", "context_exec"}:
             logger.info("dispatch_action corr_id=%s mode=%s step=context_exec route=ContextExecService", correlation_id, mode)
             chain_ctx = {**ctx, **tool_input}

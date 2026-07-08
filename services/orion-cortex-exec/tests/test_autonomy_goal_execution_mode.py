@@ -164,22 +164,16 @@ def test_supervisor_e2e_promote_plan_execute_complete(monkeypatch: pytest.Monkey
     monkeypatch.setattr("app.settings.settings.context_exec_enabled", False)
     execute_calls: list[str] = []
 
-    async def _fake_execute_action(**kwargs):
-        execute_calls.append(str((kwargs.get("action") or {}).get("tool_id")))
-        return StepExecutionResult(
-            status="success",
-            verb_name="autonomy.goal.execute.v1",
-            step_name="autonomy_goal_execute",
-            order=0,
-            result={"ContextExecService": {"text": "Goal task completed"}},
-            latency_ms=1,
-            node="n",
-            logs=[],
-            error=None,
-        )
+    async def _fake_execute_autonomy_goal_v1(payload, **kwargs):
+        execute_calls.append(str(payload.goal_artifact_id))
+        from app.autonomy_goal_execute import AutonomyGoalExecuteOutputV1
 
-    supervisor = Supervisor(object())
-    monkeypatch.setattr(supervisor, "_execute_action", _fake_execute_action)
+        return AutonomyGoalExecuteOutputV1(task_id="task-123", goal_artifact_id="goal-abc")
+
+    monkeypatch.setattr(
+        "app.autonomy_goal_execute.execute_autonomy_goal_v1",
+        _fake_execute_autonomy_goal_v1,
+    )
     monkeypatch.setattr(
         "app.supervisor.run_recall_step",
         AsyncMock(
@@ -201,6 +195,7 @@ def test_supervisor_e2e_promote_plan_execute_complete(monkeypatch: pytest.Monkey
         ),
     )
 
+    supervisor = Supervisor(object())
     ctx = {
         "mode": "agent",
         "messages": [{"role": "user", "content": "execute promoted goal"}],
@@ -227,7 +222,7 @@ def test_supervisor_e2e_promote_plan_execute_complete(monkeypatch: pytest.Monkey
             recall_cfg={},
         )
     )
-    assert execute_calls == ["autonomy.goal.execute.v1"]
+    assert execute_calls == ["goal-abc"]
     assert result.metadata["autonomy_execution_mode"] == "executing"
 
     ctx["chat_autonomy_summary"]["active_goals"][0]["proposal_status"] = "completed"

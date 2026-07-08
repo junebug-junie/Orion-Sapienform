@@ -5,8 +5,8 @@ Deterministic (§4): pure functions over a crystallization + a clock. No LLM, no
 Reuses the substrate half-life decay math (`orion.substrate.activation.decay_activation`)
 so crystallization memory ages on the same curve the substrate graph already uses.
 
-Nothing in the live path calls these yet — Phase 1 is inert and additive. Behavior wiring
-(reinforce-on-recurrence, decay reaper, recall boost) lands in later phases behind gates.
+Live wiring (M1): `seed_dynamics` / `seed_weak_dynamics` on formation, `reinforce` on dedup,
+`governor.approve` seeds dynamics. M3 follow-on: recall_boost on fetch, decay reaper, retire.
 """
 
 from __future__ import annotations

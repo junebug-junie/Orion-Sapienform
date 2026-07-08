@@ -31,6 +31,7 @@ def test_eligible_when_active_and_above_floor():
 
 def test_ineligible_when_below_floor():
     assert eligible_for_recall(_active(0.01)) is False
+    assert eligible_for_recall(_active(ACTIVATION_RECALL_FLOOR - 0.01)) is False
 
 
 def test_ineligible_when_deprecated():

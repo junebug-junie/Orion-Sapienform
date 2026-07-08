@@ -108,8 +108,13 @@ async def process_consolidation_crystallization(
             **emit_kw,
         )
         return cid, activated, "auto_activated"
-    except GovernorPathRequired:
+    except GovernorPathRequired as exc:
         row = apply_salience(crystallization)
+        row.provenance = {
+            **(row.provenance or {}),
+            "formation_policy_downgrade": str(exc),
+            "formation_policy": "governor_queue",
+        }
         cid = await insert_crystallization(pool, row)
         await emit_crystallization_lifecycle(
             bus,

@@ -141,3 +141,45 @@ async def test_non_duplicate_inserts_proposed(monkeypatch):
     update_mock.assert_not_called()
     emit_mock.assert_called_once()
     assert emit_mock.call_args.kwargs["lifecycle"] == "proposed"
+
+
+@pytest.mark.asyncio
+async def test_governor_queue_records_formation_policy_downgrade(monkeypatch):
+    candidate = _semantic_proposed()
+    candidate.kind = "contradiction"
+    candidate.summary = "Orion believes X but evidence shows not-X"
+
+    pool = MagicMock()
+    bus = MagicMock(enabled=True)
+
+    list_mock = AsyncMock(return_value=[])
+    insert_mock = AsyncMock(return_value=candidate.crystallization_id)
+    emit_mock = AsyncMock(return_value=True)
+
+    settings = _Settings()
+    settings.MEMORY_FORMATION_AUTO_ACTIVATE_ENABLED = True
+
+    monkeypatch.setattr(
+        "orion.memory.crystallization.intake_pipeline.list_crystallizations",
+        list_mock,
+    )
+    monkeypatch.setattr(
+        "orion.memory.crystallization.intake_pipeline.insert_crystallization",
+        insert_mock,
+    )
+    monkeypatch.setattr(
+        "orion.memory.crystallization.intake_pipeline.emit_crystallization_lifecycle",
+        emit_mock,
+    )
+
+    _cid, final_row, outcome = await process_consolidation_crystallization(
+        pool,
+        bus,
+        crystallization=candidate,
+        settings=settings,
+        project_config=ProjectionConfig(),
+    )
+
+    assert outcome == "proposed"
+    assert final_row.provenance.get("formation_policy") == "governor_queue"
+    assert "formation_policy_downgrade" in final_row.provenance

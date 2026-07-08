@@ -28,6 +28,7 @@ NEVER_SYNC_KEYS = frozenset(
 # Prefixes / exact keys synced after .env_example edits (default mode).
 SYNC_PREFIXES = (
     "CRYSTALLIZER_",
+    "ACTIVATION_",
     "GRAPHITI_",
     "FALKORDB_",
     "CHROMA_",

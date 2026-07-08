@@ -17,3 +17,10 @@ def test_crystallization_api_surface_present() -> None:
         "/api/memory/active-packet",
     ):
         assert path in text, f"missing route {path}"
+
+
+def test_active_packet_route_filters_by_recall_eligibility() -> None:
+    text = ROUTES.read_text(encoding="utf-8")
+    start = text.index("async def memory_active_packet")
+    block = text[start : start + 2500]
+    assert "eligible_for_recall" in block

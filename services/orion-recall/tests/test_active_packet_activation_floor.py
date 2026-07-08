@@ -55,6 +55,15 @@ def test_build_active_packet_ranks_by_activation_times_salience():
     assert packet.crystallization_refs[1] == "crys_low"
 
 
+def test_build_active_packet_excludes_below_activation_floor():
+    eligible = _crys(activation=0.2, crystallization_id="crys_eligible")
+    ineligible = _crys(activation=0.01, crystallization_id="crys_ineligible")
+
+    packet = build_active_packet(query="test", crystallizations=[eligible, ineligible])
+
+    assert packet.crystallization_refs == ["crys_eligible"]
+
+
 @pytest.mark.asyncio
 async def test_active_packet_excludes_below_activation_floor():
     eligible = _crys(activation=0.2, crystallization_id="crys_eligible", summary="eligible belief")

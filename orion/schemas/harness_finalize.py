@@ -90,6 +90,9 @@ class HarnessTurnOutcomeMoleculeV1(BaseModel):
     surprise_resolved: bool
     grammar_event_ids: list[str] = Field(default_factory=list)
     final_text: str
+    finalize_failed: bool = False
+    failure_reason: str | None = Field(default=None, max_length=500)
+    draft_text_excerpt: str | None = Field(default=None, max_length=300)
 
 
 class HarnessPostTurnClosureV1(BaseModel):

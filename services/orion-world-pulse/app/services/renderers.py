@@ -166,6 +166,7 @@ def render_hub_digest(digest: DailyWorldPulseV1) -> HubWorldPulseMessageV1:
         cards=digest.items,
         worth_reading=digest.things_worth_reading,
         worth_watching=digest.things_worth_watching,
+        curiosity_followups=digest.curiosity_followups,
         rendered_markdown=render_plaintext_digest(digest),
         structured_payload=structured,
         created_at=digest.created_at,

@@ -8789,6 +8789,10 @@ loadDismissedIds();
     return Array.isArray(item?.source_ids) ? item.source_ids.length : null;
   }
 
+  function worldPulseSafeHttpUrl(url) {
+    return /^https?:\/\//i.test(String(url || '')) ? url : null;
+  }
+
   function normalizeWorldPulsePayload(raw) {
     const payload = raw && typeof raw === 'object' ? raw : {};
     if (payload.digest && payload.run) {
@@ -8811,6 +8815,7 @@ loadDismissedIds();
           items: Array.isArray(payload.cards) ? payload.cards : [],
           things_worth_reading: Array.isArray(payload.worth_reading) ? payload.worth_reading : [],
           things_worth_watching: Array.isArray(payload.worth_watching) ? payload.worth_watching : [],
+          curiosity_followups: Array.isArray(payload.curiosity_followups) ? payload.curiosity_followups : [],
         };
     return {
       run: {
@@ -9002,6 +9007,58 @@ loadDismissedIds();
       worldPulseDetails.appendChild(cardsWrap);
     }
 
+    const curiosityFollowups = Array.isArray(digest.curiosity_followups) ? digest.curiosity_followups : [];
+    if (curiosityFollowups.length) {
+      const curiosityWrap = document.createElement('div');
+      curiosityWrap.className = 'space-y-2';
+      const curiosityTitle = document.createElement('div');
+      curiosityTitle.className = 'text-[10px] uppercase tracking-wide text-gray-500';
+      curiosityTitle.textContent = 'Orion Went Looking (gaps our sources missed)';
+      curiosityWrap.appendChild(curiosityTitle);
+      curiosityFollowups.forEach((followup) => {
+        const details = document.createElement('details');
+        details.className = 'rounded border border-gray-800 bg-gray-950/40 p-2';
+        const summary = document.createElement('summary');
+        summary.className = 'cursor-pointer text-xs text-gray-200';
+        const sectionLabel = String(followup?.section || 'unknown').replace(/_/g, ' ');
+        const articles = Array.isArray(followup?.articles) ? followup.articles : [];
+        summary.textContent = `${sectionLabel} · "${followup?.query || ''}" · ${articles.length} found`;
+        details.appendChild(summary);
+        if (articles.length) {
+          const list = document.createElement('ul');
+          list.className = 'mt-1 space-y-1';
+          articles.forEach((art) => {
+            const li = document.createElement('li');
+            li.className = 'text-xs text-gray-300';
+            const salience = Number.isFinite(Number(art?.salience)) ? Number(art.salience).toFixed(2) : '--';
+            const title = art?.title || '(untitled)';
+            const safeUrl = worldPulseSafeHttpUrl(art?.url);
+            if (safeUrl) {
+              const link = document.createElement('a');
+              link.href = safeUrl;
+              link.target = '_blank';
+              link.rel = 'noopener noreferrer';
+              link.className = 'text-blue-400 hover:underline';
+              link.textContent = title;
+              li.textContent = `[${salience}] `;
+              li.appendChild(link);
+            } else {
+              li.textContent = `[${salience}] ${title}`;
+            }
+            list.appendChild(li);
+          });
+          details.appendChild(list);
+        } else {
+          const none = document.createElement('div');
+          none.className = 'mt-1 text-xs text-gray-500';
+          none.textContent = 'looked, found nothing';
+          details.appendChild(none);
+        }
+        curiosityWrap.appendChild(details);
+      });
+      worldPulseDetails.appendChild(curiosityWrap);
+    }
+
     const worthReading = digest.things_worth_reading || digest.worth_reading || [];
     const worthWatching = digest.things_worth_watching || digest.worth_watching || [];
     const worthReadingSection = document.createElement('details');
@@ -9017,13 +9074,14 @@ loadDismissedIds();
         const reasonBlock = createWorldPulseBlock('Reason', w.reason_selected);
         if (itemBlock) row.appendChild(itemBlock);
         if (reasonBlock) row.appendChild(reasonBlock);
-        if (w.url) {
+        const safeWorthUrl = worldPulseSafeHttpUrl(w.url);
+        if (safeWorthUrl) {
           const link = document.createElement('a');
-          link.href = w.url;
+          link.href = safeWorthUrl;
           link.target = '_blank';
           link.rel = 'noopener noreferrer';
           link.className = 'text-indigo-300 hover:underline';
-          link.textContent = w.url;
+          link.textContent = safeWorthUrl;
           const linkWrap = document.createElement('div');
           linkWrap.className = 'mt-1';
           linkWrap.appendChild(link);

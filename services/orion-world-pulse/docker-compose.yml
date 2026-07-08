@@ -12,6 +12,11 @@ services:
     restart: unless-stopped
     networks:
       - app-net
+    volumes:
+      # Host ~/.fcc mounted read-only; the curiosity readonly fetch derives the
+      # Firecrawl key from /root/.fcc/.env (ORION_FCC_ENV_PATH) so no secret is
+      # ever placed in .env / .env_example. Mirrors orion-spark-concept-induction.
+      - ${HOME}/.fcc:/root/.fcc:ro
 
 networks:
   app-net:

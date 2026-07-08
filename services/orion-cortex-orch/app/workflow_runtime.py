@@ -2023,11 +2023,15 @@ async def _execute_github_compactor_pass(
     if not isinstance(fetch_payload, dict):
         raise WorkflowExecutionError("github_compactor_fetch_empty_payload")
     if not fetch_payload.get("available"):
-        raise WorkflowExecutionError("github_repo_not_configured")
+        reason = str(fetch_payload.get("reason") or "unknown")
+        if reason == "github_repo_not_configured":
+            raise WorkflowExecutionError("github_repo_not_configured")
+        raise WorkflowExecutionError(f"github_fetch_unavailable:{reason}")
 
     repo = str(fetch_payload.get("repo") or "unknown repo").strip()
     merged_pr_count = int(fetch_payload.get("merged_pr_count") or 0)
     card_id: str | None = None
+    card_persist_skipped_reason: str | None = None
 
     if merged_pr_count == 0:
         digest = build_quiet_day_digest(repo=repo, window_label=window_label)
@@ -2043,13 +2047,23 @@ async def _execute_github_compactor_pass(
             workflow_id=workflow_id,
             fetch_payload=fetch_payload,
         )
-        persisted_card_id = await persist_github_compactor_memory_card(
-            digest=digest,
-            repo=repo,
-            window_label=window_label,
-            merged_pr_count=merged_pr_count,
-        )
-        card_id = str(persisted_card_id) if persisted_card_id is not None else None
+        try:
+            persisted_card_id = await persist_github_compactor_memory_card(
+                digest=digest,
+                repo=repo,
+                window_label=window_label,
+                merged_pr_count=merged_pr_count,
+            )
+            card_id = str(persisted_card_id) if persisted_card_id is not None else None
+        except RuntimeError as exc:
+            if "recall_pg_dsn_unavailable" not in str(exc):
+                raise
+            card_persist_skipped_reason = "recall_pg_dsn_unavailable"
+            logger.warning(
+                "github_compactor_card_persist_skipped corr=%s reason=%s",
+                correlation_id,
+                card_persist_skipped_reason,
+            )
 
     draft = JournalEntryDraftV1(
         mode="digest",
@@ -2117,6 +2131,8 @@ async def _execute_github_compactor_pass(
         "card_summary_preview": digest.card_summary[:200],
         "journal_entry": write.model_dump(mode="json"),
     }
+    if card_persist_skipped_reason:
+        metadata["workflow"]["card_persist_skipped_reason"] = card_persist_skipped_reason
     return CortexClientResult(
         ok=True,
         mode="brain",

@@ -2095,3 +2095,86 @@ def test_github_compactor_pass_missing_github_config_fails(monkeypatch) -> None:
                 call_verb_runtime=_fake_call_verb_runtime,
             )
         )
+
+
+def test_github_compactor_pass_github_api_failure_uses_fetch_unavailable_token(monkeypatch) -> None:
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        req = kwargs["client_request"]
+        if req.verb == "skills.repo.github_recent_prs.v1":
+            payload = {"available": False, "reason": "HTTP Error 503", "items": []}
+            return DummyVerbResult(
+                ok=False,
+                payload={"result": {"status": "unavailable", "final_text": json.dumps(payload)}},
+            )
+        raise AssertionError(f"unexpected verb {req.verb}")
+
+    with pytest.raises(Exception, match="github_fetch_unavailable"):
+        asyncio.run(
+            execute_chat_workflow(
+                bus=DummyBus(),
+                source=ServiceRef(name="cortex-orch"),
+                req=_req("github_compactor_pass"),
+                correlation_id="00000000-0000-0000-0000-000000000102",
+                causality_chain=[],
+                trace={},
+                call_verb_runtime=_fake_call_verb_runtime,
+            )
+        )
+
+
+def test_github_compactor_pass_recall_pg_unavailable_still_writes_journal(monkeypatch) -> None:
+    bus = DummyBus()
+
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        req = kwargs["client_request"]
+        if req.verb == "skills.repo.github_recent_prs.v1":
+            payload = {
+                "available": True,
+                "repo": "acme/widgets",
+                "lookback_days": 1,
+                "merged_pr_count": 1,
+                "items": [{"number": 9, "title": "Add compactor", "body": "Body"}],
+            }
+            return DummyVerbResult(payload={"result": {"status": "success", "final_text": json.dumps(payload)}})
+        if req.verb == "github_compactor_digest_v1":
+            digest = {
+                "card_summary": "Added GitHub compactor workflow.",
+                "journal_title": "Repo development",
+                "journal_body": "Merged #9.",
+                "pr_refs": ["#9"],
+            }
+            return DummyVerbResult(
+                payload={
+                    "result": {
+                        "status": "success",
+                        "final_text": json.dumps(digest),
+                        "metadata": {"github_compactor_digest": digest},
+                    }
+                }
+            )
+        raise AssertionError(f"unexpected verb {req.verb}")
+
+    async def _fake_persist_card(**kwargs):
+        raise RuntimeError("recall_pg_dsn_unavailable")
+
+    monkeypatch.setattr(
+        "app.workflow_runtime.persist_github_compactor_memory_card",
+        _fake_persist_card,
+    )
+
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=bus,
+            source=ServiceRef(name="cortex-orch"),
+            req=_req("github_compactor_pass"),
+            correlation_id="00000000-0000-0000-0000-000000000103",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_fake_call_verb_runtime,
+        )
+    )
+
+    assert result.ok is True
+    assert result.metadata["workflow"].get("card_id") is None
+    assert result.metadata["workflow"].get("card_persist_skipped_reason") == "recall_pg_dsn_unavailable"
+    assert any(ch == "orion:journal:write" for ch, _ in bus.published)

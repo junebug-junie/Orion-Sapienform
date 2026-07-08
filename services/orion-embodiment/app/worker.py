@@ -542,10 +542,11 @@ class EmbodimentWorker:
 
         Fires only when ``perception.pathfinding`` is truthy — issuing a stop when
         Orion is already stopped would fight the engine's own post-transition move
-        and spam inputs. Guarded per-conversation via ``_faced_conversations``. The
-        stop is a ``moveTo`` to Orion's own current tile center, which replaces the
-        old path; the engine's next ``Conversation.tick`` then sets ``facing``.
-        Fail-open: never raises into the perception loop.
+        and spam inputs.         Guarded per-conversation via ``_faced_conversations``. The
+        stop is a ``moveTo`` to Orion's own *current* position — a zero-length path
+        the engine resolves to an immediate stop (no micro-move that would keep
+        ``pathfinding`` truthy), after which the next ``Conversation.tick`` sets
+        ``facing``. Fail-open: never raises into the perception loop.
         """
         if not cid or cid in self._faced_conversations:
             return
@@ -553,8 +554,8 @@ class EmbodimentWorker:
             return
         pos = perception.position or {}
         try:
-            tx = math.floor(float(pos["x"])) + 0.5
-            ty = math.floor(float(pos["y"])) + 0.5
+            tx = float(pos["x"])
+            ty = float(pos["y"])
         except (KeyError, TypeError, ValueError):
             return
         # Mark before actuating so a transient failure still can't re-fire every tick
@@ -566,7 +567,7 @@ class EmbodimentWorker:
                 player_id=own, x=tx, y=ty, world_id=self._world_id or None,
             )
             logger.info(
-                "embodiment_face_partner_stop convo=%s tile=(%.1f,%.1f)", cid, tx, ty
+                "embodiment_face_partner_stop convo=%s pos=(%.2f,%.2f)", cid, tx, ty
             )
         except Exception:
             logger.exception("embodiment_face_partner_stop_failed convo=%s", cid)

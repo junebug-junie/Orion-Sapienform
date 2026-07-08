@@ -106,7 +106,8 @@ def test_engage_stops_once_to_face_partner_when_pathfinding():
         asyncio.run(w._engage_conversation(perc))
         # Second tick for the same conversation must NOT re-issue the stop.
         asyncio.run(w._engage_conversation(perc))
-    mv.assert_called_once_with(player_id="orion", x=2.5, y=3.5, world_id="w1")
+    # Stops at Orion's exact current position (zero-length move => immediate stop).
+    mv.assert_called_once_with(player_id="orion", x=2.3, y=3.8, world_id="w1")
     assert "c:3" in w._faced_conversations
 
 

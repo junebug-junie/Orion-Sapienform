@@ -43,6 +43,8 @@ def test_explicit_workflow_prompts_resolve_for_all_supported_named_workflows() -
         ("Run a self review", "self_review"),
         ("Run your dream cycle", "dream_cycle"),
         ("Run through your concept induction graphs", "concept_induction_pass"),
+        ("Run github compactor", "github_compactor_pass"),
+        ("Compact recent prs", "github_compactor_pass"),
     ]
     for prompt, expected_workflow_id in cases:
         req, debug, _ = hub_builder.build_chat_request(

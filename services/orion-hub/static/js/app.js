@@ -240,6 +240,7 @@ document.addEventListener("DOMContentLoaded", () => {
       { workflowId: 'journal_pass', prompt: 'Do a journal pass.', label: 'Workflow · Do a journal pass.' },
       { workflowId: 'self_review', prompt: 'Run a self review.', label: 'Workflow · Run a self review.' },
       { workflowId: 'concept_induction_pass', prompt: 'Run concept induction.', label: 'Workflow · Run concept induction.' },
+      { workflowId: 'github_compactor_pass', prompt: 'Run github compactor.', label: 'Workflow · Run github compactor.' },
     ];
     const existingByWorkflowId = new Set(
       Array.from(skillRunnerSelect.options || [])

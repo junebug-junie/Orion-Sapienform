@@ -33,7 +33,7 @@ This service sits between chat/operator intent and execution infrastructure:
 
 Important clarification:
 
-- `dream_cycle`, `journal_pass`, `self_review`, and `concept_induction_pass` are **named cognition workflows**, not “Actions skills”.
+- `dream_cycle`, `journal_pass`, `self_review`, `concept_induction_pass`, and `github_compactor_pass` are **named cognition workflows**, not “Actions skills”.
 - Scheduled runs are re-dispatched through the same Orch workflow lane as immediate runs.
 - Actions does not execute a shadow copy of those workflows.
 
@@ -196,6 +196,14 @@ These are defined in workflow registry/runtime, not in Actions.
 - **Notify**: yes.
 - **Typical result**: profile summary (concept/cluster counts, freshness).
 - **Persisted meaning**: primarily reads existing profile state; no broad uncontrolled mutation in this pass.
+
+### `github_compactor_pass`
+- **Purpose**: daily compaction of merged GitHub PR descriptions into repo development memory.
+- **Example phrases**: “Run github compactor”, “compact recent prs”, “what have we been building”.
+- **Schedulable**: yes.
+- **Notify**: yes (via schedule policy).
+- **Typical result**: PR count, card summary preview, journal entry id.
+- **Persisted meaning**: supersedes one active `repo_dev_snapshot` memory card (`high_recall`) and append-only journal entry (`journal.entry.write.v1`).
 
 ---
 

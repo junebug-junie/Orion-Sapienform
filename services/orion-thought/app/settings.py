@@ -11,6 +11,17 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 
 logger = logging.getLogger("orion-thought.settings")
 
+# orion-mind runs 3 sequential LLM phases (semantic → appraisal → stance), each
+# capped by MIND_LLM_TIMEOUT_SEC (default 25s on the orion-mind service). A wall
+# budget below ~3× that ceiling guarantees synthesis is cut off mid-pipeline and
+# the Mind degrades to contract_only (the empty-shell cognition failure mode).
+# See fix/mind-enrichment-wall-budget.
+MIND_LLM_TIMEOUT_SEC_ASSUMED: float = 25.0
+MIND_ENRICHMENT_PHASE_COUNT: int = 3
+MIND_ENRICHMENT_MIN_VIABLE_WALL_MS: int = int(
+    MIND_LLM_TIMEOUT_SEC_ASSUMED * MIND_ENRICHMENT_PHASE_COUNT * 1000
+)
+
 
 class ThoughtSettings(BaseSettings):
     service_name: str = Field("orion-thought", alias="SERVICE_NAME")
@@ -114,10 +125,17 @@ class ThoughtSettings(BaseSettings):
     # Runs orion-mind before stance_react and injects an advisory self/attention
     # coloring. Silent no-op unless orion-mind has MIND_LLM_SYNTHESIS_ENABLED=true
     # (a separate service — not visible to this service's env-parity check).
+    #
+    # Wall/timeout budget: orion-mind runs THREE sequential LLM phases (semantic →
+    # appraisal → stance), each capped by MIND_LLM_TIMEOUT_SEC (default 25s on the
+    # orion-mind service). A wall below ~3× that ceiling cuts synthesis off
+    # mid-pipeline and forces contract_only degradation, so the wall default must
+    # stay >= MIND_ENRICHMENT_MIN_VIABLE_WALL_MS and the HTTP read timeout must
+    # exceed the wall (so Mind's own fail-open result is returned, not aborted).
     mind_enrichment_enabled: bool = Field(False, alias="ORION_THOUGHT_MIND_ENRICHMENT_ENABLED")
     mind_base_url: str = Field("http://orion-mind:6611", alias="ORION_MIND_BASE_URL")
-    mind_timeout_sec: float = Field(15.0, alias="ORION_THOUGHT_MIND_TIMEOUT_SEC")
-    mind_wall_ms: int = Field(12_000, alias="ORION_THOUGHT_MIND_WALL_MS")
+    mind_timeout_sec: float = Field(100.0, alias="ORION_THOUGHT_MIND_TIMEOUT_SEC")
+    mind_wall_ms: int = Field(90_000, alias="ORION_THOUGHT_MIND_WALL_MS")
     mind_router_profile: str = Field("default", alias="ORION_THOUGHT_MIND_ROUTER_PROFILE")
     mind_max_response_bytes: int = Field(2_000_000, alias="ORION_THOUGHT_MIND_MAX_RESPONSE_BYTES")
     mind_artifact_publish_enabled: bool = Field(
@@ -127,6 +145,30 @@ class ThoughtSettings(BaseSettings):
     channel_mind_artifact: str = Field("orion:mind:artifact", alias="CHANNEL_MIND_ARTIFACT")
 
 
+def mind_enrichment_config_warnings(s: "ThoughtSettings") -> list[str]:
+    """Deterministic boot-time coherence checks for the Mind enrichment budget.
+
+    Only meaningful when enrichment is enabled. Returns human-readable warnings
+    for budget settings that would silently force contract_only degradation.
+    """
+    warnings: list[str] = []
+    if not s.mind_enrichment_enabled:
+        return warnings
+    if s.mind_wall_ms < MIND_ENRICHMENT_MIN_VIABLE_WALL_MS:
+        warnings.append(
+            f"wall_too_small ORION_THOUGHT_MIND_WALL_MS={s.mind_wall_ms} < "
+            f"min_viable={MIND_ENRICHMENT_MIN_VIABLE_WALL_MS}: 3-phase LLM synthesis "
+            "will be cut off mid-pipeline and Mind will degrade to contract_only"
+        )
+    if s.mind_timeout_sec * 1000.0 <= s.mind_wall_ms:
+        warnings.append(
+            f"http_timeout_not_above_wall ORION_THOUGHT_MIND_TIMEOUT_SEC={s.mind_timeout_sec}s "
+            f"(<= ORION_THOUGHT_MIND_WALL_MS={s.mind_wall_ms}ms): the HTTP client may abort "
+            "before Mind returns its own fail-open result, losing diagnostics/artifact"
+        )
+    return warnings
+
+
 settings = ThoughtSettings()
 logger.info(
     "Loaded orion-thought settings service=%s v=%s port=%s",
@@ -134,3 +176,5 @@ logger.info(
     settings.service_version,
     settings.port,
 )
+for _mind_cfg_warning in mind_enrichment_config_warnings(settings):
+    logger.warning("mind_enrichment_config %s", _mind_cfg_warning)

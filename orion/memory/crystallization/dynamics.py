@@ -40,6 +40,23 @@ def seed_dynamics(
     return updated
 
 
+def seed_weak_dynamics(
+    crystallization: MemoryCrystallizationV1,
+    *,
+    now: datetime,
+    ratio: float = 0.4,
+    min_activation: float = 0.05,
+    max_activation: float = 0.35,
+) -> MemoryCrystallizationV1:
+    """Auto-encode at a fraction of salience — weak initial footprint."""
+    updated = crystallization.model_copy(deep=True)
+    raw = _clamp(crystallization.salience * _clamp(ratio))
+    updated.dynamics.activation = max(min_activation, min(max_activation, raw))
+    updated.dynamics.formed_at = _aware(now)
+    updated.updated_at = _aware(now)
+    return updated
+
+
 def reinforce(
     crystallization: MemoryCrystallizationV1,
     *,

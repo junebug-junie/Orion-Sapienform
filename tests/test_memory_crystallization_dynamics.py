@@ -8,6 +8,7 @@ from orion.memory.crystallization.dynamics import (
     recall_boost,
     reinforce,
     seed_dynamics,
+    seed_weak_dynamics,
     should_retire,
 )
 from orion.memory.crystallization.proposer import propose
@@ -66,6 +67,14 @@ class TestSeed:
         seeded = seed_dynamics(crys, now=_now())
         assert seeded.dynamics.activation == crys.salience
         assert seeded.dynamics.formed_at == _now()
+
+
+def test_seed_weak_dynamics_scales_salience():
+    crys = _crys()
+    crys.salience = 0.5
+    seeded = seed_weak_dynamics(crys, now=_now(), ratio=0.4)
+    assert seeded.dynamics.activation == 0.2
+    assert seeded.dynamics.formed_at is not None
 
 
 class TestReinforce:

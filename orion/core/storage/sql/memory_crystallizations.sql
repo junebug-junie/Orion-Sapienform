@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS memory_crystallizations (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+ALTER TABLE memory_crystallizations ADD COLUMN IF NOT EXISTS dynamics jsonb NOT NULL DEFAULT '{}'::jsonb;
+
 CREATE TABLE IF NOT EXISTS memory_crystallization_claims (
     claim_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     crystallization_id uuid NOT NULL REFERENCES memory_crystallizations(crystallization_id) ON DELETE CASCADE,

@@ -8789,6 +8789,10 @@ loadDismissedIds();
     return Array.isArray(item?.source_ids) ? item.source_ids.length : null;
   }
 
+  function worldPulseSafeHttpUrl(url) {
+    return /^https?:\/\//i.test(String(url || '')) ? url : null;
+  }
+
   function normalizeWorldPulsePayload(raw) {
     const payload = raw && typeof raw === 'object' ? raw : {};
     if (payload.digest && payload.run) {
@@ -9028,9 +9032,10 @@ loadDismissedIds();
             li.className = 'text-xs text-gray-300';
             const salience = Number.isFinite(Number(art?.salience)) ? Number(art.salience).toFixed(2) : '--';
             const title = art?.title || '(untitled)';
-            if (art?.url) {
+            const safeUrl = worldPulseSafeHttpUrl(art?.url);
+            if (safeUrl) {
               const link = document.createElement('a');
-              link.href = art.url;
+              link.href = safeUrl;
               link.target = '_blank';
               link.rel = 'noopener noreferrer';
               link.className = 'text-blue-400 hover:underline';
@@ -9069,13 +9074,14 @@ loadDismissedIds();
         const reasonBlock = createWorldPulseBlock('Reason', w.reason_selected);
         if (itemBlock) row.appendChild(itemBlock);
         if (reasonBlock) row.appendChild(reasonBlock);
-        if (w.url) {
+        const safeWorthUrl = worldPulseSafeHttpUrl(w.url);
+        if (safeWorthUrl) {
           const link = document.createElement('a');
-          link.href = w.url;
+          link.href = safeWorthUrl;
           link.target = '_blank';
           link.rel = 'noopener noreferrer';
           link.className = 'text-indigo-300 hover:underline';
-          link.textContent = w.url;
+          link.textContent = safeWorthUrl;
           const linkWrap = document.createElement('div');
           linkWrap.className = 'mt-1';
           linkWrap.appendChild(link);

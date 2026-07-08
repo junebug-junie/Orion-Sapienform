@@ -4,6 +4,7 @@ from typing import Any
 
 from orion.memory.consolidation_gate import ConsolidationGateResult
 from orion.memory.crystallization.schemas import (
+    STANCE_PROCEDURE_DECISION_KINDS,
     CrystallizationEvidenceRefV1,
     CrystallizationGovernanceV1,
     MemoryCrystallizationV1,
@@ -19,6 +20,34 @@ _KIND_FOR_SHIFT = {
     "REPAIR": "open_loop",
     "TOPIC": "semantic",
 }
+
+# Retrieval intent keyed off the crystallization kind. The validator requires
+# non-empty planning_effects for stance/procedure/decision, and additionally
+# non-empty retrieval_affordances for stance. These derive real affordances
+# from the resolved kind rather than emitting hollow placeholders. This mapping
+# is the single source of truth for which kinds get enriched at intake; its
+# keys must match the validator's STANCE_PROCEDURE_DECISION_KINDS.
+_RETRIEVAL_INTENT_FOR_KIND = {
+    "stance": "relational",
+    "procedure": "procedural",
+    "decision": "semantic",
+}
+assert set(_RETRIEVAL_INTENT_FOR_KIND) == set(STANCE_PROCEDURE_DECISION_KINDS)
+
+
+def _planning_and_retrieval_for_kind(kind: str, summary: str) -> tuple[list[str], list[str]]:
+    """Derive content-grounded planning_effects/retrieval_affordances for a kind.
+
+    Only stance/procedure/decision get enrichment (they are the kinds the
+    validator hard-requires it for). All other kinds return empty lists so
+    their behavior is unchanged.
+    """
+    if kind not in _RETRIEVAL_INTENT_FOR_KIND:
+        return [], []
+    grounded = summary.strip()[:120]
+    planning_effects = [f"Carry forward this {kind} when planning: {grounded}"]
+    retrieval_affordances = [f"retrieve_when:{_RETRIEVAL_INTENT_FOR_KIND[kind]}"]
+    return planning_effects, retrieval_affordances
 
 
 def _window_summary(turns: list[dict[str, Any]]) -> str:
@@ -68,15 +97,19 @@ def build_crystallization_from_window(
                 strength=0.6,
             )
         )
+    kind = _kind_for_gate(gate, turns)
+    planning_effects, retrieval_affordances = _planning_and_retrieval_for_kind(kind, summary)
     return MemoryCrystallizationV1(
         crystallization_id=new_crystallization_id(),
-        kind=_kind_for_gate(gate, turns),
+        kind=kind,
         subject=summary,
         summary=summary,
         status="proposed",
         scope=[f"memory_window:{memory_window_id}"],
         tags=["consolidation_window"],
         evidence=evidence,
+        planning_effects=planning_effects,
+        retrieval_affordances=retrieval_affordances,
         source_grammar_event_ids=grammar_ids,
         governance=CrystallizationGovernanceV1(
             proposed_by=_PROPOSED_BY,

@@ -242,6 +242,8 @@ async def run_pcr_phase3(
         user_message=user_message,
         shift_novelty_floor=cfg.chat_pcr_skip_shift_novelty_floor,
         seed_crystallization_id=str(ctx.get("seed_crystallization_id") or "").strip() or None,
+        eligible_belief_count=int((ctx.get("eligible_belief_count") or 0)),
+        brain_belief_default_enabled=cfg.memory_cognition_brain_belief_default,
     )
 
     if intent in ("none", "continuity"):

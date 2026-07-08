@@ -53,6 +53,7 @@ class OrionBusAsync:
             "decode_responses": False,
             "socket_timeout": None,
             "socket_connect_timeout": 10.0,
+            "health_check_interval": 30,
         }
 
     def _command_redis_kwargs(self) -> dict[str, Any]:

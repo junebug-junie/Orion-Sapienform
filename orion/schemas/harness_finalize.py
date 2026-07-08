@@ -61,7 +61,11 @@ class FinalizeReflectionV1(BaseModel):
     alignment_notes: list[str]
     strain_unresolved: bool
 
-    reflection_source: Literal["substrate_informed_pass", "deterministic_quick_gate"] = (
+    reflection_source: Literal[
+        "substrate_informed_pass",
+        "deterministic_quick_gate",
+        "degraded_llm_failure_fallback",
+    ] = (
         "substrate_informed_pass"
     )
     quick_lane_skipped_llm: bool = False

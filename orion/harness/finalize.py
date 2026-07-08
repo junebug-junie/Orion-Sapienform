@@ -356,8 +356,47 @@ async def run_finalize_reflection(
         user_message=user_message,
         grammar_receipts=grammar_receipts,
     )
-    exec_result = await cortex_client(plan_request)
-    raw_payload = extract_finalize_reflection_payload(exec_result)
+    try:
+        exec_result = await cortex_client(plan_request)
+        raw_payload = extract_finalize_reflection_payload(exec_result)
+    except Exception as exc:
+        degraded = maybe_quick_lane_verdict(
+            correlation_id=correlation_id,
+            thought=thought,
+            substrate_appraisal=substrate_appraisal,
+            repair_overlay=overlay,
+        )
+        if degraded is not None:
+            logger.warning(
+                "harness_finalize_reflect_llm_failed_using_quick_lane corr=%s err=%s",
+                correlation_id,
+                exc,
+            )
+            return degraded, True, None
+        logger.warning(
+            "harness_finalize_reflect_llm_failed_using_degraded_reflection corr=%s err=%s",
+            correlation_id,
+            exc,
+        )
+        return (
+            FinalizeReflectionV1(
+                correlation_id=correlation_id,
+                thought_event_id=thought.event_id,
+                substrate_appraisal_id=substrate_appraisal.molecule_id,
+                draft_hash=substrate_appraisal.draft_hash,
+                imperative=thought.imperative,
+                tone=thought.tone,
+                strain_refs=list(thought.strain_refs),
+                alignment_verdict="aligned",
+                alignment_notes=[f"reflect_llm_failed: {_excerpt(str(exc), max_len=200)}"],
+                strain_unresolved=False,
+                reflection_source="degraded_llm_failure_fallback",
+                quick_lane_skipped_llm=False,
+                finalize_changed=False,
+            ),
+            False,
+            None,
+        )
     if isinstance(raw_payload, dict):
         raw_payload.setdefault("correlation_id", correlation_id)
         raw_payload.setdefault("thought_event_id", thought.event_id)

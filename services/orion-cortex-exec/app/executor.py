@@ -4088,8 +4088,10 @@ async def call_step_services(
                     # - introspect_spark internal analysis: FAST lane ("quick")
                     # - metacog mode: METACOG lane
                     llm_route = (
-                        "quick"
-                        if step.verb_name in {"orion_voice_finalize", "harness_finalize_reflect"}
+                        "metacog"
+                        if step.verb_name == "harness_finalize_reflect"
+                        else "quick"
+                        if step.verb_name == "orion_voice_finalize"
                         else "quick"
                         if step.verb_name == "chat_general" and step.step_name == "synthesize_chat_stance_brief"
                         else "chat"

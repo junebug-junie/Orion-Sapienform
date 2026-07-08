@@ -257,7 +257,8 @@ async def test_turn_orchestrator_turn_error_on_harness_fail() -> None:
         )
 
     assert frames[-1]["type"] == "turn_error"
-    assert frames[-1]["phase"] == "substrate_appraisal"
+    assert frames[-1]["phase"] == "harness"
+    assert frames[-1]["error"] == "substrate_timeout"
     assert frames[-1]["finalize_ran"] is False
 
 

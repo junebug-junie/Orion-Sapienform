@@ -82,6 +82,27 @@ class OpenLoopV1(BaseModel):
     # remain populated for one deprecation release; new code reads these.
     salience: float = Field(default=0.0, ge=0.0, le=1.0)
     salience_features: dict[str, Any] = Field(default_factory=dict)
+    # Voluntary attention (additive, back-compatible). top_down_bias is the
+    # goal-derived bias applied to this loop; combined_salience = salience +
+    # gain·applied_bias. Both default 0.0 -> pure bottom-up when the feature is off.
+    top_down_bias: float = Field(default=0.0, ge=0.0, le=1.0)
+    combined_salience: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class VoluntaryOverrideV1(BaseModel):
+    """Recorded when top-down goal bias makes a lower-bottom-up loop win — an
+    inspectable act of volitional attention (Desimone & Duncan biased competition)."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    goal_artifact_id: str | None = None
+    goal_drive_origin: str | None = None
+    chosen_loop_id: str
+    beat_loop_id: str
+    chosen_bottom_up: float = Field(ge=0.0, le=1.0)
+    beat_bottom_up: float = Field(ge=0.0, le=1.0)
+    applied_bias: float = Field(ge=0.0, le=1.0)
+    effort_spent: float = Field(ge=0.0)
 
 
 class CuriosityCandidateActionV1(BaseModel):
@@ -131,6 +152,10 @@ class AttentionFrameV1(BaseModel):
     selected_action: CuriosityCandidateActionV1 | None = None
     suppressions: list[CuriositySuppressionV1] = Field(default_factory=list)
     deferred_items: list[str] = Field(default_factory=list)
+    # Voluntary attention (additive). Set when top-down goal bias flipped the
+    # winner; None when selection was pure bottom-up (default -> current behavior).
+    voluntary_override: VoluntaryOverrideV1 | None = None
+    effort_budget_used: float = Field(default=0.0, ge=0.0)
     debug: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("generated_at")

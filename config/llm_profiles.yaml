@@ -72,49 +72,6 @@ profiles:
       CoLA inference host profile that returns both text and latent action paths.
 
 
-  qwen2.5-32b-instruct-abliterated-gguf:
-    display_name: "Qwen 2.5 32B Instruct – abliterated Q6_K (llama.cpp, Atlas)"
-    task_type: chat
-    backend: llamacpp
-
-    # Logical label used by Orion; the llamacpp wrapper will resolve to a GGUF path
-    model_id: "qwen2.5-32b-instruct-abliterated-q6_k"
-
-    supports_tools: false
-    supports_embeddings: false
-    supports_vision: false
-
-    gpu:
-      num_gpus: 4
-      tensor_parallel_size: 4      # semantic only for llamacpp
-      device_ids: [0, 1, 2, 3]
-
-      max_model_len: 8192
-      max_batch_tokens: 512
-      max_concurrent_requests: 2
-      gpu_memory_fraction: 0.9
-
-    llamacpp:
-      model_root: "/models/gguf"
-
-      hf_repo_id: "mradermacher/Qwen2.5-32B-Instruct-abliterated-GGUF"
-      hf_filename: "Qwen2.5-32B-Instruct-abliterated.Q6_K.gguf"
-
-      host: "0.0.0.0"
-      port: 8080
-      ctx_size: 8192
-      n_gpu_layers: 80
-      threads: 16
-      n_parallel: 2
-      batch_size: 512
-
-    notes: |
-      Non-coder Qwen2.5 32B Instruct (abliterated) GGUF via llama.cpp on Atlas.
-      Source:
-        - repo: mradermacher/Qwen2.5-32B-Instruct-abliterated-GGUF
-        - file: Qwen2.5-32B-Instruct-abliterated.Q6_K.gguf
-
-
   qwen3-30b-a3b-instruct-2507-q5km-atlas-metacog-16k:
     display_name: "Qwen3 30B A3B Instruct 2507 – Q5_K_M (llama.cpp, Atlas Metacog Lane, 2x V100 16GB, 16k)"
     task_type: chat
@@ -247,7 +204,7 @@ profiles:
       device_ids: [0]
       max_model_len: 16384
       max_batch_tokens: 512
-      max_concurrent_requests: 1
+      max_concurrent_requests: 4
       gpu_memory_fraction: 0.88
 
     llamacpp:

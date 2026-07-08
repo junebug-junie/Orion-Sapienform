@@ -77,5 +77,6 @@ async def handle_world_pulse_run_result_journal(
         trigger=trigger,
         audit_action="journal.world_pulse_digest",
         dedupe_key=cooldown_key_for_trigger(trigger),
+        world_pulse_result=result,
     )
     return True

@@ -96,6 +96,13 @@ INFRA_CHANNELS: Tuple[str, ...] = (
     "catalog_drift_pressure",
 )
 
+COGNITIVE_FEATURE_NAMES: Tuple[str, ...] = (
+    "recall_gate_fired",
+    "reasoning_present",
+    "exec_step_fail_rate",
+    "execution_friction",
+)
+
 
 def _dim_score(ss, key: str, default: float = 0.0) -> float:
     dim = getattr(ss, "dimensions", {}).get(key)
@@ -108,6 +115,53 @@ def _felt_tuple(ss) -> Tuple[float, ...]:
 
 def _mean(vals: List[float]) -> float:
     return sum(vals) / len(vals) if vals else 0.0
+
+
+def cognitive_features_from_trajectory(
+    projection: dict | None,
+    *,
+    now: datetime,
+    max_age_sec: int,
+) -> List[InnerFeatureV1]:
+    """Return four cognitive InnerFeatureV1 rows (raw only; scaling in build_inner_state_features)."""
+    none_source = "execution_trajectory.none"
+    if not projection or not projection.get("runs"):
+        return [
+            InnerFeatureV1(name=n, raw_value=0.0, scaled_value=0.0, source=none_source)
+            for n in COGNITIVE_FEATURE_NAMES
+        ]
+    active = []
+    for run in projection["runs"].values():
+        ts = datetime.fromisoformat(str(run["last_updated_at"]).replace("Z", "+00:00"))
+        if (now - ts).total_seconds() <= max_age_sec:
+            active.append(run)
+    if not active:
+        return [
+            InnerFeatureV1(name=n, raw_value=0.0, scaled_value=0.0, source=none_source)
+            for n in COGNITIVE_FEATURE_NAMES
+        ]
+    recall = 1.0 if any(r.get("recall_observed") for r in active) else 0.0
+    reasoning_frac = sum(1 for r in active if r.get("reasoning_present")) / len(active)
+    steps = sum(int(r.get("step_count") or 0) for r in active)
+    fails = sum(int(r.get("failed_step_count") or 0) for r in active)
+    fail_rate = fails / max(1, steps)
+    frictions = [float(r.get("pressure_hints", {}).get("execution_friction", 0.0)) for r in active]
+    friction = sum(frictions) / len(frictions)
+    raw_by_name = {
+        "recall_gate_fired": recall,
+        "reasoning_present": reasoning_frac,
+        "exec_step_fail_rate": fail_rate,
+        "execution_friction": friction,
+    }
+    return [
+        InnerFeatureV1(
+            name=name,
+            raw_value=round(raw_by_name[name], 4),
+            scaled_value=0.0,
+            source=f"execution_trajectory.runs.*.{name}",
+        )
+        for name in COGNITIVE_FEATURE_NAMES
+    ]
 
 
 def honest_headline(raw: Dict[str, float]) -> float:
@@ -138,10 +192,13 @@ def build_inner_state_features(
     *,
     features_version: str,
     grammar_degraded: bool,
-    prev_felt: Optional[Tuple[float, ...]],
-    prev_headline: Optional[float],
-    degenerate_streak: int,
-    degenerate_limit: int,
+    degraded_reasons: Optional[List[str]] = None,
+    trajectory_projection: Optional[dict] = None,
+    exec_trajectory_max_age_sec: int = 120,
+    prev_felt: Optional[Tuple[float, ...]] = None,
+    prev_headline: Optional[float] = None,
+    degenerate_streak: int = 0,
+    degenerate_limit: int = 20,
 ) -> Tuple[InnerStateFeaturesV1, Tuple[float, ...], int]:
     """Assemble one InnerStateFeaturesV1 from a SelfStateV1.
 
@@ -175,6 +232,26 @@ def build_inner_state_features(
         )
     )
 
+    # seed-v2 always emits the four cognitive slots so encoder/corpus dims stay
+    # stable even when trajectory HTTP fails (zeros + execution_trajectory.none).
+    # seed-v1 and other versions only append when a projection was provided.
+    include_cognitive = features_version.startswith("seed-v2") or trajectory_projection is not None
+    if include_cognitive:
+        gen_for_traj = getattr(ss, "generated_at", None) or datetime.now(timezone.utc)
+        for feat in cognitive_features_from_trajectory(
+            trajectory_projection,
+            now=gen_for_traj,
+            max_age_sec=exec_trajectory_max_age_sec,
+        ):
+            features.append(
+                InnerFeatureV1(
+                    name=feat.name,
+                    raw_value=feat.raw_value,
+                    scaled_value=round(scaler.observe_and_scale(feat.name, feat.raw_value), 4),
+                    source=feat.source,
+                )
+            )
+
     infra: List[InnerFeatureV1] = []
     dom = getattr(ss, "dominant_field_channels", {}) or {}
     for ch in INFRA_CHANNELS:
@@ -203,6 +280,12 @@ def build_inner_state_features(
             headline = prev_headline
 
     gen = getattr(ss, "generated_at", None) or datetime.now(timezone.utc)
+    metadata: Dict[str, object] = {
+        "overall_condition": getattr(ss, "overall_condition", None),
+        "trajectory_condition": getattr(ss, "trajectory_condition", None),
+    }
+    if degraded_reasons:
+        metadata["degraded_reasons"] = degraded_reasons
     payload = InnerStateFeaturesV1(
         features_version=features_version,
         generated_at=gen,
@@ -215,9 +298,6 @@ def build_inner_state_features(
         phi_degenerate_streak=new_streak,
         grammar_truth_degraded=bool(grammar_degraded),
         liveness={"self_state": True, "grammar_truth": not grammar_degraded},
-        metadata={
-            "overall_condition": getattr(ss, "overall_condition", None),
-            "trajectory_condition": getattr(ss, "trajectory_condition", None),
-        },
+        metadata=metadata,
     )
     return payload, felt_tuple, new_streak

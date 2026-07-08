@@ -22,6 +22,7 @@ from orion.schemas.platform import CoreEventV1
 from orion.schemas.self_state import SelfStateV1
 from orion.schemas.telemetry.cognition_trace import CognitionTracePayload
 from orion.schemas.telemetry.inner_state import InnerStateFeaturesV1
+from orion.schemas.telemetry.phi_encoder import PhiIntrinsicRewardV1
 from orion.schemas.telemetry.spark import SparkTelemetryPayload, SparkStateSnapshotV1
 from orion.schemas.telemetry.spark_signal import SparkSignalV1
 from orion.schemas.telemetry.turn_effect import (
@@ -44,6 +45,15 @@ from .inner_state import (
     build_inner_state_features,
 )
 from .inner_state_sink import InnerStateCorpusSink
+from .phi_encoder import PhiEncoderRuntime
+from .substrate_reads import (
+    ExecutionTrajectorySnapshot,
+    GrammarTruthSnapshot,
+    SubstrateReadCache,
+    cognitive_lane_dark,
+    fetch_execution_trajectory,
+    fetch_grammar_truth,
+)
 from .queue_jobs import (
     SparkIntrospectionJobV1,
     build_idempotency_key,
@@ -102,6 +112,10 @@ _INNER_PREV_HEADLINE = None
 _INNER_DEGENERATE_STREAK = 0
 _INNER_LAST_HEADLINE: Optional[float] = None  # honest headline for WS reads
 _INNER_SINK = InnerStateCorpusSink(getattr(settings, "inner_features_corpus_path", "") or "")
+
+_PHI_ENCODER: PhiEncoderRuntime | None = None
+_PHI_PREV_PHI: float | None = None
+_PHI_PREV_RECON: float | None = None
 
 
 def set_latest_self_state(ss: SelfStateV1) -> None:
@@ -213,6 +227,26 @@ class SparkStateSnapshotEnvelope(Envelope[SparkStateSnapshotV1]):
 
 class InnerStateFeaturesEnvelope(Envelope[InnerStateFeaturesV1]):
     kind: str = Field("self.inner_features.v1", frozen=True)
+
+
+class PhiIntrinsicRewardEnvelope(Envelope[PhiIntrinsicRewardV1]):
+    kind: str = Field("self.phi_reward.v1", frozen=True)
+
+
+def _load_phi_encoder() -> PhiEncoderRuntime | None:
+    global _PHI_ENCODER
+    if _PHI_ENCODER is not None:
+        return _PHI_ENCODER
+    weights_path = (getattr(settings, "orion_phi_encoder_weights", "") or "").strip()
+    if not weights_path:
+        return None
+    enc = PhiEncoderRuntime.load(
+        Path(weights_path),
+        expected_features_version=settings.inner_features_version,
+    )
+    if enc is not None:
+        _PHI_ENCODER = enc
+    return enc
 
 
 class SparkCandidatePayload(BaseModel):
@@ -497,6 +531,70 @@ def _cola_http_client() -> httpx.AsyncClient:
     if _COLA_HTTP_CLIENT is None or _COLA_HTTP_CLIENT.is_closed:
         _COLA_HTTP_CLIENT = httpx.AsyncClient(timeout=float(settings.cola_understand_timeout_sec))
     return _COLA_HTTP_CLIENT
+
+
+_SUBSTRATE_HTTP_CLIENT: Optional[httpx.AsyncClient] = None
+_SUBSTRATE_CACHE: SubstrateReadCache | None = None
+
+
+def _substrate_http_client() -> httpx.AsyncClient:
+    global _SUBSTRATE_HTTP_CLIENT
+    if _SUBSTRATE_HTTP_CLIENT is None or _SUBSTRATE_HTTP_CLIENT.is_closed:
+        _SUBSTRATE_HTTP_CLIENT = httpx.AsyncClient(timeout=float(settings.substrate_read_timeout_sec))
+    return _SUBSTRATE_HTTP_CLIENT
+
+
+def _substrate_read_cache() -> SubstrateReadCache:
+    global _SUBSTRATE_CACHE
+    ttl = float(settings.substrate_read_cache_sec)
+    if _SUBSTRATE_CACHE is None or abs(_SUBSTRATE_CACHE._ttl_sec - ttl) > 1e-9:
+        _SUBSTRATE_CACHE = SubstrateReadCache(ttl_sec=ttl)
+    return _SUBSTRATE_CACHE
+
+
+async def _fetch_substrate_grammar_truth():
+    cache = _substrate_read_cache()
+    cached = cache.get_grammar()
+    if cached is not None:
+        return GrammarTruthSnapshot(
+            degraded=bool(cached.get("degraded")),
+            degraded_reasons=list(cached.get("degraded_reasons") or []),
+            enabled_reducers={
+                str(k): bool(v) for k, v in (cached.get("enabled_reducers") or {}).items()
+            },
+            reducer_health_by_name=dict(cached.get("reducer_health_by_name") or {}),
+        )
+    substrate_base = settings.substrate_runtime_url.rstrip("/")
+    gt = await fetch_grammar_truth(
+        _substrate_http_client(),
+        f"{substrate_base}/grammar/truth",
+    )
+    cache.put_grammar(
+        {
+            "degraded": gt.degraded,
+            "degraded_reasons": list(gt.degraded_reasons),
+            "enabled_reducers": dict(gt.enabled_reducers),
+            "reducer_health_by_name": dict(gt.reducer_health_by_name),
+        }
+    )
+    return gt
+
+
+async def _fetch_substrate_execution_trajectory():
+    cache = _substrate_read_cache()
+    cached = cache.get_trajectory()
+    if cached is not None:
+        projection = cached.get("projection")
+        if projection is not None and not isinstance(projection, dict):
+            projection = None
+        return ExecutionTrajectorySnapshot(ok=bool(cached.get("ok")), projection=projection)
+    substrate_base = settings.substrate_runtime_url.rstrip("/")
+    traj = await fetch_execution_trajectory(
+        _substrate_http_client(),
+        f"{substrate_base}/projections/execution_trajectory",
+    )
+    cache.put_trajectory({"ok": traj.ok, "projection": traj.projection})
+    return traj
 
 
 async def _fetch_cola_understanding(text: str, *, doc_id: str) -> Optional[np.ndarray]:
@@ -2257,7 +2355,7 @@ async def handle_signal(env: BaseEnvelope) -> None:
 
 
 async def handle_self_state(env: BaseEnvelope) -> None:
-    global _PREV_PHI
+    global _PREV_PHI, _PHI_PREV_PHI, _PHI_PREV_RECON
     payload = env.payload if isinstance(env.payload, dict) else {}
     try:
         ss = SelfStateV1.model_validate(payload)
@@ -2272,16 +2370,69 @@ async def handle_self_state(env: BaseEnvelope) -> None:
 
     global _INNER_PREV_FELT, _INNER_PREV_HEADLINE, _INNER_DEGENERATE_STREAK, _INNER_LAST_HEADLINE
     if settings.inner_features_enabled:
+        gt = await _fetch_substrate_grammar_truth()
+        traj = await _fetch_substrate_execution_trajectory()
+        grammar_degraded = gt.degraded or cognitive_lane_dark(gt)
+        projection = traj.projection if traj.ok else None
+
         inner, _INNER_PREV_FELT, _INNER_DEGENERATE_STREAK = build_inner_state_features(
             ss,
             _INNER_SCALER,
             features_version=settings.inner_features_version,
-            grammar_degraded=False,  # Plan 2: wire cross-service grammar-truth gate
+            grammar_degraded=grammar_degraded,
+            degraded_reasons=gt.degraded_reasons,
+            trajectory_projection=projection,
+            exec_trajectory_max_age_sec=int(settings.exec_trajectory_max_age_sec),
             prev_felt=_INNER_PREV_FELT,
             prev_headline=_INNER_PREV_HEADLINE,
             degenerate_streak=_INNER_DEGENERATE_STREAK,
             degenerate_limit=int(settings.phi_degenerate_streak),
         )
+        if (
+            settings.orion_phi_encoder_enabled
+            and inner.phi_health == "ok"
+            and not inner.grammar_truth_degraded
+        ):
+            enc = _load_phi_encoder()
+            if enc is not None:
+                x = enc.feature_vector_from_inner(inner)
+                out = enc.forward(x)
+                inner.headline = round(out.phi, 4)
+                inner.headline_source = "encoder"
+                inner.metadata.update({
+                    "recon_error": out.recon_error,
+                    "latent": out.latent,
+                    "encoder_version": enc.encoder_version,
+                })
+                delta_phi = 0.0 if _PHI_PREV_PHI is None else out.phi - _PHI_PREV_PHI
+                delta_recon = 0.0 if _PHI_PREV_RECON is None else out.recon_error - _PHI_PREV_RECON
+                reward = PhiIntrinsicRewardV1(
+                    generated_at=inner.generated_at,
+                    self_state_id=inner.self_state_id,
+                    encoder_version=enc.encoder_version,
+                    features_version=inner.features_version,
+                    phi=out.phi,
+                    delta_phi=delta_phi,
+                    recon_error=out.recon_error,
+                    delta_recon_error=delta_recon,
+                    latent=out.latent,
+                    attribution_top=out.attribution_top,
+                    grammar_truth_degraded=inner.grammar_truth_degraded,
+                )
+                if _pub_bus and _pub_bus.enabled:
+                    try:
+                        await _pub_bus.publish(
+                            settings.channel_phi_reward,
+                            PhiIntrinsicRewardEnvelope(
+                                source=_svc_ref(),
+                                correlation_id=uuid4(),
+                                payload=reward,
+                            ),
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to publish phi_reward: %s", exc)
+                _PHI_PREV_PHI = out.phi
+                _PHI_PREV_RECON = out.recon_error
         _INNER_PREV_HEADLINE = inner.headline
         _INNER_LAST_HEADLINE = inner.headline
         try:

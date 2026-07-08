@@ -72,6 +72,7 @@ from app.models import (
     MindRunSQL,
     VisionEventSQL,
     ActionOutcomeSQL,
+    PhiRewardSQL,
     GrammarEventSQL,
 )
 from orion.autonomy.models import ActionOutcomeEmitV1
@@ -127,6 +128,7 @@ from orion.schemas.evidence_index import EvidenceUnitV1
 from orion.schemas.mind.artifact import MindRunArtifactV1
 from orion.schemas.vision import VisionEventBundleItem
 from orion.schemas.grammar import GrammarEventV1
+from orion.schemas.telemetry.phi_encoder import PhiIntrinsicRewardV1
 from orion.schemas.world_pulse import (
     ClaimRecordV1,
     DailyWorldPulseItemV1,
@@ -420,6 +422,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "GrammarEventSQL": (GrammarEventSQL, GrammarEventV1),
     "VisionEventSQL": (VisionEventSQL, VisionEventBundleItem),
     "ActionOutcomeSQL": (ActionOutcomeSQL, ActionOutcomeEmitV1),
+    "PhiRewardSQL": (PhiRewardSQL, PhiIntrinsicRewardV1),
 }
 
 
@@ -1415,6 +1418,15 @@ def _normalize_calibration_profile_audit_payload(payload: Any) -> Dict[str, Any]
     }
 
 
+def _normalize_phi_reward_payload(payload: Any, *, correlation_id: str | None) -> Dict[str, Any]:
+    event = PhiIntrinsicRewardV1.model_validate(payload)
+    return {
+        "correlation_id": str(correlation_id) if correlation_id else str(uuid.uuid4()),
+        "generated_at": event.generated_at,
+        "payload": event.model_dump(mode="json"),
+    }
+
+
 def _write_fallback(kind: str, correlation_id: str, payload: Any, error: str = None) -> None:
     sess = get_session()
     try:
@@ -2121,6 +2133,12 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                 write_ok = await _write(sql_model, None, normalized, {}, kind=env.kind)
             elif sql_model is CalibrationProfileAuditSQL:
                 normalized = _normalize_calibration_profile_audit_payload(data_to_process)
+                write_ok = await _write(sql_model, None, normalized, {}, kind=env.kind)
+            elif sql_model is PhiRewardSQL:
+                normalized = _normalize_phi_reward_payload(
+                    data_to_process,
+                    correlation_id=extra_sql_fields.get("correlation_id"),
+                )
                 write_ok = await _write(sql_model, None, normalized, {}, kind=env.kind)
             else:
                 write_ok = await _write(sql_model, schema_model, data_to_process, extra_sql_fields, kind=env.kind)

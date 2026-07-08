@@ -112,15 +112,26 @@ class Settings(BaseSettings):
 
     # --- Honest inner-state features (phi Plan 1) ---
     inner_features_enabled: bool = Field(True, alias="INNER_FEATURES_ENABLED")
-    inner_features_version: str = Field("seed-v1", alias="INNER_FEATURES_VERSION")
+    inner_features_version: str = Field("seed-v2", alias="INNER_FEATURES_VERSION")
     inner_features_scaler_window_sec: int = Field(900, alias="INNER_FEATURES_SCALER_WINDOW_SEC")
     inner_features_scaler_maxlen: int = Field(256, alias="INNER_FEATURES_SCALER_MAXLEN")
     channel_inner_features: str = Field("orion:self:inner_features", alias="CHANNEL_INNER_FEATURES")
     inner_features_corpus_path: str = Field("", alias="INNER_FEATURES_CORPUS_PATH")
     phi_degenerate_streak: int = Field(20, alias="PHI_DEGENERATE_STREAK")
-    # Encoder (Plan 2) — default-off placeholders for env parity only.
+    # Substrate runtime HTTP reads (Plan 2)
+    substrate_runtime_url: str = Field(
+        "http://orion-athena-substrate-runtime:8115",
+        alias="SUBSTRATE_RUNTIME_URL",
+    )
+    substrate_read_timeout_sec: float = Field(2.0, alias="SUBSTRATE_READ_TIMEOUT_SEC")
+    substrate_read_cache_sec: float = Field(2.0, alias="SUBSTRATE_READ_CACHE_SEC")
+    exec_trajectory_max_age_sec: int = Field(120, alias="EXEC_TRAJECTORY_MAX_AGE_SEC")
+    # Encoder (Plan 2) — default-off; when enabled, loads MLP from ORION_PHI_ENCODER_WEIGHTS.
     orion_phi_encoder_enabled: bool = Field(False, alias="ORION_PHI_ENCODER_ENABLED")
     orion_phi_encoder_weights: str = Field("", alias="ORION_PHI_ENCODER_WEIGHTS")
+    orion_phi_encoder_hidden_dim: int = Field(16, alias="PHI_ENCODER_HIDDEN_DIM")
+    orion_phi_encoder_latent_dim: int = Field(8, alias="PHI_ENCODER_LATENT_DIM")
+    channel_phi_reward: str = Field("orion:self:phi_reward", alias="CHANNEL_PHI_REWARD")
 
     # CoLA-derived novelty signal (Inverse Dynamics branch of orion-llama-cola-host).
     # Off by default: the host isn't in default deploy tooling yet, and calling an

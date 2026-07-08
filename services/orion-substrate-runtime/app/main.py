@@ -28,6 +28,8 @@ from .post_turn_closure_listener import (
     start_post_turn_closure_listener,
     stop_post_turn_closure_listener,
 )
+from orion.substrate.execution_loop.constants import EXECUTION_TRAJECTORY_PROJECTION_ID
+
 from .settings import get_settings
 from .store import GRAMMAR_CURSOR_REGISTRY
 from .worker import BiometricsSubstrateWorker
@@ -81,6 +83,14 @@ async def health() -> dict:
 @app.get("/grammar/truth")
 async def grammar_truth() -> dict:
     return build_substrate_grammar_truth(worker._store)
+
+
+@app.get("/projections/execution_trajectory")
+async def execution_trajectory() -> dict:
+    proj = worker._store.load_execution_trajectory(EXECUTION_TRAJECTORY_PROJECTION_ID)
+    if proj is None:
+        return {"ok": False, "reason": "no_projection"}
+    return {"ok": True, "projection": proj.model_dump(mode="json")}
 
 
 @app.post("/grammar/cursor/reset")

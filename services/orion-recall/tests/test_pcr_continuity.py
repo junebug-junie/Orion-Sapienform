@@ -104,3 +104,63 @@ def test_worker_uses_continuity_render_when_phase_continuity(monkeypatch):
     assert bundle.rendered == "ok"
     assert render_called[0]["profile"]["sql_since_minutes"] == 120
     assert render_called[0]["profile"]["render_budget_tokens"] == 96
+
+
+def test_worker_emits_eligible_belief_count_in_pcr_continuity(monkeypatch):
+    monkeypatch.setattr(worker.settings, "RECALL_PCR_ENABLED", True)
+    monkeypatch.setattr(worker.settings, "RECALL_CONTINUITY_SQL_MINUTES", 120)
+    monkeypatch.setattr(worker.settings, "RECALL_CONTINUITY_RENDER_BUDGET", 96)
+    monkeypatch.setattr(worker.settings, "RECALL_ENABLE_SQL_CHAT", True)
+    monkeypatch.setattr(worker.settings, "RECALL_ENABLE_SQL_TIMELINE", False)
+    monkeypatch.setattr(worker.settings, "RECALL_ENABLE_RDF", False)
+    monkeypatch.setattr(worker.settings, "RECALL_INTENT_ROUTING_ENABLED", False)
+
+    continuity_profile = {
+        "profile": "chat.continuity.v1",
+        "enable_query_expansion": False,
+        "enable_anchor_candidates": False,
+        "enable_sql_timeline": False,
+        "enable_sql_chat": True,
+        "sql_chat_top_k": 6,
+        "sql_since_minutes": 120,
+        "max_total_items": 6,
+        "render_budget_tokens": 96,
+        "render_lane": "continuity",
+    }
+    monkeypatch.setattr(worker, "get_profile", lambda _name: continuity_profile)
+    worker.set_recall_pg_pool(object())
+
+    async def _count_eligible(pool, *, floor=None):
+        return 4
+
+    monkeypatch.setattr(worker, "count_eligible_active", _count_eligible)
+
+    async def _fetch_pairs(**kwargs):
+        return []
+
+    async def _fetch_msgs(**kwargs):
+        return []
+
+    async def _anchor(**kwargs):
+        return [], {}
+
+    def _mock_render(**kwargs):
+        return MemoryBundleV1(rendered="ok", stats=MemoryBundleStatsV1()), []
+
+    monkeypatch.setattr(worker, "fetch_chat_history_pairs", _fetch_pairs)
+    monkeypatch.setattr(worker, "fetch_chat_messages", _fetch_msgs)
+    monkeypatch.setattr(worker, "_fetch_anchor_candidates", _anchor)
+    monkeypatch.setattr(worker, "render_continuity_bundle", _mock_render)
+
+    q = RecallQueryV1(
+        fragment="hey",
+        profile="chat.continuity.v1",
+        recall_phase="continuity",
+        session_id="sess-1",
+    )
+
+    import asyncio
+
+    _bundle, decision = asyncio.run(worker.process_recall(q, corr_id="corr-eligible-count", diagnostic=True))
+
+    assert decision.recall_debug["eligible_belief_count"] == 4

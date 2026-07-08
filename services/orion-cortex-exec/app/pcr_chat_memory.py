@@ -182,6 +182,8 @@ async def run_pcr_phase0_and_1(
         recall_debug=dict(recall_debug) if isinstance(recall_debug, dict) else {},
     )
     _apply_pcr_to_ctx(ctx, pcr)
+    if isinstance(recall_debug, dict) and "eligible_belief_count" in recall_debug:
+        ctx["eligible_belief_count"] = recall_debug["eligible_belief_count"]
     logger.info(
         "pcr_phase1_continuity corr_id=%s profile=%s items=%s digest_chars=%s",
         correlation_id,

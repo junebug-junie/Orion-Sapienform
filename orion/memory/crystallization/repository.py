@@ -8,6 +8,7 @@ from uuid import UUID
 
 import asyncpg
 
+from orion.memory.crystallization.recall_eligibility import eligible_for_recall
 from orion.memory.crystallization.schemas import (
     CrystallizationClaimV1,
     CrystallizationDynamicsV1,
@@ -401,6 +402,11 @@ async def list_crystallizations(
         claims, evidence, links = await _load_children(pool, str(row["crystallization_id"]))
         out.append(_row_to_crystallization(row, claims=claims, evidence=evidence, links=links))
     return out
+
+
+async def count_eligible_active(pool: asyncpg.Pool, *, floor: float | None = None) -> int:
+    rows = await list_crystallizations(pool, status="active", limit=500)
+    return sum(1 for r in rows if eligible_for_recall(r, floor=floor))
 
 
 async def insert_history(

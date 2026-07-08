@@ -64,19 +64,30 @@ def build_stance_react_context(
     *,
     mind_coloring: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    stance_inputs = (
+        dict(request.stance_inputs)
+        if isinstance(request.stance_inputs, dict)
+        else {"user_message": request.user_message}
+    )
+    surface_context = stance_inputs.get("surface_context")
+    metadata: dict[str, Any] = {
+        "correlation_id": request.correlation_id,
+        "session_id": request.session_id,
+        "llm_profile": request.llm_profile,
+        "mode": "brain",
+    }
+    if isinstance(surface_context, dict) and surface_context:
+        metadata["surface_context"] = surface_context
     context: dict[str, Any] = {
         "user_message": request.user_message,
-        "stance_inputs": {"user_message": request.user_message},
+        "stance_inputs": stance_inputs,
         "association": slim_association_for_prompt(request.association),
         "repair_bundle": slim_repair_bundle_for_prompt(request.repair_bundle),
         "coalition_projection": _coalition_projection(request),
-        "metadata": {
-            "correlation_id": request.correlation_id,
-            "session_id": request.session_id,
-            "llm_profile": request.llm_profile,
-            "mode": "brain",
-        },
+        "metadata": metadata,
     }
+    if isinstance(surface_context, dict) and surface_context:
+        context["surface_context"] = surface_context
     if mind_coloring is not None:
         context["mind_coloring"] = mind_coloring
     return context

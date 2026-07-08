@@ -44,7 +44,7 @@ The dispatcher tries unified first when `EMBODIMENT_SPEECH_UNIFIED_ENABLED=true`
 | Env | Default | Purpose |
 |-----|---------|---------|
 | `EMBODIMENT_SPEECH_UNIFIED_ENABLED` | `true` | Prefer the unified turn; `false` = quick-only legacy path |
-| `EMBODIMENT_HUB_CHAT_URL` | `http://orion-athena-hub:8080/api/chat` | Hub unified-turn endpoint (app-net) |
+| `EMBODIMENT_HUB_CHAT_URL` | `http://100.92.216.81:8080/api/chat` | Hub unified-turn endpoint. Hub is host-networked, so use the node's host-reachable (Tailscale) IP, not the Docker service name |
 | `EMBODIMENT_UNIFIED_TIMEOUT_SEC` | `120` | Unified turn HTTP timeout (sec) |
 | `EMBODIMENT_UNIFIED_SESSION_PREFIX` | `aitown` | Prefix for the unified `session_id` |
 
@@ -55,8 +55,8 @@ The AI Town engine (`convex/aiTown/conversation.ts` `Conversation.tick`) orients
 This service guarantees the `!pathfinding` precondition for Orion:
 
 - **Perception surfaces own state.** `WorldPerceptionV1` now carries Orion's own `facing` ({dx,dy}) and `pathfinding` (bool), read from the raw serialized player (`convex/aiTown/player.ts` `serialize()`: `facing`, optional `pathfinding`). When Orion is `participating`, `active_conversation.facing_partner` reports whether Orion's `facing` vector aligns (dot product ≥ 0.7) with the direction to the partner — `True`/`False`, or `None` when facing/positions are unknown.
-- **Worker clears the lingering path.** In `_engage_conversation`, when the active conversation is `participating` **and** `perception.pathfinding` is truthy, the worker issues **one** stop per conversation id — a `moveTo` to Orion's own current tile center (`floor(pos)+0.5`) — which replaces the old path so the engine's next `Conversation.tick` orients Orion. It is guarded by `_faced_conversations` (fires at most once per conversation) and does **not** fire when `pathfinding` is falsy, to avoid fighting the engine's own post-transition move / spamming inputs at the shared engine. Fail-open (logged, never crashes the loop).
-- **Observability.** The `~30s` `embodiment_heartbeat` INFO line includes `facing_partner=<True|False|None>`, and a one-shot `embodiment_face_partner_stop convo=<id> tile=(x,y)` line records each stop.
+- **Worker clears the lingering path.** In `_engage_conversation`, when the active conversation is `participating` **and** `perception.pathfinding` is truthy, the worker issues **one** stop per conversation id — a `moveTo` to Orion's own **exact current position** (a zero-length path the engine resolves to an immediate stop, with no micro-move that would keep `pathfinding` truthy) — so the engine's next `Conversation.tick` orients Orion. It is guarded by `_faced_conversations` (fires at most once per conversation) and does **not** fire when `pathfinding` is falsy, to avoid fighting the engine's own post-transition move / spamming inputs at the shared engine. Fail-open (logged, never crashes the loop).
+- **Observability.** The `~30s` `embodiment_heartbeat` INFO line includes `facing_partner=<True|False|None>`, and a one-shot `embodiment_face_partner_stop convo=<id> pos=(x,y)` line records each stop.
 
 **Group chat is N/A** — this engine's conversations are strictly 2-party, so there is no multi-party orientation case to handle.
 

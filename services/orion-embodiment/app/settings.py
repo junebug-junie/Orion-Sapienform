@@ -49,7 +49,10 @@ class Settings(BaseSettings):
     # so town utterances get the full cognition pass; fall back to the quick cortex
     # rail above on timeout/error. Set false to force the quick-only legacy behavior.
     speech_unified_enabled: bool = Field(True, alias="EMBODIMENT_SPEECH_UNIFIED_ENABLED")
-    hub_chat_url: str = Field("http://orion-athena-hub:8080/api/chat", alias="EMBODIMENT_HUB_CHAT_URL")
+    # The hub runs `network_mode: host`, so the Docker service DNS name does NOT resolve
+    # from this app-net container. Reach it at the node's host-reachable (Tailscale) IP,
+    # mirroring ORION_BUS_URL. Override per node if the hub lives elsewhere.
+    hub_chat_url: str = Field("http://100.92.216.81:8080/api/chat", alias="EMBODIMENT_HUB_CHAT_URL")
     unified_timeout_sec: float = Field(120.0, alias="EMBODIMENT_UNIFIED_TIMEOUT_SEC")
     unified_session_prefix: str = Field("aitown", alias="EMBODIMENT_UNIFIED_SESSION_PREFIX")
     memory_enabled: bool = Field(False, alias="EMBODIMENT_MEMORY_ENABLED")

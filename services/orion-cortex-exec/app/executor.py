@@ -4089,6 +4089,8 @@ async def call_step_services(
                     # - metacog mode: METACOG lane
                     llm_route = (
                         "quick"
+                        if step.verb_name in {"orion_voice_finalize", "harness_finalize_reflect"}
+                        else "quick"
                         if step.verb_name == "chat_general" and step.step_name == "synthesize_chat_stance_brief"
                         else "chat"
                         if step.verb_name == "chat_general" and step.step_name == "llm_chat_general"

@@ -107,6 +107,7 @@ class Settings(BaseSettings):
     llm_route_specialist_served_by: Optional[str] = Field(None, alias="LLM_ROUTE_SPECIALIST_SERVED_BY")
     llm_route_health_timeout_sec: float = Field(1.5, alias="LLM_ROUTE_HEALTH_TIMEOUT_SEC")
     llm_gateway_health_port: int = Field(8210, alias="LLM_GATEWAY_HEALTH_PORT")
+    llm_gateway_concurrent_handlers: bool = Field(True, alias="LLM_GATEWAY_CONCURRENT_HANDLERS")
     llm_gateway_anthropic_passthrough_enabled: bool = Field(
         True, alias="LLM_GATEWAY_ANTHROPIC_PASSTHROUGH_ENABLED"
     )

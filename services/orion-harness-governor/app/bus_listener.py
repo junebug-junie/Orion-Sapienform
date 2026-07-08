@@ -121,6 +121,7 @@ async def handle_harness_run_request(
         result_prefix=settings.channel_cortex_exec_result_prefix,
         source_name=settings.service_name,
         timeout_sec=settings.finalize_reflect_timeout_sec,
+        voice_finalize_timeout_sec=settings.voice_finalize_timeout_sec,
     )
     substrate = substrate_client or HarnessSubstrateClient(
         bus,
@@ -151,25 +152,43 @@ async def handle_harness_run_request(
     async def _substrate_client(molecule: Any) -> Any:
         return await substrate.finalize_appraisal(molecule, correlation_id=corr)
 
-    chain = await run_harness_finalize_chain(
-        correlation_id=corr,
-        draft_text=motor.draft_text,
-        draft_molecule=motor.draft_molecule,
-        thought=request.thought_event,
-        grammar_receipts=motor.grammar_receipts,
-        repair_overlay=repair_overlay,
-        user_message=request.user_message,
-        voice_contract=request.answer_contract,
-        cortex_client=cortex,
-        substrate_client=_substrate_client,
-        bus=bus,
-        # v1 shortcut (default-off via EMBODIMENT_D_FINALIZE_ENABLED): treat every
-        # finalized turn as relational and approach the default human interlocutor.
-        # TODO(embodiment): derive `relational` + interlocutor from turn context
-        # (request.thought_event / answer_contract) before enabling in a multi-human town.
-        embodiment_relational=True,
-        embodiment_interlocutor_ref=DEFAULT_FINALIZE_INTERLOCUTOR,
-    )
+    try:
+        chain = await run_harness_finalize_chain(
+            correlation_id=corr,
+            draft_text=motor.draft_text,
+            draft_molecule=motor.draft_molecule,
+            thought=request.thought_event,
+            grammar_receipts=motor.grammar_receipts,
+            repair_overlay=repair_overlay,
+            user_message=request.user_message,
+            voice_contract=request.answer_contract,
+            cortex_client=cortex,
+            substrate_client=_substrate_client,
+            bus=bus,
+            # v1 shortcut (default-off via EMBODIMENT_D_FINALIZE_ENABLED): treat every
+            # finalized turn as relational and approach the default human interlocutor.
+            # TODO(embodiment): derive `relational` + interlocutor from turn context
+            # (request.thought_event / answer_contract) before enabling in a multi-human town.
+            embodiment_relational=True,
+            embodiment_interlocutor_ref=DEFAULT_FINALIZE_INTERLOCUTOR,
+        )
+    except Exception as exc:
+        logger.error("harness finalize chain error corr=%s err=%s", corr, exc)
+        run = HarnessRunV1(
+            correlation_id=corr,
+            final_text=None,
+            draft_text=motor.draft_text,
+            finalize_ran=False,
+            step_count=motor.step_count,
+            exit_code=motor.exit_code,
+            compliance_verdict="failed",
+            grounding_status=str(exc),
+            grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
+            recall_debug=recall_debug,
+            memory_digest=memory_digest,
+        )
+        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
+        return run
 
     run = HarnessRunV1(
         correlation_id=corr,

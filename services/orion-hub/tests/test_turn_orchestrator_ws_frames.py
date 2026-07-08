@@ -29,8 +29,8 @@ os.environ.setdefault("CHANNEL_VOICE_TTS", "orion:voice:tts")
 os.environ.setdefault("CHANNEL_COLLAPSE_INTAKE", "orion:collapse:intake")
 os.environ.setdefault("CHANNEL_COLLAPSE_TRIAGE", "orion:collapse:triage")
 
-from orion.hub.turn_orchestrator import _success_frames, execute_unified_turn
-from orion.schemas.harness_finalize import HarnessRunV1
+from orion.hub.turn_orchestrator import _harness_error_frame, _success_frames, execute_unified_turn
+from orion.schemas.harness_finalize import HarnessRunV1, SubstrateFinalizeAppraisalV1
 from orion.schemas.thought import (
     HubAssociationBundleV1,
     StanceHarnessSliceV1,
@@ -316,6 +316,85 @@ async def test_turn_orchestrator_passes_empty_answer_contract_not_heuristic() ->
 def test_turn_orchestrator_source_has_no_heuristic_answer_contract() -> None:
     source = (REPO_ROOT / "orion/hub/turn_orchestrator.py").read_text(encoding="utf-8")
     assert "heuristic_answer_contract" not in source
+
+
+def test_harness_error_frame_finalize_includes_partial_draft() -> None:
+    run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text=None,
+        draft_text="motor draft before voice finalize failed",
+        substrate_appraisal=SubstrateFinalizeAppraisalV1(
+            correlation_id=_CORR_ID,
+            molecule_id="mol-1",
+            draft_hash="abc123",
+            surprise_level=0.2,
+            learning_refs=["learn-1"],
+        ),
+        finalize_ran=False,
+        step_count=2,
+        compliance_verdict="failed",
+        grounding_status="orion_voice_finalize_timeout",
+    )
+    frame = _harness_error_frame(run, correlation_id=_CORR_ID)
+
+    assert frame["type"] == "turn_error"
+    assert frame["phase"] == "finalize"
+    assert frame["partial_draft"] == "motor draft before voice finalize failed"
+    assert frame["finalize_ran"] is False
+    assert frame["error"] == "orion_voice_finalize_timeout"
+
+
+def test_harness_error_frame_voice_finalize_without_substrate_appraisal() -> None:
+    """Quick-lane 5b skip: finalize fails with motor draft only on the run artifact."""
+    run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text=None,
+        draft_text="Howdy, Juniper. The world feels full today.",
+        finalize_ran=False,
+        step_count=3,
+        compliance_verdict="failed",
+        grounding_status=(
+            "orion_voice_finalize exec failed: LLMGatewayService: RPC timeout "
+            "waiting on orion:exec:result:LLMGatewayService:abc"
+        ),
+    )
+    frame = _harness_error_frame(run, correlation_id=_CORR_ID)
+
+    assert frame["phase"] == "finalize"
+    assert frame["partial_draft"] == "Howdy, Juniper. The world feels full today."
+    assert "orion_voice_finalize" in frame["error"]
+
+
+@pytest.mark.asyncio
+async def test_turn_orchestrator_finalize_failure_surfaces_partial_draft() -> None:
+    failed_run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text=None,
+        draft_text="Howdy, Juniper. The world feels full today.",
+        finalize_ran=False,
+        step_count=3,
+        compliance_verdict="failed",
+        grounding_status=(
+            "orion_voice_finalize exec failed: LLMGatewayService: RPC timeout "
+            "waiting on orion:exec:result:LLMGatewayService:abc"
+        ),
+    )
+    bus = MagicMock()
+    patches = _hub_client_patches(thought=_thought(), harness_run=failed_run)
+    with patches[0], patches[1], patches[2]:
+        frames = await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="howdy, what's your take on the world?",
+            emit_observation_fn=lambda **_kwargs: None,
+        )
+
+    err = frames[-1]
+    assert err["type"] == "turn_error"
+    assert err["phase"] == "finalize"
+    assert err["partial_draft"] == "Howdy, Juniper. The world feels full today."
+    assert "orion_voice_finalize" in err["error"]
 
 
 def test_success_frames_final_includes_recall_when_present() -> None:

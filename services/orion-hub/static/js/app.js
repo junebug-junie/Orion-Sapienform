@@ -10456,6 +10456,16 @@ document.addEventListener("DOMContentLoaded", () => {
           if (d.type === 'turn_error') {
             const phase = d.phase ? ` (${d.phase})` : '';
             const detail = d.error || d.grounding_status || 'turn failed';
+            const partialDraft = typeof d.partial_draft === 'string' ? d.partial_draft.trim() : '';
+            if (partialDraft) {
+              appendMessage('Orion', partialDraft, 'text-yellow-200', {
+                correlationId: d.correlation_id,
+                mode: d.mode || 'orion',
+                turnErrorPhase: d.phase || null,
+                turnErrorDetail: detail,
+                partialDraft: true,
+              });
+            }
             appendMessage('System', `Turn error${phase}: ${detail}`, 'text-red-400');
             return;
           }

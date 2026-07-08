@@ -114,6 +114,47 @@ async def test_harness_run_artifact_published() -> None:
 
 
 @pytest.mark.asyncio
+async def test_harness_finalize_chain_failure_preserves_draft() -> None:
+    from app import bus_listener
+
+    thought = make_thought()
+    req = HarnessRunRequestV1(
+        correlation_id="c-finalize-fail",
+        thought_event=thought,
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+    )
+    motor = _motor_result(thought)
+
+    bus = AsyncMock()
+    with patch.object(
+        bus_listener,
+        "HarnessRunner",
+        return_value=AsyncMock(run=AsyncMock(return_value=motor)),
+    ), patch.object(
+        bus_listener,
+        "run_harness_finalize_chain",
+        AsyncMock(
+            side_effect=ValueError(
+                "orion_voice_finalize exec failed: LLMGatewayService: RPC timeout"
+            )
+        ),
+    ):
+        run = await bus_listener.handle_harness_run_request(
+            bus,
+            req,
+            reply_to="orion:harness:run:result:c-finalize-fail",
+        )
+
+    assert run.finalize_ran is False
+    assert run.final_text is None
+    assert run.draft_text == "internal draft"
+    assert run.step_count == 1
+    assert "orion_voice_finalize" in (run.grounding_status or "")
+
+
+@pytest.mark.asyncio
 async def test_harness_run_carries_recall_from_grounding_capsule() -> None:
     from app import bus_listener
 

@@ -1953,3 +1953,145 @@ def test_concept_induction_prompt_contract_contains_noise_suppression_guidance()
     prompt = (REPO_ROOT / "orion" / "cognition" / "prompts" / "concept_induction_journal_synthesize.j2").read_text(encoding="utf-8")
     assert "Ignore low-information artifacts" in prompt
     assert "Cross-subject pattern only when explicitly supported" in prompt
+
+
+def test_github_compactor_pass_writes_journal_and_supersedes_card(monkeypatch) -> None:
+    bus = DummyBus()
+    card_calls: dict = {}
+
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        req = kwargs["client_request"]
+        if req.verb == "skills.repo.github_recent_prs.v1":
+            payload = {
+                "available": True,
+                "repo": "acme/widgets",
+                "lookback_days": 1,
+                "merged_pr_count": 1,
+                "items": [
+                    {
+                        "number": 9,
+                        "title": "Add compactor",
+                        "body": "Compacts PR descriptions.",
+                        "merged_at": "2026-07-08T10:00:00Z",
+                        "touched_paths": ["services/orion-hub/app/main.py"],
+                        "inferred_services": ["orion-hub"],
+                        "url": "https://github.com/acme/widgets/pull/9",
+                    }
+                ],
+            }
+            return DummyVerbResult(payload={"result": {"status": "success", "final_text": json.dumps(payload)}})
+        if req.verb == "github_compactor_digest_v1":
+            digest = {
+                "card_summary": "Added GitHub compactor workflow.",
+                "journal_title": "Repo development — 2026-07-08",
+                "journal_body": "Merged #9 added GitHub compactor.",
+                "pr_refs": ["#9"],
+            }
+            ft = json.dumps({"mode": "manual", "title": digest["journal_title"], "body": digest["journal_body"]})
+            return DummyVerbResult(
+                payload={
+                    "result": {
+                        "status": "success",
+                        "final_text": ft,
+                        "metadata": {"github_compactor_digest": digest},
+                    }
+                }
+            )
+        raise AssertionError(f"unexpected verb {req.verb}")
+
+    async def _fake_persist_card(**kwargs):
+        card_calls.update(kwargs)
+        return "00000000-0000-0000-0000-000000000099"
+
+    monkeypatch.setattr(
+        "app.workflow_runtime.persist_github_compactor_memory_card",
+        _fake_persist_card,
+    )
+
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=bus,
+            source=ServiceRef(name="cortex-orch"),
+            req=_req("github_compactor_pass"),
+            correlation_id="00000000-0000-0000-0000-000000000099",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_fake_call_verb_runtime,
+        )
+    )
+
+    assert result.ok is True
+    assert result.metadata["workflow"]["workflow_id"] == "github_compactor_pass"
+    assert result.metadata["workflow"]["merged_pr_count"] == 1
+    assert card_calls.get("digest") is not None
+    assert any(ch == "orion:journal:write" for ch, _ in bus.published)
+
+
+def test_github_compactor_pass_quiet_day_skips_card_persist(monkeypatch) -> None:
+    bus = DummyBus()
+    card_called = {"n": 0}
+
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        req = kwargs["client_request"]
+        if req.verb == "skills.repo.github_recent_prs.v1":
+            payload = {
+                "available": True,
+                "repo": "acme/widgets",
+                "lookback_days": 1,
+                "merged_pr_count": 0,
+                "items": [],
+            }
+            return DummyVerbResult(payload={"result": {"status": "success", "final_text": json.dumps(payload)}})
+        raise AssertionError(f"unexpected verb {req.verb}")
+
+    async def _fake_persist_card(**kwargs):
+        card_called["n"] += 1
+        return "00000000-0000-0000-0000-000000000099"
+
+    monkeypatch.setattr(
+        "app.workflow_runtime.persist_github_compactor_memory_card",
+        _fake_persist_card,
+    )
+
+    result = asyncio.run(
+        execute_chat_workflow(
+            bus=bus,
+            source=ServiceRef(name="cortex-orch"),
+            req=_req("github_compactor_pass"),
+            correlation_id="00000000-0000-0000-0000-000000000100",
+            causality_chain=[],
+            trace={},
+            call_verb_runtime=_fake_call_verb_runtime,
+        )
+    )
+
+    assert result.ok is True
+    assert result.metadata["workflow"]["merged_pr_count"] == 0
+    assert card_called["n"] == 0
+    assert result.metadata["workflow"].get("card_id") is None
+    assert any(ch == "orion:journal:write" for ch, _ in bus.published)
+
+
+def test_github_compactor_pass_missing_github_config_fails(monkeypatch) -> None:
+    async def _fake_call_verb_runtime(*args, **kwargs):
+        req = kwargs["client_request"]
+        if req.verb == "skills.repo.github_recent_prs.v1":
+            payload = {"available": False, "reason": "github_repo_not_configured", "items": []}
+            return DummyVerbResult(
+                ok=False,
+                payload={"result": {"status": "unavailable", "final_text": json.dumps(payload)}},
+            )
+        raise AssertionError(f"unexpected verb {req.verb}")
+
+    with pytest.raises(Exception, match="github_repo_not_configured"):
+        asyncio.run(
+            execute_chat_workflow(
+                bus=DummyBus(),
+                source=ServiceRef(name="cortex-orch"),
+                req=_req("github_compactor_pass"),
+                correlation_id="00000000-0000-0000-0000-000000000101",
+                causality_chain=[],
+                trace={},
+                call_verb_runtime=_fake_call_verb_runtime,
+            )
+        )

@@ -8,6 +8,14 @@ from typing import Any, Dict, Iterable, List, Literal, Tuple
 from uuid import uuid4
 
 from orion.cognition.workflows import get_workflow_definition, workflow_registry_payload
+from orion.cognition.github_compactor.constants import DEFAULT_LOOKBACK_DAYS
+from orion.cognition.github_compactor.digest import (
+    assert_digest_within_budget,
+    build_quiet_day_digest,
+    parse_github_compactor_digest_json,
+    stable_github_compactor_journal_entry_id,
+)
+from orion.schemas.actions.github_compactor import GithubCompactorDigestV1
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.verbs import VerbResultV1
@@ -30,6 +38,7 @@ from orion.schemas.telemetry.spark import SparkStateSnapshotV1
 from orion.spark.concept_induction.profile_repository import build_concept_profile_repository
 from orion.spark.concept_induction.settings import DEFAULT_CONCEPT_STORE_PATH
 from .concept_profile_config import build_orch_concept_profile_settings
+from .github_compactor_memory import persist_github_compactor_memory_card
 from .settings import get_settings
 from orion.schemas.notify import NotificationRequest
 from orion.schemas.workflow_execution import WorkflowDispatchRequestV1, WorkflowExecutionPolicyV1
@@ -1874,6 +1883,260 @@ async def _execute_concept_induction_pass(
     )
 
 
+def _resolve_github_compactor_lookback_days(req: CortexClientRequest) -> int:
+    request = _workflow_request(req)
+    raw = request.get("lookback_days")
+    if raw is not None:
+        try:
+            return max(1, int(raw))
+        except (TypeError, ValueError):
+            pass
+    return DEFAULT_LOOKBACK_DAYS
+
+
+async def _run_github_compactor_digest(
+    *,
+    call_verb_runtime,
+    bus: OrionBusAsync,
+    source: ServiceRef,
+    correlation_id: str,
+    causality_chain: list | None,
+    trace: dict | None,
+    req: CortexClientRequest,
+    workflow_id: str,
+    fetch_payload: Dict[str, Any],
+) -> GithubCompactorDigestV1:
+    synth_req = req.model_copy(deep=True)
+    synth_req.mode = "brain"
+    synth_req.route_intent = "none"
+    synth_req.verb = "github_compactor_digest_v1"
+    synth_req.packs = []
+    synth_req.context.messages = []
+    synth_req.context.raw_user_text = "Compact merged PR activity into repo development digest."
+    synth_req.context.user_message = synth_req.context.raw_user_text
+    synth_req.context.metadata = dict(synth_req.context.metadata or {})
+    synth_req.context.metadata["workflow_subverb"] = "github_compactor_digest_v1"
+    synth_req.context.metadata["workflow_id"] = workflow_id
+    synth_req.context.metadata["github_compactor_input"] = fetch_payload
+    synth_req.context.metadata.update(
+        _workflow_execution_envelope(
+            req=req,
+            correlation_id=correlation_id,
+            workflow_id=workflow_id,
+            workflow_subverb="github_compactor_digest_v1",
+        )
+    )
+    synth_req.recall.enabled = False
+    synth_req.recall.required = False
+    synth_req.recall.max_items = 0
+    synth_req.options = dict(synth_req.options or {})
+    synth_req.options.update(
+        {
+            "workflow_execution": True,
+            "response_format": {"type": "json_object"},
+            "return_json": True,
+            "reasoning": {"effort": "none"},
+        }
+    )
+    verb_result = await call_verb_runtime(
+        bus,
+        source=source,
+        client_request=synth_req,
+        correlation_id=correlation_id,
+        causality_chain=causality_chain,
+        trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
+        timeout_sec=float((synth_req.options or {}).get("timeout_sec", 120.0)),
+    )
+    payload = _extract_result_payload(verb_result)
+    result_metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    digest_raw = result_metadata.get("github_compactor_digest")
+    if isinstance(digest_raw, dict):
+        digest = GithubCompactorDigestV1.model_validate(digest_raw)
+    else:
+        digest = parse_github_compactor_digest_json(str(payload.get("final_text") or ""))
+    try:
+        assert_digest_within_budget(digest)
+    except ValueError as exc:
+        raise WorkflowExecutionError(str(exc)) from exc
+    return digest
+
+
+async def _execute_github_compactor_pass(
+    *,
+    bus: OrionBusAsync,
+    source: ServiceRef,
+    correlation_id: str,
+    causality_chain: list | None,
+    trace: dict | None,
+    req: CortexClientRequest,
+    call_verb_runtime,
+) -> CortexClientResult:
+    workflow_id = "github_compactor_pass"
+    lookback_days = _resolve_github_compactor_lookback_days(req)
+    window_label = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    skill_args = {"lookback_days": lookback_days}
+    fetch_req = CortexClientRequest(
+        mode="brain",
+        route_intent="none",
+        verb="skills.repo.github_recent_prs.v1",
+        packs=[],
+        options={
+            "source": "cortex-orch-workflow",
+            "policy_dispatch_only": True,
+            "workflow_execution": True,
+            "workflow_id": workflow_id,
+        },
+        recall=RecallDirective(enabled=False, required=False, profile=None),
+        context=CortexClientContext(
+            messages=[],
+            raw_user_text=req.context.raw_user_text or req.context.user_message or "GitHub compactor pass",
+            user_message=req.context.raw_user_text or req.context.user_message,
+            session_id=req.context.session_id or f"github-compactor:{correlation_id}",
+            user_id=req.context.user_id,
+            trace_id=req.context.trace_id or correlation_id,
+            metadata={
+                **(req.context.metadata if isinstance(req.context.metadata, dict) else {}),
+                "skill_args": skill_args,
+                "workflow_subverb": "skills.repo.github_recent_prs.v1",
+                "workflow_id": workflow_id,
+            },
+        ),
+    )
+    fetch_req.context.metadata.update(
+        _workflow_execution_envelope(
+            req=fetch_req,
+            correlation_id=correlation_id,
+            workflow_id=workflow_id,
+            workflow_subverb="skills.repo.github_recent_prs.v1",
+        )
+    )
+    fetch_result = await call_verb_runtime(
+        bus,
+        source=source,
+        client_request=fetch_req,
+        correlation_id=f"{correlation_id}:github_fetch",
+        causality_chain=causality_chain,
+        trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
+        timeout_sec=float((fetch_req.options or {}).get("timeout_sec", 120.0)),
+    )
+    fetch_payload = _parse_json_text(_extract_result_payload(fetch_result).get("final_text"))
+    if not isinstance(fetch_payload, dict):
+        raise WorkflowExecutionError("github_compactor_fetch_empty_payload")
+    if not fetch_payload.get("available"):
+        raise WorkflowExecutionError("github_repo_not_configured")
+
+    repo = str(fetch_payload.get("repo") or "unknown repo").strip()
+    merged_pr_count = int(fetch_payload.get("merged_pr_count") or 0)
+    card_id: str | None = None
+
+    if merged_pr_count == 0:
+        digest = build_quiet_day_digest(repo=repo, window_label=window_label)
+    else:
+        digest = await _run_github_compactor_digest(
+            call_verb_runtime=call_verb_runtime,
+            bus=bus,
+            source=source,
+            correlation_id=correlation_id,
+            causality_chain=causality_chain,
+            trace=trace,
+            req=req,
+            workflow_id=workflow_id,
+            fetch_payload=fetch_payload,
+        )
+        persisted_card_id = await persist_github_compactor_memory_card(
+            digest=digest,
+            repo=repo,
+            window_label=window_label,
+            merged_pr_count=merged_pr_count,
+        )
+        card_id = str(persisted_card_id) if persisted_card_id is not None else None
+
+    draft = JournalEntryDraftV1(
+        mode="digest",
+        title=digest.journal_title,
+        body=digest.journal_body,
+    )
+    trigger = build_manual_trigger(
+        summary=f"GitHub compactor digest for {window_label}",
+        source_ref=f"github_compactor_pass:{window_label}:{repo}",
+    )
+    entry_id = stable_github_compactor_journal_entry_id(
+        workflow_id=workflow_id,
+        calendar_date=window_label,
+        repo=repo,
+    )
+    write = build_write_payload(
+        draft,
+        trigger=trigger,
+        correlation_id=correlation_id,
+        author=req.context.user_id or "orion",
+        entry_id=entry_id,
+    )
+    await _publish_journal_entry_write_or_fail(
+        bus=bus,
+        source=source,
+        correlation_id=correlation_id,
+        causality_chain=causality_chain,
+        trace=trace,
+        workflow_id=workflow_id,
+        write=write,
+    )
+
+    persisted: List[str] = [f"journal.entry.write.v1:{write.entry_id}"]
+    if card_id:
+        persisted.insert(0, f"memory_card:{card_id}")
+
+    if merged_pr_count == 0:
+        main_result = (
+            f"No merged PRs for {repo} in the last {lookback_days} day(s). "
+            f"Journal entry {write.entry_id} recorded; repo snapshot card unchanged."
+        )
+    else:
+        main_result = (
+            f"Compacted {merged_pr_count} merged PR(s) for {repo}. "
+            f"Journal entry {write.entry_id}."
+        )
+        if card_id:
+            main_result = f"{main_result} Memory card {card_id}."
+
+    metadata = _workflow_metadata_base(request=_workflow_request(req), status="completed")
+    metadata["workflow"] = {
+        "workflow_id": workflow_id,
+        "display_name": "GitHub Compactor",
+        "status": "completed",
+        "executed": True,
+        "subverb": "github_compactor_digest_v1" if merged_pr_count > 0 else "skills.repo.github_recent_prs.v1",
+        "persisted": persisted,
+        "scheduled": [],
+        "main_result": main_result,
+        "merged_pr_count": merged_pr_count,
+        "lookback_days": lookback_days,
+        "repo": repo,
+        "window_label": window_label,
+        "card_id": card_id,
+        "card_summary_preview": digest.card_summary[:200],
+        "journal_entry": write.model_dump(mode="json"),
+    }
+    return CortexClientResult(
+        ok=True,
+        mode="brain",
+        verb=workflow_id,
+        status="success",
+        final_text=_workflow_summary_text(
+            title="GitHub Compactor",
+            status="completed",
+            main_result=main_result,
+            persisted=persisted,
+        ),
+        memory_used=False,
+        recall_debug={},
+        steps=[],
+        error=None,
+        correlation_id=correlation_id,
+        metadata=metadata,
+    )
+
+
 async def execute_chat_workflow(
     *,
     bus: OrionBusAsync,
@@ -1953,6 +2216,16 @@ async def execute_chat_workflow(
             )
         elif workflow_id == "concept_induction_pass":
             result = await _execute_concept_induction_pass(
+                bus=bus,
+                source=source,
+                correlation_id=correlation_id,
+                causality_chain=causality_chain,
+                trace=trace,
+                req=req,
+                call_verb_runtime=call_verb_runtime,
+            )
+        elif workflow_id == "github_compactor_pass":
+            result = await _execute_github_compactor_pass(
                 bus=bus,
                 source=source,
                 correlation_id=correlation_id,

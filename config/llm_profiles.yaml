@@ -217,7 +217,7 @@ profiles:
       ctx_size: 16384
       n_gpu_layers: 99
       threads: 8
-      n_parallel: 1
+      n_parallel: 4
       batch_size: 512
 
       reasoning: "off"
@@ -229,7 +229,11 @@ profiles:
       min_p: 0.0
       presence_penalty: 0.20
 
-      n_predict: 4096
+      # 4 parallel slots share ctx_size: 16384 -> 4096 tokens per slot.
+      # Cap generation so a single structured-JSON metacog reply cannot overflow
+      # its slot (prompt + n_predict must fit in 4096). Appraisal replies are
+      # short structured JSON (~200 tokens observed), so 1024 is generous.
+      n_predict: 1024
 
       no_context_shift: true
 
@@ -238,7 +242,12 @@ profiles:
       - Q5_K_M (~5.9GB weights): best quality/size tradeoff that still leaves ~6GB for 16k KV + overhead on 16GB.
         Q4_K_M is not the ceiling here; Q6_K (~6.7GB) also fits but gains are marginal for JSON extraction vs latency.
         Q8_0 (~8.7GB) fits but leaves less KV headroom if ctx grows.
-      - n_parallel=1 -> full 16k ctx per request (not 4k split across slots).
+      - n_parallel=4 -> 4 concurrent slots, ctx_size 16384 split as 4x4096 per slot
+        (llama.cpp --ctx-size is TOTAL across slots). n_predict capped to 1024 so a
+        single reply cannot overflow a 4k slot. Set n_parallel=1 + n_predict>=4096
+        only if you need full 16k single-lane context per request instead of throughput.
+      - gpu.max_concurrent_requests is documentation only; --parallel comes from
+        llamacpp.n_parallel (see services/orion-llamacpp-host/app/main.py).
       - Thinking off via llamacpp.reasoning: off (--reasoning off); do not use deprecated enable_thinking kwargs.
       - Lower temperature + presence_penalty mirror qwen3-30b-a3b-instruct-2507-q5km-atlas-metacog-16k tuning.
       - Set ATLAS_METACOG_PROFILE_NAME to this key on atlas-metacog worker.

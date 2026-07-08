@@ -650,7 +650,7 @@ profiles:
       n_gpu_layers: 99
       threads: 16
       n_parallel: 1
-      batch_size: 1024
+      batch_size: 3000
 
       chat_template_kwargs:
         enable_thinking: true

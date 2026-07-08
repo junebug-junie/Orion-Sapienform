@@ -145,6 +145,8 @@ def main() -> int:
                 "4",
                 "--min-rows",
                 "100",
+                "--min-hours",
+                "1.0",
                 "--epochs",
                 "25",
             ],

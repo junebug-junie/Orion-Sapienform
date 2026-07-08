@@ -58,8 +58,10 @@ ARCHITECTURE = "mlp_shallow_v1"
 PROMOTE_FIXTURE = REPO_ROOT / "fixtures" / "phi_encoder_promote_gate.jsonl"
 PROMOTE_MIN_RECON_RATIO = 2.0
 
-DEFAULT_MIN_ROWS = 100
-DEFAULT_MIN_HOURS = 1.0
+# Spec defaults (docs/superpowers/specs/2026-07-08-phi-encoder-plan2-design.md).
+# Tests override with --min-rows / --min-hours for synthetic corpora.
+DEFAULT_MIN_ROWS = 500
+DEFAULT_MIN_HOURS = 4.0
 DEFAULT_VARIANCE_FRACTION = 0.8
 DEFAULT_VARIANCE_EPS = 1e-6
 DEFAULT_HIDDEN_DIM = 16

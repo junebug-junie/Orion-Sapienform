@@ -232,7 +232,11 @@ def build_inner_state_features(
         )
     )
 
-    if trajectory_projection is not None:
+    # seed-v2 always emits the four cognitive slots so encoder/corpus dims stay
+    # stable even when trajectory HTTP fails (zeros + execution_trajectory.none).
+    # seed-v1 and other versions only append when a projection was provided.
+    include_cognitive = features_version.startswith("seed-v2") or trajectory_projection is not None
+    if include_cognitive:
         gen_for_traj = getattr(ss, "generated_at", None) or datetime.now(timezone.utc)
         for feat in cognitive_features_from_trajectory(
             trajectory_projection,

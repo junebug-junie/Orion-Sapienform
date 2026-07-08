@@ -59,7 +59,42 @@ class PhiEncoderRuntime:
         if manifest.features_version != expected_features_version:
             return None
         arrays = np.load(weights_path)
+        if not cls._arrays_match_manifest(manifest, arrays):
+            return None
         return cls(manifest=manifest, arrays=arrays)
+
+    @staticmethod
+    def _arrays_match_manifest(
+        manifest: PhiEncoderManifestV1,
+        arrays: Mapping[str, np.ndarray],
+    ) -> bool:
+        d_in = len(manifest.input_features)
+        h = int(manifest.hidden_dim)
+        d_lat = int(manifest.latent_dim)
+        required = ("W1", "b1", "W2", "b2", "W3", "b3", "w_phi", "b_phi")
+        try:
+            if any(key not in arrays for key in required):
+                return False
+            W1 = np.asarray(arrays["W1"], dtype=np.float64)
+            b1 = np.asarray(arrays["b1"], dtype=np.float64)
+            W2 = np.asarray(arrays["W2"], dtype=np.float64)
+            b2 = np.asarray(arrays["b2"], dtype=np.float64)
+            W3 = np.asarray(arrays["W3"], dtype=np.float64)
+            b3 = np.asarray(arrays["b3"], dtype=np.float64)
+            w_phi = np.asarray(arrays["w_phi"], dtype=np.float64).reshape(-1)
+            b_phi = np.asarray(arrays["b_phi"]).reshape(())
+            return (
+                W1.shape == (d_in, h)
+                and b1.shape == (h,)
+                and W2.shape == (h, d_lat)
+                and b2.shape == (d_lat,)
+                and W3.shape == (d_lat, d_in)
+                and b3.shape == (d_in,)
+                and w_phi.shape == (d_lat,)
+                and b_phi.shape == ()
+            )
+        except (TypeError, ValueError, KeyError):
+            return False
 
     def feature_vector_from_inner(self, inner: InnerStateFeaturesV1) -> np.ndarray:
         by_name = {f.name: f for f in inner.features}

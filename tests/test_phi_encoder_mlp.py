@@ -93,6 +93,25 @@ def test_manifest_version_mismatch_returns_none(tmp_path: Path) -> None:
     assert PhiEncoderRuntime.load(tmp_path, expected_features_version="seed-v2") is None
 
 
+def test_manifest_weight_shape_mismatch_returns_none(tmp_path: Path) -> None:
+    feats = ["coherence", "overall_intensity"]
+    manifest = _tiny_manifest(feats)
+    (tmp_path / "manifest.json").write_text(manifest.model_dump_json())
+    # Wrong W1 shape vs hidden_dim/latent_dim in manifest.
+    np.savez(
+        tmp_path / "weights.npz",
+        W1=np.zeros((2, 2)),
+        b1=np.zeros(2),
+        W2=np.zeros((2, 2)),
+        b2=np.zeros(2),
+        W3=np.zeros((2, 2)),
+        b3=np.zeros(2),
+        w_phi=np.array([0.1, 0.2]),
+        b_phi=np.array(0.0),
+    )
+    assert PhiEncoderRuntime.load(tmp_path, expected_features_version="seed-v2") is None
+
+
 def test_feature_vector_from_inner_orders_manifest_features(tmp_path: Path) -> None:
     feats = ["overall_intensity", "coherence"]
     manifest = _tiny_manifest(feats)

@@ -55,6 +55,7 @@ def _self_state_payload() -> dict:
 
 
 def _mock_healthy_substrate_reads(monkeypatch) -> None:
+    monkeypatch.setattr(worker, "_SUBSTRATE_CACHE", None, raising=False)
     monkeypatch.setattr(
         worker,
         "fetch_grammar_truth",
@@ -222,6 +223,7 @@ async def test_handle_trace_ws_phi_uses_honest_headline(monkeypatch, tmp_path) -
 
 @pytest.mark.asyncio
 async def test_handle_self_state_grammar_truth_freeze(monkeypatch) -> None:
+    monkeypatch.setattr(worker, "_SUBSTRATE_CACHE", None, raising=False)
     monkeypatch.setattr(
         worker,
         "fetch_grammar_truth",
@@ -265,6 +267,7 @@ async def test_handle_self_state_grammar_truth_freeze(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_handle_self_state_includes_cognitive_features(monkeypatch) -> None:
     now = _NOW
+    monkeypatch.setattr(worker, "_SUBSTRATE_CACHE", None, raising=False)
     monkeypatch.setattr(
         worker,
         "fetch_grammar_truth",

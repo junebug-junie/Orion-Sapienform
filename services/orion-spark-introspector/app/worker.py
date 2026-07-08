@@ -47,6 +47,9 @@ from .inner_state import (
 from .inner_state_sink import InnerStateCorpusSink
 from .phi_encoder import PhiEncoderRuntime
 from .substrate_reads import (
+    ExecutionTrajectorySnapshot,
+    GrammarTruthSnapshot,
+    SubstrateReadCache,
     cognitive_lane_dark,
     fetch_execution_trajectory,
     fetch_grammar_truth,
@@ -531,6 +534,7 @@ def _cola_http_client() -> httpx.AsyncClient:
 
 
 _SUBSTRATE_HTTP_CLIENT: Optional[httpx.AsyncClient] = None
+_SUBSTRATE_CACHE: SubstrateReadCache | None = None
 
 
 def _substrate_http_client() -> httpx.AsyncClient:
@@ -538,6 +542,59 @@ def _substrate_http_client() -> httpx.AsyncClient:
     if _SUBSTRATE_HTTP_CLIENT is None or _SUBSTRATE_HTTP_CLIENT.is_closed:
         _SUBSTRATE_HTTP_CLIENT = httpx.AsyncClient(timeout=float(settings.substrate_read_timeout_sec))
     return _SUBSTRATE_HTTP_CLIENT
+
+
+def _substrate_read_cache() -> SubstrateReadCache:
+    global _SUBSTRATE_CACHE
+    ttl = float(settings.substrate_read_cache_sec)
+    if _SUBSTRATE_CACHE is None or abs(_SUBSTRATE_CACHE._ttl_sec - ttl) > 1e-9:
+        _SUBSTRATE_CACHE = SubstrateReadCache(ttl_sec=ttl)
+    return _SUBSTRATE_CACHE
+
+
+async def _fetch_substrate_grammar_truth():
+    cache = _substrate_read_cache()
+    cached = cache.get_grammar()
+    if cached is not None:
+        return GrammarTruthSnapshot(
+            degraded=bool(cached.get("degraded")),
+            degraded_reasons=list(cached.get("degraded_reasons") or []),
+            enabled_reducers={
+                str(k): bool(v) for k, v in (cached.get("enabled_reducers") or {}).items()
+            },
+            reducer_health_by_name=dict(cached.get("reducer_health_by_name") or {}),
+        )
+    substrate_base = settings.substrate_runtime_url.rstrip("/")
+    gt = await fetch_grammar_truth(
+        _substrate_http_client(),
+        f"{substrate_base}/grammar/truth",
+    )
+    cache.put_grammar(
+        {
+            "degraded": gt.degraded,
+            "degraded_reasons": list(gt.degraded_reasons),
+            "enabled_reducers": dict(gt.enabled_reducers),
+            "reducer_health_by_name": dict(gt.reducer_health_by_name),
+        }
+    )
+    return gt
+
+
+async def _fetch_substrate_execution_trajectory():
+    cache = _substrate_read_cache()
+    cached = cache.get_trajectory()
+    if cached is not None:
+        projection = cached.get("projection")
+        if projection is not None and not isinstance(projection, dict):
+            projection = None
+        return ExecutionTrajectorySnapshot(ok=bool(cached.get("ok")), projection=projection)
+    substrate_base = settings.substrate_runtime_url.rstrip("/")
+    traj = await fetch_execution_trajectory(
+        _substrate_http_client(),
+        f"{substrate_base}/projections/execution_trajectory",
+    )
+    cache.put_trajectory({"ok": traj.ok, "projection": traj.projection})
+    return traj
 
 
 async def _fetch_cola_understanding(text: str, *, doc_id: str) -> Optional[np.ndarray]:
@@ -2313,15 +2370,8 @@ async def handle_self_state(env: BaseEnvelope) -> None:
 
     global _INNER_PREV_FELT, _INNER_PREV_HEADLINE, _INNER_DEGENERATE_STREAK, _INNER_LAST_HEADLINE
     if settings.inner_features_enabled:
-        substrate_base = settings.substrate_runtime_url.rstrip("/")
-        gt = await fetch_grammar_truth(
-            _substrate_http_client(),
-            f"{substrate_base}/grammar/truth",
-        )
-        traj = await fetch_execution_trajectory(
-            _substrate_http_client(),
-            f"{substrate_base}/projections/execution_trajectory",
-        )
+        gt = await _fetch_substrate_grammar_truth()
+        traj = await _fetch_substrate_execution_trajectory()
         grammar_degraded = gt.degraded or cognitive_lane_dark(gt)
         projection = traj.projection if traj.ok else None
 

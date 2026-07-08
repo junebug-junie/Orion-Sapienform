@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 import app.worker as worker
-from app.inner_state import FELT_DIMENSIONS
+from app.inner_state import COGNITIVE_FEATURE_NAMES, FELT_DIMENSIONS
 from app.substrate_reads import ExecutionTrajectorySnapshot, GrammarTruthSnapshot
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.telemetry.phi_encoder import (
@@ -24,7 +24,8 @@ from test_inner_state_emit import (
 
 
 def _felt_input_features() -> list[str]:
-    return list(FELT_DIMENSIONS) + ["overall_intensity"]
+    # seed-v2 always emits cognitive slots (zeroed when trajectory dark).
+    return list(FELT_DIMENSIONS) + ["overall_intensity"] + list(COGNITIVE_FEATURE_NAMES)
 
 
 def _write_tiny_encoder(tmp_path) -> None:
@@ -74,6 +75,7 @@ def _reset_inner_state(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(worker, "_PHI_ENCODER", None, raising=False)
     monkeypatch.setattr(worker, "_PHI_PREV_PHI", None, raising=False)
     monkeypatch.setattr(worker, "_PHI_PREV_RECON", None, raising=False)
+    monkeypatch.setattr(worker, "_SUBSTRATE_CACHE", None, raising=False)
 
 
 def _envelope() -> BaseEnvelope:
@@ -133,6 +135,7 @@ async def test_phi_reward_suppressed_when_frozen(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(worker, "_pub_bus", _Bus(), raising=False)
     monkeypatch.setattr(worker.manager, "broadcast", AsyncMock(), raising=False)
     _reset_inner_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(worker, "_SUBSTRATE_CACHE", None, raising=False)
     monkeypatch.setattr(
         worker,
         "fetch_grammar_truth",

@@ -126,7 +126,7 @@ class Settings(BaseSettings):
     substrate_read_timeout_sec: float = Field(2.0, alias="SUBSTRATE_READ_TIMEOUT_SEC")
     substrate_read_cache_sec: float = Field(2.0, alias="SUBSTRATE_READ_CACHE_SEC")
     exec_trajectory_max_age_sec: int = Field(120, alias="EXEC_TRAJECTORY_MAX_AGE_SEC")
-    # Encoder (Plan 2) — default-off placeholders for env parity only.
+    # Encoder (Plan 2) — default-off; when enabled, loads MLP from ORION_PHI_ENCODER_WEIGHTS.
     orion_phi_encoder_enabled: bool = Field(False, alias="ORION_PHI_ENCODER_ENABLED")
     orion_phi_encoder_weights: str = Field("", alias="ORION_PHI_ENCODER_WEIGHTS")
     orion_phi_encoder_hidden_dim: int = Field(16, alias="PHI_ENCODER_HIDDEN_DIM")

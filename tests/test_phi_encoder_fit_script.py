@@ -119,6 +119,8 @@ def test_fit_trains_on_synthetic_corpus(tmp_path: Path) -> None:
         "4",
         "--min-rows",
         "100",
+        "--min-hours",
+        "1.0",
         "--epochs",
         "30",
     )
@@ -150,6 +152,8 @@ def test_eval_only_runs_promote_gate(tmp_path: Path) -> None:
         "4",
         "--min-rows",
         "100",
+        "--min-hours",
+        "1.0",
         "--epochs",
         "40",
     )
@@ -175,6 +179,8 @@ def test_promote_symlinks_active(tmp_path: Path) -> None:
         "4",
         "--min-rows",
         "100",
+        "--min-hours",
+        "1.0",
         "--epochs",
         "20",
     )

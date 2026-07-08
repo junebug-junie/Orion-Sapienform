@@ -30,6 +30,26 @@ from .settings import settings
 
 logger = logging.getLogger("orion-thought.bus")
 
+# Poll get_message with a 1s timeout; after this many idle polls verify Redis still
+# lists us as a subscriber. A silent pubsub disconnect leaves health checks green
+# but PUBSUB NUMSUB returns 0 — hub RPC then hangs until timeout and the message
+# is lost (pubsub is not durable).
+_PUBSUB_IDLE_POLLS_BEFORE_HEALTH = 30
+
+
+async def _thought_channel_subscribers(bus: OrionBusAsync, channel: str) -> int:
+    """Return subscriber count for channel, or -1 when the probe itself fails."""
+    try:
+        pairs = await bus.redis.pubsub_numsub(channel)
+    except Exception as exc:  # noqa: BLE001 — probe must not take down the worker
+        logger.warning("pubsub health probe failed channel=%s err=%s", channel, exc)
+        return -1
+    for name, count in pairs:
+        key = name.decode() if isinstance(name, bytes) else str(name)
+        if key == channel:
+            return int(count)
+    return 0
+
 
 def _source() -> ServiceRef:
     return ServiceRef(
@@ -252,34 +272,73 @@ async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
         logger.info("Bus disabled; worker not started")
         return
 
-    bus = OrionBusAsync(url=settings.orion_bus_url)
     channel = settings.channel_thought_request
-    await bus.connect()
-    logger.info("subscribed channel=%s", channel)
+    backoff_sec = 1.0
 
-    try:
-        async with bus.subscribe(channel) as pubsub:
-            while True:
-                if stop_event is not None and stop_event.is_set():
-                    break
-                try:
-                    msg = await asyncio.wait_for(
-                        pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                        timeout=1.2,
-                    )
-                except asyncio.TimeoutError:
-                    continue
-                if not msg or msg.get("type") not in ("message", "pmessage"):
-                    continue
-                try:
-                    await _handle_bus_message(bus, msg)
-                except Exception:
-                    logger.exception("unhandled bus worker error")
-    except asyncio.CancelledError:
-        raise
-    finally:
-        with suppress(Exception):
-            await bus.close()
+    while True:
+        if stop_event is not None and stop_event.is_set():
+            return
+
+        bus = OrionBusAsync(url=settings.orion_bus_url)
+        reconnect = False
+        idle_polls = 0
+        try:
+            await bus.connect()
+            logger.info("subscribed channel=%s", channel)
+            async with bus.subscribe(channel) as pubsub:
+                backoff_sec = 1.0
+                while True:
+                    if stop_event is not None and stop_event.is_set():
+                        return
+                    try:
+                        msg = await asyncio.wait_for(
+                            pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
+                            timeout=1.2,
+                        )
+                    except asyncio.TimeoutError:
+                        idle_polls += 1
+                        if idle_polls >= _PUBSUB_IDLE_POLLS_BEFORE_HEALTH:
+                            idle_polls = 0
+                            subs = await _thought_channel_subscribers(bus, channel)
+                            if subs == 0:
+                                logger.warning(
+                                    "pubsub subscription missing channel=%s; reconnecting",
+                                    channel,
+                                )
+                                reconnect = True
+                                break
+                        continue
+                    except (ConnectionError, OSError) as exc:
+                        logger.warning(
+                            "pubsub read failed channel=%s err=%s; reconnecting",
+                            channel,
+                            exc,
+                        )
+                        reconnect = True
+                        break
+
+                    if not msg or msg.get("type") not in ("message", "pmessage"):
+                        continue
+                    idle_polls = 0
+                    try:
+                        await _handle_bus_message(bus, msg)
+                    except Exception:
+                        logger.exception("unhandled bus worker error")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("bus worker disconnect channel=%s", channel)
+            reconnect = True
+        finally:
+            with suppress(Exception):
+                await bus.close()
+
+        if stop_event is not None and stop_event.is_set():
+            return
+        if not reconnect:
+            return
+        await asyncio.sleep(backoff_sec)
+        backoff_sec = min(backoff_sec * 2, 30.0)
 
 
 async def _handle_bus_message(bus: OrionBusAsync, raw_msg: dict[str, Any]) -> None:

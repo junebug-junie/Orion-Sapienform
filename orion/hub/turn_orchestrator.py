@@ -86,8 +86,16 @@ def _harness_error_frame(run: HarnessRunV1, *, correlation_id: str) -> dict[str,
         "correlation_id": correlation_id,
         "finalize_ran": bool(run.finalize_ran),
     }
+    if run.grounding_status:
+        base["error"] = run.grounding_status
     if run.draft_text and run.substrate_appraisal is None and not _finalize_phase_error(run):
-        base["phase"] = "substrate_appraisal"
+        base["phase"] = "harness" if (run.compliance_verdict or "").strip().lower() in {
+            "partial",
+            "failed",
+        } else "substrate_appraisal"
+        partial = _partial_draft_from_run(run)
+        if partial:
+            base["partial_draft"] = partial
         return base
     if _finalize_phase_error(run) or (
         run.substrate_appraisal is not None and (run.reflection is None or not run.final_text)

@@ -244,3 +244,101 @@ def test_variance_gate_seed_v3_needs_nine_of_eleven() -> None:
     assert need2 == 9
     assert got2 == 8
     assert ok2 is False
+
+
+SEEDV4_NAMES = [
+    "agency_readiness",
+    "execution_pressure",
+    "reasoning_pressure",
+    "overall_intensity",
+    "recall_gate_fired",
+    "reasoning_present",
+    "execution_load",
+    "reasoning_load",
+]
+
+
+def test_variance_gate_seedv4_needs_six_when_both_reasoning_dims_dead() -> None:
+    from scripts.fit_phi_encoder import _variance_gate
+
+    rng = np.random.default_rng(1)
+    matrix = np.zeros((50, 8), dtype=np.float64)
+    # Live: all 6 non-reasoning dims (indices 0-4, 6). Dead: reasoning_present
+    # (5), reasoning_load (7) -- no thinking-capable model active.
+    for col in (0, 1, 2, 3, 4, 6):
+        matrix[:, col] = rng.standard_normal(50)
+    ok, got, need = _variance_gate(matrix, fraction=0.8, eps=1e-6, feature_names=SEEDV4_NAMES)
+    assert need == 6
+    assert got == 6
+    assert ok is True
+
+
+def test_variance_gate_seedv4_needs_seven_when_one_reasoning_dim_live() -> None:
+    from scripts.fit_phi_encoder import _variance_gate
+
+    rng = np.random.default_rng(2)
+    matrix = np.zeros((50, 8), dtype=np.float64)
+    # Same 6 core dims live, PLUS reasoning_present (index 5) now live too --
+    # got=7. Bar raises to need=7 the moment either reasoning dim shows signal.
+    for col in (0, 1, 2, 3, 4, 5, 6):
+        matrix[:, col] = rng.standard_normal(50)
+    ok, got, need = _variance_gate(matrix, fraction=0.8, eps=1e-6, feature_names=SEEDV4_NAMES)
+    assert need == 7
+    assert got == 7
+    assert ok is True
+
+
+def test_variance_gate_seedv4_fails_below_six_even_with_both_reasoning_dead() -> None:
+    from scripts.fit_phi_encoder import _variance_gate
+
+    rng = np.random.default_rng(3)
+    matrix = np.zeros((50, 8), dtype=np.float64)
+    # Only 5 of the 6 core dims live -> below the relaxed 6/8 floor.
+    for col in (0, 1, 2, 3, 4):
+        matrix[:, col] = rng.standard_normal(50)
+    ok, got, need = _variance_gate(matrix, fraction=0.8, eps=1e-6, feature_names=SEEDV4_NAMES)
+    assert need == 6
+    assert got == 5
+    assert ok is False
+
+
+def test_variance_gate_seedv4_needs_seven_when_both_reasoning_dims_live() -> None:
+    from scripts.fit_phi_encoder import _variance_gate
+
+    rng = np.random.default_rng(4)
+    matrix = rng.standard_normal((50, 8))  # all 8 live
+    ok, got, need = _variance_gate(matrix, fraction=0.8, eps=1e-6, feature_names=SEEDV4_NAMES)
+    assert need == 7
+    assert got == 8
+    assert ok is True
+
+
+def test_variance_gate_ignores_seedv4_policy_without_feature_names() -> None:
+    """Without feature_names, behavior stays the plain fraction-based gate --
+    backward compatible for legacy/seed-v3 callers that never pass names."""
+    from scripts.fit_phi_encoder import _variance_gate
+
+    rng = np.random.default_rng(5)
+    matrix = np.zeros((50, 8), dtype=np.float64)
+    for col in (0, 1, 2, 3, 4, 6):
+        matrix[:, col] = rng.standard_normal(50)
+    ok, got, need = _variance_gate(matrix, fraction=0.8, eps=1e-6)
+    assert need == 7  # ceil(0.8 * 8), not the seed-v4-aware 6
+    assert got == 6
+    assert ok is False
+
+
+def test_variance_gate_seedv3_feature_names_unaffected_by_seedv4_policy() -> None:
+    """seed-v3's feature set doesn't contain reasoning_present/reasoning_load
+    at all, so passing its own feature_names must fall through to the plain
+    fraction-based gate untouched."""
+    from scripts.fit_phi_encoder import _variance_gate, input_features_for_version
+
+    names = input_features_for_version("seed-v3")
+    rng = np.random.default_rng(6)
+    matrix = np.zeros((50, len(names)), dtype=np.float64)
+    for col in range(9):
+        matrix[:, col] = rng.standard_normal(50)
+    ok, got, need = _variance_gate(matrix, fraction=0.8, eps=1e-6, feature_names=names)
+    assert need == int(np.ceil(0.8 * len(names)))
+    assert got == 9

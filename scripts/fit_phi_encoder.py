@@ -72,6 +72,16 @@ DEFAULT_PHI_WEIGHT = 0.25
 DEFAULT_EARLY_STOP_PATIENCE = 15
 DEFAULT_HELD_OUT_FRACTION = 0.15
 
+# seed-v4: reasoning_present/reasoning_load may be structurally dead depending
+# on model/infra deployment (no thinking-capable model active means neither
+# can ever show variance) rather than a corpus-health problem. Gate policy:
+# require 6/8 dims live when BOTH are dead (every other dim must be live);
+# require 7/8 once EITHER shows real signal (holds the bar higher the moment
+# it's actually achievable, rather than permanently discounting both).
+SEEDV4_OPTIONAL_VARIANCE_DIMS: frozenset[str] = frozenset({"reasoning_present", "reasoning_load"})
+SEEDV4_MIN_LIVE_DIMS_BOTH_OPTIONAL_DEAD = 6
+SEEDV4_MIN_LIVE_DIMS_ONE_OPTIONAL_LIVE = 7
+
 
 @dataclass(frozen=True)
 class LoadedRow:
@@ -231,12 +241,36 @@ def _hours_span(rows: list[LoadedRow]) -> float:
     return (end - start).total_seconds() / 3600.0
 
 
-def _variance_gate(matrix: np.ndarray, *, fraction: float, eps: float) -> tuple[bool, int, int]:
+def _variance_gate(
+    matrix: np.ndarray,
+    *,
+    fraction: float,
+    eps: float,
+    feature_names: list[str] | None = None,
+) -> tuple[bool, int, int]:
     if matrix.size == 0:
         return False, 0, matrix.shape[1] if matrix.ndim == 2 else 0
     variances = np.var(matrix, axis=0)
-    ok_count = int(np.sum(variances > eps))
-    needed = int(np.ceil(fraction * matrix.shape[1]))
+    live = variances > eps
+    ok_count = int(np.sum(live))
+    total_dims = matrix.shape[1]
+
+    if feature_names is not None and SEEDV4_OPTIONAL_VARIANCE_DIMS.issubset(feature_names):
+        # Only seed-v4 carries BOTH reasoning_present and reasoning_load --
+        # seed-v3 also has reasoning_present (shared cognitive slot name) but
+        # never reasoning_load, so requiring the full set here keeps this
+        # policy from silently activating for seed-v3's feature set too.
+        optional_idx = [i for i, name in enumerate(feature_names) if name in SEEDV4_OPTIONAL_VARIANCE_DIMS]
+        if optional_idx:
+            optional_live_count = int(np.sum(live[optional_idx]))
+            needed = (
+                SEEDV4_MIN_LIVE_DIMS_ONE_OPTIONAL_LIVE
+                if optional_live_count >= 1
+                else SEEDV4_MIN_LIVE_DIMS_BOTH_OPTIONAL_DEAD
+            )
+            return ok_count >= needed, ok_count, needed
+
+    needed = int(np.ceil(fraction * total_dims))
     return ok_count >= needed, ok_count, needed
 
 
@@ -245,6 +279,7 @@ def check_corpus_gates(
     matrix: np.ndarray,
     *,
     cfg: CorpusGateConfig,
+    feature_names: list[str] | None = None,
 ) -> None:
     if len(rows) < cfg.min_rows:
         raise SystemExit(f"corpus gate failed: min_rows={cfg.min_rows} got={len(rows)}")
@@ -257,6 +292,7 @@ def check_corpus_gates(
         matrix,
         fraction=cfg.variance_fraction,
         eps=cfg.variance_eps,
+        feature_names=feature_names,
     )
     if not ok:
         raise SystemExit(
@@ -552,7 +588,7 @@ def cmd_train(args: argparse.Namespace) -> int:
         variance_fraction=args.variance_fraction,
         variance_eps=args.variance_eps,
     )
-    check_corpus_gates(loaded, matrix, cfg=gate_cfg)
+    check_corpus_gates(loaded, matrix, cfg=gate_cfg, feature_names=feature_names)
 
     train_cfg = TrainConfig(
         hidden_dim=args.hidden_dim,

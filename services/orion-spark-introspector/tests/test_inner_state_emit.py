@@ -554,3 +554,59 @@ async def test_handle_self_state_seed_v4_uses_reasoning_activity_signals(monkeyp
     assert "reasoning_present" in names
     assert "exec_step_fail_rate" not in names
     assert "execution_friction" not in names
+
+
+@pytest.mark.asyncio
+async def test_handle_self_state_corpus_gate_uses_seedv4_cognitive_names(monkeypatch) -> None:
+    """The corpus-health gate must check the cognitive names that actually
+    exist on the row: seed-v4 rows carry execution_load/reasoning_load, not
+    seed-v3's exec_step_fail_rate/execution_friction. Using the wrong name set
+    would silently narrow the "all cognitive features dead" check."""
+    monkeypatch.setattr(worker, "_SUBSTRATE_CACHE", None, raising=False)
+    monkeypatch.setattr(worker.settings, "inner_features_version", "seed-v4", raising=False)
+    monkeypatch.setattr(worker, "fetch_grammar_truth", AsyncMock(
+        return_value=GrammarTruthSnapshot(
+            degraded=False, degraded_reasons=[],
+            enabled_reducers={"execution_trajectory": True},
+            reducer_health_by_name={"execution_trajectory": {"classification": "healthy"}},
+        )
+    ))
+    monkeypatch.setattr(worker, "fetch_execution_trajectory", AsyncMock(
+        return_value=ExecutionTrajectorySnapshot(ok=True, projection=None)
+    ))
+    monkeypatch.setattr(worker, "fetch_reasoning_activity", AsyncMock(
+        return_value=ReasoningActivitySnapshot(ok=False, projection=None)
+    ))
+
+    class _Bus:
+        enabled = True
+
+        async def publish(self, channel, env):
+            pass
+
+    monkeypatch.setattr(worker, "_pub_bus", _Bus(), raising=False)
+    monkeypatch.setattr(worker.manager, "broadcast", AsyncMock(), raising=False)
+    monkeypatch.setattr(worker, "_INNER_SCALER", worker._new_inner_scaler(), raising=False)
+    monkeypatch.setattr(worker, "_INNER_PREV_FELT", None, raising=False)
+    monkeypatch.setattr(worker, "_INNER_PREV_HEADLINE", None, raising=False)
+    monkeypatch.setattr(worker, "_INNER_DEGENERATE_STREAK", 0, raising=False)
+    monkeypatch.setattr(worker, "_INNER_SINK", MagicMock(), raising=False)
+
+    captured_names = {}
+    real_gate = worker.is_corpus_row_healthy
+
+    def _spy(inner, *, cognitive_feature_names):
+        captured_names["names"] = cognitive_feature_names
+        return real_gate(inner, cognitive_feature_names=cognitive_feature_names)
+
+    monkeypatch.setattr(worker, "is_corpus_row_healthy", _spy)
+
+    env = BaseEnvelope(
+        kind="substrate.self_state.v1",
+        source=ServiceRef(name="substrate-runtime", node="athena"),
+        payload=_self_state_payload(),
+    )
+    await worker.handle_self_state(env)
+
+    assert captured_names["names"] == worker.SEEDV4_COGNITIVE_FEATURE_NAMES
+    assert "exec_step_fail_rate" not in captured_names["names"]

@@ -44,6 +44,7 @@ from . import introspection_guard as ig
 from .inner_state import (
     COGNITIVE_FEATURE_NAMES,
     RollingRobustScaler,
+    SEEDV4_COGNITIVE_FEATURE_NAMES,
     build_inner_state_features,
 )
 from .inner_state_sink import InnerStateCorpusSink
@@ -2459,8 +2460,17 @@ async def handle_self_state(env: BaseEnvelope) -> None:
                 _PHI_PREV_RECON = out.recon_error
         _INNER_PREV_HEADLINE = inner.headline
         _INNER_LAST_HEADLINE = inner.headline
+        # Corpus-health gate reads the cognitive names that actually match this
+        # row's features_version -- seed-v4 replaced exec_step_fail_rate/
+        # execution_friction with execution_load/reasoning_load, so the seed-v3
+        # names alone would miss half the seed-v4 cognitive slots.
+        gate_cognitive_names = (
+            SEEDV4_COGNITIVE_FEATURE_NAMES
+            if inner.features_version == "seed-v4"
+            else COGNITIVE_FEATURE_NAMES
+        )
         healthy, reject_reasons = is_corpus_row_healthy(
-            inner, cognitive_feature_names=COGNITIVE_FEATURE_NAMES
+            inner, cognitive_feature_names=gate_cognitive_names
         )
         if healthy:
             try:

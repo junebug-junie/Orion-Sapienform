@@ -175,6 +175,8 @@ SYNC_EXACT = frozenset(
         # Reasoning telemetry adapter (cortex-exec -> orion-thought -> phi, default-off)
         "PUBLISH_REASONING_TELEMETRY",
         "CHANNEL_REASONING_CALL",
+        # Seed-v4 feature set: spark-introspector reads orion-thought's reasoning_activity projection
+        "ORION_THOUGHT_BASE_URL",
     }
 )
 

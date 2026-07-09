@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from orion.embodiment.speech import build_speech_prompt, is_injectable, should_speak
+from orion.embodiment.speech import (
+    build_speech_prompt,
+    is_injectable,
+    is_repeated_utterance,
+    should_speak,
+)
 from orion.schemas.embodiment import WorldPerceptionV1
 
 
@@ -46,3 +51,10 @@ def test_is_injectable_rejects_empty_and_whitespace():
     assert is_injectable("") is False
     assert is_injectable("   \n  ") is False
     assert is_injectable(None) is False  # type: ignore[arg-type]
+
+
+def test_repeated_utterance_normalizes_case_and_spacing():
+    assert is_repeated_utterance("  I am with you.\n", "i am  with you.") is True
+    assert is_repeated_utterance("I am with you", "I am with you.") is True
+    assert is_repeated_utterance("I hear you.", "Tell me more.") is False
+    assert is_repeated_utterance("", "i am with you.") is False

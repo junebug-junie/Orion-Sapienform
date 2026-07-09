@@ -13,6 +13,7 @@ def _worker() -> EmbodimentWorker:
     w._orion_player_id = "orion"
     w._world_id = "w1"
     w._speaking_conversations = set()
+    w._last_spoken_by_conversation = {}
     w._opened_conversations = set()
     w._settings = SimpleNamespace(
         speech_enabled=True,
@@ -178,6 +179,61 @@ def test_speech_disabled_short_circuits():
     assert result is None
     req.assert_not_awaited()
     si.assert_not_called()
+
+
+def test_repeated_reply_is_not_injected_again():
+    w = _worker()
+    perc = _perception_in_convo()
+    replies = AsyncMock(side_effect=["I am with you.", "  i am   with you.  "])
+    with patch.object(w, "_request_utterance", new=replies), \
+         patch("app.worker.aitown_client.send_input", return_value={"ok": True}) as si, \
+         patch("app.worker.aitown_client.convex_mutation", return_value={"ok": True}) as cm:
+        first = asyncio.run(w._speak_once(perc))
+        perc.active_conversation["messages"] = [
+            {"author_id": "p9", "author": "Juniper", "text": "hey Orion"},
+            {"author_id": "orion", "author": "Orion", "text": "I am with you."},
+            {"author_id": "p9", "author": "Juniper", "text": "are you still there?"},
+        ]
+        second = asyncio.run(w._speak_once(perc))
+    assert first == "I am with you."
+    assert second is None
+    assert si.call_count == 1
+    assert cm.call_count == 1
+
+
+def test_repeated_reply_matches_transcript_after_worker_restart():
+    w = _worker()
+    perc = _perception_in_convo()
+    perc.active_conversation["messages"] = [
+        {"author_id": "p9", "author": "Juniper", "text": "hey Orion"},
+        {"author_id": "orion", "author": "Orion", "text": "I am with you."},
+        {"author_id": "p9", "author": "Juniper", "text": "can you answer me?"},
+    ]
+    with patch.object(w, "_request_utterance", new=AsyncMock(return_value="i am   with you.")), \
+         patch("app.worker.aitown_client.send_input") as si, \
+         patch("app.worker.aitown_client.convex_mutation") as cm:
+        result = asyncio.run(w._speak_once(perc))
+    assert result is None
+    si.assert_not_called()
+    cm.assert_not_called()
+
+
+def test_repeated_reply_checks_transcript_even_with_stale_memory():
+    w = _worker()
+    w._last_spoken_by_conversation["conv1"] = "older line"
+    perc = _perception_in_convo()
+    perc.active_conversation["messages"] = [
+        {"author_id": "p9", "author": "Juniper", "text": "hey Orion"},
+        {"author_id": "orion", "author": "Orion", "text": "I am with you."},
+        {"author_id": "p9", "author": "Juniper", "text": "can you answer me?"},
+    ]
+    with patch.object(w, "_request_utterance", new=AsyncMock(return_value="I am with you")), \
+         patch("app.worker.aitown_client.send_input") as si, \
+         patch("app.worker.aitown_client.convex_mutation") as cm:
+        result = asyncio.run(w._speak_once(perc))
+    assert result is None
+    si.assert_not_called()
+    cm.assert_not_called()
 
 
 def test_heartbeat_logs_once_then_throttles():

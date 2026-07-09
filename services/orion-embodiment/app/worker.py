@@ -22,7 +22,12 @@ from orion.embodiment.worldmap import walkable_tiles
 from orion.embodiment.perception import build_perception
 from orion.embodiment.resolver import resolve_destination
 from orion.embodiment.salience import SalienceState, evaluate_salience
-from orion.embodiment.speech import build_speech_prompt, is_injectable, should_speak
+from orion.embodiment.speech import (
+    build_speech_prompt,
+    is_injectable,
+    is_repeated_utterance,
+    should_speak,
+)
 from orion.journaler.schemas import JournalTriggerV1
 from orion.schemas.embodiment import (
     EMBODIMENT_OUTCOME_KIND,
@@ -77,6 +82,7 @@ class EmbodimentWorker:
         # idle-wander loop) so the move-cooldown read-then-write cannot double-fire.
         self._actuate_lock = asyncio.Lock()
         self._speaking_conversations: set[str] = set()
+        self._last_spoken_by_conversation: dict[str, str] = {}
         # Conversations Orion has already opened (spoken first in). Guards the
         # "no messages yet -> open" speech path so a persistently failing message
         # fetch (which looks like an empty transcript) can't re-trigger an opener
@@ -102,6 +108,22 @@ class EmbodimentWorker:
         # or unavailable -> resolver falls back to unconstrained wander.
         self._walkable: Optional[set[tuple[int, int]]] = None
         self._walkable_loaded = False
+
+    @staticmethod
+    def _last_own_message_text(messages: list, own_player_id: str) -> Optional[str]:
+        """Return Orion's latest transcript line, if the town message author is known."""
+        own = str(own_player_id or "").strip()
+        if not own:
+            return None
+        for message in reversed(messages or []):
+            if not isinstance(message, dict):
+                continue
+            author_id = str(message.get("author_id") or "").strip()
+            author = str(message.get("author") or "").strip().lower()
+            if author_id == own or author == "orion":
+                text = str(message.get("text") or "").strip()
+                return text or None
+        return None
 
     def _walkable_tiles(self) -> Optional[set[tuple[int, int]]]:
         """Fail-open, cached walkable set from the AI Town map. Fetched once."""
@@ -754,6 +776,13 @@ class EmbodimentWorker:
             if not is_injectable(reply):
                 logger.info("embodiment_speech_empty_reply_skipped convo=%s", convo_id)
                 return None
+            memory_last_spoken = getattr(self, "_last_spoken_by_conversation", {}).get(convo_id)
+            transcript_last_spoken = self._last_own_message_text(messages, own)
+            if is_repeated_utterance(reply, memory_last_spoken) or is_repeated_utterance(
+                reply, transcript_last_spoken
+            ):
+                logger.info("embodiment_speech_repeat_reply_skipped convo=%s", convo_id)
+                return None
 
             try:
                 await asyncio.to_thread(self._inject_utterance, own, convo_id, reply)
@@ -769,6 +798,9 @@ class EmbodimentWorker:
                 self._active_conversation_utterances = (
                     getattr(self, "_active_conversation_utterances", 0) + 1
                 )
+            if not hasattr(self, "_last_spoken_by_conversation"):
+                self._last_spoken_by_conversation = {}
+            self._last_spoken_by_conversation[convo_id] = reply
             return reply
         finally:
             self._speaking_conversations.discard(convo_id)

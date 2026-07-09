@@ -6,6 +6,7 @@ decide *whether* Orion should speak, *what* to prompt the cortex with, and
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 from orion.schemas.embodiment import WorldPerceptionV1
@@ -82,3 +83,18 @@ def build_speech_prompt(perception: WorldPerceptionV1, own_player_id: str) -> st
 def is_injectable(reply_text: Optional[str]) -> bool:
     """Anti empty-shell guard: only non-empty, non-whitespace replies are injectable."""
     return bool(reply_text and str(reply_text).strip())
+
+
+def normalize_utterance(reply_text: Optional[str]) -> str:
+    """Normalize an utterance for repeat detection without changing injected text."""
+    text = str(reply_text or "").strip().lower()
+    text = re.sub(r"[^\w\s]", "", text)
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def is_repeated_utterance(reply_text: Optional[str], previous_reply_text: Optional[str]) -> bool:
+    """True when a candidate would repeat the last injected line for a conversation."""
+    current = normalize_utterance(reply_text)
+    previous = normalize_utterance(previous_reply_text)
+    return bool(current and previous and current == previous)

@@ -1,4 +1,5 @@
-"""Fail-closed HTTP reads from orion-substrate-runtime (grammar truth + trajectory)."""
+"""Fail-closed HTTP reads from orion-substrate-runtime (grammar truth + trajectory)
+and orion-thought (reasoning activity)."""
 
 from __future__ import annotations
 
@@ -26,6 +27,12 @@ class GrammarTruthSnapshot:
 
 @dataclass(frozen=True)
 class ExecutionTrajectorySnapshot:
+    ok: bool
+    projection: dict | None
+
+
+@dataclass(frozen=True)
+class ReasoningActivitySnapshot:
     ok: bool
     projection: dict | None
 
@@ -77,6 +84,20 @@ async def fetch_execution_trajectory(client: Any, url: str) -> ExecutionTrajecto
         return ExecutionTrajectorySnapshot(ok=False, projection=None)
 
 
+async def fetch_reasoning_activity(client: Any, url: str) -> ReasoningActivitySnapshot:
+    try:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        data = await _response_json(resp)
+        ok = bool(data.get("ok"))
+        projection = data.get("projection")
+        if projection is not None and not isinstance(projection, dict):
+            projection = None
+        return ReasoningActivitySnapshot(ok=ok, projection=projection)
+    except Exception:
+        return ReasoningActivitySnapshot(ok=False, projection=None)
+
+
 def cognitive_lane_dark(snapshot: GrammarTruthSnapshot) -> bool:
     if not snapshot.enabled_reducers.get("execution_trajectory"):
         return True
@@ -93,6 +114,8 @@ class SubstrateReadCache:
         self._grammar_at: float | None = None
         self._trajectory: dict | None = None
         self._trajectory_at: float | None = None
+        self._reasoning_activity: dict | None = None
+        self._reasoning_activity_at: float | None = None
 
     def put_grammar(self, value: dict) -> None:
         self._grammar = value
@@ -115,3 +138,14 @@ class SubstrateReadCache:
         if time.monotonic() - self._trajectory_at > self._ttl_sec:
             return None
         return self._trajectory
+
+    def put_reasoning_activity(self, value: dict) -> None:
+        self._reasoning_activity = value
+        self._reasoning_activity_at = time.monotonic()
+
+    def get_reasoning_activity(self) -> dict | None:
+        if self._reasoning_activity is None or self._reasoning_activity_at is None:
+            return None
+        if time.monotonic() - self._reasoning_activity_at > self._ttl_sec:
+            return None
+        return self._reasoning_activity

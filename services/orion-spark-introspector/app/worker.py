@@ -44,6 +44,7 @@ from . import introspection_guard as ig
 from .inner_state import (
     COGNITIVE_FEATURE_NAMES,
     RollingRobustScaler,
+    SEEDV4_COGNITIVE_FEATURE_NAMES,
     build_inner_state_features,
 )
 from .inner_state_sink import InnerStateCorpusSink
@@ -51,10 +52,12 @@ from .phi_encoder import PhiEncoderRuntime
 from .substrate_reads import (
     ExecutionTrajectorySnapshot,
     GrammarTruthSnapshot,
+    ReasoningActivitySnapshot,
     SubstrateReadCache,
     cognitive_lane_dark,
     fetch_execution_trajectory,
     fetch_grammar_truth,
+    fetch_reasoning_activity,
 )
 from .queue_jobs import (
     SparkIntrospectionJobV1,
@@ -597,6 +600,23 @@ async def _fetch_substrate_execution_trajectory():
     )
     cache.put_trajectory({"ok": traj.ok, "projection": traj.projection})
     return traj
+
+
+async def _fetch_orion_thought_reasoning_activity():
+    cache = _substrate_read_cache()
+    cached = cache.get_reasoning_activity()
+    if cached is not None:
+        projection = cached.get("projection")
+        if projection is not None and not isinstance(projection, dict):
+            projection = None
+        return ReasoningActivitySnapshot(ok=bool(cached.get("ok")), projection=projection)
+    thought_base = settings.orion_thought_base_url.rstrip("/")
+    ra = await fetch_reasoning_activity(
+        _substrate_http_client(),
+        f"{thought_base}/projections/reasoning_activity",
+    )
+    cache.put_reasoning_activity({"ok": ra.ok, "projection": ra.projection})
+    return ra
 
 
 async def _fetch_cola_understanding(text: str, *, doc_id: str) -> Optional[np.ndarray]:
@@ -2374,8 +2394,10 @@ async def handle_self_state(env: BaseEnvelope) -> None:
     if settings.inner_features_enabled:
         gt = await _fetch_substrate_grammar_truth()
         traj = await _fetch_substrate_execution_trajectory()
+        reasoning_activity = await _fetch_orion_thought_reasoning_activity()
         grammar_degraded = gt.degraded or cognitive_lane_dark(gt)
         projection = traj.projection if traj.ok else None
+        reasoning_activity_projection = reasoning_activity.projection if reasoning_activity.ok else None
 
         inner, _INNER_PREV_FELT, _INNER_DEGENERATE_STREAK = build_inner_state_features(
             ss,
@@ -2384,6 +2406,7 @@ async def handle_self_state(env: BaseEnvelope) -> None:
             grammar_degraded=grammar_degraded,
             degraded_reasons=gt.degraded_reasons,
             trajectory_projection=projection,
+            reasoning_activity_projection=reasoning_activity_projection,
             exec_trajectory_max_age_sec=int(settings.exec_trajectory_max_age_sec),
             prev_felt=_INNER_PREV_FELT,
             prev_headline=_INNER_PREV_HEADLINE,
@@ -2437,8 +2460,17 @@ async def handle_self_state(env: BaseEnvelope) -> None:
                 _PHI_PREV_RECON = out.recon_error
         _INNER_PREV_HEADLINE = inner.headline
         _INNER_LAST_HEADLINE = inner.headline
+        # Corpus-health gate reads the cognitive names that actually match this
+        # row's features_version -- seed-v4 replaced exec_step_fail_rate/
+        # execution_friction with execution_load/reasoning_load, so the seed-v3
+        # names alone would miss half the seed-v4 cognitive slots.
+        gate_cognitive_names = (
+            SEEDV4_COGNITIVE_FEATURE_NAMES
+            if inner.features_version == "seed-v4"
+            else COGNITIVE_FEATURE_NAMES
+        )
         healthy, reject_reasons = is_corpus_row_healthy(
-            inner, cognitive_feature_names=COGNITIVE_FEATURE_NAMES
+            inner, cognitive_feature_names=gate_cognitive_names
         )
         if healthy:
             try:

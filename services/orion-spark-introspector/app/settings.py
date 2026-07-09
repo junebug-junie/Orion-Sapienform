@@ -123,6 +123,11 @@ class Settings(BaseSettings):
         "http://orion-athena-substrate-runtime:8115",
         alias="SUBSTRATE_RUNTIME_URL",
     )
+    # Reasoning-activity projection source for seed-v4 execution_load/reasoning_load/reasoning_present.
+    orion_thought_base_url: str = Field(
+        "http://orion-athena-thought:7155",
+        alias="ORION_THOUGHT_BASE_URL",
+    )
     substrate_read_timeout_sec: float = Field(2.0, alias="SUBSTRATE_READ_TIMEOUT_SEC")
     substrate_read_cache_sec: float = Field(2.0, alias="SUBSTRATE_READ_CACHE_SEC")
     exec_trajectory_max_age_sec: int = Field(120, alias="EXEC_TRAJECTORY_MAX_AGE_SEC")

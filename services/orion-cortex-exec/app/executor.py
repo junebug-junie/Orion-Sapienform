@@ -392,6 +392,9 @@ def _resolve_llm_chat_max_tokens(step: ExecutionStep, ctx: Dict[str, Any]) -> Tu
     if step.verb_name == "journal.compose" and step.step_name == "draft_journal_entry":
         return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_journal_compose"
 
+    if step.verb_name == "github_compactor_digest_v1":
+        return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_github_compactor_digest"
+
     if step.verb_name == "memory_graph_suggest" and step.step_name == "llm_memory_graph_suggest":
         return int(settings.llm_memory_graph_suggest_max_tokens), requested, "settings.llm_memory_graph_suggest_max_tokens"
 

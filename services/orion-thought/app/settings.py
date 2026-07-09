@@ -144,6 +144,20 @@ class ThoughtSettings(BaseSettings):
     mind_coloring_max_items: int = Field(3, alias="ORION_THOUGHT_MIND_COLORING_MAX_ITEMS")
     channel_mind_artifact: str = Field("orion:mind:artifact", alias="CHANNEL_MIND_ARTIFACT")
 
+    # --- Reasoning activity projection (always-on consumer; harmless when idle) ---
+    # Consume per-call ReasoningCallV1 telemetry and materialize a rolling-window
+    # ReasoningActivityV1 for φ. The buffer is capped (max_calls) so memory is
+    # bounded regardless of producer rate.
+    channel_reasoning_call: str = Field(
+        "orion:cognition:reasoning_call", alias="CHANNEL_REASONING_CALL"
+    )
+    reasoning_activity_window_sec: float = Field(
+        120.0, alias="REASONING_ACTIVITY_WINDOW_SEC"
+    )
+    reasoning_activity_max_calls: int = Field(
+        2000, alias="REASONING_ACTIVITY_MAX_CALLS"
+    )
+
 
 def mind_enrichment_config_warnings(s: "ThoughtSettings") -> list[str]:
     """Deterministic boot-time coherence checks for the Mind enrichment budget.

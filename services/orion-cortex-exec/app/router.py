@@ -39,6 +39,7 @@ from .grammar_emit import (
     short_error_kind,
 )
 from .metacog_enrichment import extract_reasoning_features
+from .reasoning_emit import build_reasoning_call, publish_reasoning_call
 from .chat_stance import strip_identity_recital_leadin, strip_transactional_closers
 from orion.cognition.verb_activation import is_active
 
@@ -1550,6 +1551,38 @@ class PlanRunner:
             reasoning_present=bool(reasoning_content or reasoning_trace or metacog_traces),
             thinking_source=str(thinking_source or "none"),
         )
+
+        if settings.publish_reasoning_telemetry:
+            try:
+                reasoning_call = build_reasoning_call(
+                    correlation_id=correlation_id,
+                    verb=plan.verb_name,
+                    mode=str(mode or "unknown"),
+                    node_id=settings.node_name,
+                    turn_id=str(ctx.get("turn_id") or ctx.get("message_id") or ctx.get("messageId") or "") or None,
+                    # No plan-run signal for the enable_thinking template flag is
+                    # available here (set only in pre_turn_appraisal). Report False.
+                    thinking_enabled=False,
+                    diagnostics=final_text_diag,
+                    completion_tokens=final_text_diag.get("provider_completion_tokens"),
+                    # prompt_tokens is not surfaced in _extract_final_text diagnostics.
+                    prompt_tokens=None,
+                    # No provider exposes a separate thinking-token count today.
+                    thinking_tokens=None,
+                )
+                await publish_reasoning_call(
+                    bus,
+                    source=source,
+                    channel=settings.channel_reasoning_call,
+                    call=reasoning_call,
+                )
+            except Exception:
+                logger.warning(
+                    "reasoning_telemetry_emit_failed corr_id=%s verb=%s",
+                    correlation_id,
+                    plan.verb_name,
+                    exc_info=True,
+                )
 
         return PlanExecutionResult(
             verb_name=plan.verb_name,

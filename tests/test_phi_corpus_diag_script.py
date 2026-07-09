@@ -104,7 +104,9 @@ def test_diag_fails_variance_gate_when_dims_mostly_frozen(tmp_path: Path) -> Non
     from scripts.diag import _parse_args, run_diag
 
     corpus = tmp_path / "corpus.jsonl"
-    # Only 3 of 8 dims carry variance -- needs ceil(0.8*8)=7, so this must fail.
+    # live_dims=3 -> only agency_readiness/execution_pressure/reasoning_pressure
+    # live; reasoning_present AND reasoning_load (indices 5, 7) are both dead,
+    # so the seed-v4 gate policy needs 6 (not the generic ceil(0.8*8)=7).
     _write_corpus(corpus, _live_corpus(n_rows=60, hours_span=5.0, live_dims=3))
     args = _parse_args([
         "--corpus", str(corpus),
@@ -116,7 +118,7 @@ def test_diag_fails_variance_gate_when_dims_mostly_frozen(tmp_path: Path) -> Non
     assert result["ok"] is False
     assert result["gates"]["variance"]["ok"] is False
     assert result["gates"]["variance"]["got"] == 3
-    assert result["gates"]["variance"]["need"] == 7
+    assert result["gates"]["variance"]["need"] == 6
     frozen = [d for d in result["dims"] if not d["live"]]
     assert len(frozen) == 5
 

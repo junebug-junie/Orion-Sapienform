@@ -89,7 +89,7 @@ def run_diag(args: argparse.Namespace) -> dict:
     matrix = np.stack([r.x for r in loaded], axis=0) if loaded else np.zeros((0, len(feature_names)))
     hours = _hours_span(loaded)
     variance_ok, var_ok_count, var_needed = _variance_gate(
-        matrix, fraction=args.variance_fraction, eps=args.variance_eps
+        matrix, fraction=args.variance_fraction, eps=args.variance_eps, feature_names=feature_names
     )
     variances = np.var(matrix, axis=0) if matrix.size else np.zeros(len(feature_names))
     dims = [

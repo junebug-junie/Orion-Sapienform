@@ -5,6 +5,7 @@ from app.router import (
     _extract_reasoning_payload,
     _should_fail_empty_runtime_skill_output,
     _structured_output_expected,
+    _thinking_enabled_from_ctx,
 )
 from orion.schemas.cortex.schemas import StepExecutionResult
 
@@ -322,3 +323,41 @@ def test_runtime_skill_falls_back_to_status_and_error_when_terminal_text_missing
     assert "status=fail" in final_text
     assert "docker daemon unavailable" in final_text
     assert diag["source_field"] == "runtime_fallback"
+
+
+def test_extract_final_text_surfaces_provider_prompt_tokens_alongside_completion_tokens() -> None:
+    final_text, diag = _extract_final_text(
+        [_step({"content": "Answer.", "usage": {"prompt_tokens": 128, "completion_tokens": 42}})],
+        verb_name="chat_general",
+    )
+    assert final_text == "Answer."
+    assert diag["provider_completion_tokens"] == 42
+    assert diag["provider_prompt_tokens"] == 128
+
+
+def test_extract_final_text_prompt_tokens_falls_back_to_raw_usage() -> None:
+    final_text, diag = _extract_final_text(
+        [_step({"content": "Answer.", "raw": {"usage": {"prompt_tokens": 99, "completion_tokens": 7}}})],
+        verb_name="chat_general",
+    )
+    assert final_text == "Answer."
+    assert diag["provider_completion_tokens"] == 7
+    assert diag["provider_prompt_tokens"] == 99
+
+
+def test_thinking_enabled_from_ctx_true_when_template_kwarg_set() -> None:
+    assert _thinking_enabled_from_ctx({"chat_template_kwargs": {"enable_thinking": True}}) is True
+
+
+def test_thinking_enabled_from_ctx_false_when_absent() -> None:
+    assert _thinking_enabled_from_ctx({}) is False
+
+
+def test_thinking_enabled_from_ctx_false_when_explicitly_false() -> None:
+    assert _thinking_enabled_from_ctx({"chat_template_kwargs": {"enable_thinking": False}}) is False
+
+
+def test_thinking_enabled_from_ctx_never_raises_on_bad_shapes() -> None:
+    assert _thinking_enabled_from_ctx({"chat_template_kwargs": "not-a-dict"}) is False
+    assert _thinking_enabled_from_ctx({"chat_template_kwargs": None}) is False
+    assert _thinking_enabled_from_ctx(None) is False  # type: ignore[arg-type]

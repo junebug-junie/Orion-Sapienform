@@ -1947,13 +1947,22 @@ async def _run_github_compactor_digest(
         trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
         timeout_sec=float((synth_req.options or {}).get("timeout_sec", 120.0)),
     )
+    if not verb_result.ok:
+        raise WorkflowExecutionError(f"github_compactor_digest_failed:{verb_result.error or 'verb_failed'}")
     payload = _extract_result_payload(verb_result)
+    if payload.get("ok") is False:
+        raise WorkflowExecutionError(f"github_compactor_digest_failed:{payload.get('error') or payload.get('status')}")
     result_metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    if result_metadata.get("structured_output_rejected"):
+        raise WorkflowExecutionError("github_compactor_digest_failed:structured_output_rejected")
     digest_raw = result_metadata.get("github_compactor_digest")
     if isinstance(digest_raw, dict):
         digest = GithubCompactorDigestV1.model_validate(digest_raw)
     else:
-        digest = parse_github_compactor_digest_json(str(payload.get("final_text") or ""))
+        try:
+            digest = parse_github_compactor_digest_json(str(payload.get("final_text") or ""))
+        except (ValueError, TypeError) as exc:
+            raise WorkflowExecutionError(f"github_compactor_digest_failed:invalid_json:{exc}") from exc
     try:
         assert_digest_within_budget(digest)
     except ValueError as exc:

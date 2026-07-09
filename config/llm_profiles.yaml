@@ -572,7 +572,7 @@ profiles:
       tensor_parallel_size: 1
       device_ids: [0, 1]
       max_model_len: 65536
-      max_batch_tokens: 1024
+      max_batch_tokens: 1175
       max_concurrent_requests: 1
       gpu_memory_fraction: 0.90
 
@@ -584,17 +584,21 @@ profiles:
       port: 8080
 
       ctx_size: 65536
-      n_gpu_layers: 99
-      threads: 16
+      n_gpu_layers: 87
+      threads: 18
       n_parallel: 1
-      batch_size: 1024
+      batch_size: 1175
+      ubatch_size: 541
 
       reasoning_budget: 0
 
       no_context_shift: true
-      split_mode: "row"
+      # Circe 2xV100 (PIX, no NVLink) llama-optimus 2026-07-09 (mean metric, layer+1/1 pinned):
+      #   Stage_3 winner: batch 1175, ubatch 541, threads 18, ngl 87, flash_attn 0 (~40.76 mean).
+      #   FA on Volta collapses TG ~20x; row split ~half TG vs layer. Verify bench: pp256~302, tg128~82.
+      split_mode: "layer"
       tensor_split: "1,1"
-      flash_attn: "on"
+      flash_attn: "off"
 
       temperature: 1.0
       top_k: 40
@@ -605,11 +609,12 @@ profiles:
       n_predict: 32768
 
     notes: |
-      Depth-oriented Qwen3-Coder-Next profile for 2x V100 32GB (row split).
+      Depth-oriented Qwen3-Coder-Next profile for 2x V100 32GB (layer split).
       - Target lane: long-horizon agent_repl sweeps (large repo reads, multi-step tool chains).
       - Q5_K_M (~57GB weights) trades VRAM for sharper code + tool-call quality vs Q4_K_M.
       - 64k ctx supports smolagents transcripts + repo snippets without YaRN (native 262k available if VRAM allows later tuning).
       - Same non-thinking launch policy as the breadth profile (reasoning_budget 0 → jinja path).
+      - Circe llama-optimus (2026-07-09): flash_attn off, split_mode layer, ngl 87, batch 1175, ubatch 541, threads 18.
       - Use when Gate 1 smolcode live proof needs more reasoning depth; expect slower per-step latency.
       - Wire: dedicated atlas-agent worker OR swap ATLAS_AGENT_PROFILE_NAME for depth-first deployments.
       - If OOM: lower ctx_size to 49152 before falling back to qwen3-coder-next-q4km-2xv100-32gb-agent-breadth.

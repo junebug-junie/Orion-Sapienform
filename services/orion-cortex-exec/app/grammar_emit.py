@@ -30,6 +30,8 @@ def _hash_id(*parts: object, prefix: str) -> str:
 
 
 CORTEX_EXEC_ISOLATED_TRACE_LANES = frozenset({
+    # Unified-turn auxiliary cortex runs that share correlation_id with harness motor.
+    "stance_react",
     "harness_finalize_reflect",
     "orion_voice_finalize",
 })

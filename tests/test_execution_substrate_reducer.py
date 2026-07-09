@@ -404,6 +404,49 @@ def test_reducer_noops_harness_fcc_step_in_mixed_batch() -> None:
     assert proj.runs[TRACE].started_step_count == 1
 
 
+def test_stance_react_lane_does_not_merge_with_primary_motor_trace() -> None:
+    intake = _harness_atom(
+        "exec_request_received",
+        "Harness exec received plan request for verb=orion_unified, mode=orion, steps=0",
+        event_id="motor-intake",
+    )
+    assembled = _harness_atom(
+        "exec_result_assembled",
+        "Result assembled: status=ok, final_text_present=true, reasoning_present=true, thinking_source=harness_fcc",
+        event_id="motor-assembled",
+    )
+    stance_trace = f"{TRACE}:stance_react"
+    stance = GrammarEventV1(
+        event_id="stance-intake",
+        event_kind="atom_emitted",
+        trace_id=stance_trace,
+        emitted_at=FIXED_TS,
+        atom=GrammarAtomV1(
+            atom_id=f"{stance_trace}:exec_request_received",
+            trace_id=stance_trace,
+            atom_type="observation",
+            semantic_role="exec_request_received",
+            layer="intake",
+            summary="Cortex exec received plan request for verb=stance_react, mode=brain, steps=1",
+        ),
+        provenance=GrammarProvenanceV1(source_service="orion-cortex-exec"),
+    )
+    proj, _ = reduce_execution_trace_events(
+        events=[stance],
+        projection=_empty_projection(),
+        now=FIXED_TS,
+    )
+    proj, _ = reduce_execution_trace_events(
+        events=[intake, assembled],
+        projection=proj,
+        now=FIXED_TS,
+    )
+    assert set(proj.runs) == {TRACE, stance_trace}
+    assert proj.runs[TRACE].verb == "orion_unified"
+    assert proj.runs[TRACE].reasoning_present is True
+    assert proj.runs[stance_trace].verb == "stance_react"
+
+
 def test_isolated_lane_trace_does_not_merge_with_primary_motor_trace() -> None:
     primary = _harness_atom(
         "exec_result_assembled",

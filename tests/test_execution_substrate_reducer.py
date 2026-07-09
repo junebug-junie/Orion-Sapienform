@@ -402,3 +402,43 @@ def test_reducer_noops_harness_fcc_step_in_mixed_batch() -> None:
     assert receipt.noop_event_ids == ["noop-fcc"]
     assert receipt.accepted_event_ids == ["h2"]
     assert proj.runs[TRACE].started_step_count == 1
+
+
+def test_isolated_lane_trace_does_not_merge_with_primary_motor_trace() -> None:
+    primary = _harness_atom(
+        "exec_result_assembled",
+        "Result assembled: status=ok, final_text_present=true, reasoning_present=true, thinking_source=harness_fcc",
+        event_id="primary-assembled",
+    )
+    isolated_trace = f"{TRACE}:harness_finalize_reflect"
+    isolated = GrammarEventV1(
+        event_id="isolated-step",
+        event_kind="atom_emitted",
+        trace_id=isolated_trace,
+        emitted_at=FIXED_TS,
+        atom=GrammarAtomV1(
+            atom_id=f"{isolated_trace}:exec_step_started",
+            trace_id=isolated_trace,
+            atom_type="observation",
+            semantic_role="exec_step_started",
+            layer="execution",
+            summary="Step started: order=1, step=reflect, verb=harness_finalize_reflect, services=none",
+        ),
+        provenance=GrammarProvenanceV1(source_service="orion-cortex-exec"),
+    )
+    proj, receipt_primary = reduce_execution_trace_events(
+        events=[primary],
+        projection=_empty_projection(),
+        now=FIXED_TS,
+    )
+    proj, receipt_isolated = reduce_execution_trace_events(
+        events=[isolated],
+        projection=proj,
+        now=FIXED_TS,
+    )
+    assert receipt_primary.accepted_event_ids == ["primary-assembled"]
+    assert receipt_isolated.accepted_event_ids == ["isolated-step"]
+    assert set(proj.runs) == {TRACE, isolated_trace}
+    assert proj.runs[TRACE].reasoning_present is True
+    assert proj.runs[isolated_trace].started_step_count == 1
+    assert proj.runs[isolated_trace].reasoning_present is False

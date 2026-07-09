@@ -537,8 +537,16 @@ async def publish_harness_lifecycle_grammar(
     events: list[GrammarEventV1],
     publish_fn: PublishFn | None = None,
 ) -> None:
+    corr = events[0].correlation_id if events else "unknown"
     if not events:
+        logger.info(
+            "harness_lifecycle_grammar_publish_skipped corr=%s channel=%s reason=empty_events",
+            corr,
+            channel,
+        )
         return
+    roles = sorted({e.atom.semantic_role for e in events if e.atom})
+    published = 0
     for event in events:
         try:
             if publish_fn is not None:
@@ -552,10 +560,19 @@ async def publish_harness_lifecycle_grammar(
                     source_name="orion-harness-governor",
                     channel=channel,
                 )
+            published += 1
         except Exception:
             logger.warning(
                 "harness_lifecycle_grammar_publish_failed corr=%s event_kind=%s",
-                event.correlation_id or "unknown",
+                event.correlation_id or corr,
                 event.event_kind,
                 exc_info=True,
             )
+    logger.info(
+        "harness_lifecycle_grammar_published corr=%s channel=%s trace_id=%s events=%s roles=%s",
+        corr,
+        channel,
+        events[0].trace_id,
+        published,
+        roles,
+    )

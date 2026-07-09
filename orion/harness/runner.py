@@ -294,11 +294,18 @@ class HarnessRunner:
                 reflection_ran=False,
                 quick_lane_skipped_5b=True,
             )
+            events = build_harness_grammar_events(collector)
+            logger.info(
+                "harness_motor_lifecycle_publish_begin corr=%s trace_id=%s events=%s",
+                request.correlation_id,
+                collector.trace_id,
+                len(events),
+            )
             try:
                 await publish_harness_lifecycle_grammar(
                     self.bus,
                     channel=self.grammar_channel,
-                    events=build_harness_grammar_events(collector),
+                    events=events,
                 )
             except Exception:
                 logger.warning(

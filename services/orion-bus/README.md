@@ -48,6 +48,19 @@ make logs
 make down
 ```
 
+### Redis pubsub output buffers
+
+`bus-core` sets a raised pubsub client output buffer limit so slow subscribers are less
+likely to be disconnected by Redis during long RPC handlers:
+
+```text
+client-output-buffer-limit pubsub 64mb 32mb 120
+```
+
+If production uses an external Redis (for example the Tailscale-hosted bus node), apply
+the same setting in `redis.conf` and restart Redis there. Recreating only the compose
+`bus-core` container does not change an external broker.
+
 ---
 
 ## 🔍 Monitoring

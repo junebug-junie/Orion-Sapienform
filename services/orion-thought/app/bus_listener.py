@@ -35,6 +35,40 @@ logger = logging.getLogger("orion-thought.bus")
 # but PUBSUB NUMSUB returns 0 — hub RPC then hangs until timeout and the message
 # is lost (pubsub is not durable).
 _PUBSUB_IDLE_POLLS_BEFORE_HEALTH = 30
+_HANDLER_DRAIN_TIMEOUT_SEC = 120.0
+
+_pending_handler_tasks: set[asyncio.Task[None]] = set()
+
+
+async def _run_bus_message_handler(raw_msg: dict[str, Any]) -> None:
+    """Handle one request on a dedicated bus connection so pubsub can keep draining."""
+    bus = OrionBusAsync(url=settings.orion_bus_url)
+    try:
+        await bus.connect()
+        await _handle_bus_message(bus, raw_msg)
+    except Exception:
+        logger.exception("bus message handler failed")
+    finally:
+        with suppress(Exception):
+            await bus.close()
+
+
+def _dispatch_bus_message(raw_msg: dict[str, Any]) -> None:
+    task = asyncio.create_task(_run_bus_message_handler(raw_msg))
+    _pending_handler_tasks.add(task)
+    task.add_done_callback(_pending_handler_tasks.discard)
+
+
+async def _drain_pending_handler_tasks(*, timeout_sec: float = _HANDLER_DRAIN_TIMEOUT_SEC) -> None:
+    if not _pending_handler_tasks:
+        return
+    pending = set(_pending_handler_tasks)
+    done, still = await asyncio.wait(pending, timeout=timeout_sec)
+    if still:
+        for task in still:
+            task.cancel()
+        await asyncio.gather(*still, return_exceptions=True)
+    _ = done
 
 
 async def _thought_channel_subscribers(bus: OrionBusAsync, channel: str) -> int:
@@ -288,6 +322,7 @@ async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
 
     while True:
         if stop_event is not None and stop_event.is_set():
+            await asyncio.shield(_drain_pending_handler_tasks())
             return
 
         bus = OrionBusAsync(url=settings.orion_bus_url)
@@ -300,7 +335,7 @@ async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
                 backoff_sec = 1.0
                 while True:
                     if stop_event is not None and stop_event.is_set():
-                        return
+                        break
                     try:
                         msg = await asyncio.wait_for(
                             pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
@@ -332,7 +367,7 @@ async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
                         continue
                     idle_polls = 0
                     try:
-                        await _handle_bus_message(bus, msg)
+                        _dispatch_bus_message(msg)
                     except Exception:
                         logger.exception("unhandled bus worker error")
         except asyncio.CancelledError:
@@ -341,6 +376,8 @@ async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
             logger.exception("bus worker disconnect channel=%s", channel)
             reconnect = True
         finally:
+            if stop_event is not None and stop_event.is_set():
+                await asyncio.shield(_drain_pending_handler_tasks())
             with suppress(Exception):
                 await bus.close()
 

@@ -297,3 +297,77 @@ def test_merge_failed_step_raises_failure_pressure() -> None:
     merged = merge_execution_run_state(full, incoming)
     assert merged.failed_step_count >= 1
     assert merged.pressure_hints["failure_pressure"] == 1.0
+
+
+def _harness_atom(role: str, summary: str, *, event_id: str = "gev_h") -> GrammarEventV1:
+    atom = GrammarAtomV1(
+        atom_id=f"{TRACE}:{role}",
+        trace_id=TRACE,
+        atom_type="observation",
+        semantic_role=role,
+        layer="harness",
+        summary=summary,
+    )
+    return GrammarEventV1(
+        event_id=event_id,
+        event_kind="atom_emitted",
+        trace_id=TRACE,
+        emitted_at=FIXED_TS,
+        observed_at=FIXED_TS,
+        atom=atom,
+        provenance=GrammarProvenanceV1(
+            source_service="orion-harness-governor",
+            source_component="harness_grammar_emit",
+        ),
+        correlation_id="corr-abc",
+    )
+
+
+def test_extract_accepts_harness_governor_lifecycle() -> None:
+    events = [
+        _harness_atom(
+            "exec_request_received",
+            "Harness exec received request for verb=orion_unified, mode=orion, steps=0",
+            event_id="h1",
+        ),
+        _harness_atom("exec_step_started", "Step started: order=1, step=fcc, verb=orion_unified, services=none", event_id="h2"),
+        _harness_atom(
+            "exec_result_assembled",
+            "Final result assembled: status=success, final_text_present=True, reasoning_present=True, thinking_source=harness_fcc",
+            event_id="h3",
+        ),
+        _harness_atom(
+            "exec_result_emitted",
+            "Harness exec result emitted to reply_to=True, status=success",
+            event_id="h4",
+        ),
+    ]
+    run = extract_execution_state_from_events(events, now=FIXED_TS)
+    assert run.verb == "orion_unified"
+    assert run.mode == "orion"
+    assert run.started_step_count == 1
+    assert run.reasoning_present is True
+    assert run.thinking_source == "harness_fcc"
+
+
+def test_reducer_noops_harness_fcc_step_role() -> None:
+    bad = GrammarEventV1(
+        event_id="noop1",
+        event_kind="atom_emitted",
+        trace_id=TRACE,
+        emitted_at=FIXED_TS,
+        atom=GrammarAtomV1(
+            atom_id=f"{TRACE}:harness_fcc_step",
+            trace_id=TRACE,
+            atom_type="observation",
+            semantic_role="harness_fcc_step",
+            layer="harness",
+            summary="Harness step 0: tool=none, ok",
+        ),
+        provenance=GrammarProvenanceV1(source_service="orion-harness-governor"),
+    )
+    proj, receipt = reduce_execution_trace_events(
+        events=[bad], projection=_empty_projection(), now=FIXED_TS,
+    )
+    assert receipt.noop_event_ids == ["noop1"]
+    assert proj.runs == {}

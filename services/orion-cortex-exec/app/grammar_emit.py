@@ -14,10 +14,7 @@ from orion.schemas.grammar import (
     GrammarEventV1,
     GrammarProvenanceV1,
 )
-
-
-def cortex_exec_trace_id(node_name: str, correlation_id: str) -> str:
-    return f"cortex.exec:{node_name}:{correlation_id}"
+from orion.substrate.execution_loop.ids import cortex_exec_trace_id
 
 
 def short_error_kind(error: str | None) -> str:

@@ -371,3 +371,34 @@ def test_reducer_noops_harness_fcc_step_role() -> None:
     )
     assert receipt.noop_event_ids == ["noop1"]
     assert proj.runs == {}
+
+
+def test_reducer_noops_harness_fcc_step_in_mixed_batch() -> None:
+    lifecycle = _harness_atom(
+        "exec_step_started",
+        "Step started: order=1, step=fcc, verb=orion_unified, services=none",
+        event_id="h2",
+    )
+    fcc_step = GrammarEventV1(
+        event_id="noop-fcc",
+        event_kind="atom_emitted",
+        trace_id=TRACE,
+        emitted_at=FIXED_TS,
+        atom=GrammarAtomV1(
+            atom_id=f"{TRACE}:harness_fcc_step",
+            trace_id=TRACE,
+            atom_type="observation",
+            semantic_role="harness_fcc_step",
+            layer="harness",
+            summary="Harness step 0: tool=none, ok",
+        ),
+        provenance=GrammarProvenanceV1(source_service="orion-harness-governor"),
+    )
+    proj, receipt = reduce_execution_trace_events(
+        events=[lifecycle, fcc_step],
+        projection=_empty_projection(),
+        now=FIXED_TS,
+    )
+    assert receipt.noop_event_ids == ["noop-fcc"]
+    assert receipt.accepted_event_ids == ["h2"]
+    assert proj.runs[TRACE].started_step_count == 1

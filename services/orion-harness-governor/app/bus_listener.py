@@ -19,6 +19,7 @@ from orion.harness.finalize import (
 from orion.harness.grammar_emit import (
     HarnessGrammarCollector,
     build_harness_grammar_events,
+    build_harness_grammar_finalize_events,
     publish_harness_lifecycle_grammar,
 )
 from orion.harness.repair import map_repair_pressure_contract
@@ -133,7 +134,11 @@ async def _emit_finalize_lifecycle_grammar(
     )
     if emit_result:
         collector.record_result_emitted(reply_present=True, status=status)
-    await _publish_harness_lifecycle(bus, collector=collector)
+    await publish_harness_lifecycle_grammar(
+        bus,
+        channel=settings.channel_grammar_event,
+        events=build_harness_grammar_finalize_events(collector),
+    )
 
 
 def _recall_fields_from_thought(thought: Any) -> tuple[dict[str, Any] | None, str | None]:
@@ -224,17 +229,6 @@ async def handle_harness_run_request(
         recall_debug=recall_debug,
     )
     if not motor.draft_text or motor.draft_molecule is None:
-        if motor.grammar_collector is not None:
-            await _emit_finalize_lifecycle_grammar(
-                bus,
-                collector=motor.grammar_collector,
-                step_count=motor.step_count,
-                grammar_receipt_count=len(motor.grammar_receipts),
-                reflection_ran=False,
-                quick_lane_skipped_5b=True,
-                final_text_present=False,
-                status="failed",
-            )
         run = HarnessRunV1(
             correlation_id=corr,
             final_text=None,

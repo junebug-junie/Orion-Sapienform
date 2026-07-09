@@ -88,3 +88,14 @@ def test_seed_v3_still_emits_saturated_felt_for_audit() -> None:
         grammar_degraded=False,
     )
     assert "field_intensity" in {f.name for f in payload.features}
+
+
+def test_seed_v3_headline_still_reads_reliability_from_dimensions() -> None:
+    payload, _, _ = inner_state.build_inner_state_features(
+        _sample_self_state(),
+        scaler,
+        features_version="seed-v3",
+        grammar_degraded=False,
+    )
+    assert payload.headline > 0.0
+    assert "reliability_pressure" not in {f.name for f in payload.features}

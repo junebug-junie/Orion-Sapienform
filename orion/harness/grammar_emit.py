@@ -464,6 +464,72 @@ def build_harness_grammar_events(
     return events
 
 
+def build_harness_grammar_finalize_events(
+    collector: HarnessGrammarCollector,
+) -> list[GrammarEventV1]:
+    """Emit only post-motor finalize atoms (refreshed assembled + egress).
+
+    Motor publish already sent request/plan/step lifecycle; finalize must not
+    replay the full trace (duplicate trace_started / step atoms on the bus).
+    """
+    roles = ("exec_result_assembled", "exec_result_emitted")
+    atoms = [collector._atoms[r] for r in roles if r in collector._atoms]
+    if not atoms:
+        return []
+
+    observed_at = collector.observed_at
+    emitted_at = datetime.now(timezone.utc)
+    trace_id = collector.trace_id
+    provenance = collector._provenance(f"harness.exec.finalize:{collector.correlation_id}")
+    events: list[GrammarEventV1] = []
+    for atom in atoms:
+        events.append(
+            _event(
+                event_kind="atom_emitted",
+                trace_id=trace_id,
+                emitted_at=emitted_at,
+                observed_at=observed_at,
+                provenance=provenance,
+                atom=atom,
+                layer=atom.layer,
+                dimensions=atom.dimensions,
+                session_id=collector.session_id,
+                turn_id=collector.turn_id,
+                correlation_id=collector.correlation_id,
+            )
+        )
+
+    assembled = collector._atoms.get("exec_result_assembled")
+    emitted = collector._atoms.get("exec_result_emitted")
+    if assembled and emitted:
+        edge = GrammarEdgeV1(
+            edge_id=f"{trace_id}:edge:{assembled.atom_id}:rendered_as:{emitted.atom_id}",
+            trace_id=trace_id,
+            from_atom_id=assembled.atom_id,
+            to_atom_id=emitted.atom_id,
+            relation_type="rendered_as",  # type: ignore[arg-type]
+            confidence=0.9,
+            salience=0.7,
+            evidence_event_ids=[collector.correlation_id],
+        )
+        events.append(
+            _event(
+                event_kind="edge_emitted",
+                trace_id=trace_id,
+                emitted_at=emitted_at,
+                observed_at=observed_at,
+                provenance=provenance,
+                edge=edge,
+                layer="step",
+                dimensions=["execution", "plan", "step"],
+                session_id=collector.session_id,
+                turn_id=collector.turn_id,
+                correlation_id=collector.correlation_id,
+            )
+        )
+    return events
+
+
 async def publish_harness_lifecycle_grammar(
     bus: Any,
     *,

@@ -99,6 +99,7 @@ def reduce_execution_trace_events(
         )
 
     events = processable
+    fcc_noop_ids = harness_fcc_noop_ids
 
     updated = deepcopy(projection)
     updated.generated_at = clock
@@ -136,9 +137,10 @@ def reduce_execution_trace_events(
             accepted_event_ids=event_ids,
             rejected_event_ids=[],
             merged_event_ids=[],
-            noop_event_ids=[],
+            noop_event_ids=fcc_noop_ids,
         ),
         accepted_event_ids=event_ids,
+        noop_event_ids=fcc_noop_ids,
         state_deltas=[
             StateDeltaV1(
                 delta_id=stable_delta_id(

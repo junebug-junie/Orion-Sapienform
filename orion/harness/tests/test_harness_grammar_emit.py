@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from orion.harness.grammar_emit import (
     HarnessGrammarCollector,
     build_harness_grammar_events,
+    build_harness_grammar_finalize_events,
     compute_harness_reasoning_present,
     publish_harness_lifecycle_grammar,
 )
@@ -51,3 +52,24 @@ def test_build_events_include_lifecycle_roles() -> None:
     assembled = next(e for e in events if e.atom and e.atom.semantic_role == "exec_result_assembled")
     assert "reasoning_present=True" in assembled.atom.summary
     assert "thinking_source=harness_fcc" in assembled.atom.summary
+
+
+def test_finalize_events_emit_only_assembled_and_egress() -> None:
+    c = HarnessGrammarCollector(node_name=NODE, correlation_id=CORR, observed_at=FIXED)
+    c.record_request_received()
+    c.record_plan_started(step_count=0)
+    c.record_result_assembled(
+        status="success",
+        final_text_present=True,
+        step_count=1,
+        grammar_receipt_count=1,
+        reflection_ran=True,
+        quick_lane_skipped_5b=False,
+    )
+    c.record_result_emitted(reply_present=True, status="success")
+    events = build_harness_grammar_finalize_events(c)
+    kinds = {e.event_kind for e in events}
+    roles = {e.atom.semantic_role for e in events if e.atom}
+    assert "trace_started" not in kinds
+    assert roles == {"exec_result_assembled", "exec_result_emitted"}
+    assert any(e.event_kind == "edge_emitted" for e in events)

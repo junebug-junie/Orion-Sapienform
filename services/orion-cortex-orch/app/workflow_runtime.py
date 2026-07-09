@@ -5,7 +5,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Literal, Tuple
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from orion.cognition.workflows import get_workflow_definition, workflow_registry_payload
 from orion.cognition.github_compactor.constants import DEFAULT_LOOKBACK_DAYS
@@ -14,6 +14,7 @@ from orion.cognition.github_compactor.digest import (
     build_quiet_day_digest,
     parse_github_compactor_digest_json,
     stable_github_compactor_journal_entry_id,
+    trim_github_compactor_input,
 )
 from orion.schemas.actions.github_compactor import GithubCompactorDigestV1
 from orion.core.bus.async_service import OrionBusAsync
@@ -203,6 +204,11 @@ def _ensure_trace(trace: dict | None, *, correlation_id: str, workflow_id: str) 
     base.setdefault("trace_id", correlation_id)
     base.setdefault("workflow_id", workflow_id)
     return base
+
+
+def _workflow_sub_correlation_id(parent_correlation_id: str, step_key: str) -> str:
+    """Stable UUID for workflow sub-steps (BaseEnvelope requires UUID correlation_id)."""
+    return str(uuid5(NAMESPACE_URL, f"orion:workflow:{parent_correlation_id}:{step_key}"))
 
 
 def _resolve_personality_file(metadata: Dict[str, Any] | None) -> str | None:
@@ -825,7 +831,7 @@ async def _execute_journal_discussion_window_pass(
         bus,
         source=source,
         client_request=skill_client,
-        correlation_id=f"{correlation_id}:discussion_window",
+        correlation_id=_workflow_sub_correlation_id(correlation_id, "discussion_window"),
         causality_chain=causality_chain,
         trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
         timeout_sec=float((skill_client.options or {}).get("timeout_sec", 120.0)),
@@ -1917,7 +1923,7 @@ async def _run_github_compactor_digest(
     synth_req.context.metadata = dict(synth_req.context.metadata or {})
     synth_req.context.metadata["workflow_subverb"] = "github_compactor_digest_v1"
     synth_req.context.metadata["workflow_id"] = workflow_id
-    synth_req.context.metadata["github_compactor_input"] = fetch_payload
+    synth_req.context.metadata["github_compactor_input"] = trim_github_compactor_input(fetch_payload)
     synth_req.context.metadata.update(
         _workflow_execution_envelope(
             req=req,
@@ -2023,7 +2029,7 @@ async def _execute_github_compactor_pass(
         bus,
         source=source,
         client_request=fetch_req,
-        correlation_id=f"{correlation_id}:github_fetch",
+        correlation_id=_workflow_sub_correlation_id(correlation_id, "github_fetch"),
         causality_chain=causality_chain,
         trace=_ensure_trace(trace, correlation_id=correlation_id, workflow_id=workflow_id),
         timeout_sec=float((fetch_req.options or {}).get("timeout_sec", 120.0)),

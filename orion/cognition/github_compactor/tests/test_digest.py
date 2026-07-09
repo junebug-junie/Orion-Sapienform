@@ -15,6 +15,7 @@ from orion.cognition.github_compactor.digest import (
     build_quiet_day_digest,
     parse_github_compactor_digest_json,
     stable_github_compactor_journal_entry_id,
+    trim_github_compactor_input,
 )
 from orion.schemas.actions.github_compactor import GithubCompactorDigestV1
 
@@ -76,3 +77,21 @@ def test_parse_github_compactor_digest_json() -> None:
     digest = parse_github_compactor_digest_json(raw)
     assert digest.card_summary == "Card"
     assert digest.pr_refs == ["#9"]
+
+
+def test_trim_github_compactor_input_caps_items_for_digest() -> None:
+    payload = {
+        "repo": "acme/widgets",
+        "merged_pr_count": 20,
+        "items": [
+            {"number": i, "title": f"PR {i}", "body": "x" * 900, "touched_paths": ["a"] * 50}
+            for i in range(20)
+        ],
+    }
+    trimmed = trim_github_compactor_input(payload, max_items=12)
+    assert len(trimmed["items"]) == 12
+    assert trimmed["items"][0]["body"] == "x" * 600 + "…"
+    assert "grouped_summary" not in trimmed
+    assert trimmed["items_truncated_for_digest"] is True
+    assert trimmed["items_total"] == 20
+    assert trimmed["merged_pr_count"] == 20

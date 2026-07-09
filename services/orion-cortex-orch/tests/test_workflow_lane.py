@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from pathlib import Path
+from uuid import UUID
 import sys
 import pytest
 
@@ -30,7 +31,7 @@ from orion.journaler.worker import (
 )
 
 from app import main as orch_main
-from app.workflow_runtime import execute_chat_workflow
+from app.workflow_runtime import _workflow_sub_correlation_id, execute_chat_workflow
 from orion.spark.introspection_metadata import build_introspection_context
 from orion.spark.concept_induction.parity_evidence import (
     ParityReadinessThresholds,
@@ -1955,12 +1956,22 @@ def test_concept_induction_prompt_contract_contains_noise_suppression_guidance()
     assert "Cross-subject pattern only when explicitly supported" in prompt
 
 
+def test_workflow_sub_correlation_id_is_valid_uuid() -> None:
+    parent = "00000000-0000-0000-0000-000000000099"
+    fetch = _workflow_sub_correlation_id(parent, "github_fetch")
+    UUID(fetch)
+    assert fetch == _workflow_sub_correlation_id(parent, "github_fetch")
+    assert fetch != _workflow_sub_correlation_id(parent, "discussion_window")
+
+
 def test_github_compactor_pass_writes_journal_and_supersedes_card(monkeypatch) -> None:
     bus = DummyBus()
     card_calls: dict = {}
+    sub_corr_ids: list[str] = []
 
     async def _fake_call_verb_runtime(*args, **kwargs):
         req = kwargs["client_request"]
+        sub_corr_ids.append(str(kwargs.get("correlation_id") or ""))
         if req.verb == "skills.repo.github_recent_prs.v1":
             payload = {
                 "available": True,
@@ -2025,6 +2036,9 @@ def test_github_compactor_pass_writes_journal_and_supersedes_card(monkeypatch) -
     assert result.metadata["workflow"]["merged_pr_count"] == 1
     assert card_calls.get("digest") is not None
     assert any(ch == "orion:journal:write" for ch, _ in bus.published)
+    fetch_corr = next(c for c in sub_corr_ids if c)
+    UUID(fetch_corr)
+    assert fetch_corr != "00000000-0000-0000-0000-000000000099"
 
 
 def test_github_compactor_pass_quiet_day_skips_card_persist(monkeypatch) -> None:

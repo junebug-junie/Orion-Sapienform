@@ -5,12 +5,45 @@ from uuid import NAMESPACE_URL, uuid5
 
 from orion.cognition.github_compactor.constants import (
     CARD_SUMMARY_MAX_CHARS,
+    DIGEST_INPUT_BODY_MAX_CHARS,
     JOURNAL_BODY_MAX_CHARS,
     JOURNAL_TITLE_MAX_CHARS,
+    MAX_DIGEST_INPUT_PRS,
 )
 from orion.schemas.actions.github_compactor import GithubCompactorDigestV1
 
 _COMPACTOR_JOURNAL_ENTRY_NS = NAMESPACE_URL
+
+
+def trim_github_compactor_input(fetch_payload: dict, *, max_items: int = MAX_DIGEST_INPUT_PRS) -> dict:
+    """Bound digest LLM input size while preserving total merge count metadata."""
+    if not isinstance(fetch_payload, dict):
+        return {}
+    trimmed = dict(fetch_payload)
+    items = list(fetch_payload.get("items") or [])
+    total = len(items)
+    compact_items = []
+    for item in items[:max_items]:
+        if not isinstance(item, dict):
+            continue
+        body = str(item.get("body") or "").strip()
+        if len(body) > DIGEST_INPUT_BODY_MAX_CHARS:
+            body = body[:DIGEST_INPUT_BODY_MAX_CHARS].rstrip() + "…"
+        compact_items.append(
+            {
+                "number": item.get("number"),
+                "title": item.get("title"),
+                "body": body,
+                "merged_at": item.get("merged_at"),
+                "url": item.get("url"),
+            }
+        )
+    trimmed["items"] = compact_items
+    if total > max_items:
+        trimmed["items_truncated_for_digest"] = True
+        trimmed["items_total"] = total
+    trimmed.pop("grouped_summary", None)
+    return trimmed
 
 
 def assert_digest_within_budget(digest: GithubCompactorDigestV1) -> None:

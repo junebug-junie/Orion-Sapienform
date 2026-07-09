@@ -2,8 +2,12 @@
   "mcpServers": {
     "github": {
       "type": "stdio",
-      "command": "docker",
+      "command": "python3",
       "args": [
+        "-m",
+        "orion.fcc.mcp_stdio_proxy",
+        "--",
+        "docker",
         "run", "-i", "--rm",
         "-e", "GITHUB_PERSONAL_ACCESS_TOKEN",
         "-e", "GITHUB_TOOLSETS",

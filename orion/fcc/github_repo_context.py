@@ -93,6 +93,19 @@ def github_mcp_brief_lines(*, workspace: Path | str | None = None) -> list[str]:
             "Avoid search_pull_requests (blows ~65k ctx). Report the PR title only; never paste "
             "raw MCP JSON into the reply."
         ),
+        (
+            "When a PR number is already known (user message or imperative), prefer "
+            f"get_pull_request(owner={owner!r}, repo={repo!r}, pullNumber=N) — never "
+            "list_pull_requests to discover a single named PR."
+        ),
+        (
+            "Never call list_pull_requests without repo= set. Never omit perPage on list calls; "
+            "default perPage=1 unless the imperative explicitly needs a short ranked list."
+        ),
+        (
+            "If a tool result is truncated by orion-fcc-mcp-proxy, summarize from the excerpt; "
+            "do not repeat the same bulk query."
+        ),
     ]
 
 

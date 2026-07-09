@@ -319,6 +319,23 @@ def test_turn_orchestrator_source_has_no_heuristic_answer_contract() -> None:
     assert "heuristic_answer_contract" not in source
 
 
+def test_harness_error_frame_context_overflow_adds_hint() -> None:
+    run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text=None,
+        draft_text="Prompt is too long",
+        finalize_ran=False,
+        step_count=3,
+        compliance_verdict="failed",
+        grounding_status="Prompt is too long",
+    )
+    frame = _harness_error_frame(run, correlation_id=_CORR_ID)
+    assert frame["error_code"] == "context_overflow"
+    assert frame["context_overflow"] is True
+    assert "get_pull_request" in frame["error"]
+    assert "perPage=1" in frame["partial_draft"] or "get_pull_request" in str(frame.get("partial_draft"))
+
+
 def test_harness_error_frame_finalize_includes_partial_draft() -> None:
     run = HarnessRunV1(
         correlation_id=_CORR_ID,

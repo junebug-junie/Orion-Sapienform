@@ -1,1 +1,1 @@
-"""Shared FCC (agent-claude / harness) helpers."""
+"""FCC shared helpers for Hub agent-claude and harness governor."""

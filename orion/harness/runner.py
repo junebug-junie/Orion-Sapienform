@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Awaitable, Callable
 
+from orion.fcc.context_budget import apply_context_overflow_hint, is_context_overflow_text
 from orion.harness.fcc_motor import (
     _extract_tool_name,
     expand_env_path,
@@ -255,6 +256,8 @@ class HarnessRunner:
                     )
             elif etype == "final":
                 draft_text = str(event.get("llm_response") or "").strip()
+                if is_context_overflow_text(draft_text):
+                    draft_text = apply_context_overflow_hint(draft_text)
                 meta = event.get("metadata")
                 if isinstance(meta, dict):
                     raw_exit = meta.get("exit_code")
@@ -265,12 +268,12 @@ class HarnessRunner:
                 error_code = str(event.get("error_code") or "").strip()
                 error_msg = str(event.get("error") or "").strip()
                 if partial:
-                    draft_text = partial
+                    draft_text = apply_context_overflow_hint(partial)
                     compliance_verdict = "partial"
                     grounding_status = error_code or "partial"
                 else:
                     compliance_verdict = "failed"
-                    grounding_status = error_code or error_msg or "failed"
+                    grounding_status = apply_context_overflow_hint(error_msg) or error_code or error_msg or "failed"
                     motor_failed = True
                 if step_count > 0:
                     collector.record_step_failed(

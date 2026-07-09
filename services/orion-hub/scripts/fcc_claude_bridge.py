@@ -14,6 +14,19 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 from scripts.fcc_env_catalog import load_fcc_env, resolve_auth_token
 from scripts.fcc_model_mapping import DEFAULT_FCC_MODEL_LABEL, label_to_claude_model_id
 from orion.fcc.claude_spawn import auto_approve_from_env, claude_permission_argv, extend_mcp_argv
+from orion.fcc.context_budget import (
+    annotate_harness_step,
+    apply_context_overflow_hint,
+    build_context_pressure_step,
+    context_fill_pct,
+    context_overflow_operator_hint,
+    context_pressure_threshold_chars,
+    is_context_overflow_text,
+    max_context_chars,
+    max_context_tokens,
+    measure_step_payload_chars,
+    extend_fcc_subprocess_env,
+)
 
 logger = logging.getLogger("orion-hub.fcc_claude_bridge")
 
@@ -259,28 +272,11 @@ def _build_subprocess_env(*, fcc_server_url: str, auth_token: str) -> Dict[str, 
     if 0 < autocompact_pct <= 100:
         pct = int(autocompact_pct) if autocompact_pct == int(autocompact_pct) else autocompact_pct
         env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = str(pct)
+    extend_fcc_subprocess_env(env, workspace=settings.HUB_AGENT_CLAUDE_WORKSPACE)
     # Never inherit operator flags that disable Claude Code auto-compact.
     env.pop("DISABLE_COMPACT", None)
     env.pop("DISABLE_AUTO_COMPACT", None)
     return env
-
-
-def is_context_overflow_text(text: str) -> bool:
-    lowered = str(text or "").lower()
-    return (
-        "exceed_context_size_error" in lowered
-        or "exceeds the available context size" in lowered
-    )
-
-
-def context_overflow_operator_hint(*, n_ctx: int | None = None) -> str:
-    ctx = int(n_ctx or 65536)
-    return (
-        f"\n\n---\nHub: context window full (~{ctx} tokens on llamacpp). "
-        "Prefer rg/Grep before Read; use Read offset/limit on large files "
-        "(orion/bus/channels.yaml is ~65KB). Raise ctx_size in config/llm_profiles.yaml "
-        "or route ~/.fcc/.env MODEL_* to a backend with more headroom."
-    )
 
 
 async def run_turn(
@@ -353,6 +349,9 @@ async def run_turn(
     read_limit = int(getattr(settings, "HUB_AGENT_CLAUDE_STREAM_READ_LIMIT", DEFAULT_STREAM_READ_LIMIT))
     if read_limit < 65536:
         read_limit = 65536
+    budget_chars = len(prompt)
+    ceiling_chars = max_context_chars()
+    context_nudge_sent = False
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -404,7 +403,23 @@ async def run_turn(
                 continue
 
             step = build_step_frame(parsed)
+            step = annotate_harness_step(step, accumulated_chars=budget_chars, max_chars=ceiling_chars)
+            budget_chars += measure_step_payload_chars(step)
             yield {"type": "step", "step": step}
+            if (
+                not context_nudge_sent
+                and budget_chars >= context_pressure_threshold_chars()
+            ):
+                fill = context_fill_pct(accumulated_chars=budget_chars, max_chars=ceiling_chars)
+                yield {
+                    "type": "step",
+                    "step": annotate_harness_step(
+                        build_context_pressure_step(fill_pct=fill),
+                        accumulated_chars=budget_chars,
+                        max_chars=ceiling_chars,
+                    ),
+                }
+                context_nudge_sent = True
 
             text, sid, _dur = extract_final_from_stream_event(parsed, accumulated=accumulated)
             if text:
@@ -448,6 +463,9 @@ async def run_turn(
         err_msg = f"claude exited with code {exit_code}"
         if stderr_snippet:
             err_msg = f"{err_msg}: {stderr_snippet}"
+        if is_context_overflow_text(accumulated) or is_context_overflow_text(err_msg):
+            accumulated = apply_context_overflow_hint(accumulated)
+            err_msg = apply_context_overflow_hint(err_msg)
         yield {
             "type": "error",
             "error": err_msg,
@@ -456,6 +474,9 @@ async def run_turn(
             "llm_response": accumulated,
         }
         return
+
+    if is_context_overflow_text(accumulated):
+        accumulated = apply_context_overflow_hint(accumulated)
 
     yield {
         "type": "final",

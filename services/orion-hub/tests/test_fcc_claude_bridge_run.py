@@ -162,6 +162,7 @@ async def test_build_subprocess_env_omits_autocompact_when_zero(monkeypatch: pyt
 def test_is_context_overflow_text_detects_llamacpp_error() -> None:
     sample = 'exceed_context_size_error n_ctx":65536'
     assert bridge.is_context_overflow_text(sample) is True
+    assert bridge.is_context_overflow_text("Prompt is too long") is True
     assert bridge.is_context_overflow_text("all good") is False
 
 

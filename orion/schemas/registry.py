@@ -440,6 +440,7 @@ from orion.schemas.self_study import (
 )
 from orion.schemas.telemetry.inner_state import InnerFeatureV1, InnerStateFeaturesV1
 from orion.schemas.telemetry.phi_encoder import PhiEncoderManifestV1, PhiIntrinsicRewardV1
+from orion.schemas.telemetry.reasoning import ReasoningActivityV1, ReasoningCallV1
 from orion.schemas.telemetry.spark import SparkStateSnapshotV1, SparkTelemetryPayload
 from orion.schemas.telemetry.spark_ack import SparkStateSnapshotAckV1
 from orion.schemas.telemetry.spark_candidate import SparkCandidateV1
@@ -712,6 +713,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "InnerFeatureV1": InnerFeatureV1,
     "PhiEncoderManifestV1": PhiEncoderManifestV1,
     "PhiIntrinsicRewardV1": PhiIntrinsicRewardV1,
+    "ReasoningCallV1": ReasoningCallV1,
+    "ReasoningActivityV1": ReasoningActivityV1,
     "SparkCandidateV1": SparkCandidateV1,
     "SparkSignalV1": SparkSignalV1,
     "SparkStateSnapshotAckV1": SparkStateSnapshotAckV1,
@@ -1246,6 +1249,14 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "PhiIntrinsicRewardV1": SchemaRegistration(
         model=PhiIntrinsicRewardV1,
         kind="self.phi_reward.v1",
+    ),
+    "ReasoningCallV1": SchemaRegistration(
+        model=ReasoningCallV1,
+        kind="cognition.reasoning_call.v1",
+    ),
+    "ReasoningActivityV1": SchemaRegistration(
+        model=ReasoningActivityV1,
+        kind="cognition.reasoning_activity.v1",
     ),
     "VisionEdgeActivityPayload": SchemaRegistration(
         model=VisionEdgeActivityPayload,

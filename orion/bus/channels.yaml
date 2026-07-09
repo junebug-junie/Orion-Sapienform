@@ -624,6 +624,15 @@ channels:
     stability: "experimental"
     since: "2026-07-08"
 
+  - name: "orion:cognition:reasoning_call"
+    kind: "telemetry"
+    schema_id: "ReasoningCallV1"
+    message_kind: "cognition.reasoning_call.v1"
+    producer_services: ["orion-cortex-exec"]
+    consumer_services: ["orion-thought"]
+    stability: "experimental"
+    since: "2026-07-09"
+
   - name: "orion:rdf:enqueue"
     kind: "request"
     schema_id: "RdfWriteRequest"

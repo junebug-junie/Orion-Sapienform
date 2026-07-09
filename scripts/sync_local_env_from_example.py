@@ -129,6 +129,10 @@ SYNC_PREFIXES = (
     "ORION_PHI_ENCODER_",
     "SUBSTRATE_READ_",
     "EXEC_TRAJECTORY_",
+    # Reasoning telemetry adapter (cortex-exec -> orion-thought -> phi, default-off)
+    "REASONING_ACTIVITY_",
+    # Corpus hygiene: execution_trajectory projection cap (orion-substrate-runtime)
+    "EXECUTION_TRAJECTORY_",
 )
 
 SYNC_EXACT = frozenset(
@@ -168,6 +172,9 @@ SYNC_EXACT = frozenset(
         "SUBSTRATE_RUNTIME_URL",
         "CHANNEL_INNER_FEATURES",
         "CHANNEL_PHI_REWARD",
+        # Reasoning telemetry adapter (cortex-exec -> orion-thought -> phi, default-off)
+        "PUBLISH_REASONING_TELEMETRY",
+        "CHANNEL_REASONING_CALL",
     }
 )
 

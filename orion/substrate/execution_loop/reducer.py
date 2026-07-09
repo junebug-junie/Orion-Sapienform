@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from orion.schemas.execution_projection import ExecutionTrajectoryProjectionV1
 from orion.schemas.grammar import GrammarEventV1
@@ -12,6 +12,8 @@ from orion.substrate.ids import stable_delta_id, stable_receipt_id
 from .constants import (
     EXECUTION_REDUCER_ID,
     EXECUTION_SOURCE_SERVICES,
+    EXECUTION_TRAJECTORY_MAX_AGE_SEC,
+    EXECUTION_TRAJECTORY_MAX_RUNS,
     EXECUTION_TRAJECTORY_PROJECTION_ID,
 )
 from .grammar_extract import extract_execution_state_from_events
@@ -25,12 +27,53 @@ def _utc_now(now: datetime | None) -> datetime:
     return now if now.tzinfo else now.replace(tzinfo=timezone.utc)
 
 
+def _evict_stale_runs(
+    projection: ExecutionTrajectoryProjectionV1,
+    *,
+    clock: datetime,
+    max_runs: int | None,
+    max_age_sec: float | None,
+    protected_trace_id: str,
+) -> None:
+    """Prune `projection.runs` in place by LRU (last_updated_at).
+
+    Mutates `projection.runs` directly. Only called on the success path,
+    right after `protected_trace_id` has been written, so `protected_trace_id`
+    is always excluded from eviction candidates -- this is a structural
+    guarantee, not one inferred from timestamp freshness: batches processed
+    together (see pipeline.py) share a single `clock`, so multiple runs can
+    legitimately tie on `last_updated_at`, and a stable sort alone would be
+    free to evict whichever tied run happens to sit earlier in dict order
+    (e.g. a pre-existing run whose position predates this tick).
+    """
+    if max_age_sec is not None:
+        cutoff = clock - timedelta(seconds=max_age_sec)
+        stale_ids = [
+            trace_id
+            for trace_id, run in projection.runs.items()
+            if trace_id != protected_trace_id and run.last_updated_at < cutoff
+        ]
+        for trace_id in stale_ids:
+            del projection.runs[trace_id]
+
+    if max_runs is not None and len(projection.runs) > max_runs:
+        candidates = sorted(
+            (item for item in projection.runs.items() if item[0] != protected_trace_id),
+            key=lambda item: item[1].last_updated_at,
+        )
+        excess = len(projection.runs) - max_runs
+        for trace_id, _run in candidates[:excess]:
+            del projection.runs[trace_id]
+
+
 def reduce_execution_trace_events(
     *,
     events: list[GrammarEventV1],
     projection: ExecutionTrajectoryProjectionV1,
     now: datetime | None = None,
     reducer_id: str = EXECUTION_REDUCER_ID,
+    max_runs: int | None = EXECUTION_TRAJECTORY_MAX_RUNS,
+    max_age_sec: float | None = EXECUTION_TRAJECTORY_MAX_AGE_SEC,
 ) -> tuple[ExecutionTrajectoryProjectionV1, ReductionReceiptV1]:
     clock = _utc_now(now)
     if not events:
@@ -129,6 +172,13 @@ def reduce_execution_trace_events(
     operation = "create" if existing is None else "update"
     merged = merge_execution_run_state(existing, incoming)
     updated.runs[trace_id] = merged
+    _evict_stale_runs(
+        updated,
+        clock=clock,
+        max_runs=max_runs,
+        max_age_sec=max_age_sec,
+        protected_trace_id=trace_id,
+    )
 
     event_ids = [e.event_id for e in events if e.atom]
     receipt = ReductionReceiptV1(

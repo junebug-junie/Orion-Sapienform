@@ -38,9 +38,11 @@ from orion.spark.orion_tissue import OrionTissue
 from orion.spark.signal_mapper import SignalMapper
 from orion.spark.surface_encoding import SurfaceEncoding
 from orion.spark.introspection_metadata import build_introspection_context
+from orion.telemetry.corpus_gate import is_corpus_row_healthy
 
 from . import introspection_guard as ig
 from .inner_state import (
+    COGNITIVE_FEATURE_NAMES,
     RollingRobustScaler,
     build_inner_state_features,
 )
@@ -2435,10 +2437,16 @@ async def handle_self_state(env: BaseEnvelope) -> None:
                 _PHI_PREV_RECON = out.recon_error
         _INNER_PREV_HEADLINE = inner.headline
         _INNER_LAST_HEADLINE = inner.headline
-        try:
-            _INNER_SINK.append(inner)
-        except OSError as exc:
-            logger.warning("Failed to append inner-state corpus: %s", exc)
+        healthy, reject_reasons = is_corpus_row_healthy(
+            inner, cognitive_feature_names=COGNITIVE_FEATURE_NAMES
+        )
+        if healthy:
+            try:
+                _INNER_SINK.append(inner)
+            except OSError as exc:
+                logger.warning("Failed to append inner-state corpus: %s", exc)
+        else:
+            logger.info("inner_state_corpus_row_rejected reasons=%s", reject_reasons)
         if _pub_bus and _pub_bus.enabled:
             try:
                 await _pub_bus.publish(

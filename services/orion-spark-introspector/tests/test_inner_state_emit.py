@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import pytest
@@ -323,3 +323,118 @@ async def test_handle_self_state_includes_cognitive_features(monkeypatch) -> Non
     await worker.handle_self_state(env)
     names = {f.name for f in captured["payload"].features}
     assert "reasoning_present" in names
+
+
+@pytest.mark.asyncio
+async def test_handle_self_state_healthy_row_appends_to_corpus(monkeypatch) -> None:
+    """A healthy row (phi_health='ok', grammar not degraded, cognitive features
+    backed by a real execution-trajectory run rather than all '.none') must
+    reach the phi training corpus sink."""
+    monkeypatch.setattr(worker, "_SUBSTRATE_CACHE", None, raising=False)
+    monkeypatch.setattr(
+        worker,
+        "fetch_grammar_truth",
+        AsyncMock(
+            return_value=GrammarTruthSnapshot(
+                degraded=False,
+                degraded_reasons=[],
+                enabled_reducers={"execution_trajectory": True},
+                reducer_health_by_name={"execution_trajectory": {"classification": "healthy"}},
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        worker,
+        "fetch_execution_trajectory",
+        AsyncMock(
+            return_value=ExecutionTrajectorySnapshot(
+                ok=True,
+                projection={
+                    "runs": {
+                        "a": {
+                            "reasoning_present": True,
+                            "recall_observed": True,
+                            "step_count": 4,
+                            "failed_step_count": 0,
+                            "pressure_hints": {},
+                            "last_updated_at": _NOW.isoformat(),
+                        }
+                    }
+                },
+            )
+        ),
+    )
+
+    class _Bus:
+        enabled = True
+
+        async def publish(self, channel, env):
+            pass
+
+    monkeypatch.setattr(worker, "_pub_bus", _Bus(), raising=False)
+    monkeypatch.setattr(worker.manager, "broadcast", AsyncMock(), raising=False)
+    monkeypatch.setattr(worker, "_INNER_SCALER", worker._new_inner_scaler(), raising=False)
+    monkeypatch.setattr(worker, "_INNER_PREV_FELT", None, raising=False)
+    monkeypatch.setattr(worker, "_INNER_PREV_HEADLINE", None, raising=False)
+    monkeypatch.setattr(worker, "_INNER_DEGENERATE_STREAK", 0, raising=False)
+
+    mock_sink = MagicMock()
+    monkeypatch.setattr(worker, "_INNER_SINK", mock_sink, raising=False)
+
+    env = BaseEnvelope(
+        kind="substrate.self_state.v1",
+        source=ServiceRef(name="substrate-runtime", node="athena"),
+        payload=_self_state_payload(),
+    )
+    await worker.handle_self_state(env)
+
+    mock_sink.append.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_self_state_unhealthy_row_skips_corpus(monkeypatch) -> None:
+    """A frozen/degraded row must NOT reach the phi training corpus sink —
+    garbage is rejected at the write boundary, not filtered later at fit time."""
+    monkeypatch.setattr(worker, "_SUBSTRATE_CACHE", None, raising=False)
+    monkeypatch.setattr(
+        worker,
+        "fetch_grammar_truth",
+        AsyncMock(
+            return_value=GrammarTruthSnapshot(
+                degraded=True,
+                degraded_reasons=["cursor_lag:execution_grammar_reducer"],
+                enabled_reducers={"execution_trajectory": True},
+                reducer_health_by_name={},
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        worker,
+        "fetch_execution_trajectory",
+        AsyncMock(return_value=ExecutionTrajectorySnapshot(ok=False, projection=None)),
+    )
+
+    class _Bus:
+        enabled = True
+
+        async def publish(self, channel, env):
+            pass
+
+    monkeypatch.setattr(worker, "_pub_bus", _Bus(), raising=False)
+    monkeypatch.setattr(worker.manager, "broadcast", AsyncMock(), raising=False)
+    monkeypatch.setattr(worker, "_INNER_SCALER", worker._new_inner_scaler(), raising=False)
+    monkeypatch.setattr(worker, "_INNER_PREV_FELT", None, raising=False)
+    monkeypatch.setattr(worker, "_INNER_PREV_HEADLINE", None, raising=False)
+    monkeypatch.setattr(worker, "_INNER_DEGENERATE_STREAK", 0, raising=False)
+
+    mock_sink = MagicMock()
+    monkeypatch.setattr(worker, "_INNER_SINK", mock_sink, raising=False)
+
+    env = BaseEnvelope(
+        kind="substrate.self_state.v1",
+        source=ServiceRef(name="substrate-runtime", node="athena"),
+        payload=_self_state_payload(),
+    )
+    await worker.handle_self_state(env)
+
+    mock_sink.append.assert_not_called()

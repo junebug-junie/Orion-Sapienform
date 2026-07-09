@@ -27,17 +27,18 @@ class ReasoningCallV1(BaseModel):
     reasoning_present: bool = False
     reasoning_trace_present: bool = False
     completion_tokens: Optional[int] = Field(default=None, ge=0)
+    prompt_tokens: Optional[int] = Field(default=None, ge=0)
+    # True when the request set chat_template_kwargs.enable_thinking — read live
+    # from run_plan's ctx (executor.py forwards the same key to the LLM gateway).
+    # No caller in this codebase sets it True today, so this is currently always
+    # False in practice, but it is a live read, not a hardcoded literal.
+    thinking_enabled: bool = False
     emitted_at: datetime
     # --- Reserved / not yet wired by the cortex-exec producer -----------------
-    # These fields are part of the contract but the current producer cannot
-    # populate them, so they stay at their defaults until wired. Consumers must
-    # treat them as absent, not as measured zeros.
-    #   thinking_enabled: needs the `enable_thinking` template flag threaded from
-    #     pre_turn_appraisal into run_plan's ctx (a follow-on wire).
-    #   prompt_tokens: not surfaced by `_extract_final_text` diagnostics today.
-    #   thinking_tokens: no provider exposes a separate thinking-token count yet.
-    thinking_enabled: bool = False
-    prompt_tokens: Optional[int] = Field(default=None, ge=0)
+    # thinking_tokens: no provider in this stack (local vLLM via
+    # orion-llm-gateway) returns a separate reasoning-token count in `usage`
+    # (no `completion_tokens_details` field is ever parsed). Stays None until a
+    # provider actually surfaces one. Consumers must treat it as absent, not 0.
     thinking_tokens: Optional[int] = Field(default=None, ge=0)
 
 
@@ -54,7 +55,6 @@ class ReasoningActivityV1(BaseModel):
     completion_tokens_sum: int = Field(default=0, ge=0)
     completion_tokens_p50: float = Field(default=0.0, ge=0.0)
     by_mode: Dict[str, int] = Field(default_factory=dict)
-    # Derived from ReasoningCallV1's reserved thinking_* fields — stay 0 / None
-    # until the producer wires `thinking_enabled` / `thinking_tokens` (see above).
     thinking_call_count: int = Field(default=0, ge=0)
+    # thinking_tokens_sum stays None — see ReasoningCallV1.thinking_tokens (reserved).
     thinking_tokens_sum: Optional[int] = Field(default=None, ge=0)

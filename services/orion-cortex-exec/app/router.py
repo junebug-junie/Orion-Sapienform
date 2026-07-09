@@ -193,15 +193,27 @@ def _provider_completion_meta(payload: dict[str, Any]) -> dict[str, Any]:
     first = choices[0] if choices and isinstance(choices[0], dict) else {}
     finish_reason = first.get("finish_reason")
     completion_tokens = usage.get("completion_tokens") or raw_usage.get("completion_tokens")
+    prompt_tokens = usage.get("prompt_tokens") or raw_usage.get("prompt_tokens")
     meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
     return {
         "finish_reason": finish_reason,
         "completion_tokens": completion_tokens,
+        "prompt_tokens": prompt_tokens,
         "has_reasoning_content": bool(str(payload.get("reasoning_content") or "").strip()),
         "has_reasoning_trace": isinstance(payload.get("reasoning_trace"), dict),
         "provider_reasoning_available": meta.get("provider_reasoning_available"),
         "inline_think_extracted": meta.get("inline_think_extracted"),
     }
+
+
+def _thinking_enabled_from_ctx(ctx: dict[str, Any]) -> bool:
+    """Read the same chat_template_kwargs.enable_thinking key executor.py forwards
+    to the LLM gateway (executor.py:4171), rather than hardcoding False. Never
+    raises on an unexpected shape."""
+    kwargs = ctx.get("chat_template_kwargs") if isinstance(ctx, dict) else None
+    if not isinstance(kwargs, dict):
+        return False
+    return bool(kwargs.get("enable_thinking"))
 
 
 def _extract_first_json_object_text(text: str) -> str | None:
@@ -251,6 +263,7 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
         "candidate_fields_considered": [],
         "provider_finish_reason": None,
         "provider_completion_tokens": None,
+        "provider_prompt_tokens": None,
         "provider_has_reasoning_content": False,
         "provider_has_reasoning_trace": False,
         "provider_reasoning_available": None,
@@ -294,6 +307,7 @@ def _extract_final_text(steps: List[StepExecutionResult], *, verb_name: str | No
                 provider_meta = _provider_completion_meta(payload)
                 diagnostics["provider_finish_reason"] = provider_meta.get("finish_reason")
                 diagnostics["provider_completion_tokens"] = provider_meta.get("completion_tokens")
+                diagnostics["provider_prompt_tokens"] = provider_meta.get("prompt_tokens")
                 diagnostics["provider_has_reasoning_content"] = provider_meta.get("has_reasoning_content")
                 diagnostics["provider_has_reasoning_trace"] = provider_meta.get("has_reasoning_trace")
                 diagnostics["provider_reasoning_available"] = provider_meta.get("provider_reasoning_available")
@@ -1560,14 +1574,14 @@ class PlanRunner:
                     mode=str(mode or "unknown"),
                     node_id=settings.node_name,
                     turn_id=str(ctx.get("turn_id") or ctx.get("message_id") or ctx.get("messageId") or "") or None,
-                    # No plan-run signal for the enable_thinking template flag is
-                    # available here (set only in pre_turn_appraisal). Report False.
-                    thinking_enabled=False,
+                    thinking_enabled=_thinking_enabled_from_ctx(ctx),
                     diagnostics=final_text_diag,
                     completion_tokens=final_text_diag.get("provider_completion_tokens"),
-                    # prompt_tokens is not surfaced in _extract_final_text diagnostics.
-                    prompt_tokens=None,
-                    # No provider exposes a separate thinking-token count today.
+                    prompt_tokens=final_text_diag.get("provider_prompt_tokens"),
+                    # No provider in this stack (local vLLM via orion-llm-gateway)
+                    # returns a separate reasoning/thinking token count in `usage`
+                    # (verified: llm_backend.py only parses completion_tokens from
+                    # raw provider usage, no completion_tokens_details). Reserved.
                     thinking_tokens=None,
                 )
                 await publish_reasoning_call(

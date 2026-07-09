@@ -341,10 +341,11 @@ profiles:
       n_parallel: 1
       batch_size: 1024
 
-      reasoning: "on"
-      reasoning_format: "deepseek"
-      chat_template_kwargs:
-        enable_thinking: true
+      reasoning: "off"
+      reasoning_budget: 0
+      #reasoning_format: "deepseek"
+      #chat_template_kwargs:
+      #  enable_thinking: true
 
       no_context_shift: true
       split_mode: "row"

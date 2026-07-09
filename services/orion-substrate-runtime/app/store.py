@@ -28,7 +28,10 @@ from orion.core.schemas.substrate_episodes import EpisodeSummaryV1
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1
 
 from orion.substrate.biometrics_loop.constants import GRAMMAR_CURSOR_NAME
-from orion.substrate.execution_loop.constants import EXECUTION_GRAMMAR_CURSOR_NAME
+from orion.substrate.execution_loop.constants import (
+    EXECUTION_GRAMMAR_CURSOR_NAME,
+    EXECUTION_SOURCE_SERVICES,
+)
 from orion.substrate.transport_loop.constants import (
     TRANSPORT_BUS_PROJECTION_ID,
     TRANSPORT_GRAMMAR_CURSOR_NAME,
@@ -40,11 +43,13 @@ from orion.substrate.chat_loop.constants import (
 )
 from orion.schemas.chat_projection import ChatSessionProjectionV1
 
-GRAMMAR_CURSOR_REGISTRY: dict[str, tuple[str, str]] = {
-    GRAMMAR_CURSOR_NAME: ("orion-biometrics", "biometrics.node:"),
-    EXECUTION_GRAMMAR_CURSOR_NAME: ("orion-cortex-exec", "cortex.exec:"),
-    TRANSPORT_GRAMMAR_CURSOR_NAME: ("orion-bus", "bus.transport:"),
-    CHAT_GRAMMAR_CURSOR_NAME: ("orion-hub", "hub.chat:"),
+EXECUTION_GRAMMAR_SOURCE_SERVICES = tuple(EXECUTION_SOURCE_SERVICES)
+
+GRAMMAR_CURSOR_REGISTRY: dict[str, tuple[tuple[str, ...], str]] = {
+    GRAMMAR_CURSOR_NAME: (("orion-biometrics",), "biometrics.node:"),
+    EXECUTION_GRAMMAR_CURSOR_NAME: (EXECUTION_GRAMMAR_SOURCE_SERVICES, "cortex.exec:"),
+    TRANSPORT_GRAMMAR_CURSOR_NAME: (("orion-bus",), "bus.transport:"),
+    CHAT_GRAMMAR_CURSOR_NAME: ((CHAT_SOURCE_SERVICE,), "hub.chat:"),
 }
 from orion.substrate.biometrics_loop.lineage import emission_touches_node, receipt_touches_node
 from orion.substrate.receipts.retention import (
@@ -140,7 +145,7 @@ class BiometricsSubstrateStore:
         conn: Any,
         *,
         cursor_name: str,
-        source_service: str,
+        source_services: tuple[str, ...],
         trace_prefix: str,
         reason: str,
         prior_created_at: datetime | None = None,
@@ -153,14 +158,14 @@ class BiometricsSubstrateStore:
                 """
                 SELECT created_at, event_id
                 FROM grammar_events
-                WHERE source_service = :source_service
+                WHERE source_service = ANY(:source_services)
                   AND trace_id LIKE :trace_like
                 ORDER BY created_at DESC, event_id DESC
                 LIMIT 1
                 """
             ),
             {
-                "source_service": source_service,
+                "source_services": list(source_services),
                 "trace_like": trace_like,
             },
         ).mappings().first()
@@ -223,7 +228,7 @@ class BiometricsSubstrateStore:
         conn: Any,
         *,
         cursor_name: str,
-        source_service: str,
+        source_services: tuple[str, ...],
         trace_prefix: str,
         max_lag_sec: float,
         tail_seed_on_lag: bool,
@@ -242,7 +247,7 @@ class BiometricsSubstrateStore:
             self._seed_grammar_cursor_at_tail(
                 conn,
                 cursor_name=cursor_name,
-                source_service=source_service,
+                source_services=source_services,
                 trace_prefix=trace_prefix,
                 reason="cold_start",
             )
@@ -253,7 +258,7 @@ class BiometricsSubstrateStore:
             self._seed_grammar_cursor_at_tail(
                 conn,
                 cursor_name=cursor_name,
-                source_service=source_service,
+                source_services=source_services,
                 trace_prefix=trace_prefix,
                 reason="lag_exceeded",
                 prior_created_at=row["last_event_created_at"],
@@ -272,7 +277,7 @@ class BiometricsSubstrateStore:
         self,
         *,
         cursor_name: str,
-        source_service: str,
+        source_services: tuple[str, ...],
         trace_prefix: str,
         limit: int,
     ) -> list[GrammarEventV1]:
@@ -283,7 +288,7 @@ class BiometricsSubstrateStore:
             self._ensure_grammar_cursor_at_tail(
                 conn,
                 cursor_name=cursor_name,
-                source_service=source_service,
+                source_services=source_services,
                 trace_prefix=trace_prefix,
                 max_lag_sec=max_lag_sec,
                 tail_seed_on_lag=app_settings.substrate_cursor_tail_seed_on_lag,
@@ -306,7 +311,7 @@ class BiometricsSubstrateStore:
                     """
                     SELECT event_id, event_json, created_at
                     FROM grammar_events
-                    WHERE source_service = :source_service
+                    WHERE source_service = ANY(:source_services)
                       AND trace_id LIKE :trace_like
                       AND (
                         created_at > :cursor_ts
@@ -317,7 +322,7 @@ class BiometricsSubstrateStore:
                     """
                 ),
                 {
-                    "source_service": source_service,
+                    "source_services": list(source_services),
                     "trace_like": trace_like,
                     "cursor_ts": row["last_event_created_at"],
                     "cursor_id": row["last_event_id"] or "",
@@ -336,7 +341,7 @@ class BiometricsSubstrateStore:
     def fetch_biometrics_grammar_events(self, *, limit: int = 50) -> list[GrammarEventV1]:
         return self._fetch_grammar_events(
             cursor_name=GRAMMAR_CURSOR_NAME,
-            source_service="orion-biometrics",
+            source_services=("orion-biometrics",),
             trace_prefix="biometrics.node:",
             limit=limit,
         )
@@ -344,7 +349,7 @@ class BiometricsSubstrateStore:
     def fetch_execution_grammar_events(self, *, limit: int = 50) -> list[GrammarEventV1]:
         return self._fetch_grammar_events(
             cursor_name=EXECUTION_GRAMMAR_CURSOR_NAME,
-            source_service="orion-cortex-exec",
+            source_services=EXECUTION_GRAMMAR_SOURCE_SERVICES,
             trace_prefix="cortex.exec:",
             limit=limit,
         )
@@ -352,7 +357,7 @@ class BiometricsSubstrateStore:
     def fetch_transport_grammar_events(self, *, limit: int = 50) -> list[GrammarEventV1]:
         return self._fetch_grammar_events(
             cursor_name=TRANSPORT_GRAMMAR_CURSOR_NAME,
-            source_service="orion-bus",
+            source_services=("orion-bus",),
             trace_prefix="bus.transport:",
             limit=limit,
         )
@@ -360,7 +365,7 @@ class BiometricsSubstrateStore:
     def fetch_chat_grammar_events(self, *, limit: int = 100) -> list[GrammarEventV1]:
         return self._fetch_grammar_events(
             cursor_name=CHAT_GRAMMAR_CURSOR_NAME,
-            source_service=CHAT_SOURCE_SERVICE,
+            source_services=(CHAT_SOURCE_SERVICE,),
             trace_prefix=CHAT_TRACE_PREFIX,
             limit=limit,
         )
@@ -1021,7 +1026,7 @@ class BiometricsSubstrateStore:
         spec = GRAMMAR_CURSOR_REGISTRY.get(cursor_name)
         if spec is None:
             raise ValueError(f"unknown cursor_name: {cursor_name}")
-        source_service, trace_prefix = spec
+        source_services, trace_prefix = spec
         trace_like = _trace_id_like_pattern(trace_prefix)
 
         with self._engine.connect() as conn:
@@ -1040,13 +1045,13 @@ class BiometricsSubstrateStore:
                     """
                     SELECT created_at, event_id
                     FROM grammar_events
-                    WHERE source_service = :source_service
+                    WHERE source_service = ANY(:source_services)
                       AND trace_id LIKE :trace_like
                     ORDER BY created_at DESC, event_id DESC
                     LIMIT 1
                     """
                 ),
-                {"source_service": source_service, "trace_like": trace_like},
+                {"source_services": list(source_services), "trace_like": trace_like},
             ).mappings().first()
 
             pending = 0
@@ -1057,7 +1062,7 @@ class BiometricsSubstrateStore:
                             """
                             SELECT COUNT(*)
                             FROM grammar_events
-                            WHERE source_service = :source_service
+                            WHERE source_service = ANY(:source_services)
                               AND trace_id LIKE :trace_like
                               AND (
                                 created_at > :cursor_ts
@@ -1069,7 +1074,7 @@ class BiometricsSubstrateStore:
                             """
                         ),
                         {
-                            "source_service": source_service,
+                            "source_services": list(source_services),
                             "trace_like": trace_like,
                             "cursor_ts": cursor_row["last_event_created_at"],
                             "cursor_id": cursor_row["last_event_id"] or "",
@@ -1136,7 +1141,7 @@ class BiometricsSubstrateStore:
         spec = GRAMMAR_CURSOR_REGISTRY.get(cursor_name)
         if spec is None:
             raise ValueError(f"unknown cursor_name: {cursor_name}")
-        source_service, trace_prefix = spec
+        source_services, trace_prefix = spec
         trace_like = _trace_id_like_pattern(trace_prefix)
         mode_norm = mode.strip().lower()
 
@@ -1186,13 +1191,13 @@ class BiometricsSubstrateStore:
                         """
                         SELECT created_at, event_id
                         FROM grammar_events
-                        WHERE source_service = :source_service
+                        WHERE source_service = ANY(:source_services)
                           AND trace_id LIKE :trace_like
                         ORDER BY created_at ASC, event_id ASC
                         LIMIT 1
                         """
                     ),
-                    {"source_service": source_service, "trace_like": trace_like},
+                    {"source_services": list(source_services), "trace_like": trace_like},
                 ).mappings().first()
                 created_at = datetime(1970, 1, 1, tzinfo=timezone.utc)
                 event_id = ""
@@ -1218,7 +1223,7 @@ class BiometricsSubstrateStore:
                 self._seed_grammar_cursor_at_tail(
                     conn,
                     cursor_name=cursor_name,
-                    source_service=source_service,
+                    source_services=source_services,
                     trace_prefix=trace_prefix,
                     reason="operator_tail_reset",
                     operator_initiated=True,
@@ -1251,7 +1256,7 @@ class BiometricsSubstrateStore:
                         """
                         SELECT created_at, event_id
                         FROM grammar_events
-                        WHERE source_service = :source_service
+                        WHERE source_service = ANY(:source_services)
                           AND trace_id LIKE :trace_like
                           AND created_at <= :at_ts
                         ORDER BY created_at DESC, event_id DESC
@@ -1259,7 +1264,7 @@ class BiometricsSubstrateStore:
                         """
                     ),
                     {
-                        "source_service": source_service,
+                        "source_services": list(source_services),
                         "trace_like": trace_like,
                         "at_ts": at_timestamp,
                     },

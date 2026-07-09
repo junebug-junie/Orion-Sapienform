@@ -86,6 +86,21 @@ def _pcr_from_ctx(ctx: Dict[str, Any]) -> PcrChatMemoryV1 | None:
     return None
 
 
+def pcr_phase01_complete(ctx: Dict[str, Any]) -> bool:
+    """True when phase 0+1 continuity recall (or skip) already ran for this turn."""
+    pcr = _pcr_from_ctx(ctx)
+    if pcr is not None and pcr.phase in ("skip", "continuity", "belief"):
+        return True
+    if isinstance(ctx.get("continuity_digest"), str) and str(ctx.get("continuity_digest")).strip():
+        return True
+    debug = ctx.get("debug")
+    if isinstance(debug, dict):
+        pcr_debug = debug.get("pcr")
+        if isinstance(pcr_debug, dict) and pcr_debug.get("phase") in ("skip", "continuity", "belief"):
+            return True
+    return False
+
+
 def _skip_gate_from_ctx(ctx: Dict[str, Any]) -> RecallSkipGateResult:
     pcr = _pcr_from_ctx(ctx)
     if pcr is not None and pcr.phase == "skip":
@@ -182,6 +197,8 @@ async def run_pcr_phase0_and_1(
         recall_debug=dict(recall_debug) if isinstance(recall_debug, dict) else {},
     )
     _apply_pcr_to_ctx(ctx, pcr)
+    if isinstance(recall_debug, dict) and "eligible_belief_count" in recall_debug:
+        ctx["eligible_belief_count"] = recall_debug["eligible_belief_count"]
     logger.info(
         "pcr_phase1_continuity corr_id=%s profile=%s items=%s digest_chars=%s",
         correlation_id,
@@ -242,6 +259,8 @@ async def run_pcr_phase3(
         user_message=user_message,
         shift_novelty_floor=cfg.chat_pcr_skip_shift_novelty_floor,
         seed_crystallization_id=str(ctx.get("seed_crystallization_id") or "").strip() or None,
+        eligible_belief_count=int((ctx.get("eligible_belief_count") or 0)),
+        brain_belief_default_enabled=cfg.memory_cognition_brain_belief_default,
     )
 
     if intent in ("none", "continuity"):

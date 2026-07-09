@@ -77,6 +77,8 @@ class TestGovernorPath:
         crys = _active_crystallization()
         assert crys.status == "active"
         assert crys.governance.approved_by == "operator"
+        assert crys.dynamics.formed_at is not None
+        assert crys.dynamics.activation > 0.0
 
     def test_rejected_does_not_project(self):
         crys = propose(_base_request())

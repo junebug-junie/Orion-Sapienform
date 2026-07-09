@@ -28,6 +28,8 @@ NEVER_SYNC_KEYS = frozenset(
 # Prefixes / exact keys synced after .env_example edits (default mode).
 SYNC_PREFIXES = (
     "CRYSTALLIZER_",
+    "ACTIVATION_",
+    "MEMORY_FORMATION_",
     "GRAPHITI_",
     "FALKORDB_",
     "CHROMA_",
@@ -160,6 +162,7 @@ SYNC_EXACT = frozenset(
 DEFAULT_SERVICES = (
     "orion-memory-crystallizer",
     "orion-memory-consolidation",
+    "orion-recall",
     "orion-sql-writer",
     "orion-graphiti-adapter",
     "orion-hub",

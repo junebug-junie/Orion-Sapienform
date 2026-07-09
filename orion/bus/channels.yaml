@@ -1353,6 +1353,24 @@ channels:
     stability: "experimental"
     since: "2026-06-10"
 
+  - name: "orion:memory:crystallization:reinforced"
+    kind: "event"
+    schema_id: "MemoryCrystallizationV1"
+    message_kind: "memory.crystallization.reinforced.v1"
+    producer_services: ["orion-memory-consolidation", "orion-memory-crystallizer", "orion-hub"]
+    consumer_services: ["orion-memory-crystallizer", "orion-hub"]
+    stability: "experimental"
+    since: "2026-07-08"
+
+  - name: "orion:memory:crystallization:auto_activated"
+    kind: "event"
+    schema_id: "MemoryCrystallizationV1"
+    message_kind: "memory.crystallization.auto_activated.v1"
+    producer_services: ["orion-memory-consolidation", "orion-memory-crystallizer", "orion-hub"]
+    consumer_services: ["orion-memory-crystallizer", "orion-hub", "orion-vector-writer"]
+    stability: "experimental"
+    since: "2026-07-08"
+
   - name: "orion:memory:turn:persisted"
     kind: "event"
     schema_id: "MemoryTurnPersistedV1"

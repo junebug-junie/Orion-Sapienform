@@ -17,6 +17,8 @@ LIFECYCLE_KINDS = {
     "quarantined": "memory.crystallization.quarantined.v1",
     "project": "memory.crystallization.project.v1",
     "retrieved": "memory.crystallization.retrieved.v1",
+    "reinforced": "memory.crystallization.reinforced.v1",
+    "auto_activated": "memory.crystallization.auto_activated.v1",
 }
 
 CHANNEL_DEFAULTS = {
@@ -27,6 +29,8 @@ CHANNEL_DEFAULTS = {
     "quarantined": "orion:memory:crystallization:quarantined",
     "project": "orion:memory:crystallization:project",
     "retrieved": "orion:memory:crystallization:retrieved",
+    "reinforced": "orion:memory:crystallization:reinforced",
+    "auto_activated": "orion:memory:crystallization:auto_activated",
 }
 
 

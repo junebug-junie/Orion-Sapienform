@@ -100,15 +100,15 @@ async def test_consolidate_window_skips_greeting_without_draft(monkeypatch):
         "orion.memory.consolidation_grammar.fetch_grammar_evidence_for_window",
         new=AsyncMock(return_value=(False, [])),
     ), patch(
-        "orion.memory.crystallization.repository.insert_crystallization",
+        "orion.memory.crystallization.intake_pipeline.process_consolidation_crystallization",
         new=AsyncMock(),
-    ) as insert_crys_mock:
+    ) as pipeline_mock:
         await runner.consolidate_window(_greeting_window(), bus=bus)
 
     window_store.mark_consolidated_skipped.assert_awaited_once()
     suggest_mock.assert_not_awaited()
     insert_draft_mock.assert_not_awaited()
-    insert_crys_mock.assert_not_awaited()
+    pipeline_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -136,12 +136,9 @@ async def test_consolidate_window_proposes_crystallization(monkeypatch):
         "orion.memory.crystallization.intake_consolidation_window.build_crystallization_from_window",
         return_value=crystallization,
     ), patch(
-        "orion.memory.crystallization.repository.insert_crystallization",
-        new=AsyncMock(return_value="crys-1"),
-    ) as insert_crys_mock, patch(
-        "orion.memory.crystallization.bus_emit.emit_crystallization_lifecycle",
-        new=AsyncMock(return_value=True),
-    ) as emit_mock:
+        "orion.memory.crystallization.intake_pipeline.process_consolidation_crystallization",
+        new=AsyncMock(return_value=("crys-1", crystallization, "proposed")),
+    ) as pipeline_mock:
         window = {
             "memory_window_id": "win-topic",
             "turn_correlation_ids": ["corr-1"],
@@ -149,13 +146,54 @@ async def test_consolidate_window_proposes_crystallization(monkeypatch):
         }
         await runner.consolidate_window(window, bus=bus)
 
-    insert_crys_mock.assert_awaited_once()
+    pipeline_mock.assert_awaited_once()
     window_store.mark_crystallization_proposed.assert_awaited_once_with(
         "win-topic",
         crystallization_id="crys-1",
     )
-    emit_mock.assert_awaited_once()
     suggest_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_window_auto_activate_when_flag_enabled(monkeypatch):
+    monkeypatch.setattr(worker.settings, "MEMORY_CONSOLIDATION_OUTPUT", "crystallization_propose")
+    monkeypatch.setattr(worker.settings, "MEMORY_FORMATION_AUTO_ACTIVATE_ENABLED", True)
+    gate = ConsolidationGateResult(action="propose", reasons=["substantive_shift"], dominant_shift="TOPIC")
+    crystallization = MagicMock(crystallization_id="crys-auto")
+
+    pool = AsyncMock()
+    window_store = AsyncMock()
+    runner = ConsolidationSuggestRunner(pool, window_store)
+    bus = AsyncMock()
+    bus.publish = AsyncMock()
+
+    pipeline_mock = AsyncMock(return_value=("crys-auto", crystallization, "auto_activated"))
+
+    with patch(
+        "orion.memory.consolidation_grammar.fetch_grammar_evidence_for_window",
+        new=AsyncMock(return_value=(False, [])),
+    ), patch(
+        "orion.memory.consolidation_gate.consolidation_memory_gate",
+        return_value=gate,
+    ), patch(
+        "orion.memory.crystallization.intake_consolidation_window.build_crystallization_from_window",
+        return_value=crystallization,
+    ), patch(
+        "orion.memory.crystallization.intake_pipeline.process_consolidation_crystallization",
+        new=pipeline_mock,
+    ), patch.object(worker, "publish_spark_meta_patch", new=AsyncMock()) as patch_mock:
+        window = {
+            "memory_window_id": "win-auto",
+            "turn_correlation_ids": ["corr-auto"],
+            "turns": [{"correlation_id": "corr-auto", "prompt": "topic", "response": "reply", "spark_meta": {}}],
+        }
+        await runner.consolidate_window(window, bus=bus)
+
+    pipeline_mock.assert_awaited_once()
+    patch_mock.assert_awaited()
+    patch_fields = patch_mock.await_args.args[2]
+    assert patch_fields["consolidation_gate"]["formation_outcome"] == "auto_activated"
+    assert patch_fields["consolidation_gate"]["crystallization_id"] == "crys-auto"
 
 
 @pytest.mark.asyncio
@@ -217,9 +255,9 @@ async def test_skip_only_skips_even_when_gate_proposes(monkeypatch):
         "orion.memory.consolidation_gate.consolidation_memory_gate",
         return_value=gate,
     ), patch(
-        "orion.memory.crystallization.repository.insert_crystallization",
+        "orion.memory.crystallization.intake_pipeline.process_consolidation_crystallization",
         new=AsyncMock(),
-    ) as insert_crys_mock:
+    ) as pipeline_mock:
         window = {
             "memory_window_id": "win-skip-only",
             "turn_correlation_ids": [str(uuid4())],
@@ -231,7 +269,7 @@ async def test_skip_only_skips_even_when_gate_proposes(monkeypatch):
     fetch_fn.assert_awaited_once()
     assert fetch_fn.await_args.args[0] is grammar_pool
     window_store.mark_consolidated_skipped.assert_awaited_once()
-    insert_crys_mock.assert_not_awaited()
+    pipeline_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio

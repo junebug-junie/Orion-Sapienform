@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from orion.memory.crystallization.active_packet import KIND_TO_BUCKET
+from orion.memory.crystallization.recall_eligibility import eligible_for_recall
 from orion.memory.crystallization.projection_graphiti import GraphitiAdapter
 from orion.memory.crystallization.repository import list_crystallizations
 from orion.memory.crystallization.retriever import retrieve_active_packet
@@ -136,6 +137,7 @@ async def fetch_active_packet_fragments(
 
     try:
         active_items = await list_crystallizations(pool, status="active", limit=100)
+        active_items = [c for c in active_items if eligible_for_recall(c)]
     except Exception:
         return []
 

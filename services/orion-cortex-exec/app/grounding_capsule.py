@@ -8,7 +8,7 @@ from orion.core.bus.bus_schemas import ServiceRef
 from orion.schemas.thought import GroundingCapsuleV1
 from orion.thought.json_extract import extract_first_json_object_text
 
-from .pcr_chat_memory import run_pcr_phase3
+from .pcr_chat_memory import pcr_phase01_complete, run_pcr_phase0_and_1, run_pcr_phase3
 from .settings import Settings, settings
 
 logger = logging.getLogger("orion.cortex.grounding_capsule")
@@ -96,6 +96,15 @@ async def assemble_stance_grounding(
     try:
         ctx["chat_stance_brief"] = stance_slice_brief_from_step_text(stance_step_text)
         if cfg.chat_pcr_enabled:
+            if not pcr_phase01_complete(ctx):
+                await run_pcr_phase0_and_1(
+                    bus,
+                    source=source,
+                    ctx=ctx,
+                    correlation_id=correlation_id,
+                    recall_cfg=recall_cfg,
+                    exec_settings=cfg,
+                )
             _pcr, _step, _debug = await run_pcr_phase3(
                 bus,
                 source=source,

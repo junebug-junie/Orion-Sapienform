@@ -253,12 +253,10 @@ def _build_recall_payload(payload: Dict[str, Any], *, use_recall: bool, route_mo
     recall_profile = payload.get("recall_profile")
     if isinstance(recall_profile, str):
         recall_profile = recall_profile.strip() or None
-    # Route-aware defaults: brain lane uses structured SQL+RDF recall; agent stays unset unless explicit.
+    # Route-aware defaults: brain/orion leave None for cortex PCR; agent stays unset unless explicit.
     if use_recall and recall_profile is None:
         route = str(route_mode or "").strip().lower()
-        if route == "brain":
-            recall_profile = "brain.recall.v1"
-        elif route != "agent":
+        if route not in ("agent", "brain", "orion"):
             recall_profile = "reflect.v1"
 
     return {
@@ -516,8 +514,13 @@ def build_cortex_chat_request(
     }
     if isinstance(payload.get("presence_context"), dict):
         metadata["presence_context"] = payload.get("presence_context")
+    surface = dict(metadata.get("surface_context") or {})
     if isinstance(payload.get("surface_context"), dict):
-        metadata["surface_context"] = payload.get("surface_context")
+        surface.update(payload.get("surface_context"))
+    if selected_ui_route in ("brain", "orion", "quick", "grounded_small"):
+        surface.setdefault("hub_chat_lane", selected_ui_route)
+    if surface:
+        metadata["surface_context"] = surface
     if payload.get("browser_client_id"):
         metadata["browser_client_id"] = str(payload.get("browser_client_id"))
     mutation_cognition_context = payload.get("mutation_cognition_context")

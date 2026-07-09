@@ -20,6 +20,7 @@ from orion.core.contracts.recall import (
     RecallDecisionV1,
     RecallQueryV1,
 )
+from orion.memory.crystallization.repository import count_eligible_active
 
 try:
     from .fusion import fuse_candidates, pcr_fuse_belief_candidates, render_continuity_bundle
@@ -1628,6 +1629,12 @@ async def process_recall(
         )
     timing_breakdown_ms["fusion"] = int((time.time() - fuse_started) * 1000)
     timing_breakdown_ms["total"] = latency_ms
+    eligible_belief_count = 0
+    if settings.RECALL_PCR_ENABLED and recall_phase in {"continuity", "purposeful"} and _recall_pg_pool is not None:
+        try:
+            eligible_belief_count = await count_eligible_active(_recall_pg_pool)
+        except Exception as exc:
+            logger.debug("eligible_belief_count skipped: %s", exc)
     pcr_debug: Dict[str, Any] | None = None
     if settings.RECALL_PCR_ENABLED and recall_phase in {"continuity", "purposeful"}:
         continuity_count = sum(1 for i in bundle.items if recall_phase == "continuity")
@@ -1686,11 +1693,16 @@ async def process_recall(
                 },
                 "fusion": bundle.stats.diagnostic or {},
                 "selected_summary": _bounded_selected_summary(list(bundle.items)),
+                **({"eligible_belief_count": eligible_belief_count} if settings.RECALL_PCR_ENABLED and recall_phase in {"continuity", "purposeful"} else {}),
                 **({"pcr": pcr_debug} if pcr_debug else {}),
             }
             if diagnostic
             else (
-                {"latency_breakdown_ms": timing_breakdown_ms, **({"pcr": pcr_debug} if pcr_debug else {})}
+                {
+                    "latency_breakdown_ms": timing_breakdown_ms,
+                    **({"eligible_belief_count": eligible_belief_count} if settings.RECALL_PCR_ENABLED and recall_phase in {"continuity", "purposeful"} else {}),
+                    **({"pcr": pcr_debug} if pcr_debug else {}),
+                }
             )
         ),
     )

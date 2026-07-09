@@ -110,9 +110,10 @@ def derive_retrieval_intent(
     user_message: str,
     shift_novelty_floor: float = 0.35,
     seed_crystallization_id: str | None = None,
+    eligible_belief_count: int = 0,
+    brain_belief_default_enabled: bool = True,
 ) -> tuple[str, str]:
     """Derive PCR retrieval intent from stance, appraisal, and attention signals."""
-    _ = hub_chat_lane
 
     if skip_gate.skip:
         return "none", "phase0_skip"
@@ -144,5 +145,12 @@ def derive_retrieval_intent(
 
     if _has_entity_query(user_message):
         return "semantic", "entity_query"
+
+    if (
+        brain_belief_default_enabled
+        and hub_chat_lane in ("brain", "orion")
+        and eligible_belief_count > 0
+    ):
+        return "semantic", "brain_lane_belief_default"
 
     return "continuity", "continuity_only"

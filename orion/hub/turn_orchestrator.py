@@ -248,13 +248,18 @@ async def execute_unified_turn(
     from scripts.harness_governor_client import HarnessGovernorClient
     from scripts.thought_client import ThoughtClient
 
+    surface_context = payload.get("surface_context") if isinstance(payload.get("surface_context"), dict) else {}
+    surface_context = {**surface_context, "hub_chat_lane": "orion"}
     stance_req = StanceReactRequestV1(
         correlation_id=correlation_id,
         session_id=session_id,
         user_message=user_message,
         association=association,
         repair_bundle=repair_bundle,
-        stance_inputs={"user_message": user_message},
+        stance_inputs={
+            "user_message": user_message,
+            "surface_context": surface_context,
+        },
     )
     thought = await ThoughtClient(bus).react(stance_req, correlation_id=correlation_id)
     if thought is None:

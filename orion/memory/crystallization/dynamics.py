@@ -5,8 +5,8 @@ Deterministic (§4): pure functions over a crystallization + a clock. No LLM, no
 Reuses the substrate half-life decay math (`orion.substrate.activation.decay_activation`)
 so crystallization memory ages on the same curve the substrate graph already uses.
 
-Nothing in the live path calls these yet — Phase 1 is inert and additive. Behavior wiring
-(reinforce-on-recurrence, decay reaper, recall boost) lands in later phases behind gates.
+Live wiring (M1): `seed_dynamics` / `seed_weak_dynamics` on formation, `reinforce` on dedup,
+`governor.approve` seeds dynamics. M3 follow-on: recall_boost on fetch, decay reaper, retire.
 """
 
 from __future__ import annotations
@@ -35,6 +35,23 @@ def seed_dynamics(
     """Initial encoding: dynamic weight starts at the intrinsic salience prior."""
     updated = crystallization.model_copy(deep=True)
     updated.dynamics.activation = _clamp(crystallization.salience)
+    updated.dynamics.formed_at = _aware(now)
+    updated.updated_at = _aware(now)
+    return updated
+
+
+def seed_weak_dynamics(
+    crystallization: MemoryCrystallizationV1,
+    *,
+    now: datetime,
+    ratio: float = 0.4,
+    min_activation: float = 0.05,
+    max_activation: float = 0.35,
+) -> MemoryCrystallizationV1:
+    """Auto-encode at a fraction of salience — weak initial footprint."""
+    updated = crystallization.model_copy(deep=True)
+    raw = _clamp(crystallization.salience * _clamp(ratio))
+    updated.dynamics.activation = max(min_activation, min(max_activation, raw))
     updated.dynamics.formed_at = _aware(now)
     updated.updated_at = _aware(now)
     return updated

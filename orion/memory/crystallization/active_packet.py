@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from orion.memory.crystallization.recall_eligibility import eligible_for_recall
 from orion.memory.crystallization.schemas import ActiveMemoryPacketV1, MemoryCrystallizationV1
 
 KIND_TO_BUCKET = {
@@ -47,10 +48,13 @@ def build_active_packet(
     project_id: str | None = None,
     session_id: str | None = None,
 ) -> ActiveMemoryPacketV1:
-    active = [c for c in crystallizations if c.status == "active"]
+    active = [c for c in crystallizations if eligible_for_recall(c)]
     if project_id:
         active = [c for c in active if project_id in c.scope or c.scope == []]
-    active.sort(key=lambda c: c.salience + _task_boost(c.kind, task_type), reverse=True)
+    active.sort(
+        key=lambda c: (c.dynamics.activation or 0.0) * (c.salience or 0.5) + _task_boost(c.kind, task_type),
+        reverse=True,
+    )
 
     cards = list(active_cards or [])
     card_ref_ids = list(card_refs or [])

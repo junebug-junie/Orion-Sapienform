@@ -68,6 +68,21 @@ def test_derive_retrieval_intent_entity_query():
     assert rule_id == "entity_query"
 
 
+def test_brain_lane_belief_default_when_eligible_beliefs_exist():
+    intent, rule_id = derive_retrieval_intent(
+        skip_gate=RecallSkipGateResult(skip=False),
+        stance_brief={"task_mode": "direct_response"},
+        attention_frame={},
+        appraisal={"shift_kind": "NONE", "novelty_score": 0.1},
+        hub_chat_lane="brain",
+        user_message="ok",
+        eligible_belief_count=3,
+        brain_belief_default_enabled=True,
+    )
+    assert intent == "semantic"
+    assert rule_id == "brain_lane_belief_default"
+
+
 def test_derive_retrieval_intent_contradiction_seed():
     intent, rule_id = derive_retrieval_intent(
         skip_gate=RecallSkipGateResult(skip=False),

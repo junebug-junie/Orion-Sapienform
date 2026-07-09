@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Literal
 
+from orion.memory.crystallization.dynamics import seed_dynamics
 from orion.memory.crystallization.schemas import MemoryCrystallizationV1
 from orion.memory.crystallization.validator import ValidationResult, validate_proposal
 
@@ -57,13 +58,15 @@ def approve(
     updated.governance.validation_status = "valid"
     updated.governance.last_reviewed_at = now
     updated.updated_at = now
+    # Full salience seed (not seed_weak_dynamics) so human-approved beliefs enter recall immediately.
+    updated = seed_dynamics(updated, now=now)
 
     history = {
         "op": "approve",
         "actor": actor,
         "reason": reason,
         "before": {"status": crystallization.status},
-        "after": {"status": "active"},
+        "after": {"status": "active", "activation": updated.dynamics.activation},
     }
     return updated, history
 

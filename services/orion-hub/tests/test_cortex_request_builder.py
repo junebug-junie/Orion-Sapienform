@@ -116,7 +116,7 @@ def test_agent_mode_recall_toggle_preserves_supervised_routing_intent() -> None:
     assert disabled_debug["supervised"] is True
 
 
-def test_brain_mode_defaults_recall_profile_to_brain_recall_v1() -> None:
+def test_brain_mode_leaves_recall_profile_none_for_pcr() -> None:
     req, debug, _ = hub_builder.build_chat_request(
         payload={"mode": "brain", "use_recall": True},
         session_id="sid-brain-recall",
@@ -130,8 +130,23 @@ def test_brain_mode_defaults_recall_profile_to_brain_recall_v1() -> None:
 
     assert req.mode == "brain"
     assert req.recall["enabled"] is True
-    assert req.recall["profile"] == "brain.recall.v1"
-    assert debug["recall_profile"] == "brain.recall.v1"
+    assert req.recall["profile"] is None
+    assert debug["recall_profile"] is None
+
+
+def test_brain_mode_sets_hub_chat_lane_in_surface_context() -> None:
+    req, _debug, _ = hub_builder.build_chat_request(
+        payload={"mode": "brain", "use_recall": True},
+        session_id="sid-brain-lane",
+        user_id="user-1",
+        trace_id="trace-brain-lane",
+        default_mode="brain",
+        auto_default_enabled=False,
+        source_label="hub_http",
+        prompt="What did we decide about the deployment?",
+    )
+
+    assert req.metadata["surface_context"]["hub_chat_lane"] == "brain"
 
 
 def test_brain_mode_preserves_explicit_chat_general_recall_profile() -> None:

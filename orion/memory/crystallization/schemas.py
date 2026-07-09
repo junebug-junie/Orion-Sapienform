@@ -169,6 +169,18 @@ class CrystallizationRefV1(BaseModel):
     synced_at: datetime | None = None
 
 
+class CrystallizationDynamicsV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    activation: float = Field(default=0.0, ge=0.0, le=1.0)
+    reinforcement_count: int = 0
+    formed_at: datetime | None = None
+    last_reinforced_at: datetime | None = None
+    last_recalled_at: datetime | None = None
+    decay_half_life_days: float = 30.0
+    retired_at: datetime | None = None
+
+
 class MemoryCrystallizationV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -183,6 +195,7 @@ class MemoryCrystallizationV1(BaseModel):
     status: CrystallizationStatus = "proposed"
     confidence: CrystallizationConfidence = "likely"
     salience: float = Field(default=0.5, ge=0.0, le=1.0)
+    dynamics: CrystallizationDynamicsV1 = Field(default_factory=CrystallizationDynamicsV1)
 
     scope: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)

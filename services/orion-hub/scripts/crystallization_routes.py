@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from orion.core.storage import memory_cards as mc_dal
 from orion.memory.crystallization.detection import detect_contradictions, detect_duplicates, merge_detection
+from orion.memory.crystallization.recall_eligibility import eligible_for_recall
 from orion.memory.crystallization.retriever import retrieve_active_packet
 from orion.memory.crystallization.bus_emit import emit_active_packet_retrieved, emit_crystallization_lifecycle
 from orion.memory.crystallization.chroma_publish import publish_crystallization_to_chroma
@@ -483,7 +484,10 @@ async def memory_active_packet(
     card_refs: List[str] = list(body.get("card_refs") or [])
 
     try:
-        active_items = await list_crystallizations(pool, status="active", limit=100)
+        active_items = [
+            c for c in await list_crystallizations(pool, status="active", limit=100)
+            if eligible_for_recall(c)
+        ]
         active_cards = await mc_dal.list_cards(pool, status="active", limit=50)
     except Exception as exc:
         _http_if_missing_schema(exc)

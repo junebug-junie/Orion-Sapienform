@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS memory_crystallizations (
     status text NOT NULL DEFAULT 'proposed',
     confidence text NOT NULL DEFAULT 'likely',
     salience numeric NOT NULL DEFAULT 0.5,
+    dynamics jsonb NOT NULL DEFAULT '{}'::jsonb,
     scope text[] NOT NULL DEFAULT '{}',
     tags text[] NOT NULL DEFAULT '{}',
     grammar_envelope jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -22,6 +23,8 @@ CREATE TABLE IF NOT EXISTS memory_crystallizations (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE memory_crystallizations ADD COLUMN IF NOT EXISTS dynamics jsonb NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE TABLE IF NOT EXISTS memory_crystallization_claims (
     claim_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -48,21 +48,29 @@ def test_raises_loop_budget_exceeded_when_wall_clock_exhausted(monkeypatch: pyte
 
 def test_phase_timeout_clamped_below_single_phase_when_wall_too_small() -> None:
     """Regression for fix/mind-enrichment-wall-budget: a 12s wall cannot fit even a
-    single LLM phase configured at MIND_LLM_TIMEOUT_SEC=25s — the phase timeout is
+    single LLM phase configured at MIND_LLM_TIMEOUT_SEC=60s — the phase timeout is
     clamped to the remaining wall, which is why orion-thought's old 12000 default
     always timed out semantic synthesis and degraded to contract_only."""
     _mind_prep()
     from app.budget import MindRunBudget
 
     b = MindRunBudget(12_000, safety_ms=50)
-    assert b.phase_timeout_sec(25.0) < 25.0
+    assert b.phase_timeout_sec(60.0) < 60.0
 
 
 def test_viable_wall_allows_full_phase_timeout() -> None:
-    """The corrected 90s wall lets each of the 3 sequential phases use its full
+    """The corrected 180s wall lets each of the 3 sequential phases use its full
     configured timeout."""
     _mind_prep()
     from app.budget import MindRunBudget
 
-    b = MindRunBudget(90_000, safety_ms=50)
-    assert b.phase_timeout_sec(25.0) == 25.0
+    b = MindRunBudget(180_000, safety_ms=50)
+    assert b.phase_timeout_sec(60.0) == 60.0
+
+
+def test_settings_defaults_match_timeout_contract() -> None:
+    _mind_prep()
+    from app.settings import settings
+
+    assert settings.MIND_LLM_TIMEOUT_SEC == 60.0
+    assert settings.MIND_WALL_MS_DEFAULT == 180_000

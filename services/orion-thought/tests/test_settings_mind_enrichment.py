@@ -32,13 +32,15 @@ def test_mind_enrichment_defaults_off(monkeypatch):
     s = _reload_settings(monkeypatch)
     assert s.settings.mind_enrichment_enabled is False
     assert s.settings.mind_artifact_publish_enabled is False
-    assert s.settings.mind_timeout_sec == 100.0
-    assert s.settings.mind_wall_ms == 90000
+    assert s.settings.mind_timeout_sec == 210.0
+    assert s.settings.mind_wall_ms == 180000
     assert s.settings.mind_router_profile == "default"
     assert s.settings.mind_max_response_bytes == 2_000_000
     assert s.settings.mind_coloring_max_items == 3
     assert s.settings.mind_base_url == "http://orion-mind:6611"
     assert s.settings.channel_mind_artifact == "orion:mind:artifact"
+    assert s.MIND_LLM_TIMEOUT_SEC_ASSUMED == 60.0
+    assert s.MIND_ENRICHMENT_MIN_VIABLE_WALL_MS == 180000
 
 
 def test_mind_enrichment_reads_env(monkeypatch):
@@ -82,7 +84,7 @@ def test_config_warns_on_sub_viable_wall(monkeypatch):
 
 def test_config_warns_on_http_timeout_not_above_wall(monkeypatch):
     monkeypatch.setenv("ORION_THOUGHT_MIND_ENRICHMENT_ENABLED", "true")
-    monkeypatch.setenv("ORION_THOUGHT_MIND_WALL_MS", "90000")
+    monkeypatch.setenv("ORION_THOUGHT_MIND_WALL_MS", "180000")
     monkeypatch.setenv("ORION_THOUGHT_MIND_TIMEOUT_SEC", "30")
     s = _reload_settings(monkeypatch)
     warnings = s.mind_enrichment_config_warnings(s.settings)

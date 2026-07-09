@@ -113,6 +113,8 @@ def test_fit_trains_on_synthetic_corpus(tmp_path: Path) -> None:
         str(corpus),
         "--out",
         str(out_dir),
+        "--features-version",
+        "seed-v2",
         "--hidden-dim",
         "8",
         "--latent-dim",
@@ -146,6 +148,8 @@ def test_eval_only_runs_promote_gate(tmp_path: Path) -> None:
         str(corpus),
         "--out",
         str(out_dir),
+        "--features-version",
+        "seed-v2",
         "--hidden-dim",
         "8",
         "--latent-dim",
@@ -173,6 +177,8 @@ def test_promote_symlinks_active(tmp_path: Path) -> None:
         str(corpus),
         "--out",
         str(version_dir),
+        "--features-version",
+        "seed-v2",
         "--hidden-dim",
         "8",
         "--latent-dim",
@@ -207,3 +213,34 @@ def test_promote_fixture_exists(path: Path) -> None:
     assert path.is_file()
     lines = [ln for ln in path.read_text().splitlines() if ln.strip()]
     assert len(lines) >= 4
+
+
+def test_input_features_seed_v3_excludes_flat_dims() -> None:
+    from scripts.fit_phi_encoder import input_features_for_version
+
+    names = input_features_for_version("seed-v3")
+    assert "field_intensity" not in names
+    assert "resource_pressure" not in names
+    assert "introspection_pressure" not in names
+    assert "reliability_pressure" not in names
+    assert len(names) == 11
+
+
+def test_variance_gate_seed_v3_needs_nine_of_eleven() -> None:
+    from scripts.fit_phi_encoder import _variance_gate
+
+    rng = np.random.default_rng(0)
+    matrix = np.zeros((50, 11), dtype=np.float64)
+    for col in range(9):
+        matrix[:, col] = rng.standard_normal(50)
+    ok, got, need = _variance_gate(matrix, fraction=0.8, eps=1e-6)
+    assert need == 9
+    assert got == 9
+    assert ok is True
+
+    flat = np.zeros((50, 11), dtype=np.float64)
+    flat[:, :8] = rng.standard_normal((50, 8))
+    ok2, got2, need2 = _variance_gate(flat, fraction=0.8, eps=1e-6)
+    assert need2 == 9
+    assert got2 == 8
+    assert ok2 is False

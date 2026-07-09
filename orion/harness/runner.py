@@ -15,6 +15,12 @@ from orion.harness.fcc_motor import (
     run_fcc_turn,
     summarize_harness_step,
 )
+from orion.harness.grammar_emit import (
+    HarnessGrammarCollector,
+    build_harness_grammar_events,
+    publish_harness_lifecycle_grammar,
+    short_error_kind,
+)
 from orion.harness.grammar_publish import publish_harness_step_grammar
 from orion.harness.prefix import compile_harness_prefix, harness_motor_instruction
 from orion.harness.repair import map_repair_pressure_contract
@@ -42,6 +48,24 @@ class HarnessMotorResult:
     compliance_verdict: str = "completed"
     grounding_status: str = "grounded"
     draft_molecule: HarnessDraftMoleculeV1 | None = None
+    grammar_collector: HarnessGrammarCollector | None = None
+
+
+def _default_harness_node_name() -> str:
+    return os.environ.get("HARNESS_NODE_NAME", "athena")
+
+
+def _record_recall_gate_from_debug(
+    collector: HarnessGrammarCollector,
+    recall_debug: dict[str, Any] | None,
+) -> None:
+    if recall_debug is None:
+        return
+    collector.record_recall_gate_observed(
+        run_recall=True,
+        profile=recall_debug.get("profile"),
+        reason=str(recall_debug.get("source") or "recall_observed"),
+    )
 
 
 def build_coalition_snapshot(thought: ThoughtEventV1) -> CoalitionSnapshotV1:
@@ -142,12 +166,14 @@ class HarnessRunner:
         step_channel: str = "orion:harness:run:step",
         fcc_runner: FccRunner | None = None,
         fcc_timeout_sec: float = 120.0,
+        node_name: str | None = None,
     ) -> None:
         self.bus = bus
         self.grammar_channel = grammar_channel
         self.step_channel = step_channel
         self.fcc_runner = fcc_runner or default_fcc_runner
         self.fcc_timeout_sec = fcc_timeout_sec
+        self.node_name = node_name or _default_harness_node_name()
 
     async def run(
         self,
@@ -156,6 +182,7 @@ class HarnessRunner:
         repair_overlay: HarnessRepairOverlayV1 | None = None,
         coalition_snapshot: CoalitionSnapshotV1 | None = None,
         publish_grammar_fn: Callable[..., Awaitable[None]] | None = None,
+        recall_debug: dict[str, Any] | None = None,
     ) -> HarnessMotorResult:
         thought = request.thought_event
         overlay = repair_overlay or map_repair_pressure_contract(request.repair_pressure_contract)
@@ -168,12 +195,22 @@ class HarnessRunner:
             workspace=os.environ.get("HARNESS_FCC_WORKSPACE"),
         )
 
+        collector = HarnessGrammarCollector(
+            node_name=self.node_name,
+            correlation_id=request.correlation_id,
+            observed_at=datetime.now(timezone.utc),
+        )
+        collector.record_request_received()
+        collector.record_plan_started(step_count=0)
+        _record_recall_gate_from_debug(collector, recall_debug)
+
         receipts: list[GrammarReceiptV1] = []
         step_count = 0
         draft_text = ""
         exit_code: int | None = None
         compliance_verdict = "completed"
         grounding_status = "grounded"
+        motor_failed = False
 
         async for event in self.fcc_runner(
             prompt=prompt,
@@ -187,6 +224,7 @@ class HarnessRunner:
                 if not isinstance(step, dict):
                     continue
                 summary = summarize_harness_step(step, index=step_count)
+                collector.record_step_started(order=step_count + 1, summary=summary)
                 tool_name = _extract_tool_name(step)
                 receipt = await publish_harness_step_grammar(
                     self.bus,
@@ -199,6 +237,7 @@ class HarnessRunner:
                 )
                 receipts.append(receipt)
                 step_count += 1
+                collector.record_step_completed(order=step_count)
                 try:
                     await publish_harness_run_step(
                         self.bus,
@@ -232,6 +271,12 @@ class HarnessRunner:
                 else:
                     compliance_verdict = "failed"
                     grounding_status = error_code or error_msg or "failed"
+                    motor_failed = True
+                if step_count > 0:
+                    collector.record_step_failed(
+                        order=step_count,
+                        error_kind=short_error_kind(error_code or error_msg),
+                    )
                 logger.warning(
                     "fcc motor error corr=%s code=%s err=%s",
                     request.correlation_id,
@@ -240,7 +285,30 @@ class HarnessRunner:
                 )
                 break
 
+        async def _publish_motor_lifecycle(*, status: str, final_text_present: bool) -> None:
+            collector.record_result_assembled(
+                status=status,
+                final_text_present=final_text_present,
+                step_count=step_count,
+                grammar_receipt_count=len(receipts),
+                reflection_ran=False,
+                quick_lane_skipped_5b=True,
+            )
+            try:
+                await publish_harness_lifecycle_grammar(
+                    self.bus,
+                    channel=self.grammar_channel,
+                    events=build_harness_grammar_events(collector),
+                )
+            except Exception:
+                logger.warning(
+                    "harness_motor_lifecycle_grammar_publish_failed corr=%s",
+                    request.correlation_id,
+                    exc_info=True,
+                )
+
         if not draft_text:
+            await _publish_motor_lifecycle(status="failed", final_text_present=False)
             logger.info(
                 "harness_motor_complete corr=%s steps=%s grammar_receipts=%s verdict=%s grounding=%s draft_len=0",
                 request.correlation_id,
@@ -256,7 +324,10 @@ class HarnessRunner:
                 exit_code=exit_code,
                 compliance_verdict=compliance_verdict if compliance_verdict != "completed" else "failed",
                 grounding_status=grounding_status if grounding_status != "grounded" else "empty_draft",
+                grammar_collector=collector,
             )
+
+        await _publish_motor_lifecycle(status="success", final_text_present=False)
 
         molecule = build_draft_molecule(
             correlation_id=request.correlation_id,
@@ -283,4 +354,5 @@ class HarnessRunner:
             compliance_verdict=compliance_verdict,
             grounding_status=grounding_status,
             draft_molecule=molecule,
+            grammar_collector=collector,
         )

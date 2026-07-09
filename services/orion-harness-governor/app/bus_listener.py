@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import suppress
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -15,8 +16,13 @@ from orion.harness.finalize import (
     emit_post_turn_closure,
     run_harness_finalize_chain,
 )
+from orion.harness.grammar_emit import (
+    HarnessGrammarCollector,
+    build_harness_grammar_events,
+    publish_harness_lifecycle_grammar,
+)
 from orion.harness.repair import map_repair_pressure_contract
-from orion.harness.runner import HarnessRunner
+from orion.harness.runner import HarnessRunner, _record_recall_gate_from_debug
 from orion.harness.substrate_client import HarnessSubstrateClient
 from orion.schemas.harness_finalize import HarnessRunRequestV1, HarnessRunV1
 
@@ -54,6 +60,80 @@ def validate_harness_run_request(request: HarnessRunRequestV1) -> str | None:
 
 def _grammar_event_ids(receipts: list[Any]) -> list[str]:
     return [r.grammar_event_id for r in receipts if getattr(r, "grammar_event_id", None)]
+
+
+def _new_harness_grammar_collector(*, correlation_id: str) -> HarnessGrammarCollector:
+    return HarnessGrammarCollector(
+        node_name=settings.node_name,
+        correlation_id=correlation_id,
+        observed_at=datetime.now(timezone.utc),
+    )
+
+
+async def _publish_harness_lifecycle(
+    bus: OrionBusAsync,
+    *,
+    collector: HarnessGrammarCollector,
+) -> None:
+    try:
+        await publish_harness_lifecycle_grammar(
+            bus,
+            channel=settings.channel_grammar_event,
+            events=build_harness_grammar_events(collector),
+        )
+    except Exception:
+        logger.warning(
+            "harness lifecycle grammar publish failed corr=%s",
+            collector.correlation_id,
+            exc_info=True,
+        )
+
+
+async def _emit_refused_lifecycle_grammar(
+    bus: OrionBusAsync,
+    *,
+    correlation_id: str,
+    recall_debug: dict[str, Any] | None,
+) -> None:
+    collector = _new_harness_grammar_collector(correlation_id=correlation_id)
+    collector.record_request_received()
+    collector.record_plan_started(step_count=0)
+    _record_recall_gate_from_debug(collector, recall_debug)
+    collector.record_result_assembled(
+        status="refused",
+        final_text_present=False,
+        step_count=0,
+        grammar_receipt_count=0,
+        reflection_ran=False,
+        quick_lane_skipped_5b=True,
+    )
+    collector.record_result_emitted(reply_present=True, status="refused")
+    await _publish_harness_lifecycle(bus, collector=collector)
+
+
+async def _emit_finalize_lifecycle_grammar(
+    bus: OrionBusAsync,
+    *,
+    collector: HarnessGrammarCollector,
+    step_count: int,
+    grammar_receipt_count: int,
+    reflection_ran: bool,
+    quick_lane_skipped_5b: bool,
+    final_text_present: bool,
+    status: str,
+    emit_result: bool = True,
+) -> None:
+    collector.record_result_assembled(
+        status=status,
+        final_text_present=final_text_present,
+        step_count=step_count,
+        grammar_receipt_count=grammar_receipt_count,
+        reflection_ran=reflection_ran,
+        quick_lane_skipped_5b=quick_lane_skipped_5b,
+    )
+    if emit_result:
+        collector.record_result_emitted(reply_present=True, status=status)
+    await _publish_harness_lifecycle(bus, collector=collector)
 
 
 def _recall_fields_from_thought(thought: Any) -> tuple[dict[str, Any] | None, str | None]:
@@ -106,6 +186,11 @@ async def handle_harness_run_request(
             recall_debug=recall_debug,
             memory_digest=memory_digest,
         )
+        await _emit_refused_lifecycle_grammar(
+            bus,
+            correlation_id=corr,
+            recall_debug=recall_debug,
+        )
         await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
         return run
 
@@ -115,6 +200,7 @@ async def handle_harness_run_request(
         grammar_channel=settings.channel_grammar_event,
         step_channel=settings.channel_harness_run_step,
         fcc_timeout_sec=settings.fcc_timeout_sec,
+        node_name=settings.node_name,
     )
     cortex = cortex_client or HarnessCortexClient(
         bus,
@@ -132,8 +218,23 @@ async def handle_harness_run_request(
         timeout_sec=settings.substrate_finalize_timeout_sec,
     )
 
-    motor = await motor_runner.run(request, repair_overlay=repair_overlay)
+    motor = await motor_runner.run(
+        request,
+        repair_overlay=repair_overlay,
+        recall_debug=recall_debug,
+    )
     if not motor.draft_text or motor.draft_molecule is None:
+        if motor.grammar_collector is not None:
+            await _emit_finalize_lifecycle_grammar(
+                bus,
+                collector=motor.grammar_collector,
+                step_count=motor.step_count,
+                grammar_receipt_count=len(motor.grammar_receipts),
+                reflection_ran=False,
+                quick_lane_skipped_5b=True,
+                final_text_present=False,
+                status="failed",
+            )
         run = HarnessRunV1(
             correlation_id=corr,
             final_text=None,
@@ -234,6 +335,17 @@ async def handle_harness_run_request(
         recall_debug=recall_debug,
         memory_digest=memory_digest,
     )
+    if motor.grammar_collector is not None and run.final_text:
+        await _emit_finalize_lifecycle_grammar(
+            bus,
+            collector=motor.grammar_collector,
+            step_count=motor.step_count,
+            grammar_receipt_count=len(motor.grammar_receipts),
+            reflection_ran=chain.reflection is not None,
+            quick_lane_skipped_5b=chain.quick_lane_skipped_5b,
+            final_text_present=True,
+            status="success",
+        )
     await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
 
     closure = await emit_post_turn_closure(

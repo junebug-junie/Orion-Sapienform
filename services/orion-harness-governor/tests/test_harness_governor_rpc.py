@@ -492,7 +492,10 @@ async def test_harness_run_refused_when_thought_deferred() -> None:
     )
     assert run.compliance_verdict == "refused"
     assert run.finalize_ran is False
-    assert bus.publish.await_count == 2
+    assert bus.publish.await_count >= 2
+    channels = [call.args[0] for call in bus.publish.await_args_list]
+    assert "orion:harness:run:result:c-defer" in channels
+    assert bus_listener.settings.channel_harness_run_artifact in channels
     # recall carries even when the motor never runs (refusal path)
     assert run.memory_digest == (capsule.memory_digest or capsule.continuity_digest)
     assert run.recall_debug is not None

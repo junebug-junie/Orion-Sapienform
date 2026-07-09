@@ -119,7 +119,9 @@ def test_inner_features_settings_defaults() -> None:
     from app.settings import Settings
     s = Settings()
     assert s.inner_features_enabled is True
-    assert s.inner_features_version == "seed-v3"
+    # Flipped seed-v3 -> seed-v4 once specs 1-3 of the phi corpus-honesty
+    # initiative were merged and deployed (chore/enable-reasoning-telemetry-seedv4).
+    assert s.inner_features_version == "seed-v4"
     assert s.channel_inner_features == "orion:self:inner_features"
     assert s.phi_degenerate_streak == 20
     assert s.orion_phi_encoder_enabled is False

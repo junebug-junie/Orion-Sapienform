@@ -11,15 +11,16 @@ def test_compose_mounts_telemetry_root_for_plan2() -> None:
     assert "${TELEMETRY_ROOT:-/mnt/telemetry}:/mnt/telemetry" in text
 
 
-def test_compose_defaults_inner_features_to_seed_v3() -> None:
+def test_compose_defaults_inner_features_to_seed_v4() -> None:
     text = COMPOSE.read_text(encoding="utf-8")
-    assert "INNER_FEATURES_VERSION: ${INNER_FEATURES_VERSION:-seed-v3}" in text
+    assert "INNER_FEATURES_VERSION: ${INNER_FEATURES_VERSION:-seed-v4}" in text
     assert "INNER_FEATURES_CORPUS_PATH: ${INNER_FEATURES_CORPUS_PATH:-/mnt/telemetry/phi/corpus/inner_state.jsonl}" in text
     assert "ORION_PHI_ENCODER_ENABLED: ${ORION_PHI_ENCODER_ENABLED:-false}" in text
     assert "ORION_PHI_ENCODER_WEIGHTS: ${ORION_PHI_ENCODER_WEIGHTS:-/mnt/telemetry/models/phi/encoders/active}" in text
     assert "INNER_FEATURES_SCALER_WINDOW_SEC: ${INNER_FEATURES_SCALER_WINDOW_SEC:-900}" in text
     assert "PHI_DEGENERATE_STREAK: ${PHI_DEGENERATE_STREAK:-20}" in text
     assert "SUBSTRATE_RUNTIME_URL: ${SUBSTRATE_RUNTIME_URL:-http://orion-athena-substrate-runtime:8115}" in text
+    assert "ORION_THOUGHT_BASE_URL: ${ORION_THOUGHT_BASE_URL:-http://orion-athena-thought:7155}" in text
 
 
 def test_sync_script_includes_plan2_phi_keys() -> None:

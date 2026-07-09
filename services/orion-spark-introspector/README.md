@@ -372,7 +372,7 @@ Spark-introspector emits `InnerStateFeaturesV1` on `orion:self:inner_features` a
 
 | Requirement | Detail |
 |---|---|
-| `INNER_FEATURES_VERSION` | `seed-v2` (see `.env_example`) |
+| `INNER_FEATURES_VERSION` | `seed-v4` (see `.env_example` — authoritative; this table drifts) |
 | Corpus path | `INNER_FEATURES_CORPUS_PATH=/mnt/telemetry/phi/corpus/inner_state.jsonl` |
 | Telemetry mount | `docker-compose.yml` binds `${TELEMETRY_ROOT:-/mnt/telemetry}:/mnt/telemetry` — pass root `.env` so `TELEMETRY_ROOT` resolves |
 | Substrate prerequisite | `orion-substrate-runtime` must reach conjourney Postgres (`POSTGRES_URI` in substrate `.env_example`) and serve healthy `GET /grammar/truth` + `GET /projections/execution_trajectory`. **Co-deploy:** update substrate `POSTGRES_URI` manually if local `.env` predates this fix — default `sync_local_env_from_example.py` does not rewrite `POSTGRES_URI`. Restart substrate before relying on live cognitive features. |

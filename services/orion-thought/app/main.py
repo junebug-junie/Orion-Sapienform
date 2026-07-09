@@ -7,8 +7,12 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from datetime import datetime, timezone
+
 from .bus_listener import run_bus_worker
 from .chain import run_reverie_chain_worker
+from .reasoning_activity import run_reasoning_worker
+from .reasoning_activity import store as reasoning_store
 from .reverie import run_reverie_worker
 from .settings import settings
 
@@ -37,17 +41,24 @@ async def lifespan(app: FastAPI):
     app.state.reverie_chain_task = asyncio.create_task(
         run_reverie_chain_worker(app.state.reverie_chain_stop_event)
     )
+    # Reasoning-activity projection — always-on consumer. Harmless (empty
+    # projection) when no producer is publishing reasoning_call events.
+    app.state.reasoning_stop_event = asyncio.Event()
+    app.state.reasoning_task = asyncio.create_task(
+        run_reasoning_worker(app.state.reasoning_stop_event)
+    )
     yield
     app.state.bus_stop_event.set()
     app.state.reverie_stop_event.set()
     app.state.reverie_chain_stop_event.set()
+    app.state.reasoning_stop_event.set()
     with suppress(asyncio.TimeoutError):
         await asyncio.wait_for(app.state.bus_task, timeout=125.0)
     if not app.state.bus_task.done():
         app.state.bus_task.cancel()
         with suppress(asyncio.CancelledError):
             await app.state.bus_task
-    for task in (app.state.reverie_task, app.state.reverie_chain_task):
+    for task in (app.state.reverie_task, app.state.reverie_chain_task, app.state.reasoning_task):
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
@@ -67,6 +78,12 @@ async def health() -> JSONResponse:
             "channel_thought_request": settings.channel_thought_request,
         }
     )
+
+
+@app.get("/projections/reasoning_activity")
+async def reasoning_activity() -> JSONResponse:
+    projection = reasoning_store.snapshot(datetime.now(timezone.utc))
+    return JSONResponse({"ok": True, "projection": projection.model_dump(mode="json")})
 
 
 @app.get("/")

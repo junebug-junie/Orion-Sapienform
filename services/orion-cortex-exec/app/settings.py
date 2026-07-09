@@ -135,6 +135,12 @@ class Settings(BaseSettings):
     publish_cortex_exec_grammar: bool = Field(True, alias="PUBLISH_CORTEX_EXEC_GRAMMAR")
     grammar_event_channel: str = Field("orion:grammar:event", alias="GRAMMAR_EVENT_CHANNEL")
 
+    # Per-call reasoning telemetry (metadata only; default OFF).
+    publish_reasoning_telemetry: bool = Field(False, alias="PUBLISH_REASONING_TELEMETRY")
+    channel_reasoning_call: str = Field(
+        "orion:cognition:reasoning_call", alias="CHANNEL_REASONING_CALL"
+    )
+
     diagnostic_mode: bool = Field(False, alias="DIAGNOSTIC_MODE")
     diagnostic_recall_timeout_sec: float = Field(5.0, alias="DIAGNOSTIC_RECALL_TIMEOUT_SEC")
     diagnostic_agent_timeout_sec: float = Field(15.0, alias="DIAGNOSTIC_AGENT_TIMEOUT_SEC")

@@ -22,3 +22,5 @@ def test_crystallization_ui_shows_graphiti_projection_and_sync() -> None:
     ui = (HUB_ROOT / "static" / "js" / "memory-crystallization-ui.js").read_text(encoding="utf-8")
     assert "graphiti_episode_ids" in ui
     assert "/api/memory/graphiti/sync/" in ui
+    assert "renderEvidence" in ui
+    assert "window_novelty_max" in ui

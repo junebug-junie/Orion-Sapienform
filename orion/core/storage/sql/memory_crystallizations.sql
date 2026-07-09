@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS memory_crystallizations (
 );
 
 ALTER TABLE memory_crystallizations ADD COLUMN IF NOT EXISTS dynamics jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE memory_crystallizations ADD COLUMN IF NOT EXISTS provenance jsonb NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE TABLE IF NOT EXISTS memory_crystallization_claims (
     claim_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

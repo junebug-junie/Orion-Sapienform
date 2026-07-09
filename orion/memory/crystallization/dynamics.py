@@ -2,7 +2,7 @@
 reinforcement/recall, decay on disuse.
 
 Deterministic (§4): pure functions over a crystallization + a clock. No LLM, no I/O.
-Reuses the substrate half-life decay math (`orion.substrate.activation.decay_activation`)
+Reuses the substrate half-life decay math (`orion.core.activation_decay.decay_activation`)
 so crystallization memory ages on the same curve the substrate graph already uses.
 
 Live wiring (M1): `seed_dynamics` / `seed_weak_dynamics` on formation, `reinforce` on dedup,
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from orion.substrate.activation import decay_activation
+from orion.core.activation_decay import decay_activation
 from orion.memory.crystallization.schemas import MemoryCrystallizationV1
 
 _SECONDS_PER_DAY = 86400.0

@@ -50,6 +50,30 @@ def _planning_and_retrieval_for_kind(kind: str, summary: str) -> tuple[list[str]
     return planning_effects, retrieval_affordances
 
 
+def _appraisal_from_turn(turn: dict[str, Any]) -> dict[str, Any]:
+    spark = turn.get("spark_meta") if isinstance(turn.get("spark_meta"), dict) else {}
+    appraisal = spark.get("turn_change_appraisal")
+    return appraisal if isinstance(appraisal, dict) else {}
+
+
+def _evidence_note_for_turn(turn: dict[str, Any]) -> str | None:
+    appraisal = _appraisal_from_turn(turn)
+    parts: list[str] = []
+    sig = turn.get("memory_significance_score")
+    if isinstance(sig, (int, float)):
+        parts.append(f"memory_sig={float(sig):.2f}")
+    novelty = appraisal.get("novelty_score")
+    if isinstance(novelty, (int, float)):
+        parts.append(f"novelty={float(novelty):.2f}")
+    shift = appraisal.get("shift_kind")
+    if shift:
+        parts.append(f"shift={shift}")
+    bnd = turn.get("conversation_boundary_score")
+    if isinstance(bnd, (int, float)):
+        parts.append(f"boundary={float(bnd):.2f}")
+    return "; ".join(parts) if parts else None
+
+
 def _window_summary(turns: list[dict[str, Any]]) -> str:
     for turn in reversed(turns):
         prompt = str(turn.get("prompt") or "").strip()
@@ -86,6 +110,7 @@ def build_crystallization_from_window(
                 source_id=corr,
                 excerpt=excerpt,
                 strength=0.75,
+                note=_evidence_note_for_turn(turn),
             )
         )
     grammar_ids = list(gate.grammar_event_ids)

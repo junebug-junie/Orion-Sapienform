@@ -82,10 +82,10 @@ class WindowStore:
         turns = json.loads(row["turn_correlation_ids"]) if row["turn_correlation_ids"] else []
         if not isinstance(turns, list):
             turns = []
-        completed = [t for t in turns if isinstance(t, dict) and t.get("correlation_id") != closing_correlation_id]
+        all_turns = [t for t in turns if isinstance(t, dict)]
         phase = None
-        for t in reversed(turns):
-            if isinstance(t, dict) and t.get("correlation_id") == closing_correlation_id:
+        for t in reversed(all_turns):
+            if t.get("correlation_id") == closing_correlation_id:
                 phase = t.get("phase_change")
                 break
         now = datetime.now(timezone.utc)
@@ -117,8 +117,8 @@ class WindowStore:
         )
         return {
             "memory_window_id": row["memory_window_id"],
-            "turn_correlation_ids": [t.get("correlation_id") for t in completed if isinstance(t, dict)],
-            "turns": completed,
+            "turn_correlation_ids": [t.get("correlation_id") for t in all_turns],
+            "turns": all_turns,
         }
 
     async def mark_consolidated(self, memory_window_id: str, *, draft_id: str) -> None:

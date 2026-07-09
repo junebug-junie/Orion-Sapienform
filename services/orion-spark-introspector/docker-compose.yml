@@ -95,6 +95,8 @@ services:
       INNER_FEATURES_ENABLED: ${INNER_FEATURES_ENABLED:-true}
       INNER_FEATURES_VERSION: ${INNER_FEATURES_VERSION:-seed-v2}
       INNER_FEATURES_CORPUS_PATH: ${INNER_FEATURES_CORPUS_PATH:-/mnt/telemetry/phi/corpus/inner_state.jsonl}
+      INNER_FEATURES_SCALER_WINDOW_SEC: ${INNER_FEATURES_SCALER_WINDOW_SEC:-900}
+      INNER_FEATURES_SCALER_MAXLEN: ${INNER_FEATURES_SCALER_MAXLEN:-256}
       CHANNEL_INNER_FEATURES: ${CHANNEL_INNER_FEATURES:-orion:self:inner_features}
       CHANNEL_PHI_REWARD: ${CHANNEL_PHI_REWARD:-orion:self:phi_reward}
       SUBSTRATE_RUNTIME_URL: ${SUBSTRATE_RUNTIME_URL:-http://orion-athena-substrate-runtime:8115}
@@ -103,6 +105,7 @@ services:
       EXEC_TRAJECTORY_MAX_AGE_SEC: ${EXEC_TRAJECTORY_MAX_AGE_SEC:-120}
       ORION_PHI_ENCODER_ENABLED: ${ORION_PHI_ENCODER_ENABLED:-false}
       ORION_PHI_ENCODER_WEIGHTS: ${ORION_PHI_ENCODER_WEIGHTS:-/mnt/telemetry/models/phi/encoders/active}
+      PHI_DEGENERATE_STREAK: ${PHI_DEGENERATE_STREAK:-20}
       PHI_ENCODER_HIDDEN_DIM: ${PHI_ENCODER_HIDDEN_DIM:-16}
       PHI_ENCODER_LATENT_DIM: ${PHI_ENCODER_LATENT_DIM:-8}
 
@@ -111,6 +114,8 @@ services:
 
     volumes:
       - ${ORION_DATA_ROOT:-/mnt/graphdb}/orion/spark:/mnt/graphdb/orion/spark
+      # Plan 2 corpus + encoder weights (INNER_FEATURES_CORPUS_PATH, ORION_PHI_ENCODER_WEIGHTS)
+      - ${TELEMETRY_ROOT:-/mnt/telemetry}:/mnt/telemetry
 
 networks:
   app-net:

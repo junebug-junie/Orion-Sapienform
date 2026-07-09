@@ -26,11 +26,14 @@ psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_substrate_reducer
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_coalition_dwell_v1.sql
 psql "$POSTGRES_URI" -f services/orion-sql-db/manual_migration_endogenous_curiosity_candidates_v1.sql
 cp services/orion-substrate-runtime/.env_example services/orion-substrate-runtime/.env
+python scripts/sync_local_env_from_example.py orion-substrate-runtime
 ```
 
-Set `ENABLE_EXECUTION_TRAJECTORY_REDUCER=true` after cortex-exec grammar publish is enabled (`PUBLISH_CORTEX_EXEC_GRAMMAR=true` on orion-cortex-exec). Default is `false` for safe rollout.
+`POSTGRES_URI` must reach the **conjourney** database (`orion-athena-sql-db:5432`). A stale `orion:orion@postgres:5432/orion` DSN breaks `/grammar/truth` and all reducers.
 
-Set `ENABLE_TRANSPORT_BUS_REDUCER=true` after orion-bus transport traces are publishing (`PUBLISH_ORION_BUS_GRAMMAR=true`). Default is `false`.
+Set `ENABLE_EXECUTION_TRAJECTORY_REDUCER=true` after cortex-exec grammar publish is enabled (`PUBLISH_CORTEX_EXEC_GRAMMAR=true` on orion-cortex-exec). Checked-in `.env_example` default is `true`.
+
+Set `ENABLE_TRANSPORT_BUS_REDUCER=true` after orion-bus transport traces are publishing (`PUBLISH_ORION_BUS_GRAMMAR=true`). Checked-in `.env_example` default is `true`.
 
 ## Run
 
